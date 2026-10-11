@@ -4418,7 +4418,7 @@ function compileTokenStmt(ast, catalog, opts = {}) {
     if (r.error) errors.push(r.error); else kind = r.value;
   }
   if (kind === 'condition') {
-    errors.push(_err("condition-kind Token creation isn't supported from the CLI yet — edit it via the Structured tab"));
+    errors.push(_err("condition-kind Token creation isn't supported from the CLI yet — use GET/PATCH /api/admin/fragments/{id} directly, or ask an admin"));
   }
 
   const bodyResult = compileAlertClause(ast.bodyCalls, null, catalog);
@@ -5750,9 +5750,11 @@ export function decompileBracket(template, catalog, opts = {}) {
     errors.push(_err(
       `bracket: cannot safely decompile — [${unexpressible.join(', ')}] ` +
       `${unexpressible.length === 1 ? 'has' : 'have'} no bracket(...) CLI ` +
-      `syntax yet; resaving via /console (create-only) would silently ` +
-      `change this row's ${unexpressible.join('/')} instead of preserving ` +
-      `it. Edit this field via the structured form at /automation instead.`
+      `syntax yet; resaving this text would silently change this row's ` +
+      `${unexpressible.join('/')} instead of preserving it. This bracket ` +
+      `can't be edited via the CLI yet — view/delete it from its row ` +
+      `card on Automation → Agents → Brackets instead (Sprint C, 2026-10:` +
+      ` the old standalone Brackets structured-edit form was retired).`
     ));
     return { text: null, errors };
   }
@@ -5779,6 +5781,60 @@ export function decompileBracket(template, catalog, opts = {}) {
 
   const metaSuffix = metaResult.text ? ` ${metaResult.text}` : '';
   const text = `bracket(${argParts.join(', ')})${metaSuffix}`;
+  const roundTrip = compileAgentCliStatement(text, catalog, opts);
+  if (!roundTrip.ok) {
+    const detail = (roundTrip.errors && roundTrip.errors[0] && roundTrip.errors[0].message) || 'unknown error';
+    return { text: null, errors: [_err(`internal: decompiled text failed to recompile (${detail})`)] };
+  }
+  return { text, errors: [] };
+}
+
+/** Decompile a stored `kind='template'` Agent row (Sprint D) that holds a
+ *  NOTIFY-kind Token's body — i.e. a non-empty `events` array, `conditions`
+ *  empty/`{}` — back to its `token(kind=notify) <channels> #name=...`
+ *  CLI text (Sprint C, 2026-10, Phase 2 "Automation redesign"). The reverse
+ *  of `compileTokenStmt`. Reuses `decompileEvents` UNCHANGED (a Token's
+ *  notify body is the exact same `{channel, enabled}` list shape ALERT's
+ *  own clause already uses) plus the shared `decompileMetaClause` helper
+ *  every other decompiler in this file uses — Tokens only ever carry
+ *  `#name=`/`#desc=` (no `#tag=`/`#group=`, matching `compileTokenStmt`'s
+ *  own explicit rejection of those two meta keys for a token statement).
+ *
+ *  A CONDITION-kind Token (non-empty `conditions`) has no CLI representation
+ *  yet — `compileTokenStmt` itself refuses `kind=condition` at CREATE time
+ *  ("condition-kind Token creation isn't supported from the CLI yet"), so
+ *  there is structurally nothing to round-trip against; this decompiler
+ *  fails loud with the same message rather than guessing at a syntax that
+ *  doesn't exist. Same "fail loud, never silently drop a field that would
+ *  change behavior on resave" convention every other decompiler here
+ *  follows. */
+export function decompileToken({ conditions, events, name, description }, catalog, opts = {}) {
+  const errors = [];
+  const hasConditions = conditions && typeof conditions === 'object' && !Array.isArray(conditions) && Object.keys(conditions).length > 0;
+  const hasEvents = Array.isArray(events) && events.length > 0;
+
+  if (hasConditions) {
+    errors.push(_err("condition-kind Token creation isn't supported from the CLI yet — use GET/PATCH /api/admin/fragments/{id} directly, or ask an admin"));
+    return { text: null, errors };
+  }
+  if (!hasEvents) {
+    errors.push(_err('token: this Token has an empty body — nothing to decompile'));
+    return { text: null, errors };
+  }
+
+  const eventsResult = decompileEvents(events, catalog);
+  errors.push(...eventsResult.errors);
+
+  const metaResult = decompileMetaClause({ name, description });
+  errors.push(...metaResult.errors);
+  if (typeof name !== 'string' || name === '') {
+    errors.push(_err("token: missing required 'name' — cannot decompile a nameless Token"));
+  }
+
+  if (errors.length) return { text: null, errors };
+
+  const metaSuffix = metaResult.text ? ` ${metaResult.text}` : '';
+  const text = `token(kind=notify) ${eventsResult.text}${metaSuffix}`;
   const roundTrip = compileAgentCliStatement(text, catalog, opts);
   if (!roundTrip.ok) {
     const detail = (roundTrip.errors && roundTrip.errors[0] && roundTrip.errors[0].message) || 'unknown error';

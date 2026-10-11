@@ -83,11 +83,23 @@ def _validate_condition_body(body: dict) -> None:
     """Stage 2 — dry-run a condition token's body through the SAME grammar
     validator `create_agent`/`update_agent` already use for an agent's own
     `conditions` tree (`agent_evaluator.validate()`). Without this, a Token
-    saved via the TokensTab "Edit" flow with an unknown metric, a malformed
+    saved via this route's own PATCH with an unknown metric, a malformed
     `quote.*` leaf missing the required `symbol` qualifier, or any other
     structurally-invalid condition tree was accepted with no error — every
     agent that references it via `{"$ref": <name>}` then silently evaluates
     to `[]` forever, with no indication anywhere of why.
+
+    Sprint C (2026-10, Phase 2 "Automation redesign") retired the
+    standalone TokensTab.svelte component that used to be this route's
+    only caller for condition-kind edits — the new Templates kind-card
+    (`/automation`) reads from the unified `kind='template'` Agent rows
+    for display, but a condition-kind Token still has no CLI grammar
+    (`agents.js`'s `compileTokenStmt` explicitly refuses `kind=condition`)
+    and therefore no in-app Edit UI at all right now; this route is
+    reachable only directly (`PATCH /api/admin/fragments/{id}`) until a
+    future sprint extends the grammar. Notify-kind Tokens are unaffected
+    — their Edit action on the Templates card routes through this same
+    PATCH endpoint via the CLI decompile/recompile round-trip.
 
     Raises HTTPException(422) with the same `extra={"errors": errors}`
     shape `agents.py:_age_validate_threshold_conditions` already uses, for

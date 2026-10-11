@@ -3,13 +3,17 @@ Order template CRUD — /api/admin/templates/*
 
 Templates are the "exit-rule preset" the operator picks at OrderTicket
 submit time. The model is in backend.api.models.OrderTemplate, seeded
-from backend.api.algo.templates_seed.SYSTEM_TEMPLATES. The matching
-SvelteKit UI component is BracketsTab, displayed as the Brackets tab
-on /automation.
+from backend.api.algo.templates_seed.SYSTEM_TEMPLATES. Operator-facing
+UI calls these rows "Brackets" — as of Sprint C (2026-10, Phase 2
+"Automation redesign") the matching surface is the "Brackets" kind-card
+on /automation's Agents tab (/automation/+page.svelte), not a
+standalone BracketsTab.svelte component (retired that sprint, folded
+into the shared card -> #group= tabs -> row-list drill-down).
 
 Endpoint shape mirrors backend.api.routes.grammar.GrammarTokenController:
-list/read are demo-readable (visitors on /automation?tab=brackets
-see the system defaults); create/update/delete are admin-only.
+list/read are demo-readable (visitors land on /automation and see the
+Brackets kind-card's system defaults); create/update/delete are
+admin-only.
 
 System templates support partial edits to their TP / SL / wing values +
 is_active toggle + is_default — operators tune the defaults from the

@@ -32,7 +32,7 @@ vi.mock('$lib/api', () => ({ fetchGrammarTokens: vi.fn() }));
 const {
   buildCatalog, compileAgentCliStatement, decompileCondition, decompileEvents,
   decompileActions, decompileAgent, decompileMetaClause, decompileBracket,
-  decompileEventAgent, ALWAYS_LEAF,
+  decompileEventAgent, decompileToken, ALWAYS_LEAF,
 } = await import('$lib/command/grammars/agents.js');
 
 // ── Fixture catalog ──────────────────────────────────────────────────────
@@ -1203,6 +1203,67 @@ describe('Sprint 18 — decompileBracket() refuses loud on slug/is_default/is_ac
     // doesn't regress the ordinary (field-absent) compile->decompile path.
     const recompiled = compile(dec.text);
     expect(recompiled.ok).toBe(true);
+  });
+});
+
+// ── Sprint C (2026-10, Phase 2 "Automation redesign") — decompileToken(),
+//    the reverse of compileTokenStmt. Gives Edit→decompile→Console a real
+//    path for a `kind='template'` Agent row holding a notify-kind Token
+//    body (non-empty `events`, empty `conditions`) — see template_registry
+//    .py's `_tr_fragment_to_agent_fields` for how that shape is stored. ──
+describe('Sprint C — decompileToken() round-trip (notify-kind Token)', () => {
+  function decompileTok(tokenJson, opts = {}) {
+    return decompileToken(tokenJson, CATALOG, { lotSizeOf, ...opts });
+  }
+
+  it('single-channel Token decompiles and round-trips', () => {
+    const tokenJson = {
+      conditions: {},
+      events: [{ channel: 'telegram', enabled: true }],
+      name: 'notify-critical-trio',
+      description: 'Critical ops trio',
+    };
+    const dec = decompileTok(tokenJson);
+    expect(dec.errors).toEqual([]);
+    expect(dec.text).toMatch(/^token\(kind=notify\) telegram #name=notify-critical-trio #desc="Critical ops trio"$/);
+    const recompiled = compile(dec.text);
+    expect(recompiled.ok).toBe(true);
+    expect(recompiled.kind).toBe('token');
+    expect(recompiled.fragment).toEqual({ kind: 'notify', name: 'notify-critical-trio', body: tokenJson.events, description: 'Critical ops trio' });
+  });
+
+  it('multi-channel Token with params round-trips', () => {
+    const tokenJson = {
+      conditions: null,
+      events: [
+        { channel: 'telegram', enabled: true },
+        { channel: 'ntfy', enabled: true, priority: 'urgent' },
+      ],
+      name: 'notify-urgent-pair',
+    };
+    const dec = decompileTok(tokenJson);
+    expect(dec.errors).toEqual([]);
+    const recompiled = compile(dec.text);
+    expect(recompiled.ok).toBe(true);
+    expect(recompiled.fragment.body).toEqual(tokenJson.events);
+  });
+
+  it('refuses loud on a condition-kind Token (non-empty conditions) — no CLI syntax exists yet', () => {
+    const dec = decompileTok({ conditions: { metric: 'pnl', scope: 'positions.total', op: '<=', value: -1 }, events: [], name: 'loss-positions-default' });
+    expect(dec.text).toBeNull();
+    expect(dec.errors.some(e => /condition-kind Token creation isn't supported/.test(e.message))).toBe(true);
+  });
+
+  it('refuses loud on an empty body (no events, no conditions)', () => {
+    const dec = decompileTok({ conditions: {}, events: [], name: 'empty-token' });
+    expect(dec.text).toBeNull();
+    expect(dec.errors.some(e => /empty body/.test(e.message))).toBe(true);
+  });
+
+  it('refuses loud on a missing name', () => {
+    const dec = decompileTok({ conditions: {}, events: [{ channel: 'log', enabled: true }] });
+    expect(dec.text).toBeNull();
+    expect(dec.errors.some(e => /missing required 'name'/.test(e.message))).toBe(true);
   });
 });
 

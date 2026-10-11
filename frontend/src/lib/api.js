@@ -384,10 +384,16 @@ export const reloadGrammarRegistry = () => _post('/admin/grammar/reload', {}, { 
 // System templates toggle-only; custom support full CRUD. URL kept at
 // /admin/fragments for back-compat; underlying model + module renamed
 // to AgentTemplate / template_registry in v2.1 — but every live caller
-// (TokensTab component on /automation?tab=tokens) still uses the pre-v2.1
-// "Fragment" names below, so those are the canonical exports here. The
-// "AgentTemplate" names were never adopted by any caller and were removed
-// as dead code (dead-code audit, 2026-10).
+// still uses the pre-v2.1 "Fragment" names below, so those are the
+// canonical exports here. The "AgentTemplate" names were never adopted
+// by any caller and were removed as dead code (dead-code audit, 2026-10).
+// Sprint C (2026-10, Phase 2 "Automation redesign") retired the
+// standalone TokensTab component (`/automation?tab=tokens`) — the
+// Templates kind-card's row list now reads from the unified
+// `kind='template'` Agent rows instead, but its Edit/Delete actions
+// still resolve the underlying AgentTemplate row (by name) and call
+// `patchAgentFragment`/`deleteAgentFragment` below — see
+// `/automation/+page.svelte`'s `_fragmentIdForTemplateRow`.
 export const fetchAgentFragments = (kind) =>
   _get(`/admin/fragments/${kind ? `?kind=${encodeURIComponent(kind)}` : ''}`,
        { auth: true });
@@ -785,6 +791,10 @@ export const replaySimIteration   = (slug) =>
 export const updateAgent     = (slug, payload) => _put(`/agents/${slug}`, payload, { auth: true });
 export const activateAgent   = (slug) => _put(`/agents/${slug}/activate`, undefined, { auth: true });
 export const deactivateAgent = (slug) => _put(`/agents/${slug}/deactivate`, undefined, { auth: true });
+// Sprint C (2026-10, Phase 2 "Automation redesign") — the Agents-tab row
+// list's Delete action is this unified endpoint's first frontend caller;
+// DELETE /api/agents/{slug} (non-system only) already existed server-side.
+export const deleteAgent      = (slug) => _del(`/agents/${slug}`, { auth: true });
 export const interpretAgent  = (command) => _post('/agents/interpret', { command }, { auth: true });
 
 // ── Order mutations (protected) ───────────────────────────────────────────────

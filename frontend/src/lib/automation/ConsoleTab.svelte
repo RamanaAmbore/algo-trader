@@ -34,11 +34,37 @@
   import { fetchAgentCatalog, compileAgentCliStatement } from '$lib/command/grammars/agents.js';
   import {
     submitConsoleAgent, submitConsoleBracket, submitConsoleToken,
+    updateConsoleAgent, updateConsoleBracket, updateConsoleToken,
     resolveConsoleOrder, submitResolvedConsoleOrder,
   } from '$lib/command/consoleDispatch';
 
-  /** @type {{ value: string }} */
-  let { value = $bindable('') } = $props();
+  /** @type {{
+   *   value: string,
+   *   editTarget?: {rowKind: 'cycle'|'event'|'template'|'bracket', ref: string|number, label: string} | null,
+   * }} */
+  let { value = $bindable(''), editTarget = $bindable(null) } = $props();
+
+  // Sprint C (2026-10, Phase 2 "Automation redesign") — `editTarget` is
+  // set by the Agents-tab row list's Edit action (`/automation/+page.svelte`)
+  // right before it decompiles a row into `value` and switches to this
+  // tab. Maps the row's own kind to the ONE compiled statement `kind`
+  // that row can legally resave as — a cycle-kind Agent must recompile
+  // as `agent`, an event-kind Agent as `event`, a Token as `token`, a
+  // Bracket as `bracket`. Never falls back to CREATE on a mismatch (e.g.
+  // the operator rewrote a decompiled agent statement into a bracket
+  // statement while still "in" an agent's edit session) — Save simply
+  // refuses with a clear error in that case; the operator must either
+  // fix the text back to the expected kind or explicitly Cancel edit
+  // first (which is the only way to fall through to the ordinary
+  // create-only buttons below).
+  const _EDIT_KIND_FOR_ROW_KIND = { cycle: 'agent', event: 'event', template: 'token', bracket: 'bracket' };
+  const _ROW_KIND_LABEL = { cycle: 'agent', event: 'alert', template: 'token', bracket: 'bracket' };
+
+  function cancelEdit() {
+    editTarget = null;
+    value = '';
+    _cliSubmitStatus = null;
+  }
 
   const isDemo = $derived(!$authStore.user);
 
@@ -110,22 +136,111 @@
     }
   }
 
+  // Sprint C — post-SUBMIT (real backend call) result, distinct from
+  // AgentCliEditor's own client-side compile errors. Shown as a small
+  // persistent status line in the result area (toast alone disappears
+  // too fast to serve as a record of "did this actually save") — see
+  // AgentCliEditor's own `submitStatus` prop doc.
+  let _cliSubmitStatus = $state(/** @type {{ok: boolean, text: string} | null} */ (null));
+
+  // Sprint C — the "Editing X — Save will update, not create" banner,
+  // rendered via AgentCliEditor's `info` prop. Clears automatically once
+  // `editTarget` clears (Save success or explicit Cancel edit).
+  const _cliInfo = $derived.by(() => {
+    if (!editTarget) return [];
+    const label = _ROW_KIND_LABEL[editTarget.rowKind] || editTarget.rowKind;
+    return [`Editing ${label} "${editTarget.label}" — Save will update, not create.`];
+  });
+
+  /** True iff the CURRENT compiled result's kind matches what the row
+   *  under edit must recompile as — see `_EDIT_KIND_FOR_ROW_KIND`'s own
+   *  doc. `false` (not an error) when `editTarget` is null — callers use
+   *  this only to decide update-vs-create routing, never to gate
+   *  compiling itself. */
+  function _editKindMatches(/** @type {any} */ compiled) {
+    if (!editTarget) return false;
+    return compiled?.kind === _EDIT_KIND_FOR_ROW_KIND[editTarget.rowKind];
+  }
+
   async function _submitAgentCliAgent(/** @type {any} */ result) {
+    if (editTarget && (editTarget.rowKind === 'cycle' || editTarget.rowKind === 'event')) {
+      if (!_editKindMatches(result)) {
+        toast.error(`Editing ${_ROW_KIND_LABEL[editTarget.rowKind]} — statement no longer compiles as that kind`);
+        return;
+      }
+      const r = await updateConsoleAgent(/** @type {string} */ (editTarget.ref), result.agent, value);
+      if (r.ok) {
+        _cliSubmitStatus = { ok: true, text: `Agent '${r.slug}' updated` };
+        toast.success(`Agent updated: ${r.slug}`);
+        editTarget = null; value = '';
+      } else {
+        _cliSubmitStatus = { ok: false, text: `Update failed: ${r.error}` };
+        toast.error(`Agent update failed: ${_short(r.error)}`);
+      }
+      return;
+    }
     const r = await submitConsoleAgent(result.agent, value);
-    if (r.ok) { toast.success(`Agent created: ${r.slug}`); value = ''; }
-    else toast.error(`Agent failed: ${_short(r.error)}`);
+    if (r.ok) {
+      _cliSubmitStatus = { ok: true, text: `Agent '${r.slug}' created` };
+      toast.success(`Agent created: ${r.slug}`); value = '';
+    } else {
+      _cliSubmitStatus = { ok: false, text: `Create failed: ${r.error}` };
+      toast.error(`Agent failed: ${_short(r.error)}`);
+    }
   }
 
   async function _submitAgentCliBracket(/** @type {any} */ result) {
+    if (editTarget && editTarget.rowKind === 'bracket') {
+      if (!_editKindMatches(result)) {
+        toast.error('Editing bracket — statement no longer compiles as a bracket');
+        return;
+      }
+      const r = await updateConsoleBracket(/** @type {number} */ (editTarget.ref), result.template);
+      if (r.ok) {
+        _cliSubmitStatus = { ok: true, text: `Bracket '${result.template?.name || ''}' updated` };
+        toast.success(`Bracket updated: ${result.template?.name || ''}`);
+        editTarget = null; value = '';
+      } else {
+        _cliSubmitStatus = { ok: false, text: `Update failed: ${r.error}` };
+        toast.error(`Bracket update failed: ${_short(r.error)}`);
+      }
+      return;
+    }
     const r = await submitConsoleBracket(result.template);
-    if (r.ok) { toast.success(`Bracket saved: ${result.template?.name || ''}`); value = ''; }
-    else toast.error(`Bracket failed: ${_short(r.error)}`);
+    if (r.ok) {
+      _cliSubmitStatus = { ok: true, text: `Bracket '${result.template?.name || ''}' created` };
+      toast.success(`Bracket saved: ${result.template?.name || ''}`); value = '';
+    } else {
+      _cliSubmitStatus = { ok: false, text: `Create failed: ${r.error}` };
+      toast.error(`Bracket failed: ${_short(r.error)}`);
+    }
   }
 
   async function _submitAgentCliToken(/** @type {any} */ result) {
+    if (editTarget && editTarget.rowKind === 'template') {
+      if (!_editKindMatches(result)) {
+        toast.error('Editing token — statement no longer compiles as a token');
+        return;
+      }
+      const r = await updateConsoleToken(/** @type {number} */ (editTarget.ref), result.fragment);
+      if (r.ok) {
+        _cliSubmitStatus = { ok: true, text: `Token '${result.fragment?.name || ''}' updated` };
+        toast.success(`Token updated: ${result.fragment?.name || ''}`);
+        editTarget = null; value = '';
+      } else {
+        _cliSubmitStatus = { ok: false, text: `Update failed: ${r.error}` };
+        toast.error(`Token update failed: ${_short(r.error)}`);
+      }
+      return;
+    }
     const r = await submitConsoleToken(result.fragment);
-    if (r.ok) { toast.success(`Token created: ${result.fragment?.name || ''}`); value = ''; }
-    else toast.error(`Token failed: ${_short(r.error)}`);
+    if (r.ok) {
+      _cliSubmitStatus = { ok: true, text: `Token '${result.fragment?.name || ''}' created` };
+      toast.success(`Token created: ${result.fragment?.name || ''}`); value = '';
+    } else {
+      _cliSubmitStatus = { ok: false, text: `Create failed: ${r.error}` };
+      toast.error(`Token failed: ${_short(r.error)}`);
+    }
   }
 
   async function _onAgentCliOrderSubmit(/** @type {any} */ _result) {
@@ -178,6 +293,15 @@
      Console mount; the order-only mounts live on /orders and the
      SymbolPanel modal via OrderCliTab). -->
 <div class="console-agent-cli-wrap">
+  {#if editTarget}
+    <!-- Sprint C — visible even while the catalog is still loading, so
+         the operator always sees edit-mode is active and has an escape
+         hatch (Cancel edit) regardless of catalog fetch timing. -->
+    <div class="console-edit-banner">
+      <span>Editing {_ROW_KIND_LABEL[editTarget.rowKind] || editTarget.rowKind} "{editTarget.label}"</span>
+      <button type="button" class="console-edit-cancel" onclick={cancelEdit}>Cancel edit</button>
+    </div>
+  {/if}
   {#if _agentCliCatalogError}
     <div class="console-agent-cli-err">{_agentCliCatalogError}</div>
   {:else}
@@ -186,21 +310,23 @@
       catalog={_agentCliCatalog}
       mode={_execModeForCompile()}
       onOrderSubmit={_onAgentCliOrderSubmit}
+      info={_cliInfo}
+      submitStatus={_cliSubmitStatus}
     />
     {#if !isDemo && _agentCliCompiled?.ok && (_agentCliCompiled.kind === 'agent' || _agentCliCompiled.kind === 'event')}
       <button type="button" class="btn-primary console-agent-cli-btn"
         onclick={() => _submitAgentCliAgent(_agentCliCompiled)}>
-        Create agent
+        {editTarget && (editTarget.rowKind === 'cycle' || editTarget.rowKind === 'event') ? 'Save' : 'Create agent'}
       </button>
     {:else if !isDemo && _agentCliCompiled?.ok && _agentCliCompiled.kind === 'bracket'}
       <button type="button" class="btn-primary console-agent-cli-btn"
         onclick={() => _submitAgentCliBracket(_agentCliCompiled)}>
-        Save bracket
+        {editTarget && editTarget.rowKind === 'bracket' ? 'Save' : 'Save bracket'}
       </button>
     {:else if !isDemo && _agentCliCompiled?.ok && _agentCliCompiled.kind === 'token'}
       <button type="button" class="btn-primary console-agent-cli-btn"
         onclick={() => _submitAgentCliToken(_agentCliCompiled)}>
-        Create token
+        {editTarget && editTarget.rowKind === 'template' ? 'Save' : 'Create token'}
       </button>
     {/if}
   {/if}
@@ -251,5 +377,29 @@
     margin-top: 0.3rem;
     font-size: var(--fs-md);
     padding: 0.25rem 0.9rem;
+  }
+  .console-edit-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    padding: 0.35rem 0.6rem;
+    margin-bottom: 0.4rem;
+    border-radius: 0.3rem;
+    background: var(--algo-amber-bg);
+    border: 1px solid var(--algo-amber-border-soft);
+    color: var(--algo-amber);
+    font-size: var(--fs-sm);
+    font-weight: 600;
+  }
+  .console-edit-cancel {
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    text-decoration: underline;
+    color: var(--algo-amber);
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 0;
   }
 </style>

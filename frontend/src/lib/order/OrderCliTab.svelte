@@ -66,11 +66,23 @@
 
   function _short(/** @type {any} */ msg) { return String(msg || '').slice(0, 32); }
 
+  // Sprint C (2026-10, Phase 2 "Automation redesign") — post-SUBMIT
+  // result, rendered via AgentCliEditor's `submitStatus` prop alongside
+  // this mount's own toast (same persistent-status-line rule as
+  // ConsoleTab's identical field — a toast alone disappears too fast to
+  // serve as a record of "did this actually place").
+  let _submitStatus = $state(/** @type {{ok: boolean, text: string} | null} */ (null));
+
   async function _onOrderSubmit(/** @type {any} */ _result) {
     const fresh = _recompile();
     if (!fresh.ok || fresh.kind !== 'order') { toast.error('CLI changed — recheck before submit'); return; }
     const resolved = await resolveConsoleOrder(fresh);
-    if (!resolved.ok) { toast.error(_short(/** @type {any} */ (resolved).error)); return; }
+    if (!resolved.ok) {
+      const _err = /** @type {any} */ (resolved).error;
+      _submitStatus = { ok: false, text: `Order failed: ${_err}` };
+      toast.error(_short(_err));
+      return;
+    }
     const isLive = fresh.ticket?.mode === 'live' || !!fresh.basket;
     if (isLive) {
       const ok = await _confirmRef?.ask({
@@ -84,10 +96,12 @@
     }
     const r = await submitResolvedConsoleOrder(resolved, { mode, source: 'command' });
     if (r.ok) {
+      _submitStatus = { ok: true, text: r.kind === 'basket' ? 'Basket order placed' : 'Order placed' };
       toast.success(r.kind === 'basket' ? 'Basket order placed' : 'Order placed');
       _text = '';
       onSubmit?.({ mode, kind: r.kind, response: r.response });
     } else {
+      _submitStatus = { ok: false, text: `Order failed: ${/** @type {any} */ (r).error}` };
       toast.error(`Order failed: ${_short(/** @type {any} */ (r).error)}`);
     }
   }
@@ -109,6 +123,7 @@
       allowedKinds={_ALLOWED}
       placeholder={'order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)'}
       onOrderSubmit={_onOrderSubmit}
+      submitStatus={_submitStatus}
     />
   {/if}
 </div>

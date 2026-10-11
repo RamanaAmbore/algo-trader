@@ -26,8 +26,11 @@ const fetchOrderTemplates = vi.fn();
 const placeTicketOrder    = vi.fn();
 const placeBasket         = vi.fn();
 const createAgent         = vi.fn();
+const updateAgent         = vi.fn();
 const createOrderTemplate = vi.fn();
+const patchOrderTemplate  = vi.fn();
 const createAgentFragment = vi.fn();
+const patchAgentFragment  = vi.fn();
 const reloadOrderTemplates = vi.fn();
 
 vi.mock('$lib/api', () => ({
@@ -35,8 +38,11 @@ vi.mock('$lib/api', () => ({
   placeTicketOrder:    (...a) => placeTicketOrder(...a),
   placeBasket:         (...a) => placeBasket(...a),
   createAgent:         (...a) => createAgent(...a),
+  updateAgent:         (...a) => updateAgent(...a),
   createOrderTemplate: (...a) => createOrderTemplate(...a),
+  patchOrderTemplate:  (...a) => patchOrderTemplate(...a),
   createAgentFragment: (...a) => createAgentFragment(...a),
+  patchAgentFragment:  (...a) => patchAgentFragment(...a),
 }));
 vi.mock('$lib/data/templates', () => ({
   reloadOrderTemplates: (...a) => reloadOrderTemplates(...a),
@@ -52,6 +58,9 @@ const {
   submitConsoleAgent,
   submitConsoleBracket,
   submitConsoleToken,
+  updateConsoleAgent,
+  updateConsoleBracket,
+  updateConsoleToken,
   slugifyAgentName,
 } = await import('$lib/command/consoleDispatch.js');
 
@@ -60,8 +69,11 @@ beforeEach(() => {
   placeTicketOrder.mockReset();
   placeBasket.mockReset();
   createAgent.mockReset();
+  updateAgent.mockReset();
   createOrderTemplate.mockReset();
+  patchOrderTemplate.mockReset();
   createAgentFragment.mockReset();
+  patchAgentFragment.mockReset();
   reloadOrderTemplates.mockReset();
 });
 
@@ -389,5 +401,113 @@ describe('submitConsoleToken', () => {
     const r = await submitConsoleToken(null);
     expect(r.ok).toBe(false);
     expect(createAgentFragment).not.toHaveBeenCalled();
+  });
+});
+
+// ── updateConsoleAgent / updateConsoleBracket / updateConsoleToken
+//    (Sprint C, 2026-10, Phase 2 "Automation redesign") — the Edit→
+//    decompile→Console→resave path routes through UPDATE, never CREATE.
+
+describe('updateConsoleAgent', () => {
+  it('calls updateAgent(slug, ...) — never createAgent — with only the CLI-expressible fields', async () => {
+    updateAgent.mockResolvedValue({ detail: 'ok' });
+    const compiledAgent = {
+      name: 'NIFTY loss guard', description: 'Closes on -50k drawdown',
+      conditions: { metric: 'pnl', scope: 'positions.total', op: '<=', value: -50000 },
+      events: [{ channel: 'telegram', enabled: true }],
+      actions: [], tags: ['risk'], group: 'hedge-book',
+    };
+    const r = await updateConsoleAgent('nifty-loss-guard', compiledAgent, 'WHEN ...');
+    expect(r.ok).toBe(true);
+    expect(r.slug).toBe('nifty-loss-guard');
+    expect(createAgent).not.toHaveBeenCalled();
+    expect(updateAgent).toHaveBeenCalledWith('nifty-loss-guard', {
+      name: 'NIFTY loss guard',
+      description: 'Closes on -50k drawdown',
+      conditions: compiledAgent.conditions,
+      events: compiledAgent.events,
+      actions: [],
+      tags: ['risk'],
+      group: 'hedge-book',
+      cli_source: 'WHEN ...',
+    });
+  });
+
+  it('never sends schedule/tier/trade_mode/lifespan fields — None/absent on the backend means unchanged', async () => {
+    updateAgent.mockResolvedValue({ detail: 'ok' });
+    await updateConsoleAgent('x', { name: 'x', conditions: {}, events: [], actions: [] }, '');
+    const sentPayload = updateAgent.mock.calls[0][1];
+    for (const forbidden of ['schedule', 'tier', 'topic', 'trade_mode', 'cooldown_minutes',
+      'lifespan_type', 'lifespan_max_fires', 'lifespan_expires_at', 'debounce_minutes',
+      'blackout_windows', 'slug', 'kind']) {
+      expect(Object.prototype.hasOwnProperty.call(sentPayload, forbidden)).toBe(false);
+    }
+  });
+
+  it('requires a target slug — never calls updateAgent with no row selected', async () => {
+    const r = await updateConsoleAgent(null, { name: 'x' }, '');
+    expect(r.ok).toBe(false);
+    expect(updateAgent).not.toHaveBeenCalled();
+  });
+
+  it('requires a compiled agent — never calls updateAgent with nothing', async () => {
+    const r = await updateConsoleAgent('x', null, '');
+    expect(r.ok).toBe(false);
+    expect(updateAgent).not.toHaveBeenCalled();
+  });
+
+  it('surfaces an update failure (e.g. 400 kind-change rejection) as a structured error', async () => {
+    updateAgent.mockRejectedValue(new Error('kind cannot be changed after creation'));
+    const r = await updateConsoleAgent('x', { name: 'x', conditions: {}, events: [], actions: [] }, '');
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/kind cannot be changed/);
+  });
+});
+
+describe('updateConsoleBracket', () => {
+  it('calls patchOrderTemplate(id, ...) — never createOrderTemplate — and reloads the cache', async () => {
+    patchOrderTemplate.mockResolvedValue({ id: 55, name: 'My Bracket' });
+    const compiledTemplate = { name: 'My Bracket', tp_pct: 20, sl_pct: -10 };
+    const r = await updateConsoleBracket(55, compiledTemplate);
+    expect(r.ok).toBe(true);
+    expect(createOrderTemplate).not.toHaveBeenCalled();
+    expect(patchOrderTemplate).toHaveBeenCalledWith(55, compiledTemplate);
+    expect(reloadOrderTemplates).toHaveBeenCalledTimes(1);
+  });
+
+  it('requires a target id — never calls patchOrderTemplate with no row selected', async () => {
+    const r = await updateConsoleBracket(null, { name: 'x' });
+    expect(r.ok).toBe(false);
+    expect(patchOrderTemplate).not.toHaveBeenCalled();
+  });
+
+  it('surfaces an update failure without reloading the templates cache', async () => {
+    patchOrderTemplate.mockRejectedValue(new Error('not found'));
+    const r = await updateConsoleBracket(55, { name: 'x' });
+    expect(r.ok).toBe(false);
+    expect(reloadOrderTemplates).not.toHaveBeenCalled();
+  });
+});
+
+describe('updateConsoleToken', () => {
+  it('calls patchAgentFragment(id, {body, description}) — never createAgentFragment', async () => {
+    patchAgentFragment.mockResolvedValue({ id: 7, name: 'my-token' });
+    const compiledFragment = { kind: 'notify', name: 'my-token', body: [{ channel: 'telegram', enabled: true }], description: 'hi' };
+    const r = await updateConsoleToken(7, compiledFragment);
+    expect(r.ok).toBe(true);
+    expect(createAgentFragment).not.toHaveBeenCalled();
+    expect(patchAgentFragment).toHaveBeenCalledWith(7, { body: compiledFragment.body, description: 'hi' });
+  });
+
+  it('requires a target id — never calls patchAgentFragment with no row selected', async () => {
+    const r = await updateConsoleToken(null, { kind: 'notify', name: 'x', body: [] });
+    expect(r.ok).toBe(false);
+    expect(patchAgentFragment).not.toHaveBeenCalled();
+  });
+
+  it('requires a compiled fragment — never calls patchAgentFragment with nothing', async () => {
+    const r = await updateConsoleToken(7, null);
+    expect(r.ok).toBe(false);
+    expect(patchAgentFragment).not.toHaveBeenCalled();
   });
 });

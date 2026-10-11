@@ -1,45 +1,38 @@
 /**
- * console_decompile_bracket_edit_flow.spec.js — Sprint 18; rewired
- * Sprint B (2026-10, Phase 2 "Console retirement").
+ * console_decompile_bracket_edit_flow.spec.js — Sprint 18; rewired Sprint B
+ * (2026-10, Console retirement); rewired AGAIN for Sprint C (2026-10, Phase 2
+ * "Automation redesign").
  *
- * `decompileBracket` (frontend/src/lib/command/grammars/agents.js) had
- * ZERO production callers before Sprint 18 — only `__tests__` ever
- * invoked it. This spec gives it its first real UI path: BracketsTab's
- * "Open in Console" row action (frontend/src/lib/automation/
- * BracketsTab.svelte) decompiles a Bracket's live JSON to `bracket(...)`
- * CLI text and navigates to `/automation?tab=console&cli=<encoded
- * text>` (previously `/console?cli=...` — /console is now a redirect,
- * see frontend/src/routes/(algo)/console/+page.js), where Automation's
- * own `?cli=` prefill consumer seeds ConsoleTab's AgentCliEditor
- * textarea with it.
+ * BracketsTab.svelte (and its "Open in Console" create-only button) is
+ * DELETED in Sprint C — Brackets are now a kind-card on the Agents tab
+ * (`/automation` → "Brackets" card → group tab → row list). Edit on a row
+ * decompiles its live JSON straight into the Console tab's CLI textarea
+ * AND arms edit mode (`_consoleEditTarget`), so Save now genuinely routes
+ * through `PATCH /api/admin/templates/{id}` (update), never
+ * `POST /api/admin/templates/` (create) — a real behavior change from the
+ * old "Open in Console" button, which this spec's name predates but now
+ * accurately describes.
  *
- * NOT a true in-place edit — the Console tab's own submit path is
- * create-only (consoleDispatch.js:submitConsoleBracket always POSTs a
- * new row), so this button is deliberately labelled "Open in Console",
- * not "Edit via CLI". The spec name reflects the dispatch brief's
- * framing but the assertions below only ever check pre-fill
- * correctness, never that the original row got overwritten.
+ * Both scenarios intercept `GET /api/admin/templates/` with a fixed
+ * fixture row (via `page.route`) instead of creating a real row through
+ * the API — `POST/PATCH /api/admin/templates/` requires the
+ * `manage_settings` capability (designated role only; the default `rambo`
+ * admin fixture lacks it — backend/api/rbac.py). The PATCH call itself is
+ * also intercepted so this spec never needs that capability to prove the
+ * UPDATE route was actually called with the right id/body. The
+ * grammar-tokens catalog fetch (`GET /api/admin/grammar/tokens`) is real
+ * network — `view_agents_catalog` already covers the default admin role.
  *
- * Both scenarios intercept the `GET /api/admin/templates/` list response
- * with a fixed fixture row (via `page.route`) instead of creating a real
- * row through the API — `POST /api/admin/templates/` requires the
- * `manage_settings` capability (designated role only; the default
- * `rambo` admin fixture lacks it — backend/api/rbac.py), and mocking the
- * read avoids needing a second role's credentials just to seed fixture
- * data. The grammar-tokens catalog fetch (`GET /api/admin/grammar/
- * tokens`) is real network — `view_agents_catalog` already covers the
- * default admin role.
- *
- * Covers (Sprint 18 "Done when" criterion — "at least one real UI path
- * exists where decompile actually runs for an operator"):
+ * Covers:
  *   1. A realistic custom Bracket (slug=null, is_system=false,
  *      is_default=false, is_active=true) decompiles successfully —
- *      clicking "Open in Console" navigates to /console with the CLI
- *      textarea pre-filled with the correct `bracket(...)` text, and
- *      the catalog loads well enough for "Save bracket" to appear.
+ *      clicking Edit switches to the Console tab with the CLI textarea
+ *      pre-filled with the correct `bracket(...)` text, an "Editing
+ *      bracket ..." banner, and a "Save" button (not "Save bracket")
+ *      that PATCHes the SAME row id, never POSTs a new one.
  *   2. A system/default Bracket (is_system=true, is_default=true,
  *      slug set) refuses loud instead — a short toast appears, and the
- *      page stays on /automation (no navigation).
+ *      page stays on the row list (no navigation to Console).
  *
  * Viewport: chromium-desktop only (CLI authoring is not a mobile-first
  * surface — same convention as the sibling console/automation CLI specs).
@@ -96,7 +89,7 @@ const SYSTEM_BRACKET_ROW = {
   tags: [],
 };
 
-/** Intercepts GET /api/admin/templates/ with a single fixed row — never
+/** Intercepts GET /api/admin/templates/ with a fixed row list — never
  *  hits the real DB, so these scenarios run identically regardless of
  *  what real Brackets exist on dev. */
 async function mockTemplatesList(/** @type {import('@playwright/test').Page} */ page, /** @type {any[]} */ rows) {
@@ -106,25 +99,50 @@ async function mockTemplatesList(/** @type {import('@playwright/test').Page} */ 
   });
 }
 
-test.describe('BracketsTab "Open in Console" → decompileBracket (Sprint 18)', () => {
+/** Drill into the Brackets kind-card's (single, ungrouped) row list and
+ *  expand the row matching `name`. Returns the row locator, already
+ *  expanded. */
+async function openBracketRow(/** @type {import('@playwright/test').Page} */ page, /** @type {string} */ name) {
+  await page.locator('.kind-card[data-kind="brackets"]').click();
+  const row = page.locator('[role="listitem"]').filter({ hasText: name });
+  await expect(row).toBeVisible({ timeout: TIMEOUT });
+  await row.locator('[role="button"]').first().click();
+  return row;
+}
+
+test.describe('Brackets kind-card row → Edit → decompileBracket → Console (Sprint C)', () => {
   test.beforeEach(async ({ page }) => {
     await loginAsAdmin(page);
   });
 
-  test('custom Bracket decompiles and pre-fills the Console tab correctly', async ({ page }) => {
-    await mockTemplatesList(page, [CUSTOM_BRACKET_ROW]);
-    await page.goto('/automation?tab=brackets');
+  test('custom Bracket decompiles, pre-fills the Console tab in EDIT mode, and Save PATCHes the same row', async ({ page }) => {
+    let createCalled = false;
+    // ONE handler for the collection endpoint, discriminating by method —
+    // registering a second `page.route` for the same glob pattern would
+    // shadow this one (Playwright dispatches to the MOST RECENTLY
+    // registered matching handler only; an unconditional `route.continue()`
+    // in a later handler bypasses this one entirely, including for GET).
+    await page.route('**/api/admin/templates/', async (route) => {
+      if (route.request().method() === 'POST') { createCalled = true; await route.continue(); return; }
+      if (route.request().method() !== 'GET') { await route.continue(); return; }
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([CUSTOM_BRACKET_ROW]) });
+    });
+    let patchCalled = /** @type {any} */ (null);
+    await page.route('**/api/admin/templates/90001', async (route) => {
+      if (route.request().method() !== 'PATCH') { await route.continue(); return; }
+      patchCalled = { url: route.request().url(), body: route.request().postDataJSON() };
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(CUSTOM_BRACKET_ROW) });
+    });
+
+    await page.goto('/automation');
     await page.waitForLoadState('networkidle');
 
-    const row = page.locator('.tpl-row').filter({ hasText: 'ZZZ E2E Custom Bracket' });
-    await expect(row).toBeVisible({ timeout: TIMEOUT });
-    await row.locator('.tpl-row-head').click();
+    const row = await openBracketRow(page, 'ZZZ E2E Custom Bracket');
+    await row.getByRole('button', { name: 'Edit' }).click();
 
-    const openBtn = row.getByRole('button', { name: 'Open in Console' });
-    await expect(openBtn).toBeVisible({ timeout: TIMEOUT });
-    await openBtn.click();
-
-    await page.waitForURL(/\/automation\?.*cli=/, { timeout: TIMEOUT });
+    // Switched to the Console tab.
+    await expect(page.locator('.console-edit-banner')).toBeVisible({ timeout: TIMEOUT });
+    await expect(page.locator('.console-edit-banner')).toContainText('ZZZ E2E Custom Bracket');
 
     const cliTextarea = page.locator('.agent-cli-textarea');
     await expect(cliTextarea).toBeVisible({ timeout: TIMEOUT });
@@ -135,35 +153,35 @@ test.describe('BracketsTab "Open in Console" → decompileBracket (Sprint 18)', 
     expect(value).toContain('sl_pct=-20');
     expect(value).toContain('#name="ZZZ E2E Custom Bracket"');
 
-    // Catalog loaded + the decompiled text recompiles cleanly — "Save
-    // bracket" (not an error list) confirms the pre-fill is genuinely
-    // usable, not just textually present.
-    await expect(page.locator('.console-agent-cli-btn', { hasText: 'Save bracket' }))
-      .toBeVisible({ timeout: TIMEOUT });
+    // Edit mode: the button reads "Save" (update), never "Save bracket"
+    // (create) or "Create agent"/"Create token".
+    const saveBtn = page.locator('.console-agent-cli-btn');
+    await expect(saveBtn).toBeVisible({ timeout: TIMEOUT });
+    await expect(saveBtn).toHaveText('Save');
 
-    // The `?cli=` param is stripped once consumed (replaceState) — a
-    // reload shouldn't re-seed stale text over a fresh blank session.
-    // `?tab=console` is retained so a reload still lands on this tab.
-    await expect(page).toHaveURL(/\/automation\?tab=console$/);
+    await saveBtn.click();
+    await expect.poll(() => patchCalled, { timeout: TIMEOUT }).not.toBeNull();
+    expect(patchCalled.url).toContain('/api/admin/templates/90001');
+    expect(createCalled).toBe(false);
+
+    // Edit-mode banner clears on a successful Save.
+    await expect(page.locator('.console-edit-banner')).toHaveCount(0);
   });
 
-  test('system Bracket refuses loud instead of navigating', async ({ page }) => {
+  test('system Bracket refuses loud instead of switching to Console', async ({ page }) => {
     await mockTemplatesList(page, [SYSTEM_BRACKET_ROW]);
-    await page.goto('/automation?tab=brackets');
+    await page.goto('/automation');
     await page.waitForLoadState('networkidle');
 
-    const row = page.locator('.tpl-row').filter({ hasText: 'Default Bull' });
-    await expect(row).toBeVisible({ timeout: TIMEOUT });
-    await row.locator('.tpl-row-head').click();
-
-    const openBtn = row.getByRole('button', { name: 'Open in Console' });
-    await expect(openBtn).toBeVisible({ timeout: TIMEOUT });
-    await openBtn.click();
+    const row = await openBracketRow(page, 'Default Bull');
+    // is_system rows have no Delete action, but Edit is still offered —
+    // the refusal happens inside editRow()'s own decompile call.
+    await row.getByRole('button', { name: 'Edit' }).click();
 
     await expect(page.locator('.rbq-toast-msg').first()).toBeVisible({ timeout: TIMEOUT });
-    await expect(page.locator('.rbq-toast-msg').first()).toContainText(/CLI/i);
 
-    // Never navigated away.
-    await expect(page).toHaveURL(/\/automation/);
+    // Never switched to the Console tab.
+    await expect(page.locator('.console-edit-banner')).toHaveCount(0);
+    await expect(page.locator('.agent-cli-textarea')).toHaveCount(0);
   });
 });

@@ -2,27 +2,28 @@
  * LogPanel Alerts tab — 2026-10 nav restructure regression spec.
  *
  * The standalone /admin/alerts page was retired and its functionality
- * folded into LogPanel as a new 'alerts' tab, gated by the view_audit
- * capability. It is mounted ONLY on /automation, as part of the
- * already-existing bottom-attached ActivityLogSurface strip (same
- * structural role Orders' own activity card plays — always visible
- * below whatever top-level AutomationTabs sub-view is active, not a
- * fifth tab inside AutomationTabs itself).
+ * folded into LogPanel as a new 'alerts' tab (display label "Alert
+ * Log" as of Sprint C, 2026-10 — see that tab's own comment in
+ * LogPanel.svelte), gated by the view_audit capability. It is mounted
+ * ONLY on /automation, as part of the already-existing bottom-attached
+ * ActivityLogSurface strip (same structural role Orders' own activity
+ * card plays — always visible below whatever top-level AutomationTabs
+ * sub-view is active, not a tab inside AutomationTabs itself).
  *
  * Five quality dimensions (per feedback_test_dimensions.md):
  *   SSOT     — the view_audit cap gate lives once, inside LogPanel's own
  *              VISIBLE_TABS filter; no page-level duplicate gate.
  *   Perf     — the strip is a single LogPanel instance shared by every
- *              AutomationTabs sub-view (Agents/Brackets/Tokens), not
- *              remounted per tab switch.
+ *              AutomationTabs sub-view (Console/Agents), not remounted
+ *              per tab switch.
  *   Stale    — source-scan confirms the deleted /admin/alerts route is
  *              gone from disk and from the nav link array; no dangling
  *              href elsewhere in the app.
- *   Reusable — Alerts rows render through the same _logRow()-based
+ *   Reusable — Alert Log rows render through the same _logRow()-based
  *              convention every other LogPanel tab uses (time chip /
  *              level chip / message / tag), not a bespoke layout.
  *   UX       — bottom strip stays mounted across AutomationTabs
- *              sub-views (Agents/Brackets/Tokens); an operator without
+ *              sub-views (Console/Agents); an operator without
  *              view_audit never sees the tab at all.
  */
 
@@ -48,21 +49,23 @@ test.describe('LogPanel Alerts tab on /automation', () => {
     const strip = page.locator('.lp-header-wrap').first();
     await expect(strip).toBeVisible({ timeout: 15_000 });
 
-    const alertsTab = page.getByRole('tab', { name: 'Alerts' });
-    await expect(alertsTab, 'Alerts tab must be visible for a view_audit-capable operator').toBeVisible({ timeout: 10_000 });
+    const alertsTab = page.getByRole('tab', { name: 'Alert Log' });
+    await expect(alertsTab, 'Alert Log tab must be visible for a view_audit-capable operator').toBeVisible({ timeout: 10_000 });
 
     // Strip stays mounted (not remounted/torn down) when switching the
     // page's own top-level AutomationTabs sub-view — the same
     // always-visible structural role Orders' own activity card plays.
     // AutomationTabs is ALSO an AlgoTabs instance (role="tab"), scoped
     // to its own wrapper so "Agents" doesn't collide with LogPanel's
-    // identically-labelled tab inside the bottom strip.
+    // identically-labelled tab inside the bottom strip. Sprint C
+    // (2026-10, Phase 2 "Automation redesign") removed the Brackets/
+    // Tokens top-level sub-views — Console is the only other one left.
     const topTabs = page.locator('.aw-tabs-wrap');
-    const brackets = topTabs.getByRole('tab', { name: 'Brackets' });
-    if (await brackets.count()) {
-      await brackets.click();
+    const consoleTab = topTabs.getByRole('tab', { name: 'Console' });
+    if (await consoleTab.count()) {
+      await consoleTab.click();
       await expect(strip, 'bottom strip must stay mounted across AutomationTabs sub-views').toBeVisible();
-      await expect(page.getByRole('tab', { name: 'Alerts' })).toBeVisible();
+      await expect(page.getByRole('tab', { name: 'Alert Log' })).toBeVisible();
       // Return to Agents so later assertions aren't order-dependent.
       await topTabs.getByRole('tab', { name: 'Agents' }).click();
     }
@@ -70,10 +73,10 @@ test.describe('LogPanel Alerts tab on /automation', () => {
     await alertsTab.click();
     // Either real rows or the explicit empty state — never a blank panel.
     const rowsOrEmpty = page.locator('.log-row').first();
-    await expect(rowsOrEmpty, 'Alerts tab must render rows or the "No alert events yet." empty state').toBeVisible({ timeout: 10_000 });
+    await expect(rowsOrEmpty, 'Alert Log tab must render rows or the "No alert events yet." empty state').toBeVisible({ timeout: 10_000 });
   });
 
-  test('unauthorized (no view_audit) operator never sees the Alerts tab', async ({ page }) => {
+  test('unauthorized (no view_audit) operator never sees the Alert Log tab', async ({ page }) => {
     // Strip view_audit from the /whoami response so the SAME admin
     // account renders as if it lacked the capability — avoids needing
     // a separate partner/risk-role fixture account.
@@ -94,9 +97,9 @@ test.describe('LogPanel Alerts tab on /automation', () => {
     await expect(strip).toBeVisible({ timeout: 15_000 });
 
     // Give the tab strip a moment to settle (poll-driven caps bridge),
-    // then assert Alerts never appears.
+    // then assert Alert Log never appears.
     await page.waitForTimeout(1500);
-    await expect(page.getByRole('tab', { name: 'Alerts' }), 'Alerts tab must stay hidden without view_audit').toHaveCount(0);
+    await expect(page.getByRole('tab', { name: 'Alert Log' }), 'Alert Log tab must stay hidden without view_audit').toHaveCount(0);
 
     // The rest of the strip must still work normally — Agents tab is
     // always visible regardless of the cap gate. Scoped to the bottom
@@ -136,7 +139,7 @@ test.describe('[STALE] source-scan — /admin/alerts route fully removed', () =>
   test('LogPanel carries the alerts tab definition, gated by view_audit', () => {
     const logPanelPath = path.resolve(__dirname, '..', 'src', 'lib', 'LogPanel.svelte');
     const src = fs.readFileSync(logPanelPath, 'utf8');
-    expect(src, 'LogPanel must define an alerts tab').toMatch(/\['alerts',\s*'Alerts'\]/);
+    expect(src, 'LogPanel must define an alerts tab labelled "Alert Log"').toMatch(/\['alerts',\s*'Alert Log'\]/);
     expect(src, 'LogPanel must gate the alerts tab by view_audit').toContain("hasCap('view_audit'");
   });
 

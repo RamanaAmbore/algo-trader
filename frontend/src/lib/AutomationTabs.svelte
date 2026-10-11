@@ -13,6 +13,12 @@
   tab — `/console` is retired as a standalone route; its full-scope
   agent-CLI + plain orders bar now lives here (ConsoleTab.svelte).
 
+  Sprint C (2026-10, Phase 2 "Automation redesign"): the Brackets and
+  Tokens tabs are REMOVED — fully absorbed into the Agents tab's own
+  kind-count-card → #group= tabs → row-list drill-down (see
+  `/automation/+page.svelte`'s `KIND_CARDS`/`_activeCard`). Only
+  Console/Agents remain.
+
   Agent fire history lives on /activity (Agent tab), not in this strip.
 -->
 <script>
@@ -22,10 +28,8 @@
   let { value, onChange } = $props();
 
   const TABS = [
-    { id: 'console',  label: 'Console'  },
-    { id: 'agents',   label: 'Agents'   },
-    { id: 'brackets', label: 'Brackets' },
-    { id: 'tokens',   label: 'Tokens'   },
+    { id: 'console', label: 'Console' },
+    { id: 'agents',  label: 'Agents'  },
   ];
 </script>
 

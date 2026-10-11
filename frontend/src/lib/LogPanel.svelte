@@ -973,10 +973,17 @@
   // is unaffected. Only a caller that explicitly adds 'alerts' to its
   // own `tabs=` prop (today: /automation's bottom-attached strip) gets
   // it, and even then only once the view_audit cap gate passes below.
+  // Labelled "Alert Log" (not "Alerts") as of Sprint C (2026-10, Phase 2
+  // "Automation redesign") — that phase added a NEW "Alerts" kind-card
+  // on /automation's Agents tab (kind='event' agents), which would
+  // otherwise collide in name with this tab (agent-fire HISTORY, a
+  // different concept) on the very same page. The tab id stays 'alerts'
+  // (every caller's `tabs=` prop and the backend's log tag are
+  // unaffected) — only the display label changed.
   const _ALL_TABS = [
     ['order',     'Orders'],
     ['agent',     'Agents'],
-    ['alerts',    'Alerts'],
+    ['alerts',    'Alert Log'],
     ['terminal',  'Terminal'],
     ['simulator', 'Ticks'],
     ['system',    'System'],

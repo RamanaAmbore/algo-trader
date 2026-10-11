@@ -4,26 +4,31 @@
   import AlgoTimestamp from '$lib/AlgoTimestamp.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
-  import InfoHint from '$lib/InfoHint.svelte';
   import StaleBanner from '$lib/StaleBanner.svelte';
   import { toast } from '$lib/data/toastStore.svelte.js';
   import {
-    fetchAgents, activateAgent, deactivateAgent, updateAgent,
+    fetchAgents, activateAgent, deactivateAgent, deleteAgent, updateAgent,
     fetchSimStatus,
-    startSimForAgent, fetchGrammarTokens,
+    startSimForAgent,
     fetchAgentRenderers, fetchSetting,
-    patchOrderTemplate,
+    deleteOrderTemplate,
+    fetchAgentFragments, deleteAgentFragment,
   } from '$lib/api';
   import ActivityLogSurface from '$lib/ActivityLogSurface.svelte';
-  import Select   from '$lib/Select.svelte';
   import AutomationTabs from '$lib/AutomationTabs.svelte';
   import DisclosureChevron from '$lib/DisclosureChevron.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
-  import ChaseAggPicker from '$lib/order/ChaseAggPicker.svelte';
+  import AlgoTabs from '$lib/AlgoTabs.svelte';
   import { loadOrderTemplates, reloadOrderTemplates, orderTemplatesStore } from '$lib/data/templates';
-  import BracketsTab from '$lib/automation/BracketsTab.svelte';
-  import TokensTab from '$lib/automation/TokensTab.svelte';
   import ConsoleTab from '$lib/automation/ConsoleTab.svelte';
+  import {
+    KIND_CARDS, classifyAgentCardId, groupRowsByGroup, kindCounts,
+    filterAgentRowsByCard, UNGROUPED_TAB_LABEL,
+  } from '$lib/data/automationKinds.js';
+  import {
+    fetchAgentCatalog, decompileAgent, decompileEventAgent,
+    decompileBracket, decompileToken,
+  } from '$lib/command/grammars/agents.js';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
 
@@ -34,11 +39,15 @@
   const algoStatus = getContext('algoStatus');
   const isDemo = $derived(algoStatus.isDemo);
 
-  // ── Tab state (Sprint 9 — Agents / Brackets / Tokens folded onto one
-  //    page; Sprint B 2026-10 added Console). Seeded from ?tab= on
-  //    mount; written back via replaceState so a reload / bookmark
-  //    preserves the tab without adding a history entry per click. */
-  let activeTab = $state(/** @type {'console'|'agents'|'brackets'|'tokens'} */ ('agents'));
+  // ── Tab state (Sprint B 2026-10 added Console; Sprint C 2026-10 folded
+  //    Brackets + Tokens tabs into the Agents-tab kind-card structure, so
+  //    only 'console'/'agents' remain). Seeded from ?tab= on mount;
+  //    written back via replaceState so a reload / bookmark preserves
+  //    the tab without adding a history entry per click. A stale
+  //    bookmarked `?tab=brackets`/`?tab=tokens` (Sprint 9 era, before
+  //    this redesign) lands on 'agents' with that kind-card preselected
+  //    instead of a dead tab — see the `$effect` below. */
+  let activeTab = $state(/** @type {'console'|'agents'} */ ('agents'));
   function setActiveTab(/** @type {string} */ id) {
     activeTab = /** @type {any} */ (id);
     const url = new URL(window.location.href);
@@ -46,87 +55,229 @@
     goto(url.pathname + '?' + url.searchParams.toString(), { replaceState: true, noScroll: true, keepFocus: true });
   }
 
-  // Console tab's CLI text — kept at page level (not inside ConsoleTab's
-  // own internal state) so a future Edit→decompile action elsewhere on
-  // this page (Sprint C) can write into it, and so it survives a tab
+  // Console tab's CLI text + edit-mode target — kept at page level (not
+  // inside ConsoleTab's own internal state) so the Agents-tab row list's
+  // Edit action (below) can write into it, and so both survive a tab
   // switch away from Console and back. Bound two-way into ConsoleTab.
   let _consoleCliText = $state('');
+  /** @type {{rowKind: 'cycle'|'event'|'template'|'bracket', ref: string|number, label: string} | null} */
+  let _consoleEditTarget = $state(null);
 
   // Sprint B (2026-10) — single reactive effect (not a one-shot onMount
-  // read) on `page.url`, per the design doc: both `?tab=` (brackets/
-  // tokens/console) and `?cli=` (BracketsTab's "Open in Console" prefill,
-  // the retired /console page's own mechanism) must keep working on a
-  // WITHIN-page navigation to this same route, not just on first mount —
-  // SvelteKit reuses this component instance for a same-route navigation,
-  // so onMount never re-fires for a second "Open in Console" click while
-  // already on /automation. `_lastConsumedCli` guards against reprocessing
-  // the same value after it's stripped from the URL (not a single-shot
-  // flag — a DIFFERENT `?cli=` value later in the same session must still
-  // be consumed).
-  let _lastConsumedCli = /** @type {string|null} */ (null);
+  // read) on `page.url`: `?tab=` must keep working on a WITHIN-page
+  // navigation to this same route, not just on first mount — SvelteKit
+  // reuses this component instance for a same-route navigation.
+  // Sprint C — `?tab=brackets`/`?tab=tokens` (pre-redesign bookmarks)
+  // redirect to the Agents tab with the matching kind-card preselected,
+  // rather than landing on a tab that no longer exists.
   $effect(() => {
     const t = page.url.searchParams.get('tab');
-    if ((t === 'brackets' || t === 'tokens' || t === 'console') && activeTab !== t) {
-      activeTab = t;
-    }
-    const raw = page.url.searchParams.get('cli');
-    if (raw != null && raw !== _lastConsumedCli) {
-      _lastConsumedCli = raw;
-      _consoleCliText = raw;
-      activeTab = 'console';
-      const url = new URL(window.location.href);
-      url.searchParams.delete('cli');
-      url.searchParams.set('tab', 'console');
-      goto(url.pathname + '?' + url.searchParams.toString(),
-        { replaceState: true, noScroll: true, keepFocus: true });
-    }
+    if (t === 'console' && activeTab !== 'console') activeTab = 'console';
+    else if (t === 'brackets' && _activeCard !== 'brackets') { activeTab = 'agents'; _activeCard = 'brackets'; }
+    else if (t === 'tokens' && _activeCard !== 'templates') { activeTab = 'agents'; _activeCard = 'templates'; }
   });
-  /** @type {{ focusTemplate: (id: number) => void } | null} */
-  let _bracketsTabRef = $state(null);
-  /** Clicking a Bracket mini-card in the Agents-tab group grids jumps to
-   *  the Brackets tab and expands that row for editing. */
-  function focusBracket(/** @type {number} */ id) {
-    setActiveTab('brackets');
-    // The Brackets tab mounts fresh on tab switch — tick once so its
-    // onMount/load() has run before we reach into it.
-    setTimeout(() => _bracketsTabRef?.focusTemplate(id), 50);
-  }
+
   // Global simulator status — when active, the Agent-events panel swaps to
   // the simulator's event stream so operators only see sim results in the
   // algo pages while the sim is running.
   let simActive   = $state(false);
-  // Symbols with captured price-history ticks. Sourced from the active
-  let editing     = $state(null);     // slug of agent being edited
-  let expandedSlug = $state(/** @type {string|null} */(null));
-  let editForm    = $state(/** @type {{
-    name: string, long_name: string, description: string,
-    conditions: string, events: string, actions: string,
-    cooldown_minutes: number, scope: string, schedule: string,
-    fire_at_time: string,
-    lifespan_type: string, lifespan_max_fires: number|string,
-    lifespan_expires_at: string,
-    tier: string, topic: string,
-    trade_mode: string, debounce_minutes: number,
-    tags: string, blackout_windows: string,
-  }} */ ({
-    name: '', long_name: '', description: '',
-    conditions: '{}', events: '[]', actions: '[]',
-    cooldown_minutes: 30, scope: 'total', schedule: 'market_hours',
-    fire_at_time: '',
-    lifespan_type: 'persistent', lifespan_max_fires: '', lifespan_expires_at: '',
-    tier: 'medium', topic: 'general',
-    trade_mode: 'paper', debounce_minutes: 0,
-    tags: '', blackout_windows: '[]',
-  }));
 
-  // Tier order matters — UI segmented control lists them critical → low
-  // so the eye reads them as severity descending.
-  const TIER_PILLS = [
-    { value: 'critical', label: 'Critical', desc: 'Suppresses every lower tier in the same topic' },
-    { value: 'high',     label: 'High',     desc: 'Suppressed by critical; suppresses medium + low' },
-    { value: 'medium',   label: 'Medium',   desc: 'Default — suppressed by higher tiers in same topic' },
-    { value: 'low',      label: 'Low',      desc: 'Always-suppressible — logs only when a peer fires' },
-  ];
+  // Template catalog for the Brackets card — same module-level cache +
+  // store every other surface (TemplateBar, OrderTicket) reads;
+  // loadOrderTemplates() below is a cheap no-op if already warm.
+  // Unfiltered — every OrderTemplate row is a Bracket row (Sprint 7's
+  // "table identity alone decides the kind" storage note).
+  let _allTemplates = $state(/** @type {any[]} */ ([]));
+  $effect(() => {
+    const rows = $orderTemplatesStore;
+    if (rows) _allTemplates = rows;
+  });
+
+  // ── Kind-card / group-tab / row-list drill-down (Sprint C, 2026-10,
+  //    Phase 2 "Automation redesign") — replaces the old flat Agents
+  //    grid entirely. `_activeCard` null = show the four summary cards;
+  //    set to a card id = drilled into that kind's own group tabs.
+  //    `_activeGroupId` is the currently-selected group tab WITHIN
+  //    `_activeCard` — reset to the first available group whenever the
+  //    card changes. `_expandedRowKey` is a `${cardId}:${slugOrId}` key
+  //    for the one row currently expanded for "view" (read-only), at
+  //    most one open at a time, same UX as the old flat grid's
+  //    `expandedSlug`. */
+  let _activeCard = $state(/** @type {string|null} */ (null));
+  let _activeGroupId = $state(/** @type {string|null} */ (null));
+  let _expandedRowKey = $state(/** @type {string|null} */ (null));
+
+  function selectCard(/** @type {string} */ cardId) {
+    _activeCard = cardId;
+    _activeGroupId = null;
+    _expandedRowKey = null;
+    if (cardId === 'alerts' && !renderers.length) loadRenderers();
+    if (cardId === 'templates' && !_fragments.length) loadFragments();
+  }
+  function backToCards() { _activeCard = null; _activeGroupId = null; }
+
+  const _cardCounts = $derived(kindCounts(agents, _allTemplates));
+
+  /** Every row belonging to the currently-drilled-into card, in its own
+   *  kind's own shape (`AgentInfo` for agents/alerts/templates,
+   *  `OrderTemplateOut` for brackets). */
+  const _activeCardRows = $derived.by(() => {
+    if (!_activeCard) return [];
+    if (_activeCard === 'brackets') return _allTemplates;
+    return filterAgentRowsByCard(agents, _activeCard);
+  });
+
+  /** Groups are strictly per-kind (CLAUDE.md, Sprint C) — `groupRowsByGroup`
+   *  only ever sees `_activeCardRows`, already filtered to ONE card's own
+   *  rows above, so a Brackets group tab can never show an Agent/Alert/
+   *  Template row even if they happen to share the same `group` string. */
+  const _activeCardGroups = $derived(groupRowsByGroup(_activeCardRows));
+
+  const _activeGroupRows = $derived.by(() => {
+    const groups = _activeCardGroups;
+    if (!groups.length) return [];
+    const match = groups.find((g) => g.id === _activeGroupId) || groups[0];
+    return match.rows;
+  });
+
+  // Keep `_activeGroupId` pointing at a real tab once the group list is
+  // known (e.g. right after `selectCard` resets it to null, or if the
+  // previously-active group's last row gets deleted).
+  $effect(() => {
+    const groups = _activeCardGroups;
+    if (groups.length && !groups.some((g) => g.id === _activeGroupId)) {
+      _activeGroupId = groups[0].id;
+    }
+  });
+
+  function toggleRowView(/** @type {string} */ key) {
+    _expandedRowKey = _expandedRowKey === key ? null : key;
+  }
+
+  // ── Templates card's own data source — raw AgentTemplate rows
+  //    (`GET /api/admin/fragments`). The CARD's list view reads from the
+  //    unified `kind='template'` Agent rows (`agents`, filtered above) —
+  //    per CLAUDE.md's Sprint C adapter note, NOT this fragments list.
+  //    This fragments list exists ONLY to resolve a Template row's real
+  //    `AgentTemplate.id` for Edit/Delete (matched by name === the
+  //    Agent row's own slug — `mirror_fragment_upsert()` always sets
+  //    slug == frag.name for every row it mirrors). Lazy-loaded the
+  //    first time the Templates card is opened. */
+  let _fragments = $state(/** @type {any[]} */ ([]));
+  async function loadFragments() {
+    try { _fragments = await fetchAgentFragments(); }
+    catch (_) { /* keep last-known list */ }
+  }
+  function _fragmentIdForTemplateRow(/** @type {any} */ row) {
+    return _fragments.find((f) => f.name === row.slug)?.id ?? null;
+  }
+
+  // One shared CLI-catalog fetch for Edit's decompile step — separate
+  // from ConsoleTab's OWN internal fetch (ConsoleTab is usable/testable
+  // standalone); a small duplicate network call, deliberately accepted
+  // rather than threading the catalog through as a prop this sprint.
+  let _editCatalog = $state(/** @type {any} */ (null));
+  async function _ensureEditCatalog() {
+    if (_editCatalog) return _editCatalog;
+    _editCatalog = await fetchAgentCatalog();
+    return _editCatalog;
+  }
+
+  /** Edit action for any row, any kind — decompiles the row's current
+   *  JSON into CLI text and switches to the Console tab with edit-mode
+   *  armed (Save routes through UPDATE, never CREATE — see
+   *  ConsoleTab's own `_EDIT_KIND_FOR_ROW_KIND`). On a decompile
+   *  failure (e.g. a condition-kind Token, or a system/default/slugged/
+   *  inactive Bracket — see `_bracketUnexpressibleFields` in agents.js)
+   *  shows the error and stays on the row — NEVER switches to Console
+   *  with an empty/broken box. */
+  async function editRow(/** @type {string} */ cardId, /** @type {any} */ row) {
+    let catalog;
+    try { catalog = await _ensureEditCatalog(); }
+    catch { toast.error('CLI catalog unavailable'); return; }
+
+    let dec, ref;
+    /** @type {'cycle'|'event'|'template'|'bracket'|undefined} */
+    let rowKind;
+    try {
+      if (cardId === 'agents' || cardId === 'alerts') {
+        rowKind = row.kind === 'event' ? 'event' : 'cycle';
+        ref = row.slug;
+        dec = rowKind === 'event'
+          ? decompileEventAgent(row, catalog)
+          : decompileAgent(row, catalog);
+      } else if (cardId === 'brackets') {
+        rowKind = 'bracket';
+        ref = row.id;
+        dec = decompileBracket(row, catalog);
+      } else if (cardId === 'templates') {
+        const fragId = _fragmentIdForTemplateRow(row);
+        if (fragId == null) {
+          toast.error(`Token '${row.name}' not found in the Tokens catalog`);
+          return;
+        }
+        rowKind = 'template';
+        ref = fragId;
+        dec = decompileToken(row, catalog);
+      } else {
+        return;
+      }
+    } catch (e) {
+      // Decompilers are written to return {text:null, errors} rather than
+      // throw — this catch is a defensive backstop only, so a genuine bug
+      // surfaces as a toast instead of a silent no-op click.
+      toast.error(`Decompile failed: ${(e?.message || 'unknown error').slice(0, 100)}`);
+      return;
+    }
+
+    if (!dec.text) {
+      toast.error((dec.errors?.[0]?.message || 'cannot be edited via CLI yet').slice(0, 120));
+      return;
+    }
+    _consoleCliText = dec.text;
+    _consoleEditTarget = { rowKind, ref, label: row.name || row.slug };
+    setActiveTab('console');
+  }
+
+  function _deleteConfirmMessage(/** @type {string} */ cardId, /** @type {any} */ row) {
+    if (cardId === 'brackets') return `Delete bracket "${row.name}"? Existing orders that used it are not affected.`;
+    if (cardId === 'templates') return `Delete token "${row.name}"? Any agent still $ref-ing it will log a warning and skip that reference.`;
+    return `Delete agent "${row.name}"? This cannot be undone.`;
+  }
+
+  /** @type {{ ask: (opts: any) => Promise<boolean> } | null} */
+  let _deleteConfirmRef = $state(null);
+
+  async function deleteRow(/** @type {string} */ cardId, /** @type {any} */ row) {
+    const ok = await _deleteConfirmRef?.ask({
+      title: 'Delete?',
+      message: _deleteConfirmMessage(cardId, row),
+      confirmLabel: 'Delete',
+      cancelLabel: 'Cancel',
+      destructive: true,
+    });
+    if (!ok) return;
+    try {
+      if (cardId === 'brackets') {
+        await deleteOrderTemplate(row.id);
+        await reloadOrderTemplates().catch(() => {});
+      } else if (cardId === 'templates') {
+        const fragId = _fragmentIdForTemplateRow(row);
+        if (fragId == null) { toast.error(`Token '${row.name}' not found in the Tokens catalog`); return; }
+        await deleteAgentFragment(fragId);
+        await loadFragments();
+        await loadAgents();
+      } else {
+        await deleteAgent(row.slug);
+        await loadAgents();
+      }
+      toast.success(`${row.name}: deleted`);
+      if (_expandedRowKey === `${cardId}:${row.id ?? row.slug}`) _expandedRowKey = null;
+    } catch (e) {
+      toast.error(`Delete failed: ${e.message}`);
+    }
+  }
+
   // ── Trade-mode confirm modal ──────────────────────────────────────────
   /** @type {{ ask: (opts: any) => Promise<boolean> } | null} */
   let _liveAgentConfirmRef = $state(null);
@@ -211,113 +362,27 @@
     }
   }
 
-  async function startEdit(/** @type {any} */ agent) {
-    editing = agent.slug;
-    // Keep the agent's row expanded so the inline editor actually renders
-    // where the operator clicked.
-    expandedSlug = agent.slug;
-    validationErrors = [];
-    validationGrammar = '';
-    editForm = {
-      name: agent.name,
-      long_name: agent.long_name || '',
-      description: agent.description || '',
-      conditions: JSON.stringify(agent.conditions, null, 2),
-      events: JSON.stringify(agent.events, null, 2),
-      actions: JSON.stringify(agent.actions, null, 2),
-      cooldown_minutes: agent.cooldown_minutes,
-      scope: agent.scope,
-      schedule: agent.schedule || 'market_hours',
-      fire_at_time: agent.fire_at_time || '',
-      lifespan_type:        agent.lifespan_type || 'persistent',
-      lifespan_max_fires:   agent.lifespan_max_fires == null ? '' : agent.lifespan_max_fires,
-      // ISO datetime → "YYYY-MM-DDTHH:MM" (datetime-local input format).
-      // Trim seconds + tz so the native input accepts the value.
-      lifespan_expires_at:  agent.lifespan_expires_at
-        ? String(agent.lifespan_expires_at).slice(0, 16)
-        : '',
-      // Priority / topic — tier drives topic-scoped suppression in run_cycle.
-      tier:                 agent.tier  || 'medium',
-      topic:                agent.topic || 'general',
-      // Trade mode + debounce — execution routing + spike suppression.
-      trade_mode:           agent.trade_mode || 'paper',
-      debounce_minutes:     typeof agent.debounce_minutes === 'number'
-                              ? agent.debounce_minutes : 0,
-      // Tags: comma-joined CSV in the input, parsed back to list on save.
-      // Blackout windows: list of {start: "HH:MM", end: "HH:MM"} as JSON.
-      tags:                 Array.isArray(agent.tags) ? agent.tags.join(', ') : '',
-      blackout_windows:     JSON.stringify(agent.blackout_windows || [], null, 2),
-    };
-    // Event-kind agents show the fixed Renderer field via rendererLabel() —
-    // lazy-load the renderer catalog here (not on page mount) the first
-    // time an event agent is actually opened for edit.
-    if (agent.kind === 'event' && !renderers.length) loadRenderers();
-  }
-
-  let validationErrors = $state(/** @type {string[]} */([]));
-  let validationGrammar = $state('');
-
-  // ── Live tree view of the agent under edit/create ────────────────────
-  // Parsed state is derived from the three JSON textareas so every keystroke
-  // reflects into the graphical tree without an explicit refresh.
-  const parsedConditions = $derived.by(() => {
-    try { return { ok: true, value: JSON.parse(editForm.conditions || '{}') }; }
-    catch (e) { return { ok: false, error: e.message }; }
-  });
-  const parsedEvents = $derived.by(() => {
-    try { return { ok: true, value: JSON.parse(editForm.events || '[]') }; }
-    catch (e) { return { ok: false, error: e.message }; }
-  });
-
-  // ── Notify-channel checkbox helpers ────────────────────────────────
-  // The four supported channels (matches backend/api/algo/events.py:dispatch).
-  // Each one is one row in the edit-form checkbox grid. Description
-  // shown next to the channel name so operators pick the right one.
-  // THRESHOLD-agent channel set only — do NOT reuse for event agents,
-  // which use a different, backend-enforced set (EVENT_CHANNELS below).
-  const ALERT_CHANNELS = [
-    { id: 'telegram',  label: 'Telegram',  desc: 'Push to the ops Telegram group' },
-    { id: 'email',     label: 'Email',     desc: 'SMTP to alert recipients' },
-    { id: 'websocket', label: 'WebSocket', desc: 'Live UI toast / chart overlay' },
-    { id: 'log',       label: 'Log',       desc: 'Server log file only (no push)' },
-  ];
-
-  // EVENT-agent channel set (matches backend/api/algo/event_agents.py:CHANNELS).
-  // Deliberately separate from ALERT_CHANNELS — event agents (kind='event')
-  // are dispatched by a different pipeline with a different channel list
-  // (ntfy + telegram_info instead of websocket/log).
-  const EVENT_CHANNELS = [
-    { id: 'ntfy',           label: 'ntfy',           desc: 'Push via ntfy.sh (supports priority)' },
-    { id: 'telegram',       label: 'Telegram',        desc: 'Push to the ops Telegram group' },
-    { id: 'telegram_info',  label: 'Telegram (info)', desc: 'Low-noise info channel' },
-    { id: 'email',          label: 'Email',            desc: 'SMTP to alert recipients' },
-  ];
-  // event_agents.py seed specs use CRITICAL (chase-cancel, partial-gtt);
-  // the threshold editor's LOG_LEVELS below deliberately stays unchanged.
-  const EVENT_LOG_LEVELS = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'];
-
-  // ── "+ New Agent" entry point ──────────────────────────────────────
-  // Independent of the Ask-AI flow above. null = closed, 'pick' = kind
-  // selector shown, 'threshold' = reuses the inline editor (editForm,
-  // editing='__new__'), 'event' = the dedicated event-agent builder.
-  /** @type {{key:string, label:string, description?:string}[]} */
-  let renderers      = $state([]);
-  let renderersError = $state('');
-  async function loadRenderers() {
-    try {
-      const rows = await fetchAgentRenderers();
-      renderers = Array.isArray(rows) ? rows : [];
-      renderersError = '';
-    } catch (e) {
-      // Never clobber a previously-successful list with [] on a
-      // transient failure (templates.js cache-poisoning rule).
-      renderersError = e.message || 'Renderers unavailable';
-    }
-  }
+  // Sprint C (2026-10, Phase 2 "Automation redesign") — the old in-row
+  // Structured-JSON editor (startEdit/saveEdit/saveEventEdit/editForm +
+  // every channel-checkbox/tier-pill/blackout-window helper feeding it)
+  // is RETIRED. Edit now decompiles a row's JSON straight into the
+  // Console tab's CLI text (see `_editRow`/`_consoleEditTarget` below) —
+  // giving the already-built decompiler functions their first production
+  // caller and fixing the page-switching pain that started this phase.
+  // Fields the CLI grammar has no syntax for yet (schedule/cooldown/tier/
+  // topic/trade_mode/lifespan_*/debounce_minutes/blackout_windows) are
+  // simply not editable from this page anymore — saving via Console only
+  // ever sends the fields the grammar CAN express (see
+  // `updateConsoleAgent`'s own doc), so those settings are PRESERVED
+  // (never reset), just not reachable from a UI control until a future
+  // grammar extension covers them.
+  // Sprint C note (see comment above): EVENT_CHANNELS/ALERT_CHANNELS and
+  // every per-channel-checkbox/log-tag/renderer-picker helper that used
+  // to feed the in-row Structured editor are gone — the generic CLI
+  // grammar (agents.js) is the only Edit surface now.
 
   // Global default trade mode — informational "Global: X" display next
-  // to the per-agent trade_mode override (which already exists as the
-  // editable field; no separate override mechanism is added here).
+  // to the per-agent trade_mode chip on each row.
   let globalDefaultTradeMode = $state('paper');
   async function loadGlobalDefaultTradeMode() {
     try {
@@ -326,7 +391,18 @@
     } catch (_) { /* keep last-known value */ }
   }
 
-  /** Read-only renderer key for an existing event agent (actions[0].render). */
+  // Event-kind row's fixed Renderer field — shown read-only on the row's
+  // expanded "view" (no edit control; renderer/condition/slug are fixed
+  // at creation). Lazy-loaded the first time an Alerts-card row is
+  // expanded.
+  /** @type {{key:string, label:string, description?:string}[]} */
+  let renderers      = $state([]);
+  async function loadRenderers() {
+    try {
+      const rows = await fetchAgentRenderers();
+      renderers = Array.isArray(rows) ? rows : [];
+    } catch (_) { /* keep last-known list */ }
+  }
   function eventRendererKey(/** @type {any} */ agent) {
     return (agent?.actions || []).find((a) => a?.type === 'render')?.render || null;
   }
@@ -334,189 +410,6 @@
     if (!key) return '—';
     return renderers.find((r) => r.key === key)?.label || key;
   }
-
-  /** Per-channel priority (ntfy-only in practice) — read/write editForm.events. */
-  function channelPriority(/** @type {string} */ channelId) {
-    const list = parsedEvents.ok ? (parsedEvents.value || []) : [];
-    return list.find((e) => e?.channel === channelId)?.priority || 'normal';
-  }
-  function setChannelPriority(/** @type {string} */ channelId, /** @type {string} */ priority) {
-    let list = [];
-    try { list = JSON.parse(editForm.events || '[]'); } catch { list = []; }
-    if (!Array.isArray(list)) list = [];
-    const idx = list.findIndex((e) => e?.channel === channelId);
-    if (idx < 0) return;
-    const row = { ...list[idx] };
-    if (priority === 'normal') delete row.priority; else row.priority = priority;
-    list[idx] = row;
-    editForm.events = JSON.stringify(list, null, 2);
-  }
-  /** Per-channel capability gate (default true = respect capability flag). */
-  function channelGate(/** @type {string} */ channelId) {
-    const list = parsedEvents.ok ? (parsedEvents.value || []) : [];
-    const row = list.find((e) => e?.channel === channelId);
-    return row?.gate !== undefined ? row.gate : true;
-  }
-  function setChannelGate(/** @type {string} */ channelId, /** @type {boolean} */ gate) {
-    let list = [];
-    try { list = JSON.parse(editForm.events || '[]'); } catch { list = []; }
-    if (!Array.isArray(list)) list = [];
-    const idx = list.findIndex((e) => e?.channel === channelId);
-    if (idx < 0) return;
-    const row = { ...list[idx] };
-    if (gate === true) delete row.gate; else row.gate = gate;
-    list[idx] = row;
-    editForm.events = JSON.stringify(list, null, 2);
-  }
-
-  /** Minimal save path for an existing event agent — channels (incl.
-   *  per-channel priority/gate) only. Renderer / condition / slug are
-   *  fixed at creation and never sent. Does NOT go through
-   *  runValidation() (that posts conditions to the grammar validator,
-   *  irrelevant here since conditions never change). */
-  async function saveEventEdit(/** @type {any} */ agent) {
-    let events;
-    try { events = JSON.parse(editForm.events || '[]'); }
-    catch (e) { validationErrors = [`events JSON invalid: ${e.message}`]; return; }
-    try {
-      await updateAgent(editing, { events });
-      editing = null; validationErrors = [];
-      toast.success(`Agent saved: ${agent.name}`);
-      await loadAgents();
-    } catch (e) {
-      toast.error(`Save failed: ${e.message}`);
-      validationErrors = [e.fullMessage || e.message];
-    }
-  }
-
-  // ── Log tags and log matches ───────────────────────────────────────
-  // Tags come from the grammar registry (grammar_kind 'log'). A channel row may carry
-  // a tags array; the backend sends the channel only when a matched record carries one.
-  let logTags = $state([]);
-  let logTagPick = $state('');
-  let logMinLevel = $state('INFO');
-  const LOG_LEVELS = ['DEBUG', 'INFO', 'WARNING', 'ERROR'];
-
-  async function loadLogTags() {
-    try {
-      const rows = await fetchGrammarTokens('log');
-      logTags = (rows || [])
-        .filter((r) => r.token_kind === 'tag' && r.is_active !== false)
-        .map((r) => r.token);
-    } catch {
-      logTags = [];
-    }
-  }
-
-  function channelTags(/** @type {string} */ channelId) {
-    const list = parsedEvents.ok ? (parsedEvents.value || []) : [];
-    const row = list.find((e) => e?.channel === channelId);
-    return Array.isArray(row?.tags) ? row.tags : [];
-  }
-
-  /** Add or remove one tag on an enabled channel row. Re-serializes editForm.events. */
-  function toggleChannelTag(/** @type {string} */ channelId, /** @type {string} */ tag) {
-    let list = [];
-    try { list = JSON.parse(editForm.events || '[]'); } catch { list = []; }
-    if (!Array.isArray(list)) list = [];
-    const idx = list.findIndex((e) => e?.channel === channelId && e?.enabled);
-    if (idx < 0) return;
-    const current = Array.isArray(list[idx].tags) ? list[idx].tags : [];
-    const next = current.includes(tag) ? current.filter((t) => t !== tag) : [...current, tag];
-    const row = { ...list[idx], tags: next };
-    if (next.length === 0) delete row.tags;
-    list[idx] = row;
-    editForm.events = JSON.stringify(list, null, 2);
-  }
-
-  /** Append a log leaf to the conditions tree (AND-ed with any existing condition). */
-  function addLogMatch() {
-    if (!logTagPick) return;
-    const leaf = { log: { tag: logTagPick, min_level: logMinLevel } };
-    let cond = {};
-    try { cond = JSON.parse(editForm.conditions || '{}'); } catch { cond = {}; }
-    const empty = !cond || Object.keys(cond).length === 0;
-    editForm.conditions = JSON.stringify(empty ? leaf : { all: [cond, leaf] }, null, 2);
-  }
-
-  /** Returns true if the channel is enabled in editForm.events (parsed). */
-  function isChannelEnabled(/** @type {string} */ channelId) {
-    const list = parsedEvents.ok ? (parsedEvents.value || []) : [];
-    const row = list.find((e) => e?.channel === channelId);
-    return !!(row && row.enabled);
-  }
-
-  /** Flip a single channel on/off in editForm.events. Re-serializes the
-   *  JSON so the existing save path keeps working unchanged. Channels
-   *  not present in the array are added; existing rows are toggled in
-   *  place (preserves order operators set). */
-  function toggleChannel(/** @type {string} */ channelId, /** @type {boolean} */ enabled) {
-    let list = [];
-    try { list = JSON.parse(editForm.events || '[]'); } catch { list = []; }
-    if (!Array.isArray(list)) list = [];
-    const idx = list.findIndex((e) => e?.channel === channelId);
-    if (idx >= 0) {
-      list[idx] = { ...list[idx], channel: channelId, enabled };
-    } else {
-      list.push({ channel: channelId, enabled });
-    }
-    editForm.events = JSON.stringify(list, null, 2);
-  }
-  const parsedActions = $derived.by(() => {
-    try { return { ok: true, value: JSON.parse(editForm.actions || '[]') }; }
-    catch (e) { return { ok: false, error: e.message }; }
-  });
-
-  // ── Structured place_order controls ───────────────────────────────────
-  // Convenience mini-form over the raw Actions JSON textarea: shown only
-  // when the textarea currently parses to exactly ONE place_order action.
-  // Two-way synced with the textarea (the textarea stays the single
-  // source of truth) — reading `parsedActions` here means a manual
-  // textarea edit re-parses and the mini-form reflects it immediately;
-  // a control edit re-serializes the whole action back into
-  // editForm.actions via _updatePlaceOrderParam below.
-  const _singlePlaceOrderAction = $derived.by(() => {
-    if (!parsedActions.ok) return null;
-    const arr = parsedActions.value;
-    if (!Array.isArray(arr) || arr.length !== 1) return null;
-    const a = arr[0];
-    if (!a || a.type !== 'place_order') return null;
-    return a;
-  });
-
-  /** Set (or delete, when value===undefined) one params.<key> on the
-   *  single place_order action, then re-serialize into editForm.actions.
-   *  Re-parses fresh from the textarea (not the `_singlePlaceOrderAction`
-   *  snapshot) so this never clobbers a manual edit made a moment ago. */
-  function _updatePlaceOrderParam(/** @type {string} */ key, /** @type {any} */ value) {
-    let arr;
-    try { arr = JSON.parse(editForm.actions || '[]'); }
-    catch (_) { return; }
-    if (!Array.isArray(arr) || arr.length !== 1 || arr[0]?.type !== 'place_order') return;
-    const params = { ...(arr[0].params || {}) };
-    if (value === undefined) delete params[key];
-    else params[key] = value;
-    arr[0] = { ...arr[0], params };
-    editForm.actions = JSON.stringify(arr, null, 2);
-  }
-
-  // Template catalog for the structured dropdown — same module-level
-  // cache + store every other surface (TemplateBar, OrderTicket,
-  // Brackets tab) reads; loadOrderTemplates() below is a
-  // cheap no-op if already warm.
-  let _templateRows = $state(/** @type {any[]} */ ([]));
-  // Unfiltered — drives the Bracket group-grid below (every OrderTemplate
-  // row, same "show every row" contract the Agents grid already has for
-  // Agent rows). `_templateRows` above stays active-only for the
-  // place_order mini-form's Bracket dropdown.
-  let _allTemplates = $state(/** @type {any[]} */ ([]));
-  $effect(() => {
-    const rows = $orderTemplatesStore;
-    if (rows) {
-      _templateRows = rows.filter((t) => t.is_active);
-      _allTemplates = rows;
-    }
-  });
 
   /** Detect AI provenance in agent.description and split into chips.
    *  Backend's _compose_ai_description writes the lines:
@@ -544,103 +437,6 @@
       ? `₹${node.value.toLocaleString('en-IN')}`
       : JSON.stringify(node.value);
     return `${node.metric}@${node.scope} ${node.op || '?'} ${v}`;
-  }
-
-  async function runValidation() {
-    validationErrors = []; validationGrammar = '';
-    let parsed;
-    try { parsed = JSON.parse(editForm.conditions); }
-    catch (e) { validationErrors = [`conditions JSON invalid: ${e.message}`]; return false; }
-    try {
-      const { validateAgentCondition } = await import('$lib/api');
-      const res = await validateAgentCondition(parsed);
-      validationGrammar = res.grammar || '';
-      validationErrors = res.errors || [];
-      return res.ok;
-    } catch (e) {
-      validationErrors = [e.message || 'Validation failed'];
-      return false;
-    }
-  }
-
-  /**
-   * Parse the blackout_windows textarea JSON.
-   * Returns {ok: true, value} on success, {ok: false, error} on failure.
-   */
-  function _parseBlackoutWindows() {
-    let bw;
-    try { bw = JSON.parse(editForm.blackout_windows || '[]'); }
-    catch (e) { return { ok: false, error: `blackout_windows JSON invalid: ${e.message}` }; }
-    if (!Array.isArray(bw)) {
-      return { ok: false, error: 'blackout_windows must be a JSON array of {start, end} entries' };
-    }
-    return { ok: true, value: bw };
-  }
-
-  /**
-   * Build the PATCH payload from editForm + resolved tags and blackout windows.
-   * All conditional field coercions (lifespan, nulls) live here.
-   * @param {string[]} tagsList
-   * @param {any[]} bw
-   */
-  function _buildEditPayload(tagsList, bw) {
-    return {
-      name: editForm.name,
-      long_name: editForm.long_name || null,
-      description: editForm.description,
-      conditions: JSON.parse(editForm.conditions),
-      events: JSON.parse(editForm.events),
-      actions: JSON.parse(editForm.actions),
-      cooldown_minutes: editForm.cooldown_minutes,
-      scope: editForm.scope,
-      schedule: editForm.schedule,
-      fire_at_time: editForm.fire_at_time || '',
-      lifespan_type: editForm.lifespan_type || 'persistent',
-      lifespan_max_fires: (editForm.lifespan_type === 'n_fires'
-        && editForm.lifespan_max_fires !== '' && editForm.lifespan_max_fires != null)
-        ? Number(editForm.lifespan_max_fires) : null,
-      lifespan_expires_at: (editForm.lifespan_type === 'until_date'
-        && editForm.lifespan_expires_at)
-        ? String(editForm.lifespan_expires_at) : null,
-      tier:              editForm.tier  || 'medium',
-      topic:             editForm.topic || 'general',
-      trade_mode:        editForm.trade_mode || 'paper',
-      debounce_minutes:  Number(editForm.debounce_minutes) || 0,
-      tags:              tagsList,
-      blackout_windows:  bw,
-      // `update_agent` treats `cli_source: None` as "leave unchanged" (same
-      // convention every other optional AgentUpdateRequest field follows).
-      // This page has no CLI editor of its own (Sprint 9 — CLI authoring
-      // moved to /console) so a Structured-tab save always sends '' to
-      // clear any `cli_source` an agent may carry from being authored
-      // elsewhere — never leaves it stale against the JSON just edited.
-      cli_source: '',
-    };
-  }
-
-  async function saveEdit() {
-    // Server-side validation must pass for v2 trees before we touch the
-    // agent row — v1 trees are accepted as-is.
-    const ok = await runValidation();
-    if (!ok) return;
-    // Parse blackout_windows JSON — invalid surfaces as a validation error
-    // (saves get blocked) instead of a silent 400 from the backend.
-    const bwResult = _parseBlackoutWindows();
-    if (!bwResult.ok) { validationErrors = [bwResult.error]; return; }
-    // Tags: split on comma, trim, drop empty. Operator types
-    // "iron-condor, nifty, review-q3" — round-tripped to a list.
-    const tagsList = String(editForm.tags || '')
-      .split(',').map(t => t.trim()).filter(Boolean);
-    try {
-      await updateAgent(editing, _buildEditPayload(tagsList, bwResult.value));
-      toast.success(`Agent saved: ${editForm.name}`);
-      editing = null;
-      validationErrors = []; validationGrammar = '';
-      await loadAgents();
-    } catch (e) {
-      toast.error(`Save failed: ${e.message}`);
-      validationErrors = [e.fullMessage || e.message];
-    }
   }
 
   function connectWS() {
@@ -705,204 +501,16 @@
   }
 
   // ── Category grouping ────────────────────────────────────────────────────
-  // Classify by consequence ("can this agent act on its own") using real
-  // AgentInfo fields (actions / conditions / fire_at_time / is_system)
-  // instead of slug-text guessing. Motivating bug: expiry-day-positions-alert
-  // is notify-only (no broker-verb action) and must land in Risk Alerts, not
-  // Automated Actions, even though its slug contains "expiry".
-  //
-  // Action types that place/modify/cancel/close a real broker order — every
-  // type EXCEPT the pure-notification ones (monitor_order, deactivate_agent,
-  // set_flag, emit_log). Confirmed exhaustive against the full action_type
-  // catalog in backend/config/grammars/agent_grammar.yaml (11 tokens total:
-  // these 7 + those 4 notify-only ones).
-  const AUTOMATED_ACTION_TYPES = new Set([
-    'place_order', 'modify_order', 'cancel_order', 'cancel_all_orders',
-    'close_position', 'chase_close_positions', 'expiry_auto_close',
-  ]);
-
-  // Built-in schedule-only pings (market-open-nse, market-preclose-mcx) hand-
-  // author an "always-true" sentinel condition (e.g. avail_margin >= -999999999)
-  // to gate a fire_at_time schedule rather than carrying a real condition —
-  // same backend convention agent_engine.py's _v2_format_threshold guards
-  // against (abs(threshold) >= 1e8 renders as "n/a"). `conditions` is `null`
-  // only for the excluded 'manual' pseudo-agent; defensively also treat an
-  // empty `{}` as schedule-only, rather than assuming `null` per the
-  // AgentInfo schema (`conditions: dict`, not `dict | None`).
-  function _isScheduleOnlySentinel(/** @type {any} */ conditions) {
-    if (!conditions) return true;
-    if (typeof conditions === 'object' && Object.keys(conditions).length === 0) return true;
-    const v = conditions.value;
-    return typeof v === 'number' && Math.abs(v) >= 1e8;
-  }
-
-  function categoryFor(/** @type {any} */ agent) {
-    if (!agent?.slug) return 'Custom';
-    if (agent.slug === 'manual') return null;
-    if (Array.isArray(agent.actions) && agent.actions.some(a => AUTOMATED_ACTION_TYPES.has(a?.type))) {
-      return 'Automated Actions';
-    }
-    if (_isScheduleOnlySentinel(agent.conditions) && agent.fire_at_time) {
-      return 'Scheduled Info';
-    }
-    if (agent.is_system) return 'Risk Alerts';
-    return 'Custom';
-  }
-
-  const CATEGORY_ORDER = ['Automated Actions', 'Risk Alerts', 'Scheduled Info', 'Custom'];
-
-  function groupedAgents() {
-    const out = {};
-    for (const a of agents) {
-      const cat = categoryFor(a);
-      if (!cat) continue;
-      (out[cat] = out[cat] || []).push(a);
-    }
-    for (const cat of Object.keys(out)) {
-      out[cat].sort((a, b) => a.name.localeCompare(b.name));
-    }
-    return CATEGORY_ORDER
-      .filter(c => out[c]?.length)
-      .map(c => ({ name: c, agents: out[c] }));
-  }
-
-  // ── Custom group grids (Sprint 9) ─────────────────────────────────────
-  // Any non-empty `group` value present on at least one Agent OR
-  // OrderTemplate (`group` API field ↔ `group_name` DB column on both)
-  // creates an ADDITIONAL grid mixing both types, filtered to that value.
-  // The default Agents grid (groupedAgents() above) and default Bracket
-  // grid (_allTemplates) keep showing EVERY row regardless of group —
-  // a grouped card intentionally appears in both its custom grid and its
-  // type's default grid. 'manual' pseudo-agent excluded, same as
-  // groupedAgents().
-  function _normGroup(/** @type {string|null|undefined} */ g) {
-    const t = (g || '').trim();
-    return t === '' ? null : t;
-  }
-  const customGroups = $derived.by(() => {
-    const names = new Set();
-    for (const a of agents) { if (a.slug === 'manual') continue; const g = _normGroup(a.group); if (g) names.add(g); }
-    for (const t of _allTemplates) { const g = _normGroup(t.group); if (g) names.add(g); }
-    return [...names].sort((a, b) => a.localeCompare(b)).map((name) => ({
-      name,
-      agents: agents.filter((a) => a.slug !== 'manual' && _normGroup(a.group) === name),
-      templates: _allTemplates.filter((t) => _normGroup(t.group) === name),
-    }));
-  });
-
-  /** Drag payload: `{kind: 'agent'|'bracket', id}`. id is agent.slug or
-   *  template.id. Used by both the mini drag-cards and the grid drop
-   *  targets below. */
-  function _dragStart(/** @type {DragEvent} */ e, /** @type {'agent'|'bracket'} */ kind, /** @type {string|number} */ id) {
-    e.dataTransfer?.setData('text/plain', JSON.stringify({ kind, id }));
-    e.dataTransfer.effectAllowed = 'move';
-  }
-  function _dragOver(/** @type {DragEvent} */ e) { e.preventDefault(); }
-
-  async function setAgentGroup(/** @type {any} */ agent, /** @type {string|null} */ newGroup) {
-    const prev = agent.group ?? null;
-    if (prev === newGroup) return;
-    agent.group = newGroup;
-    agents = [...agents];
-    try {
-      await updateAgent(agent.slug, { group: newGroup || '' });
-      toast.success(`${agent.name}: group → ${newGroup || '(none)'}`);
-      await loadAgents();
-    } catch (e) {
-      agent.group = prev;
-      agents = [...agents];
-      toast.error(`Group update failed: ${e.message}`);
-    }
-  }
-
-  async function setTemplateGroup(/** @type {any} */ tpl, /** @type {string|null} */ newGroup) {
-    const prev = tpl.group ?? null;
-    if (prev === newGroup) return;
-    tpl.group = newGroup;
-    _allTemplates = [..._allTemplates];
-    try {
-      await patchOrderTemplate(tpl.id, { group: newGroup || '' });
-      toast.success(`${tpl.name}: group → ${newGroup || '(none)'}`);
-      await reloadOrderTemplates();
-    } catch (e) {
-      tpl.group = prev;
-      _allTemplates = [..._allTemplates];
-      toast.error(`Group update failed: ${e.message}`);
-    }
-  }
-
-  /** Drop handler shared by every grid section. `acceptKind` restricts a
-   *  default grid to its own type (dropping a Bracket onto the Agents
-   *  grid, or vice-versa, is rejected) — a custom-group grid passes
-   *  `null` and accepts either type. `targetGroup` is the group name to
-   *  set (null/'' = ungroup, used by the default grids). */
-  function onGridDrop(/** @type {DragEvent} */ e, /** @type {'agent'|'bracket'|null} */ acceptKind, /** @type {string|null} */ targetGroup) {
-    e.preventDefault();
-    const raw = e.dataTransfer?.getData('text/plain');
-    if (!raw) return;
-    /** @type {{kind:'agent'|'bracket', id:any}} */
-    let payload;
-    try { payload = JSON.parse(raw); } catch { return; }
-    if (acceptKind && payload.kind !== acceptKind) {
-      toast.error(`Can't drop a ${payload.kind} here`);
-      return;
-    }
-    if (payload.kind === 'agent') {
-      const a = agents.find((x) => x.slug === payload.id);
-      if (a) setAgentGroup(a, targetGroup);
-    } else if (payload.kind === 'bracket') {
-      const t = _allTemplates.find((x) => x.id === payload.id);
-      if (t) setTemplateGroup(t, targetGroup);
-    }
-  }
-
-  // Action-type skeletons used by the quick-add pills below the Actions
-  // textarea. Each entry is a legal action dict the operator can tune after
-  // it lands in the JSON. Keys match the seeded grammar_tokens action list.
-  const ACTION_SKELETONS = {
-    close_position: {
-      type: "close_position",
-      params: { account: "ZG####", symbol: "<tradingsymbol>", exchange: "NFO", product: "NRML" },
-    },
-    // place_order — entry + template_slug. The agent places the order
-    // and the standard template-attach pipeline kicks in on fill
-    // (TP/SL GTTs + wing on SELL options). The skeleton ships with
-    // template_slug="default-bull" as a sensible default for a BUY
-    // entry; operator changes the slug to "default-short-vol" for a
-    // SELL-side credit-spread strategy, or "none" to opt out of
-    // auto-attachments. The earlier split into place_order +
-    // place_order_templated buttons confused the operator (two
-    // pills doing essentially the same thing); consolidated in
-    // audit pass 6 to one pill + an editable slug field.
-    place_order: {
-      type: "place_order",
-      params: { account: "ZG####", symbol: "<tradingsymbol>", exchange: "NFO",
-                side: "BUY", qty: 50, order_type: "LIMIT",
-                template_slug: "default-bull" },
-    },
-    chase_close_positions: {
-      type: "chase_close_positions",
-      params: { scope: "total", timeout_minutes: 10, adjust_pct: 0.1 },
-    },
-    cancel_all_orders: {
-      type: "cancel_all_orders",
-      params: { scope: "total" },
-    },
-    emit_log: {
-      type: "emit_log",
-      params: { level: "info", message: "Agent fired" },
-    },
-  };
-
-  /** @type {(kind: keyof ACTION_SKELETONS) => void} */
-  function addAction(kind) {
-    let arr;
-    try { arr = JSON.parse(editForm.actions || '[]'); }
-    catch (_) { arr = []; }
-    if (!Array.isArray(arr)) arr = [];
-    arr.push(ACTION_SKELETONS[kind]);
-    editForm.actions = JSON.stringify(arr, null, 2);
-  }
+  // Sprint C (2026-10, Phase 2 "Automation redesign") — the old content-
+  // based categorization (`categoryFor`/`groupedAgents`: "Automated
+  // Actions"/"Risk Alerts"/"Scheduled Info"/"Custom") and the custom
+  // `#group=` drag-and-drop grids (`customGroups`/`_dragStart`/
+  // `_dragOver`/`setAgentGroup`/`setTemplateGroup`/`onGridDrop`) are both
+  // RETIRED — superseded by the kind-card → per-kind `#group=` tabs →
+  // row-list drill-down built above (`_activeCard`/`_activeCardGroups`).
+  // Changing a row's group now happens via Edit → decompile → edit the
+  // `#group=` meta tag in the Console tab → Save, not by dragging a
+  // card between grids.
 
   async function runInSim(/** @type {any} */ agent) {
     // Call the synthesizer endpoint — the backend builds a scenario from
@@ -927,14 +535,12 @@
     // (Sprint B, 2026-10) so a same-route navigation (not just first
     // mount) keeps working — see that effect's own comment.
     loadAll();
-    loadLogTags();
     loadGlobalDefaultTradeMode();
     connectWS();
     pollSimStatus();
     refreshTeardown   = visibleInterval(loadAll, 30000);
     simStatusTeardown = visibleInterval(pollSimStatus, 4000);
-    // Warm the template catalog for the place_order structured controls'
-    // Template dropdown + the Bracket group-grid — idempotent,
+    // Warm the template catalog for the Brackets kind-card — idempotent,
     // module-level cached.
     loadOrderTemplates().catch(() => { /* silent — store stays empty */ });
   });
@@ -948,6 +554,7 @@
 </script>
 
 <ConfirmModal bind:this={_liveAgentConfirmRef} />
+<ConfirmModal bind:this={_deleteConfirmRef} />
 
 <svelte:head>
   <title>Automation | RamboQuant Analytics</title>
@@ -975,11 +582,7 @@
 <AutomationTabs value={activeTab} onChange={setActiveTab} />
 
 {#if activeTab === 'console'}
-  <ConsoleTab bind:value={_consoleCliText} />
-{:else if activeTab === 'brackets'}
-  <BracketsTab bind:this={_bracketsTabRef} />
-{:else if activeTab === 'tokens'}
-  <TokensTab />
+  <ConsoleTab bind:value={_consoleCliText} bind:editTarget={_consoleEditTarget} />
 {:else}
 
 <StaleBanner {error} hasData={agents.length > 0} label="Agents" />
@@ -1014,740 +617,237 @@
   {/if}
 {/snippet}
 
-<!-- Threshold-agent editor body — used BOTH to edit an existing
-     threshold-kind agent (agent = the real row, editing=agent.slug) and
-     to create a brand-new one (agent = null, editing='__new__'). Every
-     field is always editable here — event-kind agents never reach this
-     snippet (they render eventEditorBody instead), so no fieldset-level
-     disable is needed. -->
-{#snippet thresholdEditorBody(/** @type {any} */ agent)}
-              <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <div>
-                  <span class="field-label">Name</span>
-                  <input bind:value={editForm.name} class="field-input" />
-                </div>
-                <div>
-                  <span class="field-label">
-                    Long name
-                    <InfoHint popup panel title="Long name" text="Operator-readable 3-part label: <b>when:&lt;condition&gt;</b> &mdash; <b>alert:&lt;notify&gt;</b> &mdash; <b>do:&lt;action&gt;</b>. Surfaces under the short name on the agents row so an operator scanning the list sees what each agent actually does without expanding." />
-                  </span>
-                  <input bind:value={editForm.long_name}
-                         placeholder="when:positions.total.pnl<=-50k   alert:critical/tg+email   do:notify-only"
-                         class="field-input font-mono text-[length:var(--fs-sm)]" />
-                </div>
-                <div class="md:col-span-2">
-                  <span class="field-label">Description</span>
-                  <input bind:value={editForm.description} class="field-input" />
-                </div>
-                <div>
-                  <span class="field-label">Scope</span>
-                  <Select ariaLabel="Scope" bind:value={editForm.scope}
-                    options={[
-                      { value: 'total',       label: 'Total Only' },
-                      { value: 'per_account', label: 'Per Account' },
-                    ]} />
-                </div>
-                <div>
-                  <span class="field-label">Schedule</span>
-                  <Select ariaLabel="Schedule" bind:value={editForm.schedule}
-                    options={[
-                      { value: 'market_hours', label: 'Market Hours' },
-                      { value: 'always',       label: 'Always' },
-                    ]} />
-                </div>
-                <div>
-                  <span class="field-label">Cooldown (minutes)</span>
-                  <input type="number" bind:value={editForm.cooldown_minutes} class="field-input" />
-                </div>
-                <div>
-                  <span class="field-label">
-                    Debounce (minutes)
-                    <InfoHint popup panel title="Debounce (minutes)" text="Fire only when the condition holds for N consecutive evaluations spanning at least N minutes. <b>0</b> = fire immediately on first true tick. Use to suppress single-tick spikes (e.g. a Kite glitch dropping pnl_pct to -2.1% for one cycle). Industry analogue: Datadog/Grafana <b>For:</b>, CloudWatch <b>EvaluationPeriods</b>." />
-                  </span>
-                  <input type="number" min="0"
-                         bind:value={editForm.debounce_minutes}
-                         class="field-input" />
-                </div>
-                <div>
-                  <span class="field-label">
-                    Trade mode
-                    <InfoHint popup panel title="Trade mode" text="Per-agent execution mode. <b>paper</b> = simulated fills against real bid/ask (default). <b>live</b> = real broker orders. Resolved against the engine's master <code>execution.paper_trading_mode</code> setting + the branch gate — dev always forces paper regardless." />
-                  </span>
-                  <Select ariaLabel="Trade mode" bind:value={editForm.trade_mode}
-                    options={[
-                      { value: 'paper', label: 'Paper (simulated)' },
-                      { value: 'live',  label: 'Live (real broker)' },
-                    ]} />
-                  <div class="text-[length:var(--fs-xs)] text-[var(--c-muted)] mt-1">
-                    Global default: <b>{globalDefaultTradeMode.toUpperCase()}</b>
-                    {#if editForm.trade_mode !== globalDefaultTradeMode}
-                      <span class="text-[var(--c-action)]">(overridden)</span>
-                    {:else}
-                      <span class="opacity-70">(inherited)</span>
-                    {/if}
-                  </div>
-                </div>
-                <div>
-                  <span class="field-label">
-                    Fire at (IST)
-                    <InfoHint popup panel title="Fire at (IST)" text="Optional <b>HH:MM IST</b> time-of-day gate. When set, agent only evaluates inside a small window around this wall-clock time (covers one background poll cycle ~ 6 min). Empty = no gate, evaluates every tick. Use for daily summaries, EOD scans, expiry-day close orders." />
-                  </span>
-                  <input type="time"
-                    bind:value={editForm.fire_at_time}
-                    placeholder="HH:MM"
-                    class="field-input" />
-                </div>
-                <!-- Lifespan — controls whether the agent persists or
-                     auto-completes after firing. one_shot / n_fires let
-                     algos spawn temporary agents (expiry-day auto-close,
-                     "watch this until X" rules) that drop out of the
-                     active set on completion instead of needing a manual
-                     deactivate. -->
-                <div>
-                  <span class="field-label">Lifespan</span>
-                  <Select ariaLabel="Lifespan" bind:value={editForm.lifespan_type}
-                    options={[
-                      { value: 'persistent', label: 'Persistent (default)' },
-                      { value: 'one_shot',   label: 'One-shot (fires once)' },
-                      { value: 'n_fires',    label: 'N fires' },
-                      { value: 'until_date', label: 'Until date' },
-                    ]} />
-                  {#if agent && lifespanChip(agent)}
-                    {@const _ls = lifespanChip(agent)}
-                    <div class="text-[length:var(--fs-xs)] text-[var(--c-muted)] mt-1" title={_ls.tooltip}>
-                      Current: <span class={'lifespan-chip lifespan-chip-' + _ls.color}>{_ls.label}</span>
-                    </div>
-                  {:else if !agent || agent.lifespan_type === 'persistent'}
-                    <div class="text-[length:var(--fs-xs)] text-[var(--c-muted)] mt-1 italic">
-                      Persistent — fires until manually deactivated.
-                    </div>
-                  {/if}
-                </div>
-                {#if editForm.lifespan_type === 'n_fires'}
-                  <div>
-                    <span class="field-label">Max fires</span>
-                    <input type="number" min="1"
-                           bind:value={editForm.lifespan_max_fires}
-                           class="field-input"
-                           placeholder="e.g. 3" />
-                  </div>
-                {/if}
-                {#if editForm.lifespan_type === 'until_date'}
-                  <div>
-                    <span class="field-label">Expires at (UTC)</span>
-                    <input type="datetime-local"
-                           bind:value={editForm.lifespan_expires_at}
-                           class="field-input" />
-                  </div>
-                {/if}
-              </div>
+<!-- Per-row "view" body — shared across all four kinds. Agents/Alerts/
+     Templates all share the Agent-row (`AgentInfo`) condition/events
+     shape (a Token's `conditions`/`events` ARE an agent's, per
+     template_registry.py's `_tr_fragment_to_agent_fields` — reusing
+     `renderCondNode`/`channelSummary` here is not a coincidence, it's
+     the same underlying shape). Brackets have their own distinct
+     TP/SL/Wing shape, rendered separately below. -->
+{#snippet agentRowView(/** @type {any} */ agent)}
+  {@const _aiMeta = parseAIDescription(agent.description)}
+  {#if _aiMeta.prompt || _aiMeta.why}
+    <div class="ai-meta-box">
+      <span class="ai-meta-pill" title="Created by AI">✦ AI</span>
+      {#if _aiMeta.why}<span class="ai-meta-why">{_aiMeta.why}</span>{/if}
+      {#if _aiMeta.prompt}
+        <details class="ai-meta-prompt">
+          <summary>prompt</summary>
+          <span>{_aiMeta.prompt}</span>
+        </details>
+      {/if}
+      {#if _aiMeta.rest}<span class="ai-meta-rest">{_aiMeta.rest}</span>{/if}
+    </div>
+  {:else if agent.description}
+    <div class="text-[length:var(--fs-sm)] text-[var(--c-muted)] italic mt-1.5 mb-1">{agent.description}</div>
+  {/if}
 
-              <!-- ── Alert hierarchy strip (tier + topic) ─────
-                   Single tight row. Tier as a 4-pill segmented control
-                   so all severity options are visible without a dropdown
-                   click. Topic as a small text input with datalist
-                   autocomplete (writes the existing topics back, so
-                   ops can group new agents alongside the loss-* ones
-                   in a single click). -->
-              <div class="tier-strip">
-                <div class="tier-strip-left">
-                  <span class="field-label" style="margin-right: 0.5rem; display: inline-flex; align-items: center; gap: 0.25rem;">
-                    Priority
-                    <InfoHint popup panel title="Priority" text="Severity bucket (a.k.a. <b>tier</b>) — <b>critical &gt; high &gt; medium &gt; low</b>. Drives topic-scoped suppression: when multiple agents in the same topic fire on one tick, only the highest priority dispatches; the others are logged as suppressed. Industry analogue: PagerDuty <b>Urgency</b>, Opsgenie <b>Priority P1-P5</b>, Datadog <b>monitor priority</b>." />
-                  </span>
-                  <div class="tier-pill-row">
-                    {#each TIER_PILLS as t}
-                      <button type="button"
-                              class={'tier-pill tier-pill-' + t.value}
-                              class:on={editForm.tier === t.value}
-                              onclick={() => { editForm.tier = t.value; }}
-                              title={t.desc}>
-                        {t.label}
-                      </button>
-                    {/each}
-                  </div>
-                </div>
-                <div class="tier-strip-right">
-                  <div>
-                    <span class="field-label">Topic</span>
-                    <input list="agent-topics"
-                           bind:value={editForm.topic}
-                           class="field-input"
-                           placeholder="general"
-                           title="Agents sharing a topic get cross-suppressed by tier. 'general' (default) opts out — no suppression." />
-                    <datalist id="agent-topics">
-                      <option value="holdings_loss"></option>
-                      <option value="positions_loss"></option>
-                      <option value="funds_warning"></option>
-                      <option value="general"></option>
-                    </datalist>
-                  </div>
-                </div>
-              </div>
+  <div class="preview-section-label mt-1">Condition</div>
+  {#if agent.conditions && Object.keys(agent.conditions).length}
+    <div class="preview-tree">{@render renderCondNode(agent.conditions)}</div>
+  {:else}
+    <div class="text-[length:var(--fs-sm)] text-[var(--c-muted)] italic">no conditions</div>
+  {/if}
 
-              <!-- Tags + Blackout windows — operator-facing labels for
-                   filtering on /automation (tags) and IST quiet hours
-                   (blackout windows). Industry analogue: Datadog tags +
-                   Grafana silences / PagerDuty maintenance windows. -->
-              <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
-                <div>
-                  <span class="field-label">
-                    Tags
-                    <InfoHint popup panel title="Tags" text="Free-form labels for filtering. Comma-separated. Examples: <b>iron-condor, nifty, review-q3</b>. Surfaces on the agents list as chips. Industry analogue: Datadog tags, Grafana labels." />
-                  </span>
-                  <input bind:value={editForm.tags}
-                         placeholder="iron-condor, nifty, review-q3"
-                         class="field-input" />
-                </div>
-                <div>
-                  <span class="field-label">
-                    Blackout windows (JSON)
-                    <InfoHint popup panel title="Blackout windows (JSON)" text="List of <b>&#123;start: 'HH:MM', end: 'HH:MM'&#125;</b> entries in IST. Agent is skipped while wall-clock IST is inside any window. Crossing-midnight windows like <code>&#123;start:'23:00',end:'01:00'&#125;</code> are supported. Industry analogue: PagerDuty maintenance windows, Grafana silences, Datadog <b>mute_until</b>." />
-                  </span>
-                  <textarea bind:value={editForm.blackout_windows}
-                            class="field-input font-mono text-[length:var(--fs-sm)]" rows="3"
-                            placeholder={'[{"start":"12:00","end":"13:00"}]'}></textarea>
-                </div>
-              </div>
+  <div class="text-[length:var(--fs-sm)] text-[var(--c-muted)] mt-2 mb-1 flex items-center flex-wrap gap-x-2 gap-y-0.5">
+    <span class="text-[var(--c-muted)]">Alert via:</span> <span>{channelSummary(agent.events)}</span>
+    {#if agent.tier && agent.tier !== 'medium'}
+      <span class={'tier-badge tier-badge-' + agent.tier} title="Severity tier — drives topic-scoped suppression in run_cycle.">{agent.tier}</span>
+    {/if}
+    {#if agent.topic && agent.topic !== 'general'}
+      <span class="topic-badge" title="Agents sharing a topic get cross-suppressed by tier.">{agent.topic}</span>
+    {/if}
+    {#if agent.kind === 'event'}
+      <span class="topic-badge" title="Fixed render template, set at creation.">renderer: {rendererLabel(eventRendererKey(agent))}</span>
+    {/if}
+  </div>
 
-              <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mt-3">
-                <div>
-                  <span class="field-label">
-                    Conditions (JSON)
-                    <InfoHint popup panel title="Conditions (JSON)" text="A leaf is <code>&#123;metric, scope, op, value&#125;</code>, e.g. <b>&#123;&quot;metric&quot;:&quot;pnl&quot;,&quot;scope&quot;:&quot;positions.total&quot;,&quot;op&quot;:&quot;&lt;=&quot;,&quot;value&quot;:-50000&#125;</code>. Rolling-window metrics like <b>mean_pnl_30m</b> also accept call syntax for ANY window in minutes — <b>mean_pnl(45)</b>, <b>max_drawdown_pnl(90)</b>, <b>stdev_pnl(120)</b> — instead of being limited to the fixed _30m/_1h/_4h tokens. Combine leaves with <code>&#123;all:[...]&#125;</code> / <code>&#123;any:[...]&#125;</code> / <code>&#123;not:...&#125;</code>." />
-                  </span>
-                  <textarea bind:value={editForm.conditions} class="field-input font-mono text-[length:var(--fs-sm)]" rows="5"></textarea>
-                </div>
-                <div>
-                  <span class="field-label">Alert channels</span>
-                  <!-- Per-agent notify routing. Each tick adds a row
-                       {channel, enabled:true} to the agent's events
-                       JSONB; the dispatcher (backend/api/algo/events.py)
-                       fans out the alert to every enabled channel. Saves
-                       round-trip with the JSON shape unchanged on the
-                       wire. -->
-                  <div class="channel-grid">
-                    {#each ALERT_CHANNELS as ch}
-                      <label class="channel-row">
-                        <input type="checkbox"
-                               class="channel-check"
-                               checked={isChannelEnabled(ch.id)}
-                               onchange={(e) => toggleChannel(ch.id, /** @type {HTMLInputElement} */(e.target).checked)} />
-                        <span class="channel-label">{ch.label}</span>
-                        <span class="channel-desc">{ch.desc}</span>
-                      </label>
-                      {#if isChannelEnabled(ch.id) && logTags.length}
-                        <div class="channel-tags" aria-label="{ch.label} tag filter">
-                          {#each logTags as t}
-                            <button type="button"
-                                    class="tag-chip"
-                                    class:on={channelTags(ch.id).includes(t)}
-                                    aria-pressed={channelTags(ch.id).includes(t)}
-                                    onclick={() => toggleChannelTag(ch.id, t)}>{t}</button>
-                          {/each}
-                        </div>
-                      {/if}
-                    {/each}
-                  </div>
-                  <div class="log-match-row">
-                    <span class="field-label">Log match</span>
-                    <select class="log-match-select" bind:value={logTagPick} aria-label="Log tag">
-                      <option value="">Tag…</option>
-                      {#each logTags as t}<option value={t}>{t}</option>{/each}
-                    </select>
-                    <select class="log-match-select" bind:value={logMinLevel} aria-label="Minimum level">
-                      {#each LOG_LEVELS as lv}<option value={lv}>{lv}</option>{/each}
-                    </select>
-                    <button type="button" class="log-match-add" onclick={addLogMatch} disabled={!logTagPick}>
-                      Add to conditions
-                    </button>
-                  </div>
-                </div>
-                <div>
-                  <div class="flex items-center justify-between flex-wrap gap-1">
-                    <span class="field-label">
-                      Actions (JSON)
-                      <InfoHint popup panel title="Actions (JSON)" text="The single <b>+ place_order</b> pill appends an entry + <code>template_slug=&quot;default-bull&quot;</code> skeleton (change the slug to <code>default-short-vol</code> for a SELL-side credit spread, or <code>none</code> to opt out of auto-attachments). Whenever this JSON parses to exactly ONE <code>place_order</code> action, a structured mini-form appears below the textarea — <b>Product</b> (NRML/MIS), <b>Chase</b> aggressiveness (L/M/H, maps to <code>chase_aggressiveness</code> — the same pacing a manual order ticket's chase uses; default <b>med</b> when unset), and <b>Bracket</b> (keyed by slug from the catalog, 'None' clears <code>template_slug</code>). Edits there re-serialize back into this textarea; editing the JSON directly updates the mini-form the same way. The Bracket runs on fill — sim path goes through SimGttBook; live path through broker GTT. Catalog at <a href='/automation?tab=brackets' target='_blank'>Brackets</a>." />
-                    </span>
-                    <!-- Quick-add pills — click appends a skeleton action
-                         entry so operators don't have to remember the
-                         exact shape. Params are templated to legal values;
-                         the operator tunes them after. -->
-                    <div class="flex flex-wrap gap-1">
-                      <button type="button" onclick={() => addAction('close_position')}
-                        class="action-add-pill action-add-close">+ close_position</button>
-                      <button type="button" onclick={() => addAction('place_order')}
-                        class="action-add-pill action-add-place" title="Entry + template_slug (default-bull). Change slug to default-short-vol for SELL, or 'none' to opt out of auto-attachments.">+ place_order</button>
-                      <button type="button" onclick={() => addAction('chase_close_positions')}
-                        class="action-add-pill action-add-chase">+ chase_close</button>
-                      <button type="button" onclick={() => addAction('cancel_all_orders')}
-                        class="action-add-pill action-add-cancel">+ cancel_all</button>
-                      <button type="button" onclick={() => addAction('emit_log')}
-                        class="action-add-pill action-add-log">+ log</button>
-                    </div>
-                  </div>
-                  <textarea bind:value={editForm.actions} data-testid="actions-json-textarea" class="field-input font-mono text-[length:var(--fs-sm)]" rows="5"></textarea>
-                  {#if _singlePlaceOrderAction}
-                    <div class="place-order-struct" data-testid="place-order-struct">
-                      <div class="pos-field">
-                        <span class="pos-label">Product</span>
-                        <Select ariaLabel="Product"
-                          value={_singlePlaceOrderAction.params?.product || 'NRML'}
-                          options={[
-                            { value: 'NRML', label: 'NRML' },
-                            { value: 'MIS',  label: 'MIS' },
-                          ]}
-                          onValueChange={(v) => _updatePlaceOrderParam('product', v)} />
-                      </div>
-                      <div class="pos-field">
-                        <span class="pos-label">Chase</span>
-                        <ChaseAggPicker
-                          value={_singlePlaceOrderAction.params?.chase_aggressiveness || 'med'}
-                          onChange={(v) => _updatePlaceOrderParam('chase_aggressiveness', v)} />
-                      </div>
-                      <div class="pos-field">
-                        <span class="pos-label">Bracket</span>
-                        <Select ariaLabel="Bracket"
-                          value={_singlePlaceOrderAction.params?.template_slug ?? 'none'}
-                          options={[
-                            { value: 'none', label: 'None' },
-                            ..._templateRows.map((t) => ({ value: t.slug, label: t.name || t.slug })),
-                          ]}
-                          onValueChange={(v) => _updatePlaceOrderParam('template_slug', v === 'none' ? undefined : v)} />
-                      </div>
-                    </div>
-                  {/if}
-                </div>
-              </div>
+  {#if agent.kind !== 'template'}
+    <div class="preview-section-label mt-2">Actions</div>
+    {#if agent.actions && agent.actions.length}
+      <div class="space-y-1">
+        {#each agent.actions as a}
+          <div class="preview-action">
+            <span class="preview-action-type">{a.type || '?'}</span>
+            {#if a.params && Object.keys(a.params).length}
+              <pre class="preview-action-params">{JSON.stringify(a.params, null, 2)}</pre>
+            {/if}
+          </div>
+        {/each}
+      </div>
+    {:else}
+      <div class="text-[length:var(--fs-sm)] text-[var(--c-muted)] italic">alert-only (no actions)</div>
+    {/if}
+  {/if}
 
-              {#if validationErrors.length}
-                <div class="mt-3 p-2 rounded bg-red-500/15 text-[var(--algo-red-text-bright)] text-[length:var(--fs-sm)] border border-red-500/40">
-                  <div class="font-semibold mb-1">Condition validation failed:</div>
-                  <ul class="list-disc ml-4">{#each validationErrors as err}<li>{err}</li>{/each}</ul>
-                </div>
-              {:else if validationGrammar}
-                <div class="mt-3 p-2 rounded bg-[var(--algo-green-bg)] text-[var(--algo-green-text)] text-[length:var(--fs-sm)] border border-[var(--algo-green-border-soft)]">
-                  Validated — ready to save.
-                </div>
-              {/if}
+  {#if agent.tags && agent.tags.length}
+    <div class="preview-section-label mt-2">Tags</div>
+    <div class="flex flex-wrap gap-1">
+      {#each agent.tags as t}<span class="topic-badge">{t}</span>{/each}
+    </div>
+  {/if}
 
-              <div class="flex gap-2 mt-3">
-                <button type="button" onclick={async () => { await runValidation(); }}
-                  class="text-[length:var(--fs-md)] py-1 px-3 rounded border border-[#7dd3fc]/50 bg-[#7dd3fc]/15 text-[#7dd3fc] hover:bg-[#7dd3fc]/25 font-semibold disabled:opacity-40">
-                  Validate
-                </button>
-                <button type="button" onclick={saveEdit}
-                  class="btn-primary text-[length:var(--fs-md)] py-1 px-4 disabled:opacity-40">Save</button>
-                <button type="button" onclick={() => { editing = null; validationErrors = []; validationGrammar = ''; }}
-                  class="btn-secondary text-[length:var(--fs-md)] py-1 px-4">Cancel</button>
-              </div>
-
-              <!-- ── LIVE TREE PREVIEW (below the form) ── -->
-              <div class="agent-preview mt-4 pt-3 border-t" style="border-top-color: rgba(126,151,184,0.10)">
-                <div class="preview-heading">Live preview</div>
-                <div class="grid grid-cols-1 md:grid-cols-[1fr_1fr] gap-3">
-                  <div>
-                    <div class="preview-header">
-                      <div class="preview-title">{editForm.name || '(unnamed agent)'}</div>
-                      {#if editForm.description}
-                        <div class="preview-desc">{editForm.description}</div>
-                      {/if}
-                      <div class="preview-meta">
-                        Scope: <b>{editForm.scope}</b>
-                        <span class="preview-sep">|</span>
-                        Schedule: <b>{editForm.schedule}</b>
-                        <span class="preview-sep">|</span>
-                        Cooldown: <b>{editForm.cooldown_minutes}m</b>
-                        {#if editForm.fire_at_time}
-                          <span class="preview-sep">|</span>
-                          Fire at: <b>{editForm.fire_at_time} IST</b>
-                        {/if}
-                      </div>
-                    </div>
-                    <div class="preview-section-label">Condition tree</div>
-                    {#if parsedConditions.ok}
-                      <div class="preview-tree">{@render renderCondNode(parsedConditions.value)}</div>
-                    {:else}
-                      <div class="preview-error">Invalid JSON: {parsedConditions.error}</div>
-                    {/if}
-                  </div>
-                  <div>
-                    <div class="preview-section-label">Notify</div>
-                    {#if parsedEvents.ok}
-                      {#if parsedEvents.value.length}
-                        <div class="flex flex-wrap gap-1">
-                          {#each parsedEvents.value as ev}
-                            {@const on = ev.enabled !== false}
-                            <span class="preview-chip {on ? 'chip-on' : 'chip-off'}">{ev.channel || '?'}{on ? '' : ' (off)'}</span>
-                          {/each}
-                        </div>
-                      {:else}
-                        <div class="preview-muted">no channels configured</div>
-                      {/if}
-                    {:else}
-                      <div class="preview-error">Invalid JSON: {parsedEvents.error}</div>
-                    {/if}
-
-                    <div class="preview-section-label">Actions</div>
-                    {#if parsedActions.ok}
-                      {#if parsedActions.value.length}
-                        <div class="space-y-1">
-                          {#each parsedActions.value as a}
-                            <div class="preview-action">
-                              <span class="preview-action-type">{a.type || '?'}</span>
-                              {#if a.params && Object.keys(a.params).length}
-                                <pre class="preview-action-params">{JSON.stringify(a.params, null, 2)}</pre>
-                              {/if}
-                            </div>
-                          {/each}
-                        </div>
-                      {:else}
-                        <div class="preview-muted">alert-only (no actions)</div>
-                      {/if}
-                    {:else}
-                      <div class="preview-error">Invalid JSON: {parsedActions.error}</div>
-                    {/if}
-                  </div>
-                </div>
-              </div>
+  <div class="flex items-center justify-between text-[length:var(--fs-xs)] text-[var(--c-muted)] mt-2">
+    <span>
+      Last fire: {agent.last_triggered_at ? logTime(new Date(agent.last_triggered_at)) : '—'}
+      {#if agent.kind !== 'template'}
+        <span class="mx-1">|</span>
+        Count: {agent.trigger_count}{#if agent.lifespan_type === 'n_fires' && agent.lifespan_max_fires}/{agent.lifespan_max_fires}{/if}
+        <span class="mx-1">|</span>
+        Cooldown: {agent.cooldown_minutes}m
+        <span class="mx-1">|</span>
+        Scope: {agent.scope}
+      {/if}
+      {#if agent.kind !== 'event' && agent.kind !== 'template'}
+        <span class="mx-1">|</span>
+        Mode: {(agent.trade_mode || 'paper').toUpperCase()}
+        <span class="opacity-60">(global: {globalDefaultTradeMode.toUpperCase()})</span>
+      {/if}
+      {#if lifespanChip(agent)}
+        {@const _lc = lifespanChip(agent)}
+        <span class="mx-1">|</span>
+        <span class={'lifespan-chip lifespan-chip-' + _lc.color} title={_lc.tooltip}>{_lc.label}</span>
+      {/if}
+    </span>
+  </div>
 {/snippet}
 
-<!-- Event-agent editor body (existing event-kind agents only). Renderer,
-     condition, and slug are FIXED at creation — shown read-only. Channel
-     enabled/priority/capability-gate stay editable per plan item 3. -->
-{#snippet eventEditorBody(/** @type {any} */ agent)}
-              <div class="mb-3 p-2 rounded bg-[#7dd3fc]/10 text-[#7dd3fc] text-[length:var(--fs-sm)] border border-[#7dd3fc]/30">
-                System event agent — renderer, condition, and slug are fixed at creation.
-                Channels, priority, and the capability gate stay editable below.
-                Use Activate / Deactivate to change whether it fires.
-              </div>
-              <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
-                <div>
-                  <span class="field-label">Slug <span class="opacity-50">(fixed)</span></span>
-                  <input class="field-input" value={agent.slug} disabled />
-                </div>
-                <div>
-                  <span class="field-label">Renderer <span class="opacity-50">(fixed)</span></span>
-                  <input class="field-input" value={rendererLabel(eventRendererKey(agent))} disabled />
-                </div>
-              </div>
-              <div class="mb-3">
-                <span class="field-label">Condition <span class="opacity-50">(fixed)</span></span>
-                <div class="preview-tree">{@render renderCondNode(agent.conditions)}</div>
-              </div>
-              <div class="mb-1">
-                <span class="field-label">Alert channels</span>
-                <div class="channel-grid">
-                  {#each EVENT_CHANNELS as ch}
-                    <label class="channel-row">
-                      <input type="checkbox"
-                             class="channel-check"
-                             checked={isChannelEnabled(ch.id)}
-                             onchange={(e) => toggleChannel(ch.id, /** @type {HTMLInputElement} */(e.target).checked)} />
-                      <span class="channel-label">{ch.label}</span>
-                      <span class="channel-desc">{ch.desc}</span>
-                    </label>
-                    {#if isChannelEnabled(ch.id)}
-                      <div class="channel-tags" style="padding-left: 1.4rem; display:flex; gap:0.6rem; align-items:center; flex-wrap:wrap;">
-                        {#if ch.id === 'ntfy'}
-                          <span class="text-[length:var(--fs-xs)] opacity-60">Priority</span>
-                          <Select ariaLabel="Priority" value={channelPriority(ch.id)}
-                            onValueChange={(v) => setChannelPriority(ch.id, String(v))}
-                            options={[
-                              { value: 'normal', label: 'normal' },
-                              { value: 'high',   label: 'high' },
-                              { value: 'urgent', label: 'urgent' },
-                            ]} />
-                        {/if}
-                        <label class="flex items-center gap-1 text-[length:var(--fs-xs)] opacity-70 cursor-pointer">
-                          <input type="checkbox" checked={channelGate(ch.id) === false}
-                            onchange={(e) => setChannelGate(ch.id, /** @type {HTMLInputElement} */(e.target).checked ? false : true)} />
-                          Always send (bypass capability gate)
-                        </label>
-                      </div>
-                    {/if}
-                  {/each}
-                </div>
-              </div>
-              {#if validationErrors.length}
-                <div class="mt-2 p-2 rounded bg-red-500/15 text-[var(--algo-red-text-bright)] text-[length:var(--fs-sm)] border border-red-500/40">
-                  <ul class="list-disc ml-4">{#each validationErrors as err}<li>{err}</li>{/each}</ul>
-                </div>
-              {/if}
-              <div class="flex gap-2 mt-3">
-                <button type="button" onclick={() => saveEventEdit(agent)}
-                  class="btn-primary text-[length:var(--fs-md)] py-1 px-4">Save</button>
-                <button type="button" onclick={() => { editing = null; validationErrors = []; }}
-                  class="btn-secondary text-[length:var(--fs-md)] py-1 px-4">Cancel</button>
-              </div>
+{#snippet bracketRowView(/** @type {any} */ tpl)}
+  {#if tpl.description}
+    <div class="text-[length:var(--fs-sm)] text-[var(--c-muted)] italic mt-1.5 mb-1">{tpl.description}</div>
+  {/if}
+  <div class="preview-section-label mt-1">Applies to</div>
+  <div class="text-[length:var(--fs-sm)]">{tpl.applies_to}</div>
+  <div class="preview-section-label mt-2">TP / SL / Wing</div>
+  <div class="text-[length:var(--fs-sm)] flex flex-wrap gap-x-3 gap-y-0.5">
+    {#if tpl.tp_pct != null}<span>TP {tpl.tp_pct}% ({tpl.tp_order_type})</span>{/if}
+    {#if tpl.sl_pct != null}<span>SL {tpl.sl_pct}%</span>{/if}
+    {#if tpl.sl_trail_pct != null}<span>Trail {tpl.sl_trail_pct}%</span>{/if}
+    {#if tpl.wing_premium_pct != null}<span>Wing premium {tpl.wing_premium_pct}%</span>{/if}
+    {#if tpl.wing_strike_offset != null}<span>Wing offset {tpl.wing_strike_offset}</span>{/if}
+    {#if tpl.tp_pct == null && tpl.sl_pct == null && tpl.wing_premium_pct == null && tpl.wing_strike_offset == null}
+      <span class="text-[var(--c-muted)] italic">none set</span>
+    {/if}
+  </div>
+  {#if tpl.tags && tpl.tags.length}
+    <div class="preview-section-label mt-2">Tags</div>
+    <div class="flex flex-wrap gap-1">{#each tpl.tags as t}<span class="topic-badge">{t}</span>{/each}</div>
+  {/if}
+  <div class="flex items-center gap-2 text-[length:var(--fs-xs)] text-[var(--c-muted)] mt-2">
+    {#if tpl.is_system}<span class="topic-badge" title="Seeded built-in — body/description are code-owned">system</span>{/if}
+    {#if tpl.is_default}<span class="topic-badge" title="Default bracket for this applies_to scope">default</span>{/if}
+    {#if !tpl.is_active}<span class="topic-badge" title="Deactivated">inactive</span>{/if}
+  </div>
 {/snippet}
 
-<!-- Grouped agent list — compact rows, click to expand.
-     Two-column magazine-flow on ≥1024 px (lg:columns-2): items
-     fill column 1 top-to-bottom, then column 2 starts; expanding a
-     card just grows its own column without pulling its row-neighbour
-     down (true CSS-columns behaviour, unlike a 2-col Grid where
-     row siblings would equalise heights). Single column on mobile. -->
-{#each groupedAgents() as group}
-  <h2 class="section-heading mt-3 mb-1.5 border-b border-white/10 pb-0.5">
-    {group.name}
-    <span class="opacity-60 font-normal ml-1">({group.agents.length})</span>
-  </h2>
-  <div class="page-grid agent-group-grid mb-3" role="list"
-       ondragover={_dragOver}
-       ondrop={(e) => onGridDrop(e, 'agent', null)}>
-    {#each group.agents as agent}
-      {@const isOpen = expandedSlug === agent.slug}
-      <div class="algo-status-card {agent.status === 'triggered' ? 'animate-pulse' : ''}"
-           data-status={agent.status}
-           role="listitem"
-           draggable={editing !== agent.slug}
-           ondragstart={(e) => _dragStart(e, 'agent', agent.slug)}
-           style="padding: 0">
-        <!-- Compact row (always visible). Div + role="button" so the inner
-             ON/OFF can stay a real <button> — nested buttons aren't valid. -->
-        <div role="button" tabindex="0"
-          aria-expanded={isOpen}
-          onclick={() => expandedSlug = isOpen ? null : agent.slug}
-          onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); expandedSlug = isOpen ? null : agent.slug; } }}
-          class="w-full flex items-center gap-2 px-2 py-1 text-left cursor-pointer select-none">
-          <span class="w-2 h-2 rounded-full {statusDot(agent.status)} flex-shrink-0"></span>
-          <!-- Name column: display name on top, 3-part long_name
-               (condition - alert - action) below in muted mono so an
-               operator can scan "what does this agent do" without
-               expanding the row. -->
+<!-- Sprint C (2026-10, Phase 2 "Automation redesign") — kind-count-card
+     → per-kind #group= tabs → row-list drill-down. Replaces the old
+     flat Agents grid + drag-and-drop custom-group grids entirely. -->
+{#if !_activeCard}
+  <StaleBanner {error} hasData={agents.length > 0} label="Agents" />
+  <div class="page-grid kind-card-grid mb-3" role="list">
+    {#each KIND_CARDS as card (card.id)}
+      <button type="button" class="kind-card" data-kind={card.id}
+              onclick={() => selectCard(card.id)}>
+        <span class="kind-card-n">{_cardCounts[card.id] ?? 0}</span>
+        <span class="kind-card-l">{card.label}</span>
+      </button>
+    {/each}
+  </div>
+{:else}
+  {@const _cardLabel = KIND_CARDS.find((c) => c.id === _activeCard)?.label || _activeCard}
+  <div class="flex items-center gap-2 mb-2">
+    <button type="button" class="text-[var(--c-action)] hover:underline text-[length:var(--fs-sm)]" onclick={backToCards}>
+      &larr; Back to cards
+    </button>
+    <h2 class="section-heading mb-0 border-0 pb-0">{_cardLabel}</h2>
+  </div>
+
+  <AlgoTabs
+    tabs={_activeCardGroups.map((g) => ({ id: g.id, label: `${g.name} (${g.rows.length})` }))}
+    value={_activeGroupId}
+    onChange={(id) => { _activeGroupId = id; _expandedRowKey = null; }}
+  />
+
+  <div class="page-grid agent-group-grid mt-2" role="list">
+    {#each _activeGroupRows as row (row.id ?? row.slug)}
+      {@const _rowKey = `${_activeCard}:${row.id ?? row.slug}`}
+      {@const isOpen = _expandedRowKey === _rowKey}
+      <div class="algo-status-card {row.status === 'triggered' ? 'animate-pulse' : ''}"
+           data-status={row.status} role="listitem" style="padding: 0">
+        <div role="button" tabindex="0" aria-expanded={isOpen}
+             onclick={() => toggleRowView(_rowKey)}
+             onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleRowView(_rowKey); } }}
+             class="w-full flex items-center gap-2 px-2 py-1 text-left cursor-pointer select-none">
+          {#if _activeCard === 'agents' || _activeCard === 'alerts'}
+            <span class="w-2 h-2 rounded-full {statusDot(row.status)} flex-shrink-0"></span>
+          {/if}
           <span class="flex-1 min-w-0 flex flex-col leading-tight">
-            <span class="text-[length:var(--fs-lg)] text-[var(--c-action)] truncate">{agent.name}</span>
-            {#if agent.long_name}
-              <span class="text-[length:var(--fs-lg)] font-mono truncate" style="color: var(--c-muted)">{agent.long_name}</span>
+            <span class="text-[length:var(--fs-lg)] text-[var(--c-action)] truncate">{row.name}</span>
+            {#if row.long_name}
+              <span class="text-[length:var(--fs-lg)] font-mono truncate" style="color: var(--c-muted)">{row.long_name}</span>
             {/if}
           </span>
-          <!-- Notify-channel icon strip — one tiny emoji per enabled
-               channel. Grouped on the right alongside the trade-mode +
-               ON/OFF buttons + chevron so every controller-style affordance
-               clusters in one visual zone. Operator scans "📨✉" to know
-               "this agent pages Telegram + email"; the tooltip carries
-               the full channel list for accessibility. -->
-          <span class="agent-row-icons" title={'Notify: ' + (enabledChannels(agent.events).join(', ') || 'none')}>
-            {#each enabledChannels(agent.events) as ch (ch)}
-              <span class="agent-notify-ico" aria-label={ch}>{@html CHANNEL_ICON[ch] || '•'}</span>
-            {/each}
-          </span>
-          <button type="button"
-            onclick={(e) => { e.stopPropagation(); toggleTradeMode(agent); }}
-            title={`Trade mode: ${(agent.trade_mode || 'paper').toUpperCase()} — click to flip (paper ↔ live)`}
-            class="text-[length:var(--fs-xs)] px-1.5 py-0 rounded font-bold border flex-shrink-0
-              {(agent.trade_mode || 'paper') === 'live'
-                ? 'bg-red-500/15 text-red-400 border-red-500/40'
-                : 'bg-[var(--algo-sky-bg)] text-[var(--algo-sky)] border-sky-500/40'}">
-            {(agent.trade_mode || 'paper') === 'live' ? 'L' : 'P'}
-          </button>
-          <button type="button"
-            onclick={(e) => { e.stopPropagation(); toggle(agent); }}
-            class="text-[length:var(--fs-xs)] px-1.5 py-0 rounded font-medium border flex-shrink-0
-              {agent.status !== 'inactive'
-                ? 'bg-green-500/15 text-[var(--algo-green)] border-green-500/40'
-                : 'bg-slate-700/40 text-slate-400 border-slate-500/30'}">
-            {agent.status !== 'inactive' ? 'ON' : 'OFF'}
-          </button>
+          {#if _activeCard === 'agents' || _activeCard === 'alerts'}
+            <span class="agent-row-icons" title={'Notify: ' + (enabledChannels(row.events).join(', ') || 'none')}>
+              {#each enabledChannels(row.events) as ch (ch)}
+                <span class="agent-notify-ico" aria-label={ch}>{@html CHANNEL_ICON[ch] || '•'}</span>
+              {/each}
+            </span>
+          {/if}
+          {#if _activeCard === 'agents'}
+            <button type="button"
+              onclick={(e) => { e.stopPropagation(); toggleTradeMode(row); }}
+              title={`Trade mode: ${(row.trade_mode || 'paper').toUpperCase()} — click to flip (paper ↔ live)`}
+              class="text-[length:var(--fs-xs)] px-1.5 py-0 rounded font-bold border flex-shrink-0
+                {(row.trade_mode || 'paper') === 'live'
+                  ? 'bg-red-500/15 text-red-400 border-red-500/40'
+                  : 'bg-[var(--algo-sky-bg)] text-[var(--algo-sky)] border-sky-500/40'}">
+              {(row.trade_mode || 'paper') === 'live' ? 'L' : 'P'}
+            </button>
+          {/if}
+          {#if _activeCard === 'agents' || _activeCard === 'alerts'}
+            <button type="button"
+              onclick={(e) => { e.stopPropagation(); toggle(row); }}
+              class="text-[length:var(--fs-xs)] px-1.5 py-0 rounded font-medium border flex-shrink-0
+                {row.status !== 'inactive'
+                  ? 'bg-green-500/15 text-[var(--algo-green)] border-green-500/40'
+                  : 'bg-slate-700/40 text-slate-400 border-slate-500/30'}">
+              {row.status !== 'inactive' ? 'ON' : 'OFF'}
+            </button>
+          {/if}
           <DisclosureChevron open={isOpen} ariaLabel={isOpen ? 'Collapse row' : 'Expand row'} />
         </div>
 
         {#if isOpen}
-          {#if editing === agent.slug}
-            <!-- ──────── Inline editor ──────── -->
-            <div class="px-3 pb-3 pt-2 border-t" style="border-top-color: rgba(126,151,184,0.10)">
-              {#if agent.kind === 'event'}
-                {@render eventEditorBody(agent)}
-              {:else}
-                {@render thresholdEditorBody(agent)}
+          <div class="px-2 pb-2 border-t" style="border-top-color: rgba(126,151,184,0.10)">
+            {#if _activeCard === 'brackets'}
+              {@render bracketRowView(row)}
+            {:else}
+              {@render agentRowView(row)}
+            {/if}
+            <div class="flex items-center justify-end gap-3 text-[length:var(--fs-xs)] mt-2">
+              {#if (_activeCard === 'agents' || _activeCard === 'alerts') && !isDemo}
+                <button type="button" onclick={(e) => { e.stopPropagation(); runInSim(row); }}
+                  title="Dry-fire this agent in the Simulator (bypasses schedule / cooldown / baseline)"
+                  class="text-[var(--c-long)] hover:underline">Run in Simulator</button>
+              {/if}
+              <button type="button" onclick={(e) => { e.stopPropagation(); editRow(_activeCard, row); }}
+                class="text-[var(--c-action)] hover:underline">Edit</button>
+              {#if !(row.is_system)}
+                <button type="button" onclick={(e) => { e.stopPropagation(); deleteRow(_activeCard, row); }}
+                  class="text-[var(--c-short)] hover:underline">Delete</button>
               {/if}
             </div>
-          {:else}
-            {@const _aiMeta = parseAIDescription(agent.description)}
-            <!-- ──────── Normal expanded view ──────── -->
-            <div class="px-2 pb-2 border-t" style="border-top-color: rgba(126,151,184,0.10)">
-              {#if _aiMeta.prompt || _aiMeta.why}
-                <div class="ai-meta-box">
-                  <span class="ai-meta-pill" title="Created by AI">✦ AI</span>
-                  {#if _aiMeta.why}
-                    <span class="ai-meta-why">{_aiMeta.why}</span>
-                  {/if}
-                  {#if _aiMeta.prompt}
-                    <details class="ai-meta-prompt">
-                      <summary>prompt</summary>
-                      <span>{_aiMeta.prompt}</span>
-                    </details>
-                  {/if}
-                  {#if _aiMeta.rest}
-                    <span class="ai-meta-rest">{_aiMeta.rest}</span>
-                  {/if}
-                </div>
-              {:else if agent.description}
-                <div class="text-[length:var(--fs-sm)] text-[var(--c-muted)] italic mt-1.5 mb-1">{agent.description}</div>
-              {/if}
-
-              <!-- Condition tree (always shown; falls back to text summary when parse fails) -->
-              <div class="preview-section-label mt-1">Condition</div>
-              {#if agent.conditions && Object.keys(agent.conditions).length}
-                <div class="preview-tree">{@render renderCondNode(agent.conditions)}</div>
-              {:else}
-                <div class="text-[length:var(--fs-sm)] text-[var(--c-muted)] italic">no conditions</div>
-              {/if}
-
-              <div class="text-[length:var(--fs-sm)] text-[var(--c-muted)] mt-2 mb-1 flex items-center flex-wrap gap-x-2 gap-y-0.5">
-                <span class="text-[var(--c-muted)]">Alert via:</span> <span>{channelSummary(agent.events)}</span>
-                {#if agent.tier && agent.tier !== 'medium'}
-                  <span class={'tier-badge tier-badge-' + agent.tier}
-                        title="Severity tier — drives topic-scoped suppression in run_cycle.">
-                    {agent.tier}
-                  </span>
-                {/if}
-                {#if agent.topic && agent.topic !== 'general'}
-                  <span class="topic-badge"
-                        title="Agents sharing a topic get cross-suppressed by tier.">
-                    {agent.topic}
-                  </span>
-                {/if}
-                {#if agent.group}
-                  <span class="group-badge"
-                        title="Drag this card onto a group grid below to change, or back onto Agents to ungroup.">
-                    {agent.group}
-                  </span>
-                {/if}
-              </div>
-              <!-- Actions list — surface each action and its params so
-                   close_position / place_order / chase_close_positions are
-                   visible at a glance with the account / symbol / qty they
-                   target. Previously this was just a comma-joined type
-                   list and the params were invisible unless the operator
-                   hit Edit. -->
-              <div class="preview-section-label mt-2">Actions</div>
-              {#if agent.actions && agent.actions.length}
-                <div class="space-y-1">
-                  {#each agent.actions as a}
-                    <div class="preview-action">
-                      <span class="preview-action-type">{a.type || '?'}</span>
-                      {#if a.params && Object.keys(a.params).length}
-                        <pre class="preview-action-params">{JSON.stringify(a.params, null, 2)}</pre>
-                      {/if}
-                    </div>
-                  {/each}
-                </div>
-              {:else}
-                <div class="text-[length:var(--fs-sm)] text-[var(--c-muted)] italic">alert-only (no actions)</div>
-              {/if}
-              <div class="flex items-center justify-between text-[length:var(--fs-xs)] text-[var(--c-muted)] mt-2">
-                <span>
-                  Last fire: {agent.last_triggered_at ? logTime(new Date(agent.last_triggered_at)) : '—'}
-                  <span class="mx-1">|</span>
-                  Count: {agent.trigger_count}{#if agent.lifespan_type === 'n_fires' && agent.lifespan_max_fires}/{agent.lifespan_max_fires}{/if}
-                  <span class="mx-1">|</span>
-                  Cooldown: {agent.cooldown_minutes}m
-                  <span class="mx-1">|</span>
-                  Scope: {agent.scope}
-                  {#if agent.kind !== 'event'}
-                    <span class="mx-1">|</span>
-                    <!-- The trade_mode Select in the editor IS the per-agent
-                         override — this is purely informational so the
-                         operator can see at a glance whether the row is
-                         inheriting the global default or has been overridden. -->
-                    Mode: {(agent.trade_mode || 'paper').toUpperCase()}
-                    <span class="opacity-60">(global: {globalDefaultTradeMode.toUpperCase()})</span>
-                  {/if}
-                  {#if lifespanChip(agent)}
-                    {@const _lc = lifespanChip(agent)}
-                    <span class="mx-1">|</span>
-                    <span class={'lifespan-chip lifespan-chip-' + _lc.color} title={_lc.tooltip}>
-                      {_lc.label}
-                    </span>
-                  {/if}
-                </span>
-                <span class="flex items-center gap-3">
-                  {#if !isDemo}
-                  <button type="button"
-                    onclick={(e) => { e.stopPropagation(); runInSim(agent); }}
-                    title="Dry-fire this agent in the Simulator (bypasses schedule / cooldown / baseline)"
-                    class="text-[var(--c-long)] hover:underline">Run in Simulator</button>
-                  {:else}
-                  <span title="Demo: sim disabled"
-                    class="text-[var(--c-muted)] cursor-not-allowed opacity-50 select-none">Run in Simulator</span>
-                  {/if}
-                  <button type="button"
-                    onclick={(e) => { e.stopPropagation(); startEdit(agent); }}
-                    class="text-[var(--c-action)] hover:underline">Edit</button>
-                </span>
-              </div>
-            </div>
-          {/if}
+          </div>
         {/if}
       </div>
     {/each}
+    {#if !_activeGroupRows.length}
+      <div class="text-[length:var(--fs-sm)] text-[var(--c-muted)] italic">No rows in this group.</div>
+    {/if}
   </div>
-{/each}
-
-<!-- Bracket default grid — every OrderTemplate row (Sprint 9). Compact,
-     draggable mini-cards; click jumps to the Brackets tab for editing. -->
-<h2 class="section-heading mt-3 mb-1.5 border-b border-white/10 pb-0.5">
-  Bracket
-  <span class="opacity-60 font-normal ml-1">({_allTemplates.length})</span>
-</h2>
-<div class="page-grid automation-mini-grid mb-3" role="list"
-     ondragover={_dragOver}
-     ondrop={(e) => onGridDrop(e, 'bracket', null)}>
-  {#each _allTemplates as tpl (tpl.id)}
-    <button type="button" class="algo-status-card automation-mini-card"
-            draggable={true}
-            ondragstart={(e) => _dragStart(e, 'bracket', tpl.id)}
-            onclick={() => focusBracket(tpl.id)}
-            title="Click to edit on the Brackets tab">
-      <span class="automation-mini-name">{tpl.name}</span>
-      <span class="automation-mini-sub">
-        {tpl.applies_to}
-        {#if tpl.tp_pct != null}· TP {tpl.tp_pct}%{/if}
-        {#if tpl.sl_pct != null}· SL {tpl.sl_pct}%{/if}
-        {#if tpl.group}· {tpl.group}{/if}
-      </span>
-    </button>
-  {/each}
-  {#if !_allTemplates.length}
-    <div class="text-[length:var(--fs-sm)] text-[var(--c-muted)] italic">No Brackets yet.</div>
-  {/if}
-</div>
-
-<!-- Custom group grids — any non-empty `group` on an agent or Bracket
-     creates one of these, mixing both types (Sprint 9). -->
-{#each customGroups as grp (grp.name)}
-  <h2 class="section-heading mt-3 mb-1.5 border-b border-white/10 pb-0.5">
-    {grp.name}
-    <span class="opacity-60 font-normal ml-1">({grp.agents.length + grp.templates.length})</span>
-  </h2>
-  <div class="page-grid automation-mini-grid mb-3" role="list"
-       ondragover={_dragOver}
-       ondrop={(e) => onGridDrop(e, null, grp.name)}>
-    {#each grp.agents as agent (agent.slug)}
-      <button type="button" class="algo-status-card automation-mini-card"
-              draggable={true}
-              ondragstart={(e) => _dragStart(e, 'agent', agent.slug)}
-              onclick={() => { expandedSlug = agent.slug; startEdit(agent); }}
-              title="Click to edit">
-        <span class="w-2 h-2 rounded-full {statusDot(agent.status)} flex-shrink-0"></span>
-        <span class="automation-mini-name">{agent.name}</span>
-        <span class="automation-mini-sub">Agent</span>
-      </button>
-    {/each}
-    {#each grp.templates as tpl (tpl.id)}
-      <button type="button" class="algo-status-card automation-mini-card"
-              draggable={true}
-              ondragstart={(e) => _dragStart(e, 'bracket', tpl.id)}
-              onclick={() => focusBracket(tpl.id)}
-              title="Click to edit on the Brackets tab">
-        <span class="automation-mini-name">{tpl.name}</span>
-        <span class="automation-mini-sub">Bracket</span>
-      </button>
-    {/each}
-  </div>
-{/each}
+{/if}
 
 {/if}
 
@@ -1759,14 +859,15 @@
   }
   /* ── Agent group grid — uses canonical .page-grid for layout ───────
      Overrides auto-fill with a fixed 2-column layout on desktop so each
-     agent card takes exactly half the row width. Child overflow fix:
+     row card takes exactly half the row width. Child overflow fix:
      `min-width: 0` lets the track honour `1fr` and allows inner overflow
-     guards (word-break, overflow-x) to engage.
-     Scroll cap added (operator: "I don't see various agent groups as
-     scrollable grids") — this grid previously grew unbounded while the
-     Bracket/custom-group mini-card grid below (.automation-mini-grid)
-     already had a scroll cap. Taller than the mini-grid's 16rem since
-     these are full-size status cards, not compact mini-cards. */
+     guards (word-break, overflow-x) to engage. Scroll-capped so a
+     large group's row list stays a bounded scrollable panel rather
+     than growing the whole page unbounded. Sprint C (2026-10) reuses
+     this SAME class for every kind's row list (agents/alerts/brackets/
+     templates) — previously Agents-only, with a separate
+     `.automation-mini-grid` for Brackets/custom groups (removed, no
+     longer needed now there's one row-list shape per kind). */
   .agent-group-grid {
     grid-template-columns: repeat(2, 1fr);
     max-height: 32rem;
@@ -1780,56 +881,43 @@
     max-width: 100%;
   }
 
-  /* ── Group-based grids (Sprint 9) — Bracket default grid + any custom
-     `group` grid mixing agents and Brackets. ONE shared scrollable-grid
-     class so neither new grid hand-rolls its own height-cap + overflow
-     rule. Auto-fill columns (unlike the fixed 2-col .agent-group-grid)
-     since mini-cards are much smaller than a full agent row. */
-  .automation-mini-grid {
-    grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
-    max-height: 16rem;
-    overflow-y: auto;
+  /* ── Kind-count-card row (Sprint C, 2026-10) — Agents/Alerts/Brackets/
+     Templates summary cards, same status-chip-count pattern as
+     OrderBook.svelte's `.ob-status-bar`/`.ob-sc` (count + label per
+     button, clicking drills into that kind). Palette-neutral (no
+     per-kind status color the way order status chips have one) since
+     all four cards are peers, not a severity/state spectrum. */
+  .kind-card-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
   }
-  .automation-mini-card {
+  .kind-card {
+    flex: 1 1 8rem;
+    min-width: 7rem;
     display: flex;
     flex-direction: column;
-    align-items: flex-start;
+    align-items: center;
     gap: 0.15rem;
-    padding: 0.4rem 0.55rem;
+    padding: 0.6rem 0.5rem;
+    border-radius: 0.4rem;
+    border: 1px solid var(--card-divider);
+    background: linear-gradient(180deg, #0f1729 0%, #0a1020 100%);
     cursor: pointer;
-    text-align: left;
-    width: 100%;
+    transition: border-color 0.08s;
   }
-  .automation-mini-card:active { cursor: grabbing; }
-  .automation-mini-name {
-    font-size: var(--fs-md);
+  .kind-card:hover { border-color: rgba(251,191,36,0.35); }
+  .kind-card-n {
+    font-size: var(--fs-xl);
     font-weight: 700;
+    font-family: var(--font-numeric);
     color: var(--c-action);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 100%;
   }
-  .automation-mini-sub {
-    font-size: var(--fs-xs);
+  .kind-card-l {
+    font-size: var(--fs-sm);
     color: var(--c-muted);
-    font-family: var(--font-numeric);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 100%;
-  }
-
-  /* Group badge — mirrors .topic-badge's low-key palette; shown on an
-     agent row when it carries a custom `group`. */
-  .group-badge {
-    font-size: var(--fs-xs);
-    font-family: var(--font-numeric);
-    padding: 0.05rem 0.35rem;
-    border-radius: 3px;
-    background: rgba(192,132,252,0.10);
-    color: #c084fc;
-    border: 1px solid rgba(192,132,252,0.30);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
   }
 
   /* ── Agent row card chrome — matches agent-templates' .frag-row look
@@ -2044,60 +1132,6 @@
     word-break: break-word;
   }
 
-  /* ── Tier + topic strip ────────────────────────────────────────────────
-     Single row, two halves. Left half hosts the 4-tier pill row; right
-     half hosts the topic input. Built as a
-     flex strip so the left collapses to 4 inline pills (saves vertical
-     space vs a dropdown) and the right wraps gracefully on narrow
-     viewports. */
-  .tier-strip {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: flex-end;
-    gap: 1rem;
-    margin-top: 0.6rem;
-    padding: 0.5rem 0.6rem;
-    background: rgba(8, 14, 30, 0.55);
-    border: 1px solid rgba(255, 255, 255, 0.06);
-    border-radius: 3px;
-  }
-  .tier-strip-left {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 0.3rem;
-    min-width: 0;
-  }
-  .tier-strip-right {
-    display: flex;
-    align-items: flex-end;
-    gap: 0.6rem;
-  }
-  .tier-pill-row {
-    display: inline-flex;
-    gap: 0.2rem;
-  }
-  .tier-pill {
-    font-size: var(--fs-sm);
-    padding: 0.22rem 0.55rem;
-    border-radius: 999px;
-    border: 1px solid rgba(255, 255, 255, 0.15);
-    background: transparent;
-    color: var(--algo-muted);
-    font-family: var(--font-numeric);
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    cursor: pointer;
-    transition: background-color 0.08s, color 0.08s, border-color 0.08s;
-  }
-  .tier-pill:hover { color: var(--algo-slate); border-color: rgba(255,255,255,0.3); }
-  /* When ON, pill picks its severity colour. Match the algo palette
-     (red/orange/amber/grey for crit/high/med/low). */
-  .tier-pill-critical.on { background: rgba(248,113,113,0.18); color: var(--c-short); border-color: var(--c-short); }
-  .tier-pill-high.on     { background: rgba(251,191,36,0.18);  color: var(--c-action); border-color: var(--c-action); }
-  .tier-pill-medium.on   { background: rgba(251,191,36,0.18);  color: var(--c-action); border-color: var(--c-action); }
-  .tier-pill-low.on      { background: rgba(125,211,252,0.16); color: #7dd3fc; border-color: #7dd3fc; }
-
   /* Tier badge — non-editable mini-pill rendered in each agent's row to
      surface severity at a glance. Same colour family as the edit pills
      but smaller + lowercase to read as a status marker rather than a
@@ -2128,101 +1162,6 @@
     background: rgba(126,151,184,0.10);
     color: var(--algo-slate-muted);
     border: 1px solid rgba(255,255,255,0.12);
-  }
-
-  /* Alert-channel checkbox grid — replaces the prior raw-JSON textarea.
-     Each row is one channel (telegram / email / websocket / log) with
-     a label + short description. Stacked vertically so the description
-     wraps cleanly on narrow viewports. */
-  .channel-grid {
-    display: flex;
-    flex-direction: column;
-    gap: 0.35rem;
-    padding: 0.4rem 0.5rem;
-    background: rgba(8, 14, 30, 0.55);
-    border: 1px solid rgba(255, 255, 255, 0.06);
-    border-radius: 3px;
-  }
-  .channel-row {
-    display: grid;
-    grid-template-columns: auto auto 1fr;
-    align-items: center;
-    gap: 0.5rem;
-    font-size: var(--fs-md);
-    color: var(--algo-slate);
-    cursor: pointer;
-  }
-  .channel-check {
-    accent-color: #fbbf24;
-    cursor: pointer;
-  }
-  .channel-label {
-    font-weight: 700;
-    color: var(--c-action);
-    letter-spacing: 0.02em;
-  }
-  .channel-desc {
-    color: var(--algo-muted);
-    font-size: var(--fs-sm);
-    line-height: 1.25;
-  }
-
-  /* Quick-add action pills next to the Actions textarea. Compact, colour-
-     coded by rough semantic group so they don't visually blend together. */
-  .action-add-pill {
-    font-size: var(--fs-xs);
-    padding: 0.1rem 0.4rem;
-    border-radius: 999px;
-    border: 1px solid;
-    font-family: var(--font-numeric);
-    font-weight: 700;
-    letter-spacing: 0.02em;
-    cursor: pointer;
-    white-space: nowrap;
-    transition: background-color 0.08s, border-color 0.08s;
-  }
-  .action-add-close  { background: rgba(248,113,113,0.12); color: var(--c-short); border-color: rgba(248,113,113,0.4); }
-  .action-add-close:hover  { background: rgba(248,113,113,0.25); border-color: var(--c-short); }
-  .action-add-place  { background: rgba(74,222,128,0.12);  color: var(--c-long); border-color: rgba(74,222,128,0.4); }
-  .action-add-place:hover  { background: rgba(74,222,128,0.25); border-color: var(--c-long); }
-  /* `.action-add-place-tpl` removed in audit pass 6 — the
-     +place_order pill now ships with template_slug="default-bull" in
-     the skeleton so a separate "templated" variant was redundant. */
-  .action-add-chase  { background: rgba(251,191,36,0.12);  color: var(--c-action); border-color: rgba(251,191,36,0.4); }
-  .action-add-chase:hover  { background: rgba(251,191,36,0.25); border-color: var(--c-action); }
-  .action-add-cancel { background: rgba(148,163,184,0.12); color: var(--algo-slate); border-color: rgba(148,163,184,0.35); }
-  .action-add-cancel:hover { background: rgba(148,163,184,0.25); border-color: #94a3b8; }
-  .action-add-log    { background: rgba(125,211,252,0.12); color: #7dd3fc; border-color: rgba(125,211,252,0.4); }
-  .action-add-log:hover    { background: rgba(125,211,252,0.25); border-color: #7dd3fc; }
-
-  /* Structured place_order controls — convenience mini-form shown below
-     the Actions textarea when it parses to exactly one place_order
-     action. Mobile-first: wraps to a single column under 600px. */
-  .place-order-struct {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.6rem;
-    margin-top: 0.4rem;
-    padding: 0.4rem 0.5rem;
-    border: 1px solid rgba(148,163,184,0.18);
-    border-radius: 4px;
-    background: rgba(255,255,255,0.02);
-  }
-  .pos-field {
-    display: flex;
-    flex-direction: column;
-    gap: 0.15rem;
-    min-width: 6rem;
-  }
-  .pos-label {
-    font-size: var(--fs-xs);
-    color: var(--c-muted);
-    font-weight: 600;
-    letter-spacing: 0.02em;
-  }
-  @media (max-width: 600px) {
-    .place-order-struct { flex-direction: column; }
-    .pos-field { min-width: 0; }
   }
 
 </style>

@@ -28,7 +28,12 @@
 // This is a pre-existing, shared limitation (the Lab/MCP path has the
 // identical gap) — flagged here, not patched here.
 
-import { fetchOrderTemplates, placeTicketOrder, placeBasket, createAgent, createOrderTemplate, createAgentFragment } from '$lib/api';
+import {
+  fetchOrderTemplates, placeTicketOrder, placeBasket,
+  createAgent, updateAgent,
+  createOrderTemplate, patchOrderTemplate,
+  createAgentFragment, patchAgentFragment,
+} from '$lib/api';
 import { reloadOrderTemplates } from '$lib/data/templates';
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -319,5 +324,110 @@ export async function submitConsoleToken(compiledFragment) {
     return { ok: true, response };
   } catch (e) {
     return { ok: false, error: e?.message || 'token create failed' };
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// (d) Edit-mode updates (Sprint C, 2026-10, Phase 2 "Automation redesign")
+//     — the Agents-tab row list's Edit action decompiles a row into this
+//     Console tab and must route Save through an UPDATE on the SAME row,
+//     never `submitConsole*`'s own create-only path (which 409s on a slug
+//     collision rather than risking an overwrite of an unrelated row —
+//     see `submitConsoleAgent`'s own doc). Each function below targets
+//     one already-identified row (slug for an Agent, numeric id for a
+//     Bracket/Token) and calls the EXISTING update endpoint the
+//     Structured/Brackets/Tokens UIs already used — no new write path.
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * Update an EXISTING agent/event agent (any kind the unified `/api/agents/`
+ * endpoint accepts) from a compiled `kind:'agent'|'event'` CLI result.
+ * Sends ONLY the fields the CLI grammar can express (name, description,
+ * conditions, events, actions, tags, group, cli_source) — every other
+ * `AgentUpdateRequest` field (schedule, cooldown, tier, topic, trade_mode,
+ * lifespan_*, debounce_minutes, blackout_windows) is deliberately left
+ * `undefined` so `update_agent`'s own "None/absent = leave unchanged"
+ * convention preserves whatever those fields were already set to — a
+ * CLI-driven Edit+Save must never silently reset a setting the grammar
+ * has no syntax to express at all.
+ * @param {string} slug — the agent row being edited (unchanged by this call)
+ * @param {any} compiledAgent — `compiled.agent` from compileAgentCliStatement
+ * @param {string} rawText — the raw (edited) CLI text, stored as cli_source
+ */
+export async function updateConsoleAgent(slug, compiledAgent, rawText) {
+  if (!slug) return { ok: false, error: 'no agent selected for update' };
+  if (!compiledAgent) return { ok: false, error: 'nothing compiled to save' };
+  const payload = {
+    name: compiledAgent.name,
+    description: compiledAgent.description || '',
+    conditions: compiledAgent.conditions,
+    events: compiledAgent.events,
+    actions: compiledAgent.actions,
+    tags: compiledAgent.tags || [],
+    group: compiledAgent.group || null,
+    cli_source: rawText || '',
+  };
+  try {
+    await updateAgent(slug, payload);
+    return { ok: true, slug };
+  } catch (e) {
+    return { ok: false, error: e?.message || 'agent update failed' };
+  }
+}
+
+/**
+ * Update an EXISTING saved order template (Bracket) via the existing
+ * `PATCH /api/admin/templates/{id}`. `compiledTemplate` (`compiled.template`
+ * from `compileBracketStmt`) never carries `slug`/`is_default`/`is_active`/
+ * `is_system` at all (see `_bracketUnexpressibleFields` in agents.js — the
+ * decompiler already refuses to produce CLI text for a row where any of
+ * those four would be lost), so a PATCH built straight from it can never
+ * regress them — every field PATCH doesn't receive stays at its current
+ * value, same "absent = unchanged" convention `updateConsoleAgent` relies
+ * on above.
+ * @param {number} id — the OrderTemplate row being edited
+ * @param {any} compiledTemplate — `compiled.template`
+ */
+export async function updateConsoleBracket(id, compiledTemplate) {
+  if (id == null) return { ok: false, error: 'no bracket selected for update' };
+  if (!compiledTemplate) return { ok: false, error: 'nothing compiled to save' };
+  try {
+    const response = await patchOrderTemplate(id, compiledTemplate);
+    try { await reloadOrderTemplates(); } catch { /* non-fatal — next loader call just refetches */ }
+    return { ok: true, response };
+  } catch (e) {
+    return { ok: false, error: e?.message || 'bracket update failed' };
+  }
+}
+
+/**
+ * Update an EXISTING Token (AgentTemplate row, still reachable at
+ * `PATCH /api/admin/fragments/{id}` even though the Templates CARD's own
+ * READ path sources from the unified `kind='template'` Agent rows — see
+ * CLAUDE.md's Sprint C note on this adapter). The fragments PATCH route
+ * already mirrors the edit into the matching `Agent(kind='template')` row
+ * (`mirror_fragment_upsert(force=True)`, `backend/api/routes/
+ * agent_templates.py`), so the Templates card's list view picks up the
+ * change on its next poll with no extra plumbing here. `fragmentId` must
+ * be resolved by the CALLER (matching the row's `name`/slug against a
+ * fetched `/api/admin/fragments` list) before this is called — this
+ * module does no such lookup itself, matching `resolveConsoleOrder`'s own
+ * separation of "resolve a reference" from "submit."
+ * @param {number} fragmentId — the AgentTemplate row's own numeric id
+ * @param {any} compiledFragment — `compiled.fragment` (`{kind, name, body,
+ *   description?}`) — `name`/`kind` are not sent (FragmentPatch has no
+ *   fields for either; a Token's kind/name are fixed at creation)
+ */
+export async function updateConsoleToken(fragmentId, compiledFragment) {
+  if (fragmentId == null) return { ok: false, error: 'no token selected for update' };
+  if (!compiledFragment) return { ok: false, error: 'nothing compiled to save' };
+  try {
+    const response = await patchAgentFragment(fragmentId, {
+      body: compiledFragment.body,
+      description: compiledFragment.description || '',
+    });
+    return { ok: true, response };
+  } catch (e) {
+    return { ok: false, error: e?.message || 'token update failed' };
   }
 }
