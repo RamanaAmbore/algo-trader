@@ -46,6 +46,7 @@ vi.mock('$lib/data/templates', () => ({
 
 const {
   classifyConsoleStatement,
+  dispatchConsoleStatement,
   needsTemplateResolution,
   resolveBracketTemplateRefs,
   resolveConsoleOrder,
@@ -112,6 +113,75 @@ describe('classifyConsoleStatement', () => {
     expect(classifyConsoleStatement('')).toBe('empty');
     expect(classifyConsoleStatement('   ')).toBe('empty');
     expect(classifyConsoleStatement(null)).toBe('empty');
+  });
+
+  // Sprint I Phase 1 (2026-10-11, "unify console's two CLI boxes") —
+  // GIVEN (Sprint G's agent_stmt preamble keyword) was missing from
+  // `_AGENT_HEAD_RE`, so a `GIVEN x = ...; WHEN x ...` statement
+  // misclassified as 'legacy' and would have been POSTed to
+  // /api/admin/exec as a shell command.
+  it('routes a leading GIVEN (any case) to the agent-family grammar', () => {
+    expect(classifyConsoleStatement('GIVEN x = pnl@positions.total; WHEN x < -1000 ALERT telegram')).toBe('agents');
+    expect(classifyConsoleStatement('given y = 5 DO nop')).toBe('agents');
+  });
+
+  it('classifies a half-typed order( call as agent-family mid-type', () => {
+    expect(classifyConsoleStatement('order(acct=')).toBe('agents');
+  });
+
+  // The real event_stmt reserved leading kwargs are log_tag=/min_level=/
+  // render=/where=/gate=/match= (agents.js `_EVENT_META_KEYS`) — NOT
+  // `tag=`. This still classifies 'agents' either way (classify routes
+  // ANY bare leading ALERT to 'agents'; the agent-vs-event disambiguation
+  // happens downstream inside compileAgentCliStatement, untouched by this
+  // function) — asserted here with the REAL spelling so this test can't
+  // silently drift from the actual grammar.
+  it('routes a bare ALERT with event-meta kwargs (log_tag=) to the agent-family grammar', () => {
+    expect(classifyConsoleStatement('ALERT log_tag=error, render=error, telegram')).toBe('agents');
+  });
+
+  it('classifies an unrelated shell-style command as legacy', () => {
+    expect(classifyConsoleStatement('docker ps')).toBe('legacy');
+  });
+});
+
+describe('dispatchConsoleStatement', () => {
+  it('routes agent-family text to onAgentFamily, never onLegacyFallback', () => {
+    const onAgentFamily = vi.fn(() => 'agent-result');
+    const onLegacyFallback = vi.fn();
+    const r = dispatchConsoleStatement('order(account="ZG0790")', { onAgentFamily, onLegacyFallback });
+    expect(onAgentFamily).toHaveBeenCalledTimes(1);
+    expect(onLegacyFallback).not.toHaveBeenCalled();
+    expect(r).toBe('agent-result');
+  });
+
+  it('routes orders-grammar text (buy/sell/modify/cancel) to onLegacyFallback', () => {
+    const onAgentFamily = vi.fn();
+    const onLegacyFallback = vi.fn(() => 'legacy-result');
+    const r = dispatchConsoleStatement('buy ZG0790 NIFTY 5', { onAgentFamily, onLegacyFallback });
+    expect(onLegacyFallback).toHaveBeenCalledTimes(1);
+    expect(onAgentFamily).not.toHaveBeenCalled();
+    expect(r).toBe('legacy-result');
+  });
+
+  it('routes unrelated/shell text to onLegacyFallback', () => {
+    const onLegacyFallback = vi.fn();
+    dispatchConsoleStatement('docker ps', { onLegacyFallback });
+    expect(onLegacyFallback).toHaveBeenCalledTimes(1);
+  });
+
+  it('calls neither callback for empty text', () => {
+    const onAgentFamily = vi.fn();
+    const onLegacyFallback = vi.fn();
+    const r = dispatchConsoleStatement('   ', { onAgentFamily, onLegacyFallback });
+    expect(onAgentFamily).not.toHaveBeenCalled();
+    expect(onLegacyFallback).not.toHaveBeenCalled();
+    expect(r).toBeUndefined();
+  });
+
+  it('tolerates missing handlers (no-op, never throws)', () => {
+    expect(() => dispatchConsoleStatement('order(account="x")', {})).not.toThrow();
+    expect(() => dispatchConsoleStatement('buy x', {})).not.toThrow();
   });
 });
 

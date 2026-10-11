@@ -1,21 +1,28 @@
 <script>
   // ConsoleTab — Automation's Console tab (Sprint B, 2026-10, Phase 2
-  // "Console retirement"). Ported body of the retired `/console` route
+  // "Console retirement"; re-unified Sprint I Phase 1, 2026-10-11, "unify
+  // console's two CLI boxes into one window via a dispatch layer").
+  // Ported body of the retired `/console` route
   // (frontend/src/routes/(algo)/console/+page.svelte, now a redirect to
-  // `/automation?tab=console`) — same plain orders bar (CommandLineTab,
-  // the legacy positional orders.js grammar) + agent-family CLI
-  // (AgentCliEditor, agents.js grammar — FULL statement scope: order,
-  // bracket, agent, event, token — no `allowedKinds` restriction, unlike
-  // the two order-scoped mounts added this same phase on /orders and the
-  // SymbolPanel order-ticket modal, see OrderCliTab.svelte).
+  // `/automation?tab=console`) — ONE visible CLI textbox (AgentCliEditor,
+  // agents.js grammar — FULL statement scope: order, bracket, agent,
+  // event, token — no `allowedKinds` restriction, unlike the two
+  // order-scoped mounts added in Sprint B on /orders and the SymbolPanel
+  // order-ticket modal, see OrderCliTab.svelte), backed by a dispatch
+  // layer (`consoleDispatch.js:dispatchConsoleStatement`) that tries the
+  // generic grammar first and falls back to the legacy positional
+  // orders.js grammar (CommandLineTab, mounted `headless` — see that
+  // component's own prop doc) for anything it doesn't recognize
+  // (buy/sell/cancel/modify, `agent ...` interpret, raw shell).
   //
-  // Deliberately mounts CommandLineTab (not just AgentCliEditor) — the
-  // legacy orders.js grammar's own retirement is Sprint F, gated on a
-  // parity checklist that hasn't passed yet (cancel/modify verbs,
-  // agent-ai /interpret, /api/admin/exec passthrough, up-arrow recall —
-  // see CLAUDE.md's Phase 2 Sprint F note). Dropping CommandLineTab here
-  // would have unmounted its ONLY remaining callsite in the app and
-  // silently executed that retirement early.
+  // Phase 1 of 2, explicitly: the legacy parser is NOT deleted or
+  // retired — it becomes invisible fallback machinery behind the one
+  // visible box. Full retirement (Phase 2) is gated on a parity
+  // checklist that hasn't passed yet (cancel/modify verbs ACTUALLY doing
+  // something — see CommandLineTab.svelte's `runExternal` doc, they are
+  // pre-existing no-ops today — agent-ai /interpret, /api/admin/exec
+  // passthrough, up-arrow recall — which does not exist anywhere in this
+  // CLI stack today, Phase 1 or before; there is nothing to lose here).
   //
   // The page-level Activity log (5-tab ActivityLogSurface) that used to
   // render below the command bars on /console is NOT re-ported here —
@@ -36,6 +43,7 @@
     submitConsoleAgent, submitConsoleBracket, submitConsoleToken,
     updateConsoleAgent, updateConsoleBracket, updateConsoleToken,
     resolveConsoleOrder, submitResolvedConsoleOrder,
+    classifyConsoleStatement, dispatchConsoleStatement,
   } from '$lib/command/consoleDispatch';
 
   /** @type {{
@@ -79,13 +87,82 @@
       .catch(() => { _agentCliCatalogError = 'CLI catalog unavailable'; });
   });
 
-  /** Fired by CommandLineTab when the operator typed agent-family syntax
-   *  into the orders-grammar bar and pressed Enter — hands the raw text
-   *  to the agent panel for review/compile/submit instead of letting it
-   *  fall through to the shell-exec fallback. */
-  function _onAgentStatement(/** @type {string} */ raw) {
-    value = raw;
+  // Sprint I Phase 1 (2026-10-11) — the ONE typed textbox is now always
+  // AgentCliEditor's own `value`; CommandLineTab is mounted `headless`
+  // (see below) and driven programmatically via `runExternal`, so there
+  // is no longer a separate bar an operator could type agent-family
+  // syntax into for a hand-off — the old `_onAgentStatement` hand-off
+  // (`onAgentStatement` prop) is unreachable from this mount and was
+  // removed; CommandLineTab.svelte keeps the prop itself as a generic,
+  // self-contained extension point (same idiom as its unused
+  // `onParsedOrder`/`onAddToBasket` props) for any future caller that
+  // mounts it visibly again.
+
+  /** Live classification of the single textbox's current text — 'agents'
+   *  routes through the existing compileAgentCliStatement flow below
+   *  unchanged; 'orders'/'legacy' route through the CommandLineTab
+   *  fallback; 'empty' shows neither action button. */
+  const _classify = $derived(classifyConsoleStatement(value));
+
+  // Sprint I Phase 1 follow-up (operator-requested kind selector) — a
+  // small, secondary visual hint row above the textbox mirroring the
+  // Phase 1 dispatch rule's own leading-token buckets (order(/bracket(/
+  // WHEN-or-GIVEN/bare ALERT — `token(` deliberately omitted, it has no
+  // slot in the operator's 4-option ask and stays fully typeable without
+  // a shortcut). Interaction model (operator left this to our judgment):
+  // NOT a hard mode-lock — the real dispatch decision always comes from
+  // `_classify`/`compileAgentCliStatement` on the typed text, never from
+  // this selector. It (a) reflects whatever kind the typed text already,
+  // confidently resolved to (synced below), and (b) when the box is
+  // EMPTY, clicking an option seeds a short starter snippet for that
+  // kind — a convenience, never a destructive overwrite of real typed
+  // text.
+  const _KIND_OPTIONS = ['order', 'bracket', 'agent', 'alert'];
+  const _KIND_LABELS = { order: 'Order', bracket: 'Bracket', agent: 'Agent', alert: 'Alert' };
+  const _KIND_SEED = {
+    order: 'order(account="", symbol="", side="BUY", lots=1)',
+    bracket: 'bracket(applies_to=buy_any, tp_pct=30, sl_pct=-20) #name=""',
+    agent: 'WHEN pnl_pct@positions.total <= -5 ALERT telegram DO nop',
+    alert: 'ALERT telegram',
+  };
+  let _kindHint = $state('order');
+
+  function _pickKind(/** @type {string} */ k) {
+    _kindHint = k;
+    if (!value || !value.trim()) value = _KIND_SEED[k] || '';
   }
+
+  /** Leading-TOKEN detector for the kind-selector sync below — deliberately
+   *  reads the raw text's own first word, NOT `_agentCliCompiled.kind`.
+   *  Those two disagree for the "Alert" bucket: a bare `ALERT telegram`
+   *  statement (no WHEN, no event-meta leading kwarg) compiles to
+   *  `kind:'agent'` (compileStatement's own dispatch — see agents.js),
+   *  the SAME compiled kind an ordinary `WHEN...ALERT...DO...` statement
+   *  gets, even though textually it's the "Alert" bucket the operator
+   *  picked. The selector's job is to reflect what the operator TYPED,
+   *  not which JSON shape it happens to compile to — same split the
+   *  Phase 1 dispatch rule itself draws (first-token peek, not compiled
+   *  result). Mirrors (but does not reuse) `classifyConsoleStatement`'s
+   *  own regexes — scoped to UI-hint purposes only; the real dispatch
+   *  decision is still `_classify`. */
+  function _detectKindHint(/** @type {string} */ text) {
+    const t = String(text || '').trimStart();
+    if (/^(order|place_order)\s*\(/i.test(t)) return 'order';
+    if (/^bracket\s*\(/i.test(t)) return 'bracket';
+    if (/^(when|given|do)\b/i.test(t)) return 'agent';
+    if (/^alert\b/i.test(t)) return 'alert';
+    return null;
+  }
+
+  // Keeps the selector in sync with whatever the typed text's leading
+  // token actually is. Intentionally does nothing when the text doesn't
+  // start with one of these five keywords (mid-typing, a bare
+  // `token(...)`, or legacy/empty text) — the selector simply keeps
+  // showing whatever the operator last picked.
+  $effect(() => {
+    const k = _detectKindHint(value);
+    if (k) _kindHint = k;
+  });
 
   function _execModeForCompile() {
     return safeRead(executionMode) === 'live' ? 'live' : 'paper';
@@ -265,6 +342,77 @@
   // `_submitPlaceOrder`, writing to its own `cmdHistory`) — the modal
   // mount was dead code, unreachable from any real operator action.
   let _fsConsole = $state(false);
+
+  // Sprint I Phase 1 (2026-10-11) — the hidden (`headless`) legacy
+  // CommandLineTab instance, driven programmatically. `bind:this` gives
+  // us its exported `runExternal`.
+  let _cltRef = $state(/** @type {{ runExternal: (raw: string) => Promise<{ok:boolean,error?:string}> } | null} */ (null));
+
+  /** Button label for the legacy-fallback action — '' when the current
+   *  text isn't fallback-eligible (agent-family or empty), which also
+   *  gates the button's visibility in the markup below. */
+  const _fallbackLabel = $derived(
+    _classify === 'orders' ? 'Submit order' : _classify === 'legacy' ? 'Run shell command' : ''
+  );
+
+  /** Fires the legacy orders.js parser on the current `value` via the
+   *  hidden CommandLineTab's `runExternal`. Mirrors the agent-family
+   *  submit functions' own conventions: clear + success toast + status
+   *  line on success; preserve the text (so the operator can fix +
+   *  retry) + error toast + status line on failure. The actual
+   *  success/failure DETAIL for buy/sell/shell/`agent ...` output always
+   *  lands in the still-visible `clt-history` list below — this status
+   *  line is a short, consistent confirmation that something happened,
+   *  not a duplicate of that detail. */
+  async function _submitLegacyFallback() {
+    const raw = value;
+    if (!raw || !raw.trim()) return;
+    const r = await _cltRef?.runExternal(raw);
+    if (r && r.ok === false) {
+      _cliSubmitStatus = { ok: false, text: `Command failed: ${_short(r.error)}` };
+      toast.error(_short(r.error));
+      return;
+    }
+    _cliSubmitStatus = { ok: true, text: 'Sent — see command history below.' };
+    toast.success('Command sent');
+    value = '';
+  }
+
+  /** Single entry point for "do whatever the current text's own action
+   *  button would do" — shared by every kind-specific button's onclick
+   *  AND the Ctrl/Cmd+Enter keyboard shortcut below, via
+   *  `dispatchConsoleStatement` (consoleDispatch.js) so the keyboard
+   *  path can never drift from the button-click path. */
+  function _primaryAction() {
+    if (isDemo || editTarget) return;
+    dispatchConsoleStatement(value, {
+      onAgentFamily: () => {
+        if (!_agentCliCompiled?.ok) return;
+        if (_agentCliCompiled.kind === 'order') return _onAgentCliOrderSubmit(_agentCliCompiled);
+        if (_agentCliCompiled.kind === 'agent' || _agentCliCompiled.kind === 'event') return _submitAgentCliAgent(_agentCliCompiled);
+        if (_agentCliCompiled.kind === 'bracket') return _submitAgentCliBracket(_agentCliCompiled);
+        if (_agentCliCompiled.kind === 'token') return _submitAgentCliToken(_agentCliCompiled);
+      },
+      onLegacyFallback: () => _submitLegacyFallback(),
+    });
+  }
+
+  // Sprint I Phase 1 — Ctrl/Cmd+Enter keyboard submit. AgentCliEditor's
+  // own textarea deliberately treats a bare Enter as a literal newline
+  // (multi-line statements are valid grammar — see agents.js's own
+  // "Newlines count as ordinary whitespace" lexer rule), so submission
+  // has always been button-driven for the agent-family path; this adds
+  // a keyboard EQUIVALENT of whichever button is currently showing,
+  // rather than changing Enter's own meaning. Attached on this
+  // component's own wrapper div (NOT inside AgentCliEditor, which is
+  // also used, unmodified, by the order-scoped OrderCliTab mounts) so
+  // keydown simply bubbles up from the textarea.
+  function _onWrapperKeydown(/** @type {KeyboardEvent} */ e) {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+      e.preventDefault();
+      _primaryAction();
+    }
+  }
 </script>
 
 <section class="console-card" class:fs-card-on={_fsConsole}>
@@ -276,7 +424,11 @@
     showCollapse={false}
     detectOverflow={false}
   />
-  <div class="console-card-body">
+  <!-- svelte-ignore a11y_no_static_element_interactions -- this div only
+       listens for Ctrl/Cmd+Enter as a keyboard-shortcut convenience over
+       the real interactive elements it contains (the textarea + action
+       buttons below); it is not itself an interactive control. -->
+  <div class="console-card-body" onkeydown={_onWrapperKeydown}>
     {#if isDemo}
       <div class="mb-2 p-2 rounded bg-purple-500/10 border border-purple-500/30 text-[0.65rem] text-purple-200">
         <strong class="text-purple-100">Demo view.</strong>
@@ -286,30 +438,48 @@
       </div>
     {/if}
 
-    <div class="console-tab-guide">
-      <a href="/automation/guide" title="CLI grammar guide" class="btn-secondary console-guide-btn">Guide: CLI grammar reference &rarr;</a>
+    <!-- "CLI" label + Guide button, same row, directly above the one
+         textbox (operator-requested relocation, 2026-10-11). The tab's
+         OWN nav-strip label stays "Console" (AutomationTabs.svelte) —
+         this is a separate, body-level heading. -->
+    <div class="console-tab-guide console-cli-label-row">
+      <span class="console-cli-label">CLI</span>
+      <a href="/automation/guide" title="CLI grammar guide" class="btn-secondary console-guide-btn">Guide: CLI grammar reference</a>
     </div>
 
-    <!-- Plain command-line entry — buy/sell/modify/cancel stay on this bar;
-         WHEN/ALERT/DO and bare order(/place_order(/bracket( hand off to the
-         agent-family panel below instead of falling through to this bar's
-         own shell-exec fallback. -->
-    <div class="console-cmd-wrap">
-      <CommandLineTab
-        onAgentStatement={_onAgentStatement}
-        prefillSide=""
-        prefillAccount=""
-        prefillSymbol=""
-        prefillQty={0}
-        prefillPrice={0}
-        prefillOrderType="LIMIT" />
+    <!-- Statement-kind hint row (operator-requested, 2026-10-11) — see
+         the `_kindHint`/`_pickKind` doc above: a secondary, non-blocking
+         affordance, not a parsing mode-lock. -->
+    <div class="console-kind-row" role="group" aria-label="Statement kind">
+      {#each _KIND_OPTIONS as k (k)}
+        <button type="button" class="console-kind-pill" class:is-active={_kindHint === k}
+          onclick={() => _pickKind(k)}>{_KIND_LABELS[k]}</button>
+      {/each}
     </div>
 
-    <!-- Agent-family CLI — WHEN/ALERT/DO agents, bare order(...)/
-         place_order(...), bracket(...), and token(...) — full statement
-         scope, no allowedKinds restriction (this is the un-restricted
-         Console mount; the order-only mounts live on /orders and the
-         SymbolPanel modal via OrderCliTab). -->
+    <!-- Sprint I Phase 1 — the legacy positional orders.js parser, kept
+         mounted `headless` (no visible input of its own) purely so its
+         `runExternal()` and result/history list stay available as the
+         fallback path for anything the generic grammar below doesn't
+         recognize (buy/sell/modify/cancel, `agent ...` interpret, raw
+         shell). See CommandLineTab.svelte's own `headless` prop doc. -->
+    <CommandLineTab
+      bind:this={_cltRef}
+      headless
+      prefillSide=""
+      prefillAccount=""
+      prefillSymbol=""
+      prefillQty={0}
+      prefillPrice={0}
+      prefillOrderType="LIMIT" />
+
+    <!-- The ONE visible CLI textbox — WHEN/GIVEN/ALERT/DO agents, bare
+         order(...)/place_order(...), bracket(...), and token(...) — full
+         statement scope, no allowedKinds restriction (this is the
+         un-restricted Console mount; the order-only mounts live on
+         /orders and the SymbolPanel modal via OrderCliTab). Anything
+         that doesn't classify as agent-family falls back to the hidden
+         CommandLineTab above via `_submitLegacyFallback`/`_primaryAction`. -->
     <div class="console-agent-cli-wrap">
       {#if editTarget}
         <!-- Sprint C — visible even while the catalog is still loading, so
@@ -330,6 +500,7 @@
           onOrderSubmit={_onAgentCliOrderSubmit}
           info={_cliInfo}
           submitStatus={_cliSubmitStatus}
+          showCompileErrors={_classify === 'agents'}
         />
         {#if !isDemo && _agentCliCompiled?.ok && (_agentCliCompiled.kind === 'agent' || _agentCliCompiled.kind === 'event')}
           <button type="button" class="btn-primary console-agent-cli-btn"
@@ -346,6 +517,12 @@
             onclick={() => _submitAgentCliToken(_agentCliCompiled)}>
             {editTarget && editTarget.rowKind === 'template' ? 'Save' : 'Create token'}
           </button>
+        {:else if !isDemo && !editTarget && _fallbackLabel}
+          <!-- Sprint I Phase 1 — legacy-grammar fallback action. Gated on
+               !editTarget: editing an existing row only ever recompiles
+               as agent/event/bracket/token, never a raw legacy command. -->
+          <button type="button" class="btn-secondary console-agent-cli-btn console-fallback-btn"
+            onclick={_submitLegacyFallback}>{_fallbackLabel}</button>
         {/if}
       {/if}
     </div>
@@ -394,9 +571,47 @@
     white-space: nowrap;
     text-decoration: none;
   }
-  .console-cmd-wrap {
-    flex-shrink: 0;
-    margin-bottom: 0.4rem;
+  /* "CLI" label + Guide button row (operator-requested relocation,
+     2026-10-11) — replaces the old standalone `.console-tab-guide` block
+     (class name KEPT for an existing Playwright selector,
+     console_guide_page.spec.js's `.console-tab-guide a`); the row's own
+     flex layout is new. */
+  .console-cli-label-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+  .console-cli-label {
+    font-size: var(--fs-sm);
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--algo-muted);
+  }
+  /* Statement-kind hint pills (operator-requested, 2026-10-11) — see the
+     `_kindHint`/`_pickKind` doc in <script>. */
+  .console-kind-row {
+    display: flex;
+    gap: 0.3rem;
+    margin: 0.3rem 0 0.4rem;
+    flex-wrap: wrap;
+  }
+  .console-kind-pill {
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    padding: 0.15rem 0.6rem;
+    border-radius: 999px;
+    border: 1px solid rgba(126, 151, 184, 0.30);
+    background: rgba(126, 151, 184, 0.08);
+    color: var(--algo-muted);
+    cursor: pointer;
+  }
+  .console-kind-pill:hover { border-color: rgba(126, 151, 184, 0.55); }
+  .console-kind-pill.is-active {
+    background: var(--algo-amber-bg);
+    border-color: var(--algo-amber-border-soft);
+    color: var(--algo-amber);
   }
   .console-agent-cli-wrap {
     flex-shrink: 0;

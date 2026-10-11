@@ -12,6 +12,14 @@
 // the EXACT SAME API calls the existing Ticket/basket UI already uses.
 // No parallel execution path is introduced.
 //
+// Sprint I Phase 1 (2026-10-11) — `dispatchConsoleStatement` (below) is
+// the thin top-level router ConsoleTab.svelte now calls to decide between
+// its own generic-grammar flow and CommandLineTab's headless
+// `runExternal` fallback, collapsing the two previously-separate VISIBLE
+// input boxes into one. The legacy orders.js parser itself is unchanged
+// and not retired — see that function's own doc for the Phase 1/Phase 2
+// split.
+//
 // ── `bracket="slug"` resolution — KNOWN GAP, do not silently "fix" ─────
 // The one existing server-side resolver for this exact reference shape
 // (`backend/api/algo/template_attach.py:load_template_for_slug_or_id`,
@@ -48,11 +56,14 @@ import { loadOrderTemplates, reloadOrderTemplates } from '$lib/data/templates';
 // ─────────────────────────────────────────────────────────────────────────
 
 const _ORDER_VERBS = new Set(['buy', 'sell', 'modify', 'cancel']);
-// WHEN / ALERT / DO are agent_stmt's three (each-optional) clause
-// keywords — matching any one of them as the FIRST word is unambiguous
-// because none of them can ever be a real order verb or a bare
-// order/place_order/bracket call name (agents.js's own _RESERVED set).
-const _AGENT_HEAD_RE = /^(when|alert|do)\b/i;
+// WHEN / ALERT / DO / GIVEN are agent_stmt's clause keywords — matching
+// any one of them as the FIRST word is unambiguous because none of them
+// can ever be a real order verb or a bare order/place_order/bracket call
+// name (agents.js's own _RESERVED set). `given` added Sprint I Phase 1
+// (2026-10-11) — Sprint G's GIVEN preamble (agents.js) was missing here,
+// so `GIVEN x = ...; WHEN x ...` misclassified as 'legacy' and would
+// have been POSTed to /api/admin/exec as a shell command.
+const _AGENT_HEAD_RE = /^(when|alert|do|given)\b/i;
 // A bare `order(...)`/`place_order(...)`/`bracket(...)`/`token(...)` call —
 // matched on just the "name(" prefix (not a balanced-paren scan) so a
 // STILL-BEING-TYPED statement like `order(acct=` classifies correctly
@@ -81,6 +92,42 @@ export function classifyConsoleStatement(text) {
   // keeps flowing through CommandLineTab's existing raw-command handling
   // (interpretAgent / POST /api/admin/exec) — zero behaviour change.
   return 'legacy';
+}
+
+/**
+ * Sprint I (2026-10-11, Phase 1 "unify console's two CLI boxes into one
+ * window via a dispatch layer") — the one function that decides which of
+ * the two live CLI parsers handles a given raw statement typed into
+ * Console's SINGLE visible textbox. Thin wrapper over
+ * `classifyConsoleStatement` (reused, not re-implemented): 'agents' routes
+ * to the caller's own generic-grammar flow (`compileAgentCliStatement` —
+ * already fully wired in ConsoleTab.svelte, untouched by this function);
+ * anything else ('orders': buy/sell/modify/cancel, or 'legacy': `agent
+ * ...` interpret / shell passthrough) routes to the caller's legacy
+ * fallback (CommandLineTab's `runExternal`, invoked headless). 'empty'
+ * text calls neither callback.
+ *
+ * Deliberately does NOT itself call compileAgentCliStatement / submit /
+ * fetch — both callbacks own their own compile + submission mechanics
+ * exactly as before this sprint; this is pure routing so it stays trivial
+ * to unit-test in isolation (see consoleDispatch.test.js).
+ *
+ * Phase 1 explicitly keeps BOTH parsers alive side by side — this is not
+ * a merge of the two grammars (out of scope, confirmed in an earlier
+ * investigation). Phase 2 (gated on the Sprint F parity checklist —
+ * cancel/modify verbs, recall, /interpret AI-draft, /api/admin/exec
+ * passthrough — actually passing) will retire this function along with
+ * the legacy fallback branch entirely.
+ *
+ * @param {string} text
+ * @param {{onAgentFamily?: () => any, onLegacyFallback?: () => any}} handlers
+ * @returns {any} whatever the invoked callback returns (undefined for 'empty')
+ */
+export function dispatchConsoleStatement(text, { onAgentFamily, onLegacyFallback } = {}) {
+  const kind = classifyConsoleStatement(text);
+  if (kind === 'agents') return onAgentFamily?.();
+  if (kind === 'empty') return undefined;
+  return onLegacyFallback?.();
 }
 
 // ─────────────────────────────────────────────────────────────────────────

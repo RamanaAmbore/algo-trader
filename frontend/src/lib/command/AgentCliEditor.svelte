@@ -53,6 +53,20 @@
    *                toast alone disappears too fast to serve as a record
    *                of "did this actually save." The host sets/clears this
    *                — this component never calls a submit endpoint itself.
+   *   showCompileErrors — Sprint I Phase 1 (2026-10-11, console dispatch
+   *                layer) — `true` (default, preserving every existing
+   *                mount's behaviour unchanged) shows the `.agent-cli-
+   *                errors` block exactly as before. `false` suppresses
+   *                it: used by Console's unified box when the typed text
+   *                classifies as legacy-grammar syntax (buy/sell/cancel/
+   *                modify, shell) — this grammar correctly fails to
+   *                compile that text, and showing a red "Errors:" block
+   *                for text that was never meant to compile here would
+   *                be confusing, not informative. Autocomplete
+   *                suggestions are NOT gated by this prop — they stay
+   *                live regardless, since the operator may still be
+   *                mid-way through typing a real statement (e.g. `ord`
+   *                before the `(`).
    */
 
   import { tick } from 'svelte';
@@ -70,6 +84,7 @@
    *   placeholder?: string,
    *   info?: string[],
    *   submitStatus?: {ok: boolean, text: string} | null,
+   *   showCompileErrors?: boolean,
    * }} */
   let {
     value = $bindable(''), catalog = null, lotSizeOf = undefined,
@@ -77,6 +92,7 @@
     allowedKinds = undefined,
     placeholder = 'WHEN pnl_pct@positions.total <= -5 ALERT telegram DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)',
     info = [], submitStatus = null,
+    showCompileErrors = true,
   } = $props();
 
   /** @type {HTMLTextAreaElement|null} */
@@ -315,7 +331,7 @@
       </div>
     {/if}
 
-    {#if compiled && !compiled.ok}
+    {#if compiled && !compiled.ok && showCompileErrors}
       <div class="agent-cli-errors">
         <div class="agent-cli-errors-title">Errors:</div>
         <ul class="list-disc ml-4">

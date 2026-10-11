@@ -26,11 +26,13 @@
     getLtpForContext,
   } from '$lib/command/grammars/orders';
   import { classifyConsoleStatement } from '$lib/command/consoleDispatch';
+  import { parse } from '$lib/command/engine';
 
   /** @type {{
    *   onParsedOrder?: (props: any) => void,
    *   onAddToBasket?: (leg: any) => void,
    *   onAgentStatement?: (raw: string) => void,
+   *   headless?: boolean,
    *   standalone?: boolean,
    *   prefillSide?: string, prefillAccount?: string, prefillSymbol?: string,
    *   prefillQty?: number,  prefillPrice?: number,  prefillOrderType?: string,
@@ -48,8 +50,26 @@
     // which is exactly the hazard this intercept exists to close. No
     // other current caller passes this prop, so omitting it is a
     // complete no-op (default undefined preserves the exact prior
-    // behaviour for every other mount).
+    // behaviour for every other mount). Unused by Console as of Sprint I
+    // Phase 1 — Console no longer mounts this component's own CommandBar
+    // visibly (see `headless` below), so text never reaches it via typing
+    // in the first place; kept as a generic, self-contained extension
+    // point for any FUTURE caller that mounts this bar visibly and wants
+    // the same intercept (same idiom as `onParsedOrder`/`onAddToBasket`
+    // above, also currently unused by Console).
     onAgentStatement = /** @type {((raw: string) => void) | undefined} */ (undefined),
+    // Sprint I Phase 1 (2026-10-11, "unify console's two CLI boxes into
+    // one window via a dispatch layer") — when true, hides this
+    // component's OWN input surface (CommandBar, the LTP/margin info
+    // strip, and the +Basket/Submit/Clear buttons) while KEEPING its
+    // result/history list (`clt-history`/`clt-empty`) rendered and its
+    // normal lifecycle (onMount's loadInstruments/loadAccounts, the
+    // quote-loaded callback) fully active. The component stays a real,
+    // functioning instance — just with no visible way to type into it —
+    // so `runExternal()` (below) can drive it programmatically from a
+    // single external textbox (ConsoleTab's unified AgentCliEditor-shaped
+    // box) and have the result show up in the still-visible history list.
+    headless      = false,
     standalone    = false,
     // When the parent (OrderEntryShell) already knows context tokens,
     // we pre-fill the command bar with them so the operator only fills
@@ -400,11 +420,71 @@
     }
   }
 
+  /**
+   * Sprint I Phase 1 (2026-10-11, "unify console's two CLI boxes into one
+   * window via a dispatch layer") — programmatic entry point for the
+   * console dispatch layer (`consoleDispatch.js:dispatchConsoleStatement`).
+   * Mirrors EXACTLY what `CommandBar`'s own internal `submit()` does for
+   * this component's `onsubmit`/`onsubmitRaw` wiring (`runParsed`/
+   * `runRaw`) — `onsubmitRaw` (via `runRaw`) always fires; `onsubmit`
+   * (via `runParsed`) only fires when the grammar parsed with zero
+   * errors — so a raw line handed to this method runs through the exact
+   * same legacy dispatch a visibly-typed line would have, no second
+   * parse/execute path. Requires this component to be mounted (hidden
+   * via `headless` is fine) — `onMount`'s `loadInstruments()`/
+   * `loadAccounts()` calls and the `orderGrammar` suggesters assume
+   * normal component lifecycle.
+   *
+   * `runRaw` silently no-ops for a recognized order-grammar verb
+   * (buy/sell/cancel/modify — see its own early-return) and `runParsed`
+   * never fires when the parse carried errors, so a malformed
+   * `buy ...`/`sell ...`/`cancel ...`/`modify ...` would otherwise
+   * disappear with ZERO feedback once this component's own inline
+   * CommandBar error chip is hidden (`headless`) — pushed into
+   * `cmdHistory` directly here instead, so the (still-visible) history
+   * list always shows SOMETHING for every call.
+   * @param {string} raw
+   * @returns {Promise<{ok: true} | {ok: false, error: string}>}
+   */
+  export async function runExternal(raw) {
+    const line = String(raw == null ? '' : raw).trim();
+    if (!line) return { ok: false, error: 'empty command' };
+    const p = parse(line, orderGrammar, cmdContext);
+    await runRaw({ ...p, _line: line });
+    const verb = (p.verb || '').toLowerCase();
+    const isRecognizedOrderVerb = !!orderGrammar.verbs[verb];
+    if (p.errors && p.errors.length) {
+      if (isRecognizedOrderVerb) {
+        // A recognized order-grammar verb (buy/sell/cancel/modify) that
+        // failed to validate (e.g. a missing required token) — THIS is a
+        // real failure; `runRaw` already returned early for these verbs
+        // without producing any history entry at all, and `runParsed`
+        // below never fires (onsubmit only fires on a clean parse), so
+        // without this the command would silently vanish.
+        addResult(line, `✗ ${p.errors.join('; ')}`);
+        return { ok: false, error: p.errors.join('; ') };
+      }
+      // An UNRECOGNIZED verb (shell command, `agent list`, etc.) always
+      // carries a parse error too (`parse()` returns one for any verb
+      // not in `orderGrammar.verbs`) — that is normal, not a failure:
+      // `runRaw` above has already dispatched it to the `agent ...`
+      // interpreter or the /api/admin/exec shell fallback and recorded
+      // its own result into history. Report success here regardless of
+      // whatever the shell/agent call itself returned — same as before
+      // this sprint, when this component's own CommandBar always
+      // cleared on any submit with no ok/fail distinction at this layer.
+      return { ok: true };
+    }
+    await runParsed(p);
+    return { ok: true };
+  }
+
   // Expose cmdHistory so standalone Terminal page can pass it to LogPanel.
   export { cmdHistory };
 </script>
 
-<div class="clt-root" class:clt-standalone={standalone}>
+<div class="clt-root" class:clt-standalone={standalone} class:clt-headless={headless}>
+  {#if !headless}
   {#if _cmdCtx?.symbol}
     <!-- Pre-submit info strip — LTP + margin / cash impact for the
          currently parsed command. Operator can read the trade
@@ -491,8 +571,11 @@
       <code>buy|sell ACCT SYMBOL QTY [LIMIT PRICE]</code> · <code>agent list|status|activate|config</code> · shell
     </div>
   {/if}
+  {/if}
 
-  <!-- Scrollable output history -->
+  <!-- Scrollable output history — rendered regardless of `headless`, per
+       this component's own `headless` prop doc: the input chrome hides,
+       the result surface does not. -->
   {#if cmdHistory.length}
     <div class="clt-history">
       {#each cmdHistory as row, i (row.time + '|' + row.cmd + '|' + i)}
@@ -511,6 +594,10 @@
 <style>
   .clt-root { display: flex; flex-direction: column; }
   /* .clt-standalone intentionally has no extra styles — caller owns layout */
+  /* .clt-headless (Sprint I Phase 1) — input chrome is removed from the
+     DOM entirely by the {#if !headless} guard above, not just hidden via
+     CSS, so no extra rule is needed here; the class exists for any
+     future caller-side styling hook (e.g. tightening history spacing). */
 
   /* Drop CommandBar's amber 2px left-edge accent inside the
      command-line tab body. The parent /orders Order Entry card
