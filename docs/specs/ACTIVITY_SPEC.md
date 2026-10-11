@@ -41,7 +41,7 @@ Activity log appears in five contexts with different default behaviors and scope
 | /activity page | `/activity` | Persisted (activityStore) | Shared (activityStore) | Full-page, bookmarkable |
 | Orders activity card | `/orders` page sidebar | "order" | Local (per-card) | Orders tab only, isolated |
 | Dashboard activity card | `/dashboard` | "order" (default) | Local (per-card) | All tabs, isolated |
-| Inline panels | `/console`, `/automation`, others | Context-dependent | Local | Configurable tab subset |
+| Inline panels | `/automation`, `/symbol-panel`, others | Context-dependent | Local | Configurable tab subset |
 
 **ActivityLogModal** — keyboard shortcut `h` or navbar "Log" button opens a modal overlay.
 Tab selection persists in `activityStore` and is shared with `/activity` page. Closed via
@@ -59,7 +59,7 @@ so setting a filter in the card doesn't affect the modal.
 **Dashboard activity card** — embedded on `/dashboard`, can show any subset of tabs (no
 `tabs=` override defaults to all). Filter state is local and isolated per card instance.
 
-**Inline panels** — components like `/console`, `/automation`, `/symbol-panel` pass custom
+**Inline panels** — components like `/automation`, `/orders`, `/symbol-panel` pass custom
 `defaultTab` and `tabs=` props to `ActivityLogSurface`, which forwards to `LogPanel`.
 Each mount can hide irrelevant tabs (e.g., ReplayPanel might hide Agent/System/Conn) and
 set its own poll cadence via `pollMs=`.

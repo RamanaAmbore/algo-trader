@@ -402,8 +402,8 @@ Built-in agents are **force-reseeded on every boot** — your changes to their `
 ## Authoring workflow
 
 1. **Spike the agent** via the Console tab's CLI (`/automation?tab=console`,
-   plain text) or `/automation` Structured tab (JSON), or via the Claude Code
-   MCP Lab (see [LAB_MCP_GUIDE.md](LAB_MCP_GUIDE.md))
+   plain text) or via the Claude Code MCP Lab
+   (see [LAB_MCP_GUIDE.md](LAB_MCP_GUIDE.md))
 2. **Validate** at `/automation` — clear all token + shape errors
 3. **Dry-run** — simulate against live data without firing
 4. **Run in Simulator** — test on synthetic ticks; fires immediately, bypassing gates
@@ -476,7 +476,7 @@ The Order log Mode pill (SIM / PAPER / LIVE / SHADOW) visualises the difference.
 | CLI statement rejects with "argument must be written as name=value" | Attempted positional argument (first arg without a key). CLI grammar requires every argument to be keyword-only | Type at `/automation?tab=console` with correct syntax: `place_order(acct="ZG0790", sym="NIFTY25JULFUT", ...)` |
 | `dry-run` shows `would_fire: false` but you expect true | Condition mismatch — operator's threshold vs current state | Use the dry-run `matches` array; each entry shows the metric, scope, threshold, and actual value |
 | `dry-run` shows `blocked_by: "schedule"` | Agent has `schedule: market_hours` but markets are closed | Either wait for session, or flip `schedule: always` for diagnostic agents |
-| Agent never fires on real ticks | Rate metric without baseline crossed; or in cooldown; or suppressed | `/automation/<slug>` Events tab + the Alerts tab in the Activity log (bottom of `/automation`); or set `cooldown_minutes: 0` temporarily |
+| Agent never fires on real ticks | Rate metric without baseline crossed; or in cooldown; or suppressed | `/automation/<slug>` Events tab + Alert Log tab in LogPanel; or set `cooldown_minutes: 0` temporarily |
 | Loss agent silent for first 10–15 min after market open | ROC agents (`loss-rate-acct`) silent during baseline window; point-in-time agents normal | Wait for window or check `loss-rate-acct` baseline gate |
 | Real loss alerts never fire but sim fires OK | Simulator engine running — real loss alerts suppressed while sim is active | Stop the sim via `/admin/execution` or wait for auto-stop (30 min default) |
 | Sim shows alert + action but real ticks don't | Real `_task_performance` skipped because sim was active — sims auto-stop in 30 min by default | Stop the sim or wait for auto-stop |

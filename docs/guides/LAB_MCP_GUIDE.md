@@ -265,10 +265,10 @@ agent.
 ### 4.4 Review in the simulator
 
 This is the only step that genuinely requires human attention. Go
-to `/agents`, find the draft, click **Run in Simulator**. The
-existing simulator drives synthetic price moves through the
-condition tree so you can see whether the agent fires where you
-expect.
+to `/automation?tab=agents`, find the draft, click
+**Run in Simulator**. The existing simulator drives synthetic
+price moves through the condition tree so you can see whether the
+agent fires where you expect.
 
 Need to tweak? Either:
 - Ask Claude Code to delete + redraft (fine for inactive drafts), or
@@ -281,7 +281,7 @@ On `/admin/mcp` → **Settings** → **0. Mint a confirm token**:
 | Field | Value |
 |---|---|
 | Kind | `ACTIVATE agent` |
-| Agent slug | `reliance-2pct-10m-loss` (copy from /agents) |
+| Agent slug | `reliance-2pct-10m-loss` (copy from `/automation?tab=agents`) |
 
 Click **Mint token** → you see a 32-char hex string with a 60-second
 countdown.
@@ -465,9 +465,9 @@ collapsed):
 - Keeping the seam means future config can diverge without
   re-splitting agents
 
-Edit any built-in's condition tree from the `/agents` page — the
-seeder preserves your edits across deploys. Reset to defaults by
-deleting the row + restarting.
+Edit any built-in's condition tree from `/automation?tab=agents` —
+the seeder preserves your edits across deploys. Reset to defaults
+by deleting the row + restarting.
 
 #### Retired slugs (consolidated 2026-05-26)
 
@@ -498,16 +498,19 @@ loss-funds-margin-negative      → loss-funds-negative
 
 Two paths into the `agents` table:
 
-1. **`/agents` page** — the existing UI. Compose conditions in the
-   JSON editor, save as inactive, run in simulator, activate.
+1. **`/automation?tab=agents` page** — the existing UI. Compose
+   conditions via Console tab CLI, save as inactive, run in
+   simulator, activate.
 2. **`save_agent_draft` MCP tool** — Claude Code builds the
    condition tree from your chat, lands as inactive + paper-mode,
-   appears on `/admin/mcp` → Drafts tab + on `/agents`.
+   appears on `/admin/mcp` → Drafts tab + on
+   `/automation?tab=agents`.
 
 Either way, the agent goes through the simulator review step
 before live activation. There is no path to ship an agent active
-without explicit human approval (button click on `/agents` OR
-operator-minted activate token via `/admin/mcp`).
+without explicit human approval (button click on
+`/automation?tab=agents` OR operator-minted activate token via
+`/admin/mcp`).
 
 ### The condition tree (v2 grammar)
 
@@ -542,17 +545,17 @@ Example — *"alert if total positions P&L drops 3% over 10 min"*:
 
 ### Run-in-Simulator (the safety check before activate)
 
-Every agent row on `/agents` has a **Run in Simulator** button.
-Behind the scenes, the synthesizer (`backend/api/algo/sim/synthesize.py`)
-walks the condition tree, picks the leaf nearest to firing, and
-builds an inline scenario that drives the metric across that
-threshold. Drops you on
+Every agent row on `/automation?tab=agents` has a **Run in
+Simulator** button. Behind the scenes, the synthesizer
+(`backend/api/algo/sim/synthesize.py`) walks the condition tree,
+picks the leaf nearest to firing, and builds an inline scenario
+that drives the metric across that threshold. Drops you on
 `/admin/execution?mode=sim&agent_id=<id>` with the synthesized
 scenario armed.
 
 Watch the fire — does it land where you expect? Tighten or widen
-the condition tree on `/agents`, repeat. When happy, mint an
-activate token + flip it on.
+the condition tree on `/automation?tab=agents`, repeat. When
+happy, mint an activate token + flip it on.
 
 ### Agent → order pipeline
 

@@ -294,7 +294,8 @@ and email still arrive in real-time for any fills / agent events that happen ove
 
 ## Agents — the rules layer
 
-Open `/agents`. Every row is a rule. Click to expand and read it in plain English.
+Open `/automation?tab=agents`. Every row is a rule. Click to
+expand and read it in plain English.
 
 ### Anatomy of a rule
 
@@ -489,7 +490,11 @@ If you want to test a position you don't actually have, add it manually: scroll 
 
 ### Run-in-Simulator on a specific agent
 
-Every row on `/agents` has a **Run in Simulator** button. Click it, and the simulator builds a one-off scenario *targeted at that agent's condition tree* — no manual scenario picking. Useful for: *"does this new agent I just wrote actually fire when I think it should?"*
+Every row on `/automation?tab=agents` has a **Run in Simulator**
+button. Click it, and the simulator builds a one-off scenario
+*targeted at that agent's condition tree* — no manual scenario
+picking. Useful for: *"does this new agent I just wrote actually
+fire when I think it should?"*
 
 ---
 
@@ -523,7 +528,9 @@ If you submit an order with chase enabled and the exchange is already closed at 
 
 - **Auto-close on loss** (`chase_close_positions` action) — when a loss agent fires, it tries to close positions by chasing. You see exactly how aggressive the chase was before it filled.
 - **Expiry-day cleanup** — every weekly expiry day the platform automatically chase-closes ITM options before the broker takes them to delivery.
-- **Manual orders from Terminal** — when you type `buy NIFTY25APR22000CE 50 @180` on `/console`, the chase engine handles it just like an agent-driven order.
+- **Manual orders from CLI** — when you type an order in the
+  Console tab on `/automation` or the CLI tab on `/orders`, the
+  chase engine handles it just like an agent-driven order.
 - **Post-placement chase failures** — if an order is placed but the fill chase later fails (e.g. price moves too far from the limit and attempts are exhausted), a Telegram + email alert fires so you know the position wasn't fully executed. Previously these post-placement failures were silent.
 
 ---
@@ -538,7 +545,9 @@ Live tick streams of last-traded price + bid/ask spread + order-event markers. F
 
 - `/admin/execution?mode=sim` — one chart per symbol with captured ticks while a sim runs
 - `/admin/execution?mode=paper` — same but for the prod paper engine
-- `/agents` and `/orders` — inline charts on the page; from any page the Chart icon in the header opens the canonical Chart modal for any symbol
+- `/automation?tab=agents` and `/orders` — inline charts on the
+  page; from any page the Chart icon in the header opens the
+  canonical Chart modal for any symbol
 
 Symbols are classified as:
 - **SPOT** (sky-blue tag) — an underlying like NIFTY itself
@@ -827,9 +836,14 @@ A typical session for an active operator:
    **Activity** card opens on **News** by default; flip to Orders, Agents,
    Terminal, Conn, System, or Ticks to scan whichever paper trail you need
    without leaving the dashboard.
-2. **Watch `/agents`** — any fires today? Any in cooldown?
-3. **If a new strategy is being considered**: `/admin/derivatives` → Strategy mode → build the legs → eyeball the breakevens, max loss, POP → if it looks good, place the trade through the Terminal or your usual flow.
-4. **If thresholds need adjusting**: `/admin/settings` or edit the relevant agent on `/agents`.
+2. **Watch `/automation?tab=agents`** — any fires today? Any in
+   cooldown?
+3. **If a new strategy is being considered**: `/admin/derivatives`
+   → Strategy mode → build the legs → eyeball the breakevens,
+   max loss, POP → if it looks good, place the trade through
+   the Terminal or your usual flow.
+4. **If thresholds need adjusting**: `/admin/settings` or edit
+   the relevant agent on `/automation?tab=agents`.
 5. **Before adding a new agent**: write the rule → `Run in Simulator` → confirm it fires on the right conditions and the auto-close action does what you expect → flip it ON.
 6. **Once a week or so**: glance at `/admin/paper` to see what mode-2 paper trades fired since you last looked. Compare against what you'd have done manually.
 
@@ -1043,7 +1057,7 @@ Every action that changes state in RamboQuant — placing an order, a broker fil
 
 ## Glossary
 
-- **Agent** — a rule row on `/agents`.
+- **Agent** — a rule row on `/automation?tab=agents`.
 - **Alert** — the moment an agent fired.
 - **Action** — what the agent did (place order / close position / etc).
 - **Bid** — the highest price someone is willing to pay right now.
@@ -1067,7 +1081,7 @@ Every action that changes state in RamboQuant — placing an order, a broker fil
 
 | Symptom | Where to look |
 |---|---|
-| Agent didn't fire when I expected it to | `/agents` → expand the row → check "Last fire" timestamp + "Count" + cooldown. Also try **Run in Simulator** to confirm. |
+| Agent didn't fire when I expected it to | `/automation?tab=agents` → expand the row → check "Last fire" timestamp + "Count" + cooldown. Also try **Run in Simulator** to confirm. |
 | Telegram / email not arriving | `/admin/settings` → notifications block. Make sure `cap_in_<branch>.telegram` and `mail` are on. |
 | Options page shows yellow "stale" chips | The broker has no fresh quote. Likely because: market closed, contract illiquid, weekend. Fallback values are still useful for the *shape* of the payoff, just not absolute P&L. |
 | Brokers page shows "PENDING" status pill | The DB row exists but the platform's connection map hasn't picked it up yet. Wait 15 s — the page polls. Or click **Test** to force a load. |
