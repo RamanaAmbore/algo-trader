@@ -33,7 +33,7 @@ const {
   buildCatalog, fetchAgentCatalog, parseStatement, compileStatement,
   compileAgentCliStatement, validateAgentCliStatement, lexAgentStatement,
   parseCall, parseValue, parseLeaf, ALWAYS_LEAF, KWARG_ALIASES,
-  suggestAgentCliAt, decompileCondition,
+  suggestAgentCliAt, decompileCondition, describeErrorPosition,
 } = await import('$lib/command/grammars/agents.js');
 const { fetchGrammarTokens } = await import('$lib/api');
 
@@ -234,9 +234,18 @@ const CATALOG = buildCatalog(FIXTURE_ROWS);
 // Fixture lot sizes — NIFTY/BANKNIFTY-ish, so lots→qty tests are readable.
 const LOT_SIZES = { NIFTY25JULFUT: 75, BANKNIFTY25JULFUT: 25 };
 const lotSizeOf = (sym) => LOT_SIZES[sym] || null;
+// Sprint 20 (item 2) — fixture exchange listing, mirroring `LOT_SIZES`'s
+// pattern: both fixture symbols are single-listed NFO futures, so the
+// new exchange-derivation logic in `_compileOrderCallToLeg` resolves
+// unambiguously without every test needing its own `exchange=`/
+// `exchangesOf` override.
+// RELIANCE is deliberately dual-listed (NSE+BSE), for the ambiguous-
+// exchange compile-error test below.
+const EXCHANGES = { NIFTY25JULFUT: ['NFO'], BANKNIFTY25JULFUT: ['NFO'], RELIANCE: ['NSE', 'BSE'] };
+const exchangesOf = (sym) => EXCHANGES[sym] || [];
 
 function compile(text, opts = {}) {
-  return compileAgentCliStatement(text, CATALOG, { lotSizeOf, ...opts });
+  return compileAgentCliStatement(text, CATALOG, { lotSizeOf, exchangesOf, ...opts });
 }
 
 // ── buildCatalog() / fetchAgentCatalog() ────────────────────────────────
@@ -392,14 +401,17 @@ describe('canonical examples — exact compiled JSON', () => {
   });
 
   it('7. bare order — single ticket shape', () => {
-    const r = compile('order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)', { mode: 'paper' });
+    // Sprint 20 (item 2) — `price=` is now required at compile time for
+    // the actually-emitted LIMIT order_type default (previously silently
+    // compiled with `price: null`, failing only later at the broker).
+    const r = compile('order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, price=100)', { mode: 'paper' });
     expect(r.errors).toEqual([]);
     expect(r.kind).toBe('order');
     expect(r.basket).toBeNull();
     expect(r.ticket).toEqual({
       mode: 'paper', account: 'ZG0790', side: 'SELL', tradingsymbol: 'NIFTY25JULFUT', quantity: 1,
       exchange: 'NFO', product: 'NRML', order_type: 'LIMIT', variety: 'regular',
-      price: null, trigger_price: null, chase: false, chase_aggressiveness: 'low',
+      price: 100, trigger_price: null, chase: false, chase_aggressiveness: 'low',
       template_id: null, tp_pct_override: null, sl_pct_override: null,
       wing_premium_pct_override: null, wing_strike_offset_override: null,
       lot_size_hint: 75,
@@ -408,8 +420,8 @@ describe('canonical examples — exact compiled JSON', () => {
 
   it('8. bare multiple orders — basket shape, grouped by account', () => {
     const r = compile(
-      'order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1), ' +
-      'order(account="ZJ6294", symbol="BANKNIFTY25JULFUT", side="BUY", lots=1)'
+      'order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, price=100), ' +
+      'order(account="ZJ6294", symbol="BANKNIFTY25JULFUT", side="BUY", lots=1, price=200)'
     );
     expect(r.errors).toEqual([]);
     expect(r.ticket).toBeNull();
@@ -418,14 +430,14 @@ describe('canonical examples — exact compiled JSON', () => {
         { account: 'ZG0790', legs: [{
           transaction_type: 'SELL', tradingsymbol: 'NIFTY25JULFUT', quantity: 1,
           exchange: 'NFO', product: 'NRML', order_type: 'LIMIT', variety: 'regular',
-          price: null, trigger_price: null, chase: false, chase_aggressiveness: 'low',
+          price: 100, trigger_price: null, chase: false, chase_aggressiveness: 'low',
           template_id: null, tp_pct_override: null, sl_pct_override: null,
           wing_premium_pct_override: null, wing_strike_offset_override: null, lot_size_hint: 75,
         }] },
         { account: 'ZJ6294', legs: [{
           transaction_type: 'BUY', tradingsymbol: 'BANKNIFTY25JULFUT', quantity: 1,
           exchange: 'NFO', product: 'NRML', order_type: 'LIMIT', variety: 'regular',
-          price: null, trigger_price: null, chase: false, chase_aggressiveness: 'low',
+          price: 200, trigger_price: null, chase: false, chase_aggressiveness: 'low',
           template_id: null, tp_pct_override: null, sl_pct_override: null,
           wing_premium_pct_override: null, wing_strike_offset_override: null, lot_size_hint: 25,
         }] },
@@ -559,7 +571,7 @@ describe('WHEN — now optional too (operator request: "alert to be placed, or a
   });
 
   it('a bare "order(...)" statement is still routed as order_stmt, never mistaken for a WHEN-omitted agent_stmt', () => {
-    const r = compile('order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)', { mode: 'paper' });
+    const r = compile('order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, price=100)', { mode: 'paper' });
     expect(r.ok).toBe(true);
     expect(r.kind).toBe('order');
     expect(r.ticket).not.toBeNull();
@@ -611,7 +623,7 @@ describe('adversarial — nop() / any zero-arg token with parens', () => {
 describe('adversarial — case-insensitivity', () => {
   it('SELL / sell / Sell are all equivalent and normalize to catalog casing', () => {
     for (const side of ['SELL', 'sell', 'Sell']) {
-      const r = compile(`order(account="ZG0790", symbol="NIFTY25JULFUT", side=${side}, lots=1)`, { mode: 'paper' });
+      const r = compile(`order(account="ZG0790", symbol="NIFTY25JULFUT", side=${side}, lots=1, price=100)`, { mode: 'paper' });
       expect(r.ok).toBe(true);
       expect(r.ticket.side).toBe('SELL');
     }
@@ -622,7 +634,7 @@ describe('adversarial — case-insensitivity', () => {
     expect(r.agent.conditions.metric).toBe('mean_pnl(30)');
   });
   it('a quoted string\'s case is NOT touched', () => {
-    const r = compile('order(account="zg0790", symbol="NIFTY25JULFUT", side=SELL, lots=1)', { mode: 'paper' });
+    const r = compile('order(account="zg0790", symbol="NIFTY25JULFUT", side=SELL, lots=1, price=100)', { mode: 'paper' });
     expect(r.ok).toBe(true);
     expect(r.ticket.account).toBe('zg0790');
   });
@@ -651,7 +663,7 @@ describe('adversarial — depth/length guard', () => {
 
 describe('adversarial — first-arg-as-keyword for order', () => {
   it('all-keyword form (account=...) works exactly like positional-first', () => {
-    const r = compile('order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)', { mode: 'paper' });
+    const r = compile('order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, price=100)', { mode: 'paper' });
     expect(r.ok).toBe(true);
     expect(r.ticket.account).toBe('ZG0790');
   });
@@ -663,16 +675,48 @@ describe('adversarial — lots vs qty', () => {
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /cannot specify both qty and lots/.test(e.message))).toBe(true);
   });
-  it('qty alone (contracts, no lot_size_hint) works for the ticket path', () => {
-    const r = compile('order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", qty=75)', { mode: 'paper' });
+  // Sprint 20 (item 1, URGENT) — `qty=` now means CONTRACTS everywhere,
+  // including the bare ticket/basket path — a literal F&O symbol's
+  // contracts are converted to LOTS (the real `/api/orders/ticket`
+  // endpoint's own documented convention) at compile time, never passed
+  // through raw (that was the "qty=75 silently became 75 LOTS instead
+  // of 1" incident class this item exists to close).
+  it('qty alone (contracts) converts to lots via lot_size for the ticket path', () => {
+    const r = compile('order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", qty=75, price=100)', { mode: 'paper' });
     expect(r.ok).toBe(true);
-    expect(r.ticket.quantity).toBe(75);
+    expect(r.ticket.quantity).toBe(1); // 75 contracts / lot_size 75
+    expect(r.ticket.lot_size_hint).toBe(75);
+  });
+  it('qty= that is not an exact multiple of the lot size is a structured error, never silently truncated', () => {
+    const r = compile('order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", qty=80, price=100)', { mode: 'paper' });
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /qty= is contracts.*multiple of 75/.test(e.message))).toBe(true);
+  });
+  it('qty= for an equity (non-F&O) exchange passes through unchanged (raw shares, no lot conversion)', () => {
+    const r = compile(
+      'order(account="ZG0790", symbol="RELIANCE", exchange="NSE", side="SELL", qty=10, price=100)',
+      { mode: 'paper' },
+    );
+    expect(r.ok).toBe(true);
+    expect(r.ticket.quantity).toBe(10);
     expect(r.ticket.lot_size_hint).toBeUndefined();
+    // Sprint 20 (item 2) — equity product default is CNC, not NRML.
+    expect(r.ticket.product).toBe('CNC');
   });
   it('unresolvable lot size is a structured error, never silently defaults to 1', () => {
-    const r = compile('order(account="ZG0790", symbol="UNKNOWN_SYM", side="SELL", lots=1)', { mode: 'paper' });
+    const r = compile('order(account="ZG0790", symbol="UNKNOWN_SYM", exchange="NFO", side="SELL", lots=1, price=100)', { mode: 'paper' });
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /could not resolve lot size/.test(e.message))).toBe(true);
+  });
+  it('unresolvable exchange (unlisted symbol, no exchange= given) is a structured error, never silently defaults to NFO', () => {
+    const r = compile('order(account="ZG0790", symbol="UNKNOWN_SYM", side="SELL", lots=1, price=100)', { mode: 'paper' });
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /could not resolve exchange/.test(e.message))).toBe(true);
+  });
+  it('a dual-listed symbol (RELIANCE on NSE+BSE) with no exchange= given is a structured error, never a silent guess', () => {
+    const r = compile('order(account="ZG0790", symbol="RELIANCE", side="SELL", qty=10, price=100)', { mode: 'paper' });
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /lists on multiple exchanges \(NSE, BSE\)/.test(e.message))).toBe(true);
   });
   it('DO order(...) lots converts to CONTRACTS (lots × lot_size), NOT the ticket "lots-only" convention', () => {
     const r = compile('WHEN always ALERT nop DO order(account="ZG0790", symbol="BANKNIFTY25JULFUT", side="BUY", lots=3)');
@@ -710,7 +754,7 @@ describe('Sprint 8 — tp_scales_json object-literal parsing', () => {
 describe('Sprint 8 — order(...) inline TP/SL/Wing overrides', () => {
   it('tp_pct/sl_pct compile to the *_override ticket field names', () => {
     const r = compile(
-      'order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, tp_pct=30, sl_pct=-20)',
+      'order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, price=100, tp_pct=30, sl_pct=-20)',
       { mode: 'paper' },
     );
     expect(r.ok).toBe(true);
@@ -729,7 +773,7 @@ describe('Sprint 8 — order(...) inline TP/SL/Wing overrides', () => {
 
   it('bracket="name" compiles to template_slug on the ticket', () => {
     const r = compile(
-      'order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, bracket="default-bull")',
+      'order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, price=100, bracket="default-bull")',
       { mode: 'paper' },
     );
     expect(r.ok).toBe(true);
@@ -846,7 +890,7 @@ describe('Sprint 17 — generalized mutual-exclusion (declared mutuallyExclusive
 
   it('only one of the pair still compiles fine (no regression)', () => {
     const r = compile(
-      'order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, wing_premium_pct=5)',
+      'order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, price=100, wing_premium_pct=5)',
       { mode: 'paper' },
     );
     expect(r.ok).toBe(true);
@@ -951,7 +995,13 @@ describe('Sprint 10 — hyphenated NAME lexing (call/token-reference position on
   it('a negative number in a kwarg value position inside a call still lexes correctly, unaffected by the hyphen widening', () => {
     const { tokens, errors } = lexAgentStatement('mean_pnl(minutes=-50000)');
     expect(errors).toEqual([]);
-    expect(tokens[0].args).toEqual([{ key: 'minutes', value: { type: 'number', value: -50000 } }]);
+    // Sprint 20 (items 4/5) — every ArgEntry/ValueNode now also carries
+    // position metadata (`keyStart`/`start`/`end`) — asserted via
+    // `objectContaining` here so this test stays scoped to the
+    // key/value SHAPE it was written to check, not exact offsets.
+    expect(tokens[0].args).toEqual([expect.objectContaining({
+      key: 'minutes', value: expect.objectContaining({ type: 'number', value: -50000 }),
+    })]);
   });
 
   it('a kwarg KEY still cannot resolve as a known parameter even though it lexes with a hyphen (no regression — real keys use underscore)', () => {
@@ -1252,17 +1302,17 @@ describe('unparenthesized leaf combination', () => {
 
 describe('lexer — spacing around "="', () => {
   it('spaced "symbol = \\"X\\"" is equivalent to fused "symbol=\\"X\\""', () => {
-    const r = compile('order(account="ZG0790", symbol = "NIFTY25JULFUT", side="SELL", lots=1)', { mode: 'paper' });
+    const r = compile('order(account="ZG0790", symbol = "NIFTY25JULFUT", side="SELL", lots=1, price=100)', { mode: 'paper' });
     expect(r.ok).toBe(true);
     expect(r.ticket.tradingsymbol).toBe('NIFTY25JULFUT');
   });
   it('"key =value" (space before =, none after) also works', () => {
-    const r = compile('order(account="ZG0790", symbol ="NIFTY25JULFUT", side="SELL", lots=1)', { mode: 'paper' });
+    const r = compile('order(account="ZG0790", symbol ="NIFTY25JULFUT", side="SELL", lots=1, price=100)', { mode: 'paper' });
     expect(r.ok).toBe(true);
     expect(r.ticket.tradingsymbol).toBe('NIFTY25JULFUT');
   });
   it('"key= value" (space after =, none before) also works', () => {
-    const r = compile('order(account="ZG0790", symbol= "NIFTY25JULFUT", side="SELL", lots=1)', { mode: 'paper' });
+    const r = compile('order(account="ZG0790", symbol= "NIFTY25JULFUT", side="SELL", lots=1, price=100)', { mode: 'paper' });
     expect(r.ok).toBe(true);
     expect(r.ticket.tradingsymbol).toBe('NIFTY25JULFUT');
   });
@@ -1314,7 +1364,7 @@ describe('KWARG_ALIASES', () => {
     expect(KWARG_ALIASES.chase_level).toBe('chase');
   });
   it('an alias resolves to the real schema key in compiled output', () => {
-    const r = compile('order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, chase=HIGH)', { mode: 'paper' });
+    const r = compile('order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, price=100, chase=HIGH)', { mode: 'paper' });
     expect(r.ok).toBe(true);
     expect(r.ticket.chase).toBe(true);
     expect(r.ticket.chase_aggressiveness).toBe('high');
@@ -1409,10 +1459,17 @@ describe('ALERT msg= default', () => {
     expect(r.errors.some(e => /duplicate parameter 'msg'\/'message'/.test(e.message))).toBe(true);
   });
 
-  it('a bare (unquoted) per-channel message value is rejected, same "must be quoted" rule as every other free-text field', () => {
+  // Sprint 20 (item 4) — `msg=`/`message=` now accept a bare single
+  // word, same as `log_tag=`/`render=`/meta values already do (no
+  // $row-binding concept applies to notification text) — closes the
+  // "msg=hello doesn't [accept bare]" inconsistency the audit flagged.
+  // `account=`/`symbol=` (genuinely $row-ambiguous action params) are
+  // deliberately UNCHANGED — see the "free-text field requires quoting"
+  // describe block above, still green.
+  it('a bare (unquoted) per-channel message value is now accepted, same bare-or-quoted rule as log_tag= and meta values', () => {
     const r = compile('WHEN pnl@positions.total <= -1 ALERT telegram(msg=hello) DO nop');
-    expect(r.ok).toBe(false);
-    expect(r.errors.some(e => /must be quoted/.test(e.message))).toBe(true);
+    expect(r.ok).toBe(true);
+    expect(r.agent.events[0].message).toBe('hello');
   });
 
   it('msg= and MSG= are case-insensitive and behave identically', () => {
@@ -1468,7 +1525,11 @@ describe('low-level exports', () => {
     expect(errors).toEqual([]);
     expect(tokens[0].type).toBe('NAME');
     expect(tokens[0].hasCall).toBe(true);
-    expect(tokens[0].args).toEqual([{ key: 'minutes', value: { type: 'number', value: 30 } }]);
+    // Sprint 20 (items 4/5) — see the sibling hyphen-widening test's own
+    // comment above for why this now uses `objectContaining`.
+    expect(tokens[0].args).toEqual([expect.objectContaining({
+      key: 'minutes', value: expect.objectContaining({ type: 'number', value: 30 }),
+    })]);
   });
 
   it('a bare positional argument is a parse error, even as the first argument', () => {
@@ -2321,5 +2382,218 @@ describe('Sprint 18 follow-up — match=[...] event-meta syntax', () => {
     const r = compile('ALERT match=[{tag=a, bogus=1}, {tag=b}], render=x, telegram');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /unknown key 'bogus'/.test(e.message))).toBe(true);
+  });
+});
+
+// ── Sprint 20, item 2 — exchange/product defaults + real required_if ───
+
+describe('Sprint 20 (item 2) — exchange derived from the instruments cache, product default follows it', () => {
+  it('exchange= omitted resolves from a single-listed symbol, product defaults to NRML for F&O', () => {
+    const r = compile('order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, price=100)', { mode: 'paper' });
+    expect(r.ok).toBe(true);
+    expect(r.ticket.exchange).toBe('NFO');
+    expect(r.ticket.product).toBe('NRML');
+  });
+  it('an explicit exchange= always wins over the resolver, even for an ambiguous dual-listed symbol', () => {
+    const r = compile('order(account="ZG0790", symbol="RELIANCE", exchange="BSE", side="SELL", qty=10, price=100)', { mode: 'paper' });
+    expect(r.ok).toBe(true);
+    expect(r.ticket.exchange).toBe('BSE');
+    expect(r.ticket.product).toBe('CNC');
+  });
+});
+
+describe('Sprint 20 (item 2) — required_if checks the ACTUALLY-emitted order_type, not the catalog default', () => {
+  it('order_type omitted (defaults to the real LIMIT the ticket ships with) with no price= is now a compile error', () => {
+    const r = compile('order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)', { mode: 'paper' });
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /price is required when order_type=LIMIT/.test(e.message))).toBe(true);
+  });
+  it('order_type omitted WITH price= compiles fine (the fix only closes the price-less gap)', () => {
+    const r = compile('order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, price=100)', { mode: 'paper' });
+    expect(r.ok).toBe(true);
+    expect(r.ticket.order_type).toBe('LIMIT');
+    expect(r.ticket.price).toBe(100);
+  });
+  it('order_type="MARKET" explicitly still compiles fine with no price= (no regression)', () => {
+    const r = compile('order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, order_type="MARKET")', { mode: 'paper' });
+    expect(r.ok).toBe(true);
+    expect(r.ticket.price).toBeNull();
+  });
+});
+
+// ── Sprint 20, item 3 — &/| precedence, and/or/not word aliases, hints ──
+
+describe('Sprint 20 (item 3) — & binds tighter than | (standard precedence)', () => {
+  it('a | b & c means a | (b & c), not (a | b) & c', () => {
+    // pnl > 0 is TRUE, day_pct > 0 is FALSE, avail_margin > 0 is FALSE
+    // (a | b) & c -> (T|F) & F -> F.  a | (b & c) -> T | (F&F) -> T.
+    const r = compile(
+      'WHEN pnl@positions.total > 0 | day_pct@positions.total > 0 & avail_margin@funds.total > 0 '
+      + 'ALERT telegram DO nop'
+    );
+    expect(r.ok).toBe(true);
+    // Wire vocabulary is `any`/`all` (not `or`/`and` — that's only the
+    // internal AST node type) per `compileCondNode`'s existing mapping.
+    expect(r.agent.conditions).toEqual({
+      any: [
+        { metric: 'pnl', scope: 'positions.total', op: '>', value: 0 },
+        {
+          all: [
+            { metric: 'day_pct', scope: 'positions.total', op: '>', value: 0 },
+            { metric: 'avail_margin', scope: 'funds.total', op: '>', value: 0 },
+          ],
+        },
+      ],
+    });
+  });
+
+  it('explicit parens still override precedence exactly as before', () => {
+    const r = compile(
+      'WHEN (pnl@positions.total > 0 | day_pct@positions.total > 0) & avail_margin@funds.total > 0 '
+      + 'ALERT telegram DO nop'
+    );
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions).toEqual({
+      all: [
+        {
+          any: [
+            { metric: 'pnl', scope: 'positions.total', op: '>', value: 0 },
+            { metric: 'day_pct', scope: 'positions.total', op: '>', value: 0 },
+          ],
+        },
+        { metric: 'avail_margin', scope: 'funds.total', op: '>', value: 0 },
+      ],
+    });
+  });
+
+  it('a decompiled existing agent (fully-parenthesized mixed &/| tree) round-trips byte-identically under the new precedence', () => {
+    // Regression guard (per the task's own instruction to check this
+    // before changing precedence) — confirms the pre-existing fully-
+    // parenthesized fixture (identical to the one already covered in
+    // the "canonical 2-op boolean tree" describe block) is UNAFFECTED,
+    // since every nested composite the decompiler emits is always
+    // wrapped in its own disambiguating parens regardless of precedence.
+    const text = 'WHEN ((mean_pnl(minutes=30)@positions.total <= -50000) & (stdev_pnl(minutes=30)@positions.total > 10000)) '
+      + '| (avail_margin@funds.total < 0) ALERT telegram DO nop';
+    const r1 = compile(text);
+    expect(r1.ok).toBe(true);
+    const d = decompileCondition(r1.agent.conditions, CATALOG);
+    expect(d.errors).toEqual([]);
+    const r2 = compile(`WHEN ${d.text} ALERT telegram DO nop`);
+    expect(r2.ok).toBe(true);
+    expect(r2.agent.conditions).toEqual(r1.agent.conditions);
+  });
+});
+
+describe('Sprint 20 (item 3) — and/or/not word aliases for &/|/~', () => {
+  it('"and"/"or" compile identically to "&"/"|"', () => {
+    const viaWords = compile('WHEN pnl@positions.total > 0 and avail_margin@funds.total > 0 ALERT telegram DO nop');
+    const viaSymbols = compile('WHEN pnl@positions.total > 0 & avail_margin@funds.total > 0 ALERT telegram DO nop');
+    expect(viaWords.ok).toBe(true);
+    expect(viaWords.agent.conditions).toEqual(viaSymbols.agent.conditions);
+  });
+  it('"or" also respects the new precedence against "&"', () => {
+    const viaWords = compile(
+      'WHEN pnl@positions.total > 0 or day_pct@positions.total > 0 and avail_margin@funds.total > 0 '
+      + 'ALERT telegram DO nop'
+    );
+    const viaSymbols = compile(
+      'WHEN pnl@positions.total > 0 | day_pct@positions.total > 0 & avail_margin@funds.total > 0 '
+      + 'ALERT telegram DO nop'
+    );
+    expect(viaWords.ok).toBe(true);
+    expect(viaWords.agent.conditions).toEqual(viaSymbols.agent.conditions);
+  });
+  it('"not" negates a term exactly like "~"', () => {
+    const viaWord = compile('WHEN not pnl@positions.total > 0 ALERT telegram DO nop');
+    const viaSymbol = compile('WHEN ~(pnl@positions.total > 0) ALERT telegram DO nop');
+    expect(viaWord.ok).toBe(true);
+    expect(viaWord.agent.conditions).toEqual(viaSymbol.agent.conditions);
+  });
+  it('"not in"/"not_in" comparator is completely unaffected by the new "not" term-negation alias (different grammar position, no collision)', () => {
+    const r = compile('WHEN side@positions.total not in [BUY] ALERT telegram DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions.op).toBe('not_in');
+  });
+  it('"always and x" is rejected the same way "always & x" already was', () => {
+    const r = compile('WHEN always and (pnl@positions.total <= -1) ALERT telegram DO nop');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /"always" is standalone-only/.test(e.message))).toBe(true);
+  });
+  it('"and"/"or" are reserved — "and(...)"/"or(...)" cannot be used as a token/channel name', () => {
+    const r = compile('WHEN pnl@positions.total > 0 ALERT telegram DO emit_log(message="x"), and()');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /reserved word/.test(e.message))).toBe(true);
+  });
+});
+
+describe('Sprint 20 (item 3) — targeted error hints for "=" and "!"', () => {
+  it('"=" in comparator position hints at "=="', () => {
+    const r = compile('WHEN pnl@positions.total = -1 ALERT telegram DO nop');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /use "==" for equality/.test(e.message))).toBe(true);
+  });
+  it('"!x" hints at "~"/"not" for negation', () => {
+    const r = compile('WHEN !pnl@positions.total > 0 ALERT telegram DO nop');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /use '~' or 'not' to negate/.test(e.message))).toBe(true);
+  });
+});
+
+// ── Sprint 20, item 4 — typed-alias-aware error messages ────────────────
+
+describe('Sprint 20 (item 4) — quoting-error names the ALIAS the trader typed, not the canonical field', () => {
+  it('order(acct=ZG0790, ...) names "acct" in the quoting error, not "account"', () => {
+    const r = compile('order(acct=ZG0790, symbol="NIFTY25JULFUT", side="SELL", lots=1, price=100)', { mode: 'paper' });
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /order\.acct: free-text value must be quoted/.test(e.message))).toBe(true);
+  });
+});
+
+// ── Sprint 20, item 5 — describeErrorPosition() + position threading ───
+
+describe('Sprint 20 (item 5) — describeErrorPosition()', () => {
+  it('returns 1-based line/column and a bounded snippet with a caret offset', () => {
+    const text = 'order(acct=ZG0790, symbol="NIFTY25JULFUT")';
+    const d = describeErrorPosition(text, 6);
+    expect(d).not.toBeNull();
+    expect(d.line).toBe(1);
+    expect(d.column).toBe(7);
+    expect(d.snippet).toContain('acct');
+    expect(d.snippet[d.caretOffset]).toBe('a');
+  });
+  it('computes line/column correctly across an embedded newline', () => {
+    const text = 'WHEN pnl@positions.total > 0\nALERT telegram DO nop';
+    const d = describeErrorPosition(text, text.indexOf('ALERT')); // 'A' of ALERT, right after the \n
+    expect(d.line).toBe(2);
+    expect(d.column).toBe(1);
+  });
+  it('returns null for an out-of-range or non-numeric position (never throws, never a garbled result)', () => {
+    expect(describeErrorPosition('abc', -1)).toBeNull();
+    expect(describeErrorPosition('abc', 999)).toBeNull();
+    expect(describeErrorPosition('abc', undefined)).toBeNull();
+    expect(describeErrorPosition('abc', NaN)).toBeNull();
+  });
+  it('sets truncatedStart/truncatedEnd when the window is clipped by a short windowSize', () => {
+    const text = 'x'.repeat(100);
+    const d = describeErrorPosition(text, 50, 5);
+    expect(d.truncatedStart).toBe(true);
+    expect(d.truncatedEnd).toBe(true);
+    expect(d.snippet.length).toBe(10);
+  });
+  it('a real compile error\'s position, fed through describeErrorPosition, lands on the offending "acct=ZG0790" argument', () => {
+    const text = 'order(acct=ZG0790, symbol="NIFTY25JULFUT", side="SELL", lots=1, price=100)';
+    const r = compile(text, { mode: 'paper' });
+    expect(r.ok).toBe(false);
+    const err = r.errors.find(e => /must be quoted/.test(e.message));
+    expect(typeof err.position).toBe('number');
+    // position lands at (or before) the fused "acct=ZG0790" token — the
+    // tokenizer fuses an unquoted "key=value" into one atom with no
+    // finer-grained sub-offset for just the value half (see engine.js's
+    // `tokenizeCallStyle`), so the snippet contains the whole argument.
+    expect(text.slice(err.position)).toContain('acct=ZG0790');
+    const d = describeErrorPosition(text, err.position);
+    expect(d).not.toBeNull();
+    expect(d.snippet).toContain('acct=ZG0790');
   });
 });

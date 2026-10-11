@@ -180,9 +180,13 @@ const CATALOG = buildCatalog(FIXTURE_ROWS);
 
 const LOT_SIZES = { NIFTY25JULFUT: 75, BANKNIFTY25JULFUT: 25 };
 const lotSizeOf = (sym) => LOT_SIZES[sym] || null;
+// Sprint 20 (item 2) — see agentsGrammar.test.js's identical fixture
+// for the rationale.
+const EXCHANGES = { NIFTY25JULFUT: ['NFO'], BANKNIFTY25JULFUT: ['NFO'] };
+const exchangesOf = (sym) => EXCHANGES[sym] || [];
 
 function compile(text, opts = {}) {
-  return compileAgentCliStatement(text, CATALOG, { lotSizeOf, ...opts });
+  return compileAgentCliStatement(text, CATALOG, { lotSizeOf, exchangesOf, ...opts });
 }
 
 function decompile(agentJson, opts = {}) {

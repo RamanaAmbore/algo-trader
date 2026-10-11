@@ -28,7 +28,7 @@
 
   import { tick } from 'svelte';
   import {
-    compileAgentCliStatement, suggestAgentCliAt,
+    compileAgentCliStatement, suggestAgentCliAt, describeErrorPosition,
   } from '$lib/command/grammars/agents.js';
 
   /** @type {{
@@ -119,6 +119,20 @@
     if (compiled?.ok && compiled.kind === 'order') onOrderSubmit?.(compiled);
   }
 
+  // Sprint 20 (item 5) — visual position indicator for a compile/parse
+  // error that carries a real `position` (an ever-growing share of them,
+  // after this sprint's `_err()` position-threading work). `\n` is
+  // swapped 1-for-1 for `⏎` so the caret's character-offset alignment
+  // under the snippet stays correct even when the error sits near a
+  // line break in a multi-line statement (`describeErrorPosition` itself
+  // stays UI-agnostic — this swap is presentation-only, done here).
+  function _posIndicator(err) {
+    if (typeof err.position !== 'number') return null;
+    const d = describeErrorPosition(value, err.position);
+    if (!d) return null;
+    return { ...d, snippet: d.snippet.replace(/\n/g, '⏎') };
+  }
+
   // Description of whichever suggestion pill is currently hovered/focused,
   // or '' when nothing is hovered or the hovered suggestion has no
   // backend-provided description (e.g. an enum value, or an undescribed
@@ -184,7 +198,16 @@
       <div class="agent-cli-errors-title">Errors:</div>
       <ul class="list-disc ml-4">
         {#each compiled.errors as err}
-          <li>{err.message}{typeof err.position === 'number' ? ` (pos ${err.position})` : ''}</li>
+          <li>
+            {err.message}{typeof err.position === 'number' ? ` (line ${_posIndicator(err)?.line}, col ${_posIndicator(err)?.column})` : ''}
+            {#if _posIndicator(err)}
+              {@const p = _posIndicator(err)}
+              <div class="agent-cli-error-pos">
+                <div class="agent-cli-error-pos-snippet">{p.truncatedStart ? '…' : ''}{p.snippet}{p.truncatedEnd ? '…' : ''}</div>
+                <div class="agent-cli-error-pos-caret" style="--caret-col: {p.caretOffset + (p.truncatedStart ? 1 : 0)}">^</div>
+              </div>
+            {/if}
+          </li>
         {/each}
       </ul>
     </div>
@@ -245,6 +268,21 @@
     font-size: var(--fs-sm);
   }
   .agent-cli-errors-title { font-weight: 600; margin-bottom: 0.2rem; }
+  /* Sprint 20 (item 5) — visual position indicator: a horizontally-
+     scrollable monospace snippet window with a `^` caret aligned under
+     the exact error offset via a `ch`-unit margin (one `ch` ≈ one
+     monospace character width, so the caret lines up with the snippet
+     above regardless of the surrounding font-size) — `overflow-x: auto`
+     keeps this readable on a <600px phone viewport without wrapping
+     and losing caret alignment. */
+  .agent-cli-error-pos {
+    margin: 0.15rem 0 0.3rem 0;
+    overflow-x: auto;
+    font-family: var(--font-mono, monospace);
+    font-size: var(--fs-xs);
+  }
+  .agent-cli-error-pos-snippet { white-space: pre; }
+  .agent-cli-error-pos-caret { white-space: pre; margin-left: calc(var(--caret-col) * 1ch); color: var(--algo-amber); }
   .agent-cli-preview {
     padding: 0.4rem 0.6rem; border-radius: 0.3rem;
     background: var(--algo-green-bg);

@@ -635,7 +635,7 @@
 //     correctness — no backend change was needed.
 
 import { fetchGrammarTokens } from '$lib/api';
-import { getInstrument } from '$lib/data/instruments';
+import { getInstrument, listExchangesForSymbol } from '$lib/data/instruments';
 import { tokenizeCallStyle, fuzzyFilter } from '$lib/command/engine.js';
 
 // ── Depth/length guards — mirrors backend/api/algo/expr_eval.py's
@@ -651,7 +651,12 @@ const _MAX_DEPTH = 20;
 
 // ── Reserved words — checked before generic NAME classification, never
 //    treated as a callable token name. ──────────────────────────────────
-const _RESERVED = new Set(['when', 'alert', 'do', 'nop', 'always', 'in', 'not', 'true', 'false']);
+// Sprint 20 (item 3) — 'and'/'or' added alongside the pre-existing 'not'
+// as reserved words, now that all three are accepted as word aliases
+// for '&'/'|'/'~' (see `_isAndTok`/`_isOrTok`/`_isNotTok`) — reserving
+// them prevents `and(...)`/`or(...)` from ever being (mis)parsed as a
+// real metric/channel/action token name.
+const _RESERVED = new Set(['when', 'alert', 'do', 'nop', 'always', 'in', 'not', 'and', 'or', 'true', 'false']);
 export const RESERVED_WORDS = _RESERVED;
 
 // ── event_stmt reserved kwarg names (Sprint 12, +`gate` Sprint 18) — NOT
@@ -835,6 +840,23 @@ function _defaultLotSizeOf(symbol) {
   } catch { return null; }
 }
 
+// Sprint 20 (item 2) — canonical F&O-vs-equity exchange split, per the
+// backend's own documented convention (`backend/api/schemas.py`:
+// "F&O exchanges (NFO/MCX/CDS/BFO/BCD/NCO): quantity is LOTS... Equity
+// exchanges (NSE/BSE): quantity is raw shares.") — the SAME set drives
+// both item 2's exchange/product defaulting AND item 1's qty-as-contracts
+// conversion below, since both need the identical F&O/equity split.
+const _FO_EXCHANGES = new Set(['NFO', 'MCX', 'CDS', 'BFO', 'BCD', 'NCO']);
+
+/** Default exchange resolver — mirrors `_defaultLotSizeOf`'s pattern,
+ *  reusing the SAME instruments-cache index (`listExchangesForSymbol`,
+ *  the multi-listing-aware sibling of `getInstrument`) rather than a
+ *  second lookup mechanism. Returns the raw array (never a single
+ *  string) — callers decide what "exactly one" / "zero" / "2+" means. */
+function _defaultExchangesOf(symbol) {
+  try { return listExchangesForSymbol(symbol) || []; } catch { return []; }
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // Error helper
 // ═══════════════════════════════════════════════════════════════════════
@@ -848,6 +870,35 @@ class _ParseError extends Error {
     super(message);
     this.position = token && typeof token.start === 'number' ? token.start : undefined;
   }
+}
+
+/** Sprint 20 (item 5) — pure, UI-agnostic position-describer: given the
+ *  full editor text and a character offset (`error.position`, as every
+ *  `_err()`/`_ParseError` above now threads for an ever-growing share of
+ *  this grammar's compile/parse errors), returns 1-based `line`/`column`
+ *  plus a bounded ~`2*windowSize`-char `snippet` window around the
+ *  offset with its own `caretOffset` (the offset's position WITHIN
+ *  `snippet`, for a caller to render a `^` marker under it) —
+ *  `AgentCliEditor.svelte` renders this; never throws, returns `null`
+ *  for an out-of-range/missing position (never a garbled partial result). */
+export function describeErrorPosition(text, position, windowSize = 30) {
+  if (typeof text !== 'string' || typeof position !== 'number' || !Number.isFinite(position)) return null;
+  if (position < 0 || position > text.length) return null;
+  let line = 1;
+  let lineStart = 0;
+  for (let i = 0; i < position; i++) {
+    if (text[i] === '\n') { line++; lineStart = i + 1; }
+  }
+  const column = position - lineStart + 1;
+  const start = Math.max(0, position - windowSize);
+  const end = Math.min(text.length, position + windowSize);
+  return {
+    line, column,
+    snippet: text.slice(start, end),
+    caretOffset: position - start,
+    truncatedStart: start > 0,
+    truncatedEnd: end < text.length,
+  };
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -877,18 +928,28 @@ function _isWordStart(ch) { return /[A-Za-z_]/.test(ch); }
 function _isDigit(ch) { return /[0-9]/.test(ch); }
 
 /** Tokenize a value-ish fragment (from the inner-arg tokenizeCallStyle
- *  stream) into a ValueNode. */
-function _valueNodeFromCallStyleToken(tok) {
-  if (tok.quoted) return { type: 'string', value: tok.text };
+ *  stream) into a ValueNode, tagged with its own `start`/`end` position
+ *  (Sprint 20, item 5 — threads a real compile-error position through;
+ *  `start`/`end` default to the source token's own when omitted by the
+ *  caller, so every existing call site keeps working unchanged). */
+function _valueNodeFromCallStyleToken(tok, start, end) {
+  const pos = { start: start != null ? start : tok.start, end: end != null ? end : tok.end };
+  if (tok.quoted) return { type: 'string', value: tok.text, ...pos };
   const text = tok.text;
-  if (/^-?\d+(\.\d+)?$/.test(text)) return { type: 'number', value: Number(text) };
-  return { type: 'name', value: text };
+  if (/^-?\d+(\.\d+)?$/.test(text)) return { type: 'number', value: Number(text), ...pos };
+  return { type: 'name', value: text, ...pos };
 }
 
 /** Parse a single comma-separated arg segment (array of tokenizeCallStyle
  *  tokens) into one ArgEntry, handling every spacing variant around `=`
  *  (fused `key=value`, fused `key="quoted value"`, spaced `key = value`,
- *  `key =value`, `key= value`). Throws _ParseError on malformed segments. */
+ *  `key =value`, `key= value`). Throws _ParseError on malformed segments.
+ *
+ *  Sprint 20 (items 4/5) — every returned ArgEntry now also carries
+ *  `keyStart` (the position of the TYPED key itself, for "unknown
+ *  parameter"/"duplicate parameter" errors) and every `value` ValueNode
+ *  carries its own `start`/`end` (for per-value coercion errors) — see
+ *  `_mapCallArgsToKeys`/`_coerceValueForSpec` for the consumer side. */
 function _parseArgSegment(segTokens, labelToken) {
   if (segTokens.length === 0) throw new _ParseError('empty argument (trailing/leading/double comma)', labelToken);
   const first = segTokens[0];
@@ -897,13 +958,13 @@ function _parseArgSegment(segTokens, labelToken) {
       // `key= value` — value is the glued-nothing kwarg continued by the
       // next token.
       if (segTokens.length > 2) throw new _ParseError('unexpected token in argument', segTokens[2]);
-      return { key: first.kwarg.key, value: _valueNodeFromCallStyleToken(segTokens[1]) };
+      return { key: first.kwarg.key, keyStart: first.start, value: _valueNodeFromCallStyleToken(segTokens[1]) };
     }
     if (segTokens.length > 1) throw new _ParseError('unexpected token in argument', segTokens[1]);
-    return {
-      key: first.kwarg.key,
-      value: first.kwarg.quoted ? { type: 'string', value: first.kwarg.value } : _valueNodeFromCallStyleToken({ text: first.kwarg.value }),
-    };
+    const value = first.kwarg.quoted
+      ? { type: 'string', value: first.kwarg.value, start: first.start, end: first.end }
+      : _valueNodeFromCallStyleToken({ text: first.kwarg.value }, first.start, first.end);
+    return { key: first.kwarg.key, keyStart: first.start, value };
   }
   if (!first.punct && !first.quoted && segTokens.length > 1) {
     const second = segTokens[1];
@@ -911,12 +972,13 @@ function _parseArgSegment(segTokens, labelToken) {
       // spaced `key = value`
       if (segTokens.length < 3) throw new _ParseError('expected a value after "="', second);
       if (segTokens.length > 3) throw new _ParseError('unexpected token in argument', segTokens[3]);
-      return { key: first.text, value: _valueNodeFromCallStyleToken(segTokens[2]) };
+      return { key: first.text, keyStart: first.start, value: _valueNodeFromCallStyleToken(segTokens[2]) };
     }
     if (!second.punct && !second.quoted && !second.kwarg && second.text.startsWith('=') && second.text.length > 1) {
       // `key =value` — second token is glued "=value"
       if (segTokens.length > 2) throw new _ParseError('unexpected token in argument', segTokens[2]);
-      return { key: first.text, value: _valueNodeFromCallStyleToken({ text: second.text.slice(1) }) };
+      const value = _valueNodeFromCallStyleToken({ text: second.text.slice(1) }, second.start + 1, second.end);
+      return { key: first.text, keyStart: first.start, value };
     }
   }
   if (first.punct) throw new _ParseError(`unexpected '${first.punct}' in argument list`, first);
@@ -1271,7 +1333,12 @@ export function lexAgentStatement(text) {
           i += 1;
           continue;
         }
-        if (ch === '!') { if (two === '!=') { tokens.push({ type: 'NE', start, end: i + 2 }); i += 2; continue; } throw new _ParseError(`unexpected '!'`, { start }); }
+        if (ch === '!') {
+          if (two === '!=') { tokens.push({ type: 'NE', start, end: i + 2 }); i += 2; continue; }
+          // Sprint 20 (item 3) — targeted hint: `!x` (negation) isn't
+          // this grammar's spelling — `~`/`not` negate, `!=` compares.
+          throw new _ParseError(`unexpected '!' — use '~' or 'not' to negate, '!=' for not-equal`, { start });
+        }
       }
 
       if (_PUNCT_SINGLE[ch]) {
@@ -1533,6 +1600,13 @@ const _COMPARATOR_MAP = { LT: '<', LE: '<=', GT: '>', GE: '>=', EQEQ: '==', NE: 
 
 function _isComparatorStart(tok) {
   if (_COMPARATOR_MAP[tok.type]) return true;
+  // Sprint 20 (item 3) — a lone EQ ("=") is ALSO recognized as "a
+  // comparator is starting here" (not a real comparator — `parseComparator`
+  // immediately rejects it with the targeted "==" hint below) so that
+  // rejection actually happens, instead of `parseLeaf` silently treating
+  // the metric as a boolean-shorthand leaf and leaving the "=" dangling
+  // as unconsumed trailing input with a far less specific error.
+  if (tok.type === 'EQ') return true;
   return tok.type === 'NAME' && (_wordIs(tok, 'in') || _wordIs(tok, 'not'));
 }
 
@@ -1547,6 +1621,10 @@ function parseComparator(state) {
     return 'not_in';
   }
   if (tok.type === 'NAME' && _wordIs(tok, 'in')) { _advance(state); return 'in'; }
+  // Sprint 20 (item 3) — targeted hint: a lone "=" lexes fine (it's
+  // `alert_clause`'s own `msg=` production elsewhere) but is never a
+  // valid COMPARATOR — the trader almost always meant "==".
+  if (tok.type === 'EQ') throw new _ParseError('expected a comparator — use "==" for equality, not "="', tok);
   throw new _ParseError('expected a comparator', tok);
 }
 
@@ -1635,10 +1713,26 @@ export function parsePrimary(state, depth = 0) {
   return parseLeaf(state);
 }
 
-/** `term := "~" primary | primary` */
+// Sprint 20 (item 3) — `and`/`or`/`not` are accepted as case-insensitive
+// WORD aliases for `&`/`|`/`~` respectively, matching how a trader
+// already thinks/speaks about boolean logic (the standing "intuitiveness
+// over technical correctness alone" design principle). Recognized by
+// PEEKING at a bare (non-call) NAME token — never by lexer-level token-
+// type rewriting — so no other production in this grammar needs to
+// change. `not` collides with NOTHING: the existing `not in` comparator
+// (`parseComparator`) is only ever consumed AFTER a `metric@scope` has
+// already been parsed, deep inside `parseLeaf` — `parseTerm` only ever
+// peeks at a bare `not` at the START of a fresh term (before any
+// `metric@scope` exists yet), so the two productions can never collide
+// on the same token.
+function _isAndTok(tok) { return tok.type === 'AMP' || (tok.type === 'NAME' && !tok.hasCall && _wordIs(tok, 'and')); }
+function _isOrTok(tok) { return tok.type === 'PIPE' || (tok.type === 'NAME' && !tok.hasCall && _wordIs(tok, 'or')); }
+function _isNotTok(tok) { return tok.type === 'TILDE' || (tok.type === 'NAME' && !tok.hasCall && _wordIs(tok, 'not')); }
+
+/** `term := ("~" | "not") primary | primary` */
 export function parseTerm(state, depth = 0) {
   const tok = _peek(state);
-  if (tok.type === 'TILDE') {
+  if (_isNotTok(tok)) {
     _checkDepth(depth + 1, tok);
     _advance(state);
     const inner = parsePrimary(state, depth + 1);
@@ -1647,34 +1741,63 @@ export function parseTerm(state, depth = 0) {
   return parsePrimary(state, depth);
 }
 
-/** `or_expr := term (("&" | "|") term)*` — equal precedence, strictly
- *  left-to-right (folded as a left-leaning binary chain, NOT an n-ary node —
- *  this correctly represents e.g. `a & b | c` as `(a & b) | c` without
- *  pretending `&`/`|` share one node type). */
-export function parseOrExpr(state, depth = 0) {
+/** `and_expr := term (("&" | "and") term)*` — left-to-right fold,
+ *  BINDS TIGHTER than `or_expr` below (Sprint 20, item 3 — see its own
+ *  comment for why this is now a real precedence split rather than the
+ *  pre-Sprint-20 "`&`/`|` share one equal-precedence level" design). */
+export function parseAndExpr(state, depth = 0) {
   let node = parseTerm(state, depth);
-  while (true) {
-    const tok = _peek(state);
-    if (tok.type === 'AMP') { _advance(state); node = { type: 'and', left: node, right: parseTerm(state, depth) }; continue; }
-    if (tok.type === 'PIPE') { _advance(state); node = { type: 'or', left: node, right: parseTerm(state, depth) }; continue; }
-    break;
+  while (_isAndTok(_peek(state))) {
+    _advance(state);
+    node = { type: 'and', left: node, right: parseTerm(state, depth) };
+  }
+  return node;
+}
+
+/** `or_expr := and_expr (("|" | "or") and_expr)*` — left-to-right fold.
+ *
+ *  Sprint 20 (item 3) — PRECEDENCE CHANGE: `&`/`and` now binds TIGHTER
+ *  than `|`/`or` (standard boolean precedence — matches Python's
+ *  `and`/`or`, SQL, and how a trader already reads a mixed expression),
+ *  replacing the pre-Sprint-20 "equal precedence, strictly left-to-right"
+ *  design where `a | b & c` silently meant `(a | b) & c` with no warning
+ *  — the exact audit-flagged defect this closes. An unparenthesized
+ *  mixed `&`/`|` chain now means `a | (b & c)` instead.
+ *
+ *  Confirmed safe to change (no silent behavior flip on any existing
+ *  agent): (1) neither `agentsGrammar.test.js` nor
+ *  `agentsDecompiler.test.js` has ANY test exercising an unparenthesized
+ *  mixed `&`/`|` chain — the only mixed-operator fixtures in either file
+ *  are fully, explicitly parenthesized. (2) `decompileAllAny` (this
+ *  file) ALWAYS wraps every nested child in its own `(...)` at the
+ *  recursive call boundary — `decompileCondNode`'s own caller wraps
+ *  `inner` in `(${inner})` regardless of what shape `inner` is — so a
+ *  decompiled agent can NEVER emit an unparenthesized mixed chain in the
+ *  first place; re-saving an existing agent through the CLI (decompile →
+ *  recompile with no edits) is unaffected by this precedence change. */
+export function parseOrExpr(state, depth = 0) {
+  let node = parseAndExpr(state, depth);
+  while (_isOrTok(_peek(state))) {
+    _advance(state);
+    node = { type: 'or', left: node, right: parseAndExpr(state, depth) };
   }
   return node;
 }
 
 /** `condition := "always" | or_expr` — "always" is standalone-only: a
  *  parse error, not a silently-tolerated redundancy, if followed by `&`
- *  or `|` right here at the top level. `always` appearing as an OPERAND
- *  deeper in an expression (e.g. `x | always`) is caught differently —
- *  `parseCall` rejects any reserved word used as a token name, which
- *  `always` always is outside this one top-level sentinel spot — still a
- *  clear parse error, just a different message. */
+ *  or `|` (or their `and`/`or` word aliases) right here at the top
+ *  level. `always` appearing as an OPERAND deeper in an expression (e.g.
+ *  `x | always`) is caught differently — `parseCall` rejects any
+ *  reserved word used as a token name, which `always` always is outside
+ *  this one top-level sentinel spot — still a clear parse error, just a
+ *  different message. */
 export function parseCondition(state, depth = 0) {
   const tok = _peek(state);
   if (tok.type === 'NAME' && _wordIs(tok, 'always') && !tok.hasCall) {
     _advance(state);
     const next = _peek(state);
-    if (next.type === 'AMP' || next.type === 'PIPE') {
+    if (_isAndTok(next) || _isOrTok(next)) {
       throw new _ParseError('"always" is standalone-only — it cannot be combined with & or |', next);
     }
     return { type: 'always' };
@@ -2143,28 +2266,44 @@ function _mapCallArgsToKeys(callNode, keys, aliasToReal, errors, label) {
       const aliased = aliasToReal[typedLower];
       if (aliased && keys.includes(aliased)) realKey = aliased;
     }
-    if (!realKey) { errors.push(_err(`unknown parameter '${arg.key}' for ${label}`)); return; }
-    if (provided.has(realKey)) { errors.push(_err(`${label}: duplicate parameter '${realKey}'`)); return; }
-    provided.set(realKey, arg.value);
+    const keyTok = { start: arg.keyStart };
+    if (!realKey) { errors.push(_err(`unknown parameter '${arg.key}' for ${label}`, keyTok)); return; }
+    if (provided.has(realKey)) { errors.push(_err(`${label}: duplicate parameter '${realKey}'`, keyTok)); return; }
+    // Sprint 20 (item 4) — clone (never mutate the parsed AST node in
+    // place) and tag with the operator's ORIGINAL typed spelling (which
+    // may be an alias, e.g. "acct" for "account") so a downstream
+    // coercion error can name what the trader actually typed, not the
+    // canonical resolved field name — see `_coerceValueForSpec`.
+    provided.set(realKey, { ...arg.value, _typedKey: arg.key });
   });
   return provided;
 }
 
 /** Coerce one ValueNode against its params_schema field spec. Returns
- *  `{ value }` or `{ error }` — never throws. */
+ *  `{ value }` or `{ error }` — never throws.
+ *
+ *  Sprint 20 (items 4/5) — every error message now names whatever the
+ *  operator ACTUALLY TYPED for this field (`valueNode._typedKey`, set by
+ *  `_mapCallArgsToKeys` when the typed spelling is an alias; falls back
+ *  to the canonical `key` when absent, e.g. for a call site that never
+ *  went through alias mapping at all) and carries a real text position
+ *  (`valueNode` itself, when it has a `start`, since `_parseArgSegment`
+ *  now tags every ValueNode with its own `start`/`end`). */
 function _coerceValueForSpec(valueNode, spec, key, label) {
   const type = spec && spec.type;
+  const displayKey = (valueNode && valueNode._typedKey) || key;
+  const pos = valueNode && typeof valueNode.start === 'number' ? valueNode : undefined;
   if (type === 'enum') {
-    if (valueNode.type !== 'string' && valueNode.type !== 'name') return { error: _err(`${label}.${key}: expected an enum value`) };
+    if (valueNode.type !== 'string' && valueNode.type !== 'name') return { error: _err(`${label}.${displayKey}: expected an enum value`, pos) };
     const raw = valueNode.value;
     const match = (spec.enum || []).find(e => String(e).toLowerCase() === String(raw).toLowerCase());
-    if (!match) return { error: _err(`${label}.${key}: '${raw}' is not one of [${(spec.enum || []).join(', ')}]`) };
+    if (!match) return { error: _err(`${label}.${displayKey}: '${raw}' is not one of [${(spec.enum || []).join(', ')}]`, pos) };
     return { value: match };
   }
   if (type === 'number') {
     if (valueNode.type === 'number') return { value: valueNode.value };
     if (valueNode.type === 'string' && spec.token_ref_ok) return { value: valueNode.value }; // expr string, evaluated server-side
-    return { error: _err(`${label}.${key}: expected a number`) };
+    return { error: _err(`${label}.${displayKey}: expected a number`, pos) };
   }
   if (type === 'boolean') {
     if (valueNode.type === 'name') {
@@ -2172,28 +2311,36 @@ function _coerceValueForSpec(valueNode, spec, key, label) {
       if (low === 'true') return { value: true };
       if (low === 'false') return { value: false };
     }
-    return { error: _err(`${label}.${key}: expected true or false`) };
+    return { error: _err(`${label}.${displayKey}: expected true or false`, pos) };
   }
   if (type === 'string') {
     if (valueNode.type === 'string') return { value: valueNode.value };
-    return { error: _err(`${label}.${key}: free-text value must be quoted (e.g. ${key}="...")`) };
+    // Sprint 20 (item 4) — explains WHY, so the rule stops "looking
+    // arbitrary from the error alone": a bare word here is reserved for
+    // enum values and $row column references (see `_resolveRowRefOrNull`
+    // for the latter), never literal free text — unlike `msg=`/`log_tag=`/
+    // meta values below, which have no $row concept and accept either.
+    return { error: _err(`${label}.${displayKey}: free-text value must be quoted (e.g. ${displayKey}="...") — bare words are reserved for enum/row-ref values`, pos) };
   }
   // Sprint 18 follow-up (`match=[...]`) — `freetext` mirrors
   // `_freeTextValue`'s own bare-NAME-or-quoted-STRING acceptance (e.g.
   // `log_tag=`/`render=`): preserved EXACTLY as typed, no case
   // normalization, unlike `type:'enum'` above or `type:'string'`'s
   // quote-required rule. Used for match entry `tag=` (`tag=orders`,
-  // unquoted, same spelling convention as the simple form's `log_tag=`).
+  // unquoted, same spelling convention as the simple form's `log_tag=`)
+  // and (Sprint 20, item 4) `msg=`/`message=` (`_MESSAGE_SPEC`) — a bare
+  // single word now works there too, same rule as log_tag/meta, closing
+  // the "msg=hello doesn't [accept bare]" inconsistency the audit flagged.
   if (type === 'freetext') {
     if (valueNode.type === 'string' || valueNode.type === 'name') return { value: valueNode.value };
-    return { error: _err(`${label}.${key}: expected a bare word or quoted string`) };
+    return { error: _err(`${label}.${displayKey}: expected a bare word or quoted string`, pos) };
   }
   // Sprint 18 follow-up — a nested object_literal value (match entry's
   // own `where={...}`), unwrapped via `_unwrapValueNode` same as the
   // top-level `where=`'s passthrough schema (`OBJECT_LITERAL_SCHEMAS.where
   // === null`) already does.
   if (type === 'object') {
-    if (valueNode.type !== 'object') return { error: _err(`${label}.${key}: expected an object literal {...}`) };
+    if (valueNode.type !== 'object') return { error: _err(`${label}.${displayKey}: expected an object literal {...}`, pos) };
     return { value: _unwrapValueNode(valueNode) };
   }
   // Unknown/absent spec type — best-effort passthrough.
@@ -3132,8 +3279,14 @@ function _compileOrderActionParams(call, entry, opts, rowRefCtx) {
 
   if (lotsArgs.length === 1) {
     const lotsVal = lotsArgs[0].value;
-    if (lotsVal.type !== 'number' || !(lotsVal.value > 0)) {
-      errors.push(_err(`${entry.token}: lots must be a positive number`));
+    // Sprint 20 (item 1) — reject a fractional lot count rather than
+    // silently rounding it into `Math.round(lots * lot_size)` below;
+    // same unit-safety class as the qty-vs-contracts fix elsewhere in
+    // this item (a trader typing `lots=1.5` almost certainly meant
+    // something else, and a silent round is exactly the kind of
+    // unannounced qty mutation this sprint exists to close).
+    if (lotsVal.type !== 'number' || !(lotsVal.value > 0) || !Number.isInteger(lotsVal.value)) {
+      errors.push(_err(`${entry.token}: lots must be a positive whole number`));
       return { params: null, errors };
     }
     const symbol = params.symbol;
@@ -3186,7 +3339,15 @@ function _compileOrderActionParams(call, entry, opts, rowRefCtx) {
 // itself, which DO's `emit_log(message=...)` also uses and which DOES
 // declare a real `message` param that must keep working unmodified.
 const _MESSAGE_KEYS = new Set(['msg', 'message']);
-const _MESSAGE_SPEC = Object.freeze({ type: 'string' });
+// Sprint 20 (item 4) — 'freetext' (bare NAME or quoted STRING), not the
+// stricter 'string' (quote-required) type: `msg=`/`message=` is pure
+// notification text with no $row-binding concept at all (unlike
+// account/symbol/qty action params, where a bare word is ambiguous with
+// a $row column reference and MUST stay quote-required), so there is
+// no reason to force quotes on a single bare word — same rule
+// `log_tag=`/`render=`/meta values (`#name=`/`#desc=`/`#tag=`) already
+// follow. Closes the "msg=hello doesn't [accept bare]" inconsistency.
+const _MESSAGE_SPEC = Object.freeze({ type: 'freetext' });
 
 /** `alert_clause`'s per-channel message resolution (Sprint 6):
  *    1. a channel's OWN `msg=`/`message=` kwarg (either spelling) always
@@ -3816,8 +3977,39 @@ function _compileOrderCallToLeg(call, catalog, opts) {
   const account = coerce('account', null);
   const symbol = coerce('symbol', null);
   const side = coerce('side', null);
-  const exchange = coerce('exchange', 'NFO');
-  const product = coerce('product', 'NRML');
+  if (errors.length) return { leg: null, errors };
+
+  // Sprint 20 (item 2) — `exchange=` omitted: derive it from the real
+  // instruments cache (`listExchangesForSymbol`, the SAME multi-listing
+  // index `getInstrument`'s own lot-size lookup is built on) instead of
+  // the old hardcoded 'NFO' default, which silently mis-tagged every
+  // equity/MCX/BSE order as NFO. A symbol listed on exactly one exchange
+  // resolves unambiguously; 0 (cache miss) or 2+ (a dual-listed equity,
+  // e.g. RELIANCE on NSE+BSE) listings REQUIRE an explicit `exchange=` —
+  // never a silent guess either way.
+  let exchange;
+  if (provided.has('exchange')) {
+    exchange = coerce('exchange', null);
+  } else if (typeof symbol === 'string' && symbol) {
+    const exchangesOf = (opts && opts.exchangesOf) || _defaultExchangesOf;
+    const listed = exchangesOf(symbol) || [];
+    if (listed.length === 1) {
+      exchange = listed[0];
+    } else if (listed.length === 0) {
+      errors.push(_err(`order: could not resolve exchange for '${symbol}' — specify exchange= explicitly`));
+    } else {
+      errors.push(_err(`order: '${symbol}' lists on multiple exchanges (${listed.join(', ')}) — specify exchange= explicitly`));
+    }
+  } else {
+    errors.push(_err("order: exchange= is required when symbol isn't a literal value"));
+  }
+  if (errors.length) return { leg: null, errors };
+
+  // Sprint 20 (item 2) — `product=` default now follows the SAME
+  // F&O-vs-equity split as the qty-as-contracts conversion below
+  // ('CNC' for NSE/BSE equity, 'NRML' for F&O) instead of a flat 'NRML'
+  // that was invalid at the broker for an equity order.
+  const product = coerce('product', _FO_EXCHANGES.has(exchange) ? 'NRML' : 'CNC');
   const order_type = coerce('order_type', 'LIMIT');
   const variety = coerce('variety', 'regular');
   const price = coerce('price', null);
@@ -3837,17 +4029,20 @@ function _compileOrderCallToLeg(call, catalog, opts) {
 
   // Sprint 17 — generic conditional-requirement check (place_order's real
   // catalog `price`/`trigger_price` `required_if` specs) against this
-  // call's EXPLICITLY-TYPED values only — `order_type`'s own LOCAL
-  // default above (`'LIMIT'`, used for every ticket's actually-compiled
-  // output) is deliberately NOT what's checked here when `order_type=`
-  // was omitted; the catalog's own declared default (`'MARKET'`, which
-  // never satisfies LIMIT/SL's `required_if.in`) is used instead, so a
-  // bare `order(...)` that never mentions `order_type=` at all keeps
-  // compiling exactly as it always has — this divergence between the
-  // compiled ticket's real default and the catalog's documented default
-  // is pre-existing and out of this sprint's scope (flagged, not fixed).
+  // call's EXPLICITLY-TYPED values only.
+  //
+  // Sprint 20 (item 2) fix — this now checks `order_type` against the
+  // SAME local default (`'LIMIT'`) the compiled leg ACTUALLY ships with,
+  // not the catalog's own declared default ('MARKET'). Pre-Sprint-20,
+  // checking against 'MARKET' meant a bare `order(...)` with no
+  // `order_type=`/`price=` at all compiled cleanly (MARKET never
+  // satisfies LIMIT/SL's `required_if.in`) while actually emitting a
+  // LIMIT order with `price: null` — a compile-time-invisible defect
+  // that only surfaced as a confusing broker-side rejection. `order_type`
+  // itself already equals either the provided value or the local
+  // 'LIMIT' default (set above), so this is now a direct passthrough.
   const resolvedForReqIf = (k) => {
-    if (k === 'order_type') return provided.has('order_type') ? order_type : (entry.paramsSchema.order_type && entry.paramsSchema.order_type.default);
+    if (k === 'order_type') return order_type;
     if (k === 'price') return provided.has('price') ? price : undefined;
     if (k === 'trigger_price') return provided.has('trigger_price') ? trigger_price : undefined;
     return undefined;
@@ -3855,12 +4050,29 @@ function _compileOrderCallToLeg(call, catalog, opts) {
   errors.push(..._checkRequiredIf(['price', 'trigger_price'], entry.paramsSchema, resolvedForReqIf, 'order'));
   if (errors.length) return { leg: null, errors };
 
+  // Sprint 20 (item 1, URGENT) — `qty=` now means CONTRACTS everywhere
+  // (bare `order(...)` AND `DO place_order(...)`/`DO order(...)` alike),
+  // matching the agent-action convention that is already baked into the
+  // decompiler, `$row`-bound `qty=qty` (a matched row's own `qty` column
+  // is contracts), and every already-stored `Agent.cli_source` text —
+  // all of which are far more expensive to change than this ephemeral,
+  // never-persisted bare-order path. For the ticket/basket destination
+  // (which the real `/api/orders/ticket`/`/api/orders/basket` endpoints
+  // still expect in LOTS for F&O, per `_ticket_validate_input`), a
+  // literal F&O exchange's contracts are converted to lots HERE, at
+  // compile time, using the SAME resolved `exchange`/lot-size machinery
+  // `lots=` already uses — never passed through unconverted (that was
+  // the exact "qty=75 silently became 75 LOTS instead of 1" incident
+  // class this item exists to close). Equity (NSE/BSE) has no lots
+  // concept — `qty=` there is raw shares, passed through unchanged, same
+  // as before.
   let quantity;
   let lot_size_hint = null;
+  const isFo = _FO_EXCHANGES.has(exchange);
   if (lotsArgs.length === 1) {
     const lotsVal = lotsArgs[0].value;
-    if (lotsVal.type !== 'number' || !(lotsVal.value > 0)) {
-      errors.push(_err('order: lots must be a positive number'));
+    if (lotsVal.type !== 'number' || !(lotsVal.value > 0) || !Number.isInteger(lotsVal.value)) {
+      errors.push(_err('order: lots must be a positive whole number'));
       return { leg: null, errors };
     }
     const lotSizeOf = (opts && opts.lotSizeOf) || _defaultLotSizeOf;
@@ -3869,12 +4081,34 @@ function _compileOrderCallToLeg(call, catalog, opts) {
       errors.push(_err(`order: could not resolve lot size for '${symbol}'`));
       return { leg: null, errors };
     }
-    quantity = Math.round(lotsVal.value);
+    quantity = lotsVal.value;
     lot_size_hint = Math.round(lotSize);
   } else {
     const c = _coerceValueForSpec(provided.get('qty'), entry.paramsSchema.qty, 'qty', 'order');
     if (c.error) { errors.push(c.error); return { leg: null, errors }; }
-    quantity = c.value;
+    const qtyContracts = c.value;
+    if (!isFo) {
+      quantity = qtyContracts;
+    } else {
+      const lotSizeOf = (opts && opts.lotSizeOf) || _defaultLotSizeOf;
+      const lotSize = lotSizeOf(symbol);
+      if (!lotSize || !(lotSize > 0)) {
+        errors.push(_err(
+          `order: could not resolve lot size for '${symbol}' — required to interpret `
+          + `qty= as contracts; use lots=N instead`
+        ));
+        return { leg: null, errors };
+      }
+      if (qtyContracts % lotSize !== 0) {
+        errors.push(_err(
+          `order: qty= is contracts; '${symbol}' lot size is ${lotSize} — use lots=N `
+          + `or a qty that's a multiple of ${lotSize}`
+        ));
+        return { leg: null, errors };
+      }
+      quantity = qtyContracts / lotSize;
+      lot_size_hint = Math.round(lotSize);
+    }
   }
 
   const leg = {
@@ -5854,7 +6088,10 @@ function _isFreshNamePosition(lastTok) {
   if (!lastTok) return true; // start of text — nothing typed yet
   if (lastTok.type === 'NAME' && lastTok.reserved) {
     const w = String(lastTok.value).toLowerCase();
-    return w === 'when' || w === 'alert' || w === 'do';
+    // Sprint 20 (item 3) — 'and'/'or'/'not' legally precede a fresh
+    // metric/scope name too, same as 'when'/'alert'/'do' already did,
+    // now that they're accepted word aliases for '&'/'|'/'~'.
+    return w === 'when' || w === 'alert' || w === 'do' || w === 'and' || w === 'or' || w === 'not';
   }
   return lastTok.type === 'AMP' || lastTok.type === 'PIPE' || lastTok.type === 'TILDE'
     || lastTok.type === 'LPAREN' || lastTok.type === 'COMMA';
