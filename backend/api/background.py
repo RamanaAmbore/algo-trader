@@ -1368,6 +1368,154 @@ async def _perf_build_quote_rows() -> list[dict]:
     return rows
 
 
+def _conditions_reference_watchlist_scope(conditions: list) -> bool:
+    """Pure walk — True when at least one leaf across `conditions` (one
+    entry per active agent's `agent.conditions` tree) uses a
+    `watchlist.*` scope token. Same recursion shape as
+    `_collect_quote_symbols_from_conditions` (short-circuits on first
+    hit) — a boolean gate rather than a symbol collector, since
+    `watchlist.*` scopes carry no per-leaf qualifier to extract.
+    """
+    def walk(node, visited: frozenset = frozenset()) -> bool:
+        if not isinstance(node, dict):
+            return False
+        if '$ref' in node:
+            ref = node.get('$ref')
+            if not isinstance(ref, str) or not ref or ref in visited:
+                return False
+            try:
+                from backend.api.algo.template_registry import REGISTRY as _FRAG
+                body = _FRAG.get('condition', ref)
+            except Exception:
+                return False
+            return walk(body, visited | {ref}) if isinstance(body, dict) else False
+        if 'all' in node or 'any' in node:
+            key = 'all' if 'all' in node else 'any'
+            return any(walk(child, visited) for child in (node.get(key) or []))
+        if 'not' in node:
+            return walk(node.get('not'), visited)
+        if 'log' in node:
+            return False
+        scope_tok = node.get('scope')
+        return isinstance(scope_tok, str) and scope_tok.startswith('watchlist.')
+
+    for cond in conditions or []:
+        try:
+            if walk(cond):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+async def _perf_fetch_watchlist_rows() -> list[dict]:
+    """Live-path population for the `watchlist.*` scope family
+    (`agent_evaluator.Context.watchlist_rows`) — this is the live
+    mirror of `SimDriver._watchlist_rows` (see
+    `backend/api/algo/sim/driver.py:_fetch_user_watchlist_rows` /
+    `_sd_build_watchlist_row`), which was the ONLY path populating this
+    field before this fix; the live `_perf_run_agent_engine` path left
+    it permanently empty, so `watchlist.*` agents never fired in
+    production (see `Context.watchlist_rows`'s own field comment,
+    predates this fix).
+
+    Gated like `_perf_build_quote_rows` — only queries the DB + fetches
+    quotes when at least one active agent's condition actually
+    references a `watchlist.*` scope (`_conditions_reference_watchlist_
+    scope`), so an install with no watchlist-scoped agents pays zero
+    extra cost per cycle.
+
+    User scope: `Agent` rows carry no owner/user_id column (this is a
+    single-operator trading app, not multi-tenant per-user alerting —
+    see `User.role`'s own comment: designated/admin/trader/risk/
+    partner tiers), so this reuses every watchlist owned by a
+    designated/admin-role user, UNIONED with the global (`is_global`)
+    Pinned list — the same visibility rule `routes/watchlist.py`'s own
+    list endpoint grants a designated/admin caller. Deduped on
+    (list name, exchange, tradingsymbol) across owners in case more
+    than one designated/admin user exists, so two operators owning a
+    same-named 'Default' list can never double-fire an agent off the
+    same symbol.
+
+    Reuses `sim/driver.py`'s `_sd_build_watchlist_row` row-builder
+    directly so `Context.watchlist_rows`' row SHAPE is byte-identical
+    between the sim and live paths — any future `watchlist.*` scope/
+    metric resolver change only has to special-case the row shape
+    once.
+    """
+    from backend.api.algo.agent_engine import _cycle_load_agents
+    from backend.api.algo.sim.driver import _sd_build_watchlist_row
+    from backend.api.models import User, Watchlist, WatchlistItem
+    from backend.api.routes.watchlist import _fetch_quotes
+    from sqlalchemy import select as _sa_select, or_ as _sa_or
+
+    try:
+        agents = await _cycle_load_agents(None)
+    except Exception as e:
+        logger.warning(f"Background: watchlist_rows — active agent load failed: {e}")
+        return []
+
+    if not _conditions_reference_watchlist_scope(
+        [a.conditions for a in agents if getattr(a, 'conditions', None)]
+    ):
+        return []
+
+    try:
+        async with async_session() as session:
+            wl_result = await session.execute(
+                _sa_select(Watchlist.id, Watchlist.name).where(
+                    _sa_or(
+                        Watchlist.is_global == True,  # noqa: E712
+                        Watchlist.user_id.in_(
+                            _sa_select(User.id).where(User.role.in_(("designated", "admin")))
+                        ),
+                    )
+                )
+            )
+            wls = list(wl_result.all())
+            if not wls:
+                return []
+            wl_map = {wid: wname for (wid, wname) in wls}
+            items_result = await session.execute(
+                _sa_select(WatchlistItem)
+                .where(WatchlistItem.watchlist_id.in_(list(wl_map.keys())))
+                .order_by(WatchlistItem.watchlist_id, WatchlistItem.sort_order)
+            )
+            items = list(items_result.scalars().all())
+    except Exception as e:
+        logger.warning(f"Background: watchlist_rows DB fetch failed: {e}")
+        return []
+
+    if not items:
+        return []
+
+    try:
+        quotes = await _fetch_quotes(items)
+    except Exception as e:
+        logger.warning(f"Background: watchlist_rows quote fetch failed: {e}")
+        return []
+
+    qmap = {q.item_id: q for q in quotes}
+    rows = [_sd_build_watchlist_row(it, qmap.get(it.id), wl_map) for it in items]
+
+    # Missing-vs-zero (same contract as _perf_build_quote_rows): a row
+    # whose quote fetch failed/was empty carries last_price=0.0 from
+    # `_sd_build_watchlist_row`'s own `_sd_qf` default — drop it rather
+    # than expose it as a confirmed zero LTP, so `watchlist.*.ltp < X`
+    # can never false-fire off a fetch outage.
+    seen: set[tuple] = set()
+    out: list[dict] = []
+    for r in rows:
+        if not r.get("last_price") or r["last_price"] <= 0:
+            continue
+        dedupe_key = (r.get("account"), r.get("exchange"), r.get("tradingsymbol"))
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        out.append(r)
+    return out
+
+
 async def _perf_run_agent_engine(
     sim_active: bool,
     df_holdings: pd.DataFrame,
@@ -1434,6 +1582,11 @@ async def _perf_run_agent_engine(
         except Exception as qe:
             logger.warning(f"Background: quote_rows unavailable this tick: {qe}")
             quote_rows = []
+        try:
+            watchlist_rows = await _perf_fetch_watchlist_rows()
+        except Exception as we:
+            logger.warning(f"Background: watchlist_rows unavailable this tick: {we}")
+            watchlist_rows = []
         agent_context = {
             "sum_holdings": sum_holdings,
             "sum_positions": sum_positions,
@@ -1444,6 +1597,7 @@ async def _perf_run_agent_engine(
             "spot_prices":   spot_prices,
             "orders_rows":   orders_rows,
             "quote_rows":    quote_rows,
+            "watchlist_rows": watchlist_rows,
             "ist_display": ist_display,
             "now": now,
             "seg_state": seg_state,

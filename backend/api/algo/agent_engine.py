@@ -2663,11 +2663,15 @@ def _ae_fanout_matches(latched_matches: list) -> list[dict]:
     `_ae_dispatch_survivor_entry` fires `agent.actions` against, once per
     entry (Sprint 16 fan-out).
 
-    Aggregate/synthetic matches — `account` is `None` or the literal
-    `'TOTAL'` sentinel (every `positions.total` / `funds.total`-scoped
-    leaf's row, and the `not` composite's synthetic `{'not': inner}`
-    entry) — collapse to EXACTLY ONE execution with `account='TOTAL'`,
-    using the first such match's row. This is the backward-compatibility
+    Aggregate/synthetic matches — classified by SCOPE SHAPE via
+    `_ae_is_aggregate_match` (every `positions.total` / `holdings.total`
+    / `funds.total`-scoped leaf's row, and the `not` composite's
+    synthetic `{'not': inner}` entry; NOT by whether `account` happens
+    to be `None` — fixed, see that function's docstring: a `quote.
+    tracked` match has `account=None` but is a genuine per-row match,
+    never aggregate) — collapse to EXACTLY ONE execution with
+    `account='TOTAL'`, using the first such match's row. This is the
+    backward-compatibility
     guarantee: an agent built entirely from aggregate-scoped leaves fires
     exactly once today (each such leaf's scope selector returns at most
     one TOTAL row), and must keep firing exactly once after fan-out —
@@ -2699,8 +2703,7 @@ def _ae_fanout_matches(latched_matches: list) -> list[dict]:
     per_row: list[dict] = []
     seen_identities: set = set()
     for m in latched_matches:
-        acct = m.get('account')
-        if acct in (None, 'TOTAL'):
+        if _ae_is_aggregate_match(m):
             if aggregate_entry is None:
                 aggregate_entry = m
             continue
@@ -2714,6 +2717,52 @@ def _ae_fanout_matches(latched_matches: list) -> list[dict]:
         out.append(aggregate_entry)
     out.extend(per_row)
     return out
+
+
+def _ae_is_aggregate_match(m: dict) -> bool:
+    """Shared aggregate/synthetic classifier for a v2 condition match
+    entry — used by both `_ae_fanout_matches` (dedup pass) and
+    `_ae_dispatch_actions` (row-binding gate) so the two can never
+    drift apart.
+
+    Classifies by SCOPE SHAPE, never by whether `account` happens to be
+    None (fixed — see CLAUDE.md "Alert evaluation and latching" /
+    Sprint 21 notes). The pre-fix version checked `m.get('account') in
+    (None, 'TOTAL')`, which silently misclassified every `quote.tracked`
+    match as aggregate — `quote.tracked` rows carry NO account dimension
+    at all (market data belongs to no account — see
+    `grammar.py:_scope_quote_tracked`'s own docstring), so `account` is
+    always None on a real, specific, symbol-filtered match, not because
+    the match is an aggregate/TOTAL row.
+
+    True when:
+      - the entry has no `scope` key at all — the `not` composite's
+        synthetic `{'not': inner}` entry (see `evaluate()`'s `not`
+        branch in agent_evaluator.py) is the only shape this covers;
+        it carries no row to bind, by construction.
+      - `scope` ends with `.total` — the three account-level TOTAL
+        summary scopes (`positions.total` / `holdings.total` /
+        `funds.total` — the only scope tokens ending in `.total` in
+        `grammar.py`'s SCOPE_REGISTRY).
+      - `account == 'TOTAL'` literal — belt-and-suspenders: every real
+        `.total`-scope row already carries this sentinel (see
+        `grammar.py:_scope_positions_total` et al.), so this is
+        redundant with the scope-suffix check above today, but guards
+        against a future scope that sets the sentinel without itself
+        ending in `.total`.
+
+    Every other match (including `quote.tracked`, whose rows have
+    `account=None` but a real `scope='quote.tracked'`) is a genuine
+    per-row match and must bind its row for `$row`-referencing actions.
+    """
+    if 'scope' not in m:
+        return True
+    scope_tok = m.get('scope')
+    if isinstance(scope_tok, str) and scope_tok.endswith('.total'):
+        return True
+    if m.get('account') == 'TOTAL':
+        return True
+    return False
 
 
 def _ae_row_identity(m: dict) -> tuple:
@@ -2873,17 +2922,23 @@ async def _ae_dispatch_actions(entry: dict, agent, context: dict, sim_mode_p: bo
     for match_entry in fanout:
         action_ctx = dict(context)
         acct = match_entry.get('account')
-        is_aggregate = acct in (None, 'TOTAL')
-        action_ctx["account"] = "TOTAL" if is_aggregate else acct
+        # Classified by scope SHAPE (`_ae_is_aggregate_match`), not by
+        # whether `account` happens to be None — see that function's
+        # docstring. A genuine per-row match whose scope carries no
+        # account dimension at all (e.g. `quote.tracked` — market data
+        # belongs to no account) still displays "TOTAL" here (no
+        # per-account identity to show) but DOES bind its row below.
+        is_aggregate = _ae_is_aggregate_match(match_entry)
+        action_ctx["account"] = acct if (not is_aggregate and acct) else "TOTAL"
         action_ctx["sim_mode"] = sim_mode_p
         # Matched-row binding for bare-NAME ($row) action params — see
         # actions.py:resolve_row_ref_params for the marker shape and
-        # fail-closed resolution contract. An AGGREGATE match (account is
-        # None/'TOTAL') never binds a row, even though the underlying
-        # TOTAL summary row technically has an 'account' column — a
-        # $row reference under an aggregate scope must fail closed
-        # (skip + log), never silently resolve to the literal "TOTAL"
-        # string.
+        # fail-closed resolution contract. An AGGREGATE match (scope
+        # ends in `.total`, or the `not` composite's synthetic entry)
+        # never binds a row, even though the underlying TOTAL summary
+        # row technically has an 'account' column — a $row reference
+        # under an aggregate scope must fail closed (skip + log), never
+        # silently resolve to the literal "TOTAL" string.
         action_ctx["_matched_row"] = None if is_aggregate else match_entry.get('row')
         action_ctx["_matched_row_scope"] = None if is_aggregate else match_entry.get('scope')
         await execute(agent, agent.actions, action_ctx)

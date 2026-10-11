@@ -170,9 +170,12 @@ class Context:
     df_margins:      Optional[pd.DataFrame] = None
     # Watchlist rows — each row has tradingsymbol, exchange, last_price,
     # day_change, day_change_percentage, and `account` carrying the
-    # watchlist name. Populated by the sim driver from _watchlist_rows;
-    # empty on the live path until a future "watchlist polling" task
-    # mirrors the simulator behaviour.
+    # watchlist name. Populated by the sim driver from _watchlist_rows
+    # on the sim path; populated once per `_task_performance` cycle by
+    # `background._perf_fetch_watchlist_rows` on the live path (fixed —
+    # see CLAUDE.md "Alert evaluation and latching" / Sprint 21+ notes).
+    # Both paths build rows via the same `sim/driver.py:
+    # _sd_build_watchlist_row` helper so the row shape is identical.
     watchlist_rows:  list = field(default_factory=list)
     # Per-symbol position rows (one dict per Kite row, with tradingsymbol +
     # exchange + quantity + last_price). Used by expiry-aware scopes that
