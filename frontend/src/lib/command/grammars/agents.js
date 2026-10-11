@@ -154,6 +154,47 @@
 //                                                       `parseAlertClauseBody`/
 //                                                       `parseEventStmt`'s
 //                                                       own comments). *)
+//                    | ("match" "=" match_value ",")  (* Sprint 18 follow-up
+//                                                       — a list-of-objects
+//                                                       alternative to the
+//                                                       `log_tag=`/
+//                                                       `min_level=`/
+//                                                       `where=` triple,
+//                                                       MUTUALLY EXCLUSIVE
+//                                                       with all three
+//                                                       (compile-time error
+//                                                       if combined — see
+//                                                       `compileEventStmt`).
+//                                                       Compiles to
+//                                                       {"any": [{"log":
+//                                                       {...}}, {"log":
+//                                                       {...}}]} — each list
+//                                                       entry has the SAME
+//                                                       `tag`/`min_level`/
+//                                                       `where` sub-keys the
+//                                                       simple form has
+//                                                       (spelled `tag=`, not
+//                                                       `log_tag=`, since
+//                                                       there is no reserved-
+//                                                       word collision risk
+//                                                       inside an object
+//                                                       literal). *)
+//   match_value    := "[" object_literal ("," object_literal)* "]"
+//                                                   (* Sprint 18 follow-up —
+//                                                       reuses
+//                                                       `parseObjectLiteral`
+//                                                       directly against the
+//                                                       main token stream,
+//                                                       same mechanism
+//                                                       `where=` already
+//                                                       uses (see
+//                                                       `parseMatchValue`'s
+//                                                       own comment for why
+//                                                       this needs no
+//                                                       dedicated mini-lexer
+//                                                       the way
+//                                                       `tp_scales_json_value`
+//                                                       does). *)
 //   token_stmt     := call call_list meta_item*     (* Sprint 10 — `token(...)`
 //                                                       only, restricted to
 //                                                       standalone use,
@@ -333,7 +374,28 @@
 //                                                          instead of parse
 //                                                          time. *)
 //   metric_ref     := call "@" scope_ref
-//   scope_ref      := call ("." call)*
+//   scope_ref      := scope_seg ("." scope_seg)*
+//   scope_seg      := call | qualifier_seg     (* Sprint 19 — a qualifier_seg
+//                        is trailing-only (never followed by a plain `call`
+//                        segment); short scope-family aliases (`pos`/`hld`/
+//                        `fnd`/`wl`, SCOPE_FAMILY_ALIASES) apply to
+//                        scope_ref's FIRST `call` segment only. *)
+//   qualifier_seg  := NAME ":" qualifier_value (* Sprint 19 — `account:value`/
+//                        `symbol:value` appended to a scope chain, e.g.
+//                        `positions.account:ZG0790`. Compiles to a leaf-level
+//                        `scope_filter` dict (sibling of metric/scope/op/
+//                        value — the REAL, already-shipped backend shape,
+//                        commit 1a904a12), never folded into the `scope`
+//                        string. `*`/`worst` are RESERVED values with NO
+//                        `scope_filter` — pure aliases onto the EXISTING
+//                        `<family>.any_acct`/`<family>.worst_acct`/
+//                        `<family>.worst_symbol` scope tokens (zero new
+//                        backend mechanism). See `_resolveScopeRefFull`'s
+//                        own comment for the full resolution algorithm. *)
+//   qualifier_value := "*" | NAME | STRING     (* "*" = wildcard (no filter);
+//                        a bare NAME of `worst` (case-insensitive) is the
+//                        "computed worst" sentinel; any other NAME/STRING is
+//                        a literal filter value. *)
 //   col_ref        := call ("." call)+        (* Sprint 15 — `leaf`'s OTHER
 //                        alternative, with NO "@": a bare dotted chain,
 //                        e.g. `positions.total.pnl`. Syntactically
@@ -410,14 +472,28 @@
 //                                                       rather than
 //                                                       `tp_scales_json`'s
 //                                                       own raw-substring
-//                                                       mini-lexer. Still
+//                                                       mini-lexer. Sprint
+//                                                       18 follow-up adds a
+//                                                       THIRD call site —
+//                                                       each entry of
+//                                                       `match=[...]`'s own
+//                                                       list (see
+//                                                       `match_value` below)
+//                                                       — and widens
+//                                                       `obj_kwarg`'s own
+//                                                       `value` to also
+//                                                       accept a NESTED
+//                                                       object_literal (a
+//                                                       match entry's own
+//                                                       `where={...}`),
+//                                                       scoped to that one
+//                                                       case only. Still
 //                                                       NOT a general
-//                                                       addition to `value`
-//                                                       anywhere else in
-//                                                       this grammar — only
-//                                                       these two named
-//                                                       call-sites ever
-//                                                       invoke it. Reuses
+//                                                       addition to the
+//                                                       top-level `value`
+//                                                       production anywhere
+//                                                       else in this
+//                                                       grammar. Reuses
 //                                                       "=" as the key/value
 //                                                       separator — this
 //                                                       grammar's one and
@@ -509,7 +585,12 @@
 //                   hasCall: boolean, start, end }
 //   ArgEntry   := { key: string, value: ValueNode }   (* key is NEVER null —
 //                   every argument is keyword-only, including the first *)
-//   ScopeNode  := { type:'scope', segments: CallNode[] }
+//   ScopeNode  := { type:'scope', segments: (CallNode|QualifierNode)[] }
+//                  (* Sprint 19 — a segment may now be a QualifierNode
+//                     (`account:value`/`symbol:value`), always trailing. *)
+//   QualifierNode := { type:'qualifier', key: string,
+//                       value: { type:'star' } | { type:'name'|'string', value },
+//                       start, end }
 //   ValueNode  := { type:'number'|'string'|'name', value }
 //               | { type:'list', value: ValueNode[] }
 //               | { type:'object', value: { [key: string]: ValueNode } }
@@ -588,8 +669,12 @@ export const RESERVED_WORDS = _RESERVED;
 //    params_schema`) — unrelated to a CHANNEL's own `gate=` kwarg (e.g.
 //    `telegram(gate=false)`), which is an ordinary per-channel param
 //    resolved generically through that channel's own `paramsSchema`, not
-//    through this reserved-kwarg set at all. ──────────────────────────
-const _EVENT_META_KEYS = new Set(['log_tag', 'min_level', 'render', 'where', 'gate']);
+//    through this reserved-kwarg set at all. `match=` (Sprint 18
+//    follow-up) is a NEW sixth key — a list-of-objects alternative to
+//    the `log_tag=`/`min_level=`/`where=` triple, mutually exclusive
+//    with all three (never combined — see `compileEventStmt`'s own
+//    guard). ─────────────────────────────────────────────────────────
+const _EVENT_META_KEYS = new Set(['log_tag', 'min_level', 'render', 'where', 'gate', 'match']);
 
 // ── `always` sentinel leaf — the exact shape the real `market-open-nse` /
 //    `market-preclose-mcx` builtin agents use (agent_engine.py ~1578-1590).
@@ -616,6 +701,32 @@ export const KWARG_ALIASES = Object.freeze({
 const _ALIAS_TO_REAL = Object.fromEntries(
   Object.entries(KWARG_ALIASES).map(([real, alias]) => [alias.toLowerCase(), real])
 );
+
+// ── Short scope-family alias table (Sprint 19) — SAME exact pattern as
+//    KWARG_ALIASES above: presentation-only, input-side CLI typing
+//    convenience, applied ONLY to a scope chain's FIRST segment (the
+//    family root — `positions`/`holdings`/`funds`/`watchlist`; deeper
+//    segments like `expiring_today`/`mcx_unhedged` have no abbreviated
+//    form). Never written to the output JSON — the compiler always
+//    resolves to the real catalog scope token, and the decompiler always
+//    renders the canonical long form, never the alias. ───────────────────
+export const SCOPE_FAMILY_ALIASES = Object.freeze({
+  positions: 'pos',
+  holdings: 'hld',
+  funds: 'fnd',
+  watchlist: 'wl',
+});
+const _SCOPE_ALIAS_TO_REAL = Object.fromEntries(
+  Object.entries(SCOPE_FAMILY_ALIASES).map(([real, alias]) => [alias.toLowerCase(), real])
+);
+
+/** Resolve a scope chain's FIRST segment name through `SCOPE_FAMILY_ALIASES`
+ *  (case-insensitive) to its canonical family name — a no-op for a name
+ *  that isn't a registered alias (including an already-canonical name). */
+function _scopeFamilyAliasOf(name) {
+  const lower = String(name).toLowerCase();
+  return _SCOPE_ALIAS_TO_REAL[lower] || lower;
+}
 
 // ═══════════════════════════════════════════════════════════════════════
 // (a) Catalog fetch + generic grammar builder
@@ -753,6 +864,12 @@ const _PUNCT_SINGLE = {
   // `{`/`}` at the top level (it was a hard lex error before), so this is a
   // no-op for every existing statement shape.
   '{': 'LBRACE', '}': 'RBRACE',
+  // Sprint 19 — `:` binds a qualifier key to its value inside a scope_ref
+  // segment (`account:ZG0790`, `symbol:*`, `account:worst`); `*` is the
+  // qualifier's own "any value" wildcard literal. Neither character was
+  // used anywhere else in this grammar before Sprint 19, so this is a
+  // no-op for every pre-Sprint-19 statement.
+  ':': 'COLON', '*': 'STAR',
 };
 
 function _isWordChar(ch) { return /[A-Za-z0-9_]/.test(ch); }
@@ -885,19 +1002,23 @@ function _lexObjScalesTok(text, baseStart) {
   return tokens;
 }
 
-/** `value` production, reused for an `obj_kwarg`'s RHS — a flat
- *  NUMBER/STRING/NAME only (a nested list_literal inside an object field is
- *  intentionally NOT supported — out of scope, no realistic object_literal
- *  call-site needs it; a nested object_literal is likewise not supported —
- *  object_literal does not recurse). GENERIC (Sprint 12) — no
- *  tp_scales_json-specific wording, since `where=` (event_stmt) shares this
- *  exact function unchanged. */
+/** `value` production, reused for an `obj_kwarg`'s RHS — NUMBER/STRING/
+ *  NAME, or (Sprint 18 follow-up, `match=[...]`'s per-entry `where={...}`)
+ *  a NESTED object_literal via a direct recursive call to
+ *  `parseObjectLiteral` below. A nested list_literal remains intentionally
+ *  NOT supported — out of scope, no realistic object_literal call-site
+ *  needs it. GENERIC (Sprint 12) — no tp_scales_json-specific wording,
+ *  since `where=` (event_stmt) shares this exact function unchanged; the
+ *  LBRACE branch works against BOTH the mini `_lexObjScalesTok` stream
+ *  (which already lexes `{`/`}`, see that function) and the main
+ *  `lexAgentStatement` stream, same as every other branch here. */
 function _objLiteralParseValue(state) {
   const tok = state.tokens[state.pos];
   if (tok.type === 'NUMBER') { state.pos++; return { type: 'number', value: tok.value }; }
   if (tok.type === 'STRING') { state.pos++; return { type: 'string', value: tok.value }; }
   if (tok.type === 'NAME') { state.pos++; return { type: 'name', value: tok.value }; }
-  throw new _ParseError('expected a value (number, string, or bare name) inside {...}', tok);
+  if (tok.type === 'LBRACE') return parseObjectLiteral(state);
+  throw new _ParseError('expected a value (number, string, bare name, or {...}) inside {...}', tok);
 }
 
 /** `object_literal := "{" obj_kwarg ("," obj_kwarg)* "}"` — GENERALIZED
@@ -1282,12 +1403,52 @@ export function parseCall(state) {
  *  already-parsed argument list without re-deriving it. */
 export function parseArgList(callNode) { return callNode.args || []; }
 
-/** `scope_ref := call ("." call)*` */
+/** `scope_seg := call | qualifier_seg` (Sprint 19)
+ *  `qualifier_seg := NAME ":" qualifier_value`
+ *  `qualifier_value := "*" | NAME | STRING`
+ *
+ *  Disambiguated from an ordinary `call` segment by a bare NAME
+ *  immediately followed by `:` — a real scope-family/scope-narrowing
+ *  name is NEVER itself followed by `:` anywhere else in this grammar,
+ *  so this lookahead is unambiguous. The qualifier KEY (`account`/
+ *  `symbol`) is accepted permissively here (any bare NAME) — an unknown
+ *  key is a compile-time error (`_resolveScopeRefFull`), same
+ *  parse-permissively/validate-at-compile split this grammar always
+ *  uses. `*` is the reserved "any value" wildcard; a bare NAME value of
+ *  `worst` (case-insensitive) is the reserved "computed worst" sentinel
+ *  — both resolved at compile time, never here (this function only
+ *  shapes the AST). */
+function parseScopeSeg(state) {
+  const tok = _peek(state);
+  if (tok.type === 'NAME' && !tok.hasCall) {
+    const next = state.tokens[state.pos + 1];
+    if (next && next.type === 'COLON') {
+      _advance(state); // qualifier key
+      _advance(state); // ":"
+      const valueTok = _peek(state);
+      let value;
+      if (valueTok.type === 'STAR') value = { type: 'star' };
+      else if (valueTok.type === 'NAME' && !valueTok.hasCall) value = { type: 'name', value: valueTok.value };
+      else if (valueTok.type === 'STRING') value = { type: 'string', value: valueTok.value };
+      else {
+        throw new _ParseError(
+          `expected a qualifier value after '${tok.value}:' (a bare account/symbol value, "*", or "worst")`,
+          valueTok,
+        );
+      }
+      _advance(state); // value
+      return { type: 'qualifier', key: tok.value, value, start: tok.start, end: valueTok.end };
+    }
+  }
+  return parseCall(state);
+}
+
+/** `scope_ref := scope_seg ("." scope_seg)*` */
 export function parseScopeRef(state) {
-  const segments = [parseCall(state)];
+  const segments = [parseScopeSeg(state)];
   while (_peek(state).type === 'DOT') {
     _advance(state);
-    segments.push(parseCall(state));
+    segments.push(parseScopeSeg(state));
   }
   return { type: 'scope', segments };
 }
@@ -1701,23 +1862,63 @@ export function parseAgentStmt(state) {
   return { kind: 'agent', condition, alertCalls, alertMsg, doCalls, meta };
 }
 
+/** `match_value := "[" object_literal ("," object_literal)* "]"` — Sprint
+ *  18 follow-up (`ALERT match=[{tag=orders, min_level=WARNING}, {...}]`).
+ *  Parsed DIRECTLY against the main `state` token stream — UNLIKE
+ *  `tp_scales_json_value` (`_parseTpScalesJsonArg`), which needs its own
+ *  raw-substring mini-lexer because it sits INSIDE a call's `(...)`
+ *  argument list, where top-level comma-splitting (`_splitTopLevelArgCommas`)
+ *  would otherwise confuse a nested object's commas with argument-
+ *  separating commas. `match=` sits in the event_meta KEYWORD position of
+ *  the main statement grammar, not inside any call's parens, so the main
+ *  lexer's already-lexed LBRACKET/LBRACE/COMMA/EQ/NAME/STRING/NUMBER
+ *  tokens are sufficient with no special-casing — this reuses
+ *  `parseObjectLiteral` (the SAME function `where=` already calls
+ *  directly against `state`) per list entry, mirroring
+ *  `_parseTpScalesJsonArg`'s own list-of-objects structure one level up,
+ *  just without that function's dedicated mini-lexer. */
+function parseMatchValue(state) {
+  const open = _peek(state);
+  if (open.type !== 'LBRACKET') {
+    throw new _ParseError('match= requires a list of {...} entries, e.g. [{tag=orders, min_level=WARNING}]', open);
+  }
+  _advance(state);
+  const items = [];
+  if (_peek(state).type !== 'RBRACKET') {
+    items.push(parseObjectLiteral(state));
+    while (_peek(state).type === 'COMMA') {
+      _advance(state);
+      if (_peek(state).type === 'RBRACKET') throw new _ParseError('trailing comma in match= list', _peek(state));
+      items.push(parseObjectLiteral(state));
+    }
+  }
+  const close = _peek(state);
+  if (close.type !== 'RBRACKET') throw new _ParseError('expected "]"', close);
+  _advance(state);
+  return { type: 'list', value: items };
+}
+
 /** `event_stmt := "ALERT" event_meta call_list meta_item*` — Sprint 12,
  *  notification (`kind='event'`) agents. Dispatched from `parseStatement`'s
  *  own lookahead rule (see that function's dispatch comment) specifically
- *  when a bare leading `ALERT` is immediately followed by one of the five
+ *  when a bare leading `ALERT` is immediately followed by one of the six
  *  reserved event-meta kwargs (`log_tag=`/`min_level=`/`render=`/`where=`/
- *  `gate=`, see `_EVENT_META_KEYS`) — never reached for an ordinary bare-ALERT
- *  agent_stmt (e.g. `ALERT telegram DO nop`), which keeps going through
- *  `parseAgentStmt`/`parseAlertClauseBody` exactly as before.
+ *  `gate=`/`match=`, see `_EVENT_META_KEYS`) — never reached for an ordinary
+ *  bare-ALERT agent_stmt (e.g. `ALERT telegram DO nop`), which keeps going
+ *  through `parseAgentStmt`/`parseAlertClauseBody` exactly as before.
  *
- *  `event_meta := event_kw*` — each of the five keys at most once, ANY
- *  ORDER (a plain loop, not five fixed positions); a duplicate key is a
+ *  `event_meta := event_kw*` — each of the six keys at most once, ANY
+ *  ORDER (a plain loop, not six fixed positions); a duplicate key is a
  *  PARSE-time error (not deferred to compile time, per the operator's
  *  explicit instruction — unlike almost everything else in this grammar).
  *  `where=` is the ONE key whose value is an `object_literal` (reusing
  *  `parseObjectLiteral` directly against THIS function's own `state` — see
- *  that function's own generalization comment); the other four use the
- *  ordinary `value` production.
+ *  that function's own generalization comment); `match=` (Sprint 18
+ *  follow-up) is a `match_value` (list of `object_literal`, see
+ *  `parseMatchValue` above) — mutually exclusive with
+ *  `log_tag=`/`min_level=`/`where=` (checked at COMPILE time,
+ *  `compileEventStmt`, not here — this function parses permissively);
+ *  the other three use the ordinary `value` production.
  *
  *  After `event_meta`, two guards run before the channel call_list:
  *    1. WHEN/DO immediately following `event_meta` (e.g.
@@ -1747,7 +1948,9 @@ export function parseEventStmt(state) {
     seenKeys.add(lower);
     _advance(state); // key
     _advance(state); // "="
-    eventMeta[lower] = lower === 'where' ? parseObjectLiteral(state) : parseValue(state);
+    eventMeta[lower] = lower === 'where' ? parseObjectLiteral(state)
+      : lower === 'match' ? parseMatchValue(state)
+      : parseValue(state);
     const comma = _peek(state);
     if (comma.type !== 'COMMA') throw new _ParseError(`expected "," after ${lower}=...`, comma);
     _advance(state);
@@ -1755,7 +1958,7 @@ export function parseEventStmt(state) {
   const after = _peek(state);
   if (after.type === 'NAME' && !after.hasCall && (_wordIs(after, 'when') || _wordIs(after, 'do'))) {
     throw new _ParseError(
-      'log_tag=/min_level=/render=/where=/gate= are only valid on a bare ALERT-only statement, not combined with WHEN/DO',
+      'log_tag=/min_level=/render=/where=/gate=/match= are only valid on a bare ALERT-only statement, not combined with WHEN/DO',
       after,
     );
   }
@@ -1790,7 +1993,7 @@ export function parseEventStmt(state) {
   const afterCalls = _peek(state);
   if (afterCalls.type === 'NAME' && !afterCalls.hasCall && _wordIs(afterCalls, 'do')) {
     throw new _ParseError(
-      'log_tag=/min_level=/render=/where=/gate= are only valid on a bare ALERT-only statement, not combined with WHEN/DO',
+      'log_tag=/min_level=/render=/where=/gate=/match= are only valid on a bare ALERT-only statement, not combined with WHEN/DO',
       afterCalls,
     );
   }
@@ -1975,6 +2178,24 @@ function _coerceValueForSpec(valueNode, spec, key, label) {
     if (valueNode.type === 'string') return { value: valueNode.value };
     return { error: _err(`${label}.${key}: free-text value must be quoted (e.g. ${key}="...")`) };
   }
+  // Sprint 18 follow-up (`match=[...]`) — `freetext` mirrors
+  // `_freeTextValue`'s own bare-NAME-or-quoted-STRING acceptance (e.g.
+  // `log_tag=`/`render=`): preserved EXACTLY as typed, no case
+  // normalization, unlike `type:'enum'` above or `type:'string'`'s
+  // quote-required rule. Used for match entry `tag=` (`tag=orders`,
+  // unquoted, same spelling convention as the simple form's `log_tag=`).
+  if (type === 'freetext') {
+    if (valueNode.type === 'string' || valueNode.type === 'name') return { value: valueNode.value };
+    return { error: _err(`${label}.${key}: expected a bare word or quoted string`) };
+  }
+  // Sprint 18 follow-up — a nested object_literal value (match entry's
+  // own `where={...}`), unwrapped via `_unwrapValueNode` same as the
+  // top-level `where=`'s passthrough schema (`OBJECT_LITERAL_SCHEMAS.where
+  // === null`) already does.
+  if (type === 'object') {
+    if (valueNode.type !== 'object') return { error: _err(`${label}.${key}: expected an object literal {...}`) };
+    return { value: _unwrapValueNode(valueNode) };
+  }
   // Unknown/absent spec type — best-effort passthrough.
   if (valueNode.type === 'list') return { value: valueNode.value.map(v => v.value) };
   return { value: valueNode.value };
@@ -1987,6 +2208,16 @@ function _coerceValueForSpec(valueNode, spec, key, label) {
 // requirements, and declared (`mutuallyExclusiveGroups`) mutual-exclusion.
 // ═══════════════════════════════════════════════════════════════════════
 
+// `min_level`'s enum spec + default — shared by event_stmt's simple
+// single-filter form (`min_level=`) AND (Sprint 18 follow-up) each
+// `match=[...]` list entry's own `min_level` field. Moved up here (ahead
+// of its original Sprint 12 call site, further down this file) so
+// `OBJECT_LITERAL_SCHEMAS.match` below can reference `_MIN_LEVEL_SPEC`
+// directly — see the "event_stmt compiler" section comment further down
+// for the full history/rationale.
+const _MIN_LEVEL_SPEC = Object.freeze({ type: 'enum', enum: ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'] });
+const _MIN_LEVEL_DEFAULT = 'INFO'; // confirmed against event_agents.py:validate_seed_spec's own `str(leaf.get("min_level", "INFO"))` default
+
 /** Per-key type schema for object-literal-valued call args, keyed by the
  *  FIELD NAME the object-literal is assigned to. `tp_scales_json=[{...}]`'s
  *  per-entry shape has a real fixed schema (both keys are plain numbers on
@@ -1995,10 +2226,23 @@ function _coerceValueForSpec(valueNode, spec, key, label) {
  *  deliberately maps to `null` — it has no fixed schema at all (arbitrary
  *  key/value pairs matching whatever real `log` `extra` fields exist),
  *  so `_coerceObjectLiteralEntry` below treats a `null` schema as
- *  "passthrough every key unwrapped, untyped" — not "reject everything". */
+ *  "passthrough every key unwrapped, untyped" — not "reject everything".
+ *
+ *  `match` (Sprint 18 follow-up, `ALERT match=[{...}, {...}]`) is the
+ *  per-entry shape of `match=`'s list-of-objects — each entry has the
+ *  SAME three sub-keys the simple single-filter event_stmt form has
+ *  (`tag`/`min_level`/`where`, spelled `tag=` rather than `log_tag=`
+ *  since there is no top-level `log_tag=` reserved-word collision risk
+ *  inside an object literal): `tag` is free-text (same `_freeTextValue`-
+ *  equivalent semantics as the simple form's `log_tag=` — bare or
+ *  quoted, never case-normalized), `min_level` is the SAME enum spec as
+ *  the simple form (defaults to `_MIN_LEVEL_DEFAULT` when omitted,
+ *  applied in `_compileMatchList` below), `where` is a nested object
+ *  literal (untyped passthrough, same as the simple form's own `where=`). */
 const OBJECT_LITERAL_SCHEMAS = Object.freeze({
   tp_scales_json: Object.freeze({ at_pct: { type: 'number' }, close_pct: { type: 'number' } }),
   where: null,
+  match: Object.freeze({ tag: { type: 'freetext' }, min_level: _MIN_LEVEL_SPEC, where: { type: 'object' } }),
 });
 
 /** Coerce ONE `{key=value}` object-literal entry node (the `{type:'object',
@@ -2098,16 +2342,235 @@ function _resolveMetric(callNode, catalog, errors) {
   return entry;
 }
 
-function _resolveScopeString(scopeNode, catalog, errors) {
+/** Join plain `call`-type scope segments into a dotted lookup key, applying
+ *  the Sprint 19 short scope-family alias to segment 0 only (deeper
+ *  segments like `expiring_today`/`mcx_unhedged` have no abbreviated
+ *  form). Returns the resolved catalog TOKEN (canonical casing) or `null`
+ *  when the joined chain doesn't resolve as a known scope — `null` is NOT
+ *  itself an error here (a caller may legitimately want to try a fallback
+ *  resolution, see `_resolveScopeRefFull`'s implicit-base-scope branch);
+ *  an `.args` violation on a segment IS always a hard error, pushed
+ *  directly onto `errors`. */
+function _resolveScopeStringParts(segs, catalog, errors) {
   const parts = [];
-  for (const seg of scopeNode.segments) {
+  for (let i = 0; i < segs.length; i++) {
+    const seg = segs[i];
     if (seg.args && seg.args.length) { errors.push(_err(`scope segment '${seg.name}' takes no arguments`)); return null; }
-    parts.push(seg.name.toLowerCase());
+    const lower = seg.name.toLowerCase();
+    parts.push(i === 0 ? _scopeFamilyAliasOf(lower) : lower);
   }
-  const joined = parts.join('.');
-  const entry = catalog.scopes.get(joined);
-  if (!entry) { errors.push(_err(`unknown scope '${parts.join('.')}'`)); return null; }
-  return entry.token;
+  const entry = catalog.scopes.get(parts.join('.'));
+  return entry ? entry.token : null;
+}
+
+function _resolveScopeString(scopeNode, catalog, errors) {
+  const localErrors = [];
+  const resolved = _resolveScopeStringParts(scopeNode.segments, catalog, localErrors);
+  if (localErrors.length) { errors.push(...localErrors); return null; }
+  if (!resolved) {
+    errors.push(_err(`unknown scope '${scopeNode.segments.map(s => s.name.toLowerCase()).join('.')}'`));
+    return null;
+  }
+  return resolved;
+}
+
+// ── Scope-filter qualifiers (Sprint 19) — `account:value`/`symbol:value`
+// (plus their `*`/`worst` reserved-value forms), appended to a scope
+// chain via the existing "." dotting convention, e.g.
+// `positions.account:ZG0790`, `positions.expiring_today.symbol:
+// NIFTY25JULFUT`. Targets the real, already-shipped backend shape (commit
+// 1a904a12): a leaf's compiled JSON gains an OPTIONAL `scope_filter` key,
+// a SIBLING of `metric`/`scope`/`op`/`value` (NEVER folded into the
+// `scope` string itself) — e.g.
+// `{"metric":"pnl","scope":"positions.expiring_today","op":"<=",
+//   "value":-5000,"scope_filter":{"symbol":"NIFTY25JULFUT"}}`.
+// Qualifier keys compile to EXPOSED-COLUMN names (`account_id`/`symbol`),
+// reusing Sprint 15's `catalog.columns` per-scope registry as the
+// validity whitelist — mirrors the backend's own
+// `exposed_columns_for_scope()`/`scope_filter_row_predicate()` check
+// byte-for-byte (same error class: an unsupported qualifier on a scope
+// with no matching exposed column is a compile error, exactly like the
+// backend's own save-time `validate()` rejects it). An empty/all-wildcard
+// filter is never emitted as `scope_filter: {}` — omitted entirely,
+// matching the backend's explicit "omit the key for no filter" rule.
+//
+// `*` and `worst` are RESERVED qualifier values carrying NO `scope_filter`
+// at all — pure aliases onto an EXISTING scope token, zero new mechanism:
+// `account:*` always resolves the implicit `<family>.any_acct` scope
+// with no filter (identical to omitting the qualifier entirely);
+// `account:worst`/`symbol:worst` resolve the EXISTING
+// `<family>.worst_acct`/`<family>.worst_symbol` tokens directly. `worst`
+// is valid ONLY as the chain's sole qualifier, directly off the bare
+// scope-family root (no deeper scope name before it) — there is no
+// existing "worst within THIS narrower scope" token to alias onto, and
+// inventing one is explicitly out of scope for this sprint (deliberately
+// surfaces as a clear compile error for e.g. `funds.account:worst`, which
+// has no `funds.worst_acct` token today — a real, intentionally-deferred
+// gap, not silently-wrong behavior).
+const _QUALIFIER_COLUMN_NAME = Object.freeze({ account: 'account_id', symbol: 'symbol' });
+const _QUALIFIER_COLUMN_NAME_REVERSE = Object.freeze({ account_id: 'account', symbol: 'symbol' });
+
+// family -> qualifier key -> existing scope token "worst" aliases onto.
+// Deliberately sparse — e.g. `funds` has no `worst_acct` token today (see
+// the comment above) — a missing entry surfaces as a clear compile
+// error, never a silent wrong scope.
+const _QUALIFIER_WORST_ALIAS = Object.freeze({
+  positions: Object.freeze({ account: 'positions.worst_acct', symbol: 'positions.worst_symbol' }),
+  holdings: Object.freeze({ account: 'holdings.worst_acct', symbol: 'holdings.worst_symbol' }),
+});
+
+function _qualifierValueText(q) {
+  if (q.value.type === 'star') return '*';
+  return String(q.value.value);
+}
+
+/** `scope_ref` resolver (Sprint 15's `_resolveScopeString`, extended for
+ *  Sprint 19's qualifier segments). Returns `{ scopeStr, scopeFilter }` —
+ *  `scopeFilter` is `undefined` when no literal-valued qualifier was
+ *  present (NEVER an empty `{}`). Returns `null` (after pushing onto
+ *  `errors`) on any failure. */
+function _resolveScopeRefFull(scopeNode, catalog, errors) {
+  const segs = scopeNode.segments;
+  const qualIdx = segs.findIndex((s) => s.type === 'qualifier');
+  if (qualIdx === -1) {
+    const scopeStr = _resolveScopeString(scopeNode, catalog, errors);
+    return scopeStr ? { scopeStr, scopeFilter: undefined } : null;
+  }
+  // Trailing-only — a 'call' segment after the first qualifier segment is
+  // a clear, specific compile error (same "trailing-only" convention
+  // `meta_item*` already follows elsewhere in this grammar).
+  for (let i = qualIdx + 1; i < segs.length; i++) {
+    if (segs[i].type !== 'qualifier') {
+      errors.push(_err(`scope qualifier segments ('${segs[qualIdx].key}:...') must be trailing — '${segs[i].name}' cannot follow one`));
+      return null;
+    }
+  }
+  const callSegs = segs.slice(0, qualIdx);
+  const qualSegs = segs.slice(qualIdx);
+  if (callSegs.length === 0) {
+    errors.push(_err('expected a scope before a qualifier segment'));
+    return null;
+  }
+  // A real args-violation on a call segment is always a hard error — even
+  // though the "does the prefix resolve explicitly" check just below is
+  // speculative (a failed explicit resolution legitimately falls back to
+  // the implicit any_acct base), a malformed segment like `positions(5)`
+  // must never be silently swallowed by that fallback.
+  for (const seg of callSegs) {
+    if (seg.args && seg.args.length) { errors.push(_err(`scope segment '${seg.name}' takes no arguments`)); return null; }
+  }
+
+  // Resolve the base scope the qualifiers apply to. If the call-segment
+  // prefix ALREADY is a real, existing scope token (e.g.
+  // `positions.expiring_today`), use it unchanged. Otherwise — the
+  // common case, a BARE scope-family root with no scope token of its own
+  // (e.g. bare `positions`) — fall back to that family's own `.any_acct`
+  // token, the implicit "every account, per-row" base every qualifier
+  // example assumes (`positions.account:ZG0790` reads as "within
+  // positions.any_acct's own rows, keep only this account").
+  const family = _scopeFamilyAliasOf(callSegs[0].name);
+  const explicit = _resolveScopeStringParts(callSegs, catalog, []);
+  let effectiveBaseScope;
+  if (explicit) {
+    effectiveBaseScope = explicit;
+  } else if (callSegs.length === 1 && catalog.scopes.has(`${family}.any_acct`)) {
+    effectiveBaseScope = catalog.scopes.get(`${family}.any_acct`).token;
+  } else {
+    errors.push(_err(`unknown scope '${callSegs.map(s => s.name.toLowerCase()).join('.')}'`));
+    return null;
+  }
+
+  // "worst" — pure alias onto an existing scope token, mutually exclusive
+  // with every other qualifier form (no backend representation exists
+  // for combining it with a literal filter or a second qualifier). Valid
+  // ONLY directly off the bare scope-family root (`callSegs` resolving
+  // via the IMPLICIT any_acct fallback, never an explicit deeper/narrower
+  // scope like `expiring_today`) — there is no "worst within THIS
+  // narrower scope" token to alias onto, and silently discarding the
+  // narrowing (e.g. collapsing `positions.expiring_today.symbol:worst`
+  // onto plain `positions.worst_symbol`) would change the condition's
+  // meaning without any error.
+  const worstQual = qualSegs.find((q) => q.value.type === 'name' && String(q.value.value).toLowerCase() === 'worst');
+  if (worstQual) {
+    if (qualSegs.length > 1) {
+      errors.push(_err(`'${worstQual.key}:worst' must be the only qualifier on this scope — it already selects one specific row`));
+      return null;
+    }
+    if (explicit) {
+      errors.push(_err(
+        `'${worstQual.key}:worst' is only valid directly off the bare '${family}' scope family — `
+        + `there is no "worst within '${effectiveBaseScope}'" token to alias onto`
+      ));
+      return null;
+    }
+    const qualKey = worstQual.key.toLowerCase();
+    const target = (_QUALIFIER_WORST_ALIAS[family] || {})[qualKey];
+    if (!target || !catalog.scopes.has(target)) {
+      errors.push(_err(`'${family}.${qualKey}:worst' has no existing scope token to alias onto`));
+      return null;
+    }
+    return { scopeStr: catalog.scopes.get(target).token, scopeFilter: undefined };
+  }
+
+  const scopeFilter = {};
+  const seenColumns = new Set();
+  for (const q of qualSegs) {
+    const qualKey = q.key.toLowerCase();
+    const column = _QUALIFIER_COLUMN_NAME[qualKey];
+    if (!column) {
+      errors.push(_err(`unknown scope qualifier '${q.key}:' — only 'account:'/'symbol:' are supported`));
+      return null;
+    }
+    const colKey = `${effectiveBaseScope}.${column}`.toLowerCase();
+    if (!catalog.columns || !catalog.columns.has(colKey)) {
+      errors.push(_err(`'${q.key}' is not a valid qualifier for scope '${effectiveBaseScope}' (no exposed '${column}' column)`));
+      return null;
+    }
+    if (seenColumns.has(column)) {
+      errors.push(_err(`scope_filter: duplicate qualifier '${q.key}:'`));
+      return null;
+    }
+    seenColumns.add(column);
+    // "*" is validated identically to a literal value above (an unknown
+    // key or an unexposed column is still a compile error for a wildcard
+    // qualifier) but contributes NO scope_filter entry — explicit
+    // wildcard is the same as omitting the qualifier entirely.
+    if (q.value.type === 'star') continue;
+    scopeFilter[column] = _qualifierValueText(q);
+  }
+  const hasFilter = Object.keys(scopeFilter).length > 0;
+  return { scopeStr: effectiveBaseScope, scopeFilter: hasFilter ? scopeFilter : undefined };
+}
+
+/** Decompile-direction mirror of `_resolveScopeRefFull`'s `scope_filter`
+ *  handling — renders a stored `scope_filter` dict back to its trailing
+ *  `.qualifier:value` CLI suffix (e.g. `.account:ZG0790`), appended
+ *  verbatim to whatever the stored `scope` string already decompiled to.
+ *  Fails loud (never guesses) on an unrecognized scope_filter key or an
+ *  unsafe-to-render value, per this file's "never silently drop a field"
+ *  convention. */
+function _decompileScopeFilter(scopeFilter, errors) {
+  if (!scopeFilter || typeof scopeFilter !== 'object' || Array.isArray(scopeFilter)) {
+    errors.push(_err(`scope_filter must be an object, got ${JSON.stringify(scopeFilter)}`));
+    return null;
+  }
+  const keys = Object.keys(scopeFilter);
+  if (keys.length === 0) {
+    errors.push(_err('scope_filter must not be empty (omit the key entirely for "no filter")'));
+    return null;
+  }
+  const parts = [];
+  for (const column of keys) {
+    const qualKey = _QUALIFIER_COLUMN_NAME_REVERSE[column];
+    if (!qualKey) { errors.push(_err(`scope_filter key '${column}' has no CLI qualifier representation yet`)); return null; }
+    const raw = scopeFilter[column];
+    if (typeof raw !== 'string' || !raw) { errors.push(_err(`scope_filter.${column} must be a non-empty string`)); return null; }
+    if (raw === '*') { parts.push(`${qualKey}:*`); continue; }
+    const r = _isBareable(raw) ? { text: raw } : _quoteString(raw);
+    if (r.error) { errors.push(_err(`scope_filter.${column}: ${r.message}`)); return null; }
+    parts.push(`${qualKey}:${r.text}`);
+  }
+  return `.${parts.join('.')}`;
 }
 
 /** Compiles a metric/scope `call` to its POSITIONAL-ONLY catalog string
@@ -2232,12 +2695,16 @@ function _compileComparatorValue(metricStr, scopeStr, valueType, op, value, erro
  *    4. Anything else — unknown scope or unknown column/metric on it. */
 function _resolveDotAccess(segments, catalog, errors) {
   const parts = [];
-  for (const seg of segments) {
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
     if (seg.args && seg.args.length) {
       errors.push(_err(`'${seg.name}' takes no arguments`));
       return null;
     }
-    parts.push(seg.name.toLowerCase());
+    // Sprint 19 — short scope-family alias (`pos`/`hld`/`fnd`/`wl`),
+    // applied to segment 0 only, same as `_resolveScopeStringParts`.
+    const lower = seg.name.toLowerCase();
+    parts.push(i === 0 ? _scopeFamilyAliasOf(lower) : lower);
   }
   const full = parts.join('.');
   if (catalog.scopes.has(full)) {
@@ -2286,12 +2753,16 @@ function _resolveDotAccess(segments, catalog, errors) {
 function compileLeaf(node, catalog) {
   const errors = [];
   const metricEntry = _resolveMetric(node.metric, catalog, errors);
-  const scopeStr = metricEntry ? _resolveScopeString(node.scope, catalog, errors) : null;
+  const scopeResolved = metricEntry ? _resolveScopeRefFull(node.scope, catalog, errors) : null;
   if (errors.length) return { conditions: null, errors };
   const metricStr = _compileMetricCallString(node.metric, metricEntry, errors);
   if (errors.length) return { conditions: null, errors };
-  const conditions = _compileComparatorValue(metricStr, scopeStr, metricEntry.valueType, node.op, node.value, errors);
+  const conditions = _compileComparatorValue(metricStr, scopeResolved.scopeStr, metricEntry.valueType, node.op, node.value, errors);
   if (errors.length) return { conditions: null, errors };
+  // Sprint 19 — a resolved qualifier filter is a SIBLING key of the
+  // condition object the comparator just built, never folded into
+  // `scope`/`metric` — mirrors the real backend leaf shape exactly.
+  if (scopeResolved.scopeFilter) conditions.scope_filter = scopeResolved.scopeFilter;
   return { conditions, errors: [] };
 }
 
@@ -2315,18 +2786,20 @@ const _BETWEEN_FLIP = { '<': '>', '<=': '>=', '>': '<', '>=': '<=' };
 
 function compileBetween(node, catalog) {
   const errors = [];
-  let metricStr, scopeStr, valueType;
+  let metricStr, scopeStr, valueType, scopeFilter;
   if (node.colSegments) {
     const resolved = _resolveDotAccess(node.colSegments, catalog, errors);
     if (errors.length) return { conditions: null, errors };
     ({ metricStr, scopeStr, valueType } = resolved);
   } else {
     const metricEntry = _resolveMetric(node.metric, catalog, errors);
-    scopeStr = metricEntry ? _resolveScopeString(node.scope, catalog, errors) : null;
+    const scopeResolved = metricEntry ? _resolveScopeRefFull(node.scope, catalog, errors) : null;
     if (errors.length) return { conditions: null, errors };
     metricStr = _compileMetricCallString(node.metric, metricEntry, errors);
     if (errors.length) return { conditions: null, errors };
     valueType = metricEntry.valueType;
+    scopeStr = scopeResolved.scopeStr;
+    scopeFilter = scopeResolved.scopeFilter;
   }
 
   if (node.value1.type !== 'number' || node.value2.type !== 'number') {
@@ -2350,7 +2823,9 @@ function compileBetween(node, catalog) {
   const inclusive = (node.op1 === '<=' && node.op2 === '<=') || (node.op1 === '>=' && node.op2 === '>=');
   if (inclusive) {
     const [low, high] = dirLow ? [node.value1.value, node.value2.value] : [node.value2.value, node.value1.value];
-    return { conditions: { metric: metricStr, scope: scopeStr, op: 'between', value: [low, high] }, errors: [] };
+    const conditions = { metric: metricStr, scope: scopeStr, op: 'between', value: [low, high] };
+    if (scopeFilter) conditions.scope_filter = scopeFilter;
+    return { conditions, errors: [] };
   }
   // Strict / mixed-strictness chain — the backend's `between` op is ALWAYS
   // inclusive (`lambda a,b: b[0] <= a <= b[1]`), so compiling a strict
@@ -2359,6 +2834,7 @@ function compileBetween(node, catalog) {
   // instead — see .claude/PLAN.md Step 5's "between" design note.
   const leaf1 = { metric: metricStr, scope: scopeStr, op: _BETWEEN_FLIP[node.op1], value: node.value1.value };
   const leaf2 = { metric: metricStr, scope: scopeStr, op: node.op2, value: node.value2.value };
+  if (scopeFilter) { leaf1.scope_filter = scopeFilter; leaf2.scope_filter = scopeFilter; }
   return { conditions: { all: [leaf1, leaf2] }, errors: [] };
 }
 
@@ -3071,9 +3547,12 @@ function compileAgentStmt(ast, catalog, opts) {
 // case normalization — see `_EVENT_META_KEYS`'s own file-header note and
 // the PLAN's explicit "asymmetric casing" rule); `min_level` is the ONE
 // field that DOES get case-normalized, via the SAME `_coerceValueForSpec`
-// enum path every other enum field in this grammar already uses. ───────
-const _MIN_LEVEL_SPEC = Object.freeze({ type: 'enum', enum: ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'] });
-const _MIN_LEVEL_DEFAULT = 'INFO'; // confirmed against event_agents.py:validate_seed_spec's own `str(leaf.get("min_level", "INFO"))` default
+// enum path every other enum field in this grammar already uses.
+// `_MIN_LEVEL_SPEC`/`_MIN_LEVEL_DEFAULT` are defined earlier in this file
+// (right before `OBJECT_LITERAL_SCHEMAS`) — moved up in Sprint 18's
+// follow-up (`match=[...]`) so `OBJECT_LITERAL_SCHEMAS.match` can
+// reference `_MIN_LEVEL_SPEC` directly for its per-entry `min_level`
+// field, without a module-load-order (TDZ) hazard. ─────────────────────
 
 /** Extract a free-text value (bare NAME or quoted STRING) PRESERVED
  *  EXACTLY as typed — no case normalization, unlike an enum field. Used
@@ -3096,6 +3575,37 @@ function _freeTextValue(valueNode, label) {
  *  compile-time error naming the offending key, per the operator's
  *  explicit instruction that `render=` — not `msg=` — owns the message for
  *  an event agent. */
+/** Compile `match=[...]`'s list of object-literal entries (Sprint 18
+ *  follow-up) into the backend's `{"any": [{"log": {...}}, {"log":
+ *  {...}}]}` leaf shape — each entry resolved via
+ *  `OBJECT_LITERAL_SCHEMAS.match` (the SAME generic
+ *  `_coerceObjectLiteralEntry` mechanism tp_scales_json/where= already
+ *  use). `min_level` defaults to `_MIN_LEVEL_DEFAULT` per-entry, same
+ *  default the simple single-filter form already applies. Returns the
+ *  `any` array (list of `{log: {...}}` objects) or `null` on any error
+ *  (pushed onto the caller-supplied `errors`). */
+function _compileMatchList(matchNode, errors) {
+  if (!matchNode || matchNode.type !== 'list') {
+    errors.push(_err('match= requires a list of {...} entries, e.g. [{tag=orders, min_level=WARNING}]'));
+    return null;
+  }
+  if (matchNode.value.length === 0) {
+    errors.push(_err('match= requires at least one {...} entry'));
+    return null;
+  }
+  const logs = [];
+  matchNode.value.forEach((entryNode, i) => {
+    const coerced = _coerceObjectLiteralEntry(entryNode, OBJECT_LITERAL_SCHEMAS.match, `match[${i}]`);
+    if (coerced.errors.length) { errors.push(...coerced.errors); return; }
+    const fields = coerced.value;
+    if (fields.tag === undefined) { errors.push(_err(`match[${i}]: missing required 'tag='`)); return; }
+    const log = { tag: fields.tag, min_level: fields.min_level !== undefined ? fields.min_level : _MIN_LEVEL_DEFAULT };
+    if (fields.where !== undefined) log.where = fields.where;
+    logs.push({ log });
+  });
+  return errors.length ? null : logs;
+}
+
 function compileEventStmt(ast, catalog) {
   const errors = [];
 
@@ -3104,15 +3614,26 @@ function compileEventStmt(ast, catalog) {
   const minLevelNode = ast.eventMeta.min_level;
   const whereNode = ast.eventMeta.where;
   const gateNode = ast.eventMeta.gate;
+  const matchNode = ast.eventMeta.match; // Sprint 18 follow-up
 
   // `msg=`/`message=` rejection, naming EVERY other reserved key present
   // alongside it (not just a generic "doesn't apply" wording) — per the
   // operator's explicit instruction that "log_tag= and msg= both present"
   // must name both keys, not just complain about msg= in isolation.
   if (ast.msgNode != null) {
-    const present = ['log_tag', 'min_level', 'render', 'where', 'gate'].filter((k) => ast.eventMeta[k]);
+    const present = ['log_tag', 'min_level', 'render', 'where', 'gate', 'match'].filter((k) => ast.eventMeta[k]);
     const alongside = present.length ? ` (combined with ${present.map((k) => `${k}=`).join(', ')})` : '';
     errors.push(_err(`msg= doesn't apply to event agents${alongside} — set render= instead`));
+  }
+
+  // Sprint 18 follow-up — `match=` is mutually exclusive with the simple
+  // single-filter `log_tag=`/`min_level=`/`where=` triple (an event_stmt
+  // has either form, never both).
+  if (matchNode) {
+    const present = ['log_tag', 'min_level', 'where'].filter((k) => ast.eventMeta[k]);
+    if (present.length) {
+      errors.push(_err(`match= is mutually exclusive with ${present.map((k) => `${k}=`).join(', ')} — use one form or the other`));
+    }
   }
   // Sprint 18 — `ast.calls` is `'nop' | CallNode[]` (see `parseEventStmt`'s
   // own comment on switching to `parseClauseBody`); `'nop'` means an empty
@@ -3125,11 +3646,25 @@ function compileEventStmt(ast, catalog) {
     }
   }
 
-  let logTag = null;
-  if (!logTagNode) errors.push(_err("event agent: missing required 'log_tag='"));
-  else {
-    const r = _freeTextValue(logTagNode, 'log_tag');
-    if (r.error) errors.push(r.error); else logTag = r.value;
+  // Sprint 18 follow-up — the simple single-filter triple (`log_tag=`/
+  // `min_level=`/`where=`) is only resolved/required when `match=` is
+  // ABSENT; `matchList` is only resolved when it's PRESENT. The mutual-
+  // exclusion check above already errored if both forms were typed
+  // together, so this branch never silently prefers one over the other.
+  let logTag = null, minLevel = _MIN_LEVEL_DEFAULT, where, matchList = null;
+  if (!matchNode) {
+    if (!logTagNode) errors.push(_err("event agent: missing required 'log_tag=' (or match=[...])"));
+    else {
+      const r = _freeTextValue(logTagNode, 'log_tag');
+      if (r.error) errors.push(r.error); else logTag = r.value;
+    }
+    if (minLevelNode) {
+      const r = _coerceValueForSpec(minLevelNode, _MIN_LEVEL_SPEC, 'min_level', 'event agent');
+      if (r.error) errors.push(r.error); else minLevel = r.value;
+    }
+    if (whereNode) where = _unwrapValueNode(whereNode);
+  } else {
+    matchList = _compileMatchList(matchNode, errors);
   }
 
   let renderName = null;
@@ -3138,15 +3673,6 @@ function compileEventStmt(ast, catalog) {
     const r = _freeTextValue(renderNode, 'render');
     if (r.error) errors.push(r.error); else renderName = r.value;
   }
-
-  let minLevel = _MIN_LEVEL_DEFAULT;
-  if (minLevelNode) {
-    const r = _coerceValueForSpec(minLevelNode, _MIN_LEVEL_SPEC, 'min_level', 'event agent');
-    if (r.error) errors.push(r.error); else minLevel = r.value;
-  }
-
-  let where;
-  if (whereNode) where = _unwrapValueNode(whereNode);
 
   // Sprint 18 — `gate=` is the RENDER ACTION's own optional sibling key
   // (repeat-dedup via the shared RepeatGate), validated against
@@ -3185,8 +3711,14 @@ function compileEventStmt(ast, catalog) {
 
   if (errors.length) return { kind: 'event', errors, agent: null };
 
-  const log = { tag: logTag, min_level: minLevel };
-  if (where !== undefined) log.where = where;
+  let conditions;
+  if (matchNode) {
+    conditions = { any: matchList };
+  } else {
+    const log = { tag: logTag, min_level: minLevel };
+    if (where !== undefined) log.where = where;
+    conditions = { log };
+  }
 
   const action = { type: 'render', render: renderName };
   if (gate !== undefined) action.gate = gate;
@@ -3195,7 +3727,7 @@ function compileEventStmt(ast, catalog) {
     kind: 'event', errors: [],
     agent: {
       kind: 'event',
-      conditions: { log },
+      conditions,
       events: eventsResult.events,
       actions: [action],
       ...metaFields,
@@ -3826,6 +4358,11 @@ function _isPlainLeaf(x) {
 function _tryDecompileBetween(a, b, catalog) {
   if (!_isPlainLeaf(a) || !_isPlainLeaf(b)) return null;
   if (a.metric !== b.metric || a.scope !== b.scope) return null;
+  // Sprint 19 — both sides must carry the SAME scope_filter (including
+  // "neither has one") before collapsing; a mismatched filter means these
+  // aren't really the same qualified scope and must fall back to generic
+  // per-leaf rendering.
+  if (JSON.stringify(a.scope_filter || null) !== JSON.stringify(b.scope_filter || null)) return null;
   if (typeof a.value !== 'number' || typeof b.value !== 'number') return null;
   const aLow = _CMP_LOW_OPS.has(a.op), aHigh = _CMP_HIGH_OPS.has(a.op);
   const bLow = _CMP_LOW_OPS.has(b.op), bHigh = _CMP_HIGH_OPS.has(b.op);
@@ -3838,10 +4375,16 @@ function _tryDecompileBetween(a, b, catalog) {
   if (m.error) return null;
   const s = _decompileResolveScopeString(a.scope, catalog);
   if (s.error) return null;
+  let scopeText = s.text;
+  if (a.scope_filter !== undefined) {
+    const qualSuffix = _decompileScopeFilter(a.scope_filter, []);
+    if (qualSuffix == null) return null;
+    scopeText = `${scopeText}${qualSuffix}`;
+  }
   const v1 = _renderNumber(a.value);
   const v2 = _renderNumber(b.value);
   if (v1 == null || v2 == null) return null;
-  return `${v1} ${op1} ${m.text}@${s.text} ${op2} ${v2}`;
+  return `${v1} ${op1} ${m.text}@${scopeText} ${op2} ${v2}`;
 }
 
 /** Decompile a single leaf `{metric, scope, op, value}` — the mirror of
@@ -3865,12 +4408,32 @@ function decompileLeaf(node, catalog, errors) {
   const s = _decompileResolveScopeString(node.scope, catalog);
   if (s.error) { errors.push(_err(s.error)); return null; }
 
+  // Sprint 19 — a stored `scope_filter` renders as a trailing
+  // `.qualifier:value` suffix on the scope text, applied BEFORE the
+  // metric/column resolution below so both the `@`-metric-form and the
+  // `between`/`in`/boolean ops downstream automatically pick it up via
+  // the shared `refText`.
+  let scopeText = s.text;
+  if (node.scope_filter !== undefined) {
+    const qualSuffix = _decompileScopeFilter(node.scope_filter, errors);
+    if (qualSuffix == null) return null;
+    scopeText = `${scopeText}${qualSuffix}`;
+  }
+
   const m = _resolveMetricCall(node.metric, catalog);
   let refText, entry;
   if (!m.error) {
-    refText = `${m.text}@${s.text}`;
+    refText = `${m.text}@${scopeText}`;
     entry = m.entry;
   } else {
+    // A bare-column metric has no "@" form at all, so a scope_filter
+    // (which only ever renders as a qualifier suffix on the "@"-scope
+    // side) has nowhere to attach — fail loud rather than guess at a
+    // syntax this grammar doesn't have.
+    if (node.scope_filter !== undefined) {
+      errors.push(_err(`leaf '${node.metric}@${node.scope}': a scope_filter combined with a bare-column metric has no CLI representation yet`));
+      return null;
+    }
     const colKey = `${s.text}.${node.metric}`.toLowerCase();
     const colEntry = catalog.columns && catalog.columns.get(colKey);
     if (!colEntry) { errors.push(_err(m.error)); return null; }
@@ -4427,6 +4990,46 @@ export function decompileAgent({ conditions, events, actions, name = undefined, 
   return { text, errors: [] };
 }
 
+/** Decompile ONE `conditions.any[i].log` entry (Sprint 18 follow-up) back
+ *  to its `{tag=..., min_level=..., where={...}}` object-literal CLI
+ *  text — the mirror of `_compileMatchList`'s per-entry handling inside
+ *  `compileEventStmt`. `tag` is rendered bare-or-quoted (same
+ *  `_freeTextValue`-equivalent convention as the simple form's own
+ *  `log_tag=`); `min_level` always renders explicitly (never omitted,
+ *  even when it was defaulted from an absent key — matches the simple
+ *  form's own always-explicit `min_level=` rendering). Returns
+ *  `{ text, errors }` — `text` is `null` when `errors` is non-empty. */
+function _decompileMatchEntry(log, idx) {
+  const errors = [];
+  if (!log || typeof log !== 'object' || Array.isArray(log)) {
+    errors.push(_err(`match[${idx}]: expected a {"log": {...}} entry`));
+    return { text: null, errors };
+  }
+  if (typeof log.tag !== 'string' || !log.tag) {
+    errors.push(_err(`match[${idx}].tag must be a non-empty string`));
+    return { text: null, errors };
+  }
+  const tagR = _isBareable(log.tag) ? { text: log.tag } : _quoteString(log.tag);
+  if (tagR.error) { errors.push(_err(`match[${idx}].tag: ${tagR.message}`)); return { text: null, errors }; }
+  const rawLevel = 'min_level' in log ? log.min_level : _MIN_LEVEL_DEFAULT;
+  if (typeof rawLevel !== 'string' || !_MIN_LEVEL_SPEC.enum.includes(String(rawLevel).toUpperCase())) {
+    errors.push(_err(`match[${idx}].min_level ${JSON.stringify(log.min_level)} is not a recognized level`));
+    return { text: null, errors };
+  }
+  const minLevel = String(rawLevel).toUpperCase();
+  const parts = [`tag=${tagR.text}`, `min_level=${minLevel}`];
+  if ('where' in log) {
+    if (!log.where || typeof log.where !== 'object' || Array.isArray(log.where)) {
+      errors.push(_err(`match[${idx}].where must be an object`));
+      return { text: null, errors };
+    }
+    const whereR = _renderObjectLiteral(log.where);
+    if (whereR.error) { errors.push(_err(`match[${idx}].where: ${whereR.message}`)); return { text: null, errors }; }
+    parts.push(`where=${whereR.text}`);
+  }
+  return { text: `{${parts.join(', ')}}`, errors: [] };
+}
+
 /** Decompile a stored `kind='event'` agent's `{conditions, events,
  *  actions}` (plus the shared meta fields) back to its equivalent `ALERT
  *  log_tag=... render=... ...` CLI text (Sprint 12) — the reverse of
@@ -4457,16 +5060,27 @@ export function decompileAgent({ conditions, events, actions, name = undefined, 
  *  `buildCatalog`'s own comment) the same generic, catalog-driven way
  *  `decompileEvents` already resolves a channel's own extra keys — an
  *  undeclared key (or a stale catalog missing the `render_action` row
- *  entirely) still fails loud, never silently dropped. */
+ *  entirely) still fails loud, never silently dropped.
+ *
+ *  Sprint 18 follow-up — `conditions` wrapped in `{"any": [{"log":...},
+ *  {"log":...}]}` (the real seeded `template-attach-urgent`/
+ *  `template-attach-high` shape the comment above used to flag as a gap)
+ *  now decompiles to `match=[{...}, {...}]` via `_decompileMatchEntry`
+ *  below — the ONE remaining unsupported `conditions` shape is anything
+ *  other than a bare `{"log":...}` or a flat `{"any": [{"log":...}, ...]}`
+ *  (e.g. `all`/`not`/a nested `any`), which still fails loud exactly as
+ *  before. */
 export function decompileEventAgent({ conditions, events, actions, name = undefined, description = undefined, tags = undefined, group = undefined }, catalog, opts = {}) {
   const errors = [];
 
-  const log = conditions && typeof conditions === 'object' && !Array.isArray(conditions) ? conditions.log : null;
-  if (!log || typeof log !== 'object' || Array.isArray(log)) {
-    errors.push(_err(`event agent: 'conditions' must be a {"log": {...}} shape, got ${JSON.stringify(conditions)} (an any/all-wrapped list of log leaves has no CLI representation yet)`));
+  const isPlainObj = conditions && typeof conditions === 'object' && !Array.isArray(conditions);
+  const log = isPlainObj ? conditions.log : null;
+  const anyList = isPlainObj && Array.isArray(conditions.any) ? conditions.any : null;
+  if (!log && !anyList) {
+    errors.push(_err(`event agent: 'conditions' must be a {"log": {...}} or {"any": [{"log":...}, ...]} shape, got ${JSON.stringify(conditions)}`));
   }
 
-  let logTag = null, minLevel = null, whereObj = null;
+  let logTag = null, minLevel = null, whereObj = null, matchEntryTexts = null;
   if (log) {
     if (typeof log.tag !== 'string' || !log.tag) {
       errors.push(_err('event agent: conditions.log.tag must be a non-empty string'));
@@ -4485,6 +5099,17 @@ export function decompileEventAgent({ conditions, events, actions, name = undefi
       } else {
         whereObj = log.where;
       }
+    }
+  } else if (anyList) {
+    if (anyList.length === 0) {
+      errors.push(_err('event agent: conditions.any must contain at least one {"log": {...}} entry'));
+    } else {
+      matchEntryTexts = [];
+      anyList.forEach((item, i) => {
+        const entryLog = item && typeof item === 'object' && !Array.isArray(item) ? item.log : null;
+        const r = _decompileMatchEntry(entryLog, i);
+        if (r.errors.length) errors.push(...r.errors); else matchEntryTexts.push(r.text);
+      });
     }
   }
 
@@ -4531,16 +5156,23 @@ export function decompileEventAgent({ conditions, events, actions, name = undefi
 
   if (errors.length) return { text: null, errors };
 
-  const logTagR = _isBareable(logTag) ? { text: logTag } : _quoteString(logTag);
-  if (logTagR.error) return { text: null, errors: [_err(`log_tag: ${logTagR.message}`)] };
   const renderR = _isBareable(renderName) ? { text: renderName } : _quoteString(renderName);
   if (renderR.error) return { text: null, errors: [_err(`render: ${renderR.message}`)] };
 
-  const parts = [`log_tag=${logTagR.text}`, `min_level=${minLevel}`, `render=${renderR.text}`];
-  if (whereObj) {
-    const whereR = _renderObjectLiteral(whereObj);
-    if (whereR.error) return { text: null, errors: [_err(`where: ${whereR.message}`)] };
-    parts.push(`where=${whereR.text}`);
+  let parts;
+  if (matchEntryTexts) {
+    // Sprint 18 follow-up — `match=[...]` replaces the whole
+    // log_tag=/min_level=/where= triple.
+    parts = [`match=[${matchEntryTexts.join(', ')}]`, `render=${renderR.text}`];
+  } else {
+    const logTagR = _isBareable(logTag) ? { text: logTag } : _quoteString(logTag);
+    if (logTagR.error) return { text: null, errors: [_err(`log_tag: ${logTagR.message}`)] };
+    parts = [`log_tag=${logTagR.text}`, `min_level=${minLevel}`, `render=${renderR.text}`];
+    if (whereObj) {
+      const whereR = _renderObjectLiteral(whereObj);
+      if (whereR.error) return { text: null, errors: [_err(`where: ${whereR.message}`)] };
+      parts.push(`where=${whereR.text}`);
+    }
   }
   // Sprint 18 — render action's own extra keys (e.g. `gate=true`),
   // rendered above against `catalog.renderAction`'s schema.
@@ -4561,17 +5193,29 @@ export function decompileEventAgent({ conditions, events, actions, name = undefi
 // rendering rules `_renderParamValue`'s "unknown/absent schema type"
 // fallback branch already uses for every other generic action param. ───
 
-/** Render one `tp_scales_json` object-literal entry (a plain JS object,
- *  after `JSON.parse`) back to `{key=value, ...}` CLI text. No
- *  params_schema exists for an object literal's inner fields — always
- *  best-effort passthrough, same as `_renderParamValue`'s own fallback
- *  branch (reused directly, with `spec: null`). */
+/** Render one `tp_scales_json`/`where`/match-entry object-literal entry (a
+ *  plain JS object, after `JSON.parse`/direct property read) back to
+ *  `{key=value, ...}` CLI text. No fixed params_schema exists for an
+ *  object literal's inner fields — always best-effort passthrough, same
+ *  as `_renderParamValue`'s own fallback branch (reused directly, with
+ *  `spec: null`) — EXCEPT a nested plain object value (Sprint 18
+ *  follow-up, a match entry's own `where={...}`), which recurses into
+ *  THIS function again (object_literal values can nest exactly one level
+ *  deep in practice — the parser itself has no depth limit on this
+ *  recursion, since `parseObjectLiteral`'s own LBRACE branch is
+ *  general). */
 function _renderObjectLiteral(obj) {
   if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
-    return { error: true, message: 'tp_scales_json entry must be an object' };
+    return { error: true, message: 'object literal entry must be an object' };
   }
   const parts = [];
   for (const [k, v] of Object.entries(obj)) {
+    if (v && typeof v === 'object' && !Array.isArray(v)) {
+      const nested = _renderObjectLiteral(v);
+      if (nested.error) return nested;
+      parts.push(`${k}=${nested.text}`);
+      continue;
+    }
     const r = _renderParamValue(v, null);
     if (r.error) return r;
     parts.push(`${k}=${r.text}`);

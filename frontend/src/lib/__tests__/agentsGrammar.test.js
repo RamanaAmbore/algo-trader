@@ -220,6 +220,13 @@ const FIXTURE_ROWS = [
     label: 'Account',
     description: "Account. Sourced from DataFrame column 'account' on ctx.df_margins, populated by backend.api.algo.grammar._scope_funds_any_acct.",
   },
+  // Sprint 19 — appended at the END (same append-only convention as every
+  // earlier batch above) for qualifier-filter (`account:`/`symbol:`)
+  // coverage. `positions.worst_acct` is a REAL existing scope token
+  // (backend/api/algo/grammar.py's EXPOSED_COLUMNS) that `account:worst`
+  // on the bare `positions` family aliases onto directly — a pure alias,
+  // no `scope_filter` involved, so no new COLUMN row is needed for it.
+  { grammar_kind: 'condition', token_kind: 'scope', token: 'positions.worst_acct', params_schema: null },
 ];
 
 const CATALOG = buildCatalog(FIXTURE_ROWS);
@@ -2031,5 +2038,288 @@ describe('Sprint 16 — $row binding for place_order/order(...)\'s own qty= para
     );
     expect(r.ok).toBe(true);
     expect(r.agent.actions[0].params.qty).toBe(150); // 2 lots x 75 (fixture lot size)
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// Sprint 19 — `account:value`/`symbol:value` qualifier syntax on scope
+// chains, short scope-family aliases (pos/hld/fnd/wl), and (bundled per
+// the Sprint 18 follow-up note) `match=[...]` event-meta syntax.
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('Sprint 19 — account:/symbol: qualifier syntax on scope chains', () => {
+  it('positions.account:ZG0790 (literal) compiles to scope:"positions.any_acct" (unchanged) + scope_filter', () => {
+    const r = compile('WHEN pnl@positions.account:ZG0790 <= -50000 ALERT telegram DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions).toEqual({
+      metric: 'pnl', scope: 'positions.any_acct', op: '<=', value: -50000,
+      scope_filter: { account_id: 'ZG0790' },
+    });
+  });
+
+  it('positions.account:* compiles to bare scope:"positions.any_acct" — NO scope_filter key at all', () => {
+    const r = compile('WHEN pnl@positions.account:* <= -50000 ALERT telegram DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions).toEqual({ metric: 'pnl', scope: 'positions.any_acct', op: '<=', value: -50000 });
+    expect(r.agent.conditions.scope_filter).toBeUndefined();
+  });
+
+  it('positions.account:worst compiles to scope:"positions.worst_acct" — zero new mechanism, pure alias, no scope_filter', () => {
+    const r = compile('WHEN pnl@positions.account:worst <= -50000 ALERT telegram DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions).toEqual({ metric: 'pnl', scope: 'positions.worst_acct', op: '<=', value: -50000 });
+    expect(r.agent.conditions.scope_filter).toBeUndefined();
+  });
+
+  it('positions.expiring_today.symbol:NIFTY25JULFUT compiles correctly (scope unchanged, scope_filter on symbol)', () => {
+    const r = compile('WHEN pnl@positions.expiring_today.symbol:NIFTY25JULFUT <= -5000 ALERT telegram DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions).toEqual({
+      metric: 'pnl', scope: 'positions.expiring_today', op: '<=', value: -5000,
+      scope_filter: { symbol: 'NIFTY25JULFUT' },
+    });
+  });
+
+  it('the SAME .symbol:X qualifier under positions.total is a compile error — no symbol dimension on that scope', () => {
+    const r = compile('WHEN pnl@positions.total.symbol:NIFTY25JULFUT <= -5000 ALERT telegram DO nop');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /not a valid qualifier for scope 'positions\.total'/.test(e.message))).toBe(true);
+  });
+
+  it('positions.expiring_today.symbol:* is redundant with omitting the filter — no scope_filter key', () => {
+    const r = compile('WHEN pnl@positions.expiring_today.symbol:* <= -5000 ALERT telegram DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions).toEqual({ metric: 'pnl', scope: 'positions.expiring_today', op: '<=', value: -5000 });
+  });
+
+  it('an unknown qualifier key (e.g. "foo:") is a clear compile error', () => {
+    const r = compile('WHEN pnl@positions.foo:bar <= -5000 ALERT telegram DO nop');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /unknown scope qualifier 'foo:'/.test(e.message))).toBe(true);
+  });
+
+  it('a qualifier with no preceding scope ("@account:X") is a compile error', () => {
+    const r = compile('WHEN pnl@account:ZG0790 <= -5000 ALERT telegram DO nop');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /expected a scope before a qualifier segment/.test(e.message))).toBe(true);
+  });
+
+  it('":worst" on a family with no existing worst_acct token (funds) is a real, intentionally-deferred gap — compile error', () => {
+    const r = compile('WHEN avail_margin@funds.account:worst <= 0 ALERT telegram DO nop');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /has no existing scope token to alias onto/.test(e.message))).toBe(true);
+  });
+
+  it('":worst" combined with a second qualifier is rejected — it already selects one specific row', () => {
+    const r = compile('WHEN pnl@positions.account:worst.symbol:NIFTY25JULFUT <= -5000 ALERT telegram DO nop');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /must be the only qualifier on this scope/.test(e.message))).toBe(true);
+  });
+
+  it('a scope-narrowing segment after a qualifier segment is a trailing-only violation', () => {
+    const r = compile('WHEN pnl@positions.account:ZG0790.expiring_today <= -5000 ALERT telegram DO nop');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /must be trailing/.test(e.message))).toBe(true);
+  });
+
+  it('an args-violation on the scope-family segment is never silently swallowed by the implicit any_acct fallback', () => {
+    const r = compile('WHEN pnl@positions(foo=5).account:ZG0790 <= -50000 ALERT telegram DO nop');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /takes no arguments/.test(e.message))).toBe(true);
+  });
+
+  it('chained-comparison ("between") form also threads scope_filter through', () => {
+    const r = compile('WHEN -5000 <= pnl@positions.account:ZG0790 <= 5000 ALERT telegram DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions).toEqual({
+      metric: 'pnl', scope: 'positions.any_acct', op: 'between', value: [-5000, 5000],
+      scope_filter: { account_id: 'ZG0790' },
+    });
+  });
+
+  it('a STRICT between-chain (the all:[...] fallback, not native "between") also threads scope_filter onto BOTH leaves', () => {
+    const r = compile('WHEN -5000 < pnl@positions.account:ZG0790 < 5000 ALERT telegram DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions).toEqual({
+      all: [
+        { metric: 'pnl', scope: 'positions.any_acct', op: '>', value: -5000, scope_filter: { account_id: 'ZG0790' } },
+        { metric: 'pnl', scope: 'positions.any_acct', op: '<', value: 5000, scope_filter: { account_id: 'ZG0790' } },
+      ],
+    });
+  });
+
+  // ── advisor-flagged correctness guards ──────────────────────────────
+  it('":worst" is REJECTED when there is a narrowing scope segment before it — no "worst within a narrower scope" token exists (would otherwise silently discard the narrowing)', () => {
+    const r = compile('WHEN pnl@positions.expiring_today.symbol:worst <= -5000 ALERT telegram DO nop');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /only valid directly off the bare 'positions' scope family/.test(e.message))).toBe(true);
+  });
+
+  it('"*" is validated against the SAME exposed-column registry as a literal value — an unsupported qualifier key with "*" still errors', () => {
+    const r = compile('WHEN pnl@positions.foo:* <= -5000 ALERT telegram DO nop');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /unknown scope qualifier 'foo:'/.test(e.message))).toBe(true);
+  });
+
+  it('"*" on a qualifier with no exposed column on that scope still errors (funds has no symbol dimension)', () => {
+    const r = compile('WHEN avail_margin@funds.symbol:* <= 0 ALERT telegram DO nop');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /not a valid qualifier for scope 'funds\.any_acct'/.test(e.message))).toBe(true);
+  });
+});
+
+describe('Sprint 19 — scope_filter decompile round-trip (compile → decompile → recompile)', () => {
+  it('positions.account:ZG0790 (literal qualifier) round-trips byte-identical', () => {
+    const r = compile('WHEN pnl@positions.account:ZG0790 <= -50000 ALERT telegram DO nop');
+    expect(r.ok).toBe(true);
+    const dec = decompileCondition(r.agent.conditions, CATALOG);
+    expect(dec.errors).toEqual([]);
+    expect(dec.text).toBe('pnl@positions.any_acct.account:ZG0790 <= -50000');
+    const recompiled = compile(`WHEN ${dec.text} ALERT telegram DO nop`);
+    expect(recompiled.ok).toBe(true);
+    expect(recompiled.agent.conditions).toEqual(r.agent.conditions);
+  });
+
+  it('positions.expiring_today.symbol:NIFTY25JULFUT round-trips byte-identical', () => {
+    const r = compile('WHEN pnl@positions.expiring_today.symbol:NIFTY25JULFUT <= -5000 ALERT telegram DO nop');
+    expect(r.ok).toBe(true);
+    const dec = decompileCondition(r.agent.conditions, CATALOG);
+    expect(dec.errors).toEqual([]);
+    expect(dec.text).toBe('pnl@positions.expiring_today.symbol:NIFTY25JULFUT <= -5000');
+    const recompiled = compile(`WHEN ${dec.text} ALERT telegram DO nop`);
+    expect(recompiled.ok).toBe(true);
+    expect(recompiled.agent.conditions).toEqual(r.agent.conditions);
+  });
+
+  it('a STRICT between-chain (all:[...]) with a matching scope_filter on both leaves decompiles back to the pretty chained form', () => {
+    const r = compile('WHEN -5000 < pnl@positions.account:ZG0790 < 5000 ALERT telegram DO nop');
+    expect(r.ok).toBe(true);
+    const dec = decompileCondition(r.agent.conditions, CATALOG);
+    expect(dec.errors).toEqual([]);
+    expect(dec.text).toBe('-5000 < pnl@positions.any_acct.account:ZG0790 < 5000');
+    const recompiled = compile(`WHEN ${dec.text} ALERT telegram DO nop`);
+    expect(recompiled.ok).toBe(true);
+    expect(recompiled.agent.conditions).toEqual(r.agent.conditions);
+  });
+
+  it('a qualifier combined with a $row binding (the motivating multi-row-per-account use case) compiles and round-trips', () => {
+    const r = compile(
+      'WHEN pnl@positions.expiring_today.symbol:NIFTY25JULFUT > 0 '
+      + 'DO close_position(account=account_id, symbol=symbol)'
+    );
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions).toEqual({
+      metric: 'pnl', scope: 'positions.expiring_today', op: '>', value: 0,
+      scope_filter: { symbol: 'NIFTY25JULFUT' },
+    });
+    expect(r.agent.actions).toEqual([{
+      type: 'close_position',
+      params: { account: { '$row': 'account_id' }, symbol: { '$row': 'symbol' } },
+    }]);
+  });
+});
+
+describe('Sprint 19 — short scope-family aliases (pos/hld/fnd/wl)', () => {
+  it('pos.any_acct compiles identically to positions.any_acct (same scope token in the compiled JSON)', () => {
+    const viaAlias = compile('WHEN pnl@pos.any_acct <= -50000 ALERT telegram DO nop');
+    const viaLong = compile('WHEN pnl@positions.any_acct <= -50000 ALERT telegram DO nop');
+    expect(viaAlias.ok).toBe(true);
+    expect(viaAlias.agent.conditions).toEqual(viaLong.agent.conditions);
+    expect(viaAlias.agent.conditions.scope).toBe('positions.any_acct');
+  });
+
+  it('pos.any_acct DECOMPILES to the canonical long form "positions.any_acct", never the alias (mandatory PLAN.md case)', () => {
+    const r = compile('WHEN pnl@pos.any_acct <= -50000 ALERT telegram DO nop');
+    expect(r.ok).toBe(true);
+    const dec = decompileCondition(r.agent.conditions, CATALOG);
+    expect(dec.errors).toEqual([]);
+    expect(dec.text).toBe('pnl@positions.any_acct <= -50000');
+    expect(dec.text).not.toContain('pos.');
+  });
+
+  it('fnd.any_acct compiles to the canonical funds.any_acct token', () => {
+    const r = compile('WHEN avail_margin@fnd.any_acct <= 0 ALERT telegram DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions.scope).toBe('funds.any_acct');
+  });
+
+  it('the short alias also combines with a qualifier (pos.account:ZG0790)', () => {
+    const r = compile('WHEN pnl@pos.account:ZG0790 <= -50000 ALERT telegram DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions).toEqual({
+      metric: 'pnl', scope: 'positions.any_acct', op: '<=', value: -50000,
+      scope_filter: { account_id: 'ZG0790' },
+    });
+  });
+
+  it('the alias also works for the bare col_ref dot-access form (Sprint 15)', () => {
+    const r = compile('WHEN pos.total.pnl <= -50000 ALERT telegram DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions).toEqual({ metric: 'pnl', scope: 'positions.total', op: '<=', value: -50000 });
+  });
+
+  it('an unknown alias-looking prefix still fails as an unknown scope (no silent guess)', () => {
+    const r = compile('WHEN pnl@xyz.any_acct <= -50000 ALERT telegram DO nop');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /unknown scope/.test(e.message))).toBe(true);
+  });
+});
+
+describe('Sprint 18 follow-up — match=[...] event-meta syntax', () => {
+  it('compiles to the exact {"any": [{"log": {...}}, {"log": {...}}]} shape', () => {
+    const r = compile(
+      'ALERT match=[{tag=orders, min_level=WARNING, where={alert_event="cancel_unconfirmed"}}, '
+      + '{tag=gtt, min_level=WARNING}], render=template_attach, telegram, email'
+    );
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions).toEqual({
+      any: [
+        { log: { tag: 'orders', min_level: 'WARNING', where: { alert_event: 'cancel_unconfirmed' } } },
+        { log: { tag: 'gtt', min_level: 'WARNING' } },
+      ],
+    });
+    expect(r.agent.events).toEqual([
+      { channel: 'telegram', enabled: true },
+      { channel: 'email', enabled: true },
+    ]);
+    expect(r.agent.actions).toEqual([{ type: 'render', render: 'template_attach' }]);
+  });
+
+  it('a match= entry missing min_level defaults to INFO, same default the simple form uses', () => {
+    const r = compile('ALERT match=[{tag=a}, {tag=b}], render=x, telegram');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions).toEqual({
+      any: [{ log: { tag: 'a', min_level: 'INFO' } }, { log: { tag: 'b', min_level: 'INFO' } }],
+    });
+  });
+
+  it('match= used together with log_tag= in the same statement is a compile error', () => {
+    const r = compile('ALERT match=[{tag=a}, {tag=b}], log_tag=x, render=y, telegram');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /match= is mutually exclusive with log_tag=/.test(e.message))).toBe(true);
+  });
+
+  it('match= used together with where= in the same statement is a compile error, naming where=', () => {
+    const r = compile('ALERT match=[{tag=a}, {tag=b}], where={x=1}, render=y, telegram');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /match= is mutually exclusive with where=/.test(e.message))).toBe(true);
+  });
+
+  it('an empty match=[] is a compile error', () => {
+    const r = compile('ALERT match=[], render=x, telegram');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /match= requires at least one/.test(e.message))).toBe(true);
+  });
+
+  it('a match= entry missing tag= is a compile error naming the entry index', () => {
+    const r = compile('ALERT match=[{min_level=WARNING}, {tag=b}], render=x, telegram');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /match\[0\]: missing required 'tag='/.test(e.message))).toBe(true);
+  });
+
+  it('an unknown key inside a match= entry is a compile error', () => {
+    const r = compile('ALERT match=[{tag=a, bogus=1}, {tag=b}], render=x, telegram');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /unknown key 'bogus'/.test(e.message))).toBe(true);
   });
 });

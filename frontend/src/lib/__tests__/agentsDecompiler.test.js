@@ -1283,10 +1283,13 @@ describe('Sprint 12/18 — event_stmt decompile round-trip (real seeded agent sh
     expect(dec.errors.some(e => /not expressible by this syntax yet/.test(e.message))).toBe(true);
   });
 
-  it('fails loud on a malformed conditions shape (missing "log")', () => {
+  it('fails loud on a malformed conditions shape (missing "log"/"any")', () => {
     const dec = decompileEvent({ conditions: { all: [] }, events: [], actions: [] });
     expect(dec.text).toBeNull();
-    expect(dec.errors.some(e => /'conditions' must be a \{"log": \{\.\.\.\}\} shape/.test(e.message))).toBe(true);
+    // Sprint 18 follow-up — the message now also mentions the `{"any":
+    // [...]}` (match=) alternative; match on the stable leading substring
+    // rather than the old exact-to-"shape" wording.
+    expect(dec.errors.some(e => /'conditions' must be a \{"log": \{\.\.\.\}\}/.test(e.message))).toBe(true);
   });
 
   // ── real seeded ORDER_FAILURE_AGENT shape — channel-level `gate: false`
@@ -1351,17 +1354,14 @@ describe('Sprint 12/18 — event_stmt decompile round-trip (real seeded agent sh
     expect(recompiled.agent.actions).toEqual(agentJson.actions);
   });
 
-  // ── real seeded TEMPLATE_ATTACH_URGENT_AGENT shape — `conditions:
-  // {"any": [{"log": ...}, {"log": ...}]}` (two log leaves, different
-  // min_level AND where, same tag). CONFIRMED BLOCKED, not a silent
-  // partial decompile: `event_stmt` has exactly one `log_tag=`/
-  // `min_level=`/`where=` triple — there is no existing syntax to
-  // express a second, independently-thresholded log leaf, and
-  // inventing one is an operator-facing grammar design decision (see
-  // the proposal in `decompileEventAgent`'s own docstring), not
-  // something to improvise silently here. This test documents the
-  // current, correct, loud-failure behavior — NOT a round-trip. */
-  it('real template-attach-urgent shape: any:[{log},{log}] fails loud, not silently (confirmed blocked pending new CLI syntax)', () => {
+  // ── Sprint 18 follow-up (`match=[...]`) — the two real seeded agents
+  // that originally motivated this syntax, `template-attach-urgent`/
+  // `template-attach-high` (backend/api/algo/event_agents.py:
+  // SEEDED_AGENTS — `conditions`/`events`/`actions` reused VERBATIM
+  // below), now round-trip (previously confirmed blocked — see the
+  // removed test this replaces — since `event_stmt` had no syntax for
+  // a second, independently-thresholded log leaf). ───────────────────
+  it('real template-attach-urgent shape: any:[{log},{log}] decompiles to match=[...] and round-trips', () => {
     const agentJson = {
       conditions: { any: [
         { log: { tag: 'gtt', min_level: 'WARNING', where: { alert_event: 'wing_unprotected' } } },
@@ -1372,8 +1372,51 @@ describe('Sprint 12/18 — event_stmt decompile round-trip (real seeded agent sh
       name: 'Template attach urgent',
     };
     const dec = decompileEvent(agentJson);
-    expect(dec.text).toBeNull();
-    expect(dec.errors.some(e => /'conditions' must be a \{"log": \{\.\.\.\}\} shape/.test(e.message))).toBe(true);
+    expect(dec.errors).toEqual([]);
+    expect(dec.text).toBe(
+      'ALERT match=[{tag=gtt, min_level=WARNING, where={alert_event=wing_unprotected}}, '
+      + '{tag=gtt, min_level=CRITICAL, where={alert_event=wing_hard_reject}}], '
+      + 'render=template_attach, ntfy(priority=urgent) #name="Template attach urgent"'
+    );
+    const recompiled = compile(dec.text);
+    expect(recompiled.ok).toBe(true);
+    expect(recompiled.agent.conditions).toEqual(agentJson.conditions);
+    expect(recompiled.agent.events).toEqual(agentJson.events);
+    expect(recompiled.agent.actions).toEqual(agentJson.actions);
+    expect(recompiled.agent.name).toBe(agentJson.name);
+  });
+
+  it('real template-attach-high shape: any:[{log},{log}] (same min_level both entries) decompiles to match=[...] and round-trips', () => {
+    const agentJson = {
+      conditions: { any: [
+        { log: { tag: 'gtt', min_level: 'WARNING', where: { alert_event: 'wing_skip' } } },
+        { log: { tag: 'gtt', min_level: 'WARNING', where: { alert_event: 'wing_offset_skip' } } },
+      ] },
+      events: [{ channel: 'ntfy', enabled: true, priority: 'high' }],
+      actions: [{ type: 'render', render: 'template_attach' }],
+      name: 'Template attach high',
+    };
+    const dec = decompileEvent(agentJson);
+    expect(dec.errors).toEqual([]);
+    const recompiled = compile(dec.text);
+    expect(recompiled.ok).toBe(true);
+    expect(recompiled.agent.conditions).toEqual(agentJson.conditions);
+    expect(recompiled.agent.events).toEqual(agentJson.events);
+    expect(recompiled.agent.actions).toEqual(agentJson.actions);
+  });
+
+  it('match= combined with log_tag= in the same statement is a compile-time error', () => {
+    const r = compile(
+      'ALERT match=[{tag=gtt, min_level=WARNING}, {tag=gtt, min_level=CRITICAL}], log_tag=gtt, render=template_attach, ntfy(priority=urgent)'
+    );
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /match= is mutually exclusive with log_tag=/.test(e.message))).toBe(true);
+  });
+
+  it('match= requires at least one entry', () => {
+    const r = compile('ALERT match=[], render=x, telegram');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /match= requires at least one/.test(e.message))).toBe(true);
   });
 });
 
