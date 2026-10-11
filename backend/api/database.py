@@ -1162,6 +1162,21 @@ async def init_db() -> None:
     from backend.api.algo.agent_engine import seed_agents
     await seed_agents()
 
+    # Sprint D (Agent/Bracket/Template unification phase) — one-time
+    # (idempotent) backfill: mirror every agent_fragments row into a
+    # matching Agent(kind='template') row. Runs AFTER seed_agents() so
+    # the migration's own slug-collision check sees every built-in
+    # cycle/event agent's slug already in place. agent_fragments /
+    # AgentTemplate stay fully in place — additive only.
+    from backend.api.algo.template_registry import migrate_fragments_to_template_agents
+    await migrate_fragments_to_template_agents()
+
+    # Rebuild the $ref cache now that it may include newly-migrated
+    # kind='template' Agent rows (seed_agent_templates()'s own reload()
+    # above ran BEFORE this migration, so its cache snapshot predates it).
+    from backend.api.algo.template_registry import REGISTRY as _tmpl_registry_boot
+    await _tmpl_registry_boot.reload()
+
     # Seed DB-backed settings (populates `settings` table from
     # backend/shared/helpers/settings.py seed list; preserves operator
     # overrides on subsequent boots).

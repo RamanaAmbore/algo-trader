@@ -146,7 +146,11 @@ class AgentCreateRequest(msgspec.Struct):
     # the way in — see _age_normalize_kind(). 'event' = log-driven
     # agent; conditions/events/actions are validated against
     # event_agents.validate_seed_spec() instead of the threshold path.
-    kind:                  Literal["cycle", "threshold", "event"] = "cycle"
+    # 'template' (Sprint D, Agent/Bracket/Template unification phase) —
+    # a reusable $ref-able condition/notify sub-tree. Never independently
+    # evaluated by run_cycle()/event_agents.py (both filter on a positive
+    # kind=='cycle'/kind=='event' allowlist). See template_registry.py.
+    kind:                  Literal["cycle", "threshold", "event", "template"] = "cycle"
     # Alert hierarchy / noise-reduction — see Agent.tier / .topic.
     # None lets the model defaults ("medium" / "general") apply.
     tier:                   str | None = None
@@ -189,7 +193,11 @@ class AgentUpdateRequest(msgspec.Struct):
     # form state doesn't 400 on an unknown field; changing kind on an
     # existing row is rejected (see update_agent) — kind is fixed at
     # creation, never re-pointed between 'cycle' and 'event'.
-    kind:                  Literal["cycle", "threshold", "event"] | None = None
+    # Widened to admit 'template' alongside create — update_agent itself
+    # still rejects any attempt to actually CHANGE kind (see below); this
+    # only keeps msgspec decode from rejecting a client that round-trips
+    # the row's current kind value in a full-form update payload.
+    kind:                  Literal["cycle", "threshold", "event", "template"] | None = None
     tier:                  str | None = None
     topic:                 str | None = None
     # Sprint 4 (CLI grammar authoring) — None means unchanged, same
@@ -242,17 +250,22 @@ _VALID_TRADE_MODES = {"paper", "live"}
 
 # Agent.kind + agent_engine.run_cycle() / event_agents.load_agents() only
 # recognise the model's real vocabulary: 'cycle' (evaluated every engine
-# tick) or 'event' (matches each new log record). 'threshold' is a
-# plan-level synonym for 'cycle' accepted at the API boundary for a more
-# descriptive name — it must NEVER be written to the DB column as-is:
-# run_cycle()'s query filters `Agent.kind == "cycle"` and would silently
-# skip any row stored with kind="threshold" forever.
-_VALID_KINDS_INPUT = {"cycle", "threshold", "event"}
+# tick), 'event' (matches each new log record), or 'template' (Sprint D
+# — a reusable $ref-able sub-tree, never independently evaluated by
+# either loader; both are positive kind=='cycle'/kind=='event'
+# allowlists, so 'template' rows are structurally excluded from both
+# with zero loader changes). 'threshold' is a plan-level synonym for
+# 'cycle' accepted at the API boundary for a more descriptive name — it
+# must NEVER be written to the DB column as-is: run_cycle()'s query
+# filters `Agent.kind == "cycle"` and would silently skip any row stored
+# with kind="threshold" forever.
+_VALID_KINDS_INPUT = {"cycle", "threshold", "event", "template"}
 
 
 def _age_normalize_kind(raw: str | None) -> str:
     """Normalise an incoming `kind` value to the Agent model's real
-    vocabulary ('cycle' or 'event'). Raises 400 on anything else."""
+    vocabulary ('cycle', 'event', or 'template'). Raises 400 on anything
+    else."""
     k = (raw or "cycle").strip().lower()
     if k not in _VALID_KINDS_INPUT:
         raise HTTPException(status_code=400,
@@ -835,6 +848,12 @@ class AgentController(Controller):
             # up to a minute after this request returns.
             from backend.api.algo import event_agents as _ea
             _ea._cache["at"] = float("-inf")
+        elif kind == "template":
+            # Make a freshly-created template immediately $ref-resolvable
+            # — TemplateRegistry's in-memory cache is otherwise only
+            # rebuilt on app startup or an explicit /fragments mutation.
+            from backend.api.algo.template_registry import REGISTRY as _tmpl_registry
+            await _tmpl_registry.reload()
         logger.info(f"Agent created: {data.slug} [lifespan={lifespan_type}] [kind={kind}]")
         return {"detail": f"Agent '{data.slug}' created"}
 
@@ -917,6 +936,10 @@ class AgentController(Controller):
         if agent.kind == "event":
             from backend.api.algo import event_agents as _ea
             _ea._cache["at"] = float("-inf")
+        elif agent.kind == "template":
+            # Make an edited template's new body immediately $ref-resolvable.
+            from backend.api.algo.template_registry import REGISTRY as _tmpl_registry
+            await _tmpl_registry.reload()
         logger.info(f"Agent updated: {slug}")
         return {"detail": f"Agent '{slug}' updated"}
 
@@ -955,8 +978,12 @@ class AgentController(Controller):
                 raise HTTPException(status_code=404, detail=f"Agent '{slug}' not found")
             if agent.is_system:
                 raise HTTPException(status_code=403, detail="Cannot delete system agent")
+            deleted_kind = agent.kind
             await session.delete(agent)
             await session.commit()
+        if deleted_kind == "template":
+            from backend.api.algo.template_registry import REGISTRY as _tmpl_registry
+            await _tmpl_registry.reload()
         return {"detail": f"Agent '{slug}' deleted"}
 
     @get("/{slug:str}/dry-run", guards=[cap_guard("manage_own_agents")])

@@ -424,8 +424,15 @@ def evaluate(cond: dict, ctx: Context, _visited: set | None = None) -> list[dict
                 f"'{ref_name}' referenced inside its own resolution chain"
             )
             return []
-        from backend.api.algo.template_registry import REGISTRY as _FRAG
-        body = _FRAG.get('condition', ref_name)
+        # Sprint D (Agent/Bracket/Template unification phase) — resolves
+        # against TemplateRegistry, whose in-memory cache is now sourced
+        # primarily from kind='template' Agent rows (migrated from the
+        # legacy agent_fragments table; see template_registry.reload()'s
+        # own docstring for the condition/notify/collision rules), with
+        # agent_fragments itself kept as a fallback for any name not
+        # also present as an Agent row.
+        from backend.api.algo.template_registry import REGISTRY as _TMPL
+        body = _TMPL.get('condition', ref_name)
         if body is None:
             logger.warning(
                 f"Condition evaluator: unknown condition fragment "
@@ -715,8 +722,10 @@ def validate(cond: dict) -> list[str]:
                     f"resolution chain"
                 )
                 return
-            from backend.api.algo.template_registry import REGISTRY as _FRAG
-            body = _FRAG.get('condition', ref)
+            # Sprint D — same Agent-row-backed resolution as evaluate()
+            # above (see its comment + template_registry.reload()).
+            from backend.api.algo.template_registry import REGISTRY as _TMPL
+            body = _TMPL.get('condition', ref)
             if body is None:
                 errors.append(
                     f"{path}.$ref: unknown condition fragment '{ref}'"

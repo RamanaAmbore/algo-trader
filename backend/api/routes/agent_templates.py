@@ -216,6 +216,13 @@ class AgentTemplateController(Controller):
             s.add(row)
             await s.commit()
             await s.refresh(row)
+            # Sprint D (Agent/Bracket/Template unification phase) — mirror
+            # into the new kind='template' Agent row so $ref resolution
+            # (now sourced from Agent rows, see template_registry.reload())
+            # sees this fragment without waiting for a separate migration
+            # pass. Best-effort — never raises, never blocks this response.
+            from backend.api.algo.template_registry import mirror_fragment_upsert
+            await mirror_fragment_upsert(s, row, force=True)
         await _reload_registry()
         return _to_out(row)
 
@@ -244,6 +251,9 @@ class AgentTemplateController(Controller):
                 row.is_active = bool(data.is_active)
             await s.commit()
             await s.refresh(row)
+            # Sprint D — propagate this edit to the mirrored Agent row.
+            from backend.api.algo.template_registry import mirror_fragment_upsert
+            await mirror_fragment_upsert(s, row, force=True)
         await _reload_registry()
         return _to_out(row)
 
@@ -274,8 +284,12 @@ class AgentTemplateController(Controller):
                 raise HTTPException(status_code=400,
                     detail="Cannot delete system tokens. Toggle is_active "
                            "off instead.")
+            frag_kind, frag_name = row.kind, row.name
             await s.delete(row)
             await s.commit()
+            # Sprint D — remove the mirrored Agent row too.
+            from backend.api.algo.template_registry import mirror_fragment_delete
+            await mirror_fragment_delete(s, frag_kind, frag_name)
         await _reload_registry()
         return {"detail": f"Token {frag_id} deleted"}
 

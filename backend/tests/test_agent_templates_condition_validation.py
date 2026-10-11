@@ -195,8 +195,13 @@ async def test_create_condition_fragment_valid_body_saves_successfully():
         out = await _handler_fn(at.AgentTemplateController.create_fragment)(controller, data)
 
     assert out.kind == "condition"
-    session.add.assert_called_once()
-    session.commit.assert_awaited_once()
+    # Sprint D (Agent/Bracket/Template unification) — create_fragment now
+    # also mirrors into a kind='template' Agent row via
+    # mirror_fragment_upsert(force=True), which adds + commits a SECOND
+    # time against this same mocked session (once for the AgentTemplate
+    # row, once for its Agent mirror).
+    assert session.add.call_count == 2
+    assert session.commit.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -216,7 +221,10 @@ async def test_create_notify_fragment_body_unaffected_by_condition_validation(mo
         out = await _handler_fn(at.AgentTemplateController.create_fragment)(controller, data)
 
     assert out.kind == "notify"
-    session.commit.assert_awaited_once()
+    # Sprint D — see test_create_condition_fragment_valid_body_saves_
+    # successfully's comment: mirror_fragment_upsert commits a second
+    # time against this same mocked session.
+    assert session.commit.await_count == 2
 
 
 # ── endpoint-level: update_fragment (patch) ─────────────────────────────
