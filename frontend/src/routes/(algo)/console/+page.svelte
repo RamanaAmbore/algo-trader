@@ -9,6 +9,8 @@
   // Submit. Keeps the safety net while making plain-text the primary UI.
 
   import { get as getStore } from 'svelte/store';
+  import { page } from '$app/state';
+  import { goto } from '$app/navigation';
   import { authStore, executionMode } from '$lib/stores';
   import { toast } from '$lib/data/toastStore.svelte.js';
   import { safeRead } from '$lib/utils/safeRead.js';
@@ -37,6 +39,26 @@
   let _agentCliText = $state('');
   let _agentCliCatalog = $state(/** @type {any} */ (null));
   let _agentCliCatalogError = $state('');
+
+  // ── `?cli=` prefill (Sprint 18) — /automation's BracketsTab "Open in
+  // Console" action (and any future caller) navigates here with an
+  // already-decompiled CLI statement in the query string. Consumed ONCE
+  // at mount, then stripped via replaceState so a later reload doesn't
+  // re-seed stale text over whatever the operator has since typed.
+  // Console stays a plain text consumer here — it doesn't care whether
+  // the text came from a hand-typed agent or a decompiled bracket.
+  let _cliPrefillConsumed = $state(false);
+  $effect(() => {
+    if (_cliPrefillConsumed) return;
+    const raw = page.url.searchParams.get('cli');
+    if (raw == null) return;
+    _cliPrefillConsumed = true;
+    _agentCliText = raw;
+    const url = new URL(window.location.href);
+    url.searchParams.delete('cli');
+    goto(url.pathname + (url.searchParams.toString() ? `?${url.searchParams.toString()}` : ''),
+      { replaceState: true, noScroll: true, keepFocus: true });
+  });
 
   $effect(() => {
     if (isDemo) return; // /admin/grammar/tokens requires auth

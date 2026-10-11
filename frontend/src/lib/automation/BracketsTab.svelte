@@ -18,6 +18,7 @@
 -->
 <script>
   import { onMount } from 'svelte';
+  import { goto } from '$app/navigation';
   import { authStore } from '$lib/stores';
   import CardHeader from '$lib/CardHeader.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
@@ -28,6 +29,7 @@
   import { loadOrderTemplates, reloadOrderTemplates } from '$lib/data/templates';
   import { toast } from '$lib/data/toastStore.svelte.js';
   import { fmtPctScaled } from '$lib/format';
+  import { decompileBracket, fetchAgentCatalog } from '$lib/command/grammars/agents.js';
 
   let templates = $state(/** @type {any[]} */ ([]));
   let loading = $state(true);
@@ -191,6 +193,46 @@
     } finally {
       busy = false;
     }
+  }
+
+  // ── "Open in Console" (Sprint 18) — gives `decompileBracket` its first
+  // real production caller. Decompiles this row's live JSON to CLI text
+  // and navigates to /console with it pre-filled via a `?cli=` query
+  // param. NOT a true in-place edit — /console's own submit path is
+  // create-only (see consoleDispatch.js:submitConsoleBracket, always
+  // POSTs), so saving from there creates a NEW Bracket seeded from this
+  // one's text rather than overwriting it; the button is deliberately
+  // labelled "Open in Console", not "Edit via CLI", so that behavior
+  // isn't misrepresented. A system/default/slugged/inactive row refuses
+  // with a short toast instead of navigating — see
+  // `_bracketUnexpressibleFields` in agents.js for why those 4 fields
+  // can't round-trip through this create-only path at all.
+  /** @type {any} */
+  let _cliCatalog = null;
+  /** @type {Promise<any> | null} */
+  let _cliCatalogPromise = null;
+  function _getCliCatalog() {
+    if (_cliCatalog) return Promise.resolve(_cliCatalog);
+    if (!_cliCatalogPromise) {
+      _cliCatalogPromise = fetchAgentCatalog().then((c) => { _cliCatalog = c; return c; });
+    }
+    return _cliCatalogPromise;
+  }
+
+  async function openInConsole(/** @type {any} */ t) {
+    let catalog;
+    try {
+      catalog = await _getCliCatalog();
+    } catch {
+      toast.error('CLI catalog unavailable');
+      return;
+    }
+    const dec = decompileBracket(t, catalog);
+    if (!dec.text) {
+      toast.error("Can't open via CLI yet");
+      return;
+    }
+    goto(`/console?cli=${encodeURIComponent(dec.text)}`);
   }
 
   async function confirmDelete(/** @type {any} */ t) {
@@ -509,10 +551,17 @@
                 </div>
               </div>
             {:else if !isDemo}
-              <button class="tpl-btn tpl-btn-primary"
-                      onclick={() => startEdit(t)} type="button">
-                Edit
-              </button>
+              <div class="tpl-row-actions">
+                <button class="tpl-btn tpl-btn-primary"
+                        onclick={() => startEdit(t)} type="button">
+                  Edit
+                </button>
+                <button class="tpl-btn"
+                        onclick={() => openInConsole(t)} type="button"
+                        title="Decompile to CLI text and open /console (saving there creates a new Bracket — it does not overwrite this one)">
+                  Open in Console
+                </button>
+              </div>
             {/if}
           </div>
         {/if}
@@ -737,6 +786,7 @@
   .tpl-input:disabled { color: rgba(180,200,230,0.55); background: rgba(15,23,41,0.4); cursor: not-allowed; }
   .tpl-checkbox { display: flex; align-items: center; gap: 0.45rem; font-size: var(--fs-lg); color: color-mix(in srgb, var(--algo-slate) 85%, transparent); cursor: pointer; }
 
+  .tpl-row-actions { display: flex; gap: 0.45rem; }
   .tpl-form-err { grid-column: 1 / -1; color: #fca5a5; font-size: var(--fs-lg); font-family: var(--font-numeric); }
   .tpl-json-err { display: block; margin-top: 0.2rem; color: var(--c-short); font-size: var(--fs-sm); font-family: var(--font-numeric); }
   .tpl-form-actions { grid-column: 1 / -1; display: flex; gap: 0.45rem; margin-top: 0.4rem; }

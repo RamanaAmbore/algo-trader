@@ -1118,6 +1118,66 @@ describe('Sprint 8 — bracket(...) decompile round-trip', () => {
   });
 });
 
+// ── Sprint 18 — decompileBracket() refuses loud on slug/is_default/
+//    is_active/is_system instead of silently dropping them ─────────────
+//
+// Audit finding: decompiling (and resaving, via /console's create-only
+// submit) a seeded system bracket like 'default-bull' silently produced
+// a slugless, non-default, non-system copy — none of these 4 real
+// OrderTemplate fields had any bracket(...) CLI representation, and the
+// old decompiler just never read them. Fixed by refusing outright
+// (never emitting text that would resave as a materially different row)
+// — see `_bracketUnexpressibleFields`'s own doc for why "emit cleanly"
+// isn't viable (no slug field on OrderTemplateCreate at all; is_system
+// is hardcoded False server-side; is_default would actively steal the
+// default slot from the original row via `_demote_existing_default`).
+describe('Sprint 18 — decompileBracket() refuses loud on slug/is_default/is_active/is_system', () => {
+  const BASE = { id: 7, name: 'Realistic Custom Bracket', tp_pct: 30, sl_pct: -20 };
+
+  it('refuses when slug is set (non-null) — system-seed-only field, no create-API support', () => {
+    const dec = decompileBracketTemplate({ ...BASE, slug: 'default-bull' });
+    expect(dec.text).toBeNull();
+    expect(dec.errors.some(e => /\bslug\b/.test(e.message))).toBe(true);
+  });
+
+  it('refuses when is_default is true — resaving would steal the default slot from the real row', () => {
+    const dec = decompileBracketTemplate({ ...BASE, is_default: true });
+    expect(dec.text).toBeNull();
+    expect(dec.errors.some(e => /\bis_default\b/.test(e.message))).toBe(true);
+  });
+
+  it('refuses when is_active is false — resaving would silently resurrect a deactivated row', () => {
+    const dec = decompileBracketTemplate({ ...BASE, is_active: false });
+    expect(dec.text).toBeNull();
+    expect(dec.errors.some(e => /\bis_active\b/.test(e.message))).toBe(true);
+  });
+
+  it('refuses when is_system is true — create_template always forces is_system=False server-side', () => {
+    const dec = decompileBracketTemplate({ ...BASE, is_system: true });
+    expect(dec.text).toBeNull();
+    expect(dec.errors.some(e => /\bis_system\b/.test(e.message))).toBe(true);
+  });
+
+  it('reports ALL offending fields at once when more than one is set', () => {
+    const dec = decompileBracketTemplate({ ...BASE, slug: 'x', is_system: true });
+    expect(dec.text).toBeNull();
+    expect(dec.errors.some(e => /\bslug\b/.test(e.message) && /\bis_system\b/.test(e.message))).toBe(true);
+  });
+
+  it('still decompiles fine for a realistic custom row where all 4 are at their create-default values', () => {
+    const dec = decompileBracketTemplate({
+      ...BASE, slug: null, is_default: false, is_active: true, is_system: false,
+    });
+    expect(dec.errors).toEqual([]);
+    expect(dec.text).toMatch(/^bracket\(/);
+    expect(dec.text).toMatch(/#name="Realistic Custom Bracket"/);
+    // Round-trips cleanly too — proves the predicate isn't over-eager and
+    // doesn't regress the ordinary (field-absent) compile->decompile path.
+    const recompiled = compile(dec.text);
+    expect(recompiled.ok).toBe(true);
+  });
+});
+
 // ── Sprint 12 — event_stmt decompiler (decompileEventAgent) ────────────────
 //
 // `ERROR_AGENT` (backend/api/algo/event_agents.py, SEEDED_AGENTS) — its

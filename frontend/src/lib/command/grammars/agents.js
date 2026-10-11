@@ -4507,17 +4507,73 @@ function _decompileTpSlWingFields(obj, destKind, label) {
   return { argParts, errors };
 }
 
+/** The 4 real `OrderTemplate` fields (`backend/api/models.py`) that
+ *  `bracket(...)` CLI syntax has NO way to express (Sprint 18 audit fix)
+ *  — `compileBracketStmt` only ever recognizes `applies_to` + the shared
+ *  TP/SL/Wing kwargs + the generic `#`-meta clause; any other kwarg is a
+ *  hard "unknown parameter" compile error. Checking truthiness alone
+ *  would be wrong — `is_active` is `true` and `is_default`/`is_system`
+ *  are `false` on the overwhelming majority of real rows (every
+ *  operator-created custom bracket), so this only flags a NON-DEFAULT
+ *  value that this syntax would actually lose on resave:
+ *    - `slug` (non-null) — system-seed-only; `OrderTemplateCreate` (the
+ *      ONLY write path `/console`'s create-only submit can reach, see
+ *      `consoleDispatch.js:submitConsoleBracket`) has no `slug` field at
+ *      all, so there is structurally no way to round-trip it even if a
+ *      `#slug=` meta key were invented.
+ *    - `is_system: true` — `create_template` (`backend/api/routes/
+ *      templates.py`) hardcodes `is_system=False` on every create; a
+ *      decompiled-then-resaved system bracket can never come back as
+ *      system, no matter what CLI syntax existed.
+ *    - `is_default: true` — `OrderTemplateCreate.is_default` IS a real,
+ *      honored create-time field, but `create_template`'s own
+ *      `_demote_existing_default()` call means resubmitting this would
+ *      ACTIVELY STEAL the default slot away from the original row in
+ *      that `applies_to` scope — strictly worse than just losing
+ *      information, so this is refused rather than "safely dropped".
+ *    - `is_active: false` — dropping this silently resurrects an
+ *      operator-deactivated row as active on resave.
+ *  Refusing loud here (never silently emitting CLI text that would
+ *  resave as a DIFFERENT row) is the same "fail loud, don't silently
+ *  drop a field that would change behavior on resave" convention
+ *  `decompileEventAgent`'s own docstring documents for its `gate` key.
+ *  Returns the offending field names (empty = safe to decompile). */
+function _bracketUnexpressibleFields(t) {
+  const bad = [];
+  if (t.slug != null) bad.push('slug');
+  if (t.is_default === true) bad.push('is_default');
+  if (t.is_active === false) bad.push('is_active');
+  if (t.is_system === true) bad.push('is_system');
+  return bad;
+}
+
 /** Decompile a stored `OrderTemplateCreate`-shaped bracket back to its
  *  `bracket(...) #name=...` CLI text — the reverse of `compileBracketStmt`
  *  (Sprint 8). Reuses `decompileMetaClause` UNCHANGED (same generic helper
  *  `decompileAgent` uses) plus the shared `_decompileTpSlWingFields`
  *  renderer above. Same recompile safety net `decompileAgent` already
  *  uses — builds the text, then actually recompiles it and fails loud if
- *  that recompile itself errors. */
+ *  that recompile itself errors.
+ *
+ *  Refuses outright (Sprint 18) when the row carries `slug`/`is_default`/
+ *  `is_active`/`is_system` in a way `bracket(...)` syntax can't express —
+ *  see `_bracketUnexpressibleFields` above for the full reasoning. */
 export function decompileBracket(template, catalog, opts = {}) {
   const t = template || {};
   const errors = [];
   const argParts = [];
+
+  const unexpressible = _bracketUnexpressibleFields(t);
+  if (unexpressible.length) {
+    errors.push(_err(
+      `bracket: cannot safely decompile — [${unexpressible.join(', ')}] ` +
+      `${unexpressible.length === 1 ? 'has' : 'have'} no bracket(...) CLI ` +
+      `syntax yet; resaving via /console (create-only) would silently ` +
+      `change this row's ${unexpressible.join('/')} instead of preserving ` +
+      `it. Edit this field via the structured form at /automation instead.`
+    ));
+    return { text: null, errors };
+  }
 
   if (t.applies_to != null) {
     if (typeof t.applies_to !== 'string') {
