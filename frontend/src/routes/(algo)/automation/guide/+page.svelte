@@ -188,6 +188,90 @@ DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)</pre>
     </p>
   </section>
 
+  <!-- ══════════════════════════ GIVEN PREAMBLE ══════════════════════════ -->
+  <section class="algo-card cg-section">
+    <h2 class="section-heading">GIVEN preamble — label assignments</h2>
+    <p class="cg-lede">
+      An optional <code>GIVEN</code> clause can appear before <code>WHEN</code>/<code>ALERT</code>/<code>DO</code>
+      to assign one or more labels (reusable names) to expressions. Once assigned in <code>GIVEN</code>,
+      a label can be read anywhere in <code>WHEN</code>, <code>ALERT</code>, or <code>DO</code> that follows.
+      <code>WHEN</code> itself can only READ labels (never assign them).
+    </p>
+
+    <div class="cg-example">
+      <p class="cg-why">
+        You want to check the same complex condition in both the alert channel AND the action,
+        without retyping it twice — bind it to a label in <code>GIVEN</code>, then reuse the label.
+      </p>
+      <pre class="cg-code">GIVEN risky = (pnl@positions.total &lt;= -50000) &amp; (avail_margin@funds.any_acct &lt; 0)
+WHEN risky ALERT telegram DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)</pre>
+      <p class="cg-what">
+        The label <code>risky</code> is assigned once in <code>GIVEN</code> to a full boolean expression,
+        then referenced by name in <code>WHEN</code>. The backend evaluates the expression once and
+        reuses the result, avoiding redundant polling.
+      </p>
+    </div>
+
+    <div class="cg-example">
+      <p class="cg-why">
+        A label doesn't have to be a condition — it can be any expression, including a metric binding.
+        Use this to set up reusable metrics for inspection.
+      </p>
+      <pre class="cg-code">GIVEN pnl_now = mean_pnl(minutes=30)@positions.total
+WHEN pnl_now &lt;= -50000 ALERT telegram DO nop</pre>
+      <p class="cg-what">
+        <code>pnl_now</code> is a label bound to a live metric. Every time <code>WHEN</code> evaluates,
+        it reads the current value of <code>pnl_now</code> and compares it.
+      </p>
+    </div>
+
+    <p class="cg-note">
+      A label can be assigned <strong>once per statement</strong> (no rebinding across statements),
+      and the right-hand side can be any expression — a literal number, a metric@scope binding,
+      a full boolean condition with <code>&amp;</code>/<code>|</code>/<code>~</code>, or a function call.
+    </p>
+  </section>
+
+  <!-- ══════════════════════════ DEBUG STATEMENT ══════════════════════════ -->
+  <section class="algo-card cg-section">
+    <h2 class="section-heading">Debug — <code>debug(x)</code> (inspect label values)</h2>
+    <p class="cg-lede">
+      Use <code>debug(x)</code> in a <code>GIVEN</code>, <code>ALERT</code>, or <code>DO</code> clause
+      to inspect a label's or token's resolved value. The value is written to the Agents log at DEBUG level
+      (hidden by default in LogPanel — toggle the level filter on to see debug logs).
+    </p>
+
+    <div class="cg-example">
+      <p class="cg-why">
+        You've set up a label in <code>GIVEN</code> and want to see its live value without having
+        to open a separate log viewer.
+      </p>
+      <pre class="cg-code">GIVEN pnl_now = pnl@positions.total
+DO debug(pnl_now)</pre>
+      <p class="cg-what">
+        A label bound to a live metric shows a description of what's being checked (e.g. "pnl across all positions").
+        For a label bound to a literal, <code>debug()</code> shows the exact value.
+      </p>
+    </div>
+
+    <div class="cg-example">
+      <p class="cg-why">
+        Debug a condition label to verify the condition logic is working as expected.
+      </p>
+      <pre class="cg-code">GIVEN risky = (pnl@positions.total &lt;= -50000) &amp; (avail_margin@funds.any_acct &lt; 0)
+WHEN risky ALERT telegram DO debug(risky)</pre>
+      <p class="cg-what">
+        When the condition fires, <code>debug(risky)</code> logs the evaluated result to DEBUG level.
+      </p>
+    </div>
+
+    <p class="cg-note">
+      A <code>debug(x)</code> call in a per-row matched condition (e.g. inside a position filter)
+      shows the genuinely live value for that row. In a per-account or firm-wide context,
+      it shows metadata about the metric being evaluated, not a live-refreshed number.
+    </p>
+  </section>
+
   <!-- ══════════════════════════ EVENT AGENTS ══════════════════════════ -->
   <section class="algo-card cg-section">
     <h2 class="section-heading">Event agents — notifications on log activity</h2>
@@ -311,6 +395,70 @@ DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)</pre>
     </p>
   </section>
 
+  <!-- ══════════════════════════ SCOPES AND FILTERS ══════════════════════════ -->
+  <section class="algo-card cg-section">
+    <h2 class="section-heading">Scopes and filters</h2>
+    <p class="cg-lede">
+      Scopes define where a metric is measured. Most scopes support qualifiers to narrow the result
+      (e.g., to a specific underlying or account). Here are the most common scope families:
+    </p>
+
+    <div class="cg-example">
+      <p class="cg-why">
+        You want an alert that fires based on market movers — gainers over 5%, losers under −5%,
+        or trending symbols from a saved watchlist.
+      </p>
+      <pre class="cg-code">WHEN day_change_pct@symbols.kind:gainers &gt; 5 ALERT telegram DO nop
+WHEN day_change_pct@symbols.kind:losers &lt; -5 ALERT telegram DO nop
+WHEN ltp@symbols.kind:watchlist &gt; 1000 ALERT telegram DO nop</pre>
+      <p class="cg-what">
+        <code>symbols.*</code> is a scope family for market/instrument data, qualified by a required
+        <code>kind:</code> value. Valid kinds are <code>watchlist</code> (symbols from your saved watchlist),
+        <code>gainers</code> (day's top gainers), <code>losers</code> (day's top losers), and
+        <code>pinned</code> (your pinned chart symbols). The metric evaluates across all symbols
+        in that category.
+      </p>
+    </div>
+
+    <div class="cg-example">
+      <p class="cg-why">
+        You only want to monitor positions on one specific underlying (e.g. NIFTY), ignoring other
+        underlyings in your book.
+      </p>
+      <pre class="cg-code">WHEN pnl@positions.expiring_today.underlying:NIFTY &lt;= -10000 ALERT telegram DO nop</pre>
+      <p class="cg-what">
+        The <code>underlying:</code> qualifier filters a <code>positions.*</code> scope to one specific
+        underlying symbol. This evaluates the metric only for positions whose underlying is NIFTY,
+        not across all positions.
+      </p>
+    </div>
+
+    <div class="cg-example">
+      <p class="cg-why">
+        A shorthand for <code>holdings</code> — either name works the same way.
+      </p>
+      <pre class="cg-code">WHEN pnl@hold.total &lt;= -10000 ALERT telegram DO nop
+WHEN pnl@holdings.total &lt;= -10000 ALERT telegram DO nop</pre>
+      <p class="cg-what">
+        <code>hold</code> is an alias for <code>holdings</code> — pick whichever you prefer. Both
+        refer to your equity/equity-derivative holdings (securities held in your demat).
+      </p>
+    </div>
+
+    <div class="cg-example">
+      <p class="cg-why">
+        Access a specific funds column directly (cash balance, available margin, etc.).
+      </p>
+      <pre class="cg-code">WHEN funds.cash@funds.total &lt; 0 ALERT telegram DO nop
+WHEN funds.margin@funds.any_acct &gt; 100000 ALERT telegram DO nop</pre>
+      <p class="cg-what">
+        <code>funds.cash</code> and <code>funds.margin</code> are column aliases on the
+        <code>funds</code> scope, giving direct access to cash balance and available margin.
+        Use the dot notation <code>scope.column</code> (not <code>column@scope</code>).
+      </p>
+    </div>
+  </section>
+
   <!-- ══════════════════════════ QUICK REFERENCE ══════════════════════════ -->
   <section class="algo-card cg-section">
     <h2 class="section-heading">Quick reference</h2>
@@ -322,11 +470,21 @@ DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)</pre>
         <tbody>
           <tr><td><code>metric@scope</code></td><td>Bind a metric to where it's measured, e.g. <code>pnl@positions.total</code></td></tr>
           <tr><td><code>scope.column</code></td><td>Dot-access a scope's own column directly, e.g. <code>positions.total.pnl</code> (no <code>@</code>)</td></tr>
+          <tr><td><code>GIVEN label = expr</code></td><td>Assign a reusable label to any expression in <code>GIVEN</code> preamble; reference the label in <code>WHEN</code>/<code>ALERT</code>/<code>DO</code> that follow</td></tr>
+          <tr><td><code>debug(label)</code></td><td>Inspect a label's resolved value, writing to Agents log at DEBUG level (hidden by default — toggle filter in LogPanel to see)</td></tr>
           <tr><td><code>&amp;</code> / <code>|</code> / <code>~</code></td><td>AND / OR (equal precedence, left-to-right) / NOT — parens required when combining: <code>(a &amp; b) | c</code></td></tr>
           <tr><td><code>&lt; &lt;= &gt; &gt;= == != in / not in</code></td><td>Comparators. <code>in</code>/<code>not in</code> take a <code>[a, b, c]</code> list literal</td></tr>
           <tr><td><code>a &lt;= metric@scope &lt;= b</code></td><td>Between-range sugar for two chained comparisons on one metric</td></tr>
           <tr><td><code>always</code></td><td>Sentinel condition that's always true (used to run a DO/ALERT unconditionally)</td></tr>
           <tr><td><code>nop</code></td><td>Explicit no-op for an ALERT or DO clause (same as omitting the clause)</td></tr>
+          <tr><td><code>symbols.kind:watchlist</code></td><td>Market data scope: symbols from your saved watchlist</td></tr>
+          <tr><td><code>symbols.kind:gainers</code></td><td>Market data scope: today's top gaining symbols</td></tr>
+          <tr><td><code>symbols.kind:losers</code></td><td>Market data scope: today's top losing symbols</td></tr>
+          <tr><td><code>symbols.kind:pinned</code></td><td>Market data scope: your pinned chart symbols</td></tr>
+          <tr><td><code>positions.underlying:SYMBOL</code></td><td>Filter a positions scope to one specific underlying, e.g. <code>pnl@positions.expiring_today.underlying:NIFTY</code></td></tr>
+          <tr><td><code>hold</code></td><td>Alias for <code>holdings</code> — equity/equity-derivative holdings in your demat</td></tr>
+          <tr><td><code>funds.cash</code></td><td>Column alias on <code>funds</code> scope — direct access to cash balance, use as <code>funds.cash@funds.total</code></td></tr>
+          <tr><td><code>funds.margin</code></td><td>Column alias on <code>funds</code> scope — direct access to available margin, use as <code>funds.margin@funds.any_acct</code></td></tr>
           <tr><td><code>lots=</code> vs <code>qty=</code></td><td>F&amp;O orders take <code>lots=</code> (auto-converted via the symbol's lot size); equity uses raw <code>qty=</code></td></tr>
           <tr><td><code>tp_pct</code> / <code>sl_pct</code></td><td>Inline take-profit / stop-loss override, on <code>order(...)</code> or <code>bracket(...)</code></td></tr>
           <tr><td><code>wing_premium_pct</code> / <code>wing_strike_offset</code></td><td>Wing-leg hedge sizing — mutually exclusive, pick one</td></tr>
