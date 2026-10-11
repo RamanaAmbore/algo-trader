@@ -314,14 +314,63 @@
   // DOM identity per row). Each entry carries a stable `key` so
   // Svelte can diff per row; the `html` string is the same as
   // _logRow() output but wrapped one DOM node at a time.
+  // Full DEBUG..CRITICAL vocabulary — same ordering/names as the
+  // min_level filtering concept event_agents.py's real seeded agents
+  // already use server-side (reused here, not reinvented).
+  const _LOG_LEVELS = ['debug', 'info', 'warning', 'error', 'critical'];
+
   // Map an agent event_type → log level so the header level filter
   // applies the same semantics across tabs. action_failed = error,
   // cooldown = warning, action_success / fired = info.
+  //
+  // Sprint G addendum (`debug(x)` CLI statement) — `debug(x)` compiles to
+  // the existing `emit_log` action with `level="debug"` (backend/api/algo/
+  // actions.py:921-925, zero backend change needed). `execute()`'s
+  // success path (`_log_action_success`) writes EVERY action's resolved
+  // `params` dict verbatim into `AgentEvent.detail` regardless of action
+  // type — so for an emit_log/debug(x) fire specifically, `e.detail.level`
+  // carries the real level ("debug", or whatever the operator set, incl.
+  // a future "critical"). That explicit value is checked FIRST, before
+  // falling back to the coarser event_type heuristic every other action
+  // type still relies on (those never set `detail.level`).
   function _agentLevel(/** @type {any} */ e) {
+    const explicit = String(e?.detail?.level || '').toLowerCase();
+    if (_LOG_LEVELS.includes(explicit)) return explicit;
     const t = (e?.event_type || '').toLowerCase();
     if (t.includes('fail') || t.includes('error') || t.includes('reject')) return 'error';
     if (t.includes('cool') || t.includes('warn') || t.includes('skip'))    return 'warning';
     return 'info';
+  }
+  // Severity-chip letter code ('d'|'i'|'w'|'e') for a resolved level —
+  // 'critical' shares the 'e' (error) visual tier since no 5th chip
+  // style exists today (scoped minimal — see _levelChipHtml/app.css
+  // .lv-* rules); the filter still treats critical as its own bucket.
+  function _agentLevelChipCode(/** @type {string} */ level) {
+    if (level === 'debug')   return 'd';
+    if (level === 'warning') return 'w';
+    if (level === 'error' || level === 'critical') return 'e';
+    return 'i';
+  }
+  // ── Agents tab — Kind filter bucket mapping ─────────────────────────
+  // ASSUMPTION, not yet confirmed against the real backend (per brief):
+  // a parallel backend change threads the firing agent's own `kind`
+  // column (cycle|threshold|event|bracket|template) into the AgentEvent
+  // row as `agent_kind` — most likely via execute() injecting agent.kind
+  // into context before dispatching emit_log (backend/api/algo/
+  // actions.py). If the real landed field name differs, this is the
+  // ONE lookup to update — every other piece of the kind filter is keyed
+  // off the bucket this returns, not the raw field name.
+  // Bucket mapping mirrors Sprint C's own four-kind card set
+  // (Agents/Alerts/Brackets/Templates): event→alert, bracket→bracket,
+  // template→template, cycle/threshold (ordinary rule agents)→agent.
+  function _agentKindBucket(/** @type {any} */ e) {
+    const raw = String(e?.agent_kind || '').toLowerCase();
+    if (!raw) return null;
+    if (raw === 'event')    return 'alert';
+    if (raw === 'bracket')  return 'bracket';
+    if (raw === 'template') return 'template';
+    if (raw === 'cycle' || raw === 'threshold') return 'agent';
+    return raw;
   }
   // ── Search helper ────────────────────────────────────────────────────
   // Text-match predicate for the card button group search. Strips HTML tags
@@ -338,7 +387,18 @@
   const _agentRows = $derived.by(() => {
     return agentLog.slice()
       .filter(e => {
-        if (levelFilter !== 'all' && _agentLevel(e) !== levelFilter) return false;
+        // Deliberately NOT ANDing the old parked `levelFilter` prop here
+        // (unlike _sysRows/_connEventRows, which still use it) — it's an
+        // exact-match single-value filter with no live operator control
+        // (see its own doc comment above: "PARKED... decision deferred"),
+        // and every real mount (ActivityLogSurface) defaults it to
+        // 'warning', which would silently neuter the new Level/Kind
+        // filters below to warning-only on every page. The new filters
+        // are the Agents tab's real, operator-facing level control now.
+        if (!_agentLevelFilter.has(_agentLevel(e))) return false;
+        // New Agents-tab kind filter (agent/alert/bracket/template,
+        // 'all' = no narrowing) — ANDs with everything else.
+        if (_agentKindFilter !== 'all' && _agentKindBucket(e) !== _agentKindFilter) return false;
         if (orderAccountFilter.length > 0 && e.account
             && !orderAccountFilter.includes(String(e.account))) return false;
         return true;
@@ -352,7 +412,10 @@
         const cond = chipsFromJson(e.trigger_condition) || '';
         const tag  = (e.event_type || '').replace(/_/g, ' ');
         const stripe = i % 2 === 0 ? 'row-tint-even' : 'row-tint-odd';
-        const lv = cls.includes('failed') ? 'e' : cls.includes('cooldown') ? 'w' : cls.includes('success') ? 'i' : 'd';
+        // Chip letter now derives from the real resolved level (picks up
+        // debug(x)'s detail.level) instead of the event_type-only `cls`
+        // guess, so a debug fire shows the 'D' chip, not 'I'.
+        const lv = _agentLevelChipCode(_agentLevel(e));
         return {
           key: e.id != null ? `a${e.id}` : `a${e.timestamp || ''}-${i}`,
           html: _logRow(e.timestamp, cond, tag, `${cls} ${stripe}`, lv),
@@ -1071,6 +1134,76 @@
     ['shadow', 'Shadow'],
     ['replay', 'Replay'],
   ];
+
+  // ── Agents tab — Level + Kind filters (Sprint G addendum, `debug(x)`) ──
+  // Two independent, AND-combined filter dimensions so a `debug(x)` CLI
+  // statement's entries don't clutter the Agents tab by default, while
+  // still being easy to surface when actively debugging. Chip-row UI
+  // (reuses the existing `.om-chip` shape from the Order-tab mode strip
+  // above) rather than a <select> dropdown — matches this file's own
+  // established convention for tab-scoped filter controls.
+  //
+  // Level: multi-select toggle (any subset may be active at once) —
+  // a single min-level threshold wouldn't let an operator isolate just
+  // DEBUG without also losing ERROR/CRITICAL visibility. Default hides
+  // DEBUG only; every other level is on.
+  const _AGENT_LEVEL_TABS = _LOG_LEVELS.map(id => [id, id[0].toUpperCase() + id.slice(1)]);
+  const _AGENT_LEVEL_LS_KEY = 'ramboq.logpanel.agentLevelFilter';
+  /** @type {Set<string>} */
+  let _agentLevelFilter = $state(new Set(['info', 'warning', 'error', 'critical']));
+  function _toggleAgentLevel(/** @type {string} */ level) {
+    const next = new Set(_agentLevelFilter);
+    if (next.has(level)) next.delete(level); else next.add(level);
+    _agentLevelFilter = next;
+  }
+
+  // Kind: single-select narrowing (default 'all' — never hides anything
+  // by default, unlike Level above). See `_agentKindBucket()` for the
+  // raw-field assumption this depends on.
+  const _AGENT_KIND_TABS = [
+    ['all',      'All'],
+    ['agent',    'Agent'],
+    ['alert',    'Alert'],
+    ['bracket',  'Bracket'],
+    ['template', 'Template'],
+  ];
+  const _AGENT_KIND_LS_KEY = 'ramboq.logpanel.agentKindFilter';
+  let _agentKindFilter = $state('all');
+
+  // Persist both filters the same way CollapseButton.svelte persists its
+  // own per-card UI preference: plain localStorage, try/catch-silent
+  // (quota / Safari private mode), restore-once-on-mount gated by a
+  // `_restored` flag so the initial default doesn't immediately
+  // overwrite a real stored value before it's been read.
+  let _agentFiltersRestored = false;
+  onMount(() => {
+    try {
+      const raw = localStorage.getItem(_AGENT_LEVEL_LS_KEY);
+      if (raw) {
+        const arr = JSON.parse(raw);
+        if (Array.isArray(arr)) {
+          const valid = arr.filter(v => _LOG_LEVELS.includes(v));
+          if (valid.length) _agentLevelFilter = new Set(valid);
+        }
+      }
+    } catch (_) { /* quota / Safari private / malformed JSON — keep default */ }
+    try {
+      const rawKind = localStorage.getItem(_AGENT_KIND_LS_KEY);
+      if (rawKind && _AGENT_KIND_TABS.some(([id]) => id === rawKind)) _agentKindFilter = rawKind;
+    } catch (_) {}
+    _agentFiltersRestored = true;
+  });
+  $effect(() => {
+    const snap = [..._agentLevelFilter];
+    if (!_agentFiltersRestored || typeof localStorage === 'undefined') return;
+    try { localStorage.setItem(_AGENT_LEVEL_LS_KEY, JSON.stringify(snap)); } catch (_) {}
+  });
+  $effect(() => {
+    const snap = _agentKindFilter;
+    if (!_agentFiltersRestored || typeof localStorage === 'undefined') return;
+    try { localStorage.setItem(_AGENT_KIND_LS_KEY, snap); } catch (_) {}
+  });
+
   // Account multi-select filter — matches the /orders Order Activity
   // card. Operator: "order activity tabs have all accounts in order
   // page. the order modal should also have it"; "keep the activity
@@ -1986,6 +2119,38 @@
      changed. Audit defect #11 (the old @html-joined-string
      approach destroyed all row DOM identity on every poll,
      killing text selection inside the log). -->
+{#if logTab === 'agent'}
+  <!-- Agents-tab Level + Kind filter bar (Sprint G addendum, `debug(x)`).
+       Level is multi-select (toggle any subset); Kind is single-select
+       narrowing with an 'All' default. Both AND together and with every
+       other existing filter (see _agentRows above). -->
+  <div class="agent-filter-bar" data-testid="agent-filter-bar">
+    <span class="agent-filter-label">Level</span>
+    <div class="agent-filter-group" role="group" aria-label="Agent log level filter">
+      {#each _AGENT_LEVEL_TABS as [val, label]}
+        <button type="button"
+                class="om-chip agent-filter-chip {_agentLevelFilter.has(val) ? 'om-on agent-chip-on' : ''}"
+                aria-pressed={_agentLevelFilter.has(val)}
+                data-testid="agent-level-chip-{val}"
+                onclick={() => _toggleAgentLevel(val)}>
+          {label}
+        </button>
+      {/each}
+    </div>
+    <span class="agent-filter-label">Kind</span>
+    <div class="agent-filter-group" role="group" aria-label="Agent log kind filter">
+      {#each _AGENT_KIND_TABS as [val, label]}
+        <button type="button"
+                class="om-chip agent-filter-chip {_agentKindFilter === val ? 'om-on agent-chip-on' : ''}"
+                aria-pressed={_agentKindFilter === val}
+                data-testid="agent-kind-chip-{val}"
+                onclick={() => _agentKindFilter = val}>
+          {label}
+        </button>
+      {/each}
+    </div>
+  </div>
+{/if}
 <div class="log-panel log-rows {heightClass} {multiColumn && logTab !== 'order' ? 'lp-multicol' : ''}">
   {#if logTab === 'terminal'}
     {@html _terminalHtmlDerived}
@@ -2607,6 +2772,36 @@
   .om-chip.om-on.om-chip-shadow { background: rgba(251,146,60,0.14); color: var(--algo-orange); border-color: rgba(251,146,60,0.45); }
   /* Replay — canonical green var(--c-long) */
   .om-chip.om-on.om-chip-replay { background: rgba(74,222,128,0.14); color: var(--c-long); border-color: rgba(74,222,128,0.45); }
+
+  /* Agents-tab Level/Kind filter bar (Sprint G addendum, `debug(x)`).
+     Reuses the `.om-chip` shape from the Order-tab mode strip above;
+     the generic "on" tint is action-amber (toggle/narrowing affordance),
+     distinct from the mode-specific colours the Order-tab chips use. */
+  .agent-filter-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+    padding: 0.18rem 0;
+    margin-bottom: 0.2rem;
+    border-bottom: 1px dashed rgba(251,191,36,0.12);
+  }
+  .agent-filter-group { display: inline-flex; }
+  .agent-filter-group > .om-chip ~ .om-chip { margin-left: 0; }
+  .agent-filter-label {
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--algo-slate-muted);
+    margin-right: 0.1rem;
+  }
+  .om-chip.agent-filter-chip.om-on.agent-chip-on {
+    background: var(--c-action-14);
+    color: var(--c-action);
+    border-color: rgba(251,191,36,0.45);
+  }
 
   /* Preflight verdict chip — ✓ when basket_margin / Kite preflight
      accepted the order, ✗ when it pushed back. Hover the chip to see
