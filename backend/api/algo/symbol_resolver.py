@@ -269,6 +269,100 @@ async def _list_all_futures_fallback(
 
 
 # ---------------------------------------------------------------------------
+# Exchange resolver: resolve_exchange_for_symbol
+# ---------------------------------------------------------------------------
+
+async def resolve_exchange_for_symbol(symbol: str) -> "str | None":
+    """Resolve which exchange a bare tradingsymbol (no explicit exchange
+    qualifier given) belongs to, by consulting the live instruments cache.
+
+    Used by `background._perf_build_quote_rows` as the fallback for a
+    `quote.tracked` leaf whose `scope_filter` carries no `exchange` key —
+    replaces blindly defaulting to NSE (the Sprint 21 bug: every non-NSE
+    `quote.tracked` symbol silently never fired because its quote was
+    fetched under the wrong exchange key).
+
+    Resolution policy (never a blind guess across genuinely cross-listed
+    non-NSE exchanges — "drop rather than guess wrong", same principle
+    the frontend CLI compiler uses for a bare `order(...)` statement with
+    an ambiguous symbol, see `agents.js`'s `_defaultExchangesOf` caller):
+
+      1. Symbol lists on NSE (alongside any other exchange, e.g. a
+         dual-listed NSE+BSE equity like RELIANCE) → "NSE". This is
+         IDENTICAL to this function's predecessor's unconditional NSE
+         default for the single most common case, so no previously-
+         working NSE-rooted agent regresses.
+      2. Symbol lists on exactly one exchange → that exchange (the actual
+         fix — this is what resolves a bare MCX/NFO/CDS/BSE symbol
+         correctly instead of defaulting to NSE).
+      3. Symbol lists on NO real instrument row — try the virtual
+         MCX/CDS root convention (`CRUDEOIL`, `CRUDEOIL_NEXT`, bare alpha,
+         no instrument row of its own): a static-set match
+         (`MCX_VIRTUAL_ROOTS`/`CDS_VIRTUAL_ROOTS`) resolves immediately;
+         otherwise a dynamic lookup against FUT rows' `u` (underlying)
+         field — the same field `list_active_futures` keys on — covers a
+         future commodity Kite adds before this module's static root
+         sets are updated. Still unresolved (cold cache, truly unknown
+         symbol) → "NSE", matching the pre-fix default exactly so a cold
+         cache never behaves worse than before (the downstream
+         missing-vs-zero `ltp<=0` guard in `_perf_build_quote_rows`
+         already safely drops a wrong guess).
+      4. Symbol lists on 2+ exchanges, none of them NSE (genuinely
+         ambiguous, no sane default) → `None` — caller skips the symbol
+         for this cycle rather than guessing wrong.
+
+    Returns `None` only for case 4 above. Never raises — a cold/broken
+    instruments cache degrades to the NSE fallback (case 3's tail), never
+    an exception propagating to the caller.
+    """
+    if not symbol:
+        return None
+
+    from backend.api.cache import get_or_fetch
+    from backend.api.routes.instruments import _fetch_instruments, _TTL_SECONDS
+    try:
+        resp = await get_or_fetch(
+            "instruments", _fetch_instruments, ttl_seconds=_TTL_SECONDS
+        )
+        items = resp.items if resp else []
+    except Exception:
+        items = []
+
+    sym_u = symbol.upper()
+    candidates = {inst.e for inst in items if (inst.s or "").upper() == sym_u}
+
+    if "NSE" in candidates:
+        return "NSE"
+    if len(candidates) == 1:
+        return next(iter(candidates))
+    if candidates:
+        # 2+ candidates, none NSE — genuinely ambiguous across non-NSE
+        # exchanges; skip rather than guess.
+        return None
+
+    # No real instrument row at all — virtual MCX/CDS root convention.
+    root, _ = _strip_next(sym_u)
+    if _is_virtual(root):
+        if root in MCX_VIRTUAL_ROOTS:
+            return "MCX"
+        if root in CDS_VIRTUAL_ROOTS:
+            return "CDS"
+        if items:
+            dyn = {
+                inst.e for inst in items
+                if inst.t == "FUT"
+                and (inst.u or "").upper() == root
+                and inst.e in _VIRTUAL_EXCHANGES
+            }
+            if len(dyn) == 1:
+                return next(iter(dyn))
+
+    # Cold cache / genuinely unknown symbol — NSE fallback, identical to
+    # the pre-fix behavior for this specific tail case.
+    return "NSE"
+
+
+# ---------------------------------------------------------------------------
 # Reverse resolver: root_of
 # ---------------------------------------------------------------------------
 

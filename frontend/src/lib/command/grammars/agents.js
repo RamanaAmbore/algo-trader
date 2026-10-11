@@ -2570,8 +2570,17 @@ function _resolveScopeString(scopeNode, catalog, errors) {
 // surfaces as a clear compile error for e.g. `funds.account:worst`, which
 // has no `funds.worst_acct` token today — a real, intentionally-deferred
 // gap, not silently-wrong behavior).
-const _QUALIFIER_COLUMN_NAME = Object.freeze({ account: 'account_id', symbol: 'symbol' });
-const _QUALIFIER_COLUMN_NAME_REVERSE = Object.freeze({ account_id: 'account', symbol: 'symbol' });
+// `exchange:` (added for `quote.tracked` — Sprint 21's non-NSE quote-fire
+// bug fix) follows the SAME generic mechanism as `account:`/`symbol:`: no
+// per-scope allowlist here, the `catalog.columns.has(scope.exchange)`
+// check just below already restricts it to whichever scopes genuinely
+// expose a real `exchange` column (`EXPOSED_COLUMNS` in the backend's
+// `grammar.py` — currently `quote.tracked`, `watchlist.*`,
+// `orders.any_acct`, and the `positions.expiring_today` row family; NOT
+// `positions.total`/`funds.*`/summary scopes, which have no single
+// exchange to filter on).
+const _QUALIFIER_COLUMN_NAME = Object.freeze({ account: 'account_id', symbol: 'symbol', exchange: 'exchange' });
+const _QUALIFIER_COLUMN_NAME_REVERSE = Object.freeze({ account_id: 'account', symbol: 'symbol', exchange: 'exchange' });
 
 // family -> qualifier key -> existing scope token "worst" aliases onto.
 // Deliberately sparse — e.g. `funds` has no `worst_acct` token today (see
@@ -2681,7 +2690,7 @@ function _resolveScopeRefFull(scopeNode, catalog, errors) {
     const qualKey = q.key.toLowerCase();
     const column = _QUALIFIER_COLUMN_NAME[qualKey];
     if (!column) {
-      errors.push(_err(`unknown scope qualifier '${q.key}:' — only 'account:'/'symbol:' are supported`));
+      errors.push(_err(`unknown scope qualifier '${q.key}:' — only 'account:'/'symbol:'/'exchange:' are supported`));
       return null;
     }
     const colKey = `${effectiveBaseScope}.${column}`.toLowerCase();
@@ -2699,7 +2708,19 @@ function _resolveScopeRefFull(scopeNode, catalog, errors) {
     // qualifier) but contributes NO scope_filter entry — explicit
     // wildcard is the same as omitting the qualifier entirely.
     if (q.value.type === 'star') continue;
-    scopeFilter[column] = _qualifierValueText(q);
+    let qualText = _qualifierValueText(q);
+    // `exchange:` values are always stored/compared uppercase — every
+    // real row's `exchange` column is uppercase ("MCX"/"NFO"/"CDS"/...,
+    // see `background._perf_build_quote_rows`'s `exch_u`), and the
+    // backend's `scope_filter_row_predicate` does an exact case-sensitive
+    // `str(...) == str(...)` match (grammar.py), so `exchange:mcx` would
+    // otherwise compile cleanly but never match any row — a silent
+    // never-fires bug of the same class this fix closes. Uppercase here
+    // at compile time rather than relaxing the backend match to
+    // case-insensitive, since every other qualifier (`account:`/
+    // `symbol:`) intentionally stays case-sensitive passthrough.
+    if (column === 'exchange') qualText = qualText.toUpperCase();
+    scopeFilter[column] = qualText;
   }
   const hasFilter = Object.keys(scopeFilter).length > 0;
   return { scopeStr: effectiveBaseScope, scopeFilter: hasFilter ? scopeFilter : undefined };

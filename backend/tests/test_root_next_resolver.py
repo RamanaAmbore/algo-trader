@@ -569,3 +569,124 @@ def test_pinned_roots_next_falls_back_when_only_one_contract():
         assert back == f"{root}26JULFUT", (
             f"{root}/{exchange} _NEXT must fall back to front-month during "
             f"transition weeks; got {back!r}")
+
+
+# ---------------------------------------------------------------------------
+# resolve_exchange_for_symbol — Sprint 21 quote.tracked non-NSE bug fix
+#
+# `background._perf_build_quote_rows` used to default EVERY `quote.tracked`
+# symbol with no explicit `scope_filter.exchange` to NSE, so any F&O/MCX/
+# CDS/BSE symbol silently never produced a quote row (wrong broker key →
+# `_fetch_ltp` returns ltp<=0 → missing-vs-zero guard drops it). This
+# resolver replaces the blind NSE default by consulting the live
+# instruments cache.
+# ---------------------------------------------------------------------------
+
+def _make_eq(sym: str, exchange: str) -> SimpleNamespace:
+    """Bare equity instrument row — no futures-only fields set."""
+    return SimpleNamespace(s=sym, u=None, e=exchange, t="EQ", x=None)
+
+
+def test_resolve_exchange_single_exchange_nfo():
+    """A symbol listed on exactly one (non-NSE) exchange resolves to it —
+    the actual fix: previously this would have silently defaulted to NSE."""
+    from backend.api.algo.symbol_resolver import resolve_exchange_for_symbol
+
+    universe = [_make_fut("NIFTY26JULFUT", "NIFTY", "NFO", "2026-07-30")]
+    with ExitStack() as stack:
+        for cm in _patch_resolver(universe, "2026-07-01"):
+            stack.enter_context(cm)
+        result = asyncio.run(resolve_exchange_for_symbol("NIFTY26JULFUT"))
+
+    assert result == "NFO"
+
+
+def test_resolve_exchange_mcx_only_symbol():
+    """A real MCX-only contract (no NSE listing at all) resolves to MCX,
+    never the old blind NSE default (Test coverage #2)."""
+    from backend.api.algo.symbol_resolver import resolve_exchange_for_symbol
+
+    universe = [_make_fut("CRUDEOIL26OCTFUT", "CRUDEOIL", "MCX", "2026-10-30")]
+    with ExitStack() as stack:
+        for cm in _patch_resolver(universe, "2026-10-01"):
+            stack.enter_context(cm)
+        result = asyncio.run(resolve_exchange_for_symbol("CRUDEOIL26OCTFUT"))
+
+    assert result == "MCX"
+
+
+def test_resolve_exchange_dual_listed_prefers_nse():
+    """A symbol listed on BOTH NSE and BSE (e.g. RELIANCE) resolves to
+    NSE — identical to the pre-fix behavior, so no previously-working
+    NSE-rooted agent regresses."""
+    from backend.api.algo.symbol_resolver import resolve_exchange_for_symbol
+
+    universe = [_make_eq("RELIANCE", "NSE"), _make_eq("RELIANCE", "BSE")]
+    with ExitStack() as stack:
+        for cm in _patch_resolver(universe, "2026-07-01"):
+            stack.enter_context(cm)
+        result = asyncio.run(resolve_exchange_for_symbol("RELIANCE"))
+
+    assert result == "NSE"
+
+
+def test_resolve_exchange_ambiguous_non_nse_skips():
+    """2+ candidate exchanges, none of them NSE, is genuinely ambiguous —
+    returns None so the caller skips rather than guessing wrong."""
+    from backend.api.algo.symbol_resolver import resolve_exchange_for_symbol
+
+    universe = [_make_eq("DUMMY", "MCX"), _make_eq("DUMMY", "CDS")]
+    with ExitStack() as stack:
+        for cm in _patch_resolver(universe, "2026-07-01"):
+            stack.enter_context(cm)
+        result = asyncio.run(resolve_exchange_for_symbol("DUMMY"))
+
+    assert result is None
+
+
+def test_resolve_exchange_virtual_mcx_root_static_set():
+    """A bare virtual MCX root (e.g. 'CRUDEOIL', no instrument row of its
+    own) resolves to MCX via the static root-set fallback, same convention
+    `resolve_symbol` already uses for the SAME root."""
+    from backend.api.algo.symbol_resolver import resolve_exchange_for_symbol
+
+    with ExitStack() as stack:
+        for cm in _patch_resolver(_CRUDEOIL, "2026-06-15"):
+            stack.enter_context(cm)
+        result = asyncio.run(resolve_exchange_for_symbol("CRUDEOIL"))
+
+    assert result == "MCX"
+
+
+def test_resolve_exchange_virtual_mcx_root_next_suffix():
+    """The `_NEXT` back-month virtual-root spelling resolves the same way
+    as the bare root (both strip to the same root before lookup)."""
+    from backend.api.algo.symbol_resolver import resolve_exchange_for_symbol
+
+    with ExitStack() as stack:
+        for cm in _patch_resolver(_CRUDEOIL, "2026-06-15"):
+            stack.enter_context(cm)
+        result = asyncio.run(resolve_exchange_for_symbol("CRUDEOIL_NEXT"))
+
+    assert result == "MCX"
+
+
+def test_resolve_exchange_cold_cache_falls_back_to_nse():
+    """Cold/empty instruments cache degrades to the pre-fix NSE default —
+    never worse than before; the downstream missing-vs-zero ltp<=0 guard
+    in `_perf_build_quote_rows` safely drops a wrong guess."""
+    from backend.api.algo.symbol_resolver import resolve_exchange_for_symbol
+
+    with ExitStack() as stack:
+        for cm in _patch_resolver([], "2026-07-01"):
+            stack.enter_context(cm)
+        result = asyncio.run(resolve_exchange_for_symbol("SOMENEWSYMBOL"))
+
+    assert result == "NSE"
+
+
+def test_resolve_exchange_empty_symbol_returns_none():
+    from backend.api.algo.symbol_resolver import resolve_exchange_for_symbol
+
+    result = asyncio.run(resolve_exchange_for_symbol(""))
+    assert result is None

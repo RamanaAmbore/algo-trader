@@ -2951,3 +2951,84 @@ describe('Sprint 21 — quote.tracked.symbol:NIFTY25JULFUT.ltp decompile round-t
     expect(recompiled.agent.conditions).toEqual(r.agent.conditions);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════
+// Non-NSE quote.tracked bug fix — `exchange:` qualifier (backend+frontend
+// companion fix; see CLAUDE.md "Alert evaluation and latching" /
+// background._perf_build_quote_rows). Covers PLAN items 3/4.
+// ═══════════════════════════════════════════════════════════════════════
+describe('exchange: qualifier on quote.tracked (non-NSE quote.tracked fire-never bug fix)', () => {
+  it('quote.tracked.exchange:MCX.symbol:CRUDEOIL25NOVFUT.ltp <= 100 compiles with BOTH exchange and symbol in scope_filter (Test coverage #3)', () => {
+    const r = compile('WHEN quote.tracked.exchange:MCX.symbol:CRUDEOIL25NOVFUT.ltp <= 100 ALERT telegram DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions).toEqual({
+      metric: 'ltp', scope: 'quote.tracked', op: '<=', value: 100,
+      scope_filter: { exchange: 'MCX', symbol: 'CRUDEOIL25NOVFUT' },
+    });
+  });
+
+  it('the "@" form threads both qualifiers identically, in symbol-then-exchange order too', () => {
+    const r = compile('WHEN ltp@quote.tracked.symbol:CRUDEOIL25NOVFUT.exchange:MCX <= 100 ALERT telegram DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions).toEqual({
+      metric: 'ltp', scope: 'quote.tracked', op: '<=', value: 100,
+      scope_filter: { symbol: 'CRUDEOIL25NOVFUT', exchange: 'MCX' },
+    });
+  });
+
+  it('a lowercase exchange: value compiles UPPERCASED — the real row\'s exchange column is always uppercase, so a lowercase qualifier must not silently never-match at evaluation time', () => {
+    const r = compile('WHEN quote.tracked.exchange:mcx.symbol:CRUDEOIL25NOVFUT.ltp <= 100 ALERT telegram DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions.scope_filter).toEqual({ exchange: 'MCX', symbol: 'CRUDEOIL25NOVFUT' });
+  });
+
+  it('exchange: alone (no symbol:) still fails the existing quote.tracked-requires-symbol guard — exchange is an OPTIONAL secondary qualifier, never a substitute for symbol', () => {
+    const r = compile('WHEN quote.tracked.exchange:MCX.ltp <= 100 ALERT telegram DO nop');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /quote\.tracked requires a specific symbol: qualifier/.test(e.message))).toBe(true);
+  });
+
+  it('exchange: is rejected on a scope with no real exchange column (e.g. positions.total, a summary scope) — generic column-whitelist mechanism, no special-casing needed', () => {
+    const r = compile('WHEN pnl@positions.total.exchange:NSE > 0 ALERT telegram DO nop');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /not a valid qualifier for scope 'positions\.total'/.test(e.message))).toBe(true);
+  });
+
+  // NOTE: the backend's `_POSITION_ROW_COLUMNS` (grammar.py) already
+  // exposes a real `exchange` column for `positions.expiring_today`/
+  // `.nfo`/`.mcx_unhedged`/`positions.worst_symbol`, so the SAME generic
+  // mechanism covers `exchange:` there too in production — this test
+  // file's hand-maintained `COLUMN_ROWS` fixture (above) just doesn't
+  // happen to include that specific row, so it isn't asserted here.
+  // `quote.tracked` is the scope this fix's own bug report is about, and
+  // is fully covered above/below.
+
+  it('unknown qualifier error message now lists exchange: alongside account:/symbol:', () => {
+    const r = compile('WHEN positions.bogus:X.pnl > 0 ALERT telegram DO nop');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /only 'account:'\/'symbol:'\/'exchange:' are supported/.test(e.message))).toBe(true);
+  });
+});
+
+describe('exchange:+symbol: scope_filter decompile round-trip (Test coverage #4)', () => {
+  it('quote.tracked.exchange:MCX.symbol:CRUDEOIL25NOVFUT.ltp <= 100 decompiles and recompiles to an identical scope_filter carrying both keys', () => {
+    const r = compile('WHEN quote.tracked.exchange:MCX.symbol:CRUDEOIL25NOVFUT.ltp <= 100 ALERT telegram DO nop');
+    expect(r.ok).toBe(true);
+    const dec = decompileCondition(r.agent.conditions, CATALOG);
+    expect(dec.errors).toEqual([]);
+    const recompiled = compile(`WHEN ${dec.text} ALERT telegram DO nop`);
+    expect(recompiled.ok).toBe(true);
+    expect(recompiled.agent.conditions.scope_filter).toEqual({ exchange: 'MCX', symbol: 'CRUDEOIL25NOVFUT' });
+    expect(recompiled.agent.conditions).toEqual(r.agent.conditions);
+  });
+
+  it('a column with no metric token (.bid) on quote.tracked also round-trips with both scope_filter keys intact', () => {
+    const r = compile('WHEN quote.tracked.exchange:MCX.symbol:CRUDEOIL25NOVFUT.bid <= 100 ALERT telegram DO nop');
+    expect(r.ok).toBe(true);
+    const dec = decompileCondition(r.agent.conditions, CATALOG);
+    expect(dec.errors).toEqual([]);
+    const recompiled = compile(`WHEN ${dec.text} ALERT telegram DO nop`);
+    expect(recompiled.ok).toBe(true);
+    expect(recompiled.agent.conditions).toEqual(r.agent.conditions);
+  });
+});

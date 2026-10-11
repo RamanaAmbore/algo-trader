@@ -457,6 +457,7 @@ class TestPerfBuildQuoteRows:
         )
         with patch("backend.api.algo.agent_engine._cycle_load_agents", new=AsyncMock(return_value=[agent])), \
              patch("backend.api.algo.symbol_resolver.resolve_market_data_keys", new=AsyncMock(return_value=key_map)), \
+             patch("backend.api.algo.symbol_resolver.resolve_exchange_for_symbol", new=AsyncMock(return_value="NSE")), \
              patch("backend.api.routes.quote._fetch_ltp", return_value=_fake_quote_response(0.0)):
             out = await _perf_build_quote_rows()
         assert out == []
@@ -468,6 +469,154 @@ class TestPerfBuildQuoteRows:
                    new=AsyncMock(side_effect=RuntimeError("db down"))):
             out = await _perf_build_quote_rows()
         assert out == []
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  5c. _perf_build_quote_rows — non-NSE exchange resolution fix
+#
+#  Confirmed bug: every `quote.tracked` symbol with no explicit
+#  `scope_filter.exchange` used to default blindly to NSE, so any real
+#  MCX/NFO/CDS/BSE symbol's quote was fetched under the WRONG broker key
+#  and always dropped by the missing-vs-zero guard — the condition could
+#  never fire. Fixed via `symbol_resolver.resolve_exchange_for_symbol`.
+# ═══════════════════════════════════════════════════════════════════════
+
+class TestPerfBuildQuoteRowsExchangeResolution:
+    @pytest.mark.asyncio
+    async def test_explicit_exchange_qualifier_wins_never_defaults_to_nse(self):
+        """Test coverage #1 — an explicit exchange:MCX qualifier builds a
+        quote row for MCX, and the (cache-hitting, potentially-slow)
+        instruments-cache resolver is never even consulted."""
+        from backend.api.background import _perf_build_quote_rows
+        from backend.api.algo.symbol_resolver import MarketDataKeyMap
+        agent = _FakeAgent({
+            "metric": "ltp", "scope": "quote.tracked", "op": ">=", "value": 1,
+            "scope_filter": {"symbol": "CRUDEOIL26OCTFUT", "exchange": "MCX"},
+        })
+
+        async def _identity_key_map(keys):
+            return MarketDataKeyMap(
+                broker_keys=list(keys),
+                input_to_broker={k: k for k in keys},
+                broker_to_input={k: k for k in keys},
+            )
+
+        with patch("backend.api.algo.agent_engine._cycle_load_agents", new=AsyncMock(return_value=[agent])), \
+             patch("backend.api.algo.symbol_resolver.resolve_market_data_keys", new=AsyncMock(side_effect=_identity_key_map)) as m_keymap, \
+             patch("backend.api.algo.symbol_resolver.resolve_exchange_for_symbol", new=AsyncMock()) as m_resolve, \
+             patch("backend.api.routes.quote._fetch_ltp",
+                   return_value=_fake_quote_response(5200.0, symbol="CRUDEOIL26OCTFUT", exchange="MCX")) as m_fetch:
+            out = await _perf_build_quote_rows()
+
+        m_resolve.assert_not_called()
+        m_keymap.assert_awaited_once_with(["MCX:CRUDEOIL26OCTFUT"])
+        assert m_fetch.call_args[0][0] == "MCX"  # b_exch — never "NSE"
+        assert out == [{
+            "tradingsymbol": "CRUDEOIL26OCTFUT", "exchange": "MCX", "last_price": 5200.0,
+            "bid": None, "ask": None, "volume": 0,
+        }]
+
+    @pytest.mark.asyncio
+    async def test_no_exchange_qualifier_resolves_from_instruments_cache_not_nse(self):
+        """Test coverage #2 — a `quote.tracked` leaf with NO exchange
+        qualifier resolves the real MCX-only symbol's exchange by
+        consulting the REAL `resolve_exchange_for_symbol` (not mocked),
+        backed by a fake instruments-cache response — proving the full
+        chain (cache → resolver → broker key → fetch → row), not just
+        the wiring between `_perf_build_quote_rows` and a stubbed
+        resolver."""
+        from backend.api.background import _perf_build_quote_rows
+        from backend.api.algo.symbol_resolver import MarketDataKeyMap
+
+        async def _identity_key_map(keys):
+            return MarketDataKeyMap(
+                broker_keys=list(keys),
+                input_to_broker={k: k for k in keys},
+                broker_to_input={k: k for k in keys},
+            )
+
+        instruments_resp = types.SimpleNamespace(items=[
+            types.SimpleNamespace(s="CRUDEOIL26OCTFUT", e="MCX", t="FUT", u="CRUDEOIL", x="2026-10-30"),
+        ])
+        agent = _FakeAgent({
+            "metric": "ltp", "scope": "quote.tracked", "op": ">=", "value": 1,
+            "scope_filter": {"symbol": "CRUDEOIL26OCTFUT"},
+        })
+
+        with patch("backend.api.algo.agent_engine._cycle_load_agents", new=AsyncMock(return_value=[agent])), \
+             patch("backend.api.algo.symbol_resolver.resolve_market_data_keys", new=AsyncMock(side_effect=_identity_key_map)) as m_keymap, \
+             patch("backend.api.cache.get_or_fetch", new=AsyncMock(return_value=instruments_resp)), \
+             patch("backend.api.routes.quote._fetch_ltp",
+                   return_value=_fake_quote_response(5200.0, symbol="CRUDEOIL26OCTFUT", exchange="MCX")) as m_fetch:
+            out = await _perf_build_quote_rows()
+
+        m_keymap.assert_awaited_once_with(["MCX:CRUDEOIL26OCTFUT"])
+        assert m_fetch.call_args[0][0] == "MCX"  # the real fix: NOT "NSE"
+        assert out == [{
+            "tradingsymbol": "CRUDEOIL26OCTFUT", "exchange": "MCX", "last_price": 5200.0,
+            "bid": None, "ask": None, "volume": 0,
+        }]
+
+    @pytest.mark.asyncio
+    async def test_ambiguous_unresolvable_symbol_is_skipped_not_guessed(self):
+        """A symbol genuinely ambiguous across non-NSE exchanges (resolver
+        returns None) is dropped for this cycle — never fetched under a
+        guessed-wrong exchange."""
+        from backend.api.background import _perf_build_quote_rows
+        agent = _FakeAgent({
+            "metric": "ltp", "scope": "quote.tracked", "op": ">=", "value": 1,
+            "scope_filter": {"symbol": "DUMMY"},
+        })
+        with patch("backend.api.algo.agent_engine._cycle_load_agents", new=AsyncMock(return_value=[agent])), \
+             patch("backend.api.algo.symbol_resolver.resolve_exchange_for_symbol", new=AsyncMock(return_value=None)), \
+             patch("backend.api.algo.symbol_resolver.resolve_market_data_keys", new=AsyncMock()) as m_keymap, \
+             patch("backend.api.routes.quote._fetch_ltp") as m_fetch:
+            out = await _perf_build_quote_rows()
+
+        # The symbol is dropped BEFORE the broker-key / ltp-fetch step —
+        # the resolver's own key list ends up empty (no broker round-trip
+        # for the skipped symbol), and `_fetch_ltp` is never reached.
+        m_keymap.assert_awaited_once_with([])
+        m_fetch.assert_not_called()
+        assert out == []
+
+    @pytest.mark.asyncio
+    async def test_two_leaves_resolving_to_the_same_broker_key_dedupe_to_one_row(self):
+        """Two different agents' leaves referencing the SAME symbol — one
+        with an explicit exchange:MCX qualifier, one with none (which
+        resolves to MCX too) — must not double-fetch or produce two rows
+        for the same broker key."""
+        from backend.api.background import _perf_build_quote_rows
+        from backend.api.algo.symbol_resolver import MarketDataKeyMap
+        agent_a = _FakeAgent({
+            "metric": "ltp", "scope": "quote.tracked", "op": ">=", "value": 1,
+            "scope_filter": {"symbol": "CRUDEOIL26OCTFUT", "exchange": "MCX"},
+        })
+        agent_b = _FakeAgent({
+            "metric": "ltp", "scope": "quote.tracked", "op": "<=", "value": 99999,
+            "scope_filter": {"symbol": "CRUDEOIL26OCTFUT"},
+        })
+
+        async def _identity_key_map(keys):
+            return MarketDataKeyMap(
+                broker_keys=list(keys),
+                input_to_broker={k: k for k in keys},
+                broker_to_input={k: k for k in keys},
+            )
+
+        with patch("backend.api.algo.agent_engine._cycle_load_agents", new=AsyncMock(return_value=[agent_a, agent_b])), \
+             patch("backend.api.algo.symbol_resolver.resolve_market_data_keys", new=AsyncMock(side_effect=_identity_key_map)) as m_keymap, \
+             patch("backend.api.algo.symbol_resolver.resolve_exchange_for_symbol", new=AsyncMock(return_value="MCX")), \
+             patch("backend.api.routes.quote._fetch_ltp",
+                   return_value=_fake_quote_response(5200.0, symbol="CRUDEOIL26OCTFUT", exchange="MCX")) as m_fetch:
+            out = await _perf_build_quote_rows()
+
+        m_keymap.assert_awaited_once_with(["MCX:CRUDEOIL26OCTFUT"])
+        assert m_fetch.call_count == 1
+        assert out == [{
+            "tradingsymbol": "CRUDEOIL26OCTFUT", "exchange": "MCX", "last_price": 5200.0,
+            "bid": None, "ask": None, "volume": 0,
+        }]
 
 
 # ═══════════════════════════════════════════════════════════════════════

@@ -1312,9 +1312,20 @@ async def _perf_build_quote_rows() -> list[dict]:
     a total broker failure — a row with `last_price=0.0` is dropped
     entirely rather than exposed as a confirmed zero price, so a
     `quote.tracked.ltp < X` leaf can never false-fire off a fetch outage.
+
+    Exchange resolution (fix — every non-NSE `quote.tracked` symbol used
+    to silently never fire, because this function blindly defaulted every
+    symbol to NSE regardless of its real exchange): a leaf's own
+    `scope_filter.exchange` (already extracted by
+    `_collect_quote_symbols_from_conditions`) wins when present. Absent,
+    `symbol_resolver.resolve_exchange_for_symbol` consults the live
+    instruments cache instead of guessing NSE — see that function's
+    docstring for the full resolution policy, including the deliberate
+    "skip rather than guess wrong" outcome for a symbol genuinely
+    cross-listed on 2+ non-NSE exchanges with no qualifier given.
     """
     from backend.api.algo.agent_engine import _cycle_load_agents
-    from backend.api.algo.symbol_resolver import resolve_market_data_keys
+    from backend.api.algo.symbol_resolver import resolve_exchange_for_symbol, resolve_market_data_keys
     from backend.api.routes.quote import _fetch_ltp
 
     try:
@@ -1332,8 +1343,27 @@ async def _perf_build_quote_rows() -> list[dict]:
     keys: list[str] = []
     key_to_pair: dict[str, tuple[str, str]] = {}
     for sym, exch in symbols:
-        exch_u = (exch or "NSE").upper()
+        if exch:
+            exch_u = exch.upper()
+        else:
+            try:
+                exch_u = await resolve_exchange_for_symbol(sym)
+            except Exception as e:
+                logger.debug(f"Background: quote_rows exchange resolution failed for '{sym}': {e}")
+                exch_u = None
+            if not exch_u:
+                logger.debug(
+                    f"Background: quote_rows — skipping '{sym}' (no explicit exchange "
+                    f"qualifier and symbol is ambiguous across non-NSE exchanges)"
+                )
+                continue
         k = f"{exch_u}:{sym}"
+        if k in key_to_pair:
+            # Dedupe — two different leaves referencing the SAME symbol
+            # (one with an explicit exchange qualifier, one without, both
+            # resolving to the same broker key) must not double-fetch or
+            # produce two identical quote rows.
+            continue
         keys.append(k)
         key_to_pair[k] = (sym, exch_u)
 
