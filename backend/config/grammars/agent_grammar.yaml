@@ -547,16 +547,43 @@ system_tokens:
 # ════════════════════════════════════════════════════════════════════════
 #  NOTIFY — CHANNELS (how the alert is delivered)
 # ════════════════════════════════════════════════════════════════════════
+# `gate` (Sprint 18) is channel-level, independent of the `gate` key on
+# the render action below — same name, unrelated meaning, confirmed from
+# real seeded shapes in event_agents.py:SEEDED_AGENTS and the dispatch
+# code that actually reads it (`_send_channel`, event_agents.py:345).
+# Defaults to `true` (gate active): when active, the channel send is
+# skipped unless `_channel_enabled(capability)` (the
+# `notifications.<cap>_enabled` DB/YAML capability toggle) passes.
+# `gate: false` bypasses that capability check for this channel entry —
+# used by seeded agents (order-failure, template-guard, rich-alert, etc.)
+# whose channel list must still attempt delivery even when the matching
+# capability toggle is off. Deliberately NOT declared on `log` (capability
+# is already `None` — `_channel_enabled(None)` is always `True`, so `gate`
+# has no effect there) or on `websocket`/`inapp` (not read by
+# `event_agents.CHANNELS`/`_send_channel` at all — those are the kind=
+# 'cycle' agent-engine's own separate notify path). Schema-only addition —
+# the field already worked functionally before this declaration; this
+# just lets catalog-driven validators/decompilers recognize it.
 - grammar_kind: notify
   token_kind: channel
   token: telegram
   value_type: enum
   description: Telegram group defined by secrets.telegram_chat_id.
+  params_schema:
+    gate:
+      type: boolean
+      required: false
+      description: Bypass the 'telegram' capability gate when false. Defaults to true (gate active).
 - grammar_kind: notify
   token_kind: channel
   token: email
   value_type: enum
   description: Email to every address in secrets.alert_emails.
+  params_schema:
+    gate:
+      type: boolean
+      required: false
+      description: Bypass the 'mail' capability gate when false. Defaults to true (gate active).
 # ntfy already dispatches today (events.py's _RECORDED_CHANNELS /
 # event_agents.py's CHANNELS table) — this entry is Sprint 6's catalog
 # registration only, so the agent CLI grammar's autocomplete/validation
@@ -575,6 +602,10 @@ system_tokens:
       - high
       - urgent
       required: false
+    gate:
+      type: boolean
+      required: false
+      description: Bypass the 'ntfy' capability gate when false. Defaults to true (gate active).
 - grammar_kind: notify
   token_kind: channel
   token: websocket
@@ -1021,6 +1052,42 @@ system_tokens:
       type: string
       required: true
       token_ref_ok: true
+
+# ════════════════════════════════════════════════════════════════════════
+#  EVENT AGENTS — RENDER ACTION (kind='event' agents only)
+# ════════════════════════════════════════════════════════════════════════
+# A kind='event' agent's `actions` array is always exactly one
+# `{"type": "render", "render": "<renderer-key>", ...}` entry — a
+# structurally different, flat shape from the `{"type": <action_type>,
+# "params": {...}}` dispatchable actions above (which belong to
+# kind='cycle' agents and resolve through actions.py's live dispatch
+# tables). `render`'s own value is free text validated against
+# `event_agents.RENDERS` by `event_agents.validate_seed_spec()`, NOT
+# against this catalog. This section exists purely to declare the
+# render action's own OPTIONAL sibling keys (currently just `gate`) so
+# anything that wants to validate/decompile a render action entry has a
+# real schema to read — see `grammar.get_render_action_params_schema()`.
+# Deliberately NOT merged into SYSTEM_TOKENS / the `action_type` token
+# family above — doing so would make `is_known_action_type("render")`
+# true and let a kind='cycle' agent's DO list accept a `render` action it
+# has no handler for (see `routes/agents.py:_age_validate_action_entries`,
+# which is never even called for kind='event' agents in the first place).
+event_actions:
+  render:
+    params_schema:
+      # `gate` here (action-level) defaults to FALSE and means something
+      # unrelated to a notify-channel's own `gate` key above — same name,
+      # confirmed-distinct meaning from the real seeded shapes
+      # (event_agents.py:SEEDED_AGENTS) and the dispatch code that reads
+      # it (`_gate_spec`/`_gate_passes`, event_agents.py:325-337). `true`
+      # turns on the shared RepeatGate (keyed by `logger|message`) so
+      # repeat-identical fired records collapse into one alert carrying a
+      # `repeats` count instead of re-notifying per occurrence. Only
+      # ERROR_AGENT sets this `true` today.
+      gate:
+        type: boolean
+        required: false
+        description: Enable repeat-dedup (RepeatGate) for this renderer's fired records. Defaults to false (no dedup).
 
 log_tags:
   source:

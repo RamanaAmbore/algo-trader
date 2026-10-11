@@ -617,14 +617,28 @@
       "token_kind": "channel",
       "token": "telegram",
       "value_type": "enum",
-      "description": "Telegram group defined by secrets.telegram_chat_id."
+      "description": "Telegram group defined by secrets.telegram_chat_id.",
+      "params_schema": {
+        "gate": {
+          "type": "boolean",
+          "required": false,
+          "description": "Bypass the 'telegram' capability gate when false. Defaults to true (gate active)."
+        }
+      }
     },
     {
       "grammar_kind": "notify",
       "token_kind": "channel",
       "token": "email",
       "value_type": "enum",
-      "description": "Email to every address in secrets.alert_emails."
+      "description": "Email to every address in secrets.alert_emails.",
+      "params_schema": {
+        "gate": {
+          "type": "boolean",
+          "required": false,
+          "description": "Bypass the 'mail' capability gate when false. Defaults to true (gate active)."
+        }
+      }
     },
     {
       "grammar_kind": "notify",
@@ -642,6 +656,11 @@
             "urgent"
           ],
           "required": false
+        },
+        "gate": {
+          "type": "boolean",
+          "required": false,
+          "description": "Bypass the 'ntfy' capability gate when false. Defaults to true (gate active)."
         }
       }
     },

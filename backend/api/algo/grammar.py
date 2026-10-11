@@ -1193,3 +1193,29 @@ def get_action_mutex_groups(action_type: str) -> list | None:
     list[str] field-name groups) for a system action token, or `None` if
     the action type is unknown or declares no mutex groups."""
     return _ACTION_MUTEX_GROUPS.get(action_type)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  EVENT-AGENT RENDER ACTION PARAMS SCHEMA (Sprint 18)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Sourced from agent_grammar.yaml's `event_actions.render.params_schema` —
+# a SEPARATE top-level YAML key from `SYSTEM_TOKENS`'s `action_type`
+# family, deliberately not merged into it (see that section's own
+# comment in the YAML for why: it would make `is_known_action_type
+# ("render")` true and let a kind='cycle' agent's DO list accept a
+# `render` action with no real handler). A kind='event' agent's single
+# `{"type": "render", "render": <key>, ...}` action entry is validated
+# against `event_agents.RENDERS` (the `render` key's own value), not
+# against this schema — this schema only covers RENDER's OWN optional
+# sibling keys (currently just `gate`).
+_EVENT_ACTIONS_CATALOG: dict = _GRAMMAR_CATALOG.get("event_actions") or {}
+_RENDER_ACTION_PARAMS_SCHEMA: dict = (_EVENT_ACTIONS_CATALOG.get("render") or {}).get("params_schema") or {}
+
+
+def get_render_action_params_schema() -> dict:
+    """Return the declared params_schema for a kind='event' agent's
+    `{"type": "render", ...}` action entry (currently just `gate`) —
+    the keys an action entry may carry besides the required `type`/
+    `render` pair. Empty dict if the YAML section is absent."""
+    return dict(_RENDER_ACTION_PARAMS_SCHEMA)

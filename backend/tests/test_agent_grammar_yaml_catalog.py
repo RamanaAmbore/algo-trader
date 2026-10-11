@@ -39,6 +39,15 @@ the authorable catalog. Inserted at the same list position as the YAML
 for_byte_equal_to_baseline` keeps passing with a baseline that reflects
 this intentional, documented addition rather than a real regression.
 
+Amendment (Sprint 18, event-agent decompiler gaps): a channel-level
+`gate` boolean was added to `telegram`/`email`/`ntfy`'s `params_schema`
+in `agent_grammar.yaml` (and mirrored here) — the field already worked
+functionally (`event_agents.py:_send_channel`, line ~345) but had no
+catalog declaration, which is the one thing blocking 8 of 15 real
+seeded event agents (see `event_agents.py:SEEDED_AGENTS`) from
+round-tripping through the frontend's `event_stmt` CLI decompiler. See
+`test_grammar_event_action_gate_field.py` for the dedicated coverage.
+
 Perf: no DB / network calls, pure in-memory comparison.
 Reuse: shares the same SYSTEM_TOKENS / LOG_TAG_TOKENS module attributes
 every other grammar test and `seed_grammar_tokens()` read.
