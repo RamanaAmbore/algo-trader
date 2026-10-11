@@ -160,6 +160,61 @@ const FIXTURE_ROWS = [
     label: 'Option Premium',
     description: "Option Premium. Sourced from DataFrame column 'util option_premium' on ctx.df_margins, populated by backend.api.algo.grammar._scope_funds_total.",
   },
+  // Sprint 16 — appended at the END (same append-only convention as the
+  // Sprint 15 rows above) for matched-row ($row) binding coverage. Reuses
+  // the EXISTING `pnl` metric (already registered above) for every new
+  // WHEN leaf below rather than introducing a new metric token — a new
+  // `qty` metric would collide with the pre-existing
+  // `positions.expiring_today.qty` COLUMN row (Sprint 15) and change
+  // that scope's decompile-ambiguity behavior for an unrelated test.
+  //
+  // `close_position` mirrors the REAL agent_grammar.yaml schema (account/
+  // symbol are both required free-text strings — see backend/config/
+  // grammars/agent_grammar.yaml's own close_position entry).
+  {
+    grammar_kind: 'action', token_kind: 'action_type', token: 'close_position',
+    params_schema: {
+      account: { type: 'string', required: true, token_ref_ok: true },
+      symbol: { type: 'string', required: true },
+    },
+  },
+  // `account_id` exposed on BOTH the per-row `positions.expiring_today`
+  // scope AND the account-level-summary `positions.any_acct` scope —
+  // matches the real backend's `_POSITION_ROW_COLUMNS`/
+  // `_POSITIONS_SUMMARY_COLUMNS` (both carry `account_id`) — needed so
+  // the "any_acct lacks symbol, NOT account_id" guard-2 test exercises a
+  // real asymmetry, not a scope with zero columns registered at all.
+  {
+    grammar_kind: 'condition', token_kind: 'column', token: 'positions.expiring_today.account_id', value_type: 'string',
+    label: 'Account',
+    description: "Account. Sourced from DataFrame column 'account' on ctx.position_rows, populated by backend.api.algo.grammar._scope_positions_expiring_today.",
+  },
+  {
+    grammar_kind: 'condition', token_kind: 'column', token: 'positions.any_acct.account_id', value_type: 'string',
+    label: 'Account',
+    description: "Account. Sourced from DataFrame column 'account' on ctx.sum_positions, populated by backend.api.algo.grammar._scope_positions_any_acct.",
+  },
+  // Watchlist scope — guard 3 (watchlist rejection) fixture. `symbol` IS
+  // a real exposed column on this scope (mirrors the live
+  // `_WATCHLIST_COLUMNS` registry) — the point of the guard is that this
+  // must still be rejected for a $row reference despite being exposed.
+  { grammar_kind: 'condition', token_kind: 'scope', token: 'watchlist.all', params_schema: null },
+  {
+    grammar_kind: 'condition', token_kind: 'column', token: 'watchlist.all.symbol', value_type: 'string',
+    label: 'Symbol',
+    description: "Symbol. Sourced from DataFrame column 'tradingsymbol' on ctx.watchlist_rows, populated by backend.api.algo.grammar._scope_watchlist_all.",
+  },
+  // `funds.any_acct` also carries a real `account_id` (mirrors the live
+  // `_FUNDS_COLUMNS` registry, which always includes `account_id`) — the
+  // ALWAYS_LEAF sentinel's own scope is `funds.any_acct`, so this is
+  // needed for the "bare DO with no WHEN" test to exercise the REAL
+  // asymmetry (account_id exposed, symbol never is) instead of a scope
+  // with zero columns registered at all.
+  {
+    grammar_kind: 'condition', token_kind: 'column', token: 'funds.any_acct.account_id', value_type: 'string',
+    label: 'Account',
+    description: "Account. Sourced from DataFrame column 'account' on ctx.df_margins, populated by backend.api.algo.grammar._scope_funds_any_acct.",
+  },
 ];
 
 const CATALOG = buildCatalog(FIXTURE_ROWS);
@@ -1646,5 +1701,253 @@ describe('Sprint 12 — event_stmt: full compile of the example statement', () =
     const r = compile('ALERT telegram DO nop #name="x"');
     expect(r.ok).toBe(true);
     expect(r.kind).toBe('agent');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// Sprint 16 — matched-row ($row) binding for DO-clause action params.
+// Backend marker shape (confirmed, backend/api/algo/actions.py):
+// {"$row": "<exposed_name>"} — a single-key dict, never a bare string.
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('Sprint 16 — bare-NAME $row binding, both spellings', () => {
+  it('bare NAME (account_id) compiles to {"$row": "account_id"}', () => {
+    const r = compile(
+      'WHEN pnl@positions.expiring_today > 0 DO close_position(account=account_id, symbol=symbol)'
+    );
+    expect(r.ok).toBe(true);
+    expect(r.agent.actions).toEqual([{
+      type: 'close_position',
+      params: { account: { '$row': 'account_id' }, symbol: { '$row': 'symbol' } },
+    }]);
+  });
+
+  it('the "result." alias (result.account_id) compiles to the IDENTICAL marker as the bare spelling', () => {
+    const bare = compile(
+      'WHEN pnl@positions.expiring_today > 0 DO close_position(account=account_id, symbol=symbol)'
+    );
+    const alias = compile(
+      'WHEN pnl@positions.expiring_today > 0 DO close_position(account=result.account_id, symbol=result.symbol)'
+    );
+    expect(bare.ok).toBe(true);
+    expect(alias.ok).toBe(true);
+    expect(alias.agent).toEqual(bare.agent);
+  });
+
+  it('a bare NAME NOT matching any known exposed column still gets the pre-existing "must be quoted" error (no regression)', () => {
+    const r = compile(
+      'WHEN pnl@positions.expiring_today > 0 DO close_position(account="ZG0790", symbol=totally_unknown_bare_word)'
+    );
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /free-text value must be quoted/.test(e.message))).toBe(true);
+  });
+});
+
+describe('Sprint 16 — valid per-row example (PLAN canonical)', () => {
+  it('WHEN pnl@positions.expiring_today > 0 DO close_position(account=account_id, symbol=symbol) compiles successfully', () => {
+    const r = compile(
+      'WHEN pnl@positions.expiring_today > 0 DO close_position(account=account_id, symbol=symbol)'
+    );
+    expect(r.ok).toBe(true);
+    expect(r.errors).toEqual([]);
+    expect(r.agent.conditions).toEqual({ metric: 'pnl', scope: 'positions.expiring_today', op: '>', value: 0 });
+  });
+
+  // NOTE on a literal reading of the task brief's own example text,
+  // `WHEN qty@positions.expiring_today > 0 DO close_position(...)`: this
+  // does NOT compile against the real catalog — `qty` is NEVER a
+  // registered METRIC token (`grep "token: qty" agent_grammar.yaml` finds
+  // nothing); it exists ONLY as an exposed-column name on
+  // `positions.expiring_today` (Sprint 15). The `metric@scope` ("@")
+  // syntax strictly resolves `metric` against `catalog.metrics` only —
+  // the correct, real-catalog-compilable spelling for "qty on this
+  // scope" is Sprint 15's dot-access `col_ref` form,
+  // `positions.expiring_today.qty > 0`, exercised below. Every OTHER
+  // test in this file substitutes the pre-existing `pnl` metric for the
+  // brief's `qty@scope` leaves for exactly this reason.
+  it('the REAL compilable spelling of the brief\'s canonical example — dot-access col_ref, not qty@scope', () => {
+    const r = compile(
+      'WHEN positions.expiring_today.qty > 0 DO close_position(account=account_id, symbol=symbol)'
+    );
+    expect(r.ok).toBe(true);
+    expect(r.errors).toEqual([]);
+    expect(r.agent.conditions).toEqual({ metric: 'qty', scope: 'positions.expiring_today', op: '>', value: 0 });
+    expect(r.agent.actions).toEqual([{
+      type: 'close_position',
+      params: { account: { '$row': 'account_id' }, symbol: { '$row': 'symbol' } },
+    }]);
+  });
+});
+
+describe('Sprint 16 — compile-time guard 1: aggregate (*.total) scope rejects $row', () => {
+  it('the SAME DO action under positions.total (aggregate) is a compile error', () => {
+    const r = compile(
+      'WHEN pnl@positions.total > 0 DO close_position(account=account_id, symbol=symbol)'
+    );
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e =>
+      /'account_id' cannot be bound from a matched row/.test(e.message)
+      && /aggregate 'positions\.total'/.test(e.message)
+    )).toBe(true);
+  });
+
+  it('account_id IS a real exposed column on positions.total, yet is STILL rejected — the aggregate guard is independent of column exposure', () => {
+    // Sanity precondition: account_id really is registered on positions.total
+    // in this fixture (guard-1 must fire even though guard-2's "is it
+    // exposed on this scope" check alone would have passed).
+    expect(CATALOG.columns.has('positions.total.account_id')).toBe(true);
+    const r = compile('WHEN pnl@positions.total > 0 DO close_position(account=account_id, symbol="NIFTY25JULFUT")');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /aggregate 'positions\.total'/.test(e.message))).toBe(true);
+  });
+});
+
+describe('Sprint 16 — compile-time guard 2: per-leaf-scope consistency (any_acct has no per-symbol identity)', () => {
+  it('symbol=symbol under positions.any_acct is a compile error naming the field and scope', () => {
+    const r = compile(
+      'WHEN pnl@positions.any_acct > 0 DO close_position(account=account_id, symbol=symbol)'
+    );
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e =>
+      /'symbol' is not an exposed column for scope 'positions\.any_acct'/.test(e.message)
+    )).toBe(true);
+  });
+
+  it('account_id alone (no symbol) under positions.any_acct compiles fine — only the unexposed field fails', () => {
+    const r = compile('WHEN pnl@positions.any_acct > 0 DO deactivate_agent');
+    expect(r.ok).toBe(true);
+  });
+
+  it('mixed-scope leaves: a name exposed on ONE leaf scope but not the OTHER is rejected, naming the lacking scope', () => {
+    // positions.expiring_today exposes account_id; positions.any_acct does
+    // NOT expose symbol — combining both leaves in one condition tree
+    // means $row:symbol must fail even though its OWN leaf (expiring_today)
+    // does expose it, because the tree also contains an any_acct leaf.
+    const r = compile(
+      'WHEN (pnl@positions.expiring_today > 0) | (pnl@positions.any_acct > 0) '
+      + 'DO close_position(account=account_id, symbol=symbol)'
+    );
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e =>
+      /'symbol' is not an exposed column for scope 'positions\.any_acct'/.test(e.message)
+    )).toBe(true);
+  });
+});
+
+describe('Sprint 16 — compile-time guard 3: watchlist.* scope rejects $row even for an exposed column', () => {
+  it('symbol=symbol under watchlist.all is a compile error, even though symbol IS exposed there', () => {
+    expect(CATALOG.columns.has('watchlist.all.symbol')).toBe(true);
+    const r = compile('WHEN pnl@watchlist.all > 0 DO close_position(account="ZG0790", symbol=symbol)');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e =>
+      /'symbol' cannot be bound from a matched row/.test(e.message)
+      && /watchlist row \('watchlist\.all'\)/.test(e.message)
+    )).toBe(true);
+  });
+});
+
+describe('Sprint 16 — $row fails closed against a Token ($ref) reference (own scope unknowable at compile time)', () => {
+  it('a WHEN clause that is a bare Token ($ref) reference is a compile error naming the Token-reference reason', () => {
+    // `loss-positions-default` is a Token reference (is_fragment_ref), so
+    // the compiled condition is `{"$ref": "loss-positions-default"}` — its
+    // real scope is resolved server-side, against whatever condition the
+    // referenced Token itself declares, so it is genuinely unknowable
+    // here at compile time.
+    const r = compile('WHEN loss-positions-default DO close_position(account=account_id, symbol=symbol)');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e =>
+      /includes a Token \(\$ref\) reference whose own per-row scope isn't visible/.test(e.message)
+    )).toBe(true);
+  });
+
+  it('a Token ($ref) reference MIXED into a larger tree alongside a real per-row leaf still fails closed (not just the pure-$ref case)', () => {
+    // Without the hasTokenRef flag, this would wrongly "succeed" by only
+    // validating against the ONE leaf scope it can see
+    // (positions.expiring_today, which DOES expose both fields) while
+    // silently ignoring the sibling Token leaf's own unknown scope.
+    const r = compile(
+      'WHEN loss-positions-default & (pnl@positions.expiring_today > 0) '
+      + 'DO close_position(account=account_id, symbol=symbol)'
+    );
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e =>
+      /includes a Token \(\$ref\) reference whose own per-row scope isn't visible/.test(e.message)
+    )).toBe(true);
+  });
+
+  it('bare "DO ..." with no WHEN at all defaults to "WHEN always" (funds.any_acct scope, per ALWAYS_LEAF) — account_id IS exposed there, but symbol never is', () => {
+    expect(CATALOG.columns.has('funds.any_acct.account_id')).toBe(true);
+    const r = compile('DO close_position(account=account_id, symbol=symbol)');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /'symbol' is not an exposed column for scope 'funds\.any_acct'/.test(e.message))).toBe(true);
+    // account_id alone (no symbol) compiles fine against this real scope.
+    const ok = compile('DO close_position(account=account_id, symbol="NIFTY25JULFUT")');
+    expect(ok.ok).toBe(true);
+  });
+});
+
+describe('Sprint 16 — $row fails closed against a negated (~) leaf (backend never binds a row for a `not` match)', () => {
+  it('a $row reference under a negated leaf is a compile error naming the negation reason', () => {
+    // Per the backend's own _ae_fanout_matches docstring, a `not`
+    // composite emits a synthetic match with account=None, which
+    // _ae_dispatch_actions treats as aggregate (_matched_row=None) —
+    // this must be a compile-time error, not a silent runtime skip.
+    const r = compile(
+      'WHEN ~(pnl@positions.expiring_today > 0) DO close_position(account=account_id, symbol=symbol)'
+    );
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e =>
+      /contains a negated \(~\) leaf \(no real per-row identity at runtime/.test(e.message)
+    )).toBe(true);
+  });
+
+  it('a negated leaf MIXED into a larger tree alongside a real per-row leaf still fails closed', () => {
+    const r = compile(
+      'WHEN ~(pnl@positions.total > 0) & (pnl@positions.expiring_today > 0) '
+      + 'DO close_position(account=account_id, symbol=symbol)'
+    );
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e =>
+      /contains a negated \(~\) leaf \(no real per-row identity at runtime/.test(e.message)
+    )).toBe(true);
+  });
+});
+
+describe('Sprint 16 — $row binding for place_order/order(...)\'s own qty= param, and the lots= literal-symbol guard', () => {
+  it('qty=qty ($row-bound, same contracts unit as place_order.qty) compiles to {"$row": "qty"}', () => {
+    const r = compile(
+      'WHEN pnl@positions.expiring_today > 0 '
+      + 'DO order(account=account_id, symbol=symbol, side="SELL", qty=qty)'
+    );
+    expect(r.ok).toBe(true);
+    expect(r.agent.actions).toEqual([{
+      type: 'place_order',
+      params: {
+        account: { '$row': 'account_id' }, symbol: { '$row': 'symbol' },
+        side: 'SELL', qty: { '$row': 'qty' },
+      },
+    }]);
+  });
+
+  it('lots= with a $row-bound symbol is a clear compile error, not a crash/garbled "[object Object]" message', () => {
+    const r = compile(
+      'WHEN pnl@positions.expiring_today > 0 '
+      + 'DO order(account=account_id, symbol=symbol, side="SELL", lots=1)'
+    );
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e =>
+      /lots= requires a literal \(quoted\) symbol to resolve lot size at compile time/.test(e.message)
+      && /use qty= instead/.test(e.message)
+    )).toBe(true);
+    expect(r.errors.some(e => /\[object Object\]/.test(e.message))).toBe(false);
+  });
+
+  it('lots= with a LITERAL (quoted) symbol is unaffected — still resolves the lot size normally', () => {
+    const r = compile(
+      'WHEN pnl@positions.expiring_today > 0 '
+      + 'DO order(account=account_id, symbol="NIFTY25JULFUT", side="SELL", lots=2)'
+    );
+    expect(r.ok).toBe(true);
+    expect(r.agent.actions[0].params.qty).toBe(150); // 2 lots x 75 (fixture lot size)
   });
 });

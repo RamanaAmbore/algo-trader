@@ -2357,7 +2357,7 @@ function compileCondition(node, catalog) {
   return compileCondNode(node, catalog);
 }
 
-function _compileGenericActionParams(call, entry) {
+function _compileGenericActionParams(call, entry, rowRefCtx) {
   const errors = [];
   const provided = _mapCallArgsToKeys(call, entry.paramKeys, _ALIAS_TO_REAL, errors, entry.token);
   if (errors.length) return { params: null, errors };
@@ -2368,6 +2368,16 @@ function _compileGenericActionParams(call, entry) {
   if (errors.length) return { params: null, errors };
   const params = {};
   for (const [k, v] of provided) {
+    // Sprint 16 — a bare NAME matching a known exposed-row column (e.g.
+    // `account=account_id`) is tried FIRST, before the ordinary
+    // enum/number/string coercion — see `_resolveRowRefOrNull`'s own
+    // header comment for why this never collides with an existing
+    // literal/enum value.
+    const rowRef = _resolveRowRefOrNull(v, rowRefCtx, `${entry.token}.${k}`);
+    if (rowRef) {
+      if (rowRef.error) errors.push(rowRef.error); else params[k] = rowRef.value;
+      continue;
+    }
     const coerced = _coerceValueForSpec(v, entry.paramsSchema[k], k, entry.token);
     if (coerced.error) errors.push(coerced.error); else params[k] = coerced.value;
   }
@@ -2533,7 +2543,7 @@ function _compileTpSlWingFields(tpSlWingArgs, destKind, label, mutexGroups) {
  *  convention (order_fields.yaml: "qty: Number of lots × lot size"),
  *  DISTINCT from the ticket/basket convention below (where `quantity` is
  *  lots directly, no multiplication) — see `_compileOrderCallToLeg`. */
-function _compileOrderActionParams(call, entry, opts) {
+function _compileOrderActionParams(call, entry, opts, rowRefCtx) {
   const errors = [];
   const { lotsArgs, call: strippedCall } = _splitLotsArg(call);
   const provided = _mapCallArgsToKeys(strippedCall, entry.paramKeys, _ALIAS_TO_REAL, errors, entry.token);
@@ -2554,6 +2564,15 @@ function _compileOrderActionParams(call, entry, opts) {
   const params = {};
   for (const [k, v] of provided) {
     if (k === 'qty') continue;
+    // Sprint 16 — see `_compileGenericActionParams`'s identical guard;
+    // place_order/order(...) gets the same bare-NAME ($row) recognition
+    // for every non-qty param (qty keeps its own lots/qty-specific path
+    // below, untouched).
+    const rowRef = _resolveRowRefOrNull(v, rowRefCtx, `${entry.token}.${k}`);
+    if (rowRef) {
+      if (rowRef.error) errors.push(rowRef.error); else params[k] = rowRef.value;
+      continue;
+    }
     const coerced = _coerceValueForSpec(v, entry.paramsSchema[k], k, entry.token);
     if (coerced.error) errors.push(coerced.error); else params[k] = coerced.value;
   }
@@ -2581,8 +2600,18 @@ function _compileOrderActionParams(call, entry, opts) {
       return { params: null, errors };
     }
     const symbol = params.symbol;
-    if (!symbol) {
-      errors.push(_err(`${entry.token}: lots requires symbol to be resolvable`));
+    // Sprint 16 — `symbol` may now be a `$row` marker object (not a
+    // plain string) when $row-bound — `lots=` needs a LITERAL symbol to
+    // look up a lot size at COMPILE time, which a row-bound value can
+    // never provide (the real symbol is only known at dispatch time,
+    // per matched row). Fails loud with a clear redirect to `qty=`
+    // instead of silently stringifying the marker object into
+    // `lotSizeOf('[object Object]')`.
+    if (!symbol || typeof symbol !== 'string') {
+      errors.push(_err(
+        `${entry.token}: lots= requires a literal (quoted) symbol to resolve lot size at compile `
+        + `time — a $row-bound or missing symbol can't be resolved here; use qty= instead`
+      ));
       return { params: null, errors };
     }
     const lotSizeOf = (opts && opts.lotSizeOf) || _defaultLotSizeOf;
@@ -2594,9 +2623,19 @@ function _compileOrderActionParams(call, entry, opts) {
     params.qty = Math.round(lotsVal.value * lotSize);
   } else {
     const qtyVal = provided.get('qty');
-    const coerced = _coerceValueForSpec(qtyVal, entry.paramsSchema.qty, 'qty', entry.token);
-    if (coerced.error) { errors.push(coerced.error); return { params: null, errors }; }
-    params.qty = coerced.value;
+    // Sprint 16 — `qty=qty` ($row-bound, e.g. `close_position`'s matched
+    // row carries its own `qty` column — CONTRACTS, same unit
+    // `place_order.qty` already uses) is tried before the ordinary
+    // numeric coercion, same as every other param above.
+    const qtyRowRef = _resolveRowRefOrNull(qtyVal, rowRefCtx, `${entry.token}.qty`);
+    if (qtyRowRef) {
+      if (qtyRowRef.error) { errors.push(qtyRowRef.error); return { params: null, errors }; }
+      params.qty = qtyRowRef.value;
+    } else {
+      const coerced = _coerceValueForSpec(qtyVal, entry.paramsSchema.qty, 'qty', entry.token);
+      if (coerced.error) { errors.push(coerced.error); return { params: null, errors }; }
+      params.qty = coerced.value;
+    }
   }
   return { params, errors: [] };
 }
@@ -2699,7 +2738,172 @@ function compileAlertClause(alertCalls, alertMsg, catalog) {
   return { events: errors.length ? null : events, errors };
 }
 
-function compileDoClause(doCalls, catalog, opts) {
+// ═══════════════════════════════════════════════════════════════════════
+// Sprint 16 — matched-row ($row) binding for DO-clause action params.
+// ═══════════════════════════════════════════════════════════════════════
+//
+// Mirrors the backend marker shape EXACTLY (backend/api/algo/actions.py:
+// resolve_row_ref_params / _is_row_ref_marker): a bare, unquoted NAME
+// written as a DO-clause action argument value — e.g.
+// `close_position(account=account_id, symbol=symbol)` — compiles to the
+// single-key marker `{"$row": "<exposed_name>"}`, never a plain string.
+// `result.<name>` is accepted as an alias for the IDENTICAL marker (pure
+// spelling choice, same resolution either way).
+//
+// A bare NAME is recognised as a $row CANDIDATE only when it matches one
+// of Sprint 15's exposed-column names for SOME scope anywhere in the
+// catalog (`_allExposedColumnNames`) — this keeps every pre-existing
+// enum/free-text bare-NAME error path (`_coerceValueForSpec`) completely
+// unchanged for every name that doesn't collide (the backend deliberately
+// keeps `account` itself out of the exposed-name vocabulary for exactly
+// this reason — see grammar.py's own comment on `_COL_ACCOUNT_ID`; the
+// real column is only ever exposed as `account_id`). Once recognised as
+// a candidate, resolution ALWAYS returns success or a specific compile
+// error — never silently falls through to a different, confusing error.
+//
+// Three compile-time guards (mirror the runtime backstop in
+// `actions.py:resolve_row_ref_params` plus the operator's explicit scope
+// rules):
+//   1. AGGREGATE scope (any leaf scoped `*.total`) — no real per-row
+//      identity exists; `$row` is rejected outright, regardless of which
+//      field is referenced (even `account_id`, which IS technically
+//      present in an aggregate scope's own exposed-column schema — the
+//      backend's own `_ae_dispatch_actions` never binds a row for an
+//      aggregate match, so compiling to `$row` here would be a silent
+//      runtime skip, not a working reference).
+//   2. Per-LEAF-scope resolution — a condition tree can combine leaves
+//      across DIFFERENT scopes (e.g. an `any[]` of a `positions.any_acct`
+//      leaf and a `funds.any_acct` leaf); the referenced name must be
+//      exposed on EVERY leaf's own scope in the tree, not just one, since
+//      there is no single well-defined "the agent's scope" in general.
+//   3. WATCHLIST scope (any leaf scoped `watchlist.*`) — a watchlist row
+//      carries no account/qty identity suitable for an order-placing
+//      action, even for a name (`symbol`) that IS present in its own
+//      exposed-column schema.
+
+/** Union of every exposed-column PLAIN name (the part after the scope
+ *  prefix) registered anywhere in the catalog, lowercased — e.g. `pnl`,
+ *  `account_id`, `symbol`. Exposed names never contain a `.` themselves
+ *  (enforced on the backend — see grammar.py's own naming-rule comment),
+ *  so the plain name is always the token's LAST dot-segment, regardless
+ *  of how many dot-segments the owning scope's own token has. */
+function _allExposedColumnNames(catalog) {
+  const names = new Set();
+  for (const entry of catalog.columns.values()) {
+    const parts = String(entry.token).split('.');
+    names.add(parts[parts.length - 1].toLowerCase());
+  }
+  return names;
+}
+
+function _isAggregateScope(scope) {
+  return typeof scope === 'string' && scope.toLowerCase().endsWith('.total');
+}
+
+function _isWatchlistScope(scope) {
+  return typeof scope === 'string' && scope.toLowerCase().startsWith('watchlist.');
+}
+
+/** Recursively collect every real leaf's `scope` string out of a
+ *  COMPILED condition tree (`{all:[...]}` / `{any:[...]}` / `{not:...}` /
+ *  a flat `{metric,scope,op,value}` leaf) into `out`, and flag two
+ *  structural cases ANYWHERE in the tree (not just at the root) via
+ *  `state` — both make a leaf's real per-row identity unknowable at
+ *  compile time, and (per the backend) unknowable at RUNTIME too for
+ *  `not`, so a `$row` reference must fail closed whenever either is
+ *  present, even mixed into a larger tree alongside other, perfectly
+ *  resolvable per-row leaves:
+ *    - `state.hasNegation` — ANY `not` composite anywhere. Per the
+ *      backend's own `_ae_fanout_matches` docstring, a `not` leaf
+ *      produces a synthetic match with `account=None` — `_ae_dispatch_
+ *      actions` treats that exactly like an aggregate match and never
+ *      binds a row (`_matched_row=None`) — so a `$row` reference under
+ *      a negated leaf would compile clean but ALWAYS skip at runtime.
+ *      This is the exact "silent pass-through to a runtime skip" this
+ *      sprint's guards exist to prevent — treated with the same
+ *      "reject unconditionally, regardless of which field" severity as
+ *      the aggregate-scope guard.
+ *    - `state.hasTokenRef` — ANY `{"$ref": token}` Token reference
+ *      anywhere. Its own scope is resolved server-side at RUNTIME
+ *      against whatever condition the referenced Token itself declares
+ *      — genuinely unknowable here, so the "name must be exposed on
+ *      EVERY leaf's scope" check (guard 2) cannot be soundly performed
+ *      when a leaf's scope isn't even visible, whether the Token is the
+ *      ENTIRE condition or just one leaf mixed into a larger tree. */
+function _collectLeafScopes(node, out, state) {
+  if (!node || typeof node !== 'object') return;
+  if (Array.isArray(node.all)) { for (const n of node.all) _collectLeafScopes(n, out, state); return; }
+  if (Array.isArray(node.any)) { for (const n of node.any) _collectLeafScopes(n, out, state); return; }
+  if (node.not) { state.hasNegation = true; _collectLeafScopes(node.not, out, state); return; }
+  if ('$ref' in node) { state.hasTokenRef = true; return; }
+  if (typeof node.scope === 'string') out.add(node.scope);
+}
+
+function _exposedColumnForScope(catalog, scope, lowerName) {
+  return catalog.columns.get(`${scope}.${lowerName}`.toLowerCase()) || null;
+}
+
+/** Try to resolve `valueNode` as a Sprint-16 matched-row reference.
+ *  Returns:
+ *    - `null` — not a row-ref candidate at all (not a bare NAME, or the
+ *      name matches no known exposed column anywhere, or no rowRefCtx
+ *      was threaded in at all — e.g. ALERT-channel params/standalone
+ *      `order(...)` statements never get this feature) — caller falls
+ *      through to the ordinary `_coerceValueForSpec` path, byte-identical
+ *      to pre-Sprint-16 behavior.
+ *    - `{ value: {"$row": name} }` — resolved successfully.
+ *    - `{ error }` — a definite row-ref-shaped value that FAILS one of
+ *      the three guards — never falls through to a different error. */
+function _resolveRowRefOrNull(valueNode, rowRefCtx, label) {
+  if (!rowRefCtx || !valueNode || valueNode.type !== 'name') return null;
+  const raw = valueNode.value;
+  const aliasMatch = /^result\.(.+)$/i.exec(raw);
+  const requested = aliasMatch ? aliasMatch[1] : raw;
+  const lower = requested.toLowerCase();
+  if (!rowRefCtx.allExposedNames.has(lower)) return null;
+
+  const { leafScopes, catalog } = rowRefCtx;
+  if (rowRefCtx.hasNegation) {
+    return { error: _err(
+      `${label}: '${requested}' cannot be bound from a matched row — WHEN condition contains a `
+      + `negated (~) leaf (no real per-row identity at runtime — see agent_engine.py's _ae_fanout_matches)`
+    ) };
+  }
+  if (rowRefCtx.hasTokenRef) {
+    return { error: _err(
+      `${label}: '${requested}' cannot be bound from a matched row — WHEN condition includes a `
+      + `Token ($ref) reference whose own per-row scope isn't visible at compile time`
+    ) };
+  }
+  if (leafScopes.size === 0) {
+    return { error: _err(`${label}: '${requested}' needs a per-row WHEN condition to bind against`) };
+  }
+  for (const scope of leafScopes) {
+    if (_isAggregateScope(scope)) {
+      return { error: _err(
+        `${label}: '${requested}' cannot be bound from a matched row — WHEN condition is scoped `
+        + `to the aggregate '${scope}' (no real per-row identity)`
+      ) };
+    }
+    if (_isWatchlistScope(scope)) {
+      return { error: _err(
+        `${label}: '${requested}' cannot be bound from a matched row — a watchlist row `
+        + `('${scope}') has no account/qty identity suitable for an order-placing action`
+      ) };
+    }
+  }
+  let canonicalName = null;
+  for (const scope of leafScopes) {
+    const colEntry = _exposedColumnForScope(catalog, scope, lower);
+    if (!colEntry) {
+      return { error: _err(`${label}: '${requested}' is not an exposed column for scope '${scope}'`) };
+    }
+    if (canonicalName === null) canonicalName = String(colEntry.token).split('.').pop();
+  }
+  return { value: { '$row': canonicalName } };
+}
+
+function compileDoClause(doCalls, catalog, opts, rowRefCtx) {
   if (doCalls === 'nop') return { actions: [], errors: [] };
   const errors = [];
   const actions = [];
@@ -2715,12 +2919,12 @@ function compileDoClause(doCalls, catalog, opts) {
       continue;
     }
     if (lookupName === 'place_order') {
-      const r = _compileOrderActionParams(call, entry, opts);
+      const r = _compileOrderActionParams(call, entry, opts, rowRefCtx);
       errors.push(...r.errors);
       if (!r.errors.length) actions.push({ type: 'place_order', params: r.params });
       continue;
     }
-    const r = _compileGenericActionParams(call, entry);
+    const r = _compileGenericActionParams(call, entry, rowRefCtx);
     errors.push(...r.errors);
     if (!r.errors.length) actions.push({ type: entry.token, params: r.params });
   }
@@ -2776,7 +2980,19 @@ function compileAgentStmt(ast, catalog, opts) {
   errors.push(...condResult.errors);
   const eventsResult = compileAlertClause(ast.alertCalls, ast.alertMsg, catalog);
   errors.push(...eventsResult.errors);
-  const actionsResult = compileDoClause(ast.doCalls, catalog, opts);
+  // Sprint 16 — matched-row ($row) binding context, built from THIS
+  // statement's own compiled condition tree (every real leaf's `scope`,
+  // see `_collectLeafScopes`) so `compileDoClause` can recognise/validate
+  // bare-NAME action-param values against it. See the "Sprint 16" header
+  // comment above `_resolveRowRefOrNull` for the full design.
+  const leafScopes = new Set();
+  const scopeState = { hasNegation: false, hasTokenRef: false };
+  _collectLeafScopes(condResult.conditions, leafScopes, scopeState);
+  const rowRefCtx = {
+    catalog, leafScopes, allExposedNames: _allExposedColumnNames(catalog),
+    hasNegation: scopeState.hasNegation, hasTokenRef: scopeState.hasTokenRef,
+  };
+  const actionsResult = compileDoClause(ast.doCalls, catalog, opts, rowRefCtx);
   errors.push(...actionsResult.errors);
   const metaFields = compileMetaClause(ast.meta, errors);
   if (ast.alertCalls === 'nop' && ast.doCalls === 'nop') {
@@ -3370,6 +3586,16 @@ function _renderListLiteral(items) {
   return { text: `[${parts.join(', ')}]` };
 }
 
+/** True iff `value` is EXACTLY the Sprint 16 single-key matched-row
+ *  marker `{"$row": "<name>"}` — mirrors the backend's own
+ *  `actions.py:_is_row_ref_marker` single-key check, so a legitimate
+ *  multi-key object-literal param value is never misread as one. */
+function _isRowRefMarker(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    && Object.keys(value).length === 1
+    && typeof value['$row'] === 'string';
+}
+
 /** Render a single param value against its `params_schema` field spec —
  *  the decompile-direction mirror of `_coerceValueForSpec`. Enum values
  *  always render bare when possible (grammar's own documented
@@ -3381,6 +3607,13 @@ function _renderListLiteral(items) {
  *  instead of a literal — rendered quoted, exactly as it would have been
  *  typed, never coerced to a bare (unparseable) arithmetic expression. */
 function _renderParamValue(value, spec) {
+  // Sprint 16 — a $row marker renders as the bare, unquoted exposed
+  // column name (the exact CLI spelling that compiles back to this same
+  // marker — see `_resolveRowRefOrNull`), REGARDLESS of the param's own
+  // declared schema type (string/number/enum) — a $row-bound value is
+  // never a literal of that type, so none of the type-specific render
+  // branches below apply to it.
+  if (_isRowRefMarker(value)) return { text: value['$row'] };
   const type = spec && spec.type;
   if (type === 'number') {
     if (typeof value === 'string') return _quoteString(value); // token_ref_ok expression
@@ -3917,13 +4150,20 @@ function _decompileOrderAction(params, entry, opts) {
   }
   if (!('qty' in (params || {}))) return { error: `order: missing 'qty' in stored params — malformed place_order action` };
   const qty = params.qty;
-  if (typeof qty !== 'string' && (typeof qty !== 'number' || !Number.isFinite(qty))) {
+  // Sprint 16 — a $row-bound qty (e.g. `{"$row": "qty"}`) has no
+  // compile-time numeric value to attempt a lots= conversion against,
+  // and is not itself a number/string — it is excluded from the
+  // malformed-shape guard below (which predates this marker shape) and
+  // renders via the exact same `_renderParamValue` path every other
+  // param uses, just always as plain `qty=`, never `lots=`.
+  const qtyIsRowRef = _isRowRefMarker(qty);
+  if (!qtyIsRowRef && typeof qty !== 'string' && (typeof qty !== 'number' || !Number.isFinite(qty))) {
     return { error: `order: qty is neither a number nor an expression string — malformed place_order action` };
   }
 
   // Try the nicer lots= form first — only when it converts cleanly.
   let qtyArgText = null;
-  if (typeof qty === 'number') {
+  if (!qtyIsRowRef && typeof qty === 'number') {
     const symbol = params.symbol;
     const lotSizeOf = (opts && opts.lotSizeOf) || _defaultLotSizeOf;
     const lotSize = typeof symbol === 'string' && symbol ? lotSizeOf(symbol) : null;
@@ -3934,7 +4174,7 @@ function _decompileOrderAction(params, entry, opts) {
   }
   // Fall back to plain qty= — always possible, reuses the exact same
   // rendering every other param goes through (quotes a token_ref_ok
-  // expression string automatically).
+  // expression string automatically, renders a $row marker bare).
   if (qtyArgText == null) {
     const r = _renderParamValue(qty, entry.paramsSchema.qty);
     if (r.error) return { error: `order.qty: ${r.message}` };

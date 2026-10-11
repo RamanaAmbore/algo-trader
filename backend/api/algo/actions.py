@@ -23,7 +23,7 @@ from typing import Any, NamedTuple
 
 from backend.shared.helpers.ramboq_logger import get_logger
 from backend.api.algo.expr_eval import eval_expr, ExprError
-from backend.api.algo.grammar import get_action_params_schema
+from backend.api.algo.grammar import get_action_params_schema, exposed_columns_for_scope
 
 logger = get_logger(__name__)
 
@@ -388,6 +388,150 @@ async def _al_dispatch_by_mode(
 _INTEGER_ONLY_PARAM_KEYS = frozenset({"qty", "new_qty"})
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+#  Matched-row binding (Sprint 16 — bare-NAME action params, DO-clause fan-out)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Marker shape, FINAL (coordinate with the CLI compiler on the frontend):
+# a bare NAME written inside a DO-clause action call (e.g.
+# `close_position(account=account_id, symbol=symbol)`) compiles to a
+# single-key dict `{"$row": "<exposed_column_name>"}` as that param's
+# stored JSON value — never a plain string (a plain string is, and stays,
+# a literal value; a literal string value colliding with an exposed
+# column's spelling, e.g. a literal `account="account_id"`, must never be
+# misread as a row-reference). `<exposed_column_name>` is one of Sprint 15's
+# per-scope exposed names (`grammar.EXPOSED_COLUMNS` / `exposed_columns_
+# for_scope()`), e.g. `account_id`, `symbol`, `qty` — the SAME vocabulary
+# the WHEN-clause's dot-access already uses, never the raw DataFrame
+# column name. `$` is the established "this is a reference, not a literal"
+# sigil already used elsewhere in this grammar (`$ref:` in
+# agent_grammar.yaml's own schema authoring). The marker is recognised
+# ONLY as a bare, top-level, SINGLE-KEY param value (`_is_row_ref_marker`)
+# — never nested inside a larger object-literal param (a different,
+# unrelated feature) — so a legitimate multi-key object value can never
+# be misread as a row reference.
+#
+# Scope resolution uses the MATCHED LEAF's own scope
+# (`context["_matched_row_scope"]`, set per fan-out execution from that
+# specific match entry's `scope` key — see agent_evaluator.py's
+# `_eval_leaf`), never a single "the agent's scope" — a condition tree
+# can legally combine leaves across different scopes (e.g. an `any[]` of
+# a `positions.total` leaf and a `positions.any_acct` leaf), so there is
+# no single well-defined "agent scope" to resolve against in general.
+#
+# Compile-time guard (frontend CLI, not enforced here — this module is
+# the runtime backstop only): a `$row` reference is a compile error when
+# ANY leaf in the condition tree is scoped `*.total` (aggregate — single
+# TOTAL row, `account='TOTAL'`, no real per-row identity; this module
+# always fails closed on it at runtime — see TestAggregateRowRefFailsClosed)
+# — or when the referenced exposed name isn't present on EVERY leaf scope
+# in the tree. `watchlist.*` scopes are a SEPARATE case worth calling out
+# explicitly: their `account` column holds the WATCHLIST NAME ('Default',
+# 'Markets', …), not a real trading account (`grammar.py`'s own
+# `_WATCHLIST_COLUMNS` comment) — `exposed_columns_for_scope('watchlist.*')`
+# deliberately has NO `account_id` key (only `watchlist_name`), so
+# `$row:account_id` under a watchlist leaf already fails closed here via
+# the ordinary "not an exposed column for this scope" path, with no
+# special-case needed. Still worth a compile-time rejection on the
+# frontend too (a watchlist row has no qty/account suitable for an
+# order-placing DO action at all, `$row:symbol` included) — but the
+# runtime backstop here is already safe without it.
+#
+# Resolved by `resolve_row_ref_params()` below, called from `execute()`
+# BEFORE the exchange-open gate and before `resolve_action_params()`'s
+# expression evaluator — so a $row-bound `symbol`/`account` is a real
+# string by the time anything else inspects `params`. Resolution reads
+# `context["_matched_row"]` (the matched entry's full `row` dict) and
+# `context["_matched_row_scope"]` (that entry's `scope` token, used to
+# look up the exposed-column schema) — both set once per fan-out
+# execution by `agent_engine._ae_dispatch_survivor_entry`.
+#
+# Fails CLOSED, never silently to None/"TOTAL": an unresolvable $row
+# reference (no row bound for this execution, or the name isn't exposed
+# for this scope — e.g. `symbol` under an aggregate `positions.total`
+# scope, which carries no per-symbol identity) returns a non-None error
+# string; `execute()` skips that one action (same treatment as the
+# existing exchange-closed gate) and logs an `action_skipped` event
+# rather than placing an order with a wrong/blank field. The CLI's own
+# compile-time guard (frontend) is expected to reject this case before
+# it is ever saved, but this is the runtime backstop.
+def _is_row_ref_marker(v: Any) -> bool:
+    """True iff `v` is EXACTLY the single-key marker dict
+    `{"$row": "<name>"}` — a single-key check, not merely "contains
+    '$row'", so a legitimate multi-key object-literal param value (a
+    different, unrelated feature) is never misread as a row-reference
+    marker. `$row` is reserved ONLY as a bare top-level param value in
+    this exact shape, never nested inside a larger object literal."""
+    return isinstance(v, dict) and len(v) == 1 and "$row" in v
+
+
+def resolve_row_ref_params(params: dict, context: dict) -> tuple[dict, str | None]:
+    """Resolve `{"$row": "<exposed_name>"}` markers in `params` against
+    `context["_matched_row"]` / `context["_matched_row_scope"]`.
+
+    Returns `(resolved_params, error)`. `error` is `None` on success
+    (including the common case of no markers present at all — a true
+    no-op, byte-identical `params` returned, for every agent that
+    doesn't use this feature). On failure, returns the ORIGINAL
+    (unresolved) `params` alongside a short human-readable reason —
+    callers must not dispatch the action when `error` is not None.
+    """
+    if not isinstance(params, dict) or not params:
+        return params, None
+    if not any(_is_row_ref_marker(v) for v in params.values()):
+        return params, None
+
+    row = context.get("_matched_row")
+    if row is None:
+        return params, (
+            "action references matched-row data ($row) but no row is "
+            "bound for this execution"
+        )
+    scope_tok = context.get("_matched_row_scope")
+    exposed = exposed_columns_for_scope(scope_tok) if scope_tok else {}
+
+    resolved = dict(params)
+    for key, value in params.items():
+        if not _is_row_ref_marker(value):
+            continue
+        exposed_name = value["$row"]
+        col = exposed.get(exposed_name)
+        if not col:
+            return params, (
+                f"'{exposed_name}' is not an exposed column for scope "
+                f"'{scope_tok}'"
+            )
+        val = _native_row_value(row.get(col["from_column"]))
+        if val is None or (isinstance(val, float) and val != val):  # None or NaN
+            return params, (
+                f"'{exposed_name}' is missing (None/NaN) on the matched "
+                f"row for scope '{scope_tok}'"
+            )
+        resolved[key] = val
+    return resolved, None
+
+
+def _native_row_value(v: Any) -> Any:
+    """Convert a pandas/numpy scalar (the real shape `row.to_dict()`
+    produces, e.g. `numpy.int64`/`numpy.float64`) to a native Python
+    type via `.item()`. `json.dumps` (log_event, order-write payloads)
+    rejects numpy scalars outright, so this must run before a $row-
+    resolved value is placed into `params`. Strings/bytes are excluded
+    even though they don't have `.item()` normally — defensive, in case
+    a future pandas dtype ever added one. Any other type (including
+    None/NaN, which the caller checks separately) passes through
+    unchanged."""
+    if isinstance(v, (str, bytes)):
+        return v
+    item = getattr(v, "item", None)
+    if callable(item):
+        try:
+            return item()
+        except Exception:
+            return v
+    return v
+
+
 def resolve_action_params(action_type: str, params: dict, context: dict) -> dict:
     """
     Resolve any expression-string param values for this action into real
@@ -500,6 +644,28 @@ def _coerce_expr_result(action_type: str, key: str, field_type: str, result: Any
     return result
 
 
+async def _al_log_action_skipped(
+    agent, action_type: str, params: dict, reason: str, tag: str,
+    sim_mode: bool, *, level: str = "info",
+) -> None:
+    """Shared `action_skipped` audit-log write for `execute()`'s two skip
+    gates ($row resolution failure, exchange-closed gate) — kept as one
+    helper so both call sites log identically and `execute()` stays
+    below the radon complexity gate."""
+    log_fn = logger.warning if level == "warning" else logger.info
+    log_fn(f"{tag}Agent [{agent.slug}]: skipping action '{action_type}' — {reason}")
+    try:
+        from backend.api.algo.events import log_event
+        await log_event(
+            agent, "action_skipped",
+            f"{tag}Action {action_type} skipped: {reason}",
+            {"action_type": action_type, "params": params, "skip_reason": reason},
+            sim_mode=sim_mode,
+        )
+    except Exception as e:
+        logger.warning(f"action_skipped log_event failed: {e}")
+
+
 async def execute(agent, actions: list, context: dict):
     """
     Execute action chain sequentially. Every broker-hitting action
@@ -521,6 +687,20 @@ async def execute(agent, actions: list, context: dict):
         tag  = {"sim": "[SIM] ", "replay": "[REPLAY] ", "shadow": "[SHADOW] ",
                 "paper": "[PAPER] ", "live": "", "noop": ""}.get(mode, "")
 
+        # ── Sprint 16 — matched-row ($row) binding ──────────────────
+        # Resolved FIRST, before the exchange gate (which needs the real
+        # symbol/account) and before resolve_action_params()'s expression
+        # evaluator. A true no-op for every pre-existing agent (no $row
+        # markers in params) — see resolve_row_ref_params()'s docstring
+        # for the marker shape and fail-closed contract.
+        params, row_ref_error = resolve_row_ref_params(params, context)
+        if row_ref_error:
+            await _al_log_action_skipped(
+                agent, action_type, params, row_ref_error, tag, sim_mode,
+                level="warning",
+            )
+            continue
+
         # ── Phase 23 — per-order exchange-open gate ────────────────
         # Skip broker-touching actions when the target symbol's
         # exchange segment is closed. Applies to BOTH paper and live
@@ -528,21 +708,9 @@ async def execute(agent, actions: list, context: dict):
         # Sim/replay bypass — they drive their own clock.
         allowed, reason = _exchange_gate_passes(action_type, params, context)
         if not allowed:
-            logger.info(
-                f"{tag}Agent [{agent.slug}]: skipping action '{action_type}' "
-                f"— {reason}"
+            await _al_log_action_skipped(
+                agent, action_type, params, reason, tag, sim_mode,
             )
-            try:
-                from backend.api.algo.events import log_event
-                await log_event(
-                    agent, "action_skipped",
-                    f"{tag}Action {action_type} skipped: {reason}",
-                    {"action_type": action_type, "params": params,
-                     "skip_reason": reason},
-                    sim_mode=sim_mode,
-                )
-            except Exception as e:
-                logger.warning(f"action_skipped log_event failed: {e}")
             continue
 
         try:

@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select, update
 
 from backend.api.algo.events import dispatch, log_event, EvalResult
-from backend.api.algo.actions import execute
+from backend.api.algo.actions import execute, _is_row_ref_marker
 from backend.api.algo.agent_evaluator import (
     Context as V2Context, evaluate as v2_evaluate, windowed_rate,
 )
@@ -2156,12 +2156,32 @@ def _cycle_maybe_buffer_fire(
         return False
     if bypass_suppression:
         effective = matches
+        fire_matches = matches
     else:
         cooldown_min = getattr(agent, 'cooldown_minutes', None) or cfg['cooldown_min']
         store = alert_state.setdefault('_sim_latch', {}) if (sim_mode or replay_mode) else None
         effective = _v2_apply_escalation_gate(
             agent, matches, now, cooldown_min, store=store,
         )
+        # Sprint 16 fan-out support — `effective` (below, unchanged,
+        # still feeds `latched_matches`/hydration) is gated at per-KEY
+        # granularity: `_latch_key` is (agent_slug, metric, scope,
+        # account) — NO symbol component. For a per-row scope like
+        # `positions.expiring_today` where the SAME account can
+        # legitimately produce 2+ matches with DIFFERENT symbols in one
+        # tick, `_v2_apply_escalation_gate`'s loop re-arms the latch
+        # after the FIRST row of a key passes, so every subsequent row
+        # sharing that same key fails its own cooldown check a moment
+        # later in the same loop and is silently dropped from
+        # `effective` — even though the key as a whole genuinely fired
+        # this tick. `fire_matches` re-expands back to every RAW match
+        # row whose key is among the keys that passed, so action fan-out
+        # (which needs one execution per real row) doesn't silently skip
+        # rows the escalation gate only ever intended to gate at the key
+        # level. `latched_matches`/hydration are untouched — they keep
+        # reading `effective` exactly as before this fix.
+        effective_keys = {_latch_key(agent.slug, m) for m in effective}
+        fire_matches = [m for m in matches if _latch_key(agent.slug, m) in effective_keys]
     if not effective:
         return False
 
@@ -2183,6 +2203,12 @@ def _cycle_maybe_buffer_fire(
         'agent':           agent,
         'matches':         matches,
         'latched_matches': effective,
+        # Sprint 16 fan-out — see the comment above `fire_matches`'
+        # derivation. Deliberately NOT touched by
+        # `_cycle_dispatch_survivors`' topic-suppression merge (same
+        # reasoning as `latched_matches`: a merged sibling agent's rows
+        # must never be fired through THIS agent's actions).
+        'fire_matches':    fire_matches,
         'result':          result,
         'sim_mode':        sim_mode,
         'replay_mode':     replay_mode,
@@ -2623,6 +2649,116 @@ async def _ae_dispatch_suppressed_entry(entry: dict, suppressed_ids: dict,
         })
 
 
+def _ae_fanout_matches(latched_matches: list) -> list[dict]:
+    """Collapse `latched_matches` (the escalation-gated subset that
+    actually fired THIS tick — see `_cycle_maybe_buffer_fire`, which
+    stamps this as `effective = _v2_apply_escalation_gate(...)`, i.e.
+    "what really fired", as opposed to the raw `matches` list which can
+    also be extended with a SIBLING agent's rows by
+    `_cycle_dispatch_survivors`'s topic-tier merge — using the raw list
+    here would leak another agent's row data into this agent's action
+    execution) into the list of per-execution match entries
+    `_ae_dispatch_survivor_entry` fires `agent.actions` against, once per
+    entry (Sprint 16 fan-out).
+
+    Aggregate/synthetic matches — `account` is `None` or the literal
+    `'TOTAL'` sentinel (every `positions.total` / `funds.total`-scoped
+    leaf's row, and the `not` composite's synthetic `{'not': inner}`
+    entry) — collapse to EXACTLY ONE execution with `account='TOTAL'`,
+    using the first such match's row. This is the backward-compatibility
+    guarantee: an agent built entirely from aggregate-scoped leaves fires
+    exactly once today (each such leaf's scope selector returns at most
+    one TOTAL row), and must keep firing exactly once after fan-out —
+    including the edge case of an `any[]`/`all[]` combining MULTIPLE
+    aggregate leaves that all happen to breach the same tick (e.g.
+    `loss-positions-total`'s 4-leaf `any[]`, every leaf scoped to
+    `positions.total` — two or more could legitimately co-breach in one
+    tick; today's code only ever executes `agent.actions` once
+    regardless, so fan-out must not turn that into 2+ fires).
+
+    Real per-row matches (`positions.any_acct`, `positions.expiring_today`,
+    etc. — `account` is a genuine, non-TOTAL account id) each get their
+    own execution, EVEN WHEN two matches share the same account with
+    different rows (e.g. two different MCX contracts both expiring today
+    in the same account) — fan-out is per matched ROW, not per account.
+
+    Same-row duplicate guard: a condition tree can combine two DIFFERENT
+    leaves over the SAME underlying row (e.g. `loss-funds-negative`'s
+    `any[cash<0, avail_margin<0]` on `funds.any_acct` — one account
+    breaching BOTH legs at once produces two match entries for the
+    identical row). Deduped by row identity `(scope, account,
+    tradingsymbol, exchange, product)` — the first entry for a given
+    identity wins, later ones are dropped — so one real-world breach
+    never becomes two executions.
+    """
+    if not latched_matches:
+        return []
+    aggregate_entry = None
+    per_row: list[dict] = []
+    seen_identities: set = set()
+    for m in latched_matches:
+        acct = m.get('account')
+        if acct in (None, 'TOTAL'):
+            if aggregate_entry is None:
+                aggregate_entry = m
+            continue
+        identity = _ae_row_identity(m)
+        if identity in seen_identities:
+            continue
+        seen_identities.add(identity)
+        per_row.append(m)
+    out: list[dict] = []
+    if aggregate_entry is not None:
+        out.append(aggregate_entry)
+    out.extend(per_row)
+    return out
+
+
+def _ae_row_identity(m: dict) -> tuple:
+    """Row-identity key for `_ae_fanout_matches`' dedup pass — two match
+    entries referring to the SAME underlying row (same scope, account,
+    and — for per-symbol scopes — the same tradingsymbol/exchange/
+    product) collapse to one execution regardless of which leaf(s)
+    produced them. Account-level summary rows (funds/positions/holdings
+    `*_acct` scopes) have no tradingsymbol, so those three fields are
+    `None` for every row at that scope — which is exactly the desired
+    behavior: scope+account alone is already a full identity for a
+    one-row-per-account summary frame."""
+    row = m.get('row') or {}
+    return (
+        m.get('scope'), m.get('account'),
+        row.get('tradingsymbol'), row.get('exchange'), row.get('product'),
+    )
+
+
+def _ae_actions_use_row_ref(actions: list | None) -> bool:
+    """True when at least one action in `actions` references a bare-NAME
+    matched-row column (the `{"$row": "<name>"}` marker — see
+    `actions.py:resolve_row_ref_params`).
+
+    Fan-out (`_ae_dispatch_survivor_entry`) activates ONLY when this is
+    True. No currently-existing agent (seeded or operator-authored) can
+    contain `$row` — it is a brand-new marker the Sprint 16 CLI compiler
+    introduces — so this makes the backward-compatibility guarantee true
+    BY CONSTRUCTION for every agent that predates this feature, not just
+    ones whose condition scope happens to be aggregate. It also protects
+    whole-scope "sweep" actions (`chase_close_positions`, `cancel_all_
+    orders`, `expiry_auto_close` — each already scans/closes everything
+    in scope in ONE call) from being re-invoked once per matched row,
+    which would be actively harmful (N redundant close sweeps racing each
+    other, not N correct partial actions) for an agent whose action
+    doesn't reference per-row data at all. Fan-out is reserved for
+    actions that explicitly ask for row-bound values via bare-NAME
+    syntax (`close_position(account=account_id, symbol=symbol)`)."""
+    for action in actions or []:
+        params = action.get('params') if isinstance(action, dict) else None
+        if not isinstance(params, dict):
+            continue
+        if any(_is_row_ref_marker(v) for v in params.values()):
+            return True
+    return False
+
+
 async def _ae_dispatch_survivor_entry(entry: dict, now, context: dict,
                                       broadcast_fn) -> None:
     """Commit all side-effects for a surviving (non-suppressed) fire.
@@ -2678,9 +2814,67 @@ async def _ae_dispatch_survivor_entry(entry: dict, now, context: dict,
             'sim_mode': sim_mode_p,
         })
     if agent.actions:
+        await _ae_dispatch_actions(entry, agent, context, sim_mode_p)
+
+
+async def _ae_dispatch_actions(entry: dict, agent, context: dict, sim_mode_p: bool) -> None:
+    """Run `agent.actions` for one survivor entry — single-execution path
+    (today's unconditional behavior, byte-identical) or Sprint 16 fan-out,
+    chosen by `_ae_actions_use_row_ref`. Extracted from
+    `_ae_dispatch_survivor_entry` to keep it below the complexity gate."""
+    if not _ae_actions_use_row_ref(agent.actions):
+        # No action in this agent's chain references matched-row data
+        # ($row) — fire EXACTLY as before this sprint: once, with
+        # account="TOTAL". This is the backward-compatibility guarantee,
+        # true BY CONSTRUCTION for every agent that predates Sprint 16
+        # (none can contain $row) — see _ae_actions_use_row_ref's
+        # docstring for why fan-out is gated on $row usage rather than on
+        # condition scope alone (whole-scope "sweep" actions like
+        # chase_close_positions / expiry_auto_close must never be
+        # re-invoked once per row).
         action_ctx = dict(context)
         action_ctx["account"] = "TOTAL"
         action_ctx["sim_mode"] = sim_mode_p
+        await execute(agent, agent.actions, action_ctx)
+        return
+
+    # Sprint 16 fan-out — fire agent.actions once PER MATCHED ROW in
+    # entry['fire_matches'] (the raw per-row matches whose key passed
+    # the escalation gate this tick — see _cycle_maybe_buffer_fire's
+    # derivation comment; deliberately NOT entry['matches'], which
+    # _cycle_dispatch_survivors' topic merge can extend with a SIBLING
+    # agent's rows). Falls back to 'latched_matches'/'matches' only for
+    # an entry built by a caller that predates 'fire_matches' (none exist
+    # on the real dispatch path today — defensive compatibility guard
+    # only).
+    fire_matches = entry.get('fire_matches')
+    if fire_matches is None:
+        fire_matches = entry.get('latched_matches') or entry.get('matches') or []
+    fanout = _ae_fanout_matches(fire_matches)
+    if not fanout:
+        # Defensive only — _cycle_maybe_buffer_fire never buffers an
+        # entry with empty latched_matches (`if not effective: return
+        # False`), so this is unreachable on the real dispatch path.
+        # Guarantees the agent still fires once — today's unconditional
+        # behavior — rather than silently firing zero times if some
+        # future caller ever violates that invariant.
+        fanout = [{}]
+    for match_entry in fanout:
+        action_ctx = dict(context)
+        acct = match_entry.get('account')
+        is_aggregate = acct in (None, 'TOTAL')
+        action_ctx["account"] = "TOTAL" if is_aggregate else acct
+        action_ctx["sim_mode"] = sim_mode_p
+        # Matched-row binding for bare-NAME ($row) action params — see
+        # actions.py:resolve_row_ref_params for the marker shape and
+        # fail-closed resolution contract. An AGGREGATE match (account is
+        # None/'TOTAL') never binds a row, even though the underlying
+        # TOTAL summary row technically has an 'account' column — a
+        # $row reference under an aggregate scope must fail closed
+        # (skip + log), never silently resolve to the literal "TOTAL"
+        # string.
+        action_ctx["_matched_row"] = None if is_aggregate else match_entry.get('row')
+        action_ctx["_matched_row_scope"] = None if is_aggregate else match_entry.get('scope')
         await execute(agent, agent.actions, action_ctx)
 
 

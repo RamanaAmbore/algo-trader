@@ -125,6 +125,31 @@ const FIXTURE_ROWS = [
   // for the `isFragmentRef` flag these set.
   { grammar_kind: 'condition', token_kind: 'metric', token: 'loss-positions-default', is_fragment_ref: true, params_schema: null },
   { grammar_kind: 'notify', token_kind: 'channel', token: 'notify-critical-trio', is_fragment_ref: true, params_schema: null },
+  // Sprint 16 — matched-row ($row) binding decompile coverage, appended
+  // at the end (same append-only convention as every other sprint's
+  // fixture additions in this file).
+  {
+    grammar_kind: 'action', token_kind: 'action_type', token: 'close_position',
+    params_schema: {
+      account: { type: 'string', required: true, token_ref_ok: true },
+      symbol: { type: 'string', required: true },
+    },
+  },
+  {
+    grammar_kind: 'condition', token_kind: 'column', token: 'positions.expiring_today.account_id', value_type: 'string',
+    label: 'Account',
+    description: "Account. Sourced from DataFrame column 'account' on ctx.position_rows, populated by backend.api.algo.grammar._scope_positions_expiring_today.",
+  },
+  {
+    grammar_kind: 'condition', token_kind: 'column', token: 'positions.expiring_today.symbol', value_type: 'string',
+    label: 'Symbol',
+    description: "Symbol. Sourced from DataFrame column 'tradingsymbol' on ctx.position_rows, populated by backend.api.algo.grammar._scope_positions_expiring_today.",
+  },
+  {
+    grammar_kind: 'condition', token_kind: 'column', token: 'positions.expiring_today.qty', value_type: 'number',
+    label: 'Quantity (Contracts)',
+    description: "Quantity (Contracts). Sourced from DataFrame column 'quantity' on ctx.position_rows, populated by backend.api.algo.grammar._scope_positions_expiring_today.",
+  },
 ];
 
 const CATALOG = buildCatalog(FIXTURE_ROWS);
@@ -1183,5 +1208,39 @@ describe('Sprint 12 — event_stmt decompile round-trip (real ERROR_AGENT shape)
     const dec = decompileEvent({ conditions: { all: [] }, events: [], actions: [] });
     expect(dec.text).toBeNull();
     expect(dec.errors.some(e => /'conditions' must be a \{"log": \{\.\.\.\}\} shape/.test(e.message))).toBe(true);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// Sprint 16 — matched-row ($row) binding decompile round-trip.
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('Sprint 16 — {"$row": "<name>"} decompiles to the bare field-name CLI form', () => {
+  it('a real {"$row": "account_id"} action param decompiles to the bare name and recompiles to the IDENTICAL JSON', () => {
+    const r = decompileActions(
+      [{ type: 'close_position', params: { account: { '$row': 'account_id' }, symbol: { '$row': 'symbol' } } }],
+      CATALOG,
+    );
+    expect(r.errors).toEqual([]);
+    expect(r.text).toBe('close_position(account=account_id, symbol=symbol)');
+  });
+
+  it('full agent round-trip: compile -> decompile -> recompile yields byte-identical JSON', () => {
+    roundTrip(
+      'WHEN pnl@positions.expiring_today > 0 DO close_position(account=account_id, symbol=symbol)'
+    );
+  });
+
+  it('a mixed literal + $row action (account bound, symbol literal) round-trips correctly', () => {
+    roundTrip(
+      'WHEN pnl@positions.expiring_today > 0 DO close_position(account=account_id, symbol="NIFTY25JULFUT")'
+    );
+  });
+
+  it('place_order/order(...)\'s own $row-bound qty= round-trips correctly', () => {
+    roundTrip(
+      'WHEN pnl@positions.expiring_today > 0 '
+      + 'DO order(account=account_id, symbol=symbol, side="SELL", qty=qty)'
+    );
   });
 });
