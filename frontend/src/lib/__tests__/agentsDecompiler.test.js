@@ -1518,3 +1518,44 @@ describe('Sprint 16 — {"$row": "<name>"} decompiles to the bare field-name CLI
     );
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════
+// Sprint G — debug(x) decompile round-trip.
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('Sprint G — debug(x) decompiles from a {"$row": ...}-message emit_log(level=debug) action', () => {
+  it('a debug(x)-compiled $row action decompiles back to the bare debug(name) CLI form and recompiles to IDENTICAL JSON', () => {
+    const r = decompileActions(
+      [{ type: 'emit_log', params: { level: 'debug', message: { '$row': 'account_id' } } }],
+      CATALOG,
+    );
+    expect(r.errors).toEqual([]);
+    expect(r.text).toBe('debug(account_id)');
+  });
+
+  it('full agent round-trip: WHEN ... DO debug(account_id) compiles -> decompiles -> recompiles byte-identical', () => {
+    roundTrip('WHEN pnl@positions.expiring_today > 0 DO debug(account_id)');
+  });
+
+  it('a GIVEN-bound PRIMITIVE label debug(x) is NOT reversible to debug(...) — decompiles to the generic, EXPANDED emit_log(level=debug, message="...") form instead (documented GIVEN macro-expansion trade-off), and that form still recompiles cleanly', () => {
+    // Mirrors the same documented trade-off as a plain GIVEN value
+    // binding: the ORIGINAL label name is never stored in the compiled
+    // JSON (only its expanded value is), so there is no way back to
+    // `debug(x)` — this is NOT an ambiguity bug, it is the same
+    // "editing a saved rule shows the expanded form" rule already
+    // documented for the bind operator generally.
+    const r = decompileActions(
+      [{ type: 'emit_log', params: { level: 'debug', message: 'ping' } }],
+      CATALOG,
+    );
+    expect(r.errors).toEqual([]);
+    expect(r.text).toBe('emit_log(level=debug, message="ping")');
+    const recompiled = compile(`WHEN always ALERT telegram DO ${r.text}`);
+    expect(recompiled.ok).toBe(true);
+    expect(recompiled.agent.actions).toEqual([{ type: 'emit_log', params: { level: 'debug', message: 'ping' } }]);
+  });
+
+  it('a hand-authored emit_log(level=debug, message="literal") is INDISTINGUISHABLE from one that came from debug(x) with a literal-bound label — both decompile/recompile identically, by design (no new ambiguity: both are equally valid)', () => {
+    roundTrip('WHEN always ALERT telegram DO emit_log(level=debug, message="hand typed")');
+  });
+});

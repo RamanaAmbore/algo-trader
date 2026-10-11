@@ -325,6 +325,31 @@ const FIXTURE_ROWS = [
       variety: { type: 'enum', enum: ['regular', 'amo'], required: false },
     },
   },
+  // Sprint G (Task 3) — the real `cash` metric (agent_grammar.yaml's own
+  // `token: cash`), needed for the `funds.cash` dot-access alias test —
+  // `avail_margin` (the `funds.margin` alias target) already exists above.
+  { grammar_kind: 'condition', token_kind: 'metric', token: 'cash', value_type: 'number', params_schema: null },
+  // Sprint G (Task 4) — appended at the END (same append-only convention
+  // as every earlier sprint's additions above). `symbols.any_acct` mirrors
+  // the real backend's planned base scope for the new `symbols.*` family
+  // (not yet shipped — see this sprint's handback report for the exact
+  // naming assumption); `kind:` filters it to one of watchlist/gainers/
+  // losers/pinned via the SAME `account:`/`symbol:` scope_filter mechanism.
+  { grammar_kind: 'condition', token_kind: 'scope', token: 'symbols.any_acct', params_schema: null },
+  {
+    grammar_kind: 'condition', token_kind: 'column', token: 'symbols.any_acct.kind', value_type: 'string',
+    label: 'Kind',
+    description: "Kind. Sourced from DataFrame column 'kind' on ctx.symbol_rows, populated by backend.api.algo.grammar._scope_symbols_any_acct.",
+  },
+  // `underlying:` on `positions.*` — reuses the EXISTING
+  // `positions.expiring_today` scope (already in the fixture above); a
+  // real `underlying` column is part of the backend agent's parallel
+  // "underlying column derivation" work for this same sprint.
+  {
+    grammar_kind: 'condition', token_kind: 'column', token: 'positions.expiring_today.underlying', value_type: 'string',
+    label: 'Underlying',
+    description: "Underlying. Sourced from DataFrame column 'underlying' on ctx.position_rows, populated by backend.api.algo.grammar._scope_positions_expiring_today.",
+  },
 ];
 
 const CATALOG = buildCatalog(FIXTURE_ROWS);
@@ -3060,10 +3085,10 @@ describe('exchange: qualifier on quote.tracked (non-NSE quote.tracked fire-never
   // `quote.tracked` is the scope this fix's own bug report is about, and
   // is fully covered above/below.
 
-  it('unknown qualifier error message now lists exchange: alongside account:/symbol:', () => {
+  it('unknown qualifier error message now lists exchange:/kind:/underlying: alongside account:/symbol: (Sprint G, Task 4)', () => {
     const r = compile('WHEN positions.bogus:X.pnl > 0 ALERT telegram DO nop');
     expect(r.ok).toBe(false);
-    expect(r.errors.some(e => /only 'account:'\/'symbol:'\/'exchange:' are supported/.test(e.message))).toBe(true);
+    expect(r.errors.some(e => /only 'account:'\/'symbol:'\/'exchange:'\/'kind:'\/'underlying:' are supported/.test(e.message))).toBe(true);
   });
 });
 
@@ -3087,5 +3112,253 @@ describe('exchange:+symbol: scope_filter decompile round-trip (Test coverage #4)
     const recompiled = compile(`WHEN ${dec.text} ALERT telegram DO nop`);
     expect(recompiled.ok).toBe(true);
     expect(recompiled.agent.conditions).toEqual(r.agent.conditions);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// Sprint G — GIVEN preamble, the "=" bind operator, debug(...), the
+// `hold` alias, `funds.cash`/`funds.margin`, and `kind:`/`underlying:`
+// qualifiers.
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('Sprint G — GIVEN preamble + "=" bind operator (labels)', () => {
+  it('a GIVEN-bound PRIMITIVE label is readable as a plain action-param value in DO', () => {
+    const r = compile('GIVEN x = "stop hit" WHEN pnl@positions.total <= -50000 ALERT telegram DO emit_log(message=x)');
+    expect(r.ok).toBe(true);
+    expect(r.agent.actions).toEqual([{ type: 'emit_log', params: { message: 'stop hit' } }]);
+  });
+
+  it('the SAME label is readable in BOTH ALERT (via a channel kwarg) and DO in one statement', () => {
+    const r = compile(
+      'GIVEN x = "stop hit" WHEN pnl@positions.total <= -50000 '
+      + 'ALERT telegram(msg=x) DO emit_log(message=x)'
+    );
+    expect(r.ok).toBe(true);
+    expect(r.agent.events).toEqual([{ channel: 'telegram', enabled: true, message: 'stop hit' }]);
+    expect(r.agent.actions).toEqual([{ type: 'emit_log', params: { message: 'stop hit' } }]);
+  });
+
+  it('a GIVEN-bound CONDITION label used as the WHOLE bare WHEN condition compiles byte-identically to writing it out by hand (no label)', () => {
+    const viaLabel = compile(
+      'GIVEN x = pnl@positions.total <= -50000 WHEN x ALERT telegram DO nop'
+    );
+    const byHand = compile('WHEN pnl@positions.total <= -50000 ALERT telegram DO nop');
+    expect(viaLabel.ok).toBe(true);
+    expect(byHand.ok).toBe(true);
+    expect(viaLabel.agent.conditions).toEqual(byHand.agent.conditions);
+  });
+
+  it('operator mid-task widening: a label bound to a FULL multi-leaf "&"-combined condition tree is usable as the whole WHEN condition', () => {
+    const viaLabel = compile(
+      'GIVEN x = (pnl@positions.total <= -50000) & (avail_margin@funds.total < 0) '
+      + 'WHEN x ALERT telegram'
+    );
+    const byHand = compile(
+      'WHEN (pnl@positions.total <= -50000) & (avail_margin@funds.total < 0) ALERT telegram'
+    );
+    expect(viaLabel.ok).toBe(true);
+    expect(byHand.ok).toBe(true);
+    expect(viaLabel.agent.conditions).toEqual(byHand.agent.conditions);
+  });
+
+  it('a condition-bound label combines with another leaf via "&" exactly like the full expression would', () => {
+    const viaLabel = compile(
+      'GIVEN x = pnl@positions.total <= -50000 '
+      + 'WHEN x & (avail_margin@funds.total < 0) ALERT telegram'
+    );
+    const byHand = compile(
+      'WHEN (pnl@positions.total <= -50000) & (avail_margin@funds.total < 0) ALERT telegram'
+    );
+    expect(viaLabel.ok).toBe(true);
+    expect(viaLabel.agent.conditions).toEqual(byHand.agent.conditions);
+  });
+
+  it('multiple bindings in one GIVEN ("," is not the separator — ";" is)', () => {
+    const r = compile(
+      'GIVEN a = "first"; b = "second" '
+      + 'WHEN always ALERT telegram DO emit_log(message=a), emit_log(message=b)'
+    );
+    expect(r.ok).toBe(true);
+    expect(r.agent.actions).toEqual([
+      { type: 'emit_log', params: { message: 'first' } },
+      { type: 'emit_log', params: { message: 'second' } },
+    ]);
+  });
+
+  it('no-shadowing: rebinding the same label twice in one statement is a compile-time (parse) error', () => {
+    const r = compile('GIVEN x = 1; x = 2 WHEN always ALERT telegram');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /already bound in this statement/.test(e.message))).toBe(true);
+  });
+
+  it('a label spelled as a reserved word is a parse-time error', () => {
+    const r = compile('GIVEN alert = 5 WHEN always ALERT telegram');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /reserved word and cannot be used as a label/.test(e.message))).toBe(true);
+  });
+
+  it('a label colliding with a real catalog token name (an existing metric) is a compile-time error', () => {
+    const r = compile('GIVEN pnl = 5 WHEN always ALERT telegram');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /collides with an existing token name/.test(e.message))).toBe(true);
+  });
+
+  it('a label colliding with an exposed column name is a compile-time error', () => {
+    const r = compile('GIVEN account_id = 5 WHEN always ALERT telegram');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /collides with an exposed column name/.test(e.message))).toBe(true);
+  });
+
+  it('a label colliding with a scope-family alias (e.g. "hold") is a compile-time error', () => {
+    const r = compile('GIVEN hold = 5 WHEN always ALERT telegram');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /collides with a scope-family name\/alias/.test(e.message))).toBe(true);
+  });
+
+  it('a VALUE-kind label used as the WHEN condition is a clear compile-time error', () => {
+    const r = compile('GIVEN x = 5 WHEN x ALERT telegram');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /bound to a plain value.*cannot be used as a WHEN condition/.test(e.message))).toBe(true);
+  });
+
+  it('a CONDITION-kind label used as a plain action-param value is a clear compile-time error', () => {
+    const r = compile('GIVEN x = pnl@positions.total <= -50000 WHEN always ALERT telegram DO emit_log(message=x)');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /bound to a condition.*only usable in WHEN or debug/.test(e.message))).toBe(true);
+  });
+
+  it('a forward reference (reading a label before it is bound) does not resolve as a label — falls through to the ordinary unknown-token error', () => {
+    const r = compile('WHEN always ALERT telegram DO emit_log(message=x) GIVEN x = "too late"');
+    // GIVEN must be FIRST syntactically — this is simply a parse error
+    // (GIVEN cannot appear after WHEN/ALERT/DO at all).
+    expect(r.ok).toBe(false);
+  });
+});
+
+describe('Sprint G — debug(x)', () => {
+  it('debug(x) for a PRIMITIVE-bound label renders its plain value as the emit_log message', () => {
+    const r = compile('GIVEN x = "ping" WHEN always ALERT telegram DO debug(x)');
+    expect(r.ok).toBe(true);
+    expect(r.agent.actions).toEqual([
+      { type: 'emit_log', params: { level: 'debug', message: 'ping' } },
+    ]);
+  });
+
+  it('debug(x) for a CONDITION-bound (dict-shaped) label JSON-stringifies the compiled condition', () => {
+    const r = compile('GIVEN x = pnl@positions.total <= -50000 WHEN always ALERT telegram DO debug(x)');
+    expect(r.ok).toBe(true);
+    const expectedDict = compile('WHEN pnl@positions.total <= -50000 ALERT telegram DO nop').agent.conditions;
+    expect(r.agent.actions).toEqual([
+      { type: 'emit_log', params: { level: 'debug', message: JSON.stringify(expectedDict) } },
+    ]);
+  });
+
+  it('debug(x) for a bare exposed-column (matched-row $row) name — a REAL live value via the existing Sprint 16 mechanism', () => {
+    const r = compile('WHEN pnl@positions.expiring_today > 0 DO debug(account_id)');
+    expect(r.ok).toBe(true);
+    expect(r.agent.actions).toEqual([
+      { type: 'emit_log', params: { level: 'debug', message: { '$row': 'account_id' } } },
+    ]);
+  });
+
+  it('debug(x) for an unbound, non-exposed-column name is a clear compile error', () => {
+    const r = compile('WHEN always ALERT telegram DO debug(bogus_name)');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /not a bound label.*or a matched-row column name/.test(e.message))).toBe(true);
+  });
+
+  it('a GIVEN-placed debug(...) is HOISTED into the compiled actions array even with DO omitted entirely', () => {
+    const r = compile('GIVEN x = "ping"; debug(x) WHEN always ALERT telegram');
+    expect(r.ok).toBe(true);
+    expect(r.agent.actions).toEqual([{ type: 'emit_log', params: { level: 'debug', message: 'ping' } }]);
+    expect(r.agent.events).toEqual([{ channel: 'telegram', enabled: true }]);
+  });
+
+  it('an ALERT-placed debug(...) is stripped out of events and hoisted into actions, not left as an unknown channel', () => {
+    const r = compile('GIVEN x = "hey" WHEN always ALERT debug(x), telegram DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.events).toEqual([{ channel: 'telegram', enabled: true }]);
+    expect(r.agent.actions).toEqual([{ type: 'emit_log', params: { level: 'debug', message: 'hey' } }]);
+  });
+
+  it('a debug-only statement (no real ALERT/DO) satisfies the "at least one of ALERT or DO" rule', () => {
+    const r = compile('GIVEN x = "ping" WHEN always DO debug(x)');
+    expect(r.ok).toBe(true);
+    expect(r.agent.actions).toEqual([{ type: 'emit_log', params: { level: 'debug', message: 'ping' } }]);
+  });
+
+  it('debug(...) takes exactly one bare argument — a parenthesized expression is a lex/parse error', () => {
+    const r = compile('WHEN always ALERT telegram DO debug(pnl@positions.total)');
+    expect(r.ok).toBe(false);
+  });
+
+  it('hand-typed emit_log(level=debug, message="...") (NOT via the debug(...) sugar) also compiles — the live catalog enum gap is bridged', () => {
+    const r = compile('WHEN always ALERT telegram DO emit_log(level=debug, message="hand typed")');
+    expect(r.ok).toBe(true);
+    expect(r.agent.actions).toEqual([{ type: 'emit_log', params: { level: 'debug', message: 'hand typed' } }]);
+  });
+
+  it('emit_log with a genuinely bogus level is still rejected (the bypass is scoped to "debug" only)', () => {
+    const r = compile('WHEN always ALERT telegram DO emit_log(level=critical, message="x")');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /not one of \[info, warning, error\]/.test(e.message))).toBe(true);
+  });
+});
+
+describe('Sprint G — Task 3 aliases: "hold" + funds.cash/funds.margin', () => {
+  it('"hold" is an additional accepted alias for "holdings" alongside the already-shipped "hld"', () => {
+    const viaHold = compile('WHEN pnl@hold.total <= -50000 ALERT telegram DO nop');
+    const viaHld = compile('WHEN pnl@hld.total <= -50000 ALERT telegram DO nop');
+    const viaLong = compile('WHEN pnl@holdings.total <= -50000 ALERT telegram DO nop');
+    expect(viaHold.ok).toBe(true);
+    expect(viaHold.agent.conditions).toEqual(viaLong.agent.conditions);
+    expect(viaHld.agent.conditions).toEqual(viaLong.agent.conditions);
+  });
+
+  it('"hold" DECOMPILES to the canonical long form "holdings", never the alias', () => {
+    const r = compile('WHEN pnl@hold.total <= -50000 ALERT telegram DO nop');
+    expect(r.ok).toBe(true);
+    const dec = decompileCondition(r.agent.conditions, CATALOG);
+    expect(dec.errors).toEqual([]);
+    expect(dec.text).toBe('pnl@holdings.total <= -50000');
+  });
+
+  it('funds.cash dot-access compiles as the real "cash" metric bound to funds.total — no new scope root', () => {
+    const r = compile('WHEN funds.cash <= 0 ALERT telegram DO nop');
+    const byHand = compile('WHEN cash@funds.total <= 0 ALERT telegram DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions).toEqual(byHand.agent.conditions);
+  });
+
+  it('funds.margin dot-access compiles as the real "avail_margin" metric bound to funds.total', () => {
+    const r = compile('WHEN funds.margin <= 0 ALERT telegram DO nop');
+    const byHand = compile('WHEN avail_margin@funds.total <= 0 ALERT telegram DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions).toEqual(byHand.agent.conditions);
+  });
+
+  it('"cash"/"margin" are NOT separate scope roots — funds.cash/funds.margin only exist as this dot-access alias', () => {
+    const r = compile('WHEN pnl@cash.total <= -50000 ALERT telegram DO nop');
+    expect(r.ok).toBe(false);
+  });
+});
+
+describe('Sprint G — Task 4: kind: / underlying: qualifiers', () => {
+  it('symbols.kind:gainers compiles to the correct scope_filter shape', () => {
+    const r = compile('WHEN symbols.kind:gainers.kind == "gainers" ALERT telegram DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions).toEqual({
+      metric: 'kind', scope: 'symbols.any_acct', op: '==', value: 'gainers',
+      scope_filter: { kind: 'gainers' },
+    });
+  });
+
+  it('positions.expiring_today.underlying:NIFTY compiles to the correct scope_filter shape', () => {
+    const r = compile('WHEN pnl@positions.expiring_today.underlying:NIFTY <= -5000 ALERT telegram DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions).toEqual({
+      metric: 'pnl', scope: 'positions.expiring_today', op: '<=', value: -5000,
+      scope_filter: { underlying: 'NIFTY' },
+    });
   });
 });

@@ -656,7 +656,15 @@ const _MAX_DEPTH = 20;
 // for '&'/'|'/'~' (see `_isAndTok`/`_isOrTok`/`_isNotTok`) — reserving
 // them prevents `and(...)`/`or(...)` from ever being (mis)parsed as a
 // real metric/channel/action token name.
-const _RESERVED = new Set(['when', 'alert', 'do', 'nop', 'always', 'in', 'not', 'and', 'or', 'true', 'false']);
+// Sprint G — 'given' added (the new optional preamble section keyword,
+// same reserved-word treatment WHEN/ALERT/DO already get). 'debug' is
+// DELIBERATELY NOT reserved — same "contextual, not a reserved word"
+// treatment Sprint 6's `msg=` already uses (see the lexer's NAME-scanning
+// branch below, which special-cases `debug(...)`'s single bare argument
+// without ever marking the token itself reserved) — this lets `parseCall`
+// keep working unchanged for the (today, zero) real catalog tokens that
+// might coincidentally also be named "debug".
+const _RESERVED = new Set(['when', 'alert', 'do', 'nop', 'always', 'in', 'not', 'and', 'or', 'true', 'false', 'given']);
 export const RESERVED_WORDS = _RESERVED;
 
 // ── event_stmt reserved kwarg names (Sprint 12, +`gate` Sprint 18) — NOT
@@ -721,9 +729,27 @@ export const SCOPE_FAMILY_ALIASES = Object.freeze({
   funds: 'fnd',
   watchlist: 'wl',
 });
-const _SCOPE_ALIAS_TO_REAL = Object.fromEntries(
-  Object.entries(SCOPE_FAMILY_ALIASES).map(([real, alias]) => [alias.toLowerCase(), real])
-);
+// Sprint G (Task 3) — `hold` as an ADDITIONAL accepted alias for
+// `holdings`, alongside the already-shipped `hld` above (never removed —
+// aliases are pure input-side sugar with zero migration cost either way).
+// Kept as a SEPARATE table (not folded into `SCOPE_FAMILY_ALIASES` itself,
+// which maps each real family to exactly ONE canonical short alias for
+// display/documentation purposes) so `SCOPE_FAMILY_ALIASES.holdings`
+// keeps returning `'hld'` unchanged for any existing reader — only the
+// resolver's reverse lookup (`_SCOPE_ALIAS_TO_REAL`, below) gains the
+// extra entry.
+const _EXTRA_SCOPE_FAMILY_ALIASES = Object.freeze({ hold: 'holdings' });
+// Sprint G (Task 3) — `funds.cash`/`funds.margin` dot-access aliases
+// (bare column name -> real metric token), consulted by `_resolveDotAccess`
+// only when the chain's own prefix is exactly `funds` (2 segments total,
+// e.g. `funds.cash`) — see that function's own comment for why this needs
+// a dedicated check rather than falling out of the generic scope-prefix
+// resolution.
+const _FUNDS_COLUMN_ALIASES = Object.freeze({ cash: 'cash', margin: 'avail_margin' });
+const _SCOPE_ALIAS_TO_REAL = {
+  ...Object.fromEntries(Object.entries(SCOPE_FAMILY_ALIASES).map(([real, alias]) => [alias.toLowerCase(), real])),
+  ..._EXTRA_SCOPE_FAMILY_ALIASES,
+};
 
 /** Resolve a scope chain's FIRST segment name through `SCOPE_FAMILY_ALIASES`
  *  (case-insensitive) to its canonical family name — a no-op for a name
@@ -922,6 +948,11 @@ const _PUNCT_SINGLE = {
   // used anywhere else in this grammar before Sprint 19, so this is a
   // no-op for every pre-Sprint-19 statement.
   ':': 'COLON', '*': 'STAR',
+  // Sprint G — `;` separates items inside GIVEN/ALERT/DO's own item list
+  // (`label = value; call, call; label = value; ...`) — SEPARATE from
+  // `,`, which still only ever joins calls WITHIN one call_list run (see
+  // `parseItemListClause`'s own header comment for the full grammar).
+  ';': 'SEMI',
 };
 
 function _isWordChar(ch) { return /[A-Za-z0-9_]/.test(ch); }
@@ -1411,11 +1442,42 @@ export function lexAgentStatement(text) {
           if (pd !== 0) throw new _ParseError(`unbalanced parentheses after '${nameRaw}'`, { start });
           const innerEnd = k - 1;
           const innerText = text.slice(innerStart, innerEnd);
-          // Note: innerText.trim() !== '' always yields args.length >= 1 or
-          // a thrown _ParseError (tokenizeCallStyle never silently drops a
-          // non-whitespace char) — no separate "non-empty but zero args"
-          // case to guard here.
-          const args = _parseArgListFromInnerText(innerText, { start });
+          // Sprint G (Task 2) — `debug(x)` takes exactly ONE BARE argument
+          // (a label or token reference name, no "="), which `arg_list`'s
+          // ordinary keyword-only rule (every argument is `name=value`)
+          // cannot express at all — `_parseArgListFromInnerText` would
+          // reject a bare `x` with "argument must be written as
+          // name=value". Special-cased HERE, by name, before the generic
+          // arg-list parse ever runs — mirrors this grammar's established
+          // "contextual, not reserved" carve-outs (Sprint 6's `msg=`,
+          // Sprint 12's event-meta keys) rather than widening `arg_list`
+          // itself for every OTHER call. Produces a single synthetic
+          // ArgEntry under the fixed key `'x'` so the rest of the pipeline
+          // (parseCall/CallNode shape) is completely unchanged — only
+          // `_compileDebugCall` (compiler) and the parser's label-binding
+          // substitution ever look at this specific entry.
+          let args;
+          if (lower === 'debug') {
+            const trimmed = innerText.trim();
+            const leadWs = innerText.length - innerText.replace(/^\s+/, '').length;
+            if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(trimmed)) {
+              throw new _ParseError(
+                `debug(...) takes exactly one bare argument — a label or token reference name, e.g. debug(x)`,
+                { start: innerStart + leadWs },
+              );
+            }
+            args = [{
+              key: 'x',
+              keyStart: innerStart + leadWs,
+              value: { type: 'name', value: trimmed, start: innerStart + leadWs, end: innerStart + leadWs + trimmed.length },
+            }];
+          } else {
+            // Note: innerText.trim() !== '' always yields args.length >= 1 or
+            // a thrown _ParseError (tokenizeCallStyle never silently drops a
+            // non-whitespace char) — no separate "non-empty but zero args"
+            // case to guard here.
+            args = _parseArgListFromInnerText(innerText, { start });
+          }
           tokens.push({ type: 'NAME', value: nameRaw, reserved: _RESERVED.has(lower), hasCall: true, args, start, end: k });
           i = k;
         } else {
@@ -1461,7 +1523,18 @@ export function parseCall(state) {
     throw new _ParseError(`"${tok.value}()" is a parse error — a zero-argument token is always written bare`, tok);
   }
   _advance(state);
-  return { type: 'call', name: tok.value, args: tok.args || [], hasCall: tok.hasCall, start: tok.start, end: tok.end };
+  // Sprint G — snapshot whatever labels are visible RIGHT HERE (a plain
+  // copy of `state.bindings`, cheap — statements bind at most a handful
+  // of labels) so compile-time arg substitution (`_substituteBoundArgs`)
+  // can later resolve a bare-NAME arg value against exactly the bindings
+  // in scope at THIS call's own position in the source text, enforcing
+  // left-to-right visibility (no forward reference) even though every
+  // call's args were already parsed into ArgEntry[] at LEX time, before
+  // any binding existed. `undefined` (not an empty Map) for every
+  // pre-Sprint-G call site with no GIVEN/assignment anywhere in the
+  // statement — a true no-op, zero behavior change.
+  const bindingsAt = state.bindings && state.bindings.size ? new Map(state.bindings) : undefined;
+  return { type: 'call', name: tok.value, args: tok.args || [], hasCall: tok.hasCall, start: tok.start, end: tok.end, _bindingsAt: bindingsAt };
 }
 
 /** `arg_list := first_arg ("," kw_arg)*` — args are resolved at LEX time
@@ -1689,11 +1762,49 @@ export function parseLeaf(state) {
     return { type: 'colref', segments, op: null, value: null };
   }
   if (_peek(state).type !== 'AT') {
-    // No "@" and no "." follows — a real metric ALWAYS requires
-    // "@ scope_ref", so this can only be a bare Token ($ref) reference.
-    // Deferred to COMPILE time (see `compileRef`) — parse permissively,
-    // validate once the catalog is known, same split this grammar already
-    // uses everywhere else.
+    // Sprint G — a bare (non-call) NAME here that matches an already-
+    // visible label (`state.bindings`, left-to-right source order) is a
+    // CONDITION-kind label reference: splice in a CLONE of the bound
+    // condition subtree directly, in place of what would otherwise be a
+    // Sprint-10 Token ($ref) reference — this is the "label used as the
+    // whole bare WHEN condition" case (`GIVEN x = (...) & (...); WHEN x`).
+    // A PRIMITIVE-kind label used here is a clear parse-time error (zero
+    // catalog dependency either way, so there's no reason to defer this
+    // one to compile time the way an unrecognized name normally is).
+    if (!firstCall.hasCall && state.bindings) {
+      const bound = state.bindings.get(firstCall.name.toLowerCase());
+      if (bound) {
+        if (bound.rhsKind === 'condition') return _cloneAstNode(bound.rhsNode);
+        throw new _ParseError(
+          `label '${firstCall.name}' is bound to a plain value — it cannot be used as a WHEN condition `
+          + `(only a label bound to a condition, e.g. 'x = metric@scope <= value', can be)`,
+          firstCall,
+        );
+      }
+    }
+    // No "@" and no "." follows, and not a bound label — a real metric
+    // ALWAYS requires "@ scope_ref", so this can only be a bare Token
+    // ($ref) reference. Deferred to COMPILE time (see `compileRef`) —
+    // parse permissively, validate once the catalog is known, same split
+    // this grammar already uses everywhere else.
+    //
+    // KNOWN LIMITATION, operator-accepted 2026-10-11 (Sprint G): a
+    // PRIMITIVE-kind label (e.g. `GIVEN x = mean_pnl(30)@positions.total`)
+    // can ONLY be read as a whole value (an action/channel argument) or
+    // — via the CONDITION-kind branch above — as a whole bare WHEN
+    // condition. It canNOT be re-attached to a NEW comparator to form a
+    // fresh leaf (`WHEN x <= -50000` does NOT work when `x` is bound to a
+    // metric_ref, even though `WHEN x` alone works when `x` is bound to a
+    // full condition). This is structural, not an oversight: a leaf's
+    // shape (`metric_ref comparator value`) is fixed at PARSE time by
+    // this very function, and a bare label reaching this branch has
+    // already committed to being parsed as a `ref`/condition-splice node,
+    // not a `metric_ref` — there is no production here that re-opens a
+    // label into "the left operand of a comparator I haven't seen yet."
+    // Supporting it would need a real grammar change (a label's bound
+    // metric_ref AST node substituting into leaf position), not a
+    // compile-time workaround. If this is ever needed, write the full
+    // expression inline instead: `WHEN mean_pnl(30)@positions.total <= -50000`.
     return { type: 'ref', call: firstCall };
   }
   _advance(state); // consume "@"
@@ -1842,38 +1953,140 @@ function parseClauseBody(state) {
   return parseCallList(state);
 }
 
-/** `alert_clause := "nop" | (("msg" "=" value ",")? call_list)` — Sprint 6.
- *  ALERT-only (DO has no equivalent; `parseClauseBody` above is unchanged
- *  and still used for DO). The leading `msg="..."` default is recognized
- *  CONTEXTUALLY — "msg" is NOT in `_RESERVED` — purely by lookahead: a
- *  bare (non-call) NAME spelled "msg" (case-insensitive) immediately
- *  followed by a lone `EQ` token. A hand-typed channel that happens to be
- *  literally named "msg" but is NOT followed by "=" (e.g. a bare `msg`
- *  channel, or `msg(...)`, which lexes with `hasCall: true`) falls straight
- *  through to the ordinary `parseCallList` branch below — no reserved-word
- *  collision is possible. The value's STRING-ness is deliberately NOT
- *  enforced here (same "parse permissively, validate at compile time"
- *  split every other field in this grammar follows — see `parseValue`'s
- *  callers elsewhere); `compileAlertClause` rejects a non-string default
- *  with the same "must be quoted" wording other free-text fields use.
- *  @returns {{ msgDefault: any, calls: 'nop' | any[] }} */
-function parseAlertClauseBody(state) {
-  const tok = _peek(state);
-  if (tok.type === 'NAME' && _wordIs(tok, 'nop')) {
-    if (tok.hasCall) throw new _ParseError('"nop" takes no arguments — nop() is a parse error', tok);
-    _advance(state);
-    return { msgDefault: null, calls: 'nop' };
+// ═══════════════════════════════════════════════════════════════════════
+// Sprint G — GIVEN preamble + the "=" bind operator + debug(...)
+// ═══════════════════════════════════════════════════════════════════════
+//
+// `given_part := "GIVEN" clause_item (";" clause_item)*`           (new)
+// `alert_clause := "nop" | clause_item (";" clause_item)*`  (generalizes
+//                                                             Sprint 6)
+// `do_clause    := "nop" | clause_item (";" clause_item)*`  (generalizes
+//                                                             the old
+//                                                             plain
+//                                                             call_list)
+// `clause_item  := assignment | (msg_default? call_list)`
+// `assignment   := NAME "=" given_rhs`
+// `given_rhs    := value | or_expr`
+// `msg_default  := "msg" "=" value ","`      (Sprint 6, ALERT-only,
+//                                              PRESERVED byte-for-byte —
+//                                              see `parseOneClauseItem`)
+//
+// The bind operator is plain "=" (operator-revised; an earlier `:=`
+// design was superseded before any shipped code depended on it) — this
+// sidesteps a `:=`-vs-`:`-qualifier lexer disambiguation problem entirely
+// (no two-character lookahead needed: `=` and `:` never share a
+// character), and reads as "the same `name=value` kwarg syntax, just at
+// STATEMENT level instead of inside a call's parens." A label may be
+// bound ANYWHERE in GIVEN/ALERT/DO (not just GIVEN) and read anywhere
+// else in the SAME statement, including a clause that textually precedes
+// it being bound LATER being a genuine, rejected forward-reference (see
+// `_registerBinding`/`parseLeaf`'s bare-ref branch) — `state.bindings`
+// is a single Map threaded through the WHOLE parse, mutated in strict
+// left-to-right source order, so visibility naturally follows text order
+// with zero extra bookkeeping. `WHEN` itself never WRITES a binding
+// (read-only), only reads ones already visible by the time it's parsed.
+//
+// Binding kind (Sprint G's "dict vs primitive" type rule) is determined
+// structurally by `given_rhs`, not declared: `value` (NUMBER/STRING/NAME/
+// list_literal) is a PRIMITIVE binding; anything requiring the full
+// `or_expr` condition grammar (a bare metric_ref/col_ref boolean-
+// shorthand leaf, a between-chain, a Token ($ref) reference, or a real
+// `&`/`|`/`~`-combined tree) is a CONDITION binding, which compiles to a
+// JSON dict — see `compileCondition`. A condition-bound label may be used
+// as a WHOLE bare WHEN condition (substituted in place of what would
+// otherwise be a Sprint-10 bare Token ($ref) reference) or inside
+// `debug(...)`; using it as an ordinary action/channel param value is a
+// compile-time error (`_substituteBoundArgs`) — the hand-written
+// equivalent would be invalid syntax there too.
+
+/** Clone a plain AST/ValueNode/Condition node — JSON round-trip is safe
+ *  here since every node in this grammar is plain, acyclic, JSON-
+ *  serializable data (see the file-header AST-shape comment). Needed so
+ *  a label referenced MULTIPLE times in one statement never shares one
+ *  mutable AST subtree across occurrences. */
+function _cloneAstNode(node) {
+  return node == null ? node : JSON.parse(JSON.stringify(node));
+}
+
+/** True iff `tok` can legally end a `given_rhs := value` parse attempt —
+ *  i.e. the point right after an `assign` item's RHS (a `;`, a trailing
+ *  `#meta`, EOF, or the next WHEN/ALERT/DO keyword — WHEN only appears
+ *  here because GIVEN itself is `when_part`'s own predecessor), OR a
+ *  bare `,` — needed so `parseOneClauseItem` can tell "this WAS a
+ *  complete `value`, now decide whether it's the old Sprint-6 `msg=...,`
+ *  sugar or a plain comma-after-assignment typo" apart from "this value
+ *  parse succeeded but the REAL expression continues past it" (e.g.
+ *  `pnl@positions.total <= -1` — `parseValue` only ever consumes the bare
+ *  NAME `pnl`, leaving `@` next, which is correctly NOT a terminator). */
+function _isClauseItemTerminator(tok) {
+  if (tok.type === 'SEMI' || tok.type === 'EOF' || tok.type === 'HASH' || tok.type === 'COMMA') return true;
+  return tok.type === 'NAME' && !tok.hasCall && (_wordIs(tok, 'when') || _wordIs(tok, 'alert') || _wordIs(tok, 'do'));
+}
+
+/** `given_rhs := value | or_expr` — tries the narrower `value` production
+ *  FIRST (the PRIMITIVE binding kind), backtracking to the full `or_expr`
+ *  condition grammar (the CONDITION/dict binding kind) when `value`
+ *  either fails to parse, or parses but leaves something other than a
+ *  genuine item terminator right after it (e.g. `pnl@positions.total` —
+ *  `parseValue` consumes only the bare NAME "pnl", then sees "@" instead
+ *  of a terminator, forcing the backtrack; `(a<=1)&(b>=2)` can't even
+ *  start as a `value` at all). `value` and `or_expr` share a NUMBER/
+ *  STRING/NAME start set with no 1-token disambiguator, so this needs
+ *  real backtracking, not lookahead. */
+function parseGivenRhs(state) {
+  const save = state.pos;
+  try {
+    const v = parseValue(state);
+    if (_isClauseItemTerminator(_peek(state))) return { kind: 'value', node: v };
+  } catch { /* fall through to the condition grammar below */ }
+  state.pos = save;
+  const cond = parseOrExpr(state, 0);
+  return { kind: 'condition', node: cond };
+}
+
+/** Register a new label binding into `state.bindings` (read live by
+ *  `parseLeaf`'s bare-ref branch, and snapshotted per-call by
+ *  `parseCall`) — enforces the "no shadowing/rebinding" rule (ONE write
+ *  per label per statement, never a silent override) and rejects a label
+ *  spelled as a real grammar keyword. Collision against a real catalog
+ *  token/scope-family-alias/exposed-column name is a COMPILE-time check
+ *  (`_checkLabelCollisions`) — the catalog isn't available yet at parse
+ *  time, same "parse permissively, validate at compile time" split this
+ *  file always uses. */
+function _registerBinding(state, labelTok, rhsKind, rhsNode) {
+  const lower = labelTok.value.toLowerCase();
+  if (_RESERVED.has(lower) || lower === 'debug' || lower === 'result') {
+    throw new _ParseError(`'${labelTok.value}' is a reserved word and cannot be used as a label`, labelTok);
   }
-  // Sprint 12 — log_tag=/min_level=/render=/where= are event_stmt-ONLY
-  // reserved kwargs (see `_EVENT_META_KEYS`'s own comment). Hitting one
-  // here means the operator combined them with WHEN/DO (this function is
-  // only ever reached from the ordinary agent_stmt's ALERT clause, never
-  // from a bare event_stmt — see `parseEventStmt`) — reject with a clear,
-  // specific message instead of falling through to `parseCallList` (which
-  // would choke on the unconsumed trailing "=" with a confusing generic
-  // "unexpected trailing input" parse error) or, worse, silently parsing
-  // as a bare channel named e.g. "log_tag" and failing later with a
-  // confusing "unknown channel 'log_tag'" compile error.
+  if (!state.bindings) state.bindings = new Map();
+  if (!state.allBindings) state.allBindings = [];
+  if (state.bindings.has(lower)) {
+    throw new _ParseError(`label '${labelTok.value}' is already bound in this statement — rebinding is not allowed (no shadowing)`, labelTok);
+  }
+  const binding = { label: labelTok.value, rhsKind, rhsNode };
+  state.bindings.set(lower, binding);
+  state.allBindings.push(binding);
+}
+
+/** One item of a GIVEN/ALERT/DO item list — see the section header above
+ *  for the full `clause_item`/`assignment`/`msg_default` grammar.
+ *  Disambiguated from an ordinary new-style `assign` item purely by what
+ *  follows the parsed RHS: a literal "msg"-spelled assignment whose RHS
+ *  parsed as a plain `value` AND is immediately followed by `,` (not a
+ *  terminator) is the OLD Sprint-6 sugar — consume the comma and keep
+ *  parsing a call_list on the SAME item. Any OTHER label, or "msg" not
+ *  immediately followed by `,`, is a plain `assign` item instead.
+ *  `allowMsgDefault` is only ever `true` for ALERT's clause, and the old
+ *  sugar is (as it always was) a leading-position-only concept — callers
+ *  only pass `true` for the FIRST item in a clause. */
+function parseOneClauseItem(state, { allowMsgDefault }) {
+  const tok = _peek(state);
+  // Sprint 12 — log_tag=/min_level=/render=/where=/gate=/match= are
+  // event_stmt-ONLY reserved kwargs; hitting one here means the operator
+  // combined them with WHEN/ALERT/DO (this function is only ever reached
+  // from agent_stmt's own GIVEN/ALERT/DO, never from a bare event_stmt —
+  // see `parseEventStmt`) — same clear, specific rejection the pre-
+  // Sprint-G `parseAlertClauseBody` always gave, ported over unchanged.
   if (tok.type === 'NAME' && !tok.hasCall && _EVENT_META_KEYS.has(tok.value.toLowerCase())) {
     const evNext = state.tokens[state.pos + 1];
     if (evNext && evNext.type === 'EQ') {
@@ -1883,22 +2096,90 @@ function parseAlertClauseBody(state) {
       );
     }
   }
-  let msgDefault = null;
-  if (tok.type === 'NAME' && !tok.hasCall && tok.value.toLowerCase() === 'msg') {
+  if (tok.type === 'NAME' && !tok.hasCall) {
     const next = state.tokens[state.pos + 1];
     if (next && next.type === 'EQ') {
-      _advance(state); // consume "msg"
-      _advance(state); // consume "="
-      msgDefault = parseValue(state);
-      const comma = _peek(state);
-      if (comma.type !== 'COMMA') {
-        throw new _ParseError('expected "," after msg="..." default, followed by a channel list', comma);
+      const labelTok = tok;
+      _advance(state); // label
+      _advance(state); // "="
+      const rhs = parseGivenRhs(state);
+      const after = _peek(state);
+      if (allowMsgDefault && labelTok.value.toLowerCase() === 'msg' && rhs.kind === 'value' && after.type === 'COMMA') {
+        _advance(state); // consume ","
+        const calls = parseCallList(state);
+        return { type: 'msgDefaultCalls', msgNode: rhs.node, calls };
       }
-      _advance(state);
+      if (after.type === 'COMMA') {
+        throw new _ParseError(`expected ";" after a label assignment, not "," (a comma only joins calls, never an assignment)`, after);
+      }
+      _registerBinding(state, labelTok, rhs.kind, rhs.node);
+      return { type: 'assign', label: labelTok.value };
     }
   }
   const calls = parseCallList(state);
-  return { msgDefault, calls };
+  return { type: 'calls', calls };
+}
+
+/** `clause_body := "nop" | clause_item (";" clause_item)*` — the unified
+ *  item-list grammar for GIVEN/ALERT/DO. Subsumes the pre-Sprint-G
+ *  `alert_clause`/plain call_list productions byte-for-byte when the
+ *  clause contains no `;` and no label assignment at all (every pre-
+ *  existing agent decompiles/recompiles through this function
+ *  unchanged) — see `parseOneClauseItem`'s own header comment for the
+ *  disambiguation rule. `allowNop` is `false` only for GIVEN (a bare
+ *  "nop" there is meaningless — GIVEN is omitted entirely instead). A
+ *  bare "nop" cannot be combined with any other item (same "nop excludes
+ *  everything else" rule the pre-Sprint-G grammar always had). */
+function parseItemListClause(state, { allowMsgDefault = false, allowNop = true } = {}) {
+  const tok = _peek(state);
+  if (allowNop && tok.type === 'NAME' && _wordIs(tok, 'nop')) {
+    if (tok.hasCall) throw new _ParseError('"nop" takes no arguments — nop() is a parse error', tok);
+    _advance(state);
+    return { items: [{ type: 'nop' }] };
+  }
+  const items = [parseOneClauseItem(state, { allowMsgDefault })];
+  while (_peek(state).type === 'SEMI') {
+    _advance(state);
+    items.push(parseOneClauseItem(state, { allowMsgDefault: false }));
+  }
+  if (items.length > 1 && items.some((it) => it.type === 'nop')) {
+    throw new _ParseError('"nop" cannot be combined with other items', tok);
+  }
+  return { items };
+}
+
+/** Flatten a parsed ALERT/DO item list down to the pre-Sprint-G shape
+ *  `{ msgDefault, calls }` plus a NEW `debugCalls` array (every call
+ *  named "debug", stripped out — see `compileAgentStmt`'s own hoisting
+ *  logic) so `compileAlertClause`/`compileDoClause` never need to know
+ *  about GIVEN/assignment items at all. `calls` is `'nop'` only when the
+ *  WHOLE item list was the bare `nop` sentinel, OR (new) the item list
+ *  turned out to be made ENTIRELY of `assign` items with no real calls at
+ *  all (e.g. `ALERT msg = "y"` — "msg" is just an ordinary label now, per
+ *  the operator's own revised design — with no channel list at all, this
+ *  is semantically IDENTICAL to `nop`: zero events/actions). Normalizing
+ *  both to the SAME `'nop'` sentinel means every downstream consumer
+ *  (`compileAlertClause`'s nop-shortcut, `compileAgentStmt`'s "at least
+ *  one of ALERT or DO" check) treats them identically, with no separate
+ *  "empty array" case to special-case anywhere else. `assign` items
+ *  otherwise contribute nothing here — they already did their only job
+ *  (populating `state.bindings`) as a side effect of parsing.
+ *  @returns {{ msgDefault: any, calls: 'nop' | any[], debugCalls: any[] }} */
+function _flattenClauseItems(items) {
+  if (items.length === 1 && items[0].type === 'nop') return { msgDefault: null, calls: 'nop', debugCalls: [] };
+  let msgDefault = null;
+  /** @type {any[]} */
+  const calls = [];
+  const debugCalls = [];
+  for (const it of items) {
+    if (it.type === 'assign') continue;
+    if (it.type === 'msgDefaultCalls') msgDefault = it.msgNode;
+    for (const c of it.calls || []) {
+      if (c.name.toLowerCase() === 'debug') debugCalls.push(c);
+      else calls.push(c);
+    }
+  }
+  return { msgDefault, calls: calls.length ? calls : 'nop', debugCalls };
 }
 
 /** `meta_value := STRING | BARE_WORD` — both already resolved to one token
@@ -1960,11 +2241,30 @@ export function parseMetaClause(state) {
  *  clause never appeared at all, so the compiler never needs to know
  *  "omitted" from "explicit nop" as a separate case. */
 export function parseAgentStmt(state) {
+  // GIVEN — Sprint G's new optional preamble, ALWAYS first (before WHEN/
+  // ALERT/DO, all three still independently optional exactly as before).
+  // Its OWN item list only ever accepts label assignments and `debug(...)`
+  // sugar calls — any other call is a clear parse-time error naming the
+  // offender, rather than a confusing "unknown channel/action" later.
+  const debugCalls = [];
+  if (_wordIs(_peek(state), 'given')) {
+    _advance(state);
+    const { items } = parseItemListClause(state, { allowMsgDefault: false, allowNop: false });
+    for (const it of items) {
+      if (it.type === 'assign') continue;
+      for (const c of it.calls || []) {
+        if (c.name.toLowerCase() === 'debug') debugCalls.push(c);
+        else throw new _ParseError(`GIVEN only accepts label assignments and debug(...) — '${c.name}' is not valid here`, { start: c.start });
+      }
+    }
+  }
   // WHEN itself is now optional (per operator instruction — an alert/action
   // should be placeable with no condition at all). Omitting it means the
   // same thing as writing it as `always` explicitly — both produce the
   // identical `{ type: 'always' }` AST node, so compileCondition/the rest
   // of this function never need to know "omitted" from "explicit always".
+  // WHEN only ever READS labels bound above (in GIVEN) — it never writes
+  // one itself (see `parseLeaf`'s bare-ref branch).
   let condition;
   if (_wordIs(_peek(state), 'when')) {
     _advance(state);
@@ -1984,13 +2284,18 @@ export function parseAgentStmt(state) {
     const tok = _peek(state);
     if (!sawAlert && _wordIs(tok, 'alert')) {
       _advance(state);
-      const body = parseAlertClauseBody(state);
-      alertCalls = body.calls;
-      alertMsg = body.msgDefault;
+      const { items } = parseItemListClause(state, { allowMsgDefault: true });
+      const flat = _flattenClauseItems(items);
+      alertCalls = flat.calls;
+      alertMsg = flat.msgDefault;
+      debugCalls.push(...flat.debugCalls);
       sawAlert = true;
     } else if (!sawDo && _wordIs(tok, 'do')) {
       _advance(state);
-      doCalls = parseClauseBody(state);
+      const { items } = parseItemListClause(state, { allowMsgDefault: false });
+      const flat = _flattenClauseItems(items);
+      doCalls = flat.calls;
+      debugCalls.push(...flat.debugCalls);
       sawDo = true;
     } else {
       break;
@@ -1999,7 +2304,13 @@ export function parseAgentStmt(state) {
   // meta_item* — trailing-only, parsed AFTER the tail loop above completes.
   // See `parseMetaClause`'s own docstring for why no pre-pass is needed.
   const meta = parseMetaClause(state);
-  return { kind: 'agent', condition, alertCalls, alertMsg, doCalls, meta };
+  // Sprint G — `bindings` is the ORDERED list of every label bound
+  // anywhere in this statement (GIVEN/ALERT/DO), for `compileAgentStmt`'s
+  // collision check against real catalog names; `debugCalls` is every
+  // `debug(...)` call encountered anywhere (GIVEN/ALERT/DO), in textual
+  // order, HOISTED out of `alertCalls`/`doCalls` so neither compiler needs
+  // to know about it — see `compileAgentStmt`'s own hoisting comment.
+  return { kind: 'agent', condition, alertCalls, alertMsg, doCalls, meta, debugCalls, bindings: state.allBindings || [] };
 }
 
 /** `match_value := "[" object_literal ("," object_literal)* "]"` — Sprint
@@ -2241,8 +2552,14 @@ export function parseStatement(text) {
     const evThird = firstIsAlert ? state.tokens[state.pos + 2] : null;
     const isEventStmt = firstIsAlert && evSecond && evSecond.type === 'NAME' && !evSecond.hasCall
       && _EVENT_META_KEYS.has(evSecond.value.toLowerCase()) && evThird && evThird.type === 'EQ';
+    // Sprint G — a leading `GIVEN` also dispatches to `parseAgentStmt`
+    // (GIVEN is agent_stmt-ONLY — `event_stmt`/`order_stmt`/`bracket_stmt`/
+    // `token_stmt` never accept it; writing `GIVEN ...` in front of any of
+    // those falls through to `parseOrderStmt`, which rejects the leading
+    // `GIVEN` call-list item the same way it rejects any non-order(...)
+    // call today).
     const isAgentStmt = !isEventStmt && first.type === 'NAME' && !first.hasCall
-      && (_wordIs(first, 'when') || _wordIs(first, 'alert') || _wordIs(first, 'do'));
+      && (_wordIs(first, 'when') || _wordIs(first, 'alert') || _wordIs(first, 'do') || _wordIs(first, 'given'));
     const isBracketStmt = !isEventStmt && !isAgentStmt && first.type === 'NAME' && first.hasCall && _wordIs(first, 'bracket');
     const isTokenStmt = !isEventStmt && !isAgentStmt && !isBracketStmt && first.type === 'NAME' && first.hasCall && _wordIs(first, 'token');
     const ast = isEventStmt ? parseEventStmt(state)
@@ -2580,8 +2897,20 @@ function _resolveScopeString(scopeNode, catalog, errors) {
 // `orders.any_acct`, and the `positions.expiring_today` row family; NOT
 // `positions.total`/`funds.*`/summary scopes, which have no single
 // exchange to filter on).
-const _QUALIFIER_COLUMN_NAME = Object.freeze({ account: 'account_id', symbol: 'symbol', exchange: 'exchange' });
-const _QUALIFIER_COLUMN_NAME_REVERSE = Object.freeze({ account_id: 'account', symbol: 'symbol', exchange: 'exchange' });
+// Sprint G (Task 4) — `kind:` (the new `symbols.*` family — watchlist/
+// gainers/losers/pinned) and `underlying:` (`positions.*` — free-text
+// symbol name) extend this SAME scope_filter mechanism (Sprint 19,
+// commit 1a904a12) — a small, mechanical whitelist addition, not a new
+// qualifier-parsing path. Both compile to a leaf-level `scope_filter`
+// dict exactly like `account:`/`symbol:`/`exchange:` already do; neither
+// gets its own uppercase-normalization rule (that's `exchange:`-specific,
+// per the real backend's uppercase-only `exchange` column convention).
+const _QUALIFIER_COLUMN_NAME = Object.freeze({
+  account: 'account_id', symbol: 'symbol', exchange: 'exchange', kind: 'kind', underlying: 'underlying',
+});
+const _QUALIFIER_COLUMN_NAME_REVERSE = Object.freeze({
+  account_id: 'account', symbol: 'symbol', exchange: 'exchange', kind: 'kind', underlying: 'underlying',
+});
 
 // family -> qualifier key -> existing scope token "worst" aliases onto.
 // Deliberately sparse — e.g. `funds` has no `worst_acct` token today (see
@@ -2691,7 +3020,7 @@ function _resolveScopeRefFull(scopeNode, catalog, errors) {
     const qualKey = q.key.toLowerCase();
     const column = _QUALIFIER_COLUMN_NAME[qualKey];
     if (!column) {
-      errors.push(_err(`unknown scope qualifier '${q.key}:' — only 'account:'/'symbol:'/'exchange:' are supported`));
+      errors.push(_err(`unknown scope qualifier '${q.key}:' — only 'account:'/'symbol:'/'exchange:'/'kind:'/'underlying:' are supported`));
       return null;
     }
     const colKey = `${effectiveBaseScope}.${column}`.toLowerCase();
@@ -2979,6 +3308,24 @@ function _resolveDotAccess(segments, catalog, errors) {
       + `(e.g. '${full}.pnl'), or use "metric@${full}" syntax`
     ));
     return null;
+  }
+  // Sprint G (Task 3) — `funds.cash`/`funds.margin` are column-alias
+  // shortcuts for the real `cash`/`avail_margin` metrics, bound to
+  // `funds.total` (the aggregate, operator-facing default) — NOT a new
+  // scope root (operator's explicit "do NOT split funds into separate
+  // cash/margin scope roots" instruction; reuses Sprint 15's exposed-
+  // column registry MECHANISM, not a literal new column row). Checked
+  // here, before the generic scope-prefix resolution below, since the
+  // literal 2-segment spelling `funds.cash` has no scope token of its
+  // own at all (only `funds.total`/`funds.any_acct` do) — the generic
+  // path below would otherwise fail with "unknown scope 'funds'" before
+  // ever reaching a column/metric lookup.
+  if (parts.length === 2 && parts[0] === 'funds' && _FUNDS_COLUMN_ALIASES[parts[1]]) {
+    const base = catalog.scopes.get('funds.total');
+    const aliasedMetric = base && catalog.metrics.get(_FUNDS_COLUMN_ALIASES[parts[1]]);
+    if (base && aliasedMetric && !aliasedMetric.isFragmentRef) {
+      return { metricStr: aliasedMetric.token, scopeStr: base.token, valueType: aliasedMetric.valueType };
+    }
   }
   if (parts.length < 2) {
     const other = _describeKind(parts[0], catalog);
@@ -3771,11 +4118,43 @@ function compileDoClause(doCalls, catalog, opts, rowRefCtx) {
       if (!r.errors.length) actions.push({ type: 'place_order', params: r.params });
       continue;
     }
+    if (lookupName === 'emit_log') {
+      const r = _compileEmitLogActionParams(call, entry, rowRefCtx);
+      errors.push(...r.errors);
+      if (!r.errors.length) actions.push({ type: 'emit_log', params: r.params });
+      continue;
+    }
     const r = _compileGenericActionParams(call, entry, rowRefCtx);
     errors.push(...r.errors);
     if (!r.errors.length) actions.push({ type: entry.token, params: r.params });
   }
   return { actions: errors.length ? null : actions, errors };
+}
+
+/** `emit_log(...)` — hand-typed only (the `debug(x)` sugar bypasses this
+ *  entirely, see `_compileDebugCall`'s own header comment for why). The
+ *  live catalog's declared `level` enum (`agent_grammar.yaml`) is
+ *  `[info, warning, error]` — it doesn't list `debug`, even though the
+ *  Python handler accepts it unconditionally (`getattr(logger, level,
+ *  logger.info)`). Strip `level=debug` out before the ordinary generic
+ *  enum-validated path runs, then reattach it afterwards — this is the
+ *  ONE field/value this sprint special-cases, so a hand-typed
+ *  `emit_log(level=debug, message="...")` (not written via the
+ *  `debug(x)` sugar) also compiles, and `decompileActions`' generic
+ *  rendering of a `debug(x)`-compiled action that falls back to the
+ *  plain `emit_log(...)` form (see that function's own comment) recompiles
+ *  cleanly too. Every OTHER field/value still goes through the real
+ *  catalog schema unchanged. */
+function _compileEmitLogActionParams(call, entry, rowRefCtx) {
+  const levelArg = (call.args || []).find((a) => a.key && a.key.toLowerCase() === 'level');
+  const isDebugLevel = levelArg && levelArg.value
+    && (levelArg.value.type === 'name' || levelArg.value.type === 'string')
+    && String(levelArg.value.value).toLowerCase() === 'debug';
+  if (!isDebugLevel) return _compileGenericActionParams(call, entry, rowRefCtx);
+  const strippedCall = { ...call, args: (call.args || []).filter((a) => a !== levelArg) };
+  const r = _compileGenericActionParams(strippedCall, entry, rowRefCtx);
+  if (r.errors.length) return r;
+  return { params: { ...r.params, level: 'debug' }, errors: [] };
 }
 
 // ── Meta clause (Sprint 7) — `#name=`/`#desc=`/`#tag=`/`#group=`. GENERIC,
@@ -3821,11 +4200,204 @@ export function compileMetaClause(metaItems, errors) {
   return out;
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// Sprint G — compile-time label-binding support (substitution, collision
+// checks, and `debug(...)` → `emit_log` compilation).
+// ═══════════════════════════════════════════════════════════════════════
+
+// Words a label may never be bound to, beyond `_RESERVED`/'debug'/'result'
+// (already rejected at PARSE time by `_registerBinding`) — these need the
+// live `catalog` to check, so they're COMPILE-time-only.
+const _LABEL_BLOCKED_WORDS = Object.freeze(new Set(['given']));
+
+/** Every word a scope-chain's FIRST segment could mean — every real
+ *  family name (`positions`/`holdings`/`funds`/`watchlist`) AND every
+ *  short alias for one (`pos`/`hld`/`hold`/`fnd`/`wl`) — used only for
+ *  the label-collision check below; `_scopeFamilyAliasOf` itself (parse-
+ *  side resolution) is untouched. */
+function _allScopeFamilyWords() {
+  const words = new Set(Object.keys(SCOPE_FAMILY_ALIASES));
+  for (const alias of Object.keys(_SCOPE_ALIAS_TO_REAL)) words.add(alias);
+  return words;
+}
+
+/** Reject any bound label that collides with a real, live catalog name —
+ *  a metric/scope/channel/action token, an exposed column's bare name
+ *  (the SAME vocabulary `$row` binding already reserves — see
+ *  `_allExposedColumnNames`), or a scope-family name/alias. Parse-time
+ *  already rejected reserved words / rebinding (`_registerBinding`); this
+ *  is the half that NEEDS the live catalog, so it only ever runs here, at
+ *  compile time. */
+function _checkLabelCollisions(bindings, catalog) {
+  const errors = [];
+  if (!bindings || !bindings.length) return errors;
+  const exposedCols = _allExposedColumnNames(catalog);
+  const scopeWords = _allScopeFamilyWords();
+  for (const b of bindings) {
+    const lower = b.label.toLowerCase();
+    if (_LABEL_BLOCKED_WORDS.has(lower)) {
+      errors.push(_err(`label '${b.label}' is a reserved word in this grammar and cannot be used as a label`));
+    } else if (catalog.metrics.has(lower) || catalog.scopes.has(lower) || catalog.channels.has(lower) || catalog.actions.has(lower)) {
+      errors.push(_err(`label '${b.label}' collides with an existing token name — choose a different label`));
+    } else if (exposedCols.has(lower)) {
+      errors.push(_err(`label '${b.label}' collides with an exposed column name — choose a different label`));
+    } else if (scopeWords.has(lower)) {
+      errors.push(_err(`label '${b.label}' collides with a scope-family name/alias — choose a different label`));
+    }
+  }
+  return errors;
+}
+
+/** Compile-time half of the label-binding substitution for ArgEntry
+ *  VALUE positions (an action/channel call's own `key=value` args) — the
+ *  mirror of `parseLeaf`'s PARSE-time splice for CONDITION positions.
+ *  Can't run at parse time: every call's `args` are already parsed into
+ *  ArgEntry[] at LEX time, before any binding exists — so instead, each
+ *  CallNode carries its own `_bindingsAt` snapshot (set by `parseCall`,
+ *  the bindings visible AT THAT CALL'S OWN POSITION in the source,
+ *  enforcing left-to-right visibility / no forward reference) which this
+ *  function consults. `debug(...)`'s own sole argument is EXPLICITLY
+ *  skipped here — it's resolved separately by `_compileDebugCall`, which
+ *  needs the full `catalog` to format a condition-kind binding, not just
+ *  a value swap. A bare NAME matching no binding at all is untouched,
+ *  falling through to the EXISTING `_resolveRowRefOrNull`/
+ *  `_coerceValueForSpec` path unchanged — true no-op for every pre-
+ *  Sprint-G statement (no GIVEN/assignment anywhere → `_bindingsAt` is
+ *  always `undefined`). */
+function _substituteBoundArgs(call, errors) {
+  const bindings = call._bindingsAt;
+  if (!bindings || !bindings.size || !call.args || !call.args.length) return call;
+  if (call.name.toLowerCase() === 'debug') return call;
+  let changed = false;
+  const newArgs = call.args.map((arg) => {
+    if (!arg.value || arg.value.type !== 'name') return arg;
+    const bound = bindings.get(String(arg.value.value).toLowerCase());
+    if (!bound) return arg;
+    if (bound.rhsKind === 'condition') {
+      errors.push(_err(`label '${arg.value.value}' is bound to a condition — only usable in WHEN or debug(...)`, arg.value));
+      return arg;
+    }
+    changed = true;
+    return { ...arg, value: _cloneAstNode(bound.rhsNode) };
+  });
+  return changed ? { ...call, args: newArgs } : call;
+}
+
+function _substituteBoundArgsInCalls(calls, errors) {
+  if (!Array.isArray(calls)) return calls;
+  return calls.map((c) => _substituteBoundArgs(c, errors));
+}
+
+/** `debug(x)`'s own auto-format rule: a PRIMITIVE binding (or literal)
+ *  renders as its plain value — no JSON-stringify ceremony for a single
+ *  number/string/bare-word. A `list` ValueNode (the one other `value`
+ *  shape) renders as its JSON array — there's no "plain" text form for a
+ *  list. */
+function _debugFormatValueNode(node) {
+  if (!node) return '';
+  if (node.type === 'number') return String(node.value);
+  if (node.type === 'string' || node.type === 'name') return String(node.value);
+  if (node.type === 'list') return JSON.stringify(node.value.map((v) => v.value));
+  return JSON.stringify(node);
+}
+
+/** Compile one `debug(x)` call (found in GIVEN, ALERT, or DO — all
+ *  hoisted into `ast.debugCalls` by the parser) to a real `emit_log`
+ *  action — `{"type":"emit_log","params":{"level":"debug","message":...}}`.
+ *  Built DIRECTLY (bypassing `catalog.actions.get('emit_log')`'s own
+ *  declared `params_schema` entirely) rather than through the generic
+ *  `_compileGenericActionParams` path, for two confirmed reasons:
+ *    1. The live catalog's `emit_log.level` enum (`agent_grammar.yaml`)
+ *       is `[info, warning, error]` — it does not list `debug` (the
+ *       Python HANDLER already accepts it unconditionally via
+ *       `getattr(logger, level, logger.info)`, but the DECLARED enum
+ *       does not; flagged for the backend agent to add 'debug' to that
+ *       enum for documentation/consistency — see this sprint's handback
+ *       report). Going through the generic enum-coercion path would
+ *       reject `level: "debug"` outright.
+ *    2. `message`'s declared type is `string` with `token_ref_ok: true`,
+ *       but `backend/api/algo/actions.py:_is_expr_eligible_param`
+ *       deliberately restricts expression-string resolution to `type in
+ *       (number, boolean)` ONLY — `token_ref_ok` on a `string` field is a
+ *       no-op server-side (by design, to keep fields like account/symbol
+ *       safe even if one of them ever carried a stale `token_ref_ok`
+ *       flag). There is therefore NO existing mechanism that resolves an
+ *       arbitrary metric@scope/condition expression into live message
+ *       TEXT at action-dispatch time — only `resolve_row_ref_params`'s
+ *       `{"$row": "<name>"}` marker (Sprint 16, ANY param type) genuinely
+ *       resolves to a LIVE value at execution time. So:
+ *       - a GIVEN-bound PRIMITIVE label (or a literal) formats to a
+ *         plain STATIC string at COMPILE time (`_debugFormatValueNode`)
+ *         — fully known already, no runtime resolution needed.
+ *       - a GIVEN-bound CONDITION label formats to the JSON-stringified
+ *         COMPILED condition dict (`compileCondition`) — a static
+ *         DESCRIPTION of what's being checked, not its live truth value
+ *         (there is no backend mechanism to re-evaluate an arbitrary sub-
+ *         condition at action-dispatch time and splice its boolean result
+ *         into a log message) — consistent with `emit_log`'s own catalog
+ *         description ("quiet action for testing agent wiring").
+ *       - a bare NAME matching neither falls back to the EXISTING,
+ *         genuinely-live `{"$row": name}` marker when it's a real
+ *         exposed-row-column name (Sprint 16) — the ONE case this
+ *         compiles to an honestly-live runtime value, via a mechanism
+ *         that already exists server-side today.
+ *       - anything else (an unbound, non-exposed-column bare word) is a
+ *         compile-time error.
+ *       KNOWN LIMITATION, operator-accepted 2026-10-11 (Sprint G): only
+ *       the `{"$row": name}` case above shows a genuinely live value.
+ *       `debug()` on a GIVEN-bound metric/condition label is closer to
+ *       "here's what's being checked" than "here's what it actually is
+ *       right now" — accepted as-is rather than widening the backend's
+ *       deliberate `token_ref_ok` type restriction (a real safety
+ *       boundary, not an oversight) to chase live-value inspection for
+ *       every label shape. */
+function _compileDebugCall(call, bindings, catalog) {
+  const errors = [];
+  const arg = (call.args || [])[0];
+  if (!call.args || call.args.length !== 1 || !arg || arg.value.type !== 'name') {
+    errors.push(_err('debug(...) takes exactly one argument — a label or token reference name', { start: call.start }));
+    return { action: null, errors };
+  }
+  const refName = arg.value.value;
+  const lower = String(refName).toLowerCase();
+  const bound = bindings && bindings.get(lower);
+  if (bound) {
+    let message;
+    if (bound.rhsKind === 'value') {
+      message = _debugFormatValueNode(bound.rhsNode);
+    } else {
+      const compiled = compileCondition(bound.rhsNode, catalog);
+      if (compiled.errors.length) {
+        errors.push(...compiled.errors);
+        return { action: null, errors };
+      }
+      message = JSON.stringify(compiled.conditions);
+    }
+    return { action: { type: 'emit_log', params: { level: 'debug', message } }, errors };
+  }
+  if (_allExposedColumnNames(catalog).has(lower)) {
+    return { action: { type: 'emit_log', params: { level: 'debug', message: { '$row': lower } } }, errors };
+  }
+  errors.push(_err(`debug(${refName}): '${refName}' is not a bound label (GIVEN/ALERT/DO) or a matched-row column name`, { start: call.start }));
+  return { action: null, errors };
+}
+
 function compileAgentStmt(ast, catalog, opts) {
   const errors = [];
+  // Sprint G — bound-label collisions against real catalog names, checked
+  // once up front (pure catalog lookups, no interaction with anything
+  // else compiled below).
+  errors.push(..._checkLabelCollisions(ast.bindings, catalog));
   const condResult = compileCondition(ast.condition, catalog);
   errors.push(...condResult.errors);
-  const eventsResult = compileAlertClause(ast.alertCalls, ast.alertMsg, catalog);
+  // Sprint G — substitute any VALUE-kind bound label referenced as a
+  // plain action/channel arg value BEFORE either clause compiler ever
+  // sees these calls (a CONDITION-kind label used this way is a compile
+  // error raised by `_substituteBoundArgs` itself). True no-op for every
+  // pre-Sprint-G statement (`_bindingsAt` is `undefined` everywhere).
+  const alertCallsSubst = _substituteBoundArgsInCalls(ast.alertCalls, errors);
+  const doCallsSubst = _substituteBoundArgsInCalls(ast.doCalls, errors);
+  const eventsResult = compileAlertClause(alertCallsSubst, ast.alertMsg, catalog);
   errors.push(...eventsResult.errors);
   // Sprint 16 — matched-row ($row) binding context, built from THIS
   // statement's own compiled condition tree (every real leaf's `scope`,
@@ -3839,16 +4411,37 @@ function compileAgentStmt(ast, catalog, opts) {
     catalog, leafScopes, allExposedNames: _allExposedColumnNames(catalog),
     hasNegation: scopeState.hasNegation, hasTokenRef: scopeState.hasTokenRef,
   };
-  const actionsResult = compileDoClause(ast.doCalls, catalog, opts, rowRefCtx);
+  const actionsResult = compileDoClause(doCallsSubst, catalog, opts, rowRefCtx);
   errors.push(...actionsResult.errors);
+  // Sprint G — every `debug(...)` call hoisted out of GIVEN/ALERT/DO
+  // during parsing compiles to a real `emit_log` action, appended to the
+  // final `actions` array — this is the "needs real compiler logic, not
+  // just a grammar production" piece: a GIVEN-placed `debug(...)` has no
+  // match-gate of its own, so simply landing it in `actions` (which only
+  // ever runs on a real WHEN match, same as every other action) is what
+  // makes it "only fire when the statement's WHEN turns out true."
+  const debugActions = [];
+  for (const dCall of ast.debugCalls || []) {
+    // `dCall._bindingsAt` (not the full `bindingsMap`) — same left-to-
+    // right "no forward reference" visibility rule every other label
+    // read enforces; a `debug(x)` written BEFORE `x` is bound anywhere
+    // else in the statement must not see it.
+    const r = _compileDebugCall(dCall, dCall._bindingsAt, catalog);
+    errors.push(...r.errors);
+    if (!r.errors.length) debugActions.push(r.action);
+  }
   const metaFields = compileMetaClause(ast.meta, errors);
-  if (ast.alertCalls === 'nop' && ast.doCalls === 'nop') {
+  // A debug-only statement (no real ALERT, no real DO, but at least one
+  // `debug(...)`) DOES satisfy "at least one real ALERT/DO" — it compiles
+  // to a genuine, non-empty `actions` array.
+  if (ast.alertCalls === 'nop' && ast.doCalls === 'nop' && debugActions.length === 0) {
     errors.push(_err('an agent must have at least one of ALERT or DO'));
   }
   if (errors.length) return { kind: 'agent', errors, agent: null };
+  const actions = actionsResult.actions ? [...actionsResult.actions, ...debugActions] : debugActions;
   return {
     kind: 'agent', errors: [],
-    agent: { conditions: condResult.conditions, events: eventsResult.events, actions: actionsResult.actions, ...metaFields },
+    agent: { conditions: condResult.conditions, events: eventsResult.events, actions, ...metaFields },
   };
 }
 
@@ -5322,6 +5915,23 @@ export function decompileActions(actions, catalog, opts = {}) {
       parts.push(r.text);
       continue;
     }
+    // Sprint G — render the `debug(x)` sugar form ONLY when the ORIGINAL
+    // label/column name is actually recoverable: a `$row` marker carries
+    // its own exposed-column name verbatim, so `debug(x)` round-trips
+    // byte-for-byte. A GIVEN-bound label's value/condition is NOT
+    // recoverable (the compiled JSON only ever holds the EXPANDED literal/
+    // JSON-stringified form, by the macro's own documented design — see
+    // the GIVEN section header comment) — those fall through to the
+    // generic `emit_log(level=debug, message=...)` rendering below, same
+    // as any OTHER hand-authored `emit_log(level=debug, ...)` the operator
+    // might have typed directly without ever using the `debug(...)`
+    // sugar — there is no way to tell the two apart from stored JSON
+    // alone, and there doesn't need to be: both are equally valid, and
+    // re-saving either one is a no-op round trip.
+    if (lookupName === 'emit_log' && act.params && act.params.level === 'debug' && _isRowRefMarker(act.params.message)) {
+      parts.push(`debug(${act.params.message['$row']})`);
+      continue;
+    }
     const r = _decompileGenericAction(act.params, entry);
     if (r.error) { errors.push(_err(r.error)); continue; }
     parts.push(r.text);
@@ -5921,9 +6531,16 @@ function _clauseKindFromTokenPrefix(tokens) {
   for (const t of tokens) {
     if (t.type !== 'NAME' || !t.reserved) continue;
     const w = String(t.value).toLowerCase();
+    // Sprint G — `given` is its OWN recognized kind (not folded into the
+    // `order` fallback below) so autocomplete inside GIVEN's own item
+    // list suggests metrics/scopes (the common RHS shape — a bare value
+    // or a metric@scope condition), not action tokens. Every downstream
+    // consumer below (`_lookupAnyCatalogEntry`/`_candidateTokensForClause`/
+    // `_descMapForClause`) treats `'given'` the same as `'when'`.
     if (w === 'when') kind = 'when';
     else if (w === 'alert') kind = 'alert';
     else if (w === 'do') kind = 'do';
+    else if (w === 'given') kind = 'given';
   }
   return kind || 'order';
 }
@@ -5938,7 +6555,7 @@ function _lookupAnyCatalogEntry(name, catalog, clauseKind, scopeHint) {
   if (scopeHint) order = ['scopes', 'metrics', 'channels', 'actions'];
   else if (clauseKind === 'alert') order = ['channels', 'metrics', 'scopes', 'actions'];
   else if (clauseKind === 'do' || clauseKind === 'order') order = ['actions', 'metrics', 'scopes', 'channels'];
-  else order = ['metrics', 'scopes', 'channels', 'actions'];
+  else order = ['metrics', 'scopes', 'channels', 'actions']; // 'when' / 'given' / unknown
   for (const section of order) {
     const m = catalog[section];
     if (m && m.has(key)) return m.get(key);
@@ -5948,7 +6565,7 @@ function _lookupAnyCatalogEntry(name, catalog, clauseKind, scopeHint) {
 
 function _candidateTokensForClause(clauseKind, catalog) {
   if (!catalog) return null;
-  if (clauseKind === 'when') return [...catalog.metrics.values()].map((e) => e.token);
+  if (clauseKind === 'when' || clauseKind === 'given') return [...catalog.metrics.values()].map((e) => e.token);
   if (clauseKind === 'alert') return [...catalog.channels.values()].map((e) => e.token);
   if (clauseKind === 'do' || clauseKind === 'order') return [...catalog.actions.values()].map((e) => e.token);
   return null;
@@ -5962,7 +6579,7 @@ function _candidateTokensForClause(clauseKind, catalog) {
 function _descMapForClause(clauseKind, catalog) {
   if (!catalog) return null;
   let section;
-  if (clauseKind === 'when') section = catalog.metrics;
+  if (clauseKind === 'when' || clauseKind === 'given') section = catalog.metrics;
   else if (clauseKind === 'alert') section = catalog.channels;
   else if (clauseKind === 'do' || clauseKind === 'order') section = catalog.actions;
   else return null;
