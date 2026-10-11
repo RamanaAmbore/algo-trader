@@ -1,42 +1,48 @@
 """
-Tests for Sprint D of the Agent/Bracket/Template unification phase
+Tests for Sprint D2 of the Agent/Bracket/Template unification phase
 (Phase 2 — Console retirement, Agent/Bracket/Template unification,
 Automation redesign; see ~/.claude/plans/purrfect-marinating-pixel.md).
 
-`AgentTemplate` rows (table `agent_fragments`) are additively migrated
-into `Agent` rows with `kind='template'`. The old table/model/CRUD
-routes stay in place — this is additive only.
+Sprint D2 retired the `AgentTemplate` model, the `agent_fragments` table,
+the separate `/api/admin/fragments` CRUD route, and Sprint D's own
+transitional mirror-write/fallback-read machinery. A saved condition/
+notify sub-tree is now just an ordinary `Agent` row with `kind='template'`
+— authored/edited/deleted through the SAME unified `/api/agents/`
+endpoints every other agent kind uses.
 
 Covers:
-  1. `$ref` resolution (agent_evaluator.evaluate()) against a migrated
-     kind='template' Agent row — condition-kind fragment.
+  1. `$ref` resolution (agent_evaluator.evaluate()/validate()) against a
+     directly-created kind='template' Agent row — condition-kind.
   2. `$ref` resolution (template_registry.resolve_events()) against a
-     migrated kind='template' Agent row — notify-kind fragment.
-  3. Migration correctness — every pre-migration agent_fragments row
-     (system AND custom, both kinds) gets an equivalent post-migration
-     Agent row: kind='template', slug == name, is_system preserved,
-     body landed in the right column (conditions vs events).
+     directly-created kind='template' Agent row — notify-kind.
+  3. `seed_agent_templates()` now seeds system Templates as Agent rows
+     directly (no `AgentTemplate` table involved at all) — insert,
+     refresh-on-reseed, and the slug-collision skip guards.
   4. Regression — kind='template' rows are excluded from BOTH
      agent_engine._cycle_load_agents() (run_cycle()'s loader) and
-     event_agents.load_agents(), asserted directly rather than just
-     reasoned about from the existing positive-allowlist filters.
-  5. create_agent now accepts kind='template' without a 400 (both at
-     the _age_normalize_kind() layer and end-to-end through the real
-     handler), and still 400s on a kind outside the valid set.
-  6. _ae_prune_retired_builtins() does not delete a migrated system
-     kind='template' row even though its slug is never in
-     BUILTIN_AGENTS — the landmine this sprint's migration would hit
-     every subsequent boot without the kind!='template' guard.
-  7. The legacy /api/admin/fragments CRUD (create/update/delete) mirrors
-     into the matching Agent(kind='template') row, so $ref resolution
-     stays in sync with edits made through the old UI/route.
+     event_agents.load_agents(), asserted directly.
+  5. create_agent/update_agent accept kind='template': body-shape
+     validation (exactly one of conditions/events non-empty, events
+     entries need a 'channel' key, condition bodies run through the
+     real grammar validator), slug-format validation at create, and the
+     is_system body-lock guard at update.
+  6. _ae_prune_retired_builtins() does not delete a kind='template' row
+     even though its slug is never in BUILTIN_AGENTS.
+  7. `migrate_and_retire_agent_fragments()` — the one-time, self-
+     contained backfill-then-DROP migration: happy path (every row
+     backfills and the table drops), the fail-closed collision path
+     (table stays in place), and the already-dropped no-op path.
 
 In-process SQLite DB for isolation, mirroring the pattern already used
-by test_orders_drafts.py / test_order_events.py: redeclare lightweight
-sqlite-compatible stand-ins for `Agent` / `AgentTemplate` (the real
-models use JSONB, a Postgres-only type) and monkeypatch every module
-that imported the real classes/async_session (module-level OR lazy) to
-point at the sqlite ones for the duration of each test.
+by test_orders_drafts.py / test_order_events.py: redeclare a lightweight
+sqlite-compatible stand-in for `Agent` (the real model uses JSONB, a
+Postgres-only type) and monkeypatch every module that imported the real
+class/async_session (module-level OR lazy) to point at the sqlite one
+for the duration of each test. The legacy `agent_fragments` table (for
+the retirement-migration tests only) is created from
+`template_registry._LEGACY_FRAGMENTS_TABLE` itself — the EXACT Core
+`Table` object the migration code reads — so the test schema can never
+drift from what the migration actually expects.
 """
 from __future__ import annotations
 
@@ -51,8 +57,7 @@ from unittest.mock import patch
 
 # pytest-asyncio runs in Mode.AUTO for this suite (see pyproject.toml) —
 # async def test_* functions are auto-detected; no module-level
-# pytestmark needed (and adding one would wrongly tag the two plain sync
-# test_age_normalize_kind_* functions below too).
+# pytestmark needed.
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -61,9 +66,10 @@ from unittest.mock import patch
 
 @pytest_asyncio.fixture
 async def sqlite_env():
-    """Builds sqlite-compatible Agent/AgentTemplate tables, monkeypatches
-    every module-level AND lazy reference to the real classes/
-    async_session, and yields (session_factory, AgentModel, AgentTemplateModel).
+    """Builds a sqlite-compatible `agents` table (+ the legacy
+    `agent_fragments` table, for the retirement-migration tests),
+    monkeypatches every module-level AND lazy reference to the real
+    `Agent`/`async_session`, and yields `(session_factory, AgentModel)`.
     Reverses all patches on teardown."""
     from sqlalchemy import Column, Integer, String, Text, Boolean, JSON, DateTime
     from sqlalchemy.orm import DeclarativeBase
@@ -112,39 +118,22 @@ async def sqlite_env():
         updated_at           = Column(DateTime, nullable=False,
                                        default=lambda: datetime.now(timezone.utc))
 
-    class _AgentTemplate(_Base):
-        __tablename__ = "agent_fragments"
-        id           = Column(Integer, primary_key=True, autoincrement=True)
-        kind         = Column(String(16), nullable=False)
-        name         = Column(String(128), nullable=False)
-        body         = Column(JSON, nullable=False)
-        description  = Column(Text, nullable=False, default="")
-        is_system    = Column(Boolean, nullable=False, default=False)
-        is_active    = Column(Boolean, nullable=False, default=True)
-        created_at   = Column(DateTime, nullable=False,
-                               default=lambda: datetime.now(timezone.utc))
-        updated_at   = Column(DateTime, nullable=False,
-                               default=lambda: datetime.now(timezone.utc))
-
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
     async with engine.begin() as conn:
         await conn.run_sync(_Base.metadata.create_all)
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    factory._test_engine = engine   # stashed for legacy_fragments_table below
 
     import backend.api.models as _models
     import backend.api.database as _database
     import backend.api.routes.agents as _agents_route
-    import backend.api.routes.agent_templates as _agent_templates_route
     import backend.api.algo.agent_engine as _agent_engine
 
     patches = [
         patch.object(_models, "Agent", _Agent),
-        patch.object(_models, "AgentTemplate", _AgentTemplate),
         patch.object(_database, "async_session", factory),
         patch.object(_agents_route, "Agent", _Agent),
         patch.object(_agents_route, "async_session", factory),
-        patch.object(_agent_templates_route, "AgentTemplate", _AgentTemplate),
-        patch.object(_agent_templates_route, "async_session", factory),
         patch.object(_agent_engine, "Agent", _Agent),
         patch.object(_agent_engine, "async_session", factory),
     ]
@@ -152,13 +141,30 @@ async def sqlite_env():
         p.start()
 
     try:
-        yield factory, _Agent, _AgentTemplate
+        yield factory, _Agent
     finally:
         for p in patches:
             p.stop()
         async with engine.begin() as conn:
             await conn.run_sync(_Base.metadata.drop_all)
         await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def legacy_fragments_table(sqlite_env):
+    """Creates the legacy `agent_fragments` table on the SAME sqlite
+    engine `sqlite_env` already built, using the EXACT `Table` object
+    `migrate_and_retire_agent_fragments()` reads from — so the test
+    schema can never drift from what the migration code expects."""
+    factory, _Agent = sqlite_env
+    from backend.api.algo.template_registry import _LEGACY_FRAGMENTS_TABLE
+
+    engine = factory._test_engine
+    async with engine.begin() as conn:
+        await conn.run_sync(_LEGACY_FRAGMENTS_TABLE.metadata.create_all)
+    yield factory, _Agent, _LEGACY_FRAGMENTS_TABLE
+    async with engine.begin() as conn:
+        await conn.run_sync(_LEGACY_FRAGMENTS_TABLE.metadata.drop_all)
 
 
 @pytest.fixture(autouse=True)
@@ -184,143 +190,127 @@ def _ctx_pnl(pnl: float):
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 1-2 — $ref resolution against migrated rows
+# 1-2 — $ref resolution against a directly-created kind='template' row
 # ═══════════════════════════════════════════════════════════════════════
 
-async def test_ref_resolution_condition_kind_against_migrated_row(sqlite_env):
-    factory, _Agent, _AgentTemplate = sqlite_env
-    from backend.api.algo.template_registry import (
-        migrate_fragments_to_template_agents, REGISTRY,
-    )
+async def test_ref_resolution_condition_kind_against_template_agent(sqlite_env):
+    factory, _Agent = sqlite_env
+    from backend.api.algo.template_registry import REGISTRY
     from backend.api.algo.agent_evaluator import evaluate
 
     async with factory() as s:
-        s.add(_AgentTemplate(
-            kind="condition", name="loss-total-migrated",
-            body={"metric": "pnl", "scope": "positions.total",
-                  "op": "<=", "value": -50000},
-            description="", is_system=False, is_active=True,
+        s.add(_Agent(
+            slug="loss-total-direct", name="loss-total-direct", kind="template",
+            is_system=False, status="active",
+            conditions={"metric": "pnl", "scope": "positions.total",
+                        "op": "<=", "value": -50000},
+            events=[], actions=[],
         ))
         await s.commit()
 
-    await migrate_fragments_to_template_agents()
     await REGISTRY.reload()
 
-    matches = evaluate({"$ref": "loss-total-migrated"}, _ctx_pnl(-60000))
+    matches = evaluate({"$ref": "loss-total-direct"}, _ctx_pnl(-60000))
     assert len(matches) == 1
     assert matches[0]["value"] == -60000
 
     # Below threshold — must not fire.
-    assert evaluate({"$ref": "loss-total-migrated"}, _ctx_pnl(-10000)) == []
+    assert evaluate({"$ref": "loss-total-direct"}, _ctx_pnl(-10000)) == []
 
 
-async def test_ref_resolution_notify_kind_against_migrated_row(sqlite_env):
-    factory, _Agent, _AgentTemplate = sqlite_env
-    from backend.api.algo.template_registry import (
-        migrate_fragments_to_template_agents, REGISTRY, resolve_events,
-    )
+async def test_ref_resolution_notify_kind_against_template_agent(sqlite_env):
+    factory, _Agent = sqlite_env
+    from backend.api.algo.template_registry import REGISTRY, resolve_events
 
     async with factory() as s:
-        s.add(_AgentTemplate(
-            kind="notify", name="notify-trio-migrated",
-            body=[
+        s.add(_Agent(
+            slug="notify-trio-direct", name="notify-trio-direct", kind="template",
+            is_system=False, status="active", conditions={},
+            events=[
                 {"channel": "telegram", "enabled": True},
                 {"channel": "email", "enabled": True},
             ],
-            description="", is_system=False, is_active=True,
+            actions=[],
         ))
         await s.commit()
 
-    await migrate_fragments_to_template_agents()
     await REGISTRY.reload()
 
-    out = resolve_events([{"$ref": "notify-trio-migrated"}])
+    out = resolve_events([{"$ref": "notify-trio-direct"}])
     assert [c["channel"] for c in out] == ["telegram", "email"]
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 3 — migration correctness
+# 3 — seed_agent_templates() writes directly to Agent rows
 # ═══════════════════════════════════════════════════════════════════════
 
-async def test_migration_covers_every_fragment_row_system_and_custom(sqlite_env):
-    factory, _Agent, _AgentTemplate = sqlite_env
+async def test_seed_agent_templates_inserts_system_rows_directly(sqlite_env):
+    factory, _Agent = sqlite_env
     from sqlalchemy import select
-    from backend.api.algo.template_registry import migrate_fragments_to_template_agents
+    from backend.api.algo.template_registry import seed_agent_templates, SYSTEM_AGENT_TEMPLATES
 
-    async with factory() as s:
-        s.add(_AgentTemplate(
-            kind="notify", name="sys-notify", body=[{"channel": "log", "enabled": True}],
-            description="d1", is_system=True, is_active=True,
-        ))
-        s.add(_AgentTemplate(
-            kind="condition", name="sys-condition",
-            body={"metric": "pnl", "scope": "positions.total", "op": "<=", "value": -1},
-            description="d2", is_system=True, is_active=True,
-        ))
-        s.add(_AgentTemplate(
-            kind="notify", name="custom-notify", body=[{"channel": "telegram", "enabled": True}],
-            description="d3", is_system=False, is_active=True,
-        ))
-        s.add(_AgentTemplate(
-            kind="condition", name="custom-condition",
-            body={"metric": "pnl", "scope": "positions.total", "op": "<=", "value": -2},
-            description="d4", is_system=False, is_active=False,
-        ))
-        await s.commit()
-
-    await migrate_fragments_to_template_agents()
+    await seed_agent_templates()
 
     async with factory() as s:
         rows = (await s.execute(select(_Agent).where(_Agent.kind == "template"))).scalars().all()
     by_slug = {r.slug: r for r in rows}
 
-    assert set(by_slug) == {"sys-notify", "sys-condition", "custom-notify", "custom-condition"}
-
-    assert by_slug["sys-notify"].is_system is True
-    assert by_slug["sys-notify"].events == [{"channel": "log", "enabled": True}]
-    assert by_slug["sys-notify"].conditions == {}
-
-    assert by_slug["sys-condition"].is_system is True
-    assert by_slug["sys-condition"].conditions == {
-        "metric": "pnl", "scope": "positions.total", "op": "<=", "value": -1,
-    }
-    assert by_slug["sys-condition"].events == []
-
-    assert by_slug["custom-notify"].is_system is False
-    assert by_slug["custom-notify"].status == "active"
-
-    assert by_slug["custom-condition"].is_system is False
-    assert by_slug["custom-condition"].status == "inactive"   # is_active=False mapped
+    assert set(by_slug) == {spec["name"] for spec in SYSTEM_AGENT_TEMPLATES}
+    for spec in SYSTEM_AGENT_TEMPLATES:
+        row = by_slug[spec["name"]]
+        assert row.is_system is True
+        if spec["kind"] == "notify":
+            assert row.events == spec["body"]
+            assert row.conditions == {}
+        else:
+            assert row.conditions == spec["body"]
+            assert row.events == []
 
 
-async def test_migration_is_idempotent_and_preserves_custom_edits(sqlite_env):
-    """Re-running the backfill must not clobber an operator's independent
-    edit to an already-migrated CUSTOM Agent row (force=False semantics)."""
-    factory, _Agent, _AgentTemplate = sqlite_env
+async def test_seed_agent_templates_refreshes_existing_system_row_body(sqlite_env):
+    """Re-seeding must overwrite a system row's body/description from
+    code (operators clone to a custom template for a permanent change)."""
+    factory, _Agent = sqlite_env
     from sqlalchemy import select
-    from backend.api.algo.template_registry import migrate_fragments_to_template_agents
+    from backend.api.algo.template_registry import seed_agent_templates
+
+    await seed_agent_templates()
 
     async with factory() as s:
-        s.add(_AgentTemplate(
-            kind="notify", name="custom-stable", body=[{"channel": "log", "enabled": True}],
-            description="", is_system=False, is_active=True,
+        row = (await s.execute(
+            select(_Agent).where(_Agent.slug == "notify-log-only")
+        )).scalar_one()
+        row.events = [{"channel": "telegram", "enabled": True}]  # operator "edit"
+        await s.commit()
+
+    await seed_agent_templates()   # re-seed — must overwrite back
+
+    async with factory() as s:
+        row = (await s.execute(
+            select(_Agent).where(_Agent.slug == "notify-log-only")
+        )).scalar_one()
+        assert row.events == [{"channel": "log", "enabled": True}]
+
+
+async def test_seed_agent_templates_skips_slug_owned_by_non_template_agent(sqlite_env):
+    factory, _Agent = sqlite_env
+    from sqlalchemy import select
+    from backend.api.algo.template_registry import seed_agent_templates
+
+    async with factory() as s:
+        s.add(_Agent(
+            slug="notify-log-only", name="A real cycle agent", kind="cycle",
+            is_system=False, status="active", conditions={}, events=[], actions=[],
         ))
         await s.commit()
 
-    await migrate_fragments_to_template_agents()
-
-    # Operator edits the mirrored Agent row directly (e.g. Sprint C UI).
-    async with factory() as s:
-        row = (await s.execute(select(_Agent).where(_Agent.slug == "custom-stable"))).scalar_one()
-        row.events = [{"channel": "telegram", "enabled": True}]
-        await s.commit()
-
-    # Re-run the backfill — must NOT overwrite the operator's edit.
-    await migrate_fragments_to_template_agents()
+    await seed_agent_templates()   # must not raise, must not clobber the cycle row
 
     async with factory() as s:
-        row = (await s.execute(select(_Agent).where(_Agent.slug == "custom-stable"))).scalar_one()
-        assert row.events == [{"channel": "telegram", "enabled": True}]
+        row = (await s.execute(
+            select(_Agent).where(_Agent.slug == "notify-log-only")
+        )).scalar_one()
+        assert row.kind == "cycle"   # untouched
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -328,7 +318,7 @@ async def test_migration_is_idempotent_and_preserves_custom_edits(sqlite_env):
 # ═══════════════════════════════════════════════════════════════════════
 
 async def test_cycle_loader_excludes_template_rows(sqlite_env):
-    factory, _Agent, _AgentTemplate = sqlite_env
+    factory, _Agent = sqlite_env
     from backend.api.algo.agent_engine import _cycle_load_agents
 
     async with factory() as s:
@@ -346,7 +336,7 @@ async def test_cycle_loader_excludes_template_rows(sqlite_env):
 
 
 async def test_event_loader_excludes_template_rows(sqlite_env):
-    factory, _Agent, _AgentTemplate = sqlite_env
+    factory, _Agent = sqlite_env
     from backend.api.algo import event_agents
 
     async with factory() as s:
@@ -365,7 +355,7 @@ async def test_event_loader_excludes_template_rows(sqlite_env):
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 5 — create_agent accepts kind='template'; still 400s outside the set
+# 5 — create_agent/update_agent validation + guards for kind='template'
 # ═══════════════════════════════════════════════════════════════════════
 
 def test_age_normalize_kind_accepts_template():
@@ -385,13 +375,14 @@ def test_age_normalize_kind_rejects_unknown():
 
 
 async def test_create_agent_persists_template_kind_end_to_end(sqlite_env):
-    factory, _Agent, _AgentTemplate = sqlite_env
+    factory, _Agent = sqlite_env
     from sqlalchemy import select
     from backend.api.routes.agents import AgentController, AgentCreateRequest
 
     controller = AgentController.__new__(AgentController)
     data = AgentCreateRequest(
-        slug="cli-template-1", name="CLI template", conditions={}, events=[],
+        slug="cli-template-1", name="CLI template", conditions={},
+        events=[{"channel": "telegram", "enabled": True}],
         actions=[], kind="template",
     )
     result = await AgentController.create_agent.fn(controller, data)
@@ -402,20 +393,121 @@ async def test_create_agent_persists_template_kind_end_to_end(sqlite_env):
         assert row.kind == "template"
 
     # Immediately $ref-resolvable without a restart (reload() triggered
-    # by create_agent's own kind=='template' branch) — notify-shaped
-    # content here since `events` was non-empty... Actually this row's
-    # events/conditions are both empty (alert-only placeholder); confirm
-    # the reload call itself didn't raise rather than asserting content.
+    # by create_agent's own kind=='template' branch).
     from backend.api.algo.template_registry import REGISTRY
-    assert isinstance(REGISTRY._cache, dict)
+    assert REGISTRY.get("notify", "cli-template-1") == [{"channel": "telegram", "enabled": True}]
+
+
+async def test_create_agent_rejects_both_conditions_and_events_for_template(sqlite_env):
+    from litestar.exceptions import HTTPException
+    from backend.api.routes.agents import AgentController, AgentCreateRequest
+
+    controller = AgentController.__new__(AgentController)
+    data = AgentCreateRequest(
+        slug="both-bodies", name="Both bodies",
+        conditions={"metric": "pnl", "scope": "positions.total", "op": "<=", "value": -1},
+        events=[{"channel": "log", "enabled": True}],
+        actions=[], kind="template",
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        await AgentController.create_agent.fn(controller, data)
+    assert exc_info.value.status_code == 400
+
+
+async def test_create_agent_rejects_empty_body_for_template(sqlite_env):
+    from litestar.exceptions import HTTPException
+    from backend.api.routes.agents import AgentController, AgentCreateRequest
+
+    controller = AgentController.__new__(AgentController)
+    data = AgentCreateRequest(
+        slug="empty-body", name="Empty body", conditions={}, events=[],
+        actions=[], kind="template",
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        await AgentController.create_agent.fn(controller, data)
+    assert exc_info.value.status_code == 400
+
+
+async def test_create_agent_rejects_bad_slug_shape_for_template(sqlite_env):
+    from litestar.exceptions import HTTPException
+    from backend.api.routes.agents import AgentController, AgentCreateRequest
+
+    controller = AgentController.__new__(AgentController)
+    data = AgentCreateRequest(
+        slug="Not A Valid Slug!", name="Bad slug",
+        conditions={}, events=[{"channel": "log", "enabled": True}],
+        actions=[], kind="template",
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        await AgentController.create_agent.fn(controller, data)
+    assert exc_info.value.status_code == 400
+
+
+async def test_create_agent_validates_condition_body_through_grammar_evaluator(sqlite_env):
+    """Ports the defect-prevention guarantee of the retired
+    `agent_templates.py`'s `_validate_condition_body` — a malformed/
+    unknown-token condition-kind Template body must 422, not silently
+    save a Template that will always resolve to []."""
+    from litestar.exceptions import HTTPException
+    from backend.api.routes.agents import AgentController, AgentCreateRequest
+
+    controller = AgentController.__new__(AgentController)
+    data = AgentCreateRequest(
+        slug="bad-condition-template", name="Bad condition",
+        conditions={"metric": "totally-unknown-metric", "scope": "positions.total",
+                    "op": "<=", "value": -1},
+        events=[], actions=[], kind="template",
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        await AgentController.create_agent.fn(controller, data)
+    assert exc_info.value.status_code == 422
+
+
+async def test_update_agent_rejects_body_edit_on_system_template(sqlite_env):
+    factory, _Agent = sqlite_env
+    from litestar.exceptions import HTTPException
+    from backend.api.routes.agents import AgentController, AgentUpdateRequest
+
+    async with factory() as s:
+        s.add(_Agent(slug="sys-tpl", name="Sys template", kind="template",
+                      is_system=True, status="active", conditions={},
+                      events=[{"channel": "log", "enabled": True}], actions=[]))
+        await s.commit()
+
+    controller = AgentController.__new__(AgentController)
+    data = AgentUpdateRequest(events=[{"channel": "telegram", "enabled": True}])
+    with pytest.raises(HTTPException) as exc_info:
+        await AgentController.update_agent.fn(controller, "sys-tpl", data)
+    assert exc_info.value.status_code == 400
+
+
+async def test_update_agent_allows_body_edit_on_custom_template(sqlite_env):
+    factory, _Agent = sqlite_env
+    from sqlalchemy import select
+    from backend.api.routes.agents import AgentController, AgentUpdateRequest
+
+    async with factory() as s:
+        s.add(_Agent(slug="custom-tpl", name="Custom template", kind="template",
+                      is_system=False, status="active", conditions={},
+                      events=[{"channel": "log", "enabled": True}], actions=[]))
+        await s.commit()
+
+    controller = AgentController.__new__(AgentController)
+    data = AgentUpdateRequest(events=[{"channel": "telegram", "enabled": True}])
+    result = await AgentController.update_agent.fn(controller, "custom-tpl", data)
+    assert result == {"detail": "Agent 'custom-tpl' updated"}
+
+    async with factory() as s:
+        row = (await s.execute(select(_Agent).where(_Agent.slug == "custom-tpl"))).scalar_one()
+        assert row.events == [{"channel": "telegram", "enabled": True}]
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 6 — prune guard: migrated system templates survive seed_agents()
+# 6 — prune guard: template rows survive seed_agents()
 # ═══════════════════════════════════════════════════════════════════════
 
 async def test_prune_retired_builtins_spares_template_rows(sqlite_env):
-    factory, _Agent, _AgentTemplate = sqlite_env
+    factory, _Agent = sqlite_env
     from sqlalchemy import select
     from backend.api.algo.agent_engine import _ae_prune_retired_builtins
 
@@ -428,7 +520,7 @@ async def test_prune_retired_builtins_spares_template_rows(sqlite_env):
 
         # Only "sys-cycle-retired" is NOT in builtin_slugs for either row,
         # but the template row must survive regardless; the retired
-        # cycle row must still be pruned (regression guard that the new
+        # cycle row must still be pruned (regression guard that the
         # kind!='template' filter didn't break the original behaviour).
         await _ae_prune_retired_builtins(s, builtin_slugs=set())
         await s.commit()
@@ -441,48 +533,102 @@ async def test_prune_retired_builtins_spares_template_rows(sqlite_env):
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 7 — legacy /api/admin/fragments CRUD mirrors into Agent rows
+# 7 — migrate_and_retire_agent_fragments()
 # ═══════════════════════════════════════════════════════════════════════
 
-async def test_fragment_create_mirrors_into_agent_row(sqlite_env):
-    factory, _Agent, _AgentTemplate = sqlite_env
-    from sqlalchemy import select
-    from backend.api.routes.agent_templates import AgentTemplateController, FragmentCreate
+async def _insert_legacy_row(factory, table, **kw):
+    defaults = dict(description="", is_system=False, is_active=True)
+    defaults.update(kw)
+    async with factory() as s:
+        await s.execute(table.insert().values(**defaults))
+        await s.commit()
 
-    controller = AgentTemplateController.__new__(AgentTemplateController)
-    data = FragmentCreate(
-        kind="condition", name="mirror-test-frag",
-        body={"metric": "pnl", "scope": "positions.total", "op": "<=", "value": -1},
+
+async def test_retirement_already_dropped_is_a_noop(sqlite_env):
+    """No `agent_fragments` table at all (the steady-state case once
+    this has run successfully everywhere) — must not raise."""
+    from backend.api.algo.template_registry import migrate_and_retire_agent_fragments
+    await migrate_and_retire_agent_fragments()   # table never created in this fixture — no-op
+
+
+async def test_retirement_happy_path_backfills_and_drops_table(legacy_fragments_table):
+    factory, _Agent, table = legacy_fragments_table
+    from sqlalchemy import select, inspect as sa_inspect
+    from backend.api.algo.template_registry import migrate_and_retire_agent_fragments
+
+    await _insert_legacy_row(
+        factory, table, kind="notify", name="sys-notify",
+        body=[{"channel": "log", "enabled": True}], is_system=True,
     )
-    out = await AgentTemplateController.create_fragment.fn(controller, data)
-    assert out.name == "mirror-test-frag"
+    await _insert_legacy_row(
+        factory, table, kind="condition", name="custom-condition",
+        body={"metric": "pnl", "scope": "positions.total", "op": "<=", "value": -2},
+        is_system=False, is_active=False,
+    )
+
+    await migrate_and_retire_agent_fragments()
 
     async with factory() as s:
-        row = (await s.execute(
-            select(_Agent).where(_Agent.slug == "mirror-test-frag")
-        )).scalar_one()
-        assert row.kind == "template"
-        assert row.conditions == {"metric": "pnl", "scope": "positions.total",
-                                   "op": "<=", "value": -1}
+        rows = (await s.execute(select(_Agent).where(_Agent.kind == "template"))).scalars().all()
+        by_slug = {r.slug: r for r in rows}
+        has_table = await s.run_sync(
+            lambda sync_session: sa_inspect(sync_session.get_bind()).has_table("agent_fragments")
+        )
+
+    assert set(by_slug) == {"sys-notify", "custom-condition"}
+    assert by_slug["sys-notify"].is_system is True
+    assert by_slug["sys-notify"].events == [{"channel": "log", "enabled": True}]
+    assert by_slug["custom-condition"].status == "inactive"
+    assert has_table is False   # table dropped
 
 
-async def test_fragment_delete_removes_mirrored_agent_row(sqlite_env):
-    factory, _Agent, _AgentTemplate = sqlite_env
-    from sqlalchemy import select
-    from backend.api.routes.agent_templates import AgentTemplateController, FragmentCreate
+async def test_retirement_leaves_table_in_place_on_slug_collision(legacy_fragments_table):
+    """A legacy row whose name is already used by a non-template agent
+    must NOT be silently dropped/lost — the table stays in place."""
+    factory, _Agent, table = legacy_fragments_table
+    from sqlalchemy import inspect as sa_inspect
+    from backend.api.algo.template_registry import migrate_and_retire_agent_fragments
 
-    controller = AgentTemplateController.__new__(AgentTemplateController)
-    data = FragmentCreate(
-        kind="notify", name="mirror-delete-frag",
+    async with factory() as s:
+        s.add(_Agent(slug="collides", name="A real cycle agent", kind="cycle",
+                      status="active", conditions={}, events=[], actions=[]))
+        await s.commit()
+    await _insert_legacy_row(
+        factory, table, kind="notify", name="collides",
         body=[{"channel": "log", "enabled": True}],
     )
-    out = await AgentTemplateController.create_fragment.fn(controller, data)
-    frag_id = out.id
 
-    await AgentTemplateController.delete_fragment.fn(controller, frag_id)
+    await migrate_and_retire_agent_fragments()
 
     async with factory() as s:
-        row = (await s.execute(
-            select(_Agent).where(_Agent.slug == "mirror-delete-frag")
-        )).scalar_one_or_none()
-        assert row is None
+        has_table = await s.run_sync(
+            lambda sync_session: sa_inspect(sync_session.get_bind()).has_table("agent_fragments")
+        )
+    assert has_table is True   # NOT dropped — manual review needed
+
+
+async def test_retirement_is_idempotent_across_two_calls(legacy_fragments_table):
+    """Re-running after a successful drop (table already gone) must not
+    raise, and a row already matched by a prior partial boot (e.g. a
+    system Template `seed_agent_templates()` already seeded directly)
+    must not be re-inserted or duplicated."""
+    factory, _Agent, table = legacy_fragments_table
+    from sqlalchemy import select
+    from backend.api.algo.template_registry import (
+        migrate_and_retire_agent_fragments, seed_agent_templates,
+    )
+
+    await seed_agent_templates()   # seeds system Templates as Agent rows directly
+    await _insert_legacy_row(
+        factory, table, kind="notify", name="notify-log-only",   # same slug as a seeded system row
+        body=[{"channel": "log", "enabled": True}], is_system=True,
+    )
+
+    await migrate_and_retire_agent_fragments()
+    await migrate_and_retire_agent_fragments()   # second call — table already gone, must no-op
+
+    async with factory() as s:
+        rows = (await s.execute(
+            select(_Agent).where(_Agent.slug == "notify-log-only")
+        )).scalars().all()
+    assert len(rows) == 1   # no duplicate

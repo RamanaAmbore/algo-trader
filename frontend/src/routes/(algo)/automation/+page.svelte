@@ -12,7 +12,6 @@
     startSimForAgent,
     fetchAgentRenderers, fetchSetting,
     deleteOrderTemplate,
-    fetchAgentFragments, deleteAgentFragment,
   } from '$lib/api';
   import ActivityLogSurface from '$lib/ActivityLogSurface.svelte';
   import AutomationTabs from '$lib/AutomationTabs.svelte';
@@ -112,7 +111,6 @@
     _activeGroupId = null;
     _expandedRowKey = null;
     if (cardId === 'alerts' && !renderers.length) loadRenderers();
-    if (cardId === 'templates' && !_fragments.length) loadFragments();
   }
   function backToCards() { _activeCard = null; _activeGroupId = null; }
 
@@ -154,24 +152,6 @@
     _expandedRowKey = _expandedRowKey === key ? null : key;
   }
 
-  // ── Templates card's own data source — raw AgentTemplate rows
-  //    (`GET /api/admin/fragments`). The CARD's list view reads from the
-  //    unified `kind='template'` Agent rows (`agents`, filtered above) —
-  //    per CLAUDE.md's Sprint C adapter note, NOT this fragments list.
-  //    This fragments list exists ONLY to resolve a Template row's real
-  //    `AgentTemplate.id` for Edit/Delete (matched by name === the
-  //    Agent row's own slug — `mirror_fragment_upsert()` always sets
-  //    slug == frag.name for every row it mirrors). Lazy-loaded the
-  //    first time the Templates card is opened. */
-  let _fragments = $state(/** @type {any[]} */ ([]));
-  async function loadFragments() {
-    try { _fragments = await fetchAgentFragments(); }
-    catch (_) { /* keep last-known list */ }
-  }
-  function _fragmentIdForTemplateRow(/** @type {any} */ row) {
-    return _fragments.find((f) => f.name === row.slug)?.id ?? null;
-  }
-
   // One shared CLI-catalog fetch for Edit's decompile step — separate
   // from ConsoleTab's OWN internal fetch (ConsoleTab is usable/testable
   // standalone); a small duplicate network call, deliberately accepted
@@ -211,13 +191,8 @@
         ref = row.id;
         dec = decompileBracket(row, catalog);
       } else if (cardId === 'templates') {
-        const fragId = _fragmentIdForTemplateRow(row);
-        if (fragId == null) {
-          toast.error(`Token '${row.name}' not found in the Tokens catalog`);
-          return;
-        }
         rowKind = 'template';
-        ref = fragId;
+        ref = row.slug;
         dec = decompileToken(row, catalog);
       } else {
         return;
@@ -261,13 +236,10 @@
       if (cardId === 'brackets') {
         await deleteOrderTemplate(row.id);
         await reloadOrderTemplates().catch(() => {});
-      } else if (cardId === 'templates') {
-        const fragId = _fragmentIdForTemplateRow(row);
-        if (fragId == null) { toast.error(`Token '${row.name}' not found in the Tokens catalog`); return; }
-        await deleteAgentFragment(fragId);
-        await loadFragments();
-        await loadAgents();
       } else {
+        // 'agents' / 'alerts' / 'templates' — all three are Agent rows
+        // (templates = kind='template') deleted via the one unified
+        // endpoint (Sprint D2, Agent/Bracket/Template unification phase).
         await deleteAgent(row.slug);
         await loadAgents();
       }

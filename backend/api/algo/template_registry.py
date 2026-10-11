@@ -1,34 +1,47 @@
 """
 Agent template registry — saved $ref-able sub-trees (notify + condition).
 
-An AgentTemplate is a saved JSONB body that an agent can reference via
-`{"$ref": "<name>"}`. The engine resolves the ref against this
-registry at evaluation / dispatch time.
+A Template is an `Agent` row with `kind='template'` that another agent's
+condition tree or events list can reference via `{"$ref": "<slug>"}`. The
+engine resolves the ref against this registry at evaluation / dispatch
+time.
 
 This module owns:
 
-  - in-memory cache of {kind: {name: body}} for fast lookup
-  - load_from_db()                 — pull all active templates on boot / reload
+  - in-memory cache of {kind: {slug: body}} for fast lookup
+  - reload()                       — pull all kind='template' Agent rows on boot / reload
   - resolve_events(events)         — expand $ref entries in a notify list
   - SYSTEM_AGENT_TEMPLATES         — declarative seed list (mirrors the
                                       grammar.SYSTEM_TOKENS pattern)
-  - seed_agent_templates()         — upsert system templates on startup
+  - seed_agent_templates()         — upsert system templates (as Agent
+                                      rows) on startup
+  - migrate_and_retire_agent_fragments() — one-time, self-contained
+                                      backfill-then-DROP of the legacy
+                                      `agent_fragments` table (Sprint D2)
 
 Cycle detection: condition $refs walk a visited set so A → B → A loops
 log a warning and return [] instead of recursing forever.
 
-Renamed from fragment_registry.py / TemplateRegistry / SYSTEM_AGENT_TEMPLATES
-in v2.1 — operator vocabulary unified under "templates" (order
-templates + agent templates). DB table keeps its historical name
-`agent_fragments` so existing rows survive without a migration. The
-old `seed_fragments` / `resolve_events` callable names stay as
-backward-compatible aliases (see end of file).
+History: renamed from fragment_registry.py / FragmentRegistry /
+SYSTEM_FRAGMENTS in v2.1 (operator vocabulary unified under "templates").
+Sprint D (2026-10, Agent/Bracket/Template unification phase) additively
+migrated every `agent_fragments` row into a matching `Agent(kind=
+'template')` row, keeping the old table as a transitional fallback read.
+Sprint D2 (same phase) retired that table + the `AgentTemplate` model
+entirely — `reload()` now sources ONLY from `Agent` rows, and
+`migrate_and_retire_agent_fragments()` (below) is the one-time migration
+that backfills any not-yet-migrated row and drops the old table in the
+same boot, self-contained (it does not assume Sprint D's own migration
+ever ran in this environment — confirmed via `git merge-base` that
+neither dev nor prod had deployed Sprint D before D2 landed).
 """
 
 from __future__ import annotations
 
 import threading
 from typing import Any
+
+import sqlalchemy as sa
 
 from backend.shared.helpers.ramboq_logger import get_logger
 
@@ -182,32 +195,25 @@ class TemplateRegistry:
         pass
 
     async def reload(self) -> None:
-        """Replace the in-memory cache with the latest rows from BOTH
-        sources. Called on app startup AND on every CRUD mutation (the
-        legacy /api/admin/fragments routes, and create_agent/update_agent/
-        delete for kind='template' rows) so edits land without a restart.
+        """Replace the in-memory cache with the latest kind='template'
+        Agent rows. Called on app startup AND on every mutation
+        (create_agent/update_agent/delete for kind='template' rows) so
+        edits land without a restart.
 
-        Sprint D (Agent/Bracket/Template unification phase) — the
-        `agents` table (kind='template' rows) is now the primary source;
-        `agent_fragments` (the legacy AgentTemplate table, kept fully in
-        place) is read FIRST and only used as a fallback for any name not
-        also present as a kind='template' Agent row, so a name that
-        exists in both (the common case, post-migration — every fragment
-        is mirrored into an Agent row by `migrate_fragments_to_template_
-        agents()` / `mirror_fragment_upsert()`) resolves from the newer,
-        canonical Agent-backed source.
+        Sprint D2 (Agent/Bracket/Template unification phase) — `Agent`
+        rows are the ONLY source; the legacy `agent_fragments` table +
+        its fallback-read path (Sprint D's transitional dual-source read)
+        were retired this sprint, once `migrate_and_retire_agent_
+        fragments()` confirmed every row had a matching Agent row.
 
         Bucketing a kind='template' Agent row into 'condition' vs
         'notify' is by CONTENT SHAPE, not a stored discriminator column:
         a non-empty `conditions` dict is a condition fragment; a
-        non-empty `events` list is a notify fragment (mirrors exactly how
-        AgentTemplate.body splits structurally for its two kinds). The
-        cache key is `Agent.slug`, which `mirror_fragment_upsert()`
-        always sets equal to the fragment's own `name` for any row it
-        successfully migrates/mirrors (a genuine name collision is
-        skipped with a CRITICAL log there, never silently re-slugged) —
-        so slug and the original $ref name are always identical for
-        every resolvable row.
+        non-empty `events` list is a notify fragment. The cache key is
+        `Agent.slug` — every Template-authoring path (the CLI's
+        `token(...)` statement, `seed_agent_templates()`, the retirement
+        migration's backfill) sets `slug` equal to the Template's own
+        name, so slug and the $ref name are always identical.
 
         Status is intentionally NOT filtered on the Agent side — a
         template is never independently fired (run_cycle()/
@@ -219,22 +225,12 @@ class TemplateRegistry:
         unresolvable until an operator remembered to activate it."""
         from sqlalchemy import select
         from backend.api.database import async_session
-        from backend.api.models import AgentTemplate, Agent
+        from backend.api.models import Agent
 
         next_cache: dict[str, dict[str, list | dict]] = {
             "notify": {}, "condition": {},
         }
         async with async_session() as s:
-            # Legacy fallback source — unchanged read, still gated on
-            # is_active same as before this sprint.
-            result = await s.execute(
-                select(AgentTemplate).where(AgentTemplate.is_active == True)  # noqa: E712
-            )
-            for row in result.scalars().all():
-                bucket = next_cache.setdefault(row.kind, {})
-                bucket[row.name] = row.body
-
-            # Primary source — kind='template' Agent rows.
             result = await s.execute(select(Agent).where(Agent.kind == "template"))
             for a in result.scalars().all():
                 if isinstance(a.conditions, dict) and a.conditions:
@@ -302,92 +298,102 @@ def resolve_events(events: list | None) -> list[dict]:
 # ═══════════════════════════════════════════════════════════════════════════
 
 async def seed_agent_templates() -> None:
-    """Insert/update system agent templates. Custom (is_system=False)
-    rows are never touched. Existing system rows have their body and
-    description refreshed from code so operator edits to system rows
-    are intentionally overwritten — operators clone to a custom
-    template if they want a permanent change."""
+    """Insert/update system Templates — as `Agent(kind='template',
+    is_system=True)` rows directly (Sprint D2; there is no `AgentTemplate`
+    table to seed into anymore). Custom (is_system=False) rows are never
+    touched. An existing system row has its `conditions`/`events`/
+    `description` refreshed from code so operator edits to a system row
+    are intentionally overwritten — operators clone to a custom template
+    if they want a permanent change.
+
+    Slug collision guards (same spirit as the retired `mirror_fragment_
+    upsert`'s guards): a slug already used by a non-template Agent, or
+    already used by a custom (is_system=False) Template, is left alone
+    with a log line rather than being overwritten."""
     from sqlalchemy import select
     from backend.api.database import async_session
-    from backend.api.models import AgentTemplate
+    from backend.api.models import Agent
 
     async with async_session() as s:
-        existing = await s.execute(
-            select(AgentTemplate).where(AgentTemplate.is_system == True)  # noqa: E712
-        )
-        by_key = {(r.kind, r.name): r for r in existing.scalars().all()}
-
-        inserted = updated = 0
+        inserted = updated = skipped = 0
         for spec in SYSTEM_AGENT_TEMPLATES:
-            key = (spec["kind"], spec["name"])
-            row = by_key.get(key)
-            if row is None:
-                s.add(AgentTemplate(
-                    kind=spec["kind"],
-                    name=spec["name"],
-                    body=spec["body"],
+            slug = spec["name"]
+            conditions = spec["body"] if spec["kind"] == "condition" else {}
+            events = spec["body"] if spec["kind"] == "notify" else []
+            existing = (await s.execute(
+                select(Agent).where(Agent.slug == slug)
+            )).scalar_one_or_none()
+            if existing is None:
+                s.add(Agent(
+                    slug=slug, name=slug,
                     description=spec.get("description", ""),
-                    is_system=True,
-                    is_active=True,
+                    conditions=conditions, events=events, actions=[],
+                    kind="template", is_system=True, status="active",
                 ))
                 inserted += 1
+            elif existing.kind != "template":
+                logger.critical(
+                    f"template seed: slug {slug!r} already used by a "
+                    f"non-template agent (id={existing.id}) — skipping seed"
+                )
+                skipped += 1
+            elif not existing.is_system:
+                logger.warning(
+                    f"template seed: slug {slug!r} exists as a custom "
+                    f"(non-system) template — leaving it alone"
+                )
+                skipped += 1
             else:
-                # Refresh body + description; preserve is_active toggle.
-                row.body = spec["body"]
-                row.description = spec.get("description", row.description or "")
+                existing.description = spec.get("description", existing.description or "")
+                existing.conditions = conditions
+                existing.events = events
                 updated += 1
         await s.commit()
         logger.info(
-            f"Agent templates seeded — inserted={inserted} updated={updated}"
+            f"Agent templates seeded — inserted={inserted} updated={updated} "
+            f"skipped={skipped}"
         )
     # Hot-rebuild the in-memory cache.
     await REGISTRY.reload()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  Sprint D (Agent/Bracket/Template unification phase) — mirror
-#  agent_fragments rows into kind='template' Agent rows
+#  Sprint D2 (Agent/Bracket/Template unification phase) — one-time,
+#  self-contained retirement of the legacy `agent_fragments` table.
 # ═══════════════════════════════════════════════════════════════════════════
 #
-# agent_fragments / AgentTemplate stay in place through this sprint — this
-# is additive only. Every AgentTemplate row (system AND custom, 'notify'
-# AND 'condition') gets a matching Agent(kind='template') row so $ref
-# resolution (agent_evaluator.py's evaluate()/validate(), via this
-# module's reload()) can source from Agent rows going forward, per the
-# Sprint D brief. Slug is always set equal to the fragment's own `name`
-# — never re-slugged on collision — because $ref strings reference that
-# exact name; a genuine collision (another agent already owns that slug,
-# or a notify and a condition fragment share the same name) is skipped
-# with a CRITICAL log rather than silently diverging slug from name.
+# This function does NOT assume Sprint D's own additive migration
+# (`migrate_fragments_to_template_agents()` / `mirror_fragment_upsert()`,
+# both deleted this sprint along with the `AgentTemplate` model and the
+# `/api/admin/fragments` CRUD route that was their only caller) ever ran
+# in this environment — confirmed via `git merge-base --is-ancestor` that
+# neither dev nor prod had deployed Sprint D before this sprint landed.
+# Backfill and DROP happen together, in the SAME boot: a custom fragment
+# that was never migrated must never be silently lost by a DROP running
+# before its backfill.
+#
+# Reads the OLD table via a plain (non-ORM-mapped) `sqlalchemy.Table`
+# object — not the deleted `AgentTemplate` class — using the generic
+# `sa.JSON` column type (not `postgresql.JSONB`) so the same code path
+# is exercisable against the sqlite test double this codebase's other
+# migration tests already use.
 
-def _tr_fragment_to_agent_fields(frag) -> dict:
-    """Map one AgentTemplate row onto the Agent columns a mirrored
-    kind='template' row occupies. `body` lands in `conditions` (dict)
-    for a 'condition' fragment, or `events` (list) for a 'notify'
-    fragment — the other of the two stays at its Agent-model default
-    (empty dict / empty list), which is also how `reload()` discriminates
-    condition-shaped vs notify-shaped rows back out again. `actions` is
-    always empty — AgentTemplate has no action-kind content today."""
-    conditions = frag.body if (frag.kind == "condition" and isinstance(frag.body, dict)) else {}
-    events = frag.body if (frag.kind == "notify" and isinstance(frag.body, list)) else []
-    return dict(
-        name=frag.name,
-        description=frag.description or "",
-        conditions=conditions,
-        events=events,
-        actions=[],
-        kind="template",
-        is_system=frag.is_system,
-        status="active" if frag.is_active else "inactive",
-    )
+_LEGACY_FRAGMENTS_TABLE = sa.Table(
+    "agent_fragments", sa.MetaData(),
+    sa.Column("id", sa.Integer, primary_key=True),
+    sa.Column("kind", sa.String),
+    sa.Column("name", sa.String),
+    sa.Column("body", sa.JSON),
+    sa.Column("description", sa.String),
+    sa.Column("is_system", sa.Boolean),
+    sa.Column("is_active", sa.Boolean),
+)
 
 
-def _tr_agent_fragment_kind(agent) -> str | None:
-    """Infer which AgentTemplate `kind` a mirrored Agent row corresponds
-    to, from content shape alone (no stored discriminator column —
-    see reload()'s own docstring). None when neither shape is populated
-    (shouldn't happen for a row this module wrote, but a defensive
-    guard against hand-edited rows)."""
+def _tr_agent_content_kind(agent) -> str | None:
+    """Infer which legacy fragment `kind` an Agent(kind='template') row's
+    content shape corresponds to (no stored discriminator column — see
+    `reload()`'s own docstring). None when neither shape is populated."""
     if isinstance(agent.conditions, dict) and agent.conditions:
         return "condition"
     if isinstance(agent.events, list) and agent.events:
@@ -395,135 +401,115 @@ def _tr_agent_fragment_kind(agent) -> str | None:
     return None
 
 
-async def mirror_fragment_upsert(session, frag, *, force: bool = False) -> None:
-    """Best-effort: create/update the Agent(kind='template') row that
-    mirrors one AgentTemplate row, keyed by slug == frag.name.
+async def migrate_and_retire_agent_fragments() -> None:
+    """One-time, idempotent, self-contained backfill-then-DROP of the
+    legacy `agent_fragments` table. Safe to call on every boot:
 
-    Never raises — every failure path logs and returns, so a fragment
-    CRUD request (which already committed its own AgentTemplate write
-    before calling this) never fails because of this additive safety
-    net, and the one-time migration backfill never aborts partway
-    through on one bad row.
-
-    `force=False` (the migration backfill's own call shape): insert
-    only if missing. An existing SYSTEM row is refreshed (mirrors
-    `seed_agent_templates()`'s own "system rows are code-owned" rule);
-    an existing CUSTOM row is left alone — the backfill must not clobber
-    an operator's independent edit to the Agent-side row.
-
-    `force=True` (the legacy /api/admin/fragments CRUD routes' own call
-    shape): this call IS the authoritative edit — always overwrite the
-    mirrored row's fields, system or custom."""
-    from backend.api.models import Agent
-    from sqlalchemy import select
-
-    try:
-        if len(frag.name) > 64:
-            logger.critical(
-                f"template mirror: fragment name {frag.name!r} exceeds "
-                f"Agent.slug's 64-char limit — skipping Agent mirror"
-            )
-            return
-        existing = (await session.execute(
-            select(Agent).where(Agent.slug == frag.name)
-        )).scalar_one_or_none()
-        fields = _tr_fragment_to_agent_fields(frag)
-
-        if existing is None:
-            session.add(Agent(slug=frag.name, **fields))
-            await session.commit()
-            return
-
-        if existing.kind != "template":
-            logger.critical(
-                f"template mirror: slug {frag.name!r} is already used by "
-                f"a non-template agent (id={existing.id}) — skipping "
-                f"Agent mirror for fragment kind={frag.kind}"
-            )
-            return
-
-        prior_kind = _tr_agent_fragment_kind(existing)
-        if prior_kind is not None and prior_kind != frag.kind:
-            logger.critical(
-                f"template mirror: name {frag.name!r} is used by both a "
-                f"notify and a condition fragment — skipping Agent "
-                f"mirror for fragment kind={frag.kind} (existing mirrored "
-                f"row is kind={prior_kind})"
-            )
-            return
-
-        if force or existing.is_system or frag.is_system:
-            for k, v in fields.items():
-                setattr(existing, k, v)
-            await session.commit()
-        # else: already-mirrored custom row, backfill call — leave alone.
-    except Exception as e:
-        logger.error(
-            f"template mirror: failed to upsert Agent row for fragment "
-            f"{frag.kind}/{frag.name}: {e}"
-        )
-
-
-async def mirror_fragment_delete(session, frag_kind: str, frag_name: str) -> None:
-    """Best-effort: delete the Agent(kind='template') row mirroring a
-    just-deleted AgentTemplate row, if one exists AND its content shape
-    still matches frag_kind (guards against deleting the wrong mirror in
-    the rare notify/condition name-collision case, where only one of the
-    two ever actually got mirrored — see mirror_fragment_upsert)."""
-    from backend.api.models import Agent
-    from sqlalchemy import select, delete as sa_delete
-
-    try:
-        existing = (await session.execute(
-            select(Agent).where(Agent.slug == frag_name, Agent.kind == "template")
-        )).scalar_one_or_none()
-        if existing is None:
-            return
-        if _tr_agent_fragment_kind(existing) != frag_kind:
-            return
-        await session.execute(sa_delete(Agent).where(Agent.id == existing.id))
-        await session.commit()
-    except Exception as e:
-        logger.error(
-            f"template mirror: failed to delete Agent row for fragment "
-            f"{frag_kind}/{frag_name}: {e}"
-        )
-
-
-async def migrate_fragments_to_template_agents() -> None:
-    """One-time (idempotent) backfill: copy every existing agent_fragments
-    row into a matching Agent(kind='template') row, preserving is_system
-    and the slug/name. agent_fragments / AgentTemplate stay fully in
-    place — this is additive only (Sprint D of the Agent/Bracket/Template
-    unification phase; a later, not-yet-scheduled cleanup sprint removes
-    the old table once the new path has proven out).
-
-    Safe to call on every boot: `mirror_fragment_upsert(force=False)`
-    inserts missing rows, refreshes already-migrated SYSTEM rows (same
-    "code owns system bodies" convention as `seed_agent_templates()`),
-    and leaves already-migrated CUSTOM rows untouched so a repeat boot
-    never clobbers an operator's independent edit to the Agent-side row.
+      1. No-ops immediately if the table is already gone (checked via
+         dialect-portable `sqlalchemy.inspect(...).has_table()`, not a
+         Postgres-only `to_regclass()` call, so the exact same function
+         is exercisable against the sqlite test double this codebase's
+         other migration tests already use).
+      2. Reads every row from the OLD table (raw Core `Table`, not the
+         deleted `AgentTemplate` ORM class).
+      3. For each row whose `name` doesn't already have a matching
+         `Agent(kind='template', slug=name)` row, inserts one (mirrors
+         the retired `mirror_fragment_upsert(force=False)`'s guards:
+         name > 64 chars, slug already owned by a non-template agent,
+         or a notify/condition name collision all skip that one row
+         with a CRITICAL log, rather than aborting the whole pass).
+      4. If every row ended up matched (inserted this pass, OR already
+         present — e.g. a system Template `seed_agent_templates()` just
+         seeded directly, or a custom row a prior partial boot already
+         backfilled), re-verifies via a SQL anti-join (belt-and-suspenders
+         against a transaction-visibility edge case) and only THEN drops
+         the old table.
+      5. If anything is unmatched, logs CRITICAL with the offending names
+         and leaves `agent_fragments` in place for manual review — never
+         drops a table that still holds un-migrated data.
     """
-    from sqlalchemy import select
+    from sqlalchemy import select, text, inspect as sa_inspect
     from backend.api.database import async_session
-    from backend.api.models import AgentTemplate
+    from backend.api.models import Agent
 
     async with async_session() as s:
-        rows = (await s.execute(select(AgentTemplate))).scalars().all()
-        for frag in rows:
-            await mirror_fragment_upsert(s, frag, force=False)
-    logger.info(
-        f"migrate_fragments_to_template_agents: processed {len(rows)} "
-        f"agent_fragments row(s)"
-    )
+        has_table = await s.run_sync(
+            lambda sync_session: sa_inspect(sync_session.get_bind()).has_table("agent_fragments")
+        )
+        if not has_table:
+            return   # already dropped — nothing to do
 
+        rows = (await s.execute(select(_LEGACY_FRAGMENTS_TABLE))).all()
+        unmatched: list[str] = []
+        for row in rows:
+            name, kind, body = row.name, row.kind, row.body
+            if len(name) > 64:
+                logger.critical(
+                    f"agent_fragments retirement: name {name!r} exceeds "
+                    f"Agent.slug's 64-char limit — leaving row un-migrated"
+                )
+                unmatched.append(name)
+                continue
+            existing = (await s.execute(
+                select(Agent).where(Agent.slug == name)
+            )).scalar_one_or_none()
+            if existing is not None:
+                if existing.kind != "template":
+                    logger.critical(
+                        f"agent_fragments retirement: slug {name!r} already "
+                        f"used by a non-template agent (id={existing.id}) "
+                        f"— leaving row un-migrated"
+                    )
+                    unmatched.append(name)
+                    continue
+                prior_kind = _tr_agent_content_kind(existing)
+                if prior_kind is not None and prior_kind != kind:
+                    logger.critical(
+                        f"agent_fragments retirement: name {name!r} is used "
+                        f"by both a notify and a condition fragment — "
+                        f"leaving row un-migrated (existing Agent row is "
+                        f"kind={prior_kind})"
+                    )
+                    unmatched.append(name)
+                    continue
+                continue   # already matched — nothing to insert
+            conditions = body if (kind == "condition" and isinstance(body, dict)) else {}
+            events = body if (kind == "notify" and isinstance(body, list)) else []
+            s.add(Agent(
+                slug=name, name=name, description=row.description or "",
+                conditions=conditions, events=events, actions=[],
+                kind="template", is_system=bool(row.is_system),
+                status="active" if row.is_active else "inactive",
+            ))
+        await s.commit()
 
-# ── Backwards-compatibility shims ─────────────────────────────────────
-# Pre-v2.1 callers used SYSTEM_FRAGMENTS / FragmentRegistry / seed_fragments.
-# Aliasing here keeps any external script that imported the old names
-# working without a code change while internal consumers migrate to the
-# new vocabulary. Remove these shims in v2.2 once external surfaces
-# are confirmed migrated.
-SYSTEM_FRAGMENTS = SYSTEM_AGENT_TEMPLATES   # noqa: N816 — legacy name
-FragmentRegistry = TemplateRegistry         # noqa: N816 — legacy alias
-seed_fragments   = seed_agent_templates     # noqa: N816 — legacy name
+        if unmatched:
+            logger.critical(
+                f"agent_fragments retirement: {len(unmatched)} row(s) could "
+                f"not be matched to an Agent row ({sorted(unmatched)}) — "
+                f"table LEFT IN PLACE for manual review"
+            )
+            return
+
+        remaining = (await s.execute(text(
+            "SELECT af.name FROM agent_fragments af "
+            "LEFT JOIN agents a ON a.slug = af.name AND a.kind = 'template' "
+            "WHERE a.id IS NULL"
+        ))).scalars().all()
+        if remaining:
+            logger.critical(
+                f"agent_fragments retirement: anti-join still finds "
+                f"{list(remaining)} unmatched after backfill — not dropping"
+            )
+            return
+
+        # SET LOCAL is Postgres-only syntax (no sqlite equivalent) — this
+        # bounds how long the DROP can wait behind any in-flight lock on
+        # `agent_fragments` in production; harmless to skip in the
+        # sqlite test double, which has no such lock-contention concern.
+        dialect_name = s.get_bind().dialect.name
+        if dialect_name == "postgresql":
+            await s.execute(text("SET LOCAL lock_timeout = '5s'"))
+        await s.execute(text("DROP TABLE agent_fragments"))
+        await s.commit()
+    logger.info("agent_fragments table dropped — retirement complete")

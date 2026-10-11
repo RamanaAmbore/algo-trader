@@ -677,8 +677,12 @@ Two seeded agents using them — `expiry-day-positions-alert`
 `{"$ref": "<name>"}`. Two kinds: notify (channel lists for
 `agent.events`) + condition (sub-trees for `agent.conditions`).
 
-CRUD at `/api/admin/fragments/*` (admin-guarded); UI at
-`/agents/fragments`. Seeded:
+Stored as `Agent` rows with `kind='template'` (Sprint D2, Agent/Bracket/
+Template unification phase, 2026-10 — the earlier separate
+`/api/admin/fragments` CRUD route + `agent_fragments` table were
+retired); authored/edited/deleted via the unified `/api/agents/`
+endpoints, same as any other agent kind. Browsed via the "Templates"
+kind-card on `/automation`. Seeded:
 
 - `notify-critical-trio` — telegram + email + log
 - `notify-log-only` · `notify-telegram-only`

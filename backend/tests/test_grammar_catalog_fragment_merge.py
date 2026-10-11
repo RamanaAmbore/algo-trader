@@ -1,19 +1,31 @@
 """
-Sprint 10 — merge active AgentTemplate ("Token") rows into the grammar
-catalog response served by `GET /api/admin/grammar/tokens`, the exact
-endpoint the agent CLI's `fetchGrammarTokens('condition')` /
-`('notify')` calls hit (see `backend/api/routes/grammar.py`).
+Sprint 10 (amended Sprint D2, Agent/Bracket/Template unification phase) —
+merge `kind='template'` Agent rows into the grammar catalog response
+served by `GET /api/admin/grammar/tokens`, the exact endpoint the agent
+CLI's `fetchGrammarTokens('condition')` / `('notify')` calls hit (see
+`backend/api/routes/grammar.py`).
+
+Sprint D2 retired the old `AgentTemplate` model / `agent_fragments`
+table this merge used to read directly — the source is now `Agent` rows
+with `kind='template'`, bucketed into 'condition' vs 'notify' by CONTENT
+SHAPE (a non-empty `conditions` dict, or a non-empty `events` list — no
+stored discriminator column), and `token` is the row's `slug` (the real
+`$ref` key), not its free-text `name`.
 
 Covers:
-  - `_fragment_catalog_rows`: an active condition-kind Template surfaces
-    as grammar_kind='condition'/token_kind='metric', an active
-    notify-kind Template surfaces as grammar_kind='notify'/
-    token_kind='channel', both carrying `is_fragment_ref=True`.
-  - The underlying DB query filters on `is_active == True` at the SQL
-    level — the enforcement mechanism behind "an inactive row never
-    appears".
+  - `_fragment_catalog_rows`: a condition-shaped Template surfaces as
+    grammar_kind='condition'/token_kind='metric', a notify-shaped
+    Template surfaces as grammar_kind='notify'/token_kind='channel',
+    both carrying `is_fragment_ref=True` and `token == row.slug`.
+  - The underlying DB query filters on `Agent.kind == 'template'` at the
+    SQL level — the enforcement mechanism behind "only Template rows
+    ever merge in". Status is deliberately NOT filtered (a freshly
+    created template is `status='inactive'` but must still appear).
+  - A Template whose `conditions`/`events` are both empty/absent (e.g.
+    a hand-edited or mid-save row) surfaces as [] — never a malformed
+    GrammarTokenOut.
   - grammar='action' (and None) short-circuits to [] with no DB call —
-    AgentTemplate has no 'action' kind, and the unfiltered admin Tokens
+    a Template has no 'action' kind, and the unfiltered admin Tokens
     CRUD page must never see merged rows (id-space collision guard).
   - `_merge_fragment_rows`: a Template name colliding with an existing
     real token's name in the same bucket is skipped, not appended
@@ -36,11 +48,13 @@ from backend.api.schemas import GrammarTokenOut
 
 # ── fixtures / helpers ───────────────────────────────────────────────────
 
-def _agent_template(**kw):
+def _template_agent(**kw):
+    """A kind='template' Agent row, shaped as _fragment_catalog_rows
+    expects to read it (slug/conditions/events/description/is_system)."""
     defaults = dict(
-        id=5, kind="condition", name="loss-positions-acct-default",
-        body={"any": []}, description="a saved condition subtree",
-        is_system=True, is_active=True,
+        id=5, slug="loss-positions-acct-default", kind="template",
+        conditions={"any": []}, events=[],
+        description="a saved condition subtree", is_system=True,
     )
     defaults.update(kw)
     return SimpleNamespace(**defaults)
@@ -84,9 +98,10 @@ def _session_ctx(rows, capture: dict | None = None):
 
 @pytest.mark.asyncio
 async def test_active_condition_template_surfaces_as_metric_fragment_ref(monkeypatch):
-    row = _agent_template(
-        kind="condition", name="loss-positions-acct-default", id=5,
-        description="the acct-default threshold set", is_system=True, is_active=True,
+    row = _template_agent(
+        slug="loss-positions-acct-default", id=5,
+        conditions={"any": []}, events=[],
+        description="the acct-default threshold set", is_system=True,
     )
     monkeypatch.setattr(g, "async_session", lambda: _session_ctx([row]))
 
@@ -107,9 +122,10 @@ async def test_active_condition_template_surfaces_as_metric_fragment_ref(monkeyp
 
 @pytest.mark.asyncio
 async def test_active_notify_template_surfaces_as_channel_fragment_ref(monkeypatch):
-    row = _agent_template(
-        kind="notify", name="notify-critical-trio", id=9,
-        description="telegram + email + log + inapp", is_system=True, is_active=True,
+    row = _template_agent(
+        slug="notify-critical-trio", id=9,
+        conditions={}, events=[{"channel": "telegram", "enabled": True}],
+        description="telegram + email + log + inapp", is_system=True,
     )
     monkeypatch.setattr(g, "async_session", lambda: _session_ctx([row]))
 
@@ -125,20 +141,47 @@ async def test_active_notify_template_surfaces_as_channel_fragment_ref(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_fragment_catalog_query_filters_inactive_at_sql_level(monkeypatch):
-    """The enforcement mechanism behind 'an inactive Template never
-    appears' — the SELECT itself carries `is_active = true`. A fake
-    session can't apply a real WHERE clause, so this asserts the
+async def test_condition_grammar_skips_a_notify_shaped_row():
+    row = _template_agent(
+        slug="notify-only", conditions={}, events=[{"channel": "log", "enabled": True}],
+    )
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(g, "async_session", lambda: _session_ctx([row]))
+        out = await g._fragment_catalog_rows("condition")
+    assert out == []
+
+
+@pytest.mark.asyncio
+async def test_empty_both_fields_row_surfaces_nowhere(monkeypatch):
+    """A Template row with neither conditions nor events populated (e.g.
+    mid-save, or hand-edited) must not surface in EITHER bucket — never a
+    malformed GrammarTokenOut with an empty token string."""
+    row = _template_agent(slug="blank", conditions={}, events=[])
+    monkeypatch.setattr(g, "async_session", lambda: _session_ctx([row]))
+
+    assert await g._fragment_catalog_rows("condition") == []
+    assert await g._fragment_catalog_rows("notify") == []
+
+
+@pytest.mark.asyncio
+async def test_fragment_catalog_query_filters_kind_template_at_sql_level(monkeypatch):
+    """The enforcement mechanism behind 'only kind=template Agent rows
+    ever merge in' — the SELECT itself carries `agents.kind = 'template'`.
+    A fake session can't apply a real WHERE clause, so this asserts the
     statement actually built carries the filter, proving the SQL layer
-    (not just the mock) excludes inactive rows in production."""
+    (not just the mock) scopes the query correctly. Deliberately does
+    NOT assert a status filter — `create_agent` always writes a fresh
+    row with status='inactive', so filtering on status would hide a
+    brand-new Template from this catalog while the $ref registry can
+    already resolve it (see `_fragment_catalog_rows`'s own docstring)."""
     capture: dict = {}
     monkeypatch.setattr(g, "async_session", lambda: _session_ctx([], capture))
 
     await g._fragment_catalog_rows("condition")
 
     compiled = str(capture["stmt"])
-    assert "agent_fragments.is_active = true" in compiled
-    assert "agent_fragments.kind = " in compiled
+    assert "agents.kind = " in compiled
+    assert "is_active" not in compiled
 
 
 @pytest.mark.asyncio
@@ -161,9 +204,9 @@ async def test_fragment_catalog_rows_action_grammar_short_circuits_no_db_call(mo
 @pytest.mark.asyncio
 async def test_fragment_catalog_rows_unfiltered_grammar_short_circuits(monkeypatch):
     """grammar=None (what the unfiltered /admin/tokens CRUD page always
-    sends) must never merge Template rows in — AgentTemplate ids live in
-    a separate table and would otherwise collide with real GrammarToken
-    ids on that page's own id-keyed PATCH/DELETE actions."""
+    sends) must never merge Template rows in — Agent ids live in a
+    distinct id-space from GrammarToken ids and would otherwise collide
+    on that page's own id-keyed PATCH/DELETE actions."""
     monkeypatch.setattr(
         g, "async_session",
         lambda: (_ for _ in ()).throw(AssertionError("must not query DB")),
@@ -209,9 +252,9 @@ async def test_list_tokens_merges_active_template_alongside_real_tokens(monkeypa
     real_row = _grammar_token(
         id=1, grammar_kind="condition", token_kind="metric", token="pnl",
     )
-    frag_row = _agent_template(
-        kind="condition", name="loss-positions-acct-default", id=5,
-        description="desc", is_active=True,
+    frag_row = _template_agent(
+        slug="loss-positions-acct-default", id=5,
+        conditions={"any": []}, events=[], description="desc",
     )
 
     calls = {"n": 0}
@@ -219,7 +262,7 @@ async def test_list_tokens_merges_active_template_alongside_real_tokens(monkeypa
     def _session_factory():
         calls["n"] += 1
         # First async_session() call = the GrammarToken query inside
-        # list_tokens itself; second = the AgentTemplate query inside
+        # list_tokens itself; second = the Agent query inside
         # _fragment_catalog_rows.
         return _session_ctx([real_row]) if calls["n"] == 1 else _session_ctx([frag_row])
 

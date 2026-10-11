@@ -795,8 +795,9 @@ function _buildCatalogEntry(row) {
     // already — untouched here, just surfaced downstream by
     // `suggestAgentCliAt`'s param-name branch.
     description: row.description || '',
-    // Sprint 10 — true only for a merged-in AgentTemplate ("Token") row
-    // (backend's GrammarTokenOut.is_fragment_ref) — see the file-header
+    // Sprint 10 — true only for a merged-in kind='template' Agent
+    // ("Token"/"Template") row (backend's GrammarTokenOut.is_fragment_ref)
+    // — see the file-header
     // EBNF's `leaf`/`call` production notes for how this flag is consumed.
     isFragmentRef: row.is_fragment_ref === true,
     // Sprint 17 — token-level (sibling of params_schema, NOT nested inside
@@ -4387,17 +4388,22 @@ function compileBracketStmt(ast, catalog, opts = {}) {
 const _TOKEN_KIND_SPEC = Object.freeze({ type: 'enum', enum: ['notify', 'condition'] });
 
 /** Compile a standalone `token(kind=...)` statement to a
- *  `POST /api/admin/fragments`-shaped request object (Sprint 10) —
- *  `{kind, name, body, description?}`. `kind=notify` is the ONLY
- *  supported value this sprint — `kind=condition` is a clear compile
- *  error (edit it via the Structured tab instead). The body call_list is
- *  compiled via the EXACT SAME `compileAlertClause` path ALERT's own
- *  call_list already uses (no clause-level `msg=` default — `null` —
- *  since a Token body is a plain channel list, not an ALERT clause).
- *  `#name=` is required (`AgentTemplate.name` is a required field, same
- *  required-field style as `compileBracketStmt`'s own `#name=`
- *  requirement); `#tag=`/`#group=` are rejected outright — `AgentTemplate`
- *  has no such columns. */
+ *  `{kind, name, body, description?}` object (Sprint 10) — the caller
+ *  (`submitConsoleToken`/`updateConsoleToken` in consoleDispatch.js)
+ *  maps this onto the unified `/api/agents/` create/update request
+ *  shape for an `Agent(kind='template')` row (Sprint D2, Agent/Bracket/
+ *  Template unification phase — the dedicated `AgentTemplate` model/
+ *  table this used to target directly is retired). `kind=notify` is the
+ *  ONLY supported value this sprint — `kind=condition` is a clear
+ *  compile error (edit it via `PUT /api/agents/{slug}` directly
+ *  instead). The body call_list is compiled via the EXACT SAME
+ *  `compileAlertClause` path ALERT's own call_list already uses (no
+ *  clause-level `msg=` default — `null` — since a Token body is a plain
+ *  channel list, not an ALERT clause). `#name=` is required (it doubles
+ *  as the row's `slug`, the real `$ref` key — see `submitConsoleToken`'s
+ *  own doc); `#tag=`/`#group=` are rejected outright — not yet wired up
+ *  for Template rows by this grammar, even though the underlying `Agent`
+ *  model has `tags`/`group_name` columns a future sprint could expose. */
 function compileTokenStmt(ast, catalog, opts = {}) {
   const errors = [];
   const head = ast.head;
@@ -4418,7 +4424,7 @@ function compileTokenStmt(ast, catalog, opts = {}) {
     if (r.error) errors.push(r.error); else kind = r.value;
   }
   if (kind === 'condition') {
-    errors.push(_err("condition-kind Token creation isn't supported from the CLI yet — use GET/PATCH /api/admin/fragments/{id} directly, or ask an admin"));
+    errors.push(_err("condition-kind Token creation isn't supported from the CLI yet — edit via PUT /api/agents/{slug} directly, or ask an admin"));
   }
 
   const bodyResult = compileAlertClause(ast.bodyCalls, null, catalog);
@@ -5814,7 +5820,7 @@ export function decompileToken({ conditions, events, name, description }, catalo
   const hasEvents = Array.isArray(events) && events.length > 0;
 
   if (hasConditions) {
-    errors.push(_err("condition-kind Token creation isn't supported from the CLI yet — use GET/PATCH /api/admin/fragments/{id} directly, or ask an admin"));
+    errors.push(_err("condition-kind Token creation isn't supported from the CLI yet — edit via PUT /api/agents/{slug} directly, or ask an admin"));
     return { text: null, errors };
   }
   if (!hasEvents) {

@@ -424,13 +424,12 @@ def evaluate(cond: dict, ctx: Context, _visited: set | None = None) -> list[dict
                 f"'{ref_name}' referenced inside its own resolution chain"
             )
             return []
-        # Sprint D (Agent/Bracket/Template unification phase) — resolves
-        # against TemplateRegistry, whose in-memory cache is now sourced
-        # primarily from kind='template' Agent rows (migrated from the
-        # legacy agent_fragments table; see template_registry.reload()'s
-        # own docstring for the condition/notify/collision rules), with
-        # agent_fragments itself kept as a fallback for any name not
-        # also present as an Agent row.
+        # Sprint D2 (Agent/Bracket/Template unification phase) — resolves
+        # against TemplateRegistry, whose in-memory cache is sourced
+        # ONLY from kind='template' Agent rows (the legacy agent_fragments
+        # table + its fallback-read path were retired this sprint — see
+        # template_registry.reload()'s own docstring for the condition/
+        # notify/collision bucketing rules).
         from backend.api.algo.template_registry import REGISTRY as _TMPL
         body = _TMPL.get('condition', ref_name)
         if body is None:
@@ -722,7 +721,7 @@ def validate(cond: dict) -> list[str]:
                     f"resolution chain"
                 )
                 return
-            # Sprint D — same Agent-row-backed resolution as evaluate()
+            # Sprint D2 — same Agent-row-only resolution as evaluate()
             # above (see its comment + template_registry.reload()).
             from backend.api.algo.template_registry import REGISTRY as _TMPL
             body = _TMPL.get('condition', ref)
@@ -803,46 +802,11 @@ def validate(cond: dict) -> list[str]:
     return errors
 
 
-def collect_refs(tree) -> set[str]:
-    """Every `$ref` name in a condition or notify tree, nested at any depth."""
-    refs: set[str] = set()
-
-    def walk(node):
-        if isinstance(node, dict):
-            ref = node.get('$ref')
-            if isinstance(ref, str) and ref:
-                refs.add(ref)
-            for value in node.values():
-                walk(value)
-        elif isinstance(node, list):
-            for value in node:
-                walk(value)
-
-    walk(tree)
-    return refs
-
-
-def fragments_reaching(target: str, bodies: dict) -> set[str]:
-    """`target` plus every fragment that reaches it through `$ref`, directly or via others."""
-    reach = {target}
-    changed = True
-    while changed:
-        changed = False
-        for name, body in bodies.items():
-            if name not in reach and collect_refs(body) & reach:
-                reach.add(name)
-                changed = True
-    return reach
-
-
-def referencing_agents(kind: str, name: str, bodies: dict, agents: list[dict]) -> list[dict]:
-    """Agents whose tree for this fragment kind reaches `name`. `agents` rows carry
-    slug, status, conditions and events; `bodies` maps same-kind fragment names to bodies."""
-    reach = fragments_reaching(name, bodies)
-    field = 'conditions' if kind == 'condition' else 'events'
-    hits = []
-    for agent in agents:
-        via = collect_refs(agent.get(field)) & reach
-        if via:
-            hits.append({'slug': agent['slug'], 'status': agent['status'], 'via': sorted(via)})
-    return sorted(hits, key=lambda h: h['slug'])
+# `collect_refs` / `fragments_reaching` / `referencing_agents` (the
+# Fragment-impact-preview helpers backing the old `/api/admin/fragments/
+# {id}/references` endpoint) were deleted in Sprint D2 (Agent/Bracket/
+# Template unification phase) along with that route — grep confirmed
+# they had no other caller. If a future sprint wants an equivalent
+# "who $ref-s this Template" preview for the unified `/api/agents/`
+# endpoints, reintroduce the walk fresh against `Agent` rows rather than
+# resurrecting these.

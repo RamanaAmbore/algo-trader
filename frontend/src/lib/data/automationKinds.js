@@ -1,12 +1,16 @@
 // automationKinds.js — Sprint C (2026-10, Phase 2 "Automation redesign").
 //
-// Pure, backend-agnostic adapter sitting between the three EXISTING APIs
-// (agents-list, /api/admin/templates, /api/admin/fragments) and the new
-// Automation "Agents" tab UI: kind-count-card -> per-kind #group= tabs ->
-// row list. This is the ONE seam Sprint D2 (dropping agent_fragments) and
-// a future Sprint E (Brackets becoming kind='bracket' Agent rows) later
-// swap underneath — the card/tab/row UI itself never changes as long as
-// this module's output shape stays constant across that swap.
+// Pure, backend-agnostic adapter sitting between the EXISTING APIs
+// (agents-list for Agents/Alerts/Templates, /api/admin/templates for
+// Brackets) and the new Automation "Agents" tab UI: kind-count-card ->
+// per-kind #group= tabs -> row list. This is the ONE seam Sprint D2
+// (dropping the separate /api/admin/fragments route + its agent_fragments
+// table — Templates now source from the unified agents-list API like
+// Agents/Alerts do) swapped underneath with zero change to this module;
+// a future Sprint E (Brackets becoming kind='bracket' Agent rows) will
+// do the same for /api/admin/templates — the card/tab/row UI itself
+// never changes as long as this module's output shape stays constant
+// across that swap.
 //
 // "Groups are strictly per-kind" (CLAUDE.md, Sprint C) is enforced
 // STRUCTURALLY here, not by convention: groupRowsByGroup() has zero

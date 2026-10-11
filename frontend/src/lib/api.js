@@ -380,34 +380,14 @@ export const deleteGrammarToken = (id) =>
   _del(`/admin/grammar/tokens/${id}`, { auth: true });
 export const reloadGrammarRegistry = () => _post('/admin/grammar/reload', {}, { auth: true });
 
-// ── Agent templates — reusable notify / condition saved sub-trees ────
-// System templates toggle-only; custom support full CRUD. URL kept at
-// /admin/fragments for back-compat; underlying model + module renamed
-// to AgentTemplate / template_registry in v2.1 — but every live caller
-// still uses the pre-v2.1 "Fragment" names below, so those are the
-// canonical exports here. The "AgentTemplate" names were never adopted
-// by any caller and were removed as dead code (dead-code audit, 2026-10).
-// Sprint C (2026-10, Phase 2 "Automation redesign") retired the
-// standalone TokensTab component (`/automation?tab=tokens`) — the
-// Templates kind-card's row list now reads from the unified
-// `kind='template'` Agent rows instead, but its Edit/Delete actions
-// still resolve the underlying AgentTemplate row (by name) and call
-// `patchAgentFragment`/`deleteAgentFragment` below — see
-// `/automation/+page.svelte`'s `_fragmentIdForTemplateRow`.
-export const fetchAgentFragments = (kind) =>
-  _get(`/admin/fragments/${kind ? `?kind=${encodeURIComponent(kind)}` : ''}`,
-       { auth: true });
-export const createAgentFragment = (payload) =>
-  _post('/admin/fragments/', payload, { auth: true });
-export const patchAgentFragment  = (id, payload) =>
-  _patch(`/admin/fragments/${id}`, payload, { auth: true });
-export const deleteAgentFragment = (id) =>
-  _del(`/admin/fragments/${id}`, { auth: true });
-export const reloadFragments     = () =>
-  _post('/admin/fragments/reload', {}, { auth: true });
-// Agents whose trees reach this fragment, directly or through other fragments.
-export const fetchFragmentReferences = (id) =>
-  _get(`/admin/fragments/${id}/references`, { auth: true });
+// Agent templates ("Tokens") — RETIRED (Sprint D2, Agent/Bracket/
+// Template unification phase, 2026-10). The separate `/admin/fragments`
+// CRUD + its backing `agent_fragments` table / `AgentTemplate` model are
+// gone; a saved condition/notify sub-tree is now just an ordinary
+// `Agent(kind='template')` row, authored/edited/deleted via the SAME
+// `createAgent`/`updateAgent`/`deleteAgent` exports every other agent
+// kind uses (see `consoleDispatch.js`'s `submitConsoleToken`/
+// `updateConsoleToken`).
 
 // ── Order templates — TP/SL/Wing exit-rule presets attached at OrderTicket
 // submit time. System rows are toggle + tune; custom rows full CRUD.

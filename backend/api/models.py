@@ -1443,68 +1443,16 @@ class Setting(Base):
 
 
 # ---------------------------------------------------------------------------
-# Agent templates — reusable saved condition/notify/action sub-trees
+# Agent templates — RETIRED (Sprint D2, Agent/Bracket/Template unification
+# phase, 2026-10). The `AgentTemplate` model / `agent_fragments` table that
+# used to live here were fully migrated into `Agent` rows with
+# `kind='template'` (see `Agent` below, and
+# `backend/api/algo/template_registry.py`'s `migrate_and_retire_agent_
+# fragments()` for the one-time backfill-then-drop migration). A saved
+# condition/notify sub-tree is now just an ordinary `Agent` row, referenced
+# inline via `{"$ref": "<slug>"}` exactly as before — only the storage
+# changed, not the `$ref` mechanism itself.
 # ---------------------------------------------------------------------------
-#
-# An AgentTemplate is a saved JSONB body that an agent can reference inline via
-# `{"$ref": "<name>"}`. Two kinds today:
-#
-#   notify — saves an events list (channels + enabled flags). Used in
-#            place of (or inside) `Agent.events`. When N agents share
-#            the same telegram+email+log trio, they all reference
-#            `notify-critical-trio` instead of each carrying their own
-#            three-row copy.
-#
-#   condition — saves a condition sub-tree (a leaf, an `any/all/not`
-#            block, or a full tree). Referenced from inside an agent's
-#            `conditions` field via `{"$ref": "loss-positions-default"}`.
-#            Stage 2 — Stage 1 lands notify only.
-#
-# System templates ship with the code and seed on every boot. Operators
-# can deactivate but not delete them; custom templates have full CRUD.
-#
-# The evaluator dereferences refs lazily via the TemplateRegistry
-# singleton. Cycles (A refs B refs A) are detected with a visited set
-# and surface as a warning + no-fire — same graceful path as missing
-# tokens in the existing grammar pipeline.
-#
-# Renamed from AgentFragment in v2.1 alongside fragment_registry.py
-# → template_registry.py. The DB table keeps its historical name
-# `agent_fragments` so existing rows survive the rename without
-# requiring a migration; the Python class + module paths use the new
-# vocabulary.
-
-class AgentTemplate(Base):
-    __tablename__ = "agent_fragments"   # historical — table rename pending
-
-    id: Mapped[int]           = mapped_column(primary_key=True, autoincrement=True)
-    # 'condition' or 'notify'. Reserved 'action' for a future stage.
-    kind: Mapped[str]         = mapped_column(String(16), nullable=False, index=True)
-    # Slug-style name — what callers write inside the $ref. Lowercase,
-    # hyphenated. Unique per kind so a notify fragment and a condition
-    # fragment can share a name without colliding.
-    name: Mapped[str]         = mapped_column(String(128), nullable=False)
-    # The actual content — for notify: list of {channel, enabled} dicts;
-    # for condition: a condition sub-tree (leaf or composite).
-    body: Mapped[dict]        = mapped_column(JSONB, nullable=False)
-    description: Mapped[str]  = mapped_column(Text, nullable=False, default="")
-    # System fragments seed from code on every boot. Operators can
-    # toggle is_active but never delete.
-    is_system: Mapped[bool]   = mapped_column(Boolean, nullable=False, default=False)
-    is_active: Mapped[bool]   = mapped_column(Boolean, nullable=False, default=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False,
-        default=lambda: datetime.now(timezone.utc),
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False,
-        default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc),
-    )
-
-    __table_args__ = (
-        UniqueConstraint('kind', 'name', name='uq_agent_fragment'),
-    )
 
 
 # ---------------------------------------------------------------------------

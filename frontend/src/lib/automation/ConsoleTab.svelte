@@ -222,7 +222,7 @@
         toast.error('Editing token — statement no longer compiles as a token');
         return;
       }
-      const r = await updateConsoleToken(/** @type {number} */ (editTarget.ref), result.fragment);
+      const r = await updateConsoleToken(/** @type {string} */ (editTarget.ref), result.fragment, value);
       if (r.ok) {
         _cliSubmitStatus = { ok: true, text: `Token '${result.fragment?.name || ''}' updated` };
         toast.success(`Token updated: ${result.fragment?.name || ''}`);
@@ -233,7 +233,7 @@
       }
       return;
     }
-    const r = await submitConsoleToken(result.fragment);
+    const r = await submitConsoleToken(result.fragment, value);
     if (r.ok) {
       _cliSubmitStatus = { ok: true, text: `Token '${result.fragment?.name || ''}' created` };
       toast.success(`Token created: ${result.fragment?.name || ''}`); value = '';

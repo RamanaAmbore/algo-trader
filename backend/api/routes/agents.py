@@ -671,6 +671,50 @@ def _age_validate_threshold_conditions(conditions: dict) -> None:
             detail="; ".join(errors), extra={"errors": errors})
 
 
+def _age_validate_template_shape(conditions: dict, events: list, *,
+                                   is_create: bool, slug: str | None = None) -> None:
+    """kind='template' body-shape guard (Sprint D2, Agent/Bracket/Template
+    unification phase) — ports the retired `agent_templates.py` CRUD
+    route's `_validate_body_shape` into the unified `/api/agents/`
+    endpoint, scoped to kind='template' only.
+
+    A Template is bucketed into 'condition' vs 'notify' purely by
+    CONTENT SHAPE (template_registry.py's own convention — no stored
+    discriminator column), so exactly one of `conditions`/`events` must
+    be non-empty — both non-empty or both empty would file the row under
+    both buckets (or neither) in `reload()`. `_age_validate_threshold_
+    conditions` (called unconditionally right after this, for every
+    kind) separately runs the real grammar validator over a non-empty
+    `conditions` body — this function only checks the shape, not the
+    condition tree's own token validity.
+
+    `is_create=True` additionally enforces the slug format the old
+    route's `create_fragment` required of a Token's `name` (which WAS
+    its slug) — lowercase alphanumerics + hyphens, max 64 chars — since
+    a Template's slug IS the string every `$ref` references, unlike an
+    ordinary agent's slug which is cosmetic to everything except its own
+    URL."""
+    has_cond = isinstance(conditions, dict) and bool(conditions)
+    has_evt = isinstance(events, list) and bool(events)
+    if has_cond and has_evt:
+        raise HTTPException(status_code=400,
+            detail="a template must have EITHER conditions OR events, not both")
+    if not has_cond and not has_evt:
+        raise HTTPException(status_code=400,
+            detail="a template must have a non-empty conditions OR events body")
+    if has_evt:
+        for i, entry in enumerate(events):
+            if not isinstance(entry, dict) or "channel" not in entry:
+                raise HTTPException(status_code=400,
+                    detail=f"template events[{i}] missing 'channel'")
+    if is_create:
+        name = (slug or "").strip().lower()
+        if not name or len(name) > 64 or not all(c.isalnum() or c == "-" for c in name):
+            raise HTTPException(status_code=400,
+                detail="template slug must be lowercase alphanumerics + "
+                       "hyphens, max 64 chars")
+
+
 def _age_validate_action_entries(actions: list) -> None:
     """Reject unknown action types / missing required params on a cycle
     agent's `actions` array at save time — kind-agnostic companion to
@@ -814,6 +858,9 @@ class AgentController(Controller):
             kind = _age_normalize_kind(data.kind)
             if kind == "event":
                 _age_validate_event_spec(data.slug, data.conditions, data.events, data.actions)
+            elif kind == "template":
+                _age_validate_template_shape(data.conditions, data.events,
+                                               is_create=True, slug=data.slug)
             else:
                 _age_validate_action_entries(data.actions)
             _age_validate_threshold_conditions(data.conditions)
@@ -895,6 +942,18 @@ class AgentController(Controller):
                     raise HTTPException(status_code=400,
                         detail="kind cannot be changed after creation "
                                f"(agent is {agent.kind!r})")
+            # System templates (Sprint D2) — body + description are
+            # code-owned, same guard the retired agent_templates.py CRUD
+            # route's PATCH enforced for `is_system` fragments. Status
+            # (activate/deactivate) still works — that's a separate
+            # endpoint, untouched here.
+            if agent.kind == "template" and agent.is_system:
+                if data.conditions is not None or data.events is not None \
+                        or data.description is not None:
+                    raise HTTPException(status_code=400,
+                        detail="System templates can only toggle status "
+                               "(activate/deactivate); body + description "
+                               "are owned by code seeds.")
             for field in ('name', 'long_name', 'description', 'conditions',
                           'events', 'actions', 'scope', 'schedule',
                           'cooldown_minutes', 'debounce_minutes',
@@ -929,6 +988,9 @@ class AgentController(Controller):
             if agent.kind == "event":
                 _age_validate_event_spec(agent.slug, agent.conditions,
                                           agent.events, agent.actions)
+            elif agent.kind == "template":
+                _age_validate_template_shape(agent.conditions, agent.events,
+                                               is_create=False)
             else:
                 _age_validate_action_entries(agent.actions)
             _age_validate_threshold_conditions(agent.conditions)

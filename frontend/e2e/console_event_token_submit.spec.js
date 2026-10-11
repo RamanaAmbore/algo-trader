@@ -19,7 +19,10 @@
  *      a real `kind:'event'` Agent row (verified via GET /api/agents/).
  *   2. Typing a complete `token(kind=notify) telegram #name="..."`
  *      statement shows a "Create token" submit button; clicking it
- *      creates a real Token row (verified via GET /api/admin/fragments).
+ *      creates a real `kind:'template'` Agent row (verified via GET
+ *      /api/agents/ — Sprint D2, Agent/Bracket/Template unification
+ *      phase, retired the separate /api/admin/fragments route a Token
+ *      used to be created/read through).
  *
  * Environment: localhost (workshop branch) — vite dev server proxies
  * /api to dev.ramboq.com (see frontend/vite.config.js), so API calls in
@@ -27,7 +30,7 @@
  * Auth: dedicated trader-role test account (same account + direct-API
  * login pattern as e2e/automation_cli_grammar.spec.js — the default
  * `rambo`/admin fixture account lacks `manage_own_agents`, required for
- * both POST /api/agents/ and POST /api/admin/fragments).
+ * POST /api/agents/).
  * Viewport: chromium-desktop only (same convention as the sibling
  * automation_cli_grammar.spec.js — CLI authoring is not a mobile-first
  * surface).
@@ -94,22 +97,16 @@ test.describe('console — event-agent and Token submission (Sprint 14 audit gap
   });
 
   test.afterEach(async ({ page }) => {
-    // Cleanup — delete anything this spec created, via API.
+    // Cleanup — delete anything this spec created, via API. A Token is
+    // just an Agent(kind='template') row (Sprint D2, Agent/Bracket/
+    // Template unification phase) — the SAME /api/agents/ delete the
+    // event-agent cleanup above already uses covers both.
     try {
       const agentsResp = await page.request.get('/api/agents/');
       const agents = await agentsResp.json();
       for (const agent of agents) {
         if (agent.slug?.includes('zzz-console-e2e')) {
           try { await page.request.delete(`/api/agents/${agent.slug}`); } catch {}
-        }
-      }
-    } catch {}
-    try {
-      const fragResp = await page.request.get('/api/admin/fragments/?kind=notify');
-      const frags = await fragResp.json();
-      for (const frag of frags) {
-        if (frag.name?.includes('zzz-console-e2e')) {
-          try { await page.request.delete(`/api/admin/fragments/${frag.id}`); } catch {}
         }
       }
     } catch {}
@@ -170,13 +167,15 @@ test.describe('console — event-agent and Token submission (Sprint 14 audit gap
     await createTokenBtn.click();
     await expect(cliTextarea).toHaveValue('', { timeout: 10000 });
 
-    // ── Verify a real row was created, via the fragments list API ──
-    const fragResp = await page.request.get('/api/admin/fragments/?kind=notify');
-    expect(fragResp.ok()).toBe(true);
-    const frags = await fragResp.json();
-    const created = frags.find((f) => f.name === uniqueName);
+    // ── Verify a real row was created, via the unified agents list API
+    //    (Sprint D2 — a Token is now an Agent(kind='template') row, not
+    //    a separate agent_fragments row) ──
+    const agentsResp = await page.request.get('/api/agents/');
+    expect(agentsResp.ok()).toBe(true);
+    const agents = await agentsResp.json();
+    const created = agents.find((a) => a.slug === uniqueName);
     expect(created).toBeTruthy();
-    expect(created.kind).toBe('notify');
-    expect(created.body).toEqual([{ channel: 'telegram', enabled: true }]);
+    expect(created.kind).toBe('template');
+    expect(created.events).toEqual([{ channel: 'telegram', enabled: true }]);
   });
 });

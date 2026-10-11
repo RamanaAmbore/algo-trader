@@ -77,11 +77,6 @@ const BRACKET_ROW = {
   is_default: false, is_system: false, is_active: true, group: 'hedge-book', tags: [],
 };
 
-const FRAGMENT_ROW = {
-  id: 301, kind: 'notify', name: 'notify-critical-trio-e2e', body: [{ channel: 'telegram', enabled: true }],
-  description: '', is_system: false, is_active: true,
-};
-
 async function mockLists(/** @type {import('@playwright/test').Page} */ page) {
   await page.route('**/api/agents/', async (route) => {
     if (route.request().method() !== 'GET') { await route.continue(); return; }
@@ -90,10 +85,6 @@ async function mockLists(/** @type {import('@playwright/test').Page} */ page) {
   await page.route('**/api/admin/templates/', async (route) => {
     if (route.request().method() !== 'GET') { await route.continue(); return; }
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([BRACKET_ROW]) });
-  });
-  await page.route('**/api/admin/fragments/', async (route) => {
-    if (route.request().method() !== 'GET') { await route.continue(); return; }
-    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([FRAGMENT_ROW]) });
   });
 }
 

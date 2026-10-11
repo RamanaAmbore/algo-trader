@@ -416,7 +416,6 @@ _PATH_CATEGORY_RULES: tuple[tuple[str, str], ...] = (
     ("/api/admin/settings",                  "config"),
     ("/api/admin/brokers",                   "config.broker"),
     ("/api/admin/grammar/",                  "config.grammar"),
-    ("/api/admin/fragments",                 "config.fragment"),
     ("/api/admin/hedge-proxies",             "config.hedge"),
     ("/api/admin/statements",                "system.statement"),
     ("/api/nav/compute",                     "system.nav"),

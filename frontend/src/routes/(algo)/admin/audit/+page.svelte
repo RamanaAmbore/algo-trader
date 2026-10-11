@@ -44,7 +44,7 @@
     { key: 'orders',  label: 'Orders',      cats: 'order.place,order.modify,order.cancel,order.fill,order.reject,order' },
     { key: 'agents',  label: 'Agents',      cats: 'agent.action' },
     { key: 'users',   label: 'Users',       cats: 'user' },
-    { key: 'config',  label: 'Config',      cats: 'config,config.broker,config.grammar,config.fragment,config.hedge' },
+    { key: 'config',  label: 'Config',      cats: 'config,config.broker,config.grammar,config.hedge' },
     { key: 'system',  label: 'System',      cats: 'system.nav,system.statement,system.bootstrap' },
   ]);
   let categoryPill = $state(/** @type {string} */ ('all'));

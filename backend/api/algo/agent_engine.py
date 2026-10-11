@@ -1793,13 +1793,15 @@ async def _ae_prune_retired_builtins(session, builtin_slugs: set) -> None:
     agent_events rows cascade via ON DELETE CASCADE.
     Extracted from seed_agents to reduce CC there.
 
-    kind != "template" guard (Sprint D, Agent/Bracket/Template
-    unification phase): system templates migrated from agent_fragments
-    (is_system=True, preserved from AgentTemplate.is_system) are NOT
-    sourced from BUILTIN_AGENTS at all — without this exclusion, this
-    sweep would delete every migrated system template on the very next
-    boot after the migration ran, since none of their slugs ever appear
-    in builtin_slugs."""
+    kind != "template" guard (Sprint D, amended Sprint D2 — Agent/
+    Bracket/Template unification phase): system Templates (`is_system=
+    True` `Agent(kind='template')` rows, seeded directly by
+    `seed_agent_templates()` since D2, or backfilled from the now-
+    retired `agent_fragments` table by `migrate_and_retire_agent_
+    fragments()`) are NOT sourced from BUILTIN_AGENTS at all — without
+    this exclusion, this sweep would delete every one of them on the
+    very next boot, since none of their slugs ever appear in
+    builtin_slugs."""
     from sqlalchemy import delete as sa_delete
     retired = await session.execute(
         select(Agent).where(Agent.is_system.is_(True), Agent.kind != "template")

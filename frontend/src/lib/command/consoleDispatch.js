@@ -32,7 +32,6 @@ import {
   fetchOrderTemplates, placeTicketOrder, placeBasket,
   createAgent, updateAgent,
   createOrderTemplate, patchOrderTemplate,
-  createAgentFragment, patchAgentFragment,
 } from '$lib/api';
 import { reloadOrderTemplates } from '$lib/data/templates';
 
@@ -309,19 +308,40 @@ export async function submitConsoleBracket(compiledTemplate) {
 
 /**
  * Submit a compiled `kind:'token'` result (`compiled.fragment` —
- * `{kind, name, body, description?}`, already `FragmentCreate`-shaped —
- * see `compileTokenStmt` in agents.js) as a new Token via the existing
- * `createAgentFragment` (`POST /api/admin/fragments`). Mirrors
- * `submitConsoleBracket`'s pattern exactly; unlike `submitConsoleAgent`
- * there's no slug to derive — `fragment.name` is sent as-is (the backend
- * itself lowercases + validates it's alnum/hyphen-only).
+ * `{kind, name, body, description?}` — see `compileTokenStmt` in
+ * agents.js) as a new Template — `Agent(kind='template')` — via the
+ * unified `createAgent` (`POST /api/agents/`). Sprint D2 (Agent/Bracket/
+ * Template unification phase) retired the separate `/api/admin/
+ * fragments` CRUD this used to call; a Template is now just an ordinary
+ * Agent row. `kind` here is ALWAYS 'notify' in practice —
+ * `compileTokenStmt` refuses `kind=condition` at compile time — so
+ * `fragment.body` (a channel list) always lands in `events`;
+ * `conditions` stays `{}`. Unlike `submitConsoleAgent`, the slug is NOT
+ * derived via `slugifyAgentName` — `fragment.name` IS the slug (the
+ * exact string every `{"$ref": ...}` elsewhere resolves by), so it must
+ * be sent unchanged; the backend 400s if it isn't already a valid slug
+ * shape (lowercase alnum + hyphens), same as the retired route did.
  * @param {any} compiledFragment — `compiled.fragment` from compileAgentCliStatement
+ * @param {string} rawText — the raw CLI text, stored as cli_source for audit
  */
-export async function submitConsoleToken(compiledFragment) {
-  if (!compiledFragment) return { ok: false, error: 'token requires a #name= tag' };
+export async function submitConsoleToken(compiledFragment, rawText = '') {
+  if (!compiledFragment || !compiledFragment.name) {
+    return { ok: false, error: 'token requires a #name= tag' };
+  }
+  const slug = compiledFragment.name;
+  const payload = {
+    slug,
+    kind: 'template',
+    name: slug,
+    description: compiledFragment.description || '',
+    conditions: {},
+    events: compiledFragment.body || [],
+    actions: [],
+    cli_source: rawText || '',
+  };
   try {
-    const response = await createAgentFragment(compiledFragment);
-    return { ok: true, response };
+    await createAgent(payload);
+    return { ok: true, slug };
   } catch (e) {
     return { ok: false, error: e?.message || 'token create failed' };
   }
@@ -401,32 +421,36 @@ export async function updateConsoleBracket(id, compiledTemplate) {
 }
 
 /**
- * Update an EXISTING Token (AgentTemplate row, still reachable at
- * `PATCH /api/admin/fragments/{id}` even though the Templates CARD's own
- * READ path sources from the unified `kind='template'` Agent rows — see
- * CLAUDE.md's Sprint C note on this adapter). The fragments PATCH route
- * already mirrors the edit into the matching `Agent(kind='template')` row
- * (`mirror_fragment_upsert(force=True)`, `backend/api/routes/
- * agent_templates.py`), so the Templates card's list view picks up the
- * change on its next poll with no extra plumbing here. `fragmentId` must
- * be resolved by the CALLER (matching the row's `name`/slug against a
- * fetched `/api/admin/fragments` list) before this is called — this
- * module does no such lookup itself, matching `resolveConsoleOrder`'s own
- * separation of "resolve a reference" from "submit."
- * @param {number} fragmentId — the AgentTemplate row's own numeric id
- * @param {any} compiledFragment — `compiled.fragment` (`{kind, name, body,
- *   description?}`) — `name`/`kind` are not sent (FragmentPatch has no
- *   fields for either; a Token's kind/name are fixed at creation)
+ * Update an EXISTING Template (`Agent(kind='template')` row) via the
+ * unified `updateAgent` (`PUT /api/agents/{slug}`). Sprint D2 retired the
+ * separate `/api/admin/fragments` PATCH this used to call — the
+ * Templates card's own read path already sourced from these same Agent
+ * rows (Sprint C's adapter), so there's no separate id to resolve
+ * anymore; the row's own `slug` IS the thing to PUT against.
+ *
+ * Deliberately does NOT send `name` — the retired FragmentPatch endpoint
+ * had no field for it either (a Token's name/slug were fixed at
+ * creation), and under the unified model `Agent.slug` is the real `$ref`
+ * key while `Agent.name` is free-text display text; sending a possibly-
+ * edited `#name=` here would risk the two drifting apart with no way for
+ * an operator to tell which one `$ref` still resolves by. If the
+ * operator wants to rename a Template, they delete + recreate it.
+ * @param {string} slug — the Agent row being edited (unchanged by this call)
+ * @param {any} compiledFragment — `compiled.fragment` (`{kind, name, body, description?}`)
+ * @param {string} rawText — the raw (edited) CLI text, stored as cli_source
  */
-export async function updateConsoleToken(fragmentId, compiledFragment) {
-  if (fragmentId == null) return { ok: false, error: 'no token selected for update' };
+export async function updateConsoleToken(slug, compiledFragment, rawText = '') {
+  if (!slug) return { ok: false, error: 'no token selected for update' };
   if (!compiledFragment) return { ok: false, error: 'nothing compiled to save' };
+  const payload = {
+    description: compiledFragment.description || '',
+    conditions: {},
+    events: compiledFragment.body || [],
+    cli_source: rawText || '',
+  };
   try {
-    const response = await patchAgentFragment(fragmentId, {
-      body: compiledFragment.body,
-      description: compiledFragment.description || '',
-    });
-    return { ok: true, response };
+    await updateAgent(slug, payload);
+    return { ok: true, slug };
   } catch (e) {
     return { ok: false, error: e?.message || 'token update failed' };
   }

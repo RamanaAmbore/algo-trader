@@ -388,8 +388,9 @@ class GrammarTokenOut(msgspec.Struct):
     # column for this key). None when the action declares no mutex groups
     # or for any non-action/non-system token.
     mutually_exclusive_groups: list | None = None
-    # Sprint 10 — set True only for a merged-in AgentTemplate ("Token" in
-    # operator-facing text) row representing a saved condition-subtree or
+    # Sprint 10 (amended Sprint D2) — set True only for a merged-in
+    # `kind='template'` Agent ("Token"/"Template" in operator-facing
+    # text) row representing a saved condition-subtree or
     # notify-channel-list $ref. Lets a caller distinguish "this is a real
     # metric/channel/action token" from "this is a reference to a saved
     # fragment" once both are merged into the same catalog response — a

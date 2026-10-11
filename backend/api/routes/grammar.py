@@ -50,63 +50,83 @@ def _to_out(row: GrammarToken) -> GrammarTokenOut:
     )
 
 
-# Sprint 10 — merge active AgentTemplate ("Token") rows into the same
-# catalog shape fetchGrammarTokens('condition')/('notify') already
-# returns, so the frontend's existing buildCatalog() picks them up with
-# zero fetch-side changes. A condition-kind Template behaves like a
-# metric (it stands where a leaf would inside WHEN); a notify-kind
-# Template behaves like a channel (it stands where a channel would
-# inside ALERT). See GrammarTokenOut.is_fragment_ref for the marker a
-# caller uses to tell a merged Template row apart from a real token.
+# Sprint 10 (amended Sprint D2) — merge `kind='template'` Agent rows
+# ("Token"/"Template" in operator-facing text) into the same catalog
+# shape fetchGrammarTokens('condition')/('notify') already returns, so
+# the frontend's existing buildCatalog() picks them up with zero
+# fetch-side changes. A condition-kind Template behaves like a metric
+# (it stands where a leaf would inside WHEN); a notify-kind Template
+# behaves like a channel (it stands where a channel would inside ALERT).
+# See GrammarTokenOut.is_fragment_ref for the marker a caller uses to
+# tell a merged Template row apart from a real token.
+#
+# Sprint D2 (Agent/Bracket/Template unification phase) retired the old
+# `AgentTemplate` model / `agent_fragments` table this merge used to read
+# directly — the source is now `Agent` rows with `kind='template'`,
+# bucketed into 'condition' vs 'notify' by CONTENT SHAPE (same convention
+# `template_registry.py:reload()` uses), since there's no stored
+# discriminator column on `Agent`. `token` is the row's `slug` (the real
+# `$ref` key — see `template_registry.reload()`'s own docstring), not its
+# free-text `name`.
 _FRAGMENT_TOKEN_KIND = {"condition": "metric", "notify": "channel"}
 
 
 async def _fragment_catalog_rows(grammar: str | None) -> list[GrammarTokenOut]:
-    """Active AgentTemplate rows for `grammar`, shaped as GrammarTokenOut.
+    """Active (content-wise) kind='template' Agent rows for `grammar`,
+    shaped as GrammarTokenOut.
 
     Deliberately scoped to grammar in {"condition", "notify"} ONLY — the
     exact two calls agents.js's fetchAgentCatalog makes. An unfiltered
     call (grammar=None — what the admin Tokens CRUD page at /admin/tokens
     always sends, filtering by tab client-side) never merges these in:
-    AgentTemplate rows live in a separate table (agent_fragments) with
-    their own id-space, and that admin page mutates rows by id
-    (toggle/patch/delete) straight against this same /tokens/{id} path.
-    Merging there would risk an operator action against a merged row
-    silently landing on an unrelated real grammar token that happens to
-    share the same numeric id. Returning [] for any other grammar value
-    (including "action", which AgentTemplate doesn't support) is correct.
+    `Agent` rows live in a distinct id-space from `GrammarToken` rows,
+    and that admin page mutates rows by id (toggle/patch/delete) straight
+    against this same /tokens/{id} path. Merging there would risk an
+    operator action against a merged row silently landing on an
+    unrelated real grammar token that happens to share the same numeric
+    id. Returning [] for any other grammar value (including "action",
+    which a Template doesn't support) is correct.
+
+    Deliberately does NOT filter on `Agent.status` — `template_registry.
+    reload()`'s own docstring explains why: `create_agent` always writes
+    a freshly-created row with `status='inactive'` regardless of kind, so
+    a status filter here would hide a brand-new Template from the CLI
+    catalog while the $ref registry can already resolve it. The catalog
+    must show exactly what the registry can resolve.
     """
     if grammar not in _FRAGMENT_TOKEN_KIND:
         return []
-    from backend.api.models import AgentTemplate
+    from backend.api.models import Agent
 
     token_kind = _FRAGMENT_TOKEN_KIND[grammar]
     async with async_session() as s:
         rows = (await s.execute(
-            select(AgentTemplate).where(
-                AgentTemplate.kind == grammar,
-                AgentTemplate.is_active == True,  # noqa: E712
-            )
+            select(Agent).where(Agent.kind == "template")
         )).scalars().all()
-    return [
-        GrammarTokenOut(
-            # Negative id namespace: AgentTemplate.id lives in a distinct
-            # table (agent_fragments) and could otherwise numerically
-            # collide with a real GrammarToken.id. A negative id can never
-            # match a real (autoincrement, positive) GrammarToken row, so
-            # any stray PATCH/DELETE against it 404s instead of mutating
-            # an unrelated token.
+    out: list[GrammarTokenOut] = []
+    for row in rows:
+        if grammar == "condition":
+            if not (isinstance(row.conditions, dict) and row.conditions):
+                continue
+        else:   # "notify"
+            if not (isinstance(row.events, list) and row.events):
+                continue
+        out.append(GrammarTokenOut(
+            # Negative id namespace: Agent.id could otherwise numerically
+            # collide with a real GrammarToken.id. A negative id can
+            # never match a real (autoincrement, positive) GrammarToken
+            # row, so any stray PATCH/DELETE against it 404s instead of
+            # mutating an unrelated token.
             id=-row.id,
             grammar_kind=grammar,
             token_kind=token_kind,
-            token=row.name,
+            token=row.slug,
             description=row.description or "",
             is_system=row.is_system,
             is_active=True,
             is_fragment_ref=True,
-        )
-        for row in rows
-    ]
+        ))
+    return out
 
 
 def _merge_fragment_rows(
@@ -142,8 +162,8 @@ def _merge_fragment_rows(
 # scopes/channels/actions and (since Sprint 10) Tokens/fragments already
 # are. Sibling to `_fragment_catalog_rows`/`_merge_fragment_rows` above —
 # same gating + merge pattern, deliberately duplicated rather than shared
-# since the two sources (DB-backed AgentTemplate rows vs. an in-memory
-# Python registry) have nothing else in common.
+# since the two sources (DB-backed kind='template' Agent rows vs. an
+# in-memory Python registry) have nothing else in common.
 #
 # Token shape (the frontend agent in this sprint depends on this EXACT
 # shape): `token = "<scope_token>.<exposed_name>"`, e.g.
@@ -175,8 +195,8 @@ def _exposed_column_catalog_rows(grammar: str | None) -> list[GrammarTokenOut]:
     rationale as `_fragment_catalog_rows`'s own `grammar=None` short-circuit.
 
     Negative id namespace, offset far below `_fragment_catalog_rows`' own
-    `-row.id` range (AgentTemplate ids are small DB autoincrement values)
-    so the two synthetic-row sources can never collide on id even though
+    `-row.id` range (Agent ids are small DB autoincrement values) so the
+    two synthetic-row sources can never collide on id even though
     both use negative ids to stay clear of real (positive) GrammarToken
     ids. Ids are deterministic across calls/process restarts — derived
     from a FIXED, alphabetically-sorted walk order, not registry dict
@@ -337,10 +357,11 @@ class GrammarTokenController(Controller):
         token name so the list is stable across reloads.
 
         When `grammar` is "condition" or "notify" — the exact two calls
-        the agent CLI's catalog fetcher makes — active AgentTemplate
-        ("Token") rows are merged in too, marked `is_fragment_ref=True`
-        (see `_fragment_catalog_rows`). An unfiltered call never merges
-        them (see that function's docstring for why).
+        the agent CLI's catalog fetcher makes — `kind='template'` Agent
+        ("Token"/"Template") rows are merged in too, marked
+        `is_fragment_ref=True` (see `_fragment_catalog_rows`). An
+        unfiltered call never merges them (see that function's docstring
+        for why).
 
         When `grammar == "condition"` specifically, the Sprint 15
         per-scope exposed-column registry (`EXPOSED_COLUMNS` in

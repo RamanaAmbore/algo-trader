@@ -54,11 +54,6 @@ const TEMPLATE_ROW = {
   tier: 'medium', topic: 'general', group: null, cli_source: null,
 };
 
-const FRAGMENT_ROW = {
-  id: 301, kind: 'notify', name: 'notify-critical-trio-e2e', body: [{ channel: 'telegram', enabled: true }],
-  description: '', is_system: false, is_active: true,
-};
-
 async function mockAgentsList(/** @type {import('@playwright/test').Page} */ page, /** @type {any[]} */ rows) {
   await page.route('**/api/agents/', async (route) => {
     if (route.request().method() !== 'GET') { await route.continue(); return; }
@@ -144,17 +139,18 @@ test('event Agent (Alert): Edit decompiles, Save PUTs the same slug', async ({ p
   expect(putCalled.url).toContain('/api/agents/error-alert-e2e');
 });
 
-test('Template (Token): Edit decompiles, Save PATCHes the resolved fragment id — never a different id', async ({ page }) => {
+test('Template (Token): Edit decompiles, Save PUTs /api/agents/{slug} — never the retired fragments route', async ({ page }) => {
   await mockAgentsList(page, [TEMPLATE_ROW]);
-  await page.route('**/api/admin/fragments/', async (route) => {
-    if (route.request().method() !== 'GET') { await route.continue(); return; }
-    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([FRAGMENT_ROW]) });
+  let putCalled = /** @type {any} */ (null);
+  let fragmentsRouteCalled = false;
+  await page.route('**/api/admin/fragments/**', async (route) => {
+    fragmentsRouteCalled = true;
+    await route.continue();
   });
-  let patchCalled = /** @type {any} */ (null);
-  await page.route('**/api/admin/fragments/301', async (route) => {
-    if (route.request().method() !== 'PATCH') { await route.continue(); return; }
-    patchCalled = { url: route.request().url(), body: route.request().postDataJSON() };
-    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(FRAGMENT_ROW) });
+  await page.route('**/api/agents/notify-critical-trio-e2e', async (route) => {
+    if (route.request().method() !== 'PUT') { await route.continue(); return; }
+    putCalled = { url: route.request().url(), body: route.request().postDataJSON() };
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ detail: 'ok' }) });
   });
 
   const row = await openCardAndRow(page, 'templates', 'Notify Critical Trio E2E');
@@ -169,6 +165,8 @@ test('Template (Token): Edit decompiles, Save PATCHes the resolved fragment id �
   await expect(saveBtn).toHaveText('Save', { timeout: TIMEOUT });
   await saveBtn.click();
 
-  await expect.poll(() => patchCalled, { timeout: TIMEOUT }).not.toBeNull();
-  expect(patchCalled.url).toContain('/api/admin/fragments/301');
+  await expect.poll(() => putCalled, { timeout: TIMEOUT }).not.toBeNull();
+  expect(putCalled.url).toContain('/api/agents/notify-critical-trio-e2e');
+  expect(putCalled.body.events).toEqual([{ channel: 'telegram', enabled: true }]);
+  expect(fragmentsRouteCalled).toBe(false);
 });

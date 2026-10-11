@@ -1110,7 +1110,7 @@ describe('Sprint 10 — hyphenated NAME lexing (call/token-reference position on
 });
 
 describe('Sprint 10 — standalone token(...) statement', () => {
-  it('compiles to a POST /api/admin/fragments-shaped object', () => {
+  it('compiles to a {kind, name, body, description?} object', () => {
     const r = compile('token(kind=notify) telegram, email #name="x"');
     expect(r.ok).toBe(true);
     expect(r.fragment).toEqual({

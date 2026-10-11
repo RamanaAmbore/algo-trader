@@ -29,8 +29,6 @@ const createAgent         = vi.fn();
 const updateAgent         = vi.fn();
 const createOrderTemplate = vi.fn();
 const patchOrderTemplate  = vi.fn();
-const createAgentFragment = vi.fn();
-const patchAgentFragment  = vi.fn();
 const reloadOrderTemplates = vi.fn();
 
 vi.mock('$lib/api', () => ({
@@ -41,8 +39,6 @@ vi.mock('$lib/api', () => ({
   updateAgent:         (...a) => updateAgent(...a),
   createOrderTemplate: (...a) => createOrderTemplate(...a),
   patchOrderTemplate:  (...a) => patchOrderTemplate(...a),
-  createAgentFragment: (...a) => createAgentFragment(...a),
-  patchAgentFragment:  (...a) => patchAgentFragment(...a),
 }));
 vi.mock('$lib/data/templates', () => ({
   reloadOrderTemplates: (...a) => reloadOrderTemplates(...a),
@@ -72,8 +68,6 @@ beforeEach(() => {
   updateAgent.mockReset();
   createOrderTemplate.mockReset();
   patchOrderTemplate.mockReset();
-  createAgentFragment.mockReset();
-  patchAgentFragment.mockReset();
   reloadOrderTemplates.mockReset();
 });
 
@@ -382,25 +376,43 @@ describe('submitConsoleBracket', () => {
 // ── submitConsoleToken (Sprint 14) ──────────────────────────────────────
 
 describe('submitConsoleToken', () => {
-  it('creates the fragment via the existing createAgentFragment call', async () => {
-    createAgentFragment.mockResolvedValue({ id: 7, kind: 'notify', name: 'my-token' });
+  it('creates an Agent(kind="template") row via the unified createAgent call (Sprint D2)', async () => {
+    createAgent.mockResolvedValue({ detail: "Agent 'my-token' created" });
     const fragment = { kind: 'notify', name: 'my-token', body: [{ channel: 'telegram', enabled: true }] };
-    const r = await submitConsoleToken(fragment);
+    const r = await submitConsoleToken(fragment, 'token(kind=notify) telegram #name="my-token"');
     expect(r.ok).toBe(true);
-    expect(createAgentFragment).toHaveBeenCalledWith(fragment);
+    expect(r.slug).toBe('my-token');
+    expect(createAgent).toHaveBeenCalledWith({
+      slug: 'my-token',
+      kind: 'template',
+      name: 'my-token',
+      description: '',
+      conditions: {},
+      events: fragment.body,
+      actions: [],
+      cli_source: 'token(kind=notify) telegram #name="my-token"',
+    });
   });
 
-  it('surfaces a create failure (e.g. 409 name collision) as a structured error', async () => {
-    createAgentFragment.mockRejectedValue(new Error("Fragment notify/my-token already exists"));
+  it('sends the fragment name as the slug UNCHANGED — never slugified', async () => {
+    createAgent.mockResolvedValue({ detail: 'ok' });
+    await submitConsoleToken({ kind: 'notify', name: 'already-valid-slug', body: [] });
+    expect(createAgent.mock.calls[0][0].slug).toBe('already-valid-slug');
+  });
+
+  it('surfaces a create failure (e.g. 409 slug collision, or a 400 bad-slug-shape) as a structured error', async () => {
+    createAgent.mockRejectedValue(new Error("Agent 'my-token' already exists"));
     const r = await submitConsoleToken({ kind: 'notify', name: 'my-token', body: [] });
     expect(r.ok).toBe(false);
     expect(r.error).toMatch(/already exists/);
   });
 
-  it('requires a compiled fragment — never calls createAgentFragment with nothing', async () => {
-    const r = await submitConsoleToken(null);
-    expect(r.ok).toBe(false);
-    expect(createAgentFragment).not.toHaveBeenCalled();
+  it('requires a compiled fragment with a name — never calls createAgent with nothing', async () => {
+    const r1 = await submitConsoleToken(null);
+    expect(r1.ok).toBe(false);
+    const r2 = await submitConsoleToken({ kind: 'notify', body: [] });   // no name
+    expect(r2.ok).toBe(false);
+    expect(createAgent).not.toHaveBeenCalled();
   });
 });
 
@@ -490,24 +502,37 @@ describe('updateConsoleBracket', () => {
 });
 
 describe('updateConsoleToken', () => {
-  it('calls patchAgentFragment(id, {body, description}) — never createAgentFragment', async () => {
-    patchAgentFragment.mockResolvedValue({ id: 7, name: 'my-token' });
+  it('calls updateAgent(slug, {description, conditions, events, cli_source}) — never createAgent (Sprint D2)', async () => {
+    updateAgent.mockResolvedValue({ detail: 'ok' });
     const compiledFragment = { kind: 'notify', name: 'my-token', body: [{ channel: 'telegram', enabled: true }], description: 'hi' };
-    const r = await updateConsoleToken(7, compiledFragment);
+    const r = await updateConsoleToken('my-token', compiledFragment, 'token(kind=notify) telegram #name="my-token" #desc="hi"');
     expect(r.ok).toBe(true);
-    expect(createAgentFragment).not.toHaveBeenCalled();
-    expect(patchAgentFragment).toHaveBeenCalledWith(7, { body: compiledFragment.body, description: 'hi' });
+    expect(r.slug).toBe('my-token');
+    expect(createAgent).not.toHaveBeenCalled();
+    expect(updateAgent).toHaveBeenCalledWith('my-token', {
+      description: 'hi',
+      conditions: {},
+      events: compiledFragment.body,
+      cli_source: 'token(kind=notify) telegram #name="my-token" #desc="hi"',
+    });
   });
 
-  it('requires a target id — never calls patchAgentFragment with no row selected', async () => {
+  it('never sends name — Agent.name must never drift from the $ref-key slug', async () => {
+    updateAgent.mockResolvedValue({ detail: 'ok' });
+    await updateConsoleToken('my-token', { kind: 'notify', name: 'my-token', body: [] });
+    const sentPayload = updateAgent.mock.calls[0][1];
+    expect(Object.prototype.hasOwnProperty.call(sentPayload, 'name')).toBe(false);
+  });
+
+  it('requires a target slug — never calls updateAgent with no row selected', async () => {
     const r = await updateConsoleToken(null, { kind: 'notify', name: 'x', body: [] });
     expect(r.ok).toBe(false);
-    expect(patchAgentFragment).not.toHaveBeenCalled();
+    expect(updateAgent).not.toHaveBeenCalled();
   });
 
-  it('requires a compiled fragment — never calls patchAgentFragment with nothing', async () => {
-    const r = await updateConsoleToken(7, null);
+  it('requires a compiled fragment — never calls updateAgent with nothing', async () => {
+    const r = await updateConsoleToken('my-token', null);
     expect(r.ok).toBe(false);
-    expect(patchAgentFragment).not.toHaveBeenCalled();
+    expect(updateAgent).not.toHaveBeenCalled();
   });
 });
