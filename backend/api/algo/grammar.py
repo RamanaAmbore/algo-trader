@@ -1011,11 +1011,13 @@ _ORDERS_COLUMNS = {
     # field comment, models.py).
     'price':      _col('price', 'Order Price (₹)'),
     'status':     _col('status', 'Order Status', 'string'),
-    # Maps 1:1 to the `order_id` param every `cancel_order`/`modify_order`
-    # action reads (actions_live.py) — i.e. the BROKER's order id
-    # (AlgoOrder.broker_order_id), never the internal AlgoOrder.id primary
-    # key. A `{"$row": "order_id"}` action param on an `orders.any_acct`
-    # match therefore resolves to exactly the value those actions expect.
+    # Maps 1:1 to the `broker_order_id` param every `cancel_order`/
+    # `modify_order` action reads first (actions_live.py; the legacy
+    # `order_id` key is still read as a fallback) — i.e. the BROKER's
+    # order id (AlgoOrder.broker_order_id), never the internal
+    # AlgoOrder.id primary key. A `{"broker_order_id": {"$row":
+    # "order_id"}}` action param on an `orders.any_acct` match therefore
+    # resolves to exactly the value those actions expect.
     'order_id':   _col('order_id', 'Broker Order ID', 'string'),
 }
 

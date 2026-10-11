@@ -541,6 +541,8 @@ async def test_action_live_close_position_ltp_fetched_via_helper():
          patch("backend.brokers.registry.get_broker",     return_value=broker), \
          patch("backend.brokers.adapters.kite.get_lot_size",
                new=AsyncMock(return_value=100)), \
+         patch("backend.api.routes.orders_place._fetch_net_position_qty",
+               new=AsyncMock(return_value=100.0)), \
          patch("backend.api.algo.chase.chase_order",      new=mock_chase), \
          patch("backend.api.algo.actions._write_live_order",
                new=AsyncMock(return_value=42)), \
@@ -630,6 +632,8 @@ async def test_action_live_close_position_db_write_failure_never_calls_chase():
          patch("backend.brokers.registry.get_broker",     return_value=broker), \
          patch("backend.brokers.adapters.kite.get_lot_size",
                new=AsyncMock(return_value=100)), \
+         patch("backend.api.routes.orders_place._fetch_net_position_qty",
+               new=AsyncMock(return_value=100.0)), \
          patch("backend.api.algo.chase.chase_order",      new=mock_chase), \
          patch("backend.api.algo.actions._write_live_order",
                new=AsyncMock(return_value=None)), \

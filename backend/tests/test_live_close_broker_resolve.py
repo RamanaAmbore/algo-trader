@@ -86,6 +86,12 @@ async def test_live_close_broker_resolve_failure_does_not_raise_and_logs_correct
     with (
         # logger lives in actions_live; patch there so _action_live_close_position sees it.
         patch.object(_mod_live, "logger",       mock_logger),
+        # Position-verification gate (2026-10 fix) — stub the real-position
+        # lookup so this NameError regression test can reach the
+        # get_broker()/chase_order() path it actually exercises. qty=50 held
+        # long, SELL requested — side matches, qty matches exactly.
+        patch("backend.api.routes.orders_place._fetch_net_position_qty",
+              new=AsyncMock(return_value=50.0)),
         # get_broker is imported locally from backend.brokers inside the function;
         # patch the source so the local `from backend.brokers import get_broker` picks it up.
         patch("backend.brokers.get_broker", side_effect=_raising_get_broker),

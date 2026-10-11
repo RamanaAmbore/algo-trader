@@ -12,6 +12,13 @@ The project bans mocking of BROKER API calls (network-bound).
 `chase_order` is internal, so it IS patched to isolate broker contact.
 `get_lot_size` is patched to avoid the instruments-cache hit.
 `run_preflight` is NOT patched — these tests verify the real guard fires.
+`backend.api.routes.orders_place._fetch_net_position_qty` (2026-10 fix)
+is patched for `_action_live_close_position` tests — it's an internal
+verified-intent helper (reads the cached broker-DataFrame, not a direct
+broker API call) that resolves/verifies the real held position before
+`close_position` is allowed to proceed; patched here to a value matching
+each test's `side`/`quantity` params so the position gate passes and the
+test can isolate the G1/G2 behavior it's actually checking.
 """
 
 import pytest
@@ -87,6 +94,8 @@ async def test_close_position_sub_lot_mcx_blocked():
          patch("backend.brokers.registry.get_broker",     return_value=broker), \
          patch("backend.brokers.adapters.kite.get_lot_size",
                new=AsyncMock(return_value=100)), \
+         patch("backend.api.routes.orders_place._fetch_net_position_qty",
+               new=AsyncMock(return_value=50.0)), \
          patch("backend.api.algo.chase.chase_order",      new=mock_chase), \
          patch("backend.api.algo.actions._write_live_order", new=mock_write), \
          patch("backend.brokers.get_broker",              return_value=broker), \
@@ -132,6 +141,8 @@ async def test_close_position_valid_3_lot_mcx_passes():
          patch("backend.brokers.registry.get_broker",     return_value=broker), \
          patch("backend.brokers.adapters.kite.get_lot_size",
                new=AsyncMock(return_value=100)), \
+         patch("backend.api.routes.orders_place._fetch_net_position_qty",
+               new=AsyncMock(return_value=300.0)), \
          patch("backend.api.algo.chase.chase_order",      new=mock_chase), \
          patch("backend.api.algo.actions._write_live_order",
                new=AsyncMock(return_value=42)), \
@@ -169,6 +180,8 @@ async def test_close_position_6_lot_mcx_passes_g2_bypassed():
          patch("backend.brokers.registry.get_broker",     return_value=broker), \
          patch("backend.brokers.adapters.kite.get_lot_size",
                new=AsyncMock(return_value=100)), \
+         patch("backend.api.routes.orders_place._fetch_net_position_qty",
+               new=AsyncMock(return_value=600.0)), \
          patch("backend.api.algo.chase.chase_order",      new=mock_chase), \
          patch("backend.api.algo.actions._write_live_order",
                new=AsyncMock(return_value=42)), \

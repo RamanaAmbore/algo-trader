@@ -605,24 +605,97 @@ async def _close_position_on_failure(
 
 def _al_close_resolve_params(
     params: dict,
-) -> "tuple[str, str, str, int, str, str]":
-    """Extract and validate close_position params from the action dict.
+) -> "tuple[str, str, str, int, str | None, str]":
+    """Extract close_position params from the action dict (raw extraction
+    only — no position-aware resolution; see `_al_close_resolve_position`
+    for that).
 
-    Returns (account, symbol, exchange, qty, side, product).
-    Raises ValueError when required fields are absent.
+    Returns (account, symbol, exchange, qty_param, side_param, product).
+    `qty_param` is 0 when omitted — the caller treats 0 as "flatten the
+    full position", deriving the real quantity from the live broker
+    position. `side_param` is None when omitted so the caller can derive
+    it from the position's own sign, per the `close_position`
+    params_schema (`agent_grammar.yaml`): "Override auto-derived side.
+    Default: long -> SELL, short -> BUY."
+
+    2026-10 audit fix: this function used to hard-default `side="SELL"`
+    unconditionally and require `quantity > 0` — silently DOUBLING a
+    short position's exposure (a BUY-side position closed with a
+    hardcoded SELL order instead of a covering BUY) whenever an agent
+    omitted `side`/`quantity`, even though the schema documents both as
+    optional with position-derived defaults. Raises ValueError only for
+    missing account/symbol identity fields or a negative quantity —
+    never for an omitted side/quantity, which are now valid inputs.
     """
     account  = str(params.get("account") or "")
     symbol   = str(params.get("symbol") or params.get("tradingsymbol") or "")
     exchange = str(params.get("exchange") or "NFO")
-    qty      = int(params.get("quantity") or params.get("qty") or 0)
-    side     = (params.get("side") or params.get("transaction_type") or "SELL").upper()
+    qty_raw  = params.get("quantity")
+    if qty_raw is None:
+        qty_raw = params.get("qty")
+    qty_param = int(qty_raw) if qty_raw else 0
+    side_raw   = params.get("side") or params.get("transaction_type")
+    side_param = str(side_raw).upper() if side_raw else None
     product  = str(params.get("product") or "NRML")
-    if not account or not symbol or qty <= 0:
+    if not account or not symbol:
         raise ValueError(
             f"close_position: missing required params (account={account!r}, "
-            f"symbol={symbol!r}, qty={qty})"
+            f"symbol={symbol!r})"
         )
-    return account, symbol, exchange, qty, side, product
+    if qty_param < 0:
+        raise ValueError(
+            f"close_position: quantity must not be negative (got {qty_param})"
+        )
+    return account, symbol, exchange, qty_param, side_param, product
+
+
+async def _al_close_resolve_position(
+    account: str, symbol: str, exchange: str,
+    side_param: "str | None", qty_param: int,
+) -> "tuple[str, int] | None":
+    """Resolve + verify the real side/qty to close against the live
+    broker position.
+
+    2026-10 audit fix: `_action_live_close_position` used to hard-default
+    `side="SELL"` unconditionally and pass `intent="close"` to
+    `run_preflight` with ZERO verification against the real position — a
+    short position (net_qty < 0) closed with the hardcoded SELL default
+    would DOUBLE the short instead of covering it, and the unverified
+    `intent="close"` bypassed the G2 5-lot fat-finger cap for an order
+    that was never confirmed to actually offset anything. Fixed by
+    reusing `orders_place.py`'s `_fetch_net_position_qty` (sign) and
+    `_verify_close_intent` (sign + magnitude) — the EXACT same
+    lookup+verification pattern the manual-ticket close path
+    (`_ticket_enforce_lot_and_fat_finger`) already relies on — instead of
+    reinventing it here. Both helpers read through the shared 30s
+    raw-broker-DataFrame cache (`_RAW_CACHE`), so this adds no extra
+    broker round-trip versus the single lookup either one does alone.
+
+    Returns (side, qty) only when the close is verified: a live position
+    exists, is non-flat, the (possibly operator-overridden) side
+    genuinely offsets it, and the qty (defaulted to the full held
+    quantity when omitted) does not exceed the held quantity. Returns
+    None in every other case — callers MUST refuse to place/chase on
+    None, never fall back to placing an unverified close.
+    """
+    from backend.api.routes.orders_place import (
+        _fetch_net_position_qty, _verify_close_intent,
+    )
+
+    net_qty = await _fetch_net_position_qty(symbol, exchange, account)
+    if net_qty is None or net_qty == 0:
+        return None
+
+    derived_side = "SELL" if net_qty > 0 else "BUY"
+    side = (side_param or derived_side).upper()
+    qty  = int(qty_param) if qty_param else int(abs(net_qty))
+    if qty <= 0:
+        return None
+
+    verified = await _verify_close_intent(symbol, exchange, side, account, qty)
+    if not verified:
+        return None
+    return side, qty
 
 
 async def _al_close_fetch_broker_ltp(
@@ -654,8 +727,16 @@ async def _action_live_close_position(agent, context: dict, params: dict):
     """
     Close a single position via the adaptive chase engine.
 
-    Resolves account / symbol / qty / side from params, fetches LTP from
-    the broker as the initial limit price, then delegates to chase_order()
+    Resolves account / symbol from params, then resolves the real
+    side/qty to close by looking up the live broker position
+    (`_al_close_resolve_position`) — side defaults to the direction that
+    actually offsets the held position (long -> SELL, short -> BUY);
+    quantity defaults to the full held quantity when omitted. The
+    operator-supplied `side`/`quantity` (if any) must still verify
+    against the real position before `intent="close"` is allowed to
+    bypass the G2 fat-finger cap; an unverified close is refused
+    (REJECTED row + alert), never silently placed. Fetches LTP from the
+    broker as the initial limit price, then delegates to chase_order()
     which handles cancel-and-re-place until filled or attempt-cap.
 
     An AlgoOrder(mode='live') row is written before the first placement.
@@ -665,10 +746,36 @@ async def _action_live_close_position(agent, context: dict, params: dict):
     from backend.api.algo.chase import chase_order, ChaseConfig
     from backend.api.algo.actions import _write_live_order
 
-    account, symbol, exchange, qty, side, product = _al_close_resolve_params(params)
+    account, symbol, exchange, qty_param, side_param, product = (
+        _al_close_resolve_params(params)
+    )
+
+    resolved = await _al_close_resolve_position(
+        account, symbol, exchange, side_param, qty_param,
+    )
+    if resolved is None:
+        pf_unverified = {
+            "blocked": [{
+                "code": "CLOSE_INTENT_UNVERIFIED",
+                "reason": (
+                    "could not verify this close against the real broker "
+                    "position (no live position found, position is flat, "
+                    "requested quantity exceeds the held quantity, or the "
+                    "requested side does not offset the held position)"
+                ),
+            }],
+        }
+        await _close_position_preflight_block(
+            pf_unverified, agent, account, symbol, exchange,
+            side_param or "SELL", qty_param, None,
+        )
+        return  # abort — never place/chase an unverified close
+
+    side, qty = resolved
     broker, price = await _al_close_fetch_broker_ltp(account, exchange, symbol)
 
-    # ── Preflight (G1 lot-multiple; G2 5-lot cap bypassed for closes) ────
+    # ── Preflight (G1 lot-multiple; G2 5-lot cap bypassed for closes,
+    # now reached only after the verified-intent gate above) ───────────
     pf = await run_preflight(account, {
         "exchange": exchange, "tradingsymbol": symbol,
         "quantity": qty, "order_type": "LIMIT",
@@ -950,51 +1057,86 @@ async def _action_live_cancel_order(agent, context: dict, params: dict):
     """
     Cancel a single open broker order.  Wraps kite.cancel_order.
     Marks the matching AlgoOrder row CANCELLED on success.
+
+    2026-10 audit fix: `broker_order_id` is the key the `cancel_order`
+    params_schema (`agent_grammar.yaml`) documents and the only key
+    `routes/agents.py` accepts when saving an agent — this handler used
+    to read ONLY the legacy `order_id` key, so every schema-conformant
+    agent silently did nothing (empty order_id -> ValueError on every
+    fire). Fixed with the same dual-key read `_action_live_modify_order`
+    already uses for the same field. Also added: the FINAL-status guard
+    (`ALGO_ORDER_FINAL_STATUSES`) + `.with_for_update()` row lock that
+    `_al_modify_write_reject` already applies for modify_order failures —
+    a row already FILLED/REJECTED must never be overwritten to CANCELLED
+    by a late/duplicate cancel confirmation.
     """
     import asyncio
     from backend.brokers import get_broker
-    from sqlalchemy import update as sql_update
+    from sqlalchemy import select as sql_select
     from backend.api.database import async_session
-    from backend.api.models import AlgoOrder
+    from backend.api.models import AlgoOrder, ALGO_ORDER_FINAL_STATUSES
 
     account  = str(params.get("account") or "")
-    order_id = str(params.get("order_id") or "")
+    order_id = str(params.get("broker_order_id") or params.get("order_id") or "")
     variety  = str(params.get("variety") or "regular")
 
     if not account or not order_id:
-        raise ValueError(f"cancel_order: account and order_id are required")
+        raise ValueError(
+            f"cancel_order: account and broker_order_id are required"
+        )
 
     broker = get_broker(account)
     loop = asyncio.get_running_loop()
 
-    try:
-        await loop.run_in_executor(
-            None, lambda: broker.cancel_order(order_id, variety=variety)
-        )
-    except Exception as e:
-        raise
+    await loop.run_in_executor(
+        None, lambda: broker.cancel_order(order_id, variety=variety)
+    )
 
-    # Mark CANCELLED in our order log.
+    # Mark CANCELLED in our order log — never clobber an already-final row.
     try:
         async with async_session() as s:
-            await s.execute(
-                sql_update(AlgoOrder)
+            rows = (await s.execute(
+                sql_select(AlgoOrder)
                 .where(AlgoOrder.broker_order_id == order_id)
-                .values(status="CANCELLED",
-                        detail=f"Cancelled by agent {agent.slug}")
-            )
-            await s.commit()
+                .with_for_update()
+            )).scalars().all()
+            changed = False
+            for row in rows:
+                if row.status in ALGO_ORDER_FINAL_STATUSES:
+                    logger.warning(
+                        "cancel_order: AlgoOrder #%s already in final "
+                        "status %s — leaving status unchanged, not "
+                        "overwriting to CANCELLED",
+                        getattr(row, "id", "?"), row.status,
+                    )
+                    continue
+                row.status = "CANCELLED"
+                row.detail = f"Cancelled by agent {agent.slug}"
+                changed = True
+            if changed:
+                await s.commit()
     except Exception as db_e:
         logger.warning(f"[LIVE] cancel_order DB update failed: {db_e}")
 
 
 async def _al_cancel_broker_orders(
-    broker, scope_account: str, loop
+    broker, scope_account: str, loop,
+    symbol: "str | None" = None, side: "str | None" = None,
 ) -> "tuple[int, int]":
-    """Cancel all open orders for a single broker account.
+    """Cancel open orders for a single broker account, optionally
+    narrowed to a specific `symbol`/`side`.
 
-    Skips the broker entirely when scope_account is set and does not match.
-    Returns (cancelled_count, error_count).
+    Skips the broker entirely when scope_account is set and does not
+    match. When `symbol` and/or `side` are set, only orders whose own
+    `tradingsymbol`/`transaction_type` match are cancelled — an order
+    missing either key entirely (e.g. a broker whose `orders()` dicts
+    use different field names) is left alone rather than guessed at,
+    fail-safe. Returns (cancelled_count, error_count).
+
+    2026-10 audit fix: this used to ignore `symbol`/`side` entirely —
+    `cancel_all_orders(scope=account, account=X, symbol=Y)` cancelled
+    EVERY open order on account X, including manual orders unrelated to
+    the agent, instead of only orders on symbol Y.
     """
     acct = broker.account
     if scope_account and acct != scope_account:
@@ -1009,6 +1151,16 @@ async def _al_cancel_broker_orders(
             if str(o.get("status", "")).upper()
             in ("OPEN", "TRIGGER PENDING", "AMO REQ RECEIVED")
         ]
+        if symbol:
+            open_orders = [
+                o for o in open_orders
+                if str(o.get("tradingsymbol") or "").upper() == symbol.upper()
+            ]
+        if side:
+            open_orders = [
+                o for o in open_orders
+                if str(o.get("transaction_type") or "").upper() == side.upper()
+            ]
         for o in open_orders:
             oid     = str(o.get("order_id", ""))
             variety = str(o.get("variety") or "regular")
@@ -1035,29 +1187,57 @@ async def _al_cancel_broker_orders(
 
 async def _action_live_cancel_all_orders(agent, context: dict, params: dict):
     """
-    Cancel every open order across all accounts (or a scoped account).
+    Cancel every open order across all accounts (or a scoped account),
+    optionally narrowed by `symbol`/`side`.
 
     Routes through the Broker registry — broker.orders() lists the
     account's open orders, broker.cancel_order() fires the cancel. All
     calls are wrapped in run_in_executor since the underlying SDKs are
     synchronous.  Returns aggregate cancelled count via log.
+
+    2026-10 audit fix: `symbol`/`side` (both documented in the
+    `cancel_all_orders` params_schema, `agent_grammar.yaml`) used to be
+    silently ignored — now threaded through to `_al_cancel_broker_orders`
+    so a scoped cancel only touches matching orders, not every open
+    order on the account.
+
+    `scope="account"` without an `account` value is refused outright
+    (ValueError) rather than silently falling through to a fleet-wide
+    cancel — the one case that would have been WIDER than intended.
+    `account` otherwise narrows the cancel whenever it's set, regardless
+    of `scope` — this is the pre-existing (safe, narrowing-only) behavior
+    and is deliberately NOT relaxed to "only gate when scope=='account'",
+    which would have widened an accidental account-scoped cancel under
+    scope='total' to every account — the opposite of this fix's intent.
     """
     import asyncio
     from backend.brokers.registry import all_brokers
 
     loop = asyncio.get_running_loop()
+    scope = str(params.get("scope") or "total").lower()
     scope_account = str(params.get("account") or "")
+    if scope == "account" and not scope_account:
+        raise ValueError(
+            "cancel_all_orders: account is required when scope=account"
+        )
+    symbol = params.get("symbol")
+    symbol = str(symbol) if symbol else None
+    side = params.get("side")
+    side = str(side).upper() if side else None
 
     total_cancelled = 0
     total_errors = 0
 
     for broker in all_brokers():
-        cancelled, errors = await _al_cancel_broker_orders(broker, scope_account, loop)
+        cancelled, errors = await _al_cancel_broker_orders(
+            broker, scope_account, loop, symbol=symbol, side=side,
+        )
         total_cancelled += cancelled
         total_errors    += errors
 
     logger.info(f"[LIVE] cancel_all_orders complete: {total_cancelled} cancelled, "
-                f"{total_errors} errors (agent={agent.slug})")
+                f"{total_errors} errors (agent={agent.slug}, scope={scope}, "
+                f"symbol={symbol}, side={side})")
 
 
 def _al_positions_to_rows(df) -> "list[dict]":
