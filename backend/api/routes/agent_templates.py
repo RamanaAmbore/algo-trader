@@ -79,10 +79,33 @@ def _to_out(row: AgentTemplate) -> FragmentOut:
     )
 
 
+def _validate_condition_body(body: dict) -> None:
+    """Stage 2 — dry-run a condition token's body through the SAME grammar
+    validator `create_agent`/`update_agent` already use for an agent's own
+    `conditions` tree (`agent_evaluator.validate()`). Without this, a Token
+    saved via the TokensTab "Edit" flow with an unknown metric, a malformed
+    `quote.*` leaf missing the required `symbol` qualifier, or any other
+    structurally-invalid condition tree was accepted with no error — every
+    agent that references it via `{"$ref": <name>}` then silently evaluates
+    to `[]` forever, with no indication anywhere of why.
+
+    Raises HTTPException(422) with the same `extra={"errors": errors}`
+    shape `agents.py:_age_validate_threshold_conditions` already uses, for
+    consistency across both save surfaces."""
+    from backend.api.algo.agent_evaluator import validate as v2_validate
+    errors = v2_validate(body)
+    if errors:
+        raise HTTPException(status_code=422,
+            detail="; ".join(errors), extra={"errors": errors})
+
+
 def _validate_body_shape(kind: str, body) -> None:
     """Stage 1 — sanity-check the body matches its kind. Notify must be
     a list of {channel, enabled} dicts; condition must be a dict (leaf
-    or composite). Raises HTTPException(400) on bad shape."""
+    or composite). Raises HTTPException(400) on bad shape. Condition
+    bodies additionally run through `_validate_condition_body` (Stage 2)
+    once the shape check passes — notify bodies are a channel list, not
+    a condition tree, so they never go through the grammar validator."""
     if kind == "notify":
         if not isinstance(body, list):
             raise HTTPException(status_code=400,
@@ -95,6 +118,7 @@ def _validate_body_shape(kind: str, body) -> None:
         if not isinstance(body, dict):
             raise HTTPException(status_code=400,
                 detail="condition token body must be a dict (leaf or composite)")
+        _validate_condition_body(body)
     else:
         raise HTTPException(status_code=400,
             detail=f"kind must be one of {sorted(_VALID_KINDS)}")
