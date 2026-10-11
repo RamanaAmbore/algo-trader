@@ -77,6 +77,26 @@ describe('bracketAgentToTemplateOut (Sprint E)', () => {
     expect(out.tags).toEqual(['x']);
   });
 
+  it('a custom (non-system) bracket reports slug:null even though Agent.slug '
+    + 'carries bracket_registry\'s synthetic bracket-{id} placeholder -- '
+    + 'decompileBracket\'s refusal rule treats non-null slug as "system-seeded, '
+    + 'cannot round-trip", so forwarding the synthetic placeholder verbatim '
+    + 'would falsely refuse every custom bracket (the actual bug this guards)', () => {
+    const out = bracketAgentToTemplateOut({
+      id: 7, legacy_template_id: 42, slug: 'bracket-42', name: 'My Custom Bracket',
+      kind: 'bracket', is_system: false, status: 'active', bracket_config: {},
+    });
+    expect(out.slug).toBeNull();
+  });
+
+  it('a system bracket still forwards its real slug', () => {
+    const out = bracketAgentToTemplateOut({
+      id: 7, legacy_template_id: 1, slug: 'default-bull', name: 'Default Bull',
+      kind: 'bracket', is_system: true, status: 'active', bracket_config: {},
+    });
+    expect(out.slug).toBe('default-bull');
+  });
+
   it('is_active derives from status, not a stored bracket_config flag', () => {
     const out = bracketAgentToTemplateOut({
       id: 1, legacy_template_id: 2, slug: 's', name: 'n', kind: 'bracket',

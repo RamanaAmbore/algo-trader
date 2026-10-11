@@ -87,7 +87,16 @@ export function bracketAgentToTemplateOut(agent) {
   const cfg = agent.bracket_config || {};
   return {
     id: agent.legacy_template_id,
-    slug: agent.slug,
+    // `decompileBracket`'s refusal rule treats a non-null `slug` as
+    // "system-seeded, can't round-trip" (Sprint 18 -- written when
+    // OrderTemplate.slug was only ever set for system rows). Agent.slug
+    // is unique/required on EVERY row now, so a custom bracket's mirror
+    // gets bracket_registry.bracket_slug_for()'s synthetic `bracket-{id}`
+    // placeholder, not a real slug -- passing it through verbatim here
+    // made every custom bracket falsely trip that refusal. Only forward
+    // a real slug for system rows; custom rows report null, restoring
+    // the original "null = safe to decompile" signal the check depends on.
+    slug: agent.is_system ? agent.slug : null,
     name: agent.name,
     description: agent.description || '',
     applies_to: cfg.applies_to ?? 'both',
