@@ -59,14 +59,16 @@ const DESIGNATED_PASS = process.env.PLAYWRIGHT_DESIGNATED_PASS || '';
 const HAS_DESIGNATED  = !!DESIGNATED_PASS;
 
 // Pages gated by caps that admin (rambo) holds: manage_brokers + view_audit.
-// /admin/alerts uses view_audit which admin holds; /admin/mcp uses
-// view_research which admin does NOT hold per backend/api/rbac.py CAPS.
+// /admin/mcp uses view_research which admin does NOT hold per
+// backend/api/rbac.py CAPS. /admin/alerts removed (2026-10 nav
+// restructure) — folded into LogPanel's 'alerts' tab on /automation,
+// gated by the same view_audit cap; see logpanel_alerts_tab.spec.js
+// for its own RBAC coverage.
 const ADMIN_ACCESSIBLE_PAGES = [
   { path: '/admin/brokers',  title: 'Brokers',  cap: 'manage_brokers' },
   { path: '/admin/history',  title: 'History',  cap: 'view_audit'     },
   { path: '/admin/audit',    title: 'Audit',    cap: 'view_audit'     },
   { path: '/admin/health',   title: 'Health',   cap: 'view_audit'     },
-  { path: '/admin/alerts',   title: 'Alerts',   cap: 'view_audit'     },
 ];
 
 // Pages gated by caps that only designated holds.
@@ -92,7 +94,6 @@ const ACCESS_LOCKED_PAGES_ADMIN_OK = [
   'audit',     // view_audit
   'history',   // view_audit
   'health',    // view_audit
-  'alerts',    // view_audit
 ];
 const ACCESS_LOCKED_PAGES_DESIGNATED_ONLY = [
   'settings',  // manage_settings
@@ -325,7 +326,9 @@ test(`[STALE] no bare role==='admin' in config page guards`, async () => {
     path.join(routesRoot, 'history',    '+page.svelte'),
     path.join(routesRoot, 'health',     '+page.svelte'),
     path.join(routesRoot, 'statements', '+page.svelte'),
-    path.join(routesRoot, 'alerts',     '+page.svelte'),
+    // 'alerts' removed (2026-10 nav restructure) — route deleted,
+    // folded into LogPanel's 'alerts' tab (no top-level access-denied
+    // lock pattern there — gated by VISIBLE_TABS filtering instead).
     path.join(routesRoot, 'research',   '+page.svelte'),
   ];
 

@@ -351,12 +351,20 @@
     // ── Monitor ── ordered by daily-trader workflow frequency:
     //   Pulse → Dashboard (the two always-open watch surfaces)
     //   Orders (active trading entry point)
+    //   Console (2026-10 nav restructure — moved out of the now-deleted
+    //            "build" group; sits directly after Orders because it's
+    //            a genuine bridge between Orders and Automation: Console
+    //            creates for BOTH orders (ephemeral, never persisted)
+    //            and agents (persisted, managed on /automation) — place
+    //            / watch an order, author via Console, review what got
+    //            persisted on Automation)
     //   Derivatives → Charts (analysis surfaces, reached from Orders)
     //   Automation (rule review, lower frequency than active trading)
     //   Strategies → NAV (attribution + LP / fund views, weekly)
     { href: '/pulse',            label: 'Pulse',     group: 'monitor' },
     { href: '/dashboard',        label: 'Dashboard', group: 'monitor' },
     { href: '/orders',           label: 'Orders',    group: 'monitor' },
+    { href: '/console',          label: 'Console',   group: 'monitor' },
     { href: '/admin/derivatives', label: 'Derivatives', group: 'monitor' },
     { href: '/charts',           label: 'Charts',    group: 'monitor' },
     { href: '/automation',       label: 'Automation', group: 'monitor' },
@@ -380,17 +388,17 @@
     // Simulator — past sim iterations; no adminOnly (page gates on sign-in).
     { href: '/admin/mcp',        label: 'MCP',       adminOnly: true, group: 'explore' },
     { href: '/admin/simulator/iterations', label: 'Simulator', group: 'explore' },
-    // ── Build / extend ── Activity (log viewer) and Console (terminal).
-    // /console keeps the URL but the navbar label aligns with the URL
-    // ('Console') now that 'Terminal' is the brand name of the whole
-    // umbrella (Rambo Terminal). Avoids the visual collision where a
-    // first-time visitor sees 'Terminal' in the nav and wonders if it's
-    // the whole platform or just one tool.
-    { href: '/activity',         label: 'Activity',  group: 'build' },
-    // Alerts — agent-fire history. Gated by the view_audit capability
-    // (designated, admin, risk), not by admin role.
-    { href: '/admin/alerts',     label: 'Alerts',    cap: 'view_audit', group: 'build' },
-    { href: '/console',          label: 'Console',   group: 'build' },
+    // ── Build group removed (2026-10 nav restructure) ──────────────────
+    // It held exactly three items, all now gone:
+    //   Activity  — the nav LINK was redundant with the icon-triggered
+    //               openActivityModal() already in the header; the
+    //               /activity page + modal themselves are untouched.
+    //   Alerts    — folded into LogPanel as a new 'alerts' tab (gated
+    //               by the same view_audit cap), mounted on /automation's
+    //               always-visible bottom log strip. /admin/alerts route
+    //               deleted.
+    //   Console   — moved up into the monitor group, directly after
+    //               Orders (see that entry's own comment for why).
     // ── Config ── ordered by edit frequency, not alphabetic.
     //   Brokers — most-touched (account creds, IP binding, secrets).
     //   Settings — occasional threshold tuning during volatile days.
@@ -494,12 +502,13 @@
     monitor: 'Monitor',
     analyze: 'Analyze',
     explore: 'Explore',
-    build:   'Build',
     config:  'Config',
   };
   // Order matters — defines the visual position of each dropdown
   // trigger after the inline section. Operator-frequency-ordered.
-  const DROPDOWN_GROUPS = ['build', 'config'];
+  // 'build' removed (2026-10 nav restructure) — Activity/Alerts/Console
+  // all moved out, leaving it empty; see _algoLinksAll's own comment.
+  const DROPDOWN_GROUPS = ['config'];
   // Render these groups inline (never collapse).
   const INLINE_GROUPS = new Set(['monitor', 'analyze', 'explore']);
 
@@ -1144,8 +1153,8 @@
             >{link.label}</button>
           {/each}
 
-          <!-- Disclosure dropdowns — Build + Config groups collapse
-               behind their group label. Trigger stays lit when the
+          <!-- Disclosure dropdowns — Config group collapses
+               behind its group label. Trigger stays lit when the
                operator's current page is inside that group. -->
           {#each DROPDOWN_GROUPS as g}
             {#if groupedLinks.dropdowns[g]?.length > 0}
@@ -1442,7 +1451,7 @@
 
       <!-- Mobile drawer — grouped by section. Each group renders its
            caption first, then its items. Order mirrors the desktop
-           layout (Monitor → Analyze → Modes → Build → Config). -->
+           layout (Monitor → Analyze → Explore → Config). -->
       {#if menuOpen}
         <nav class="algo-mobile-dropdown" use:portal
              style={mobileMenuPos ? `top:${mobileMenuPos.top}px` : ''}>
@@ -1984,7 +1993,7 @@
     border-bottom: 1px solid var(--algo-amber-border);
     box-shadow: 0 8px 20px rgba(0,0,0,0.5);
     /* Cap the drawer height so a many-item nav (Monitor + Analyze +
-       Modes + Build + Config + 30+ entries) doesn't extend past the
+       Explore + Config + 30+ entries) doesn't extend past the
        viewport with the last items unreachable. The trailing
        padding-bottom adds a safe area inset so the last item clears
        the iOS home indicator. */

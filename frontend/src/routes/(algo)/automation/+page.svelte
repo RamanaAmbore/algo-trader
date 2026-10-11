@@ -1723,9 +1723,16 @@
      Overrides auto-fill with a fixed 2-column layout on desktop so each
      agent card takes exactly half the row width. Child overflow fix:
      `min-width: 0` lets the track honour `1fr` and allows inner overflow
-     guards (word-break, overflow-x) to engage. */
+     guards (word-break, overflow-x) to engage.
+     Scroll cap added (operator: "I don't see various agent groups as
+     scrollable grids") — this grid previously grew unbounded while the
+     Bracket/custom-group mini-card grid below (.automation-mini-grid)
+     already had a scroll cap. Taller than the mini-grid's 16rem since
+     these are full-size status cards, not compact mini-cards. */
   .agent-group-grid {
     grid-template-columns: repeat(2, 1fr);
+    max-height: 32rem;
+    overflow-y: auto;
   }
   @media (max-width: 768px) {
     .agent-group-grid { grid-template-columns: 1fr; }
@@ -2190,5 +2197,6 @@
   simScope={simActive}
   multiColumn={true}
   hideInlineAccountFilter={false}
+  tabs={['order','agent','alerts','terminal','simulator','system','conn','news']}
   onTabChange={(id) => { logTab = id; }}
 />

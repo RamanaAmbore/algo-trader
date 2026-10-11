@@ -42,7 +42,9 @@ const PAGES = [
   '/admin/audit',
   '/admin/history',
   '/admin/health',
-  '/admin/alerts',
+  // /admin/alerts removed (2026-10 nav restructure) — folded into
+  // LogPanel's 'alerts' tab on /automation, no longer a standalone
+  // page with its own .page-header.
   '/admin/statements',
   '/admin/tokens',
   '/admin/mcp',

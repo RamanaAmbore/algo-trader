@@ -5,6 +5,7 @@
     fetchRecentAgentEvents, fetchSimEvents,
     fetchSimTicks, fetchAdminLogs, fetchBrokerConnectionEvents, fetchAlgoOrdersRecent,
     fetchOrders, cancelOrder, reconcileSingleOrder, fetchOrderEvents, fetchGtts,
+    fetchAlertsHistory,
   } from '$lib/api';
   import NewsList from '$lib/NewsList.svelte';
   import { priceFmt, aggCompact } from '$lib/format';
@@ -26,6 +27,7 @@
   import { toast } from '$lib/data/toastStore.svelte.js';
   import { noteAttachObservation } from '$lib/data/templateAttachToast.js';
   import { noteOrderPollFills } from '$lib/data/orderFillDetector.js';
+  import { userRole, userCaps, hasCap } from '$lib/rbac';
 
   // mode (sim/paper/live/shadow/replay): when set, auto-flips logTab to
   // the mapped tab AND auto-applies the matching order filter — sim →
@@ -288,6 +290,22 @@
   let systemLog   = $state(/** @type {string[]} */ ([]));
   let connEvents  = $state(/** @type {any[]} */ ([]));
   let simLog      = $state(/** @type {any[]} */ ([]));
+  let alertsLog   = $state(/** @type {any[]} */ ([]));   // AlertEvent rows (agent-fire history)
+
+  // ── Alerts tab capability gate ──────────────────────────────────────
+  // The 'alerts' tab (folded in from the retired /admin/alerts page,
+  // 2026-10 nav restructure) must stay invisible to operators who lack
+  // the view_audit capability, independent of whichever surface this
+  // LogPanel instance happens to be mounted on. Bridge pattern matches
+  // the one every admin page with an access-denied lock already uses
+  // (see feedback_svelte5_store_derived.md) — reading $userCaps/$userRole
+  // directly inside a $derived can stale-cache the initial [] /
+  // 'partner' boot values.
+  let _alertsCaps = $state(/** @type {string[]} */ ([]));
+  let _alertsRole = $state(/** @type {string} */ ('partner'));
+  $effect(() => { _alertsCaps = $userCaps; });
+  $effect(() => { _alertsRole = $userRole; });
+  const _canViewAlerts = $derived(hasCap('view_audit', _alertsCaps, _alertsRole));
 
   // Derived row arrays for the keyed {#each} renderers below —
   // operator-visible benefit: text selection inside an agent /
@@ -401,6 +419,65 @@
       .sort((a, b) => _tsKey(b.event_ts) - _tsKey(a.event_ts));
   });
 
+  // ── Alerts tab rendering (ported from the retired /admin/alerts page) ──
+  // Short uppercase tag for the row's tag chip — mirrors the old page's
+  // event-type labels (Triggered / Action OK / Action failed / Cooldown).
+  function _alertEventTag(/** @type {string} */ evt) {
+    if (evt === 'triggered')      return 'TRIGGERED';
+    if (evt === 'action_success') return 'ACTION OK';
+    if (evt === 'action_failed')  return 'ACTION FAILED';
+    if (evt === 'cooldown')       return 'COOLDOWN';
+    return (evt || '—').toUpperCase();
+  }
+  /**
+   * Alert row message — agent name + condition summary + channels +
+   * detail. Field names match the REAL /api/admin/alerts/history
+   * response shape (`AlertEvent` struct in backend/api/routes/alerts.py):
+   * agent_name / conditions_summary / channels_sent / detail. The old
+   * standalone page referenced agent_slug / conditions_matched /
+   * channels_notified instead — fields the backend never actually sent,
+   * so those three columns always rendered '—' there. Not replicating
+   * that dead-field bug here. Every piece is escaped via _escAttr since
+   * the result flows into {@html} through _logRow.
+   */
+  function _alertContentHtml(/** @type {any} */ e) {
+    const who = _escAttr(e.agent_name || '—');
+    const agentLink = e.agent_id
+      ? `<a class="log-agent-chip" href="/automation?focus=${e.agent_id}">${who}</a>`
+      : `<span>${who}</span>`;
+    const cond = e.conditions_summary ? _escAttr(e.conditions_summary) : '';
+    const detail = e.detail ? _escAttr(e.detail) : '';
+    const channels = Array.isArray(e.channels_sent) && e.channels_sent.length
+      ? e.channels_sent.map(c => `<span class="log-chip"><span class="log-chip-key">ch:</span>${_escAttr(c)}</span>`).join(' ')
+      : '';
+    return `${agentLink}${cond ? ' ' + cond : ''}${detail ? ' · ' + detail : ''}${channels ? ' ' + channels : ''}`.trim();
+  }
+  // No levelFilter gating here (unlike _agentRows) — the old standalone
+  // page showed every event type by default (no level-based filter
+  // existed there), and ActivityLogSurface's own default levelFilter
+  // ('warning') would otherwise exact-match-hide action_failed (the
+  // single most important row) and action_success rows, which map to
+  // 'e' and 'i' respectively, not 'w'. No account filter either — the
+  // alerts-history endpoint's response shape carries no per-row account
+  // field to match against.
+  const _alertRows = $derived.by(() => {
+    return alertsLog.slice()
+      .map((e, i) => {
+        const cls = e.event_type === 'action_failed'  ? 'log-agent-failed'
+                  : e.event_type === 'action_success' ? 'log-agent-success'
+                  : e.event_type === 'cooldown'        ? 'log-agent-cooldown'
+                  : 'log-agent-default';
+        const lv = cls.includes('failed') ? 'e' : cls.includes('cooldown') ? 'w' : cls.includes('success') ? 'i' : 'd';
+        const stripe = i % 2 === 0 ? 'row-tint-even' : 'row-tint-odd';
+        return {
+          key: e.id != null ? `al${e.id}` : `al${e.triggered_at || ''}-${i}`,
+          html: _logRow(e.triggered_at, _alertContentHtml(e), _alertEventTag(e.event_type), `${cls} ${stripe}`, lv),
+          _raw: e,
+        };
+      })
+      .filter(r => _rowMatchesSearch(r.html));
+  });
+
   /** @type {Array<() => void>} */
   const _intervals = [];
   function _every(/** @type {() => Promise<void> | void} */ fn) {
@@ -439,6 +516,23 @@
     try {
       const d = await fetchBrokerConnectionEvents({ limit: 200 });
       connEvents = d?.events ?? [];
+    } catch (_) { /* keep last-good */ }
+  }
+  /**
+   * Alerts tab loader — ports the real fetch call the old standalone
+   * /admin/alerts page made (fetchAlertsHistory, same default params:
+   * last 24h, live events only, no agent/event-type narrowing). The
+   * backend guard (admin_guard) only admits role designated/admin
+   * today, slightly narrower than the view_audit cap set (which also
+   * admits 'risk') — a risk-role operator will see the tab but the
+   * fetch will 403 and fall silently through to the catch below,
+   * same pre-existing gap the old page had. Not fixed here — out of
+   * scope for this nav restructure.
+   */
+  async function _loadAlerts() {
+    try {
+      const data = await fetchAlertsHistory({ limit: 200, since_minutes: 1440, sim_mode: false });
+      alertsLog = Array.isArray(data?.events) ? data.events : (Array.isArray(data) ? data : []);
     } catch (_) { /* keep last-good */ }
   }
 
@@ -733,6 +827,13 @@
     // either one is in the visible set.
     if (tabs.includes('order') || tabs.includes('terminal'))
       _every(_loadOrders);
+    // Alerts polls eagerly (not deferred to first-tab-click) — same
+    // continuously-visible rationale as the Agents tab: an operator
+    // reviewing a different agent must see a critical fire land without
+    // switching tabs first. Only ever wired on mounts that explicitly
+    // opt into 'alerts' via the `tabs` prop (today: /automation's
+    // bottom-attached strip) — see LogPanel's own `tabs` default doc.
+    if (tabs.includes('alerts')) _every(_loadAlerts);
     // system + simulator polls are deferred — started in the $effect below
     // on first tab click so idle sessions pay zero cost for tabs never visited.
   });
@@ -865,9 +966,17 @@
   // driver (price changes, sim-tick-generated orders), so it's labelled
   // 'Ticks' — the SIM pill on each row already conveys the mode. Earlier
   // 'Simulator' overlapped with the same SIM pill on filtered Orders rows.
+  // 'alerts' (agent-fire history, folded in from the retired
+  // /admin/alerts page — 2026-10 nav restructure) is deliberately NOT
+  // part of the default `tabs` prop below, so every existing mount
+  // (ActivityLogModal, /orders, /console, SymbolPanel, /activity page)
+  // is unaffected. Only a caller that explicitly adds 'alerts' to its
+  // own `tabs=` prop (today: /automation's bottom-attached strip) gets
+  // it, and even then only once the view_audit cap gate passes below.
   const _ALL_TABS = [
     ['order',     'Orders'],
     ['agent',     'Agents'],
+    ['alerts',    'Alerts'],
     ['terminal',  'Terminal'],
     ['simulator', 'Ticks'],
     ['system',    'System'],
@@ -878,9 +987,13 @@
   // hide Order / Simulator / Agent that don't apply.
   // Additionally, when gateByMode is active and the current mode is not
   // sim, hide the Ticks (simulator) tab — ticks are sim-only by definition.
+  // Alerts additionally requires the view_audit capability regardless of
+  // whether the caller's `tabs` prop includes it — the capability gate is
+  // the one that must hold, not just the mount-point opt-in.
   const VISIBLE_TABS = $derived(_ALL_TABS.filter(([id]) => {
     if (!tabs.includes(id)) return false;
     if (id === 'simulator' && _gatingMode && _gatingMode !== 'sim') return false;
+    if (id === 'alerts' && !_canViewAlerts) return false;
     return true;
   }));
 
@@ -922,6 +1035,17 @@
   $effect(() => {
     if (_gatingMode && _gatingMode !== 'sim' && untrack(() => logTab) === 'simulator') {
       logTab = 'order';
+    }
+  });
+
+  // Alerts tab requires view_audit — if the operator lacks the cap (or
+  // loses it mid-session, e.g. a slow /whoami race on first paint) while
+  // somehow landing on 'alerts' (a caller-seeded defaultTab, or a cap
+  // that resolves false after an optimistic initial render), fall back
+  // to Agents rather than rendering a gated-empty tab body.
+  $effect(() => {
+    if (untrack(() => logTab) === 'alerts' && !_canViewAlerts) {
+      logTab = 'agent';
     }
   });
 
@@ -1668,6 +1792,19 @@
         e.event_type || '',
         _fmtConnDetail(e.detail),
       ]);
+    } else if (logTab === 'alerts') {
+      header = ['time', 'agent', 'event_type', 'conditions', 'channels', 'detail'];
+      rows = _alertRows.map(r => {
+        const e = r._raw || {};
+        return [
+          e.triggered_at || '',
+          e.agent_name || '',
+          e.event_type || '',
+          e.conditions_summary || '',
+          Array.isArray(e.channels_sent) ? e.channels_sent.join(', ') : '',
+          e.detail || '',
+        ];
+      });
     } else if (logTab === 'terminal') {
       header = ['time', 'source', 'message'];
       const all = [
@@ -1754,7 +1891,12 @@
       <button type="button" class="lp-close-btn"
               title="Close" aria-label="Close activity log"
               onclick={() => onClose?.()}>×</button>
-    {:else}
+    {:else if logTab !== 'alerts'}
+      <!-- Fullscreen deep-links into ActivityLogModal, which doesn't
+           carry an 'alerts' tab (it's scoped to /automation's own
+           mount only — see ACTIVITY_TABS in activityStore.svelte.js).
+           Suppressed here rather than deep-linking to a tab the modal
+           can't show. -->
       <button type="button" class="lp-fs-btn"
               title="Open fullscreen"
               aria-label="Open fullscreen"
@@ -1845,6 +1987,12 @@
       {#each _agentRows as r (r.key)}{@html r.html}{/each}
     {:else}
       <div class="log-row log-debug"><span class="log-row-msg">No agent events yet.</span></div>
+    {/if}
+  {:else if logTab === 'alerts'}
+    {#if _alertRows.length}
+      {#each _alertRows as r (r.key)}{@html r.html}{/each}
+    {:else}
+      <div class="log-row log-debug"><span class="log-row-msg">No alert events yet.</span></div>
     {/if}
   {:else if logTab === 'simulator'}
     {#if _simRows.length}

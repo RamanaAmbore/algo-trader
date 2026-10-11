@@ -2,7 +2,8 @@
 //   • .algo-ts timestamp colour is sky-300 (#7dd3fc) — distinct from
 //     the amber page-title chip.
 //   • /automation header no longer carries a History pill (Activity
-//     lives on /activity?tab=agent); /admin/alerts is reached via nav.
+//     lives on /activity?tab=agent). /admin/alerts was removed
+//     (2026-10 nav restructure) — folded into LogPanel's 'alerts' tab.
 //   • /pulse toolbar carries a refresh icon button.
 //   • /pulse sparkline column header reads "5d" (renamed from "Curve").
 import { test, expect } from '@playwright/test';
