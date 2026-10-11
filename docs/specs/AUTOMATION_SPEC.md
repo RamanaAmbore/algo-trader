@@ -303,7 +303,8 @@ order/agent grammars are similarly externalized.
 - Fields: `parent_order_id`, `target_pct`, `target_abs`, `basket_tag`
 - Skipped if parent order rejected or stays PENDING
 
-**API surface**: `/automation/templates` UI or `/api/agent_templates` CRUD.
+**UI surface**: Brackets tab at `/automation?tab=brackets`. **API surface**: `/api/admin/templates/`
+(list/get demo-readable; create/update/delete admin-only).
 
 ---
 
@@ -411,8 +412,8 @@ order/agent grammars are similarly externalized.
 | `/api/agents/{slug}/delete` | DELETE | Admin | Delete agent |
 | `/api/agents/{slug}/events` | GET | Required | Agent fire history |
 | `/api/agents/interpret` | POST | Required | Terminal command parser |
-| `/api/agent_templates/` | GET | Required | List saved GTT templates |
-| `/api/agent_templates/` | POST | Required | Create template |
+| `/api/admin/templates/` | GET | Demo | List saved GTT templates |
+| `/api/admin/templates/` | POST | Admin | Create Order Template |
 
 **Agent create/update payload**:
 ```json

@@ -52,7 +52,7 @@
   // Order-template catalog — shared with OrderTicket. SymbolPanel's
   // basket bar exposes the "On fill" picker; the chosen template is
   // attached per leg in submitBasket. Single source of truth so
-  // CRUD on /automation/templates propagates here without a refresh.
+  // CRUD on the Brackets tab propagates here without a refresh.
   import { loadOrderTemplates, orderTemplatesStore } from '$lib/data/templates';
   import { appliesToFor as _appliesToFor } from '$lib/data/templateScope.js';
   // resolveUnderlying / findNearestFuture / resolveAnchorToTradeable
@@ -1283,10 +1283,10 @@
   // this is the FIRST mount in the page's lifetime the rows may
   // not have landed yet — kick a load() (idempotent, cached on
   // repeat). The store subscription below picks up CRUD mutations
-  // on /automation/templates while the modal is open.
+  // on the Brackets tab while the modal is open.
   loadOrderTemplates().catch(() => { /* picker stays empty */ });
   // Pure subscription — keeps the basket-bar Select rows current when
-  // /automation/templates mutates. Default selection is owned entirely
+  // the Brackets tab mutates. Default selection is owned entirely
   // by OrderTicket: it's always mounted (display:none, not unmounted,
   // when Chain tab is active) and its own onMount `_autoSelectTemplate()`
   // picks the side-aware is_default template into the SAME two-way-bound

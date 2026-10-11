@@ -465,7 +465,7 @@
 
   // Template catalog for the structured dropdown — same module-level
   // cache + store every other surface (TemplateBar, OrderTicket,
-  // /automation/templates) reads; loadOrderTemplates() below is a
+  // Brackets tab) reads; loadOrderTemplates() below is a
   // cheap no-op if already warm.
   let _templateRows = $state(/** @type {any[]} */ ([]));
   // Unfiltered — drives the Bracket group-grid below (every OrderTemplate
@@ -1824,7 +1824,7 @@
   }
   /* AI-provenance meta box on the expanded agent row.
      Shows the violet "✦ AI" pill, the LLM's why_summary, and a
-     foldable prompt details element. Mirrors the .ai-pill palette. */
+     foldable prompt details element. Uses --algo-ai color palette. */
   .ai-meta-box {
     display: flex;
     align-items: center;

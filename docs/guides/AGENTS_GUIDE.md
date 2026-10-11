@@ -21,17 +21,19 @@ Mental model: condition fires → alert emitted → notifies dispatch → action
 
 | Surface | URL | Purpose |
 |---|---|---|
-| Agents list | `/automation` | Rule editor — create, edit, activate, deactivate, dry-run, run-in-sim |
-| Brackets | `/automation/templates` | Per-position TP/SL/wing/scale/trail exit rules attached at order fill |
-| Agent Templates | `/automation/agent-templates` | Reusable saved sub-trees (notify channel sets + condition snippets) |
-| Activity | `/activity?tab=agent` | Recent fires (real, not sim) |
-| Tokens | `/admin/tokens` | Grammar catalog — every metric / scope / op / action (Config group) |
-| MCP | `/admin/mcp` | LLM-driven research → draft agents via Claude Code MCP (Explore group; tabs: Research, Drafts, Audit, Settings) |
-| Simulator | `/admin/execution?mode=sim` | Fabricated price-move workspace for dry-firing agents (Explore group) |
+| Agents | `/automation?tab=agents` | Rule editor — create, edit, activate, deactivate, dry-run |
+| Brackets (Order Templates) | `/automation?tab=brackets` | Per-position TP/SL/wing/scale/trail exit rules attached at order fill |
+| Tokens (Saved Condition/Notify) | `/automation?tab=tokens` | Reusable saved sub-trees (notify channel sets + condition snippets) |
+| Activity | `/activity?tab=agent` | Recent agent fires (real, not sim) |
+| Grammar Catalog | `/admin/tokens` | Live metrics/scopes/operators/channels/actions (Config group, read-only) |
+| CLI (Command Line) | `/console` | Plain-text agent/order authoring (WHEN/ALERT/DO grammar + `order(...)`) |
+| MCP | `/admin/mcp` | LLM-driven research → draft agents via Claude Code MCP (Explore group) |
+| Simulator | `/admin/execution?mode=sim` | Fabricated price-move workspace for testing agents (Explore group) |
 
-Legacy `/agents`, `/agents/activity`, `/agents/fragments` paths still
-308-redirect for old bookmarks; new docs link the canonical URLs.
-`/automation/activity` redirects to `/activity?tab=agent` (Activity page, Agent tab).
+Legacy `/agents` paths redirect for old bookmarks. Note: the **Tokens** tabs
+on `/automation` are saved operator-defined filters (notify channel groups +
+condition sub-trees); the **Grammar Catalog** at `/admin/tokens` is the
+read-only system token registry — distinct concepts sharing "token" wording.
 
 ---
 
@@ -77,7 +79,7 @@ condition ::=  leaf
             |  { "all": [condition, …] }       AND  — every child must fire
             |  { "any": [condition, …] }       OR   — at least one
             |  { "not": condition }            NOT  — child must NOT fire
-            |  { "$ref": "<fragment-name>" }   REF  — substitute a saved fragment
+            |  { "$ref": "<saved-token-name>" } REF — substitute a saved Token
 
 leaf      ::=  { "metric": <metric>,
                  "scope":  <scope>,
@@ -171,125 +173,102 @@ spikes.
 
 ---
 
-## The CLI tab — single-line agent authoring
+## Agent CLI — plain-text authoring at /console
 
-A faster authoring path for threshold agents: type a single-line statement in the 
-CLI tab instead of hand-editing JSON. The statement compiles live to the same 
-JSON tree the Structured tab produces.
+The Agent CLI (available at `/console`, not in `/automation`) is a text-first 
+grammar for typing agents, brackets, tokens, and orders without hand-editing JSON. 
+The live preview compiles each statement to JSON as you type, and the 
+Grammar Catalog (`/admin/tokens`) displays available metric/scope/channel/action 
+tokens.
 
-### Statement shape
+### WHEN/ALERT/DO — Agent statements
 
 ```
 WHEN <condition> [ALERT <channels>] [DO <actions>]
 ```
 
-Both `ALERT` and `DO` are independently optional — you can omit either or both 
-(but not both together). Order is flexible: `DO` can come before `ALERT`.
+Each clause is independently optional (omit `WHEN` → always true; omit `ALERT` or 
+`DO` → nop). Order is flexible: `DO` can come before `ALERT`. At least one real 
+`ALERT` or `DO` is required (can't be all-nop).
 
-Examples:
+**Condition** (`WHEN` clause, examples):
+- `pnl@positions.total <= -50000` — total P&L threshold
+- `mean_pnl(minutes=45)@positions.total <= -25000` — 45-min rolling mean
+- `positions.total.pnl <= -50000` — dot-access syntax (same as above)
+- `25000 > avail_margin@funds.any_acct > 0` — between-range sugar
+- `side@positions in ["BUY", "SELL"]` — list membership
 
-```
-WHEN pnl@positions.total <= -50000 ALERT telegram DO nop
-```
+**ALERT** (channels):
+- `ALERT telegram` — single channel
+- `ALERT msg="Caution: loss at 5%", telegram, email` — clause-level message + 
+  multiple channels (per-channel `msg=` overrides clause default)
+- `ALERT nop` — skip notification
 
-(Fire when total P&L drops to -₹50k, notify Telegram only, no action.)
+**DO** (actions):
+- `DO place_order(acct="ZG0790", sym="NIFTY25JULFUT", side="BUY", qty=1)` — 
+  place order using live account data
+- `DO close_position(account=account_id, symbol=symbol)` — close using matched 
+  row values (Sprint 16: `$row` binding)
+- `DO emit_log(message="Market open")` — log only
+- `DO nop` — no action
 
-```
-WHEN max_drawdown_pnl(minutes=90)@funds.any_acct <= -100000 DO 
-  close_position(exchange="NFO")
-```
+### Syntax reference
 
-(Fire when any account's 90-min max drawdown hits -₹100k; close F&O positions, 
-no notification.)
+**Boolean logic**: `&` (AND), `|` (OR), `~` (NOT) with equal precedence (L→R). 
+Parentheses required when mixing: `(a & b) | c`.
 
-```
-WHEN always ALERT nop DO emit_log(message="Market open check")
-```
+**Metric windows**: Any rolling-window metric can take a `minutes=N` parameter: 
+`mean_pnl(minutes=90)`, `max_drawdown_day(minutes=120)`, `stdev_pnl(60)`.
 
-(Schedule-only agent; fires on the market-open tick, logs a message.)
+**Dot-access scope.column** (Sprint 15): `positions.total.pnl <= -50000` instead 
+of `pnl@positions.total <= -50000` — both compile identically.
 
-### Syntax highlights
+**Message defaults**: `msg=` applies to every bare channel unless overridden per 
+channel: `ALERT msg="default", telegram, email(msg="custom")`.
 
-**Boolean logic**: `&` (AND) and `|` (OR) have equal precedence, left-to-right 
-evaluation — **use parentheses to disambiguate**:
-```
-WHEN (pnl@positions.total <= -50000 & day_pct@positions.total <= -2) 
-  | pnl_rate_abs@positions.total <= -5000
-```
+**Matched-row binding** (Sprint 16): In `DO` actions, bare names resolve to 
+matched scope row columns: `close_position(account=account_id, symbol=symbol)` 
+uses the WHEN scope's own rows.
 
-**NOT**: `~` prefix:
-```
-WHEN ~(pnl@positions.total > 0)
-```
-
-**Metric windows**: Parameterized call syntax for arbitrary rolling windows:
-```
-WHEN mean_pnl(minutes=45)@positions.total <= -25000
-WHEN max_drawdown_day(minutes=120)@holdings.total <= -50000
-```
-
-**Arguments**: Keyword-only (every arg is `name=value`, even the first). 
-Shorthand aliases provided:
-- `acct` ← `account`, `sym` ← `symbol`, `exch` ← `exchange`, `otype` ← `order_type`,
-  `px` ← `price`, `prod` ← `product`, `var` ← `variety`, `chase` ← `chase_level`
-
-```
-place_order(acct="ZG0790", sym="NIFTY25JULFUT", side="BUY", qty=1)
-```
-
-**List literals**: Allowed only on the right-hand side of a condition:
-```
-WHEN side@positions in ["BUY", "SELL"]
-```
+**Shorthand kwarg aliases**: `acct` ← `account`, `sym` ← `symbol`, 
+`px` ← `price`, `prod` ← `product`, `var` ← `variety`, `chase` ← `chase_level`.
 
 **Reserved words**: `when`, `alert`, `do`, `nop`, `always`, `in`, `not`, `true`, 
-`false` — cannot be used as metric/scope/action names (parser rejects them).
+`false` — cannot be token names.
 
-### Editing workflow
+### Direct order placement
 
-- **Create new**: Start in the CLI tab, type your statement. Live compilation 
-  updates the JSON preview below as you type (debounce ~150ms). Errors appear 
-  in red.
-- **Edit existing**: Open an agent's edit panel. If its JSON cleanly decompiles to 
-  CLI text, the CLI tab shows the equivalent statement by default. If not 
-  (e.g., has a `$ref` fragment), the tab is greyed out and you must use Structured.
-- **Switching tabs**: Changing from Structured to CLI re-decompiles the current 
-  JSON if you edited it since the last sync. Invalid JSON blocks the switch. 
-  Switching back to Structured preserves any JSON edits.
-- **Save**: Click Save from either tab. Structured saves clear any prior CLI text; 
-  CLI saves persist the typed statement as audit/history in the `cli_source` field.
-
-### Direct order placement (no agent)
-
-Type a bare `order(...)` call (or several comma-separated) with no `WHEN`:
+Type a bare `order(...)` call with no `WHEN`:
 
 ```
-order(acct="ZG0790", sym="NIFTY25JULFUT", side="BUY", qty=1, px=25500)
+order(acct="ZG0790", sym="NIFTY25JULFUT", side="BUY", lots=1, tp_pct=30, sl_pct=-20)
 ```
 
-The CLI tab shows a **Place order** button instead of Save. Clicking it submits 
-directly to the broker (single leg via ticket endpoint, multiple legs via basket). 
-LIVE mode orders require confirmation before submission.
+Multiple comma-separated orders compile to a basket. Submit button is 
+**Place order (PAPER)** or **(LIVE)** depending on execution mode. LIVE orders 
+require a confirmation dialog.
 
-**Caution**: This places a real broker order immediately — not a template, not 
-a simulator. Confirm the statement before clicking Place order.
+**Caution**: This places a real broker order immediately. Confirm before submitting.
 
 ---
 
-## Fragments — reuse without copy-paste
+## Tokens — saved condition/notify reuse
 
-Two kinds at `/automation/agent-templates`:
+Browse saved Tokens at `/automation?tab=tokens` (the Tokens tab). Two kinds:
 
-**Notify fragments** — saved channel lists. Reference from `agent.events`:
-
+**Notify Tokens** — saved channel groups. Create with:
+```
+token(kind=notify) telegram, email, log #name="Ops Channels"
+```
+Reference in agents:
 ```jsonc
-{ "events": [ {"$ref": "notify-critical-trio"} ] }
+{ "events": [ {"$ref": "ops-channels"} ] }
 ```
 
-Three seeded today: `notify-critical-trio` (telegram + email + log), `notify-log-only`, `notify-telegram-only`.
+Seeded examples: `notify-critical-trio`, `notify-log-only`, `notify-telegram-only`.
 
-**Condition fragments** — saved sub-trees. Reference from `agent.conditions`:
-
+**Condition Tokens** — saved condition sub-trees. Currently browse-only (no 
+create UI in `/console` this sprint). Reference in agents:
 ```jsonc
 {
   "conditions": { "all": [
@@ -299,9 +278,11 @@ Three seeded today: `notify-critical-trio` (telegram + email + log), `notify-log
 }
 ```
 
-Three seeded today: `loss-positions-acct-default`, `loss-positions-total-default`, `near-market-close-30m`.
+Seeded examples: `loss-positions-acct-default`, `loss-positions-total-default`, 
+`near-market-close-30m`.
 
-Edit a fragment once → every consumer agent updates. Cycle detection prevents A→B→A from blowing the stack.
+Edit a Token once → every agent referencing it updates automatically. Cycle 
+detection prevents A→B→A recursion.
 
 ---
 
@@ -413,13 +394,14 @@ Built-in agents are **force-reseeded on every boot** — your changes to their `
 
 ## Authoring workflow
 
-1. **Spike the condition tree** in the `/automation` editor (CLI tab for text, 
-   Structured tab for JSON) or via the Claude Code MCP (see [LAB_MCP_GUIDE.md](LAB_MCP_GUIDE.md))
-2. **Validate** — clear all token / shape errors
-3. **Dry-run** — sanity check against current market
-4. **Run in Simulator** — confirm the alert fires + actions log correctly with the `SIM` pill
-5. **Activate on prod with `status: inactive` + a one-shot lifespan** — fire once, observe, deactivate
-6. **Promote to perpetual** once you've watched it behave on real ticks
+1. **Spike the agent** via `/console` CLI (plain text) or `/automation` Structured 
+   tab (JSON), or via the Claude Code MCP Lab (see [LAB_MCP_GUIDE.md](LAB_MCP_GUIDE.md))
+2. **Validate** at `/automation` — clear all token + shape errors
+3. **Dry-run** — simulate against live data without firing
+4. **Run in Simulator** — test on synthetic ticks; fires immediately, bypassing gates
+5. **Activate with `status: inactive` + `lifespan_type: one_shot`** — fire once on 
+   real data, observe, then deactivate
+6. **Promote to `perpetual`** once you've watched it behave on live ticks
 
 ---
 
@@ -483,8 +465,7 @@ The Order log Mode pill (SIM / PAPER / LIVE / SHADOW) visualises the difference.
 | Symptom | Likely cause | Where to look |
 |---|---|---|
 | `Validate` rejects with `unknown metric token` | Typo in metric name OR token deactivated on `/admin/tokens` | `/admin/tokens` → Condition tab → search the token |
-| CLI tab is greyed out (disabled) | Agent's JSON uses a `$ref` fragment (condition, events, or actions); cannot decompile to CLI form | Use the Structured tab and JSON textarea instead; edit as JSON |
-| CLI statement rejects with "argument must be written as name=value" | Attempted positional argument (first arg without a key). CLI grammar requires every argument to be keyword-only | Change `place_order(account, symbol, ...)` to `place_order(acct=account, sym=symbol, ...)` |
+| CLI statement rejects with "argument must be written as name=value" | Attempted positional argument (first arg without a key). CLI grammar requires every argument to be keyword-only | Type at `/console` with correct syntax: `place_order(acct="ZG0790", sym="NIFTY25JULFUT", ...)` |
 | `dry-run` shows `would_fire: false` but you expect true | Condition mismatch — operator's threshold vs current state | Use the dry-run `matches` array; each entry shows the metric, scope, threshold, and actual value |
 | `dry-run` shows `blocked_by: "schedule"` | Agent has `schedule: market_hours` but markets are closed | Either wait for session, or flip `schedule: always` for diagnostic agents |
 | Agent never fires on real ticks | Rate metric without baseline crossed; or in cooldown; or suppressed | `/automation/<slug>` Events tab + `/admin/alerts` log; or set `cooldown_minutes: 0` temporarily |

@@ -2,13 +2,13 @@
  * Order-template catalog cache — memoised module-level loader for
  * /api/admin/templates/. Three surfaces currently fetch the catalog
  * on mount (OrderTicket, /admin/derivatives Optimize tab, and
- * /automation/templates);
+ * Brackets tab);
  * without this cache, opening the order modal hits the DB once per
- * mount + once per nav to the templates page.
+ * mount + once per nav to the Brackets tab.
  *
  * Pattern mirrors `loadAccounts()` in `accounts.js`. Single in-flight
  * promise dedups concurrent callers; cached array survives subsequent
- * calls until reload() is invoked (e.g. after CRUD on /automation/templates).
+ * calls until reload() is invoked (e.g. after CRUD on the Brackets tab).
  */
 
 import { writable } from 'svelte/store';
@@ -20,7 +20,7 @@ let _templates = null;
 let _loadPromise = null;
 
 /** Reactive read-side for templates list. Subscribe in components that
- *  need to react to CRUD mutations elsewhere (e.g. /automation/templates
+ *  need to react to CRUD mutations elsewhere (e.g. Brackets tab
  *  edits → other open modals re-render with the new values). */
 export const orderTemplatesStore = writable(/** @type {any[]} */ ([]));
 
@@ -59,7 +59,7 @@ export async function loadOrderTemplates() {
 }
 
 /** Force a fresh fetch — call after templates CRUD so all subscribers
- *  see the new values. Used by the /automation/templates page after
+ *  see the new values. Used by the Brackets tab after
  *  save / delete; idempotent on concurrent calls. */
 export async function reloadOrderTemplates() {
   _templates = null;

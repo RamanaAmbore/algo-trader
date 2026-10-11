@@ -384,10 +384,10 @@ export const reloadGrammarRegistry = () => _post('/admin/grammar/reload', {}, { 
 // System templates toggle-only; custom support full CRUD. URL kept at
 // /admin/fragments for back-compat; underlying model + module renamed
 // to AgentTemplate / template_registry in v2.1 — but every live caller
-// (automation/agent-templates page) still uses the pre-v2.1 "Fragment"
-// names below, so those are the canonical exports here. The "AgentTemplate"
-// names were never adopted by any caller and were removed as dead code
-// (dead-code audit, 2026-10).
+// (TokensTab component on /automation?tab=tokens) still uses the pre-v2.1
+// "Fragment" names below, so those are the canonical exports here. The
+// "AgentTemplate" names were never adopted by any caller and were removed
+// as dead code (dead-code audit, 2026-10).
 export const fetchAgentFragments = (kind) =>
   _get(`/admin/fragments/${kind ? `?kind=${encodeURIComponent(kind)}` : ''}`,
        { auth: true });

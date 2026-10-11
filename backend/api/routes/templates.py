@@ -4,10 +4,11 @@ Order template CRUD — /api/admin/templates/*
 Templates are the "exit-rule preset" the operator picks at OrderTicket
 submit time. The model is in backend.api.models.OrderTemplate, seeded
 from backend.api.algo.templates_seed.SYSTEM_TEMPLATES. The matching
-SvelteKit UI lives at /automation/templates.
+SvelteKit UI component is BracketsTab, displayed as the Brackets tab
+on /automation.
 
 Endpoint shape mirrors backend.api.routes.grammar.GrammarTokenController:
-list/read are demo-readable (visitors browsing /automation/templates
+list/read are demo-readable (visitors on /automation?tab=brackets
 see the system defaults); create/update/delete are admin-only.
 
 System templates support partial edits to their TP / SL / wing values +

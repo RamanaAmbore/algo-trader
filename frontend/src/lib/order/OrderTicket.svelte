@@ -2445,7 +2445,7 @@
   });
 
   // Re-sync when the catalog mutates elsewhere (e.g. operator edits a
-  // template on /automation/templates while the modal is open). Pure
+  // template on the Brackets tab while the modal is open). Pure
   // subscription — no network cost.
   $effect(() => {
     const rows = $orderTemplatesStore;

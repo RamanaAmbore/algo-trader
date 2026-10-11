@@ -2344,7 +2344,7 @@ flowchart LR
 - `frontend/src/lib/order/OrderTicket.svelte::_appliesToFor`
 - `frontend/src/lib/SymbolPanel.svelte::_appliesToFor` — same helper at shell level
 - `frontend/src/lib/SymbolPanel.svelte::_sideAwareDefault` — with fallback to focused-leg symbol
-- `frontend/src/routes/(algo)/automation/templates/+page.svelte` — coverage view (note: `/automation/templates` is the actual route; older docs reference `/admin/templates` which is stale)
+- `frontend/src/lib/automation/BracketsTab.svelte` — Order Template browse/manage (ported from deleted `/automation/templates` route)
 
 ---
 
@@ -5918,7 +5918,7 @@ Templates have grown organically. The current schema is wide (5 mandatory + 7 op
 
 ### Frontend
 
-7. **Template management UI** at `/automation/templates` — add the input.
+7. **Template management UI** at `/automation?tab=brackets` (BracketsTab) — add the input.
 8. **Override input** at the shell-level Template container in `SymbolPanel.svelte` — add the override field + reset on template change.
 9. **Preview** — `previewTicketTemplate` should already wire it because the backend handles it; double-check the chip render handles the new shape.
 
@@ -6362,7 +6362,7 @@ given underlying. This is a broker-hitting (live) action.
 
 6. **Seeded defaults** in `backend/api/algo/templates_seed.py::SYSTEM_TEMPLATES` — add to whichever defaults should ship with it ON.
 
-7. **Frontend management UI** at `frontend/src/routes/(algo)/automation/templates/+page.svelte`:
+7. **Frontend management UI** at `frontend/src/lib/automation/BracketsTab.svelte`:
    - Add a toggle to the create/edit form
    - Surface it in the listing
 
@@ -6488,7 +6488,7 @@ given underlying. This is a broker-hitting (live) action.
 
 3. **If operator has saved-instance edits** (i.e. clicked Edit on a system template and saved), those land in a separate row keyed by user_id. They survive system re-seed. To force-refresh, the operator deletes their saved copy.
 
-4. **Verify.** Restart dev, hit `/automation/templates`, confirm SL value is updated. Place a test order — fill should trigger SL GTT placement.
+4. **Verify.** Restart dev, hit `/automation?tab=brackets`, confirm SL value is updated. Place a test order — fill should trigger SL GTT placement.
 
 ---
 

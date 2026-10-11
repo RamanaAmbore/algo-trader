@@ -10,13 +10,10 @@
     Direct import — MarketPulse, /dashboard, /admin/derivatives,
       PerformancePage (Positions/Holdings Summary + Breakdown cards).
     Indirect, via LogPanel.svelte's own CardControls import — /orders
-      (renders LogPanel directly) and /automation + /automation/activity
-      (render ActivityLogSurface, which wraps LogPanel). These three
-      never import CardControls themselves.
-    NOT adopted anywhere — /admin/mcp and /automation/templates
-      and /automation/agent-templates render neither LogPanel nor
-      CardControls; any hand-rolled chrome there is unrelated to this
-      component.
+      (renders LogPanel directly) and /automation (renders ActivityLogSurface,
+      which wraps LogPanel).
+    NOT adopted on pages without actionable grids — /admin/mcp, pure
+      /console (CLI input), etc.
 
   Operator: "have search, expand/contract, full screen card as a
   reusable code".

@@ -8,11 +8,8 @@
     • condition templates — saved condition sub-trees (any/all/not/leaf)
 
   Pure browse/manage: filter + expand + toggle + edit + delete. NO creation
-  entry point — Sprint 9's /automation goal is "no creation entry point of
-  any kind survives on this page." The CLI grammar has no fragment-create
-  statement today (only `bracket_stmt` exists for Order Templates), so
-  Token (fragment) creation currently has no UI anywhere in the app —
-  flagged as a follow-up gap, not solved here.
+  entry point on /automation per Sprint 9 design. Token creation happens
+  at /console via `token(kind=notify) <channels> #name="..."` CLI statements.
 -->
 <script>
   import { onMount } from 'svelte';

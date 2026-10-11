@@ -1,8 +1,8 @@
 """
 agent_ai — natural-language → agent draft pipeline.
 
-Operator describes what they want (terminal command or /agents UI prompt
-field); this module:
+Operator describes what they want (terminal `agent ai create` command);
+this module:
 
   1. Snapshots the live grammar registry (metrics / scopes / operators /
      channels / action types) so the LLM only proposes tokens that exist.
