@@ -856,9 +856,16 @@
   /* ── Kind-count-card row (Sprint C, 2026-10) — Agents/Alerts/Brackets/
      Templates summary cards, same status-chip-count pattern as
      OrderBook.svelte's `.ob-status-bar`/`.ob-sc` (count + label per
-     button, clicking drills into that kind). Palette-neutral (no
-     per-kind status color the way order status chips have one) since
-     all four cards are peers, not a severity/state spectrum. */
+     button, clicking drills into that kind).
+     REVERSED 2026-10-11 (explicit operator instruction) — originally
+     deliberately palette-neutral ("all four cards are peers, not a
+     severity/state spectrum"). Operator now wants each kind visually
+     distinct, matching the decoration level of OrderBook.svelte's
+     `.ob-sc[data-status="..."]` chips. Same mechanism: color keyed off
+     the existing `data-kind={card.id}` attribute, reusing existing
+     app.css palette tokens (no new hex colors) — amber/sky/cyan/violet,
+     deliberately NOT green/red (long/short) to avoid implying a P&L
+     sentiment these peer cards don't carry. */
   .kind-card-grid {
     display: flex;
     flex-wrap: wrap;
@@ -879,12 +886,20 @@
     transition: border-color 0.08s;
   }
   .kind-card:hover { border-color: rgba(251,191,36,0.35); }
+  .kind-card[data-kind="agents"]:hover    { border-color: var(--algo-amber-border); }
+  .kind-card[data-kind="alerts"]:hover    { border-color: var(--algo-sky-border); }
+  .kind-card[data-kind="brackets"]:hover  { border-color: var(--algo-cyan-border); }
+  .kind-card[data-kind="templates"]:hover { border-color: var(--algo-violet-border); }
   .kind-card-n {
     font-size: var(--fs-xl);
     font-weight: 700;
     font-family: var(--font-numeric);
     color: var(--c-action);
   }
+  .kind-card[data-kind="agents"]    .kind-card-n { color: var(--c-action); }
+  .kind-card[data-kind="alerts"]    .kind-card-n { color: var(--algo-sky); }
+  .kind-card[data-kind="brackets"]  .kind-card-n { color: var(--algo-cyan); }
+  .kind-card[data-kind="templates"] .kind-card-n { color: var(--algo-violet); }
   .kind-card-l {
     font-size: var(--fs-sm);
     color: var(--c-muted);

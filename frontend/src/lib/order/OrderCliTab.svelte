@@ -110,7 +110,7 @@
 <div class="order-cli-tab">
   <div class="order-cli-scope-label">
     CLI — orders only. Author agents/brackets on <a href="/automation?tab=console">Automation → Console</a>.
-    <a href="/automation/guide" title="CLI grammar guide" class="order-cli-guide-link">Guide: CLI grammar reference &rarr;</a>
+    <a href="/automation/guide" title="CLI grammar guide" class="btn-secondary order-cli-guide-link">Guide: CLI grammar reference &rarr;</a>
   </div>
   {#if isDemo}
     <div class="order-cli-demo">Demo view — CLI order placement disabled.</div>
@@ -143,7 +143,21 @@
     color: var(--algo-muted);
   }
   .order-cli-scope-label a { color: var(--algo-sky); text-decoration: underline; }
-  .order-cli-guide-link { white-space: nowrap; }
+  /* Guide link — small pill button (operator request, 2026-10), not a
+     bare underlined text link. `.btn-secondary` supplies the shared
+     navy/amber-hover chrome ((algo)/+layout.svelte's own
+     `.algo-content .btn-secondary` override); this rule only fixes up
+     anchor-specific box rendering and out-specifies the sibling link's
+     underline rule above (compound selector, no `!important` needed) so
+     the amber hover color from the layout-level override still wins.
+     Same reuse pattern as ConsoleTab's matching link. */
+  .order-cli-scope-label a.order-cli-guide-link {
+    display: inline-flex;
+    align-items: center;
+    white-space: nowrap;
+    text-decoration: none;
+    color: var(--algo-slate);
+  }
   .order-cli-demo,
   .order-cli-err {
     padding: 0.4rem 0.6rem;

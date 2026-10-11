@@ -28,8 +28,8 @@
   import { toast } from '$lib/data/toastStore.svelte.js';
   import { safeRead } from '$lib/utils/safeRead.js';
   import CommandLineTab from '$lib/order/CommandLineTab.svelte';
-  import SymbolPanel from '$lib/SymbolPanel.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
+  import CardHeader from '$lib/CardHeader.svelte';
   import AgentCliEditor from '$lib/command/AgentCliEditor.svelte';
   import { fetchAgentCatalog, compileAgentCliStatement } from '$lib/command/grammars/agents.js';
   import {
@@ -114,7 +114,12 @@
 
   async function _submitAgentCliOrder(/** @type {any} */ result) {
     const resolved = await resolveConsoleOrder(result);
-    if (!resolved.ok) { toast.error(_short(/** @type {any} */ (resolved).error)); return; }
+    if (!resolved.ok) {
+      const _err = /** @type {any} */ (resolved).error;
+      _cliSubmitStatus = { ok: false, text: `Order failed: ${_err}` };
+      toast.error(_short(_err));
+      return;
+    }
     const isLive = result.ticket?.mode === 'live' || !!result.basket;
     if (isLive) {
       const ok = await _liveConfirmRef?.ask({
@@ -129,9 +134,11 @@
     const mode = getStore(executionMode) || 'paper';
     const r = await submitResolvedConsoleOrder(resolved, { mode });
     if (r.ok) {
+      _cliSubmitStatus = { ok: true, text: r.kind === 'basket' ? 'Basket order placed' : 'Order placed' };
       toast.success(r.kind === 'basket' ? 'Basket order placed' : 'Order placed');
       value = '';
     } else {
+      _cliSubmitStatus = { ok: false, text: `Order failed: ${/** @type {any} */ (r).error}` };
       toast.error(`Order failed: ${_short(/** @type {any} */ (r).error)}`);
     }
   }
@@ -249,114 +256,144 @@
     await _submitAgentCliOrder(fresh);
   }
 
-  // SymbolPanel-as-modal state — opened when CommandLineTab fires a
-  // parsed order. Operator confirms / edits / submits from the modal.
-  let _ticketProps = $state(/** @type {any} */ (null));
-  function _onParsedOrder(/** @type {any} */ props) {
-    _ticketProps = { ...props, defaultTab: 'ticket' };
-  }
-  function _closeTicket() { _ticketProps = null; }
+  // Sprint C follow-up (2026-10) — CLI order placement stays inline in
+  // this panel, matching agent/bracket/token submission (see
+  // `_submitAgentCliOrder` above). A prior SymbolPanel-ticket-MODAL hand-
+  // off (`onParsedOrder` → `_ticketProps`) was removed here: audit found
+  // `CommandLineTab`'s own `runParsed` never actually calls its
+  // `onParsedOrder` prop (buy/sell submits directly via
+  // `_submitPlaceOrder`, writing to its own `cmdHistory`) — the modal
+  // mount was dead code, unreachable from any real operator action.
+  let _fsConsole = $state(false);
 </script>
 
-{#if isDemo}
-  <div class="mb-2 p-2 rounded bg-purple-500/10 border border-purple-500/30 text-[0.65rem] text-purple-200">
-    <strong class="text-purple-100">Demo view.</strong>
-    Browse the command grammar + autocomplete. Submit + write paths are
-    disabled — see <a href="/showcase" class="underline hover:text-purple-50">the tour</a>
-    for what this terminal does in production.
-  </div>
-{/if}
-
-<div class="console-tab-guide">
-  <a href="/automation/guide" title="CLI grammar guide">Guide: CLI grammar reference &rarr;</a>
-</div>
-
-<!-- Plain command-line entry — buy/sell/modify/cancel stay on this bar;
-     WHEN/ALERT/DO and bare order(/place_order(/bracket( hand off to the
-     agent-family panel below instead of falling through to this bar's
-     own shell-exec fallback. -->
-<div class="console-cmd-wrap">
-  <CommandLineTab
-    onParsedOrder={_onParsedOrder}
-    onAgentStatement={_onAgentStatement}
-    prefillSide=""
-    prefillAccount=""
-    prefillSymbol=""
-    prefillQty={0}
-    prefillPrice={0}
-    prefillOrderType="LIMIT" />
-</div>
-
-<!-- Agent-family CLI — WHEN/ALERT/DO agents, bare order(...)/
-     place_order(...), bracket(...), and token(...) — full statement
-     scope, no allowedKinds restriction (this is the un-restricted
-     Console mount; the order-only mounts live on /orders and the
-     SymbolPanel modal via OrderCliTab). -->
-<div class="console-agent-cli-wrap">
-  {#if editTarget}
-    <!-- Sprint C — visible even while the catalog is still loading, so
-         the operator always sees edit-mode is active and has an escape
-         hatch (Cancel edit) regardless of catalog fetch timing. -->
-    <div class="console-edit-banner">
-      <span>Editing {_ROW_KIND_LABEL[editTarget.rowKind] || editTarget.rowKind} "{editTarget.label}"</span>
-      <button type="button" class="console-edit-cancel" onclick={cancelEdit}>Cancel edit</button>
-    </div>
-  {/if}
-  {#if _agentCliCatalogError}
-    <div class="console-agent-cli-err">{_agentCliCatalogError}</div>
-  {:else}
-    <AgentCliEditor
-      bind:value
-      catalog={_agentCliCatalog}
-      mode={_execModeForCompile()}
-      onOrderSubmit={_onAgentCliOrderSubmit}
-      info={_cliInfo}
-      submitStatus={_cliSubmitStatus}
-    />
-    {#if !isDemo && _agentCliCompiled?.ok && (_agentCliCompiled.kind === 'agent' || _agentCliCompiled.kind === 'event')}
-      <button type="button" class="btn-primary console-agent-cli-btn"
-        onclick={() => _submitAgentCliAgent(_agentCliCompiled)}>
-        {editTarget && (editTarget.rowKind === 'cycle' || editTarget.rowKind === 'event') ? 'Save' : 'Create agent'}
-      </button>
-    {:else if !isDemo && _agentCliCompiled?.ok && _agentCliCompiled.kind === 'bracket'}
-      <button type="button" class="btn-primary console-agent-cli-btn"
-        onclick={() => _submitAgentCliBracket(_agentCliCompiled)}>
-        {editTarget && editTarget.rowKind === 'bracket' ? 'Save' : 'Save bracket'}
-      </button>
-    {:else if !isDemo && _agentCliCompiled?.ok && _agentCliCompiled.kind === 'token'}
-      <button type="button" class="btn-primary console-agent-cli-btn"
-        onclick={() => _submitAgentCliToken(_agentCliCompiled)}>
-        {editTarget && editTarget.rowKind === 'template' ? 'Save' : 'Create token'}
-      </button>
-    {/if}
-  {/if}
-</div>
-
-{#if _ticketProps}
-  <SymbolPanel
-    symbol={_ticketProps.symbol || ''}
-    exchange={_ticketProps.exchange || ''}
-    defaultTab="ticket"
-    side={_ticketProps.side || 'BUY'}
-    qty={_ticketProps.qty || 0}
-    price={_ticketProps.price || 0}
-    orderType={_ticketProps.orderType || 'LIMIT'}
-    account={_ticketProps.account || ''}
-    accounts={[]}
-    onSubmit={_closeTicket}
-    onClose={_closeTicket}
+<section class="console-card" class:fs-card-on={_fsConsole}>
+  <CardHeader
+    title="Console"
+    label="Console"
+    bind:isFullscreen={_fsConsole}
+    showSearch={false}
+    showCollapse={false}
+    detectOverflow={false}
   />
-{/if}
+  <div class="console-card-body">
+    {#if isDemo}
+      <div class="mb-2 p-2 rounded bg-purple-500/10 border border-purple-500/30 text-[0.65rem] text-purple-200">
+        <strong class="text-purple-100">Demo view.</strong>
+        Browse the command grammar + autocomplete. Submit + write paths are
+        disabled — see <a href="/showcase" class="underline hover:text-purple-50">the tour</a>
+        for what this terminal does in production.
+      </div>
+    {/if}
+
+    <div class="console-tab-guide">
+      <a href="/automation/guide" title="CLI grammar guide" class="btn-secondary console-guide-btn">Guide: CLI grammar reference &rarr;</a>
+    </div>
+
+    <!-- Plain command-line entry — buy/sell/modify/cancel stay on this bar;
+         WHEN/ALERT/DO and bare order(/place_order(/bracket( hand off to the
+         agent-family panel below instead of falling through to this bar's
+         own shell-exec fallback. -->
+    <div class="console-cmd-wrap">
+      <CommandLineTab
+        onAgentStatement={_onAgentStatement}
+        prefillSide=""
+        prefillAccount=""
+        prefillSymbol=""
+        prefillQty={0}
+        prefillPrice={0}
+        prefillOrderType="LIMIT" />
+    </div>
+
+    <!-- Agent-family CLI — WHEN/ALERT/DO agents, bare order(...)/
+         place_order(...), bracket(...), and token(...) — full statement
+         scope, no allowedKinds restriction (this is the un-restricted
+         Console mount; the order-only mounts live on /orders and the
+         SymbolPanel modal via OrderCliTab). -->
+    <div class="console-agent-cli-wrap">
+      {#if editTarget}
+        <!-- Sprint C — visible even while the catalog is still loading, so
+             the operator always sees edit-mode is active and has an escape
+             hatch (Cancel edit) regardless of catalog fetch timing. -->
+        <div class="console-edit-banner">
+          <span>Editing {_ROW_KIND_LABEL[editTarget.rowKind] || editTarget.rowKind} "{editTarget.label}"</span>
+          <button type="button" class="console-edit-cancel" onclick={cancelEdit}>Cancel edit</button>
+        </div>
+      {/if}
+      {#if _agentCliCatalogError}
+        <div class="console-agent-cli-err">{_agentCliCatalogError}</div>
+      {:else}
+        <AgentCliEditor
+          bind:value
+          catalog={_agentCliCatalog}
+          mode={_execModeForCompile()}
+          onOrderSubmit={_onAgentCliOrderSubmit}
+          info={_cliInfo}
+          submitStatus={_cliSubmitStatus}
+        />
+        {#if !isDemo && _agentCliCompiled?.ok && (_agentCliCompiled.kind === 'agent' || _agentCliCompiled.kind === 'event')}
+          <button type="button" class="btn-primary console-agent-cli-btn"
+            onclick={() => _submitAgentCliAgent(_agentCliCompiled)}>
+            {editTarget && (editTarget.rowKind === 'cycle' || editTarget.rowKind === 'event') ? 'Save' : 'Create agent'}
+          </button>
+        {:else if !isDemo && _agentCliCompiled?.ok && _agentCliCompiled.kind === 'bracket'}
+          <button type="button" class="btn-primary console-agent-cli-btn"
+            onclick={() => _submitAgentCliBracket(_agentCliCompiled)}>
+            {editTarget && editTarget.rowKind === 'bracket' ? 'Save' : 'Save bracket'}
+          </button>
+        {:else if !isDemo && _agentCliCompiled?.ok && _agentCliCompiled.kind === 'token'}
+          <button type="button" class="btn-primary console-agent-cli-btn"
+            onclick={() => _submitAgentCliToken(_agentCliCompiled)}>
+            {editTarget && editTarget.rowKind === 'template' ? 'Save' : 'Create token'}
+          </button>
+        {/if}
+      {/if}
+    </div>
+  </div>
+</section>
 
 <ConfirmModal bind:this={_liveConfirmRef} />
 
 <style>
+  /* Sprint C follow-up (2026-10) — Console tab's own card chrome. Wraps
+     the CLI entry + result area so the standard CardControls group
+     (via CardHeader) applies, matching every other operator-action
+     card in the app. Only Fullscreen is wired (showSearch/showCollapse
+     false) — there is no grid to search, and collapsing a tab's only
+     content is a no-op the operator would just re-expand; Download
+     doesn't apply either (no tabular export), left unset so
+     GridDownloadButton hides itself. */
+  .console-card {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+  }
+  .console-card-body {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  .console-card.fs-card-on .console-card-body {
+    flex: 1 1 auto;
+    overflow-y: auto;
+  }
   .console-tab-guide {
     flex-shrink: 0;
     margin-bottom: 0.3rem;
     font-size: var(--fs-xs);
   }
-  .console-tab-guide a { color: var(--algo-sky); text-decoration: underline; }
+  /* Guide link — styled as a small pill button (operator request,
+     2026-10) rather than a bare underlined text link. `.btn-secondary`
+     supplies the shared navy/amber-hover chrome ((algo)/+layout.svelte's
+     `.algo-content .btn-secondary` override); this scoped class only
+     fixes up anchor-specific box rendering (inline-flex + no implicit
+     underline) — same reuse pattern as OrderCliTab's matching link. */
+  .console-guide-btn {
+    display: inline-flex;
+    align-items: center;
+    white-space: nowrap;
+    text-decoration: none;
+  }
   .console-cmd-wrap {
     flex-shrink: 0;
     margin-bottom: 0.4rem;

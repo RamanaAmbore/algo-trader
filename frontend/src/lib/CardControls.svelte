@@ -12,8 +12,12 @@
     Indirect, via LogPanel.svelte's own CardControls import — /orders
       (renders LogPanel directly) and /automation (renders ActivityLogSurface,
       which wraps LogPanel).
-    NOT adopted on pages without actionable grids — /admin/mcp, pure
-      /console (CLI input), etc.
+    Automation's Console tab (ConsoleTab.svelte, 2026-10) — wraps the CLI
+      entry + result area in a CardHeader with ONLY Fullscreen wired
+      (showSearch/showCollapse false — no grid to search, and collapsing
+      a tab's only content is a no-op). Operator request: give the CLI
+      panel the same card chrome every other operator-action card has.
+    NOT adopted on pages without actionable grids — /admin/mcp, etc.
 
   Operator: "have search, expand/contract, full screen card as a
   reusable code".
