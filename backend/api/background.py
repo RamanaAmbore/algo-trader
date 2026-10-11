@@ -1438,22 +1438,13 @@ def _conditions_reference_watchlist_scope(conditions: list) -> bool:
     return False
 
 
-async def _perf_fetch_watchlist_rows() -> list[dict]:
-    """Live-path population for the `watchlist.*` scope family
-    (`agent_evaluator.Context.watchlist_rows`) — this is the live
-    mirror of `SimDriver._watchlist_rows` (see
-    `backend/api/algo/sim/driver.py:_fetch_user_watchlist_rows` /
-    `_sd_build_watchlist_row`), which was the ONLY path populating this
-    field before this fix; the live `_perf_run_agent_engine` path left
-    it permanently empty, so `watchlist.*` agents never fired in
-    production (see `Context.watchlist_rows`'s own field comment,
-    predates this fix).
-
-    Gated like `_perf_build_quote_rows` — only queries the DB + fetches
-    quotes when at least one active agent's condition actually
-    references a `watchlist.*` scope (`_conditions_reference_watchlist_
-    scope`), so an install with no watchlist-scoped agents pays zero
-    extra cost per cycle.
+async def _fetch_watchlist_rows_raw() -> list[dict]:
+    """Ungated raw fetch for the `watchlist.*` row shape — extracted from
+    `_perf_fetch_watchlist_rows` (Sprint G) so a SECOND gate
+    (`_perf_build_symbols_rows`'s `symbols.*` kinds — 'watchlist'/'pinned')
+    can reuse the exact same fetch without also requiring a bare
+    `watchlist.*` scope to be referenced somewhere. Carries no gate of its
+    own — callers decide when it's worth paying for.
 
     User scope: `Agent` rows carry no owner/user_id column (this is a
     single-operator trading app, not multi-tenant per-user alerting —
@@ -1473,22 +1464,10 @@ async def _perf_fetch_watchlist_rows() -> list[dict]:
     metric resolver change only has to special-case the row shape
     once.
     """
-    from backend.api.algo.agent_engine import _cycle_load_agents
     from backend.api.algo.sim.driver import _sd_build_watchlist_row
     from backend.api.models import User, Watchlist, WatchlistItem
     from backend.api.routes.watchlist import _fetch_quotes
     from sqlalchemy import select as _sa_select, or_ as _sa_or
-
-    try:
-        agents = await _cycle_load_agents(None)
-    except Exception as e:
-        logger.warning(f"Background: watchlist_rows — active agent load failed: {e}")
-        return []
-
-    if not _conditions_reference_watchlist_scope(
-        [a.conditions for a in agents if getattr(a, 'conditions', None)]
-    ):
-        return []
 
     try:
         async with async_session() as session:
@@ -1546,6 +1525,207 @@ async def _perf_fetch_watchlist_rows() -> list[dict]:
     return out
 
 
+async def _perf_fetch_watchlist_rows() -> list[dict]:
+    """Live-path population for the `watchlist.*` scope family
+    (`agent_evaluator.Context.watchlist_rows`) — this is the live
+    mirror of `SimDriver._watchlist_rows` (see
+    `backend/api/algo/sim/driver.py:_fetch_user_watchlist_rows` /
+    `_sd_build_watchlist_row`), which was the ONLY path populating this
+    field before this fix; the live `_perf_run_agent_engine` path left
+    it permanently empty, so `watchlist.*` agents never fired in
+    production (see `Context.watchlist_rows`'s own field comment,
+    predates this fix).
+
+    Gated like `_perf_build_quote_rows` — only queries the DB + fetches
+    quotes when at least one active agent's condition actually
+    references a `watchlist.*` scope (`_conditions_reference_watchlist_
+    scope`), so an install with no watchlist-scoped agents pays zero
+    extra cost per cycle. The raw fetch itself now lives in
+    `_fetch_watchlist_rows_raw` (Sprint G — shared with the `symbols.*`
+    'watchlist'/'pinned' kinds, which need the SAME data under a
+    DIFFERENT gate).
+    """
+    from backend.api.algo.agent_engine import _cycle_load_agents
+
+    try:
+        agents = await _cycle_load_agents(None)
+    except Exception as e:
+        logger.warning(f"Background: watchlist_rows — active agent load failed: {e}")
+        return []
+
+    if not _conditions_reference_watchlist_scope(
+        [a.conditions for a in agents if getattr(a, 'conditions', None)]
+    ):
+        return []
+
+    return await _fetch_watchlist_rows_raw()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Symbols scope family (Sprint G) — watchlist/pinned/gainers/losers union
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# `agent_evaluator.Context.symbols_rows` — populated once per
+# `_task_performance` cycle, gated like every other opt-in scope family
+# above (quote.*/orders.*/watchlist.*): zero extra cost when no active
+# agent's condition actually references `symbols.*`.
+#
+# The GLOBAL "Pinned" watchlist (`Watchlist.is_global == True`, always
+# named "Pinned" — see `routes/watchlist.py:_sgp_find_or_create_global` /
+# `DEMO_WATCHLIST_NAME`) is the real backing store for `kind='pinned'`;
+# every OTHER watchlist `_fetch_watchlist_rows_raw` returns is `kind=
+# 'watchlist'`. Both kinds reuse that one raw fetch — no second DB query.
+#
+# `kind='gainers'`/`'losers'` reuse `routes/watchlist._get_movers_rows`
+# (the SAME computation `GET /watchlist/movers` serves — Sprint G
+# extracted it to a plain function precisely so this background path
+# could call it) — never a second winners/losers implementation. Split
+# by the sign of `change_pct`, the identical classification
+# `_combine_movers` already uses internally (positive -> winners/
+# gainers, negative -> losers) — not reinvented here.
+
+_SYMBOLS_PINNED_WATCHLIST_NAME = "Pinned"
+
+
+def _collect_symbols_kinds_from_conditions(conditions: list) -> "set[str]":
+    """Pure walk — given a list of agent `conditions` trees, return the
+    set of `kind` qualifier values ('watchlist'/'pinned'/'gainers'/
+    'losers') referenced by at least one `symbols.*` leaf's
+    `scope_filter.kind`. Same recursion shape as
+    `_collect_quote_symbols_from_conditions` (short-circuit-free, cycle-
+    guarded via the `$ref` visited set) — no DB/agent-loading I/O here.
+    """
+    out: set[str] = set()
+
+    def walk(node, visited: frozenset = frozenset()) -> None:
+        if not isinstance(node, dict):
+            return
+        if '$ref' in node:
+            ref = node.get('$ref')
+            if not isinstance(ref, str) or not ref or ref in visited:
+                return
+            try:
+                from backend.api.algo.template_registry import REGISTRY as _FRAG
+                body = _FRAG.get('condition', ref)
+            except Exception:
+                return
+            if isinstance(body, dict):
+                walk(body, visited | {ref})
+            return
+        if 'all' in node or 'any' in node:
+            key = 'all' if 'all' in node else 'any'
+            for child in (node.get(key) or []):
+                walk(child, visited)
+            return
+        if 'not' in node:
+            walk(node.get('not'), visited)
+            return
+        if 'log' in node:
+            return
+        scope_tok = node.get('scope')
+        if isinstance(scope_tok, str) and scope_tok.startswith('symbols.'):
+            sf = node.get('scope_filter') or {}
+            kind = sf.get('kind') if isinstance(sf, dict) else None
+            if kind and kind != '*':
+                out.add(str(kind).lower())
+
+    for cond in conditions or []:
+        try:
+            walk(cond)
+        except Exception:
+            continue
+    return out
+
+
+def _symbols_rows_from_watchlist_raw(raw_rows: list[dict]) -> list[dict]:
+    """Shape `_fetch_watchlist_rows_raw`'s rows into the `symbols_rows`
+    convention: `tradingsymbol`/`exchange`/`last_price`/`day_change`/
+    `day_change_percentage` (normalised to a true PERCENT, matching
+    `routes/watchlist.py`'s movers `change_pct` — the raw watchlist row's
+    own `day_change_percentage` is a FRACTION, see `grammar.py`'s
+    `_WATCHLIST_COLUMNS` collision-guard note) plus `kind` — 'pinned' for
+    the global Pinned list, 'watchlist' for every other list."""
+    out: list[dict] = []
+    for r in raw_rows:
+        kind = 'pinned' if str(r.get('account', '')) == _SYMBOLS_PINNED_WATCHLIST_NAME else 'watchlist'
+        frac = r.get('day_change_percentage')
+        out.append({
+            "tradingsymbol": r.get("tradingsymbol"),
+            "exchange":      r.get("exchange"),
+            "last_price":    r.get("last_price"),
+            "day_change":    r.get("day_change"),
+            "day_change_percentage": (frac * 100.0) if frac is not None else None,
+            "kind":          kind,
+        })
+    return out
+
+
+async def _symbols_rows_from_movers(kinds: "set[str]") -> list[dict]:
+    """Fetch the real winners/losers computation
+    (`routes/watchlist._get_movers_rows`) and split into 'gainers'/
+    'losers' `symbols_rows`, returning only the kind(s) actually
+    requested. `change_pct` from `MoverRow` is already a true percent —
+    no normalisation needed (unlike the watchlist-sourced kinds above)."""
+    from backend.api.routes.watchlist import _get_movers_rows
+
+    try:
+        resp = await _get_movers_rows(is_demo=False)
+    except Exception as e:
+        logger.warning(f"Background: symbols_rows movers fetch failed: {e}")
+        return []
+
+    out: list[dict] = []
+    for m in resp.movers:
+        kind = 'gainers' if m.change_pct > 0 else ('losers' if m.change_pct < 0 else None)
+        if kind is None or kind not in kinds:
+            continue
+        out.append({
+            "tradingsymbol": m.tradingsymbol,
+            "exchange":      m.exchange,
+            "last_price":    m.last_price,
+            "day_change":    (m.last_price - m.previous_close) if m.previous_close else None,
+            "day_change_percentage": m.change_pct,
+            "kind":          kind,
+        })
+    return out
+
+
+async def _perf_build_symbols_rows() -> list[dict]:
+    """Live-path population for the unified `symbols.*` scope family
+    (`agent_evaluator.Context.symbols_rows`). Gated on whether at least
+    one active agent's condition references `symbols.*` at all
+    (cheap pre-check); when it does, builds ONLY the kind(s) actually
+    referenced (`_collect_symbols_kinds_from_conditions`) — an install
+    with agents referencing only `kind:gainers` never pays for the
+    watchlist DB fetch, and vice versa.
+    """
+    from backend.api.algo.agent_engine import _cycle_load_agents
+
+    try:
+        agents = await _cycle_load_agents(None)
+    except Exception as e:
+        logger.warning(f"Background: symbols_rows — active agent load failed: {e}")
+        return []
+
+    kinds = _collect_symbols_kinds_from_conditions(
+        [a.conditions for a in agents if getattr(a, 'conditions', None)]
+    )
+    if not kinds:
+        return []
+
+    out: list[dict] = []
+    if kinds & {'watchlist', 'pinned'}:
+        try:
+            raw = await _fetch_watchlist_rows_raw()
+        except Exception as e:
+            logger.warning(f"Background: symbols_rows watchlist fetch failed: {e}")
+            raw = []
+        out.extend(r for r in _symbols_rows_from_watchlist_raw(raw) if r['kind'] in kinds)
+    if kinds & {'gainers', 'losers'}:
+        out.extend(await _symbols_rows_from_movers(kinds))
+    return out
+
+
 async def _perf_run_agent_engine(
     sim_active: bool,
     df_holdings: pd.DataFrame,
@@ -1591,6 +1771,21 @@ async def _perf_run_agent_engine(
             if (df_positions is not None and not df_positions.empty)
             else []
         )
+        # Sprint G, Task 2 — real `underlying` field on every position row,
+        # derived via the SAME symbol-decomposition logic the MCX collar
+        # detector already uses (`grammar._parsed_or_none` ->
+        # `parsed['root']`), generalized into `grammar.underlying_of_symbol`
+        # so this is the one place that logic runs, not a second
+        # implementation. None for cash-equity/unparseable symbols — wires
+        # the new `underlying:` qualifier (grammar.py's `_POSITION_ROW_
+        # COLUMNS`) onto every positions.* scope sharing this row shape.
+        if position_rows:
+            try:
+                from backend.api.algo.grammar import underlying_of_symbol
+                for _r in position_rows:
+                    _r["underlying"] = underlying_of_symbol(_r.get("tradingsymbol"))
+            except Exception as ue:
+                logger.debug(f"Background: position_rows underlying derivation failed: {ue}")
         spot_prices = await _run(_resolve_spot_prices, df_positions)
         if not spot_prices:
             logger.warning(
@@ -1617,6 +1812,11 @@ async def _perf_run_agent_engine(
         except Exception as we:
             logger.warning(f"Background: watchlist_rows unavailable this tick: {we}")
             watchlist_rows = []
+        try:
+            symbols_rows = await _perf_build_symbols_rows()
+        except Exception as se:
+            logger.warning(f"Background: symbols_rows unavailable this tick: {se}")
+            symbols_rows = []
         agent_context = {
             "sum_holdings": sum_holdings,
             "sum_positions": sum_positions,
@@ -1628,6 +1828,7 @@ async def _perf_run_agent_engine(
             "orders_rows":   orders_rows,
             "quote_rows":    quote_rows,
             "watchlist_rows": watchlist_rows,
+            "symbols_rows":  symbols_rows,
             "ist_display": ist_display,
             "now": now,
             "seg_state": seg_state,

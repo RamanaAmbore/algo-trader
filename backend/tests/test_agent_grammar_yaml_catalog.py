@@ -55,6 +55,14 @@ Amendment (Sprint 21, orders.* + quote.* scope families): two new
 notes / `backend/api/algo/grammar.py`'s `_scope_orders_any_acct` /
 `_scope_quote_tracked`.
 
+Amendment (Sprint G, symbols.* scope family): one new
+`(condition, scope, symbols.all)` token was added to `agent_grammar.yaml`
+right after `quote.tracked` (and mirrored here at the same position) —
+unifies watchlist/pinned/gainers/losers behind one scope token + a
+required `scope_filter.kind` qualifier. See
+`backend/api/algo/grammar.py`'s `_scope_symbols_all` and
+`backend/tests/test_symbols_scope_family.py`.
+
 Perf: no DB / network calls, pure in-memory comparison.
 Reuse: shares the same SYSTEM_TOKENS / LOG_TAG_TOKENS module attributes
 every other grammar test and `seed_grammar_tokens()` read.

@@ -51,6 +51,28 @@ def _handlers_source() -> str:
     return _HANDLERS_SRC.read_text(encoding="utf-8")
 
 
+def _get_movers_combined_body() -> str:
+    """Sprint G extracted `get_movers`'s real body verbatim into
+    module-level `_get_movers_rows` (so `background._perf_build_
+    symbols_rows` can reuse the exact same computation without an HTTP
+    request object) — `get_movers` is now a thin wrapper. Every
+    source-level assertion below that used to inspect `get_movers`'s own
+    body now needs to see the UNION of the wrapper + `_get_movers_rows`,
+    since that's where the real logic now lives."""
+    src = _wl_source()
+    wrapper_match = re.search(
+        r"async def get_movers\(self.*?\).*?(?=\n    @|\nclass |\Z)",
+        src, re.DOTALL,
+    )
+    assert wrapper_match, "get_movers not found in watchlist.py"
+    rows_match = re.search(
+        r"async def _get_movers_rows\(.*?\).*?(?=\nasync def |\ndef |\nclass |\Z)",
+        src, re.DOTALL,
+    )
+    assert rows_match, "_get_movers_rows not found in watchlist.py"
+    return wrapper_match.group(0) + "\n" + rows_match.group(0)
+
+
 # ---------------------------------------------------------------------------
 # Lightweight in-memory SQLite DB
 # ---------------------------------------------------------------------------
@@ -114,12 +136,7 @@ def test_force_snapshot_helper_defined_in_watchlist():
 def test_route_calls_save_on_live_result():
     """get_movers calls _save_movers_snapshot when rows is non-empty (via _movers_build_live_rows)."""
     src = _wl_source()
-    match = re.search(
-        r"async def get_movers\(self.*?\).*?(?=\n    @|\nclass |\Z)",
-        src, re.DOTALL,
-    )
-    assert match, "Could not find get_movers in watchlist.py"
-    body = match.group(0)
+    body = _get_movers_combined_body()
     # After C→B refactoring, get_movers calls _movers_build_live_rows which calls _save_movers_snapshot
     assert "_movers_build_live_rows(" in body, (
         "get_movers does not call _movers_build_live_rows"
@@ -140,15 +157,11 @@ def test_route_calls_load_on_market_closed():
     _load_latest_movers_snapshot. Since Jul 2026 this is extracted into
     `_movers_offhours_response`, so we accept either the direct call in
     get_movers OR the helper being wired through the closed-hours
-    branch."""
+    branch. Sprint G further extracted get_movers's real body into
+    `_get_movers_rows` — `_get_movers_combined_body()` unions both so
+    this check still sees the real delegation chain."""
     src = _wl_source()
-    # Case A — inline (pre-refactor).
-    match = re.search(
-        r"async def get_movers\(self.*?\).*?(?=\n    @|\nclass |\Z)",
-        src, re.DOTALL,
-    )
-    assert match, "Could not find get_movers in watchlist.py"
-    body = match.group(0)
+    body = _get_movers_combined_body()
     if "_load_latest_movers_snapshot(" in body:
         return
     # Case B — extracted into `_movers_offhours_response`, which
@@ -258,13 +271,7 @@ def test_route_uses_nse_specific_predicate_not_any_segment():
     winners/losers panels during 15:30-23:30 IST (NSE closed, MCX still open).
     Fix: gate the live-path on the NSE equity session window only.
     """
-    src = _wl_source()
-    match = re.search(
-        r"async def get_movers\(self.*?\).*?(?=\n    @|\nclass |\Z)",
-        src, re.DOTALL,
-    )
-    assert match, "get_movers not found in watchlist.py"
-    body = match.group(0)
+    body = _get_movers_combined_body()
 
     assert "is_any_segment_open" not in body, (
         "get_movers still uses is_any_segment_open — must use NSE-specific "
@@ -441,12 +448,7 @@ def test_off_hours_path_reads_db_and_returns_captured_at():
     Since Jul 2026 the off-hours branch is extracted into
     `_movers_offhours_response`; accept the check in either location."""
     src = _wl_source()
-    match = re.search(
-        r"async def get_movers\(self.*?\).*?(?=\n    @|\nclass |\Z)",
-        src, re.DOTALL,
-    )
-    assert match, "get_movers not found"
-    body = match.group(0)
+    body = _get_movers_combined_body()
 
     # The fast-path block must gate on nse_is_open
     assert "nse_is_open" in body, (
@@ -469,12 +471,7 @@ def test_off_hours_path_reads_db_and_returns_captured_at():
 def test_live_path_fires_save_as_task():
     """get_movers: live path fires _save_movers_snapshot via asyncio.create_task (via _movers_build_live_rows)."""
     src = _wl_source()
-    match = re.search(
-        r"async def get_movers\(self.*?\).*?(?=\n    @|\nclass |\Z)",
-        src, re.DOTALL,
-    )
-    assert match
-    body = match.group(0)
+    body = _get_movers_combined_body()
     # After C→B refactoring, get_movers calls _movers_build_live_rows which fires the task
     assert "_movers_build_live_rows(" in body, (
         "get_movers does not call _movers_build_live_rows"

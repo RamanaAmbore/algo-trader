@@ -203,6 +203,18 @@ class Context:
     # `watchlist_rows`'s existing pattern: cheap, in-memory, same
     # staleness profile as every other scope.
     quote_rows:      list = field(default_factory=list)
+    # Sprint G — unified `symbols.*` scope family rows (one dict per row,
+    # each carrying tradingsymbol/exchange/last_price/day_change/
+    # day_change_percentage plus a `kind` field — 'watchlist' | 'pinned' |
+    # 'gainers' | 'losers'). Populated once per `_task_performance` cycle
+    # by `background._perf_build_symbols_rows`, which reuses the EXISTING
+    # watchlist-row fetch (`_perf_fetch_watchlist_rows`'s own raw-fetch
+    # helper) for 'watchlist'/'pinned' and the existing winners/losers
+    # movers computation (`routes/watchlist.py`) for 'gainers'/'losers' —
+    # never a live per-condition broker round-trip. Empty when the engine
+    # hasn't populated it (sim/replay drivers don't; gated out when no
+    # active agent references `symbols.*` this cycle).
+    symbols_rows:    list = field(default_factory=list)
     # Underlying spot prices keyed by underlying name (e.g. {"NIFTY":
     # 22150.30, "BANKNIFTY": 48230.10}). Populated by the engine once
     # per tick from broker.ltp on the distinct underlyings of the
@@ -779,6 +791,21 @@ def validate(cond: dict) -> list[str]:
                 errors.append(
                     f"{path}: scope '{c['scope']}' requires a non-wildcard "
                     f"scope_filter.symbol (quote.* is instrument-rooted)"
+                )
+
+        # Sprint G — symbols.* unions four materially different row
+        # populations (watchlist/pinned/gainers/losers) behind one scope
+        # token; OR-evaluating a leaf across all four unfiltered would be
+        # meaningless. Mirror of the quote.* guard directly above, just a
+        # different required qualifier (`kind` instead of `symbol`).
+        if isinstance(c.get('scope'), str) and c['scope'].startswith('symbols.'):
+            _ksf = c.get('scope_filter')
+            _kind = _ksf.get('kind') if isinstance(_ksf, dict) else None
+            if not _kind or _kind == '*':
+                errors.append(
+                    f"{path}: scope '{c['scope']}' requires a non-wildcard "
+                    f"scope_filter.kind (symbols.* unions watchlist/pinned/"
+                    f"gainers/losers — must disambiguate which)"
                 )
 
         # Sprint 19 — optional scope_filter (e.g. {"symbol": "..."})

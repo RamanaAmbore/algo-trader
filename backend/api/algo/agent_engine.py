@@ -2110,6 +2110,7 @@ def _cycle_evaluate_agent(agent, context: dict, cfg: dict, now, alert_state: dic
         position_rows=context.get("position_rows") or [],
         orders_rows=context.get("orders_rows") or [],
         quote_rows=context.get("quote_rows") or [],
+        symbols_rows=context.get("symbols_rows") or [],
         spot_prices=context.get("spot_prices") or {},
         log_records=(context.get("log_records_by_agent") or {}).get(agent.id, []),
         alert_state=alert_state,

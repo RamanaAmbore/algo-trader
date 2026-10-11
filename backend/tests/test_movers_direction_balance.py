@@ -81,17 +81,32 @@ def test_combine_movers_defined():
 
 
 def test_get_movers_calls_combine_movers():
-    """get_movers delegates the combine step to _combine_movers (via _movers_build_live_rows)."""
+    """get_movers delegates the combine step to _combine_movers (via
+    _get_movers_rows -> _movers_build_live_rows). Sprint G extracted
+    get_movers's real body verbatim into module-level _get_movers_rows
+    (so background._perf_build_symbols_rows can reuse the exact same
+    computation) — get_movers is now a thin wrapper, so this test walks
+    the full delegation chain rather than just the controller method."""
     src = _wl_source()
     match = re.search(
         r"async def get_movers\(self.*?\).*?(?=\n    @|\nclass |\Z)",
         src, re.DOTALL,
     )
     assert match, "get_movers not found in watchlist.py"
-    body = match.group(0)
-    # After C→B refactoring, get_movers calls _movers_build_live_rows which calls _combine_movers
+    wrapper_body = match.group(0)
+    assert "_get_movers_rows(" in wrapper_body, (
+        "get_movers does not delegate to _get_movers_rows"
+    )
+    # The real logic now lives in _get_movers_rows (Sprint G extraction).
+    rows_match = re.search(
+        r"async def _get_movers_rows\(.*?\).*?(?=\nasync def |\ndef |\nclass |\Z)",
+        src, re.DOTALL,
+    )
+    assert rows_match, "_get_movers_rows not found in watchlist.py"
+    body = rows_match.group(0)
+    # After C→B refactoring, _get_movers_rows calls _movers_build_live_rows which calls _combine_movers
     assert "_movers_build_live_rows(" in body, (
-        "get_movers does not call _movers_build_live_rows"
+        "_get_movers_rows does not call _movers_build_live_rows"
     )
     # Verify _movers_build_live_rows actually calls _combine_movers
     helper_match = re.search(

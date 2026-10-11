@@ -1895,6 +1895,110 @@ async def _apply_rename_fields(
         wl.is_pinned = bool(data.is_pinned)
 
 
+async def _get_movers_rows(is_demo: bool) -> "MoversResponse":
+    """Full winners/losers movers computation — extracted verbatim from
+    `WatchlistController.get_movers`'s body (Sprint G) so a non-HTTP caller
+    (`background._perf_build_symbols_rows`, the `symbols.*` scope family's
+    gainers/losers kinds) can reuse the EXACT SAME real computation the
+    `/watchlist/movers` route already serves, instead of a second
+    hand-rolled winners/losers implementation.
+
+    Takes `is_demo` directly instead of a `Request` (the only thing the
+    original body actually read off `request` was `request.state.is_demo`)
+    so this has no Litestar/HTTP dependency and can be called from
+    anywhere. Behaviour is byte-identical to the pre-extraction method —
+    the controller below is now a thin wrapper around this function.
+    """
+    from backend.shared.helpers.date_time_utils import timestamp_indian
+
+    global _session_movers, _session_date, _mcx_fut_map
+
+    # Session rollover at IST midnight.
+    ist_now = timestamp_indian()
+    ist_today = ist_now.date().isoformat()
+    if _session_date != ist_today:
+        _session_movers = {}
+        _mcx_fut_map = {}   # cleared alongside _mcx_underlyings_cache_date buster
+        _session_date = ist_today
+
+    # Demo sessions never touch the live broker — serve the same
+    # closed-hours snapshot path that anonymous visitors see.
+    if is_demo:
+        return await _movers_offhours_response(ist_today)
+
+    # ── Market-state probe ────────────────────────────────────────
+    nse_is_open, mcx_is_open = _movers_probe_market_state(ist_now)
+
+    # Branch 2: BOTH closed → NSE snapshot fallback (unchanged).
+    if not nse_is_open and not mcx_is_open:
+        return await _movers_offhours_response(ist_today)
+
+    # ── Branch 1: at least one exchange open → unified live path ──
+
+    # Build BOTH universe caches once per calendar day. NSE = underlyings
+    # with a CE/PE chain (spot symbols like NIFTY, RELIANCE). MCX = bare
+    # commodity roots with a CE/PE chain, keyed off the earliest-expiry
+    # FUT tradingsymbol (broker.quote() returns nothing on the bare root).
+    await _movers_rebuild_universes_if_needed(ist_today)
+
+    # Build the unified key_to_meta map. Only include NSE keys when
+    # NSE is open; MCX keys when MCX is open. When one exchange is
+    # closed, session-sticky entries from that exchange stay in
+    # `_session_movers` and continue to appear via `_combine_movers`
+    # overlay (their `last_price` won't update — that's the intended
+    # sticky behaviour).
+    key_to_meta = _movers_build_key_to_meta(nse_is_open, mcx_is_open)
+
+    if not key_to_meta and not _session_movers:
+        logger.info(
+            f"[MOVERS-EMPTY] reason=no_universe "
+            f"nse_open={nse_is_open} mcx_open={mcx_is_open} "
+            f"nse_cache={len(_underlyings_cache)} "
+            f"mcx_cache={len(_mcx_underlyings_cache)}"
+        )
+        return MoversResponse(
+            movers=[], threshold_pct=MOVER_THRESHOLD_PCT, session_date=ist_today,
+        )
+
+    # Cached 30 s quote batch. Cache key is universe-scoped so that a
+    # transition from NSE-only → NSE+MCX (11:00 IST) doesn't reuse the
+    # NSE-only batch. Key components: TTL window + universe-size digest.
+    quote_data = await _movers_fetch_quotes_cached(key_to_meta)
+
+    if not quote_data and key_to_meta:
+        logger.warning(
+            "[MOVERS-EMPTY] reason=broker_quote_empty universe=%d — snapshot fallback",
+            len(key_to_meta),
+        )
+        return await _movers_offhours_response(ist_today)
+
+    # When NSE is closed but MCX is still open (15:30–23:30 IST), load
+    # today's NSE EOD snapshot so equity underlyings stay visible alongside
+    # live MCX quotes.  Pass None otherwise to keep the hot path unchanged.
+    _nse_snap: "dict[str, dict] | None" = None
+    if not nse_is_open and mcx_is_open:
+        _nse_snap = await _nse_snapshot_as_live_dict(ist_today)
+
+    rows, live_snapshot = _movers_build_live_rows(
+        key_to_meta, quote_data, nse_is_open, mcx_is_open, ist_today,
+        nse_snapshot=_nse_snap,
+    )
+
+    if not rows:
+        logger.info(
+            f"[MOVERS-EMPTY] reason=no_matches "
+            f"universe_size={len(key_to_meta)} "
+            f"session_movers={len(_session_movers)} "
+            f"live_snapshot={len(live_snapshot)}"
+        )
+
+    return MoversResponse(
+        movers=rows,
+        threshold_pct=MOVER_THRESHOLD_PCT,
+        session_date=ist_today,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Controller
 # ---------------------------------------------------------------------------
@@ -2125,96 +2229,13 @@ class WatchlistController(Controller):
         out at the write site so the NSE 15:29 snapshot in movers_snapshots
         isn't overwritten by evening MCX data (which the closed-hours
         fallback would then serve on an equity-context grid before 09:15).
+
+        Sprint G — body extracted verbatim into module-level `_get_movers_rows`
+        so `background._perf_build_symbols_rows` (the `symbols.*` gainers/
+        losers kinds) can reuse this EXACT computation without an HTTP
+        request object. This method is now a thin wrapper.
         """
-        import asyncio
-        from backend.shared.helpers.date_time_utils import timestamp_indian
-
-        global _session_movers, _session_date, _mcx_fut_map
-
-        # Session rollover at IST midnight.
-        ist_now = timestamp_indian()
-        ist_today = ist_now.date().isoformat()
-        if _session_date != ist_today:
-            _session_movers = {}
-            _mcx_fut_map = {}   # cleared alongside _mcx_underlyings_cache_date buster
-            _session_date = ist_today
-
-        # Demo sessions never touch the live broker — serve the same
-        # closed-hours snapshot path that anonymous visitors see.
-        if getattr(request.state, "is_demo", False):
-            return await _movers_offhours_response(ist_today)
-
-        # ── Market-state probe ────────────────────────────────────────
-        nse_is_open, mcx_is_open = _movers_probe_market_state(ist_now)
-
-        # Branch 2: BOTH closed → NSE snapshot fallback (unchanged).
-        if not nse_is_open and not mcx_is_open:
-            return await _movers_offhours_response(ist_today)
-
-        # ── Branch 1: at least one exchange open → unified live path ──
-
-        # Build BOTH universe caches once per calendar day. NSE = underlyings
-        # with a CE/PE chain (spot symbols like NIFTY, RELIANCE). MCX = bare
-        # commodity roots with a CE/PE chain, keyed off the earliest-expiry
-        # FUT tradingsymbol (broker.quote() returns nothing on the bare root).
-        await _movers_rebuild_universes_if_needed(ist_today)
-
-        # Build the unified key_to_meta map. Only include NSE keys when
-        # NSE is open; MCX keys when MCX is open. When one exchange is
-        # closed, session-sticky entries from that exchange stay in
-        # `_session_movers` and continue to appear via `_combine_movers`
-        # overlay (their `last_price` won't update — that's the intended
-        # sticky behaviour).
-        key_to_meta = _movers_build_key_to_meta(nse_is_open, mcx_is_open)
-
-        if not key_to_meta and not _session_movers:
-            logger.info(
-                f"[MOVERS-EMPTY] reason=no_universe "
-                f"nse_open={nse_is_open} mcx_open={mcx_is_open} "
-                f"nse_cache={len(_underlyings_cache)} "
-                f"mcx_cache={len(_mcx_underlyings_cache)}"
-            )
-            return MoversResponse(
-                movers=[], threshold_pct=MOVER_THRESHOLD_PCT, session_date=ist_today,
-            )
-
-        # Cached 30 s quote batch. Cache key is universe-scoped so that a
-        # transition from NSE-only → NSE+MCX (11:00 IST) doesn't reuse the
-        # NSE-only batch. Key components: TTL window + universe-size digest.
-        quote_data = await _movers_fetch_quotes_cached(key_to_meta)
-
-        if not quote_data and key_to_meta:
-            logger.warning(
-                "[MOVERS-EMPTY] reason=broker_quote_empty universe=%d — snapshot fallback",
-                len(key_to_meta),
-            )
-            return await _movers_offhours_response(ist_today)
-
-        # When NSE is closed but MCX is still open (15:30–23:30 IST), load
-        # today's NSE EOD snapshot so equity underlyings stay visible alongside
-        # live MCX quotes.  Pass None otherwise to keep the hot path unchanged.
-        _nse_snap: "dict[str, dict] | None" = None
-        if not nse_is_open and mcx_is_open:
-            _nse_snap = await _nse_snapshot_as_live_dict(ist_today)
-
-        rows, live_snapshot = _movers_build_live_rows(
-            key_to_meta, quote_data, nse_is_open, mcx_is_open, ist_today,
-            nse_snapshot=_nse_snap,
-        )
-
-        if not rows:
-            logger.info(
-                f"[MOVERS-EMPTY] reason=no_matches "
-                f"universe_size={len(key_to_meta)} "
-                f"session_movers={len(_session_movers)} "
-                f"live_snapshot={len(live_snapshot)}"
-            )
-
-        return MoversResponse(
-            movers=rows,
-            threshold_pct=MOVER_THRESHOLD_PCT,
-            session_date=ist_today,
-        )
+        return await _get_movers_rows(getattr(request.state, "is_demo", False))
 
     # ── Items ─────────────────────────────────────────────────────────
 

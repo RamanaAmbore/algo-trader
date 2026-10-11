@@ -514,6 +514,16 @@ system_tokens:
     per-condition broker fetch. REQUIRES a non-wildcard scope_filter.symbol. Leaf is OR-combined per row.
   resolver: backend.api.algo.grammar._scope_quote_tracked
 
+# ── Symbols scope (Sprint G — unified watchlist/pinned/gainers/losers) ──
+- grammar_kind: condition
+  token_kind: scope
+  token: symbols.all
+  value_type: array
+  description: Every row across the unified symbols.* kinds (watchlist/pinned/gainers/losers), refreshed once
+    per performance cycle. REQUIRES a non-wildcard scope_filter.kind (one of watchlist/pinned/gainers/losers)
+    to disambiguate which kind's rows a leaf evaluates over. Leaf is OR-combined per row.
+  resolver: backend.api.algo.grammar._scope_symbols_all
+
 # ════════════════════════════════════════════════════════════════════════
 #  CONDITION — OPERATORS (leaf comparators)
 # ════════════════════════════════════════════════════════════════════════

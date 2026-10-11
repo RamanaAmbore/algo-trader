@@ -35,6 +35,7 @@ via dotted-path import — the `resolver` column already stores a string.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Optional
 
 import yaml
 
@@ -380,6 +381,26 @@ def _parsed_or_none(symbol):
         return parse_tradingsymbol(symbol)
     except Exception:
         return None
+
+
+def underlying_of_symbol(symbol: str) -> Optional[str]:
+    """Return the underlying root (e.g. 'NIFTY', 'CRUDEOIL') for an F&O
+    tradingsymbol, or None for a cash-equity / unparseable symbol.
+
+    Sprint G, Task 2 — generalizes the per-row underlying derivation the
+    MCX collar detector (`_scope_positions_expiring_today_mcx_unhedged`
+    below) already does inline (`parsed.get('root')`) into a single,
+    reusable function, so `background.py`'s position-row builder and any
+    future caller share the EXACT same symbol-decomposition logic rather
+    than re-implementing it. `_parsed_or_none` already wraps
+    `derivatives.parse_tradingsymbol` with the same try/except-to-None
+    contract every other resolver in this module uses for an
+    unparseable symbol — reused verbatim, not duplicated.
+    """
+    parsed = _parsed_or_none(symbol or '')
+    if not parsed:
+        return None
+    return parsed.get('root') or None
 
 
 def _metric_days_until_expiry(ctx, row):
@@ -781,6 +802,26 @@ def _scope_quote_tracked(ctx):
     return list(getattr(ctx, 'quote_rows', []) or [])
 
 
+# ── Symbols scope (Sprint G) ──────────────────────────────────────────────
+# Reads ctx.symbols_rows — one dict per row, UNIONING four previously
+# separate concepts (watchlist / pinned / gainers / losers) behind a single
+# `kind` qualifier, per the operator's "symbols.* groups" design. Populated
+# once per `_task_performance` cycle by `background._perf_build_symbols_rows`
+# (gated on whether any active agent actually references `symbols.*`, same
+# cost profile as `watchlist.*`/`quote.*` — never a live per-condition
+# broker round-trip). Instrument-rooted like `watchlist.*`/`quote.*` — no
+# account dimension. REQUIRES a non-wildcard `scope_filter.kind` (enforced
+# in `agent_evaluator.validate()`, mirroring the existing `quote.*`
+# required-symbol guard) since the four kinds carry materially different
+# row populations and mixing them unfiltered under one OR-combined leaf
+# would be meaningless.
+def _scope_symbols_all(ctx):
+    """Every row across every `symbols.*` kind (watchlist/pinned/gainers/
+    losers) — always narrowed by a `scope_filter.kind` qualifier in
+    practice; see module-level note above."""
+    return list(getattr(ctx, 'symbols_rows', []) or [])
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 #  EXPOSED-COLUMN REGISTRY (Sprint 15 — generic `scope.attribute` dot-access)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -931,6 +972,19 @@ _POSITION_ROW_COLUMNS = {
     'symbol':         _col('tradingsymbol', 'Symbol', 'string'),
     'exchange':       _col('exchange', 'Exchange', 'string'),
     'product':        _col('product', 'Product', 'string'),
+    # Sprint G, Task 2 — derived underlying root (e.g. 'NIFTY',
+    # 'CRUDEOIL') via `underlying_of_symbol` at row-build time
+    # (`background.py`'s position_rows construction), same
+    # `derivatives.parse_tradingsymbol`-based logic the MCX collar
+    # detector already uses. None for cash-equity/unparseable rows —
+    # a `scope_filter: {"underlying": ...}` naturally excludes those
+    # rows (str(None) never matches a real underlying name). Wires the
+    # `underlying:` qualifier onto every positions.* scope that shares
+    # this per-symbol row schema (expiring_today / .nfo /
+    # .mcx_unhedged / worst_symbol) via the SAME generic
+    # `scope_filter_row_predicate` mechanism `symbol:`/`exchange:`
+    # already use — no new filter machinery.
+    'underlying':     _col('underlying', 'Underlying', 'string'),
     # Always in CONTRACTS, never lots — `_annotate_lot_size` normalises
     # `quantity` to contracts for every exchange before this row shape is
     # ever built (see CLAUDE.md "F&O order qty convention").
@@ -1039,6 +1093,29 @@ _QUOTE_COLUMNS = {
     'volume':   _col('volume', 'Volume'),
 }
 
+# Symbols rows (ctx.symbols_rows — see `background._perf_build_symbols_rows`).
+# Sprint G — unifies watchlist/pinned/gainers/losers under one scope family.
+# `kind` is the qualifier column `scope_filter: {"kind": "gainers"}` reads
+# (REQUIRED — see `agent_evaluator.validate()`'s `symbols.*` guard), via the
+# SAME generic `scope_filter_row_predicate` mechanism `symbol:`/`exchange:`
+# already use elsewhere — no new filter machinery for this sprint.
+# `day_change_pct` is normalised to a true PERCENT (e.g. -2.0 = -2%) across
+# EVERY kind at row-build time in `background.py`, even though the
+# watchlist/pinned source rows carry a FRACTION internally (see
+# `_WATCHLIST_COLUMNS`'s own `day_change_frac` collision-guard note above) —
+# deliberately avoiding that exact "same name, different unit" trap for
+# this new, unified family.
+_SYMBOLS_COLUMNS = {
+    # 'watchlist' | 'pinned' | 'gainers' | 'losers' — see
+    # `background._perf_build_symbols_rows` for how each kind is built.
+    'kind':           _col('kind', 'Kind', 'string'),
+    'symbol':         _col('tradingsymbol', 'Symbol', 'string'),
+    'exchange':       _col('exchange', 'Exchange', 'string'),
+    'ltp':            _col('last_price', 'LTP'),
+    'day_change':     _col('day_change', 'Day Change (₹)'),
+    'day_change_pct': _col('day_change_percentage', 'Day Change %'),
+}
+
 # scope token -> its exposed-column schema. MUST cover every real
 # `token_kind: scope` row in agent_grammar.yaml — enforced by
 # backend/tests/test_grammar_exposed_columns.py (walks the YAML itself,
@@ -1062,6 +1139,7 @@ EXPOSED_COLUMNS: dict[str, dict] = {
     'watchlist.markets':                      _WATCHLIST_COLUMNS,
     'orders.any_acct':                        _ORDERS_COLUMNS,
     'quote.tracked':                          _QUOTE_COLUMNS,
+    'symbols.all':                            _SYMBOLS_COLUMNS,
 }
 
 # scope token -> (ctx attribute the resolver reads, resolver function name
@@ -1088,6 +1166,7 @@ EXPOSED_COLUMN_SCOPE_PROVENANCE: dict[str, tuple[str, str]] = {
     'watchlist.markets':                      ('ctx.watchlist_rows', '_scope_watchlist_markets'),
     'orders.any_acct':                        ('ctx.orders_rows', '_scope_orders_any_acct'),
     'quote.tracked':                          ('ctx.quote_rows', '_scope_quote_tracked'),
+    'symbols.all':                            ('ctx.symbols_rows', '_scope_symbols_all'),
 }
 
 

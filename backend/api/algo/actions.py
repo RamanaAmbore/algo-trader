@@ -293,8 +293,15 @@ async def _log_action_success(
     """Log a successful action dispatch: logger line + log_event + optional audit."""
     logger.info(f"{tag}Agent [{agent.slug}]: action '{action_type}' completed")
     from backend.api.algo.events import log_event
+    # agent_kind rides on the persisted AgentEvent.detail (not just the
+    # emit_log return value or raw logger line, both of which are
+    # discarded by execute() before reaching here) so LogPanel's
+    # Agents-tab kind filter has real data from the row `agent` already
+    # carries — no new param/context threading needed, `agent.kind` is
+    # already in hand at this call site.
+    detail = {**params, "agent_kind": getattr(agent, "kind", None)}
     await log_event(agent, "action_success", f"{tag}Action: {action_type}",
-                    params, sim_mode=sim_mode)
+                    detail, sim_mode=sim_mode)
     # Audit trail for every agent-triggered action that mutates state.
     # Skipped when sim — sim_mode actions are already isolated in their own
     # logs + don't touch real broker / DB state beyond agent_events.
@@ -323,9 +330,10 @@ async def _al_action_failed_audit(
     """Log action_failed event + optional audit trail (fire-and-forget)."""
     logger.error(f"{tag}Agent [{agent.slug}]: action '{action_type}' failed: {exc}")
     from backend.api.algo.events import log_event
+    detail = {**params, "agent_kind": getattr(agent, "kind", None)}
     await log_event(agent, "action_failed",
                     f"{tag}Action: {action_type} — {exc}",
-                    params, sim_mode=sim_mode)
+                    detail, sim_mode=sim_mode)
     if sim_mode:
         return
     try:
@@ -659,7 +667,8 @@ async def _al_log_action_skipped(
         await log_event(
             agent, "action_skipped",
             f"{tag}Action {action_type} skipped: {reason}",
-            {"action_type": action_type, "params": params, "skip_reason": reason},
+            {"action_type": action_type, "params": params, "skip_reason": reason,
+             "agent_kind": getattr(agent, "kind", None)},
             sim_mode=sim_mode,
         )
     except Exception as e:
@@ -680,6 +689,17 @@ async def execute(agent, actions: list, context: dict):
                  df_positions used by paper-mode chase expansion)
     """
     sim_mode = bool(context.get("sim_mode"))
+    # Sprint G, Task 3 — thread the firing agent's `kind` (cycle/bracket/
+    # template/alert, …) into context BEFORE any handler dispatch, so a
+    # non-broker handler like `emit_log` can tag its own log line/record
+    # with which kind fired it (e.g. for a future LogPanel kind-filter).
+    # `context` here is always a fresh per-call dict (agent_engine.py's
+    # `_ae_dispatch_actions` builds `action_ctx = dict(context)` once per
+    # agent/match before calling `execute()`), so mutating it in place is
+    # safe and never leaks across agents or cycles. Field name is
+    # `agent_kind`, deliberately distinct from any bare `kind` key that
+    # might already exist in context, to avoid a silent collision.
+    context["agent_kind"] = getattr(agent, "kind", None)
     for action in actions:
         action_type = action.get("type", "")
         params = action.get("params", {})
@@ -921,8 +941,21 @@ async def set_flag(ctx, params: dict) -> dict:
 async def emit_log(ctx, params: dict) -> dict:
     level   = (params.get("level") or "info").lower()
     message = params.get("message", "")
-    getattr(logger, level, logger.info)(f"Agent emit_log: {message}")
-    return {"action": "emit_log", "status": "logged", "level": level, "message": message}
+    # Sprint G, Task 3 — carry the firing agent's kind (injected into
+    # `ctx` by `execute()` above) on the log line AND in the returned
+    # dict, so a future LogPanel kind-filter has something real to key
+    # off. `ctx` may be `{}`/None in direct-call tests — `.get` degrades
+    # to None rather than raising, same missing-vs-zero convention used
+    # everywhere else in this module.
+    agent_kind = (ctx or {}).get("agent_kind")
+    logline = f"Agent emit_log: {message}"
+    if agent_kind:
+        logline = f"{logline} [agent_kind={agent_kind}]"
+    getattr(logger, level, logger.info)(logline)
+    return {
+        "action": "emit_log", "status": "logged", "level": level,
+        "message": message, "agent_kind": agent_kind,
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════════════
