@@ -110,6 +110,7 @@
 <div class="order-cli-tab">
   <div class="order-cli-scope-label">
     CLI — orders only. Author agents/brackets on <a href="/automation?tab=console">Automation → Console</a>.
+    <a href="/automation/guide" title="CLI grammar guide" class="order-cli-guide-link">Guide: CLI grammar reference &rarr;</a>
   </div>
   {#if isDemo}
     <div class="order-cli-demo">Demo view — CLI order placement disabled.</div>
@@ -133,10 +134,16 @@
 <style>
   .order-cli-tab { display: flex; flex-direction: column; gap: 0.4rem; }
   .order-cli-scope-label {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 0.5rem;
     font-size: var(--fs-xs);
     color: var(--algo-muted);
   }
   .order-cli-scope-label a { color: var(--algo-sky); text-decoration: underline; }
+  .order-cli-guide-link { white-space: nowrap; }
   .order-cli-demo,
   .order-cli-err {
     padding: 0.4rem 0.6rem;
