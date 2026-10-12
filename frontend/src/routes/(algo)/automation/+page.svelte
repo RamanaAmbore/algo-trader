@@ -67,12 +67,14 @@
   // reuses this component instance for a same-route navigation.
   // Sprint C — `?tab=brackets`/`?tab=tokens` (pre-redesign bookmarks)
   // redirect to the Agents tab with the matching kind-card preselected,
-  // rather than landing on a tab that no longer exists.
+  // rather than landing on a tab that no longer exists. `?tab=tokens`
+  // now lands on the 'agents' card itself (2026-10-12 — Templates folded
+  // into Agents, no separate card left to preselect).
   $effect(() => {
     const t = page.url.searchParams.get('tab');
     if (t === 'console' && activeTab !== 'console') activeTab = 'console';
     else if (t === 'brackets' && _activeCard !== 'brackets') { activeTab = 'agents'; _activeCard = 'brackets'; }
-    else if (t === 'tokens' && _activeCard !== 'templates') { activeTab = 'agents'; _activeCard = 'templates'; }
+    else if (t === 'tokens' && _activeCard !== 'agents') { activeTab = 'agents'; _activeCard = 'agents'; }
   });
 
   // Global simulator status — when active, the Agent-events panel swaps to
@@ -156,10 +158,15 @@
    *  JSON into CLI text and switches to the Console tab with edit-mode
    *  armed (Save routes through UPDATE, never CREATE — see
    *  ConsoleTab's own `_EDIT_KIND_FOR_ROW_KIND`). On a decompile
-   *  failure (e.g. a condition-kind Token, or a system/default/slugged/
-   *  inactive Bracket — see `_bracketUnexpressibleFields` in agents.js)
-   *  shows the error and stays on the row — NEVER switches to Console
-   *  with an empty/broken box. */
+   *  failure (e.g. a system/default/slugged/inactive Bracket — see
+   *  `_bracketUnexpressibleFields` in agents.js) shows the error and
+   *  stays on the row — NEVER switches to Console with an empty/broken
+   *  box.
+   *
+   *  Dispatch is keyed on `row.kind`, NOT `cardId` — since 2026-10-12,
+   *  `kind='template'` rows share the 'agents' card with ordinary cycle
+   *  agents (Templates folded into Agents), so `cardId === 'agents'` no
+   *  longer implies `row.kind` is 'cycle'. */
   async function editRow(/** @type {string} */ cardId, /** @type {any} */ row) {
     let catalog;
     try { catalog = await _ensureEditCatalog(); }
@@ -169,20 +176,20 @@
     /** @type {'cycle'|'event'|'template'|'bracket'|undefined} */
     let rowKind;
     try {
-      if (cardId === 'agents' || cardId === 'alerts') {
+      if (cardId === 'brackets') {
+        rowKind = 'bracket';
+        ref = row.id;
+        dec = decompileBracket(row, catalog);
+      } else if (row.kind === 'template') {
+        rowKind = 'template';
+        ref = row.slug;
+        dec = decompileToken(row, catalog);
+      } else if (cardId === 'agents' || cardId === 'alerts') {
         rowKind = row.kind === 'event' ? 'event' : 'cycle';
         ref = row.slug;
         dec = rowKind === 'event'
           ? decompileEventAgent(row, catalog)
           : decompileAgent(row, catalog);
-      } else if (cardId === 'brackets') {
-        rowKind = 'bracket';
-        ref = row.id;
-        dec = decompileBracket(row, catalog);
-      } else if (cardId === 'templates') {
-        rowKind = 'template';
-        ref = row.slug;
-        dec = decompileToken(row, catalog);
       } else {
         return;
       }
@@ -205,7 +212,7 @@
 
   function _deleteConfirmMessage(/** @type {string} */ cardId, /** @type {any} */ row) {
     if (cardId === 'brackets') return `Delete bracket "${row.name}"? Existing orders that used it are not affected.`;
-    if (cardId === 'templates') return `Delete token "${row.name}"? Any agent still $ref-ing it will log a warning and skip that reference.`;
+    if (row.kind === 'template') return `Delete token "${row.name}"? Any agent still $ref-ing it will log a warning and skip that reference.`;
     return `Delete agent "${row.name}"? This cannot be undone.`;
   }
 
@@ -746,7 +753,7 @@
               {/each}
             </span>
           {/if}
-          {#if _activeCard === 'agents'}
+          {#if _activeCard === 'agents' && row.kind !== 'template'}
             <button type="button"
               onclick={(e) => { e.stopPropagation(); toggleTradeMode(row); }}
               title={`Trade mode: ${(row.trade_mode || 'paper').toUpperCase()} — click to flip (paper ↔ live)`}
@@ -757,7 +764,7 @@
               {(row.trade_mode || 'paper') === 'live' ? 'L' : 'P'}
             </button>
           {/if}
-          {#if _activeCard === 'agents' || _activeCard === 'alerts'}
+          {#if (_activeCard === 'agents' || _activeCard === 'alerts') && row.kind !== 'template'}
             <button type="button"
               onclick={(e) => { e.stopPropagation(); toggle(row); }}
               class="text-[length:var(--fs-xs)] px-1.5 py-0 rounded font-medium border flex-shrink-0
@@ -794,7 +801,7 @@
               {@render agentRowView(row)}
             {/if}
             <div class="flex items-center justify-end gap-3 text-[length:var(--fs-xs)] mt-2">
-              {#if (_activeCard === 'agents' || _activeCard === 'alerts') && !isDemo}
+              {#if (_activeCard === 'agents' || _activeCard === 'alerts') && !isDemo && row.kind !== 'template'}
                 <button type="button" onclick={(e) => { e.stopPropagation(); runInSim(row); }}
                   title="Dry-fire this agent in the Simulator (bypasses schedule / cooldown / baseline)"
                   class="text-[var(--c-long)] hover:underline">Run in Simulator</button>
@@ -883,7 +890,6 @@
   .kind-card[data-kind="agents"]:hover    { border-color: var(--algo-amber-border); }
   .kind-card[data-kind="alerts"]:hover    { border-color: var(--algo-sky-border); }
   .kind-card[data-kind="brackets"]:hover  { border-color: var(--algo-cyan-border); }
-  .kind-card[data-kind="templates"]:hover { border-color: var(--algo-violet-border); }
 
   /* ── Always-active kind-tinted background + border (2026-10-12) —
      matches OrderBook.svelte's `.ob-sc[data-status]` decoration level
@@ -914,16 +920,9 @@
       linear-gradient(180deg, #0f1729 0%, #0a1020 100%);
     border-color: var(--algo-cyan-border-soft);
   }
-  .kind-card[data-kind="templates"] {
-    background:
-      linear-gradient(180deg, rgba(192,132,252,0.14) 0%, rgba(192,132,252,0.04) 60%, rgba(0,0,0,0.08) 100%),
-      linear-gradient(180deg, #0f1729 0%, #0a1020 100%);
-    border-color: var(--algo-violet-border-soft);
-  }
   .kind-card.is-active[data-kind="agents"]    { border-color: var(--algo-amber-border); }
   .kind-card.is-active[data-kind="alerts"]    { border-color: var(--algo-sky-border); }
   .kind-card.is-active[data-kind="brackets"]  { border-color: var(--algo-cyan-border); }
-  .kind-card.is-active[data-kind="templates"] { border-color: var(--algo-violet-border); }
 
   .kind-card-n {
     font-size: var(--fs-xl);
@@ -934,13 +933,19 @@
   .kind-card[data-kind="agents"]    .kind-card-n { color: var(--c-action); }
   .kind-card[data-kind="alerts"]    .kind-card-n { color: var(--algo-sky); }
   .kind-card[data-kind="brackets"]  .kind-card-n { color: var(--algo-cyan); }
-  .kind-card[data-kind="templates"] .kind-card-n { color: var(--algo-violet); }
   .kind-card-l {
     font-size: var(--fs-sm);
     color: var(--c-muted);
     text-transform: uppercase;
     letter-spacing: 0.04em;
   }
+  /* Label text colored per kind too (2026-10-12, operator: "alerts and
+     brackets background, border, text colors can be different from
+     agents") — same per-kind tokens `.kind-card-n` already uses, so
+     background/border/number/label all agree on one color per card. */
+  .kind-card[data-kind="agents"]    .kind-card-l { color: var(--c-action); }
+  .kind-card[data-kind="alerts"]    .kind-card-l { color: var(--algo-sky); }
+  .kind-card[data-kind="brackets"]  .kind-card-l { color: var(--algo-cyan); }
 
   /* ── Agent row card chrome — matches agent-templates' .frag-row look
      (same literal gradient/border/radius) for visual parity across the

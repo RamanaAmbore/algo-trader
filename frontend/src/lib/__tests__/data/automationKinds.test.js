@@ -6,9 +6,9 @@ import {
 } from '$lib/data/automationKinds.js';
 
 describe('KIND_CARDS', () => {
-  it('has exactly the four Sprint C cards, in display order', () => {
-    expect(KIND_CARDS.map((c) => c.id)).toEqual(['agents', 'alerts', 'brackets', 'templates']);
-    expect(KIND_CARDS.map((c) => c.label)).toEqual(['Agents', 'Alerts', 'Brackets', 'Templates']);
+  it('has exactly the three cards (Templates folded into Agents, 2026-10-12), in display order', () => {
+    expect(KIND_CARDS.map((c) => c.id)).toEqual(['agents', 'alerts', 'brackets']);
+    expect(KIND_CARDS.map((c) => c.label)).toEqual(['Agents', 'Alerts', 'Brackets']);
   });
 });
 
@@ -16,8 +16,8 @@ describe('classifyAgentCardId', () => {
   it('kind=event -> alerts', () => {
     expect(classifyAgentCardId({ slug: 'x', kind: 'event' })).toBe('alerts');
   });
-  it('kind=template -> templates', () => {
-    expect(classifyAgentCardId({ slug: 'x', kind: 'template' })).toBe('templates');
+  it('kind=template -> agents (folded in, 2026-10-12 — Templates are no longer a separate card)', () => {
+    expect(classifyAgentCardId({ slug: 'x', kind: 'template' })).toBe('agents');
   });
   it('kind=cycle -> agents', () => {
     expect(classifyAgentCardId({ slug: 'x', kind: 'cycle' })).toBe('agents');
@@ -203,14 +203,17 @@ describe('kindCounts', () => {
       { slug: 'loss-margin-low', kind: 'threshold' },
     ];
     const templateRows = [{ id: 1, name: 'default-bull' }, { id: 2, name: 'default-bear' }];
+    // 'notify-critical-trio' (kind=template) now counts under 'agents'
+    // too (2026-10-12 — Templates folded into Agents): 2 cycle/threshold
+    // rows + 1 template row = 3.
     expect(kindCounts(agentRows, templateRows)).toEqual({
-      agents: 2, alerts: 1, brackets: 2, templates: 1,
+      agents: 3, alerts: 1, brackets: 2,
     });
   });
 
   it('handles empty/missing inputs without throwing', () => {
-    expect(kindCounts([], [])).toEqual({ agents: 0, alerts: 0, brackets: 0, templates: 0 });
-    expect(kindCounts(undefined, undefined)).toEqual({ agents: 0, alerts: 0, brackets: 0, templates: 0 });
+    expect(kindCounts([], [])).toEqual({ agents: 0, alerts: 0, brackets: 0 });
+    expect(kindCounts(undefined, undefined)).toEqual({ agents: 0, alerts: 0, brackets: 0 });
   });
 
   it('Sprint E: kind=bracket rows riding along in the full agentRows list are '
@@ -226,7 +229,7 @@ describe('kindCounts', () => {
     ];
     const templateRows = [{ id: 10, name: 'default-bull' }, { id: 11, name: 'default-bear' }];
     expect(kindCounts(agentRows, templateRows)).toEqual({
-      agents: 1, alerts: 0, brackets: 2, templates: 0,
+      agents: 1, alerts: 0, brackets: 2,
     });
   });
 });
@@ -234,5 +237,17 @@ describe('kindCounts', () => {
 describe('filterAgentRowsByCard', () => {
   it('"brackets" always returns [] for Agent rows — Agent rows are never Brackets', () => {
     expect(filterAgentRowsByCard([{ slug: 'x', kind: 'cycle' }], 'brackets')).toEqual([]);
+  });
+
+  it('"agents" includes both cycle rows AND kind=template rows (2026-10-12 — Templates folded into Agents)', () => {
+    const rows = [
+      { slug: 'a', kind: 'cycle' },
+      { slug: 'b', kind: 'event' },
+      { slug: 'c', kind: 'template' },
+    ];
+    expect(filterAgentRowsByCard(rows, 'agents')).toEqual([
+      { slug: 'a', kind: 'cycle' },
+      { slug: 'c', kind: 'template' },
+    ]);
   });
 });

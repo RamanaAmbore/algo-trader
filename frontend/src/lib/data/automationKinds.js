@@ -20,12 +20,19 @@
 // code path inside this module that could accidentally merge two kinds'
 // rows into one group tab.
 
-/** The four top-level kind-cards, in display order. */
+/** The three top-level kind-cards, in display order. Templates were
+ *  folded into Agents (2026-10-12, operator: "there are no agent
+ *  templates. they are either brackets, alerts or agents... move them
+ *  under agents") — a kind='template' row is a condition/notify
+ *  snippet referenced via $ref, not a genuinely distinct top-level
+ *  category. They now classify as 'agents' (see `classifyAgentCardId`
+ *  below) and are distinguished within that row list by their own
+ *  `group` tag + inline `.log-chip` detail, same as any other row —
+ *  no forced/synthetic group value is applied here. */
 export const KIND_CARDS = [
   { id: 'agents',    label: 'Agents' },
   { id: 'alerts',    label: 'Alerts' },
   { id: 'brackets',  label: 'Brackets' },
-  { id: 'templates', label: 'Templates' },
 ];
 
 const UNGROUPED = '__ungrouped__';
@@ -41,7 +48,9 @@ export const UNGROUPED_TAB_LABEL = 'Ungrouped';
 export function classifyAgentCardId(agent) {
   if (!agent || agent.slug === 'manual') return null;
   if (agent.kind === 'event') return 'alerts';
-  if (agent.kind === 'template') return 'templates';
+  // 'template' rows (2026-10-12) now land on the ordinary Agents card —
+  // see the KIND_CARDS comment above. Falls through to the final
+  // `return 'agents'` below, same as 'cycle'/'threshold'/unrecognized.
   // 'bracket' (Sprint E, Agent/Bracket/Template unification phase) —
   // EXCLUDED here (null, same as the 'manual' exclusion above), NOT
   // reclassified to 'brackets'. Bracket counting/listing goes through
@@ -174,7 +183,7 @@ export function groupRowsByGroup(rows) {
  *  `classifyAgentCardId`); `templateRows` is the raw `GET
  *  /api/admin/templates/` list (every row is a Bracket). */
 export function kindCounts(agentRows, templateRows) {
-  const counts = { agents: 0, alerts: 0, brackets: (templateRows || []).length, templates: 0 };
+  const counts = { agents: 0, alerts: 0, brackets: (templateRows || []).length };
   for (const a of agentRows || []) {
     const id = classifyAgentCardId(a);
     if (id) counts[id] += 1;
@@ -183,9 +192,11 @@ export function kindCounts(agentRows, templateRows) {
 }
 
 /** Convenience: every Agent row belonging to one kind-card, `manual`
- *  already excluded. `cardId` is one of 'agents'|'alerts'|'templates' —
- *  passing 'brackets' always returns `[]` (Agent rows are never Brackets;
- *  use `filterTemplateRows`/the raw template list for that card instead). */
+ *  already excluded. `cardId` is one of 'agents'|'alerts' — passing
+ *  'brackets' always returns `[]` (Agent rows are never Brackets; use
+ *  `filterTemplateRows`/the raw template list for that card instead).
+ *  `cardId: 'agents'` includes both ordinary cycle agents AND
+ *  `kind='template'` rows (folded in 2026-10-12 — see KIND_CARDS). */
 export function filterAgentRowsByCard(agentRows, cardId) {
   return (agentRows || []).filter((a) => classifyAgentCardId(a) === cardId);
 }

@@ -13,9 +13,10 @@
  * 3. `CardControls` (via `CardHeader`) renders on the Console tab's card,
  *    with Fullscreen wired (Search/Collapse intentionally omitted — no
  *    grid, no reason to hide a tab's only content).
- * 4. The four Agents-tab kind-count cards (Agents/Alerts/Brackets/
- *    Templates) each render with a distinct `.kind-card-n` color keyed
- *    off `data-kind`.
+ * 4. The three Agents-tab kind-count cards (Agents/Alerts/Brackets —
+ *    Templates folded into Agents 2026-10-12) each render with a
+ *    distinct `.kind-card-n` AND `.kind-card-l` color keyed off
+ *    `data-kind`.
  *
  * Mocking — order submission is mocked at the network boundary
  * (`POST /api/orders/ticket`), same approach as the sibling
@@ -50,8 +51,7 @@ test.describe('Item 1 — Console CLI order placement stays inline, no modal', (
     const captured = { body: null };
     await mockPost(page, '**/api/orders/ticket', captured, { status: 'ok', order_id: 'ZZZ-E2E-POLISH-1' });
 
-    await page.goto('/automation?tab=console');
-    await page.waitForLoadState('networkidle');
+    await page.goto('/automation?tab=console', { waitUntil: 'domcontentloaded' });
 
     const cli = page.locator('.agent-cli-textarea');
     await expect(cli).toBeVisible({ timeout: TIMEOUT });
@@ -77,8 +77,7 @@ test.describe('Item 1 — Console CLI order placement stays inline, no modal', (
     const captured = { body: null };
     await mockPost(page, '**/api/orders/ticket', captured, { detail: 'margin shortfall' }, 400);
 
-    await page.goto('/automation?tab=console');
-    await page.waitForLoadState('networkidle');
+    await page.goto('/automation?tab=console', { waitUntil: 'domcontentloaded' });
 
     const cli = page.locator('.agent-cli-textarea');
     await expect(cli).toBeVisible({ timeout: TIMEOUT });
@@ -108,8 +107,7 @@ test.describe('Item 2 — Guide link renders as a button, not a bare link', () =
   });
 
   test('Console tab Guide link has button-pill chrome', async ({ page }) => {
-    await page.goto('/automation?tab=console');
-    await page.waitForLoadState('networkidle');
+    await page.goto('/automation?tab=console', { waitUntil: 'domcontentloaded' });
 
     const guideLink = page.locator('a[href="/automation/guide"]').first();
     await expect(guideLink).toBeVisible({ timeout: TIMEOUT });
@@ -127,8 +125,7 @@ test.describe('Item 2 — Guide link renders as a button, not a bare link', () =
   });
 
   test('Orders CLI tab Guide link has button-pill chrome', async ({ page }) => {
-    await page.goto('/orders');
-    await page.waitForLoadState('networkidle');
+    await page.goto('/orders', { waitUntil: 'domcontentloaded' });
 
     const cliTab = page.getByRole('tab', { name: 'CLI' });
     await expect(cliTab).toBeVisible({ timeout: TIMEOUT });
@@ -153,8 +150,7 @@ test.describe('Item 3 — CardControls on the Console tab panel', () => {
   });
 
   test('Console tab renders a CardHeader with a wired Fullscreen control', async ({ page }) => {
-    await page.goto('/automation?tab=console');
-    await page.waitForLoadState('networkidle');
+    await page.goto('/automation?tab=console', { waitUntil: 'domcontentloaded' });
 
     const header = page.locator('.console-card .card-header');
     await expect(header).toBeVisible({ timeout: TIMEOUT });
@@ -173,8 +169,7 @@ test.describe('Item 3 — CardControls on the Console tab panel', () => {
   });
 
   test('Console tab card omits Search/Download (no grid to act on)', async ({ page }) => {
-    await page.goto('/automation?tab=console');
-    await page.waitForLoadState('networkidle');
+    await page.goto('/automation?tab=console', { waitUntil: 'domcontentloaded' });
 
     const header = page.locator('.console-card .card-header');
     await expect(header).toBeVisible({ timeout: TIMEOUT });
@@ -189,11 +184,10 @@ test.describe('Item 4 — Agents-tab kind-cards each get a distinct color', () =
     await loginAsAdmin(page);
   });
 
-  test('Agents/Alerts/Brackets/Templates kind-cards render 4 distinct .kind-card-n colors', async ({ page }) => {
-    await page.goto('/automation');
-    await page.waitForLoadState('networkidle');
+  test('Agents/Alerts/Brackets kind-cards render 3 distinct .kind-card-n colors (Templates folded into Agents, 2026-10-12)', async ({ page }) => {
+    await page.goto('/automation', { waitUntil: 'domcontentloaded' });
 
-    const kinds = ['agents', 'alerts', 'brackets', 'templates'];
+    const kinds = ['agents', 'alerts', 'brackets'];
     const colors = new Set();
     for (const kind of kinds) {
       const card = page.locator(`.kind-card[data-kind="${kind}"] .kind-card-n`);
@@ -201,7 +195,25 @@ test.describe('Item 4 — Agents-tab kind-cards each get a distinct color', () =
       const color = await card.evaluate((el) => getComputedStyle(el).color);
       colors.add(color);
     }
-    // All four must be distinct — no two kinds share a color.
-    expect(colors.size).toBe(4);
+    // All three must be distinct — no two kinds share a color.
+    expect(colors.size).toBe(3);
+  });
+
+  // 2026-10-12 — operator: "alerts and brackets background, border, text
+  // colors can be different from agents". The number already was
+  // distinct (test above); the LABEL text ("AGENTS"/"ALERTS"/"BRACKETS")
+  // was still a flat muted grey for all three until this fix.
+  test('Agents/Alerts/Brackets kind-cards also render 3 distinct .kind-card-l (label) colors', async ({ page }) => {
+    await page.goto('/automation', { waitUntil: 'domcontentloaded' });
+
+    const kinds = ['agents', 'alerts', 'brackets'];
+    const colors = new Set();
+    for (const kind of kinds) {
+      const label = page.locator(`.kind-card[data-kind="${kind}"] .kind-card-l`);
+      await expect(label).toBeVisible({ timeout: TIMEOUT });
+      const color = await label.evaluate((el) => getComputedStyle(el).color);
+      colors.add(color);
+    }
+    expect(colors.size).toBe(3);
   });
 });

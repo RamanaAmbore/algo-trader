@@ -133,17 +133,19 @@ test.beforeEach(async ({ page }) => {
 });
 
 test.describe('Agents tab — kind-count cards (Sprint C)', () => {
-  test('card counts exclude the manual row and split agents/alerts/templates correctly', async ({ page }) => {
+  test('card counts exclude the manual row and split agents/alerts/brackets correctly (Templates folded into Agents, 2026-10-12)', async ({ page }) => {
     // domcontentloaded, not networkidle — this page's WS reconnect loop
     // keeps the network non-idle indefinitely (same caveat already
     // documented in automation_agent_row_card_styling.spec.js).
     await page.goto('/automation', { waitUntil: 'domcontentloaded' });
     await expect(page.locator('.kind-card-grid')).toBeVisible({ timeout: TIMEOUT });
 
-    await expect(page.locator('.kind-card[data-kind="agents"] .kind-card-n')).toHaveText('2', { timeout: TIMEOUT });
+    // CYCLE_ROW + CYCLE_ROW_UNGROUPED + TEMPLATE_ROW (kind=template, now
+    // folded into Agents) = 3.
+    await expect(page.locator('.kind-card[data-kind="agents"] .kind-card-n')).toHaveText('3', { timeout: TIMEOUT });
     await expect(page.locator('.kind-card[data-kind="alerts"] .kind-card-n')).toHaveText('1');
     await expect(page.locator('.kind-card[data-kind="brackets"] .kind-card-n')).toHaveText('1');
-    await expect(page.locator('.kind-card[data-kind="templates"] .kind-card-n')).toHaveText('1');
+    await expect(page.locator('.kind-card[data-kind="templates"]')).toHaveCount(0);
   });
 
   test('clicking a card toggles the row list below it — cards stay visible, no navigation', async ({ page }) => {
@@ -204,22 +206,27 @@ test.describe('Agents tab — groups are strictly per-kind (Sprint C regression)
     await page.goto('/automation', { waitUntil: 'domcontentloaded' });
     await expect(page.locator('.kind-card-grid')).toBeVisible({ timeout: TIMEOUT });
 
+    // 'Notify Critical Trio E2E' (kind=template) now shares the 'agents'
+    // card with 'Loss Funds Negative E2E' (kind=cycle) — 2026-10-12,
+    // Templates folded into Agents — so the 'agents' case expects BOTH
+    // rows instead of excluding one.
     const cases = [
-      { card: 'agents',    expectRow: 'Loss Funds Negative E2E', excludeRows: ['Error Alert E2E', 'Notify Critical Trio E2E', 'E2E Bracket'] },
-      { card: 'alerts',    expectRow: 'Error Alert E2E',          excludeRows: ['Loss Funds Negative E2E', 'Notify Critical Trio E2E', 'E2E Bracket'] },
-      { card: 'brackets',  expectRow: 'E2E Bracket',              excludeRows: ['Loss Funds Negative E2E', 'Error Alert E2E', 'Notify Critical Trio E2E'] },
-      { card: 'templates', expectRow: 'Notify Critical Trio E2E', excludeRows: ['Loss Funds Negative E2E', 'Error Alert E2E', 'E2E Bracket'] },
+      { card: 'agents',   expectRows: ['Loss Funds Negative E2E', 'Notify Critical Trio E2E'], excludeRows: ['Error Alert E2E', 'E2E Bracket'] },
+      { card: 'alerts',   expectRows: ['Error Alert E2E'],                                      excludeRows: ['Loss Funds Negative E2E', 'Notify Critical Trio E2E', 'E2E Bracket'] },
+      { card: 'brackets', expectRows: ['E2E Bracket'],                                          excludeRows: ['Loss Funds Negative E2E', 'Error Alert E2E', 'Notify Critical Trio E2E'] },
     ];
 
     for (const c of cases) {
       await page.locator('.kind-card[data-kind="' + c.card + '"]').click();
-      const row = page.locator('[role="listitem"]').filter({ hasText: c.expectRow });
-      await expect(row, `${c.card} card must show ${c.expectRow}`).toHaveCount(1, { timeout: TIMEOUT });
-      // Group now renders as a `.log-chip` ("group:hedge-book"), the same
-      // chip class OrderCard.svelte uses — matches on the KEY+VALUE text
-      // together, not an exact standalone value.
-      await expect(row.locator('.log-chip', { hasText: 'group:' }), `${c.card}'s row must show its group as a chip`)
-        .toContainText('hedge-book');
+      for (const expectName of c.expectRows) {
+        const row = page.locator('[role="listitem"]').filter({ hasText: expectName });
+        await expect(row, `${c.card} card must show ${expectName}`).toHaveCount(1, { timeout: TIMEOUT });
+        // Group now renders as a `.log-chip` ("group:hedge-book"), the same
+        // chip class OrderCard.svelte uses — matches on the KEY+VALUE text
+        // together, not an exact standalone value.
+        await expect(row.locator('.log-chip', { hasText: 'group:' }), `${expectName}'s row must show its group as a chip`)
+          .toContainText('hedge-book');
+      }
       for (const excluded of c.excludeRows) {
         await expect(page.locator('[role="listitem"]').filter({ hasText: excluded }), `${c.card} must NOT show ${excluded}`)
           .toHaveCount(0);

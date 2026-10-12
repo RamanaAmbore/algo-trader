@@ -155,7 +155,9 @@ test('Template (Token): Edit decompiles, Save PUTs /api/agents/{slug} — never 
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ detail: 'ok' }) });
   });
 
-  const row = await openCardAndRow(page, 'templates', 'Notify Critical Trio E2E');
+  // 'templates' card no longer exists (2026-10-12 — Templates folded
+  // into Agents); this row now lives under 'agents'.
+  const row = await openCardAndRow(page, 'agents', 'Notify Critical Trio E2E');
   await row.getByRole('button', { name: 'Edit' }).click();
 
   await expect(page.locator('.console-edit-banner')).toContainText('Notify Critical Trio E2E', { timeout: TIMEOUT });
