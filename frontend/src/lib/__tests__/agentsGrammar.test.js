@@ -1052,6 +1052,18 @@ describe('Sprint 8 — standalone bracket(...) statement', () => {
     expect(r.ok).toBe(true);
     expect(r.template.applies_to).toBe('sell_any');
   });
+
+  // Sprint 14 finding #4 — `buy_option` was ALSO missing from the CLI's
+  // enum list (a second gap, documented but never actioned alongside
+  // sell_any above), even though the real seeded `default-long-option`
+  // bracket uses it. Confirmed live 2026-10-12: creating a new custom
+  // bracket replicating that same applies_to value failed to decompile
+  // with "'buy_option' is not one of [...]" until this enum was fixed.
+  it('accepts applies_to=buy_option, matching the real backend enum (Sprint 14 finding #4)', () => {
+    const r = compile('bracket(applies_to=buy_option, tp_pct=80, tp_order_type=MARKET) #name="Long Option"');
+    expect(r.ok).toBe(true);
+    expect(r.template.applies_to).toBe('buy_option');
+  });
 });
 
 // ── Sprint 10 — Token ($ref) references ─────────────────────────────────

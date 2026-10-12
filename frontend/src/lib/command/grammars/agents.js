@@ -5000,10 +5000,15 @@ function compileOrderStmt(ast, catalog, opts = {}) {
 }
 
 // Sprint 14 — added 'sell_any' to match the real backend
-// `_APPLIES_TO_CHOICES` set (`backend/api/routes/templates.py:39`:
-// {"buy_any", "sell_option", "sell_any", "both"}), which this enum had
-// silently drifted out of sync with.
-const _BRACKET_APPLIES_TO_SPEC = Object.freeze({ type: 'enum', enum: ['buy_any', 'sell_option', 'sell_any', 'both'] });
+// `_APPLIES_TO_CHOICES` set. Sprint 14 finding #4 (documented, never
+// actioned until 2026-10-12) also flagged a SECOND, separate gap:
+// 'buy_option' was still missing even though the real seeded
+// `default-long-option` bracket uses it — confirmed again directly by
+// a live decompile failure on a new custom bracket replicating that
+// same applies_to value. `_APPLIES_TO_CHOICES`
+// (`backend/api/routes/templates.py:50`) is the full, real set:
+// {"buy_any", "sell_option", "sell_any", "both", "buy_option"}.
+const _BRACKET_APPLIES_TO_SPEC = Object.freeze({ type: 'enum', enum: ['buy_any', 'sell_option', 'sell_any', 'both', 'buy_option'] });
 
 /** Compile a standalone `bracket(...)` call to an `OrderTemplateCreate`-
  *  shaped object (`backend/api/schemas.py`) — Sprint 8. `applies_to` is
