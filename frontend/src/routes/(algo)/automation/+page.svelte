@@ -889,7 +889,7 @@
   .kind-card:hover { border-color: rgba(251,191,36,0.35); }
   .kind-card[data-kind="agents"]:hover    { border-color: var(--algo-amber-border); }
   .kind-card[data-kind="alerts"]:hover    { border-color: var(--algo-sky-border); }
-  .kind-card[data-kind="brackets"]:hover  { border-color: var(--algo-cyan-border); }
+  .kind-card[data-kind="brackets"]:hover  { border-color: var(--algo-violet-border); }
 
   /* ── Always-active kind-tinted background + border (2026-10-12) —
      matches OrderBook.svelte's `.ob-sc[data-status]` decoration level
@@ -897,8 +897,14 @@
      an amber inset ring on `.is-active`, since exactly one kind card is
      always the active filter now (no more drill-down/back navigation —
      operator: "keep agents status cards always... toggle... instead of
-     using go back"). RGB triples match the existing --algo-amber/-sky/
-     -cyan/-violet tokens verbatim (app.css) — no new colors. */
+     using go back"). Brackets uses violet (was cyan — operator: "alerts
+     and brackets have same color scheme... make them look different";
+     sky and cyan sit next to each other on the wheel and read as near-
+     identical at this size, so Brackets moved to violet, the color freed
+     up when the Templates card was removed — amber/sky/violet are
+     maximally distinct, matching Orders' own palette, which already uses
+     violet for "Held/Attn"). RGB triples match the existing --algo-
+     amber/-sky/-violet tokens verbatim (app.css) — no new colors. */
   .kind-card.is-active {
     box-shadow: 0 0 0 2px rgba(251,191,36,0.55) inset;
   }
@@ -916,13 +922,13 @@
   }
   .kind-card[data-kind="brackets"] {
     background:
-      linear-gradient(180deg, rgba(34,211,238,0.14) 0%, rgba(34,211,238,0.04) 60%, rgba(0,0,0,0.08) 100%),
+      linear-gradient(180deg, rgba(192,132,252,0.14) 0%, rgba(192,132,252,0.04) 60%, rgba(0,0,0,0.08) 100%),
       linear-gradient(180deg, #0f1729 0%, #0a1020 100%);
-    border-color: var(--algo-cyan-border-soft);
+    border-color: var(--algo-violet-border-soft);
   }
   .kind-card.is-active[data-kind="agents"]    { border-color: var(--algo-amber-border); }
   .kind-card.is-active[data-kind="alerts"]    { border-color: var(--algo-sky-border); }
-  .kind-card.is-active[data-kind="brackets"]  { border-color: var(--algo-cyan-border); }
+  .kind-card.is-active[data-kind="brackets"]  { border-color: var(--algo-violet-border); }
 
   .kind-card-n {
     font-size: var(--fs-xl);
@@ -932,7 +938,7 @@
   }
   .kind-card[data-kind="agents"]    .kind-card-n { color: var(--c-action); }
   .kind-card[data-kind="alerts"]    .kind-card-n { color: var(--algo-sky); }
-  .kind-card[data-kind="brackets"]  .kind-card-n { color: var(--algo-cyan); }
+  .kind-card[data-kind="brackets"]  .kind-card-n { color: var(--algo-violet); }
   .kind-card-l {
     font-size: var(--fs-sm);
     color: var(--c-muted);
@@ -945,7 +951,7 @@
      background/border/number/label all agree on one color per card. */
   .kind-card[data-kind="agents"]    .kind-card-l { color: var(--c-action); }
   .kind-card[data-kind="alerts"]    .kind-card-l { color: var(--algo-sky); }
-  .kind-card[data-kind="brackets"]  .kind-card-l { color: var(--algo-cyan); }
+  .kind-card[data-kind="brackets"]  .kind-card-l { color: var(--algo-violet); }
 
   /* ── Agent row card chrome — matches agent-templates' .frag-row look
      (same literal gradient/border/radius) for visual parity across the
