@@ -4399,20 +4399,33 @@
                  ids; onChange decodes back to the number/'pinned'
                  union the rest of MarketPulse expects. -->
             {#snippet left()}
-              <AlgoTabs
-                tabs={[
-                  { id: 'pinned', label: 'Pinned', color: /** @type {const} */ ('amber') },
-                  /* Operator (2026-07-01): "active tab text color must be
-                     consistent". User-created watchlists previously took
-                     the sky variant to distinguish them from Pinned; now
-                     every tab shares the canonical amber palette so the
-                     active state reads uniform across the platform. */
-                  ..._userLists.map(l => ({ id: `wl:${l.id}`, label: l.name, color: /** @type {const} */ ('amber') }))
-                ]}
-                value={topTab === 'pinned' ? 'pinned' : `wl:${topTab}`}
-                onChange={(id) => { topTab = id === 'pinned' ? 'pinned' : Number(id.slice(3)); }}
-                compact={true}
-              />
+              <!-- Left-bar accent (2026-10-12, operator: "in pinned panel
+                   pulse add left vertical bar like other panels") — the
+                   other 4 bucket panels get this via their own
+                   .mp-bucket-label span's border-left; Pinned has no such
+                   span (AlgoTabs replaces it), so the bar is applied to a
+                   thin wrapper around the tabs instead, same 3px/amber
+                   treatment (amber already being this panel's own
+                   established identity color — see the AlgoTabs color
+                   props right below). border-left-color set directly
+                   (not via color+currentColor) so it doesn't cascade an
+                   unwanted text color into AlgoTabs' own children. -->
+              <div class="mp-pinwatch-leftbar">
+                <AlgoTabs
+                  tabs={[
+                    { id: 'pinned', label: 'Pinned', color: /** @type {const} */ ('amber') },
+                    /* Operator (2026-07-01): "active tab text color must be
+                       consistent". User-created watchlists previously took
+                       the sky variant to distinguish them from Pinned; now
+                       every tab shares the canonical amber palette so the
+                       active state reads uniform across the platform. */
+                    ..._userLists.map(l => ({ id: `wl:${l.id}`, label: l.name, color: /** @type {const} */ ('amber') }))
+                  ]}
+                  value={topTab === 'pinned' ? 'pinned' : `wl:${topTab}`}
+                  onChange={(id) => { topTab = id === 'pinned' ? 'pinned' : Number(id.slice(3)); }}
+                  compact={true}
+                />
+              </div>
               <!-- Watchlist add button — opens the Add-to-Pulse modal
                    (add a symbol, create a new watchlist, rename, delete).
                    Plain "+" is the canonical affordance for "add entry".
@@ -5156,20 +5169,10 @@
        bottom so no gap appears between the last row border and the card
        border (double-border artifact). */
     --ch-padding: 0.2rem 0.35rem 0;
-    /* Header bar gets a slightly different shade than the panel body for
-       emphasis (2026-10-12, operator: "all panel headers which have
-       grids, have headers as same color as panel background... slightly
-       different shade for the header"). A subtle highlight layered over
-       the SAME --card-bg-elevated gradient (not a new color) plus a thin
-       bottom divider, so the header reads as its own strip without
-       clashing with the per-bucket label tint (.mp-bucket-label-*) or
-       the per-bucket accent border below. Scoped to Pulse ONLY for now
-       (--ch-bg is CardHeader's own themeable custom property, set here
-       rather than touching CardHeader.svelte itself) — review later to
-       decide whether this generalizes to every other CardHeader-using
-       page. */
-    --ch-bg: linear-gradient(180deg, rgba(255,255,255,0.05) 0%, rgba(255,255,255,0.0) 100%), var(--card-bg-elevated);
-    --ch-border-bottom: 1px solid var(--card-divider);
+    /* The header-bar emphasis shade (originally added here Pulse-only on
+       2026-10-12) is now the ONE shared app-wide default — see
+       `(algo)/+layout.svelte`'s `:global(body)` CardHeader-theming block
+       — so no per-page override is needed here any more. */
   }
   /* Bucket label — small mono caps above each grid, tinted to match
      the per-major palette already used elsewhere on the page so the
@@ -5191,6 +5194,16 @@
   .mp-bucket-label-holdings  { color: rgba(134, 239, 172, 0.85); }
   .mp-bucket-label-winners   { color: rgba(74, 222, 128, 0.85); }
   .mp-bucket-label-losers    { color: rgba(248, 113, 113, 0.85); }
+  /* Pinned/Watchlist's own left-bar (2026-10-12) — see the `left`
+     snippet's own comment for why this is a separate rule from
+     .mp-bucket-label rather than reusing it directly (AlgoTabs is an
+     interactive child, not a plain text span). */
+  .mp-pinwatch-leftbar {
+    display: flex;
+    align-items: center;
+    border-left: 3px solid rgba(251, 191, 36, 0.85);
+    padding-left: 0.35rem;
+  }
 
   /* Label lives inside CardHeader's .ch-left flex row —
      neutralise the base margin-bottom so it centres correctly. */

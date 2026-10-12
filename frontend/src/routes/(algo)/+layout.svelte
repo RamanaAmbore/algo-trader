@@ -2765,13 +2765,31 @@
 
   /* ── CardHeader theming — algo dark scheme ───────────────────────────
      Matches the canonical .card-header-row / .mp-bucket-head idiom:
-     bare flex row, no bg, no border, no padding — only a gap between
-     items. Title typography follows .algo-card-title exactly (amber
-     #fbbf24, monospace, uppercase, 0.04em tracking, 700 weight, 0.6rem).
-     Timestamp uses the canonical muted secondary color. */
+     bare flex row, no padding — only a gap between items. Title
+     typography follows .algo-card-title exactly (amber #fbbf24,
+     monospace, uppercase, 0.04em tracking, 700 weight, 0.6rem).
+     Timestamp uses the canonical muted secondary color.
+
+     --ch-bg/--ch-border-bottom (2026-10-12, operator: "apply the header
+     color scheme for other panels in other pages and modals. this
+     should use a common code for headers") — generalizes what was
+     first built Pulse-only (MarketPulse.svelte's own .mp-bucket-wrap
+     override, now removed as redundant) into the ONE shared default
+     every CardHeader in the algo app inherits, so every card header
+     everywhere gets a subtly different shade than its own panel body
+     for emphasis, with zero per-page override needed. Deliberately a
+     semi-transparent highlight-only gradient (fading to fully
+     transparent), NOT a hardcoded base color — it sits on top of
+     whatever background the enclosing card already painted, so this
+     works identically regardless of which --card-bg-* token a given
+     card happens to use. Any page/modal that needs a DIFFERENT header
+     treatment can still override --ch-bg/--ch-border-bottom locally
+     (CSS custom properties resolve nearest-ancestor-wins) — see
+     `(public)/+layout.svelte`'s own distinct light-theme override,
+     intentionally left alone. */
   :global(body) {
-    --ch-bg: transparent;
-    --ch-border-bottom: none;
+    --ch-bg: linear-gradient(180deg, rgba(255,255,255,0.05) 0%, rgba(255,255,255,0) 100%);
+    --ch-border-bottom: 1px solid var(--card-divider);
     --ch-padding: 0;
     --ch-gap: 0.4rem;
     --ch-title-font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;

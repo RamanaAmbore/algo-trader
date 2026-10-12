@@ -14,9 +14,11 @@
  *    with Fullscreen wired (Search/Collapse intentionally omitted — no
  *    grid, no reason to hide a tab's only content).
  * 4. The three Agents-tab kind-count cards (Agents/Alerts/Brackets —
- *    Templates folded into Agents 2026-10-12) each render with a
- *    distinct `.kind-card-n` AND `.kind-card-l` color keyed off
- *    `data-kind`.
+ *    Templates folded into Agents 2026-10-12) each render a `.kind-
+ *    card-n` AND `.kind-card-l` color keyed off `data-kind`. Revised
+ *    again 2026-10-12: Brackets deliberately shares Agents' amber
+ *    ("open status card" scheme, operator-requested) — Alerts stays
+ *    the one distinct color.
  *
  * Mocking — order submission is mocked at the network boundary
  * (`POST /api/orders/ticket`), same approach as the sibling
@@ -184,36 +186,35 @@ test.describe('Item 4 — Agents-tab kind-cards each get a distinct color', () =
     await loginAsAdmin(page);
   });
 
-  test('Agents/Alerts/Brackets kind-cards render 3 distinct .kind-card-n colors (Templates folded into Agents, 2026-10-12)', async ({ page }) => {
+  // Revised 2026-10-12 — operator: "make brackets use similar scheme as
+  // open status card" (Orders' amber "Open" chip) — explicitly makes
+  // Brackets share Agents' amber, so only 2 distinct colors remain
+  // (amber for agents+brackets, sky for alerts), not 3. Agents and
+  // Brackets are asserted to MATCH; Alerts is asserted to differ from
+  // both — the deliberate, operator-requested shape of this palette.
+  test('Agents/Brackets kind-cards share the amber "Open" scheme; Alerts stays distinct (.kind-card-n)', async ({ page }) => {
     await page.goto('/automation', { waitUntil: 'domcontentloaded' });
 
-    const kinds = ['agents', 'alerts', 'brackets'];
-    const colors = new Set();
-    for (const kind of kinds) {
+    const colorOf = async (kind) => {
       const card = page.locator(`.kind-card[data-kind="${kind}"] .kind-card-n`);
       await expect(card).toBeVisible({ timeout: TIMEOUT });
-      const color = await card.evaluate((el) => getComputedStyle(el).color);
-      colors.add(color);
-    }
-    // All three must be distinct — no two kinds share a color.
-    expect(colors.size).toBe(3);
+      return card.evaluate((el) => getComputedStyle(el).color);
+    };
+    const [agents, alerts, brackets] = await Promise.all([colorOf('agents'), colorOf('alerts'), colorOf('brackets')]);
+    expect(brackets).toBe(agents);
+    expect(alerts).not.toBe(agents);
   });
 
-  // 2026-10-12 — operator: "alerts and brackets background, border, text
-  // colors can be different from agents". The number already was
-  // distinct (test above); the LABEL text ("AGENTS"/"ALERTS"/"BRACKETS")
-  // was still a flat muted grey for all three until this fix.
-  test('Agents/Alerts/Brackets kind-cards also render 3 distinct .kind-card-l (label) colors', async ({ page }) => {
+  test('Agents/Brackets kind-cards also share the amber .kind-card-l (label) color; Alerts stays distinct', async ({ page }) => {
     await page.goto('/automation', { waitUntil: 'domcontentloaded' });
 
-    const kinds = ['agents', 'alerts', 'brackets'];
-    const colors = new Set();
-    for (const kind of kinds) {
+    const colorOf = async (kind) => {
       const label = page.locator(`.kind-card[data-kind="${kind}"] .kind-card-l`);
       await expect(label).toBeVisible({ timeout: TIMEOUT });
-      const color = await label.evaluate((el) => getComputedStyle(el).color);
-      colors.add(color);
-    }
-    expect(colors.size).toBe(3);
+      return label.evaluate((el) => getComputedStyle(el).color);
+    };
+    const [agents, alerts, brackets] = await Promise.all([colorOf('agents'), colorOf('alerts'), colorOf('brackets')]);
+    expect(brackets).toBe(agents);
+    expect(alerts).not.toBe(agents);
   });
 });

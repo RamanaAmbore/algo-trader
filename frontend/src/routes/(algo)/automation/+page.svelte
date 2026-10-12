@@ -21,7 +21,7 @@
   import ConsoleTab from '$lib/automation/ConsoleTab.svelte';
   import {
     KIND_CARDS, classifyAgentCardId, groupRowsByGroup, kindCounts,
-    filterAgentRowsByCard, UNGROUPED_TAB_LABEL,
+    filterAgentRowsByCard,
   } from '$lib/data/automationKinds.js';
   import {
     fetchAgentCatalog, decompileAgent, decompileEventAgent,
@@ -778,19 +778,29 @@
         </div>
         <!-- Collapsed-state detail chip row (2026-10-12, operator: "make
              agent row card styling similar to order card styling... name,
-             group and short description") — reuses the SAME `.log-chip`/
-             `.log-chip-key` class OrderCard.svelte's own chip row already
-             uses (app.css, explicitly documented there as shared across
-             log/orders/notification surfaces), instead of a bespoke style,
-             so a collapsed agent row reads with the same density/chrome
-             as a collapsed order row. Expand/collapse-on-click behavior
-             itself is unchanged — only the collapsed view shows more. -->
-        <div class="flex flex-wrap items-center gap-y-1 px-2 pb-1">
-          <span class="log-chip"><span class="log-chip-key">group:</span>{row.group || UNGROUPED_TAB_LABEL}</span>
-          {#if row.description}
-            <span class="log-chip" title={row.description}><span class="log-chip-key">desc:</span>{row.description}</span>
-          {/if}
-        </div>
+             group and short description") — reuses the SAME `.log-chip`
+             class OrderCard.svelte's own chip row already uses (app.css,
+             explicitly documented there as shared across log/orders/
+             notification surfaces), instead of a bespoke style, so a
+             collapsed agent row reads with the same density/chrome as a
+             collapsed order row. Expand/collapse-on-click behavior
+             itself is unchanged — only the collapsed view shows more.
+
+             Group folded into the description text as a trailing
+             `#group:name` tag (2026-10-12, operator: "instead of having
+             a separate group button... put it in the description, as
+             #group: at the end of the description. this will reduce
+             space wastage") — replaces the earlier standalone "group:"
+             chip. Only appends the tag for a REAL custom group (an
+             ungrouped row shows nothing extra, which is the actual
+             space-saving — tagging every row "#group:Ungrouped" would
+             be more noise, not less). The whole chip is omitted only
+             when there's neither a description nor a group. -->
+        {#if row.description || row.group}
+          <div class="flex flex-wrap items-center gap-y-1 px-2 pb-1">
+            <span class="log-chip" title={row.description || ''}>{row.description}{row.description && row.group ? ' ' : ''}{row.group ? `#group:${row.group}` : ''}</span>
+          </div>
+        {/if}
         </div>
 
         {#if isOpen}
@@ -889,7 +899,7 @@
   .kind-card:hover { border-color: rgba(251,191,36,0.35); }
   .kind-card[data-kind="agents"]:hover    { border-color: var(--algo-amber-border); }
   .kind-card[data-kind="alerts"]:hover    { border-color: var(--algo-sky-border); }
-  .kind-card[data-kind="brackets"]:hover  { border-color: var(--algo-violet-border); }
+  .kind-card[data-kind="brackets"]:hover  { border-color: var(--algo-amber-border); }
 
   /* ── Always-active kind-tinted background + border (2026-10-12) —
      matches OrderBook.svelte's `.ob-sc[data-status]` decoration level
@@ -897,14 +907,14 @@
      an amber inset ring on `.is-active`, since exactly one kind card is
      always the active filter now (no more drill-down/back navigation —
      operator: "keep agents status cards always... toggle... instead of
-     using go back"). Brackets uses violet (was cyan — operator: "alerts
-     and brackets have same color scheme... make them look different";
-     sky and cyan sit next to each other on the wheel and read as near-
-     identical at this size, so Brackets moved to violet, the color freed
-     up when the Templates card was removed — amber/sky/violet are
-     maximally distinct, matching Orders' own palette, which already uses
-     violet for "Held/Attn"). RGB triples match the existing --algo-
-     amber/-sky/-violet tokens verbatim (app.css) — no new colors. */
+     using go back"). Brackets now uses amber too (operator: "make
+     brackets use similar scheme as open status card" — Orders' own
+     "Open" chip, `.ob-sc[data-status="running"]`, is amber) —
+     deliberately the SAME color as Agents, per explicit operator
+     instruction; flagged to the operator as a known consequence of this
+     change (Agents and Brackets now share a hue) rather than silently
+     picking a different one. RGB triples match the existing --algo-
+     amber/-sky tokens verbatim (app.css) — no new colors. */
   .kind-card.is-active {
     box-shadow: 0 0 0 2px rgba(251,191,36,0.55) inset;
   }
@@ -922,13 +932,13 @@
   }
   .kind-card[data-kind="brackets"] {
     background:
-      linear-gradient(180deg, rgba(192,132,252,0.14) 0%, rgba(192,132,252,0.04) 60%, rgba(0,0,0,0.08) 100%),
+      linear-gradient(180deg, rgba(251,191,36,0.14) 0%, rgba(251,191,36,0.04) 60%, rgba(0,0,0,0.08) 100%),
       linear-gradient(180deg, #0f1729 0%, #0a1020 100%);
-    border-color: var(--algo-violet-border-soft);
+    border-color: var(--algo-amber-border-soft);
   }
   .kind-card.is-active[data-kind="agents"]    { border-color: var(--algo-amber-border); }
   .kind-card.is-active[data-kind="alerts"]    { border-color: var(--algo-sky-border); }
-  .kind-card.is-active[data-kind="brackets"]  { border-color: var(--algo-violet-border); }
+  .kind-card.is-active[data-kind="brackets"]  { border-color: var(--algo-amber-border); }
 
   .kind-card-n {
     font-size: var(--fs-xl);
@@ -938,7 +948,7 @@
   }
   .kind-card[data-kind="agents"]    .kind-card-n { color: var(--c-action); }
   .kind-card[data-kind="alerts"]    .kind-card-n { color: var(--algo-sky); }
-  .kind-card[data-kind="brackets"]  .kind-card-n { color: var(--algo-violet); }
+  .kind-card[data-kind="brackets"]  .kind-card-n { color: var(--c-action); }
   .kind-card-l {
     font-size: var(--fs-sm);
     color: var(--c-muted);
@@ -951,7 +961,7 @@
      background/border/number/label all agree on one color per card. */
   .kind-card[data-kind="agents"]    .kind-card-l { color: var(--c-action); }
   .kind-card[data-kind="alerts"]    .kind-card-l { color: var(--algo-sky); }
-  .kind-card[data-kind="brackets"]  .kind-card-l { color: var(--algo-violet); }
+  .kind-card[data-kind="brackets"]  .kind-card-l { color: var(--c-action); }
 
   /* ── Agent row card chrome — matches agent-templates' .frag-row look
      (same literal gradient/border/radius) for visual parity across the
