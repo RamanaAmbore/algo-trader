@@ -999,6 +999,62 @@ async def test_preflight_margin_shortfall_fix_qty_calculation():
 
 
 @pytest.mark.asyncio
+async def test_preflight_margin_shortfall_fix_qty_mcx_lot_math():
+    """MCX/NCO: fix_qty suggestion must price per LOT, not raw contracts.
+
+    `required` is quoted by Kite for the LOT-converted wire qty (Kite
+    sees 3 lots for 300 contracts @ lot_size=100 — mirroring real
+    `_preflight_build_basket_orders` behavior, where `broker.normalise_qty`
+    == `translate_qty` converts contracts -> lots for MCX/NCO only).
+
+    Pre-fix, dividing `required` by raw CONTRACTS (300000 / 300 =
+    1000/contract) would suggest "reduce qty to 250" — not a valid
+    multiple of lot_size=100. Post-fix, pricing per LOT
+    (300000 / 3 lots = 100000/lot) correctly suggests 200 contracts
+    (2 lots) — a valid lot multiple.
+    """
+    from backend.api.algo.actions import run_preflight
+
+    broker = _make_broker_stub(basket_required_total=300000.0, margin_net=250000.0)
+    conns = _conns_with("ZG0790")
+
+    with patch("backend.brokers.connections.Connections", return_value=conns), \
+         patch("backend.brokers.registry.get_broker", return_value=broker), \
+         patch("backend.brokers.adapters.kite.get_lot_size",
+               new=AsyncMock(return_value=100)):
+        result = await run_preflight("ZG0790", {
+            "exchange":      "MCX",
+            "tradingsymbol": "CRUDEOIL25NOVFUT",
+            "quantity":      300,  # 3 lots @ lot_size=100
+            "order_type":    "LIMIT",
+            "product":       "NRML",
+            "variety":       "regular",
+            "side":          "BUY",
+            "price":         6500.0,
+        })
+
+    assert result["ok"] is False
+    codes = [b["code"] for b in result["blocked"]]
+    assert "MARGIN_SHORTFALL" in codes
+    ms = next(b for b in result["blocked"] if b["code"] == "MARGIN_SHORTFALL")
+
+    import re
+    m = re.search(r"reduce qty to ([\d,]+)", ms["fix"])
+    assert m is not None, f"expected a reduce-qty suggestion in: {ms['fix']!r}"
+    suggested_qty = int(m.group(1).replace(",", ""))
+
+    # The suggestion must be a valid lot multiple — the actual bug being fixed.
+    assert suggested_qty % 100 == 0
+
+    # Corrected lot-priced math, computed by hand from the same inputs:
+    #   priced_units (lots)     = 300 // 100 = 3
+    #   per_unit (per lot)      = 300000 / 3 = 100000
+    #   max_units_fit (lots)    = int(250000 / 100000) = 2
+    #   max_qty_fit (contracts) = 2 * 100 = 200
+    assert suggested_qty == 200
+
+
+@pytest.mark.asyncio
 async def test_preflight_negative_margin_legitimate():
     """required < 0 (credit margin): logged as legitimate, not blocked."""
     from backend.api.algo.actions import run_preflight

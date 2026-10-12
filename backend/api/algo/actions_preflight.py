@@ -389,6 +389,8 @@ def _preflight_margin_shortfall_fix_qty(
     required: float,
     available: float | None,
     qty: int,
+    exchange: str = "",
+    lot_size: int = 0,
 ) -> str:
     """
     Compute the ``fix_qty`` suffix for MARGIN_SHORTFALL blockers.
@@ -396,14 +398,32 @@ def _preflight_margin_shortfall_fix_qty(
     Returns a string like " or reduce qty to 25" when per-unit margin
     can be inferred, or an empty string when the calculation is not
     possible (required=0, available=0, qty=0).
+
+    ``required`` is the rupee margin Kite quoted via
+    `basket_order_margins`, which was computed using the WIRE quantity
+    built by `_preflight_build_basket_orders` — `broker.normalise_qty`
+    (== `translate_qty`) converts CONTRACTS → LOTS for MCX/NCO only
+    (a no-op for NFO/BFO/CDS). So for MCX/NCO, `required` prices the
+    order in LOT units while `qty` here is always CONTRACTS — dividing
+    directly would be off by a factor of `lot_size` and could suggest a
+    non-lot-aligned quantity. When `exchange` is MCX/NCO and `lot_size`
+    is known, price per LOT (`priced_units = qty // lot_size`) and
+    convert the resulting fit back to contracts for display. Every
+    other exchange keeps the original contracts-based math unchanged.
     """
     if not (required > 0 and available is not None and available > 0):
         return ""
-    per_unit = required / qty if qty > 0 else 0
+    _is_mcx = exchange in ("MCX", "NCO") and lot_size > 0
+    if _is_mcx:
+        priced_units = qty // lot_size
+        per_unit = required / priced_units if priced_units > 0 else 0
+    else:
+        per_unit = required / qty if qty > 0 else 0
     if per_unit <= 0:
         return ""
     try:
-        max_qty_fit = max(0, int(available / per_unit))
+        max_units_fit = max(0, int(available / per_unit))
+        max_qty_fit = max_units_fit * lot_size if _is_mcx else max_units_fit
         return f" or reduce qty to {max_qty_fit:,}" if max_qty_fit > 0 else ""
     except Exception:
         return ""
@@ -415,6 +435,8 @@ def _preflight_handle_positive_margin(
     segment: str,
     account: str,
     qty: int,
+    exchange: str = "",
+    lot_size: int = 0,
 ) -> tuple[list[dict], dict]:
     """
     Handle the ``required >= 0`` branch of the margin gate.
@@ -475,7 +497,9 @@ def _preflight_handle_positive_margin(
         )
 
     if shortfall > 0 and not math.isnan(shortfall):
-        fix_qty = _preflight_margin_shortfall_fix_qty(required, available, qty)
+        fix_qty = _preflight_margin_shortfall_fix_qty(
+            required, available, qty, exchange=exchange, lot_size=lot_size
+        )
         new_blockers.append({
             "code":   "MARGIN_SHORTFALL",
             "reason": (f"Required margin ₹{required:,.0f} exceeds available "
@@ -499,6 +523,8 @@ async def _preflight_check_margin(
     symbol: str,
     qty: int,
     loop: object,
+    exchange: str = "",
+    lot_size: int = 0,
 ) -> tuple[list[dict], dict]:
     """
     Evaluate basket-order margin and account margin to emit blockers.
@@ -559,7 +585,8 @@ async def _preflight_check_margin(
 
         else:
             _pm_blockers, _pm_diag = _preflight_handle_positive_margin(
-                required, margins_res, segment, account, qty
+                required, margins_res, segment, account, qty,
+                exchange=exchange, lot_size=lot_size,
             )
             new_blockers.extend(_pm_blockers)
             diag.update(_pm_diag)
@@ -866,8 +893,15 @@ async def run_preflight(
         blocked.append(_freeze_blocker)
 
     # ── Margin-shortfall gate (basket_order_margins + account margins) ───
+    # Re-fetch lot_size here (O(1) cached lookup, no network — same
+    # function `_preflight_build_basket_orders` already called above)
+    # so the MCX/NCO fix_qty math can price the shortfall per LOT,
+    # matching the unit `required` was actually quoted in.
+    from backend.brokers.adapters.kite import get_lot_size as _pf_margin_lot_fn
+    _margin_lot_size = await _pf_margin_lot_fn(exchange, symbol)
     _margin_blockers, _margin_diag = await _preflight_check_margin(
-        bm_res, margins_res, segment, account, symbol, qty, loop
+        bm_res, margins_res, segment, account, symbol, qty, loop,
+        exchange=exchange, lot_size=_margin_lot_size,
     )
     blocked.extend(_margin_blockers)
     diagnostics.update(_margin_diag)

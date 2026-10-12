@@ -746,7 +746,7 @@
       {@const _rowKey = `${_activeCard}:${row.id ?? row.slug}`}
       {@const isOpen = _expandedRowKey === _rowKey}
       <div class="algo-status-card {row.status === 'triggered' ? 'animate-pulse' : ''}"
-           data-status={row.status} role="listitem" style="padding: 0">
+           data-status={row.status ?? (row.is_active ? 'active' : 'inactive')} role="listitem" style="padding: 0">
         <div role="button" tabindex="0" aria-expanded={isOpen}
              onclick={() => toggleRowView(_rowKey)}
              onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleRowView(_rowKey); } }}
@@ -755,9 +755,9 @@
             <span class="w-2 h-2 rounded-full {statusDot(row.status)} flex-shrink-0"></span>
           {/if}
           <span class="flex-1 min-w-0 flex flex-col leading-tight">
-            <span class="text-[length:var(--fs-lg)] text-[var(--c-action)] truncate">{row.name}</span>
+            <span class="text-[length:var(--fs-sm)] text-[var(--c-action)] truncate">{row.name}</span>
             {#if row.long_name}
-              <span class="text-[length:var(--fs-lg)] font-mono truncate" style="color: var(--c-muted)">{row.long_name}</span>
+              <span class="text-[length:var(--fs-sm)] font-mono truncate" style="color: var(--c-muted)">{row.long_name}</span>
             {/if}
           </span>
           {#if _activeCard === 'agents' || _activeCard === 'alerts'}
@@ -925,6 +925,26 @@
     transition: border-color 0.08s;
   }
   .algo-status-card:hover { border-color: rgba(251,191,36,0.25); }
+
+  /* ── Per-row status border accent (2026-10) — real agent status
+     vocabulary (statusDot(), above): active/inactive/triggered/running/
+     cooldown/error. Brackets/Templates rows carry no native `status`
+     field; the markup falls back to is_active → 'active'/'inactive' so
+     every kind gets a color. Distinct from app.css's shared
+     [data-status] block (sets --st-fg/--st-bg/--st-border for the
+     nested .algo-status-pill badge used by OrderBook/OrderCard — never
+     a border) — this is a LOCAL border-only override, scoped to this
+     file, reusing the same existing palette tokens. `border-left`
+     (not the full border) preserves the flat gradient background +
+     thin divider while giving each row a readable at-a-glance accent,
+     matching the decoration level of OrderBook.svelte's
+     .ob-sc[data-status] chips. */
+  .algo-status-card[data-status="active"]    { border-left: 3px solid var(--algo-green-border); }
+  .algo-status-card[data-status="inactive"]  { border-left: 3px solid var(--card-divider); }
+  .algo-status-card[data-status="running"]   { border-left: 3px solid var(--algo-amber-border); }
+  .algo-status-card[data-status="cooldown"]  { border-left: 3px solid var(--algo-amber-border-soft); }
+  .algo-status-card[data-status="triggered"],
+  .algo-status-card[data-status="error"]     { border-left: 3px solid var(--algo-red-border); }
 
   /* Notify-channel icon strip on each agent row — sits between the
      name and the trade-mode / ON-OFF cluster on the right. Single
