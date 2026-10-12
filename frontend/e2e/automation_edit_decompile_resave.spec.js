@@ -62,8 +62,10 @@ async function mockAgentsList(/** @type {import('@playwright/test').Page} */ pag
 }
 
 async function openCardAndRow(/** @type {import('@playwright/test').Page} */ page, /** @type {string} */ cardId, /** @type {string} */ name) {
-  await page.goto('/automation');
-  await page.waitForLoadState('networkidle');
+  // domcontentloaded, not networkidle — this page's WS reconnect loop
+  // keeps the network non-idle indefinitely.
+  await page.goto('/automation', { waitUntil: 'domcontentloaded' });
+  await expect(page.locator('.kind-card-grid')).toBeVisible({ timeout: TIMEOUT });
   await page.locator(`.kind-card[data-kind="${cardId}"]`).click();
   const row = page.locator('[role="listitem"]').filter({ hasText: name });
   await expect(row).toBeVisible({ timeout: TIMEOUT });

@@ -177,9 +177,8 @@ test.describe('automation agent rows — status-keyed border color + row text si
     const inactiveColor = await borderColorOf(inactiveAgentRow);
     expect(activeColor, 'active vs inactive agent row border color').not.toBe(inactiveColor);
 
-    await page.locator('button', { hasText: 'Back to cards' }).click();
-    await expect(page.locator('.kind-card-grid')).toBeVisible({ timeout: TIMEOUT });
-
+    // Kind cards stay visible always (2026-10-12 revision — no more
+    // drill-down/Back navigation) — switching kinds is just another click.
     await page.locator('.kind-card[data-kind="brackets"]').click();
     // Only one row renders under the Brackets card — data-status is
     // enough on its own, same collision-avoidance reasoning as above.

@@ -1,16 +1,24 @@
 /**
  * automation_kind_card_drilldown.spec.js — Sprint C (2026-10, Phase 2
- * "Automation redesign").
+ * "Automation redesign"), REVISED 2026-10-12 per operator instruction
+ * ("use order status cards as reference... keep agents status cards
+ * always, and show the agent rows below when a status card pressed...
+ * toggle... instead of using go back... show the group tag in the row,
+ * sort the rows on group tag").
  *
- * Covers the new kind-count-card → per-kind #group= tabs → row-list
- * drill-down that replaces the old flat Agents grid + content-based
- * categorization on `/automation`'s Agents tab:
+ * Covers the kind-count-card → row-list toggle-filter (matching
+ * OrderBook.svelte's `.ob-status-bar`/`.ob-sc` reference model exactly:
+ * cards always visible, exactly one active, no Back button) that
+ * replaces the old flat Agents grid AND the original Sprint C per-kind
+ * `#group=` tab layer (now gone — each row shows its own `group` as an
+ * inline tag instead, rows sorted by group):
  *   1. The four kind-cards (Agents/Alerts/Brackets/Templates) show the
- *      right row counts and drilling into each shows the right rows.
+ *      right row counts and selecting each shows the right rows,
+ *      directly below the cards, with no navigation.
  *   2. Groups are strictly per-kind — four rows (one Agent-cycle, one
  *      Agent-event, one Bracket, one Template) all share the SAME
- *      `group` string ("hedge-book"); each kind's own "hedge-book" tab
- *      must show EXACTLY its own row, never another kind's.
+ *      `group` string ("hedge-book"); each kind's own row list must show
+ *      EXACTLY its own row (never another kind's), tagged "hedge-book".
  *
  * All four list endpoints are mocked (`page.route`) so this spec is
  * deterministic regardless of real dev-DB contents. The grammar-tokens
@@ -37,13 +45,29 @@ const MANUAL_ROW = {
 
 const CYCLE_ROW = {
   id: 101, slug: 'loss-funds-negative-e2e', name: 'Loss Funds Negative E2E', long_name: null,
-  description: '', conditions: { metric: 'pnl', scope: 'positions.total', op: '<=', value: -50000 },
+  description: 'Blocks on heavy account-level drawdown', conditions: { metric: 'pnl', scope: 'positions.total', op: '<=', value: -50000 },
   events: [{ channel: 'telegram', enabled: true }], actions: [], scope: 'total',
   schedule: 'market_hours', cooldown_minutes: 30, fire_at_time: null, status: 'active',
   last_triggered_at: null, trigger_count: 0, last_error: null, is_system: false,
   lifespan_type: 'persistent', lifespan_max_fires: null, lifespan_expires_at: null,
   debounce_minutes: 0, tags: [], blackout_windows: [], trade_mode: 'paper', kind: 'cycle',
   tier: 'medium', topic: 'general', group: 'hedge-book', cli_source: null,
+};
+
+// Second 'agents'-kind row, deliberately UNGROUPED (group: null) — proves
+// (1) the fallback "Ungrouped" tag renders, and (2) sort-by-group puts
+// the named "hedge-book" group before the ungrouped bucket, matching
+// `groupRowsByGroup`'s own documented convention (named groups
+// alphabetically first, ungrouped bucket always last).
+const CYCLE_ROW_UNGROUPED = {
+  id: 104, slug: 'aaa-ungrouped-e2e', name: 'AAA Ungrouped E2E', long_name: null,
+  description: '', conditions: { metric: 'pnl', scope: 'positions.total', op: '<=', value: -1 },
+  events: [{ channel: 'telegram', enabled: true }], actions: [], scope: 'total',
+  schedule: 'market_hours', cooldown_minutes: 30, fire_at_time: null, status: 'active',
+  last_triggered_at: null, trigger_count: 0, last_error: null, is_system: false,
+  lifespan_type: 'persistent', lifespan_max_fires: null, lifespan_expires_at: null,
+  debounce_minutes: 0, tags: [], blackout_windows: [], trade_mode: 'paper', kind: 'cycle',
+  tier: 'medium', topic: 'general', group: null, cli_source: null,
 };
 
 const EVENT_ROW = {
@@ -94,7 +118,7 @@ const BRACKET_AGENT_ROW = {
   },
 };
 
-const AGENT_ROWS = [MANUAL_ROW, CYCLE_ROW, EVENT_ROW, TEMPLATE_ROW, BRACKET_AGENT_ROW];
+const AGENT_ROWS = [MANUAL_ROW, CYCLE_ROW, CYCLE_ROW_UNGROUPED, EVENT_ROW, TEMPLATE_ROW, BRACKET_AGENT_ROW];
 
 async function mockLists(/** @type {import('@playwright/test').Page} */ page) {
   await page.route('**/api/agents/', async (route) => {
@@ -110,35 +134,75 @@ test.beforeEach(async ({ page }) => {
 
 test.describe('Agents tab — kind-count cards (Sprint C)', () => {
   test('card counts exclude the manual row and split agents/alerts/templates correctly', async ({ page }) => {
-    await page.goto('/automation');
-    await page.waitForLoadState('networkidle');
+    // domcontentloaded, not networkidle — this page's WS reconnect loop
+    // keeps the network non-idle indefinitely (same caveat already
+    // documented in automation_agent_row_card_styling.spec.js).
+    await page.goto('/automation', { waitUntil: 'domcontentloaded' });
+    await expect(page.locator('.kind-card-grid')).toBeVisible({ timeout: TIMEOUT });
 
-    await expect(page.locator('.kind-card[data-kind="agents"] .kind-card-n')).toHaveText('1', { timeout: TIMEOUT });
+    await expect(page.locator('.kind-card[data-kind="agents"] .kind-card-n')).toHaveText('2', { timeout: TIMEOUT });
     await expect(page.locator('.kind-card[data-kind="alerts"] .kind-card-n')).toHaveText('1');
     await expect(page.locator('.kind-card[data-kind="brackets"] .kind-card-n')).toHaveText('1');
     await expect(page.locator('.kind-card[data-kind="templates"] .kind-card-n')).toHaveText('1');
   });
 
-  test('clicking a card drills into its own group tabs and row list', async ({ page }) => {
-    await page.goto('/automation');
-    await page.waitForLoadState('networkidle');
+  test('clicking a card toggles the row list below it — cards stay visible, no navigation', async ({ page }) => {
+    // domcontentloaded, not networkidle — this page's WS reconnect loop
+    // keeps the network non-idle indefinitely (same caveat already
+    // documented in automation_agent_row_card_styling.spec.js).
+    await page.goto('/automation', { waitUntil: 'domcontentloaded' });
+    await expect(page.locator('.kind-card-grid')).toBeVisible({ timeout: TIMEOUT });
+
+    // Default-active card is 'agents' — its rows are already visible with
+    // no click needed (matches OrderBook.svelte's always-one-active model).
+    await expect(page.locator('.kind-card-grid')).toBeVisible({ timeout: TIMEOUT });
+    await expect(page.locator('[role="listitem"]').filter({ hasText: 'Loss Funds Negative E2E' })).toBeVisible({ timeout: TIMEOUT });
 
     await page.locator('.kind-card[data-kind="agents"]').click();
-    await expect(page.locator('h2.section-heading', { hasText: 'Agents' })).toBeVisible({ timeout: TIMEOUT });
-    await expect(page.getByRole('tab', { name: /hedge-book/ })).toBeVisible({ timeout: TIMEOUT });
+    // Cards remain visible (never replaced by a drilled-down screen) and
+    // there is no Back/navigation affordance to return from.
+    await expect(page.locator('.kind-card-grid')).toBeVisible();
+    await expect(page.locator('button', { hasText: 'Back to cards' })).toHaveCount(0);
     await expect(page.locator('[role="listitem"]').filter({ hasText: 'Loss Funds Negative E2E' })).toBeVisible();
     // The event-kind row must NOT appear under the Agents card.
     await expect(page.locator('[role="listitem"]').filter({ hasText: 'Error Alert E2E' })).toHaveCount(0);
 
-    await page.locator('button', { hasText: 'Back to cards' }).click();
+    // Collapsed row shows name + group + description without expanding
+    // (operator: "make agent row card styling similar to order card
+    // styling... name, group and short description") — reuses the same
+    // `.log-chip` class OrderCard.svelte's chip row already uses.
+    const cycleRow = page.locator('[role="listitem"]').filter({ hasText: 'Loss Funds Negative E2E' });
+    await expect(cycleRow.locator('.log-chip', { hasText: 'desc:' })).toContainText('Blocks on heavy account-level drawdown');
+
+    // Switching to a different kind card changes the row list IN PLACE.
+    await page.locator('.kind-card[data-kind="alerts"]').click();
+    await expect(page.locator('.kind-card-grid')).toBeVisible();
+    await expect(page.locator('[role="listitem"]').filter({ hasText: 'Error Alert E2E' })).toBeVisible({ timeout: TIMEOUT });
+    await expect(page.locator('[role="listitem"]').filter({ hasText: 'Loss Funds Negative E2E' })).toHaveCount(0);
+  });
+
+  test('the active kind card gets a visibly different state than an inactive one', async ({ page }) => {
+    // domcontentloaded, not networkidle — this page's WS reconnect loop
+    // keeps the network non-idle indefinitely (same caveat already
+    // documented in automation_agent_row_card_styling.spec.js).
+    await page.goto('/automation', { waitUntil: 'domcontentloaded' });
     await expect(page.locator('.kind-card-grid')).toBeVisible({ timeout: TIMEOUT });
+
+    await page.locator('.kind-card[data-kind="alerts"]').click();
+    const active = page.locator('.kind-card[data-kind="alerts"]');
+    const inactive = page.locator('.kind-card[data-kind="agents"]');
+    await expect(active).toHaveClass(/is-active/);
+    await expect(inactive).not.toHaveClass(/is-active/);
   });
 });
 
-test.describe('Agents tab — groups are strictly per-kind (Sprint C regression)', () => {
-  test('four rows of four different kinds share the SAME group name — each kind\'s own tab shows only its own row', async ({ page }) => {
-    await page.goto('/automation');
-    await page.waitForLoadState('networkidle');
+test.describe('Agents tab — groups are strictly per-kind (Sprint C regression), group tag shown + sorted (2026-10-12 revision)', () => {
+  test('four rows of four different kinds share the SAME group name — each kind\'s own row list shows only its own row, tagged "hedge-book"', async ({ page }) => {
+    // domcontentloaded, not networkidle — this page's WS reconnect loop
+    // keeps the network non-idle indefinitely (same caveat already
+    // documented in automation_agent_row_card_styling.spec.js).
+    await page.goto('/automation', { waitUntil: 'domcontentloaded' });
+    await expect(page.locator('.kind-card-grid')).toBeVisible({ timeout: TIMEOUT });
 
     const cases = [
       { card: 'agents',    expectRow: 'Loss Funds Negative E2E', excludeRows: ['Error Alert E2E', 'Notify Critical Trio E2E', 'E2E Bracket'] },
@@ -149,17 +213,43 @@ test.describe('Agents tab — groups are strictly per-kind (Sprint C regression)
 
     for (const c of cases) {
       await page.locator('.kind-card[data-kind="' + c.card + '"]').click();
-      const groupTab = page.getByRole('tab', { name: /hedge-book/ });
-      await expect(groupTab, `${c.card} card must show a "hedge-book" group tab`).toBeVisible({ timeout: TIMEOUT });
-      await groupTab.click();
-      await expect(page.locator('[role="listitem"]').filter({ hasText: c.expectRow }), `${c.card} hedge-book tab must show ${c.expectRow}`)
-        .toHaveCount(1, { timeout: TIMEOUT });
+      const row = page.locator('[role="listitem"]').filter({ hasText: c.expectRow });
+      await expect(row, `${c.card} card must show ${c.expectRow}`).toHaveCount(1, { timeout: TIMEOUT });
+      // Group now renders as a `.log-chip` ("group:hedge-book"), the same
+      // chip class OrderCard.svelte uses — matches on the KEY+VALUE text
+      // together, not an exact standalone value.
+      await expect(row.locator('.log-chip', { hasText: 'group:' }), `${c.card}'s row must show its group as a chip`)
+        .toContainText('hedge-book');
       for (const excluded of c.excludeRows) {
-        await expect(page.locator('[role="listitem"]').filter({ hasText: excluded }), `${c.card} hedge-book tab must NOT show ${excluded}`)
+        await expect(page.locator('[role="listitem"]').filter({ hasText: excluded }), `${c.card} must NOT show ${excluded}`)
           .toHaveCount(0);
       }
-      await page.locator('button', { hasText: 'Back to cards' }).click();
     }
+  });
+
+  test('ungrouped rows show the "Ungrouped" tag, and named groups sort before the ungrouped bucket', async ({ page }) => {
+    // domcontentloaded, not networkidle — this page's WS reconnect loop
+    // keeps the network non-idle indefinitely (same caveat already
+    // documented in automation_agent_row_card_styling.spec.js).
+    await page.goto('/automation', { waitUntil: 'domcontentloaded' });
+    await expect(page.locator('.kind-card-grid')).toBeVisible({ timeout: TIMEOUT });
+
+    await page.locator('.kind-card[data-kind="agents"]').click();
+    const groupedRow = page.locator('[role="listitem"]').filter({ hasText: 'Loss Funds Negative E2E' });
+    const ungroupedRow = page.locator('[role="listitem"]').filter({ hasText: 'AAA Ungrouped E2E' });
+    await expect(groupedRow.locator('.log-chip', { hasText: 'group:' })).toContainText('hedge-book');
+    await expect(ungroupedRow.locator('.log-chip', { hasText: 'group:' })).toContainText('Ungrouped');
+
+    // Sort-by-group check: "AAA Ungrouped E2E" would sort FIRST under a
+    // plain alphabetical-by-name order — asserting it renders AFTER the
+    // "hedge-book" row proves the list is actually sorted by group, not
+    // by name.
+    const rows = page.locator('[role="listitem"]');
+    const names = await rows.locator('.flex-1.min-w-0.flex.flex-col span.truncate').allTextContents();
+    const hedgeIdx = names.findIndex((n) => n.includes('Loss Funds Negative E2E'));
+    const ungroupedIdx = names.findIndex((n) => n.includes('AAA Ungrouped E2E'));
+    expect(hedgeIdx).toBeGreaterThanOrEqual(0);
+    expect(ungroupedIdx).toBeGreaterThan(hedgeIdx);
   });
 });
 
@@ -183,8 +273,11 @@ test.describe('Brackets kind-card reads live Agent(kind=bracket) data (Sprint E)
       await route.continue();
     });
 
-    await page.goto('/automation');
-    await page.waitForLoadState('networkidle');
+    // domcontentloaded, not networkidle — this page's WS reconnect loop
+    // keeps the network non-idle indefinitely (same caveat already
+    // documented in automation_agent_row_card_styling.spec.js).
+    await page.goto('/automation', { waitUntil: 'domcontentloaded' });
+    await expect(page.locator('.kind-card-grid')).toBeVisible({ timeout: TIMEOUT });
 
     await page.locator('.kind-card[data-kind="brackets"]').click();
     const row = page.locator('[role="listitem"]').filter({ hasText: 'E2E Bracket' });

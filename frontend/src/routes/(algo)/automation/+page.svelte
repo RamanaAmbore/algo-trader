@@ -17,7 +17,6 @@
   import AutomationTabs from '$lib/AutomationTabs.svelte';
   import DisclosureChevron from '$lib/DisclosureChevron.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
-  import AlgoTabs from '$lib/AlgoTabs.svelte';
   import { loadOrderTemplates, reloadOrderTemplates, orderTemplatesStore } from '$lib/data/templates';
   import ConsoleTab from '$lib/automation/ConsoleTab.svelte';
   import {
@@ -92,61 +91,51 @@
     if (rows) _allTemplates = rows;
   });
 
-  // ── Kind-card / group-tab / row-list drill-down (Sprint C, 2026-10,
-  //    Phase 2 "Automation redesign") — replaces the old flat Agents
-  //    grid entirely. `_activeCard` null = show the four summary cards;
-  //    set to a card id = drilled into that kind's own group tabs.
-  //    `_activeGroupId` is the currently-selected group tab WITHIN
-  //    `_activeCard` — reset to the first available group whenever the
-  //    card changes. `_expandedRowKey` is a `${cardId}:${slugOrId}` key
-  //    for the one row currently expanded for "view" (read-only), at
-  //    most one open at a time, same UX as the old flat grid's
-  //    `expandedSlug`. */
-  let _activeCard = $state(/** @type {string|null} */ (null));
-  let _activeGroupId = $state(/** @type {string|null} */ (null));
+  // ── Kind-card toggle-filter / row-list (2026-10-12, revised per operator
+  //    instruction: "use order status cards as reference... keep agent
+  //    status cards always, and show the agent rows below when a status
+  //    card pressed... toggle... instead of using go back functionality").
+  //    Matches OrderBook.svelte's `.ob-status-bar`/`.ob-sc` exactly: the
+  //    kind cards are ALWAYS rendered (never replaced by a drilled-down
+  //    screen), exactly one is active at a time (radio-style, no deselect,
+  //    mirroring `_activeStatus`/`_internalStatus` there), and clicking a
+  //    DIFFERENT card just changes which kind's rows render in the SAME
+  //    row-list below — no navigation, no Back button.
+  //
+  //    The separate per-kind `#group=` TAB layer (Sprint C) is REMOVED —
+  //    operator instruction: "show the group tag in the row, sort the
+  //    rows on group tag" instead of a tab-per-group UI. `_expandedRowKey`
+  //    is a `${cardId}:${slugOrId}` key for the one row currently expanded
+  //    for "view" (read-only), at most one open at a time, same UX as the
+  //    old flat grid's `expandedSlug`. */
+  let _activeCard = $state('agents');
   let _expandedRowKey = $state(/** @type {string|null} */ (null));
 
   function selectCard(/** @type {string} */ cardId) {
     _activeCard = cardId;
-    _activeGroupId = null;
     _expandedRowKey = null;
     if (cardId === 'alerts' && !renderers.length) loadRenderers();
   }
-  function backToCards() { _activeCard = null; _activeGroupId = null; }
 
   const _cardCounts = $derived(kindCounts(agents, _allTemplates));
 
-  /** Every row belonging to the currently-drilled-into card, in its own
+  /** Every row belonging to the currently-selected card, in its own
    *  kind's own shape (`AgentInfo` for agents/alerts/templates,
    *  `OrderTemplateOut` for brackets). */
   const _activeCardRows = $derived.by(() => {
-    if (!_activeCard) return [];
     if (_activeCard === 'brackets') return _allTemplates;
     return filterAgentRowsByCard(agents, _activeCard);
   });
 
-  /** Groups are strictly per-kind (CLAUDE.md, Sprint C) — `groupRowsByGroup`
-   *  only ever sees `_activeCardRows`, already filtered to ONE card's own
-   *  rows above, so a Brackets group tab can never show an Agent/Alert/
-   *  Template row even if they happen to share the same `group` string. */
-  const _activeCardGroups = $derived(groupRowsByGroup(_activeCardRows));
-
-  const _activeGroupRows = $derived.by(() => {
-    const groups = _activeCardGroups;
-    if (!groups.length) return [];
-    const match = groups.find((g) => g.id === _activeGroupId) || groups[0];
-    return match.rows;
-  });
-
-  // Keep `_activeGroupId` pointing at a real tab once the group list is
-  // known (e.g. right after `selectCard` resets it to null, or if the
-  // previously-active group's last row gets deleted).
-  $effect(() => {
-    const groups = _activeCardGroups;
-    if (groups.length && !groups.some((g) => g.id === _activeGroupId)) {
-      _activeGroupId = groups[0].id;
-    }
-  });
+  /** Rows sorted by `group` (reuses `groupRowsByGroup`'s existing
+   *  alphabetical-named-groups-first, ungrouped-bucket-last convention —
+   *  flattened into one list instead of one list per tab, now that the
+   *  tab UI itself is gone). Groups are still strictly per-kind
+   *  (CLAUDE.md, Sprint C) since `_activeCardRows` is already filtered to
+   *  ONE card's own rows above. */
+  const _sortedActiveCardRows = $derived(
+    groupRowsByGroup(_activeCardRows).flatMap((g) => g.rows)
+  );
 
   function toggleRowView(/** @type {string} */ key) {
     _expandedRowKey = _expandedRowKey === key ? null : key;
@@ -712,37 +701,26 @@
   </div>
 {/snippet}
 
-<!-- Sprint C (2026-10, Phase 2 "Automation redesign") — kind-count-card
-     → per-kind #group= tabs → row-list drill-down. Replaces the old
-     flat Agents grid + drag-and-drop custom-group grids entirely. -->
-{#if !_activeCard}
-  <StaleBanner {error} hasData={agents.length > 0} label="Agents" />
-  <div class="page-grid kind-card-grid mb-3" role="list">
-    {#each KIND_CARDS as card (card.id)}
-      <button type="button" class="kind-card" data-kind={card.id}
-              onclick={() => selectCard(card.id)}>
-        <span class="kind-card-n">{_cardCounts[card.id] ?? 0}</span>
-        <span class="kind-card-l">{card.label}</span>
-      </button>
-    {/each}
-  </div>
-{:else}
-  {@const _cardLabel = KIND_CARDS.find((c) => c.id === _activeCard)?.label || _activeCard}
-  <div class="flex items-center gap-2 mb-2">
-    <button type="button" class="text-[var(--c-action)] hover:underline text-[length:var(--fs-sm)]" onclick={backToCards}>
-      &larr; Back to cards
+<!-- 2026-10-12 (revised, supersedes Sprint C's kind-count-card → per-kind
+     #group= tabs → row-list drill-down) — kind cards are now ALWAYS
+     visible (never replaced by a drilled-down screen), exactly one is
+     active at a time, and the row list for the active kind renders
+     directly below — matches OrderBook.svelte's `.ob-status-bar`/`.ob-sc`
+     reference model exactly. Group tabs are gone; each row shows its own
+     `group` as a tag instead, and rows are sorted by group
+     (`_sortedActiveCardRows`). -->
+<div class="page-grid kind-card-grid mb-3" role="list">
+  {#each KIND_CARDS as card (card.id)}
+    <button type="button" class="kind-card" class:is-active={_activeCard === card.id} data-kind={card.id}
+            onclick={() => selectCard(card.id)}>
+      <span class="kind-card-n">{_cardCounts[card.id] ?? 0}</span>
+      <span class="kind-card-l">{card.label}</span>
     </button>
-    <h2 class="section-heading mb-0 border-0 pb-0">{_cardLabel}</h2>
-  </div>
-
-  <AlgoTabs
-    tabs={_activeCardGroups.map((g) => ({ id: g.id, label: `${g.name} (${g.rows.length})` }))}
-    value={_activeGroupId}
-    onChange={(id) => { _activeGroupId = id; _expandedRowKey = null; }}
-  />
+  {/each}
+</div>
 
   <div class="page-grid agent-group-grid mt-2" role="list">
-    {#each _activeGroupRows as row (row.id ?? row.slug)}
+    {#each _sortedActiveCardRows as row (row.id ?? row.slug)}
       {@const _rowKey = `${_activeCard}:${row.id ?? row.slug}`}
       {@const isOpen = _expandedRowKey === _rowKey}
       <div class="algo-status-card {row.status === 'triggered' ? 'animate-pulse' : ''}"
@@ -750,7 +728,8 @@
         <div role="button" tabindex="0" aria-expanded={isOpen}
              onclick={() => toggleRowView(_rowKey)}
              onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleRowView(_rowKey); } }}
-             class="w-full flex items-center gap-2 px-2 py-1 text-left cursor-pointer select-none">
+             class="w-full flex flex-col gap-0.5 px-2 py-1 text-left cursor-pointer select-none">
+        <div class="flex items-center gap-2">
           {#if _activeCard === 'agents' || _activeCard === 'alerts'}
             <span class="w-2 h-2 rounded-full {statusDot(row.status)} flex-shrink-0"></span>
           {/if}
@@ -790,6 +769,22 @@
           {/if}
           <DisclosureChevron open={isOpen} ariaLabel={isOpen ? 'Collapse row' : 'Expand row'} />
         </div>
+        <!-- Collapsed-state detail chip row (2026-10-12, operator: "make
+             agent row card styling similar to order card styling... name,
+             group and short description") — reuses the SAME `.log-chip`/
+             `.log-chip-key` class OrderCard.svelte's own chip row already
+             uses (app.css, explicitly documented there as shared across
+             log/orders/notification surfaces), instead of a bespoke style,
+             so a collapsed agent row reads with the same density/chrome
+             as a collapsed order row. Expand/collapse-on-click behavior
+             itself is unchanged — only the collapsed view shows more. -->
+        <div class="flex flex-wrap items-center gap-y-1 px-2 pb-1">
+          <span class="log-chip"><span class="log-chip-key">group:</span>{row.group || UNGROUPED_TAB_LABEL}</span>
+          {#if row.description}
+            <span class="log-chip" title={row.description}><span class="log-chip-key">desc:</span>{row.description}</span>
+          {/if}
+        </div>
+        </div>
 
         {#if isOpen}
           <div class="px-2 pb-2 border-t" style="border-top-color: rgba(126,151,184,0.10)">
@@ -815,11 +810,10 @@
         {/if}
       </div>
     {/each}
-    {#if !_activeGroupRows.length}
-      <div class="text-[length:var(--fs-sm)] text-[var(--c-muted)] italic">No rows in this group.</div>
+    {#if !_sortedActiveCardRows.length}
+      <div class="text-[length:var(--fs-sm)] text-[var(--c-muted)] italic">No rows in this card.</div>
     {/if}
   </div>
-{/if}
 
 {/if}
 
@@ -890,6 +884,47 @@
   .kind-card[data-kind="alerts"]:hover    { border-color: var(--algo-sky-border); }
   .kind-card[data-kind="brackets"]:hover  { border-color: var(--algo-cyan-border); }
   .kind-card[data-kind="templates"]:hover { border-color: var(--algo-violet-border); }
+
+  /* ── Always-active kind-tinted background + border (2026-10-12) —
+     matches OrderBook.svelte's `.ob-sc[data-status]` decoration level
+     exactly: a persistent tinted gradient overlay (not hover-only) plus
+     an amber inset ring on `.is-active`, since exactly one kind card is
+     always the active filter now (no more drill-down/back navigation —
+     operator: "keep agents status cards always... toggle... instead of
+     using go back"). RGB triples match the existing --algo-amber/-sky/
+     -cyan/-violet tokens verbatim (app.css) — no new colors. */
+  .kind-card.is-active {
+    box-shadow: 0 0 0 2px rgba(251,191,36,0.55) inset;
+  }
+  .kind-card[data-kind="agents"] {
+    background:
+      linear-gradient(180deg, rgba(251,191,36,0.14) 0%, rgba(251,191,36,0.04) 60%, rgba(0,0,0,0.08) 100%),
+      linear-gradient(180deg, #0f1729 0%, #0a1020 100%);
+    border-color: var(--algo-amber-border-soft);
+  }
+  .kind-card[data-kind="alerts"] {
+    background:
+      linear-gradient(180deg, rgba(125,211,252,0.14) 0%, rgba(125,211,252,0.04) 60%, rgba(0,0,0,0.08) 100%),
+      linear-gradient(180deg, #0f1729 0%, #0a1020 100%);
+    border-color: var(--algo-sky-border-soft);
+  }
+  .kind-card[data-kind="brackets"] {
+    background:
+      linear-gradient(180deg, rgba(34,211,238,0.14) 0%, rgba(34,211,238,0.04) 60%, rgba(0,0,0,0.08) 100%),
+      linear-gradient(180deg, #0f1729 0%, #0a1020 100%);
+    border-color: var(--algo-cyan-border-soft);
+  }
+  .kind-card[data-kind="templates"] {
+    background:
+      linear-gradient(180deg, rgba(192,132,252,0.14) 0%, rgba(192,132,252,0.04) 60%, rgba(0,0,0,0.08) 100%),
+      linear-gradient(180deg, #0f1729 0%, #0a1020 100%);
+    border-color: var(--algo-violet-border-soft);
+  }
+  .kind-card.is-active[data-kind="agents"]    { border-color: var(--algo-amber-border); }
+  .kind-card.is-active[data-kind="alerts"]    { border-color: var(--algo-sky-border); }
+  .kind-card.is-active[data-kind="brackets"]  { border-color: var(--algo-cyan-border); }
+  .kind-card.is-active[data-kind="templates"] { border-color: var(--algo-violet-border); }
+
   .kind-card-n {
     font-size: var(--fs-xl);
     font-weight: 700;

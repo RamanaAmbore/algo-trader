@@ -134,8 +134,10 @@ test.describe('Brackets kind-card row → Edit → decompileBracket → Console 
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({}) });
     });
 
-    await page.goto('/automation');
-    await page.waitForLoadState('networkidle');
+    // domcontentloaded, not networkidle — /automation's WS reconnect loop
+    // keeps the network non-idle indefinitely.
+    await page.goto('/automation', { waitUntil: 'domcontentloaded' });
+    await expect(page.locator('.kind-card-grid')).toBeVisible({ timeout: TIMEOUT });
 
     const row = await openBracketRow(page, 'ZZZ E2E Custom Bracket');
     await row.getByRole('button', { name: 'Edit' }).click();
@@ -170,8 +172,10 @@ test.describe('Brackets kind-card row → Edit → decompileBracket → Console 
 
   test('system Bracket refuses loud instead of switching to Console', async ({ page }) => {
     await mockAgentsList(page, [SYSTEM_BRACKET_AGENT_ROW]);
-    await page.goto('/automation');
-    await page.waitForLoadState('networkidle');
+    // domcontentloaded, not networkidle — /automation's WS reconnect loop
+    // keeps the network non-idle indefinitely.
+    await page.goto('/automation', { waitUntil: 'domcontentloaded' });
+    await expect(page.locator('.kind-card-grid')).toBeVisible({ timeout: TIMEOUT });
 
     const row = await openBracketRow(page, 'Default Bull');
     // is_system rows have no Delete action, but Edit is still offered —
