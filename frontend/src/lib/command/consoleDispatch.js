@@ -363,19 +363,29 @@ export async function submitConsoleBracket(compiledTemplate) {
 
 /**
  * Submit a compiled `kind:'token'` result (`compiled.fragment` —
- * `{kind, name, body, description?}` — see `compileTokenStmt` in
- * agents.js) as a new Template — `Agent(kind='template')` — via the
- * unified `createAgent` (`POST /api/agents/`). Sprint D2 (Agent/Bracket/
- * Template unification phase) retired the separate `/api/admin/
- * fragments` CRUD this used to call; a Template is now just an ordinary
- * Agent row. `kind` here is ALWAYS 'notify' in practice —
- * `compileTokenStmt` refuses `kind=condition` at compile time — so
- * `fragment.body` (a channel list) always lands in `events`;
- * `conditions` stays `{}`. Unlike `submitConsoleAgent`, the slug is NOT
- * derived via `slugifyAgentName` — `fragment.name` IS the slug (the
- * exact string every `{"$ref": ...}` elsewhere resolves by), so it must
- * be sent unchanged; the backend 400s if it isn't already a valid slug
- * shape (lowercase alnum + hyphens), same as the retired route did.
+ * `{kind, name, body?, conditions?, description?}` — see
+ * `compileTokenStmt` in agents.js) as a new Template —
+ * `Agent(kind='template')` — via the unified `createAgent` (`POST
+ * /api/agents/`). Sprint D2 (Agent/Bracket/Template unification phase)
+ * retired the separate `/api/admin/fragments` CRUD this used to call; a
+ * Template is now just an ordinary Agent row.
+ *
+ * `compiledFragment.kind` is `'notify'` or `'condition'` (2026-10-12 —
+ * condition-kind Token creation is now supported). For `'notify'`,
+ * `fragment.body` (a channel list) lands in `events`, `conditions`
+ * stays `{}`. For `'condition'`, `fragment.conditions` (the JSON
+ * condition tree, from `compileCondition` — the same production WHEN
+ * uses) lands in `conditions`, `events` stays `[]`. No backend change
+ * needed — `createAgent` already accepts a non-empty `conditions` tree
+ * for `kind='template'` rows (confirmed: real condition-kind Templates
+ * already exist in production, authored via direct JSON before this
+ * grammar supported them).
+ *
+ * Unlike `submitConsoleAgent`, the slug is NOT derived via
+ * `slugifyAgentName` — `fragment.name` IS the slug (the exact string
+ * every `{"$ref": ...}` elsewhere resolves by), so it must be sent
+ * unchanged; the backend 400s if it isn't already a valid slug shape
+ * (lowercase alnum + hyphens), same as the retired route did.
  * @param {any} compiledFragment — `compiled.fragment` from compileAgentCliStatement
  * @param {string} rawText — the raw CLI text, stored as cli_source for audit
  */
@@ -384,13 +394,14 @@ export async function submitConsoleToken(compiledFragment, rawText = '') {
     return { ok: false, error: 'token requires a #name= tag' };
   }
   const slug = compiledFragment.name;
+  const isCondition = compiledFragment.kind === 'condition';
   const payload = {
     slug,
     kind: 'template',
     name: slug,
     description: compiledFragment.description || '',
-    conditions: {},
-    events: compiledFragment.body || [],
+    conditions: isCondition ? (compiledFragment.conditions || {}) : {},
+    events: isCondition ? [] : (compiledFragment.body || []),
     actions: [],
     cli_source: rawText || '',
   };
@@ -491,16 +502,18 @@ export async function updateConsoleBracket(id, compiledTemplate) {
  * an operator to tell which one `$ref` still resolves by. If the
  * operator wants to rename a Template, they delete + recreate it.
  * @param {string} slug — the Agent row being edited (unchanged by this call)
- * @param {any} compiledFragment — `compiled.fragment` (`{kind, name, body, description?}`)
+ * @param {any} compiledFragment — `compiled.fragment` (`{kind, name, body?, conditions?, description?}`)
  * @param {string} rawText — the raw (edited) CLI text, stored as cli_source
  */
 export async function updateConsoleToken(slug, compiledFragment, rawText = '') {
   if (!slug) return { ok: false, error: 'no token selected for update' };
   if (!compiledFragment) return { ok: false, error: 'nothing compiled to save' };
+  // 2026-10-12 — condition-kind Token editing, same branch submitConsoleToken uses.
+  const isCondition = compiledFragment.kind === 'condition';
   const payload = {
     description: compiledFragment.description || '',
-    conditions: {},
-    events: compiledFragment.body || [],
+    conditions: isCondition ? (compiledFragment.conditions || {}) : {},
+    events: isCondition ? [] : (compiledFragment.body || []),
     cli_source: rawText || '',
   };
   try {

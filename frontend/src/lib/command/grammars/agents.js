@@ -2497,15 +2497,35 @@ export function parseBracketStmt(state) {
   return { kind: 'bracket', call, meta };
 }
 
-/** `token_stmt := call call_list meta_item*` — Sprint 10. A standalone
- *  `token(kind=...)` HEAD call — restricted to standalone use, EXACTLY
- *  mirroring `parseBracketStmt`'s own "only bracket(...) can be used
- *  standalone" rule/error-message style above, naming "token" instead —
- *  immediately followed by its BODY call_list (`telegram, email, log`,
- *  reusing `parseCallList` unchanged — the SAME production ALERT's own
- *  call_list uses). At least one body call is required (`parseCallList`
- *  never returns an empty array) — a Token with zero channels has no
- *  useful body. */
+/** `token_stmt := call token_body meta_item*` — Sprint 10, extended
+ *  2026-10-12 (operator: "build [condition-kind Token support] now") —
+ *  a standalone `token(kind=...)` HEAD call, restricted to standalone
+ *  use, EXACTLY mirroring `parseBracketStmt`'s own "only bracket(...)
+ *  can be used standalone" rule/error-message style above, naming
+ *  "token" instead.
+ *
+ *  `token_body` depends on the HEAD's own `kind=` argument, peeked here
+ *  (via the same `_coerceValueForSpec`/`_TOKEN_KIND_SPEC` helper
+ *  `compileTokenStmt` uses to validate it properly) BEFORE deciding how
+ *  to parse the rest of the statement:
+ *    - `kind=notify` (or an unrecognized/omitted kind — unchanged
+ *      default) → `call_list` (`telegram, email, log`, reusing
+ *      `parseCallList` unchanged — the SAME production ALERT's own
+ *      call_list uses). At least one body call is required
+ *      (`parseCallList` never returns an empty array) — a notify Token
+ *      with zero channels has no useful body.
+ *    - `kind=condition` → a full boolean `condition` expression (reuses
+ *      `parseCondition` UNCHANGED — the exact same production `WHEN`
+ *      uses), e.g. `token(kind=condition) pnl@positions.total <= -50000
+ *      #name=...`. A condition-kind Token's body IS a condition tree
+ *      (the same shape a stored Agent row's own `conditions` column
+ *      already holds for these rows — see `compileTokenStmt`), so
+ *      reusing the WHEN-clause grammar verbatim is correct, not just
+ *      convenient.
+ *  An invalid `kind=` value (or a missing one) is NOT re-validated
+ *  here — this peek is parse-only and defaults to the notify/call_list
+ *  shape on any ambiguity; `compileTokenStmt` is the single source of
+ *  truth for the real "kind must be notify|condition" error. */
 export function parseTokenStmt(state) {
   const head = parseCall(state);
   if (head.name.toLowerCase() !== 'token') {
@@ -2513,6 +2533,13 @@ export function parseTokenStmt(state) {
       'only token(...) can be used standalone — wrap other actions in a WHEN ... DO ... agent',
       { start: head.start },
     );
+  }
+  const kindArg = (head.args || []).find((a) => a.key && a.key.toLowerCase() === 'kind');
+  const kindPeek = kindArg ? _coerceValueForSpec(kindArg.value, _TOKEN_KIND_SPEC, 'kind', 'token') : null;
+  if (kindPeek && !kindPeek.error && kindPeek.value === 'condition') {
+    const condition = parseCondition(state);
+    const meta = parseMetaClause(state);
+    return { kind: 'token', head, condition, meta };
   }
   const bodyCalls = parseCallList(state);
   const meta = parseMetaClause(state);
@@ -5034,22 +5061,36 @@ function compileBracketStmt(ast, catalog, opts = {}) {
 const _TOKEN_KIND_SPEC = Object.freeze({ type: 'enum', enum: ['notify', 'condition'] });
 
 /** Compile a standalone `token(kind=...)` statement to a
- *  `{kind, name, body, description?}` object (Sprint 10) — the caller
- *  (`submitConsoleToken`/`updateConsoleToken` in consoleDispatch.js)
- *  maps this onto the unified `/api/agents/` create/update request
- *  shape for an `Agent(kind='template')` row (Sprint D2, Agent/Bracket/
- *  Template unification phase — the dedicated `AgentTemplate` model/
- *  table this used to target directly is retired). `kind=notify` is the
- *  ONLY supported value this sprint — `kind=condition` is a clear
- *  compile error (edit it via `PUT /api/agents/{slug}` directly
- *  instead). The body call_list is compiled via the EXACT SAME
+ *  `{kind, name, body?, conditions?, description?}` object (Sprint 10,
+ *  extended 2026-10-12 for condition-kind — operator: "build it now")
+ *  — the caller (`submitConsoleToken`/`updateConsoleToken` in
+ *  consoleDispatch.js) maps this onto the unified `/api/agents/`
+ *  create/update request shape for an `Agent(kind='template')` row
+ *  (Sprint D2, Agent/Bracket/Template unification phase — the
+ *  dedicated `AgentTemplate` model/table this used to target directly
+ *  is retired).
+ *
+ *  `kind=notify`: the body call_list is compiled via the EXACT SAME
  *  `compileAlertClause` path ALERT's own call_list already uses (no
  *  clause-level `msg=` default — `null` — since a Token body is a plain
- *  channel list, not an ALERT clause). `#name=` is required (it doubles
- *  as the row's `slug`, the real `$ref` key — see `submitConsoleToken`'s
- *  own doc); `#tag=`/`#group=` are rejected outright — not yet wired up
- *  for Template rows by this grammar, even though the underlying `Agent`
- *  model has `tags`/`group_name` columns a future sprint could expose. */
+ *  channel list, not an ALERT clause). Result carries `fragment.body`
+ *  (an events array) — `fragment.conditions` is absent.
+ *
+ *  `kind=condition`: `ast.condition` (parsed by `parseTokenStmt` via the
+ *  SAME `parseCondition` production `WHEN` uses) is compiled via the
+ *  SAME `compileCondition` function `WHEN`'s own clause uses. Result
+ *  carries `fragment.conditions` (the JSON condition tree) — `fragment.
+ *  body` is absent. No backend change needed for this — condition-kind
+ *  Template rows already exist in production with real `conditions`
+ *  trees (authored via direct JSON before this grammar supported them);
+ *  `createAgent`/`updateAgent` already accept this shape for
+ *  `kind='template'` rows.
+ *
+ *  `#name=` is required in both cases (it doubles as the row's `slug`,
+ *  the real `$ref` key — see `submitConsoleToken`'s own doc); `#tag=`/
+ *  `#group=` are rejected outright — not yet wired up for Template rows
+ *  by this grammar, even though the underlying `Agent` model has
+ *  `tags`/`group_name` columns a future sprint could expose. */
 function compileTokenStmt(ast, catalog, opts = {}) {
   const errors = [];
   const head = ast.head;
@@ -5069,12 +5110,24 @@ function compileTokenStmt(ast, catalog, opts = {}) {
     const r = _coerceValueForSpec(kindArgs[0].value, _TOKEN_KIND_SPEC, 'kind', 'token');
     if (r.error) errors.push(r.error); else kind = r.value;
   }
-  if (kind === 'condition') {
-    errors.push(_err("condition-kind Token creation isn't supported from the CLI yet — edit via PUT /api/agents/{slug} directly, or ask an admin"));
-  }
 
-  const bodyResult = compileAlertClause(ast.bodyCalls, null, catalog);
-  errors.push(...bodyResult.errors);
+  let body, conditions;
+  if (kind === 'condition') {
+    if (!ast.condition) {
+      errors.push(_err('token: kind=condition requires a condition expression body'));
+    } else {
+      const condResult = compileCondition(ast.condition, catalog);
+      errors.push(...condResult.errors);
+      conditions = condResult.conditions;
+    }
+  } else if (kind === 'notify') {
+    const bodyResult = compileAlertClause(ast.bodyCalls, null, catalog);
+    errors.push(...bodyResult.errors);
+    body = bodyResult.events;
+  }
+  // kind invalid/unresolved (e.g. missing/duplicate/bad enum) — the
+  // errors above already explain why; skip body/condition compilation
+  // rather than guessing which one was intended.
 
   const metaFields = compileMetaClause(ast.meta, errors);
   if (metaFields.tags) errors.push(_err('token: #tag is not supported for a Token — Token has no tags field'));
@@ -5083,7 +5136,9 @@ function compileTokenStmt(ast, catalog, opts = {}) {
 
   if (errors.length) return { errors, fragment: null };
 
-  const fragment = { kind, name: metaFields.name, body: bodyResult.events };
+  const fragment = { kind, name: metaFields.name };
+  if (kind === 'condition') fragment.conditions = conditions;
+  else fragment.body = body;
   if (metaFields.description) fragment.description = metaFields.description;
   return { errors: [], fragment };
 }
@@ -6478,41 +6533,48 @@ export function decompileBracket(template, catalog, opts = {}) {
   return { text, errors: [] };
 }
 
-/** Decompile a stored `kind='template'` Agent row (Sprint D) that holds a
- *  NOTIFY-kind Token's body — i.e. a non-empty `events` array, `conditions`
- *  empty/`{}` — back to its `token(kind=notify) <channels> #name=...`
- *  CLI text (Sprint C, 2026-10, Phase 2 "Automation redesign"). The reverse
- *  of `compileTokenStmt`. Reuses `decompileEvents` UNCHANGED (a Token's
- *  notify body is the exact same `{channel, enabled}` list shape ALERT's
- *  own clause already uses) plus the shared `decompileMetaClause` helper
- *  every other decompiler in this file uses — Tokens only ever carry
- *  `#name=`/`#desc=` (no `#tag=`/`#group=`, matching `compileTokenStmt`'s
- *  own explicit rejection of those two meta keys for a token statement).
+/** Decompile a stored `kind='template'` Agent row back to its CLI text
+ *  (Sprint C, 2026-10, Phase 2 "Automation redesign"; condition-kind
+ *  support added 2026-10-12, operator: "build it now"). The reverse of
+ *  `compileTokenStmt`. Dispatches on which field is actually populated:
  *
- *  A CONDITION-kind Token (non-empty `conditions`) has no CLI representation
- *  yet — `compileTokenStmt` itself refuses `kind=condition` at CREATE time
- *  ("condition-kind Token creation isn't supported from the CLI yet"), so
- *  there is structurally nothing to round-trip against; this decompiler
- *  fails loud with the same message rather than guessing at a syntax that
- *  doesn't exist. Same "fail loud, never silently drop a field that would
- *  change behavior on resave" convention every other decompiler here
- *  follows. */
+ *  NOTIFY-kind — non-empty `events`, `conditions` empty/`{}` — decompiles
+ *  to `token(kind=notify) <channels> #name=...`. Reuses `decompileEvents`
+ *  UNCHANGED (a Token's notify body is the exact same `{channel,
+ *  enabled}` list shape ALERT's own clause already uses).
+ *
+ *  CONDITION-kind — non-empty `conditions` — decompiles to
+ *  `token(kind=condition) <expr> #name=...`. Reuses `decompileCondition`
+ *  UNCHANGED — the SAME public entry point `decompileAgent`'s own WHEN
+ *  clause uses — so any condition tree a cycle agent could decompile
+ *  (metric refs, scopes, between-chains, `$ref`s, etc.) a condition-kind
+ *  Template can too; no separate rendering logic duplicated here.
+ *
+ *  Both branches share `decompileMetaClause` — Tokens only ever carry
+ *  `#name=`/`#desc=` (no `#tag=`/`#group=`, matching `compileTokenStmt`'s
+ *  own explicit rejection of those two meta keys for a token statement). */
 export function decompileToken({ conditions, events, name, description }, catalog, opts = {}) {
   const errors = [];
   const hasConditions = conditions && typeof conditions === 'object' && !Array.isArray(conditions) && Object.keys(conditions).length > 0;
   const hasEvents = Array.isArray(events) && events.length > 0;
 
-  if (hasConditions) {
-    errors.push(_err("condition-kind Token creation isn't supported from the CLI yet — edit via PUT /api/agents/{slug} directly, or ask an admin"));
-    return { text: null, errors };
-  }
-  if (!hasEvents) {
+  if (!hasConditions && !hasEvents) {
     errors.push(_err('token: this Token has an empty body — nothing to decompile'));
     return { text: null, errors };
   }
 
-  const eventsResult = decompileEvents(events, catalog);
-  errors.push(...eventsResult.errors);
+  let headAndBodyText;
+  if (hasConditions) {
+    const condResult = decompileCondition(conditions, catalog);
+    errors.push(...condResult.errors);
+    if (condResult.text == null) return { text: null, errors };
+    headAndBodyText = `token(kind=condition) ${condResult.text}`;
+  } else {
+    const eventsResult = decompileEvents(events, catalog);
+    errors.push(...eventsResult.errors);
+    if (eventsResult.text == null) return { text: null, errors };
+    headAndBodyText = `token(kind=notify) ${eventsResult.text}`;
+  }
 
   const metaResult = decompileMetaClause({ name, description });
   errors.push(...metaResult.errors);
@@ -6523,7 +6585,7 @@ export function decompileToken({ conditions, events, name, description }, catalo
   if (errors.length) return { text: null, errors };
 
   const metaSuffix = metaResult.text ? ` ${metaResult.text}` : '';
-  const text = `token(kind=notify) ${eventsResult.text}${metaSuffix}`;
+  const text = `${headAndBodyText}${metaSuffix}`;
   const roundTrip = compileAgentCliStatement(text, catalog, opts);
   if (!roundTrip.ok) {
     const detail = (roundTrip.errors && roundTrip.errors[0] && roundTrip.errors[0].message) || 'unknown error';

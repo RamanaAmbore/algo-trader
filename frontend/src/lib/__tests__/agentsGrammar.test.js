@@ -1148,10 +1148,32 @@ describe('Sprint 10 — standalone token(...) statement', () => {
     });
   });
 
-  it('kind=condition is a clear compile error — not supported from the CLI yet', () => {
-    const r = compile('token(kind=condition) telegram #name="x"');
+  // 2026-10-12 — condition-kind Token creation is now supported (was a
+  // clear compile error before this). The body after `token(kind=
+  // condition)` is a full condition expression (the SAME production
+  // WHEN uses — `parseCondition`/`compileCondition`), not a call_list.
+  it('kind=condition compiles the body as a condition expression, not a call_list', () => {
+    const r = compile('token(kind=condition) pnl@positions.total <= -50000 #name="x"');
+    expect(r.ok).toBe(true);
+    expect(r.fragment).toEqual({
+      kind: 'condition',
+      name: 'x',
+      conditions: { metric: 'pnl', scope: 'positions.total', op: '<=', value: -50000 },
+    });
+  });
+
+  it('kind=condition with a compound boolean expression compiles the same way a WHEN clause would', () => {
+    const r = compile('token(kind=condition) (pnl@positions.total <= -1) & (day_pct@positions.total <= -2) #name="x"');
+    expect(r.ok).toBe(true);
+    expect(r.fragment.conditions).toEqual({ all: [
+      { metric: 'pnl', scope: 'positions.total', op: '<=', value: -1 },
+      { metric: 'day_pct', scope: 'positions.total', op: '<=', value: -2 },
+    ] });
+  });
+
+  it('kind=condition with no body at all is still a compile error', () => {
+    const r = compile('token(kind=condition) #name="x"');
     expect(r.ok).toBe(false);
-    expect(r.errors.some(e => /condition-kind Token creation isn't supported/.test(e.message))).toBe(true);
   });
 
   it('a missing #name= is a compile-time error', () => {

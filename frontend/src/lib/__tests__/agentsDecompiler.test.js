@@ -1283,10 +1283,37 @@ describe('Sprint C — decompileToken() round-trip (notify-kind Token)', () => {
     expect(recompiled.fragment.body).toEqual(tokenJson.events);
   });
 
-  it('refuses loud on a condition-kind Token (non-empty conditions) — no CLI syntax exists yet', () => {
-    const dec = decompileTok({ conditions: { metric: 'pnl', scope: 'positions.total', op: '<=', value: -1 }, events: [], name: 'loss-positions-default' });
-    expect(dec.text).toBeNull();
-    expect(dec.errors.some(e => /condition-kind Token creation isn't supported/.test(e.message))).toBe(true);
+  it('decompiles a condition-kind Token to token(kind=condition) <expr> #name=... and round-trips (2026-10-12)', () => {
+    const tokenJson = {
+      conditions: { metric: 'pnl', scope: 'positions.total', op: '<=', value: -1 },
+      events: [],
+      name: 'loss-positions-default',
+    };
+    const dec = decompileTok(tokenJson);
+    expect(dec.errors).toEqual([]);
+    expect(dec.text).toBe('token(kind=condition) pnl@positions.total <= -1 #name=loss-positions-default');
+    const recompiled = compile(dec.text);
+    expect(recompiled.ok).toBe(true);
+    expect(recompiled.fragment.kind).toBe('condition');
+    expect(recompiled.fragment.conditions).toEqual(tokenJson.conditions);
+    expect(recompiled.fragment.body).toBeUndefined();
+  });
+
+  it('a condition-kind Token round-trips a compound boolean expression, same as a WHEN clause', () => {
+    const tokenJson = {
+      conditions: { any: [
+        { metric: 'pnl_pct', scope: 'positions.any_acct', op: '<=', value: -2.0 },
+        { metric: 'pnl', scope: 'positions.any_acct', op: '<=', value: -30000 },
+      ] },
+      events: [],
+      name: 'loss-positions-acct-default',
+    };
+    const dec = decompileTok(tokenJson);
+    expect(dec.errors).toEqual([]);
+    expect(dec.text).toContain('token(kind=condition)');
+    const recompiled = compile(dec.text);
+    expect(recompiled.ok).toBe(true);
+    expect(recompiled.fragment.conditions).toEqual(tokenJson.conditions);
   });
 
   it('refuses loud on an empty body (no events, no conditions)', () => {
