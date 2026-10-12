@@ -87,6 +87,16 @@ const FIXTURE_ROWS = [
     params_schema: { gate: { type: 'boolean', required: false } },
   },
   { grammar_kind: 'notify', token_kind: 'channel', token: 'log', params_schema: null },
+  // Closed 2026-10-12 — `telegram_info` had NO catalog row at all (not
+  // just a missing `gate` param like the other channels above), so the
+  // real seeded `market-summary` agent's Edit/decompile failed with
+  // "unknown channel 'telegram_info'" / "not declared in its catalog
+  // schema" (the latter once `gate: false` was reached) — see
+  // agent_grammar.yaml + backend's test_grammar_event_action_gate_field.py.
+  {
+    grammar_kind: 'notify', token_kind: 'channel', token: 'telegram_info',
+    params_schema: { gate: { type: 'boolean', required: false } },
+  },
   {
     grammar_kind: 'notify', token_kind: 'channel', token: 'ntfy',
     params_schema: {
@@ -1380,6 +1390,33 @@ describe('Sprint 12/18 — event_stmt decompile round-trip (real seeded agent sh
     // [...]}` (match=) alternative; match on the stable leading substring
     // rather than the old exact-to-"shape" wording.
     expect(dec.errors.some(e => /'conditions' must be a \{"log": \{\.\.\.\}\}/.test(e.message))).toBe(true);
+  });
+
+  // Closed 2026-10-12 — real `market-summary` SEEDED_AGENTS shape
+  // (backend/api/algo/event_agents.py). Before `telegram_info` was
+  // registered as a catalog channel (agent_grammar.yaml), clicking Edit
+  // on this agent in Automation → Alerts failed with "unknown channel
+  // 'telegram_info'" / "event 'telegram_info': unknown parameter 'gate'
+  // (not declared in its catalog schema)" — the operator-visible "not
+  // added to the catalog" report this fix closes.
+  it('the real market-summary seeded agent (telegram_info channel + gate:false) decompiles and round-trips', () => {
+    // Exact stored shape (confirmed against the real dev-DB row) —
+    // min_level/where both present, not relying on decompile's own
+    // default-filling for an omitted min_level (covered separately above).
+    const agentJson = {
+      conditions: { log: { tag: 'summary', min_level: 'INFO', where: { alert_event: 'summary' } } },
+      events: [{ channel: 'telegram_info', enabled: true, gate: false }],
+      actions: [{ type: 'render', render: 'summary' }],
+      name: 'Market summary',
+    };
+    const dec = decompileEvent(agentJson);
+    expect(dec.errors).toEqual([]);
+    expect(dec.text).toContain('telegram_info(gate=false)');
+    const recompiled = compile(dec.text);
+    expect(recompiled.ok).toBe(true);
+    expect(recompiled.agent.conditions).toEqual(agentJson.conditions);
+    expect(recompiled.agent.events).toEqual(agentJson.events);
+    expect(recompiled.agent.actions).toEqual(agentJson.actions);
   });
 
   // ── real seeded ORDER_FAILURE_AGENT shape — channel-level `gate: false`

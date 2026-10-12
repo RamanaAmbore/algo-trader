@@ -34,11 +34,12 @@ Covers:
      reads — a kind='cycle' agent's DO action list must still reject an
      unknown `render` action type exactly as before this change.
   5. Every real seeded agent's `events`/`actions` entries are now fully
-     describable by a declared schema, except the two known, deferred
-     gaps (`telegram_info` channel, not yet declared in the catalog at
-     all — Sprint 18 PLAN item 2) — this is a structural regression
-     guard: a FUTURE undeclared key reintroduces a decompile failure and
-     must fail this test, not silently slip through.
+     describable by a declared schema — including `telegram_info`
+     (closed 2026-10-12; was the one remaining gap, causing `market-
+     summary`'s Edit/decompile to fail with "not declared in its catalog
+     schema") — this is a structural regression guard: a FUTURE
+     undeclared key reintroduces a decompile failure and must fail this
+     test, not silently slip through.
 
 Perf: no DB / network calls — in-memory catalog + a fake GrammarToken
 row for the wire-shape check, same pattern as
@@ -90,6 +91,36 @@ class TestChannelGateFieldSchema:
         schema = _live_channel_token("log").get("params_schema") or {}
         assert "gate" not in schema
 
+    def test_telegram_info_channel_is_declared_with_gate(self):
+        """Closed 2026-10-12 — `telegram_info` (event_agents.py:CHANNELS,
+        used only by the seeded `market-summary` agent) had no catalog
+        row at all, so the frontend CLI grammar's Edit/decompile path
+        failed with "unknown channel 'telegram_info'" (or, once the
+        `gate: false` key is reached, "not declared in its catalog
+        schema") for that one agent. Distinct from `log` (capability also
+        None, but no seeded agent sets `gate` on it) — `telegram_info`
+        DOES need the declaration since market-summary's own event entry
+        carries `gate: false`."""
+        schema = _live_channel_token("telegram_info")["params_schema"]
+        assert "gate" in schema
+        assert schema["gate"]["type"] == "boolean"
+        assert schema["gate"]["required"] is False
+
+    def test_market_summary_agent_events_fully_resolve_against_declared_schema(self):
+        """The real seeded agent this gap affected — confirms its exact
+        stored `events[]` entry (channel + extra keys) all resolve
+        against a declared schema, the backend-side half of the
+        decompile fix (the frontend decompiler itself is covered by a
+        Vitest round-trip test)."""
+        agent = next(a for a in ea.SEEDED_AGENTS if a["slug"] == "market-summary")
+        for ev in agent.get("events") or []:
+            schema = _channel_params_schema(ev["channel"])
+            assert schema, f"channel {ev['channel']!r} has no declared schema at all"
+            for key in ev:
+                if key in _CHANNEL_ENTRY_RESERVED_KEYS:
+                    continue
+                assert key in schema, f"{ev['channel']}.{key} not declared"
+
     def test_gate_field_survives_onto_grammar_token_wire_shape(self):
         """End-to-end: the same shape `GET /api/admin/grammar/tokens`
         serves via `GrammarTokenController` / `routes/grammar.py:_to_out`."""
@@ -133,7 +164,10 @@ _RENDER_ACTION_RESERVED_KEYS = {"type", "render"}
 # Known, deferred gaps — Sprint 18 PLAN item 2 scopes these out
 # explicitly. If one of these channels/keys gets a real catalog
 # declaration later, remove it here so this test tightens automatically.
-_KNOWN_UNDECLARED_CHANNELS = {"telegram_info"}
+# `telegram_info` was closed 2026-10-12 (agent_grammar.yaml now declares
+# it with a `gate` param) — removed from this set; see
+# TestTelegramInfoChannelDeclared below for its own positive coverage.
+_KNOWN_UNDECLARED_CHANNELS: set[str] = set()
 
 
 def _channel_params_schema(channel: str) -> dict:

@@ -603,6 +603,29 @@ system_tokens:
       type: boolean
       required: false
       description: Bypass the 'telegram' capability gate when false. Defaults to true (gate active).
+# Was never registered as a catalog token at all (distinct from the
+# `gate`-schema-only additions above) — event_agents.py's CHANNELS table
+# has carried a real, working `telegram_info` sender (_send_telegram_info_html,
+# a separate 'info' Telegram key, secrets.telegram_chat_id_info) since
+# before this catalog existed; the seeded `market-summary` agent's own
+# event entry (`{"channel": "telegram_info", "enabled": true, "gate":
+# false}`) could never decompile back to CLI text because the channel
+# itself had no catalog row to resolve against — "unknown channel
+# 'telegram_info'" (or, once a `gate` key is present, "not declared in
+# its catalog schema"). capability=None (same as `log`) — `gate` is a
+# structural no-op here (`_channel_enabled(None)` is always True) but is
+# still declared, schema-only, so `market-summary`'s stored `gate: false`
+# key round-trips instead of failing loud.
+- grammar_kind: notify
+  token_kind: channel
+  token: telegram_info
+  value_type: enum
+  description: Telegram via the dedicated 'info' key (secrets.telegram_chat_id_info), bypassing the regular 'telegram' capability gate — used by low-noise informational alerts (e.g. market-summary).
+  params_schema:
+    gate:
+      type: boolean
+      required: false
+      description: Structural no-op (capability is None for this channel) — declared only so a stored 'gate' key decompiles.
 - grammar_kind: notify
   token_kind: channel
   token: email
