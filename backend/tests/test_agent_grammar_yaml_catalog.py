@@ -63,6 +63,13 @@ required `scope_filter.kind` qualifier. See
 `backend/api/algo/grammar.py`'s `_scope_symbols_all` and
 `backend/tests/test_symbols_scope_family.py`.
 
+Amendment (2026-10-12, telegram_info channel): one new
+`(notify, channel, telegram_info)` token was added to `agent_grammar.yaml`
+right after `telegram` (and mirrored here at the same position) — closes
+the real seeded `market-summary` agent's Edit/decompile failure ("not
+declared in its catalog schema"); see
+`test_grammar_event_action_gate_field.py`'s own dedicated coverage.
+
 Perf: no DB / network calls, pure in-memory comparison.
 Reuse: shares the same SYSTEM_TOKENS / LOG_TAG_TOKENS module attributes
 every other grammar test and `seed_grammar_tokens()` read.

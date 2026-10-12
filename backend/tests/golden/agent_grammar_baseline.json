@@ -653,6 +653,20 @@
     {
       "grammar_kind": "notify",
       "token_kind": "channel",
+      "token": "telegram_info",
+      "value_type": "enum",
+      "description": "Telegram via the dedicated 'info' key (secrets.telegram_chat_id_info), bypassing the regular 'telegram' capability gate — used by low-noise informational alerts (e.g. market-summary).",
+      "params_schema": {
+        "gate": {
+          "type": "boolean",
+          "required": false,
+          "description": "Structural no-op (capability is None for this channel) — declared only so a stored 'gate' key decompiles."
+        }
+      }
+    },
+    {
+      "grammar_kind": "notify",
+      "token_kind": "channel",
       "token": "email",
       "value_type": "enum",
       "description": "Email to every address in secrets.alert_emails.",
