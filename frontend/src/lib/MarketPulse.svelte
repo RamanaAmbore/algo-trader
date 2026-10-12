@@ -5156,6 +5156,20 @@
        bottom so no gap appears between the last row border and the card
        border (double-border artifact). */
     --ch-padding: 0.2rem 0.35rem 0;
+    /* Header bar gets a slightly different shade than the panel body for
+       emphasis (2026-10-12, operator: "all panel headers which have
+       grids, have headers as same color as panel background... slightly
+       different shade for the header"). A subtle highlight layered over
+       the SAME --card-bg-elevated gradient (not a new color) plus a thin
+       bottom divider, so the header reads as its own strip without
+       clashing with the per-bucket label tint (.mp-bucket-label-*) or
+       the per-bucket accent border below. Scoped to Pulse ONLY for now
+       (--ch-bg is CardHeader's own themeable custom property, set here
+       rather than touching CardHeader.svelte itself) — review later to
+       decide whether this generalizes to every other CardHeader-using
+       page. */
+    --ch-bg: linear-gradient(180deg, rgba(255,255,255,0.05) 0%, rgba(255,255,255,0.0) 100%), var(--card-bg-elevated);
+    --ch-border-bottom: 1px solid var(--card-divider);
   }
   /* Bucket label — small mono caps above each grid, tinted to match
      the per-major palette already used elsewhere on the page so the
