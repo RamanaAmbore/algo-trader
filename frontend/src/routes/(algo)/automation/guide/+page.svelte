@@ -350,12 +350,12 @@ WHEN risky ALERT telegram DO debug(risky)</pre>
 
   <!-- ══════════════════════════ TOKENS ══════════════════════════ -->
   <section class="algo-card cg-section">
-    <h2 class="section-heading">Tokens — <code>token(kind=notify) ...</code></h2>
+    <h2 class="section-heading">Tokens — <code>token(kind=notify|condition) ...</code></h2>
     <p class="cg-lede">
-      A Token saves a reusable group of channels (or, for <code>kind=condition</code>, a
-      reusable condition) under one name — handy when several different agents should
-      always notify the same way, so you don't repeat the same channel list in every
-      <code>ALERT</code> clause.
+      A Token saves a reusable group of channels (<code>kind=notify</code>), or a reusable
+      condition expression (<code>kind=condition</code>), under one name — handy when
+      several different agents should always notify the same way, or test the same
+      threshold, so you don't repeat it in every agent.
     </p>
 
     <div class="cg-example">
@@ -366,13 +366,32 @@ WHEN risky ALERT telegram DO debug(risky)</pre>
       </p>
       <pre class="cg-code">token(kind=notify) telegram, email #name="Ops Channels"</pre>
       <p class="cg-what">
-        <code>kind=notify</code> is the supported value this release; the body after the
-        head call is a plain channel list, compiled the exact same way an ordinary
-        <code>ALERT</code> call-list is. <code>#name=</code> is required. Once saved, a Token
-        shows up in the channel/condition catalog under its own name and can be referenced
-        anywhere a channel (or, for condition-kind, a metric) is expected.
+        The body after the head call is a plain channel list, compiled the exact same way
+        an ordinary <code>ALERT</code> call-list is.
       </p>
     </div>
+
+    <div class="cg-example">
+      <p class="cg-why">
+        Several different agents all need the same "is this account deep in loss" check —
+        save the condition once instead of retyping the same threshold everywhere.
+      </p>
+      <pre class="cg-code">token(kind=condition) pnl_pct@positions.any_acct &lt;= -2.0 #name="loss-positions-acct-default"</pre>
+      <p class="cg-what">
+        The body after the head call is a full condition expression — the exact same
+        grammar a <code>WHEN</code> clause uses (metric refs, <code>&amp;</code>/<code>|</code>/
+        <code>~</code>, between-chains, nested <code>$ref</code>s — anything a WHEN clause can
+        express, a condition-kind Token can too).
+      </p>
+    </div>
+
+    <p class="cg-lede">
+      <code>#name=</code> is required in both cases. Once saved, a Token shows up in the
+      channel/condition catalog under its own name and can be referenced anywhere a channel
+      (or, for condition-kind, a condition leaf) is expected. Templates (Tokens) render
+      under the <strong>Agents</strong> card on the Automation page — there's no separate
+      Templates card.
+    </p>
   </section>
 
   <!-- ══════════════════════════ META TAGS ══════════════════════════ -->

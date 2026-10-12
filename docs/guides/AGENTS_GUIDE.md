@@ -23,17 +23,18 @@ Mental model: condition fires → alert emitted → notifies dispatch → action
 |---|---|---|
 | Agents | `/automation?tab=agents` | Rule editor — create, edit, activate, deactivate, dry-run |
 | Brackets (Order Templates) | `/automation?tab=brackets` | Per-position TP/SL/wing/scale/trail exit rules attached at order fill |
-| Tokens (Saved Condition/Notify) | `/automation?tab=tokens` | Reusable saved sub-trees (notify channel sets + condition snippets) |
+| Tokens (Saved Condition/Notify) | `/automation?tab=tokens` (redirects to the **Agents** card — Tokens have no separate card) | Reusable saved sub-trees (notify channel sets + condition snippets) |
 | Activity | `/activity?tab=agent` | Recent agent fires (real, not sim) |
 | Grammar Catalog | `/admin/tokens` | Live metrics/scopes/operators/channels/actions (Config group, read-only) |
 | CLI (Command Line) | `/automation?tab=console` | Plain-text agent/order authoring (WHEN/ALERT/DO grammar + `order(...)`) — `/console` retired 2026-10, redirects here |
 | MCP | `/admin/mcp` | LLM-driven research → draft agents via Claude Code MCP (Explore group) |
 | Simulator | `/admin/execution?mode=sim` | Fabricated price-move workspace for testing agents (Explore group) |
 
-Legacy `/agents` paths redirect for old bookmarks. Note: the **Tokens** tabs
-on `/automation` are saved operator-defined filters (notify channel groups +
-condition sub-trees); the **Grammar Catalog** at `/admin/tokens` is the
-read-only system token registry — distinct concepts sharing "token" wording.
+Legacy `/agents` paths redirect for old bookmarks. Note: **Tokens** are
+saved operator-defined filters (notify channel groups + condition sub-trees)
+that render as ordinary rows under the **Agents** card (no separate Tokens
+card); the **Grammar Catalog** at `/admin/tokens` is the read-only system
+token registry — distinct concepts sharing "token" wording.
 
 ---
 
@@ -261,9 +262,12 @@ require a confirmation dialog.
 
 ## Tokens — saved condition/notify reuse
 
-Browse saved Tokens at `/automation?tab=tokens` (the Tokens tab). Two kinds:
+Tokens (`kind='template'` Agent rows) render under the **Agents** card on
+`/automation` — there is no separate Templates/Tokens card or tab; a Token's
+own `#group=` tag (if set) and description distinguish it from an ordinary
+agent in that same row list. Two kinds:
 
-**Notify Tokens** — saved channel groups. Create with:
+**Notify Tokens** — saved channel groups. Create or edit via Console:
 ```
 token(kind=notify) telegram, email, log #name="Ops Channels"
 ```
@@ -274,8 +278,14 @@ Reference in agents:
 
 Seeded examples: `notify-critical-trio`, `notify-log-only`, `notify-telegram-only`.
 
-**Condition Tokens** — saved condition sub-trees. Currently browse-only (no
-create UI on the Console tab this sprint). Reference in agents:
+**Condition Tokens** — saved condition sub-trees. Create or edit via Console
+the same way — the body after the head call is a full condition expression,
+the exact same grammar a `WHEN` clause uses (metric refs, `&`/`|`/`~`,
+between-chains, nested `$ref`s):
+```
+token(kind=condition) pnl_pct@positions.any_acct <= -2.0 #name="loss-positions-acct-default"
+```
+Reference in agents:
 ```jsonc
 {
   "conditions": { "all": [
