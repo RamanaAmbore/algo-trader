@@ -101,7 +101,14 @@
     max-height: none;
     display: flex;
     flex-direction: column;
-    padding: 0.4rem 0.6rem 0.6rem;
+    /* Horizontal padding matches `.algo-content`'s own 0.5rem side
+       gutter ((algo)/+layout.svelte) — confirmed via bounding-box
+       measurement (2026-10-13 width-consistency fix) that the prior
+       0.6rem here produced a real, measurable ~3.2px narrower content
+       width than /automation's bottom-attached strip for the exact
+       same LogPanel/tab-bar content. Keep this in sync with that
+       0.5rem value if the page gutter convention ever changes. */
+    padding: 0.4rem 0.5rem 0.6rem;
     overflow: hidden;
   }
   /* Panel-specific border tint — orange matches the Log icon's new

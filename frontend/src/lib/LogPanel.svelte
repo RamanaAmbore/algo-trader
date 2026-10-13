@@ -62,11 +62,18 @@
    * }} */
   let {
     heightClass = 'flex-1 min-h-0',
-    // Canonical order: Orders → Agents → Terminal → Ticks → System → News.
-    // Every LogPanel mount inherits this — drop the explicit `tabs=`
-    // prop at callsites unless a page genuinely needs a subset
-    // (e.g. /console hiding Order in a future iteration).
-    tabs        = ['order','agent','terminal','simulator','system','conn','news'],
+    // Canonical order: Orders → Agents → Alerts → Terminal → Ticks →
+    // System → Conn → News — mirrors `_ALL_TABS` below exactly. Every
+    // LogPanel mount inherits this default — drop the explicit `tabs=`
+    // prop at callsites unless a page genuinely needs a subset (e.g.
+    // /console hiding Order in a future iteration). `alerts` was added
+    // 2026-10-13 (CardHeader/Activity-panel consistency sweep) — it was
+    // previously missing from this default array, which was the actual
+    // root cause of every non-Automation embedding site lacking the
+    // Alerts tab despite it being a real, fully-functional tab (gated
+    // independently by the view_audit cap check in VISIBLE_TABS below,
+    // regardless of whether it's listed here).
+    tabs        = ['order','agent','alerts','terminal','simulator','system','conn','news'],
     defaultTab  = 'order',
     simScope    = false,
     // Default matches the `polling.fast_ms` registry setting's own default
@@ -1030,23 +1037,22 @@
   // 'Ticks' — the SIM pill on each row already conveys the mode. Earlier
   // 'Simulator' overlapped with the same SIM pill on filtered Orders rows.
   // 'alerts' (agent-fire history, folded in from the retired
-  // /admin/alerts page — 2026-10 nav restructure) is deliberately NOT
-  // part of the default `tabs` prop below, so every existing mount
-  // (ActivityLogModal, /orders, /console, SymbolPanel, /activity page)
-  // is unaffected. Only a caller that explicitly adds 'alerts' to its
-  // own `tabs=` prop (today: /automation's bottom-attached strip) gets
-  // it, and even then only once the view_audit cap gate passes below.
-  // Labelled "Alert Log" (not "Alerts") as of Sprint C (2026-10, Phase 2
-  // "Automation redesign") — that phase added a NEW "Alerts" kind-card
-  // on /automation's Agents tab (kind='event' agents), which would
-  // otherwise collide in name with this tab (agent-fire HISTORY, a
-  // different concept) on the very same page. The tab id stays 'alerts'
-  // (every caller's `tabs=` prop and the backend's log tag are
-  // unaffected) — only the display label changed.
+  // /admin/alerts page — 2026-10 nav restructure) is now part of the
+  // default `tabs` array above, so every mount (ActivityLogModal,
+  // /orders, /console, SymbolPanel, /activity page, /automation) gets
+  // it — gated independently by the view_audit cap check below.
+  // Labelled "Alerts" (CardHeader + Activity-panel consistency sweep,
+  // 2026-10-13 — reverted from the interim "Alert Log" label used
+  // during Sprint C). Known, operator-accepted consequence: this
+  // restores a real but purely cosmetic wording overlap with
+  // /automation's own "Alerts" kind-card (a `kind='event'` agents
+  // grouping on the Agents sub-view — an unrelated concept). The tab id
+  // stays 'alerts' either way (every caller's `tabs=` prop and the
+  // backend's log tag are unaffected) — only the display label changed.
   const _ALL_TABS = [
     ['order',     'Orders'],
     ['agent',     'Agents'],
-    ['alerts',    'Alert Log'],
+    ['alerts',    'Alerts'],
     ['terminal',  'Terminal'],
     ['simulator', 'Ticks'],
     ['system',    'System'],
@@ -2031,16 +2037,17 @@
       <button type="button" class="lp-close-btn"
               title="Close" aria-label="Close activity log"
               onclick={() => onClose?.()}>×</button>
-    {:else if logTab !== 'alerts'}
-      <!-- Fullscreen deep-links into ActivityLogModal, which doesn't
-           carry an 'alerts' tab (it's scoped to /automation's own
-           mount only — see ACTIVITY_TABS in activityStore.svelte.js).
-           Suppressed here rather than deep-linking to a tab the modal
-           can't show. -->
+    {:else}
+      <!-- Fullscreen deep-links into ActivityLogModal. As of the
+           2026-10-13 CardHeader/Activity-panel consistency sweep,
+           'alerts' is a default tab everywhere (including the modal),
+           so no tab needs to be excluded here any more — previously
+           this button hid itself entirely on the alerts tab because
+           the modal couldn't show it. -->
       <button type="button" class="lp-fs-btn"
               title="Open fullscreen"
               aria-label="Open fullscreen"
-              onclick={() => openActivityModal(/** @type {'order'|'agent'|'terminal'|'simulator'|'system'|'conn'|'news'} */ (logTab))}>
+              onclick={() => openActivityModal(/** @type {'order'|'agent'|'alerts'|'terminal'|'simulator'|'system'|'conn'|'news'} */ (logTab))}>
 
         <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
           <path d="M2 6V2h4M14 6V2h-4M2 10v4h4M14 10v4h-4"

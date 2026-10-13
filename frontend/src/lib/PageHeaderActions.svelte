@@ -46,6 +46,20 @@
     hideOrder = /** @type {boolean} */ (false),
     /** When true, the Chart icon is hidden (caller is on the charts page). */
     hideChart = /** @type {boolean} */ (false),
+    /**
+     * Optional contextual default tab for the Log button — threaded
+     * straight into `openActivityModal(tab)`'s existing deep-link
+     * mechanism (same one BrokerHealthBadge already uses for 'conn').
+     * When provided, every click of THIS page's Log button lands on
+     * that tab (e.g. /orders passes 'order', /admin/derivatives passes
+     * 'agent' — see that page's own comment for why not 'alerts');
+     * when omitted (the default — every other page), the
+     * generic no-arg open path is used and the operator's last-viewed
+     * tab (activityStore.activeTab) is preserved, unchanged from
+     * today's behaviour.
+     * @type {import('$lib/stores').ActivityTab | undefined}
+     */
+    logTabHint = /** @type {any} */ (undefined),
   } = $props();
 
   // Universal default falls back to the operator-configured
@@ -174,7 +188,7 @@
 
   function _openLog() {
     _orderOpen = false;
-    openActivityModal();
+    openActivityModal(logTabHint);
   }
 </script>
 

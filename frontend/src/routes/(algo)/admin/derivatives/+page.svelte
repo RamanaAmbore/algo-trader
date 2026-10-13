@@ -5340,7 +5340,19 @@
   <span class="page-header-actions">
     <RefreshButton onClick={_refreshAll}
                    loading={_refreshing} label="derivatives" />
-    <PageHeaderActions symbol={selectedUnderlying} />
+    <!-- logTabHint="agent" (not "alerts", despite Alerts being
+         thematically closer to risk/margin on this page): LogPanel has
+         a pre-existing fallback effect that force-flips a seeded
+         'alerts' defaultTab to 'agent' the instant it mounts with
+         `_canViewAlerts` still false (the view_audit cap read is async
+         and starts false on every fresh page load) — and never flips
+         it back once the cap resolves true moments later. Seeding
+         'alerts' here would deterministically race-lose to that
+         one-way fallback on every cold page load. 'agent' (no cap
+         gate) is immediate and still contextually relevant (agent-fire
+         / risk history). See LogPanel.svelte's own `_canViewAlerts`
+         fallback `$effect` if that race is ever fixed upstream. -->
+    <PageHeaderActions symbol={selectedUnderlying} logTabHint="agent" />
   </span>
 </div>
 
@@ -5438,9 +5450,13 @@
      live + sim positions. -->
 {#if drafts.length}
   <div class="algo-status-card cmd-surface p-3 mb-3" data-status="inactive">
-    <div class="opt-section-h" style="padding-bottom: 0.5rem;">
-      Drafts <span class="opt-section-meta">({drafts.length}) — hypothetical positions; appear in Candidates when their symbol matches the underlying</span>
-    </div>
+    <!-- 2026-10 CardHeader adoption sweep — plain title + meta text,
+         no button group (nothing to preserve beyond the text itself). -->
+    <CardHeader title="Drafts" showControls={false} detectOverflow={false}>
+      {#snippet left()}
+        <span class="opt-section-meta">({drafts.length}) — hypothetical positions; appear in Candidates when their symbol matches the underlying</span>
+      {/snippet}
+    </CardHeader>
     <div class="leg-grid">
       <div class="leg-headrow">
         <span>Symbol</span>
@@ -5676,18 +5692,45 @@
     data-status="inactive"
     class:fs-card-on={_fsLegs}
     class:is-collapsed={_colLegs}>
-    <!-- Legs header — non-clickable title block on the left; the
-         global CollapseButton on the right is the sole collapse
-         control. (Earlier the row carried a redundant left-side
-         chevron button — duplicate toggle with the same effect as
-         CollapseButton, removed for visual + behavioural parity
-         with every other card on the page.) -->
-    <div class="legs-header-row">
-      <div class="legs-header legs-header-static">
+    <!-- Legs header — 2026-10 CardHeader adoption sweep. AlgoTabs is
+         still the card identifier (no `title` prop, same as the
+         Payoff/Snapshot precedent elsewhere on this page), now carried
+         in CardHeader's `middle` zone; the underlying chip moves to
+         `prefix` (renders before the tabs, matching its old left-most
+         position); CardControls' own props map 1:1 onto CardHeader's
+         forwarded props, so the full button set (search/download/
+         collapse/fullscreen/refresh) is unchanged — only the wrapper
+         markup changed. -->
+    <CardHeader
+      bind:isCollapsed={_colLegs}
+      bind:isFullscreen={_fsLegs}
+      bind:filter={_filterLegs}
+      cardId="optLegs"
+      label="Legs"
+      onRefresh={_refreshAll}
+      bind:refreshLoading={_refreshing}
+      onDownload={() => exportRowsToCsv(
+        displayedCandidates,
+        [
+          { header: 'Symbol',    key: 'symbol' },
+          { header: 'Exchange',  key: 'exchange' },
+          { header: 'Account',   key: 'account' },
+          { header: 'Qty',       key: 'qty' },
+          { header: 'Avg',       key: 'avg_cost',        format: (v) => v == null ? '' : String(v) },
+          { header: 'LTP',       key: 'ltp',             format: (v) => v == null ? '' : String(v) },
+          { header: 'Day P&L',   key: 'day_change_val',  format: (v) => v == null ? '' : String(v) },
+          { header: 'P&L',       key: 'pnl',             format: (v) => v == null ? '' : String(v) },
+        ],
+        'legs.csv'
+      )}
+    >
+      {#snippet prefix()}
         {#if selectedUnderlying}
           <span class="legs-underlying-chip">{selectedUnderlying}</span>
           <span class="legs-header-sep" aria-hidden="true"></span>
         {/if}
+      {/snippet}
+      {#snippet middle()}
         <!-- Tabs replace the static title — operator flips between
              the full leg list and the close-list summary. Expiry
              tab carries its count in a rose-colored badge variant
@@ -5709,36 +5752,8 @@
           onChange={(id) => { legsTab = /** @type {'legs'|'expiry'} */ (id); }}
           compact={true}
         />
-      </div>
-      <!-- Same tight no-wrap trio cluster as the Payoff header — see
-           the comment over `.payoff-card-controls`. Reuses the same
-           class so the CSS rule covers both cards. -->
-      <span class="payoff-card-controls">
-        <CardControls
-          bind:isCollapsed={_colLegs}
-          bind:isFullscreen={_fsLegs}
-          bind:filter={_filterLegs}
-          cardId="optLegs"
-          label="Legs"
-          onRefresh={_refreshAll}
-          bind:refreshLoading={_refreshing}
-          onDownload={() => exportRowsToCsv(
-            displayedCandidates,
-            [
-              { header: 'Symbol',    key: 'symbol' },
-              { header: 'Exchange',  key: 'exchange' },
-              { header: 'Account',   key: 'account' },
-              { header: 'Qty',       key: 'qty' },
-              { header: 'Avg',       key: 'avg_cost',        format: (v) => v == null ? '' : String(v) },
-              { header: 'LTP',       key: 'ltp',             format: (v) => v == null ? '' : String(v) },
-              { header: 'Day P&L',   key: 'day_change_val',  format: (v) => v == null ? '' : String(v) },
-              { header: 'P&L',       key: 'pnl',             format: (v) => v == null ? '' : String(v) },
-            ],
-            'legs.csv'
-          )}
-        />
-      </span>
-    </div>
+      {/snippet}
+    </CardHeader>
     {#if !_colLegs}
       {#if hiddenByAccount.rows > 0}
         <div class="cand-hidden-hint" title="Picker scopes legs to the chosen accounts. Clear the Account filter to include these rows in the payoff.">
@@ -6675,27 +6690,10 @@
     .opt-grid { grid-template-columns: 1fr; }
   }
 
-  .opt-section-h {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    /* Locked to canonical .algo-card-title typography tokens so this
-       header renders identically to Snapshot / Order entry / GREEKS.
-       Operator: "make them consistent and uniform." */
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: var(--fs-sm);
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--c-action);
-    padding: 0 0.25rem 0;
-    /* Match .opt-block-h (Greeks heading) — the amber underline
-       anchors the label and makes it read as bright as the Greeks
-       card title on the same page. Operator: "GREEKS is brighter." */
-    border-bottom: 1px solid rgba(251,191,36,0.18);
-    margin-bottom: 0.4rem;
-    flex-wrap: wrap;
-  }
+  /* .opt-section-h retired (2026-10 CardHeader adoption sweep) — its
+     one remaining user (Drafts card title) now renders via
+     <CardHeader>, which already matches this same canonical
+     Snapshot/Order-entry/GREEKS title typography by default. */
   /* Chips scroll container — holds EV + Greek chips in the Payoff
      header. Takes all remaining space between the title and the
      button cluster; scrolls horizontally so chips never wrap into
@@ -6725,24 +6723,12 @@
      MAX LOSS chips on one line by trimming font + padding + the
      section gap so the row fits inside a ~360px viewport. */
   @media (max-width: 600px) {
-    .opt-section-h { gap: 0.25rem; flex-wrap: nowrap; overflow-x: auto; }
     .opt-section-tag { font-size: var(--fs-sm); padding: 1px 3px; letter-spacing: 0.02em; }
   }
-  /* Tight no-wrap cluster for the card-control trio (Collapse +
-     DefaultSize + Fullscreen + optional Refresh in fullscreen mode).
-     Without this, the outer `.opt-section-row gap: 0.5rem` applied
-     between each child and the trio ate ~1rem of horizontal space —
-     enough to spill the Fullscreen button to a second row on mobile.
-     Inside the cluster the buttons sit at 0.15rem; the outer 0.5rem
-     gap separates the cluster from the previous header chip. */
-  .payoff-card-controls {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.15rem;
-    white-space: nowrap;
-    flex-shrink: 0;
-    margin-left: auto;
-  }
+  /* .payoff-card-controls retired (2026-10 CardHeader adoption sweep)
+     — the Legs card (its only remaining user) now renders its control
+     cluster via CardHeader's own built-in CardControls, which needs
+     no outer no-wrap wrapper span. */
   .tag-deriv  { color: var(--algo-sky); background: rgba(125,211,252,0.10); }
   .tag-long   { color: var(--c-long); background: var(--algo-green-bg); }
   .tag-short  { color: var(--c-short); background: var(--algo-red-bg); }
@@ -7444,43 +7430,11 @@
   .cand-scroll::-webkit-scrollbar-thumb:hover {
     background: rgba(251,191,36,0.85);
   }
-  /* Legs header row — flex container that hosts the legs-header
-     button (chevron + title + tag + count) on the left and the
-     global Collapse + Fullscreen toggles clustered on the right.
-     Same idiom as dashboard .card-header-row. */
-  .legs-header-row {
-    display: flex;
-    align-items: center;
-    gap: 0.3rem;
-    width: 100%;
-  }
-  .legs-header-row > .legs-header { flex: 1 1 auto; width: auto; }
-
-  /* Legs panel header — collapsable. Reset button defaults so it
-     still picks up the .opt-section-h typography but with a click
-     affordance + a rotating chevron on the left. */
-  .legs-header {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    width: 100%;
-    background: none;
-    border: 0;
-    padding: 0 0.25rem 0;
-    cursor: pointer;
-    color: var(--c-action);
-    font-family: inherit;
-    font-size: var(--fs-sm);
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    text-align: left;
-    flex-wrap: nowrap;
-    overflow-x: auto;
-    min-width: 0;
-    scrollbar-width: none;
-  }
-  .legs-header:hover { color: #fde047; }
+  /* .legs-header-row/.legs-header retired (2026-10 CardHeader adoption
+     sweep) — this card's chrome now renders via <CardHeader>, with the
+     underlying chip + separator carried in the `prefix` snippet and the
+     Legs/Exp-close AlgoTabs in `middle` (see the card markup above).
+     .legs-underlying-chip/.legs-header-sep below are still used there. */
 
   /* Legs / Expiry tabs migrated to canonical AlgoTabs (compact
      amber; expiry switches to rose color when expiryCloseTotal>0

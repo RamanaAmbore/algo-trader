@@ -992,7 +992,7 @@ if (browser) {
 //   persists across modal open/close and is shared with the /activity page.
 //   initialTab is now written to activityStore.activeTab by openActivityModal;
 //   the modal reads activityStore.activeTab directly instead of this field.
-/** @typedef {'order'|'agent'|'terminal'|'simulator'|'system'|'conn'|'news'} ActivityTab */
+/** @typedef {'order'|'agent'|'alerts'|'terminal'|'simulator'|'system'|'conn'|'news'} ActivityTab */
 
 export const activityModal = writable(
   /** @type {{ open: boolean }} */
@@ -1001,11 +1001,13 @@ export const activityModal = writable(
 
 /** Open the activity modal, optionally deep-linking to a specific tab.
  *
- *  When `tab` is provided (e.g. 'conn' from BrokerHealthBadge), it
- *  writes to activityStore so the modal and /activity page land on that
- *  tab immediately. When omitted (the Log button, keyboard `h`, context
- *  menus), the store's current tab is preserved — this is the whole point
- *  of lifting state to activityStore.
+ *  When `tab` is provided (e.g. 'conn' from BrokerHealthBadge, or
+ *  PageHeaderActions' `logTabHint` prop — 'order' on /orders, 'agent'
+ *  on /admin/derivatives), it writes to activityStore so the modal and
+ *  /activity page land on that tab immediately. When omitted (the
+ *  generic Log button, keyboard `h`, context menus), the store's
+ *  current tab is preserved — this is the whole point of lifting state
+ *  to activityStore.
  *
  *  @param {ActivityTab} [tab] */
 export function openActivityModal(tab) {

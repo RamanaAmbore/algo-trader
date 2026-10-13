@@ -342,7 +342,7 @@
          exist. -->
     <StrategyPicker label="Strategy" />
     <RefreshButton onClick={loadOrders} loading={loading} label="orders" />
-    <PageHeaderActions symbol={_entrySymbol} hideOrder={true} />
+    <PageHeaderActions symbol={_entrySymbol} hideOrder={true} logTabHint="order" />
   </span>
 </div>
 
@@ -462,11 +462,11 @@
      clean during idle hours. -->
 {#if _showChases}
 <section class="bucket-card bucket-card-chase">
-  <CardHeader showControls={false}>
-    {#snippet left()}
-      <span class="mp-section-label">Chases</span>
-    {/snippet}
-  </CardHeader>
+  <!-- ChaseCard now owns its own single CardHeader (2026-10 CardHeader
+       adoption sweep) — the page no longer wraps it in a second "Chases"
+       bar, which used to stack two shaded header rows on top of each
+       other. ChaseCard's own title ("Chases in flight") replaces this
+       page's plain "Chases" label. -->
   <div class="card-body oc-chase-body">
     <ChaseCard pollMs={3000} onKilled={() => loadOrders()} bind:activeCount={_activeChases}
       bind:chaseOrderIds={_chaseOrderIds}
@@ -490,19 +490,24 @@
   onPendingModify={(o) => { orderTicketProps = _buildModifyProps(o); }} /></div>
 {/if}
 
-<!-- Order Activity card — same 6-tab LogPanel surface the ActivityLogModal
-     mounts (Orders · Agents · Terminal · Ticks · System · News). The card
-     header carries the modal's "Activity" wording + bell icon so heading
-     text matches; LogPanel renders its own tab strip + the live mode
-     chip (top-right of the tab row, mode-pill-paper/-live/-sim). Modify /
-     Cancel / Reconcile actions live on every OrderCard inside LogPanel
-     itself so they ship to the modal too — single source of truth for
-     order-row actions.
+<!-- Order Activity card — NOT the tabbed LogPanel surface (that claim was
+     stale/inaccurate; corrected 2026-10-13). `OrderBook.svelte` is a
+     separate, non-tabbed order-card grid extracted from LogPanel's own
+     `order` tab (see that component's own header doc) — it has no tab
+     strip of its own. The REAL tabbed LogPanel surface on /orders is
+     the bell-icon modal (ActivityLogModal), opened via PageHeaderActions
+     (logTabHint="order" defaults it straight to the Orders tab). This
+     card's header carries the same "Activity" wording + bell icon as the
+     modal purely so heading text matches, with no shared LogPanel
+     instance underneath. Modify / Cancel / Reconcile actions live on
+     every OrderCard inside OrderBook itself, mirroring (not sharing)
+     LogPanel's own order-row actions — see OrderBook.svelte's own doc
+     comment for the "mirrors LogPanel" convention this relies on.
 
-     Listener for lp:modify-order: LogPanel dispatches this CustomEvent
+     Listener for lp:modify-order: OrderBook dispatches this CustomEvent
      when the operator clicks the inline pencil on any row; the host
      opens its OrderTicket modal pre-filled. Same plumbing the Activity
-     modal uses. -->
+     modal's own LogPanel instance uses, kept in sync by convention. -->
 <section class="bucket-card bucket-card-activity oc-fill"
   class:is-collapsed={_colActivity}
   class:fs-card-on={_fsActivity}

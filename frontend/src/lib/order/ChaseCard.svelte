@@ -18,6 +18,7 @@
   import { fetchActiveChases, killChase, reconcileAlgoOrders } from '$lib/api';
   import { priceFmt } from '$lib/format';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
+  import CardHeader from '$lib/CardHeader.svelte';
   import { visibleInterval } from '$lib/stores';
 
   let {
@@ -280,22 +281,32 @@
      traffic drops to one fetch every ~30s. -->
 {#if _chases.length || pendingOrders.length || draftOrders.length}
 <div class="cc-root" class:cc-compact={compact}>
-  <div class="cc-header">
-    <span class="cc-label">Chases in flight</span>
-    <span class="cc-count">{_chases.length + pendingOrders.length + draftOrders.length}</span>
-    <span class="cc-spacer"></span>
-    {#if _reconcileMsg}
-      <span class="cc-reconcile-msg" title={_reconcileMsg}>{_reconcileMsg}</span>
-    {:else if _err}
-      <span class="cc-err" title={_err}>{_err.slice(0, 60)}</span>
-    {/if}
-    <button type="button" class="cc-reconcile"
-      title="Re-sync live OPEN rows against the broker (live mode only)"
-      disabled={_reconciling}
-      onclick={_reconcile}>
-      {_reconciling ? 'Reconciling…' : 'Reconcile'}
-    </button>
-  </div>
+  <!-- 2026-10 CardHeader adoption sweep — this is now the ONE header
+       ChaseCard renders, consolidating what used to be a second,
+       redundant header some host pages (e.g. /orders) wrapped around
+       this component themselves. ActivityLogModal and SymbolPanel mount
+       ChaseCard bare with no wrapper at all, so moving the header inside
+       the component (rather than leaving it to each host) is also what
+       gives those two surfaces the shared CardHeader shade for the
+       first time. -->
+  <CardHeader title="Chases in flight" showControls={false}>
+    {#snippet left()}
+      <span class="cc-count">{_chases.length + pendingOrders.length + draftOrders.length}</span>
+    {/snippet}
+    {#snippet right()}
+      {#if _reconcileMsg}
+        <span class="cc-reconcile-msg" title={_reconcileMsg}>{_reconcileMsg}</span>
+      {:else if _err}
+        <span class="cc-err" title={_err}>{_err.slice(0, 60)}</span>
+      {/if}
+      <button type="button" class="cc-reconcile"
+        title="Re-sync live OPEN rows against the broker (live mode only)"
+        disabled={_reconciling}
+        onclick={_reconcile}>
+        {_reconciling ? 'Reconciling…' : 'Reconcile'}
+      </button>
+    {/snippet}
+  </CardHeader>
 
   <div class="cc-grid" role="grid">
     <div class="cc-row cc-row-h" role="row">
@@ -510,19 +521,10 @@
     min-width: 0;
     box-sizing: border-box;
   }
-  .cc-header {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-  }
-  .cc-label {
-    font-family: var(--font-numeric);
-    font-size: var(--fs-sm);
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: rgba(248, 113, 113, 0.8);
-  }
+  /* .cc-header/.cc-label/.cc-spacer retired (2026-10 CardHeader adoption
+     sweep) — title now renders via <CardHeader>'s own title prop; the
+     push-right-of-Reconcile effect comes from CardHeader's middle
+     spacer instead of a local flex:1 spacer element. */
   .cc-count {
     display: inline-flex;
     align-items: center;
@@ -535,7 +537,6 @@
     font-weight: 800;
     font-variant-numeric: tabular-nums;
   }
-  .cc-spacer { flex: 1 1 0; }
   .cc-err {
     color: var(--c-short);
     font-size: var(--fs-xs);

@@ -35,11 +35,11 @@
  * module-level object with `$state`-backed reactive getters, no class.
  */
 
-/** @typedef {'order'|'agent'|'terminal'|'simulator'|'system'|'conn'|'news'} ActivityTab */
+/** @typedef {'order'|'agent'|'alerts'|'terminal'|'simulator'|'system'|'conn'|'news'} ActivityTab */
 
 /** Canonical allowed tab ids — kept in sync with LogPanel's default tab list. */
 export const ACTIVITY_TABS = /** @type {ActivityTab[]} */ (
-  ['order', 'agent', 'terminal', 'simulator', 'system', 'conn', 'news']
+  ['order', 'agent', 'alerts', 'terminal', 'simulator', 'system', 'conn', 'news']
 );
 
 // ── Reactive backing state ───────────────────────────────────────────────

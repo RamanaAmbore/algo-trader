@@ -10,6 +10,7 @@
   import Select     from '$lib/Select.svelte';
   import AlgoTabs   from '$lib/AlgoTabs.svelte';
   import ModalShell from '$lib/ModalShell.svelte';
+  import CardHeader from '$lib/CardHeader.svelte';
 
   // Bindable prop — flips to `false` only after a successful fetch
   // confirms zero rows for the current filters. Defaults to `true` so
@@ -580,18 +581,19 @@
 
   <!-- Performance chart -->
   <div class="card chart-card">
-    <div class="card-head-row">
-      <span class="section-head">Performance — % from {fromDate}</span>
-      <div class="bm-toggles">
-        {#each BENCHMARKS as bm}
-          <button
-            class="bm-chip {bmActive.has(bm.id) ? 'bm-on' : 'bm-off'}"
-            style="--bm-color:{bm.color}"
-            onclick={() => toggleBenchmark(bm.id)}
-          >{bm.label}</button>
-        {/each}
-      </div>
-    </div>
+    <CardHeader title={`Performance — % from ${fromDate}`} showControls={false}>
+      {#snippet right()}
+        <div class="bm-toggles">
+          {#each BENCHMARKS as bm}
+            <button
+              class="bm-chip {bmActive.has(bm.id) ? 'bm-on' : 'bm-off'}"
+              style="--bm-color:{bm.color}"
+              onclick={() => toggleBenchmark(bm.id)}
+            >{bm.label}</button>
+          {/each}
+        </div>
+      {/snippet}
+    </CardHeader>
 
     {#if !portfolioActive && data && !data.start_capital}
       <div class="no-capital-hint">
@@ -1082,14 +1084,10 @@
   }
 
   .chart-card { padding: 0.5rem 0.75rem 0.55rem; }
-  .card-head-row {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 0.4rem;
-    margin-bottom: 0.35rem;
-  }
-  .card-head-row .section-head { margin-bottom: 0; }
+  /* .card-head-row retired (2026-10 CardHeader adoption sweep) — the
+     chart card's own title bar now renders via <CardHeader>. Spacing
+     before the chart below is preserved via this scoped margin. */
+  .chart-card :global(.card-header) { margin-bottom: 0.35rem; }
   .bm-toggles {
     display: flex;
     flex-wrap: wrap;

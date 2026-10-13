@@ -9,6 +9,7 @@
   import { toast } from '$lib/data/toastStore.svelte.js';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
+  import CardHeader from '$lib/CardHeader.svelte';
 
   let confirmRef = $state(null);
   let releasingAll = $state(false);
@@ -119,16 +120,19 @@
 <ConfirmModal bind:this={confirmRef} />
 {#if rows.length}
   <section class="held-card" aria-label="Held orders">
-    <header class="held-head">
-      <span class="held-title">Held orders</span>
-      <InfoHint
-        text="Automated orders paused for your review — the broker never got this order, or (Bracket exit) a position is sitting with no TP/SL. Release sends it; Cancel discards it."
-      />
-      <span class="held-count">{rows.length}</span>
-      <button type="button" class="held-release-all"
-              disabled={releasingAll}
-              onclick={releaseAll}>Release all</button>
-    </header>
+    <CardHeader title="Held orders" showControls={false} detectOverflow={false}>
+      {#snippet left()}
+        <InfoHint
+          text="Automated orders paused for your review — the broker never got this order, or (Bracket exit) a position is sitting with no TP/SL. Release sends it; Cancel discards it."
+        />
+        <span class="held-count">{rows.length}</span>
+      {/snippet}
+      {#snippet right()}
+        <button type="button" class="held-release-all"
+                disabled={releasingAll}
+                onclick={releaseAll}>Release all</button>
+      {/snippet}
+    </CardHeader>
     {#each rows as row (row.id)}
       <div class="held-row">
         <span class="held-kind {kindClassOf(row)}">{kindOf(row)}</span>
@@ -158,11 +162,10 @@
     padding: 6px 8px;
     margin-bottom: 8px;
   }
-  .held-head { display: flex; align-items: center; gap: 6px; font-weight: 700; color: var(--c-action); }
-  .held-title { flex-shrink: 0; }
+  /* .held-head/.held-title retired — CardHeader now owns the title bar
+     (2026-10 CardHeader adoption sweep); push-right-of-Release-all comes
+     from CardHeader's own middle spacer instead of a local flex:1 rule. */
   .held-count {
-    flex: 1;
-    text-align: left;
     color: var(--algo-muted);
     font-weight: 400;
     font-size: var(--fs-sm);

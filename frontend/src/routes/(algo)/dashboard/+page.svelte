@@ -1889,63 +1889,68 @@
   <section class="bucket-card cap-eq-tabbed"
     class:fs-card-on={_fsNavBd || _fsCapital || _fsEquity}
     class:is-collapsed={_colNavBd && _colCapital && _colEquity}>
-    <div class="bucket-header">
-      <AlgoTabs
-        tabs={[
-          { id: 'nav',     label: 'P&L'     },
-          { id: 'capital', label: 'Capital' },
-          { id: 'equity',  label: 'Equity'  },
-        ]}
-        bind:value={_capEqTab}
-        compact={true}
-      />
-      <!-- Explicit `flex:1` spacer pushes the icon trio to the card's
-           right edge. -->
-      <span class="cap-eq-spacer"></span>
-      <!-- These three CardControls blocks live inline intentionally:
-           this header has no title — AlgoTabs IS the card identifier.
-           Wrapping in CardHeader would nest a header-bar inside a header-bar.
-           Svelte 5 also doesn't permit ternary expressions inside `bind:`,
-           so we split into per-tab instances to bind each tab's own
-           collapse + fullscreen state. -->
-      {#if _capEqTab === 'nav'}
-        <CardControls
-          bind:isCollapsed={_colNavBd}
-          bind:isFullscreen={_fsNavBd}
-          label="P&L"
-          onRefresh={_refreshAll}
-          bind:refreshLoading={_refreshing}
-          showSearch={false}
-          onDownload={() => _navBdRef?.downloadCsv?.()}
+    <!-- 2026-10 CardHeader adoption sweep — AlgoTabs still IS the card
+         identifier (no `title` prop), now carried in CardHeader's own
+         `middle` zone instead of a bespoke `.bucket-header` div, so this
+         card picks up the same shared shade every other migrated panel
+         gets. showControls=false because the per-tab control cluster
+         below still needs direct CardControls (Svelte 5 doesn't permit
+         ternary expressions inside `bind:`, so each tab binds its own
+         collapse/fullscreen state) — CardHeader's own single built-in
+         cluster can't express that, so the three CardControls blocks
+         move into the `right` snippet unchanged. -->
+    <CardHeader showControls={false}>
+      {#snippet middle()}
+        <AlgoTabs
+          tabs={[
+            { id: 'nav',     label: 'P&L'     },
+            { id: 'capital', label: 'Capital' },
+            { id: 'equity',  label: 'Equity'  },
+          ]}
+          bind:value={_capEqTab}
+          compact={true}
         />
-      {:else if _capEqTab === 'capital'}
-        <CardControls
-          bind:isCollapsed={_colCapital}
-          bind:isFullscreen={_fsCapital}
-          label="Capital"
-          onRefresh={_refreshAll}
-          bind:refreshLoading={_refreshing}
-          showSearch={false}
-          onDownload={() => {
-            _capMRef?.downloadCsv?.();
-            _capCRef?.downloadCsv?.();
-          }}
-        />
-      {:else}
-        <CardControls
-          bind:isCollapsed={_colEquity}
-          bind:isFullscreen={_fsEquity}
-          label="Equity"
-          onRefresh={_refreshAll}
-          bind:refreshLoading={_refreshing}
-          showSearch={false}
-          onDownload={() => {
-            _eqPRef?.downloadCsv?.();
-            _eqHRef?.downloadCsv?.();
-          }}
-        />
-      {/if}
-    </div>
+      {/snippet}
+      {#snippet right()}
+        {#if _capEqTab === 'nav'}
+          <CardControls
+            bind:isCollapsed={_colNavBd}
+            bind:isFullscreen={_fsNavBd}
+            label="P&L"
+            onRefresh={_refreshAll}
+            bind:refreshLoading={_refreshing}
+            showSearch={false}
+            onDownload={() => _navBdRef?.downloadCsv?.()}
+          />
+        {:else if _capEqTab === 'capital'}
+          <CardControls
+            bind:isCollapsed={_colCapital}
+            bind:isFullscreen={_fsCapital}
+            label="Capital"
+            onRefresh={_refreshAll}
+            bind:refreshLoading={_refreshing}
+            showSearch={false}
+            onDownload={() => {
+              _capMRef?.downloadCsv?.();
+              _capCRef?.downloadCsv?.();
+            }}
+          />
+        {:else}
+          <CardControls
+            bind:isCollapsed={_colEquity}
+            bind:isFullscreen={_fsEquity}
+            label="Equity"
+            onRefresh={_refreshAll}
+            bind:refreshLoading={_refreshing}
+            showSearch={false}
+            onDownload={() => {
+              _eqPRef?.downloadCsv?.();
+              _eqHRef?.downloadCsv?.();
+            }}
+          />
+        {/if}
+      {/snippet}
+    </CardHeader>
 
     <!-- NAV panel — mislabeled (see CORRECTION note above the tabbed
          card): renders NavBreakdown's default 'P' slot (Day/Lifetime/
@@ -2334,12 +2339,9 @@
        page (operator: "be consistent"). */
     padding: 0.65rem 0.75rem 0.7rem;
   }
-  .bucket-header {
-    display: flex;
-    align-items: center;
-    gap: 0.6rem;
-    margin-bottom: 0.5rem;
-  }
+  /* .bucket-header retired (2026-10 CardHeader adoption sweep) — the
+     NAV/Capital/Equity tabbed card's identity strip now renders via
+     <CardHeader>'s own `middle` zone; see the card markup above. */
   .bucket-subheader {
     font-family: var(--font-numeric);
     font-size: var(--fs-sm);
@@ -2351,23 +2353,11 @@
   }
   .bucket-subheader-spaced { margin-top: 0.7rem; }
 
-  /* AccountMultiSelect (.ams) is LEFT-aligned in the bucket header,
-     sitting right after the tabs / label. The card-control trio gets
-     pushed right via the explicit `.cap-eq-spacer` below.
-     Was: margin-left:auto on .ams (right-aligned next to the icon
-     cluster) — moved per operator feedback so the picker reads as
-     part of the card's identity strip, not part of the controls. */
-  .bucket-header > :global(.ams) { margin-left: 0; }
-
-  /* Flex spacer between the AccountMultiSelect and the trailing
-     control trio (Refresh? + Collapse + DefaultSize + Fullscreen).
-     The trio's individual `margin: 0 0 0 auto` rules each push
-     right; with two buttons carrying auto-margins the free space
-     splits between them and the trio drifts mid-row. An explicit
-     `flex: 1` spacer collapses the auto-margin behaviour into a
-     single rightward push and guarantees the trio sits at the
-     card's right edge. Zero visible width — pure layout glue. */
-  .cap-eq-spacer { flex: 1 1 0; }
+  /* .ams override + .cap-eq-spacer retired alongside .bucket-header
+     above (2026-10 CardHeader adoption sweep) — both were already
+     dead (no <AccountMultiSelect> renders in this card any more;
+     CardHeader's own middle/right zones provide the push-right
+     layout natively, no explicit spacer element needed). */
 
   /* Inline count chip used inside Equity sub-headings (Positions
      and Holdings). Small muted pill — at-a-glance "how many", not
