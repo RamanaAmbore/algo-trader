@@ -268,8 +268,11 @@ test.describe('CardHeader — unified card header component', () => {
     const headerDark = await page.locator('.card-header .ch-title').first();
     if (await headerDark.isVisible()) {
       const darkColor = await headerDark.evaluate(el => getComputedStyle(el).color);
-      // Algo dark should use amber for titles
-      // rgb(251, 191, 36) = #fbbf24 (amber)
+      // 2026-10-13 (CardHeader sweep round 3, Part A) — algo dark now
+      // defaults to white (--algo-slate, rgb(255,255,255)), not amber;
+      // the old amber default collided with AlgoTabs' own default
+      // untagged-tab color. See cardheader_sweep_round3.spec.js for the
+      // asserted check.
       console.log(`[INFO] Algo dark theme title color: ${darkColor}`);
     }
 

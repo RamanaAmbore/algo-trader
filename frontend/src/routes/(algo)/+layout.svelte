@@ -2815,7 +2815,19 @@
     --ch-title-font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     --ch-title-size: 0.6rem;
     --ch-title-weight: 700;
-    --ch-title-color: var(--c-action);
+    /* 2026-10-13 (CardHeader sweep round 3, Part A) — was var(--c-action)
+       (amber), which collided with AlgoTabs' own default untagged-tab
+       color (`tab.color ?? 'amber'` in AlgoTabs.svelte), making a plain
+       CardHeader title read as "just another tab." Switched to
+       --algo-slate (white), matching MarketPulse's own .mp-bucket-label
+       neutral default. This body-level declaration is what every
+       CardHeader in the algo app actually resolves against — a custom
+       property declared here always wins over CardHeader.svelte's own
+       internal var() fallback (same ancestor-wins rule as the
+       --card-divider note just above), so CardHeader.svelte's fallback
+       was changed to the same value in the same commit for consistency,
+       but updating ONLY that file would have been dead code here. */
+    --ch-title-color: var(--algo-slate);
     --ch-title-letter-spacing: 0.04em;
     --ch-title-transform: uppercase;
     --ch-ts-size: 0.65rem;

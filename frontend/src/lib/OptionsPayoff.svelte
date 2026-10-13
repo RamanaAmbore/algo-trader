@@ -876,7 +876,7 @@
   );
 </script>
 
-<div class="payoff-chart" style="--chart-h: {height}px">
+<div class="payoff-chart algo-chart-frame" style="--chart-h: {height}px">
   {#if (legCount ?? 0) === 0 && !payoff.length}
     <!-- No legs selected — chart has nothing to plot. Tell the
          operator instead of leaving a stale "Resolving spot…" message
@@ -1602,13 +1602,12 @@
     /* REVERTED (2026-09-30, same day, explicit operator request) — was
        briefly switched to --chain-depth-bg to match Chain/Depth/price
        chart; back to the plain canonical card surface every other
-       generic card uses. */
-    background: var(--card-bg-gradient);
-    border: 1px solid rgba(251,191,36,0.18);
-    border-radius: 4px;
+       generic card uses. background/border/border-radius/box-sizing now
+       live in the shared `.algo-chart-frame` class (app.css, 2026-10
+       CardHeader sweep round 3, Part C) — this component just adds its
+       own padding/width/position on top. */
     padding: 6px 8px 8px;
     width: 100%;
-    box-sizing: border-box;
     position: relative;
   }
   /* Stack container for the two SVG layers. Both SVGs use

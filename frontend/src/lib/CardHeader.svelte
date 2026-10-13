@@ -23,7 +23,7 @@
     --ch-title-font-family   font family for the title span      (default: inherit)
     --ch-title-size          font-size for the title span        (default: var(--fs-sm, 0.6rem))
     --ch-title-weight        font-weight for the title span      (default: 700)
-    --ch-title-color         color for the title span            (default: var(--c-action, #fbbf24))
+    --ch-title-color         color for the title span            (default: var(--algo-slate, #ffffff))
     --ch-title-letter-spacing letter-spacing for the title span  (default: 0.04em)
     --ch-title-transform     text-transform for the title span   (default: uppercase)
     --ch-ts-size             font-size for the timestamp span    (default: var(--fs-md, 0.65rem))
@@ -176,10 +176,31 @@
     font-family: var(--ch-title-font-family, inherit);
     font-size: var(--ch-title-size, var(--fs-sm, 0.6rem));
     font-weight: var(--ch-title-weight, 700);
-    color: var(--ch-title-color, var(--c-action, #fbbf24));
+    color: var(--ch-title-color, var(--algo-slate, #ffffff));
     letter-spacing: var(--ch-title-letter-spacing, 0.04em);
     text-transform: var(--ch-title-transform, uppercase);
     white-space: nowrap;
+    /* 2026-10-13 (CardHeader sweep round 3, Part A) — border-left +
+       left gap match MarketPulse's own `.mp-bucket-label` reference
+       pattern (border-left: 3px solid currentColor; padding: …
+       0.35rem), so a plain CardHeader title reads as a LABEL, not a
+       clickable tab — it used to sit flush against `.ch-left`'s edge
+       with no border at all. `currentColor` means the bar always
+       tracks whatever color is active (this neutral default, or a
+       per-panel --ch-title-color override) with no second color to
+       keep in sync. Default fallback changed from --c-action (amber)
+       to --algo-slate (white) in the same fix: amber collided with
+       AlgoTabs' own default untagged-tab color (`tab.color ?? 'amber'`
+       in AlgoTabs.svelte), making a plain header title visually read
+       as "just another tab." This component-level fallback alone was
+       dead code for every algo-app CardHeader — (algo)/+layout.svelte's
+       own body-level --ch-title-color override was ALSO amber and had
+       to be changed in the same commit, since a body-level custom
+       property always wins over this one's var() fallback. The public
+       layout's `.pub-viewport` override (navy, #1a2744) already wins
+       over both and is unaffected either way. */
+    border-left: 3px solid currentColor;
+    padding-left: 0.35rem;
   }
   .ch-ts {
     font-size: var(--ch-ts-size, var(--fs-md, 0.65rem));

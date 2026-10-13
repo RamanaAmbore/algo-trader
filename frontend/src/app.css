@@ -1657,6 +1657,23 @@
   font-weight: 600;
 }
 
+/* ── Canonical chart-frame border — shared by every hand-rolled SVG chart
+   wrapper (2026-10, CardHeader sweep round 3, Part C). OptionsPayoff's
+   .payoff-chart and PriceChart's .price-chart independently duplicated
+   this exact literal (`border: 1px solid rgba(251,191,36,0.18); border-
+   radius: 4px;`) — extracted once here so a future palette tweak lands
+   in one place. Padding is intentionally OMITTED — each chart's internal
+   spacing differs, so padding stays a per-component rule layered on top
+   via `class="xyz-chart algo-chart-frame"`. Component-specific accents
+   (e.g. PriceChart's own `border-left: 3px solid var(--c-action)`) also
+   stay local — only the plain border/background/radius are shared. */
+.algo-chart-frame {
+  background: var(--card-bg-gradient);
+  border: 1px solid rgba(251, 191, 36, 0.18);
+  border-radius: 4px;
+  box-sizing: border-box;
+}
+
 /* ── Per-account identity stripe (ag-col-acct) ────────────────────────────
    Default: no stripe. Real accounts get one via the .ag-theme-algo rule
    below; this bare rule is the base reset every non-wired cell falls back

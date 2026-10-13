@@ -421,7 +421,7 @@
   });
 </script>
 
-<div class="price-chart {_pulse.classOf('chart')}" style="--chart-h: {height}px">
+<div class="price-chart algo-chart-frame {_pulse.classOf('chart')}" style="--chart-h: {height}px">
   <div class="chart-header">
     <span class="chart-symbol">{symbol || '—'}</span>
     {#if kind === 'underlying'}
@@ -621,10 +621,13 @@
 
 <style>
   .price-chart {
-    background: var(--card-bg-gradient);
-    border: 1px solid rgba(251,191,36,0.18);
+    /* background/border/border-radius/box-sizing now live in the shared
+       `.algo-chart-frame` class (app.css, 2026-10 CardHeader sweep round 3,
+       Part C). The `border-left` accent stays local — it's specific to
+       this component (not part of the shared frame) and its higher
+       specificity (scoped selector) reliably wins over the plain class
+       rule's own `border` shorthand. */
     border-left: 3px solid var(--c-action);
-    border-radius: 4px;
     padding: 8px 12px 6px;
     width: 100%;
     /* Cap chart width on desktop so the viewBox (720×height) doesn't
@@ -634,7 +637,6 @@
        1920+ widths and matches the natural aspect of a 720-unit
        viewBox at ~180px tall. */
     max-width: 960px;
-    box-sizing: border-box;
   }
   .chart-header {
     display: flex;

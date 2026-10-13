@@ -917,8 +917,15 @@
   // ── Equity chart SVG constants ─────────────────────────────────────
   const CHART_W = 600;
   const CHART_H = 220;
-  const PAD_L = 8;
-  const PAD_R = 52;
+  // Y-axis labels moved to the left (2026-10 CardHeader sweep round 3,
+  // Part C) to match NavTab's own convention (`_pad.l - 8`, text-anchor
+  // "end") — same tabbed card, different tab, previously the only one
+  // with its scale on the right with no stated reason. Swapping the two
+  // constants (rather than just moving the label's x=) keeps INNER_W
+  // identical (600 - 52 - 8 === 600 - 8 - 52) so the plot area's width
+  // doesn't shift; only which side carries the margin changes.
+  const PAD_L = 52;
+  const PAD_R = 8;
   const PAD_T = 12;
   const PAD_B = 28;
   const INNER_W = CHART_W - PAD_L - PAD_R;
@@ -1644,7 +1651,7 @@
       bind:isCollapsed={_colEquityCurve}
       bind:isFullscreen={_fsEquityCurve}
       label="Chart"
-      title="Performance"
+      title="Chart"
       onRefresh={_refreshAll}
       bind:refreshLoading={_refreshing}
       showSearch={false}
@@ -1667,12 +1674,24 @@
       {/snippet}
     </CardHeader>
 
+    <!-- Shared chart frame — ONE border/background wrapper around all
+         three tabs (NAV/Intraday/Performance), per the Payoff-chart look
+         (2026-10 CardHeader sweep round 3, Part C). This MUST stay a
+         single always-mounted element, not a per-tab wrapper — NavTab.svelte
+         (lines ~280-288) documents the exact "border jumps when switching
+         tabs" bug that resulted from each tab owning its own chrome;
+         giving all three the SAME parent element removes that failure
+         mode structurally (same DOM node, same CSS box, regardless of
+         which child is visible). Collapse-hiding lives HERE (not on the
+         inner panels below) so a collapsed card doesn't leave an empty
+         bordered box under the header. -->
+    <div class="dash-chart-frame algo-chart-frame" hidden={_colEquityCurve}>
     <!-- NAV panel — firm NAV history curve (NavTab). Default tab.
          Polls /api/nav/history?days=90 on a market-aware interval;
          renders the hand-rolled amber SVG line. Lives ABOVE the
          Intraday + Performance panels so the operator's first glance
          on the chart card is the firm's net-liq trajectory. -->
-    <div class="card-body" hidden={_chartTab !== 'nav' || _colEquityCurve}>
+    <div class="card-body" hidden={_chartTab !== 'nav'}>
       {#if _navFetchError}
         <!-- Chip-fetch error strip — shown when GET /api/auth/firm-nav
              (the live NAV chip fetch, polled every 60s) fails. Small
@@ -1692,7 +1711,7 @@
     </div>
 
     <!-- Intraday panel — SVG curve of today's cum P&L. -->
-    <div class="card-body" hidden={_chartTab !== 'intraday' || _colEquityCurve}>
+    <div class="card-body" hidden={_chartTab !== 'intraday'}>
     {#if !_equityPoints.length}
       <div class="eq-empty">
         No data yet — markets open at 09:15 IST
@@ -1799,13 +1818,15 @@
           {/if}
         {/each}
 
-        <!-- Y-axis labels (right) -->
+        <!-- Y-axis labels (left) — matches NavTab's own convention
+             (`_pad.l - 8`, text-anchor="end") on the sibling NAV tab of
+             this same tabbed card. See PAD_L/PAD_R comment above. -->
         {#each _eqYLabels as lbl}
           <text
-            x={PAD_L + INNER_W + 4} y={parseFloat(lbl.y) + 3.5}
-            transform="rotate(-45 {PAD_L + INNER_W + 4} {parseFloat(lbl.y) + 3.5})"
+            x={PAD_L - 8} y={parseFloat(lbl.y) + 3.5}
+            transform="rotate(-45 {PAD_L - 8} {parseFloat(lbl.y) + 3.5})"
             font-size="11" font-weight="600" fill="#ffffff" style="font-family: var(--font-numeric)"
-            text-anchor="start">{lbl.label}</text>
+            text-anchor="end">{lbl.label}</text>
         {/each}
 
         <!-- X-axis text labels intentionally removed — dashboard chart
@@ -1850,9 +1871,10 @@
          PnlAnalysis which owns its own filters, summary, and chart.
          hasData flows back so the parent can auto-collapse this card
          when both Intraday + Performance are empty. -->
-    <div class="card-body" hidden={_chartTab !== 'performance' || _colEquityCurve}>
+    <div class="card-body" hidden={_chartTab !== 'performance'}>
       <PnlAnalysis bind:hasData={_pnlHasData} />
     </div>
+    </div><!-- /dash-chart-frame -->
   </section>
 
   <!-- RIGHT: P&L | Capital | Equity tabbed card (operator-requested
@@ -2136,6 +2158,28 @@
      the same gradient, border, radius, shadow + the amber 3px left
      accent that every other card now uses). Only the local class is
      kept for `.row1-col-chart .card-body` positioning below. */
+  /* .dash-chart-frame (Part C, 2026-10 CardHeader sweep round 3) sits
+     between .row1-col-chart's .bucket-card and its three .card-body
+     tab panels — it carries the shared .algo-chart-frame border/
+     background and must itself participate in the card's flex column
+     so the generic `.dash-row1-split > .bucket-card > .card-body` rule
+     above (still correct for the RIGHT card's own direct .card-body
+     children) is supplemented here rather than replaced. [hidden] is
+     overridden explicitly because `display: flex` on this element would
+     otherwise beat the UA default `[hidden] { display: none }` rule. */
+  .dash-row1-split > .bucket-card > .dash-chart-frame {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .dash-chart-frame[hidden] {
+    display: none;
+  }
+  .dash-row1-split > .bucket-card > .dash-chart-frame > .card-body {
+    flex: 1 1 auto;
+    min-height: 0;
+  }
   /* Tabbed NAV | Capital | Equity card — tab buttons now rendered by
      AlgoTabs (global .algo-tab rules in app.css). */
   .cap-eq-tabbed { display: flex; flex-direction: column; }
@@ -2240,11 +2284,13 @@
     min-height: 320px;
   }
   /* Stat overlay magnifies in step with the chart so the P&L numerics
-     stay readable at viewport size. */
+     stay readable at viewport size. `left` keeps the same `calc(8.7% + ...)`
+     offset as the non-fullscreen rule below — see that rule's comment
+     for the derivation; only the rem term scales up for fullscreen. */
   .fs-card-on .eq-stats {
     gap: 1.4rem;
     top: 0.6rem;
-    left: 0.7rem;
+    left: calc(8.7% + 0.7rem);
   }
   .fs-card-on .eq-stat-k { font-size: var(--fs-lg); margin-bottom: 0.32rem; }
   .fs-card-on .eq-stat-v { font-size: var(--fs-2xl); }
@@ -2260,11 +2306,18 @@
      vs NIFTY) anchored top-left inside the chart card body. Same
      pointer-events:none HTML overlay pattern OptionsPayoff uses;
      never blocks SVG hover / zoom. Replaces the retired top-of-page
-     `.hero-row` chips. */
+     `.hero-row` chips.
+     `left` offset (2026-10, Part C Y-axis-side fix): the Y-axis labels
+     moved from the right edge to the left (PAD_L=52 of CHART_W=600 —
+     52/600 = 8.67%, rounded). A plain `left: 0.4rem` would now sit the
+     stat overlay directly on top of the rotated Y-tick labels. Same fix,
+     same formula NavTab already applied to its own chip overlay for the
+     identical collision (NavTab.svelte ~line 394: `calc(7.9% + 0.4rem)`,
+     pad.l=60/760). */
   .eq-stats {
     position: absolute;
     top: 0.3rem;
-    left: 0.4rem;
+    left: calc(8.7% + 0.4rem);
     display: flex;
     gap: 0.65rem;
     font-family: var(--font-numeric);
