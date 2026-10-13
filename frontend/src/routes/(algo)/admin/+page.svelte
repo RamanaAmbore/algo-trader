@@ -6,6 +6,7 @@
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import DisclosureChevron from '$lib/DisclosureChevron.svelte';
+  import CardHeader from '$lib/CardHeader.svelte';
   import {
     fetchUsers, approveUser, rejectUser, updateUser, createUser,
     suspendUser, reinstateUser, terminateUser, toggleDesignated, adminResetPassword,
@@ -959,16 +960,17 @@
 <!-- ── Email Partners panel ─────────────────────────────────────────── -->
 <section class="email-panel algo-card mt-3" data-status="inactive">
   <!-- Header -->
-  <div class="flex items-center justify-between mb-1 gap-2 flex-wrap">
-    <h2 class="algo-card-title mb-0">Email Partners</h2>
-    <button
-      onclick={() => { showEmailHistory = !showEmailHistory; if (showEmailHistory) loadEmailEvents(); }}
-      class="text-[0.62rem] text-[#7dd3fc] hover:text-[#bae6fd] font-mono flex items-center gap-1 transition-colors">
-      {showEmailHistory ? 'hide history' : 'show history'}
-      <DisclosureChevron open={showEmailHistory} />
-    </button>
-  </div>
-  <div class="border-b border-[rgba(251,191,36,0.25)] mb-3"></div>
+  <CardHeader title="Email Partners" showControls={false} detectOverflow={false}>
+    {#snippet right()}
+      <button
+        onclick={() => { showEmailHistory = !showEmailHistory; if (showEmailHistory) loadEmailEvents(); }}
+        class="text-[0.62rem] text-[#7dd3fc] hover:text-[#bae6fd] font-mono flex items-center gap-1 transition-colors">
+        {showEmailHistory ? 'hide history' : 'show history'}
+        <DisclosureChevron open={showEmailHistory} />
+      </button>
+    {/snippet}
+  </CardHeader>
+  <div class="mb-3"></div>
 
   <!-- History panel -->
   {#if showEmailHistory}

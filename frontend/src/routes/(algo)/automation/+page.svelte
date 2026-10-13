@@ -982,9 +982,16 @@
   .algo-status-card {
     background: linear-gradient(180deg, #0f1729 0%, #0a1020 100%);
     /* 0.10 (matching agent-templates' .frag-row) read as near-invisible
-       against this dark gradient — bumped to --card-divider's 0.20 so
-       each row's edge is actually perceptible while staying subtle. */
-    border: 1px solid var(--card-divider);
+       against this dark gradient — originally bumped to --card-divider's
+       pre-2026-10-13-round-2 value (0.20) so each row's edge is actually
+       perceptible while staying subtle. Pinned to that literal 0.20 value
+       directly (rather than `var(--card-divider)`, now 0.40 after the
+       round-2 CardHeader-contrast bump) so this row chrome keeps the
+       exact subtlety it was tuned for — do NOT repoint this back to
+       var(--card-divider), that would make every agent row's edge nearly
+       as strong as the kind-count-card borders above, which isn't the
+       look this was tuned for. */
+    border: 1px solid rgba(126, 151, 184, 0.20);
     border-radius: 0.3rem;
     overflow: hidden;
     transition: border-color 0.08s;
@@ -1005,7 +1012,12 @@
      matching the decoration level of OrderBook.svelte's
      .ob-sc[data-status] chips. */
   .algo-status-card[data-status="active"]    { border-left: 3px solid var(--algo-green-border); }
-  .algo-status-card[data-status="inactive"]  { border-left: 3px solid var(--card-divider); }
+  /* Pinned to the same 0.20 literal as .algo-status-card's own base
+     border above (not var(--card-divider), now 0.40 post-round-2) —
+     "inactive" is meant to read as "same neutral edge color as the rest
+     of the card, just a touch thicker," not a visibly different shade
+     on the left edge only. */
+  .algo-status-card[data-status="inactive"]  { border-left: 3px solid rgba(126, 151, 184, 0.20); }
   .algo-status-card[data-status="running"]   { border-left: 3px solid var(--algo-amber-border); }
   .algo-status-card[data-status="cooldown"]  { border-left: 3px solid var(--algo-amber-border-soft); }
   .algo-status-card[data-status="triggered"],

@@ -3290,7 +3290,34 @@ button:not(:disabled):active,
   /* Card shell */
   --card-bg:                  var(--card-bg-gradient);
   --card-border:              rgba(255, 255, 255, 0.08);
-  --card-divider:             rgba(126, 151, 184, 0.20);
+  /* 2026-10-13 (CardHeader sweep round 2, item 1) — bumped 0.20 → 0.40.
+     Original plan assumption was "the line is subtle on non-grid
+     panels" — direct measurement found it was worse than subtle: it
+     never rendered at all (`border-bottom-width: 0px`), on ANY
+     CardHeader, since the shared-border mechanism was introduced
+     (2026-10-12). Root cause: `(algo)/+layout.svelte`'s `:global(body)
+     { --ch-border-bottom: 1px solid var(--card-divider); }` sits at
+     body, and --card-divider is declared only here, on a DIV that is a
+     CHILD of body — custom properties fully substitute their own
+     var() references at their OWN declaration site, so body could
+     never see this token and the whole declaration was invalid at
+     computed-value time for every descendant. Fixed by ALSO declaring
+     --card-divider directly in that `:global(body)` block (same
+     literal, see that file's own comment) — this app.css declaration
+     remains the canonical definition for every other direct consumer
+     (NavCard, automation's kind-card/status-card borders) and for
+     `.card-theme-cream`'s own light-theme equivalent.
+     0.40 matches the existing ag-theme-algo inset-border alpha this file
+     already uses for the same blue-grey triple (see the
+     `.ltp-vs-prev-*`/`box-shadow: inset ... rgba(126,151,184,0.40)` rules
+     below) — makes the header border read consistently everywhere instead
+     of only where grid chrome happens to reinforce it.
+     One deliberate consumer override exists: automation/+page.svelte's
+     `.algo-status-card` pins its OWN border to the pre-bump 0.20 literal
+     (see that file's comment) because it was explicitly tuned to read as
+     subtle against the row's gradient background — do not "fix" that by
+     changing it back to var(--card-divider). */
+  --card-divider:             rgba(126, 151, 184, 0.40);
 
   /* Text */
   --card-cell-text:           #e2e8f0;   /* slate-200 */

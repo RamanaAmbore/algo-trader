@@ -175,6 +175,30 @@ test.describe('[STALE] source-scan — /admin/alerts route fully removed', () =>
     const defaultTabsLiteral = defaultTabsMatch[1];
     expect(defaultTabsLiteral, "LogPanel's default tabs array must include 'alerts'").toContain("'alerts'");
   });
+
+  test('_canViewAlerts reads $userCaps/$userRole directly — no $state+$effect bridge (Finding #3, round 2)', () => {
+    // Prior to the 2026-10-13 round-2 fix, `_canViewAlerts` bridged the
+    // shared $userCaps/$userRole stores through an intermediate
+    // $state+$effect pair that started at the wrong initial value
+    // ([] / 'partner') and only corrected one render tick later — the
+    // exact anti-pattern CLAUDE.md's "Reactive safety" section warns
+    // against for any $derived touching a legacy store. This is a
+    // source-level guard (not a DOM/behavioral one) because the one-tick
+    // gap itself is not reliably observable via black-box Playwright once
+    // $userCaps/$userRole have already resolved for the session — see the
+    // "Fresh-mount remount guard" describe block above for the measured
+    // reasoning. Confirmed to fail against the pre-fix source (temporarily
+    // restored the old bridge locally, re-ran this test, saw it fail,
+    // reverted) before landing this assertion.
+    const logPanelPath = path.resolve(__dirname, '..', 'src', 'lib', 'LogPanel.svelte');
+    const src = fs.readFileSync(logPanelPath, 'utf8');
+    expect(src, '_canViewAlerts must read $userCaps/$userRole directly inside its own $derived')
+      .toMatch(/const _canViewAlerts = \$derived\(hasCap\('view_audit',\s*\$userCaps,\s*\$userRole\)\)/);
+    expect(src, 'the intermediate _alertsCaps $state bridge must not be reintroduced')
+      .not.toContain('_alertsCaps');
+    expect(src, 'the intermediate _alertsRole $state bridge must not be reintroduced')
+      .not.toContain('_alertsRole');
+  });
 });
 
 // ── Tab-set consistency across every real embedding site ──────────────────
@@ -329,6 +353,82 @@ test.describe('Contextual default-active tab — modal opened from different lau
     await expect(modal).toBeVisible({ timeout: 10_000 });
     const reopenedActiveTab = modal.getByRole('tab', { selected: true });
     await expect(reopenedActiveTab, 'remembered tab persists across a generic (no-hint) re-open').toHaveText('Conn');
+  });
+});
+
+// ── Fresh-mount remount guard (Finding #3, round 2, 2026-10-13) ───────────
+// `_canViewAlerts` (LogPanel.svelte) used to bridge the shared
+// $userCaps/$userRole stores through an intermediate $state+$effect pair
+// that started at the wrong initial value ([] / 'partner') and only
+// corrected one render tick later — the exact anti-pattern CLAUDE.md's
+// "Reactive safety" section warns against for any $derived touching a
+// legacy store. Fixed by reading $userCaps/$userRole directly inside the
+// $derived (no intermediate $state) — see LogPanel.svelte's own comment
+// above `_canViewAlerts` for the full writeup.
+//
+// IMPORTANT, measured empirically while writing this test: this specific
+// one-tick gap is NOT independently observable via black-box Playwright
+// once $userCaps/$userRole have already resolved for the session — this
+// test (run against BOTH the old bridge and the new direct-read code,
+// manually, to confirm) passes identically either way once /whoami has
+// settled, because Svelte flushes the correcting $effect before anything
+// can read the stale intermediate frame. This test is therefore a
+// behavioral guard that Alerts stays present AND selected across repeated
+// fresh remounts (never regresses), NOT a red/green discriminator between
+// the old bridge and the fix — see the `[STALE]` source-scan block below
+// for the actual red/green proof that the bridge pattern is gone.
+test.describe('Fresh-mount remount guard — Alerts tab stays present and selected', () => {
+  test.setTimeout(90_000);
+
+  test('reopening a FRESH ActivityLogModal with Alerts as the remembered tab keeps Alerts selected, every time, 3 reopens in a row', async ({ page }) => {
+    await loginAsAdmin(page); // rambo — admin role, holds view_audit
+    // /pulse's PageHeaderActions carries no `logTabHint` override (unlike
+    // /orders → "order", which forces the Orders tab on EVERY open by
+    // design — see PageHeaderActions.svelte / stores.js:openActivityModal
+    // — or /admin/derivatives → "agent"), so its "Open Activity" button
+    // always calls openActivityModal() with no arg — a generic open that
+    // preserves whatever tab is already remembered in activityStore,
+    // instead of forcing a specific one on every click. Using /orders
+    // here would make this test assert the wrong thing (every reopen
+    // would correctly land on "Orders", not "Alerts", regardless of the
+    // fix).
+    await page.goto('/pulse', { waitUntil: 'domcontentloaded' });
+
+    // Seed the remembered tab to 'alerts' once via a real open → click →
+    // close cycle, matching how an operator would actually land here.
+    // From this point on, every open passes defaultTab='alerts' into a
+    // brand-new LogPanel instance (ActivityLogModal fully unmounts on
+    // close, confirmed via ActivityLogModal.svelte).
+    await page.getByRole('button', { name: 'Open Activity' }).click();
+    let modal = page.locator('[role="dialog"][aria-label="Activity log"]');
+    await expect(modal).toBeVisible({ timeout: 10_000 });
+    await modal.getByRole('tab', { name: 'Alerts', exact: true }).click();
+    await expect(modal.getByRole('tab', { name: 'Alerts', exact: true, selected: true })).toBeVisible({ timeout: 5_000 });
+    await page.keyboard.press('Escape');
+    await expect(modal).toBeHidden({ timeout: 5_000 });
+
+    // Repeat open/close 3 times — every single fresh mount must land on
+    // Alerts, both present AND still the SELECTED tab. LogPanel's own
+    // force-flip effect (fallback to 'agent' when !_canViewAlerts) is
+    // one-way and never self-heals once triggered, so if a regression
+    // ever reintroduces a real resolution lag, a flipped tab stays
+    // flipped for that mount's whole life rather than recovering a
+    // moment later — Playwright's own retrying `expect` cannot mask
+    // that kind of permanent-not-transient failure.
+    for (let i = 0; i < 3; i++) {
+      await page.getByRole('button', { name: 'Open Activity' }).click();
+      modal = page.locator('[role="dialog"][aria-label="Activity log"]');
+      await expect(modal, `reopen #${i + 1}: modal visible`).toBeVisible({ timeout: 10_000 });
+
+      const alertsTab = modal.getByRole('tab', { name: 'Alerts', exact: true });
+      await expect(alertsTab, `reopen #${i + 1}: Alerts tab present`).toBeVisible({ timeout: 10_000 });
+
+      const activeTab = modal.getByRole('tab', { selected: true });
+      await expect(activeTab, `reopen #${i + 1}: Alerts stays the SELECTED tab (not force-flipped to Agents)`).toHaveText('Alerts', { timeout: 5_000 });
+
+      await page.keyboard.press('Escape');
+      await expect(modal, `reopen #${i + 1}: modal closes`).toBeHidden({ timeout: 5_000 });
+    }
   });
 });
 

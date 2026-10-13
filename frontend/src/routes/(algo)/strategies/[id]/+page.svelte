@@ -27,6 +27,7 @@
   import { userRole, userCaps, hasCap } from '$lib/rbac';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
+  import CardHeader from '$lib/CardHeader.svelte';
 
   // SvelteKit's typed router only declared `slug?:` for this folder
   // (the existing /strategies tile carries slugs in some link forms).
@@ -149,17 +150,19 @@
 {#if strat}
   <!-- Header card. Stats grid + active toggle. -->
   <section class="strat-detail-head">
-    <div class="strat-head-title-row">
-      <h2 class="strat-head-name">{strat?.name}</h2>
-      <span class={strat?.is_active ? 'pill-active' : 'pill-inactive'}>
-        {strat?.is_active ? 'active' : 'paused'}
-      </span>
-      {#if canEdit}
-        <button class="btn-secondary btn-sm" onclick={toggleActive}>
-          {strat?.is_active ? 'Pause' : 'Activate'}
-        </button>
-      {/if}
-    </div>
+    <CardHeader showControls={false} detectOverflow={false}>
+      {#snippet left()}
+        <h2 class="strat-head-name">{strat?.name}</h2>
+        <span class={strat?.is_active ? 'pill-active' : 'pill-inactive'}>
+          {strat?.is_active ? 'active' : 'paused'}
+        </span>
+        {#if canEdit}
+          <button class="btn-secondary btn-sm" onclick={toggleActive}>
+            {strat?.is_active ? 'Pause' : 'Activate'}
+          </button>
+        {/if}
+      {/snippet}
+    </CardHeader>
     {#if strat?.description}
       <p class="strat-head-desc">{strat?.description}</p>
     {/if}
@@ -201,13 +204,14 @@
 
   <!-- Lot ledger -->
   <section class="strat-detail-lots">
-    <div class="strat-section-head">
-      <h2 class="section-heading">Lot ledger</h2>
-      <label class="show-closed">
-        <input type="checkbox" bind:checked={showClosed} onchange={load} />
-        Show closed
-      </label>
-    </div>
+    <CardHeader title="Lot ledger" showControls={false} detectOverflow={false}>
+      {#snippet right()}
+        <label class="show-closed">
+          <input type="checkbox" bind:checked={showClosed} onchange={load} />
+          Show closed
+        </label>
+      {/snippet}
+    </CardHeader>
     <div class="strat-table-wrap algo-grid-chrome">
       <table class="algo-table strat-table">
         <thead>
@@ -464,7 +468,11 @@
     padding: 0.9rem 1.1rem;
     margin-bottom: 0.9rem;
   }
-  .strat-head-title-row { display: flex; align-items: center; gap: 0.7rem; }
+  /* .strat-head-title-row retired (2026-10 CardHeader adoption sweep,
+     round 2) — title/pill/toggle now render via <CardHeader>'s left
+     snippet, preserving their original left-grouped (not space-between)
+     layout; the toggle button stays adjacent to the pill, not pushed
+     to the row's far right. */
   .strat-head-name {
     margin: 0; font-size: var(--fs-xl); font-weight: 800; color: var(--c-action);
   }
@@ -500,6 +508,13 @@
     display: flex; align-items: center; justify-content: space-between;
     margin-bottom: 0.5rem;
   }
+  /* Lot ledger's own header now renders via <CardHeader> (2026-10
+     CardHeader adoption sweep, round 2) — this replaces the
+     .strat-section-head margin-bottom for that one section only;
+     Risk-adjusted metrics / P&L curve below still use the bare
+     .strat-section-head + .section-heading pattern unchanged (no
+     control in their header row — just read-only meta text). */
+  .strat-detail-lots :global(.card-header) { margin-bottom: 0.5rem; }
   /* Canonical .algo-card-title palette + typography — operator: "GREEKS
      is good, make every header uniform". Was: fs-md / 800 / slate-muted
      which drifted from every other card heading on the page. */

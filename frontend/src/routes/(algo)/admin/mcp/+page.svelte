@@ -34,6 +34,7 @@
   import ConfirmModal from '$lib/ConfirmModal.svelte';
   import LoadingSkeleton from '$lib/LoadingSkeleton.svelte';
   import EmptyState from '$lib/EmptyState.svelte';
+  import CardHeader from '$lib/CardHeader.svelte';
 
   /** @type {any[]} */
   let threads     = $state([]);
@@ -575,19 +576,19 @@
           icon="search"
         />
       {:else}
-        <header class="thr-head">
-          <div class="thr-head-l">
+        <CardHeader showControls={false} detectOverflow={false}>
+          {#snippet left()}
             <span class="thr-sym">{selected.symbol}</span>
             <span class="pill {_confColor(selected.confidence)}">{selected.confidence}</span>
             <span class="thr-title">{selected.title}</span>
-          </div>
-          <div class="thr-head-r">
+          {/snippet}
+          {#snippet right()}
             <span class="thr-time">{_fmtDate(selected.updated_at)}</span>
             <button class="thr-del" type="button"
                     onclick={() => removeThread(selected.id)}
                     aria-label="Delete thread">✕</button>
-          </div>
-        </header>
+          {/snippet}
+        </CardHeader>
 
         {#if selected.thesis_text}
           <article class="thr-thesis">
@@ -1101,6 +1102,8 @@
     padding: 0.8rem;
     min-height: 50vh;
   }
+  /* Replaces the retired .thr-head's own margin-bottom: 0.7rem. */
+  .lab-main :global(.card-header) { margin-bottom: 0.7rem; }
   .lab-empty {
     display: flex;
     flex-direction: column;
@@ -1124,16 +1127,14 @@
   }
 
   /* ── Thread header ────────────────────────────────────────────── */
-  .thr-head {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding-bottom: 0.5rem;
-    border-bottom: 1px solid rgba(126, 151, 184, 0.18);
-    margin-bottom: 0.7rem;
-  }
-  .thr-head-l { display: flex; align-items: center; gap: 0.5rem; }
-  .thr-head-r { display: flex; align-items: center; gap: 0.6rem; }
+  /* .thr-head/.thr-head-l/.thr-head-r retired (2026-10 CardHeader
+     adoption sweep, round 2) — the row layout + bottom divider are now
+     owned by <CardHeader> itself; the thread's own symbol/pill/title
+     and time/delete controls render through its left/right snippets,
+     unchanged. `title` was left unset (omitted) rather than passed to
+     CardHeader's own title prop — .thr-title's free-text research-
+     thread content needs its own slate/fs-lg styling, not CardHeader's
+     amber/uppercase/bold default meant for short fixed labels. */
   .thr-sym {
     font-family: var(--font-numeric);
     font-weight: 700;

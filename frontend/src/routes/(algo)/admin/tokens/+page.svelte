@@ -21,6 +21,7 @@
   import ConfirmModal from '$lib/ConfirmModal.svelte';
   import LoadingSkeleton from '$lib/LoadingSkeleton.svelte';
   import EmptyState from '$lib/EmptyState.svelte';
+  import CardHeader from '$lib/CardHeader.svelte';
   import { toast } from '$lib/data/toastStore.svelte.js';
 
   // Agent Tokens page — read + is_active toggle for every token in the
@@ -255,13 +256,13 @@
 
 <!-- Create / edit form (shown when showForm is true) -->
 {#if showForm}
-  <div class="algo-status-card p-3 mb-3" data-status="running">
-    <div class="flex items-center justify-between mb-2">
-      <h3 class="section-heading">
-        {editingId == null ? 'New token' : `Edit token #${editingId}`}
-      </h3>
-      <button onclick={closeForm} class="text-xs text-[var(--c-muted)] hover:text-[var(--c-action)]">Cancel</button>
-    </div>
+  <div class="algo-status-card token-form-card p-3 mb-3" data-status="running">
+    <CardHeader title={editingId == null ? 'New token' : `Edit token #${editingId}`}
+                showControls={false} detectOverflow={false}>
+      {#snippet right()}
+        <button onclick={closeForm} class="text-xs text-[var(--c-muted)] hover:text-[var(--c-action)]">Cancel</button>
+      {/snippet}
+    </CardHeader>
 
     {#if formError}
       <div class="mb-2 p-1.5 rounded bg-red-500/15 text-[var(--algo-red-text-bright)] text-[0.65rem] border border-red-500/40">{formError}</div>
@@ -483,9 +484,9 @@
 {/if}
 
 <style>
-  .section-heading { font-size: var(--fs-sm, 0.6rem); font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--c-action, #fbbf24); padding-bottom: 0.3rem; margin-bottom: 0.5rem; border-bottom: 1px solid rgba(255,255,255,0.10); }
-  /* Was a bespoke 0.68rem override — drifted from the canonical
-     `.algo-table thead th` SSOT in app.css (var(--fs-sm), 0.6rem),
-     the only other consumer of which (admin/settings) renders the
-     canonical size. Removed so both pages match (2026-09 font audit). */
+  /* .section-heading retired (2026-10 CardHeader adoption sweep,
+     round 2) — the create/edit form's title now renders via
+     <CardHeader>, which owns its own bottom divider. This scoped margin
+     replaces the old h3's mb-2 Tailwind spacing before the form grid. */
+  .token-form-card :global(.card-header) { margin-bottom: 0.5rem; }
 </style>

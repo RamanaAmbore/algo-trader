@@ -25,6 +25,7 @@
   import { userRole, userCaps, userCapsReady, hasCap } from '$lib/rbac';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
+  import CardHeader from '$lib/CardHeader.svelte';
   import {
     fetchBrokerAccounts, createBrokerAccount, updateBrokerAccount,
     deleteBrokerAccount, testBrokerAccount, restoreBrokerPriority,
@@ -624,14 +625,18 @@
 
 <!-- Account list -->
 <div class="algo-card mb-3" data-status="inactive">
-  <div class="brokers-list-header">
-    <h2 class="brokers-h">
-      Accounts <span class="opacity-60 font-normal ml-1">({accounts.length})</span>
-    </h2>
-    <button type="button" class="btn-primary text-[0.6rem] py-1 px-3"
-            onclick={() => resetForm(NEW_SENTINEL)}
-            disabled={editing !== ''}>+ New account</button>
-  </div>
+  <CardHeader showControls={false} detectOverflow={false}>
+    {#snippet left()}
+      <h2 class="brokers-h">
+        Accounts <span class="opacity-60 font-normal ml-1">({accounts.length})</span>
+      </h2>
+    {/snippet}
+    {#snippet right()}
+      <button type="button" class="btn-primary text-[0.6rem] py-1 px-3"
+              onclick={() => resetForm(NEW_SENTINEL)}
+              disabled={editing !== ''}>+ New account</button>
+    {/snippet}
+  </CardHeader>
   {#if loading}
     <LoadingSkeleton variant="grid-row" rows={3} height="1.8rem" />
   {:else if !accounts.length}
@@ -889,14 +894,15 @@
 
 <!-- Connection Log -->
 <div class="algo-card mb-3">
-  <div class="brokers-list-header">
-    <h2 class="brokers-h">Connection Log</h2>
-    <button type="button" class="btn-secondary text-[0.55rem] py-0.5 px-2"
-            disabled={connLoading}
-            onclick={loadConnEvents}>
-      {connLoading ? '…' : 'Refresh'}
-    </button>
-  </div>
+  <CardHeader title="Connection Log" showControls={false} detectOverflow={false}>
+    {#snippet right()}
+      <button type="button" class="btn-secondary text-[0.55rem] py-0.5 px-2"
+              disabled={connLoading}
+              onclick={loadConnEvents}>
+        {connLoading ? '…' : 'Refresh'}
+      </button>
+    {/snippet}
+  </CardHeader>
 
   <!-- Filter bar -->
   <div class="conn-filter-bar">
@@ -966,15 +972,9 @@
 <style>
   /* .empty-state rules removed — access-denied panel migrated to
      EmptyState component (slice AE). */
-  .brokers-list-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.5rem;
-    padding: 0 0.25rem 0.4rem;
-    border-bottom: 1px solid rgba(251,191,36,0.18);
-    margin-bottom: 0.4rem;
-  }
+  /* .brokers-list-header retired (2026-10 CardHeader adoption sweep,
+     round 2) — both "Accounts"/"Connection Log" headers now render via
+     <CardHeader>, which owns the row layout + bottom divider itself. */
   /* Canonical .algo-card-title palette + typography — operator: "header
      text color is not consistent. GREEKS is good." Was slate-400 which
      read as muted next to the amber Snapshot / Order Entry headings on

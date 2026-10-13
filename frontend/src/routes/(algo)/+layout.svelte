@@ -2788,6 +2788,26 @@
      `(public)/+layout.svelte`'s own distinct light-theme override,
      intentionally left alone. */
   :global(body) {
+    /* 2026-10-13 (CardHeader sweep round 2, item 1 follow-up) —
+       `--card-divider` is declared ONLY inside `.card-theme-dark`/
+       `.card-theme-cream` (app.css), a class applied to a DIV that is a
+       CHILD of body, never body itself. CSS custom properties fully
+       substitute their own var() references at the element where
+       they're declared, using THAT element's inheritance chain — body
+       has no ancestor-or-self access to a child's custom property, so
+       `--ch-border-bottom: 1px solid var(--card-divider)` below was
+       silently invalid-at-computed-value-time for EVERY CardHeader in
+       the algo app since it was introduced (2026-10-12) — confirmed via
+       direct measurement (`borderBottomWidth: 0px`) on a plain,
+       non-grid panel. Declaring the SAME literal here too (not just in
+       app.css) gives body — and everything under it, including
+       ActivityLogModal's `use:portal`-relocated DOM, which sits outside
+       `.algo-viewport.card-theme-dark` entirely — a valid value to
+       substitute. Keep in sync with app.css's `.card-theme-dark
+       { --card-divider }` value; this file is (algo)-only (always
+       dark theme), so there is no light-theme variant to keep in sync
+       here. */
+    --card-divider: rgba(126, 151, 184, 0.40);
     --ch-bg: linear-gradient(180deg, rgba(255,255,255,0.05) 0%, rgba(255,255,255,0) 100%);
     --ch-border-bottom: 1px solid var(--card-divider);
     --ch-padding: 0;

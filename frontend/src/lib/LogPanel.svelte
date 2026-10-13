@@ -303,16 +303,38 @@
   // The 'alerts' tab (folded in from the retired /admin/alerts page,
   // 2026-10 nav restructure) must stay invisible to operators who lack
   // the view_audit capability, independent of whichever surface this
-  // LogPanel instance happens to be mounted on. Bridge pattern matches
-  // the one every admin page with an access-denied lock already uses
-  // (see feedback_svelte5_store_derived.md) — reading $userCaps/$userRole
-  // directly inside a $derived can stale-cache the initial [] /
-  // 'partner' boot values.
-  let _alertsCaps = $state(/** @type {string[]} */ ([]));
-  let _alertsRole = $state(/** @type {string} */ ('partner'));
-  $effect(() => { _alertsCaps = $userCaps; });
-  $effect(() => { _alertsRole = $userRole; });
-  const _canViewAlerts = $derived(hasCap('view_audit', _alertsCaps, _alertsRole));
+  // LogPanel instance happens to be mounted on.
+  //
+  // Reads $userCaps/$userRole directly inside this $derived — NOT
+  // bridged through an intermediate $state+$effect pair. That bridge
+  // (removed 2026-10) started at an initial wrong value ([] / 'partner')
+  // and only corrected one render tick later once the $effect fired —
+  // the exact anti-pattern CLAUDE.md's "Reactive safety" section warns
+  // against for any $derived that touches a legacy store. Measured
+  // empirically: the one-tick gap is not independently observable via
+  // black-box testing once $userCaps/$userRole have already resolved
+  // (Svelte flushes the correcting $effect before anything can read a
+  // stale frame), so this change is defence-in-depth / established-
+  // pattern hygiene rather than a confirmed fix for a specific reported
+  // symptom. It DOES close one genuinely live, non-self-healing hazard:
+  // the one-way force-flip effect below (~line 1110) still flips away
+  // from 'alerts' to 'agent' whenever _canViewAlerts is false at mount
+  // and never flips back — reading the stores directly here removes
+  // the ONE extra render-tick window in which that could fire for a
+  // reason that wasn't already true before this change. The real,
+  // still-live hazard is a genuinely cold page load racing the FIRST
+  // /whoami resolution of the session (caps genuinely not yet loaded,
+  // not a Svelte-internal lag) — unaffected by this change; see the
+  // Derivatives `logTabHint="agent"` comment (admin/derivatives/
+  // +page.svelte) for why that workaround stays.
+  // `$store` reads inside $derived compile to a synchronous,
+  // always-tracked subscription (no intermediate $state) — same
+  // pattern already relied on at `+layout.svelte:636`
+  // (`_canViewPersistMode`, the identical view_audit capability) and
+  // the CLAUDE.md-documented CRITICAL fix in `PageHeaderActions.svelte`
+  // (`_effectiveAccount`). Do NOT reintroduce a $state+$effect bridge
+  // here.
+  const _canViewAlerts = $derived(hasCap('view_audit', $userCaps, $userRole));
 
   // Derived row arrays for the keyed {#each} renderers below —
   // operator-visible benefit: text selection inside an agent /

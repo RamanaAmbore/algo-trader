@@ -19,6 +19,7 @@
   import { onMount, onDestroy } from 'svelte';
   import Select from '$lib/Select.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
+  import CardHeader from '$lib/CardHeader.svelte';
   import { visibleInterval } from '$lib/stores';
   import {
     fetchSimRecordings, deleteSimRecording,
@@ -145,12 +146,15 @@
 </script>
 
 <section class="rec-card">
-  <header class="rec-header">
-    <span class="rec-title">Recordings</span>
-    <span class="rec-count">{recordings.length} saved</span>
-    <button type="button" class="rec-refresh" onclick={_refresh}
-            disabled={loading}>{loading ? '…' : '↻'}</button>
-  </header>
+  <CardHeader title="Recordings" showControls={false} detectOverflow={false}>
+    {#snippet left()}
+      <span class="rec-count">{recordings.length} saved</span>
+    {/snippet}
+    {#snippet right()}
+      <button type="button" class="rec-refresh" onclick={_refresh}
+              disabled={loading}>{loading ? '…' : '↻'}</button>
+    {/snippet}
+  </CardHeader>
 
   {#if error}
     <div class="rec-err">⚠ {error}</div>
@@ -246,18 +250,8 @@
     flex-direction: column;
     gap: 0.55rem;
   }
-  .rec-header {
-    display: flex;
-    align-items: center;
-    gap: 0.55rem;
-  }
-  .rec-title {
-    font-family: var(--font-numeric);
-    font-size: var(--fs-lg);
-    font-weight: 700;
-    color: #c084fc;
-    letter-spacing: 0.04em;
-  }
+  /* .rec-header/.rec-title retired (2026-10 CardHeader adoption sweep,
+     round 2) — title now renders via <CardHeader>'s own title prop. */
   .rec-count {
     font-size: var(--fs-sm);
     color: rgba(180,200,230,0.65);

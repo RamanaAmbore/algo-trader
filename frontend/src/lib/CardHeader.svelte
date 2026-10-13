@@ -189,7 +189,31 @@
   .ch-sep {
     width: 1px;
     align-self: stretch;
-    background: var(--sep-color);
+    /* 2026-10-13 (CardHeader sweep round 2, item 2) — was var(--sep-color)
+       (rgba(126,151,184,0.10)), half --card-divider's alpha and a token
+       shared across dozens of unrelated low-emphasis dividers app-wide
+       (table rows, grid cells, dropdown separators) — do NOT bump
+       --sep-color itself, that would silently change all of those too.
+       Switched to --card-divider instead: the SAME token the header's
+       own bottom border already uses, so the vertical rule between the
+       title and the rest of the header reads with internal consistency,
+       zero blast radius elsewhere.
+       Fallback to var(--sep-color) is defense-in-depth, not load-
+       bearing today: some CardHeader mounts (ActivityLogModal's portal
+       target — `$lib/portal.js` moves the node to a document.body
+       child that is a SIBLING of `.algo-viewport.card-theme-dark`/
+       `.card-theme-cream`, not a descendant) sit outside the DOM scope
+       where app.css's `.card-theme-dark`/`.card-theme-cream` declare
+       --card-divider — but `(algo)/+layout.svelte`'s own `:global(body)`
+       block ALSO declares --card-divider directly (see that file's
+       comment, added the same day this fix landed, for the full root-
+       cause writeup — the SAME gap silently broke CardHeader's own
+       bottom border everywhere, not just this divider), so body-level
+       inheritance already carries a valid value into portaled mounts
+       too. This fallback only matters if some future CardHeader mount
+       ever renders fully outside <body> (e.g. a detached node) — kept
+       as a cheap safety net, not because it's currently exercised. */
+    background: var(--card-divider, var(--sep-color));
     flex-shrink: 0;
     margin: var(--sep-margin);
   }
