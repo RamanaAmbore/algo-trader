@@ -149,13 +149,77 @@ def _describe_action_params(params: dict, keys: tuple[str, ...]) -> list[str]:
     return out
 
 
+def _describe_action_place_order(action_type: str, params: dict) -> str:
+    bits = _describe_action_params(params, ("side", "qty", "lots", "symbol"))
+    label = " ".join(bits)
+    price = params.get("price")
+    if price not in (None, ""):
+        label = f"{label} @ {price}".strip()
+    return f"{label} (order)".strip() if label else "order"
+
+
+def _describe_action_close_position(action_type: str, params: dict) -> str:
+    bits = _describe_action_params(params, ("symbol",))
+    return f"closed {bits[0]} (close_position)" if bits else "close_position"
+
+
+def _describe_action_chase_close(action_type: str, params: dict) -> str:
+    scope = params.get("scope") or params.get("account") or "total"
+    return f"chase-close {scope} (chase_close_positions)"
+
+
+def _describe_action_cancel_all_orders(action_type: str, params: dict) -> str:
+    scope = params.get("scope") or params.get("account") or "total"
+    return f"cancel all orders {scope} (cancel_all_orders)"
+
+
+def _describe_action_order_ref(action_type: str, params: dict) -> str:
+    bits = _describe_action_params(params, ("broker_order_id",))
+    return f"{action_type}({bits[0]})" if bits else action_type
+
+
+def _describe_action_expiry_auto_close(action_type: str, params: dict) -> str:
+    bits = _describe_action_params(params, ("exchange",))
+    return f"expiry-close {bits[0]} (expiry_auto_close)" if bits else "expiry_auto_close"
+
+
+def _describe_action_generic(action_type: str, params: dict) -> str:
+    # Generic fallback — type(key=val, ...) for anything not special-cased
+    # below (emit_log, set_flag, monitor_order, deactivate_agent,
+    # send_summary, or any future/custom token), using up to the first 3
+    # params verbatim, in whatever order the stored dict carries them.
+    if not params:
+        return action_type
+    parts = [f"{k}={v}" for k, v in list(params.items())[:3]]
+    return f"{action_type}({', '.join(parts)})"
+
+
+# action_type -> renderer. A plain dispatch dict instead of an if/elif
+# chain — keeps _describe_action's own complexity at O(1) regardless of
+# how many action types gain a special-cased phrasing later (CC gate,
+# 2026-10-13: the if/elif form graded D(21); this form is C or better).
+_ACTION_DESCRIBERS = {
+    "place_order": _describe_action_place_order,
+    "order": _describe_action_place_order,
+    "close_position": _describe_action_close_position,
+    "chase_close": _describe_action_chase_close,
+    "chase_close_positions": _describe_action_chase_close,
+    "cancel_all_orders": _describe_action_cancel_all_orders,
+    "cancel_order": _describe_action_order_ref,
+    "modify_order": _describe_action_order_ref,
+    "expiry_auto_close": _describe_action_expiry_auto_close,
+}
+
+
 def _describe_action(action: dict) -> str:
     """Render one `agent.actions` entry (`{"type": ..., "params": {...}}`)
     as a short, human-readable summary for the action-aware default ALERT
-    message (Part A, 2026-10-12). Special-cases the handful of common
-    action types for a natural phrasing; anything else falls back to a
-    generic `type(key=val, ...)` rendering using whatever params exist —
-    this is deliberately NOT a full per-type registry.
+    message (Part A, 2026-10-12). Dispatches to a per-type renderer via
+    `_ACTION_DESCRIBERS` for the handful of common action types (a
+    natural phrasing each); anything else falls back to
+    `_describe_action_generic`'s `type(key=val, ...)` rendering using
+    whatever params exist — this is deliberately NOT a full per-type
+    registry, just these ~8 common cases plus one fallback.
 
     `agent.actions` here is the AGENT'S OWN COMPILED (not yet resolved/
     executed) action list — dispatch() runs before execute() for every
@@ -174,38 +238,8 @@ def _describe_action(action: dict) -> str:
         return ""
     action_type = action.get("type") or ""
     params = action.get("params") if isinstance(action.get("params"), dict) else {}
-
-    if action_type in ("place_order", "order"):
-        bits = _describe_action_params(params, ("side", "qty", "lots", "symbol"))
-        label = " ".join(bits)
-        price = params.get("price")
-        if price not in (None, ""):
-            label = f"{label} @ {price}".strip()
-        return f"{label} (order)".strip() if label else "order"
-    if action_type == "close_position":
-        bits = _describe_action_params(params, ("symbol",))
-        return f"closed {bits[0]} (close_position)" if bits else "close_position"
-    if action_type in ("chase_close", "chase_close_positions"):
-        scope = params.get("scope") or params.get("account") or "total"
-        return f"chase-close {scope} (chase_close_positions)"
-    if action_type == "cancel_all_orders":
-        scope = params.get("scope") or params.get("account") or "total"
-        return f"cancel all orders {scope} (cancel_all_orders)"
-    if action_type in ("cancel_order", "modify_order"):
-        bits = _describe_action_params(params, ("broker_order_id",))
-        return f"{action_type}({bits[0]})" if bits else action_type
-    if action_type == "expiry_auto_close":
-        bits = _describe_action_params(params, ("exchange",))
-        return f"expiry-close {bits[0]} (expiry_auto_close)" if bits else "expiry_auto_close"
-
-    # Generic fallback — type(key=val, ...) for anything not special-cased
-    # above (emit_log, set_flag, monitor_order, deactivate_agent,
-    # send_summary, or any future/custom token), using up to the first 3
-    # params verbatim, in whatever order the stored dict carries them.
-    if not params:
-        return action_type
-    parts = [f"{k}={v}" for k, v in list(params.items())[:3]]
-    return f"{action_type}({', '.join(parts)})"
+    describer = _ACTION_DESCRIBERS.get(action_type, _describe_action_generic)
+    return describer(action_type, params)
 
 
 def _describe_actions(actions: "list | None") -> str:
