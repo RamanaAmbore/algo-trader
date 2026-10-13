@@ -219,8 +219,11 @@ for (const vp of VIEWPORTS) {
       const payoffSpotText = (await payoffSpotCell.textContent()).trim();
 
       // ── Read spot from Snapshot card for selected underlying ──────────
-      // Get the selected underlying from the legs header chip
-      const underlyingChip = page.locator('.legs-underlying-chip').first();
+      // Get the selected underlying from the underlying picker itself.
+      // (2026-10-13 — the Legs card's own underlying chip was removed in
+      // favor of a plain "Positions" title; the picker is now the sole
+      // place to read this from.)
+      const underlyingChip = page.locator('#opt-und .rbq-select-label').first();
       const selectedUnderlying = (await underlyingChip.textContent().catch(() => '')).trim();
 
       if (!selectedUnderlying) {

@@ -170,80 +170,63 @@ test.describe('Public navbar — Terminal ↗ pill', () => {
 
 // ── algo navbar (authenticated) ───────────────────────────────────────────────
 
-test.describe('Algo navbar — Console entry', () => {
+test.describe('Algo navbar — Console entry removed (2026-10-13)', () => {
 
   test.beforeEach(async ({ page }) => {
     await loginForAlgo(page);
   });
 
-  test('desktop: navbar has "Console" button (not "Terminal") for the build group', async ({ page }) => {
+  // The separate top-level "Console" nav entry (which used to point at
+  // /automation?tab=console) was removed per operator request — Console
+  // is reachable as a tab inside the Automation nav entry, so a second
+  // link to the same page was redundant. These tests replace the old
+  // "Console nav button exists" checks with the inverse: it's gone, on
+  // both desktop and mobile, and "Terminal" (the pre-rename label) was
+  // never reintroduced either.
+
+  test('desktop: navbar has no "Console" button (removed) and no "Terminal" (old name)', async ({ page }) => {
     const width = page.viewportSize()?.width ?? 1400;
     if (width <= 800) test.skip(true, 'desktop-only check');
 
     await page.goto('/dashboard', { waitUntil: 'domcontentloaded' });
     await page.waitForURL(/dashboard/, { timeout: TIMEOUT });
 
-    // The algo nav renders ALL links as <button class="algo-nav-btn"> — NOT <a> tags.
-    // The "Console" button is in the `build` group (after a group separator).
-    // Wait for the nav to fully hydrate (it depends on paperStatus poll).
     await page.locator('.algo-nav-btn').first().waitFor({ state: 'visible', timeout: TIMEOUT });
 
-    // Collect all nav button labels to find Console.
     const navBtns = page.locator('.algo-nav-btn');
     const labels = await navBtns.allTextContents();
     const consoleIdx = labels.findIndex(t => t.trim() === 'Console');
-    expect(consoleIdx, `Expected a nav button labelled "Console"; got: ${JSON.stringify(labels)}`).toBeGreaterThanOrEqual(0);
+    expect(consoleIdx, `"Console" nav button should be removed; got: ${JSON.stringify(labels)}`).toBe(-1);
 
-    // Verify no nav button is labelled exactly "Terminal" (that would be the old name).
     const terminalIdx = labels.findIndex(t => t.trim() === 'Terminal');
-    expect(terminalIdx, `Nav button "Terminal" still present — expected it to be "Console"`).toBe(-1);
+    expect(terminalIdx, `Nav button "Terminal" still present — should not exist`).toBe(-1);
+
+    // Automation's own nav entry still exists — Console remains
+    // reachable as a tab inside it.
+    const automationIdx = labels.findIndex(t => t.trim() === 'Automation');
+    expect(automationIdx, `Expected an "Automation" nav button; got: ${JSON.stringify(labels)}`).toBeGreaterThanOrEqual(0);
   });
 
-  test('desktop: clicking "Console" nav button navigates to the Automation Console tab', async ({ page }) => {
-    // 2026-10 (Phase 2 Sprint B) — /console retired as a standalone
-    // route; the nav entry now points directly at /automation's
-    // Console tab (frontend/src/routes/(algo)/+layout.svelte).
-    const width = page.viewportSize()?.width ?? 1400;
-    if (width <= 800) test.skip(true, 'desktop-only check');
-
-    await page.goto('/dashboard', { waitUntil: 'domcontentloaded' });
-    await page.waitForURL(/dashboard/, { timeout: TIMEOUT });
-
-    await page.locator('.algo-nav-btn').first().waitFor({ state: 'visible', timeout: TIMEOUT });
-
-    // Click the Console nav button.
-    const consoleBtn = page.locator('.algo-nav-btn').filter({ hasText: 'Console' }).first();
-    await expect(consoleBtn).toBeVisible({ timeout: TIMEOUT });
-    await consoleBtn.click();
-    await page.waitForURL(/\/automation\?tab=console/, { timeout: TIMEOUT });
-    expect(page.url()).toContain('/automation?tab=console');
-  });
-
-  test('mobile: hamburger tray shows "Console" (not "Terminal") for the build-group entry', async ({ page }) => {
+  test('mobile: hamburger tray has no "Console" entry (removed) and no "Terminal" (old name)', async ({ page }) => {
     const width = page.viewportSize()?.width ?? 1400;
     if (width > 800) test.skip(true, 'mobile-only check');
 
     await page.goto('/dashboard', { waitUntil: 'domcontentloaded' });
     await page.waitForURL(/dashboard/, { timeout: TIMEOUT });
 
-    // Open algo hamburger menu.
     const hamburger = page.locator('.algo-hamburger').first();
     await expect(hamburger).toBeVisible({ timeout: 10_000 });
     await hamburger.click();
 
-    // Mobile tray renders `<button class="algo-mobile-item">` for each algoLink.
-    // Wait for the dropdown to render.
     await page.locator('.algo-mobile-dropdown').first().waitFor({ state: 'visible', timeout: 8000 });
 
-    // Find the tray entry labelled "Console".
     const trayBtns = page.locator('.algo-mobile-item');
     const labels = await trayBtns.allTextContents();
     const consoleIdx = labels.findIndex(t => t.trim() === 'Console');
-    expect(consoleIdx, `Expected tray entry "Console"; got: ${JSON.stringify(labels)}`).toBeGreaterThanOrEqual(0);
+    expect(consoleIdx, `"Console" tray entry should be removed; got: ${JSON.stringify(labels)}`).toBe(-1);
 
-    // Verify no entry is labelled exactly "Terminal".
     const terminalIdx = labels.findIndex(t => t.trim() === 'Terminal');
-    expect(terminalIdx, `Tray entry "Terminal" still present — expected "Console"`).toBe(-1);
+    expect(terminalIdx, `Tray entry "Terminal" still present — should not exist`).toBe(-1);
   });
 });
 

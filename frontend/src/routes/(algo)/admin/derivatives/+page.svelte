@@ -5687,6 +5687,7 @@
          fullscreen/refresh) is unchanged — only the wrapper
          markup changed. -->
     <CardHeader
+      title="Positions"
       bind:isFullscreen={_fsLegs}
       bind:filter={_filterLegs}
       label="Legs"
@@ -5708,11 +5709,6 @@
         'legs.csv'
       )}
     >
-      {#snippet prefix()}
-        {#if selectedUnderlying}
-          <span class="legs-underlying-chip">{selectedUnderlying}</span>
-        {/if}
-      {/snippet}
       {#snippet middle()}
         <!-- Tabs replace the static title — operator flips between
              the full leg list and the close-list summary. Expiry
@@ -7396,14 +7392,14 @@
     background: rgba(251,191,36,0.85);
   }
   /* .legs-header-row/.legs-header retired (2026-10 CardHeader adoption
-     sweep) — this card's chrome now renders via <CardHeader>, with the
-     underlying chip carried in the `prefix` snippet and the Legs/
-     Exp-close AlgoTabs in `middle` (see the card markup above).
-     .legs-underlying-chip below is still used there. .legs-header-sep
-     (a manual divider span) was removed 2026-10-13 — CardHeader's own
-     automatic `.ch-sep` (rendered whenever `middle` is supplied)
-     already provides the one divider needed between the chip and the
-     tabs; having both produced a visible double-divider. */
+     sweep) — this card's chrome now renders via <CardHeader>, with a
+     plain `title="Positions"` (2026-10-13 — replaced the underlying-
+     chip prefix per operator request, so this card gets the standard
+     border-left+padding label decoration every other header has,
+     instead of a bespoke chip) and the Legs/Exp-close AlgoTabs in
+     `middle` (see the card markup above). .legs-underlying-chip and
+     .legs-header-sep (a manual divider span, removed separately) are
+     both fully retired now — no remaining markup user. */
 
   /* Legs / Expiry tabs migrated to canonical AlgoTabs (compact
      amber; expiry switches to rose color when expiryCloseTotal>0
@@ -7411,20 +7407,6 @@
      neutral). All `.legs-tab*` CSS retired — AlgoTabs owns the
      decoration via `.algo-tab` in app.css. */
 
-  /* Underlying chip — sits before the legs/close tabs. Visually
-     distinct from the tabs so the operator's eye reads it as
-     "what symbol am I looking at" first, then "which view".
-     Solid amber pill with a darker background; the separator
-     below pushes the tabs visually apart. */
-  .legs-underlying-chip {
-    color: var(--c-action);
-    font-size: var(--fs-sm, 0.6rem);
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    white-space: nowrap;
-    flex-shrink: 0;
-  }
   /* Expiry tab band tints, expiry-band-header, expiry-id-chip, and
      all cand-row variant styles moved to CandidateLegRow.svelte. */
 

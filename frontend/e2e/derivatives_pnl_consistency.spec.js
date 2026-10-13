@@ -169,8 +169,11 @@ for (const vp of VIEWPORTS) {
 
       // ── Find the selected underlying ───────────────────────────────────
       // The underlying picker value is either set automatically from positions
-      // or left empty. Read what's currently selected.
-      const selectedUnderlying = await page.locator('.legs-underlying-chip').first()
+      // or left empty. Read what's currently selected. (2026-10-13 — the
+      // Legs card's own underlying chip was removed in favor of a plain
+      // "Positions" title; read the real source of truth, the picker
+      // itself, instead.)
+      const selectedUnderlying = await page.locator('#opt-und .rbq-select-label').first()
         .textContent({ timeout: 5000 }).catch(() => null);
 
       if (!selectedUnderlying?.trim()) {

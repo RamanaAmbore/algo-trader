@@ -2288,17 +2288,6 @@
       <CardHeader showControls={false} onRefresh={_refreshAll}>
         {#snippet left()}
           <span class="oes-modal-name">
-            <!-- Order-slip / receipt glyph — matches the page-header Order
-                 button (PageHeaderActions). Rectangle with order lines
-                 inside reads as "order entry form" without the directional
-                 confusion the prior dual-arrow caused (operator: read as a
-                 refresh icon). -->
-            <svg class="oes-modal-name-icon" width="13" height="13" viewBox="0 0 16 16"
-                 fill="none" stroke="currentColor" stroke-width="1.5"
-                 stroke-linecap="round" aria-hidden="true">
-              <rect x="3.2" y="2" width="9.6" height="12" rx="1.2" />
-              <path d="M5.5 6h5M5.5 8.5h5M5.5 11h3" stroke-width="1.4" />
-            </svg>
             Order entry
           </span>
           {#if _wlToast}
@@ -3447,8 +3436,15 @@
     display: inline-flex;
     align-items: center;
     gap: 0.35rem;
+    /* 2026-10-13 — border-left + left padding, matching every other
+       header label's decoration (.ch-title, .mp-bucket-label,
+       orders/+page.svelte's .oc-entry-label). Icon removed per
+       operator request; kept the deliberate amber color (same
+       reasoning as .oc-entry-label — "writing surface / operator
+       action" surface, not the generic neutral default). */
+    border-left: 3px solid currentColor;
+    padding-left: 0.35rem;
   }
-  .oes-modal-name-icon { color: currentColor; flex-shrink: 0; }
   /* Shared Symbol picker — replaces the static `.oes-title` placeholder
      ("Symbol") with a live search input. Operator can pick a new
      symbol; every tab (Ticket / Chain / Command) re-renders against

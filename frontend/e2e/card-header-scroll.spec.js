@@ -159,32 +159,38 @@ test.describe('Mobile viewport overflow — card headers and NavStrip', () => {
     await loginAsAdmin(page);
     await page.goto('/admin/derivatives', { waitUntil: 'domcontentloaded' });
 
-    // Wait for legs-underlying-chip to become visible; skip if not present after 10s
-    const chip = page.locator('.legs-underlying-chip').first();
-    const chipExists = await chip.count();
-    if (chipExists === 0) {
-      const chipWait = await chip.waitFor({ state: 'visible', timeout: 10_000 }).catch(() => null);
-      if (!chipWait) {
-        test.skip(true, 'no positions');
-      }
-    }
+    // 2026-10-13 — the Legs card's own underlying chip was removed in
+    // favor of a plain `title="Positions"`, which always renders
+    // (unlike the chip, which only showed once an underlying was
+    // selected). The title itself no longer signals "no positions" the
+    // way the chip's absence used to — check the controls cluster
+    // directly instead (the Payoff card's own controls, which only
+    // render once there's something to act on), skipping if absent
+    // after a reasonable wait, same spirit as the original "no
+    // positions" skip.
+    const title = page.locator('.opt-legs-card .ch-title').first();
+    await expect(title, 'Legs card title should be visible').toBeVisible({ timeout: 10_000 });
 
     // Get the last .payoff-card-controls in the legs card area
     const controls = page.locator('.payoff-card-controls').last();
+    const controlsVisible = await controls.waitFor({ state: 'visible', timeout: 10_000 }).catch(() => null);
+    if (!controlsVisible) {
+      test.skip(true, 'no positions');
+    }
 
     // Get bounding boxes for both elements
-    const chipBox = await chip.boundingBox();
+    const titleBox = await title.boundingBox();
     const controlsBox = await controls.boundingBox();
 
-    expect(chipBox, '.legs-underlying-chip bounding box not found').toBeTruthy();
+    expect(titleBox, '.opt-legs-card .ch-title bounding box not found').toBeTruthy();
     expect(controlsBox, '.payoff-card-controls bounding box not found').toBeTruthy();
 
     // Calculate vertical midpoints
-    const chipMidpoint = chipBox.top + chipBox.height / 2;
+    const titleMidpoint = titleBox.top + titleBox.height / 2;
     const controlsMidpoint = controlsBox.top + controlsBox.height / 2;
 
     // Assert they are within ±4px of each other
-    const diff = Math.abs(chipMidpoint - controlsMidpoint);
+    const diff = Math.abs(titleMidpoint - controlsMidpoint);
     expect(diff).toBeLessThanOrEqual(
       4,
       `Vertical midpoints should align within ±4px, but differ by ${diff.toFixed(2)}px`

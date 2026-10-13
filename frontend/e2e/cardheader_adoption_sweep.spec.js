@@ -302,7 +302,7 @@ test.describe('CardHeader adoption sweep — Dashboard NAV/Capital/Equity tabbed
 });
 
 test.describe('CardHeader adoption sweep — Derivatives Legs card', () => {
-  test('underlying chip + Legs/Exp-close tabs + Search/Download still work, no Collapse button, shade present', async ({ page }) => {
+  test('"Positions" title + Legs/Exp-close tabs + Search/Download still work, no Collapse button, shade present', async ({ page }) => {
     await loginAsAdmin(page);
     await page.goto('/admin/derivatives', { waitUntil: 'domcontentloaded' });
 
@@ -311,7 +311,11 @@ test.describe('CardHeader adoption sweep — Derivatives Legs card', () => {
     const header = card.locator('.card-header').first();
     await expect(header).toBeVisible();
 
-    // 1. AlgoTabs identity (no `title` prop) — Legs / Exp close tabs render.
+    // 1. Title (2026-10-13 — replaced the underlying-chip prefix with a
+    // plain title="Positions", gaining the standard border-left+padding
+    // label decoration every other header has) + AlgoTabs identity —
+    // Legs / Exp close tabs render alongside it.
+    await expect(header.locator('.ch-title')).toHaveText('Positions');
     await expect(header.getByRole('tab', { name: /^Legs/ })).toBeVisible();
     await expect(header.getByRole('tab', { name: /Exp close/ })).toBeVisible();
 
