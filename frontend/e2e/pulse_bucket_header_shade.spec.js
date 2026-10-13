@@ -70,13 +70,16 @@ test.describe('Pulse bucket panel header gets a distinct shade from the panel bo
 });
 
 test.describe('CardHeader emphasis generalized beyond Pulse (operator: "apply the header color scheme for other panels in other pages and modals. this should use a common code for headers")', () => {
-  test('a non-Pulse page (Automation → Console tab) also gets the shared header-shade default', async ({ page }) => {
+  test('a non-Pulse page (Automation workspace header) also gets the shared header-shade default', async ({ page }) => {
     await loginAsAdmin(page);
     await page.goto('/automation?tab=console', { waitUntil: 'domcontentloaded' });
 
-    const header = page.locator('.console-card .card-header').first();
+    // Header button-group standardization, Part 8 (2026-10-13) — the
+    // Console tab's own CardHeader was removed; the shared tab-strip
+    // header now lives at the page level on `.aw-view`.
+    const header = page.locator('.aw-view .card-header').first();
     await expect(header).toBeVisible({ timeout: 20_000 });
     const headerBg = await header.evaluate((el) => getComputedStyle(el).backgroundImage);
-    expect(headerBg, 'Console tab header must inherit the shared (algo)/+layout.svelte default, not the old transparent one').not.toBe('none');
+    expect(headerBg, 'Automation workspace header must inherit the shared (algo)/+layout.svelte default, not the old transparent one').not.toBe('none');
   });
 });

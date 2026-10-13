@@ -15,6 +15,11 @@
  * `(public)/performance/+page.svelte`) maps to CardHeader's
  * `showControls`.
  *
+ * Collapse removed 2026-10-13 (header button-group standardization) —
+ * `isCollapsed`/`cardId`/`class:is-collapsed` wiring was stripped from
+ * all four cards entirely (not just hidden); Collapse is no longer
+ * part of the cluster on this or any other CardHeader-using surface.
+ *
  * The ONE current mount point (`(public)/performance/+page.svelte`)
  * pins `showGridControls={false}`, so the only live-page assertion
  * this spec can make is the negative path: the whole cluster must
@@ -47,22 +52,22 @@ test.describe('(3) PerformancePage grid cards — CardHeader/CardControls cluste
     await expect(breakdownHeader).toBeVisible();
 
     // showGridControls={false} on the public page maps to CardHeader's
-    // showControls — the whole cluster (Search/Collapse/Fullscreen/
-    // Download) must be suppressed, matching the old behavior where
+    // showControls — the whole cluster (Search/Fullscreen/Download)
+    // must be suppressed, matching the old behavior where
     // `{#if showGridControls}` hid every button.
     await expect(summaryHeader.locator('button')).toHaveCount(0);
     await expect(breakdownHeader.locator('button')).toHaveCount(0);
   });
 
-  test('collapse state: .perf-grid-card uses the global .is-collapsed ag-grid height:0 rule (no local override needed)', async ({ page }) => {
+  test('collapse removed: .perf-grid-card never carries is-collapsed, no caret/collapse button anywhere on the card', async ({ page }) => {
     await page.goto('/performance', { waitUntil: 'domcontentloaded' });
     const summaryCard = page.locator('.perf-grid-card:not(.hidden)', { has: page.locator('.card-header', { hasText: 'Summary' }) }).first();
     await expect(summaryCard).toBeVisible({ timeout: 15_000 });
-    // Collapse control is suppressed (showControls=false) so this is a
-    // structural check only: the card never carries a conflicting
-    // local height rule that could fight the global `.is-collapsed`
-    // selector once an authenticated surface (if any, in the future)
-    // enables the cluster.
+    // Collapse was fully removed (2026-10-13), not merely suppressed —
+    // the card can never carry `is-collapsed` regardless of
+    // showGridControls, since the class binding itself was deleted.
     await expect(summaryCard).not.toHaveClass(/is-collapsed/);
+    await expect(page.locator('[aria-label*="ollapse" i]')).toHaveCount(0);
+    await expect(page.locator('[title*="ollapse" i]')).toHaveCount(0);
   });
 });

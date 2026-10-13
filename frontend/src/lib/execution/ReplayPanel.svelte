@@ -20,9 +20,8 @@
   import Select      from '$lib/Select.svelte';
   import MultiSelect from '$lib/MultiSelect.svelte';
 
-  // Card fullscreen / collapse state for the replay chart grid.
+  // Card fullscreen state for the replay chart grid.
   let _chartFs  = $state(false);
-  let _chartCol = $state(false);
 
   let status       = $state(/** @type {any} */ ({}));
   let results      = $state(/** @type {any[]} */ ([]));
@@ -361,17 +360,16 @@
 
 <!-- Chart grid -->
 {#if chartSymbols.length || (!loading && status?.active)}
-  <section class="sim-card" class:fs-card-on={_chartFs} class:is-collapsed={_chartCol}>
+  <section class="sim-card" class:fs-card-on={_chartFs}>
     <CardHeader
       title="Replay Charts"
       detectOverflow={false}
       bind:isFullscreen={_chartFs}
-      bind:isCollapsed={_chartCol}
       showSearch={false}
       onRefresh={_refreshReplay}
       bind:refreshLoading={_replayRefreshing}
     />
-    <div hidden={_chartCol}>
+    <div>
       {#if chartSymbols.length}
         <div class="replay-charts fs-content-fill mb-3" style="--fs-chrome-h: 5rem;">
           {#each chartSymbols as sym (sym)}

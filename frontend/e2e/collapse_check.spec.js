@@ -1,47 +1,48 @@
-// Verify CollapseButton toggles + persists per user.
+// Collapse removal regression guard — Dashboard.
+//
+// Header button-group standardization (2026-10-13, Part 1) — the chevron
+// CollapseButton was flagged as visual clutter and deleted from
+// CardControls.svelte project-wide; Dashboard's own isCollapsed/
+// cardId-for-collapse/class:is-collapsed wiring was stripped from every
+// call site (Chart card, Capital/Equity tabbed card, Activity card, Agent
+// activity card). This file used to click `.collapse-btn` on the old
+// `.bucket-cap`/`.bucket-eq`/`.dash-mini-grid` markup (a layout that
+// predates even the current split-card/tabbed redesign) to verify
+// toggle + localStorage persistence — none of that is reachable any
+// more, so this is now a pure removal-regression guard across Dashboard's
+// real cards.
 import { test, expect } from '@playwright/test';
+import { loginAsAdmin } from './fixtures/auth.js';
 
-const USER = 'rambo';
-const PASS = process.env.PLAYWRIGHT_PASS || 'admin1234';
+test.describe('Collapse removed from Dashboard (2026-10-13 header button-group standardization)', () => {
+  test.beforeEach(async ({ page }) => {
+    await loginAsAdmin(page);
+  });
 
-async function signIn(page) {
-  await page.goto('/signin', { waitUntil: 'domcontentloaded' });
-  await page.fill('input[name="username"], input#username, input#s-user', USER);
-  await page.fill('input[name="password"], input#password, input#s-pass', PASS);
-  await page.locator('button.btn-primary, button[type="submit"].btn-primary').first().click();
-  await page.waitForURL(/^(?!.*\/signin).*$/, { timeout: 15000 });
-}
+  test('no card on /dashboard renders a Collapse button or carries is-collapsed', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto('/dashboard', { waitUntil: 'domcontentloaded' });
 
-test('CollapseButton toggles each card + persists to localStorage', async ({ page }) => {
-  await page.setViewportSize({ width: 1440, height: 900 });
-  await signIn(page);
-  await page.goto('/dashboard', { waitUntil: 'networkidle' });
-  await page.waitForTimeout(2500);
+    for (const sel of [
+      'section.row1-col-chart',
+      'section.cap-eq-tabbed',
+      'section.dash-activity',
+      'section.dash-agent',
+    ]) {
+      const card = page.locator(sel);
+      await expect(card, `${sel} should be visible`).toBeVisible({ timeout: 20_000 });
+      await expect(card.locator('button.collapse-btn'), `${sel} must have no collapse button`).toHaveCount(0);
+      await expect(card, `${sel} must never carry is-collapsed`).not.toHaveClass(/is-collapsed/);
+    }
 
-  // Capital card: click collapse — body hides, class flips
-  const cap = page.locator('.bucket-cap');
-  await expect(cap).not.toHaveClass(/is-collapsed/);
-  await cap.locator('.collapse-btn').first().click();
-  await expect(cap).toHaveClass(/is-collapsed/);
-
-  // Capital sub-grids hidden
-  await expect(cap.locator('.dash-mini-grid')).toHaveCount(0);
-
-  // localStorage written
-  const stored = await page.evaluate(() => localStorage.getItem('ramboq.collapse.rambo.capital'));
-  console.log('[capital] localStorage:', stored);
-  expect(stored).toBe('1');
-
-  // Re-load page — state restored
-  await page.reload({ waitUntil: 'networkidle' });
-  await page.waitForTimeout(2000);
-  await expect(page.locator('.bucket-cap')).toHaveClass(/is-collapsed/);
-
-  // Toggle back
-  await page.locator('.bucket-cap .collapse-btn').first().click();
-  await expect(page.locator('.bucket-cap')).not.toHaveClass(/is-collapsed/);
-  const stored2 = await page.evaluate(() => localStorage.getItem('ramboq.collapse.rambo.capital'));
-  expect(stored2).toBe('0');
-
-  await page.screenshot({ path: 'test-results/collapse-check.png', fullPage: true });
+    // No per-user collapse key is ever written any more.
+    const stored = await page.evaluate(() => {
+      const keys = Object.keys(localStorage).filter((k) => k.startsWith('ramboq.collapse.'));
+      // Clean up any stale keys left by a pre-removal localStorage snapshot
+      // in this browser profile — the assertion is that nothing NEW gets
+      // written going forward, not that old keys self-delete.
+      return keys;
+    });
+    console.log('[collapse_check] pre-existing stale collapse keys (informational):', stored);
+  });
 });

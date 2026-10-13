@@ -163,8 +163,6 @@
   // expanded log is a thin chronological list of "what fired".
   // Operator can flip the chip to ALSO include action successes /
   // errors when they want the deeper "what did the fire DO" trace.
-  // (Collapse state itself is owned by the CollapseButton via
-  // _colAgent / _colPnl + localStorage.)
   let _agentLogShowActions = $state(false);
   const _agentLogKinds = $derived(
     _agentLogShowActions
@@ -383,38 +381,19 @@
   // card always renders its body and the empty-state message lives
   // inside the panel.
 
-  // Per-card fullscreen toggles. Each card binds its own slot —
-  // multiple cards can theoretically open at once but only one is
-  // visually on top (last-clicked wins via DOM order).
-  let _fsEquityCurve = $state(false);
-  let _fsCapital     = $state(false);
-  let _fsEquity      = $state(false);
-  let _fsNavBd       = $state(false);   // NAV tab on the equity card
-  let _fsWinners     = $state(false);
-  let _fsLosers      = $state(false);
-  // _fsActivity retired — the Activity card uses in-place height
-  // expansion (isTall prop on ActivityLogSurface) rather than viewport fullscreen.
-  // _fsPnl / _colPnl retired with the standalone P&L Analysis card —
-  // PnlAnalysis now lives inside the Intraday/Performance tabbed card
-  // (shares _fsEquityCurve + _colEquityCurve).
-  let _fsAgent       = $state(false);
-
-  // Per-card collapse toggles. CollapseButton hydrates each from
-  // localStorage on mount (keyed by user + cardId), so these
-  // initial `false` values are placeholders only — the component
-  // overwrites after the first onMount tick.
-  let _colEquityCurve = $state(false);
-  let _colCapital     = $state(false);
-  let _colEquity      = $state(false);
-  let _colNavBd       = $state(false);   // NAV tab on the equity card
-  let _colWinners     = $state(false);
-  let _colLosers      = $state(false);
-  // Renamed _colNews → _colActivity (see _fsActivity above).
-  let _colActivity    = $state(false);
-  // Agent activity is a heavyweight card — start collapsed by default
-  // so the dashboard's first paint stays light. CollapseButton overrides
-  // from localStorage on mount if the user previously expanded it.
-  let _colAgent       = $state(false);
+  // Fullscreen + Collapse toggles retired across the dashboard (2026-10
+  // CardHeader button-group standardization, Parts 1+3) — every panel's
+  // CardHeader now passes hideFullscreen={true} and no longer binds
+  // isCollapsed, so none of the former per-card _fs*/_col* state vars
+  // (_fsEquityCurve/_fsCapital/_fsEquity/_fsNavBd/_fsWinners/_fsLosers/
+  // _fsAgent/_colEquityCurve/_colCapital/_colEquity/_colNavBd/
+  // _colWinners/_colLosers/_colActivity/_colAgent) have any remaining
+  // reader — removed rather than left as dead bindings.
+  // _fsActivity retired earlier — the Activity card uses in-place height
+  // expansion (isTall prop on ActivityLogSurface) rather than viewport
+  // fullscreen; _fsPnl/_colPnl retired with the standalone P&L Analysis
+  // card (PnlAnalysis now lives inside the Intraday/Performance tabbed
+  // card).
 
   // ── ag-Grid bindings for the dashboard cards ────────────────────
   // Each card mounts its own grid imperatively via bind:this + a
@@ -1286,9 +1265,6 @@
     if (storedCapEqTab !== _capEqTab) _capEqTab = /** @type {'nav'|'capital'|'equity'} */ (storedCapEqTab);
 
     _tabsHydrated = true;
-    // (P&L + Agent collapse state now owned by CollapseButton via
-    // its own per-user localStorage key — the old dash.pnlOpen
-    // restore is retired.)
     // Restore per-card account filters from sessionStorage. Each
     // card persists under its own key so the operator's per-card
     // intent survives a tab refresh. Wrapped in try/catch since
@@ -1644,23 +1620,16 @@
        history — persists across tab flips. The page-header firm-NAV
        chip is visible from every tab, so the NAV TOTAL number is on
        screen even when the operator is reading Intraday / Performance. -->
-  <section class="bucket-card row1-col-chart"
-    class:fs-card-on={_fsEquityCurve}
-    class:is-collapsed={_colEquityCurve}>
+  <section class="bucket-card row1-col-chart">
     <CardHeader
-      bind:isCollapsed={_colEquityCurve}
-      bind:isFullscreen={_fsEquityCurve}
+      hideFullscreen={true}
       label="Chart"
-      title="Chart"
+      title="Trend"
       onRefresh={_refreshAll}
       bind:refreshLoading={_refreshing}
       showSearch={false}
       detectOverflow={false}
     >
-      <!-- No cardId — collapse state resets to expanded on every page
-           load. Operator can still toggle in-session. Matches the
-           "no card collapsed if there's no data by default" rule
-           applied across the dashboard. -->
       {#snippet middle()}
         <AlgoTabs
           tabs={[
@@ -1682,10 +1651,8 @@
          tabs" bug that resulted from each tab owning its own chrome;
          giving all three the SAME parent element removes that failure
          mode structurally (same DOM node, same CSS box, regardless of
-         which child is visible). Collapse-hiding lives HERE (not on the
-         inner panels below) so a collapsed card doesn't leave an empty
-         bordered box under the header. -->
-    <div class="dash-chart-frame algo-chart-frame" hidden={_colEquityCurve}>
+         which child is visible). -->
+    <div class="dash-chart-frame algo-chart-frame">
     <!-- NAV panel — firm NAV history curve (NavTab). Default tab.
          Polls /api/nav/history?days=90 on a market-aware interval;
          renders the hand-rolled amber SVG line. Lives ABOVE the
@@ -1908,20 +1875,21 @@
        NavCard / PerformancePage embeds on any algo route automatically
        inherit the Bloomberg-dark palette. NavBreakdown uses --algo-*
        vars and is unaffected. -->
-  <section class="bucket-card cap-eq-tabbed"
-    class:fs-card-on={_fsNavBd || _fsCapital || _fsEquity}
-    class:is-collapsed={_colNavBd && _colCapital && _colEquity}>
-    <!-- 2026-10 CardHeader adoption sweep — AlgoTabs still IS the card
-         identifier (no `title` prop), now carried in CardHeader's own
-         `middle` zone instead of a bespoke `.bucket-header` div, so this
-         card picks up the same shared shade every other migrated panel
-         gets. showControls=false because the per-tab control cluster
-         below still needs direct CardControls (Svelte 5 doesn't permit
-         ternary expressions inside `bind:`, so each tab binds its own
-         collapse/fullscreen state) — CardHeader's own single built-in
-         cluster can't express that, so the three CardControls blocks
-         move into the `right` snippet unchanged. -->
-    <CardHeader showControls={false}>
+  <section class="bucket-card cap-eq-tabbed">
+    <!-- 2026-10 CardHeader adoption sweep — `title` (Part 5, button-group
+         standardization) gives this card a visible header label distinct
+         from its own P&L/Capital/Equity tab names; AlgoTabs itself carries
+         in CardHeader's own `middle` zone instead of a bespoke
+         `.bucket-header` div, so this card picks up the same shared shade
+         every other migrated panel gets. showControls=false because the
+         per-tab control cluster below still needs direct CardControls
+         (each tab wants its own `label`/`onDownload` target) — CardHeader's
+         own single built-in cluster can't express that, so the three
+         CardControls blocks move into the `right` snippet unchanged.
+         Collapse/Fullscreen removed from all three (2026-10 button-group
+         standardization, Parts 1+3) via hideFullscreen={true}; no isCollapsed/
+         isFullscreen binds remain. -->
+    <CardHeader showControls={false} title="Portfolio">
       {#snippet middle()}
         <AlgoTabs
           tabs={[
@@ -1936,8 +1904,7 @@
       {#snippet right()}
         {#if _capEqTab === 'nav'}
           <CardControls
-            bind:isCollapsed={_colNavBd}
-            bind:isFullscreen={_fsNavBd}
+            hideFullscreen={true}
             label="P&L"
             onRefresh={_refreshAll}
             bind:refreshLoading={_refreshing}
@@ -1946,8 +1913,7 @@
           />
         {:else if _capEqTab === 'capital'}
           <CardControls
-            bind:isCollapsed={_colCapital}
-            bind:isFullscreen={_fsCapital}
+            hideFullscreen={true}
             label="Capital"
             onRefresh={_refreshAll}
             bind:refreshLoading={_refreshing}
@@ -1959,8 +1925,7 @@
           />
         {:else}
           <CardControls
-            bind:isCollapsed={_colEquity}
-            bind:isFullscreen={_fsEquity}
+            hideFullscreen={true}
             label="Equity"
             onRefresh={_refreshAll}
             bind:refreshLoading={_refreshing}
@@ -1979,12 +1944,12 @@
          Expiry P&L), not a NAV total. Left as-is pending an operator
          decision on the tab; do not add NAV math here without explicit
          instruction. -->
-    <div class="card-body" hidden={_capEqTab !== 'nav' || _colNavBd}>
+    <div class="card-body" hidden={_capEqTab !== 'nav'}>
       <NavBreakdown bind:this={_navBdRef} accountFilter={_eqAccounts} />
     </div>
 
     <!-- Capital panel — Margin (M slot) + Cash/Funds (C slot) via NavBreakdown -->
-    <div class="card-body" hidden={_capEqTab !== 'capital' || _colCapital}>
+    <div class="card-body" hidden={_capEqTab !== 'capital'}>
       <div class="bucket-subheader">Margin Utilisation</div>
       <NavBreakdown bind:this={_capMRef} activeSlot="M" accountFilter={_eqAccounts} />
       <div class="bucket-subheader bucket-subheader-spaced">Cash &amp; Funds</div>
@@ -1992,7 +1957,7 @@
     </div>
 
     <!-- Equity panel — P&L (P slot) + Holdings (H slot) via NavBreakdown -->
-    <div class="card-body" hidden={_capEqTab !== 'equity' || _colEquity}>
+    <div class="card-body" hidden={_capEqTab !== 'equity'}>
       <div class="bucket-subheader">Positions P&amp;L</div>
       <NavBreakdown bind:this={_eqPRef} activeSlot="P" accountFilter={_eqAccounts} />
       <div class="bucket-subheader bucket-subheader-spaced">Holdings</div>
@@ -2016,8 +1981,7 @@
      ActivityLogModal + the /orders Activity card — single shared
      ActivityLogSurface (wrapping LogPanel), so the four mounts
      can't drift on filter UI or LogPanel config. -->
-<section class="bucket-card dash-activity"
-  class:is-collapsed={_colActivity}>
+<section class="bucket-card dash-activity">
   <div class="card-body">
     <!-- ActivityLogSurface with label="Log" so LogPanel renders its own
          tab-row header (label chip, filters, card buttons).
@@ -2026,9 +1990,7 @@
       defaultTab="news"
       context="card-wide"
       label="Log"
-      cardId="dash-activity"
       onRefresh={_refreshAll}
-      bind:isCollapsed={_colActivity}
       bind:accountFilter={_actAccountFilter}
       bind:availableAccounts={_actAvailableAccounts}
       bind:levelFilter={_actLevelFilter} />
@@ -2048,25 +2010,17 @@
     onSubmit={() => { _ticketProps = null; }} />
 {/if}
 
-<!-- Agent activity — same CollapseButton pattern as every other card.
-     Default collapsed; CollapseButton restores from localStorage if
-     the operator's last state was expanded. -->
-<section class="bucket-card dash-agent"
-  class:fs-card-on={_fsAgent}
-  class:is-collapsed={_colAgent}>
+<!-- Agent activity card. -->
+<section class="bucket-card dash-agent">
   <CardHeader
     title="AGENT ACTIVITY"
-    bind:isCollapsed={_colAgent}
-    bind:isFullscreen={_fsAgent}
+    hideFullscreen={true}
     label="Agent activity"
     onRefresh={_refreshAll}
     bind:refreshLoading={_refreshing}
     showSearch={false}
     detectOverflow={false}
   >
-    <!-- Default expanded — was previously `initialCollapsed=true` so
-         the empty-state "No agent fires yet today" was hidden behind
-         a collapse the operator had to click to discover. -->
     {#snippet left()}
       <span class="dash-agent-chip">
         <span class="dash-agent-count">{_firesToday}</span>
@@ -2074,7 +2028,7 @@
       </span>
     {/snippet}
   </CardHeader>
-  <div class="card-body" hidden={_colAgent}>
+  <div class="card-body">
     <ActionEventsToggle bind:value={_agentLogShowActions} />
     <UnifiedLog
       filter={{ kinds: _agentLogKinds }}
@@ -2164,17 +2118,12 @@
      background and must itself participate in the card's flex column
      so the generic `.dash-row1-split > .bucket-card > .card-body` rule
      above (still correct for the RIGHT card's own direct .card-body
-     children) is supplemented here rather than replaced. [hidden] is
-     overridden explicitly because `display: flex` on this element would
-     otherwise beat the UA default `[hidden] { display: none }` rule. */
+     children) is supplemented here rather than replaced. */
   .dash-row1-split > .bucket-card > .dash-chart-frame {
     flex: 1 1 auto;
     min-height: 0;
     display: flex;
     flex-direction: column;
-  }
-  .dash-chart-frame[hidden] {
-    display: none;
   }
   .dash-row1-split > .bucket-card > .dash-chart-frame > .card-body {
     flex: 1 1 auto;
@@ -2276,31 +2225,6 @@
     height: 220px;
     cursor: crosshair;
     overflow: visible;
-  }
-  /* Fullscreen card → chart fills the viewport. Same idiom OptionsPayoff
-     + PriceChart use. */
-  .fs-card-on .eq-svg {
-    height: calc(100vh - 10rem) !important;
-    min-height: 320px;
-  }
-  /* Stat overlay magnifies in step with the chart so the P&L numerics
-     stay readable at viewport size. `left` keeps the same `calc(8.7% + ...)`
-     offset as the non-fullscreen rule below — see that rule's comment
-     for the derivation; only the rem term scales up for fullscreen. */
-  .fs-card-on .eq-stats {
-    gap: 1.4rem;
-    top: 0.6rem;
-    left: calc(8.7% + 0.7rem);
-  }
-  .fs-card-on .eq-stat-k { font-size: var(--fs-lg); margin-bottom: 0.32rem; }
-  .fs-card-on .eq-stat-v { font-size: var(--fs-2xl); }
-  @media (max-width: 600px) {
-    .fs-card-on .eq-svg {
-      height: calc(100vh - 8rem) !important;
-    }
-    .fs-card-on .eq-stats { gap: 0.8rem; }
-    .fs-card-on .eq-stat-k { font-size: var(--fs-sm); }
-    .fs-card-on .eq-stat-v { font-size: var(--fs-xl); }
   }
   /* Stat overlay — at-a-glance P&L numerics (P&L TODAY · TODAY % ·
      vs NIFTY) anchored top-left inside the chart card body. Same
@@ -2451,7 +2375,7 @@
        the chip's visual center sit lower than the "AGENT ACTIVITY"
        label in the same flex row (the large count's baseline pulled
        the chip's content down). center-align matches the rest of the
-       row chrome (.mp-section-label, CollapseButton, FullscreenButton). */
+       row chrome (.mp-section-label and friends). */
     align-items: center;
     gap: 0.3rem;
     padding: 0.15rem 0.5rem;
@@ -2734,11 +2658,6 @@
     flex: 1 1 auto;
     min-height: 8rem;
     max-height: 33vh;
-  }
-  .dash-activity.is-collapsed > .card-body {
-    flex: 0 0 auto;
-    min-height: 0;
-    max-height: none;
   }
   /* NAV chip fetch-error strip — rendered above <NavTab> when the live
      GET /api/auth/firm-nav poll (60s) fails. Red palette matching

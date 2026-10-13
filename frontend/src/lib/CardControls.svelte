@@ -1,10 +1,16 @@
 <!--
   CardControls — canonical card-chrome control cluster.
 
-  Composes the five card buttons every page-section card uses, in
-  canonical order: Refresh (fullscreen only) · Search · Collapse ·
-  DefaultSize · Fullscreen. Replaces the 5-line hand-rolled cluster
-  that was duplicated across cards.
+  Composes the card buttons every page-section card uses, in
+  canonical order: Refresh (fullscreen only) · Search · DefaultSize ·
+  Fullscreen. Replaces the 5-line hand-rolled cluster that was
+  duplicated across cards.
+
+  Collapse removed 2026-10-13 (header button-group standardization) —
+  the chevron caret that inverted on toggle was flagged as visual
+  clutter. `isCollapsed`/`showCollapse` (this file) and `CardHeader.svelte`'s
+  own matching props were fully removed in the same sweep, confirmed
+  via a fresh app-wide grep that zero callers remained.
 
   Adoption (verified 2026-10, do not restate without re-checking):
     Direct import — MarketPulse, /dashboard, /admin/derivatives,
@@ -14,21 +20,22 @@
       which wraps LogPanel).
     Automation's Console tab (ConsoleTab.svelte, 2026-10) — wraps the CLI
       entry + result area in a CardHeader with ONLY Fullscreen wired
-      (showSearch/showCollapse false — no grid to search, and collapsing
-      a tab's only content is a no-op). Operator request: give the CLI
-      panel the same card chrome every other operator-action card has.
+      (showSearch false — no grid to search). Operator request: give
+      the CLI panel the same card chrome every other operator-action
+      card has.
     NOT adopted on pages without actionable grids — /admin/mcp, etc.
 
   Operator: "have search, expand/contract, full screen card as a
   reusable code".
 
   Props:
-    isCollapsed, isFullscreen — bindable card state (drives + flows
-        from each button's $bindable).
+    isFullscreen — bindable card state (drives + flows from each
+        button's $bindable).
     filter — bindable GridSearchButton filter text. Omit if the
         card has no searchable grid (component hides the button).
-    cardId — localStorage key for CollapseButton persistence
-        (omit to skip persistence; collapse still works in-session).
+    cardId — currently unused by any button here (Collapse was its
+        only consumer); kept as a prop since CardHeader still forwards
+        it through for potential future per-card persistence needs.
     label — card name used in every button's a11y title + aria-label.
     onRefresh — async function fired by RefreshButton. Required to
         render RefreshButton; otherwise refresh slot is skipped.
@@ -43,7 +50,6 @@
         refresh path independently (e.g. /orders activity log).
 -->
 <script>
-  import CollapseButton from '$lib/CollapseButton.svelte';
   import DefaultSizeButton from '$lib/DefaultSizeButton.svelte';
   import FullscreenButton from '$lib/FullscreenButton.svelte';
   import GridDownloadButton from '$lib/GridDownloadButton.svelte';
@@ -51,7 +57,6 @@
   import RefreshButton from '$lib/RefreshButton.svelte';
 
   /** @type {{
-   *   isCollapsed?: boolean,
    *   isFullscreen?: boolean,
    *   filter?: string,
    *   cardId?: string,
@@ -60,12 +65,10 @@
    *   refreshLoading?: boolean,
    *   showSearch?: boolean,
    *   refreshAlwaysVisible?: boolean,
-   *   showCollapse?: boolean,
    *   onDownload?: ((...args: any[]) => void) | null,
    *   hideFullscreen?: boolean,
    * }} */
   let {
-    isCollapsed = $bindable(false),
     isFullscreen = $bindable(false),
     filter = $bindable(''),
     cardId = '',
@@ -74,7 +77,6 @@
     refreshLoading = $bindable(false),
     showSearch = true,
     refreshAlwaysVisible = false,
-    showCollapse = true,
     onDownload = null,
     hideFullscreen = false,
   } = $props();
@@ -87,13 +89,10 @@
   <GridSearchButton bind:filter {label} />
 {/if}
 <GridDownloadButton onClick={onDownload} {label} autoMargin={false} />
-{#if showCollapse}
-  <CollapseButton bind:isCollapsed {cardId} {label} />
-{/if}
 {#if !hideFullscreen || isFullscreen}
   {#if !isFullscreen}
     <FullscreenButton bind:isFullscreen {label} />
   {:else}
-    <DefaultSizeButton bind:isFullscreen bind:isCollapsed {label} />
+    <DefaultSizeButton bind:isFullscreen {label} />
   {/if}
 {/if}

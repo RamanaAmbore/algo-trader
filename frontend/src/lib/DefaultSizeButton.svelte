@@ -1,26 +1,25 @@
 <!--
   DefaultSizeButton — restores a card to its default inline state
-  (not fullscreen, not collapsed). Pairs with FullscreenButton +
-  CollapseButton to give every card a three-state control trio:
+  (not fullscreen). Pairs with FullscreenButton as a two-state size
+  control:
 
-    [□ Fullscreen]  [▢ Default]  [▾ Collapse]
-       expand          inline      hide body
+    [□ Fullscreen]  [▢ Default]
+       expand          inline
 
-  Click resets BOTH isFullscreen=false and isCollapsed=false. Works
-  even when the card is already in the default state (idempotent
-  no-op). Highlights when the operator is currently in the default
-  state so the button reads as "you are here".
+  (Collapse removed app-wide 2026-10-13, header button-group
+  standardization — this used to also reset isCollapsed=false.)
+
+  Click resets isFullscreen=false. Works even when the card is
+  already in the default state (idempotent no-op). Highlights when
+  the operator is currently in the default state so the button reads
+  as "you are here".
 
   Usage:
     <FullscreenButton bind:isFullscreen={_fs} label="X" />
-    <DefaultSizeButton
-       bind:isFullscreen={_fs}
-       bind:isCollapsed={_col}
-       label="X" />
-    <CollapseButton bind:isCollapsed={_col} cardId="x" label="X" />
+    <DefaultSizeButton bind:isFullscreen={_fs} label="X" />
 
-  Same cyan-400 palette as the rest of the card-control trio so the
-  three icons read as one consistent family.
+  Same cyan-400 palette as FullscreenButton so the pair reads as one
+  consistent family.
 -->
 <script>
   import { pushLayer, popLayer } from '$lib/utils/layerStack.js';
@@ -28,8 +27,6 @@
   let {
     /** Bindable fullscreen state — set to false on click. */
     isFullscreen = $bindable(false),
-    /** Bindable collapse state — set to false on click. */
-    isCollapsed = $bindable(false),
     /** Card name for a11y / tooltip. */
     label = 'card',
   } = $props();
@@ -155,7 +152,6 @@
     onclick={(e) => {
       e.stopPropagation();
       isFullscreen = false;
-      isCollapsed = false;
     }}
     aria-label={`Restore ${label} to default size`}
     title="Restore to default size">

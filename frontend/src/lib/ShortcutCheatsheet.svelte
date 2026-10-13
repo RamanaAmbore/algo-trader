@@ -60,7 +60,6 @@
     { key: 'k',     label: 'Row up' },
     { key: 'Enter', label: 'Context menu' },
     { key: 'f',     label: 'Fullscreen card' },
-    { key: 'c',     label: 'Collapse card' },
   ];
 
 </script>

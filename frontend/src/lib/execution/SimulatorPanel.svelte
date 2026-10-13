@@ -30,9 +30,8 @@
   import RecordingsPanel from '$lib/execution/RecordingsPanel.svelte';
   import { priceFmt, aggFmt, qtyFmt } from '$lib/format';
 
-  // Card fullscreen / collapse state for chart sections.
+  // Card fullscreen state for chart sections.
   let _underlyingChartsFs  = $state(false);
-  let _underlyingChartsCol = $state(false);
 
   let scenarios = $state(/** @type {any[]} */ ([]));
   let status    = $state(/** @type {any} */ ({}));
@@ -967,17 +966,16 @@
   </section>
 
   <!-- Per-underlying charts — always section-labelled. -->
-  <section class="sim-card" class:fs-card-on={_underlyingChartsFs} class:is-collapsed={_underlyingChartsCol}>
+  <section class="sim-card" class:fs-card-on={_underlyingChartsFs}>
     <CardHeader
       title="Underlying Charts"
       detectOverflow={false}
       bind:isFullscreen={_underlyingChartsFs}
-      bind:isCollapsed={_underlyingChartsCol}
       showSearch={false}
       onRefresh={_refreshSim}
       bind:refreshLoading={_simRefreshing}
     />
-    <div hidden={_underlyingChartsCol}>
+    <div>
       {#if underlyingNames.length}
         <div class="sim-charts fs-content-fill" style="--fs-chrome-h: 5rem;">
           {#each underlyingNames as name (name)}

@@ -2506,9 +2506,10 @@
 
 /* In FULLSCREEN mode the card controls (Refresh, Search, Download,
    DefaultSize) stay inside their CardHeader / bucket-header bar and
-   remain visible via sticky positioning. CollapseButton is hidden
-   because collapsing a fullscreen card is not meaningful — the
-   DefaultSizeButton already exits fullscreen.
+   remain visible via sticky positioning. (Collapse button removed
+   app-wide 2026-10-13 header button-group standardization sweep —
+   this comment used to also explain why it was hidden in fullscreen;
+   no longer applicable.)
 
    Header stickiness:
      .card-header and .bucket-header (both direct children of the
@@ -2517,18 +2518,12 @@
      z-index: 1 keeps the sticky header above grid rows that would
      otherwise bleed under it during scroll.
 
-   CollapseButton:
-     - Hidden unconditionally; the operator can't collapse a card
-       that already fills the viewport. FullscreenButton hides itself
-       via {#if !isFullscreen} — no CSS needed for that one.
-
    The previous approach (position: fixed on individual buttons) was
    removed because it required hard-coded top/right offsets that
    differed across cards with different padding values (.bucket-card
    canonical 0.55rem, dashboard override 0.65rem, mp-bucket-wrap
    0rem, orders 0.35rem). The sticky header approach is SSOT and
    padding-agnostic. */
-.fs-card-on .collapse-btn { display: none !important; }
 
 /* Sticky header — keeps controls visible when card body scrolls.
    Background inherits the card's elevated surface so scrolling
@@ -2569,9 +2564,9 @@
 
    Headers opt in via one of the recognised class names below.
    Once `display: flex; align-items: center` is applied, the title
-   span sits flush-left naturally; .ams (AccountMultiSelect),
-   .collapse-btn, and .fs-btn each carry their own `margin-left:
-   auto` which pushes the icon cluster to the right edge.
+   span sits flush-left naturally; .ams (AccountMultiSelect) and
+   .fs-btn each carry their own `margin-left: auto` which pushes the
+   icon cluster to the right edge.
 
    Adding a new header class? Either add it here or compose with one
    of these names. Keeps every algo page visually aligned without

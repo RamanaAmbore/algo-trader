@@ -72,6 +72,28 @@ test.describe('CardHeader adoption sweep — positive control', () => {
     await expect(activityHeader).toBeVisible({ timeout: 20_000 });
     expect(await hasSharedShade(activityHeader), 'known-good CardHeader should show a shade').toBe(true);
   });
+
+  test('OrderBook "Activity" card has no Collapse button; Download/Fullscreen still work', async ({ page }) => {
+    await loginAsAdmin(page);
+    await page.goto('/orders', { waitUntil: 'domcontentloaded' });
+    const card = page.locator('section.bucket-card-activity');
+    const header = card.locator('.card-header').first();
+    await expect(header).toBeVisible({ timeout: 20_000 });
+
+    // Collapse removed 2026-10-13 (header button-group standardization) —
+    // no caret/collapse button renders anywhere on this card.
+    await expect(header.locator('.collapse-btn')).toHaveCount(0);
+
+    // Regression guard — Download + Fullscreen (the buttons that
+    // coexisted with Collapse on this card) still render and work.
+    await expect(header.locator('.grid-download-btn')).toBeVisible();
+    const fsBtn = header.locator('.fs-btn, .default-btn');
+    await expect(fsBtn.first()).toBeVisible();
+    await fsBtn.first().click();
+    await expect(card.locator('.ob-root')).toHaveClass(/fs-card-on/);
+    await header.locator('.default-btn').first().click();
+    await expect(card.locator('.ob-root')).not.toHaveClass(/fs-card-on/);
+  });
 });
 
 test.describe('CardHeader adoption sweep — HeldOrdersCard', () => {
@@ -232,7 +254,7 @@ test.describe('CardHeader adoption sweep — PnlAnalysis "Performance" sub-card 
 });
 
 test.describe('CardHeader adoption sweep — Dashboard NAV/Capital/Equity tabbed card', () => {
-  test('AlgoTabs identity + per-tab CardControls still work, shade present', async ({ page }) => {
+  test('title + AlgoTabs identity + per-tab CardControls still work, no Collapse/Fullscreen, shade present', async ({ page }) => {
     await loginAsAdmin(page);
     await page.goto('/dashboard', { waitUntil: 'domcontentloaded' });
 
@@ -241,35 +263,46 @@ test.describe('CardHeader adoption sweep — Dashboard NAV/Capital/Equity tabbed
     const header = card.locator('.card-header').first();
     await expect(header).toBeVisible();
 
-    // 1. No `title` prop (AlgoTabs is the identity) — confirm the three
-    // tabs render inside the header's middle zone.
+    // 1. Header button-group standardization Part 5 (2026-10-13) — this
+    // card previously had neither `title` nor `label`; it now carries a
+    // visible "Portfolio" title distinct from its own P&L/Capital/Equity
+    // tab names, alongside the AlgoTabs identity in the middle zone.
+    await expect(header.locator('.ch-title')).toHaveText('Portfolio');
     await expect(header.getByRole('tab', { name: 'P&L' })).toBeVisible();
     await expect(header.getByRole('tab', { name: 'Capital' })).toBeVisible();
     await expect(header.getByRole('tab', { name: 'Equity' })).toBeVisible();
 
-    // 2. Per-tab CardControls cluster still renders and the Collapse
-    // button still works (click-test the most load-bearing control —
-    // collapsing hides the ACTIVE tab's own card-body; the section-level
-    // `is-collapsed` class is a separate AND-of-all-three-tabs condition,
-    // unrelated to this single-tab click, and unaffected by this
-    // migration either way).
+    // 2. Collapse removed 2026-10-13 (header button-group standardization,
+    // Part 1) — no caret/collapse button renders on any of the three
+    // per-tab CardControls clusters, and the section can never carry
+    // `is-collapsed` (the binding was deleted, not just hidden).
+    await expect(header.locator('.collapse-btn')).toHaveCount(0);
+    await expect(card).not.toHaveClass(/is-collapsed/);
+
+    // 3. Fullscreen removed too, Dashboard-specific (Part 3) — unlike
+    // most other migrated cards, Dashboard panels lose Fullscreen
+    // entirely, via hideFullscreen={true} on each per-tab CardControls.
+    await expect(header.locator('.fs-btn, .default-btn')).toHaveCount(0);
+    await expect(card).not.toHaveClass(/fs-card-on/);
+
+    // 4. Regression guard — Download (the control that coexisted with
+    // Collapse/Fullscreen on this card) still renders per active tab.
     await header.getByRole('tab', { name: 'Capital' }).click();
     const capitalBody = card.locator('.card-body').nth(1);
     await expect(capitalBody).toBeVisible();
-    const collapseBtn = header.locator('.collapse-btn');
-    await expect(collapseBtn).toBeVisible();
-    await collapseBtn.click();
-    await expect(capitalBody).toBeHidden();
-    await collapseBtn.click();
-    await expect(capitalBody).toBeVisible();
+    await expect(header.locator('.grid-download-btn')).toBeVisible();
+    await header.getByRole('tab', { name: 'Equity' }).click();
+    const equityBody = card.locator('.card-body').nth(2);
+    await expect(equityBody).toBeVisible();
+    await expect(header.locator('.grid-download-btn')).toBeVisible();
 
-    // 3. Shade present.
+    // 5. Shade present.
     expect(await hasSharedShade(header)).toBe(true);
   });
 });
 
 test.describe('CardHeader adoption sweep — Derivatives Legs card', () => {
-  test('underlying chip + Legs/Exp-close tabs + full control cluster still work, shade present', async ({ page }) => {
+  test('underlying chip + Legs/Exp-close tabs + Search/Download still work, no Collapse button, shade present', async ({ page }) => {
     await loginAsAdmin(page);
     await page.goto('/admin/derivatives', { waitUntil: 'domcontentloaded' });
 
@@ -282,17 +315,28 @@ test.describe('CardHeader adoption sweep — Derivatives Legs card', () => {
     await expect(header.getByRole('tab', { name: /^Legs/ })).toBeVisible();
     await expect(header.getByRole('tab', { name: /Exp close/ })).toBeVisible();
 
-    // 2. Full CardControls cluster preserved — Collapse button still
-    // toggles the card (same behavior as before migration, now reached
-    // via CardHeader's own forwarded props instead of a bespoke wrapper).
-    const collapseBtn = header.locator('.collapse-btn');
-    await expect(collapseBtn).toBeVisible();
-    await collapseBtn.click();
-    await expect(card).toHaveClass(/is-collapsed/);
-    await collapseBtn.click();
+    // 2. Collapse removed 2026-10-13 (header button-group standardization)
+    // — no caret/collapse button renders anywhere on this card, and the
+    // card can never carry `is-collapsed` (the binding was deleted, not
+    // just hidden).
+    await expect(header.locator('.collapse-btn')).toHaveCount(0);
     await expect(card).not.toHaveClass(/is-collapsed/);
 
-    // 3. Shade present.
+    // 3. Regression guard — the other control-cluster buttons (Search,
+    // Download) that coexisted with Collapse still render and still
+    // work after its removal. (Fullscreen on this card is additionally
+    // gated by CardHeader's own overflow-detection — not exercised here
+    // to avoid coupling this test to grid row count / viewport fixture
+    // state unrelated to the Collapse removal.)
+    const searchBtn = header.locator('.grid-search-btn');
+    await expect(searchBtn).toBeVisible();
+    await searchBtn.click();
+    await expect(searchBtn).toHaveClass(/on/);
+    await searchBtn.click();
+
+    await expect(header.locator('.grid-download-btn')).toBeVisible();
+
+    // 4. Shade present.
     expect(await hasSharedShade(header)).toBe(true);
   });
 });

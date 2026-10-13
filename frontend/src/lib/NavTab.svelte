@@ -289,14 +289,32 @@
   .nav-tab-wrap {
     position: relative;
     width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
     padding: 6px 8px 8px;
     box-sizing: border-box;
   }
   .nav-tab-meta {
+    flex-shrink: 0;
     font-size: var(--fs-xs);
     color: rgba(155, 176, 208, 0.55);
     text-align: right;
     padding-right: 0.4rem;
+  }
+  /* .cp-frame is a shared cross-chart class (app.css) with no height of
+     its own (block, width:100%) — every OTHER chart using it (EquityCurve,
+     PnlAnalysis, PriceChart, MultiPriceChart) sizes its SVG with a fixed
+     px height, so that's fine for them. NavTab is the one chart that wants
+     to stretch to its card's actual available height (preserveAspectRatio
+     ="none" on the SVG below), so this local override — scoped to NavTab's
+     own instance via Svelte's component-scoped styles, not global — makes
+     .cp-frame a flex item that fills the remaining space in .nav-tab-wrap
+     after the meta row above it. */
+  .cp-frame {
+    flex: 1 1 auto;
+    min-height: 0;
   }
   /* EOD badge — marks the curve as once-per-trading-day settlement data,
      distinct from the genuinely live overlay chip (top-left). */
@@ -315,20 +333,19 @@
   .nav-svg {
     display: block;
     width: 100%;
-    height: auto;
-    aspect-ratio: 760 / 260;
+    height: 100%;
+    min-height: 0;
     border-radius: 4px;
   }
-  /* Mobile NAV card height bump — at ≤600 px the sidebar card collapses
-     so far that the curve has no room to breathe (~113 px tall at 393 px
-     wide via the 760/260 aspect ratio). Override aspect-ratio with a
-     hard min-height so the chart stays readable on phones. Operator:
-     "on mobile increase nav chart card height". */
+  /* Mobile NAV card — on a stacked single-column layout (≤600px) there's
+     no sibling card to stretch against, so .cp-frame's flex:1 resolves
+     against whatever height the card naturally ends up with (which can
+     be quite short). A hard min-height keeps the curve readable on
+     phones instead of collapsing toward 0. Operator: "on mobile increase
+     nav chart card height". */
   @media (max-width: 600px) {
     .nav-svg {
-      aspect-ratio: auto;
       min-height: 240px;
-      height: 240px;
     }
   }
   .nav-tab-empty {

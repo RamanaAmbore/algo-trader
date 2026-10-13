@@ -1283,17 +1283,6 @@
     }
   });
 
-  // Per-bucket collapse state — driven by <CollapseButton> in each
-  // header. Each bucket persists its toggle independently via
-  // CollapseButton's own localStorage layer (keyed cardId per
-  // operator), so the operator can collapse Pinned permanently
-  // while keeping Positions expanded. `_effCol*` (declared below
-  // once the row derivations exist) folds in the auto-collapse
-  // rule: a card with zero rows renders as collapsed regardless
-  // of the operator toggle.
-  // Pinned + Watchlist merged into ONE tabbed card; _colPinWatch is
-  // its single collapse state, topTab toggles which feed is visible.
-  let _colPinWatch  = $state(false);
   // Top-tab is either the special 'pinned' string (the merged
   // Default + Markets feed) OR a user-watchlist id. Operator request:
   // "there should not be any watchlist tab. it should be the tab I
@@ -1306,10 +1295,6 @@
       topTab = 'pinned';
     }
   });
-  let _colWinners   = $state(false);
-  let _colLosers    = $state(false);
-  let _colPositions = $state(false);
-  let _colHoldings  = $state(false);
 
   // Per-card symbol filters — bound by <GridSearchButton> in each
   // bucket header. Empty string = no filter. Each filter pipes into
@@ -2177,13 +2162,6 @@
     });
   }
 
-  // Effective collapse state per bucket — operator-driven on desktop;
-  // auto-collapse on empty on mobile so empty cards don't add to the
-  // mobile scroll length. Desktop keeps every card expanded with the
-  // inline empty-state message rendered inside the grid body, then
-  // flex-grow distributes viewport height across the column so the
-  // dashboard stays visually aligned regardless of data availability.
-  //
   // Winner/loser counts kept for the per-tab badge in the card header.
   const _winnersTotal = $derived(
     winnerCounts.underlying + winnerCounts.large_cap
@@ -2191,20 +2169,6 @@
   const _losersTotal = $derived(
     loserCounts.underlying + loserCounts.large_cap
     + loserCounts.midcap + loserCounts.smallcap);
-  // Effective collapse = operator's explicit choice only. The earlier
-  // `(_isMobile && rows.length === 0)` auto-collapse meant: while data
-  // is still loading OR when an operator's book legitimately has zero
-  // rows in a bucket, the card body would render at height: 0 with
-  // only the header showing — and on the post-sticky-footer layout
-  // this looked like a broken card (no body, no footer-floating to
-  // hint at the empty zone below). Let the ag-Grid render its own
-  // "No rows to display" message so the operator sees a real empty
-  // state instead of a phantom collapsed shell.
-  const _effColPinWatch  = $derived(_colPinWatch);
-  const _effColWinners   = $derived(_colWinners);
-  const _effColLosers    = $derived(_colLosers);
-  const _effColPositions = $derived(_colPositions);
-  const _effColHoldings  = $derived(_colHoldings);
 
   // Desktop proportional sizing — each bucket's flex-grow is proportional
   // to its visible row count so taller buckets claim more column height.
@@ -4280,7 +4244,7 @@
   {/if}
   <!-- Chrome row retired — Show dropdown removed, + moved into the
        Pinned/Watchlist card header, refresh moved into each card's
-       header (after the CollapseButton). -->
+       own control cluster. -->
 
 
   <!-- Per-source subtotals strip retired per operator request — the
@@ -4371,14 +4335,11 @@
           when the operator flips tabs.
         -->
         <section class="mp-bucket-wrap mp-bucket-pinwatch"
-                 class:is-collapsed={_effColPinWatch}
                  class:fs-card-on={_fsPinWatch}
                  style="--bucket-rows:{_bRowsPinWatch}">
           <CardHeader
-            bind:isCollapsed={_colPinWatch}
             bind:isFullscreen={_fsPinWatch}
             bind:filter={_filterPinWatch}
-            cardId="pulse-pinwatch"
             label="Pinned/Watchlist"
             onRefresh={refreshAllNow}
             refreshLoading={_refreshing}
@@ -4454,15 +4415,12 @@
         </section>
         {#if showWinners}
           <section class="mp-bucket-wrap mp-bucket-winners"
-                   class:is-collapsed={_effColWinners}
                    class:is-empty={_winnersTotal === 0}
                    class:fs-card-on={_fsWinners}
                    style="--bucket-rows:{_bRowsWinners}">
             <CardHeader
-              bind:isCollapsed={_colWinners}
               bind:isFullscreen={_fsWinners}
               bind:filter={_filterWinners}
-              cardId="pulse-winners"
               label="Gainers"
               onRefresh={refreshAllNow}
               refreshLoading={_refreshing}
@@ -4487,15 +4445,12 @@
         {/if}
         {#if showLosers}
           <section class="mp-bucket-wrap mp-bucket-losers"
-                   class:is-collapsed={_effColLosers}
                    class:is-empty={_losersTotal === 0}
                    class:fs-card-on={_fsLosers}
                    style="--bucket-rows:{_bRowsLosers}">
             <CardHeader
-              bind:isCollapsed={_colLosers}
               bind:isFullscreen={_fsLosers}
               bind:filter={_filterLosers}
-              cardId="pulse-losers"
               label="Losers"
               onRefresh={refreshAllNow}
               refreshLoading={_refreshing}
@@ -4521,19 +4476,28 @@
       </div>
 
       <div class="mp-col mp-col-right">
+        <!-- detectOverflow={false} (2026-10-13) — CardHeader's default
+             auto-hide-Fullscreen-when-not-overflowing heuristic was
+             silently removing this card's ONLY Fullscreen button
+             whenever the operator's book held zero open positions
+             (confirmed via live DOM measurement: agRows.offsetHeight
+             === 1, agOverflows === false on a flat account — NOT a
+             ch-left crowding/clipping issue as originally suspected).
+             Positions' row count swings between 0 and many as trades
+             open/close, so the control must stay available
+             unconditionally rather than flickering in and out with
+             the book's current state. -->
         <section class="mp-bucket-wrap mp-bucket-positions"
-                 class:is-collapsed={_effColPositions}
                  class:fs-card-on={_fsPositions}
                  style="--bucket-rows:{_bRowsPositions}">
           <CardHeader
-            bind:isCollapsed={_colPositions}
             bind:isFullscreen={_fsPositions}
             bind:filter={_filterPositions}
-            cardId="pulse-positions"
             label="Positions"
             onRefresh={refreshAllNow}
             refreshLoading={_refreshing}
             onDownload={() => gridPositions?.exportDataAsCsv({ fileName: 'positions.csv' })}
+            detectOverflow={false}
           >
             {#snippet left()}
               <span class="mp-bucket-label mp-bucket-label-positions">Positions</span>
@@ -4553,14 +4517,11 @@
           <div bind:this={gridPositionsEl} class="ag-theme-quartz ag-theme-algo bucket-grid"></div>
         </section>
         <section class="mp-bucket-wrap mp-bucket-holdings"
-                 class:is-collapsed={_effColHoldings}
                  class:fs-card-on={_fsHoldings}
                  style="--bucket-rows:{_bRowsHoldings}">
           <CardHeader
-            bind:isCollapsed={_colHoldings}
             bind:isFullscreen={_fsHoldings}
             bind:filter={_filterHoldings}
-            cardId="pulse-holdings"
             label="Holdings"
             onRefresh={refreshAllNow}
             refreshLoading={_refreshing}
@@ -5026,16 +4987,6 @@
   :global(.funds-grid .ag-header-viewport) {
     border-radius: 0 !important;
   }
-  /* Collapsed card hides the grid body but keeps the header — the
-     grid div stays in the DOM (so bind:this lands at mount time and
-     ag-Grid can instantiate) but renders as zero-height. When the
-     section un-collapses, the grid div springs back to its full
-     260 px and ag-Grid resizes on the next setGridOption call. */
-  .mp-bucket-wrap.is-collapsed .bucket-grid {
-    height: 0 !important;
-    min-height: 0 !important;
-    overflow: hidden;
-  }
   /* Empty-state shrink — when the Winners / Losers bucket has zero
      rows, drop the grid to just enough to fit the column header
      (28 px) + ag-Grid's "No top winners/losers right now." overlay
@@ -5044,7 +4995,7 @@
      room below the message. Operator gets the saved space for the
      next non-empty card; fullscreen rule below still lifts the card
      to the viewport surface when maximised. */
-  .mp-bucket-wrap.is-empty:not(.is-collapsed):not(.fs-card-on) .bucket-grid {
+  .mp-bucket-wrap.is-empty:not(.fs-card-on) .bucket-grid {
     height: 4.2rem !important;
     min-height: 4.2rem !important;
   }
@@ -5119,9 +5070,7 @@
        5 data rows + ag-Grid header + bucket-header all fit without
        grid-internal scroll. Breakdown: bucket-head ~32px + ag-Grid
        header ~32px + 5 rows × 28px = ~204px; 240px adds comfortable
-       breathing room. Collapsed buckets still hold their flex weight
-       (header visible); the bucket-grid itself is zeroed by the
-       is-collapsed rule below. */
+       breathing room. */
     .mp-col > .mp-bucket-wrap {
       flex: var(--bucket-rows, 1) 0 0;
       min-height: 240px;

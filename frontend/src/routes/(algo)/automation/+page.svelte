@@ -15,6 +15,7 @@
   } from '$lib/api';
   import ActivityLogSurface from '$lib/ActivityLogSurface.svelte';
   import AutomationTabs from '$lib/AutomationTabs.svelte';
+  import CardHeader from '$lib/CardHeader.svelte';
   import DisclosureChevron from '$lib/DisclosureChevron.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
   import { loadOrderTemplates, reloadOrderTemplates, orderTemplatesStore } from '$lib/data/templates';
@@ -60,6 +61,15 @@
   let _consoleCliText = $state('');
   /** @type {{rowKind: 'cycle'|'event'|'template'|'bracket', ref: string|number, label: string} | null} */
   let _consoleEditTarget = $state(null);
+
+  // Header button-group standardization, Part 8 (2026-10-13) — the
+  // Console/Agents tab strip's shared Fullscreen state. Lives here (not
+  // inside ConsoleTab) because it must fullscreen the SAME wrapper
+  // regardless of which sub-view (Console or Agents) is currently
+  // active — ConsoleTab no longer owns its own `_fsConsole`/CardHeader;
+  // the Agents view never had a competing fullscreen mechanism of its
+  // own, so this is the one and only control for this area.
+  let _fsAutomationView = $state(false);
 
   // Sprint B (2026-10) — single reactive effect (not a one-shot onMount
   // read) on `page.url`: `?tab=` must keep working on a WITHIN-page
@@ -547,13 +557,29 @@
   </span>
 </div>
 
-<AutomationTabs value={activeTab} onChange={setActiveTab} />
+<!-- Header button-group standardization, Part 8 (2026-10-13) — real
+     CardHeader for the Console/Agents tab strip, Fullscreen wired to
+     the page-level `_fsAutomationView` state above. Wraps BOTH the tab
+     strip AND whichever sub-view is active so the one Fullscreen
+     button correctly fullscreens the actual visible content, not just
+     the tab strip by itself, and keeps working across a tab switch
+     while fullscreen (same `.fs-card-on` global pattern every other
+     fullscreenable card in the app uses — see app.css). -->
+<section class="aw-view" class:fs-card-on={_fsAutomationView}>
+  <CardHeader
+    title="Workspace"
+    bind:isFullscreen={_fsAutomationView}
+    showSearch={false}
+    detectOverflow={false}
+  />
+  <div class="aw-view-body fs-content-fill" style="--fs-chrome-h: 2.6rem;">
+    <AutomationTabs value={activeTab} onChange={setActiveTab} />
 
-{#if activeTab === 'console'}
-  <ConsoleTab bind:value={_consoleCliText} bind:editTarget={_consoleEditTarget} />
-{:else}
+    {#if activeTab === 'console'}
+      <ConsoleTab bind:value={_consoleCliText} bind:editTarget={_consoleEditTarget} />
+    {:else}
 
-<StaleBanner {error} hasData={agents.length > 0} label="Agents" />
+    <StaleBanner {error} hasData={agents.length > 0} label="Agents" />
 
 <!-- Recursive tree renderer used by both the normal expanded view and the
      inline editor. Grammar nodes are:
@@ -840,13 +866,33 @@
     {/if}
   </div>
 
-{/if}
+    {/if}
+  </div>
+</section>
 
 <style>
   /* Mobile: the bare section heading sits directly in .algo-content
      (padding-left: 0 on mobile) — indent it to match the cards beside it. */
   @media (max-width: 640px) {
     .section-heading { padding-left: 0.7rem; }
+  }
+
+  /* ── Console/Agents tab-strip card (Header button-group
+     standardization, Part 8, 2026-10-13) — wraps AutomationTabs +
+     whichever sub-view is active so the shared CardHeader's Fullscreen
+     control promotes the WHOLE area onto the global `.fs-card-on`
+     pattern (app.css), not just the tab strip. `.aw-view-body` also
+     carries `.fs-content-fill` (global, app.css) which only takes
+     effect while `.fs-card-on` is active on the ancestor — a plain
+     block in the normal (non-fullscreen) layout. */
+  .aw-view {
+    display: flex;
+    flex-direction: column;
+  }
+  .aw-view-body {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
   }
   /* ── Agent group grid — uses canonical .page-grid for layout ───────
      Overrides auto-fill with a fixed 2-column layout on desktop so each

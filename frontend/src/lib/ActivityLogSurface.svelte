@@ -74,8 +74,6 @@
     context             = /** @type {'page'|'card'|'card-wide'|'modal'} */ ('page'),
     /** Optional label for the LogPanel header chip (e.g. "ACTIVITY"). */
     label               = /** @type {string} */ (''),
-    /** Bindable collapse state — passed through to LogPanel. */
-    isCollapsed         = $bindable(false),
     /** Bindable tall/expanded state — passed through to LogPanel. */
     isTall              = $bindable(false),
     /** Retained bindable for caller compat. Not passed to LogPanel —
@@ -87,8 +85,6 @@
     refreshLoading      = $bindable(false),
     /** Download callback — passed through to LogPanel. */
     onDownload          = /** @type {(() => void) | null} */ (null),
-    /** Card id for CollapseButton localStorage persistence. */
-    cardId              = /** @type {string} */ (''),
     /** Close callback — used in modal context. */
     onClose             = /** @type {(() => void) | null} */ (null),
     /**
@@ -185,11 +181,9 @@
   {tabs}
   {context}
   {label}
-  bind:isCollapsed
   bind:isTall
   {onRefresh}
   bind:refreshLoading
   {onDownload}
-  {cardId}
   {onClose}
 />

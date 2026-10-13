@@ -246,14 +246,6 @@
       if (fsBtn) { e.preventDefault(); fsBtn.click(); }
       return;
     }
-    // `c` = collapse toggle on the nearest algo-card ancestor.
-    if (k.toLowerCase() === 'c') {
-      const afocus2 = /** @type {HTMLElement|null} */ (document.activeElement);
-      const card2 = afocus2?.closest('.algo-card');
-      const colBtn = /** @type {HTMLButtonElement|null} */ (card2?.querySelector('.collapse-btn'));
-      if (colBtn) { e.preventDefault(); colBtn.click(); }
-      return;
-    }
     // `Enter` on a focused ag-Grid cell = open context menu if available.
     if (k === 'Enter') {
       const aenter = /** @type {HTMLElement|null} */ (document.activeElement);

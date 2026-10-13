@@ -52,11 +52,9 @@
    *   activeTab?: string,
    *   context?: 'page'|'card'|'card-wide'|'modal',
    *   label?: string,
-   *   isCollapsed?: boolean,
    *   onRefresh?: (() => void) | null,
    *   refreshLoading?: boolean,
    *   onDownload?: (() => void) | null,
-   *   cardId?: string,
    *   onClose?: (() => void) | null,
    *   isTall?: boolean,
    * }} */
@@ -174,16 +172,12 @@
      *  When provided, the tab row renders its own label + separator + card buttons.
      *  When empty (default), existing mounts get zero new chrome. */
     label           = /** @type {string} */ (''),
-    /** Bindable collapse state — passed through when label is set. */
-    isCollapsed     = $bindable(false),
     /** Refresh callback — rendered as a button in lp-card-btns when provided. */
     onRefresh       = /** @type {(() => void) | null} */ (null),
     /** Bindable refresh-loading spinner state. */
     refreshLoading  = $bindable(false),
     /** Download callback — rendered as a button in lp-card-btns when provided. */
     onDownload      = /** @type {(() => void) | null} */ (null),
-    /** Card id for CollapseButton localStorage persistence. */
-    cardId          = /** @type {string} */ (''),
     /** Close callback — used in modal context to render a close button. */
     onClose         = /** @type {(() => void) | null} */ (null),
     /** Whether the panel body is in the tall (expanded) state. Bindable so
@@ -1198,10 +1192,9 @@
   const _AGENT_KIND_LS_KEY = 'ramboq.logpanel.agentKindFilter';
   let _agentKindFilter = $state('all');
 
-  // Persist both filters the same way CollapseButton.svelte persists its
-  // own per-card UI preference: plain localStorage, try/catch-silent
-  // (quota / Safari private mode), restore-once-on-mount gated by a
-  // `_restored` flag so the initial default doesn't immediately
+  // Persist both filters as a per-card UI preference: plain localStorage,
+  // try/catch-silent (quota / Safari private mode), restore-once-on-mount
+  // gated by a `_restored` flag so the initial default doesn't immediately
   // overwrite a real stored value before it's been read.
   let _agentFiltersRestored = false;
   onMount(() => {
@@ -2024,17 +2017,14 @@
 </script>
 
 <!-- Unified header — CardHeader owns left/middle/right layout: scrollable middle
-     zone for tabs + filters, canonical CardControls buttons (chevron collapse,
-     search, download). hideFullscreen=true suppresses card-portal fullscreen;
+     zone for tabs + filters, canonical CardControls buttons (search,
+     download). hideFullscreen=true suppresses card-portal fullscreen;
      LogPanel's own modal-open button sits in the right snippet instead. -->
 <div class="lp-header-wrap" class:ctx-modal={context === 'modal'}>
 <CardHeader
   title={label}
-  {cardId}
   {onRefresh}
   refreshAlwaysVisible={context === 'modal'}
-  showCollapse={context !== 'modal'}
-  bind:isCollapsed
   bind:refreshLoading
   bind:filter={_searchQuery}
   showSearch={true}
@@ -2081,7 +2071,7 @@
 </CardHeader>
 </div><!-- /.lp-header-wrap -->
 
-<div class="lp-body-wrap {_expanded ? 'lp-body-expanded' : ''}" class:lp-tall={isTall} class:lp-body-card={context === 'card' || context === 'card-wide'} hidden={isCollapsed}>
+<div class="lp-body-wrap {_expanded ? 'lp-body-expanded' : ''}" class:lp-tall={isTall} class:lp-body-card={context === 'card' || context === 'card-wide'}>
 {#if logTab === 'news'}
   <!-- News tab — rendered via shared NewsList component in algo palette.
        Activity surface flavour: 2-column magazine flow (same as dashboard
@@ -3013,10 +3003,6 @@
   .lp-body-wrap {
     display: contents; /* transparent wrapper — no layout change by default */
   }
-  /* `display: contents` beats UA [hidden]{display:none} at equal specificity.
-     This scoped rule (0,2,0 with Svelte attribute) wins over the base rule
-     so collapse via the hidden HTML attribute actually hides the body. */
-  .lp-body-wrap[hidden] { display: none; }
   .lp-body-wrap.lp-body-expanded {
     display: flex;
     flex-direction: column;

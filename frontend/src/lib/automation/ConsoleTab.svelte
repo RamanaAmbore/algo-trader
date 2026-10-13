@@ -36,7 +36,6 @@
   import { safeRead } from '$lib/utils/safeRead.js';
   import CommandLineTab from '$lib/order/CommandLineTab.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
-  import CardHeader from '$lib/CardHeader.svelte';
   import AgentCliEditor from '$lib/command/AgentCliEditor.svelte';
   import { fetchAgentCatalog, compileAgentCliStatement } from '$lib/command/grammars/agents.js';
   import {
@@ -341,7 +340,6 @@
   // `onParsedOrder` prop (buy/sell submits directly via
   // `_submitPlaceOrder`, writing to its own `cmdHistory`) — the modal
   // mount was dead code, unreachable from any real operator action.
-  let _fsConsole = $state(false);
 
   // Sprint I Phase 1 (2026-10-11) — the hidden (`headless`) legacy
   // CommandLineTab instance, driven programmatically. `bind:this` gives
@@ -415,20 +413,21 @@
   }
 </script>
 
-<section class="console-card" class:fs-card-on={_fsConsole}>
-  <CardHeader
-    title="Console"
-    label="Console"
-    bind:isFullscreen={_fsConsole}
-    showSearch={false}
-    showCollapse={false}
-    detectOverflow={false}
-  />
-  <!-- svelte-ignore a11y_no_static_element_interactions -- this div only
-       listens for Ctrl/Cmd+Enter as a keyboard-shortcut convenience over
-       the real interactive elements it contains (the textarea + action
-       buttons below); it is not itself an interactive control. -->
-  <div class="console-card-body" onkeydown={_onWrapperKeydown}>
+<!-- Header button-group standardization, Part 8 (2026-10-13) — this
+     component's own CardHeader/Fullscreen wrapper (`.console-card`,
+     `_fsConsole`) was REMOVED; the shared Console/Agents tab-strip
+     CardHeader at the page level (`automation/+page.svelte`'s
+     `.aw-view`) now carries the ONE Fullscreen control for this whole
+     area. ConsoleTab is only ever mounted inside that page-level
+     wrapper (confirmed via grep — no standalone mount exists), so it
+     doesn't need its own fullscreen awareness at all; the global
+     `.fs-card-on`/`.fs-content-fill` CSS on the ancestor handles all
+     the visual sizing. -->
+<!-- svelte-ignore a11y_no_static_element_interactions -- this div only
+     listens for Ctrl/Cmd+Enter as a keyboard-shortcut convenience over
+     the real interactive elements it contains (the textarea + action
+     buttons below); it is not itself an interactive control. -->
+<div class="console-card-body" onkeydown={_onWrapperKeydown}>
     {#if isDemo}
       <div class="mb-2 p-2 rounded bg-purple-500/10 border border-purple-500/30 text-[0.65rem] text-purple-200">
         <strong class="text-purple-100">Demo view.</strong>
@@ -536,32 +535,21 @@
       {/if}
     </div>
   </div>
-</section>
 
 <ConfirmModal bind:this={_liveConfirmRef} />
 
 <style>
-  /* Sprint C follow-up (2026-10) — Console tab's own card chrome. Wraps
-     the CLI entry + result area so the standard CardControls group
-     (via CardHeader) applies, matching every other operator-action
-     card in the app. Only Fullscreen is wired (showSearch/showCollapse
-     false) — there is no grid to search, and collapsing a tab's only
-     content is a no-op the operator would just re-expand; Download
-     doesn't apply either (no tabular export), left unset so
-     GridDownloadButton hides itself. */
-  .console-card {
-    display: flex;
-    flex-direction: column;
-    gap: 0.3rem;
-  }
+  /* Header button-group standardization, Part 8 (2026-10-13) — this
+     component's own card chrome (`.console-card` section + CardHeader)
+     was removed; Fullscreen now lives on the shared tab-strip header
+     at the page level (`automation/+page.svelte`'s `.aw-view`), which
+     also owns the `.fs-card-on`-driven sizing for this body. This div
+     keeps only its own plain flex layout, independent of fullscreen
+     state. */
   .console-card-body {
     display: flex;
     flex-direction: column;
     min-height: 0;
-  }
-  .console-card.fs-card-on .console-card-body {
-    flex: 1 1 auto;
-    overflow-y: auto;
   }
   .console-tab-guide {
     flex-shrink: 0;

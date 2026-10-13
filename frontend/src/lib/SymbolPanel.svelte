@@ -3662,7 +3662,7 @@
 
   /* Chart icon button — opens ChartModal for the current symbol.
      Same 1.4rem × 1.4rem dimensions + cyan-400 palette as the
-     card-control trio (CollapseButton, FullscreenButton). */
+     card-control buttons (FullscreenButton, DefaultSizeButton). */
   .oes-chart-btn {
     display: inline-flex;
     align-items: center;

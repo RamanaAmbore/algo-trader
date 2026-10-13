@@ -146,9 +146,10 @@
   const _draftOrdersList = $derived([...payoffDrafts.value.values()]);
   const _showChases = $derived(_openOrderCount > 0 || _activeChases > 0 || _draftOrdersList.length > 0 || _pendingOrders.length > 0);
 
-  // Per-card collapse + fullscreen state. No persistence (no cardId
-  // on CollapseButton) so every page load opens both cards expanded
-  // — matches the dashboard pattern.
+  // Per-card fullscreen state. No persistence (no cardId) so every
+  // page load opens both cards expanded — matches the dashboard
+  // pattern. Collapse removed app-wide (2026-10-13 header
+  // button-group standardization).
   /** @type {ReturnType<typeof setTimeout>|null} */
   let _loadOrdersTimer = null;
   function _debouncedLoadOrders() {
@@ -156,10 +157,8 @@
     _loadOrdersTimer = setTimeout(loadOrders, 250);
   }
 
-  let _colEntry    = $state(false);
   let _fsEntry     = $state(false);
   let _entryRefresh = $state(0);
-  let _colActivity = $state(false);
   let _fsActivity  = $state(false);
 
   // Account dropdown lives in the Activity card header so it's
@@ -370,7 +369,6 @@
      bucket-header's section label isn't duplicated. -->
 <section class="bucket-card bucket-card-entry mt-1"
   class:fs-card-on={_fsEntry}
-  class:is-collapsed={_colEntry}
   style="--ch-padding:0.35rem 0.5rem">
   <!-- Operator: "make sure all the elements from order entry panel
        in orders modal should be present in order entry panel in
@@ -388,7 +386,6 @@
        + close button) is suppressed — operator wanted just one
        row, not two stacked. -->
   <CardHeader
-    bind:isCollapsed={_colEntry}
     bind:isFullscreen={_fsEntry}
     label="Order Entry"
     showSearch={false}
@@ -407,7 +404,7 @@
       </span>
     {/snippet}
   </CardHeader>
-  <div class="card-body fs-content-fill" style="--fs-chrome-h: 3rem;" hidden={_colEntry}>
+  <div class="card-body fs-content-fill" style="--fs-chrome-h: 3rem;">
     <!-- `headerless` re-added: SymbolPanel's internal header strip
          (title chip + close X) was the "current orders row" the
          operator asked to remove. The picker row (Account · Type ·
@@ -509,14 +506,12 @@
      opens its OrderTicket modal pre-filled. Same plumbing the Activity
      modal's own LogPanel instance uses, kept in sync by convention. -->
 <section class="bucket-card bucket-card-activity oc-fill"
-  class:is-collapsed={_colActivity}
   class:fs-card-on={_fsActivity}
   use:listenModifyOrder>
   <HeldOrdersCard />
   <OrderBook
     statusFilter={_statusFilter}
     accountFilter={_actAccountFilter}
-    bind:isCollapsed={_colActivity}
     bind:isFullscreen={_fsActivity}
   />
 </section>
@@ -703,7 +698,14 @@
 
   /* "ORDER ENTRY" label — matches the page's `.mp-section-label`
      convention used by Chase + Activity cards (0.6rem, weight 700,
-     amber-70%, 0.08em letter-spacing). */
+     amber-70%, 0.08em letter-spacing). border-left + left padding
+     added 2026-10-13 (header button-group standardization, Part 6)
+     to match `.ch-title`/MarketPulse's `.mp-bucket-label` structural
+     pattern — this custom `left`-snippet span bypasses CardHeader's
+     own `.ch-title` CSS entirely, so it never picked up that fix.
+     Amber color is a deliberate, unrelated choice (see "Card chrome"
+     comment above: Order Entry → amber-400, writing surface /
+     operator action) and stays as-is — only the structure changed. */
   .oc-entry-label {
     display: inline-flex;
     align-items: center;
@@ -714,6 +716,8 @@
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: rgba(251, 191, 36, 0.7);
+    border-left: 3px solid currentColor;
+    padding-left: 0.35rem;
     flex-shrink: 0;
   }
   .oc-entry-icon { color: currentColor; flex-shrink: 0; width: 11px; height: 11px; }

@@ -10,9 +10,11 @@
  * 2. Both Guide links (`ConsoleTab.svelte`, `OrderCliTab.svelte`) render
  *    as a button-shaped `.btn-secondary` pill, not a bare underlined
  *    text link.
- * 3. `CardControls` (via `CardHeader`) renders on the Console tab's card,
- *    with Fullscreen wired (Search/Collapse intentionally omitted — no
- *    grid, no reason to hide a tab's only content).
+ * 3. `CardControls` (via `CardHeader`) renders on the shared Console/
+ *    Agents tab-strip card (`.aw-view`, Header button-group
+ *    standardization Part 8, 2026-10-13 — superseded ConsoleTab's own
+ *    now-removed CardHeader), with Fullscreen wired (Search omitted —
+ *    no grid at this level).
  * 4. The three Agents-tab kind-count cards (Agents/Alerts/Brackets —
  *    Templates folded into Agents 2026-10-12) each render a `.kind-
  *    card-n` AND `.kind-card-l` color keyed off `data-kind`. Revised
@@ -147,34 +149,62 @@ test.describe('Item 2 — Guide link renders as a button, not a bare link', () =
   });
 });
 
-test.describe('Item 3 — CardControls on the Console tab panel', () => {
+test.describe('Item 3 — CardControls on the shared Console/Agents tab-strip header', () => {
   test.beforeEach(async ({ page }) => {
     await loginAsAdmin(page);
   });
 
-  test('Console tab renders a CardHeader with a wired Fullscreen control', async ({ page }) => {
+  // Header button-group standardization, Part 8 (2026-10-13) — ConsoleTab's
+  // own separate CardHeader/`.console-card` wrapper was removed entirely;
+  // the ONE Fullscreen control now lives on the shared tab-strip header
+  // (`.aw-view`) at the page level, above AutomationTabs.
+  test('Automation workspace header renders with a wired Fullscreen control; ConsoleTab no longer has its own', async ({ page }) => {
     await page.goto('/automation?tab=console', { waitUntil: 'domcontentloaded' });
 
-    const header = page.locator('.console-card .card-header');
+    // Negative assertion — the old per-tab wrapper must be gone, not just
+    // visually hidden.
+    await expect(page.locator('.console-card')).toHaveCount(0);
+
+    const header = page.locator('.aw-view .card-header');
     await expect(header).toBeVisible({ timeout: TIMEOUT });
-    await expect(header.locator('.ch-title')).toContainText('Console');
+    await expect(header.locator('.ch-title')).toContainText('Workspace');
 
     const fsBtn = header.locator('button[aria-label*="fullscreen" i], button[title*="fullscreen" i]');
     await expect(fsBtn).toBeVisible({ timeout: TIMEOUT });
 
     await fsBtn.click();
-    await expect(page.locator('.console-card.fs-card-on')).toBeVisible({ timeout: TIMEOUT });
+    await expect(page.locator('.aw-view.fs-card-on')).toBeVisible({ timeout: TIMEOUT });
 
     // The either/or pair — DefaultSizeButton replaces FullscreenButton
     // while fullscreen is active.
     const restoreBtn = header.locator('button[aria-label*="restore" i], button[title*="default size" i], button[title*="restore" i]');
     await expect(restoreBtn).toBeVisible({ timeout: TIMEOUT });
+
+    // Only ONE Fullscreen/DefaultSize control exists for this whole area.
+    await expect(page.locator('button[aria-label*="restore" i], button[title*="default size" i], button[title*="restore" i]')).toHaveCount(1);
+
+    // Still fullscreened, the actual Console content (the CLI textarea)
+    // is inside the fullscreened wrapper, not just the tab strip alone.
+    await expect(page.locator('.aw-view.fs-card-on .agent-cli-textarea')).toBeVisible({ timeout: TIMEOUT });
+
+    // Switching to the Agents tab and back keeps the SAME button working
+    // (no stuck/broken state across a tab switch while fullscreen). Scoped
+    // to `.aw-view` — the bottom ActivityLogSurface's own LogPanel also
+    // has an unrelated "Agents" tab (LogPanel.svelte's Agent-events tab).
+    const awView = page.locator('.aw-view');
+    await awView.getByRole('tab', { name: 'Agents' }).click();
+    await expect(page.locator('.aw-view.fs-card-on')).toBeVisible({ timeout: TIMEOUT });
+    await awView.getByRole('tab', { name: 'Console' }).click();
+    await expect(page.locator('.aw-view.fs-card-on .agent-cli-textarea')).toBeVisible({ timeout: TIMEOUT });
+
+    await restoreBtn.click();
+    await expect(page.locator('.aw-view.fs-card-on')).toHaveCount(0);
   });
 
-  test('Console tab card omits Search/Download (no grid to act on)', async ({ page }) => {
+  test('Automation workspace header omits Search/Download (no grid to act on at this level)', async ({ page }) => {
     await page.goto('/automation?tab=console', { waitUntil: 'domcontentloaded' });
 
-    const header = page.locator('.console-card .card-header');
+    const header = page.locator('.aw-view .card-header');
     await expect(header).toBeVisible({ timeout: TIMEOUT });
 
     await expect(header.locator('button[title*="search" i], button[aria-label*="search" i]')).toHaveCount(0);

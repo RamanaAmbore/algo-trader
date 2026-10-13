@@ -578,18 +578,10 @@
   // reactivity graph directly.
   let _hasHadFreshPositionsSnapshot = false;
 
-  // Legs panel collapsed/expanded — operator may want to fold it
-  // away once they've vetted the basket so the chart + cards have
-  // more vertical room.
-  // legsOpen retired — _colLegs (driven by the global CollapseButton)
-  // is now the sole gate on the legs card body.
-
-  // Per-card collapse + fullscreen toggles — match the dashboard
-  // pattern. CollapseButton hydrates each from localStorage per-user
-  // on mount (keyed by username + cardId).
-  let _colPayoff = $state(false);
-  let _colLegs   = $state(false);
-  let _colByund  = $state(false);
+  // Per-card fullscreen toggles — match the dashboard pattern.
+  // Collapse removed 2026-10-13 (header button-group standardization) —
+  // `_colPayoff`/`_colLegs`/`_colByund` (driven by the now-deleted
+  // CollapseButton) retired along with their localStorage persistence.
   let _fsPayoff  = $state(false);
   let _fsLegs    = $state(false);
   let _fsByund   = $state(false);
@@ -5516,10 +5508,9 @@
      "Pick legs to see payoff." placeholder inside the card frame. -->
 {#if selectedUnderlying}
   <div class="opt-payoff opt-payoff-full algo-status-card cmd-surface p-3"
-    class:fs-card-on={_fsPayoff}
-    class:is-collapsed={_colPayoff}>
+    class:fs-card-on={_fsPayoff}>
     <!-- Single-row header — title + EV + Greeks chips, plus the global
-         collapse + fullscreen toggles. Net Dr/Cr / MAX P / MAX L chips
+         fullscreen toggle. Net Dr/Cr / MAX P / MAX L chips
          removed 2026-07-01 per operator ("on payoff line show ev and
          greeks. remove other chips"); the same numbers are still available
          in the Aggregate / Risk kv-block below the chart. SPOT / TDAY /
@@ -5527,9 +5518,7 @@
     <CardHeader
       title="Payoff"
       loading={loading || _strategyInFlight > 0}
-      bind:isCollapsed={_colPayoff}
       bind:isFullscreen={_fsPayoff}
-      cardId="optPayoff"
       label="Payoff"
       onRefresh={_refreshAll}
       bind:refreshLoading={_refreshing}
@@ -5635,9 +5624,6 @@
         </div>
       {/snippet}
     </CardHeader>
-    <!-- Body wrapped in [hidden] (not {#if}) so the SVG chart stays
-         mounted across collapse cycles — same pattern as dashboard
-         cards (avoids re-mounting + state loss). -->
     <!--
       When the backend says spot_source='fallback' (e.g. CRUDEOIL
       future not found in any broker's instruments cache → strike-
@@ -5647,7 +5633,7 @@
       loading=true instead — operator sees an explicit loading
       state, not a misleading number.
     -->
-    <div class="card-body" hidden={_colPayoff}>
+    <div class="card-body">
       <OptionsPayoff
         payoff={payoffDisplay ? payoffDisplay.payoff : (_clientPayoffStub ?? [])}
         spot={payoffSpot}
@@ -5690,8 +5676,7 @@
      grids." -->
   <div class="algo-status-card cmd-surface p-3 opt-legs-card"
     data-status="inactive"
-    class:fs-card-on={_fsLegs}
-    class:is-collapsed={_colLegs}>
+    class:fs-card-on={_fsLegs}>
     <!-- Legs header — 2026-10 CardHeader adoption sweep. AlgoTabs is
          still the card identifier (no `title` prop, same as the
          Payoff/Snapshot precedent elsewhere on this page), now carried
@@ -5699,13 +5684,11 @@
          `prefix` (renders before the tabs, matching its old left-most
          position); CardControls' own props map 1:1 onto CardHeader's
          forwarded props, so the full button set (search/download/
-         collapse/fullscreen/refresh) is unchanged — only the wrapper
+         fullscreen/refresh) is unchanged — only the wrapper
          markup changed. -->
     <CardHeader
-      bind:isCollapsed={_colLegs}
       bind:isFullscreen={_fsLegs}
       bind:filter={_filterLegs}
-      cardId="optLegs"
       label="Legs"
       onRefresh={_refreshAll}
       bind:refreshLoading={_refreshing}
@@ -5727,7 +5710,6 @@
       {#snippet prefix()}
         {#if selectedUnderlying}
           <span class="legs-underlying-chip">{selectedUnderlying}</span>
-          <span class="legs-header-sep" aria-hidden="true"></span>
         {/if}
       {/snippet}
       {#snippet middle()}
@@ -5754,7 +5736,6 @@
         />
       {/snippet}
     </CardHeader>
-    {#if !_colLegs}
       {#if hiddenByAccount.rows > 0}
         <div class="cand-hidden-hint" title="Picker scopes legs to the chosen accounts. Clear the Account filter to include these rows in the payoff.">
           Hiding {hiddenByAccount.rows} position{hiddenByAccount.rows === 1 ? '' : 's'} on {hiddenByAccount.accts} other account{hiddenByAccount.accts === 1 ? '' : 's'}
@@ -5988,18 +5969,6 @@
           {/if}
         </div>
       </div>
-    {:else if !_colLegs}
-      <div class="text-[0.6rem] text-[var(--c-muted)] italic">
-        {#if legsTab === 'expiry'}
-          No ITM options in the current candidate set.
-        {:else}
-          No options or futures on <b>{selectedUnderlying}</b> in
-          {selectedAccounts.length ? 'the chosen accounts' : 'any account'}.
-          Try a different underlying / account, or click <b>+</b> to drop a
-          draft strike into the payoff.
-        {/if}
-      </div>
-    {/if}
   </div>
 </div>
 
@@ -6011,14 +5980,11 @@
      so the chrome stays stable across symbol switches. -->
 <div class="algo-status-card cmd-surface p-3 opt-byund-card mb-3"
   data-status="inactive"
-  class:fs-card-on={_fsByund}
-  class:is-collapsed={_colByund}>
+  class:fs-card-on={_fsByund}>
   <CardHeader
     title="Snapshot"
-    bind:isCollapsed={_colByund}
     bind:isFullscreen={_fsByund}
     bind:filter={_filterByund}
-    cardId="optByund"
     label="Snapshot"
     onRefresh={_refreshAll}
     bind:refreshLoading={_refreshing}
@@ -6077,7 +6043,6 @@
       <StrategyPicker label="Strategy" />
     {/snippet}
   </CardHeader>
-  {#if !_colByund}
     <div class="byund-scroll algo-grid-chrome">
       <div class="byund-grid">
         <div class="byund-headrow">
@@ -6194,7 +6159,6 @@
         {/if}
       </div>
     </div>
-  {/if}
 </div>
 
 <!-- Aggregate / Greeks / Risk cards — three cards in a horizontal
@@ -7432,9 +7396,13 @@
   }
   /* .legs-header-row/.legs-header retired (2026-10 CardHeader adoption
      sweep) — this card's chrome now renders via <CardHeader>, with the
-     underlying chip + separator carried in the `prefix` snippet and the
-     Legs/Exp-close AlgoTabs in `middle` (see the card markup above).
-     .legs-underlying-chip/.legs-header-sep below are still used there. */
+     underlying chip carried in the `prefix` snippet and the Legs/
+     Exp-close AlgoTabs in `middle` (see the card markup above).
+     .legs-underlying-chip below is still used there. .legs-header-sep
+     (a manual divider span) was removed 2026-10-13 — CardHeader's own
+     automatic `.ch-sep` (rendered whenever `middle` is supplied)
+     already provides the one divider needed between the chip and the
+     tabs; having both produced a visible double-divider. */
 
   /* Legs / Expiry tabs migrated to canonical AlgoTabs (compact
      amber; expiry switches to rose color when expiryCloseTotal>0
@@ -7456,16 +7424,6 @@
     white-space: nowrap;
     flex-shrink: 0;
   }
-  .legs-header-sep {
-    display: inline-block;
-    width: 1px;
-    height: 1.1rem;
-    /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
-    background: color-mix(in srgb, var(--algo-slate) 25%, transparent);
-    margin: 0 0.25rem;
-    flex-shrink: 0;
-  }
-
   /* Expiry tab band tints, expiry-band-header, expiry-id-chip, and
      all cand-row variant styles moved to CandidateLegRow.svelte. */
 

@@ -430,10 +430,14 @@ test.describe('Functional — ShortcutCheatsheet Escape coordination', () => {
   });
 
   test('cheatsheet opened over an already-fullscreen card: one Escape closes only the cheatsheet', async ({ page }) => {
-    await page.goto(`${BASE}/dashboard`, { waitUntil: 'domcontentloaded' });
+    // Header button-group standardization (2026-10-13, Part 3) — Dashboard
+    // panels lost Fullscreen entirely, so this generic layering test (which
+    // just needs ANY fullscreen-capable card, not specifically Dashboard's)
+    // now uses /orders instead, which still has one.
+    await page.goto(`${BASE}/orders`, { waitUntil: 'domcontentloaded' });
 
     const fsBtn = page.locator('button.fs-btn:visible').first();
-    await expect(fsBtn, 'a fullscreen-card trigger must be present on /dashboard').toBeVisible({ timeout: 15_000 });
+    await expect(fsBtn, 'a fullscreen-card trigger must be present on /orders').toBeVisible({ timeout: 15_000 });
     await fsBtn.click();
     const fsCard = page.locator('.fs-card-on');
     await expect(fsCard, 'card should promote to fullscreen').toHaveCount(1, { timeout: 5_000 });
@@ -559,14 +563,14 @@ test.describe('Functional — Wave B: full-screen card Escape double-close scena
   });
 
   test('full-screen Chart card + order modal: Escape closes only the topmost, one press at a time', async ({ page }) => {
-    await page.goto(`${BASE}/dashboard`, { waitUntil: 'domcontentloaded' });
+    await page.goto(`${BASE}/orders`, { waitUntil: 'domcontentloaded' });
 
-    const fsBtn = page.locator('button[aria-label="Expand Chart to fullscreen"]');
-    await expect(fsBtn, 'Chart card fullscreen button must be visible').toBeVisible({ timeout: 15_000 });
+    const fsBtn = page.locator('button[aria-label="Expand Order Entry to fullscreen"]');
+    await expect(fsBtn, 'Order Entry card fullscreen button must be visible').toBeVisible({ timeout: 15_000 });
     await fsBtn.click();
 
-    const fsCard = page.locator('.row1-col-chart.fs-card-on');
-    await expect(fsCard, 'Chart card should be fullscreen').toBeVisible({ timeout: 5_000 });
+    const fsCard = page.locator('.bucket-card-entry.fs-card-on');
+    await expect(fsCard, 'Order Entry card should be fullscreen').toBeVisible({ timeout: 5_000 });
 
     // Open the order modal via the global 't' shortcut. `.pha-order`
     // itself is now also directly clickable over a fullscreen card
@@ -585,19 +589,19 @@ test.describe('Functional — Wave B: full-screen card Escape double-close scena
 
     // Second Escape: now closes the full-screen card.
     await page.keyboard.press('Escape');
-    await expect(page.locator('.row1-col-chart.fs-card-on'), 'full-screen card should close on the second Escape')
+    await expect(page.locator('.bucket-card-entry.fs-card-on'), 'full-screen card should close on the second Escape')
       .toHaveCount(0, { timeout: 5_000 });
   });
 
   test('full-screen Chart card + shortcut cheatsheet: Escape closes only the topmost, one press at a time', async ({ page }) => {
-    await page.goto(`${BASE}/dashboard`, { waitUntil: 'domcontentloaded' });
+    await page.goto(`${BASE}/orders`, { waitUntil: 'domcontentloaded' });
 
-    const fsBtn = page.locator('button[aria-label="Expand Chart to fullscreen"]');
-    await expect(fsBtn, 'Chart card fullscreen button must be visible').toBeVisible({ timeout: 15_000 });
+    const fsBtn = page.locator('button[aria-label="Expand Order Entry to fullscreen"]');
+    await expect(fsBtn, 'Order Entry card fullscreen button must be visible').toBeVisible({ timeout: 15_000 });
     await fsBtn.click();
 
-    const fsCard = page.locator('.row1-col-chart.fs-card-on');
-    await expect(fsCard, 'Chart card should be fullscreen').toBeVisible({ timeout: 5_000 });
+    const fsCard = page.locator('.bucket-card-entry.fs-card-on');
+    await expect(fsCard, 'Order Entry card should be fullscreen').toBeVisible({ timeout: 5_000 });
 
     await page.keyboard.press('?');
     const cheatsheet = page.locator('.sc-modal');
@@ -612,7 +616,7 @@ test.describe('Functional — Wave B: full-screen card Escape double-close scena
 
     // Second Escape: now closes the full-screen card.
     await page.keyboard.press('Escape');
-    await expect(page.locator('.row1-col-chart.fs-card-on'), 'full-screen card should close on the second Escape')
+    await expect(page.locator('.bucket-card-entry.fs-card-on'), 'full-screen card should close on the second Escape')
       .toHaveCount(0, { timeout: 5_000 });
   });
 
@@ -661,14 +665,14 @@ test.describe('Functional — Wave B: full-screen card Escape double-close scena
     // static source checks above (var used in the component, old 9200
     // literal gone, var ordered above tier 2 and tier 4 in app.css)
     // fully covers the behavior without depending on a live route change.
-    await page.goto(`${BASE}/dashboard`, { waitUntil: 'domcontentloaded' });
+    await page.goto(`${BASE}/orders`, { waitUntil: 'domcontentloaded' });
 
-    const fsBtn = page.locator('button[aria-label="Expand Chart to fullscreen"]');
-    await expect(fsBtn, 'Chart card fullscreen button must be visible').toBeVisible({ timeout: 15_000 });
+    const fsBtn = page.locator('button[aria-label="Expand Order Entry to fullscreen"]');
+    await expect(fsBtn, 'Order Entry card fullscreen button must be visible').toBeVisible({ timeout: 15_000 });
     await fsBtn.click();
 
-    const fsCard = page.locator('.row1-col-chart.fs-card-on');
-    await expect(fsCard, 'Chart card should be fullscreen').toBeVisible({ timeout: 5_000 });
+    const fsCard = page.locator('.bucket-card-entry.fs-card-on');
+    await expect(fsCard, 'Order Entry card should be fullscreen').toBeVisible({ timeout: 5_000 });
 
     const [navIndicatorZ, commandZ] = await page.evaluate(() => {
       const cs = getComputedStyle(document.documentElement);
@@ -916,13 +920,13 @@ test.describe('Functional — full-screen card backdrop no longer occludes the n
   ]) {
     test(`[${vp.label}] hamburger, mode chip, broker chip, and page-header actions are all reachable while a card is fullscreen`, async ({ page }) => {
       await page.setViewportSize({ width: vp.width, height: vp.height });
-      await page.goto(`${BASE}/dashboard`, { waitUntil: 'domcontentloaded' });
+      await page.goto(`${BASE}/orders`, { waitUntil: 'domcontentloaded' });
 
-      const fsBtn = page.locator('button[aria-label="Expand Chart to fullscreen"]');
-      await expect(fsBtn, 'Chart card fullscreen button must be visible').toBeVisible({ timeout: 15_000 });
+      const fsBtn = page.locator('button[aria-label="Expand Order Entry to fullscreen"]');
+      await expect(fsBtn, 'Order Entry card fullscreen button must be visible').toBeVisible({ timeout: 15_000 });
       await fsBtn.click();
-      const fsCard = page.locator('.row1-col-chart.fs-card-on');
-      await expect(fsCard, 'Chart card should be fullscreen').toBeVisible({ timeout: 5_000 });
+      const fsCard = page.locator('.bucket-card-entry.fs-card-on');
+      await expect(fsCard, 'Order Entry card should be fullscreen').toBeVisible({ timeout: 5_000 });
 
       // Each control below only exists at some viewports (hamburger is
       // mobile-only; mode-trigger/broker-chip depend on live broker/mode
@@ -965,11 +969,11 @@ test.describe('Functional — full-screen card backdrop no longer occludes the n
     // has no reachable area left. Verified here by hit-testing a point
     // well below the chrome strip and confirming the CARD owns it, not
     // the catcher.
-    await page.goto(`${BASE}/dashboard`, { waitUntil: 'domcontentloaded' });
-    const fsBtn = page.locator('button[aria-label="Expand Chart to fullscreen"]');
+    await page.goto(`${BASE}/orders`, { waitUntil: 'domcontentloaded' });
+    const fsBtn = page.locator('button[aria-label="Expand Order Entry to fullscreen"]');
     await expect(fsBtn).toBeVisible({ timeout: 15_000 });
     await fsBtn.click();
-    const fsCard = page.locator('.row1-col-chart.fs-card-on');
+    const fsCard = page.locator('.bucket-card-entry.fs-card-on');
     await expect(fsCard).toBeVisible({ timeout: 5_000 });
 
     // Point derived from the real viewport + catcher top (not a
@@ -995,12 +999,12 @@ test.describe('Functional — Escape priority inversions exposed by the backdrop
   });
 
   test('broker-chip auth modal opened over a fullscreen card: one Escape closes only the modal', async ({ page }) => {
-    await page.goto(`${BASE}/dashboard`, { waitUntil: 'domcontentloaded' });
+    await page.goto(`${BASE}/orders`, { waitUntil: 'domcontentloaded' });
 
-    const fsBtn = page.locator('button[aria-label="Expand Chart to fullscreen"]');
+    const fsBtn = page.locator('button[aria-label="Expand Order Entry to fullscreen"]');
     await expect(fsBtn).toBeVisible({ timeout: 15_000 });
     await fsBtn.click();
-    const fsCard = page.locator('.row1-col-chart.fs-card-on');
+    const fsCard = page.locator('.bucket-card-entry.fs-card-on');
     await expect(fsCard).toBeVisible({ timeout: 5_000 });
 
     const brokerChip = page.locator('.broker-chip:visible').first();
@@ -1018,18 +1022,18 @@ test.describe('Functional — Escape priority inversions exposed by the backdrop
 
     // Second Escape: now closes the fullscreen card.
     await page.keyboard.press('Escape');
-    await expect(page.locator('.row1-col-chart.fs-card-on'), 'fullscreen card should close on the second Escape')
+    await expect(page.locator('.bucket-card-entry.fs-card-on'), 'fullscreen card should close on the second Escape')
       .toHaveCount(0, { timeout: 3_000 });
   });
 
   test('mobile hamburger drawer opened over a fullscreen card: one Escape closes only the drawer', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.goto(`${BASE}/dashboard`, { waitUntil: 'domcontentloaded' });
+    await page.goto(`${BASE}/orders`, { waitUntil: 'domcontentloaded' });
 
-    const fsBtn = page.locator('button[aria-label="Expand Chart to fullscreen"]');
+    const fsBtn = page.locator('button[aria-label="Expand Order Entry to fullscreen"]');
     await expect(fsBtn).toBeVisible({ timeout: 15_000 });
     await fsBtn.click();
-    const fsCard = page.locator('.row1-col-chart.fs-card-on');
+    const fsCard = page.locator('.bucket-card-entry.fs-card-on');
     await expect(fsCard).toBeVisible({ timeout: 5_000 });
 
     const hamburger = page.locator('.algo-hamburger').first();
@@ -1047,7 +1051,7 @@ test.describe('Functional — Escape priority inversions exposed by the backdrop
 
     // Second Escape: now closes the fullscreen card.
     await page.keyboard.press('Escape');
-    await expect(page.locator('.row1-col-chart.fs-card-on'), 'fullscreen card should close on the second Escape')
+    await expect(page.locator('.bucket-card-entry.fs-card-on'), 'fullscreen card should close on the second Escape')
       .toHaveCount(0, { timeout: 3_000 });
   });
 });

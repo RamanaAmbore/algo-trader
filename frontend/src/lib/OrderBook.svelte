@@ -57,7 +57,6 @@
    *   pollMs?: number,
    *   statusFilter?: 'chase'|'open'|'complete'|'rejected_cancelled'|'gtt',
    *   onSymbolClick?: ((ord: any) => void) | null,
-   *   isCollapsed?: boolean,
    *   isFullscreen?: boolean,
    * }} */
   let {
@@ -67,7 +66,6 @@
     pollMs        = 5000,
     statusFilter  = /** @type {'chase'|'open'|'complete'|'rejected_cancelled'|'gtt'} */ ('open'),
     onSymbolClick = /** @type {((ord: any) => void) | null} */ (null),
-    isCollapsed   = $bindable(false),
     isFullscreen  = $bindable(false),
   } = $props();
 
@@ -643,7 +641,7 @@
 <div class="ob-root" class:fs-card-on={isFullscreen}>
 
 <!-- Header -->
-<CardHeader title={title} showSearch={false} bind:isCollapsed bind:isFullscreen
+<CardHeader title={title} showSearch={false} bind:isFullscreen
   detectOverflow={false}
   onRefresh={() => { _loadOrders(); _loadGtts(); }}
   onDownload={_downloadCsv}
@@ -658,7 +656,6 @@
 </CardHeader>
 
 <!-- Order card grid -->
-{#if !isCollapsed}
   <div class="ob-status-bar">
     {#each [
       { id: 'held',               label: 'Held/Attn',          status: 'held',    count: _statusCounts.held },
@@ -800,7 +797,6 @@
     </div>
   {/if}
 </div>
-{/if}
 
 {#if _symPanelSym && !onSymbolClick}
   <SymbolPanel

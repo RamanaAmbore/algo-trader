@@ -7,7 +7,8 @@
     title            — card title string (omit to skip the span)
     timestamp        — optional muted timestamp string (omit to skip)
     showControls     — set false to suppress the embedded CardControls cluster
-    All CardControls props forwarded (isCollapsed, isFullscreen, filter, …)
+    All CardControls props forwarded (isFullscreen, filter, …) — Collapse
+    was removed app-wide (2026-10-13 header standardization sweep)
 
   Slots:
     prefix  — content rendered BEFORE the title in the left zone (e.g. an icon)
@@ -45,7 +46,6 @@
     // visibility-toggled slot so flipping loading causes zero layout shift.
     loading = undefined,
     // CardControls props — all forwarded
-    isCollapsed = $bindable(false),
     isFullscreen = $bindable(false),
     filter = $bindable(''),
     cardId = '',
@@ -56,7 +56,6 @@
     refreshAlwaysVisible = false,
     onDownload = null,
     showControls = true,
-    showCollapse = true,
     detectOverflow = true,
     hideFullscreen = false,
     /** @type {Snippet | undefined} */ prefix = undefined,
@@ -134,7 +133,6 @@
   <div class="ch-right">
     {#if showControls}
       <CardControls
-        bind:isCollapsed
         bind:isFullscreen
         bind:filter
         {cardId}
@@ -143,7 +141,6 @@
         bind:refreshLoading
         {showSearch}
         {refreshAlwaysVisible}
-        {showCollapse}
         {onDownload}
         hideFullscreen={hideFullscreen || (detectOverflow && !_hasOverflow && !isFullscreen)}
       />

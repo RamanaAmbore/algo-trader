@@ -358,19 +358,15 @@
     try { holdingsSummaryGrid?.setGridOption('quickFilterText', v); } catch (_) {}
   });
 
-  // Collapse / fullscreen state for the four grid cards (Positions /
-  // Holdings × Summary / Breakdown) — each card now wires the
-  // canonical CardHeader/CardControls cluster (Search · Collapse ·
-  // Fullscreen · Download) instead of the hand-rolled headrow that
-  // only ever exposed Download (Summary) or Search+Download
-  // (Breakdown).
-  let _colPositionsSummary = $state(false);
+  // Fullscreen state for the four grid cards (Positions / Holdings ×
+  // Summary / Breakdown) — each card wires the canonical CardHeader/
+  // CardControls cluster (Search · Fullscreen · Download) instead of
+  // the hand-rolled headrow that only ever exposed Download (Summary)
+  // or Search+Download (Breakdown). Collapse removed 2026-10-13
+  // (header button-group standardization).
   let _fsPositionsSummary  = $state(false);
-  let _colHoldingsSummary  = $state(false);
   let _fsHoldingsSummary   = $state(false);
-  let _colPositionsDetail  = $state(false);
   let _fsPositionsDetail   = $state(false);
-  let _colHoldingsDetail   = $state(false);
   let _fsHoldingsDetail    = $state(false);
 
   // Strip from the first digit onward — Zerodha F&O tradingsymbols are
@@ -1620,20 +1616,17 @@
      the shared Fund Balances renders once between them. -->
 
 <!-- Summary (active tab) — canonical CardHeader/CardControls cluster
-     (Search · Collapse · Fullscreen · Download) replaces the old
-     hand-rolled headrow, which only ever exposed Download. showGridControls
+     (Search · Fullscreen · Download) replaces the old hand-rolled
+     headrow, which only ever exposed Download. showGridControls
      maps to CardHeader's showControls so the public /performance page
      (showGridControls=false) still hides the whole cluster. -->
 <section class="perf-grid-card"
          class:hidden={activeTab !== 'positions'}
-         class:is-collapsed={_colPositionsSummary}
          class:fs-card-on={_fsPositionsSummary}>
   <CardHeader
     title="Summary"
-    bind:isCollapsed={_colPositionsSummary}
     bind:isFullscreen={_fsPositionsSummary}
     bind:filter={_filterPositionsSummary}
-    cardId="perf-positions-summary"
     label="Positions Summary"
     showControls={showGridControls}
     onDownload={() => positionsSummaryGrid?.exportDataAsCsv({ fileName: 'positions-summary.csv' })}
@@ -1646,14 +1639,11 @@
 
 <section class="perf-grid-card"
          class:hidden={activeTab !== 'holdings'}
-         class:is-collapsed={_colHoldingsSummary}
          class:fs-card-on={_fsHoldingsSummary}>
   <CardHeader
     title="Summary"
-    bind:isCollapsed={_colHoldingsSummary}
     bind:isFullscreen={_fsHoldingsSummary}
     bind:filter={_filterHoldingsSummary}
-    cardId="perf-holdings-summary"
     label="Holdings Summary"
     showControls={showGridControls}
     onDownload={() => holdingsSummaryGrid?.exportDataAsCsv({ fileName: 'holdings-summary.csv' })}
@@ -1669,17 +1659,14 @@
 
 <!-- Detail (active tab) — the per-symbol drill-down. Same CardHeader
      cluster; these cards already had Search+Download, now also get
-     Collapse+Fullscreen. -->
+     Fullscreen. -->
 <section class="perf-grid-card"
          class:hidden={activeTab !== 'positions'}
-         class:is-collapsed={_colPositionsDetail}
          class:fs-card-on={_fsPositionsDetail}>
   <CardHeader
     title="Breakdown"
-    bind:isCollapsed={_colPositionsDetail}
     bind:isFullscreen={_fsPositionsDetail}
     bind:filter={_filterPositions}
-    cardId="perf-positions-detail"
     label="Positions"
     showControls={showGridControls}
     onDownload={() => positionsAllGrid?.exportDataAsCsv({ fileName: 'positions.csv' })}
@@ -1689,14 +1676,11 @@
 
 <section class="perf-grid-card"
          class:hidden={activeTab !== 'holdings'}
-         class:is-collapsed={_colHoldingsDetail}
          class:fs-card-on={_fsHoldingsDetail}>
   <CardHeader
     title="Breakdown"
-    bind:isCollapsed={_colHoldingsDetail}
     bind:isFullscreen={_fsHoldingsDetail}
     bind:filter={_filterHoldings}
-    cardId="perf-holdings-detail"
     label="Holdings"
     showControls={showGridControls}
     onDownload={() => holdingsAllGrid?.exportDataAsCsv({ fileName: 'holdings.csv' })}
@@ -1887,12 +1871,10 @@
   .hidden { display: none; }
 
   /* Summary / Breakdown grid cards — each wraps a CardHeader (title +
-     canonical Search/Collapse/Fullscreen/Download cluster) + one
-     ag-Grid. `.is-collapsed` collapse behavior is global (app.css:
-     `.is-collapsed .ag-root-wrapper { height: 0 }`) — no local rule
-     needed. Fullscreen promotes the ag-Grid to fill the viewport,
-     mirroring MarketPulse's `.mp-bucket-wrap.fs-card-on .bucket-grid`
-     and admin/derivatives' equivalent rules. */
+     canonical Search/Fullscreen/Download cluster) + one ag-Grid.
+     Fullscreen promotes the ag-Grid to fill the viewport, mirroring
+     MarketPulse's `.mp-bucket-wrap.fs-card-on .bucket-grid` and
+     admin/derivatives' equivalent rules. */
   .perf-grid-card.fs-card-on .ag-theme-quartz {
     height: calc(100vh - 8rem) !important;
     min-height: 320px !important;

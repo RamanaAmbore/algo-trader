@@ -308,12 +308,16 @@ test.describe('CardHeader sweep round 3 Part C — Intraday Y-axis labels move t
   });
 });
 
-// ── Part D — outer "Chart" title vs. inner "Performance" tab ───────────────
+// ── Part D — outer "Trend" title vs. inner "Performance" tab ───────────────
+// 2026-10-13 header button-group standardization, Part 7 — operator
+// follow-up renamed the outer title a second time, from "Chart" (Part D's
+// own original choice, commit 43cb5a4f) to "Trend". The internal
+// `label="Chart"` card-id (never user-visible) is unchanged.
 
 test.describe('CardHeader sweep round 3 Part D — outer title renamed, inner tab unchanged', () => {
   test.use({ viewport: { width: 1440, height: 900 } });
 
-  test('chart card CardHeader title reads "Chart"; inner tab strip still has "Performance"', async ({ page }) => {
+  test('chart card CardHeader title reads "Trend"; inner tab strip still has "Performance"', async ({ page }) => {
     await loginAsAdmin(page);
     await page.goto('/dashboard', { waitUntil: 'domcontentloaded' });
 
@@ -322,15 +326,17 @@ test.describe('CardHeader sweep round 3 Part D — outer title renamed, inner ta
 
     const title = card.locator('.ch-title').first();
     await expect(title).toBeVisible({ timeout: 20_000 });
-    await expect(title).toHaveText('Chart');
+    await expect(title).toHaveText('Trend');
+    await expect(title).not.toHaveText('Chart');
     await expect(title).not.toHaveText('Performance');
 
     const perfTab = card.getByRole('tab', { name: 'Performance', exact: true });
     await expect(perfTab, 'inner Performance tab must remain, unchanged').toBeVisible();
   });
 
-  test('source: outer CardHeader title prop is "Chart", reusing the existing label="Chart" wording', () => {
-    expect(DASH_SRC).toMatch(/label="Chart"\s*\n\s*title="Chart"/);
+  test('source: outer CardHeader title prop is "Trend", internal label="Chart" card-id unchanged', () => {
+    expect(DASH_SRC).toMatch(/label="Chart"\s*\n\s*title="Trend"/);
+    expect(DASH_SRC).not.toMatch(/title="Chart"/);
     expect(DASH_SRC).not.toMatch(/title="Performance"/);
     // Inner tab definition unchanged.
     expect(DASH_SRC).toMatch(/\{ id: 'performance', label: 'Performance' \}/);
