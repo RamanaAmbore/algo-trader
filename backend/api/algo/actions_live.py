@@ -525,13 +525,23 @@ async def _action_place_order(agent, context: dict, params: dict):
     cfg = _live_chase_config(aggressiveness, product=product)
     cfg.exchange = exchange or "NFO"
     try:
-        await chase_order(
+        result = await chase_order(
             account=account, symbol=symbol,
             transaction_type=side, quantity=qty,
             cfg=cfg,
             algo_order_id=_oid,
             agent_id=_shim.id,
         )
+        # Stash the real chase outcome into context (not a changed return
+        # contract — a side effect only) so actions.py's notify wrapper can
+        # describe a successful-but-not-fully-filled order (e.g. PARTIAL)
+        # accurately instead of a blanket "placed". Mirrors the existing
+        # context["agent_kind"] stash-in-context pattern (actions.py:697).
+        status = getattr(result, "status", None)
+        context["_action_result_detail"] = {
+            "status": status.value if hasattr(status, "value") else str(status),
+            "detail": getattr(result, "detail", ""),
+        }
     except Exception as e:
         await _place_order_on_failure(e, context, account, symbol, exchange, side, qty, price, product)
         raise

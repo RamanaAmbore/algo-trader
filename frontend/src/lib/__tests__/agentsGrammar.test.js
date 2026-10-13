@@ -33,7 +33,7 @@ const {
   buildCatalog, fetchAgentCatalog, parseStatement, compileStatement,
   compileAgentCliStatement, validateAgentCliStatement, lexAgentStatement,
   parseCall, parseValue, parseLeaf, ALWAYS_LEAF, KWARG_ALIASES,
-  suggestAgentCliAt, decompileCondition, describeErrorPosition,
+  suggestAgentCliAt, decompileCondition, describeErrorPosition, decompileAgent,
 } = await import('$lib/command/grammars/agents.js');
 const { fetchGrammarTokens } = await import('$lib/api');
 
@@ -3394,5 +3394,128 @@ describe('Sprint G — Task 4: kind: / underlying: qualifiers', () => {
       metric: 'pnl', scope: 'positions.expiring_today', op: '<=', value: -5000,
       scope_filter: { underlying: 'NIFTY' },
     });
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// Part B (2026-10) — `notify=[...]` universal action-level kwarg.
+// See .claude/plans/purrfect-marinating-pixel.md's "Part B, revised and
+// approved" section for the full design. Compiles to a SIBLING key on
+// the action's own compiled dict (`{"type":...,"params":{...},
+// "notify":[...]}`) — NEVER written inside `params` — reusing the exact
+// SAME `catalog.channels` resolution ALERT's own channel-call-list uses
+// (via the shared `_resolveChannelCall` helper), so a channel's own
+// declared `params_schema` (e.g. ntfy's `priority`) resolves identically
+// here with zero action-specific code.
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('Part B — notify=[...] universal action-level kwarg', () => {
+  it('order(..., notify=[telegram]) compiles with a `notify` SIBLING key, not inside params', () => {
+    const r = compile(
+      'DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, notify=[telegram])'
+    );
+    expect(r.errors).toEqual([]);
+    expect(r.ok).toBe(true);
+    expect(r.agent.actions).toEqual([{
+      type: 'place_order',
+      params: { account: 'ZG0790', symbol: 'NIFTY25JULFUT', side: 'SELL', qty: 75 },
+      notify: [{ channel: 'telegram' }],
+    }]);
+    // never inside params
+    expect(r.agent.actions[0].params.notify).toBeUndefined();
+  });
+
+  it('close_position(..., notify=[telegram, ntfy(priority="urgent")]) — multiple channels, one with its own param', () => {
+    const r = compile(
+      'WHEN pnl@positions.expiring_today > 0 '
+      + 'DO close_position(account="ZG0790", symbol="NIFTY25JULFUT", notify=[telegram, ntfy(priority="urgent")])'
+    );
+    expect(r.errors).toEqual([]);
+    expect(r.ok).toBe(true);
+    expect(r.agent.actions).toEqual([{
+      type: 'close_position',
+      params: { account: 'ZG0790', symbol: 'NIFTY25JULFUT' },
+      notify: [
+        { channel: 'telegram' },
+        { channel: 'ntfy', params: { priority: 'urgent' } },
+      ],
+    }]);
+  });
+
+  it('an unknown channel name inside notify=[...] is a compile-time error (same message style as ALERT)', () => {
+    const r = compile(
+      'WHEN pnl@positions.expiring_today > 0 '
+      + 'DO close_position(account="ZG0790", symbol="NIFTY25JULFUT", notify=[bogus_channel])'
+    );
+    expect(r.ok).toBe(false);
+    expect(r.errors.some((e) => /unknown channel 'bogus_channel'/.test(e.message))).toBe(true);
+  });
+
+  it('an action with NO notify= compiles with no `notify` key at all (not an empty list) — zero behavior change', () => {
+    const r = compile(
+      'WHEN pnl@positions.expiring_today > 0 DO close_position(account=account_id, symbol=symbol)'
+    );
+    expect(r.ok).toBe(true);
+    expect(r.agent.actions).toEqual([{
+      type: 'close_position',
+      params: { account: { '$row': 'account_id' }, symbol: { '$row': 'symbol' } },
+    }]);
+    expect('notify' in r.agent.actions[0]).toBe(false);
+  });
+
+  it('duplicate notify= is a compile-time error', () => {
+    const r = compile(
+      'DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, notify=[telegram], notify=[telegram])'
+    );
+    expect(r.ok).toBe(false);
+    expect(r.errors.some((e) => /duplicate parameter 'notify'/.test(e.message))).toBe(true);
+  });
+
+  it('notify=[...] is universally available — zero per-action-type special-casing — exercised on emit_log too', () => {
+    const r = compile('DO emit_log(message="hello", notify=[telegram])');
+    expect(r.ok).toBe(true);
+    expect(r.agent.actions).toEqual([{
+      type: 'emit_log',
+      params: { message: 'hello' },
+      notify: [{ channel: 'telegram' }],
+    }]);
+  });
+
+  // Extensibility proof (per the plan's explicit requirement) — a
+  // brand-new, test-only channel added ONLY to a locally-built catalog
+  // (mirroring how a real new row in the backend's `grammar_tokens`
+  // table would appear) resolves in `notify=[...]` with ZERO changes to
+  // any action-compile code path — mechanically proving the "new
+  // channel just works" invariant, not just by code inspection.
+  it('extensibility: a brand-new catalog-only channel compiles in notify=[...] with zero code changes', () => {
+    const extendedCatalog = buildCatalog([
+      ...FIXTURE_ROWS,
+      { grammar_kind: 'notify', token_kind: 'channel', token: 'newtestchannel', params_schema: { urgency: { type: 'enum', enum: ['low', 'high'], required: false } } },
+    ]);
+    const r = compileAgentCliStatement(
+      'DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, notify=[newtestchannel(urgency="high")])',
+      extendedCatalog,
+      { lotSizeOf, exchangesOf }
+    );
+    expect(r.errors).toEqual([]);
+    expect(r.ok).toBe(true);
+    expect(r.agent.actions).toEqual([{
+      type: 'place_order',
+      params: { account: 'ZG0790', symbol: 'NIFTY25JULFUT', side: 'SELL', qty: 75 },
+      notify: [{ channel: 'newtestchannel', params: { urgency: 'high' } }],
+    }]);
+  });
+
+  it('decompile round-trip: compile -> decompile -> recompile is byte-identical JSON', () => {
+    const r1 = compile(
+      'WHEN pnl@positions.expiring_today > 0 '
+      + 'DO close_position(account="ZG0790", symbol="NIFTY25JULFUT", notify=[telegram, ntfy(priority="urgent")])'
+    );
+    expect(r1.ok).toBe(true);
+    const dec = decompileAgent(r1.agent, CATALOG);
+    expect(dec.errors).toEqual([]);
+    const r2 = compile(dec.text);
+    expect(r2.ok).toBe(true);
+    expect(r2.agent).toEqual(r1.agent);
   });
 });

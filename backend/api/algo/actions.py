@@ -675,6 +675,155 @@ async def _al_log_action_skipped(
         logger.warning(f"action_skipped log_event failed: {e}")
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+#  Part B — notify=[...] on action tokens (2026-10-12)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# An action of any kind (order/close_position/cancel_order/modify_order/...)
+# may declare its own `notify` SIBLING key (never inside `params`):
+#   {"type": "place_order", "params": {...},
+#    "notify": [{"channel": "telegram"},
+#               {"channel": "ntfy", "params": {"priority": "urgent"}}]}
+# Resolved against the exact same channel catalog ALERT's own dispatch
+# already uses. Fired from execute()'s loop, once per ACTION CALL (0..N
+# times per tick under Sprint 16 fan-out — deliberately NOT routed through
+# events.py:dispatch()/the log-tag queue, which is tick-cardinality: once
+# per agent per tick), strictly AFTER a confirmed successful dispatch —
+# never from the failure path, never for paper/sim/replay/shadow modes.
+# See the plan file's "Part B, revised and approved" section for the full
+# design/rationale (council findings: mode-gate, masking chokepoint,
+# fan-out throttle, notify-failure isolation).
+
+# MVP throttle cap — a simple per-agent-per-tick counter, not a full
+# RepeatGate/_V2_LATCH integration (noted as a possible future
+# enhancement, not a blocker for this ship).
+_MAX_NOTIFY_PER_AGENT_PER_TICK = 10
+
+
+def _al_notify_build_message(agent, action: dict, action_type: str, agent_key: str, context: dict) -> str:
+    """Build + mask the notify message text for one action.
+
+    Prefers the real captured chase outcome (Part B.1, actions_live.py:
+    `_action_place_order`'s `context["_action_result_detail"]` stash)
+    over the generic Part A per-action renderer, so a successful-but-
+    not-fully-filled order (e.g. PARTIAL/CANCELLED) is described
+    accurately, not as a blanket "placed". Masking reuses the EXACT SAME
+    chokepoint events.py's `_describe_actions()` already uses
+    (`mask_account_in_text`) — no second/new masking mechanism.
+    """
+    from backend.api.algo.events import _describe_action
+    from backend.shared.helpers.utils import mask_account_in_text
+
+    result_detail = context.pop("_action_result_detail", None)
+    base_desc = _describe_action(action) or action_type
+    if isinstance(result_detail, dict) and result_detail.get("status"):
+        status = result_detail["status"]
+        detail = result_detail.get("detail") or ""
+        base_desc = f"{base_desc} — {status}{(': ' + detail) if detail else ''}"
+
+    message = mask_account_in_text(base_desc) or base_desc
+    return f"Agent [{agent_key}] action: {message}"
+
+
+async def _al_notify_send_one_channel(
+    entry: Any, agent, action_type: str, agent_key: str, full_message: str,
+) -> None:
+    """Send one `notify=[...]` channel entry. Never raises — any send
+    failure (e.g. a Telegram network blip) is caught and logged here so
+    it can never be misclassified as an order/action failure.
+
+    Per-channel params (e.g. ntfy's `priority`) flow through GENERICALLY
+    — spread straight into the flat dict `_send_ntfy_channel` already
+    expects, the same shape `_dispatch_channel` passes for an
+    ALERT-authored ntfy channel. No channel-specific param branch is
+    needed here or in the future: a new param key added to the catalog
+    just rides along inside `channel_params`.
+    """
+    if not isinstance(entry, dict):
+        return
+    channel = entry.get("channel")
+    if not channel:
+        return
+    channel_params = entry.get("params") if isinstance(entry.get("params"), dict) else {}
+
+    from backend.api.algo.events import _send_telegram, _send_email_raw, _send_ntfy_channel
+    from backend.shared.helpers.utils import is_enabled
+
+    try:
+        if channel == "telegram" and is_enabled("telegram"):
+            await _send_telegram(full_message)
+        elif channel == "email" and is_enabled("mail"):
+            subject = f"RamboQuant Agent: {getattr(agent, 'name', None) or agent_key}"
+            body = f"<html><body><p>{full_message}</p></body></html>"
+            await _send_email_raw(subject, body)
+        elif channel == "ntfy" and is_enabled("ntfy"):
+            flat_ch = {"channel": "ntfy", **channel_params}
+            await _send_ntfy_channel(flat_ch, agent, full_message, full_message)
+        else:
+            logger.debug(
+                f"[NOTIFY] agent={agent_key} action={action_type}: "
+                f"channel '{channel}' unsupported or disabled — skipped"
+            )
+    except Exception as send_e:
+        # Never propagate — a notify-send failure must never be
+        # misclassified as an action/order failure.
+        logger.error(
+            f"[NOTIFY] agent={agent_key} action={action_type} "
+            f"channel={channel}: send failed: {send_e}"
+        )
+
+
+def _al_notify_throttle_check(agent_key: str, context: dict) -> bool:
+    """Returns True iff a notify send may proceed under the per-agent-
+    per-tick cap, incrementing the counter as a side effect. `context`
+    is a fresh per-call dict per agent/match (see execute()'s own
+    docstring on `context["agent_kind"]`), so this counter never leaks
+    across agents or cycles."""
+    counter_key = f"_notify_count_{agent_key}"
+    count = context.get(counter_key, 0)
+    if count >= _MAX_NOTIFY_PER_AGENT_PER_TICK:
+        return False
+    context[counter_key] = count + 1
+    return True
+
+
+async def _al_maybe_notify_action(
+    agent, action: dict, action_type: str, params: dict, mode: str, context: dict,
+) -> None:
+    """Fire an action's own declared `notify=[...]` channels, if any.
+
+    MUST be called from execute()'s loop in its OWN try/except — never
+    inside the try block that feeds `_al_action_failed_audit` — so a
+    notify-send failure (e.g. a Telegram network blip) can never be
+    misclassified as an order/action failure. Callers must only invoke
+    this after a confirmed successful dispatch (i.e. after
+    `_log_action_success` has already run for this action).
+    """
+    notify_channels = action.get("notify") if isinstance(action, dict) else None
+    if not notify_channels:
+        return
+
+    # Mode gate — no default, live-only. Mirrors `_fire_template_attach_
+    # on_fill`'s explicit mode check (see CLAUDE.md "Template attach mode
+    # gate" invariant): paper/sim/replay/shadow agents must NEVER send a
+    # real external notification via this path. Mandatory, non-negotiable
+    # per the risk council's BLOCK finding.
+    if mode != "live":
+        return
+
+    agent_key = getattr(agent, "slug", None) or getattr(agent, "id", None) or "unknown"
+    if not _al_notify_throttle_check(agent_key, context):
+        logger.debug(
+            f"[NOTIFY] agent={agent_key} action={action_type}: throttled — "
+            f"tick cap ({_MAX_NOTIFY_PER_AGENT_PER_TICK}) reached"
+        )
+        return
+
+    full_message = _al_notify_build_message(agent, action, action_type, agent_key, context)
+    for entry in notify_channels:
+        await _al_notify_send_one_channel(entry, agent, action_type, agent_key, full_message)
+
+
 async def execute(agent, actions: list, context: dict):
     """
     Execute action chain sequentially. Every broker-hitting action
@@ -741,6 +890,20 @@ async def execute(agent, actions: list, context: dict):
             await _log_action_success(agent, action_type, params, tag, sim_mode)
         except Exception as e:
             await _al_action_failed_audit(agent, action_type, params, tag, sim_mode, e)
+            continue
+
+        # Part B (2026-10-12) — action-declared notify=[...], fired only
+        # after a confirmed successful dispatch above. Deliberately its
+        # OWN try/except, OUTSIDE the block above (unreachable from the
+        # `except` branch via the `continue` above it), so a notify-send
+        # failure can never be misclassified as an action/order failure.
+        try:
+            await _al_maybe_notify_action(agent, action, action_type, params, mode, context)
+        except Exception as notify_e:
+            logger.error(
+                f"[NOTIFY] agent={getattr(agent, 'slug', '?')} "
+                f"action={action_type}: notify dispatch failed: {notify_e}"
+            )
 
 
 def _build_template_overrides(params: dict) -> dict:

@@ -1648,3 +1648,67 @@ describe('Sprint G — debug(x) decompiles from a {"$row": ...}-message emit_log
     roundTrip('WHEN always ALERT telegram DO emit_log(level=debug, message="hand typed")');
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════
+// Part B (2026-10) — `notify=[...]` decompile support. The compiled
+// JSON's `notify` sibling key (never inside `params`, see
+// `_compileNotifyClause` in agents.js) renders back to `notify=[...]`
+// CLI text, reusing `_resolveChannelEntryForDecompile` — the SAME
+// per-channel rendering `decompileEvents` already uses for ALERT.
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('Part B — notify=[...] decompile support', () => {
+  it('a single-channel notify[] sibling key decompiles to notify=[telegram] as part of the action call', () => {
+    const r = decompileActions(
+      [{ type: 'close_position', params: { account: 'ZG0790', symbol: 'NIFTY25JULFUT' }, notify: [{ channel: 'telegram' }] }],
+      CATALOG,
+    );
+    expect(r.errors).toEqual([]);
+    expect(r.text).toBe('close_position(account="ZG0790", symbol="NIFTY25JULFUT", notify=[telegram])');
+  });
+
+  it('a multi-channel notify[] with one channel\'s own param (ntfy.priority) decompiles identically to how ALERT renders the same channel', () => {
+    const r = decompileActions(
+      [{
+        type: 'close_position',
+        params: { account: 'ZG0790', symbol: 'NIFTY25JULFUT' },
+        notify: [{ channel: 'telegram' }, { channel: 'ntfy', params: { priority: 'urgent' } }],
+      }],
+      CATALOG,
+    );
+    expect(r.errors).toEqual([]);
+    expect(r.text).toBe('close_position(account="ZG0790", symbol="NIFTY25JULFUT", notify=[telegram, ntfy(priority=urgent)])');
+  });
+
+  it('an action with no `notify` key at all decompiles with no notify= text — zero behavior change', () => {
+    const r = decompileActions(
+      [{ type: 'close_position', params: { account: 'ZG0790', symbol: 'NIFTY25JULFUT' } }],
+      CATALOG,
+    );
+    expect(r.errors).toEqual([]);
+    expect(r.text).toBe('close_position(account="ZG0790", symbol="NIFTY25JULFUT")');
+  });
+
+  it('a zero-other-param action (deactivate_agent) with notify= still renders correctly (bare token + wrapped parens)', () => {
+    const r = decompileActions(
+      [{ type: 'deactivate_agent', params: {}, notify: [{ channel: 'telegram' }] }],
+      CATALOG,
+    );
+    expect(r.errors).toEqual([]);
+    expect(r.text).toBe('deactivate_agent(notify=[telegram])');
+  });
+
+  it('full agent round-trip: compile -> decompile -> recompile with notify=[...] yields byte-identical JSON', () => {
+    roundTrip(
+      'WHEN pnl@positions.expiring_today > 0 '
+      + 'DO close_position(account="ZG0790", symbol="NIFTY25JULFUT", notify=[telegram, ntfy(priority="urgent")])'
+    );
+  });
+
+  it('order(...)\'s own notify=[...] round-trips alongside lots= conversion', () => {
+    roundTrip(
+      'WHEN pnl@positions.expiring_today > 0 '
+      + 'DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, notify=[telegram])'
+    );
+  });
+});

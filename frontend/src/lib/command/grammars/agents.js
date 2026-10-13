@@ -1179,6 +1179,74 @@ function _parseTpScalesJsonArg(rawBracketText, baseStart) {
   return { type: 'list', value: items };
 }
 
+/** Recursively shift every numeric `start`/`end`/`keyStart` field found
+ *  anywhere in a plain token/AST-node tree by `baseStart` — used by
+ *  `_parseNotifyListArg` to re-anchor positions produced by a STANDALONE
+ *  `lexAgentStatement(...)` call (which always starts counting from 0)
+ *  onto the ORIGINAL statement's own absolute offsets, matching the
+ *  convention every other raw-segment arg parser in this file follows
+ *  (`_lexObjScalesTok`'s `baseStart` param, `_parseArgSegment`'s
+ *  `base`-shifted tokens). Pure/non-mutating; safe on any JSON-shaped
+ *  node (CallNode/ArgEntry/ValueNode all qualify — see the file-header
+ *  AST-shape comment). */
+function _shiftPositions(node, baseStart) {
+  if (Array.isArray(node)) return node.map((n) => _shiftPositions(n, baseStart));
+  if (node && typeof node === 'object') {
+    const out = {};
+    for (const [k, v] of Object.entries(node)) {
+      if ((k === 'start' || k === 'end' || k === 'keyStart') && typeof v === 'number') out[k] = v + baseStart;
+      else out[k] = _shiftPositions(v, baseStart);
+    }
+    return out;
+  }
+  return node;
+}
+
+/** `notify_list_value := "[" call ("," call)* "]"` — a LIST OF CALLS
+ *  (channel names, each optionally carrying its own `(...)` params, e.g.
+ *  `[telegram, ntfy(priority="urgent")]`), structurally distinct from
+ *  `tp_scales_json`'s list of `{...}` object literals
+ *  (`_parseTpScalesJsonArg` above) — reuses the MAIN `lexAgentStatement`
+ *  lexer directly (rather than a second hand-rolled mini-lexer like
+ *  `_lexObjScalesTok`) since that lexer already fully tokenizes
+ *  NAME/NAME(args)/LBRACKET/RBRACKET with correct recursive arg-list
+ *  parsing for a nested call's own params — exactly what a channel call
+ *  inside `notify=[...]` needs. `rawBracketText` is the FULL `[...]`
+ *  span; `baseStart` is its absolute offset, re-applied via
+ *  `_shiftPositions` since a fresh `lexAgentStatement` call always
+ *  counts from 0. Returns `{ type: 'list', value: CallNode[] }` — NOT
+ *  the ordinary ValueNode list shape (whose items are ValueNodes); the
+ *  sole consumer (`_compileNotifyClause`) knows to expect CallNode[]
+ *  here and never routes this through `_coerceValueForSpec`/
+ *  `_unwrapValueNode`. */
+function _parseNotifyListArg(rawBracketText, baseStart) {
+  const { tokens, errors } = lexAgentStatement(rawBracketText);
+  if (errors.length) {
+    const e = errors[0];
+    throw new _ParseError(e.message, { start: (typeof e.position === 'number' ? e.position : 0) + baseStart });
+  }
+  const state = { tokens: _shiftPositions(tokens, baseStart), pos: 0 };
+  const open = _peek(state);
+  if (open.type !== 'LBRACKET') {
+    throw new _ParseError('notify requires a list of channel calls, e.g. notify=[telegram, ntfy(priority="urgent")]', open);
+  }
+  _advance(state);
+  const calls = [];
+  if (_peek(state).type !== 'RBRACKET') {
+    calls.push(parseCall(state));
+    while (_peek(state).type === 'COMMA') {
+      _advance(state);
+      calls.push(parseCall(state));
+    }
+  }
+  const close = _peek(state);
+  if (close.type !== 'RBRACKET') throw new _ParseError('expected "]"', close);
+  _advance(state);
+  const trailing = _peek(state);
+  if (trailing.type !== 'EOF') throw new _ParseError('unexpected trailing input after notify value', trailing);
+  return { type: 'list', value: calls };
+}
+
 /** Bracket/brace/quote-aware split of a call's RAW inner text on TOP-LEVEL
  *  commas only (Sprint 8) — commas nested inside a `tp_scales_json=[...]`
  *  value (list of `{...}` object literals) must never split the arg list.
@@ -1214,10 +1282,15 @@ function _splitTopLevelArgCommas(innerText) {
 const _TP_SCALES_JSON_ARG_RE = /^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(\[[\s\S]*\])$/;
 
 /** Parse one raw (pre-split) argument segment into an ArgEntry — dispatches
- *  to the `tp_scales_json` object-literal-list parser when the segment's
- *  key matches (case-insensitive) and its value is bracket-shaped;
- *  otherwise tokenizes via the ORIGINAL Sprint 2 path (tokenizeCallStyle +
- *  `_parseArgSegment`), unchanged for every other argument. */
+ *  to the `tp_scales_json` object-literal-list parser, or (same bracket-
+ *  shaped-value trick) the `notify` channel-call-list parser
+ *  (`_parseNotifyListArg`), when the segment's key matches (case-
+ *  insensitive) and its value is bracket-shaped; otherwise tokenizes via
+ *  the ORIGINAL Sprint 2 path (tokenizeCallStyle + `_parseArgSegment`),
+ *  unchanged for every other argument. Both share the SAME `key=[...]`
+ *  regex (`_TP_SCALES_JSON_ARG_RE` — generically named only for
+ *  historical reasons, matches any bracket-shaped kwarg value) since the
+ *  only difference between them is which bracket-content parser runs. */
 function _parseOneArgFromRawSegment(seg, labelToken) {
   const leadWs = seg.text.length - seg.text.replace(/^\s+/, '').length;
   const trimmed = seg.text.trim();
@@ -1225,10 +1298,12 @@ function _parseOneArgFromRawSegment(seg, labelToken) {
   const base = seg.start + leadWs;
 
   const m = _TP_SCALES_JSON_ARG_RE.exec(trimmed);
-  if (m && m[1].toLowerCase() === 'tp_scales_json') {
+  if (m && (m[1].toLowerCase() === 'tp_scales_json' || m[1].toLowerCase() === 'notify')) {
     const bracketLocalIdx = trimmed.indexOf('[', m[1].length);
     const bracketText = trimmed.slice(bracketLocalIdx);
-    const value = _parseTpScalesJsonArg(bracketText, base + bracketLocalIdx);
+    const value = m[1].toLowerCase() === 'tp_scales_json'
+      ? _parseTpScalesJsonArg(bracketText, base + bracketLocalIdx)
+      : _parseNotifyListArg(bracketText, base + bracketLocalIdx);
     return { key: m[1], value };
   }
 
@@ -3925,6 +4000,67 @@ const _MESSAGE_KEYS = new Set(['msg', 'message']);
 // follow. Closes the "msg=hello doesn't [accept bare]" inconsistency.
 const _MESSAGE_SPEC = Object.freeze({ type: 'freetext' });
 
+/** Resolve ONE call from a channel-call-list — the shared half of
+ *  `alert_clause`'s own call_list production AND the new action-level
+ *  `notify=[...]` (Sprint — see this file's CLAUDE.md entry for the
+ *  full design) — against `catalog.channels`. This is the ONE place a
+ *  channel name is looked up and its own declared `params_schema`
+ *  resolved (via `_compileGenericActionParams`, generically, with zero
+ *  channel-specific code), so a brand-new channel added only to the
+ *  catalog works in EITHER caller with no frontend code changes at all.
+ *
+ *  `stripKeys` (optional `Set<lowercased string>`) names args to pull
+ *  out of the call BEFORE the generic params_schema compile runs —
+ *  ALERT's own `msg=`/`message=` sugar (`_MESSAGE_KEYS`) is never a
+ *  real channel param (see that const's own header comment), so ALERT
+ *  passes `_MESSAGE_KEYS` here; `notify=` has no such sugar and omits
+ *  this entirely. `contextLabel` only affects the "is ${other} — only
+ *  channels are allowed in ${contextLabel}" wording, so each caller's
+ *  error message still names its own clause.
+ *
+ *  Returns `{ errors }` (non-empty on failure), or one of:
+ *    `{ errors: [], isFragmentRef: true, token }` — a bare Token
+ *      reference (Sprint 10) — no params/message machinery applies at
+ *      all; it expands into OTHER channels server-side
+ *      (`template_registry.py:resolve_events`).
+ *    `{ errors: [], isFragmentRef: false, entry, params, strippedArgs }`
+ *      — a real channel call; `params` is the generically-resolved
+ *      param object (possibly `{}`); `strippedArgs` is whatever
+ *      `stripKeys` pulled out (always `[]` when `stripKeys` is
+ *      omitted) — left for the caller to interpret (ALERT's own `msg`
+ *      precedence logic; `notify=` never receives a non-empty array). */
+function _resolveChannelCall(call, catalog, stripKeys, contextLabel = 'here') {
+  const entry = catalog.channels.get(call.name.toLowerCase());
+  if (!entry) {
+    const other = _describeKind(call.name, catalog);
+    return { errors: [_err(other
+      ? `'${call.name}' is ${other} — only channels are allowed in ${contextLabel}`
+      : `unknown channel '${call.name}'`)] };
+  }
+
+  // Sprint 10 — a bare Token reference (`isFragmentRef`) resolves to
+  // `{"$ref": <token>}` directly, bypassing the own-message/params
+  // machinery below entirely — a Token reference expands into OTHER
+  // channels server-side (`template_registry.py:resolve_events`), so it
+  // can never carry its own params or its own `msg=`.
+  if (entry.isFragmentRef) {
+    if (call.args && call.args.length) {
+      return { errors: [_err(`'${call.name}' is a Token reference and takes no arguments`)] };
+    }
+    return { errors: [], isFragmentRef: true, token: entry.token };
+  }
+
+  const strippedArgs = stripKeys
+    ? (call.args || []).filter((a) => a.key && stripKeys.has(a.key.toLowerCase()))
+    : [];
+  const strippedCall = stripKeys
+    ? { ...call, args: (call.args || []).filter((a) => !(a.key && stripKeys.has(a.key.toLowerCase()))) }
+    : call;
+  const r = _compileGenericActionParams(strippedCall, entry);
+  if (r.errors.length) return { errors: r.errors };
+  return { errors: [], isFragmentRef: false, entry, params: r.params, strippedArgs };
+}
+
 /** `alert_clause`'s per-channel message resolution (Sprint 6):
  *    1. a channel's OWN `msg=`/`message=` kwarg (either spelling) always
  *       wins over the clause-level default;
@@ -3955,30 +4091,16 @@ function compileAlertClause(alertCalls, alertMsg, catalog) {
   const events = [];
   for (let i = 0; i < alertCalls.length; i++) {
     const call = alertCalls[i];
-    const entry = catalog.channels.get(call.name.toLowerCase());
-    if (!entry) {
-      const other = _describeKind(call.name, catalog);
-      errors.push(_err(other
-        ? `'${call.name}' is ${other} — only channels are allowed in ALERT`
-        : `unknown channel '${call.name}'`));
+    const resolved = _resolveChannelCall(call, catalog, _MESSAGE_KEYS, 'ALERT');
+    if (resolved.errors.length) { errors.push(...resolved.errors); continue; }
+
+    if (resolved.isFragmentRef) {
+      events.push({ '$ref': resolved.token });
       continue;
     }
 
-    // Sprint 10 — a bare Token reference (`isFragmentRef`) compiles to
-    // `{"$ref": <token>}` directly, bypassing the own-message/params
-    // machinery below entirely — a Token reference expands into OTHER
-    // channels server-side (`template_registry.py:resolve_events`), so it
-    // can never carry its own params or its own `msg=`.
-    if (entry.isFragmentRef) {
-      if (call.args && call.args.length) {
-        errors.push(_err(`'${call.name}' is a Token reference and takes no arguments`));
-        continue;
-      }
-      events.push({ '$ref': entry.token });
-      continue;
-    }
-
-    const msgArgs = ownMsgArgsByCall[i];
+    const { entry, params, strippedArgs } = resolved;
+    const msgArgs = strippedArgs;
     if (msgArgs.length > 1) {
       errors.push(_err(`${entry.token}: duplicate parameter 'msg'/'message'`));
       continue;
@@ -3989,11 +4111,6 @@ function compileAlertClause(alertCalls, alertMsg, catalog) {
       if (r.error) { errors.push(r.error); continue; }
       ownMessage = r.value;
     }
-    const strippedCall = { ...call, args: (call.args || []).filter((a) => !(a.key && _MESSAGE_KEYS.has(a.key.toLowerCase()))) };
-
-    const r = _compileGenericActionParams(strippedCall, entry);
-    errors.push(...r.errors);
-    if (r.errors.length) continue;
 
     let resolvedMessage = null;
     if (ownMessage != null) {
@@ -4005,7 +4122,7 @@ function compileAlertClause(alertCalls, alertMsg, catalog) {
       continue;
     }
 
-    const event = { channel: entry.token, enabled: true, ...r.params };
+    const event = { channel: entry.token, enabled: true, ...params };
     if (resolvedMessage != null) event.message = resolvedMessage;
     events.push(event);
   }
@@ -4177,11 +4294,73 @@ function _resolveRowRefOrNull(valueNode, rowRefCtx, label) {
   return { value: { '$row': canonicalName } };
 }
 
+// ── `notify=[...]` — universal action-level kwarg (Part B, 2026-10) ────
+// Available on EVERY action-kind token (`order`/`place_order`,
+// `close_position`, `cancel_order`, `modify_order`, `cancel_all_orders`,
+// `chase_close_positions`, `expiry_auto_close`, `monitor_order`,
+// `deactivate_agent`, `set_flag`, `emit_log` — every row the live
+// catalog's `grammar_kind=action` seeds today, per
+// `backend/config/grammars/agent_grammar.yaml`) with ZERO per-action
+// code: `notify=` is stripped out of the call's own args HERE, in
+// `compileDoClause`, BEFORE any per-type dispatch (place_order/emit_log/
+// generic) ever sees the call — same "strip sugar before generic
+// key-mapping" pattern `_splitLotsArg`/`_splitTpSlWingArgs`/
+// `_MESSAGE_KEYS` already established — so no action's own
+// `params_schema` needs to declare it. Compiles to a SIBLING key on the
+// action's own compiled dict (`{"type":...,"params":{...},"notify":[...]}`
+// ) — NEVER written inside `params` — using the SAME
+// `_resolveChannelCall` helper (and underlying `catalog.channels`
+// resolution) ALERT's own channel-call-list already uses, so a
+// brand-new channel added only to the backend catalog works here with
+// zero frontend code changes.
+const _NOTIFY_KEY = 'notify';
+
+/** Strip any `notify=[...]` arg out of a DO-clause action call — see the
+ *  section header above. Returns `{ notifyArgs, call }`; `notifyArgs` is
+ *  the (0 or more) matching ArgEntry(s) — more than one is a
+ *  duplicate-parameter compile error, surfaced by the caller. */
+function _splitNotifyArg(call) {
+  const notifyArgs = (call.args || []).filter((a) => a.key && a.key.toLowerCase() === _NOTIFY_KEY);
+  const rest = (call.args || []).filter((a) => !(a.key && a.key.toLowerCase() === _NOTIFY_KEY));
+  return { notifyArgs, call: { ...call, args: rest } };
+}
+
+/** Compile a `notify=[...]` arg's already-parsed CallNode[] value (see
+ *  `_parseNotifyListArg`) against `catalog.channels` — reuses
+ *  `_resolveChannelCall` with no `stripKeys` (notify has no `msg=`-style
+ *  sugar of its own). Returns `{ notify, errors }` — `notify` is the
+ *  compiled sibling-key array (`null` on any error): each entry is
+ *  either `{"$ref": token}` (a bare Token reference) or `{"channel":
+ *  token}` / `{"channel": token, "params": {...}}` (params present only
+ *  when the call declared at least one — never an empty `{}`). */
+function _compileNotifyClause(valueNode, catalog, label) {
+  if (!valueNode || valueNode.type !== 'list' || !Array.isArray(valueNode.value)) {
+    return { notify: null, errors: [_err(`${label}: notify must be a list of channel calls, e.g. notify=[telegram, ntfy(priority="urgent")]`)] };
+  }
+  const errors = [];
+  const notify = [];
+  for (const call of valueNode.value) {
+    const r = _resolveChannelCall(call, catalog, null, 'notify=[...]');
+    if (r.errors.length) { errors.push(...r.errors); continue; }
+    if (r.isFragmentRef) { notify.push({ '$ref': r.token }); continue; }
+    const out = { channel: r.entry.token };
+    if (r.params && Object.keys(r.params).length) out.params = r.params;
+    notify.push(out);
+  }
+  return { notify: errors.length ? null : notify, errors };
+}
+
 function compileDoClause(doCalls, catalog, opts, rowRefCtx) {
   if (doCalls === 'nop') return { actions: [], errors: [] };
   const errors = [];
   const actions = [];
-  for (const call of doCalls) {
+  for (const rawCall of doCalls) {
+    const { notifyArgs, call } = _splitNotifyArg(rawCall);
+    if (notifyArgs.length > 1) {
+      errors.push(_err(`${call.name}: duplicate parameter 'notify'`));
+      continue;
+    }
+
     const rawName = call.name.toLowerCase();
     const lookupName = rawName === 'order' ? 'place_order' : rawName;
     const entry = catalog.actions.get(lookupName);
@@ -4192,21 +4371,30 @@ function compileDoClause(doCalls, catalog, opts, rowRefCtx) {
         : `unknown action '${call.name}'`));
       continue;
     }
+
+    let action = null;
     if (lookupName === 'place_order') {
       const r = _compileOrderActionParams(call, entry, opts, rowRefCtx);
       errors.push(...r.errors);
-      if (!r.errors.length) actions.push({ type: 'place_order', params: r.params });
-      continue;
-    }
-    if (lookupName === 'emit_log') {
+      if (!r.errors.length) action = { type: 'place_order', params: r.params };
+    } else if (lookupName === 'emit_log') {
       const r = _compileEmitLogActionParams(call, entry, rowRefCtx);
       errors.push(...r.errors);
-      if (!r.errors.length) actions.push({ type: 'emit_log', params: r.params });
-      continue;
+      if (!r.errors.length) action = { type: 'emit_log', params: r.params };
+    } else {
+      const r = _compileGenericActionParams(call, entry, rowRefCtx);
+      errors.push(...r.errors);
+      if (!r.errors.length) action = { type: entry.token, params: r.params };
     }
-    const r = _compileGenericActionParams(call, entry, rowRefCtx);
-    errors.push(...r.errors);
-    if (!r.errors.length) actions.push({ type: entry.token, params: r.params });
+    if (!action) continue;
+
+    if (notifyArgs.length === 1) {
+      const nr = _compileNotifyClause(notifyArgs[0].value, catalog, entry.token);
+      errors.push(...nr.errors);
+      if (nr.errors.length) continue;
+      action = { ...action, notify: nr.notify };
+    }
+    actions.push(action);
   }
   return { actions: errors.length ? null : actions, errors };
 }
@@ -5819,30 +6007,68 @@ export function decompileCondition(conditions, catalog) {
  *  default. Channels with no `message` key at all (today's normal,
  *  overwhelmingly common case) decompile exactly as before Sprint 6 — no
  *  `msg=` anywhere in the output. */
+/** Resolve + render ONE channel-call-list entry back to CLI text pieces —
+ *  the decompile-side mirror of `_resolveChannelCall`, shared by
+ *  `decompileEvents` (ALERT's own `{channel, enabled, ...params}`
+ *  flat-spread shape) and the new `notify[]` decompiler (`{channel,
+ *  params}` nested shape, see `_compileNotifyClause`) — so a channel's
+ *  own declared `params_schema` renders identically in both places, with
+ *  zero channel-specific code in either caller.
+ *
+ *  `excludeKeys` names sibling keys on `ev` that are NEVER a real
+ *  channel param when reading the FLAT-SPREAD shape (ALERT's own
+ *  `enabled`/`message`, both validated separately by that caller, see
+ *  below); `paramsKey`, when set, means `ev`'s own params live NESTED
+ *  under that key instead (notify's shape) — mutually exclusive in
+ *  practice (ALERT never sets `paramsKey`, notify never sets
+ *  `excludeKeys`).
+ *
+ *  Returns `{ error }`, or `{ ref: true, text }` for a Token reference,
+ *  or `{ entry, argParts }` for a real channel — `argParts` is the
+ *  channel's own rendered `key=value` strings (possibly `[]`). */
+function _resolveChannelEntryForDecompile(ev, catalog, { excludeKeys = [], paramsKey = null } = {}) {
+  // Sprint 10 — a `{"$ref": "<name>"}` entry (a Token reference expanded
+  // by `template_registry.py:resolve_events`) renders as the bare Token
+  // name, same as `_decompileRef`'s condition-side mirror — it can never
+  // carry params or its own `msg=` (see `_resolveChannelCall`'s
+  // `isFragmentRef` branch).
+  if (ev && typeof ev === 'object' && '$ref' in ev) {
+    const name = ev['$ref'];
+    if (typeof name !== 'string' || !name) return { error: `'$ref' must be a non-empty string, got ${JSON.stringify(name)}` };
+    const refEntry = catalog.channels.get(name.toLowerCase());
+    if (!refEntry || !refEntry.isFragmentRef) return { error: `unknown Token reference '${name}' referenced in stored events` };
+    return { ref: true, text: refEntry.token };
+  }
+  if (!ev || typeof ev !== 'object' || typeof ev.channel !== 'string') {
+    return { error: `unrecognized channel entry: ${JSON.stringify(ev)}` };
+  }
+  const entry = catalog.channels.get(ev.channel.toLowerCase());
+  if (!entry) return { error: `unknown channel '${ev.channel}' referenced in stored events` };
+  const rawParams = paramsKey ? (ev[paramsKey] || {}) : ev;
+  const keys = paramsKey
+    ? Object.keys(rawParams)
+    : Object.keys(ev).filter((k) => k !== 'channel' && !excludeKeys.includes(k));
+  const argParts = [];
+  for (const k of keys) {
+    const spec = entry.paramsSchema[k];
+    if (!spec) return { error: `event '${entry.token}': unknown parameter '${k}' (not declared in its catalog schema)` };
+    const r = _renderParamValue(rawParams[k], spec);
+    if (r.error) return { error: `event '${entry.token}'.${k}: ${r.message}` };
+    argParts.push(`${k}=${r.text}`);
+  }
+  return { entry, argParts };
+}
+
 export function decompileEvents(events, catalog) {
   if (!Array.isArray(events)) return { text: null, errors: [_err(`'events' must be an array, got ${JSON.stringify(events)}`)] };
   if (events.length === 0) return { text: 'nop', errors: [] };
   const errors = [];
   const rendered = [];
   for (const ev of events) {
-    // Sprint 10 — a `{"$ref": "<name>"}` entry (a Token reference expanded
-    // by `template_registry.py:resolve_events`) renders as the bare Token
-    // name, same as `_decompileRef`'s condition-side mirror. Excluded from
-    // the message-hoisting bookkeeping below entirely — a reference can
-    // never carry params or its own `msg=` (see `compileAlertClause`'s
-    // `isFragmentRef` branch), so it's tracked separately via `ref: true`.
     if (ev && typeof ev === 'object' && '$ref' in ev) {
-      const name = ev['$ref'];
-      if (typeof name !== 'string' || !name) {
-        errors.push(_err(`'$ref' must be a non-empty string, got ${JSON.stringify(name)}`));
-        continue;
-      }
-      const refEntry = catalog.channels.get(name.toLowerCase());
-      if (!refEntry || !refEntry.isFragmentRef) {
-        errors.push(_err(`unknown Token reference '${name}' referenced in stored events`));
-        continue;
-      }
-      rendered.push({ ref: true, text: refEntry.token });
+      const r = _resolveChannelEntryForDecompile(ev, catalog);
+      if (r.error) { errors.push(_err(r.error)); continue; }
+      rendered.push({ ref: true, text: r.text });
       continue;
     }
     if (!ev || typeof ev !== 'object' || typeof ev.channel !== 'string') {
@@ -5853,19 +6079,11 @@ export function decompileEvents(events, catalog) {
       errors.push(_err(`event '${ev.channel}': a disabled or missing-'enabled' channel entry has no CLI representation`));
       continue;
     }
-    const entry = catalog.channels.get(ev.channel.toLowerCase());
-    if (!entry) { errors.push(_err(`unknown channel '${ev.channel}' referenced in stored events`)); continue; }
-    const extraKeys = Object.keys(ev).filter(k => k !== 'channel' && k !== 'enabled' && k !== 'message');
-    const argParts = [];
-    let bad = false;
-    for (const k of extraKeys) {
-      const spec = entry.paramsSchema[k];
-      if (!spec) { errors.push(_err(`event '${entry.token}': unknown parameter '${k}' (not declared in its catalog schema)`)); bad = true; continue; }
-      const r = _renderParamValue(ev[k], spec);
-      if (r.error) { errors.push(_err(`event '${entry.token}'.${k}: ${r.message}`)); bad = true; continue; }
-      argParts.push(`${k}=${r.text}`);
-    }
+    const r = _resolveChannelEntryForDecompile(ev, catalog, { excludeKeys: ['enabled', 'message'] });
+    if (r.error) { errors.push(_err(r.error)); continue; }
+    const { entry, argParts } = r;
     let message; // undefined = no 'message' key at all (the normal case)
+    let bad = false;
     if ('message' in ev) {
       if (typeof ev.message !== 'string') {
         errors.push(_err(`event '${entry.token}'.message: must be a string, got ${JSON.stringify(ev.message)}`));
@@ -6025,6 +6243,40 @@ function _decompileGenericAction(params, entry) {
  *  `decompileEvents`. `place_order` renders via the `order` CLI alias
  *  (never the literal `place_order` name — the opposite-direction
  *  mapping from how the compiler resolves `order`→`place_order`). */
+/** Render an action's `notify[]` sibling array (see `_compileNotifyClause`)
+ *  back to `notify=[...]`'s bracket-content text (WITHOUT the leading
+ *  `notify=` — the caller splices that into the action call's own
+ *  argument list, see `_appendNotifyArgText`) — shares
+ *  `_resolveChannelEntryForDecompile` with `decompileEvents`, so a
+ *  channel's own params render identically in both places. `notify` is
+ *  required non-empty here (the compiler never emits an empty array —
+ *  see `_compileNotifyClause`); the caller checks presence first. */
+function _renderNotifyListText(notify, catalog) {
+  if (!Array.isArray(notify) || notify.length === 0) {
+    return { text: null, errors: [_err(`'notify' must be a non-empty array when present, got ${JSON.stringify(notify)}`)] };
+  }
+  const errors = [];
+  const parts = [];
+  for (const ev of notify) {
+    const r = _resolveChannelEntryForDecompile(ev, catalog, { paramsKey: 'params' });
+    if (r.error) { errors.push(_err(r.error)); continue; }
+    if (r.ref) { parts.push(r.text); continue; }
+    parts.push(r.argParts.length === 0 ? r.entry.token : `${r.entry.token}(${r.argParts.join(', ')})`);
+  }
+  if (errors.length) return { text: null, errors };
+  return { text: `[${parts.join(', ')}]`, errors: [] };
+}
+
+/** Splice a rendered `notify=[...]` arg into an already-rendered action
+ *  call's text — `text` is either a bare token (zero other params, e.g.
+ *  `deactivate_agent`) or a `token(...)` call; either shape gets
+ *  `notify=` appended as one more argument, no other change. */
+function _appendNotifyArgText(text, notifyArgText) {
+  if (notifyArgText == null) return text;
+  const arg = `notify=${notifyArgText}`;
+  return text.endsWith(')') ? `${text.slice(0, -1)}, ${arg})` : `${text}(${arg})`;
+}
+
 export function decompileActions(actions, catalog, opts = {}) {
   if (!Array.isArray(actions)) return { text: null, errors: [_err(`'actions' must be an array, got ${JSON.stringify(actions)}`)] };
   if (actions.length === 0) return { text: 'nop', errors: [] };
@@ -6042,10 +6294,25 @@ export function decompileActions(actions, catalog, opts = {}) {
     const lookupName = act.type.toLowerCase();
     const entry = catalog.actions.get(lookupName);
     if (!entry) { errors.push(_err(`unknown action '${act.type}' referenced in stored actions`)); continue; }
+
+    // Part B (2026-10) — `notify=[...]` is a SIBLING key on the action
+    // dict (never inside `params`, see `_compileNotifyClause`'s own
+    // header comment); rendered once here (regardless of which branch
+    // below renders the action's own call text) and spliced in via
+    // `_appendNotifyArgText`. Absent/`undefined` is the overwhelmingly
+    // common case — zero behavior change for every action that doesn't
+    // use this.
+    let notifyArgText = null;
+    if (act.notify !== undefined) {
+      const nr = _renderNotifyListText(act.notify, catalog);
+      if (nr.errors.length) { errors.push(...nr.errors); continue; }
+      notifyArgText = nr.text;
+    }
+
     if (lookupName === 'place_order') {
       const r = _decompileOrderAction(act.params, entry, opts);
       if (r.error) { errors.push(_err(r.error)); continue; }
-      parts.push(r.text);
+      parts.push(_appendNotifyArgText(r.text, notifyArgText));
       continue;
     }
     // Sprint G — render the `debug(x)` sugar form ONLY when the ORIGINAL
@@ -6060,14 +6327,17 @@ export function decompileActions(actions, catalog, opts = {}) {
     // might have typed directly without ever using the `debug(...)`
     // sugar — there is no way to tell the two apart from stored JSON
     // alone, and there doesn't need to be: both are equally valid, and
-    // re-saving either one is a no-op round trip.
-    if (lookupName === 'emit_log' && act.params && act.params.level === 'debug' && _isRowRefMarker(act.params.message)) {
+    // re-saving either one is a no-op round trip. Skipped entirely when
+    // `notify` is present — `debug(x)`'s own grammar takes exactly one
+    // bare argument, with no room for a second `notify=` kwarg — falling
+    // through to the generic rendering below instead, which supports it.
+    if (lookupName === 'emit_log' && act.params && act.params.level === 'debug' && _isRowRefMarker(act.params.message) && notifyArgText == null) {
       parts.push(`debug(${act.params.message['$row']})`);
       continue;
     }
     const r = _decompileGenericAction(act.params, entry);
     if (r.error) { errors.push(_err(r.error)); continue; }
-    parts.push(r.text);
+    parts.push(_appendNotifyArgText(r.text, notifyArgText));
   }
   if (errors.length) return { text: null, errors };
   return { text: parts.join(', '), errors: [] };
