@@ -130,6 +130,126 @@ def _build_dispatch_bodies(
     return telegram_body, ntfy_body, email_subject, email_body
 
 
+def _describe_action_params(params: dict, keys: tuple[str, ...]) -> list[str]:
+    """Render up to the given param keys (in order) as plain values,
+    skipping any key that's absent/None/empty. A dict value (e.g. a
+    `{"$row": "symbol"}` matched-row marker, or any other structured
+    param) renders as `<name>` using its own first value rather than a
+    raw Python repr, since this text can reach an operator-facing
+    channel body."""
+    out = []
+    for k in keys:
+        v = params.get(k)
+        if v in (None, ""):
+            continue
+        if isinstance(v, dict):
+            out.append(f"<{next(iter(v.values()), k)}>")
+        else:
+            out.append(str(v))
+    return out
+
+
+def _describe_action(action: dict) -> str:
+    """Render one `agent.actions` entry (`{"type": ..., "params": {...}}`)
+    as a short, human-readable summary for the action-aware default ALERT
+    message (Part A, 2026-10-12). Special-cases the handful of common
+    action types for a natural phrasing; anything else falls back to a
+    generic `type(key=val, ...)` rendering using whatever params exist —
+    this is deliberately NOT a full per-type registry.
+
+    `agent.actions` here is the AGENT'S OWN COMPILED (not yet resolved/
+    executed) action list — dispatch() runs before execute() for every
+    survivor entry (agent_engine.py:_ae_dispatch_survivor_entry), so a
+    param may still carry a raw `token_ref_ok` expression string or a
+    `$row` matched-row marker rather than its final resolved value. This
+    only renders what's already present in the stored params, same as
+    every other fallback in this function — no I/O, no DB.
+
+    Never masks account text itself — the caller (`_describe_actions`)
+    masks the FULLY JOINED description text once, via the same
+    `mask_account_in_text()` chokepoint every other alert surface already
+    uses (see event_agents.py `_render_error`/`_gate_passes`).
+    """
+    if not isinstance(action, dict):
+        return ""
+    action_type = action.get("type") or ""
+    params = action.get("params") if isinstance(action.get("params"), dict) else {}
+
+    if action_type in ("place_order", "order"):
+        bits = _describe_action_params(params, ("side", "qty", "lots", "symbol"))
+        label = " ".join(bits)
+        price = params.get("price")
+        if price not in (None, ""):
+            label = f"{label} @ {price}".strip()
+        return f"{label} (order)".strip() if label else "order"
+    if action_type == "close_position":
+        bits = _describe_action_params(params, ("symbol",))
+        return f"closed {bits[0]} (close_position)" if bits else "close_position"
+    if action_type in ("chase_close", "chase_close_positions"):
+        scope = params.get("scope") or params.get("account") or "total"
+        return f"chase-close {scope} (chase_close_positions)"
+    if action_type == "cancel_all_orders":
+        scope = params.get("scope") or params.get("account") or "total"
+        return f"cancel all orders {scope} (cancel_all_orders)"
+    if action_type in ("cancel_order", "modify_order"):
+        bits = _describe_action_params(params, ("broker_order_id",))
+        return f"{action_type}({bits[0]})" if bits else action_type
+    if action_type == "expiry_auto_close":
+        bits = _describe_action_params(params, ("exchange",))
+        return f"expiry-close {bits[0]} (expiry_auto_close)" if bits else "expiry_auto_close"
+
+    # Generic fallback — type(key=val, ...) for anything not special-cased
+    # above (emit_log, set_flag, monitor_order, deactivate_agent,
+    # send_summary, or any future/custom token), using up to the first 3
+    # params verbatim, in whatever order the stored dict carries them.
+    if not params:
+        return action_type
+    parts = [f"{k}={v}" for k, v in list(params.items())[:3]]
+    return f"{action_type}({', '.join(parts)})"
+
+
+def _describe_actions(actions: "list | None") -> str:
+    """Render an agent's full `DO` action list as one short summary,
+    for the action-aware no-`msg=` default ALERT message (Part A,
+    2026-10-12 — see docs/specs and the plan file's "Alert/notify
+    messaging" section). Multiple actions join with '; '.
+
+    Returns "" for an empty/absent action list (ALERT-only / event-kind
+    agents with no DO clause) — the caller must then fall back to
+    EXACTLY today's condition-breach-only text, no appended "()" noise.
+
+    Masking: the joined text is passed through `mask_account_in_text()` —
+    the SAME chokepoint `event_agents.py`'s `_render_error`/`_gate_passes`
+    already use to scrub free-form alert text — before being returned, so
+    a raw account code in an action's own `account=` param (e.g.
+    `order(account="ZG0790", ...)`) can never reach an operator-facing
+    channel body unmasked. No second/new masking mechanism is introduced.
+    """
+    if not actions:
+        return ""
+    try:
+        descs = [d for d in (_describe_action(a) for a in actions) if d]
+    except TypeError:
+        # Defensive: a non-list-like `actions` (e.g. an unconfigured test
+        # double that doesn't support iteration) degrades to "no actions"
+        # rather than raising out of the alert-dispatch path.
+        return ""
+    if not descs:
+        return ""
+    from backend.shared.helpers.utils import mask_account_in_text
+    return mask_account_in_text("; ".join(descs)) or ""
+
+
+def _default_message_text(condition_text: str, action_desc: str) -> str:
+    """Combine the condition-breach text with the action-aware summary
+    for the no-`msg=` default ALERT body. Either half may be empty
+    (no action_desc -> byte-identical to pre-change behavior; no
+    condition_text -> action_desc alone, no stray leading separator)."""
+    if condition_text and action_desc:
+        return f"{condition_text} — {action_desc}"
+    return action_desc or condition_text
+
+
 def _classify_recorded_channel(
     ch: dict, agent, eval_result, condition_text: str, branch_tag: str, sim_mode: bool,
 ) -> "tuple | None":
@@ -248,8 +368,19 @@ async def dispatch(agent, eval_result, broadcast_fn=None, sim_mode: bool = False
     ist_display = timestamp_display()
     condition_text = eval_result.condition_text or ""
 
+    # Part A (2026-10-12) — action-aware default message. Only affects the
+    # SHARED/default body built here (messageless telegram/email/ntfy/log
+    # channels, plus websocket/inapp's own direct dispatch below) — a
+    # channel/clause with an explicit `msg=` never reaches this variable at
+    # all; it renders from `custom_message` via the separate loop further
+    # down, byte-identical to pre-change behavior. `condition_text` itself
+    # (used for persistence, websocket/inapp's "condition" field, and
+    # _tags_match) is deliberately left unchanged.
+    action_desc = _describe_actions(getattr(agent, "actions", None))
+    default_message_text = _default_message_text(condition_text, action_desc)
+
     telegram_body, ntfy_body, email_subject, email_body = _build_dispatch_bodies(
-        condition_text, agent, sim_tag, branch, branch_tag, ist_display, sim_mode,
+        default_message_text, agent, sim_tag, branch, branch_tag, ist_display, sim_mode,
     )
 
     # Resolve any `{"$ref": "<notify-fragment>"}` entries against the

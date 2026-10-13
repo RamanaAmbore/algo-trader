@@ -1284,3 +1284,159 @@ async def test_websocket_and_inapp_channels_still_dispatch_directly():
         await dispatch(agent, eval_result, sim_mode=False)
 
     assert set(dispatch_channel_calls) == {"websocket", "inapp"}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Part A (2026-10-12) — action-aware default ALERT message, no new grammar.
+#  See .claude/plans/purrfect-marinating-pixel.md "Alert/notify messaging"
+#  section. Only the no-`msg=` default path changes; any `msg=` configured
+#  anywhere in the clause must remain byte-identical.
+# ═══════════════════════════════════════════════════════════════════════════
+
+@pytest.mark.asyncio
+async def test_dispatch_default_message_is_action_aware_for_order_action():
+    """No msg= anywhere -> the default ALERT body describes what the
+    agent's own DO action actually is (side/qty/symbol), not just the
+    generic condition-breach text."""
+    from backend.api.algo import events
+    from backend.api.algo.events import dispatch, EvalResult
+
+    agent = MagicMock()
+    agent.id = 1
+    agent.name = "Test Agent"
+    agent.slug = "test-agent"
+    agent.tier = "medium"
+    agent.events = [{"channel": "telegram", "enabled": True}]
+    agent.actions = [
+        {"type": "place_order", "params": {
+            "account": "ZG0790", "symbol": "NIFTY25JULFUT", "side": "SELL",
+            "qty": 1, "price": 100,
+        }},
+    ]
+    eval_result = EvalResult(triggered=True, condition_text="pnl > 1000", detail={})
+
+    info_calls = []
+    with patch.object(events, "_RECORDED_CHANNELS", frozenset({"telegram", "email", "ntfy", "log"})), \
+         patch('backend.api.algo.template_registry.resolve_events', return_value=agent.events), \
+         patch('backend.api.algo.events._log_event', new_callable=AsyncMock), \
+         patch.object(events.logger, "info", side_effect=lambda msg, **kw: info_calls.append(kw.get("extra"))):
+        await dispatch(agent, eval_result, sim_mode=False)
+
+    assert len(info_calls) == 1
+    extra = info_calls[0]
+    # The real condition-breach text is still present...
+    assert "pnl > 1000" in extra["telegram_body"]
+    # ...and now the default body also describes the DO action.
+    assert "SELL" in extra["telegram_body"]
+    assert "NIFTY25JULFUT" in extra["telegram_body"]
+    assert "(order)" in extra["telegram_body"]
+    # ntfy/email share the same default-message construction.
+    assert "SELL" in extra["ntfy_body"]
+    assert "SELL" in extra["email_body"]
+    # The persisted/raw condition_text field is untouched — only the
+    # rendered body text grows the action description.
+    assert extra["condition_text"] == "pnl > 1000"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_with_explicit_msg_is_byte_identical_to_no_action_aware_text():
+    """An agent whose channel sets an explicit msg= must render EXACTLY
+    that text, even though its DO clause has a real place_order action —
+    the action-aware default must never leak into a msg=-configured
+    channel's body."""
+    from backend.api.algo import events
+    from backend.api.algo.events import dispatch, EvalResult
+
+    agent = MagicMock()
+    agent.id = 1
+    agent.name = "Test Agent"
+    agent.slug = "test-agent"
+    agent.tier = "medium"
+    agent.events = [
+        {"channel": "ntfy", "enabled": True, "message": "Stop loss hit"},
+    ]
+    agent.actions = [
+        {"type": "place_order", "params": {
+            "account": "ZG0790", "symbol": "NIFTY25JULFUT", "side": "SELL", "qty": 1,
+        }},
+    ]
+    eval_result = EvalResult(triggered=True, condition_text="pnl > 1000", detail={})
+
+    info_calls = []
+    with patch.object(events, "_RECORDED_CHANNELS", frozenset({"telegram", "email", "ntfy", "log"})), \
+         patch('backend.api.algo.template_registry.resolve_events', return_value=agent.events), \
+         patch('backend.api.algo.events._log_event', new_callable=AsyncMock), \
+         patch.object(events.logger, "info", side_effect=lambda msg, **kw: info_calls.append(kw.get("extra"))):
+        await dispatch(agent, eval_result, sim_mode=False)
+
+    assert len(info_calls) == 1
+    extra = info_calls[0]
+    assert "Condition: Stop loss hit" in extra["ntfy_body"]
+    # Neither the action type nor its params leak into a msg=-configured
+    # channel's body — byte-identical to the pre-change custom-message path.
+    assert "SELL" not in extra["ntfy_body"]
+    assert "(order)" not in extra["ntfy_body"]
+    assert "pnl > 1000" not in extra["ntfy_body"]
+
+
+@pytest.mark.asyncio
+async def test_describe_actions_masks_account_identifiers():
+    """An action param carrying a raw account code (e.g. order(...)'s
+    account=) must never reach the rendered default message unmasked —
+    reuses the same mask_account_in_text() chokepoint event_agents.py's
+    _render_error/_gate_passes already use."""
+    from backend.api.algo.events import _describe_actions
+    from backend.shared.helpers.utils import mask_account_in_text
+
+    actions = [
+        {"type": "place_order", "params": {
+            "account": "ZG0790", "symbol": "NIFTY25JULFUT", "side": "BUY", "qty": 2,
+        }},
+    ]
+    desc = _describe_actions(actions)
+    assert "ZG0790" not in desc
+    assert desc == mask_account_in_text(desc)
+
+
+@pytest.mark.asyncio
+async def test_describe_actions_empty_for_no_actions():
+    """An agent with no DO clause (empty/absent actions list) must
+    degrade to "" so the default message stays exactly the condition-
+    breach text — no appended '()' noise."""
+    from backend.api.algo.events import _describe_actions
+
+    assert _describe_actions(None) == ""
+    assert _describe_actions([]) == ""
+
+
+@pytest.mark.asyncio
+async def test_dispatch_default_message_unaffected_when_agent_has_no_actions():
+    """An ALERT-only / event-kind agent with no DO actions at all must
+    produce EXACTLY today's condition-breach-only default body — no
+    appended action description, no stray separator."""
+    from backend.api.algo import events
+    from backend.api.algo.events import dispatch, EvalResult
+
+    agent = MagicMock()
+    agent.id = 1
+    agent.name = "Test Agent"
+    agent.slug = "test-agent"
+    agent.tier = "medium"
+    agent.events = [{"channel": "telegram", "enabled": True}]
+    agent.actions = []
+    eval_result = EvalResult(triggered=True, condition_text="pnl > 1000", detail={})
+
+    info_calls = []
+    with patch.object(events, "_RECORDED_CHANNELS", frozenset({"telegram", "email", "ntfy", "log"})), \
+         patch('backend.api.algo.template_registry.resolve_events', return_value=agent.events), \
+         patch('backend.api.algo.events._log_event', new_callable=AsyncMock), \
+         patch.object(events.logger, "info", side_effect=lambda msg, **kw: info_calls.append(kw.get("extra"))):
+        await dispatch(agent, eval_result, sim_mode=False)
+
+    assert len(info_calls) == 1
+    extra = info_calls[0]
+    assert extra["telegram_body"].strip().endswith("Condition: pnl > 1000")
+    condition_line = [
+        line for line in extra["telegram_body"].splitlines() if line.startswith("Condition:")
+    ][0]
+    assert condition_line == "Condition: pnl > 1000"
