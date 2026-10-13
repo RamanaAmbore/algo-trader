@@ -324,10 +324,7 @@ test.describe('CardHeader adoption sweep — Derivatives Legs card', () => {
 
     // 3. Regression guard — the other control-cluster buttons (Search,
     // Download) that coexisted with Collapse still render and still
-    // work after its removal. (Fullscreen on this card is additionally
-    // gated by CardHeader's own overflow-detection — not exercised here
-    // to avoid coupling this test to grid row count / viewport fixture
-    // state unrelated to the Collapse removal.)
+    // work after its removal.
     const searchBtn = header.locator('.grid-search-btn');
     await expect(searchBtn).toBeVisible();
     await searchBtn.click();
@@ -338,6 +335,33 @@ test.describe('CardHeader adoption sweep — Derivatives Legs card', () => {
 
     // 4. Shade present.
     expect(await hasSharedShade(header)).toBe(true);
+  });
+
+  test('Fullscreen button is always present, regardless of grid row count (2026-10-13 fix)', async ({ page }) => {
+    // detectOverflow={false} was added to this card's CardHeader after
+    // confirming (live, via the sibling Pulse-Positions investigation
+    // earlier this session) that CardHeader's own overflow-auto-hide
+    // heuristic (hideFullscreen = detectOverflow && !_hasOverflow &&
+    // !isFullscreen) silently hides Fullscreen whenever a grid doesn't
+    // have enough rows to overflow its own viewport — exactly the state
+    // this card is often in. The PRIOR test in this file deliberately
+    // avoided asserting Fullscreen here for that reason; this test now
+    // asserts it positively, since the heuristic is disabled.
+    await loginAsAdmin(page);
+    await page.goto('/admin/derivatives', { waitUntil: 'domcontentloaded' });
+
+    const card = page.locator('.opt-legs-card');
+    await expect(card).toBeVisible({ timeout: 20_000 });
+    const header = card.locator('.card-header').first();
+
+    const fsBtn = header.locator('button[aria-label="Expand Legs to fullscreen"]');
+    await expect(fsBtn, 'Fullscreen button must always be visible on the Legs card, regardless of row count').toBeVisible({ timeout: 10_000 });
+    await fsBtn.click();
+    await expect(card, 'card should enter fullscreen').toHaveClass(/fs-card-on/);
+    const restoreBtn = header.locator('.default-btn');
+    await expect(restoreBtn).toBeVisible();
+    await restoreBtn.click();
+    await expect(card, 'card should exit fullscreen').not.toHaveClass(/fs-card-on/);
   });
 });
 

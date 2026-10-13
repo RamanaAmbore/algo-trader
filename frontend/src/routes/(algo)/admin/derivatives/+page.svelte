@@ -5692,6 +5692,7 @@
       label="Legs"
       onRefresh={_refreshAll}
       bind:refreshLoading={_refreshing}
+      detectOverflow={false}
       onDownload={() => exportRowsToCsv(
         displayedCandidates,
         [
