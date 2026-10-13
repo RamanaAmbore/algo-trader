@@ -483,11 +483,13 @@
     <div class="console-agent-cli-wrap">
       {#if editTarget}
         <!-- Sprint C — visible even while the catalog is still loading, so
-             the operator always sees edit-mode is active and has an escape
-             hatch (Cancel edit) regardless of catalog fetch timing. -->
+             the operator always sees edit-mode is active. The Cancel
+             action itself moved down into the shared bottom-right
+             button row below (2026-10-13, operator request — Save and
+             Cancel now live together, right-aligned, under the editor;
+             this banner keeps only the informational "Editing ..." text). -->
         <div class="console-edit-banner">
           <span>Editing {_ROW_KIND_LABEL[editTarget.rowKind] || editTarget.rowKind} "{editTarget.label}"</span>
-          <button type="button" class="console-edit-cancel" onclick={cancelEdit}>Cancel edit</button>
         </div>
       {/if}
       {#if _agentCliCatalogError}
@@ -502,28 +504,35 @@
           submitStatus={_cliSubmitStatus}
           showCompileErrors={_classify === 'agents'}
         />
-        {#if !isDemo && _agentCliCompiled?.ok && (_agentCliCompiled.kind === 'agent' || _agentCliCompiled.kind === 'event')}
-          <button type="button" class="btn-primary console-agent-cli-btn"
-            onclick={() => _submitAgentCliAgent(_agentCliCompiled)}>
-            {editTarget && (editTarget.rowKind === 'cycle' || editTarget.rowKind === 'event') ? 'Save' : 'Create agent'}
-          </button>
-        {:else if !isDemo && _agentCliCompiled?.ok && _agentCliCompiled.kind === 'bracket'}
-          <button type="button" class="btn-primary console-agent-cli-btn"
-            onclick={() => _submitAgentCliBracket(_agentCliCompiled)}>
-            {editTarget && editTarget.rowKind === 'bracket' ? 'Save' : 'Save bracket'}
-          </button>
-        {:else if !isDemo && _agentCliCompiled?.ok && _agentCliCompiled.kind === 'token'}
-          <button type="button" class="btn-primary console-agent-cli-btn"
-            onclick={() => _submitAgentCliToken(_agentCliCompiled)}>
-            {editTarget && editTarget.rowKind === 'template' ? 'Save' : 'Create token'}
-          </button>
-        {:else if !isDemo && !editTarget && _fallbackLabel}
-          <!-- Sprint I Phase 1 — legacy-grammar fallback action. Gated on
-               !editTarget: editing an existing row only ever recompiles
-               as agent/event/bracket/token, never a raw legacy command. -->
-          <button type="button" class="btn-secondary console-agent-cli-btn console-fallback-btn"
-            onclick={_submitLegacyFallback}>{_fallbackLabel}</button>
-        {/if}
+        <!-- Save/Create + Cancel edit share one right-aligned button row
+             at the bottom of the editor (2026-10-13, operator request). -->
+        <div class="console-agent-cli-actions">
+          {#if editTarget}
+            <button type="button" class="console-edit-cancel" onclick={cancelEdit}>Cancel edit</button>
+          {/if}
+          {#if !isDemo && _agentCliCompiled?.ok && (_agentCliCompiled.kind === 'agent' || _agentCliCompiled.kind === 'event')}
+            <button type="button" class="btn-primary console-agent-cli-btn"
+              onclick={() => _submitAgentCliAgent(_agentCliCompiled)}>
+              {editTarget && (editTarget.rowKind === 'cycle' || editTarget.rowKind === 'event') ? 'Save' : 'Create agent'}
+            </button>
+          {:else if !isDemo && _agentCliCompiled?.ok && _agentCliCompiled.kind === 'bracket'}
+            <button type="button" class="btn-primary console-agent-cli-btn"
+              onclick={() => _submitAgentCliBracket(_agentCliCompiled)}>
+              {editTarget && editTarget.rowKind === 'bracket' ? 'Save' : 'Save bracket'}
+            </button>
+          {:else if !isDemo && _agentCliCompiled?.ok && _agentCliCompiled.kind === 'token'}
+            <button type="button" class="btn-primary console-agent-cli-btn"
+              onclick={() => _submitAgentCliToken(_agentCliCompiled)}>
+              {editTarget && editTarget.rowKind === 'template' ? 'Save' : 'Create token'}
+            </button>
+          {:else if !isDemo && !editTarget && _fallbackLabel}
+            <!-- Sprint I Phase 1 — legacy-grammar fallback action. Gated on
+                 !editTarget: editing an existing row only ever recompiles
+                 as agent/event/bracket/token, never a raw legacy command. -->
+            <button type="button" class="btn-secondary console-agent-cli-btn console-fallback-btn"
+              onclick={_submitLegacyFallback}>{_fallbackLabel}</button>
+          {/if}
+        </div>
       {/if}
     </div>
   </div>
@@ -626,14 +635,12 @@
     font-size: var(--fs-sm);
   }
   .console-agent-cli-btn {
-    margin-top: 0.3rem;
     font-size: var(--fs-md);
     padding: 0.25rem 0.9rem;
   }
   .console-edit-banner {
     display: flex;
     align-items: center;
-    justify-content: space-between;
     gap: 0.5rem;
     padding: 0.35rem 0.6rem;
     margin-bottom: 0.4rem;
@@ -643,6 +650,17 @@
     color: var(--algo-amber);
     font-size: var(--fs-sm);
     font-weight: 600;
+  }
+  /* Shared bottom-right button row for Save/Create + Cancel edit
+     (2026-10-13, operator request — both actions live together at the
+     bottom of the editor, right-aligned, instead of Cancel sitting in
+     the top banner and Save left-aligned below the editor). */
+  .console-agent-cli-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.75rem;
+    margin-top: 0.3rem;
   }
   .console-edit-cancel {
     font-size: var(--fs-xs);

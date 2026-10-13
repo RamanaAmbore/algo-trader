@@ -746,34 +746,6 @@
               <span class="text-[length:var(--fs-sm)] font-mono truncate" style="color: var(--c-muted)">{row.long_name}</span>
             {/if}
           </span>
-          {#if _activeCard === 'agents' || _activeCard === 'alerts'}
-            <span class="agent-row-icons" title={'Notify: ' + (enabledChannels(row.events).join(', ') || 'none')}>
-              {#each enabledChannels(row.events) as ch (ch)}
-                <span class="agent-notify-ico" aria-label={ch}>{@html CHANNEL_ICON[ch] || '•'}</span>
-              {/each}
-            </span>
-          {/if}
-          {#if _activeCard === 'agents' && row.kind !== 'template'}
-            <button type="button"
-              onclick={(e) => { e.stopPropagation(); toggleTradeMode(row); }}
-              title={`Trade mode: ${(row.trade_mode || 'paper').toUpperCase()} — click to flip (paper ↔ live)`}
-              class="text-[length:var(--fs-xs)] px-1.5 py-0 rounded font-bold border flex-shrink-0
-                {(row.trade_mode || 'paper') === 'live'
-                  ? 'bg-red-500/15 text-red-400 border-red-500/40'
-                  : 'bg-[var(--algo-sky-bg)] text-[var(--algo-sky)] border-sky-500/40'}">
-              {(row.trade_mode || 'paper') === 'live' ? 'L' : 'P'}
-            </button>
-          {/if}
-          {#if (_activeCard === 'agents' || _activeCard === 'alerts') && row.kind !== 'template'}
-            <button type="button"
-              onclick={(e) => { e.stopPropagation(); toggle(row); }}
-              class="text-[length:var(--fs-xs)] px-1.5 py-0 rounded font-medium border flex-shrink-0
-                {row.status !== 'inactive'
-                  ? 'bg-green-500/15 text-[var(--algo-green)] border-green-500/40'
-                  : 'bg-slate-700/40 text-slate-400 border-slate-500/30'}">
-              {row.status !== 'inactive' ? 'ON' : 'OFF'}
-            </button>
-          {/if}
           <DisclosureChevron open={isOpen} ariaLabel={isOpen ? 'Collapse row' : 'Expand row'} />
         </div>
         <!-- Collapsed-state detail chip row (2026-10-12, operator: "make
@@ -805,6 +777,42 @@
 
         {#if isOpen}
           <div class="px-2 pb-2 border-t" style="border-top-color: rgba(126,151,184,0.10)">
+            <!-- 2026-10-13 (operator: declutter the collapsed row) — the
+                 notify-channel icons, trade-mode L/P toggle, and ON/OFF
+                 toggle are action/detail controls, not identity, so they
+                 now live here (expanded view only) instead of cluttering
+                 the always-visible collapsed row above. Same gating as
+                 before (template rows never get trade-mode/ON-OFF). -->
+            <div class="flex items-center justify-end gap-2 pb-2">
+              {#if _activeCard === 'agents' || _activeCard === 'alerts'}
+                <span class="agent-row-icons" title={'Notify: ' + (enabledChannels(row.events).join(', ') || 'none')}>
+                  {#each enabledChannels(row.events) as ch (ch)}
+                    <span class="agent-notify-ico" aria-label={ch}>{@html CHANNEL_ICON[ch] || '•'}</span>
+                  {/each}
+                </span>
+              {/if}
+              {#if _activeCard === 'agents' && row.kind !== 'template'}
+                <button type="button"
+                  onclick={(e) => { e.stopPropagation(); toggleTradeMode(row); }}
+                  title={`Trade mode: ${(row.trade_mode || 'paper').toUpperCase()} — click to flip (paper ↔ live)`}
+                  class="text-[length:var(--fs-xs)] px-1.5 py-0 rounded font-bold border flex-shrink-0
+                    {(row.trade_mode || 'paper') === 'live'
+                      ? 'bg-red-500/15 text-red-400 border-red-500/40'
+                      : 'bg-[var(--algo-sky-bg)] text-[var(--algo-sky)] border-sky-500/40'}">
+                  {(row.trade_mode || 'paper') === 'live' ? 'L' : 'P'}
+                </button>
+              {/if}
+              {#if (_activeCard === 'agents' || _activeCard === 'alerts') && row.kind !== 'template'}
+                <button type="button"
+                  onclick={(e) => { e.stopPropagation(); toggle(row); }}
+                  class="text-[length:var(--fs-xs)] px-1.5 py-0 rounded font-medium border flex-shrink-0
+                    {row.status !== 'inactive'
+                      ? 'bg-green-500/15 text-[var(--algo-green)] border-green-500/40'
+                      : 'bg-slate-700/40 text-slate-400 border-slate-500/30'}">
+                  {row.status !== 'inactive' ? 'ON' : 'OFF'}
+                </button>
+              {/if}
+            </div>
             {#if _activeCard === 'brackets'}
               {@render bracketRowView(row)}
             {:else}
@@ -899,7 +907,7 @@
   .kind-card:hover { border-color: rgba(251,191,36,0.35); }
   .kind-card[data-kind="agents"]:hover    { border-color: var(--algo-amber-border); }
   .kind-card[data-kind="alerts"]:hover    { border-color: var(--algo-sky-border); }
-  .kind-card[data-kind="brackets"]:hover  { border-color: var(--algo-amber-border); }
+  .kind-card[data-kind="brackets"]:hover  { border-color: var(--algo-green-border); }
 
   /* ── Always-active kind-tinted background + border (2026-10-12) —
      matches OrderBook.svelte's `.ob-sc[data-status]` decoration level
@@ -907,14 +915,15 @@
      an amber inset ring on `.is-active`, since exactly one kind card is
      always the active filter now (no more drill-down/back navigation —
      operator: "keep agents status cards always... toggle... instead of
-     using go back"). Brackets now uses amber too (operator: "make
-     brackets use similar scheme as open status card" — Orders' own
-     "Open" chip, `.ob-sc[data-status="running"]`, is amber) —
-     deliberately the SAME color as Agents, per explicit operator
-     instruction; flagged to the operator as a known consequence of this
-     change (Agents and Brackets now share a hue) rather than silently
-     picking a different one. RGB triples match the existing --algo-
-     amber/-sky tokens verbatim (app.css) — no new colors. */
+     using go back"). RGB triples match the existing --algo-amber/-sky/
+     -green tokens verbatim (app.css) — no new colors.
+
+     2026-10-13 (operator request) — Brackets moved OFF the amber/"Open"
+     scheme it briefly shared with Agents, onto the GREEN/"Filled" scheme
+     instead — the exact tokens Orders' `.ob-sc[data-status="active"]`
+     chip uses (`rgba(74,222,128,...)` / `--c-long` / `--algo-green-
+     border[-soft]`). Agents and Alerts are unaffected; all three
+     kind-cards are distinct again. */
   .kind-card.is-active {
     box-shadow: 0 0 0 2px rgba(251,191,36,0.55) inset;
   }
@@ -932,13 +941,13 @@
   }
   .kind-card[data-kind="brackets"] {
     background:
-      linear-gradient(180deg, rgba(251,191,36,0.14) 0%, rgba(251,191,36,0.04) 60%, rgba(0,0,0,0.08) 100%),
+      linear-gradient(180deg, rgba(74,222,128,0.14) 0%, rgba(74,222,128,0.04) 60%, rgba(0,0,0,0.08) 100%),
       linear-gradient(180deg, #0f1729 0%, #0a1020 100%);
-    border-color: var(--algo-amber-border-soft);
+    border-color: var(--algo-green-border-soft);
   }
   .kind-card.is-active[data-kind="agents"]    { border-color: var(--algo-amber-border); }
   .kind-card.is-active[data-kind="alerts"]    { border-color: var(--algo-sky-border); }
-  .kind-card.is-active[data-kind="brackets"]  { border-color: var(--algo-amber-border); }
+  .kind-card.is-active[data-kind="brackets"]  { border-color: var(--algo-green-border); }
 
   .kind-card-n {
     font-size: var(--fs-xl);
@@ -948,7 +957,7 @@
   }
   .kind-card[data-kind="agents"]    .kind-card-n { color: var(--c-action); }
   .kind-card[data-kind="alerts"]    .kind-card-n { color: var(--algo-sky); }
-  .kind-card[data-kind="brackets"]  .kind-card-n { color: var(--c-action); }
+  .kind-card[data-kind="brackets"]  .kind-card-n { color: var(--c-long); }
   .kind-card-l {
     font-size: var(--fs-sm);
     color: var(--c-muted);
@@ -961,7 +970,7 @@
      background/border/number/label all agree on one color per card. */
   .kind-card[data-kind="agents"]    .kind-card-l { color: var(--c-action); }
   .kind-card[data-kind="alerts"]    .kind-card-l { color: var(--algo-sky); }
-  .kind-card[data-kind="brackets"]  .kind-card-l { color: var(--c-action); }
+  .kind-card[data-kind="brackets"]  .kind-card-l { color: var(--c-long); }
 
   /* ── Agent row card chrome — matches agent-templates' .frag-row look
      (same literal gradient/border/radius) for visual parity across the

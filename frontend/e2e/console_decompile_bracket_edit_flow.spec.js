@@ -161,6 +161,27 @@ test.describe('Brackets kind-card row → Edit → decompileBracket → Console 
     await expect(saveBtn).toBeVisible({ timeout: TIMEOUT });
     await expect(saveBtn).toHaveText('Save');
 
+    // 2026-10-13 (operator request) — Save and Cancel edit now share one
+    // bottom-right button row under the editor, instead of Cancel living
+    // in the top banner and Save left-aligned below. Confirm both are
+    // present in the SAME right-aligned container.
+    const cancelBtn = page.locator('.console-edit-cancel');
+    await expect(cancelBtn).toBeVisible({ timeout: TIMEOUT });
+    await expect(cancelBtn).toHaveText('Cancel edit');
+    const actionsRow = page.locator('.console-agent-cli-actions');
+    await expect(actionsRow).toBeVisible({ timeout: TIMEOUT });
+    await expect(actionsRow.locator('.console-edit-cancel')).toHaveCount(1);
+    await expect(actionsRow.locator('.console-agent-cli-btn')).toHaveCount(1);
+    const justifyContent = await actionsRow.evaluate((el) => getComputedStyle(el).justifyContent);
+    expect(justifyContent).toBe('flex-end');
+
+    // Right-aligned: both buttons' right edge sits at (or very near) the
+    // container's own right edge, not left-aligned/centered.
+    const [rowBox, saveBox] = await Promise.all([actionsRow.boundingBox(), saveBtn.boundingBox()]);
+    expect(rowBox).not.toBeNull();
+    expect(saveBox).not.toBeNull();
+    expect(Math.abs((rowBox.x + rowBox.width) - (saveBox.x + saveBox.width))).toBeLessThan(2);
+
     await saveBtn.click();
     await expect.poll(() => patchCalled, { timeout: TIMEOUT }).not.toBeNull();
     expect(patchCalled.url).toContain('/api/admin/templates/90001');

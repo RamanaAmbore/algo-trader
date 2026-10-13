@@ -16,9 +16,10 @@
  * 4. The three Agents-tab kind-count cards (Agents/Alerts/Brackets —
  *    Templates folded into Agents 2026-10-12) each render a `.kind-
  *    card-n` AND `.kind-card-l` color keyed off `data-kind`. Revised
- *    again 2026-10-12: Brackets deliberately shares Agents' amber
- *    ("open status card" scheme, operator-requested) — Alerts stays
- *    the one distinct color.
+ *    2026-10-13: Brackets moved OFF the amber "Open status card" scheme
+ *    it briefly shared with Agents, onto the GREEN "Filled status"
+ *    scheme instead (operator-requested) — all three kind-cards
+ *    (Agents/Alerts/Brackets) are distinct colors again.
  *
  * Mocking — order submission is mocked at the network boundary
  * (`POST /api/orders/ticket`), same approach as the sibling
@@ -186,13 +187,12 @@ test.describe('Item 4 — Agents-tab kind-cards each get a distinct color', () =
     await loginAsAdmin(page);
   });
 
-  // Revised 2026-10-12 — operator: "make brackets use similar scheme as
-  // open status card" (Orders' amber "Open" chip) — explicitly makes
-  // Brackets share Agents' amber, so only 2 distinct colors remain
-  // (amber for agents+brackets, sky for alerts), not 3. Agents and
-  // Brackets are asserted to MATCH; Alerts is asserted to differ from
-  // both — the deliberate, operator-requested shape of this palette.
-  test('Agents/Brackets kind-cards share the amber "Open" scheme; Alerts stays distinct (.kind-card-n)', async ({ page }) => {
+  // Revised 2026-10-13 — operator: "brackets color should match Filled
+  // status, not Open" — Brackets now uses the GREEN scheme (Orders'
+  // `.ob-sc[data-status="active"]`/"Filled" chip tokens), distinct from
+  // both Agents' amber and Alerts' sky. All three kind-cards assert
+  // pairwise distinct colors.
+  test('Agents/Alerts/Brackets kind-cards each have a distinct color (.kind-card-n)', async ({ page }) => {
     await page.goto('/automation', { waitUntil: 'domcontentloaded' });
 
     const colorOf = async (kind) => {
@@ -201,11 +201,12 @@ test.describe('Item 4 — Agents-tab kind-cards each get a distinct color', () =
       return card.evaluate((el) => getComputedStyle(el).color);
     };
     const [agents, alerts, brackets] = await Promise.all([colorOf('agents'), colorOf('alerts'), colorOf('brackets')]);
-    expect(brackets).toBe(agents);
+    expect(brackets).not.toBe(agents);
     expect(alerts).not.toBe(agents);
+    expect(brackets).not.toBe(alerts);
   });
 
-  test('Agents/Brackets kind-cards also share the amber .kind-card-l (label) color; Alerts stays distinct', async ({ page }) => {
+  test('Agents/Alerts/Brackets kind-cards each have a distinct .kind-card-l (label) color', async ({ page }) => {
     await page.goto('/automation', { waitUntil: 'domcontentloaded' });
 
     const colorOf = async (kind) => {
@@ -214,7 +215,8 @@ test.describe('Item 4 — Agents-tab kind-cards each get a distinct color', () =
       return label.evaluate((el) => getComputedStyle(el).color);
     };
     const [agents, alerts, brackets] = await Promise.all([colorOf('agents'), colorOf('alerts'), colorOf('brackets')]);
-    expect(brackets).toBe(agents);
+    expect(brackets).not.toBe(agents);
     expect(alerts).not.toBe(agents);
+    expect(brackets).not.toBe(alerts);
   });
 });

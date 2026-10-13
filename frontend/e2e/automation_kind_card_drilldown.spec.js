@@ -148,6 +148,30 @@ test.describe('Agents tab — kind-count cards (Sprint C)', () => {
     await expect(page.locator('.kind-card[data-kind="templates"]')).toHaveCount(0);
   });
 
+  // 2026-10-13 regression (operator: declutter the collapsed row) — the
+  // trade-mode L/P toggle and ON/OFF toggle are action/detail controls
+  // that must stay hidden until the row is expanded, not clutter the
+  // always-visible collapsed row.
+  test('collapsed row hides the trade-mode/ON-OFF buttons; expanding the row reveals them', async ({ page }) => {
+    await page.goto('/automation', { waitUntil: 'domcontentloaded' });
+    await expect(page.locator('.kind-card-grid')).toBeVisible({ timeout: TIMEOUT });
+
+    const cycleRow = page.locator('[role="listitem"]').filter({ hasText: 'Loss Funds Negative E2E' });
+    await expect(cycleRow).toBeVisible({ timeout: TIMEOUT });
+
+    // Collapsed: identity-only (status dot, name, log-chip, chevron) —
+    // no trade-mode toggle, no ON/OFF toggle.
+    await expect(cycleRow.locator('button[title*="Trade mode" i]')).toHaveCount(0);
+    await expect(cycleRow.getByRole('button', { name: 'ON', exact: true })).toHaveCount(0);
+    await expect(cycleRow.getByRole('button', { name: 'OFF', exact: true })).toHaveCount(0);
+
+    // Expand — both controls are now reachable (CYCLE_ROW is status:
+    // 'active', so its toggle reads "ON").
+    await cycleRow.locator('div[role="button"]').first().click();
+    await expect(cycleRow.locator('button[title*="Trade mode" i]')).toBeVisible({ timeout: TIMEOUT });
+    await expect(cycleRow.getByRole('button', { name: 'ON', exact: true })).toBeVisible();
+  });
+
   test('clicking a card toggles the row list below it — cards stay visible, no navigation', async ({ page }) => {
     // domcontentloaded, not networkidle — this page's WS reconnect loop
     // keeps the network non-idle indefinitely (same caveat already
