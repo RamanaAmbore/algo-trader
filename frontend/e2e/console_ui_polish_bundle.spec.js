@@ -210,6 +210,25 @@ test.describe('Item 3 — Workspace header removed; Console/Agents tab row carri
     // console-specific controls are gated.
     await expect(page.locator('.aw-tabs-wrap')).toBeVisible({ timeout: TIMEOUT });
   });
+
+  // Bug fix (2026-10, operator: "need to click two times on agents tab to
+  // switch — that is a bug") — a stale-`page.url` race in the URL<->tab
+  // sync `$effect` meant ONE click on "Agents" silently reverted itself
+  // (the Console textarea stayed visible), and only a SECOND click made
+  // the switch stick. Fixed via `untrack()` around the effect's own
+  // comparison/write reads. Both directions, single click each.
+  test('a single click switches Console -> Agents -> Console (no double-click needed)', async ({ page }) => {
+    await page.goto('/automation?tab=console', { waitUntil: 'domcontentloaded' });
+    const awView = page.locator('.aw-view');
+
+    await awView.getByRole('tab', { name: 'Agents' }).click();
+    await expect(page.locator('.kind-card-grid')).toBeVisible({ timeout: TIMEOUT });
+    await expect(page.locator('textarea.agent-cli-textarea')).toHaveCount(0);
+
+    await awView.getByRole('tab', { name: 'Console' }).click();
+    await expect(page.locator('textarea.agent-cli-textarea')).toBeVisible({ timeout: TIMEOUT });
+    await expect(page.locator('.kind-card-grid')).toHaveCount(0);
+  });
 });
 
 test.describe('Item 4 — Agents-tab kind-cards each get a distinct color', () => {

@@ -1,5 +1,5 @@
 <script>
-  import { onMount, onDestroy, getContext } from 'svelte';
+  import { onMount, onDestroy, getContext, untrack } from 'svelte';
   import { logTime, lifespanChip, visibleInterval } from '$lib/stores';
   import AlgoTimestamp from '$lib/AlgoTimestamp.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
@@ -125,11 +125,26 @@
   // rather than landing on a tab that no longer exists. `?tab=tokens`
   // now lands on the 'agents' card itself (2026-10-12 — Templates folded
   // into Agents, no separate card left to preselect).
+  // Bug fix (2026-10, operator: "need to click two times on agents tab to
+  // switch — that is a bug") — this effect's job is ONE-DIRECTIONAL sync
+  // (URL -> activeTab), for direct navigation/bookmarks/back-forward. But
+  // reading `activeTab`/`_activeCard` for the comparison checks ALSO
+  // subscribed this effect to THEM, not just to `page.url` — so the
+  // instant `setActiveTab('agents')` wrote `activeTab = 'agents'`
+  // synchronously, this effect re-ran before `goto()`'s async navigation
+  // had updated `page.url`, saw the STILL-STALE `t === 'console'`, and
+  // "corrected" activeTab right back to 'console' — one click looked like
+  // a no-op, and a second click (by then `page.url` had caught up) was
+  // needed to make it stick. `untrack()` keeps the comparison/write reads
+  // out of this effect's dependency list, so it only ever re-runs in
+  // response to a genuine `page.url` change, never activeTab's own.
   $effect(() => {
     const t = page.url.searchParams.get('tab');
-    if (t === 'console' && activeTab !== 'console') activeTab = 'console';
-    else if (t === 'brackets' && _activeCard !== 'brackets') { activeTab = 'agents'; _activeCard = 'brackets'; }
-    else if (t === 'tokens' && _activeCard !== 'agents') { activeTab = 'agents'; _activeCard = 'agents'; }
+    untrack(() => {
+      if (t === 'console' && activeTab !== 'console') activeTab = 'console';
+      else if (t === 'brackets' && _activeCard !== 'brackets') { activeTab = 'agents'; _activeCard = 'brackets'; }
+      else if (t === 'tokens' && _activeCard !== 'agents') { activeTab = 'agents'; _activeCard = 'agents'; }
+    });
   });
 
   // Global simulator status — when active, the Agent-events panel swaps to
