@@ -249,11 +249,10 @@ in the alert. A GIVEN binding with an operator (string concat, math) can be reus
 message strings or string-typed action params; a bare alias (`p = pnl@...`) is lightweight 
 and works anywhere.
 
-**New: bare newlines in lists** — You can write items on separate lines without commas or 
-semicolons:
+**Separators are interchangeable** — `,`, `;`, and a bare newline are all equally valid 
+between GIVEN/ALERT/DO items; use whichever reads best:
 ```
-GIVEN p = pnl@positions.total
-      q = avail_margin@funds.total
+GIVEN p = pnl@positions.total, q = avail_margin@funds.total
 ALERT msg="Alert"
        telegram
        email
