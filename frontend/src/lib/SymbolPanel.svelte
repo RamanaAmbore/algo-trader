@@ -2284,7 +2284,12 @@
          passed from context). Uses CardHeader with showControls=false;
          amber gradient bg + border supplied by the algo layout's
          CardHeader theme tokens. -->
-    <div style="--ch-padding: 0.35rem 0.65rem">
+    <!-- --ch-padding override removed (2026-10 CardHeader/grid
+         consistency pass, Part C) — inherits the shared body-level
+         default now, matching every other CardHeader in the app.
+         .oes-modal-name's amber color/letter-spacing is unchanged
+         (confirmed intentional, preserved below). -->
+    <div>
       <CardHeader showControls={false} onRefresh={_refreshAll}>
         {#snippet left()}
           <span class="oes-modal-name algo-label-decor">

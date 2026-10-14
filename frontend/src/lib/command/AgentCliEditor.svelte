@@ -520,32 +520,45 @@
 
     {#if _showDropdown}
       <div class="agent-cli-dropdown" role="listbox" aria-label="CLI suggestions" data-testid="agent-cli-dropdown">
-        {#each suggestResult.suggestions as s, i (s)}
-          <!-- Sprint 15 — `labels[i]` (set only for a 'column' suggestion,
-               e.g. "P&L (₹)") is shown INSTEAD of the literal insertable
-               text `s` (e.g. "positions.total.pnl") when present — the
-               operator reads the short label, but `applySuggestion` below
-               always inserts the real `s` string, never the label.
-               `onmousedown|preventDefault` keeps the TEXTAREA focused
-               through the whole click (the button never steals focus),
-               so `_focused` never flips false and `_showDropdown` never
-               collapses out from under the click before `onclick` fires. -->
-          <button type="button" class="agent-cli-dropdown-row" class:is-active={i === _activeIndex}
-                  role="option" aria-selected={i === _activeIndex}
-                  data-testid="agent-cli-dropdown-row"
-                  onmousedown={(e) => e.preventDefault()}
-                  onclick={() => applySuggestion(s)}
-                  onmouseenter={() => { _hoverLabel = s; _activeIndex = i; }}
-                  onmouseleave={() => { _hoverLabel = null; }}
-                  onfocus={() => { _hoverLabel = s; _activeIndex = i; }}
-                  onblur={() => { _hoverLabel = null; }}>{suggestResult.labels?.[i] || s}</button>
-        {/each}
+        <div class="agent-cli-dropdown-list">
+          {#each suggestResult.suggestions as s, i (s)}
+            <!-- Sprint 15 — `labels[i]` (set only for a 'column' suggestion,
+                 e.g. "P&L (₹)") is shown INSTEAD of the literal insertable
+                 text `s` (e.g. "positions.total.pnl") when present — the
+                 operator reads the short label, but `applySuggestion` below
+                 always inserts the real `s` string, never the label.
+                 `onmousedown|preventDefault` keeps the TEXTAREA focused
+                 through the whole click (the button never steals focus),
+                 so `_focused` never flips false and `_showDropdown` never
+                 collapses out from under the click before `onclick` fires. -->
+            <button type="button" class="agent-cli-dropdown-row" class:is-active={i === _activeIndex}
+                    role="option" aria-selected={i === _activeIndex}
+                    data-testid="agent-cli-dropdown-row"
+                    onmousedown={(e) => e.preventDefault()}
+                    onclick={() => applySuggestion(s)}
+                    onmouseenter={() => { _hoverLabel = s; _activeIndex = i; }}
+                    onmouseleave={() => { _hoverLabel = null; }}
+                    onfocus={() => { _hoverLabel = s; _activeIndex = i; }}
+                    onblur={() => { _hoverLabel = null; }}>{suggestResult.labels?.[i] || s}</button>
+          {/each}
+        </div>
+        {#if _hoverDesc}
+          <!-- Moved INSIDE .agent-cli-dropdown (2026-10 CardHeader/grid
+               consistency pass, Part E) — previously rendered in normal
+               document flow right after .agent-cli-input-wrap closed, which
+               shifted the compile-errors/JSON-preview area below it every
+               time a suggestion row was hovered/focused. .agent-cli-dropdown
+               is already position:absolute (does not affect layout), and
+               this description now lives as a sibling to the scrollable
+               .agent-cli-dropdown-list — outside that list's own
+               max-height/overflow-y, so it's never clipped by the list's
+               scroll area and always stays visible as a footer row within
+               the same overlay. -->
+          <div class="agent-cli-suggest-desc">{_hoverDesc}</div>
+        {/if}
       </div>
     {/if}
   </div>
-  {#if _hoverDesc}
-    <div class="agent-cli-suggest-desc">{_hoverDesc}</div>
-  {/if}
 
   <!-- Sprint C (2026-10, Phase 2 "Automation redesign") — the result area
        now holds up to four distinct sections: (1) compile errors [1] —
@@ -646,6 +659,19 @@
     border: 1.5px solid rgba(251,191,36,0.35);
     border-radius: 4px;
     box-shadow: 0 10px 28px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.06);
+    /* overflow: hidden (not scrolling itself — see .agent-cli-dropdown-list
+       below) so the rounded corners stay clean; the panel's own height is
+       now driven by its content (list + optional description footer),
+       not fixed, since only the list portion is height-capped. */
+    overflow: hidden;
+  }
+  /* Part E (2026-10 CardHeader/grid consistency pass) — the
+     max-height/overflow-y that used to live on .agent-cli-dropdown
+     itself moved down to just this row-list wrapper, so the
+     description footer below (.agent-cli-suggest-desc) sits OUTSIDE
+     the scrollable area and is never clipped/scrolled away — it's a
+     flex sibling, always visible whenever `_hoverDesc` is set. */
+  .agent-cli-dropdown-list {
     max-height: 15rem;
     overflow-y: auto;
   }
@@ -674,7 +700,13 @@
   .agent-cli-suggest-desc {
     font-size: var(--fs-xs);
     color: var(--algo-muted);
-    padding: 0 0.3rem;
+    /* Footer row within .agent-cli-dropdown (Part E, moved from normal
+       document flow below the input — see template comment above). A
+       top border + background separate it visually from the row list
+       above it, matching the dropdown's own amber-accent border family. */
+    padding: 0.35rem 0.55rem;
+    border-top: 1px solid rgba(251,191,36,0.20);
+    background: rgba(15,23,42,0.35);
     /* Sprint 15 — a param's description can carry a generated
        required_if/mutually-exclusive line appended on its own newline
        (see _paramConstraintText in agents.js) — preserve it. */

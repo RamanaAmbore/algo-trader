@@ -319,16 +319,20 @@
     color: #2a2418;
     position: relative;
   }
-  /* B8 hairlines — desktop-only. Gated to >=1080px: the strict minimum
-     to avoid overlapping content is 920px content + 2×24px offset =
-     968px; 1080px adds a comfortable buffer above that so the lines
-     never collide with the content column on in-between desktop widths.
+  /* B8 hairlines — desktop-only. Gated to >=1080px: the ORIGINAL strict
+     minimum to avoid overlapping content was 920px content + 2×24px
+     offset = 968px, with 1080px adding a comfortable buffer above that.
+     --b8-margin-offset reduced 24px → 12px (2026-10 CardHeader/grid
+     consistency pass, Part D — operator wants the hairlines closer to
+     the content column); new strict minimum is 920 + 2×12 = 944px, so
+     the existing 1080px gate remains a safe (now even more generous)
+     buffer — left unchanged.
      The existing @media (max-width: 700px) mobile breakpoint below is
      untouched — there's no side margin to decorate at that width.
      Color + offset now read from the shared --b8-hairline-color /
      --b8-margin-offset tokens (app.css .card-theme-cream) so this page
      and (public)/+layout.svelte's own B8 decoration can't drift apart —
-     literal fallbacks kept identical to the original values. */
+     literal fallbacks kept identical to the current token values. */
   @media (min-width: 1080px) {
     .ip-page::before,
     .ip-page::after {
@@ -341,8 +345,8 @@
       pointer-events: none;
       z-index: 0;
     }
-    .ip-page::before { left:  calc(50% - 460px - var(--b8-margin-offset, 24px)); }  /* 460px half-width + 24px offset */
-    .ip-page::after  { right: calc(50% - 460px - var(--b8-margin-offset, 24px)); }
+    .ip-page::before { left:  calc(50% - 460px - var(--b8-margin-offset, 12px)); }  /* 460px half-width + 12px offset */
+    .ip-page::after  { right: calc(50% - 460px - var(--b8-margin-offset, 12px)); }
   }
   @media (max-width: 700px) {
     .ip-page { padding: 1.5rem 1rem 3rem; }

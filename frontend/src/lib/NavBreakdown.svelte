@@ -646,9 +646,51 @@
        elevated token so it matches algo-grid-chrome / ag-root-wrapper
        (the same surface family as the inner table rows). */
     background: var(--card-bg-elevated);
+    /* Grid-adjacency gap (2026-10 CardHeader/grid consistency pass,
+       Part A) — this wrapper sits directly below the parent page's
+       CardHeader (e.g. Dashboard's "Portfolio" card). Without this
+       gap, CardHeader's bottom border + this wrapper's own TOP border
+       stacked flush with zero separation on that one edge, reading as
+       a thickened "double border" line — this is the specific stacking
+       the operator flagged, now fixed on the top edge, matching
+       Derivatives' Legs/Exp-close tables' already-correct spacing.
+       Note: on the left/right/bottom edges, this wrapper's own border
+       AND the inner `.ag-theme-algo` element's own separate border
+       still sit flush against each other with no gap (verified via
+       computed styles — both render ~1px solid rgba(255,255,255,0.1)).
+       That's a PRE-EXISTING, SYMMETRIC characteristic shared with
+       MarketPulse's `.mp-bucket-wrap`/`.bucket-grid` pair (identical
+       computed values there too) — out of scope for this pass, which
+       only targeted the CardHeader-to-grid top-edge gap/double-border;
+       not a regression introduced here. */
+    margin-top: var(--grid-header-gap);
   }
 
   .nav-bd-ag { width: 100%; }
+
+  /* Operator 2026-07-01 rule (already applied to MarketPulse's bucket/
+     summary/funds grids — see MarketPulse.svelte): the ag-Grid default
+     draws a 1px --ag-border-color ring around .ag-root-wrapper (AG's own
+     INNER DOM node, distinct from the outer `.ag-theme-algo` element's
+     own separate `border` declared in app.css). This wrapper
+     (.nav-bd-wrap) already supplies its own complete border via the
+     .bucket-card recipe above, so .ag-root-wrapper's inner ring read as
+     duplicate chrome stacking with zero gap against it. Zeroed here to
+     match MarketPulse's existing treatment — removes ONE of the (up to)
+     three border layers this stack could carry. The outer
+     `.ag-theme-algo` element itself (`.nav-bd-ag`) still carries its own
+     app.css-level `border: 1.5px solid rgba(255,255,255,0.1)` — verified
+     via computed styles still present and flush against .nav-bd-wrap's
+     own border on the left/right/bottom edges, same as MarketPulse's
+     `.bucket-grid` (identical computed values there). That remaining
+     side/bottom-edge double-border is a pre-existing, symmetric
+     characteristic of both components — out of scope here; this pass
+     only targeted the CardHeader-to-grid TOP-edge gap (see .nav-bd-wrap
+     margin-top above), which is now a clean single separation. */
+  :global(.nav-bd-ag .ag-root-wrapper) {
+    border: none !important;
+    border-radius: 0 !important;
+  }
 
   /* Account-identity stripe + bg tint + weight now come from the shared
      app.css rule (.ag-theme-algo .ag-col-acct, driven by --acct-color) —

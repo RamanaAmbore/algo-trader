@@ -315,6 +315,28 @@
      are deliberate deviations — do not repoint those to this token. */
   --sep-color:  rgba(126, 151, 184, 0.10);
   --sep-margin: 0.15rem 0.4rem;
+
+  /* Grid-adjacency gap (2026-10 CardHeader/grid consistency pass, Part A)
+     — the small intentional gap between a CardHeader's bottom border and
+     a grid/table's own top-edge border, placed directly below it. Matches
+     the Derivatives Legs/Exp-close + Snapshot tables' already-correct
+     `margin-top: 0.4rem` spacing — without this gap, the CardHeader's
+     own bottom border and the grid's own border stack with zero
+     separation, reading as a single thickened "double border" line. */
+  --grid-header-gap: 0.4rem;
+
+  /* Shared grid-header-look variables (Part B) — standardizes every
+     grid-style header in the app (real ag-Grid via .ag-theme-algo AND
+     hand-rolled tables like Derivatives' .cand-headrow/.byund-headrow)
+     on ONE set of values, matching the Legs/Exp-close table's
+     already-good-looking reference (darker background, bolder/larger
+     type) instead of two independently-hardcoded sets that happened to
+     differ. */
+  --grid-header-bg:             rgba(15, 23, 42, 0.65);
+  --grid-header-font-size:      0.65rem;
+  --grid-header-font-weight:    800;
+  --grid-header-letter-spacing: 0.06em;
+  --grid-header-height:         30px;
 }
 
 @media (max-width: 600px) {
@@ -1394,10 +1416,10 @@
  * a transplanted light-mode widget inside the dark algo layout.
  */
 .ag-theme-algo {
-  --ag-header-background-color: rgba(15,23,42,0.65);
+  --ag-header-background-color: var(--grid-header-bg);
   --ag-header-foreground-color: var(--text-muted);
-  --ag-header-font-weight: 800;
-  --ag-header-font-size: 0.65rem;
+  --ag-header-font-weight: var(--grid-header-font-weight);
+  --ag-header-font-size: var(--grid-header-font-size);
   --ag-foreground-color: var(--algo-slate);
   --ag-background-color: #1d2a44;
   --ag-odd-row-background-color: rgba(13,22,42,0.30);
@@ -1407,7 +1429,7 @@
   --ag-font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   --ag-font-size: 0.72rem;
   --ag-row-height: 28px;
-  --ag-header-height: 28px;
+  --ag-header-height: var(--grid-header-height);
   --ag-wrapper-border-radius: 4px;
   --ag-input-background-color: #152033;
   --ag-input-foreground-color: #e2e8f0;
@@ -1430,13 +1452,14 @@
   box-shadow: none !important;
 }
 .ag-theme-algo .ag-header {
-  /* Background aligned with card-header / tab-strip context.
-     Was rgba(15,23,42,0.65) — a visibly darker near-black band that
-     read as a different component from the card surface the tab strip
-     sits on. Reduced to 0.30 so the header sits on the same mid-navy
-     tone as the card; the amber border-bottom still provides the visual
-     separator between header and body rows. */
-  background-color: rgba(15,23,42,0.30) !important;
+  /* Background standardized (2026-10 CardHeader/grid consistency pass,
+     Part B) on --grid-header-bg — the Derivatives Legs/Exp-close hand-
+     rolled table's reference look (darker, more opaque than the earlier
+     0.30 value this rule used between 2026-09 and this pass). One
+     shared variable now drives every grid-style header in the app
+     instead of two independently-hardcoded, coincidentally-differing
+     values. */
+  background-color: var(--grid-header-bg) !important;
   color: var(--text-muted) !important;
   border-bottom: 1px solid rgba(251,191,36,0.30) !important;
 }
@@ -1447,16 +1470,17 @@
   background-color: transparent !important;
 }
 .ag-theme-algo .ag-header-cell {
-  /* Typography tokens unified with .algo-card-title + .algo-tab:
-     font-family  ui-monospace stack (not AG Grid's default sans)
-     font-size    0.6rem  (was 0.5625rem — too small vs card/tab headers)
-     font-weight  700     (was 800 — now matches card-title; tab bumps to 800 on active)
-     letter-spacing 0.04em (was 0.06em — tighter, matches card-title / tab)
-     text-transform uppercase (unchanged) */
+  /* Typography standardized (2026-10 CardHeader/grid consistency pass,
+     Part B) on the shared --grid-header-* variables — the Derivatives
+     Legs/Exp-close hand-rolled table's reference look (larger, bolder,
+     wider letter-spacing than the earlier 0.6rem/700/0.04em values this
+     rule used between the 2026-09 card-title unification and this
+     pass). font-family/text-transform stay as-is (not part of the
+     shared grid-header variable set). */
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace !important;
-  font-size: 0.6rem !important;
-  font-weight: 700 !important;
-  letter-spacing: 0.04em !important;
+  font-size: var(--grid-header-font-size) !important;
+  font-weight: var(--grid-header-font-weight) !important;
+  letter-spacing: var(--grid-header-letter-spacing) !important;
   text-transform: uppercase;
   color: var(--text-muted) !important;
   background-color: transparent !important;
@@ -3301,7 +3325,14 @@ button:not(:disabled):active,
      See investor/[token]/+page.svelte and (public)/+layout.svelte for
      the per-surface geometry math. */
   --b8-hairline-color: rgba(200,168,75,0.45);
-  --b8-margin-offset:  24px;
+  /* Reduced 24px → 12px (2026-10 CardHeader/grid consistency pass,
+     Part D) — operator wants the hairlines closer to the content
+     column. This value also feeds the ellipse-vignette flat-zone math
+     documented per-surface in (public)/+layout.svelte and
+     investor/[token]/+page.svelte — re-check both comment blocks (flat
+     zone widths were sized against the OLD 24px offset) whenever this
+     changes again. */
+  --b8-margin-offset:  12px;
 
   /* P&L colours */
   --card-gain-text:           #1a6b3a;

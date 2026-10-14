@@ -300,14 +300,21 @@
      Both gated to desktop widths only, INSIDE this single media query,
      so mobile keeps the existing diagonal hatch untouched and never
      pays the background-attachment:fixed scroll-repaint cost.
-     Geometry: content half-width 640px (1280px .pub-card / 2). Hairline
-     offset = 640 + 24 = 664px from center. Strict no-overlap minimum is
-     1280 + 2×24 = 1328px; gate reuses the investor page's exact 112px
-     buffer (968->1080), landing on 1440px. Ellipse horizontal radius
-     scaled from investor's 1400px/460px-half-width ratio to this
-     frame's 640px half-width (1400 × 640/460 ≈ 1950px), giving a flat
-     zone of 1950×0.38 = 741px — comfortably wider than the 640px
-     content half-width (matches investor's ~15.6% buffer ratio). */
+     Geometry: content half-width 640px (1280px .pub-card / 2).
+     --b8-margin-offset reduced 24px → 12px (2026-10 CardHeader/grid
+     consistency pass, Part D — operator wants the hairlines closer to
+     the content column). Hairline offset is now 640 + 12 = 652px from
+     center (was 664px). Strict no-overlap minimum is now 1280 + 2×12 =
+     1304px — well under the 1440px gate below, so the existing
+     breakpoint (reusing the investor page's 112px buffer pattern,
+     968->1080) stays a safe, now even more generous margin; left
+     unchanged. Ellipse horizontal radius scaled from investor's
+     1400px/460px-half-width ratio to this frame's 640px half-width
+     (1400 × 640/460 ≈ 1950px), giving a flat zone of 1950×0.38 = 741px
+     — comfortably wider than both the 640px content half-width AND the
+     new 652px hairline offset, so the hairlines still sit fully inside
+     the vignette's flat zone (no visible seam at the new, closer
+     position). */
   @media (min-width: 1440px) {
     .pub-viewport {
       background-attachment: fixed;
@@ -338,8 +345,8 @@
       pointer-events: none;
       z-index: 0;
     }
-    .pub-viewport::before { left:  calc(50% - 640px - var(--b8-margin-offset, 24px)); }
-    .pub-viewport::after  { right: calc(50% - 640px - var(--b8-margin-offset, 24px)); }
+    .pub-viewport::before { left:  calc(50% - 640px - var(--b8-margin-offset, 12px)); }
+    .pub-viewport::after  { right: calc(50% - 640px - var(--b8-margin-offset, 12px)); }
   }
 
   .pub-accent-top, .pub-accent-bottom {

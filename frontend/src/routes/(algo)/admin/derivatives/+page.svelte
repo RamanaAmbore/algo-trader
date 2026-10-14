@@ -7142,14 +7142,22 @@
     display: contents;
   }
   /* Header row — deep-dark bg + muted-slate text + amber bottom border,
-     matching .hist-table (History page) canonical header treatment. */
+     matching .hist-table (History page) canonical header treatment.
+     Standardized (2026-10 CardHeader/grid consistency pass, Part B) on
+     the shared --grid-header-* variables instead of separately-
+     hardcoded literals — single source of truth with .cand-headrow
+     (Legs/Exp-close) and the real ag-Grid theme. Note: font-size was
+     previously var(--fs-xs) (0.55rem), a genuine pre-existing mismatch
+     with .cand-headrow's var(--fs-md) (0.65rem) despite both tables
+     being treated as "the same reference" — this switch also closes
+     that gap, a small intentional size bump on Snapshot's header only. */
   .byund-headrow > span {
     padding: 0.3rem 0.45rem;
-    background: rgba(15,23,42,0.65);  /* matches History / ag-theme-algo */
+    background: var(--grid-header-bg);
     border-bottom: 1px solid var(--algo-amber-border-soft);
-    font-size: var(--fs-xs);
-    font-weight: 800;
-    letter-spacing: 0.06em;
+    font-size: var(--grid-header-font-size);
+    font-weight: var(--grid-header-font-weight);
+    letter-spacing: var(--grid-header-letter-spacing);
     text-transform: uppercase;
     color: var(--text-muted);
   }
@@ -7573,13 +7581,18 @@
        rows' spacing from the header's. */
     padding: 0.1rem 0.2rem 0.15rem;
     align-items: center;
-    font-size: var(--fs-md);
+    /* Standardized (2026-10 CardHeader/grid consistency pass, Part B)
+       on the shared --grid-header-* variables — this table IS the
+       reference the app-wide standardization is matching, so these
+       values are unchanged, just now sourced from the shared variable
+       instead of a separately-hardcoded literal. */
+    font-size: var(--grid-header-font-size);
     font-family: monospace;
     font-variant-numeric: tabular-nums;
-    font-weight: 800;
+    font-weight: var(--grid-header-font-weight);
     color: var(--text-muted);
     text-transform: uppercase;
-    letter-spacing: 0.06em;
+    letter-spacing: var(--grid-header-letter-spacing);
     border-bottom: 1px solid var(--algo-amber-border-soft);  /* amber — matches History */
     /* Sticky header — operator scrolls data rows under it instead of
        the whole grid sliding up. Pinned to top of .cand-scroll (the
@@ -7604,7 +7617,7 @@
     top: 0;
     z-index: 2;
     background:
-      linear-gradient(rgba(15,23,42,0.65), rgba(15,23,42,0.65)),
+      linear-gradient(var(--grid-header-bg), var(--grid-header-bg)),
       #1d2a44;
   }
   /* Numeric column cells — right-aligned (industry-standard for

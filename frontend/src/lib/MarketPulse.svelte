@@ -4965,6 +4965,12 @@
     height: 260px;
     min-height: 260px;
     flex: 1 1 auto;
+    /* Grid-adjacency gap (2026-10 CardHeader/grid consistency pass,
+       Part A) — a deliberate small gap above the grid's own border so
+       it doesn't stack flush against CardHeader's bottom border and
+       read as one thickened "double border" line. Matches Derivatives'
+       Legs/Exp-close tables' already-correct spacing. */
+    margin-top: var(--grid-header-gap);
   }
   /* Operator 2026-07-01: "remove the border around ag grids in pulse. it
      is only outer border." The ag-Grid default draws a 1px --ag-border-color
@@ -5114,10 +5120,13 @@
                 inset 0 1px 0 rgba(255, 255, 255, 0.06);
     background: var(--card-bg-elevated);
     overflow: hidden;
-    /* Header gets padding via --ch-padding; grid fills flush to the card
-       bottom so no gap appears between the last row border and the card
-       border (double-border artifact). */
-    --ch-padding: 0.2rem 0.35rem 0;
+    /* --ch-padding override removed (2026-10 CardHeader/grid consistency
+       pass, Part C) — this panel now inherits the shared body-level
+       default (--ch-padding: 0, set in `(algo)/+layout.svelte`'s
+       `:global(body)` block) like every other panel, instead of its
+       own divergent padding. The grid-to-header gap this comment used
+       to reference is now handled separately by .bucket-grid's own
+       margin-top (Part A, above). */
     /* The header-bar emphasis shade (originally added here Pulse-only on
        2026-10-12) is now the ONE shared app-wide default — see
        `(algo)/+layout.svelte`'s `:global(body)` CardHeader-theming block
@@ -5403,6 +5412,8 @@
   .funds-grid {
     width: 100%;
     min-height: 40px;
+    /* Grid-adjacency gap (Part A, same rationale as .bucket-grid above). */
+    margin-top: var(--grid-header-gap);
   }
 
   /* .mp-section-label is defined globally in app.css. */
