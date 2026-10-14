@@ -301,20 +301,20 @@
      so mobile keeps the existing diagonal hatch untouched and never
      pays the background-attachment:fixed scroll-repaint cost.
      Geometry: content half-width 640px (1280px .pub-card / 2).
-     --b8-margin-offset reduced 24px → 12px → 4px (2026-10, operator:
-     "on desktop, make left and right gold borders very close the
-     container"). Hairline offset is now 640 + 4 = 644px from center
-     (was 664px, then 652px). Strict no-overlap minimum is now
-     1280 + 2×4 = 1288px — well under the 1440px gate below, so the
+     --b8-margin-offset: 24px → 12px → 4px → 8px (2026-10, latest:
+     operator "add slightly more gap between gold vertical bars and
+     content panel", a small reversal after the earlier 4px tightening
+     pass). Hairline offset is now 640 + 8 = 648px from center (was
+     664px, 652px, then 644px). Strict no-overlap minimum is now
+     1280 + 2×8 = 1296px — well under the 1440px gate below, so the
      existing breakpoint (reusing the investor page's 112px buffer
-     pattern, 968->1080) stays a safe, now even more generous margin;
-     left unchanged. Ellipse horizontal radius scaled from investor's
-     1400px/460px-half-width ratio to this frame's 640px half-width
-     (1400 × 640/460 ≈ 1950px), giving a flat zone of 1950×0.38 = 741px
-     — comfortably wider than both the 640px content half-width AND the
-     new 644px hairline offset, so the hairlines still sit fully inside
-     the vignette's flat zone (no visible seam at the new, closer
-     position). */
+     pattern, 968->1080) stays a safe margin; left unchanged. Ellipse
+     horizontal radius scaled from investor's 1400px/460px-half-width
+     ratio to this frame's 640px half-width (1400 × 640/460 ≈ 1950px),
+     giving a flat zone of 1950×0.38 = 741px — comfortably wider than
+     both the 640px content half-width AND the new 648px hairline
+     offset, so the hairlines still sit fully inside the vignette's flat
+     zone (no visible seam). */
   @media (min-width: 1440px) {
     .pub-viewport {
       background-attachment: fixed;
@@ -345,8 +345,8 @@
       pointer-events: none;
       z-index: 0;
     }
-    .pub-viewport::before { left:  calc(50% - 640px - var(--b8-margin-offset, 4px)); }
-    .pub-viewport::after  { right: calc(50% - 640px - var(--b8-margin-offset, 4px)); }
+    .pub-viewport::before { left:  calc(50% - 640px - var(--b8-margin-offset, 8px)); }
+    .pub-viewport::after  { right: calc(50% - 640px - var(--b8-margin-offset, 8px)); }
   }
 
   .pub-accent-top, .pub-accent-bottom {

@@ -322,11 +322,11 @@
   /* B8 hairlines — desktop-only. Gated to >=1080px: the ORIGINAL strict
      minimum to avoid overlapping content was 920px content + 2×24px
      offset = 968px, with 1080px adding a comfortable buffer above that.
-     --b8-margin-offset reduced 24px → 12px → 4px (2026-10, operator:
-     "on desktop, make left and right gold borders very close the
-     container"); new strict minimum is 920 + 2×4 = 928px, so the
-     existing 1080px gate remains a safe (now even more generous)
-     buffer — left unchanged.
+     --b8-margin-offset: 24px → 12px → 4px → 8px (2026-10, latest:
+     operator "add slightly more gap between gold vertical bars and
+     content panel", a small reversal after the earlier 4px tightening
+     pass); new strict minimum is 920 + 2×8 = 936px, so the existing
+     1080px gate remains a safe buffer — left unchanged.
      The existing @media (max-width: 700px) mobile breakpoint below is
      untouched — there's no side margin to decorate at that width.
      Color + offset now read from the shared --b8-hairline-color /
@@ -345,8 +345,8 @@
       pointer-events: none;
       z-index: 0;
     }
-    .ip-page::before { left:  calc(50% - 460px - var(--b8-margin-offset, 4px)); }  /* 460px half-width + 4px offset */
-    .ip-page::after  { right: calc(50% - 460px - var(--b8-margin-offset, 4px)); }
+    .ip-page::before { left:  calc(50% - 460px - var(--b8-margin-offset, 8px)); }  /* 460px half-width + 8px offset */
+    .ip-page::after  { right: calc(50% - 460px - var(--b8-margin-offset, 8px)); }
   }
   @media (max-width: 700px) {
     .ip-page { padding: 1.5rem 1rem 3rem; }

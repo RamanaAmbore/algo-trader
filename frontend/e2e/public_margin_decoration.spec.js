@@ -66,14 +66,29 @@ for (const path of DESKTOP_PAGES) {
     // an unrelated nested element that also carries a "pub-card" class
     // from a page-local component, so a bare `.pub-card` locator is
     // ambiguous on that route.
+    // Threshold made relative to the live --b8-margin-offset token
+    // (2026-10 fix) — this used to be a hardcoded `-15`, written for an
+    // earlier, larger offset era (24px) and never updated through the
+    // subsequent 24→12→4→8px tightening/loosening passes, so it was
+    // failing on EVERY offset value ≤15px including the already-shipped
+    // 4px one (confirmed via git-stash A/B test against that baseline —
+    // pre-existing, not a regression from the 8px change). Reading the
+    // actual token keeps this test correct regardless of future tuning.
     const cardBox = await page.locator('.pub-viewport > .pub-card').boundingBox();
-    const beforeLeft = await page.locator('.pub-viewport').evaluate((el) => {
+    const { beforeLeft, offsetPx } = await page.locator('.pub-viewport').evaluate((el) => {
       const s = getComputedStyle(el, '::before');
-      return parseFloat(s.left);
+      // --b8-margin-offset is scoped to .card-theme-cream (app.css), not
+      // :root — .pub-viewport itself carries that class.
+      const offset = parseFloat(getComputedStyle(el).getPropertyValue('--b8-margin-offset')) || 0;
+      return { beforeLeft: parseFloat(s.left), offsetPx: offset };
     });
     expect(cardBox, `${path}: .pub-card must be measurable`).not.toBeNull();
     expect(beforeLeft, `${path}: hairline must be outside the card's left edge`)
-      .toBeLessThan(cardBox.x - 15);
+      .toBeLessThan(cardBox.x);
+    // Gap should match --b8-margin-offset within 2px (sub-pixel rounding).
+    expect(Math.abs((cardBox.x - beforeLeft) - offsetPx),
+      `${path}: gap ${cardBox.x - beforeLeft}px should match --b8-margin-offset (${offsetPx}px)`)
+      .toBeLessThanOrEqual(2);
 
     // Vignette — .pub-viewport background-image carries a radial-gradient
     // layer alongside the pre-existing diagonal hatch.
