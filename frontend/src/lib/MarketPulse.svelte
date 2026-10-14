@@ -4991,12 +4991,21 @@
     height: 260px;
     min-height: 260px;
     flex: 1 1 auto;
-    /* Grid-adjacency gap (2026-10 CardHeader/grid consistency pass,
-       Part A) — a deliberate small gap above the grid's own border so
-       it doesn't stack flush against CardHeader's bottom border and
-       read as one thickened "double border" line. Matches Derivatives'
-       Legs/Exp-close tables' already-correct spacing. */
-    margin-top: var(--grid-header-gap);
+    /* Single-line header/grid boundary (2026-10, operator: "I want the
+       header bottom border and grid top border look like a single
+       border line. Gap should be removed everywhere") — SUPERSEDES the
+       earlier "grid-adjacency gap" fix (Part A), which added this
+       margin specifically to separate CardHeader's bottom border from
+       the grid's own top border so they wouldn't stack flush into a
+       thickened "double border" line. That rationale no longer applies:
+       the grid's own `.ag-root-wrapper` border was separately stripped
+       for every Pulse bucket (operator 2026-07-01: "remove the border
+       around ag grids in pulse"), so there is nothing left on the grid
+       side to double up with — CardHeader's own bottom border is
+       already the ONLY line at this seam. Removing the gap just lets
+       the grid sit flush against it, matching NavBreakdown/.nav-bd-wrap's
+       identical fix. */
+    margin-top: 0;
   }
   /* Operator 2026-07-01: "remove the border around ag grids in pulse. it
      is only outer border." The ag-Grid default draws a 1px --ag-border-color
@@ -5443,8 +5452,14 @@
   .funds-grid {
     width: 100%;
     min-height: 40px;
-    /* Grid-adjacency gap (Part A, same rationale as .bucket-grid above). */
-    margin-top: var(--grid-header-gap);
+    /* Gap removed (2026-10, operator: "gap should be removed
+       everywhere") — these grids sit below a `.mp-section-label`
+       (app.css), which carries no border of its own (margin-bottom
+       only), so there's no border to "merge" into a single line here
+       the way there is below a real CardHeader (.bucket-grid above) —
+       removing the gap just tightens the label-to-grid spacing for
+       consistency with the rest of the page. */
+    margin-top: 0;
   }
 
   /* .mp-section-label is defined globally in app.css. */

@@ -316,14 +316,21 @@
   --sep-color:  rgba(126, 151, 184, 0.10);
   --sep-margin: 0.15rem 0.4rem;
 
-  /* Grid-adjacency gap (2026-10 CardHeader/grid consistency pass, Part A)
-     — the small intentional gap between a CardHeader's bottom border and
-     a grid/table's own top-edge border, placed directly below it. Matches
-     the Derivatives Legs/Exp-close + Snapshot tables' already-correct
-     `margin-top: 0.4rem` spacing — without this gap, the CardHeader's
-     own bottom border and the grid's own border stack with zero
-     separation, reading as a single thickened "double border" line. */
-  --grid-header-gap: 0.4rem;
+  /* --grid-header-gap (2026-10 CardHeader/grid consistency pass, Part A)
+     retired — it put a deliberate gap between a CardHeader's bottom
+     border and a grid's own top-edge border so the two wouldn't stack
+     flush into a thickened "double border" line. Superseded (operator:
+     "I want the header bottom border and grid top border look like a
+     single border line. Gap should be removed everywhere") by dropping
+     the grid-side border outright wherever one existed (NavBreakdown/
+     .nav-bd-wrap) or just removing the gap where the grid side never
+     had its own border to begin with (MarketPulse's bucket/summary/
+     funds grids — their ag-Grid border was already stripped in an
+     earlier, separate pass) — CardHeader's own border is now the sole
+     line at every one of these seams. No remaining consumers; the
+     Derivatives Legs/Exp-close/Snapshot tables kept their own
+     `margin-top: 0.4rem` literal (never routed through this var) and
+     are unaffected. */
 
   /* Shared grid-header-look variables (Part B) — standardizes every
      grid-style header in the app (real ag-Grid via .ag-theme-algo AND

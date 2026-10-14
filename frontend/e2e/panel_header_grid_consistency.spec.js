@@ -90,7 +90,14 @@ function cssValueToPixels(cssValue, baseFontSize = 16) {
 // ─────────────────────────────────────────────────────────────────────────
 
 test.describe('Part A: Grid-adjacency gap (double-border fix)', () => {
-  test('MarketPulse bucket grid has non-zero top margin (grid-adjacency gap)', async ({ page }) => {
+  test('MarketPulse bucket grid has NO top margin — CardHeader\'s bottom border is the single boundary line', async ({ page }) => {
+    // 2026-10 (operator: "I want the header bottom border and grid top
+    // border look like a single border line. Gap should be removed
+    // everywhere") — supersedes this test's original "non-zero gap"
+    // assertion. The grid's own ag-Grid border was already stripped
+    // for Pulse buckets (separate, earlier fix), so CardHeader's own
+    // bottom border is the only line left at this seam once the gap
+    // is gone.
     await loginAsAdmin(page);
     await page.goto('/pulse', { waitUntil: 'domcontentloaded' });
 
@@ -118,8 +125,7 @@ test.describe('Part A: Grid-adjacency gap (double-border fix)', () => {
     });
 
     expect(measurements.error).toBeUndefined();
-    expect(measurements.marginTopPx).toBeGreaterThan(0);
-    expect(measurements.marginTopPx).toBeLessThan(15); // roughly 0.4rem (≈ 6-7px)
+    expect(measurements.marginTopPx).toBe(0);
   });
 
   test('Dashboard NavBreakdown card has NO gap and NO own top border — CardHeader\'s bottom border is the single boundary line', async ({ page }) => {
@@ -593,9 +599,16 @@ test.describe('Part F: Public-site hairline spacing (moved closer)', () => {
 test.describe('Static source check: app.css has grid-related CSS variables', () => {
   const css = readFile('src/app.css');
 
-  test('--grid-header-gap custom property is defined', () => {
+  test('--grid-header-gap custom property is retired (2026-10, gap removed everywhere)', () => {
+    // Superseded — operator: "I want the header bottom border and grid
+    // top border look like a single border line. Gap should be removed
+    // everywhere." The var had zero remaining consumers once
+    // NavBreakdown/MarketPulse/Derivatives all moved to dropping the
+    // grid-side border (or just the gap, where no grid-side border
+    // existed) instead of spacing the two apart — removed rather than
+    // left as dead CSS.
     const value = extractCssVar(css, 'grid-header-gap');
-    expect(value).not.toBeNull();
+    expect(value).toBeNull();
   });
 
   test('--grid-header-bg, --grid-header-font-size, --grid-header-font-weight, --grid-header-letter-spacing are defined', () => {

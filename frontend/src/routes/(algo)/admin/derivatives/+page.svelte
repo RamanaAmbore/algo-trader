@@ -7107,10 +7107,21 @@
      followed by leg-count + qty + four side-by-side P&L columns
      (Hold / No-Hold for both lifetime + today). Right-aligned numeric
      cells with the standard cell-pos / cell-neg / cell-flat tinting. */
-  /* Chrome delegated to .algo-grid-chrome class on the element. */
+  /* Chrome delegated to .algo-grid-chrome class on the element.
+     Single-line header/grid boundary (2026-10, operator: "I want the
+     header bottom border and grid top border look like a single
+     border line. Gap should be removed everywhere") — drops the gap
+     AND .algo-grid-chrome's own top border (left/right/bottom kept),
+     so the CardHeader directly above becomes the sole line at this
+     seam, same fix as NavBreakdown/.nav-bd-wrap and MarketPulse's
+     bucket grids. This component's own `.byund-scroll` rule (scoped,
+     higher specificity than the global .algo-grid-chrome class)
+     overrides it without touching .algo-grid-chrome itself, which
+     other, unrelated elements still rely on for a full border. */
   .byund-scroll {
     overflow-x: auto;
-    margin-top: 0.4rem;
+    margin-top: 0;
+    border-top: none;
   }
   .byund-grid {
     display: grid;
@@ -7387,12 +7398,19 @@
     align-content: start;
   }
 
-  /* Chrome delegated to .algo-grid-chrome class on the element. */
+  /* Chrome delegated to .algo-grid-chrome class on the element.
+     Single-line header/grid boundary (2026-10, operator: "I want the
+     header bottom border and grid top border look like a single
+     border line. Gap should be removed everywhere") — same fix as
+     .byund-scroll above: drops the gap AND .algo-grid-chrome's own
+     top border so the CardHeader directly above becomes the sole
+     line at this seam. */
   .cand-scroll {
     overflow-x: auto;
     overflow-y: auto;
     max-height: 22rem;
-    margin-top: 0.4rem;
+    margin-top: 0;
+    border-top: none;
     /* Scrollbar styling — operator: "add scroll bars so that newly
        added columns get the space required in legs". Bumped from
        6 px to 10 px so the horizontal track reads as a clear
