@@ -7785,6 +7785,20 @@ function _findOpenCallAt(text, cursor) {
   return { nameStart, nameEnd: parenPos, parenPos };
 }
 
+/** Public pass-through to `_findOpenCallAt` — exported for
+ *  `AgentCliEditor.svelte`'s auto-advance logic (Sprint [CLI dropdown],
+ *  2026-10). Disambiguates `kind:'token'` suggestions, which
+ *  `suggestAgentCliAt` returns from BOTH a top-level bare-name position
+ *  (metric/channel/action/label/debug-arg candidates — may warrant an
+ *  auto-inserted `(`, see `lookupAgentCliEntry`) AND an open call's
+ *  free-text value-fill position (a bound label filling an
+ *  already-named param — warrants an auto-inserted `, ` instead, same
+ *  as a real `kind:'enum'` value). Returns `true` iff `cursor` sits
+ *  inside a call's still-open argument list in `text`. */
+export function isInsideOpenCall(text, cursor) {
+  return !!_findOpenCallAt(text, cursor);
+}
+
 /** Nearest non-whitespace char before `pos` in `text` — used to detect
  *  "immediately after @ or ." (scope-ref position — see `_suggestScopeRef`
  *  below, Sprint 5) and to bias catalog lookup toward `catalog.scopes` for
@@ -7926,6 +7940,20 @@ function _lookupAnyCatalogEntry(name, catalog, clauseKind, scopeHint) {
     if (m && m.has(key)) return m.get(key);
   }
   return null;
+}
+
+/** Public pass-through to `_lookupAnyCatalogEntry` — exported for
+ *  `AgentCliEditor.svelte`'s auto-advance logic (Sprint [CLI dropdown],
+ *  2026-10), which needs to answer "does the token the operator just
+ *  accepted from the dropdown take parameters" (to decide whether to
+ *  auto-insert `(`) using the EXACT SAME resolution order/aliasing/
+ *  synthetic-entry rules `suggestAgentCliAt` itself already applies —
+ *  no second lookup table to drift out of sync. `clauseKind`/`scopeHint`
+ *  are optional disambiguation hints (see `_lookupAnyCatalogEntry`'s own
+ *  doc comment above) — omit both for a plain by-name lookup, safe
+ *  because the grammar's token namespaces don't collide in practice. */
+export function lookupAgentCliEntry(name, catalog, clauseKind = null, scopeHint = false) {
+  return _lookupAnyCatalogEntry(name, catalog, clauseKind, scopeHint);
 }
 
 function _candidateTokensForClause(clauseKind, catalog) {

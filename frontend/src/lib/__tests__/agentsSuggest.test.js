@@ -13,7 +13,7 @@ import { describe, it, expect, vi } from 'vitest';
 vi.mock('$lib/data/instruments', () => ({ getInstrument: vi.fn(() => null) }));
 vi.mock('$lib/api', () => ({ fetchGrammarTokens: vi.fn() }));
 
-const { buildCatalog, suggestAgentCliAt, parseStatement } = await import('$lib/command/grammars/agents.js');
+const { buildCatalog, suggestAgentCliAt, parseStatement, lookupAgentCliEntry, isInsideOpenCall } = await import('$lib/command/grammars/agents.js');
 
 const FIXTURE_ROWS = [
   // metrics
@@ -623,5 +623,70 @@ describe('suggestAgentCliAt() — Sprint H item 11: "hold" alias + funds.cash/fu
     const text = 'WHEN funds.cash <= 0';
     const { errors } = parseStatement(text);
     expect(errors).toEqual([]);
+  });
+});
+
+// Sprint [CLI dropdown] (2026-10) — `lookupAgentCliEntry`/`isInsideOpenCall`
+// are thin public pass-throughs to this file's own internal
+// `_lookupAnyCatalogEntry`/`_findOpenCallAt`, exported specifically so
+// `AgentCliEditor.svelte`'s auto-advance logic can reuse the EXACT same
+// resolution rules `suggestAgentCliAt` itself uses internally, rather than
+// re-deriving either from scratch. Covered here because they're new
+// exported surface area; the actual auto-advance DECISION built on top of
+// them (e.g. "open a paren only when a param is required") is UI-layer
+// logic in AgentCliEditor.svelte, covered by the Playwright spec for this
+// feature, not here.
+describe('lookupAgentCliEntry()', () => {
+  it('resolves a metric name to its real catalog entry (paramKeys/paramsSchema intact)', () => {
+    const entry = lookupAgentCliEntry('mean_pnl', CATALOG);
+    expect(entry).not.toBeNull();
+    expect(entry.token).toBe('mean_pnl');
+    expect(entry.paramKeys).toEqual(['minutes']);
+  });
+
+  it('resolves a zero-param channel to an entry with an empty paramKeys list', () => {
+    const entry = lookupAgentCliEntry('telegram', CATALOG);
+    expect(entry).not.toBeNull();
+    expect(entry.paramKeys).toEqual([]);
+  });
+
+  it('resolves "order" through the same place_order alias/augmentation `suggestAgentCliAt` uses', () => {
+    const entry = lookupAgentCliEntry('order', CATALOG);
+    expect(entry).not.toBeNull();
+    expect(entry.paramKeys).toEqual(expect.arrayContaining(['account', 'symbol', 'side', 'qty', 'lots']));
+    // account/symbol/side/qty are all `required: true` in the fixture —
+    // this is the exact flag AgentCliEditor's auto-advance reads to decide
+    // whether to auto-open `(`.
+    expect(entry.paramsSchema.account.required).toBe(true);
+  });
+
+  it('returns null for a name not present in any catalog section', () => {
+    expect(lookupAgentCliEntry('not_a_real_token', CATALOG)).toBeNull();
+  });
+
+  it('returns null when catalog is not yet loaded', () => {
+    expect(lookupAgentCliEntry('telegram', null)).toBeNull();
+  });
+});
+
+describe('isInsideOpenCall()', () => {
+  it('true when the cursor sits inside a call\'s still-open argument list', () => {
+    const text = 'WHEN always ALERT nop DO place_order(account="ZG0790", ';
+    expect(isInsideOpenCall(text, text.length)).toBe(true);
+  });
+
+  it('false once the call has been closed', () => {
+    const text = 'WHEN always ALERT nop DO place_order(account="ZG0790") ';
+    expect(isInsideOpenCall(text, text.length)).toBe(false);
+  });
+
+  it('false at a bare top-level position (no open call at all)', () => {
+    const text = 'WHEN mean_pnl';
+    expect(isInsideOpenCall(text, text.length)).toBe(false);
+  });
+
+  it('false for a bare grouping "(" (boolean sub-expression, not a call)', () => {
+    const text = 'WHEN (mean_pnl';
+    expect(isInsideOpenCall(text, text.length)).toBe(false);
   });
 });

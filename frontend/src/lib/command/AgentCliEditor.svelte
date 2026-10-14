@@ -2,10 +2,20 @@
   /**
    * AgentCliEditor — Sprint 4 UI for the agent CLI grammar
    * (frontend/src/lib/command/grammars/agents.js, Sprints 1-3). Renders a
-   * single textarea + a below-the-textarea suggestion row (NOT caret-
-   * anchored — deliberate scope decision, see .claude/PLAN.md) + either a
-   * red error list or a green-bordered read-only JSON preview of the
-   * compiled payload.
+   * single textarea + a fixed-position dropdown panel anchored directly
+   * below it (screener.in-style lookahead — NOT caret-pixel-tracked,
+   * see .claude/PLAN.md / ~/.claude/plans/purrfect-marinating-pixel.md)
+   * + either a red error list or a green-bordered read-only JSON preview
+   * of the compiled payload.
+   *
+   * Dropdown (Sprint [CLI dropdown], 2026-10): gated on candidate-list
+   * size (see `_showDropdown`), keyboard-navigable (ArrowUp/Down/Enter/
+   * Tab/Escape, see `handleKeydown`), and auto-advances through a
+   * statement's structure on `applySuggestion` — accepting a
+   * parameterized token auto-opens `(`, a param name auto-inserts `=`,
+   * a value fill auto-inserts `, ` — by re-deriving `suggestAgentCliAt`
+   * at the new cursor position via ordinary reactivity, never by
+   * extending that function's own contract.
    *
    * Props:
    *   value      — bindable CLI text.
@@ -73,7 +83,9 @@
   import {
     compileAgentCliStatement, suggestAgentCliAt, describeErrorPosition,
     decompileAgent, decompileEventAgent, decompileBracket, decompileToken,
+    lookupAgentCliEntry, isInsideOpenCall,
   } from '$lib/command/grammars/agents.js';
+  import { pushLayer, popLayer } from '$lib/utils/layerStack.js';
 
   /** @type {{
    *   value: string, catalog: any, lotSizeOf?: (sym: string) => number|null,
@@ -98,6 +110,13 @@
   /** @type {HTMLTextAreaElement|null} */
   let textareaEl = $state(null);
   let cursorPos = $state(0);
+  // Sprint [CLI dropdown] — whether the textarea currently has focus.
+  // `_showDropdown` is gated on this too so the panel doesn't linger
+  // on screen (visually overlapping the result area below, including
+  // the "Place order" button) once the operator clicks/tabs away —
+  // see each dropdown row's own `onmousedown` preventDefault for why
+  // clicking a row itself never flips this false before `onclick` runs.
+  let _focused = $state(false);
   // LABEL (not index) of whichever suggestion pill is currently hovered or
   // keyboard-focused — drives the small description detail line below the
   // row (Sprint 11). Deliberately keyed by the suggestion's own string,
@@ -117,6 +136,31 @@
   // decompiled/seeded `value` never fires a write-back into the parent's
   // JSON fields before the operator has touched anything.
   let dirty = $state(false);
+
+  // Sprint [CLI dropdown] (2026-10) — keyboard-navigation index into the
+  // CURRENT `suggestResult.suggestions` list (clamped, never wraps). `-1`
+  // means "no row is explicitly active yet" — the sentinel that keeps
+  // Enter/Tab from hijacking a bare keystroke the moment the dropdown
+  // shows ANY candidates (including the common case where the list is a
+  // single exact match of what's already typed, e.g. right after typing
+  // a complete scope chain) — per the brief's own wording, Enter/Tab only
+  // intercept "when a suggestion is active", distinct from "the dropdown
+  // is open" (see `handleKeydown`). Reset to -1 whenever the suggestion
+  // list is recomputed (see the `$effect` below `suggestResult`'s own
+  // declaration) so a stale index from a just-superseded list can never
+  // point at the wrong row after a keystroke re-filters it. ArrowDown/Up
+  // (see `handleKeydown`) are what first move this off -1.
+  let _activeIndex = $state(-1);
+  // Cursor offset + full text snapshot captured at the moment the
+  // operator last pressed Escape to dismiss the dropdown — dismissal is
+  // scoped to that EXACT (position, text) pair, not "dismissed until
+  // something else happens": moving the cursor OR typing further
+  // immediately re-qualifies the dropdown to reappear (see `_dismissed`
+  // below), and an auto-advance-triggered reopen at a DIFFERENT position
+  // (e.g. right after an auto-inserted `(`) is never suppressed by a
+  // manual dismissal recorded at the position before it. `null` when
+  // nothing has been dismissed (or a dismissal has since been superseded).
+  let _dismissedAt = $state(null);
 
   /** @type {{ok:boolean, errors:any[], kind:string|null, agent:any, ticket:any, basket:any, template:any, fragment:any}|null} */
   let compiled = $state(null);
@@ -166,17 +210,196 @@
     catch { return { suggestions: [], descriptions: [], labels: [], replaceRange: [cursorPos, cursorPos], kind: null }; }
   });
 
+  // Every time `suggestResult` is recomputed (new object identity on every
+  // keystroke/cursor-move — `_suggestAgentCliAtImpl` never returns a cached
+  // reference), the candidate list has effectively changed underneath
+  // `_activeIndex` — reset to "nothing active" rather than risk pointing
+  // at an unrelated row a stale index happened to still be in-range for.
+  $effect(() => { suggestResult; _activeIndex = -1; });
+
+  // Sprint [CLI dropdown] — how many characters of the CURRENT partial
+  // word have actually been typed, derived the same way the suggestion
+  // engine itself derives it (`cursor - replaceRange[0]`) rather than
+  // re-tokenizing the text a second time here.
+  const _partialLen = $derived.by(() => {
+    const start = suggestResult.replaceRange ? suggestResult.replaceRange[0] : cursorPos;
+    return Math.max(0, cursorPos - start);
+  });
+
+  // Gating (PLAN item 2) — a long candidate list (metrics are the largest,
+  // ~40-50 entries) is visual noise with nothing typed yet; a short list
+  // (top-level keywords, a function's own param names, a short enum) is
+  // exactly the "show me what's possible here" case the operator asked
+  // for, so it shows immediately on 0 characters.
+  const _LARGE_LIST_THRESHOLD = 10;
+  const _MIN_CHARS_FOR_LARGE_LIST = 3;
+  const _gatedBySize = $derived.by(() =>
+    suggestResult.suggestions.length > _LARGE_LIST_THRESHOLD && _partialLen < _MIN_CHARS_FOR_LARGE_LIST);
+
+  // Escape dismissal is scoped to the EXACT (cursor, text) pair recorded
+  // at dismissal time — see `_dismissedAt`'s own declaration above.
+  const _dismissed = $derived.by(() =>
+    _dismissedAt != null && _dismissedAt.pos === cursorPos && _dismissedAt.text === value);
+
+  const _showDropdown = $derived.by(() =>
+    _focused && suggestResult.suggestions.length > 0 && !_gatedBySize && !_dismissed);
+
+  // Escape-stack coordinator (layerStack.js, same pattern Select.svelte's
+  // own dropdown uses) — this dropdown is its own dismissible layer,
+  // pushed/popped with `_showDropdown`. Without this, Escape would bubble
+  // straight to whatever host modal AgentCliEditor is mounted inside
+  // (SymbolPanel's order-ticket modal, ConsoleTab, …) and close THAT
+  // instead of just dismissing the dropdown — the coordinator's
+  // capture-phase `stopPropagation()` ensures only the topmost layer
+  // (this dropdown, while open) reacts, never both.
+  /** @type {string | null} */
+  let _escapeLayerId = null;
+  $effect(() => {
+    if (_showDropdown) {
+      _escapeLayerId = pushLayer(() => { _dismissedAt = { pos: cursorPos, text: value }; });
+    } else {
+      if (_escapeLayerId) { popLayer(_escapeLayerId); _escapeLayerId = null; }
+      // The dropdown's own rows (and their `mouseleave`/`blur` handlers)
+      // are removed from the DOM the instant this flips false — a mouse
+      // (not keyboard-focus) hover doesn't get a synthetic `mouseleave`
+      // on removal, so without this, `_hoverDesc` below could keep
+      // showing a stale description for a row that's no longer visible.
+      _hoverLabel = null;
+    }
+  });
+
+  /** Sprint [CLI dropdown] auto-advance (PLAN item 4) — decides what, if
+   *  anything, to auto-insert right after the literal suggestion text,
+   *  based on `suggestResult.kind` as it was BEFORE this insertion (the
+   *  classification of what the operator just accepted), re-using the
+   *  SAME catalog-entry-lookup / open-call-detection machinery
+   *  `suggestAgentCliAt` itself uses internally (`lookupAgentCliEntry` /
+   *  `isInsideOpenCall`) rather than re-deriving either from scratch.
+   *  Deliberately does NOT re-call `suggestAgentCliAt` here — the next
+   *  render's own `suggestResult` derivation already does that at the
+   *  settled cursor position, which is the whole point of driving this
+   *  off ordinary reactivity instead of extending the suggest function's
+   *  contract.
+   *
+   *  Returns the extra text to insert (possibly '') — never a closing
+   *  `)`, which stays manual per the design brief. */
+  // Top-level clause-head keywords / boolean connective WORDS — the only
+  // `kind:'token'` candidates that are both (a) never a catalog entry and
+  // (b) always followed by more text with no glue character, so (unlike
+  // every OTHER bare-token candidate — a metric before its own `@`, a
+  // scope-family root before `.`, a bound label before a trailing `,`)
+  // they're the one case under `kind:'token'` that should ALSO get the
+  // trailing space `kind:'keyword'` gets below. `_bareNameCandidates`'s
+  // GIVEN/WHEN/ALERT/DO/AND/OR/NOT candidates all route through the
+  // `kind:'token'` branch (merged with ordinary metric/channel/action
+  // candidates — see `_suggestAgentCliAtImpl`'s branch (e)), NOT
+  // `kind:'keyword'` (reserved for the clause-BOUNDARY branch (d), a
+  // separate position with no other candidates to merge with).
+  const _WORD_KEYWORDS = Object.freeze(['given', 'when', 'alert', 'do', 'and', 'or', 'not']);
+
+  function _autoAdvanceExtra(kind, insertedText, preInsertText, preInsertCursor) {
+    if (kind === 'param') return '=';
+    if (kind === 'enum') return ', ';
+    if (kind === 'token') {
+      // `kind:'token'` is overloaded — it's ALSO what a free-text value
+      // fill inside an open call's argument list returns (a bound label
+      // standing in for an enum/string value, `_paramOrEnumSuggestion`'s
+      // `eqIdx >= 0` branch) when there's no real enum list to classify
+      // it as `'enum'` instead. `isInsideOpenCall` (checked against the
+      // cursor position BEFORE this insertion, same position
+      // `suggestResult` itself was computed from) is what disambiguates
+      // that from an ordinary top-level bare-name acceptance.
+      if (isInsideOpenCall(preInsertText, preInsertCursor)) return ', ';
+      if (_WORD_KEYWORDS.includes(String(insertedText).toLowerCase())) return ' ';
+      // Otherwise this was a top-level metric/scope-root/channel/action/
+      // label/debug-arg name. Whether to auto-open `(` depends on WHICH
+      // catalog section it resolves to — the compiler enforces two
+      // DIFFERENT arity conventions (see `_compileMetricCallString`'s own
+      // comment, agents.js ~3636): a metric/scope call is EXACT arity —
+      // ANY declared param (`mean_pnl`'s `minutes`, never marked
+      // `required` in the real schema) makes a bare, parenless call a
+      // compile error ("'mean_pnl' requires argument(s)") — so
+      // `paramKeys.length > 0` alone is the correct, sufficient signal
+      // there. An action/channel call, by contrast, uses PER-KEY
+      // `required` (optional params genuinely may be omitted) — real
+      // `telegram` carries one optional `gate=` kwarg, and `parseCall`
+      // makes a cosmetically-empty call, `telegram()`, a hard PARSE ERROR
+      // ("a zero-argument token is always written bare") — so for this
+      // section only `paramKeys.length > 0` would misfire, silently
+      // handing the operator a guaranteed-broken statement the moment
+      // they move on without filling it in. Gating action/channel calls
+      // on "has at least one REQUIRED param" keeps `telegram`/`email`/
+      // `log` bare (matching the worked example,
+      // `ALERT msg = msg_txt, telegram`) while `order(`/`place_order(`
+      // (account/symbol/side/qty all `required: true`) still auto-opens.
+      const key = String(insertedText).toLowerCase();
+      const isMetricOrScope = !!(catalog && ((catalog.metrics && catalog.metrics.has(key)) || (catalog.scopes && catalog.scopes.has(key))));
+      const entry = lookupAgentCliEntry(insertedText, catalog);
+      if (!entry) return '';
+      const keys = entry.paramKeys || [];
+      const shouldOpen = isMetricOrScope ? keys.length > 0 : keys.some((k) => entry.paramsSchema?.[k]?.required);
+      return shouldOpen ? '(' : '';
+    }
+    if (kind === 'keyword') {
+      // Clause-BOUNDARY keyword/connective (branch (d) — a position with
+      // NO other candidates to merge with, e.g. right after a complete
+      // leaf like `p <= -50000`) — never a catalog entry, so no `(` is
+      // possible; auto-append a trailing space (screener.in's own
+      // `selected.name + " "` convention) so the next word doesn't glue
+      // onto it.
+      return ' ';
+    }
+    return '';
+  }
+
   async function applySuggestion(s) {
     const [start, end] = suggestResult.replaceRange || [cursorPos, cursorPos];
+    const preInsertText = value;
+    const preInsertCursor = cursorPos;
+    const extra = _autoAdvanceExtra(suggestResult.kind, s, preInsertText, preInsertCursor);
     const before = value.slice(0, start);
     const after = value.slice(end);
-    value = before + s + after;
+    value = before + s + extra + after;
     dirty = true;
-    const newCursor = start + s.length;
+    const newCursor = start + s.length + extra.length;
     await tick();
     textareaEl?.focus();
     textareaEl?.setSelectionRange(newCursor, newCursor);
     cursorPos = newCursor;
+  }
+
+  /** Sprint [CLI dropdown] (PLAN item 3) — ArrowUp/ArrowDown move
+   *  `_activeIndex` (clamped, never wraps, starts at -1 = "nothing
+   *  active" — see its own declaration above); Enter/Tab accept the
+   *  ACTIVE row only (`_activeIndex >= 0`), same path as a click — a bare
+   *  Enter/Tab with nothing explicitly navigated-to is left to behave
+   *  completely normally (newline / focus-move), even while the dropdown
+   *  is showing, per the brief's own distinction between "the dropdown is
+   *  open" and "a suggestion is active". Escape is handled entirely by
+   *  the layerStack effect above (capture-phase, fires before this
+   *  bubble-phase handler would ever see it) — not duplicated here. When
+   *  the dropdown isn't showing at all (gated out, or genuinely empty),
+   *  every key below is left untouched too. */
+  function handleKeydown(e) {
+    if (!_showDropdown) return;
+    const list = suggestResult.suggestions;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      _activeIndex = Math.min(_activeIndex + 1, list.length - 1);
+      return;
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      _activeIndex = Math.max(_activeIndex - 1, 0);
+      return;
+    }
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      if (_activeIndex < 0) return; // nothing active — let the key behave normally
+      const s = list[_activeIndex];
+      if (s == null) return;
+      e.preventDefault();
+      applySuggestion(s);
+    }
   }
 
   function handlePlaceOrder() {
@@ -279,38 +502,49 @@
 </script>
 
 <div class="agent-cli-editor">
-  <textarea
-    bind:this={textareaEl}
-    bind:value
-    oninput={handleInput}
-    onclick={_updateCursor}
-    onkeyup={_updateCursor}
-    onfocus={_updateCursor}
-    class="agent-cli-textarea field-input font-mono text-[length:var(--fs-sm)]"
-    rows="6"
-    spellcheck="false"
-    {placeholder}
-  ></textarea>
+  <div class="agent-cli-input-wrap">
+    <textarea
+      bind:this={textareaEl}
+      bind:value
+      oninput={handleInput}
+      onclick={_updateCursor}
+      onkeyup={_updateCursor}
+      onfocus={() => { _focused = true; _updateCursor(); }}
+      onblur={() => { _focused = false; }}
+      onkeydown={handleKeydown}
+      class="agent-cli-textarea field-input font-mono text-[length:var(--fs-sm)]"
+      rows="6"
+      spellcheck="false"
+      {placeholder}
+    ></textarea>
 
-  {#if suggestResult.suggestions.length}
-    <div class="agent-cli-suggest-row" role="listbox" aria-label="CLI suggestions">
-      {#each suggestResult.suggestions.slice(0, 12) as s, i (s)}
-        <!-- Sprint 15 — `labels[i]` (set only for a 'column' suggestion,
-             e.g. "P&L (₹)") is shown INSTEAD of the literal insertable
-             text `s` (e.g. "positions.total.pnl") when present — the
-             operator reads the short label, but `applySuggestion` below
-             always inserts the real `s` string, never the label. -->
-        <button type="button" class="agent-cli-suggest-pill"
-                onclick={() => applySuggestion(s)}
-                onmouseenter={() => { _hoverLabel = s; }}
-                onmouseleave={() => { _hoverLabel = null; }}
-                onfocus={() => { _hoverLabel = s; }}
-                onblur={() => { _hoverLabel = null; }}>{suggestResult.labels?.[i] || s}</button>
-      {/each}
-    </div>
-    {#if _hoverDesc}
-      <div class="agent-cli-suggest-desc">{_hoverDesc}</div>
+    {#if _showDropdown}
+      <div class="agent-cli-dropdown" role="listbox" aria-label="CLI suggestions" data-testid="agent-cli-dropdown">
+        {#each suggestResult.suggestions as s, i (s)}
+          <!-- Sprint 15 — `labels[i]` (set only for a 'column' suggestion,
+               e.g. "P&L (₹)") is shown INSTEAD of the literal insertable
+               text `s` (e.g. "positions.total.pnl") when present — the
+               operator reads the short label, but `applySuggestion` below
+               always inserts the real `s` string, never the label.
+               `onmousedown|preventDefault` keeps the TEXTAREA focused
+               through the whole click (the button never steals focus),
+               so `_focused` never flips false and `_showDropdown` never
+               collapses out from under the click before `onclick` fires. -->
+          <button type="button" class="agent-cli-dropdown-row" class:is-active={i === _activeIndex}
+                  role="option" aria-selected={i === _activeIndex}
+                  data-testid="agent-cli-dropdown-row"
+                  onmousedown={(e) => e.preventDefault()}
+                  onclick={() => applySuggestion(s)}
+                  onmouseenter={() => { _hoverLabel = s; _activeIndex = i; }}
+                  onmouseleave={() => { _hoverLabel = null; }}
+                  onfocus={() => { _hoverLabel = s; _activeIndex = i; }}
+                  onblur={() => { _hoverLabel = null; }}>{suggestResult.labels?.[i] || s}</button>
+        {/each}
+      </div>
     {/if}
+  </div>
+  {#if _hoverDesc}
+    <div class="agent-cli-suggest-desc">{_hoverDesc}</div>
   {/if}
 
   <!-- Sprint C (2026-10, Phase 2 "Automation redesign") — the result area
@@ -388,23 +622,55 @@
      decompiled/typed statement exceeds the visible rows — same
      overflow-y: auto convention the result area below uses. */
   .agent-cli-textarea { width: 100%; resize: vertical; overflow-y: auto; }
-  .agent-cli-suggest-row {
-    display: flex; flex-wrap: wrap; gap: 0.3rem;
-    padding: 0.3rem; border-radius: 0.3rem;
-    background: var(--algo-sky-bg-soft);
-    border: 1px solid var(--algo-sky-border-soft);
+  /* Sprint [CLI dropdown] (2026-10) — positioning context for the
+     fixed-position (relative-to-this-wrapper) dropdown panel below;
+     replaces the old below-textarea `.agent-cli-suggest-row` pill list
+     entirely (removed, not kept alongside this). */
+  .agent-cli-input-wrap { position: relative; }
+  /* Screener.in-style lookahead dropdown — anchored directly below the
+     textarea via `position: absolute` on THIS wrapper (not caret-pixel-
+     tracked, deliberate scope decision per .claude/PLAN.md), full width,
+     real rows (not pills) so a long candidate list (metrics top out
+     around 40-50 entries) scrolls properly instead of wrapping into an
+     unbounded pill grid. Chrome mirrors Select.svelte's own dropdown
+     panel (`.rbq-select-panel`) for visual consistency with the rest of
+     the app's dropdown affordances. */
+  .agent-cli-dropdown {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    margin-top: 0.2rem;
+    z-index: var(--z-dropdown);
+    background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
+    border: 1.5px solid rgba(251,191,36,0.35);
+    border-radius: 4px;
+    box-shadow: 0 10px 28px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.06);
+    max-height: 15rem;
+    overflow-y: auto;
   }
-  .agent-cli-suggest-pill {
+  .agent-cli-dropdown-row {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 0.3rem 0.55rem;
     font-size: var(--fs-sm);
-    padding: 0.1rem 0.5rem;
-    border-radius: 999px;
-    border: 1px solid var(--algo-amber-border-soft);
-    background: var(--algo-amber-bg);
-    color: var(--algo-amber);
     font-family: var(--font-mono, monospace);
+    color: var(--algo-slate);
+    background: none;
+    border: none;
+    border-left: 2px solid transparent;
     cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
-  .agent-cli-suggest-pill:hover { background: var(--algo-amber-bg-strong); }
+  .agent-cli-dropdown-row:hover,
+  .agent-cli-dropdown-row.is-active {
+    background: rgba(251,191,36,0.15);
+    color: var(--c-action);
+    border-left-color: var(--c-action);
+  }
   .agent-cli-suggest-desc {
     font-size: var(--fs-xs);
     color: var(--algo-muted);
