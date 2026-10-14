@@ -238,36 +238,59 @@ test.describe('Part B: Grid header look consistency (shared CSS variables)', () 
     expect(agGridStyles.error).toBeUndefined();
     expect(derivativesStyles.error).toBeUndefined();
 
-    // .ag-theme-algo .ag-header paints --grid-header-bg via a plain
-    // `background-color` declaration, so it resolves directly into
-    // `backgroundColor`. .cand-headrow paints the SAME variable via a
-    // `background: linear-gradient(var(--grid-header-bg), var(--grid-header-bg)), #1d2a44`
-    // shorthand (a sticky-header compositing trick) — the browser resolves
-    // that shorthand's `background-color` longhand to the SOLID FALLBACK
-    // (#1d2a44) only, never the gradient, so comparing `backgroundColor`
-    // on both sides compares two different CSS properties by coincidence
-    // of name. The actual shared-variable paint lives in `backgroundImage`
-    // for the gradient side; assert there instead.
-    expect(derivativesStyles.backgroundImage).toContain(agGridStyles.backgroundColor);
+    // 2026-10 update: Pulse's `.ag-theme-algo .ag-header` ALSO moved
+    // onto the same gradient-shorthand compositing trick Derivatives'
+    // `.cand-headrow` already used (operator: "grid header bottom
+    // border in pulse panels look thicker... apply it to pulse" — a
+    // single semi-transparent `background-color` let whatever sat
+    // behind the header partially show through, softening the border's
+    // edge). Both sides now resolve `backgroundColor` to their own
+    // OPAQUE solid fallback (Pulse: #273552, the top stop of its own
+    // card's --card-bg-elevated gradient; Derivatives: #1d2a44, its
+    // card's --card-bg-gradient top stop) — these are DIFFERENT colors
+    // by design (each matches its own card's actual backdrop) and are
+    // no longer the thing this test should compare. The actual shared
+    // variable (--grid-header-bg) now lives in `backgroundImage` on
+    // BOTH sides — assert equality there instead, and assert each
+    // side's backgroundColor is non-transparent (the whole point of
+    // the fix) rather than asserting they match each other.
+    expect(agGridStyles.backgroundImage).toBe(derivativesStyles.backgroundImage);
+    // Opaque computed colors resolve as plain "rgb(r, g, b)" (no alpha
+    // channel) — an "rgba(...)" result means some transparency leaked
+    // back in.
+    expect(agGridStyles.backgroundColor, 'ag-Grid header background must be opaque').not.toMatch(/^rgba/);
+    expect(derivativesStyles.backgroundColor, 'Derivatives header background must be opaque').not.toMatch(/^rgba/);
     expect(agGridStyles.fontSize).toBe(derivativesStyles.fontSize);
     expect(agGridStyles.fontWeight).toBe(derivativesStyles.fontWeight);
     expect(agGridStyles.letterSpacing).toBe(derivativesStyles.letterSpacing);
   });
 
-  test('Both headers resolve to dark background (rgba 15,23,42 at 0.65 opacity)', async ({ page }) => {
+  test('Pulse header carries the dark --grid-header-bg tint (rgba 15,23,42 at 0.65 opacity) in its background layer', async ({ page }) => {
+    // 2026-10 update: the tint now lives in `backgroundImage` (a
+    // gradient layer composited over an opaque solid base), not
+    // `backgroundColor` directly — same compositing trick Derivatives'
+    // `.cand-headrow` already used, applied to Pulse so its header
+    // border doesn't read soft/blurry against a semi-transparent
+    // backdrop (operator: "apply it to pulse"). See the sibling "now
+    // have IDENTICAL computed styles" test above for the full
+    // before/after rationale.
     await loginAsAdmin(page);
     await page.goto('/pulse', { waitUntil: 'domcontentloaded' });
     await page.locator('.ag-theme-algo .ag-header').first().waitFor({ timeout: 5_000 });
 
-    const bgColor = await page.evaluate(() => {
+    const { bgColor, bgImage } = await page.evaluate(() => {
       const header = document.querySelector('.ag-theme-algo .ag-header');
       const computed = window.getComputedStyle(header);
-      return computed.backgroundColor;
+      return { bgColor: computed.backgroundColor, bgImage: computed.backgroundImage };
     });
 
-    // Should match the new --grid-header-bg variable value
-    expect(bgColor).toMatch(/rgba?\(15,\s*23,\s*42/);
-    console.log(`Grid header background verified: ${bgColor}`);
+    // The --grid-header-bg tint shows up in the gradient layer.
+    expect(bgImage).toMatch(/rgba?\(15,\s*23,\s*42/);
+    // The resolved backgroundColor is now the opaque solid fallback
+    // (#273552), not the tint itself — confirms the opaque-base fix is
+    // actually wired up, not just present in the stylesheet.
+    expect(bgColor).not.toMatch(/^rgba/);
+    console.log(`Grid header backgroundImage: ${bgImage}, backgroundColor: ${bgColor}`);
   });
 });
 

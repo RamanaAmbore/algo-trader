@@ -5028,6 +5028,37 @@
   :global(.funds-grid .ag-header-viewport) {
     border-radius: 0 !important;
   }
+  /* Opaque header background (2026-10, operator: "grid header bottom
+     border in pulse panels look thicker than derivatives legs grid
+     header bottom border" -> "apply it to pulse"). The border itself
+     is identical everywhere (1px solid var(--algo-amber-border-soft))
+     — confirmed via live computed styles — but the canonical
+     `.ag-theme-algo .ag-header` rule (app.css) paints only a single
+     semi-transparent layer (`--grid-header-bg`, 65% alpha), so
+     whatever sits behind the header partially shows through,
+     softening/blurring the border's edge against an inconsistent
+     backdrop. Derivatives' `.cand-headrow` fixed the identical symptom
+     in an earlier, unrelated pass (2026-09-30, sticky-header content
+     bleed-through) by layering the same tint over an opaque base
+     color. Same fix here, scoped to Pulse only (not the shared
+     .ag-theme-algo rule, which NavBreakdown/Dashboard/BrokerHealthBadge
+     also use) — base color is `#273552`, the TOP stop of
+     `.mp-bucket-wrap`'s own `--card-bg-elevated` gradient (where the
+     header actually sits), not Derivatives' `#1d2a44` (that card uses
+     the different `--card-bg-gradient` token, whose top stop happens
+     to be `#1d2a44` instead). */
+  :global(.mp-bucket-wrap .bucket-grid .ag-header),
+  :global(.mp-bucket-wrap .summary-grid .ag-header),
+  :global(.mp-bucket-wrap .funds-grid .ag-header) {
+    /* 3-class selector (vs the global rule's 2-class
+       `.ag-theme-algo .ag-header`) so this reliably wins regardless of
+       stylesheet load order — both rules carry !important, and among
+       !important rules specificity still decides, not just source
+       order. */
+    background:
+      linear-gradient(var(--grid-header-bg), var(--grid-header-bg)),
+      #273552 !important;
+  }
   /* Empty-state shrink — when the Winners / Losers bucket has zero
      rows, drop the grid to just enough to fit the column header
      (28 px) + ag-Grid's "No top winners/losers right now." overlay
