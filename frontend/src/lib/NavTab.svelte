@@ -360,12 +360,17 @@
     gap: 0.5rem;
   }
 
-  /* Error state — red tint matching PerformancePage .perf-banner-error palette. */
+  /* Error state — red tint matching PerformancePage .perf-banner-error palette.
+     Border color (2026-10-13 reusability sweep Part A): rgba(248,113,113,0.25)
+     is an exact value match for app.css's `--algo-red-cascade-lg` token —
+     confirmed by reading that token's own definition, not its name (it's
+     used elsewhere for an unrelated cascade-flash animation). Swapped
+     purely because the rendered color is identical; zero visual change. */
   .nav-tab-error {
     background: rgba(248, 113, 113, 0.07);
     color: var(--c-short);
     border-radius: 4px;
-    border: 1px solid rgba(248, 113, 113, 0.25);
+    border: 1px solid var(--algo-red-cascade-lg);
     margin: 0.5rem;
     font-size: var(--fs-md);
   }
@@ -382,12 +387,14 @@
   }
 
   /* Retry button — cyan-400, matches NavBreakdown .nav-bd-retry and the
-     project's canonical action palette. */
+     project's canonical action palette. Border (2026-10-13 reusability
+     sweep Part A): rgba(34,211,238,0.55) is an exact match for app.css's
+     `--algo-cyan-border` token — swapped, zero visual change. */
   .nav-tab-retry {
     flex-shrink: 0;
     padding: 0.2rem 0.7rem;
     border-radius: 3px;
-    border: 1px solid rgba(34, 211, 238, 0.55);
+    border: 1px solid var(--algo-cyan-border);
     background: var(--c-info-14);
     color: var(--c-info);
     font-size: var(--fs-lg);

@@ -104,7 +104,7 @@
   <span class="ch-overflow-anchor" aria-hidden="true" bind:this={_overflowAnchorEl} style="position:absolute;pointer-events:none;"></span>
   <div class="ch-left">
     {@render prefix?.()}
-    {#if title}<span class="ch-title">{title}</span>{/if}
+    {#if title}<span class="ch-title algo-label-decor">{title}</span>{/if}
     {#if loading !== undefined}
       <!-- Reserved-width slot (matches SVG's own 10px), always mounted
            once a consumer wires `loading` — toggling loading only flips
@@ -195,9 +195,11 @@
        to be changed in the same commit, since a body-level custom
        property always wins over this one's var() fallback. The public
        layout's `.pub-viewport` override (navy, #1a2744) already wins
-       over both and is unaffected either way. */
-    border-left: 3px solid currentColor;
-    padding-left: 0.35rem;
+       over both and is unaffected either way.
+       2026-10-13 reusability sweep Part A: the border-left/padding-left
+       pairing itself moved to the shared `.algo-label-decor` class
+       (app.css) — applied via the markup's class list above; this
+       rule still owns `color` (and everything else). */
   }
   .ch-ts {
     font-size: var(--ch-ts-size, var(--fs-md, 0.65rem));

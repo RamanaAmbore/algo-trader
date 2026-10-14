@@ -452,7 +452,7 @@
 <div class="rf-wrap">
 <button
   type="button"
-  class="rf-btn {_mktClass} {_tickPulseClass} {_pollPulseClass}"
+  class="rf-btn algo-icon-btn {_mktClass} {_tickPulseClass} {_pollPulseClass}"
   class:rf-spinning={_showSpinning}
   class:rf-refiring={_refireOnly}
   onclick={(e) => { e.stopPropagation(); _handleClick(); }}
@@ -512,17 +512,15 @@
        rf-mkt-mcx     → amber    (only MCX, e.g. 15:30–23:30 IST)
        rf-mkt-closed  → slate    (everything closed)
      Card-control trio (Collapse / Fullscreen / DefaultSize) keeps
-     cyan since they're card-scoped, not market-state indicators. */
+     cyan since they're card-scoped, not market-state indicators.
+     Box-model (display/align/justify/size/padding/margin/radius) now
+     lives in the shared `.algo-icon-btn` class (app.css, 2026-10-13
+     reusability sweep Part A) — applied via the markup's class list
+     below. `background`/`border`/`color` stay LOCAL: this button's
+     own default (slate, matching .rf-mkt-closed) is deliberately NOT
+     the shared class's cyan default — see the comment right below. */
   .rf-btn {
     position: relative;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 1.4rem;
-    height: 1.4rem;
-    padding: 0;
-    margin: 0;
-    border-radius: 3px;
     cursor: pointer;
     transition: background 0.12s, color 0.12s, border-color 0.12s;
     flex-shrink: 0;

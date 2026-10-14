@@ -7,8 +7,11 @@
  *     header label already has (.ch-title, .mp-bucket-label, orders/
  *     +page.svelte's own .oc-entry-label), keeping its deliberate amber
  *     color.
- * (3) The order-slip SVG icon that used to render before that label text
- *     was removed.
+ * (3) The order-slip SVG icon was briefly removed the same day, then
+ *     restored (operator: "keep the icon back to orders modal and
+ *     page") to match orders/+page.svelte's own .oc-entry-icon, which
+ *     was never removed — the modal was the one that drifted, not the
+ *     page.
  */
 import { test, expect } from '@playwright/test';
 import { loginAsAdmin } from './fixtures/auth.js';
@@ -27,7 +30,7 @@ test.describe('Orders page title + SymbolPanel modal label cleanup', () => {
     await expect(title).toHaveText('Orders');
   });
 
-  test('SymbolPanel order-ticket modal: "Order entry" label has no icon and has border-left decoration', async ({ page }) => {
+  test('SymbolPanel order-ticket modal: "Order entry" label has its icon and border-left decoration', async ({ page }) => {
     // /orders hides the global Order trigger (PageHeaderActions
     // hideOrder={true} — the whole page is already an order-entry
     // surface via its own inline Order Entry card), so open the modal
@@ -47,9 +50,10 @@ test.describe('Orders page title + SymbolPanel modal label cleanup', () => {
     await expect(label).toBeVisible({ timeout: 5_000 });
     await expect(label).toHaveText('Order entry');
 
-    // No icon element remains.
-    await expect(label.locator('svg.oes-modal-name-icon')).toHaveCount(0);
-    await expect(modal.locator('.oes-modal-name-icon')).toHaveCount(0);
+    // Icon restored (2026-10-13, same day) — matches the page's own
+    // .oc-entry-icon, which was never removed.
+    await expect(label.locator('svg.oes-modal-name-icon')).toHaveCount(1);
+    await expect(modal.locator('.oes-modal-name-icon')).toHaveCount(1);
 
     // Border-left decoration present, color unchanged (amber).
     const style = await label.evaluate((el) => {

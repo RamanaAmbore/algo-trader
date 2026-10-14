@@ -2287,7 +2287,19 @@
     <div style="--ch-padding: 0.35rem 0.65rem">
       <CardHeader showControls={false} onRefresh={_refreshAll}>
         {#snippet left()}
-          <span class="oes-modal-name">
+          <span class="oes-modal-name algo-label-decor">
+            <!-- Order-slip / receipt glyph — matches the page-header Order
+                 button (PageHeaderActions) and orders/+page.svelte's own
+                 .oc-entry-icon. Restored 2026-10-13 (operator: "keep the
+                 icon back to orders modal and page") after a same-day
+                 earlier removal — the page's own icon was never removed,
+                 so the modal was the odd one out, not vice versa. -->
+            <svg class="oes-modal-name-icon" width="13" height="13" viewBox="0 0 16 16"
+                 fill="none" stroke="currentColor" stroke-width="1.5"
+                 stroke-linecap="round" aria-hidden="true">
+              <rect x="3.2" y="2" width="9.6" height="12" rx="1.2" />
+              <path d="M5.5 6h5M5.5 8.5h5M5.5 11h3" stroke-width="1.4" />
+            </svg>
             Order entry
           </span>
           {#if _wlToast}
@@ -3438,13 +3450,18 @@
     gap: 0.35rem;
     /* 2026-10-13 — border-left + left padding, matching every other
        header label's decoration (.ch-title, .mp-bucket-label,
-       orders/+page.svelte's .oc-entry-label). Icon removed per
-       operator request; kept the deliberate amber color (same
-       reasoning as .oc-entry-label — "writing surface / operator
-       action" surface, not the generic neutral default). */
-    border-left: 3px solid currentColor;
-    padding-left: 0.35rem;
+       orders/+page.svelte's .oc-entry-label). Kept the deliberate
+       amber color (same reasoning as .oc-entry-label — "writing
+       surface / operator action" surface, not the generic neutral
+       default). Icon was briefly removed earlier the same day, then
+       restored — operator: "keep the icon back to orders modal and
+       page" — matching orders/+page.svelte's own .oc-entry-icon,
+       which was never removed.
+       Reusability sweep Part A (same day): border-left/padding-left
+       itself moved to the shared `.algo-label-decor` class (app.css);
+       this rule still owns `color` and everything else above. */
   }
+  .oes-modal-name-icon { color: currentColor; flex-shrink: 0; }
   /* Shared Symbol picker — replaces the static `.oes-title` placeholder
      ("Symbol") with a live search input. Operator can pick a new
      symbol; every tab (Ticket / Chain / Command) re-renders against

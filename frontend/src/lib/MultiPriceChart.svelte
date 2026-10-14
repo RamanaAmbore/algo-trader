@@ -231,7 +231,7 @@
   function onPointerLeave() { hover = null; }
 </script>
 
-<div class="mpc-shell {_pulse.classOf('mpc')}">
+<div class="mpc-shell algo-chart-frame {_pulse.classOf('mpc')}">
   <div class="mpc-header-row">
     {#if title}
       <div class="mpc-header">{title}</div>
@@ -353,14 +353,18 @@
 
 <style>
   .mpc-shell {
-    background: var(--card-bg-gradient);
-    border: 1px solid rgba(251,191,36,0.18);
+    /* background/border/border-radius/box-sizing now live in the
+       shared `.algo-chart-frame` class (app.css, 2026-10-13
+       reusability sweep Part A — same DRY extraction PriceChart's
+       `.price-chart` already uses). The `border-left` accent stays
+       local, matching PriceChart's own pattern: it's specific to
+       this component and its higher specificity (scoped selector)
+       reliably wins over the plain class rule's own `border`
+       shorthand. */
     border-left: 3px solid var(--c-action);
-    border-radius: 4px;
     padding: 8px 12px;
     width: 100%;
     max-width: 960px;
-    box-sizing: border-box;
   }
   .mpc-header-row {
     display: flex;

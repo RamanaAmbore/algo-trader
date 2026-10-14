@@ -4427,7 +4427,7 @@
               onDownload={() => gridWin?.exportDataAsCsv({ fileName: 'winners.csv' })}
             >
               {#snippet left()}
-                <span class="mp-bucket-label mp-bucket-label-winners">Gainers</span>
+                <span class="mp-bucket-label algo-label-decor mp-bucket-label-winners">Gainers</span>
               {/snippet}
               {#snippet middle()}
                 <div class="mp-head-tabs">
@@ -4457,7 +4457,7 @@
               onDownload={() => gridLose?.exportDataAsCsv({ fileName: 'losers.csv' })}
             >
               {#snippet left()}
-                <span class="mp-bucket-label mp-bucket-label-losers">Losers</span>
+                <span class="mp-bucket-label algo-label-decor mp-bucket-label-losers">Losers</span>
               {/snippet}
               {#snippet middle()}
                 <div class="mp-head-tabs">
@@ -4500,7 +4500,7 @@
             detectOverflow={false}
           >
             {#snippet left()}
-              <span class="mp-bucket-label mp-bucket-label-positions">Positions</span>
+              <span class="mp-bucket-label algo-label-decor mp-bucket-label-positions">Positions</span>
               {#if accountPicker && availableAccounts.length > 0}
                 <span class="mp-head-sep" aria-hidden="true"></span>
                 <div class="mp-head-acct">
@@ -4528,7 +4528,7 @@
             onDownload={() => gridHoldings?.exportDataAsCsv({ fileName: 'holdings.csv' })}
           >
             {#snippet left()}
-              <span class="mp-bucket-label mp-bucket-label-holdings">Holdings</span>
+              <span class="mp-bucket-label algo-label-decor mp-bucket-label-holdings">Holdings</span>
               {#if accountPicker && availableAccounts.length > 0}
                 <span class="mp-head-sep" aria-hidden="true"></span>
                 <div class="mp-head-acct">
@@ -5134,9 +5134,14 @@
     font-weight: 700;
     letter-spacing: 0.04em;
     text-transform: uppercase;
-    padding: 0.15rem 0.35rem;
+    /* padding-left + border-left moved to the shared `.algo-label-decor`
+       class (app.css, 2026-10-13 reusability sweep Part A); top/right/
+       bottom padding stay local since the shared class only supplies
+       padding-left — NOT a full `padding` shorthand. */
+    padding-top: 0.15rem;
+    padding-right: 0.35rem;
+    padding-bottom: 0.15rem;
     margin-bottom: 0.2rem;
-    border-left: 3px solid currentColor;
     color: var(--algo-slate);
   }
   .mp-bucket-label-positions { color: rgba(125, 211, 252, 0.85); }

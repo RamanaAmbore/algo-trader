@@ -54,7 +54,7 @@
 {#if !isFullscreen}
   <button
     type="button"
-    class="fs-btn"
+    class="fs-btn algo-icon-btn"
     onclick={(e) => { e.stopPropagation(); isFullscreen = true; }}
     aria-label={`Expand ${label} to fullscreen`}
     title="Expand to fullscreen">
@@ -69,26 +69,20 @@
 
 <style>
   .fs-btn {
-    /* Pin to top-right within the card body. `margin-left: auto`
-       pushes the button to the rightmost slot of any flex parent
-       (card-header-row / bucket-header / row3-header / details
-       summary), guaranteeing top-right placement without needing
-       every card header to opt into justify-content: space-between
-       or a sibling spacer.
+    /* Box-model/palette (display/align/justify/size/padding/background/
+       border/radius) now live in the shared `.algo-icon-btn` class
+       (app.css, 2026-10-13 reusability sweep Part A). `margin` stays
+       LOCAL — this button self-positions to the rightmost slot of any
+       flex parent (card-header-row / bucket-header / row3-header /
+       details summary) via `margin-left: auto`, which is NOT the
+       shared class's plain `margin: 0` default; the local declaration
+       always wins (Svelte's scoping attribute gives it higher
+       specificity than the global class, regardless of source order).
        Vibrant cyan-400 (#22d3ee) palette — shared with RefreshButton
        + CollapseButton so the trio of card-control icons reads as
        one consistent family. Matches the "live data / control"
        accent used across Bloomberg Terminal, IBKR TWS and Sensibull. */
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 1.4rem;
-    height: 1.4rem;
-    padding: 0;
     margin: 0 0 0 auto;
-    background: var(--algo-cyan-bg);
-    border: 1px solid var(--algo-cyan-border);
-    border-radius: 3px;
     color: var(--c-info);
     cursor: pointer;
     transition: background 0.12s, color 0.12s, border-color 0.12s;

@@ -35,7 +35,7 @@
 {#if onClick != null}
   <button
     type="button"
-    class="grid-download-btn"
+    class="grid-download-btn algo-icon-btn"
     class:with-auto-margin={autoMargin}
     title="Download {label} as CSV"
     aria-label="Download {label} as CSV"
@@ -61,17 +61,11 @@
 {/if}
 
 <style>
+  /* Box-model/palette (display/align/justify/size/padding/margin/
+     background/border/radius) now live in the shared `.algo-icon-btn`
+     class (app.css, 2026-10-13 reusability sweep Part A) — this
+     component's base rule was byte-identical to the shared default. */
   .grid-download-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 1.4rem;
-    height: 1.4rem;
-    padding: 0;
-    margin: 0;
-    background: var(--algo-cyan-bg);
-    border: 1px solid var(--algo-cyan-border);
-    border-radius: 3px;
     color: var(--c-info);
     cursor: pointer;
     transition: background 0.12s, color 0.12s, border-color 0.12s;

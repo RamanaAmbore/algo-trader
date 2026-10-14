@@ -1674,6 +1674,46 @@
   box-sizing: border-box;
 }
 
+/* ── Canonical card-control icon button — shared by RefreshButton,
+   FullscreenButton, DefaultSizeButton, GridDownloadButton, and
+   GridSearchButton (2026-10-13, frontend reusability sweep Part A).
+   All five independently duplicated this exact box-model/palette
+   literal. `margin` is intentionally included here as `0` — the two
+   sites that need right-self-positioning (FullscreenButton's
+   `margin-left: auto`, GridSearchButton's own `margin: 0 0 0 auto`)
+   keep that override LOCAL in their own scoped `<style>` block, which
+   always wins over this global rule regardless of source order
+   (Svelte's scoping attribute bumps a local class's specificity above
+   a plain global class). RefreshButton also keeps its own
+   `background`/`border` local (a deliberate market-session-state
+   default, slate rather than cyan — see RefreshButton.svelte's own
+   comment) since those two properties are NOT byte-identical there;
+   only the shared box-model properties were deduplicated for that
+   component. */
+.algo-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.4rem;
+  height: 1.4rem;
+  padding: 0;
+  margin: 0;
+  background: var(--algo-cyan-bg);
+  border: 1px solid var(--algo-cyan-border);
+  border-radius: 3px;
+}
+
+/* ── Canonical header-label decoration — shared by CardHeader's
+   `.ch-title`, MarketPulse's `.mp-bucket-label`, SymbolPanel's
+   `.oes-modal-name`, and orders/+page.svelte's `.oc-entry-label`
+   (2026-10-13, frontend reusability sweep Part A). Each site keeps its
+   own `color` (and any other typography) rule local; only this
+   border-left + left-padding pairing was duplicated across all four. */
+.algo-label-decor {
+  border-left: 3px solid currentColor;
+  padding-left: 0.35rem;
+}
+
 /* ── Per-account identity stripe (ag-col-acct) ────────────────────────────
    Default: no stripe. Real accounts get one via the .ag-theme-algo rule
    below; this bare rule is the base reset every non-wired cell falls back

@@ -393,7 +393,7 @@
     onRefresh={() => _entryRefresh++}
   >
     {#snippet left()}
-      <span class="oc-entry-label">
+      <span class="oc-entry-label algo-label-decor">
         <svg class="oc-entry-icon" width="13" height="13" viewBox="0 0 16 16"
              fill="none" stroke="currentColor" stroke-width="1.5"
              stroke-linecap="round" aria-hidden="true">
@@ -716,8 +716,8 @@
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: rgba(251, 191, 36, 0.7);
-    border-left: 3px solid currentColor;
-    padding-left: 0.35rem;
+    /* border-left + padding-left moved to the shared `.algo-label-decor`
+       class (app.css, 2026-10-13 reusability sweep Part A). */
     flex-shrink: 0;
   }
   .oc-entry-icon { color: currentColor; flex-shrink: 0; width: 11px; height: 11px; }

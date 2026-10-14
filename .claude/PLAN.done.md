@@ -1,104 +1,113 @@
-# Plan: Margin fix_qty MCX math + Automation status-card colors + Agents row text size
+# Plan: Frontend reusability sweep — shared CSS utilities, PnlAnalysis tab verification, modal-stacking regression coverage
 
 ## Task
 
-Three bounded fixes:
-
-1. **Margin-shortfall "reduce qty to N" is wrong for MCX/NCO orders** —
-   `backend/api/algo/actions_preflight.py:_preflight_margin_shortfall_fix_qty`
-   divides the quoted margin by raw CONTRACTS, but `basket_order_margins`
-   was called with the LOT-converted quantity for MCX/NCO (`translate_qty`
-   converts contracts→lots on the wire for those two exchanges only). The
-   suggested qty is off by a factor of `lot_size` and often isn't even a
-   valid lot multiple. NFO/BFO/CDS are unaffected. Fix: thread
-   `exchange`/`lot_size` through `_preflight_margin_shortfall_fix_qty` →
-   `_preflight_handle_positive_margin` → `_preflight_check_margin`, price
-   per LOT for MCX/NCO, convert the suggestion back to contracts for
-   display. Re-fetch `lot_size` via the cached `get_lot_size()` inside
-   `run_preflight` rather than changing `_preflight_build_basket_orders`'s
-   return signature (it has a second caller in `backend/api/routes/
-   funds.py:275` and its own test mock in
-   `backend/tests/test_funds_order_margin.py:26` — do not touch either).
-
-2. **Automation status cards show no color** — rows already carry
-   `data-status={row.status}` on `.algo-status-card`
-   (`frontend/src/routes/(algo)/automation/+page.svelte:748-749`), and a
-   global `[data-status]` color rule exists in `app.css:2740-2753`, but
-   this page's own scoped CSS override (`+page.svelte:917-927`) sets a
-   flat border color unconditionally, ignoring status. Real agent status
-   vocabulary (`statusDot()`, line 443): `active/inactive/triggered/
-   running/cooldown/error` — `active`/`cooldown` aren't in the global map.
-   Brackets/Templates rows have no `status` field at all. Fix: add local
-   `data-status` border-color variants for the full agent vocabulary
-   (reuse existing app.css palette tokens, no new hex colors), and change
-   line 749 to `data-status={row.status ?? (row.is_active ? 'active' : 'inactive')}`
-   so Brackets/Templates derive a color from `is_active`.
-
-3. **Agents-page row text too large** — `+page.svelte:758,760` render
-   `row.name`/`row.long_name` at `--fs-lg`, inconsistent with the rest of
-   the app's row-text convention (`--fs-xs`/`--fs-sm`). Fix: change both
-   to `--fs-sm`.
+Act on the frontend look-and-feel reusability audit (operator: "consider all of them for
+implementation"), as refined by a 6-agent council review (architect/risk/perf/ux/devil/research).
+Implement the council-approved, low-risk items now (shared CSS utility extraction for
+icon-buttons and label decoration, a conditional chart-frame adoption, conditional color-token
+matching); verify one item the council found was already shipped; explicitly do NOT bulk-migrate
+one low-value item; and explicitly do NOT touch the two-modal-mechanism divergence in this pass —
+instead add the regression test coverage risk's review found missing, with zero code change to
+the overlay/modal files themselves. Any further action on the modal-mechanism item requires a
+separate, explicit operator go-ahead after reviewing the new tests and a concrete proposal — it
+is deliberately split out of "all of them" per risk's and devil's findings that its risk profile
+was unknown at the time that instruction was given.
 
 ## Agents
 
-- backend: Fix `_preflight_margin_shortfall_fix_qty` (actions_preflight.py
-  line 388) to accept `exchange: str = ""` and `lot_size: int = 0` params.
-  When `exchange in ("MCX", "NCO") and lot_size > 0`: price per lot
-  (`priced_units = qty // lot_size`, `per_unit = required / priced_units`),
-  then convert the suggested fit back to contracts
-  (`max_qty_fit = max_units_fit * lot_size`). Otherwise unchanged (today's
-  contracts-based math). Thread the new params through
-  `_preflight_handle_positive_margin` (line 412) and
-  `_preflight_check_margin` (line 494). In `run_preflight` (line 752),
-  re-fetch `lot_size` via `get_lot_size(exchange, symbol)`
-  (`backend.brokers.adapters.kite.get_lot_size` — O(1) cached lookup, no
-  network) right before the `_preflight_check_margin` call and pass it +
-  `exchange` through. Do NOT change `_preflight_build_basket_orders`'s
-  signature or touch `backend/api/routes/funds.py`. Add a test to
-  `backend/tests/test_preflight_characterization.py` (new test alongside
-  the existing `test_preflight_margin_shortfall_fix_qty_calculation` at
-  line 972): an MCX case with a known lot_size/required/available,
-  asserting the suggested qty in the `fix` string is a valid multiple of
-  lot_size and matches the corrected lot-priced math. Confirm the
-  existing NFO test still passes unchanged (regression-free).
+- backend: skip
+- frontend: Dispatch as TWO separate agents in this wave — they must not touch overlapping files.
 
-- frontend: In `frontend/src/routes/(algo)/automation/+page.svelte`: (a)
-  add `[data-status="active"]`, `[data-status="cooldown"]` variants to
-  the existing `.algo-status-card[data-status="..."]` pattern already
-  used elsewhere (app.css:2740-2753) — but scoped locally in this file's
-  `<style>` block (lines 917-927), setting `border-color` (and optionally
-  a left-edge accent) per status, reusing existing `--algo-*`/`--c-long`/
-  `--c-short` tokens, matching the decoration level of `OrderBook.svelte`'s
-  `.ob-sc[data-status]` chips — do not touch the global app.css rule or
-  OrderBook.svelte. (b) Change line 749's `data-status={row.status}` to
-  `data-status={row.status ?? (row.is_active ? 'active' : 'inactive')}`.
-  (c) Change lines 758 and 760's `--fs-lg` to `--fs-sm`.
+  **Agent A — CSS utility extraction (items 1, 3, 4, 7):**
+  1. Extract a shared `.algo-icon-btn` base class into `app.css` carrying the byte-identical
+     rule currently duplicated in `RefreshButton.svelte`, `FullscreenButton.svelte`,
+     `DefaultSizeButton.svelte`, `GridDownloadButton.svelte`, `GridSearchButton.svelte`
+     (`display:inline-flex; align-items:center; justify-content:center; width:1.4rem;
+     height:1.4rem; padding:0; margin:0; background:var(--algo-cyan-bg);
+     border:1px solid var(--algo-cyan-border); border-radius:3px;`). Each component keeps its
+     own icon markup/click-handler/active-state logic — only the shared box-model/border rule
+     moves to the class, applied via `class="algo-icon-btn"` alongside each component's existing
+     class. Zero visual change expected — this is pure deduplication.
+  2. Extract a shared `.algo-label-decor` utility class (`border-left: 3px solid currentColor;
+     padding-left: 0.35rem;`) and apply it to: MarketPulse's `.mp-bucket-label`, SymbolPanel's
+     `.oes-modal-name`, `orders/+page.svelte`'s `.oc-entry-label`, and `CardHeader.svelte`'s
+     `.ch-title`. Each site keeps its own color rule (`.mp-bucket-label-positions`'s sky tone,
+     `.oes-modal-name`'s amber, etc.) — only the shared border-left+padding declaration is
+     removed from each and replaced by the new class. Zero visual change expected.
+  3. Before touching `MultiPriceChart.svelte`: diff `.algo-chart-frame`'s box-model properties
+     (border/border-radius/background/box-sizing) against `.mpc-shell`'s current literal
+     (`border: 1px solid rgba(251,191,36,0.18); border-radius: 4px;`). Only apply the shared
+     class if every property matches exactly or the difference is provably cosmetic-neutral
+     (e.g. `.algo-chart-frame` doesn't carry padding, which `.mpc-shell` may keep locally).
+     If anything doesn't line up, do NOT force it — report the discrepancy and leave
+     `MultiPriceChart.svelte` unchanged rather than risk a resize/redraw regression (per perf
+     council's specific flag).
+  4. In `NavTab.svelte`, for each of its 4 hardcoded `rgba(...)` border colors (lines ~330, 368,
+     390, 429), check for an exact or visually-indistinguishable match against existing
+     `--algo-rose-*`/`--algo-cyan-*` (or other) tokens in `app.css`. Swap only colors with a
+     confirmed match (computed-style comparison, not just eyeballing the rgba string); leave any
+     unmatched literal as-is rather than force a swap.
 
-- playwright: Add a spec asserting that on `/automation`, an active
-  agent row's `.algo-status-card` has a visibly different computed
-  `border-color` than an inactive agent row's, and that a Brackets-kind
-  row (no native `status` field) also gets a non-default border color
-  when `is_active` is true. Place in `frontend/tests/` per the project's
-  test-location map.
+  **Agent B — PnlAnalysis tab verification (item 6):**
+  NOT a migration — UX council confirmed via grep that `PnlAnalysis.svelte` already renders
+  `<AlgoTabs compact>` (shipped in commit 77eb0e51; the old hand-rolled `.tab-strip` is already
+  retired, per the comment at line ~1180). This agent's only job: load the Performance/PnlAnalysis
+  view in a real browser (or via Playwright) and confirm the tab strip renders and behaves
+  correctly with no visual regression. Make NO code changes unless a real, concrete defect is
+  found — if one is found, report it rather than fixing it silently, since this task was scoped
+  as verification-only.
+
+- broker: skip
+- doc: skip
+- backend-test: skip
+- playwright: **Item 5 — modal-overlay stacking regression coverage, test-authoring ONLY.**
+  Zero code changes to any overlay/modal file in this task (`ModalShell.svelte`,
+  `OrderTicket.svelte`, `OrderTimelineDrawer.svelte`, `OrderPairModal.svelte`, `SymbolPanel.svelte`).
+  Write new Playwright tests covering the CURRENT (already-working, not-yet-covered) behavior of
+  the overlay stack that nests `OrderTicket` inside `SymbolPanel`, and `OrderTimelineDrawer`/
+  `OrderPairModal`'s own nested overlays:
+  1. Pressing Escape closes only the topmost open overlay layer, never a parent/ancestor layer —
+     regression test for the exact failure class `OrderPairModal.svelte`'s own code comment
+     (lines 13-14) references as a prior real incident ("Escape exited a parent [ticket]").
+  2. Clicking a nested overlay's own backdrop does not close an ancestor overlay.
+  3. Submit still fires correctly through all stacked layers (order ticket submission is not
+     broken by any overlay nesting).
+  These tests assert CURRENT behavior — they must all pass against the unmodified codebase. Do
+  not merge, reconcile, or refactor `ModalShell.svelte` vs. the hand-rolled local overlays
+  (`ot-overlay`, `otd-backdrop`, `opm-overlay`) in this task. That decision is explicitly deferred
+  — see "Done when."
 
 ## Tests
 
-- pytest: yes
+- pytest: no
 - svelte-check: yes
 - playwright: yes
 
 ## Commit message
 
-fix(preflight,automation): correct MCX margin-shortfall qty math, color-code status cards, fix Agents row text size
+refactor(frontend): extract shared CSS utilities (algo-icon-btn, algo-label-decor), verify PnlAnalysis tabs, add modal-stacking regression coverage
 
 ## Done when
 
-- An MCX/NCO order's MARGIN_SHORTFALL `fix` text suggests a valid
-  lot-multiple contract quantity, priced correctly per lot.
-- NFO/BFO/CDS margin-shortfall behavior is byte-identical to today
-  (regression-free — covered by the existing NFO test).
-- Every Automation row card (all four kinds) shows a status-keyed
-  border color, matching Orders' status-card decoration style.
-- Agents-page row names render at `--fs-sm`, matching the rest of the
-  app's row-text convention.
-- pytest green, svelte-check 0 errors, new Playwright spec green.
+- `.algo-icon-btn` exists in `app.css`; all 5 CardControls sibling buttons use it; zero visual
+  change (confirmed via existing Playwright coverage of these buttons still passing).
+- `.algo-label-decor` exists; all 4 label sites (MarketPulse, SymbolPanel, orders page,
+  CardHeader) reference it instead of duplicating the border-left+padding rule; zero visual
+  change.
+- `MultiPriceChart.svelte` either adopts `.algo-chart-frame` (box-model confirmed matching, zero
+  visual change) or is left unchanged with the discrepancy reported — either outcome is
+  acceptable, a forced mismatched swap is not.
+- `NavTab.svelte`'s 4 hardcoded colors are swapped only where a token match was confirmed; any
+  unmatched color is left as a literal.
+- PnlAnalysis's AlgoTabs rendering confirmed regression-free (verification only, no code change
+  unless a real defect was found and explicitly reported).
+- The amber-color-token bypass (406 raw literals) is explicitly NOT bulk-migrated in this pass —
+  adopted only as a forward convention for files touched by future work.
+- New Playwright coverage exists and passes for Escape/backdrop-click/Submit correctness across
+  the OrderTicket/OrderTimelineDrawer/OrderPairModal/SymbolPanel overlay stack, against CURRENT,
+  unmodified overlay behavior.
+- The two modal-overlay mechanisms (`ModalShell.svelte` vs. hand-rolled local overlays) are NOT
+  merged or reconciled in this pass — explicitly deferred pending a separate, dedicated operator
+  decision after reviewing the new regression tests and a concrete before/after proposal.
+- svelte-check 0 errors, all new/updated Playwright specs green.

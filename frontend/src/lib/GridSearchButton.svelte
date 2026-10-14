@@ -74,7 +74,7 @@
     onblur={_onBlur} />
 {/if}
 <button type="button"
-        class="grid-search-btn"
+        class="grid-search-btn algo-icon-btn"
         class:on={_open}
         title={_open ? `Close ${label} filter` : `Filter ${label} by symbol`}
         aria-label={`Toggle ${label} symbol filter`}
@@ -92,17 +92,15 @@
 </button>
 
 <style>
+  /* Box-model/palette (display/align/justify/size/padding/background/
+     border/radius) now live in the shared `.algo-icon-btn` class
+     (app.css, 2026-10-13 reusability sweep Part A). `margin` stays
+     LOCAL — this button self-positions via `margin-left: auto`, which
+     is NOT the shared class's plain `margin: 0` default; the local
+     declaration always wins (Svelte's scoping attribute gives it
+     higher specificity than the global class). */
   .grid-search-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 1.4rem;
-    height: 1.4rem;
-    padding: 0;
     margin: 0 0 0 auto;
-    background: var(--algo-cyan-bg);
-    border: 1px solid var(--algo-cyan-border);
-    border-radius: 3px;
     color: var(--c-info);
     cursor: pointer;
     transition: background 0.12s, color 0.12s, border-color 0.12s;

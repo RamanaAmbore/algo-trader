@@ -148,7 +148,7 @@
 {#if isFullscreen}
   <button
     type="button"
-    class="default-btn"
+    class="default-btn algo-icon-btn"
     onclick={(e) => {
       e.stopPropagation();
       isFullscreen = false;
@@ -222,20 +222,15 @@
 
   /* Shared cyan-400 palette with RefreshButton + FullscreenButton +
      CollapseButton so the four card-control icons read as one family.
-     `margin: 0` because this button always sits BETWEEN
-     FullscreenButton (which carries the `margin-left: auto`) and
-     CollapseButton — parent `gap` handles inter-button spacing. */
+     Box-model/palette (display/align/justify/size/padding/margin/
+     background/border/radius) now live in the shared `.algo-icon-btn`
+     class (app.css, 2026-10-13 reusability sweep Part A) — this
+     component's own `margin: 0` was byte-identical to the shared
+     default (this button always sits BETWEEN FullscreenButton, which
+     carries `margin-left: auto`, and CollapseButton — parent `gap`
+     handles inter-button spacing), so nothing needed to stay local
+     here beyond color/cursor/transition/flex-shrink. */
   .default-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 1.4rem;
-    height: 1.4rem;
-    padding: 0;
-    margin: 0;
-    background: var(--algo-cyan-bg);
-    border: 1px solid var(--algo-cyan-border);
-    border-radius: 3px;
     color: var(--c-info);
     cursor: pointer;
     transition: background 0.12s, color 0.12s, border-color 0.12s;
