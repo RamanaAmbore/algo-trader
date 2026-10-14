@@ -405,6 +405,17 @@ describe('suggestAgentCliAt() — Sprint H item 1: statement-head keywords', () 
     expect(errors).toEqual([]);
     expect(r.suggestions).toContain('ALERT');
   });
+
+  it('bug fix (2026-10): a fully-typed clause-head keyword still shows itself as the matched suggestion, case-insensitively — it used to collapse to empty the instant the last letter was typed', () => {
+    const base = 'WHEN pnl@positions.total <= -5 ALERT telegram ';
+    // One letter in: both the bare keyword and the unrelated "debug" call
+    // fuzzy-match — this part always worked.
+    expect(suggest(base + 'D').suggestions).toEqual(expect.arrayContaining(['DO']));
+    // Fully typed, any case — this collapsed to [] before the fix.
+    expect(suggest(base + 'Do').suggestions).toEqual(['DO']);
+    expect(suggest(base + 'do').suggestions).toEqual(['DO']);
+    expect(suggest(base + 'DO').suggestions).toEqual(['DO']);
+  });
 });
 
 describe('suggestAgentCliAt() — Sprint H item 2/3: comparators (incl. in/not in) + post-comparator hint', () => {

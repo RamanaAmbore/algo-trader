@@ -8729,8 +8729,21 @@ function _suggestAgentCliAtImpl(text, cursor, catalog) {
   // metric/channel/action candidates) classifies off this ONE token, so
   // the glued-partial and pure-gap cases share one classification path
   // instead of two parallel copies.
+  // Bug fix (2026-10) — a glued partial whose typed text ALREADY equals a
+  // complete reserved word (e.g. the operator has just finished typing
+  // "do"/"Do"/"DO") used to bail to `_emptySuggest` here unconditionally,
+  // so the dropdown visibly collapsed to nothing the instant the last
+  // letter of a legal clause-head keyword was typed — reported by the
+  // operator as "DO" not showing as selected (misdiagnosed as a case-
+  // sensitivity issue; `fuzzyFilter` already lowercases both sides, so
+  // "Do"/"do"/"DO" were always equally affected — the real cause is this
+  // early return, independent of case). A completed reserved word is
+  // classified exactly like any other still-being-typed partial keyword
+  // (e.g. "ALE" for "ALERT", already handled below via `effectiveReal`/
+  // `contextTok`) instead of being special-cased to empty, so it keeps
+  // appearing as the single matched/selectable suggestion until the
+  // operator types past it (a space, etc.) or it's genuinely illegal here.
   const isGluedPartial = !!(lastTok && lastTok.type === 'NAME' && !lastTok.hasCall && lastTok.end === pos);
-  if (isGluedPartial && lastTok.reserved) return _emptySuggest(pos);
   const partial = isGluedPartial ? lastTok.value : '';
   const replaceStart = isGluedPartial ? lastTok.start : pos;
   const effectiveReal = isGluedPartial ? real.slice(0, -1) : real;
