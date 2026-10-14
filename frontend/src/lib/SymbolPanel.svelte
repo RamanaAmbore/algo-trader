@@ -2455,6 +2455,7 @@
             if (id === 'chain' && chainDisabled) return;
             _setActiveTab(/** @type {any} */ (id));
           }}
+          compact={true}
         />
       </div>
       <!-- Vertical divider (2026-09-30, operator: "add vertical after

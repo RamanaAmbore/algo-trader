@@ -715,3 +715,40 @@ test.describe('Fix D — alignment/overflow batch (2026-09-30, audit follow-up)'
     expect(report.docScrollWidth, 'no page-level horizontal overflow at 320px').toBeLessThanOrEqual(report.vw + 2);
   });
 });
+
+// Bug fix (2026-10, operator: "the tab space in order modal, page
+// increase. reduce it and keep it consistent with pulse tabs") —
+// SymbolPanel's own TICKET/CHAIN/CHART tab strip (`.oes-tabs-inner`'s
+// `<AlgoTabs>`) was missing the `compact={true}` prop that MarketPulse's
+// Winners/Losers "mover" tabs already pass, so it rendered at the
+// default (larger) AlgoTabs size instead of matching Pulse's own tab
+// footprint. Checked on the Orders page's inline SymbolPanel — no modal/
+// symbol-seeding needed, so this is immune to the (separate, pre-
+// existing, confirmed-unrelated) symbol-search flakiness affecting other
+// tests in this file.
+test.describe('Bug fix — SymbolPanel tab strip matches Pulse tabs\' compact sizing', () => {
+  test('SymbolPanel .algo-tab renders with the compact variant (same recipe as Pulse\'s mover tabs)', async ({ page }) => {
+    await loginAsAdmin(page);
+    await page.goto(`${BASE}/orders`, { waitUntil: 'domcontentloaded' });
+
+    const tab = page.locator('.oes-tabs-inner .algo-tab').first();
+    await expect(tab).toBeVisible({ timeout: 15_000 });
+
+    const info = await tab.evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return {
+        hasCompactClass: el.classList.contains('algo-tab--compact'),
+        padding: cs.padding,
+        minHeight: cs.minHeight,
+      };
+    });
+
+    expect(info.hasCompactClass).toBe(true);
+    // Compact variant: padding 0 0.6rem, min-height calc(--toolbar-h - 2px)
+    // — see .algo-tab--compact in app.css. Asserting the resolved pixel
+    // values (not just the class) proves the CSS rule actually applies,
+    // not just that the class name is present.
+    expect(info.padding).toBe('0px 9.6px');
+    expect(info.minHeight).toBe('22px');
+  });
+});
