@@ -160,10 +160,19 @@
   }
 
   .cm-header {
-    /* canonical-modal-header supplies gradient/padding/border/box-shadow.
-       Local overrides: gap between icon+title+actions, and no shrink. */
+    /* canonical-modal-header supplies gradient/border/box-shadow (shared
+       with 6 other modals — AddToPulseModal, PositionStrip, MarketPulse,
+       AgentFireModal, LogPanel, BrokerHealthBadge — left untouched there).
+       Local overrides: gap between icon+title+actions, no shrink, and
+       padding zeroed (2026-10, operator: sync this modal's header height
+       with the order-ticket modal's) — CardHeader's own `--ch-padding: 0`
+       body-level default is what every other CardHeader-based header in
+       the app already uses; this header isn't CardHeader-based (it's the
+       shared canonical-modal-header class instead) but adopts the same
+       zero-padding convention here, scoped to THIS modal only. */
     gap: 0.5rem;
     flex-shrink: 0;
+    padding: 0;
   }
 
   .cm-title {

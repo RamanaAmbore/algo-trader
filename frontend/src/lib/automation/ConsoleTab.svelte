@@ -103,65 +103,11 @@
    *  fallback; 'empty' shows neither action button. */
   const _classify = $derived(classifyConsoleStatement(value));
 
-  // Sprint I Phase 1 follow-up (operator-requested kind selector) — a
-  // small, secondary visual hint row above the textbox mirroring the
-  // Phase 1 dispatch rule's own leading-token buckets (order(/bracket(/
-  // WHEN-or-GIVEN/bare ALERT — `token(` deliberately omitted, it has no
-  // slot in the operator's 4-option ask and stays fully typeable without
-  // a shortcut). Interaction model (operator left this to our judgment):
-  // NOT a hard mode-lock — the real dispatch decision always comes from
-  // `_classify`/`compileAgentCliStatement` on the typed text, never from
-  // this selector. It (a) reflects whatever kind the typed text already,
-  // confidently resolved to (synced below), and (b) when the box is
-  // EMPTY, clicking an option seeds a short starter snippet for that
-  // kind — a convenience, never a destructive overwrite of real typed
-  // text.
-  const _KIND_OPTIONS = ['order', 'bracket', 'agent', 'alert'];
-  const _KIND_LABELS = { order: 'Order', bracket: 'Bracket', agent: 'Agent', alert: 'Alert' };
-  const _KIND_SEED = {
-    order: 'order(account="", symbol="", side="BUY", lots=1)',
-    bracket: 'bracket(applies_to=buy_any, tp_pct=30, sl_pct=-20) #name=""',
-    agent: 'WHEN pnl_pct@positions.total <= -5 ALERT telegram DO nop',
-    alert: 'ALERT telegram',
-  };
-  let _kindHint = $state('order');
-
-  function _pickKind(/** @type {string} */ k) {
-    _kindHint = k;
-    if (!value || !value.trim()) value = _KIND_SEED[k] || '';
-  }
-
-  /** Leading-TOKEN detector for the kind-selector sync below — deliberately
-   *  reads the raw text's own first word, NOT `_agentCliCompiled.kind`.
-   *  Those two disagree for the "Alert" bucket: a bare `ALERT telegram`
-   *  statement (no WHEN, no event-meta leading kwarg) compiles to
-   *  `kind:'agent'` (compileStatement's own dispatch — see agents.js),
-   *  the SAME compiled kind an ordinary `WHEN...ALERT...DO...` statement
-   *  gets, even though textually it's the "Alert" bucket the operator
-   *  picked. The selector's job is to reflect what the operator TYPED,
-   *  not which JSON shape it happens to compile to — same split the
-   *  Phase 1 dispatch rule itself draws (first-token peek, not compiled
-   *  result). Mirrors (but does not reuse) `classifyConsoleStatement`'s
-   *  own regexes — scoped to UI-hint purposes only; the real dispatch
-   *  decision is still `_classify`. */
-  function _detectKindHint(/** @type {string} */ text) {
-    const t = String(text || '').trimStart();
-    if (/^(order|place_order)\s*\(/i.test(t)) return 'order';
-    if (/^bracket\s*\(/i.test(t)) return 'bracket';
-    if (/^(when|given|do)\b/i.test(t)) return 'agent';
-    if (/^alert\b/i.test(t)) return 'alert';
-    return null;
-  }
-
-  // Keeps the selector in sync with whatever the typed text's leading
-  // token actually is. Intentionally does nothing when the text doesn't
-  // start with one of these five keywords (mid-typing, a bare
-  // `token(...)`, or legacy/empty text) — the selector simply keeps
-  // showing whatever the operator last picked.
-  $effect(() => {
-    const k = _detectKindHint(value);
-    if (k) _kindHint = k;
-  });
+  // Sprint I Phase 1 follow-up's statement-kind hint selector (pills) was
+  // relocated to the page level (2026-10, `/automation/+page.svelte`) as
+  // a dropdown sharing the Console/Agents tab row — it only ever operated
+  // on `value` (bindable, already owned by the page) with zero other
+  // consumers in this component, so nothing else here changed.
 
   function _execModeForCompile() {
     return safeRead(executionMode) === 'live' ? 'live' : 'paper';
@@ -437,24 +383,10 @@
       </div>
     {/if}
 
-    <!-- "CLI" label + Guide button, same row, directly above the one
-         textbox (operator-requested relocation, 2026-10-11). The tab's
-         OWN nav-strip label stays "Console" (AutomationTabs.svelte) —
-         this is a separate, body-level heading. -->
-    <div class="console-tab-guide console-cli-label-row">
-      <span class="console-cli-label">CLI</span>
-      <a href="/automation/guide" title="CLI grammar guide" class="btn-secondary console-guide-btn">Guide: CLI grammar reference</a>
-    </div>
-
-    <!-- Statement-kind hint row (operator-requested, 2026-10-11) — see
-         the `_kindHint`/`_pickKind` doc above: a secondary, non-blocking
-         affordance, not a parsing mode-lock. -->
-    <div class="console-kind-row" role="group" aria-label="Statement kind">
-      {#each _KIND_OPTIONS as k (k)}
-        <button type="button" class="console-kind-pill" class:is-active={_kindHint === k}
-          onclick={() => _pickKind(k)}>{_KIND_LABELS[k]}</button>
-      {/each}
-    </div>
+    <!-- "CLI" label, Guide link, and the statement-kind selector all
+         relocated to the page level (2026-10) — they now share the
+         Console/Agents tab row as a decorated CardHeader (see
+         `/automation/+page.svelte`) instead of two separate rows here. -->
 
     <!-- Sprint I Phase 1 — the legacy positional orders.js parser, kept
          mounted `headless` (no visible input of its own) purely so its
@@ -551,65 +483,9 @@
     flex-direction: column;
     min-height: 0;
   }
-  .console-tab-guide {
-    flex-shrink: 0;
-    margin-bottom: 0.3rem;
-    font-size: var(--fs-xs);
-  }
-  /* Guide link — styled as a small pill button (operator request,
-     2026-10) rather than a bare underlined text link. `.btn-secondary`
-     supplies the shared navy/amber-hover chrome ((algo)/+layout.svelte's
-     `.algo-content .btn-secondary` override); this scoped class only
-     fixes up anchor-specific box rendering (inline-flex + no implicit
-     underline) — same reuse pattern as OrderCliTab's matching link. */
-  .console-guide-btn {
-    display: inline-flex;
-    align-items: center;
-    white-space: nowrap;
-    text-decoration: none;
-  }
-  /* "CLI" label + Guide button row (operator-requested relocation,
-     2026-10-11) — replaces the old standalone `.console-tab-guide` block
-     (class name KEPT for an existing Playwright selector,
-     console_guide_page.spec.js's `.console-tab-guide a`); the row's own
-     flex layout is new. */
-  .console-cli-label-row {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    flex-wrap: wrap;
-  }
-  .console-cli-label {
-    font-size: var(--fs-sm);
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--algo-muted);
-  }
-  /* Statement-kind hint pills (operator-requested, 2026-10-11) — see the
-     `_kindHint`/`_pickKind` doc in <script>. */
-  .console-kind-row {
-    display: flex;
-    gap: 0.3rem;
-    margin: 0.3rem 0 0.4rem;
-    flex-wrap: wrap;
-  }
-  .console-kind-pill {
-    font-size: var(--fs-xs);
-    font-weight: 600;
-    padding: 0.15rem 0.6rem;
-    border-radius: 999px;
-    border: 1px solid rgba(126, 151, 184, 0.30);
-    background: rgba(126, 151, 184, 0.08);
-    color: var(--algo-muted);
-    cursor: pointer;
-  }
-  .console-kind-pill:hover { border-color: rgba(126, 151, 184, 0.55); }
-  .console-kind-pill.is-active {
-    background: var(--algo-amber-bg);
-    border-color: var(--algo-amber-border-soft);
-    color: var(--algo-amber);
-  }
+  /* "CLI" label row, Guide link, and statement-kind pills all relocated
+     to the page level (2026-10) — see `/automation/+page.svelte`'s
+     CardHeader-wrapped tab row. */
   .console-agent-cli-wrap {
     flex-shrink: 0;
     margin-bottom: 0.4rem;

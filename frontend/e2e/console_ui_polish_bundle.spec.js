@@ -149,59 +149,33 @@ test.describe('Item 2 — Guide link renders as a button, not a bare link', () =
   });
 });
 
-test.describe('Item 3 — CardControls on the shared Console/Agents tab-strip header', () => {
+test.describe('Item 3 — Workspace header removed; Console/Agents tab row carries the kind-dropdown + Guide link instead (2026-10)', () => {
   test.beforeEach(async ({ page }) => {
     await loginAsAdmin(page);
   });
 
-  // Header button-group standardization, Part 8 (2026-10-13) — ConsoleTab's
-  // own separate CardHeader/`.console-card` wrapper was removed entirely;
-  // the ONE Fullscreen control now lives on the shared tab-strip header
-  // (`.aw-view`) at the page level, above AutomationTabs.
-  test('Automation workspace header renders with a wired Fullscreen control; ConsoleTab no longer has its own', async ({ page }) => {
+  // Operator request (2026-10): remove the "Workspace" CardHeader (title +
+  // Fullscreen) entirely; the Console/Agents tab strip becomes a decorated
+  // CardHeader row with no title and no CardControls cluster at all
+  // (`showControls={false}`) — the kind-dropdown + Guide link share that
+  // same row instead, console-only. Uses direct navigation (not a tab
+  // click) to select the active tab — a separate, pre-existing bug in the
+  // Console/Agents click-to-switch mechanism (unrelated to this change,
+  // reproduced against the unmodified file too) makes click-based
+  // switching unreliable; direct `?tab=` navigation is unaffected by it.
+  test('no "Workspace" title and no Fullscreen control anywhere on the tab-strip header', async ({ page }) => {
     await page.goto('/automation?tab=console', { waitUntil: 'domcontentloaded' });
 
-    // Negative assertion — the old per-tab wrapper must be gone, not just
-    // visually hidden.
     await expect(page.locator('.console-card')).toHaveCount(0);
+    await expect(page.locator('.ch-title', { hasText: 'Workspace' })).toHaveCount(0);
 
     const header = page.locator('.aw-view .card-header');
     await expect(header).toBeVisible({ timeout: TIMEOUT });
-    await expect(header.locator('.ch-title')).toContainText('Workspace');
-
-    const fsBtn = header.locator('button[aria-label*="fullscreen" i], button[title*="fullscreen" i]');
-    await expect(fsBtn).toBeVisible({ timeout: TIMEOUT });
-
-    await fsBtn.click();
-    await expect(page.locator('.aw-view.fs-card-on')).toBeVisible({ timeout: TIMEOUT });
-
-    // The either/or pair — DefaultSizeButton replaces FullscreenButton
-    // while fullscreen is active.
-    const restoreBtn = header.locator('button[aria-label*="restore" i], button[title*="default size" i], button[title*="restore" i]');
-    await expect(restoreBtn).toBeVisible({ timeout: TIMEOUT });
-
-    // Only ONE Fullscreen/DefaultSize control exists for this whole area.
-    await expect(page.locator('button[aria-label*="restore" i], button[title*="default size" i], button[title*="restore" i]')).toHaveCount(1);
-
-    // Still fullscreened, the actual Console content (the CLI textarea)
-    // is inside the fullscreened wrapper, not just the tab strip alone.
-    await expect(page.locator('.aw-view.fs-card-on .agent-cli-textarea')).toBeVisible({ timeout: TIMEOUT });
-
-    // Switching to the Agents tab and back keeps the SAME button working
-    // (no stuck/broken state across a tab switch while fullscreen). Scoped
-    // to `.aw-view` — the bottom ActivityLogSurface's own LogPanel also
-    // has an unrelated "Agents" tab (LogPanel.svelte's Agent-events tab).
-    const awView = page.locator('.aw-view');
-    await awView.getByRole('tab', { name: 'Agents' }).click();
-    await expect(page.locator('.aw-view.fs-card-on')).toBeVisible({ timeout: TIMEOUT });
-    await awView.getByRole('tab', { name: 'Console' }).click();
-    await expect(page.locator('.aw-view.fs-card-on .agent-cli-textarea')).toBeVisible({ timeout: TIMEOUT });
-
-    await restoreBtn.click();
+    await expect(header.locator('button[aria-label*="fullscreen" i], button[title*="fullscreen" i]')).toHaveCount(0);
     await expect(page.locator('.aw-view.fs-card-on')).toHaveCount(0);
   });
 
-  test('Automation workspace header omits Search/Download (no grid to act on at this level)', async ({ page }) => {
+  test('tab-strip header omits the whole CardControls cluster (no Search/Download either)', async ({ page }) => {
     await page.goto('/automation?tab=console', { waitUntil: 'domcontentloaded' });
 
     const header = page.locator('.aw-view .card-header');
@@ -209,6 +183,32 @@ test.describe('Item 3 — CardControls on the shared Console/Agents tab-strip he
 
     await expect(header.locator('button[title*="search" i], button[aria-label*="search" i]')).toHaveCount(0);
     await expect(header.locator('button[title*="download" i], button[aria-label*="download" i]')).toHaveCount(0);
+  });
+
+  test('Console/Agents tabs and the Guide link share the SAME CardHeader row', async ({ page }) => {
+    await page.goto('/automation?tab=console', { waitUntil: 'domcontentloaded' });
+
+    const tabsHeader = page.locator('.aw-tabs-wrap').locator('xpath=ancestor::div[contains(@class,"card-header")]');
+    const guideHeader = page.locator('a.console-guide-btn').locator('xpath=ancestor::div[contains(@class,"card-header")]');
+    await expect(tabsHeader).toHaveCount(1);
+    await expect(guideHeader).toHaveCount(1);
+    expect(await tabsHeader.evaluate((el) => el)).toBeTruthy();
+
+    const sameRow = await page.evaluate(() => {
+      const tabs = document.querySelector('.aw-tabs-wrap');
+      const guide = document.querySelector('a.console-guide-btn');
+      return !!(tabs && guide && tabs.closest('.card-header') === guide.closest('.card-header'));
+    });
+    expect(sameRow).toBe(true);
+  });
+
+  test('the kind-dropdown + Guide link are console-only — absent on the Agents tab', async ({ page }) => {
+    await page.goto('/automation?tab=agents', { waitUntil: 'domcontentloaded' });
+    await expect(page.locator('a.console-guide-btn')).toHaveCount(0);
+
+    // AutomationTabs itself still renders on the Agents tab — only the
+    // console-specific controls are gated.
+    await expect(page.locator('.aw-tabs-wrap')).toBeVisible({ timeout: TIMEOUT });
   });
 });
 

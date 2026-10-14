@@ -15,15 +15,11 @@
  *   on each card still works post-cleanup (regression guard — removing
  *   one button in a shared group must not break its siblings).
  *
- * Part 6 — the "Order Entry" card's title is a CUSTOM `left`-snippet
- *   span (`.oc-entry-label`), not CardHeader's plain `title` prop, so
- *   the CardHeader-sweep round 3 Part A `.ch-title` border-left fix
- *   never reached it. This spec confirms `.oc-entry-label` now has
- *   the same `border-left: 3px solid currentColor` + left-padding
- *   structure, while its own deliberate amber color (writing-surface /
- *   operator-action semantic, see the page's own "Card chrome" comment)
- *   is UNCHANGED — a regression guard that the color stays amber, not
- *   just "a border was added".
+ * Part 6 (SUPERSEDED 2026-10, operator request) — the "Order Entry"
+ *   card's whole header row (the `.oc-entry-label` title + icon + its
+ *   card-control trio) was removed entirely, not just restyled. This
+ *   spec now confirms no header/label renders at all, replacing the
+ *   earlier border-left/color structure checks.
  *
  * Run:
  *   cd frontend && npx playwright test e2e/orders_header_cleanup.spec.js \
@@ -32,14 +28,6 @@
 
 import { test, expect } from '@playwright/test';
 import { loginAsAdmin } from './fixtures/auth.js';
-
-/** Parses a computed `rgb(...)`/`rgba(...)` color string into
- *  {r,g,b,a} (a defaults to 1 for 3-channel `rgb(...)`). */
-function parseRGBA(str) {
-  const m = /rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*(?:,\s*([\d.]+)\s*)?\)/.exec(str || '');
-  if (!m) return null;
-  return { r: Number(m[1]), g: Number(m[2]), b: Number(m[3]), a: m[4] !== undefined ? Number(m[4]) : 1 };
-}
 
 async function gotoOrders(page) {
   await loginAsAdmin(page);
@@ -93,24 +81,18 @@ test.describe('Orders page — Part 1: Collapse removal, no dead wiring', () => 
     await expect(activityCard).not.toHaveClass(/is-collapsed/);
   });
 
-  test('Fullscreen button survives on Order Entry card after Collapse removal (regression guard)', async ({ page }) => {
+  test('Order Entry card has no header row at all (removed entirely, 2026-10 operator request)', async ({ page }) => {
     await gotoOrders(page);
 
     const entryCard = page.locator('.bucket-card-entry');
     await expect(entryCard).toBeVisible({ timeout: 20_000 });
 
-    // FullscreenButton (.fs-btn, "expand") and DefaultSizeButton
-    // (.default-btn, "restore") are an either/or pair — only one is
-    // mounted at a time depending on isFullscreen's current value.
-    const expandBtn = entryCard.locator('.fs-btn').first();
-    await expect(expandBtn).toBeVisible();
-    await expandBtn.click();
-    await expect(entryCard).toHaveClass(/fs-card-on/);
-
-    const restoreBtn = entryCard.locator('.default-btn').first();
-    await expect(restoreBtn).toBeVisible();
-    await restoreBtn.click();
-    await expect(entryCard).not.toHaveClass(/fs-card-on/);
+    // The whole header row — title, Fullscreen, Refresh — is gone, not
+    // just restyled. No `.card-header` at all inside this card anymore,
+    // so there is also no Fullscreen/Refresh control left to regression-
+    // guard here (removing them was the explicit ask).
+    await expect(entryCard.locator('.card-header')).toHaveCount(0);
+    await expect(entryCard.locator('.fs-btn, .default-btn')).toHaveCount(0);
   });
 
   test('Fullscreen button survives on Order Activity (OrderBook) card after Collapse removal (regression guard)', async ({ page }) => {
@@ -131,48 +113,19 @@ test.describe('Orders page — Part 1: Collapse removal, no dead wiring', () => 
   });
 });
 
-test.describe('Orders page — Part 6: Order Entry label border-left + padding, amber color unchanged', () => {
+test.describe('Orders page — Part 6 (superseded 2026-10): Order Entry label removed along with the whole header', () => {
   test.use({ viewport: { width: 1440, height: 900 } });
 
-  test('.oc-entry-label has border-left + left padding, text stays amber', async ({ page }) => {
+  test('no "ORDER ENTRY" label (.oc-entry-label) renders anywhere on the page', async ({ page }) => {
     await gotoOrders(page);
 
-    const label = page.locator('.oc-entry-label', { hasText: 'ORDER ENTRY' }).first();
-    await expect(label).toBeVisible({ timeout: 20_000 });
+    const entryCard = page.locator('.bucket-card-entry');
+    await expect(entryCard).toBeVisible({ timeout: 20_000 });
 
-    const info = await label.evaluate((el) => {
-      const s = getComputedStyle(el);
-      return {
-        color: s.color,
-        borderLeftColor: s.borderLeftColor,
-        borderLeftWidth: s.borderLeftWidth,
-        borderLeftStyle: s.borderLeftStyle,
-        paddingLeft: s.paddingLeft,
-      };
-    });
-
-    // Structure now matches .ch-title / .mp-bucket-label.
-    expect(info.borderLeftWidth, 'border-left must actually render (non-zero width)').toBe('3px');
-    expect(info.borderLeftStyle).toBe('solid');
-    const paddingPx = parseFloat(info.paddingLeft);
-    expect(paddingPx, `padding-left should be > 0, got "${info.paddingLeft}"`).toBeGreaterThan(0);
-
-    // Color is UNCHANGED — still the deliberate amber-400 @ 70% alpha
-    // (rgba(251, 191, 36, 0.7)), not the new neutral .ch-title default.
-    const textRgba = parseRGBA(info.color);
-    expect(textRgba, `label color should be rgb(), got "${info.color}"`).not.toBeNull();
-    expect(textRgba.r).toBeCloseTo(251, 0);
-    expect(textRgba.g).toBeCloseTo(191, 0);
-    expect(textRgba.b).toBeCloseTo(36, 0);
-    expect(textRgba.a).toBeCloseTo(0.7, 1);
-
-    // border-left: 3px solid currentColor — border tracks the SAME
-    // resolved color as the text (same invariant .ch-title's own test
-    // checks), not a second independent color.
-    const borderRgba = parseRGBA(info.borderLeftColor);
-    expect(borderRgba, `border-left-color should be rgb(), got "${info.borderLeftColor}"`).not.toBeNull();
-    expect(borderRgba.r).toBeCloseTo(textRgba.r, 0);
-    expect(borderRgba.g).toBeCloseTo(textRgba.g, 0);
-    expect(borderRgba.b).toBeCloseTo(textRgba.b, 0);
+    // The label this spec used to style-check no longer exists at all —
+    // the whole header row (title + icon + card-controls) was removed,
+    // not just restyled (2026-10, operator request).
+    await expect(page.locator('.oc-entry-label')).toHaveCount(0);
+    await expect(page.locator('text=ORDER ENTRY')).toHaveCount(0);
   });
 });

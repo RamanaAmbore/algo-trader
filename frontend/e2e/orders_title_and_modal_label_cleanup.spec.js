@@ -30,7 +30,7 @@ test.describe('Orders page title + SymbolPanel modal label cleanup', () => {
     await expect(title).toHaveText('Orders');
   });
 
-  test('SymbolPanel order-ticket modal: "Order entry" label has its icon and border-left decoration', async ({ page }) => {
+  test('SymbolPanel order-ticket modal: "Orders" label has its icon and border-left decoration', async ({ page }) => {
     // /orders hides the global Order trigger (PageHeaderActions
     // hideOrder={true} — the whole page is already an order-entry
     // surface via its own inline Order Entry card), so open the modal
@@ -48,7 +48,7 @@ test.describe('Orders page title + SymbolPanel modal label cleanup', () => {
 
     const label = modal.locator('.oes-modal-name').first();
     await expect(label).toBeVisible({ timeout: 5_000 });
-    await expect(label).toHaveText('Order entry');
+    await expect(label).toHaveText('Orders');
 
     // Icon restored (2026-10-13, same day) — matches the page's own
     // .oc-entry-icon, which was never removed.

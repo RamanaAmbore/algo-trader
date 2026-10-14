@@ -42,11 +42,35 @@ test.use({ projects: ['chromium-desktop'] });
 
 const TIMEOUT = 20_000;
 
+/** Bug fix (2026-10) — both `beforeEach` blocks in this file used
+ *  `page.waitForLoadState('networkidle')`, which never reliably resolves
+ *  on this page (the Automation page carries persistent background
+ *  polling/WebSocket activity, so "idle" network is rarely reached) —
+ *  confirmed by ALL tests in this file (including ones unrelated to any
+ *  2026-10 change) failing on the exact same `beforeEach` timeout.
+ *  Replaced with the proven wait pattern already used successfully by
+ *  the sibling `agent_cli_dropdown.spec.js`/`cli_dropdown_layout_shift
+ *  .spec.js` specs: wait for the textarea, then wait for the catalog's
+ *  own compile effect to have run at least once (proof via EITHER the
+ *  preview or an error message appearing), falling back to a bounded
+ *  timeout rather than blocking indefinitely either way. */
+async function goConsole(page) {
+  await page.goto('/automation?tab=console', { waitUntil: 'domcontentloaded' });
+  const textarea = page.locator('textarea.agent-cli-textarea');
+  await textarea.waitFor({ timeout: TIMEOUT });
+  const preview = page.locator('pre.agent-cli-preview-json');
+  const errors = page.locator('.agent-cli-errors');
+  await Promise.race([
+    preview.waitFor({ timeout: 5_000 }).catch(() => {}),
+    errors.waitFor({ timeout: 5_000 }).catch(() => {}),
+    page.waitForTimeout(5_000),
+  ]);
+}
+
 test.describe('Console — single CLI box (Sprint I Phase 1)', () => {
   test.beforeEach(async ({ page }) => {
     await loginAsAdmin(page);
-    await page.goto('/automation?tab=console');
-    await page.waitForLoadState('networkidle');
+    await goConsole(page);
   });
 
   test('exactly one visible CLI textbox — no second (legacy) input bar in the DOM', async ({ page }) => {
@@ -136,89 +160,83 @@ test.describe('Console — single CLI box (Sprint I Phase 1)', () => {
   });
 });
 
-test.describe('Console — CLI label, Guide button, kind selector (operator follow-up, 2026-10-11)', () => {
+test.describe('Console — Guide link + kind-selector dropdown, relocated to the tab row (2026-10)', () => {
   test.beforeEach(async ({ page }) => {
     await loginAsAdmin(page);
-    await page.goto('/automation?tab=console');
-    await page.waitForLoadState('networkidle');
+    await goConsole(page);
   });
 
-  test('a "CLI" label sits directly above the textbox, with the Guide button on the same row', async ({ page }) => {
-    const label = page.locator('.console-cli-label');
-    await expect(label).toBeVisible({ timeout: TIMEOUT });
-    await expect(label).toHaveText('CLI');
+  // The "CLI" label row + statement-kind PILLS row (both originally inside
+  // ConsoleTab.svelte) are retired entirely — relocated to a Select.svelte
+  // DROPDOWN sharing the page-level Console/Agents tab-strip CardHeader
+  // row (see `/automation/+page.svelte`). The "CLI" label itself was
+  // dropped (the dropdown's own aria-label + the tab strip already
+  // identify the area) — only the Guide link and the kind-selector
+  // survived the relocation.
 
-    const row = page.locator('.console-cli-label-row');
-    await expect(row).toBeVisible();
-    // Guide button lives in the SAME row as the label.
-    const guideInRow = row.locator('a.console-guide-btn');
-    await expect(guideInRow).toBeVisible();
-
-    // The row sits above the textbox (no element between them carries
-    // the label/guide — verified via bounding box ordering).
-    const rowBox = await row.boundingBox();
-    const cliBox = await page.locator('.agent-cli-textarea').boundingBox();
-    expect(rowBox).not.toBeNull();
-    expect(cliBox).not.toBeNull();
-    expect(rowBox.y).toBeLessThan(cliBox.y);
-  });
-
-  test('the Guide button no longer carries a trailing arrow', async ({ page }) => {
+  test('the Guide button lives on the Console/Agents tab row, above the textbox, no trailing arrow', async ({ page }) => {
     const guideBtn = page.locator('a.console-guide-btn');
     await expect(guideBtn).toBeVisible({ timeout: TIMEOUT });
     const text = (await guideBtn.textContent()) || '';
     expect(text).not.toMatch(/→|&rarr;/);
     expect(text.trim()).toBe('Guide: CLI grammar reference');
+
+    const guideBox = await guideBtn.boundingBox();
+    const cliBox = await page.locator('.agent-cli-textarea').boundingBox();
+    expect(guideBox).not.toBeNull();
+    expect(cliBox).not.toBeNull();
+    expect(guideBox.y).toBeLessThan(cliBox.y);
   });
 
   test('the Console NAV TAB itself is unaffected — still labeled "Console"', async ({ page }) => {
     // AutomationTabs.svelte's own nav-strip tab — a separate, unrelated
-    // label from the body-level "CLI" heading above.
+    // control from the relocated Guide link/dropdown sharing its row.
     await expect(page.getByRole('tab', { name: 'Console' })).toBeVisible({ timeout: TIMEOUT });
   });
 
-  test('kind selector defaults to "Order" and all four options are selectable', async ({ page }) => {
-    const row = page.locator('.console-kind-row');
-    await expect(row).toBeVisible({ timeout: TIMEOUT });
+  test('kind-selector dropdown defaults to "Order" and all four options are pickable', async ({ page }) => {
+    // Select.svelte's trigger text is "<label> ▾" (a trailing caret glyph,
+    // .rbq-select-caret) — `toContainText` rather than an exact `toHaveText`
+    // match, so the assertion isn't coupled to that decorative character.
+    const trigger = page.getByRole('button', { name: 'Statement kind' });
+    await expect(trigger).toBeVisible({ timeout: TIMEOUT });
+    await expect(trigger).toContainText('Order');
 
-    const orderPill = row.locator('.console-kind-pill', { hasText: 'Order' });
-    const bracketPill = row.locator('.console-kind-pill', { hasText: 'Bracket' });
-    const agentPill = row.locator('.console-kind-pill', { hasText: 'Agent' });
-    const alertPill = row.locator('.console-kind-pill', { hasText: 'Alert' });
-    for (const pill of [orderPill, bracketPill, agentPill, alertPill]) {
-      await expect(pill).toBeVisible();
-    }
-
-    // Default = Order.
-    await expect(orderPill).toHaveClass(/is-active/);
-
-    // Clicking Bracket (box empty) seeds a bracket(...) starter snippet
-    // and flips the active pill.
-    await bracketPill.click();
-    await expect(bracketPill).toHaveClass(/is-active/);
+    // Picking Bracket (box empty) seeds a bracket(...) starter snippet.
+    await trigger.click();
+    await page.getByRole('option', { name: 'Bracket' }).click();
+    await expect(trigger).toContainText('Bracket');
     await expect(page.locator('.agent-cli-textarea')).toHaveValue(/^bracket\(/);
 
-    // Clicking Agent likewise seeds a WHEN... starter.
+    // Picking Agent likewise seeds a WHEN... starter.
     await page.locator('.agent-cli-textarea').fill('');
-    await agentPill.click();
-    await expect(agentPill).toHaveClass(/is-active/);
+    await trigger.click();
+    await page.getByRole('option', { name: 'Agent' }).click();
+    await expect(trigger).toContainText('Agent');
     await expect(page.locator('.agent-cli-textarea')).toHaveValue(/^WHEN/);
 
-    // Clicking Alert likewise seeds a bare ALERT starter.
+    // Picking Alert likewise seeds a bare ALERT starter.
     await page.locator('.agent-cli-textarea').fill('');
-    await alertPill.click();
-    await expect(alertPill).toHaveClass(/is-active/);
+    await trigger.click();
+    await page.getByRole('option', { name: 'Alert' }).click();
+    await expect(trigger).toContainText('Alert');
     await expect(page.locator('.agent-cli-textarea')).toHaveValue(/^ALERT/);
   });
 
-  test('kind selector reflects auto-detection once typed text resolves to a kind, without overwriting it', async ({ page }) => {
+  test('kind-selector reflects auto-detection once typed text resolves to a kind, without overwriting it', async ({ page }) => {
     const cli = page.locator('.agent-cli-textarea');
     await cli.fill('bracket(applies_to=buy_any, tp_pct=30, sl_pct=-20) #name="X"');
     await page.waitForTimeout(500);
 
-    const bracketPill = page.locator('.console-kind-pill', { hasText: 'Bracket' });
-    await expect(bracketPill).toHaveClass(/is-active/, { timeout: TIMEOUT });
+    const trigger = page.getByRole('button', { name: 'Statement kind' });
+    await expect(trigger).toContainText('Bracket', { timeout: TIMEOUT });
     // Text is untouched — the selector only reflects, never rewrites.
     await expect(cli).toHaveValue('bracket(applies_to=buy_any, tp_pct=30, sl_pct=-20) #name="X"');
+  });
+
+  test('the kind-selector dropdown and Guide link are absent on the Agents tab', async ({ page }) => {
+    await page.goto('/automation?tab=agents', { waitUntil: 'domcontentloaded' });
+    await expect(page.locator('a.console-guide-btn')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Statement kind' })).toHaveCount(0);
   });
 });

@@ -57,7 +57,10 @@ test.describe('Console CLI guide page', () => {
 
   test('Guide link on the Console tab navigates to /automation/guide', async ({ page }) => {
     await page.goto('/automation?tab=console');
-    const guideLink = page.locator('.console-tab-guide a');
+    // Guide link relocated (2026-10) from its own row inside ConsoleTab to
+    // the page-level CardHeader sharing the Console/Agents tab row — same
+    // `.console-guide-btn` class, now found via `a.console-guide-btn`.
+    const guideLink = page.locator('a.console-guide-btn');
     await expect(guideLink).toBeVisible({ timeout: TIMEOUT });
     await guideLink.click();
     await expect(page).toHaveURL(/\/automation\/guide$/, { timeout: TIMEOUT });

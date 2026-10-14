@@ -2305,7 +2305,7 @@
               <rect x="3.2" y="2" width="9.6" height="12" rx="1.2" />
               <path d="M5.5 6h5M5.5 8.5h5M5.5 11h3" stroke-width="1.4" />
             </svg>
-            Order entry
+            Orders
           </span>
           {#if _wlToast}
             <span class="oes-wl-toast" class:ok={_wlToast?.ok} class:err={!_wlToast?.ok}>

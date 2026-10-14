@@ -16,6 +16,7 @@
   import ActivityLogSurface from '$lib/ActivityLogSurface.svelte';
   import AutomationTabs from '$lib/AutomationTabs.svelte';
   import CardHeader from '$lib/CardHeader.svelte';
+  import Select from '$lib/Select.svelte';
   import DisclosureChevron from '$lib/DisclosureChevron.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
   import { loadOrderTemplates, reloadOrderTemplates, orderTemplatesStore } from '$lib/data/templates';
@@ -62,14 +63,58 @@
   /** @type {{rowKind: 'cycle'|'event'|'template'|'bracket', ref: string|number, label: string} | null} */
   let _consoleEditTarget = $state(null);
 
-  // Header button-group standardization, Part 8 (2026-10-13) — the
-  // Console/Agents tab strip's shared Fullscreen state. Lives here (not
-  // inside ConsoleTab) because it must fullscreen the SAME wrapper
-  // regardless of which sub-view (Console or Agents) is currently
-  // active — ConsoleTab no longer owns its own `_fsConsole`/CardHeader;
-  // the Agents view never had a competing fullscreen mechanism of its
-  // own, so this is the one and only control for this area.
-  let _fsAutomationView = $state(false);
+  // Statement-kind hint selector (relocated from ConsoleTab.svelte, 2026-10
+  // "remove Workspace header" pass) — now a dropdown sharing the Console/
+  // Agents tab row instead of a separate pills row inside ConsoleTab. Pure
+  // UI-hint state driven only by `_consoleCliText`: NOT a hard mode-lock —
+  // the real dispatch decision always comes from ConsoleTab's own
+  // `classifyConsoleStatement(value)` on the typed text, never from this
+  // selector. It (a) reflects whatever kind the typed text already,
+  // confidently resolved to (synced below), and (b) when the box is EMPTY,
+  // picking an option seeds a short starter snippet for that kind — a
+  // convenience, never a destructive overwrite of real typed text.
+  const _KIND_OPTIONS = ['order', 'bracket', 'agent', 'alert'];
+  const _KIND_LABELS = { order: 'Order', bracket: 'Bracket', agent: 'Agent', alert: 'Alert' };
+  const _KIND_SEED = {
+    order: 'order(account="", symbol="", side="BUY", lots=1)',
+    bracket: 'bracket(applies_to=buy_any, tp_pct=30, sl_pct=-20) #name=""',
+    agent: 'WHEN pnl_pct@positions.total <= -5 ALERT telegram DO nop',
+    alert: 'ALERT telegram',
+  };
+  let _kindHint = $state('order');
+
+  function _pickKind(/** @type {string} */ k) {
+    _kindHint = k;
+    if (!_consoleCliText || !_consoleCliText.trim()) _consoleCliText = _KIND_SEED[k] || '';
+  }
+
+  /** Leading-TOKEN detector for the kind-selector sync below — deliberately
+   *  reads the raw text's own first word, NOT the compiled statement's own
+   *  `kind`. Those two disagree for the "Alert" bucket: a bare
+   *  `ALERT telegram` statement (no WHEN, no event-meta leading kwarg)
+   *  compiles to `kind:'agent'` (compileStatement's own dispatch — see
+   *  agents.js), the SAME compiled kind an ordinary `WHEN...ALERT...DO...`
+   *  statement gets, even though textually it's the "Alert" bucket the
+   *  operator picked. The selector's job is to reflect what the operator
+   *  TYPED, not which JSON shape it happens to compile to. */
+  function _detectKindHint(/** @type {string} */ text) {
+    const t = String(text || '').trimStart();
+    if (/^(order|place_order)\s*\(/i.test(t)) return 'order';
+    if (/^bracket\s*\(/i.test(t)) return 'bracket';
+    if (/^(when|given|do)\b/i.test(t)) return 'agent';
+    if (/^alert\b/i.test(t)) return 'alert';
+    return null;
+  }
+
+  // Keeps the selector in sync with whatever the typed text's leading
+  // token actually is. Intentionally does nothing when the text doesn't
+  // start with one of these five keywords (mid-typing, a bare
+  // `token(...)`, or legacy/empty text) — the selector simply keeps
+  // showing whatever the operator last picked.
+  $effect(() => {
+    const k = _detectKindHint(_consoleCliText);
+    if (k) _kindHint = k;
+  });
 
   // Sprint B (2026-10) — single reactive effect (not a one-shot onMount
   // read) on `page.url`: `?tab=` must keep working on a WITHIN-page
@@ -557,24 +602,31 @@
   </span>
 </div>
 
-<!-- Header button-group standardization, Part 8 (2026-10-13) — real
-     CardHeader for the Console/Agents tab strip, Fullscreen wired to
-     the page-level `_fsAutomationView` state above. Wraps BOTH the tab
-     strip AND whichever sub-view is active so the one Fullscreen
-     button correctly fullscreens the actual visible content, not just
-     the tab strip by itself, and keeps working across a tab switch
-     while fullscreen (same `.fs-card-on` global pattern every other
-     fullscreenable card in the app uses — see app.css). -->
-<section class="aw-view" class:fs-card-on={_fsAutomationView}>
-  <CardHeader
-    title="Workspace"
-    bind:isFullscreen={_fsAutomationView}
-    showSearch={false}
-    detectOverflow={false}
-  />
-  <div class="aw-view-body fs-content-fill" style="--fs-chrome-h: 2.6rem;">
-    <AutomationTabs value={activeTab} onChange={setActiveTab} />
-
+<!-- Workspace header removed entirely (2026-10, operator request) — no
+     title row, no Fullscreen button. The Console/Agents tab strip now
+     shares ONE decorated row with the statement-kind dropdown + Guide
+     link (relocated from ConsoleTab.svelte), console-only since neither
+     is meaningful on the Agents tab. `showControls={false}` suppresses
+     CardHeader's whole CardControls cluster (Fullscreen included) while
+     `left`/`right` snippets still render — see CardHeader.svelte. -->
+<section class="aw-view">
+  <CardHeader showControls={false}>
+    {#snippet left()}
+      <AutomationTabs value={activeTab} onChange={setActiveTab} />
+    {/snippet}
+    {#snippet right()}
+      {#if activeTab === 'console'}
+        <a href="/automation/guide" title="CLI grammar guide" class="btn-secondary console-guide-btn">Guide: CLI grammar reference</a>
+        <Select
+          value={_kindHint}
+          options={_KIND_OPTIONS.map((k) => ({ value: k, label: _KIND_LABELS[k] }))}
+          ariaLabel="Statement kind"
+          onValueChange={_pickKind}
+        />
+      {/if}
+    {/snippet}
+  </CardHeader>
+  <div class="aw-view-body">
     {#if activeTab === 'console'}
       <ConsoleTab bind:value={_consoleCliText} bind:editTarget={_consoleEditTarget} />
     {:else}
@@ -877,14 +929,10 @@
     .section-heading { padding-left: 0.7rem; }
   }
 
-  /* ── Console/Agents tab-strip card (Header button-group
-     standardization, Part 8, 2026-10-13) — wraps AutomationTabs +
-     whichever sub-view is active so the shared CardHeader's Fullscreen
-     control promotes the WHOLE area onto the global `.fs-card-on`
-     pattern (app.css), not just the tab strip. `.aw-view-body` also
-     carries `.fs-content-fill` (global, app.css) which only takes
-     effect while `.fs-card-on` is active on the ancestor — a plain
-     block in the normal (non-fullscreen) layout. */
+  /* ── Console/Agents tab-strip card — wraps the CardHeader (tabs +
+     kind-dropdown/Guide link) and whichever sub-view is active. No
+     Fullscreen control here (Workspace header removed, 2026-10 operator
+     request) — plain flex column, no `.fs-card-on`/`.fs-content-fill`. */
   .aw-view {
     display: flex;
     flex-direction: column;
@@ -893,6 +941,19 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
+  }
+  /* Guide link — styled as a small pill button (operator request,
+     2026-10), relocated here from ConsoleTab.svelte alongside the
+     statement-kind dropdown it now shares a row with. `.btn-secondary`
+     supplies the shared navy/amber-hover chrome ((algo)/+layout.svelte's
+     `.algo-content .btn-secondary` override); this scoped class only
+     fixes up anchor-specific box rendering (inline-flex + no implicit
+     underline). */
+  .console-guide-btn {
+    display: inline-flex;
+    align-items: center;
+    white-space: nowrap;
+    text-decoration: none;
   }
   /* ── Agent group grid — uses canonical .page-grid for layout ───────
      Overrides auto-fill with a fixed 2-column layout on desktop so each

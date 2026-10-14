@@ -157,8 +157,6 @@
     _loadOrdersTimer = setTimeout(loadOrders, 250);
   }
 
-  let _fsEntry     = $state(false);
-  let _entryRefresh = $state(0);
   let _fsActivity  = $state(false);
 
   // Account dropdown lives in the Activity card header so it's
@@ -355,60 +353,16 @@
   </div>
 {/if}
 
-<!-- Order Entry card — bucket-card chrome re-added per operator
-     request. Has its own [Collapse · DefaultSize · Fullscreen] trio
-     on the right. Tabs strip stays in the header alongside the
-     section label + Symbol + Account picker. -->
-<!-- Operator: "keep the bucket cards. the outer container ascent,
-     borders, heading should be in sync with the current order entry
-     card container in orders page". bucket-card-entry wrapper (amber
-     left accent + navy gradient + "Order Entry" label) restored —
-     just the INNER content (tabs / body / common-actions) comes
-     from SymbolPanel and matches the modal's rendering exactly.
-     `headerless` suppresses SymbolPanel's own header chip so the
-     bucket-header's section label isn't duplicated. -->
-<section class="bucket-card bucket-card-entry mt-1"
-  class:fs-card-on={_fsEntry}>
-  <!-- Operator: "make sure all the elements from order entry panel
-       in orders modal should be present in order entry panel in
-       orders page". Bucket-header now carries only the section
-       label + card-control trio — SymbolPanel below renders its
-       own internal picker row (Account · Type · Symbol · Exchange)
-       + tab strip the same way the modal does. -->
-  <!-- Operator: "the current orders row in order entry panel needs
-       to be removed. In the header at ORDER ENTRY on the left
-       side of the panel where full screen icon is present in the
-       row". Bucket-header carries plain "ORDER ENTRY" label on
-       the left (no chip / decoration) + card-control trio on the
-       right. SymbolPanel below renders with `headerless` so its
-       OWN internal header strip (the duplicate "ORDER ENTRY" chip
-       + close button) is suppressed — operator wanted just one
-       row, not two stacked. -->
-  <CardHeader
-    bind:isFullscreen={_fsEntry}
-    label="Order Entry"
-    showSearch={false}
-    detectOverflow={false}
-    onRefresh={() => _entryRefresh++}
-  >
-    {#snippet left()}
-      <span class="oc-entry-label algo-label-decor">
-        <svg class="oc-entry-icon" width="13" height="13" viewBox="0 0 16 16"
-             fill="none" stroke="currentColor" stroke-width="1.5"
-             stroke-linecap="round" aria-hidden="true">
-          <rect x="3.2" y="2" width="9.6" height="12" rx="1.2" />
-          <path d="M5.5 6h5M5.5 8.5h5M5.5 11h3" stroke-width="1.4" />
-        </svg>
-        ORDER ENTRY
-      </span>
-    {/snippet}
-  </CardHeader>
-  <div class="card-body fs-content-fill" style="--fs-chrome-h: 3rem;">
-    <!-- `headerless` re-added: SymbolPanel's internal header strip
-         (title chip + close X) was the "current orders row" the
-         operator asked to remove. The picker row (Account · Type ·
-         Symbol · Exchange) still renders — that gate is
-         `!headerless` standalone after the earlier change. -->
+<!-- Order Entry header row removed entirely (2026-10, operator request)
+     — no title text, no card-control trio (Fullscreen/Refresh included).
+     SymbolPanel below still renders `headerless` (its own internal
+     header strip stays suppressed) so there is now no header row at
+     all above the picker row / tab strip. This also removes the only
+     manual "force refresh" and "fullscreen" triggers this card had —
+     accepted tradeoff, SymbolPanel still refreshes on its own normal
+     polling cadence. -->
+<section class="bucket-card bucket-card-entry mt-1">
+  <div class="card-body">
     <SymbolPanel
       inline
       headerless
@@ -417,7 +371,6 @@
       triggerSubmit={_triggerSubmit}
       triggerBasket={_triggerBasket}
       triggerClearBasket={_triggerClear}
-      triggerRefresh={_entryRefresh}
       bind:chase={_pageChase}
       bind:chaseAgg={_pageChaseAgg}
       bind:basketCount={_pageBasketCount}
@@ -695,48 +648,9 @@
      SymbolPanel's shared .oes-common-actions block so both surfaces
      (modal + /orders) read from one component. ~80 lines dropped. */
 
-  /* "ORDER ENTRY" label — matches the page's `.mp-section-label`
-     convention used by Chase + Activity cards (0.6rem, weight 700,
-     amber-70%, 0.08em letter-spacing — see OrderBook.svelte's
-     `.ob-sc-l` stat-chip label, used by this same page's own CHASE
-     tile, plus OptionChainTab's `.oct-label` and PnlAnalysis's
-     `.section-head`, all sharing this 0.6rem/700/0.08em/uppercase
-     in-body section-label family). border-left + left padding added
-     2026-10-13 (header button-group standardization, Part 6) to match
-     `.ch-title`/MarketPulse's `.mp-bucket-label` structural pattern —
-     this custom `left`-snippet span bypasses CardHeader's own
-     `.ch-title` CSS entirely, so it never picked up that fix. Amber
-     color is a deliberate, unrelated choice (see "Card chrome" comment
-     above: Order Entry → amber-400, writing surface / operator action)
-     and stays as-is — only the structure changed.
-     letter-spacing converged to 0.04em (2026-10 CardHeader/grid
-     consistency pass, Part C) — a real tradeoff, not a typo fix: 0.08em
-     DOES have genuine precedent elsewhere (the in-body section-label
-     family cited above), but within the narrower, structurally-identical
-     sibling group this Part C pass is standardizing — the three
-     CardHeader-TITLE-replacement labels (this one, MarketPulse's
-     `.mp-bucket-label`, SymbolPanel's `.oes-modal-name`), which all sit
-     in CardHeader's own title slot via a custom `left` snippet — the
-     other two already use 0.04em (matching `.ch-title`'s own default),
-     so this one was the odd one out in ITS direct comparison group.
-     Converged here for parity within that group; if a future pass wants
-     parity with the broader in-body section-label family instead, this
-     is the one site where that tradeoff was made explicitly. */
-  .oc-entry-label {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.3rem;
-    font-family: var(--font-numeric);
-    font-size: var(--fs-sm);
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    color: rgba(251, 191, 36, 0.7);
-    /* border-left + padding-left moved to the shared `.algo-label-decor`
-       class (app.css, 2026-10-13 reusability sweep Part A). */
-    flex-shrink: 0;
-  }
-  .oc-entry-icon { color: currentColor; flex-shrink: 0; width: 11px; height: 11px; }
+  /* "ORDER ENTRY" label (.oc-entry-label/.oc-entry-icon) removed with
+     the header row itself (2026-10, operator request — the whole
+     Order Entry CardHeader is gone, not just restyled). */
   /* Exchange filter strip + per-row Modify/Cancel/Reconcile buttons
      retired — the Activity card now mounts LogPanel which carries its
      own filter chips + action buttons via `.lp-oc-actions`. */

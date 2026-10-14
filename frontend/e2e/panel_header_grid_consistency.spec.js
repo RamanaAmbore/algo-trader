@@ -397,26 +397,18 @@ test.describe('Part D: Label color regression guard', () => {
     }
   });
 
-  test('Orders page Order-Entry label element exists (color preserved)', async ({ page }) => {
+  test('Orders page Order-Entry label/header no longer exists (removed entirely, 2026-10 operator request)', async ({ page }) => {
     await loginAsAdmin(page);
     await page.goto('/orders', { waitUntil: 'domcontentloaded' });
 
-    const labelExists = await page.evaluate(() => {
-      // Look for the Order-Entry label
-      const label = document.querySelector('.oc-entry-label');
-      if (!label) return false;
-      const computed = window.getComputedStyle(label);
-      return {
-        text: (label.textContent || '').trim(),
-        color: computed.color,
-        isVisible: label.offsetParent !== null,
-      };
-    });
-
-    if (labelExists && labelExists.isVisible) {
-      // Label found and visible, verify it has a color
-      expect(labelExists.color).toMatch(/rgb(a)?\(/);
-    }
+    // Superseded this spec's earlier "if present, check its color" probe
+    // — the whole Order Entry header row (label + icon + card-controls)
+    // was removed entirely, not just restyled, so this is now a real,
+    // meaningful negative assertion rather than a silently-vacuous one.
+    const labelCount = await page.locator('.oc-entry-label').count();
+    expect(labelCount).toBe(0);
+    const headerCount = await page.locator('.bucket-card-entry .card-header').count();
+    expect(headerCount).toBe(0);
   });
 });
 

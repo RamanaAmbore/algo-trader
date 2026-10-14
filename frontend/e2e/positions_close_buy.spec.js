@@ -180,8 +180,8 @@ test.describe('close-buy: modal opens with correct payload (desktop)', () => {
     // 6. Reuse: modal is SymbolPanel (canonical) — not a bespoke dialog
     const oesModal = page.locator('.oes-modal');
     await expect(oesModal).toBeVisible();
-    // SymbolPanel renders an "Order entry" heading
-    await expect(page.locator('.oes-modal-name')).toContainText('Order entry');
+    // SymbolPanel renders an "Orders" heading
+    await expect(page.locator('.oes-modal-name')).toContainText('Orders');
   });
 });
 
