@@ -3481,6 +3481,94 @@ describe('Sprint [newline-separator] — a bare newline is an alternative to ";"
   });
 });
 
+describe('Sprint [comma-separator] — a bare "," is a full synonym for ";"/newline between clause items', () => {
+  it('comma replaces ";" between GIVEN items — the originally-reported case', () => {
+    // `debug(...)` only ever takes one bare label/token-reference argument
+    // (unrelated, pre-existing restriction — not an arithmetic expression),
+    // so this binds the sum to its own label first, same as the operator's
+    // own original statement would need to in order to be valid at all.
+    const r = compile('GIVEN a1 = 1, a2 = 1, total = a1 + a2 WHEN always ALERT telegram DO debug(total)');
+    expect(r.ok).toBe(true);
+    // `a1`/`a2` are PRIMITIVE "value" bindings (a bare number literal) —
+    // these resolve/inline entirely at compile time and never get their
+    // own `given[]` entry (same as the pre-existing `GIVEN x = "ping"`
+    // case above); only `total` is an "expr" binding (needs live
+    // per-tick evaluation) and appears here, with the comma-separated
+    // `a1`/`a2` already correctly resolved into its verbatim source text.
+    expect(r.agent.given).toEqual([{ name: 'total', expr: 'a1 + a2' }]);
+  });
+
+  it('comma replaces ";" between ALERT items (a label assignment followed by a new calls item)', () => {
+    const r = compile('WHEN always ALERT a = 1, telegram DO debug(a)');
+    expect(r.ok).toBe(true);
+    expect(r.agent.events).toEqual([{ channel: 'telegram', enabled: true }]);
+  });
+
+  it('comma replaces ";" between DO items (a label assignment followed by a new calls item)', () => {
+    const r = compile('WHEN always ALERT telegram DO a = "x", emit_log(message=a)');
+    expect(r.ok).toBe(true);
+    expect(r.agent.actions).toEqual([{ type: 'emit_log', params: { message: 'x' } }]);
+  });
+
+  it('a comma followed by a label assignment hands off to the OUTER clause-item loop, not absorbed as "another call" (mirrors the newline-separator case)', () => {
+    // `telegram, msg_txt = "late"` must NOT be swallowed as "telegram,
+    // msg_txt" (an attempt to parse `msg_txt` as another bare call name)
+    // — the NAME-then-EQ lookahead exclusion in parseCallList hands this
+    // off to the OUTER clause-item loop, which now accepts a bare comma
+    // as a ";" the same way it already accepts a bare newline.
+    const r = compile('WHEN always ALERT telegram, msg_txt = "late" DO emit_log(message=msg_txt)');
+    expect(r.ok).toBe(true);
+    expect(r.agent.events).toEqual([{ channel: 'telegram', enabled: true }]);
+    expect(r.agent.actions).toEqual([{ type: 'emit_log', params: { message: 'late' } }]);
+  });
+
+  it('an assignment followed by comma then a calls item works in EITHER order relative to the calls item', () => {
+    const viaAssignFirst = compile('WHEN always ALERT a = 1, telegram DO debug(a)');
+    const viaCallsFirst = compile('WHEN always ALERT telegram, a = 1 DO debug(a)');
+    expect(viaAssignFirst.ok).toBe(true);
+    expect(viaCallsFirst.ok).toBe(true);
+    expect(viaAssignFirst.agent.events).toEqual(viaCallsFirst.agent.events);
+  });
+
+  it('pre-existing multi-channel comma sugar (ALERT telegram, email) is unaffected', () => {
+    const r = compile('WHEN always ALERT telegram, email DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.events).toEqual([
+      { channel: 'telegram', enabled: true },
+      { channel: 'email', enabled: true },
+    ]);
+  });
+
+  it('pre-existing msg= comma sugar (ALERT msg="x", telegram) is unaffected', () => {
+    const r = compile('WHEN always ALERT msg="x", telegram DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.events).toEqual([{ channel: 'telegram', enabled: true, message: 'x' }]);
+  });
+
+  it('a dangling comma with nothing legal after it still produces a clear parse error, not a silent swallow', () => {
+    const r = compile('GIVEN a1 = 1,  WHEN always ALERT telegram DO nop');
+    expect(r.ok).toBe(false);
+  });
+
+  it('the full Part 4 CLI placeholder example also compiles when every ";"/newline separator is replaced with ","', () => {
+    const r = compile(
+      'GIVEN p = pnl@positions.total, msg_txt = "Loss: " + p '
+      + 'WHEN p <= -50000 '
+      + 'ALERT msg = msg_txt, telegram '
+      + 'DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)'
+    );
+    expect(r.ok).toBe(true);
+    expect(r.agent.given).toEqual([
+      { name: 'p', expr: 'pnl@positions.total' },
+      { name: 'msg_txt', parts: ['Loss: ', { '$given': 'p' }] },
+    ]);
+    expect(r.agent.events).toEqual([{ channel: 'telegram', enabled: true, message: { '$given': 'msg_txt' } }]);
+    expect(r.agent.actions).toEqual([
+      { type: 'order', params: { account: 'ZG0790', symbol: 'NIFTY25JULFUT', side: 'SELL', qty: 75 } },
+    ]);
+  });
+});
+
 describe('Sprint [GIVEN-expr] — operator-expression GIVEN bindings', () => {
   it('a pure alias (bare metric@scope, no operator) still classifies/compiles EXACTLY as today — no "given" key at all', () => {
     const viaLabel = compile('GIVEN p = pnl@positions.total WHEN p <= -50000 ALERT telegram DO nop');

@@ -2164,6 +2164,26 @@ function parseCallList(state, { allowNewline = false } = {}) {
   const calls = [parseCall(state)];
   while (true) {
     if (_peek(state).type === 'COMMA') {
+      // Sprint [comma-separator] — a comma followed by `NAME "="` is NOT
+      // another call in THIS list; it's a new assignment item, which
+      // belongs to the OUTER `parseItemListClause` loop (now that it
+      // also accepts a bare comma as an item separator — see that
+      // function). Mirrors the newline path's existing
+      // `_looksLikeNewCallStartAfterNewline` exclusion below, which
+      // already special-cases this for the newline-separator case; the
+      // comma path never had the equivalent guard, so e.g.
+      // `ALERT telegram, a2=1` used to misparse `a2` as a second (bogus)
+      // call and choke on the leftover "=". A call's own `(...)` args
+      // are resolved entirely at LEX time (never re-tokenized as a
+      // standalone EQ in this stream), so this can only ever match a
+      // bare, parenless name immediately followed by a real top-level
+      // "=" — i.e. exactly the "this is actually an assignment" case,
+      // never a legitimate call's own syntax.
+      const nameTok = state.tokens[state.pos + 1];
+      const afterName = state.tokens[state.pos + 2];
+      const looksLikeNewAssignment = nameTok && nameTok.type === 'NAME' && !nameTok.reserved
+        && afterName && afterName.type === 'EQ';
+      if (looksLikeNewAssignment) break; // leave the comma for the outer loop
       _advance(state);
       calls.push(parseCall(state));
       continue;
@@ -2542,9 +2562,20 @@ function parseOneClauseItem(state, { allowMsgDefault }) {
         const calls = parseCallList(state, { allowNewline: true });
         return { type: 'msgDefaultCalls', msgNode: rhs.node, calls };
       }
-      if (after.type === 'COMMA') {
-        throw new _ParseError(`expected ";" after a label assignment, not "," (a comma only joins calls, never an assignment)`, after);
-      }
+      // Sprint [comma-separator] — a trailing "," here (not the msg=
+      // sugar above, which already consumed its own comma and returned)
+      // is left UNCONSUMED, exactly like every other terminator (";",
+      // newline, EOF, next keyword) — `_isClauseItemTerminator` already
+      // treats COMMA as ending the RHS parse, so by construction a comma
+      // reaching this point always sits at a genuine item boundary.
+      // `parseItemListClause`'s own loop now accepts a bare COMMA as a
+      // synonym for ";" (same unconditional-consume behavior), so this
+      // used to be a hard parse error ("a comma only joins calls, never
+      // an assignment") purely because that outer acceptance didn't
+      // exist yet — comma is otherwise the separator for everything else
+      // in this grammar (call args, enum/list literals, multi-channel
+      // ALERT), and `GIVEN a1=1, a2=1` is now accepted the same way
+      // `GIVEN a1=1; a2=1` always was.
       _registerBinding(state, labelTok, rhs.kind, rhs.node, rhsText);
       return { type: 'assign', label: labelTok.value };
     }
@@ -2576,8 +2607,18 @@ function parseItemListClause(state, { allowMsgDefault = false, allowNop = true }
   // `_looksLikeNewListItemStart`. A literal `;` still always demands a
   // following item (unchanged below); only its ABSENCE, replaced by a
   // bare newline, is newly accepted.
+  //
+  // Sprint [comma-separator] — a literal `,` is ALSO accepted here, same
+  // unconditional-consume treatment as `;` (no lookahead gate needed: by
+  // the time a comma reaches this loop, `parseOneClauseItem`/the RHS
+  // parser already guarantee it sits at a genuine item boundary, and if
+  // nothing legal follows, the recursive `parseOneClauseItem` call below
+  // fails with its own clear error, exactly as `;` already does today).
+  // Comma is the separator for everything else in this grammar (call
+  // args, enum/list literals, multi-channel ALERT) — this closes the one
+  // place it wasn't.
   while (true) {
-    if (_peek(state).type === 'SEMI') {
+    if (_peek(state).type === 'SEMI' || _peek(state).type === 'COMMA') {
       _advance(state);
       items.push(parseOneClauseItem(state, { allowMsgDefault: false }));
       continue;
@@ -8531,15 +8572,21 @@ function _givenRhsCandidates(catalog, text, boundaryPos) {
 function _bareNameCandidates(clauseKind, catalog, contextTok, text, boundaryPos) {
   const lastWord = (contextTok && contextTok.type === 'NAME' && contextTok.reserved)
     ? String(contextTok.value).toLowerCase() : null;
-  const lastIsSemi = !!(contextTok && contextTok.type === 'SEMI');
+  // Sprint [comma-separator] — a bare "," is now a full synonym for ";"
+  // between clause items (see `parseItemListClause`), so this item-head
+  // detection must recognize it too, not just the literal ";" — without
+  // this, typing `GIVEN a1=1, ` would wrongly offer bare metric names
+  // (not a legal top-level GIVEN item) instead of restricting to `debug`.
+  const lastIsItemSeparator = !!(contextTok && (contextTok.type === 'SEMI' || contextTok.type === 'COMMA'));
 
   // GIVEN's own item-head position (right after "GIVEN" itself, or after
-  // a ";" separating GIVEN items, with no "=" typed yet) — `parseAgentStmt`
-  // restricts GIVEN's OWN item list to label assignments and `debug(...)`
-  // ONLY ("GIVEN only accepts label assignments and debug(...)" — a bare
-  // metric call is NOT a valid GIVEN item on its own, only as the RHS of
-  // an assignment, which is `_givenRhsCandidates`'s job, not this one).
-  if (clauseKind === 'given' && (lastWord === 'given' || lastIsSemi)) {
+  // a ";"/"," separating GIVEN items, with no "=" typed yet) —
+  // `parseAgentStmt` restricts GIVEN's OWN item list to label assignments
+  // and `debug(...)` ONLY ("GIVEN only accepts label assignments and
+  // debug(...)" — a bare metric call is NOT a valid GIVEN item on its
+  // own, only as the RHS of an assignment, which is
+  // `_givenRhsCandidates`'s job, not this one).
+  if (clauseKind === 'given' && (lastWord === 'given' || lastIsItemSeparator)) {
     return { tokens: ['debug'], descByToken: new Map([['debug', 'Emit a debug log line for a bound label or matched-row column — debug(x).']]) };
   }
 

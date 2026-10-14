@@ -552,6 +552,29 @@ describe('suggestAgentCliAt() — Sprint H item 7: GIVEN suggestable, and its ow
   });
 });
 
+describe('suggestAgentCliAt() — Sprint [comma-separator]: live-typing matches the grammar\'s own comma acceptance', () => {
+  it('right after a "," ending a GIVEN assignment, suggests ONLY debug (GIVEN item-head restriction) — identical to ";"/newline, not a bare metric list', () => {
+    // Regression guard for a real bug this comma-separator sprint
+    // introduced and then fixed: `_bareNameCandidates`'s GIVEN item-head
+    // detection originally checked only for a literal SEMI token, so
+    // right after the NEWLY-accepted comma it fell through to the
+    // broader metric/scope-root candidate set — offering suggestions
+    // that would compile to an INVALID GIVEN item if picked (a bare
+    // metric is not a legal top-level GIVEN item). Fixed by widening
+    // that same detection to treat COMMA identically to SEMI.
+    const viaComma = suggest('GIVEN a1 = 1, ');
+    const viaSemi = suggest('GIVEN a1 = 1; ');
+    expect(viaComma.suggestions).toEqual(['debug']);
+    expect(viaComma.suggestions).toEqual(viaSemi.suggestions);
+  });
+
+  it('right after a "," ending an ALERT assignment, suggests fresh channel/action candidates (not just more call params)', () => {
+    const r = suggest('WHEN always ALERT a = 1, ');
+    expect(r.kind).toBe('token');
+    expect(r.suggestions).toEqual(expect.arrayContaining(['telegram']));
+  });
+});
+
 describe('suggestAgentCliAt() — Sprint H item 8: bound labels suggested wherever a value/condition is valid', () => {
   it('a CONDITION-kind label is suggested as a whole bare WHEN leaf', () => {
     const r = suggest('GIVEN x = pnl@positions.total <= -5 WHEN ');
