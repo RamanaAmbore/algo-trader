@@ -2413,9 +2413,14 @@
          (type filter + combo). Renders in EVERY mount where the tabs
          are visible (modal, inline /orders, even when headerless
          because /orders uses headerless to drop the title chip but
-         still wants the picker). -->
-    <!-- Audit cleanup: dropped a `{#if true}` wrapper that did nothing
-         but trigger svelte-check warnings. The picker always renders. -->
+         still wants the picker) — EXCEPT the CLI tab (2026-10, operator:
+         "in orders cli remove account, exchange, symbol, console
+         details. just keep trader guide button for link and cli for
+         order entry") — CLI statements carry account/symbol as their
+         own text parameters (`order(account=..., symbol=..., ...)`),
+         so this picker is redundant there and was reading as leftover
+         chrome rather than a relevant control. -->
+    {#if _activeTab !== 'cli'}
       <div class="oes-picker">
         <!-- Operator: "order entry in modal and page don't have account
              drop to default from context or select while placing order."
@@ -2473,6 +2478,7 @@
           {@render pickerSuffix()}
         {/if}
       </div>
+    {/if}
 
     <!-- Shell-level template picker — visible from EVERY tab + the modal,
          regardless of whether the basket has legs staged. Operator:

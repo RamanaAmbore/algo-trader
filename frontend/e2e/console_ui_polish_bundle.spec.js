@@ -119,7 +119,9 @@ test.describe('Item 2 — Guide link renders as a button, not a bare link', () =
     await expect(guideLink).toHaveClass(/btn-secondary/);
     // Renamed "Guide: CLI grammar reference" -> "Trader Guide" (2026-10
     // operator request) — Orders' OWN CLI-tab Guide link (sibling test
-    // below, OrderCliTab.svelte) is unrelated and keeps its old text.
+    // below, OrderCliTab.svelte) got the same rename in a later pass
+    // (2026-10, "remove account, exchange, symbol, console details.
+    // just keep trader guide button for link").
     await expect(guideLink).toContainText('Trader Guide');
 
     // A real button-shaped affordance has padding + a border, not an
@@ -142,6 +144,7 @@ test.describe('Item 2 — Guide link renders as a button, not a bare link', () =
     const guideLink = page.locator('a.order-cli-guide-link');
     await expect(guideLink).toBeVisible({ timeout: TIMEOUT });
     await expect(guideLink).toHaveClass(/btn-secondary/);
+    await expect(guideLink).toContainText('Trader Guide');
 
     const style = await guideLink.evaluate((el) => {
       const cs = getComputedStyle(el);

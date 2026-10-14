@@ -147,10 +147,15 @@ test.describe('Orders CLI tab — order-only scope (Sprint B)', () => {
 
     const cli = page.locator('.agent-cli-textarea');
     await expect(cli).toBeVisible({ timeout: TIMEOUT });
-    // "orders only" scope sub-label must be visible so the operator
-    // never expects bracket/agent syntax to work here.
+    // "orders only" scope sub-label TEXT was removed (2026-10, operator:
+    // "remove account, exchange, symbol, console details. just keep
+    // trader guide button for link and cli for order entry") — the
+    // underlying scope ENFORCEMENT (compiler rejects non-order
+    // statements) is unchanged and covered by the sibling "rejects
+    // bracket/WHEN statements" test below. This row now holds only the
+    // Trader Guide link.
     await expect(page.locator('.order-cli-scope-label')).toBeVisible();
-    await expect(page.locator('.order-cli-scope-label')).toContainText(/orders only/i);
+    await expect(page.locator('a.order-cli-guide-link')).toContainText('Trader Guide');
 
     await cli.fill('order(account="ZG0790", symbol="RELIANCE", exchange="NSE", side="SELL", qty=1, price=100)');
 
@@ -270,7 +275,9 @@ test.describe('SymbolPanel order-ticket modal — restored CLI tab (Sprint B)', 
 
     const cli = modal.locator('.agent-cli-textarea');
     await expect(cli).toBeVisible({ timeout: TIMEOUT });
-    await expect(modal.locator('.order-cli-scope-label')).toContainText(/orders only/i);
+    // Scope sub-label TEXT removed (2026-10, operator request) — see
+    // the matching comment on the /orders-page test above.
+    await expect(modal.locator('a.order-cli-guide-link')).toContainText('Trader Guide');
 
     await cli.fill('order(account="ZG0790", symbol="RELIANCE", exchange="NSE", side="SELL", qty=1, price=100)');
 
