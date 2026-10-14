@@ -17,6 +17,12 @@
  * can never silently drift apart again, mirroring PerformancePage's own
  * inline-setProperty pattern.
  *
+ * 2026-10 update: the desktop/mobile numbers themselves changed again —
+ * 28/36 → 26/34 — as part of the app-wide grid-height unification onto
+ * the Derivatives Legs-grid-based `--grid-row-height` SSOT (app.css).
+ * The regression this file guards against (JS rowHeight and the CSS var
+ * silently drifting apart) is unchanged; only the target numbers moved.
+ *
  * This file replaces an earlier, weaker Playwright spec
  * (frontend/e2e/ag_grid_algo_row_centering.spec.js) that re-implemented
  * the fix's logic INLINE inside the test via page.evaluate() instead of
@@ -66,17 +72,17 @@ describe('mkBaseGridOpts / syncGridRowHeightVar — desktop (no window / innerWi
     vi.resetModules();
   });
 
-  it('mkBaseGridOpts sets rowHeight: 28 on desktop', async () => {
+  it('mkBaseGridOpts sets rowHeight: 26 on desktop', async () => {
     const { mkBaseGridOpts } = await import('$lib/data/algoGridUtils.js');
-    expect(mkBaseGridOpts().rowHeight).toBe(28);
+    expect(mkBaseGridOpts().rowHeight).toBe(26);
   });
 
-  it('syncGridRowHeightVar sets --ag-row-height to 28px on desktop, matching app.css .ag-theme-algo', async () => {
+  it('syncGridRowHeightVar sets --ag-row-height to 26px on desktop, matching app.css .ag-theme-algo', async () => {
     const { syncGridRowHeightVar } = await import('$lib/data/algoGridUtils.js');
     let stored = null;
     const fakeEl = /** @type {any} */ ({ style: { setProperty: (k, v) => { if (k === '--ag-row-height') stored = v; } } });
     syncGridRowHeightVar(fakeEl);
-    expect(stored).toBe('28px');
+    expect(stored).toBe('26px');
   });
 
   it('rowHeight and syncGridRowHeightVar never diverge — the actual regression class this fix closes', async () => {
@@ -94,16 +100,16 @@ describe('mkBaseGridOpts / syncGridRowHeightVar — mobile (window.innerWidth <=
     vi.resetModules();
   });
 
-  it('mkBaseGridOpts sets rowHeight: 36 on mobile', async () => {
+  it('mkBaseGridOpts sets rowHeight: 34 on mobile', async () => {
     const { mkBaseGridOpts } = await import('$lib/data/algoGridUtils.js');
-    expect(mkBaseGridOpts().rowHeight).toBe(36);
+    expect(mkBaseGridOpts().rowHeight).toBe(34);
   });
 
-  it('syncGridRowHeightVar sets --ag-row-height to 36px on mobile', async () => {
+  it('syncGridRowHeightVar sets --ag-row-height to 34px on mobile', async () => {
     const { syncGridRowHeightVar } = await import('$lib/data/algoGridUtils.js');
     let stored = null;
     const fakeEl = /** @type {any} */ ({ style: { setProperty: (k, v) => { if (k === '--ag-row-height') stored = v; } } });
     syncGridRowHeightVar(fakeEl);
-    expect(stored).toBe('36px');
+    expect(stored).toBe('34px');
   });
 });

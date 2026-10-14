@@ -122,7 +122,14 @@ test.describe('Part A: Grid-adjacency gap (double-border fix)', () => {
     expect(measurements.marginTopPx).toBeLessThan(15); // roughly 0.4rem (≈ 6-7px)
   });
 
-  test('Dashboard NavBreakdown card has margin-top gap (if present)', async ({ page }) => {
+  test('Dashboard NavBreakdown card has NO gap and NO own top border — CardHeader\'s bottom border is the single boundary line', async ({ page }) => {
+    // 2026-10 (operator: "overlap the panel header bottom border...so
+    // that it looks like a single border line") — supersedes this
+    // test's original "gap exists" assertion. The gap/double-border fix
+    // is no longer "add space between two borders" but "drop one of the
+    // two borders outright" (NavBreakdown.svelte's .nav-bd-wrap): no
+    // margin-top, no border-top, so CardHeader's own bottom border is
+    // the ONLY line at that seam.
     await loginAsAdmin(page);
     await page.goto('/admin/dashboard', { waitUntil: 'domcontentloaded' });
 
@@ -140,15 +147,16 @@ test.describe('Part A: Grid-adjacency gap (double-border fix)', () => {
       if (!navBdWrap) return { error: 'not found' };
 
       const computed = window.getComputedStyle(navBdWrap);
-      const marginTop = computed.marginTop;
-      const pixels = parseFloat(marginTop);
-
-      return { marginTopPx: pixels };
+      return {
+        marginTopPx: parseFloat(computed.marginTop),
+        borderTopWidth: computed.borderTopWidth,
+        borderTopStyle: computed.borderTopStyle,
+      };
     });
 
     if (!measurements.error) {
-      expect(measurements.marginTopPx).toBeGreaterThan(0);
-      expect(measurements.marginTopPx).toBeLessThan(15);
+      expect(measurements.marginTopPx).toBe(0);
+      expect(measurements.borderTopStyle).toBe('none');
     }
   });
 });

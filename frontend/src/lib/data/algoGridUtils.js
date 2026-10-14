@@ -109,8 +109,10 @@ export function mkDirCellText(opts = {}) {
  *   - defaultColDef: resizable, sortable, non-movable, no header menu
  *   - sortingOrder: ['asc', 'desc', null] — matches the historical dashboard
  *     _baseGridOpts so W/L grid column sorts don't regress
- *   - rowHeight: 28 (desktop) / 36 (mobile) — must match --ag-row-height CSS var.
- *     Callers MUST also set el.style.setProperty('--ag-row-height', `${rowH}px`) on
+ *   - rowHeight: 26 (desktop) / 34 (mobile) — must match --ag-row-height CSS var
+ *     (app.css `--grid-row-height`, the Derivatives Legs-grid-based SSOT,
+ *     2026-10). Callers MUST also set
+ *     el.style.setProperty('--ag-row-height', `${rowH}px`) on
  *     the grid container element to keep JS rowHeight and CSS centering var in sync.
  *   - getRowId: symbol → account → '' (for in-place rowData updates)
  *
@@ -127,7 +129,7 @@ export function mkBaseGridOpts(overrides = {}) {
       suppressHeaderMenuButton: true,
     },
     sortingOrder: /** @type {('asc'|'desc'|null)[]} */ (['asc', 'desc', null]),
-    rowHeight: _isMobile ? 36 : 28,
+    rowHeight: _isMobile ? 34 : 26,
     getRowId: ({ data }) => {
       if (!data) return '';
       if (data.symbol)  return String(data.symbol);
@@ -151,6 +153,6 @@ export function mkBaseGridOpts(overrides = {}) {
  * @param {HTMLElement} gridEl - The grid container element (passed to createGrid)
  */
 export function syncGridRowHeightVar(gridEl) {
-  const rowH = _isMobile ? 36 : 28;
+  const rowH = _isMobile ? 34 : 26;
   gridEl.style.setProperty('--ag-row-height', `${rowH}px`);
 }

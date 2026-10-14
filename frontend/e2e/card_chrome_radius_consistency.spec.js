@@ -56,13 +56,17 @@ test.describe('card chrome — border/radius/shadow converge on .bucket-card', (
     expect(bucketCard).toMatch(/0\.06\)/);
   });
 
-  test('.mp-bucket-wrap (MarketPulse) has no outer border (2026-10, explicit operator removal), keeps radius + shadow', () => {
+  test('.mp-bucket-wrap (MarketPulse) has no outer border (2026-10, explicit operator removal), 4px radius (synced to .algo-grid-chrome), keeps shadow', () => {
     // Outer border removed per explicit operator instruction — the card
     // chrome now relies on box-shadow + background contrast alone, same
-    // family as .algo-grid-chrome's border-less siblings. Still shares
-    // .bucket-card's radius + shadow pair, just not its border.
+    // family as .algo-grid-chrome's border-less siblings.
+    // Radius synced (2026-10, operator: "radius of pulse panels should
+    // be in sync with other panels") from 6px (.bucket-card family) to
+    // 4px (.algo-grid-chrome family, the Derivatives/ag-Grid-wrapper
+    // standard) — NavBreakdown/.nav-bd-wrap intentionally stays at 6px,
+    // out of scope (operator asked specifically about Pulse panels).
     expect(mpBucketWrap).toMatch(/border:\s*none/);
-    expect(mpBucketWrap).toMatch(/border-radius:\s*6px/);
+    expect(mpBucketWrap).toMatch(/border-radius:\s*4px/);
     expect(mpBucketWrap).toMatch(/0\.35\)/);
     expect(mpBucketWrap).toMatch(/0\.06\)/);
     // No stale raw-literal border left behind.

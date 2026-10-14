@@ -7152,7 +7152,16 @@
      being treated as "the same reference" — this switch also closes
      that gap, a small intentional size bump on Snapshot's header only. */
   .byund-headrow > span {
-    padding: 0.3rem 0.45rem;
+    padding: 0 0.45rem;
+    /* Height SSOT (2026-10) — height + matching line-height is the
+       standard single-line vertical-centering trick (kept instead of
+       flex so the existing `.num { text-align: right }` rule below
+       keeps working — flex items don't honor text-align the same way
+       block/inline content does). Pins to the same --grid-header-height
+       every other grid family now shares. */
+    height: var(--grid-header-height);
+    line-height: var(--grid-header-height);
+    box-sizing: border-box;
     background: var(--grid-header-bg);
     border-bottom: 1px solid var(--algo-amber-border-soft);
     font-size: var(--grid-header-font-size);
@@ -7169,7 +7178,12 @@
      see the vertical-divider rule just below, which fixes this grid to
      match.) */
   .byund-row > span {
-    padding: 0.32rem 0.45rem;
+    padding: 0 0.45rem;
+    /* Height SSOT (2026-10) — same height+line-height trick as the
+       header above, pinned to --grid-row-height (app.css). */
+    height: var(--grid-row-height);
+    line-height: var(--grid-row-height);
+    box-sizing: border-box;
     border-bottom: 1px solid rgba(126,151,184,0.10);
     color: var(--algo-slate);
     transition: background-color 0.1s;
@@ -7594,6 +7608,16 @@
     text-transform: uppercase;
     letter-spacing: var(--grid-header-letter-spacing);
     border-bottom: 1px solid var(--algo-amber-border-soft);  /* amber — matches History */
+    /* Height SSOT (2026-10, operator: "legs grid header height is
+       small, needs to be increased") — this table's own padding-
+       derived height (~15.6px measured) was the app-wide grid-height
+       reference's STARTING point, but was too cramped on its own
+       merits. min-height (not height — padding can still push taller
+       if a wrapped title ever needs it) pins it to the same
+       --grid-header-height every other grid family now shares,
+       instead of being whatever its padding happens to compute to. */
+    min-height: var(--grid-header-height);
+    box-sizing: border-box;
     /* Sticky header — operator scrolls data rows under it instead of
        the whole grid sliding up. Pinned to top of .cand-scroll (the
        overflow-y container); the card-bottom navy of the parent card
@@ -8341,6 +8365,18 @@
   }
   .cand-chg-sep-hdr {
     box-shadow: inset -1px 0 0 0 rgba(126,151,184,0.40);
+  }
+  /* Vertical header hairline (2026-10, operator: "legs grid header...
+     does not have vertical cell borders. that needs to be changed") —
+     .cand-row's data cells already carry this (CandidateLegRow.svelte's
+     `.cand-row > span:not(...)` rule), but the header row never got
+     the matching one, a structural gap rather than an intentional
+     omission. `.cand-chg-sep-hdr` excluded — it already carries its own
+     right-edge decoration (inset box-shadow, immediately above) and a
+     plain border-right here would double that line. `:last-child` (EV)
+     excluded to match ag-Grid's own `.ag-column-last` convention. */
+  .cand-headrow > span:not(.cand-chg-sep-hdr):not(:last-child) {
+    border-right: 1px solid var(--sep-color);
   }
   /* Strip cell-level green/red bg from totals — amber container is the signal. */
   .cand-row.cand-row-total .cand-pnl.cell-pos,

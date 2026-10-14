@@ -27,6 +27,7 @@
   import AlgoTabs from '$lib/AlgoTabs.svelte';
   import ModalShell from '$lib/ModalShell.svelte';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
+  import { mkBaseGridOpts, syncGridRowHeightVar } from '$lib/data/algoGridUtils.js';
   import { instrumentsCacheVersion } from '$lib/data/instruments';
   import { rootOfLabel, resolveVirtual } from '$lib/data/rootOf.js';
   import { displaySymbol } from '$lib/data/displaySymbol.js';
@@ -3779,7 +3780,7 @@
     // Only columnDefs / emptyMsg / pinnedBottom / extraOpts vary per bucket.
     // extraOpts is spread last so callers can override any default.
     function makeBucketGrid(el, columnDefs, emptyMsg, pinnedBottom = [], extraOpts = {}) {
-      return createGrid(el, {
+      const grid = createGrid(el, {
         theme: 'legacy',
         columnDefs,
         rowData: [],
@@ -3796,7 +3797,15 @@
         // outside this since they're rendered via pinnedBottomRowData
         // (not in the sortable body).
         postSortRows: postSortGroups,
-        rowHeight: 28,
+        // Mobile row-height bump (2026-10 fix) — was a hardcoded `28`,
+        // bypassing the shared mkBaseGridOpts()/syncGridRowHeightVar()
+        // helpers every other algo-palette grid uses, so Pulse never
+        // got the mobile touch-target bump (confirmed live: stayed 28px
+        // on mobile while NavBreakdown-based grids correctly bumped).
+        // mkBaseGridOpts().rowHeight alone is reused (not the whole
+        // object) so this factory's own defaultColDef/getRowId/etc.
+        // stay exactly as they were.
+        rowHeight: mkBaseGridOpts().rowHeight,
         // animateRows: false (2026-09 fix) — ag-Grid defaults this to true,
         // which applies a 0.4s CSS transform transition (app.css's imported
         // ag-grid.css: `.ag-row-animation .ag-row { transition: transform
@@ -3820,6 +3829,8 @@
         },
         ...extraOpts,
       });
+      syncGridRowHeightVar(el);
+      return grid;
     }
 
     // Left-column buckets (monitoring views — leftColDefs).
@@ -3897,8 +3908,9 @@
         defaultColDef: PULSE_DEFAULT_COL_DEF,
         sortingOrder: PULSE_SORTING_ORDER,
         domLayout: 'autoHeight',
-        rowHeight: 28,
+        rowHeight: mkBaseGridOpts().rowHeight,
       });
+      syncGridRowHeightVar(positionsSummaryEl);
       positionsSummaryReady = true;
     }
 
@@ -3913,8 +3925,9 @@
         defaultColDef: PULSE_DEFAULT_COL_DEF,
         sortingOrder: PULSE_SORTING_ORDER,
         domLayout: 'autoHeight',
-        rowHeight: 28,
+        rowHeight: mkBaseGridOpts().rowHeight,
       });
+      syncGridRowHeightVar(holdingsSummaryEl);
       holdingsSummaryReady = true;
     }
 
@@ -3929,8 +3942,9 @@
         defaultColDef: PULSE_DEFAULT_COL_DEF,
         sortingOrder: PULSE_SORTING_ORDER,
         domLayout: 'autoHeight',
-        rowHeight: 28,
+        rowHeight: mkBaseGridOpts().rowHeight,
       });
+      syncGridRowHeightVar(fundsEl);
       fundsReady = true;
     }
   }
@@ -4941,14 +4955,26 @@
      so it reads as a section-membership cue without competing with
      the direction tint on pos-long / pos-short rows. Colour scales
      stay (violet/sky/teal) since this is a per-ROW indicator, not
-     a per-section divider. */
-  :global(.ag-theme-algo .ag-row.mover-underlying .ag-cell:first-child) {
+     a per-section divider.
+     Fixed (2026-10, operator: "symbol right side vertical cell border
+     has gray shade after it") — `:first-child` targets the first cell
+     in DOM order, but Symbol is a PINNED column (rendered in ag-Grid's
+     own separate pinned-left DOM section), so `:first-child` actually
+     resolved to the first SCROLLABLE cell — the 5D/sparkline column —
+     landing the violet/sky/teal accent there instead of on Symbol,
+     immediately right of Symbol's own border. At 0.35 alpha against
+     the dark navy background it read as an unexplained gray smudge
+     rather than the intended colored section indicator. `.ag-column-
+     first` is ag-Grid's own class for the true first VISUAL column
+     (pinned or not), so it correctly resolves to Symbol regardless of
+     which DOM section it lives in. */
+  :global(.ag-theme-algo .ag-row.mover-underlying .ag-cell.ag-column-first) {
     box-shadow: inset 2px 0 0 rgba(192, 132, 252, 0.35);
   }
-  :global(.ag-theme-algo .ag-row.mover-midcap .ag-cell:first-child) {
+  :global(.ag-theme-algo .ag-row.mover-midcap .ag-cell.ag-column-first) {
     box-shadow: inset 2px 0 0 rgba(56, 189, 248, 0.35);
   }
-  :global(.ag-theme-algo .ag-row.mover-smallcap .ag-cell:first-child) {
+  :global(.ag-theme-algo .ag-row.mover-smallcap .ag-cell.ag-column-first) {
     box-shadow: inset 2px 0 0 rgba(94, 234, 212, 0.35);
   }
 
@@ -5113,7 +5139,14 @@
     flex-direction: column;
     min-width: 0;
     border: none;
-    border-radius: 6px;
+    /* Radius sync (2026-10, operator: "radius of pulse panels should be
+       in sync with other panels") — was 6px (.bucket-card family,
+       shared with NavBreakdown/.nav-bd-wrap); now matches
+       .algo-grid-chrome's 4px, the Derivatives/ag-Grid-wrapper family,
+       consistent with this pass's broader "Legs grid as the reference"
+       direction. NavBreakdown/.nav-bd-wrap intentionally left at 6px —
+       out of scope here (operator asked specifically about Pulse). */
+    border-radius: 4px;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35),
                 inset 0 1px 0 rgba(255, 255, 255, 0.06);
     background: var(--card-bg-elevated);

@@ -336,13 +336,36 @@
   --grid-header-font-size:      0.65rem;
   --grid-header-font-weight:    800;
   --grid-header-letter-spacing: 0.06em;
-  --grid-header-height:         30px;
+  /* Grid height SSOT (2026-10, operator: "I like derivatives legs grids
+     as the standard" — unified every grid family, real ag-Grid AND
+     hand-rolled, onto ONE pair of height tokens instead of each family
+     carrying its own number (ag-Grid was 28/30, Legs/Exp-close was
+     ~26/16, .algo-table was 24/28). Legs' own header (15.6px measured)
+     was too cramped on its own merits — grown to 20px here, still far
+     more compact than the old 30px ag-Grid header. Mobile gets its own
+     larger pair below (720px breakpoint, matching algoGridUtils.js's
+     own `_isMobile` JS threshold so CSS and JS never disagree about
+     which bucket a given viewport falls into). */
+  --grid-header-height:         20px;
+  --grid-row-height:            26px;
 }
 
 @media (max-width: 600px) {
   :root {
     --toolbar-h: 28px;
     --chart-toolbar-h: var(--toolbar-h);
+  }
+}
+
+/* Grid height SSOT — mobile bump. 720px matches algoGridUtils.js's
+   `_isMobile` (window.innerWidth <= 720) so the CSS-var-driven hand-
+   rolled grids and the JS-driven ag-Grid rowHeight option switch at
+   the same viewport width. Row grows more than header (touch target
+   for tapping/scrolling rows matters more than tapping a header). */
+@media (max-width: 720px) {
+  :root {
+    --grid-header-height: 24px;
+    --grid-row-height:    34px;
   }
 }
 
@@ -1428,7 +1451,7 @@
   --ag-border-color: rgba(255,255,255,0.08);
   --ag-font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   --ag-font-size: 0.72rem;
-  --ag-row-height: 28px;
+  --ag-row-height: var(--grid-row-height);
   --ag-header-height: var(--grid-header-height);
   --ag-wrapper-border-radius: 4px;
   --ag-input-background-color: #152033;
@@ -1586,19 +1609,18 @@
 }
 
 /* ─── Hand-rolled table SSOT — matches ag-theme-algo ─────────────────────── */
-/* Canonical "dense grid" row/padding values (documented, not extracted
-   into a shared token — 2026-09 consistency pass audit flagged this as a
-   literal-dedup candidate, but `.algo-table`'s 24px body row and
-   ag-theme-algo's 28px are genuinely two different numbers, and the
-   latter is also overwritten at runtime per grid instance via
-   `syncGridRowHeightVar()` (`$lib/data/algoGridUtils.js`, 28px desktop /
-   36px mobile) — extracting a single var here would either be wrong for
-   one of the two surfaces or fight the JS override. Reference values for
-   the next wave, verified current as of this pass:
-     ag-theme-algo:  --ag-row-height 28px, --ag-header-height 28px
-                      (desktop; 36px row on mobile via syncGridRowHeightVar)
-     .algo-table:    thead th height 28px, tbody td height 24px
-     Both:           cell padding `0 4px` */
+/* Canonical "dense grid" row/padding values. 2026-09 consistency-pass
+   audit originally kept `.algo-table`'s 24px body row and ag-theme-
+   algo's 28px as "genuinely two different numbers, not worth a shared
+   token." 2026-10: unified onto the single `--grid-row-height`/
+   `--grid-header-height` SSOT (app.css `:root`, driven by the
+   Derivatives Legs/Exp-close table standard) — every grid family now
+   sizes off the same two tokens, including their mobile bump at the
+   720px breakpoint. ag-Grid's `--ag-row-height` is still ALSO set
+   per-instance at runtime via `syncGridRowHeightVar()`
+   (`$lib/data/algoGridUtils.js`) — that JS value must stay numerically
+   in sync with these CSS vars (it supplies ag-Grid's internal
+   rowHeight option, which CSS alone can't drive). */
 .algo-table {
   width: 100%;
   border-collapse: collapse;
@@ -1611,7 +1633,7 @@
   font-weight: 700;
   color: var(--text-muted);
   padding: 0 4px;
-  height: 28px;
+  height: var(--grid-header-height);
   background: rgba(15,23,42,0.30);
   text-align: left;
   white-space: nowrap;
@@ -1619,7 +1641,7 @@
 }
 .algo-table tbody td {
   padding: 0 4px;
-  height: 24px;
+  height: var(--grid-row-height);
   vertical-align: middle;
   border-bottom: 1px solid var(--sep-color);
 }

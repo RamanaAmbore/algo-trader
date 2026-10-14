@@ -474,6 +474,13 @@
        rows' spacing from the header's. */
     padding: 0;
     align-items: stretch;
+    /* Height SSOT (2026-10) — pins to the shared --grid-row-height
+       token (app.css) instead of whatever cell padding/font-size
+       happens to compute to; `align-items: stretch` makes the `> span`
+       children fill it. Same token drives every other grid family
+       (ag-Grid, .algo-table, the Snapshot/.byund-* grid below). */
+    min-height: var(--grid-row-height);
+    box-sizing: border-box;
     font-size: var(--fs-lg);
     font-family: monospace;
     font-variant-numeric: tabular-nums;

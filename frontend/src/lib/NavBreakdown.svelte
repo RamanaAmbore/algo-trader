@@ -646,24 +646,25 @@
        elevated token so it matches algo-grid-chrome / ag-root-wrapper
        (the same surface family as the inner table rows). */
     background: var(--card-bg-elevated);
-    /* Grid-adjacency gap (2026-10 CardHeader/grid consistency pass,
-       Part A) — this wrapper sits directly below the parent page's
-       CardHeader (e.g. Dashboard's "Portfolio" card). Without this
-       gap, CardHeader's bottom border + this wrapper's own TOP border
-       stacked flush with zero separation on that one edge, reading as
-       a thickened "double border" line — this is the specific stacking
-       the operator flagged, now fixed on the top edge, matching
-       Derivatives' Legs/Exp-close tables' already-correct spacing.
-       Note: on the left/right/bottom edges, this wrapper's own border
-       AND the inner `.ag-theme-algo` element's own separate border
-       still sit flush against each other with no gap (verified via
-       computed styles — both render ~1px solid rgba(255,255,255,0.1)).
-       That's a PRE-EXISTING, SYMMETRIC characteristic shared with
-       MarketPulse's `.mp-bucket-wrap`/`.bucket-grid` pair (identical
-       computed values there too) — out of scope for this pass, which
-       only targeted the CardHeader-to-grid top-edge gap/double-border;
-       not a regression introduced here. */
-    margin-top: var(--grid-header-gap);
+    /* Single-line header/grid boundary (2026-10, operator: "overlap
+       the panel header bottom border ... so that it looks like a
+       single border line") — SUPERSEDES the 2026-10 Part A "grid-
+       adjacency gap" fix (which added `margin-top: var(--grid-header-
+       gap)` specifically to separate CardHeader's bottom border from
+       this wrapper's own top border, because they stacked flush into a
+       thickened "double border" line). Rather than spacing the two
+       borders apart, this drops the wrapper's own TOP border entirely
+       (left/right/bottom unaffected) and removes the gap — CardHeader's
+       `--ch-border-bottom` becomes the ONLY visible line at that seam,
+       so there's nothing left to double up. A true pixel-overlap of two
+       independent borders was considered and rejected: CardHeader's
+       border (`--card-divider`, rgba(126,151,184,0.40)) and this
+       wrapper's border (`--algo-card-border`, rgba(255,255,255,0.10))
+       are different colors, so overlapping them would still show a
+       color seam — dropping one outright is the only way to get a
+       genuinely single, uniform line. */
+    border-top: none;
+    margin-top: 0;
   }
 
   .nav-bd-ag { width: 100%; }

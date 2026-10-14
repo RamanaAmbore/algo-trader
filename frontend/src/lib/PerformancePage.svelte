@@ -892,22 +892,25 @@
       // (app.css), which ag-Grid's legacy-theme cell CSS derives its
       // line-height from for vertical centering. ag-theme-ramboq's font
       // is 0.625rem/10px — its var is 22px (the theme's original,
-      // proportionate value). ag-theme-algo's font is larger and its var
-      // is 28px. A prior fix (7ccb2e50) hardcoded 28px here for every
-      // theme, which happened to match ag-theme-algo but silently
-      // orphaned ag-theme-ramboq's 22px var, producing an oversized row
-      // with top-biased (not centered) cell text. Setting the CSS var
-      // inline here — rather than leaving it static in app.css — keeps
-      // JS rowHeight and the var that drives centering as one source of
-      // truth, for both breakpoints, without a media query.
+      // proportionate value). ag-theme-algo's row height is driven by
+      // the shared `--grid-row-height` SSOT (app.css, 2026-10 Legs-grid-
+      // based unification): 26px desktop / 34px mobile. A prior fix
+      // (7ccb2e50) hardcoded 28px here for every theme, which happened
+      // to match ag-theme-algo but silently orphaned ag-theme-ramboq's
+      // 22px var, producing an oversized row with top-biased (not
+      // centered) cell text. Setting the CSS var inline here — rather
+      // than leaving it static in app.css — keeps JS rowHeight and the
+      // var that drives centering as one source of truth, for both
+      // breakpoints, without a media query.
       // ag-theme-ramboq's mobile touch-target row was 36px (df43e278);
       // operator feedback found that still slightly tall for the 10px
       // font on real phones, so it's tuned down to 32px here — still a
       // comfortable touch target, just less padding above/below the text.
-      // ag-theme-algo's (admin, dark) mobile row is untouched at 36px —
-      // this page's public ag-theme-ramboq surface only.
+      // ag-theme-algo's (admin, dark) mobile row follows the shared
+      // --grid-row-height mobile value (34px) — this page's public
+      // ag-theme-ramboq surface keeps its own independently-tuned 32px.
       rowHeight: (() => {
-        const rowH = isDark ? (_isMobile ? 36 : 28) : (_isMobile ? 32 : 22);
+        const rowH = isDark ? (_isMobile ? 34 : 26) : (_isMobile ? 32 : 22);
         el.style.setProperty('--ag-row-height', `${rowH}px`);
         return rowH;
       })(),

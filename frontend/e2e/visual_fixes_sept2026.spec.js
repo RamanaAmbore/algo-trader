@@ -265,8 +265,8 @@ test.describe('Fix 3: Sparkline border parity in gainers/losers', () => {
 // FIXTURE 4: Mobile Row Height Conditional (Fix 4)
 // ═══════════════════════════════════════════════════════════════════════════
 
-test.describe('Fix 4: Mobile row height conditional (36px mobile, 28px desktop)', () => {
-  test('5-Stale: MarketPulse.svelte has conditional rowHeight (not CSS override)', () => {
+test.describe('Fix 4: Mobile row height conditional (34px mobile, 26px desktop)', () => {
+  test('5-Stale: MarketPulse.svelte routes rowHeight through the shared mkBaseGridOpts()/syncGridRowHeightVar() helpers', () => {
     const path = '/Users/ramanambore/projects/ramboq/frontend/src/lib/MarketPulse.svelte';
     let source = '';
     try {
@@ -276,19 +276,28 @@ test.describe('Fix 4: Mobile row height conditional (36px mobile, 28px desktop)'
       return;
     }
 
-    // Assert rowHeight is conditionally set via JS (not CSS !important override)
-    // Looking for: rowHeight: ... ? 36 : 28 pattern
-    const hasConditionalHeight = /rowHeight:\s*\([^)]*window\.innerWidth[^)]*720[^)]*\)\s*\?\s*36\s*:\s*28/.test(source);
-    expect(hasConditionalHeight).toBe(true);
+    // 2026-10 fix: MarketPulse's own inline `rowHeight: (...) ? 36 : 28`
+    // conditional (this test's original assertion) regressed at some
+    // point back to a hardcoded `rowHeight: 28` with NO mobile branch at
+    // all — confirmed live (stayed 28px on mobile). Re-fixed by routing
+    // through the SAME shared helpers every other algo-palette grid uses
+    // (algoGridUtils.js's mkBaseGridOpts()/syncGridRowHeightVar()) instead
+    // of re-duplicating a conditional inline — one source of truth for
+    // the mobile breakpoint and the row-height numbers (now 26/34,
+    // matching the app-wide Derivatives-Legs-grid-based height SSOT).
+    const usesSharedHelper = /rowHeight:\s*mkBaseGridOpts\(\)\.rowHeight/.test(source);
+    expect(usesSharedHelper).toBe(true);
+    const callsSyncVar = /syncGridRowHeightVar\(/.test(source);
+    expect(callsSyncVar).toBe(true);
 
-    // Assert the old CSS override is removed (no :global(.ag-theme-algo .ag-row) { min-height: 36px })
-    const hasOldCssOverride = /:global\([^)]*\.ag-row[^)]*\)\s*\{[^}]*min-height:\s*36px/.test(source);
-    expect(hasOldCssOverride).toBe(false);
+    // No stale hardcoded `rowHeight: 28` (or 36) left behind anywhere.
+    const hasStaleLiteral = /rowHeight:\s*2?8\s*,|rowHeight:\s*36\s*,/.test(source);
+    expect(hasStaleLiteral).toBe(false);
 
-    console.log('[Fix 4] MarketPulse conditional rowHeight verified, CSS override removed');
+    console.log('[Fix 4] MarketPulse now routes rowHeight through mkBaseGridOpts()/syncGridRowHeightVar()');
   });
 
-  test('6-UX/Perf: Desktop viewport renders 28px row height', async ({ page, viewport }) => {
+  test('6-UX/Perf: Desktop viewport renders 26px row height', async ({ page, viewport }) => {
     // Skip if not running on desktop viewport
     if (viewport?.width && viewport.width <= 720) {
       test.skip(true, 'This test requires desktop viewport (>720px)');
@@ -317,14 +326,14 @@ test.describe('Fix 4: Mobile row height conditional (36px mobile, 28px desktop)'
       return Math.round(rect.height);
     });
 
-    // Desktop should be 28px (allow ±2px tolerance)
-    expect(rowHeight).toBeGreaterThanOrEqual(26);
-    expect(rowHeight).toBeLessThanOrEqual(30);
+    // Desktop should be 26px (allow ±2px tolerance)
+    expect(rowHeight).toBeGreaterThanOrEqual(24);
+    expect(rowHeight).toBeLessThanOrEqual(28);
 
-    console.log(`[Fix 4] Desktop row height verified: ${rowHeight}px (expected 28px)`);
+    console.log(`[Fix 4] Desktop row height verified: ${rowHeight}px (expected 26px)`);
   });
 
-  test('7-UX/Perf: Mobile viewport renders 36px row height', async ({ page, viewport }) => {
+  test('7-UX/Perf: Mobile viewport renders 34px row height', async ({ page, viewport }) => {
     // Skip if not running on mobile viewport
     if (viewport?.width && viewport.width > 720) {
       test.skip(true, 'This test requires mobile viewport (≤720px)');
@@ -353,11 +362,11 @@ test.describe('Fix 4: Mobile row height conditional (36px mobile, 28px desktop)'
       return Math.round(rect.height);
     });
 
-    // Mobile should be 36px (allow ±2px tolerance)
-    expect(rowHeight).toBeGreaterThanOrEqual(34);
-    expect(rowHeight).toBeLessThanOrEqual(38);
+    // Mobile should be 34px (allow ±2px tolerance)
+    expect(rowHeight).toBeGreaterThanOrEqual(32);
+    expect(rowHeight).toBeLessThanOrEqual(36);
 
-    console.log(`[Fix 4] Mobile row height verified: ${rowHeight}px (expected 36px)`);
+    console.log(`[Fix 4] Mobile row height verified: ${rowHeight}px (expected 34px)`);
   });
 });
 
