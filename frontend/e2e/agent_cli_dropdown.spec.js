@@ -763,3 +763,70 @@ test('Suggestions update correctly as cursor moves within the textarea', async (
   // or that we didn't crash. Either outcome is OK; the key is robustness.
   expect(typeof count2).toBe('number');
 });
+
+// ── Case-insensitive dropdown + auto-case-correction (2026-10) ─────────────
+//
+// Two linked fixes, same root cause: `suggestAgentCliAt` used to bail to
+// an empty suggestion list the instant the glued-partial text being typed
+// already equalled a complete reserved word (any case), so the dropdown
+// visibly vanished right as the operator finished typing a keyword —
+// reported as "DO not showing as selected". Matching was already
+// case-insensitive (`fuzzyFilter` lowercases both sides); the fix removed
+// that early-return so a just-completed keyword stays as the single
+// matched/selected suggestion. Follow-up: once typed text is an
+// unambiguous exact match (case-insensitive) for the dropdown's SOLE
+// surviving candidate, `AgentCliEditor`'s `_autoCorrectCase()` now rewrites
+// it to that candidate's own canonical casing live, so "do"/"Do" self-
+// corrects to "DO" without the operator having to pick it from the list.
+
+test.describe('Case-insensitive matching + auto-case-correction', () => {
+  test('typing a reserved keyword in any case still shows it as the matched suggestion', async ({ page }) => {
+    await loginAsAdmin(page);
+    await goConsole(page);
+
+    const textarea = page.locator('textarea.agent-cli-textarea');
+    const base = 'WHEN pnl@positions.total <= -5 ALERT telegram ';
+
+    for (const typed of ['Do', 'do', 'DO']) {
+      await textarea.fill(base + typed);
+      await textarea.focus();
+      await textarea.press('End');
+      await waitForSuggestions(page);
+      const suggestions = await getSuggestions(page);
+      const count = suggestions ? await suggestions.count() : 0;
+      expect(count, `expected "DO" to still be suggested after typing "${typed}"`).toBeGreaterThan(0);
+      const texts = suggestions ? await suggestions.allTextContents() : [];
+      expect(texts).toContain('DO');
+    }
+  });
+
+  test('typing a clause-head keyword in lowercase self-corrects to its canonical case', async ({ page }) => {
+    await loginAsAdmin(page);
+    await goConsole(page);
+
+    const textarea = page.locator('textarea.agent-cli-textarea');
+    await textarea.focus();
+    // Real per-character typing (not `.fill()`) — the auto-correction
+    // hooks the textarea's own `input` event, same as a real keystroke.
+    await textarea.pressSequentially('WHEN pnl@positions.total <= -5 ALERT telegram do', { delay: 15 });
+    await page.waitForTimeout(300);
+
+    const text = await textarea.inputValue();
+    expect(text).toBe('WHEN pnl@positions.total <= -5 ALERT telegram DO');
+  });
+
+  test('auto-case-correction does not fire on an ambiguous partial keyword', async ({ page }) => {
+    await loginAsAdmin(page);
+    await goConsole(page);
+
+    const textarea = page.locator('textarea.agent-cli-textarea');
+    await textarea.focus();
+    // "ale" is a genuine partial (only "ALERT" matches, but it's not a
+    // full-length match yet) — must stay lowercase, not get force-completed.
+    await textarea.pressSequentially('ale', { delay: 15 });
+    await page.waitForTimeout(300);
+
+    const text = await textarea.inputValue();
+    expect(text).toBe('ale');
+  });
+});

@@ -202,6 +202,7 @@
   function handleInput() {
     dirty = true;
     _updateCursor();
+    _autoCorrectCase();
   }
 
   const suggestResult = $derived.by(() => {
@@ -209,6 +210,42 @@
     try { return suggestAgentCliAt(value, cursorPos, catalog); }
     catch { return { suggestions: [], descriptions: [], labels: [], replaceRange: [cursorPos, cursorPos], kind: null }; }
   });
+
+  // Operator request (2026-10, follow-up to the "DO not showing as
+  // selected" fix above `suggestAgentCliAt`): once the text just typed
+  // exactly matches — case-insensitively — the dropdown's SOLE surviving
+  // candidate, rewrite it to that candidate's own canonical casing (e.g.
+  // "do"/"Do" self-corrects to "DO" the instant it's unambiguous),
+  // instead of requiring the operator to pick it from the dropdown by
+  // hand just to fix casing. In practice this is "uppercase" for the
+  // clause-head/connective keywords (stored in the catalog/candidate
+  // lists as "WHEN"/"ALERT"/"DO"/"GIVEN"/etc.) and a no-op for ordinary
+  // metric/scope/channel/action names, which are already lowercase in
+  // both what an operator naturally types and the catalog itself.
+  // Reads the SAME `suggestResult` the dropdown renders from (no second
+  // `suggestAgentCliAt` call) — Svelte 5's `$derived` is pull-based, so
+  // this already reflects the just-updated `value`/`cursorPos` by the
+  // time `handleInput` reads it, synchronously, no extra tick needed.
+  // Deliberately gated to EXACTLY ONE candidate and a FULL (same-length)
+  // case-insensitive match — a still-ambiguous partial (e.g. "ale" with
+  // only "ALERT" matching so far) must never be silently "completed" by
+  // this; it only fires at the exact moment typing could not possibly
+  // mean anything else.
+  async function _autoCorrectCase() {
+    const { suggestions, replaceRange } = suggestResult;
+    if (!replaceRange || suggestions.length !== 1) return;
+    const [start, end] = replaceRange;
+    if (end <= start || end > value.length) return;
+    const typed = value.slice(start, end);
+    const canonical = suggestions[0];
+    if (typed === canonical) return; // already correctly cased
+    if (typed.toLowerCase() !== canonical.toLowerCase()) return; // not a full match yet
+    value = value.slice(0, start) + canonical + value.slice(end);
+    const newCursor = start + canonical.length;
+    await tick();
+    textareaEl?.setSelectionRange(newCursor, newCursor);
+    cursorPos = newCursor;
+  }
 
   // Every time `suggestResult` is recomputed (new object identity on every
   // keystroke/cursor-move — `_suggestAgentCliAtImpl` never returns a cached
