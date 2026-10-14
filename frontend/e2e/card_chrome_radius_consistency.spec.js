@@ -56,8 +56,12 @@ test.describe('card chrome — border/radius/shadow converge on .bucket-card', (
     expect(bucketCard).toMatch(/0\.06\)/);
   });
 
-  test('.mp-bucket-wrap (MarketPulse) matches .bucket-card border token + radius + shadow', () => {
-    expect(mpBucketWrap).toMatch(/border:\s*1\.5px solid var\(--algo-card-border\)/);
+  test('.mp-bucket-wrap (MarketPulse) has no outer border (2026-10, explicit operator removal), keeps radius + shadow', () => {
+    // Outer border removed per explicit operator instruction — the card
+    // chrome now relies on box-shadow + background contrast alone, same
+    // family as .algo-grid-chrome's border-less siblings. Still shares
+    // .bucket-card's radius + shadow pair, just not its border.
+    expect(mpBucketWrap).toMatch(/border:\s*none/);
     expect(mpBucketWrap).toMatch(/border-radius:\s*6px/);
     expect(mpBucketWrap).toMatch(/0\.35\)/);
     expect(mpBucketWrap).toMatch(/0\.06\)/);

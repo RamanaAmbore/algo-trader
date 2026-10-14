@@ -5101,20 +5101,18 @@
        box-sizing: border-box so padding doesn't push the card over
        the column width.
 
-       Outer chrome gives each bucket a sharp card boundary instead of
-       relying only on the inner ag-Grid theme border, which reads
-       softer against the dark surface. Operator: "have sharp border
-       to pulse ag grids like legs ag grid." Border/radius/shadow
-       converged (2026-10 card-chrome audit) onto the canonical
-       .bucket-card recipe (app.css) — NOT .algo-grid-chrome, whose
-       4px radius + 0.45/0.08 shadow is a separate, intentionally
-       distinct family for ag-Grid wrappers. */
+       Outer card border removed (2026-10, explicit operator instruction,
+       reversing the earlier "sharp border to match legs ag-Grid"
+       decision above this line in history) — the card now relies on
+       box-shadow + background contrast alone for definition, same as
+       .algo-grid-chrome's border-less siblings. The inner ag-Grid theme
+       (`--ag-border-color`, app.css) is untouched by this change. */
     width: 100%;
     box-sizing: border-box;
     display: flex;
     flex-direction: column;
     min-width: 0;
-    border: 1.5px solid var(--algo-card-border);
+    border: none;
     border-radius: 6px;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35),
                 inset 0 1px 0 rgba(255, 255, 255, 0.06);
