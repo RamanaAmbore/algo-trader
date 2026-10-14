@@ -2350,14 +2350,70 @@
     </div>
     {/if}
 
-    <!-- Picker row — Account · Symbol type · Symbol — placed BEFORE
-         the tab strip so the operator sets the order's identity once
-         and both tabs (Chain / Order ticket) read from the same
-         values. Mirrors ChartWorkspace's toolbar pattern (type filter
-         + combo). Renders in EVERY mount where the tabs are visible
-         (modal, inline /orders, even when headerless because /orders
-         uses headerless to drop the title chip but still wants the
-         picker). -->
+    <!-- Tab strip — suppressed when the host page renders its own
+         (tabsExternal). Operator clicks still flow back via the
+         two-way bound `activeTab` either way. -->
+    {#if !tabsExternal}
+    <div class="oes-tabs" style="border-bottom: 1px solid rgba(255,255,255,0.08);">
+      <!-- Wrapper div (2026-09-30, alignment fix) — Svelte scoped styles
+           can't reach AlgoTabs' own component root from here, so
+           `flex-shrink: 0` is applied to this wrapper instead; keeps the
+           TICKET/CHAIN/CHART cluster intact (never compressed) when
+           `.oes-tabs` wraps onto a second line on narrow viewports. -->
+      <div class="oes-tabs-inner">
+        <AlgoTabs
+          tabs={TABS.map(t => ({
+            id: t.id,
+            label: t.label,
+            badge: t.id === 'chain' && basketLegs.length > 0 ? basketLegs.length : undefined,
+            /* Operator (2026-07-01): "active tab text color must be
+               consistent". Ticket / chain / panel previously took
+               amber / green / sky variants to distinguish flow; now
+               every tab is amber. Chain still carries a badge for the
+               leg count, which conveys the semantic distinction
+               without breaking the uniform active state. */
+            color: /** @type {const} */ ('amber'),
+            disabled: t.id === 'chain' ? chainDisabled : false,
+            disabledTitle: t.id === 'chain' && chainDisabled
+              ? 'No F&O for this root — chain unavailable'
+              : undefined,
+          }))}
+          value={_activeTab}
+          onChange={(id) => {
+            if (id === 'chain' && chainDisabled) return;
+            _setActiveTab(/** @type {any} */ (id));
+          }}
+          compact={true}
+        />
+      </div>
+      <!-- Vertical divider (2026-09-30, operator: "add vertical after
+           chart tab to differentiate the label values showing after") —
+           separates the TICKET/CHAIN/CHART tab strip from the LTP/CHASE
+           label-value pairs now that both clusters sit left-aligned and
+           close together. -->
+      <span class="oes-tabs-divider" aria-hidden="true"></span>
+      {#if _ltp != null && _ltp > 0}
+        <span class="oes-tab-ltp"><span class="oes-tab-ltp-label">LTP</span>{priceFmt(_ltp)}</span>
+      {/if}
+      {#if _chaseEnabled}
+        <span class="oes-common-chase-label on" title="Chase is active">CHASE</span>
+        <span class="oes-chase-agg-gap">
+          <ChaseAggPicker value={_sharedChaseAgg} onChange={_setSharedChaseAgg} variant="panel" />
+        </span>
+      {/if}
+    </div>
+    {/if}
+
+    <!-- Picker row — Account · Exchange filter · Symbol — placed AFTER
+         the tab strip (2026-10, operator request: "move account,
+         exchange, symbol elements below the tabs"). Still lives at the
+         shell level so both tabs (Chain / Order ticket) read from the
+         same values — only its vertical position relative to the tabs
+         changed, not its scope. Mirrors ChartWorkspace's toolbar pattern
+         (type filter + combo). Renders in EVERY mount where the tabs
+         are visible (modal, inline /orders, even when headerless
+         because /orders uses headerless to drop the title chip but
+         still wants the picker). -->
     <!-- Audit cleanup: dropped a `{#if true}` wrapper that did nothing
          but trigger svelte-check warnings. The picker always renders. -->
       <div class="oes-picker">
@@ -2417,64 +2473,6 @@
           {@render pickerSuffix()}
         {/if}
       </div>
-
-      <!-- Cluster lifted INTO `.oes-header` above (modal) or into the
-           /orders bucket header (page) per operator request. Standalone
-           strip removed. -->
-
-    <!-- Tab strip — suppressed when the host page renders its own
-         (tabsExternal). Operator clicks still flow back via the
-         two-way bound `activeTab` either way. -->
-    {#if !tabsExternal}
-    <div class="oes-tabs" style="border-bottom: 1px solid rgba(255,255,255,0.08);">
-      <!-- Wrapper div (2026-09-30, alignment fix) — Svelte scoped styles
-           can't reach AlgoTabs' own component root from here, so
-           `flex-shrink: 0` is applied to this wrapper instead; keeps the
-           TICKET/CHAIN/CHART cluster intact (never compressed) when
-           `.oes-tabs` wraps onto a second line on narrow viewports. -->
-      <div class="oes-tabs-inner">
-        <AlgoTabs
-          tabs={TABS.map(t => ({
-            id: t.id,
-            label: t.label,
-            badge: t.id === 'chain' && basketLegs.length > 0 ? basketLegs.length : undefined,
-            /* Operator (2026-07-01): "active tab text color must be
-               consistent". Ticket / chain / panel previously took
-               amber / green / sky variants to distinguish flow; now
-               every tab is amber. Chain still carries a badge for the
-               leg count, which conveys the semantic distinction
-               without breaking the uniform active state. */
-            color: /** @type {const} */ ('amber'),
-            disabled: t.id === 'chain' ? chainDisabled : false,
-            disabledTitle: t.id === 'chain' && chainDisabled
-              ? 'No F&O for this root — chain unavailable'
-              : undefined,
-          }))}
-          value={_activeTab}
-          onChange={(id) => {
-            if (id === 'chain' && chainDisabled) return;
-            _setActiveTab(/** @type {any} */ (id));
-          }}
-          compact={true}
-        />
-      </div>
-      <!-- Vertical divider (2026-09-30, operator: "add vertical after
-           chart tab to differentiate the label values showing after") —
-           separates the TICKET/CHAIN/CHART tab strip from the LTP/CHASE
-           label-value pairs now that both clusters sit left-aligned and
-           close together. -->
-      <span class="oes-tabs-divider" aria-hidden="true"></span>
-      {#if _ltp != null && _ltp > 0}
-        <span class="oes-tab-ltp"><span class="oes-tab-ltp-label">LTP</span>{priceFmt(_ltp)}</span>
-      {/if}
-      {#if _chaseEnabled}
-        <span class="oes-common-chase-label on" title="Chase is active">CHASE</span>
-        <span class="oes-chase-agg-gap">
-          <ChaseAggPicker value={_sharedChaseAgg} onChange={_setSharedChaseAgg} variant="panel" />
-        </span>
-      {/if}
-    </div>
-    {/if}
 
     <!-- Shell-level template picker — visible from EVERY tab + the modal,
          regardless of whether the basket has legs staged. Operator:
