@@ -117,7 +117,10 @@ test.describe('Item 2 — Guide link renders as a button, not a bare link', () =
     const guideLink = page.locator('a[href="/automation/guide"]').first();
     await expect(guideLink).toBeVisible({ timeout: TIMEOUT });
     await expect(guideLink).toHaveClass(/btn-secondary/);
-    await expect(guideLink).toContainText('Guide: CLI grammar reference');
+    // Renamed "Guide: CLI grammar reference" -> "Trader Guide" (2026-10
+    // operator request) — Orders' OWN CLI-tab Guide link (sibling test
+    // below, OrderCliTab.svelte) is unrelated and keeps its old text.
+    await expect(guideLink).toContainText('Trader Guide');
 
     // A real button-shaped affordance has padding + a border, not an
     // underline-only text link.
@@ -200,6 +203,50 @@ test.describe('Item 3 — Workspace header removed; Console/Agents tab row carri
       return !!(tabs && guide && tabs.closest('.card-header') === guide.closest('.card-header'));
     });
     expect(sameRow).toBe(true);
+  });
+
+  // Bug fix (2026-10, operator: "keep order dropdown just after agents
+  // tab. make the the link button to read as Trader Guide. make it to
+  // display after the dropdown. elements like dropdown, trader guide
+  // shoule be of same height and should be verticall centered") —
+  // tabs/dropdown/Guide link all moved into CardHeader's ONE `left`
+  // zone (were split across left/right, pushed apart by the middle
+  // spacer), in that exact order, with height parity between the
+  // dropdown and the Guide link.
+  test('tabs, kind-dropdown, and "Trader Guide" link render in that exact order, same height, vertically centered', async ({ page }) => {
+    await page.goto('/automation?tab=console', { waitUntil: 'domcontentloaded' });
+
+    const left = page.locator('.aw-view .card-header .ch-left');
+    await expect(left).toBeVisible({ timeout: TIMEOUT });
+
+    const info = await left.evaluate((el) => {
+      const children = Array.from(el.children);
+      const order = children.map((c) => {
+        if (c.classList.contains('aw-tabs-wrap')) return 'tabs';
+        if (c.classList.contains('rbq-select')) return 'dropdown';
+        if (c.classList.contains('console-guide-btn')) return 'guide';
+        return 'other';
+      });
+      const select = el.querySelector('.rbq-select-trigger');
+      const guide = el.querySelector('.console-guide-btn');
+      const selectRect = select?.getBoundingClientRect();
+      const guideRect = guide?.getBoundingClientRect();
+      return {
+        order,
+        guideText: guide?.textContent.trim(),
+        selectHeight: selectRect?.height,
+        guideHeight: guideRect?.height,
+        selectCenterY: selectRect ? selectRect.top + selectRect.height / 2 : null,
+        guideCenterY: guideRect ? guideRect.top + guideRect.height / 2 : null,
+      };
+    });
+
+    expect(info.order).toEqual(['tabs', 'dropdown', 'guide']);
+    expect(info.guideText).toBe('Trader Guide');
+    // Height parity within 1px (sub-pixel rendering tolerance), and
+    // vertical centers aligned within 1px.
+    expect(Math.abs(info.selectHeight - info.guideHeight)).toBeLessThanOrEqual(1);
+    expect(Math.abs(info.selectCenterY - info.guideCenterY)).toBeLessThanOrEqual(1);
   });
 
   test('the kind-dropdown + Guide link are console-only — absent on the Agents tab', async ({ page }) => {

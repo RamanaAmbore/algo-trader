@@ -619,25 +619,32 @@
 
 <!-- Workspace header removed entirely (2026-10, operator request) — no
      title row, no Fullscreen button. The Console/Agents tab strip now
-     shares ONE decorated row with the statement-kind dropdown + Guide
-     link (relocated from ConsoleTab.svelte), console-only since neither
-     is meaningful on the Agents tab. `showControls={false}` suppresses
-     CardHeader's whole CardControls cluster (Fullscreen included) while
-     `left`/`right` snippets still render — see CardHeader.svelte. -->
+     shares ONE decorated row with the statement-kind dropdown + Trader
+     Guide link (relocated from ConsoleTab.svelte), console-only since
+     neither is meaningful on the Agents tab. `showControls={false}`
+     suppresses CardHeader's whole CardControls cluster (Fullscreen
+     included) while `left`/`right` snippets still render — see
+     CardHeader.svelte.
+     All three controls (tabs, dropdown, Trader Guide link) now live
+     together in the SAME `left` zone, in that order (operator: "keep
+     order dropdown just after agents tab... make it [Trader Guide] to
+     display after the dropdown") — `.ch-left`'s own flex row +
+     `align-items: center` + `gap` keeps them tightly adjacent and
+     vertically centered as one group, rather than split across left/
+     right zones with a spacer pushing them apart. `right` is no longer
+     used here. -->
 <section class="aw-view">
   <CardHeader showControls={false}>
     {#snippet left()}
       <AutomationTabs value={activeTab} onChange={setActiveTab} />
-    {/snippet}
-    {#snippet right()}
       {#if activeTab === 'console'}
-        <a href="/automation/guide" title="CLI grammar guide" class="btn-secondary console-guide-btn">Guide: CLI grammar reference</a>
         <Select
           value={_kindHint}
           options={_KIND_OPTIONS.map((k) => ({ value: k, label: _KIND_LABELS[k] }))}
           ariaLabel="Statement kind"
           onValueChange={_pickKind}
         />
+        <a href="/automation/guide" title="CLI grammar guide" class="btn-secondary console-guide-btn">Trader Guide</a>
       {/if}
     {/snippet}
   </CardHeader>
@@ -969,6 +976,22 @@
     align-items: center;
     white-space: nowrap;
     text-decoration: none;
+    /* Height parity with the statement-kind Select it now sits beside
+       (2026-10, operator: "dropdown, trader guide should be of same
+       height and should be vertically centered") — the generic
+       `.btn-secondary` recipe's own padding/font-size (0.3rem/0.85rem,
+       0.75rem font) renders taller than Select's trigger (confirmed via
+       live measurement: 29.6px vs 24.8px even with a matching
+       min-height, since min-height can't shrink content that's
+       naturally taller). Overriding padding + font-size to the SAME
+       values Select's own trigger uses (`$lib/Select.svelte`'s
+       `.rbq-select-trigger`: 0.25rem vertical padding, --fs-sm font)
+       converges both to the same natural height instead of fighting it
+       with min-height. `.ch-left`'s own `align-items: center` then
+       centers the whole group on one baseline. */
+    padding: 0.25rem 0.6rem;
+    font-size: var(--fs-sm);
+    box-sizing: border-box;
   }
   /* ── Agent group grid — uses canonical .page-grid for layout ───────
      Overrides auto-fill with a fixed 2-column layout on desktop so each

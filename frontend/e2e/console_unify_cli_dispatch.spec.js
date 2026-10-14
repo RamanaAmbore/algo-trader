@@ -179,7 +179,9 @@ test.describe('Console — Guide link + kind-selector dropdown, relocated to the
     await expect(guideBtn).toBeVisible({ timeout: TIMEOUT });
     const text = (await guideBtn.textContent()) || '';
     expect(text).not.toMatch(/→|&rarr;/);
-    expect(text.trim()).toBe('Guide: CLI grammar reference');
+    // Renamed "Guide: CLI grammar reference" -> "Trader Guide" (2026-10
+    // operator request).
+    expect(text.trim()).toBe('Trader Guide');
 
     const guideBox = await guideBtn.boundingBox();
     const cliBox = await page.locator('.agent-cli-textarea').boundingBox();
