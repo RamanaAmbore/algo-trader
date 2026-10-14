@@ -90,7 +90,7 @@
     value = $bindable(''), catalog = null, lotSizeOf = undefined,
     mode = 'paper', onCompile = undefined, onOrderSubmit = undefined,
     allowedKinds = undefined,
-    placeholder = 'WHEN pnl_pct@positions.total <= -5 ALERT telegram DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)',
+    placeholder = 'GIVEN p = pnl@positions.total\nmsg_txt = "Loss: " + p\nWHEN p <= -50000\nALERT msg = msg_txt, telegram\nDO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)',
     info = [], submitStatus = null,
     showCompileErrors = true,
   } = $props();

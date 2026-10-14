@@ -314,7 +314,7 @@ async def _paper_trade(agent, action_type: str, params: dict, context: dict):
         await _paper_expiry_close(agent, action_type, params, context)
         return
 
-    if action_type in {"place_order", "close_position", "modify_order",
+    if action_type in {"order", "place_order", "close_position", "modify_order",
                        "cancel_order", "cancel_all_orders"}:
         await _paper_place_or_close(agent, action_type, params, context)
         return

@@ -451,9 +451,13 @@ class TestV2MatchToAlertrowScopeLabel:
 
     def test_scope_label_from_row_account_field(self):
         """
-        scope_label is extracted from row['account'].
+        scope_label is extracted from row['account'] and MASKED (2026-10
+        leak fix — a per-account alert row must never carry the real
+        broker account code; see mask_account()'s own docstring and
+        CLAUDE.md's "account masking used in all alerts" invariant).
         """
         from backend.api.algo.agent_engine import _v2_match_to_alertrow
+        from backend.shared.helpers.utils import mask_account
 
         match = {
             'metric': 'pnl',
@@ -463,9 +467,10 @@ class TestV2MatchToAlertrowScopeLabel:
             'row': {'account': 'ZG0790', 'pnl': -8000},
         }
         result = _v2_match_to_alertrow(match)
-        assert result['scope'] == 'ZG0790', (
-            "scope_label must be extracted from row['account']"
+        assert result['scope'] == mask_account('ZG0790'), (
+            "scope_label must be extracted from row['account'] and masked"
         )
+        assert result['scope'] != 'ZG0790', "the real account code must never reach the alert row"
 
     def test_scope_label_defaults_to_total_when_account_missing(self):
         """

@@ -284,8 +284,82 @@ def _default_message_text(condition_text: str, action_desc: str) -> str:
     return action_desc or condition_text
 
 
+def _resolve_given_message(value, agent, context: "dict | None"):
+    """Resolve a channel's `message` value when it's a `{"$given":
+    "<name>"}` marker (Part 2 of the RamboQL GIVEN upgrade — parallel to
+    `actions.py`'s existing `{"$row": "<name>"}` marker) against
+    `context["given"][agent.id]` — the per-agent bindings dict
+    `agent_engine._cycle_evaluate_given_bindings` computed once this
+    tick, BEFORE this agent's condition was evaluated.
+
+    A plain string (or anything else that isn't the single-key `$given`
+    marker dict) passes through unchanged — this is a true no-op for
+    every channel that doesn't reference an operator-based GIVEN
+    binding by name (every channel today).
+
+    An unresolved reference (name never defined, or its own evaluation
+    failed/was skipped this tick) logs a warning and returns `None` —
+    the caller then falls back to the ordinary condition-text default
+    message, the same "treat as unresolved" contract used elsewhere in
+    this evaluator, rather than sending a broken/blank alert message.
+
+    Masking: the resolved value is masked via `mask_account_in_text()`
+    before returning — this is the ONE shared resolver every `{"$given":
+    name}` ALERT-message marker goes through, whether reached via the
+    ordinary `dispatch()` path (log/websocket/inapp, and telegram/email/
+    ntfy for a non-rich agent) or the rich-alert override
+    (`agent_engine._v2_rich_alert_custom_message`) — masking HERE means
+    every one of those channels gets it for free, from one call site.
+    Deliberately NOT applied inside `agent_engine._given_resolve_parts`
+    (where a `parts`-array binding's string actually gets built) —
+    that same resolved value is also what a `{"$given": name}` DO-action
+    param reads via `actions.py:resolve_given_ref_params`, which must
+    stay raw (same contract as the existing `{"$row": name}` marker) so
+    a legitimate account-shaped string can still reach a string-typed
+    action param uncorrupted. Masking only at the point text becomes an
+    alert MESSAGE, never at binding-storage time, is the deliberate
+    design here.
+    """
+    from backend.shared.helpers.utils import mask_account_in_text
+
+    if not (isinstance(value, dict) and len(value) == 1 and "$given" in value):
+        return value
+    name_raw = value["$given"]
+    # The frontend compiler always lowercases a $given reference (a
+    # binding's own `name` field preserves the operator's original
+    # typed case, but every REFERENCE to it is `.toLowerCase()`'d) —
+    # `agent_engine._cycle_evaluate_given_bindings` stores under
+    # `name.lower()` for exactly this reason; lowercase here too.
+    name = name_raw.lower() if isinstance(name_raw, str) else name_raw
+    bindings = ((context or {}).get("given") or {}).get(getattr(agent, "id", None)) or {}
+    if name not in bindings or bindings[name] is None:
+        logger.warning(
+            f"Agent [{getattr(agent, 'slug', '?')}]: ALERT message references "
+            f"GIVEN label '{name}', which did not resolve this tick — "
+            f"falling back to the default message"
+        )
+        return None
+    resolved = bindings[name]
+    if isinstance(resolved, str):
+        text = resolved
+    elif isinstance(resolved, float) and resolved.is_integer():
+        # Same whole-number formatting rule as agent_engine's
+        # `_given_format_part_value` (deliberately duplicated rather
+        # than importing agent_engine from here — a one-line rule, not
+        # worth a cross-module coupling) — a whole-number float renders
+        # without a trailing `.0` (e.g. `-60000.0` -> `"-60000"`), so a
+        # bare operator-expression binding used directly as `msg=`
+        # formats identically to the same value threaded through a
+        # `parts`-array binding.
+        text = str(int(resolved))
+    else:
+        text = str(resolved)
+    return mask_account_in_text(text) or text
+
+
 def _classify_recorded_channel(
     ch: dict, agent, eval_result, condition_text: str, branch_tag: str, sim_mode: bool,
+    context: "dict | None" = None,
 ) -> "tuple | None":
     """Build one channel's resolved record for the _RECORDED_CHANNELS path.
 
@@ -302,6 +376,11 @@ def _classify_recorded_channel(
         return None
     rec_ch = {k: v for k, v in ch.items() if k in ("channel", "priority", "tags", "message")}
     custom_message = rec_ch.pop("message", None) or None
+    if custom_message is not None:
+        # Part 2 (RamboQL GIVEN upgrade) — a `{"$given": "<name>"}` marker
+        # resolves to a real value here; a plain string passes through
+        # unchanged (every channel predating this feature).
+        custom_message = _resolve_given_message(custom_message, agent, context)
     # Tier-driven ntfy priority default — only when the operator hasn't
     # hand-configured an explicit priority for this channel, and only for
     # ntfy (telegram/email sends don't accept a priority kwarg; injecting
@@ -366,7 +445,7 @@ def _emit_breach_record(
 
 
 async def dispatch(agent, eval_result, broadcast_fn=None, sim_mode: bool = False,
-                   skip_channels: frozenset = frozenset()):
+                   skip_channels: frozenset = frozenset(), context: "dict | None" = None):
     """
     Send alert through all enabled channels for an agent.
 
@@ -374,6 +453,14 @@ async def dispatch(agent, eval_result, broadcast_fn=None, sim_mode: bool = False
         agent: Agent DB row
         eval_result: EvalResult built by the v2 agent engine when a condition fires
         broadcast_fn: optional WebSocket broadcast function
+        context:     the same dict run_cycle passed into the evaluator —
+                     needed ONLY to resolve a `{"$given": "<name>"}`
+                     custom-message marker (Part 2 of the RamboQL GIVEN
+                     upgrade) via `context["given"][agent.id]`. `None`
+                     (the default) is fine for every caller that doesn't
+                     use GIVEN — `_resolve_given_message` degrades to
+                     "unresolved" (falls back to the condition-text
+                     default) rather than raising.
         sim_mode:    when True every surface (subjects, preambles, logs) is
                      prefixed with SIMULATOR so simulated fires are never
                      confused with real ones.
@@ -439,6 +526,7 @@ async def dispatch(agent, eval_result, broadcast_fn=None, sim_mode: bool = False
         if ch.get("channel") in _RECORDED_CHANNELS:
             classified = _classify_recorded_channel(
                 ch, agent, eval_result, condition_text, branch_tag, sim_mode,
+                context=context,
             )
             if classified is not None:
                 custom_message, rec_ch = classified

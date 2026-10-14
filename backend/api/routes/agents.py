@@ -124,6 +124,12 @@ class AgentInfo(msgspec.Struct):
     # that reconstructed row's `id` — never `id` above.
     legacy_template_id:    int | None = None
     bracket_config:        dict | None = None
+    # RamboQL Part 2 (2026-10) — server-evaluated GIVEN bindings, a list
+    # of `{"name","expr"}` dicts for every OPERATOR-BASED GIVEN the CLI
+    # compiler emitted (pure-alias bindings never reach here — see
+    # Agent.given in backend/api/models.py). [] for every agent that
+    # doesn't use GIVEN.
+    given:                 list       = msgspec.field(default_factory=list)
 
 
 class AgentCreateRequest(msgspec.Struct):
@@ -187,6 +193,9 @@ class AgentCreateRequest(msgspec.Struct):
     # attribute `group_name` (`group` is a reserved SQL keyword) — see
     # Agent.group_name in backend/api/models.py. None = ungrouped.
     group:                  str | None = None
+    # RamboQL Part 2 (2026-10) — server-evaluated GIVEN bindings. See
+    # AgentInfo.given above for the full shape/rationale.
+    given:                  list       = msgspec.field(default_factory=list)
 
 
 class AgentUpdateRequest(msgspec.Struct):
@@ -227,6 +236,9 @@ class AgentUpdateRequest(msgspec.Struct):
     # Sprint 7 (CLI grammar authoring, `#group=...`) — None means
     # unchanged, same convention. Maps to ORM attribute `group_name`.
     group:                 str | None = None
+    # RamboQL Part 2 (2026-10) — server-evaluated GIVEN bindings. None =
+    # unchanged, same convention as every other optional field here.
+    given:                 list | None = None
 
 
 class AgentEventInfo(msgspec.Struct):
@@ -558,6 +570,7 @@ def _agent_to_info(a: Agent) -> AgentInfo:
         cli_source=getattr(a, "cli_source", None),
         legacy_template_id=getattr(a, "legacy_template_id", None),
         bracket_config=getattr(a, "bracket_config", None),
+        given=list(getattr(a, "given", None) or []),
     )
 
 
@@ -924,6 +937,7 @@ class AgentController(Controller):
                 topic=(data.topic or "general"),
                 cli_source=data.cli_source,
                 group_name=data.group,
+                given=list(data.given or []),
             )
             session.add(agent)
             await session.commit()
@@ -1022,7 +1036,7 @@ class AgentController(Controller):
                           'events', 'actions', 'scope', 'schedule',
                           'cooldown_minutes', 'debounce_minutes',
                           'tags', 'blackout_windows', 'tier', 'topic',
-                          'cli_source'):
+                          'cli_source', 'given'):
                 val = getattr(data, field, None)
                 if val is not None:
                     setattr(agent, field, val)

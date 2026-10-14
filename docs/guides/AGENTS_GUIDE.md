@@ -170,7 +170,7 @@ spikes.
 
 ### Action types
 
-`place_order`, `modify_order`, `cancel_order`, `cancel_all_orders`, `chase_close_positions`, `close_position`, `monitor_order`, `deactivate_agent`, `set_flag`, `emit_log`. See [CLAUDE.md § Action grammar](CLAUDE.md) for parameter schemas.
+`order`, `modify_order`, `cancel_order`, `cancel_all_orders`, `chase_close_positions`, `close_position`, `monitor_order`, `deactivate_agent`, `set_flag`, `emit_log`. See [CLAUDE.md § Action grammar](CLAUDE.md) for parameter schemas. (The internal name `place_order` is also accepted for backward compatibility but `order` is the canonical form going forward.)
 
 ---
 
@@ -185,7 +185,7 @@ tokens.
 
 Two scope-restricted order-only mounts of the SAME grammar also exist — a "CLI"
 tab on `/orders` and a "CLI" tab in the SymbolPanel order-ticket modal — both
-compile ONLY a bare `order(...)`/`place_order(...)` statement (enforced by the
+compile ONLY a bare `order(...)` statement (enforced by the
 compiler itself, not a hidden button); bracket/agent/event/token syntax is
 rejected there with a message pointing back to `/automation?tab=console`.
 
@@ -213,17 +213,57 @@ Each clause is independently optional (omit `WHEN` → always true; omit `ALERT`
 - `ALERT nop` — skip notification
 
 **DO** (actions):
-- `DO place_order(acct="ZG0790", sym="NIFTY25JULFUT", side="BUY", qty=1)` — 
+- `DO order(acct="ZG0790", sym="NIFTY25JULFUT", side="BUY", qty=1)` — 
   place order using live account data
 - `DO close_position(account=account_id, symbol=symbol)` — close using matched 
   row values (Sprint 16: `$row` binding)
 - `DO emit_log(message="Market open")` — log only
 - `DO nop` — no action
 
+**GIVEN** (bindings, optional):
+- `GIVEN p = pnl@positions.total` — lightweight alias (client-side); can be used anywhere
+- `GIVEN msg_txt = "Loss: " + p + " on " + symbol` — real computed value (server-side); 
+  reusable in `ALERT`'s message and in `DO`'s string-typed params only (not numeric/enum fields like qty or side)
+- Bindings are evaluated once per tick in declaration order and can reference earlier 
+  bindings
+
+**Recent alert message fixes** — Three operator-visible improvements to alert delivery:
+- Per-account breach alerts now show masked account form (e.g. "Z1####") instead of 
+  the real broker account code, fixing a pre-existing information leak.
+- `ALERT msg=` overrides (plain string or GIVEN-computed) now actually render on 
+  telegram, email, and ntfy channels for live agent fires — previously silently dropped 
+  there (log, websocket, and in-app were unaffected).
+- Whole-number values in messages render without a trailing decimal (e.g. "-120000" 
+  not "-120000.0").
+
+**Example combining GIVEN, WHEN, ALERT, DO:**
+```
+GIVEN p = pnl@positions.total
+      msg_txt = "Loss: " + p
+WHEN p <= -50000
+ALERT msg = msg_txt, telegram
+DO order(acct="ZG0790", sym="NIFTY25JULFUT", side="SELL", qty=1)
+```
+The `msg_txt` binding computes the message from concatenated live values and is sent 
+in the alert. A GIVEN binding with an operator (string concat, math) can be reused in 
+message strings or string-typed action params; a bare alias (`p = pnl@...`) is lightweight 
+and works anywhere.
+
+**New: bare newlines in lists** — You can write items on separate lines without commas or 
+semicolons:
+```
+GIVEN p = pnl@positions.total
+      q = avail_margin@funds.total
+ALERT msg="Alert"
+       telegram
+       email
+```
+
 ### Syntax reference
 
-**Boolean logic**: `&` (AND), `|` (OR), `~` (NOT) with equal precedence (L→R). 
-Parentheses required when mixing: `(a & b) | c`.
+**Boolean logic**: `and` (AND), `or` (OR), `not` (NOT) with equal precedence (L→R). 
+Parentheses required when mixing: `(a and b) or c`. The compact symbols `&`, `|`, `~` 
+remain valid as aliases if you prefer them, but `and`/`or`/`not` are the recommended forms.
 
 **Metric windows**: Any rolling-window metric can take a `minutes=N` parameter: 
 `mean_pnl(minutes=90)`, `max_drawdown_day(minutes=120)`, `stdev_pnl(60)`.
@@ -243,6 +283,13 @@ uses the WHEN scope's own rows.
 
 **Reserved words**: `when`, `alert`, `do`, `nop`, `always`, `in`, `not`, `true`, 
 `false` — cannot be token names.
+
+**Debug logging**: `debug(x)` logs a GIVEN-bound name or matched row column at debug 
+level, useful for troubleshooting agent logic. Use inside `GIVEN`, `ALERT`, or `DO`. 
+For a pure-alias GIVEN binding like `p = pnl@positions.total`, `debug(p)` logs the 
+metric reference. For an operator-based binding like `msg_txt = "Loss: " + p`, 
+`debug(msg_txt)` logs the computed value at the moment the agent fires. Example: 
+`DO emit_log(message=debug(p))` or just `DO debug(msg)` with no other action.
 
 ### Direct order placement
 
@@ -280,7 +327,7 @@ Seeded examples: `notify-critical-trio`, `notify-log-only`, `notify-telegram-onl
 
 **Condition Tokens** — saved condition sub-trees. Create or edit via Console
 the same way — the body after the head call is a full condition expression,
-the exact same grammar a `WHEN` clause uses (metric refs, `&`/`|`/`~`,
+the exact same grammar a `WHEN` clause uses (metric refs, `and`/`or`/`not`,
 between-chains, nested `$ref`s):
 ```
 token(kind=condition) pnl_pct@positions.any_acct <= -2.0 #name="loss-positions-acct-default"
@@ -427,7 +474,7 @@ Built-in agents are **force-reseeded on every boot** — your changes to their `
 
 | Token | Real | Sim |
 |---|---|---|
-| `place_order` | Broker call | `AlgoOrder(mode='sim')` at sim LTP |
+| `order` | Broker call | `AlgoOrder(mode='sim')` at sim LTP |
 | `chase_close_positions` | Adaptive chase via ExpiryEngine | SimDriver chase queue, fills via spread |
 | `close_position` | LIMIT at LTP | Paper row at sim LTP |
 | `cancel_order` / `modify_order` | Real broker | Sim order book |
@@ -437,7 +484,7 @@ Built-in agents are **force-reseeded on every boot** — your changes to their `
 
 The Order log Mode pill (SIM / PAPER / LIVE / SHADOW) visualises the difference.
 
-**TP auto-attach:** When `place_order` fills, an automatic TP order fires on the flip side at `fill_price × (1 + algo.default_target_pct)` (default 0.30). Idempotent via `parent_order_id` guard. Works in paper, live, and sim.
+**TP auto-attach:** When an `order` action fills, an automatic TP order fires on the flip side at `fill_price × (1 + algo.default_target_pct)` (default 0.30). Idempotent via `parent_order_id` guard. Works in paper, live, and sim.
 
 ---
 
@@ -483,7 +530,7 @@ The Order log Mode pill (SIM / PAPER / LIVE / SHADOW) visualises the difference.
 | Symptom | Likely cause | Where to look |
 |---|---|---|
 | `Validate` rejects with `unknown metric token` | Typo in metric name OR token deactivated on `/admin/tokens` | `/admin/tokens` → Condition tab → search the token |
-| CLI statement rejects with "argument must be written as name=value" | Attempted positional argument (first arg without a key). CLI grammar requires every argument to be keyword-only | Type at `/automation?tab=console` with correct syntax: `place_order(acct="ZG0790", sym="NIFTY25JULFUT", ...)` |
+| CLI statement rejects with "argument must be written as name=value" | Attempted positional argument (first arg without a key). CLI grammar requires every argument to be keyword-only | Type at `/automation?tab=console` with correct syntax: `order(acct="ZG0790", sym="NIFTY25JULFUT", ...)` |
 | `dry-run` shows `would_fire: false` but you expect true | Condition mismatch — operator's threshold vs current state | Use the dry-run `matches` array; each entry shows the metric, scope, threshold, and actual value |
 | `dry-run` shows `blocked_by: "schedule"` | Agent has `schedule: market_hours` but markets are closed | Either wait for session, or flip `schedule: always` for diagnostic agents |
 | Agent never fires on real ticks | Rate metric without baseline crossed; or in cooldown; or suppressed | `/automation/<slug>` Events tab + Alert Log tab in LogPanel; or set `cooldown_minutes: 0` temporarily |

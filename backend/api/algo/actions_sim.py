@@ -394,7 +394,7 @@ async def _sim_paper_trade(agent, action_type: str, params: dict, context: dict)
         await _sim_expiry_close(agent, action_type, params)
         return
 
-    if action_type in {"place_order", "close_position"}:
+    if action_type in {"order", "place_order", "close_position"}:
         await _sim_place_or_close(agent, action_type, params)
         return
 

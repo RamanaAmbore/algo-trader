@@ -686,8 +686,11 @@ class TestMatchToAlertRowMarginFalsePositive:
         """CRITICAL regression guard — byte-for-byte: the real
         loss-funds-negative shape (avail_margin < 0) must render exactly as
         it did before this fix: kind, real fetched pnl, and threshold all
-        untouched."""
+        untouched. `scope` is now masked (2026-10 leak fix) — computed via
+        `mask_account()`, not hardcoded, since `mask_account`'s `_REGISTRY`
+        is a module global other tests populate via `register_accounts()`."""
         from backend.api.algo.agent_engine import _v2_match_to_alertrow
+        from backend.shared.helpers.utils import mask_account
         match = {
             'metric': 'avail_margin', 'scope': 'funds.any_acct', 'op': '<',
             'threshold': 0, 'value': -5000.0, 'row': {'account': 'ACC1'},
@@ -695,23 +698,25 @@ class TestMatchToAlertRowMarginFalsePositive:
         row = _v2_match_to_alertrow(match)
         assert row['kind'] == 'negative_margin'
         assert row['section'] == 'Funds'
-        assert row['scope'] == 'ACC1'
+        assert row['scope'] == mask_account('ACC1')
         assert row['pnl'] == -5000.0, "pnl must come from the real fetched value"
         assert row['threshold'] == '-₹0'
 
     def test_genuine_negative_margin_breach_golden_render(self):
-        """Byte-for-byte golden render of the real breach through the exact
-        Telegram/email body builders — proves the fix does not touch this
-        alert's operator-visible text at all."""
+        """Golden render of the real breach through the exact Telegram/
+        email body builders — proves the fix doesn't otherwise touch this
+        alert's operator-visible text, aside from masking the account
+        code (2026-10 leak fix)."""
         from backend.api.algo.agent_engine import _v2_match_to_alertrow
         from backend.shared.helpers.alert_utils import _tg_alert_body, _email_alert_body
+        from backend.shared.helpers.utils import mask_account
         match = {
             'metric': 'avail_margin', 'scope': 'funds.any_acct', 'op': '<',
             'threshold': 0, 'value': -5000.0, 'row': {'account': 'ACC1'},
         }
         row = _v2_match_to_alertrow(match)
         tg_body = _tg_alert_body([row])
-        assert tg_body == "▸ FND ACC1  -₹5K\n  Margin < 0  -₹0"
+        assert tg_body == f"▸ FND {mask_account('ACC1')}  -₹5K\n  Margin < 0  -₹0"
         email_html = _email_alert_body([row])
         assert "Margin &lt; 0" in email_html or "Margin < 0" in email_html
         assert "-₹0" in email_html
@@ -813,6 +818,7 @@ class TestSendRichAlertScheduledAgentClarity:
         loss-funds-negative must still render the full kind/threshold table,
         completely untouched by the scheduled-agent clarity fix."""
         from backend.api.algo.agent_engine import _v2_send_rich_alert
+        from backend.shared.helpers.utils import mask_account
         agent = MagicMock()
         agent.slug = "loss-funds-negative"
         agent.name = "Account funds gone negative (cash or margin)"
@@ -832,4 +838,6 @@ class TestSendRichAlertScheduledAgentClarity:
         captured.update(_rich_extra(mock_log))
 
         assert sent is True
-        assert captured['tg_table'] == "▸ FND ACC1  -₹5K\n  Margin < 0  -₹0"
+        # Account code masked (2026-10 leak fix) — computed, not
+        # hardcoded, same flake-safety reason as the sibling tests above.
+        assert captured['tg_table'] == f"▸ FND {mask_account('ACC1')}  -₹5K\n  Margin < 0  -₹0"

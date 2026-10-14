@@ -928,6 +928,164 @@
     {
       "grammar_kind": "action",
       "token_kind": "action_type",
+      "token": "order",
+      "value_type": "void",
+      "description": "Place a new broker order with the supplied parameters.",
+      "resolver": null,
+      "params_schema": {
+        "account": {
+          "type": "string",
+          "required": true,
+          "token_ref_ok": true,
+          "description": "Masked account id to route the order to (e.g. ZG####)."
+        },
+        "symbol": {
+          "type": "string",
+          "required": true,
+          "description": "Tradingsymbol, e.g. NIFTY26APR22500CE or RELIANCE."
+        },
+        "exchange": {
+          "type": "enum",
+          "enum": [
+            "NSE",
+            "BSE",
+            "NFO",
+            "CDS",
+            "MCX"
+          ],
+          "required": false,
+          "default": "NFO"
+        },
+        "side": {
+          "type": "enum",
+          "enum": [
+            "BUY",
+            "SELL"
+          ],
+          "required": true,
+          "description": "BUY opens long / covers short; SELL opens short / closes long."
+        },
+        "qty": {
+          "type": "number",
+          "required": true,
+          "token_ref_ok": true,
+          "description": "Number of lots × lot size. Must be positive."
+        },
+        "order_type": {
+          "type": "enum",
+          "enum": [
+            "MARKET",
+            "LIMIT",
+            "SL",
+            "SL-M"
+          ],
+          "required": false,
+          "default": "MARKET"
+        },
+        "price": {
+          "type": "number",
+          "required": false,
+          "token_ref_ok": true,
+          "description": "Required for LIMIT / SL.",
+          "required_if": {
+            "field": "order_type",
+            "in": [
+              "LIMIT",
+              "SL"
+            ]
+          }
+        },
+        "trigger_price": {
+          "type": "number",
+          "required": false,
+          "token_ref_ok": true,
+          "description": "Required for SL / SL-M.",
+          "required_if": {
+            "field": "order_type",
+            "in": [
+              "SL",
+              "SL-M"
+            ]
+          }
+        },
+        "product": {
+          "type": "enum",
+          "enum": [
+            "MIS",
+            "CNC",
+            "NRML"
+          ],
+          "required": false,
+          "default": "MIS"
+        },
+        "variety": {
+          "type": "enum",
+          "enum": [
+            "regular",
+            "amo",
+            "co",
+            "iceberg",
+            "auction"
+          ],
+          "required": false,
+          "default": "regular"
+        },
+        "tag": {
+          "type": "string",
+          "required": false,
+          "description": "Free-form tag propagated into the broker order id and AlgoOrder row."
+        },
+        "chase_level": {
+          "type": "enum",
+          "enum": [
+            "LOW",
+            "MED",
+            "HIGH"
+          ],
+          "required": false,
+          "description": "Chase aggressiveness for the live adaptive limit-order chase engine — LOW (patient, long interval, small step, more attempts), MED (balanced, used when omitted), HIGH (urgent, short interval, big step, fewer attempts, crosses the spread fast). Threads into the same backend.api.routes.orders_helpers._live_chase_config() mapping every manual-ticket chase already uses."
+        },
+        "template_id": {
+          "type": "number",
+          "required": false,
+          "description": "OrderTemplate row id. Mutually exclusive with template_slug."
+        },
+        "template_slug": {
+          "type": "string",
+          "required": false,
+          "description": "OrderTemplate stable slug (e.g. \"default-bull\", \"default-short-vol\", \"none\")."
+        },
+        "tp_pct_override": {
+          "type": "number",
+          "required": false,
+          "description": "Per-action TP% override (e.g. 25.0 = +25%). Wins over template default."
+        },
+        "sl_pct_override": {
+          "type": "number",
+          "required": false,
+          "description": "Per-action SL% override (e.g. 15.0 = -15%). Wins over template default."
+        },
+        "wing_premium_pct_override": {
+          "type": "number",
+          "required": false,
+          "description": "Per-action wing premium % override (sell_option only)."
+        },
+        "wing_strike_offset_override": {
+          "type": "number",
+          "required": false,
+          "description": "Per-action wing strike offset override (e.g. 500 → wing at +500 strike)."
+        }
+      },
+      "mutually_exclusive_groups": [
+        [
+          "wing_premium_pct_override",
+          "wing_strike_offset_override"
+        ]
+      ]
+    },
+    {
+      "grammar_kind": "action",
+      "token_kind": "action_type",
       "token": "modify_order",
       "value_type": "void",
       "description": "Modify an existing open broker order by broker_order_id.",

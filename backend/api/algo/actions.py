@@ -33,7 +33,12 @@ logger = get_logger(__name__)
 # monitor_order, deactivate_agent, send_summary) run uniformly regardless
 # of mode.
 BROKER_ACTIONS = {
-    "place_order", "modify_order",
+    # "order" is the order/place_order unification's Phase A canonical
+    # name (2026-10, widen-not-rename) — "place_order" stays accepted
+    # alongside it (both dispatch to the exact same handler, see
+    # _LIVE_ACTION_HANDLERS below); dropping "place_order" acceptance is
+    # Phase B, explicitly deferred.
+    "order", "place_order", "modify_order",
     "cancel_order", "cancel_all_orders",
     "close_position",
     "chase_close", "chase_close_positions",
@@ -104,7 +109,7 @@ def _action_target_exchanges(action_type: str, params: dict, context: dict) -> l
 
     Returns uppercased exchange codes (or [] when not applicable)."""
     at = (action_type or "").lower()
-    if at in ("place_order", "modify_order", "cancel_order", "close_position"):
+    if at in ("order", "place_order", "modify_order", "cancel_order", "close_position"):
         ex = (params.get("exchange") or "").upper().strip()
         if not ex:
             # Default mirrors TicketOrderRequest's default: NFO.
@@ -196,6 +201,14 @@ def _resolve_handler(ref: _HandlerRef):
 # `chase_close_positions` are a deliberate alias — both route to the
 # same positions-sweep handler.
 _LIVE_ACTION_HANDLERS: dict[str, _HandlerRef] = {
+    # "order"/"place_order" — order/place_order unification Phase A
+    # (2026-10): both names resolve to the exact same handler. "order" is
+    # the canonical name the frontend compiler emits going forward;
+    # "place_order" stays accepted (CLI backward-compat typing + any
+    # already-stored Agent.actions JSON predating the backfill
+    # migration). Never remove "place_order" here without a separate,
+    # explicitly-confirmed Phase B.
+    "order":                 _HandlerRef("backend.api.algo.actions_live", "_action_place_order"),
     "place_order":           _HandlerRef("backend.api.algo.actions_live", "_action_place_order"),
     "close_position":        _HandlerRef("backend.api.algo.actions_live", "_action_live_close_position"),
     "modify_order":          _HandlerRef("backend.api.algo.actions_live", "_action_live_modify_order"),
@@ -514,6 +527,84 @@ def resolve_row_ref_params(params: dict, context: dict) -> tuple[dict, str | Non
             return params, (
                 f"'{exposed_name}' is missing (None/NaN) on the matched "
                 f"row for scope '{scope_tok}'"
+            )
+        resolved[key] = val
+    return resolved, None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  GIVEN binding reference ($given) — Part 2 of the RamboQL GIVEN upgrade
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Marker shape, parallel to `$row` above: `{"$given": "<name>"}` as a
+# single-key, top-level param value. Compiled by the frontend CLI
+# (separate change) when a `DO` action param references an
+# OPERATOR-BASED `GIVEN` binding by bare name (e.g.
+# `DO order(..., tag=msg_txt)` where `GIVEN msg_txt = "Loss: " + p`) —
+# a PURE-ALIAS GIVEN binding (no operator) keeps compiling to a plain
+# literal/text substitution exactly as before, so never produces this
+# marker.
+#
+# Resolved against `context["given"][agent.id]` — the per-agent
+# bindings dict `agent_engine._cycle_evaluate_given_bindings` computed
+# once this tick, BEFORE this agent's condition was even evaluated (see
+# that function's own docstring for the per-agent-key isolation
+# rationale: `context` is shared across every agent in a cycle).
+#
+# Fails CLOSED like `$row`: a name absent from this agent's bindings
+# (binding never defined, or its own evaluation failed/was skipped this
+# tick — e.g. the per-row-scope Phase-1 limitation, or an upstream
+# ExprError) returns a non-None error string; `execute()` skips that one
+# action rather than dispatching a broker call with a missing/blank
+# field.
+def _is_given_ref_marker(v: Any) -> bool:
+    """True iff `v` is EXACTLY the single-key marker dict
+    `{"$given": "<name>"}` — mirrors `_is_row_ref_marker`'s single-key
+    check so a legitimate multi-key object-literal param value is never
+    misread as a GIVEN reference."""
+    return isinstance(v, dict) and len(v) == 1 and "$given" in v
+
+
+def resolve_given_ref_params(params: dict, agent, context: dict) -> tuple[dict, str | None]:
+    """Resolve `{"$given": "<name>"}` markers in `params` against
+    `context["given"][agent.id]`.
+
+    Returns `(resolved_params, error)` — same contract as
+    `resolve_row_ref_params`: `error` is `None` on success (including
+    the common no-markers-present case, a true no-op returning `params`
+    unchanged), and a short human-readable reason on failure. Callers
+    must not dispatch the action when `error` is not `None`.
+    """
+    if not isinstance(params, dict) or not params:
+        return params, None
+    if not any(_is_given_ref_marker(v) for v in params.values()):
+        return params, None
+
+    agent_id = getattr(agent, "id", None)
+    bindings = (context.get("given") or {}).get(agent_id)
+    if bindings is None:
+        bindings = {}
+
+    resolved = dict(params)
+    for key, value in params.items():
+        if not _is_given_ref_marker(value):
+            continue
+        name_raw = value["$given"]
+        # The frontend compiler always lowercases a $given reference (a
+        # binding's own `name` field preserves the operator's original
+        # typed case, but every REFERENCE to it is `.toLowerCase()`'d) —
+        # `agent_engine._cycle_evaluate_given_bindings` stores under
+        # `name.lower()` for exactly this reason; lowercase here too.
+        name = name_raw.lower() if isinstance(name_raw, str) else name_raw
+        if name not in bindings:
+            return params, (
+                f"GIVEN label '{name}' did not resolve to a value this tick"
+            )
+        val = bindings[name]
+        if val is None:
+            return params, (
+                f"GIVEN label '{name}' resolved to None (missing data) "
+                f"this tick"
             )
         resolved[key] = val
     return resolved, None
@@ -866,6 +957,21 @@ async def execute(agent, actions: list, context: dict):
         if row_ref_error:
             await _al_log_action_skipped(
                 agent, action_type, params, row_ref_error, tag, sim_mode,
+                level="warning",
+            )
+            continue
+
+        # ── GIVEN binding ($given) reference — Part 2 ───────────────
+        # Resolved right alongside $row, for the same reason: before the
+        # exchange gate (which needs the real symbol/account/price) and
+        # before resolve_action_params()'s expression evaluator. A true
+        # no-op for every agent without an operator-based GIVEN binding
+        # referenced in its DO params — see resolve_given_ref_params()'s
+        # docstring for the marker shape and fail-closed contract.
+        params, given_ref_error = resolve_given_ref_params(params, agent, context)
+        if given_ref_error:
+            await _al_log_action_skipped(
+                agent, action_type, params, given_ref_error, tag, sim_mode,
                 level="warning",
             )
             continue

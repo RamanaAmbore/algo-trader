@@ -32,7 +32,7 @@ vi.mock('$lib/api', () => ({ fetchGrammarTokens: vi.fn() }));
 const {
   buildCatalog, fetchAgentCatalog, parseStatement, compileStatement,
   compileAgentCliStatement, validateAgentCliStatement, lexAgentStatement,
-  parseCall, parseValue, parseLeaf, ALWAYS_LEAF, KWARG_ALIASES,
+  parseCall, parseValue, parseLeaf, parseListLiteral, ALWAYS_LEAF, KWARG_ALIASES,
   suggestAgentCliAt, decompileCondition, describeErrorPosition, decompileAgent,
 } = await import('$lib/command/grammars/agents.js');
 const { fetchGrammarTokens } = await import('$lib/api');
@@ -446,7 +446,7 @@ describe('canonical examples — exact compiled JSON', () => {
     expect(r.agent).toEqual({
       conditions: { metric: 'mean_pnl(30)', scope: 'positions.total', op: '<=', value: -50000 },
       events: [{ channel: 'telegram', enabled: true }],
-      actions: [{ type: 'place_order', params: { account: 'ZG0790', symbol: 'NIFTY25JULFUT', side: 'SELL', qty: 75 } }],
+      actions: [{ type: 'order', params: { account: 'ZG0790', symbol: 'NIFTY25JULFUT', side: 'SELL', qty: 75 } }],
     });
   });
 
@@ -462,7 +462,7 @@ describe('canonical examples — exact compiled JSON', () => {
       { channel: 'ntfy', enabled: true, priority: 'urgent' },
     ]);
     expect(r.agent.actions).toEqual([
-      { type: 'place_order', params: { account: 'ZG0790', symbol: 'NIFTY25JULFUT', side: 'SELL', qty: 75 } },
+      { type: 'order', params: { account: 'ZG0790', symbol: 'NIFTY25JULFUT', side: 'SELL', qty: 75 } },
       { type: 'emit_log', params: { message: 'stop hit' } },
     ]);
   });
@@ -503,7 +503,7 @@ describe('canonical examples — exact compiled JSON', () => {
     expect(r.errors).toEqual([]);
     expect(r.agent.events).toEqual([]);
     expect(r.agent.actions).toEqual([
-      { type: 'place_order', params: { account: 'ZG0790', symbol: 'NIFTY25JULFUT', side: 'SELL', qty: 75 } },
+      { type: 'order', params: { account: 'ZG0790', symbol: 'NIFTY25JULFUT', side: 'SELL', qty: 75 } },
     ]);
   });
 
@@ -519,7 +519,7 @@ describe('canonical examples — exact compiled JSON', () => {
     expect(r.errors).toEqual([]);
     expect(r.agent.conditions).toEqual(ALWAYS_LEAF);
     expect(r.agent.actions).toEqual([
-      { type: 'place_order', params: { account: 'ZG0790', symbol: 'NIFTY25JULFUT', side: 'BUY', qty: 150 } },
+      { type: 'order', params: { account: 'ZG0790', symbol: 'NIFTY25JULFUT', side: 'BUY', qty: 150 } },
     ]);
   });
 
@@ -1119,12 +1119,25 @@ describe('Sprint 10 — hyphenated NAME lexing (call/token-reference position on
     expect(tokens[0].value).toBe('loss-positions-default');
   });
 
-  it('a trailing hyphen (before whitespace/EOF) is NOT swallowed into the name', () => {
-    const { errors } = lexAgentStatement('loss-positions-default-');
-    // The dangling "-" (no digit, no word-char after it) has no legal
-    // production of its own — fails loud rather than silently being
-    // absorbed into the preceding name.
-    expect(errors.length).toBeGreaterThan(0);
+  it('a trailing hyphen (before whitespace/EOF) is NOT swallowed into the name — now lexes as a separate MINUS token (Sprint [GIVEN-expr])', () => {
+    const { tokens, errors } = lexAgentStatement('loss-positions-default-');
+    // The dangling "-" (no digit, no word-char after it) is NOT absorbed
+    // into the preceding NAME — unchanged. What changed (Sprint
+    // [GIVEN-expr], binary MINUS added for GIVEN's new arithmetic
+    // production): a standalone "-" is no longer a hard LEX error — it
+    // lexes as its own MINUS token. This statement still fails at PARSE
+    // time in any real context expecting EOF right after a bare Token
+    // name (a dangling MINUS is unconsumed trailing input there), just
+    // with a less specific parse-stage error instead of a lex-stage one
+    // — see the next test for the (unaffected) parse-level behavior.
+    expect(errors).toEqual([]);
+    expect(tokens.map(t => t.type)).toEqual(['NAME', 'MINUS', 'EOF']);
+    expect(tokens[0].value).toBe('loss-positions-default');
+  });
+
+  it('a dangling trailing hyphen still fails at PARSE time in a real statement (unconsumed trailing MINUS)', () => {
+    const r = compile('WHEN pnl@positions.total <= -1 ALERT loss-positions-default- DO nop');
+    expect(r.ok).toBe(false);
   });
 
   it('a negative number in a kwarg value position inside a call still lexes correctly, unaffected by the hyphen widening', () => {
@@ -1830,7 +1843,7 @@ describe('meta clause — #name=/#desc=/#tag=/#group=', () => {
     expect(r.agent.group).toBe('hedge-book');
     // conditions/events/actions compile unaffected by the trailing meta clause.
     expect(r.agent.actions).toEqual([{
-      type: 'place_order',
+      type: 'order',
       params: { account: 'ZG0790', symbol: 'NIFTY25JULFUT', side: 'SELL', qty: 75 },
     }]);
   });
@@ -2285,7 +2298,7 @@ describe('Sprint 16 — $row binding for place_order/order(...)\'s own qty= para
     );
     expect(r.ok).toBe(true);
     expect(r.agent.actions).toEqual([{
-      type: 'place_order',
+      type: 'order',
       params: {
         account: { '$row': 'account_id' }, symbol: { '$row': 'symbol' },
         side: 'SELL', qty: { '$row': 'qty' },
@@ -3339,6 +3352,346 @@ describe('Sprint G — debug(x)', () => {
   });
 });
 
+describe('Sprint [newline-separator] — a bare newline is an alternative to ";"/","', () => {
+  it('newline replaces ";" between GIVEN items', () => {
+    const r = compile('GIVEN a = "first"\nb = "second" WHEN always ALERT telegram DO emit_log(message=a), emit_log(message=b)');
+    expect(r.ok).toBe(true);
+    expect(r.agent.actions).toEqual([
+      { type: 'emit_log', params: { message: 'first' } },
+      { type: 'emit_log', params: { message: 'second' } },
+    ]);
+  });
+
+  it('newline replaces ";" between ALERT items (a label assignment followed by a new item)', () => {
+    const r = compile('WHEN always ALERT msg = "hi"\ntelegram DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.events).toEqual([{ channel: 'telegram', enabled: true, message: 'hi' }]);
+  });
+
+  it('newline replaces ";" between DO items', () => {
+    const r = compile('WHEN always ALERT telegram DO emit_log(message="a")\nemit_log(message="b")');
+    expect(r.ok).toBe(true);
+    expect(r.agent.actions).toEqual([
+      { type: 'emit_log', params: { message: 'a' } },
+      { type: 'emit_log', params: { message: 'b' } },
+    ]);
+  });
+
+  it('newline replaces "," in a call-list item (ALERT telegram\\nemail)', () => {
+    const r = compile('WHEN always ALERT telegram\nemail DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.events).toEqual([
+      { channel: 'telegram', enabled: true },
+      { channel: 'email', enabled: true },
+    ]);
+  });
+
+  it('newline replaces "," in a DO call-list item', () => {
+    const r = compile('WHEN always ALERT telegram DO emit_log(message="a")\nemit_log(message="b")');
+    expect(r.ok).toBe(true);
+    expect(r.agent.actions.length).toBe(2);
+  });
+
+  it('a newline followed by a label assignment hands off to the OUTER clause-item loop, not absorbed as "another call"', () => {
+    // `telegram\nmsg_txt = "late"` — the newline right after `telegram`
+    // must NOT be swallowed as "telegram, msg_txt" (an attempt to parse
+    // `msg_txt` as another bare call name) — the NAME-then-EQ lookahead
+    // exclusion hands this off to the OUTER clause-item loop instead,
+    // where the newline is correctly treated as a ";" between a `calls`
+    // item (telegram) and a fresh `assign` item (msg_txt).
+    const r = compile('WHEN always ALERT telegram\nmsg_txt = "late" DO emit_log(message=msg_txt)');
+    expect(r.ok).toBe(true);
+    expect(r.agent.events).toEqual([{ channel: 'telegram', enabled: true }]);
+    expect(r.agent.actions).toEqual([{ type: 'emit_log', params: { message: 'late' } }]);
+  });
+
+  it('newline replaces "," in a plain value list literal (direct parser unit test, mirrors parseValue()/parseLeaf()\'s own style above)', () => {
+    const { tokens } = lexAgentStatement('[1\n2\n3]');
+    const state = { tokens, pos: 0 };
+    expect(parseListLiteral(state)).toEqual({
+      type: 'list',
+      value: [{ type: 'number', value: 1 }, { type: 'number', value: 2 }, { type: 'number', value: 3 }],
+    });
+  });
+
+  it('a literal trailing comma in a list literal still always demands a following item (newline support does not relax this)', () => {
+    const { tokens } = lexAgentStatement('[1, 2,]');
+    const state = { tokens, pos: 0 };
+    expect(() => parseListLiteral(state)).toThrow(/trailing comma in list literal/);
+  });
+
+  it('newline replaces "," inside match=[...] (list of object literals)', () => {
+    const r = compile('ALERT match=[{tag=orders, min_level=WARNING}\n{tag=risk, min_level=ERROR}], render=x, telegram');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions.any.length).toBe(2);
+  });
+
+  it('a bare newline does NOT replace the bare multi-order top-level statement\'s "," — stays comma-only', () => {
+    const r = compile(
+      'order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, price=100)\n'
+      + 'order(account="ZJ6294", symbol="BANKNIFTY25JULFUT", side="BUY", lots=1, price=200)'
+    );
+    expect(r.ok).toBe(false);
+  });
+
+  it('a bare newline does NOT replace a call\'s own "(...)" argument separator', () => {
+    const { errors } = lexAgentStatement('order(account="ZG0790",\nsymbol="NIFTY25JULFUT")');
+    // A call's own args are resolved entirely at LEX time from the raw
+    // inner text — a newline there is ordinary whitespace, unaffected by
+    // this sprint (and already worked fine before it, since whitespace
+    // around a LITERAL "," inside "(...)" was always tolerated).
+    expect(errors).toEqual([]);
+  });
+
+  it('every existing comma/semicolon-based GIVEN/ALERT/DO statement still compiles unchanged (regression spot-check)', () => {
+    const r = compile(
+      'GIVEN a = "first"; b = "second" '
+      + 'WHEN always ALERT telegram DO emit_log(message=a), emit_log(message=b)'
+    );
+    expect(r.ok).toBe(true);
+    expect(r.agent.actions).toEqual([
+      { type: 'emit_log', params: { message: 'first' } },
+      { type: 'emit_log', params: { message: 'second' } },
+    ]);
+  });
+
+  it('the full Part 4 CLI placeholder example (multi-line GIVEN/WHEN/ALERT/DO) compiles end-to-end', () => {
+    const r = compile(
+      'GIVEN p = pnl@positions.total\n'
+      + 'msg_txt = "Loss: " + p\n'
+      + 'WHEN p <= -50000\n'
+      + 'ALERT msg = msg_txt, telegram\n'
+      + 'DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)'
+    );
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions).toEqual({ metric: 'pnl', scope: 'positions.total', op: '<=', value: -50000 });
+    // Sprint [GIVEN-parts] — `msg_txt` mixes a string literal into its
+    // expression, so it compiles to the "parts" shape (operator decision:
+    // expr_eval.py's strict str/number trust boundary was not loosened),
+    // never `expr` — see the dedicated "Sprint [GIVEN-parts]" describe
+    // block below for the full classification-rule coverage.
+    expect(r.agent.given).toEqual([
+      { name: 'p', expr: 'pnl@positions.total' },
+      { name: 'msg_txt', parts: ['Loss: ', { '$given': 'p' }] },
+    ]);
+    expect(r.agent.events).toEqual([{ channel: 'telegram', enabled: true, message: { '$given': 'msg_txt' } }]);
+    expect(r.agent.actions).toEqual([
+      { type: 'order', params: { account: 'ZG0790', symbol: 'NIFTY25JULFUT', side: 'SELL', qty: 75 } },
+    ]);
+  });
+});
+
+describe('Sprint [GIVEN-expr] — operator-expression GIVEN bindings', () => {
+  it('a pure alias (bare metric@scope, no operator) still classifies/compiles EXACTLY as today — no "given" key at all', () => {
+    const viaLabel = compile('GIVEN p = pnl@positions.total WHEN p <= -50000 ALERT telegram DO nop');
+    const byHand = compile('WHEN pnl@positions.total <= -50000 ALERT telegram DO nop');
+    expect(viaLabel.ok).toBe(true);
+    expect(byHand.ok).toBe(true);
+    expect(viaLabel.agent.conditions).toEqual(byHand.agent.conditions);
+    expect(viaLabel.agent.given).toBeUndefined();
+  });
+
+  it('a string-concat expression compiles to a NEW top-level "given" key as "parts" (string-building shape, not "expr")', () => {
+    const r = compile(
+      'GIVEN p = pnl@positions.total\n'
+      + 'msg_txt = "Loss: " + p '
+      + 'WHEN always ALERT msg = msg_txt, telegram'
+    );
+    expect(r.ok).toBe(true);
+    expect(r.agent.given).toEqual([
+      { name: 'p', expr: 'pnl@positions.total' },
+      { name: 'msg_txt', parts: ['Loss: ', { '$given': 'p' }] },
+    ]);
+  });
+
+  it('a pure alias that is NEVER referenced by any operator expression does NOT get its own "given" entry', () => {
+    const r = compile('GIVEN p = pnl@positions.total WHEN p <= -50000 ALERT telegram DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.given).toBeUndefined();
+  });
+
+  it('a bare NAME referencing an earlier alias with NO operator ALSO classifies as an operator-expression binding', () => {
+    const r = compile('GIVEN p = pnl@positions.total\nq = p WHEN always ALERT telegram DO emit_log(message=q)');
+    expect(r.ok).toBe(true);
+    expect(r.agent.given).toEqual([
+      { name: 'p', expr: 'pnl@positions.total' },
+      { name: 'q', expr: 'p' },
+    ]);
+    expect(r.agent.actions).toEqual([{ type: 'emit_log', params: { message: { '$given': 'q' } } }]);
+  });
+
+  it('REGRESSION GUARD: a comparator after a bare metric@scope still classifies as a CONDITION, not an operator expression', () => {
+    const r = compile('GIVEN x = pnl@positions.total <= -5 WHEN x ALERT telegram DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.given).toBeUndefined();
+    expect(r.agent.conditions).toEqual({ metric: 'pnl', scope: 'positions.total', op: '<=', value: -5 });
+  });
+
+  it('arithmetic operators (+ - * / % **) all lex/parse correctly in a GIVEN expression', () => {
+    const r = compile('GIVEN a = 1 + 2 - 3 * 4 / 5 % 6 ** 2 WHEN always ALERT telegram DO debug(a)');
+    expect(r.ok).toBe(true);
+    expect(r.agent.given).toEqual([{ name: 'a', expr: '1 + 2 - 3 * 4 / 5 % 6 ** 2' }]);
+  });
+
+  it('an inline metric@scope mixed into an operator expression is a compile-time error with a "bind it first" redirect', () => {
+    const r = compile('GIVEN y = "x" + pnl@positions.total WHEN always ALERT telegram DO nop');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /cannot reference a metric@scope value inline.*bind it first/.test(e.message))).toBe(true);
+  });
+
+  it('an operator-expression label used for a NUMERIC action param is a clear compile-time error naming the label', () => {
+    const r = compile(
+      'GIVEN qty_expr = 1 + 1 '
+      + 'WHEN always ALERT telegram DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", qty=qty_expr)'
+    );
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /GIVEN label 'qty_expr' is a computed value; it cannot be used for a numeric\/enum field/.test(e.message))).toBe(true);
+  });
+
+  it('an operator-expression label used for a STRING-typed action param compiles to a {"$given": name} marker', () => {
+    const r = compile('GIVEN msg_txt = "a" + "b" WHEN always ALERT telegram DO emit_log(message=msg_txt)');
+    expect(r.ok).toBe(true);
+    expect(r.agent.actions).toEqual([{ type: 'emit_log', params: { message: { '$given': 'msg_txt' } } }]);
+  });
+
+  it('ALERT\'s clause-level msg= default resolves an operator-expression label to a {"$given": name} marker', () => {
+    const r = compile('GIVEN msg_txt = "a" + "b" WHEN always ALERT msg = msg_txt, telegram DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.events).toEqual([{ channel: 'telegram', enabled: true, message: { '$given': 'msg_txt' } }]);
+  });
+
+  it('a channel\'s OWN msg= kwarg also resolves an operator-expression label to a {"$given": name} marker', () => {
+    const r = compile('GIVEN msg_txt = "a" + "b" WHEN always ALERT telegram(msg=msg_txt) DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.events).toEqual([{ channel: 'telegram', enabled: true, message: { '$given': 'msg_txt' } }]);
+  });
+
+  it('debug(x) on an operator-expression label compiles to the NEW {"$given": name} live marker', () => {
+    const r = compile('GIVEN msg_txt = "a" + "b" WHEN always ALERT telegram DO debug(msg_txt)');
+    expect(r.ok).toBe(true);
+    expect(r.agent.actions).toEqual([
+      { type: 'emit_log', params: { level: 'debug', message: { '$given': 'msg_txt' } } },
+    ]);
+  });
+
+  it('debug(x) on a PURE-ALIAS label is UNCHANGED — still the old static JSON-stringified condition format', () => {
+    const r = compile('GIVEN p = pnl@positions.total <= -50000 WHEN always ALERT telegram DO debug(p)');
+    expect(r.ok).toBe(true);
+    const expectedDict = compile('WHEN pnl@positions.total <= -50000 ALERT telegram DO nop').agent.conditions;
+    expect(r.agent.actions).toEqual([
+      { type: 'emit_log', params: { level: 'debug', message: JSON.stringify(expectedDict) } },
+    ]);
+  });
+
+  it('a pure-alias label CAN be re-attached to a fresh comparator in WHEN (WHEN p <= -50000)', () => {
+    const r = compile('GIVEN p = pnl@positions.total WHEN p <= -50000 ALERT telegram DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions).toEqual({ metric: 'pnl', scope: 'positions.total', op: '<=', value: -50000 });
+  });
+
+  it('a REAL multi-leaf condition label is still only usable as a WHOLE bare WHEN condition — re-attaching a comparator is still rejected', () => {
+    const r = compile(
+      'GIVEN x = (pnl@positions.total <= -50000) & (avail_margin@funds.total < 0) '
+      + 'WHEN x <= -1 ALERT telegram'
+    );
+    expect(r.ok).toBe(false);
+  });
+});
+
+describe('Sprint [GIVEN-parts] — string-building GIVEN expressions compile to "parts", not "expr"', () => {
+  it('"Loss: " + p (string literal + an earlier alias) compiles to the "parts" shape', () => {
+    const r = compile('GIVEN p = pnl@positions.total\nmsg_txt = "Loss: " + p WHEN always ALERT telegram DO debug(msg_txt)');
+    expect(r.ok).toBe(true);
+    expect(r.agent.given).toEqual([
+      { name: 'p', expr: 'pnl@positions.total' },
+      { name: 'msg_txt', parts: ['Loss: ', { '$given': 'p' }] },
+    ]);
+  });
+
+  it('a pure-number expression (no string literal anywhere) still compiles to "expr" — unaffected', () => {
+    const r = compile('GIVEN total = 1 + 2 WHEN always ALERT telegram DO debug(total)');
+    expect(r.ok).toBe(true);
+    expect(r.agent.given).toEqual([{ name: 'total', expr: '1 + 2' }]);
+  });
+
+  it('a pure-number expression REFERENCING an unbound name by name also still compiles to "expr"', () => {
+    const r = compile('GIVEN total = a + b WHEN always ALERT telegram DO debug(total)');
+    expect(r.ok).toBe(true);
+    expect(r.agent.given).toEqual([{ name: 'total', expr: 'a + b' }]);
+  });
+
+  it('multiple string/name parts flatten left-to-right into one array, in source order', () => {
+    const r = compile(
+      'GIVEN sym = pnl@positions.total\n'
+      + 'msg_txt = "Symbol: " + sym + " breached" '
+      + 'WHEN always ALERT telegram DO debug(msg_txt)'
+    );
+    expect(r.ok).toBe(true);
+    expect(r.agent.given).toEqual([
+      { name: 'sym', expr: 'pnl@positions.total' },
+      { name: 'msg_txt', parts: ['Symbol: ', { '$given': 'sym' }, ' breached'] },
+    ]);
+  });
+
+  it('a non-"+" operator anywhere in a string-containing expression is a compile-time error naming the restriction', () => {
+    const r = compile('GIVEN bad = "x" + 1 * 2 WHEN always ALERT telegram DO nop');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /only string concatenation with \+ is supported here/.test(e.message))).toBe(true);
+  });
+
+  it('unary minus anywhere in a string-containing expression is also rejected', () => {
+    // Note: "-1" immediately adjacent to a digit lexes as a single
+    // negative-NUMBER literal (pre-existing rule, unaffected by this
+    // sprint) — so a genuine unary-MINUS AST node needs an operand that
+    // ISN'T a digit (e.g. a bound name) to actually exercise this path.
+    const r = compile('GIVEN p = 5\nbad = "x" + -p WHEN always ALERT telegram DO nop');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /only string concatenation with \+ is supported here/.test(e.message))).toBe(true);
+  });
+
+  it('the existing inline-metric-rejection error still fires for a metric@scope mixed directly into a parts-eligible (string-containing) expression', () => {
+    const r = compile('GIVEN y = "x" + pnl@positions.total WHEN always ALERT telegram DO nop');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /cannot reference a metric@scope value inline.*bind it first/.test(e.message))).toBe(true);
+  });
+
+  it('a "$given" marker produced from a "parts"-kind binding is identical to one from an "expr"-kind binding — debug(x)/action-param/ALERT msg= consumers are unaffected by parts-vs-expr', () => {
+    const viaParts = compile('GIVEN msg_txt = "a" + "b" WHEN always ALERT msg = msg_txt, telegram DO emit_log(message=msg_txt)');
+    expect(viaParts.ok).toBe(true);
+    expect(viaParts.agent.given).toEqual([{ name: 'msg_txt', parts: ['a', 'b'] }]);
+    expect(viaParts.agent.events).toEqual([{ channel: 'telegram', enabled: true, message: { '$given': 'msg_txt' } }]);
+    expect(viaParts.agent.actions).toEqual([{ type: 'emit_log', params: { message: { '$given': 'msg_txt' } } }]);
+  });
+});
+
+describe('Sprint [order-unify] — order/place_order compile-output flip', () => {
+  it('DO order(...) compiles to type: "order"', () => {
+    const r = compile('WHEN always ALERT telegram DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)');
+    expect(r.ok).toBe(true);
+    expect(r.agent.actions[0].type).toBe('order');
+  });
+
+  it('DO place_order(...) (legacy spelling, still accepted as typed input) ALSO compiles to type: "order"', () => {
+    const r = compile('WHEN always ALERT telegram DO place_order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)');
+    expect(r.ok).toBe(true);
+    expect(r.agent.actions[0].type).toBe('order');
+  });
+
+  it('both spellings compile to byte-identical output', () => {
+    const a = compile('WHEN always ALERT telegram DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)');
+    const b = compile('WHEN always ALERT telegram DO place_order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)');
+    expect(a.ok).toBe(true);
+    expect(b.ok).toBe(true);
+    expect(a.agent.actions).toEqual(b.agent.actions);
+  });
+
+  it('a bare standalone place_order(...) statement still parses (legacy input spelling)', () => {
+    const r = compile('place_order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, price=100)', { mode: 'paper' });
+    expect(r.ok).toBe(true);
+    expect(r.kind).toBe('order');
+  });
+});
+
 describe('Sprint G — Task 3 aliases: "hold" + funds.cash/funds.margin', () => {
   it('"hold" is an additional accepted alias for "holdings" alongside the already-shipped "hld"', () => {
     const viaHold = compile('WHEN pnl@hold.total <= -50000 ALERT telegram DO nop');
@@ -3417,7 +3770,7 @@ describe('Part B — notify=[...] universal action-level kwarg', () => {
     expect(r.errors).toEqual([]);
     expect(r.ok).toBe(true);
     expect(r.agent.actions).toEqual([{
-      type: 'place_order',
+      type: 'order',
       params: { account: 'ZG0790', symbol: 'NIFTY25JULFUT', side: 'SELL', qty: 75 },
       notify: [{ channel: 'telegram' }],
     }]);
@@ -3500,7 +3853,7 @@ describe('Part B — notify=[...] universal action-level kwarg', () => {
     expect(r.errors).toEqual([]);
     expect(r.ok).toBe(true);
     expect(r.agent.actions).toEqual([{
-      type: 'place_order',
+      type: 'order',
       params: { account: 'ZG0790', symbol: 'NIFTY25JULFUT', side: 'SELL', qty: 75 },
       notify: [{ channel: 'newtestchannel', params: { urgency: 'high' } }],
     }]);

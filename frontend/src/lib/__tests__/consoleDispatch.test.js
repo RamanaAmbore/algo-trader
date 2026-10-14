@@ -408,6 +408,22 @@ describe('submitConsoleAgent', () => {
     const payload = createAgent.mock.calls[0][0];
     expect(payload.kind).toBe('threshold');
   });
+
+  // Sprint [GIVEN-expr]
+  it('sends given: [] (not undefined) when the compiled agent has no GIVEN bindings', async () => {
+    createAgent.mockResolvedValue({ detail: 'ok' });
+    await submitConsoleAgent({ name: 'x', conditions: {}, events: [], actions: [] }, 'WHEN always DO nop #name="x"');
+    const payload = createAgent.mock.calls[0][0];
+    expect(payload.given).toEqual([]);
+  });
+
+  it('forwards a non-empty compiled "given" array through unchanged, verbatim, in declaration order', async () => {
+    createAgent.mockResolvedValue({ detail: 'ok' });
+    const given = [{ name: 'p', expr: 'pnl@positions.total' }, { name: 'msg_txt', expr: '"Loss: " + p' }];
+    await submitConsoleAgent({ name: 'x', conditions: {}, events: [], actions: [], given }, '');
+    const payload = createAgent.mock.calls[0][0];
+    expect(payload.given).toEqual(given);
+  });
 });
 
 describe('slugifyAgentName', () => {
@@ -509,10 +525,31 @@ describe('updateConsoleAgent', () => {
       conditions: compiledAgent.conditions,
       events: compiledAgent.events,
       actions: [],
+      // Sprint [GIVEN-expr] — ALWAYS sent as a real array (never
+      // `undefined`), same convention as tags/group above — an absent
+      // `given` key would hit the backend's "None/absent = unchanged"
+      // convention and leave a STALE given[] in place forever once an
+      // operator edits a statement to remove every GIVEN line.
+      given: [],
       tags: ['risk'],
       group: 'hedge-book',
       cli_source: 'WHEN ...',
     });
+  });
+
+  it('sends given: [] (not undefined/omitted) when the compiled agent has no GIVEN bindings at all — required so removing every GIVEN line on edit actually clears stale server-side bindings', async () => {
+    updateAgent.mockResolvedValue({ detail: 'ok' });
+    await updateConsoleAgent('x', { name: 'x', conditions: {}, events: [], actions: [] }, '');
+    const sentPayload = updateAgent.mock.calls[0][1];
+    expect(sentPayload.given).toEqual([]);
+  });
+
+  it('forwards a non-empty compiled "given" array through unchanged, verbatim, in declaration order', async () => {
+    updateAgent.mockResolvedValue({ detail: 'ok' });
+    const given = [{ name: 'p', expr: 'pnl@positions.total' }, { name: 'msg_txt', expr: '"Loss: " + p' }];
+    await updateConsoleAgent('x', { name: 'x', conditions: {}, events: [], actions: [], given }, '');
+    const sentPayload = updateAgent.mock.calls[0][1];
+    expect(sentPayload.given).toEqual(given);
   });
 
   it('never sends schedule/tier/trade_mode/lifespan fields — None/absent on the backend means unchanged', async () => {

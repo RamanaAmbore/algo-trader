@@ -383,7 +383,6 @@
     background-color: #fffdf8;
     border-left:  none;
     border-right: none;
-    box-shadow: -4px 0 14px rgba(0,0,0,0.22), 4px 0 14px rgba(0,0,0,0.22);
     margin-top: 4px;
     margin-bottom: 4px;
     position: relative;

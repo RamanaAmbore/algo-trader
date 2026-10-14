@@ -1006,6 +1006,24 @@ async def _migrate_agents_group_name(conn) -> None:
     ))
 
 
+async def _migrate_agents_given(conn) -> None:
+    """Additive migration — `agents.given` (RamboQL Part 2, GIVEN
+    server-evaluated bindings). Mirrors `_migrate_agents_cli_source`'s
+    exact pattern: runs inside init_db's normal `engine.begin()`
+    transaction, `SET LOCAL lock_timeout` bounds how long this can wait
+    behind any in-flight row lock on `agents`, plain `ADD COLUMN IF NOT
+    EXISTS` (nullable JSONB, no default at the DDL level — the ORM
+    column itself defaults to `[]` on insert) so it's a no-op on an
+    already-migrated DB and safe on a fresh one. No index — never
+    queried by WHERE clause, only read per-row by
+    `agent_engine._cycle_evaluate_given_bindings()`."""
+    from sqlalchemy import text
+    await conn.execute(text("SET LOCAL lock_timeout = '5s'"))
+    await conn.execute(text(
+        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS given JSONB"
+    ))
+
+
 async def _migrate_agents_bracket_columns(conn) -> None:
     """Additive migration — `agents.legacy_template_id` +
     `agents.bracket_config` (Sprint E, Agent/Bracket/Template
@@ -1169,6 +1187,7 @@ async def init_db() -> None:
         await _migrate_agents_group_name(conn)
         await _migrate_order_templates_group_and_tags(conn)
         await _migrate_agents_bracket_columns(conn)
+        await _migrate_agents_given(conn)
     logger.info("Database: tables verified")
 
     # Sprint 1a — CONCURRENTLY index creation. MUST run after the
@@ -1204,6 +1223,15 @@ async def init_db() -> None:
     # Seed built-in agents
     from backend.api.algo.agent_engine import seed_agents
     await seed_agents()
+
+    # Part 3 (Phase A) of the order/place_order unification (2026-10) —
+    # one-time, idempotent backfill rewriting every stored `Agent.actions`
+    # JSON entry's `"type": "place_order"` to `"type": "order"`. Runs
+    # AFTER seed_agents() so any row freshly inserted/re-synced this boot
+    # is covered by the same scan. Safe to call on every boot — a second
+    # run finds nothing left to rewrite.
+    from backend.api.algo.agent_engine import migrate_order_action_type_rename
+    await migrate_order_action_type_rename()
 
     # Sprint D2 (Agent/Bracket/Template unification phase) — one-time,
     # self-contained backfill-then-DROP of the legacy agent_fragments

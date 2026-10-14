@@ -203,6 +203,22 @@ function decompile(agentJson, opts = {}) {
   return decompileAgent(agentJson, CATALOG, { lotSizeOf, ...opts });
 }
 
+/** Sprint [order-unify] — the compiler always EMITS `type: 'order'`, never
+ *  `'place_order'`, regardless of which spelling appears in the INPUT
+ *  JSON being decompiled. A legacy `agentJson` fixture (stored as
+ *  `'place_order'`, simulating a pre-backfill row) decompiles fine, but
+ *  RECOMPILING that decompiled text normalizes the type to the new
+ *  canonical spelling — this is the expected, intentional one-way
+ *  normalization, not a round-trip mismatch bug. Used by every
+ *  decompile→recompile round-trip test whose fixture still says
+ *  `'place_order'`. */
+function _expectedAfterOrderNormalize(agentJson) {
+  return {
+    ...agentJson,
+    actions: (agentJson.actions || []).map((a) => (a && a.type === 'place_order' ? { ...a, type: 'order' } : a)),
+  };
+}
+
 /** compile(text) -> decompile(.agent) -> compile(decompiled text) ->
  *  assert the SECOND compile's JSON deep-equals the FIRST's — the hard
  *  round-trip requirement for every canonical example. */
@@ -592,7 +608,7 @@ describe('hand-constructed shapes (JSON-textarea / AI-draft style authorship)', 
     expect(dec.text).toContain('order_type="SL-M"'); // hyphen is not bare-identifier-safe
     const recompiled = compile(dec.text);
     expect(recompiled.ok).toBe(true);
-    expect(recompiled.agent).toEqual(agentJson);
+    expect(recompiled.agent).toEqual(_expectedAfterOrderNormalize(agentJson));
   });
 
   it('a deactivate_agent action (zero params, never exercised by Sprint 2 tests) decompiles bare', () => {
@@ -836,7 +852,7 @@ describe('place_order qty (contracts) → lots reconversion', () => {
     expect(dec.text).not.toContain('qty=');
     const recompiled = compile(dec.text);
     expect(recompiled.ok).toBe(true);
-    expect(recompiled.agent).toEqual(agentJson);
+    expect(recompiled.agent).toEqual(_expectedAfterOrderNormalize(agentJson));
   });
 
   // The three cases below were originally "fail loud, agent can't be
@@ -861,7 +877,7 @@ describe('place_order qty (contracts) → lots reconversion', () => {
     expect(dec.text).not.toContain('lots=');
     const recompiled = compile(dec.text);
     expect(recompiled.ok).toBe(true);
-    expect(recompiled.agent).toEqual(agentJson);
+    expect(recompiled.agent).toEqual(_expectedAfterOrderNormalize(agentJson));
   });
 
   it('an unresolvable lot size falls back to plain qty=, never fails and never silently defaults to a lot size of 1', () => {
@@ -876,7 +892,7 @@ describe('place_order qty (contracts) → lots reconversion', () => {
     expect(dec.text).not.toContain('lots=');
     const recompiled = compile(dec.text);
     expect(recompiled.ok).toBe(true);
-    expect(recompiled.agent).toEqual(agentJson);
+    expect(recompiled.agent).toEqual(_expectedAfterOrderNormalize(agentJson));
   });
 
   it('a qty that is NOT an exact multiple of the resolved lot size falls back to plain qty= rather than losing precision', () => {
@@ -891,7 +907,7 @@ describe('place_order qty (contracts) → lots reconversion', () => {
     expect(dec.text).not.toContain('lots=');
     const recompiled = compile(dec.text);
     expect(recompiled.ok).toBe(true);
-    expect(recompiled.agent).toEqual(agentJson);
+    expect(recompiled.agent).toEqual(_expectedAfterOrderNormalize(agentJson));
   });
 
   it('qty absent entirely still fails loud — this IS genuinely malformed, no fallback possible', () => {
@@ -999,7 +1015,7 @@ describe('decompiled output key-name choice', () => {
     expect(dec.text).not.toMatch(/\bchase=/);
     const recompiled = compile(dec.text);
     expect(recompiled.ok).toBe(true);
-    expect(recompiled.agent).toEqual(agentJson);
+    expect(recompiled.agent).toEqual(_expectedAfterOrderNormalize(agentJson));
   });
 });
 
@@ -1646,6 +1662,118 @@ describe('Sprint G — debug(x) decompiles from a {"$row": ...}-message emit_log
 
   it('a hand-authored emit_log(level=debug, message="literal") is INDISTINGUISHABLE from one that came from debug(x) with a literal-bound label — both decompile/recompile identically, by design (no new ambiguity: both are equally valid)', () => {
     roundTrip('WHEN always ALERT telegram DO emit_log(level=debug, message="hand typed")');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// Sprint [GIVEN-expr] — `agent.given[]` decompile round-trip. The ONLY
+// place GIVEN round-trips at all (a pure-alias/primitive binding has
+// always decompiled via its own already-inlined expansion inside
+// conditions/actions — zero backend footprint, Sprint G's original
+// design; an operator-expression binding is new and has no other home).
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('Sprint [GIVEN-expr] — agent.given[] decompile round-trip', () => {
+  it('a single operator-expression binding decompiles to a leading GIVEN line, verbatim, and recompiles byte-identical', () => {
+    roundTrip('GIVEN msg_txt = "a" + "b" WHEN always ALERT msg = msg_txt, telegram DO nop');
+  });
+
+  it('a pure alias referenced by an operator expression decompiles with its OWN injected GIVEN entry too, and recompiles byte-identical', () => {
+    roundTrip(
+      'GIVEN p = pnl@positions.total\n'
+      + 'msg_txt = "Loss: " + p '
+      + 'WHEN p <= -50000 ALERT msg = msg_txt, telegram DO nop'
+    );
+  });
+
+  it('decompileAgent renders the GIVEN preamble — an "expr" entry reads its string back VERBATIM; a "parts" entry (string-building) is freshly reconstructed from its parts array into the SAME source text', () => {
+    const r = compile(
+      'GIVEN p = pnl@positions.total\n'
+      + 'msg_txt = "Loss: " + p '
+      + 'WHEN p <= -50000 ALERT msg = msg_txt, telegram DO nop'
+    );
+    expect(r.ok).toBe(true);
+    // `p` is `expr`-shaped (bare metric@scope, no string literal);
+    // `msg_txt` is `parts`-shaped (mixes a string literal) per the
+    // Sprint [GIVEN-parts] classification rule.
+    expect(r.agent.given).toEqual([
+      { name: 'p', expr: 'pnl@positions.total' },
+      { name: 'msg_txt', parts: ['Loss: ', { '$given': 'p' }] },
+    ]);
+    const dec = decompile(r.agent);
+    expect(dec.errors).toEqual([]);
+    expect(dec.text.startsWith('GIVEN p = pnl@positions.total; msg_txt = "Loss: " + p\n')).toBe(true);
+  });
+
+  it('a "parts"-kind binding decompile→recompile round-trip is correct — the reconstructed CLI text re-parses to the IDENTICAL "parts" array', () => {
+    const r = compile('GIVEN msg_txt = "Symbol: " + "NIFTY" WHEN always ALERT msg = msg_txt, telegram DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.given).toEqual([{ name: 'msg_txt', parts: ['Symbol: ', 'NIFTY'] }]);
+    const dec = decompile(r.agent);
+    expect(dec.errors).toEqual([]);
+    expect(dec.text).toContain('GIVEN msg_txt = "Symbol: " + "NIFTY"');
+    const recompiled = compile(dec.text);
+    expect(recompiled.ok).toBe(true);
+    expect(recompiled.agent.given).toEqual(r.agent.given);
+  });
+
+  it('a "parts" entry carrying a {"$given": name} reference decompiles the reference back to the bare name (not a quoted string)', () => {
+    const dec = decompileAgent({
+      conditions: ALWAYS_LEAF,
+      events: [{ channel: 'telegram', enabled: true, message: { '$given': 'msg_txt' } }],
+      actions: [],
+      given: [{ name: 'p', expr: 'pnl@positions.total' }, { name: 'msg_txt', parts: ['Loss: ', { '$given': 'p' }] }],
+    }, CATALOG, { lotSizeOf });
+    expect(dec.errors).toEqual([]);
+    expect(dec.text).toContain('msg_txt = "Loss: " + p');
+  });
+
+  it('debug(x) on an operator-expression label decompiles from the NEW {"$given": name} marker and recompiles byte-identical', () => {
+    const r = decompileActions(
+      [{ type: 'emit_log', params: { level: 'debug', message: { '$given': 'msg_txt' } } }],
+      CATALOG,
+    );
+    expect(r.errors).toEqual([]);
+    expect(r.text).toBe('debug(msg_txt)');
+    roundTrip('GIVEN msg_txt = "a" + "b" WHEN always ALERT telegram DO debug(msg_txt)');
+  });
+
+  it('ALERT msg= resolving to a {"$given": name} marker decompiles back to the bare label name and recompiles byte-identical', () => {
+    roundTrip('GIVEN msg_txt = "a" + "b" WHEN always ALERT msg = msg_txt, telegram DO nop');
+  });
+
+  it('an agent with no "given" key at all decompiles with no leading GIVEN line (zero behavior change for every pre-existing agent)', () => {
+    const r = compile('WHEN pnl@positions.total <= -50000 ALERT telegram DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.given).toBeUndefined();
+    const dec = decompile(r.agent);
+    expect(dec.errors).toEqual([]);
+    expect(dec.text.startsWith('GIVEN')).toBe(false);
+  });
+});
+
+describe('Sprint [order-unify] — order/place_order decompile tolerance', () => {
+  it('a stored type: "order" action decompiles to order(...)', () => {
+    const r = decompileActions(
+      [{ type: 'order', params: { account: 'ZG0790', symbol: 'NIFTY25JULFUT', side: 'SELL', qty: 75 } }],
+      CATALOG,
+    );
+    expect(r.errors).toEqual([]);
+    expect(r.text).toContain('order(');
+  });
+
+  it('a legacy stored type: "place_order" action decompiles IDENTICALLY to order(...)', () => {
+    const a = decompileActions(
+      [{ type: 'order', params: { account: 'ZG0790', symbol: 'NIFTY25JULFUT', side: 'SELL', qty: 75 } }],
+      CATALOG,
+    );
+    const b = decompileActions(
+      [{ type: 'place_order', params: { account: 'ZG0790', symbol: 'NIFTY25JULFUT', side: 'SELL', qty: 75 } }],
+      CATALOG,
+    );
+    expect(a.errors).toEqual([]);
+    expect(b.errors).toEqual([]);
+    expect(a.text).toBe(b.text);
   });
 });
 

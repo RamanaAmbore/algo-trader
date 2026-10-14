@@ -70,6 +70,16 @@ the real seeded `market-summary` agent's Edit/decompile failure ("not
 declared in its catalog schema"); see
 `test_grammar_event_action_gate_field.py`'s own dedicated coverage.
 
+Amendment (2026-10, order/place_order unification Phase A): a new
+`(action, action_type, order)` token was added to `agent_grammar.yaml`
+right after `place_order` (and mirrored here at the same position,
+index 85) — byte-identical in shape to `place_order` (same resolver/
+params_schema/mutually_exclusive_groups), since both names dispatch to
+the exact same `_action_place_order` handler. See CLAUDE.md's "order/
+place_order unification" note and `backend/tests/test_order_place_order_
+unification.py` for the dedicated dispatch-equivalence + backfill-
+migration coverage.
+
 Perf: no DB / network calls, pure in-memory comparison.
 Reuse: shares the same SYSTEM_TOKENS / LOG_TAG_TOKENS module attributes
 every other grammar test and `seed_grammar_tokens()` read.

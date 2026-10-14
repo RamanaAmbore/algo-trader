@@ -953,6 +953,15 @@ const _PUNCT_SINGLE = {
   // `,`, which still only ever joins calls WITHIN one call_list run (see
   // `parseItemListClause`'s own header comment for the full grammar).
   ';': 'SEMI',
+  // Sprint [GIVEN-expr] — `+`/`/`/`%` for GIVEN's new arithmetic/string-
+  // concat `given_rhs` alternative (see `parseArithExpr`). No ambiguity
+  // with any existing production — none of these three characters were
+  // used anywhere else in this grammar before. `-` (binary MINUS) and `*`
+  // doubled into `**` (STARSTAR) are each special-cased in the lexer body
+  // below instead of listed here — see the comments at those branches for
+  // why (ordering interactions with the existing negative-NUMBER literal
+  // rule and the existing single-STAR qualifier-wildcard token).
+  '+': 'PLUS', '/': 'SLASH', '%': 'PERCENT',
 };
 
 function _isWordChar(ch) { return /[A-Za-z0-9_]/.test(ch); }
@@ -1353,6 +1362,11 @@ export function lexAgentStatement(text) {
     else if (ch === ')') depth--;
   }
 
+  // Sprint [newline-separator] — `any[]` (not inferred from the first
+  // push site's narrower shape): every token object gains a `nlBefore`
+  // boolean in the post-pass below, which no individual push site here
+  // declares up front.
+  /** @type {any[]} */
   const tokens = [];
   let i = 0;
   const n = text.length;
@@ -1448,6 +1462,18 @@ export function lexAgentStatement(text) {
         }
       }
 
+      // Sprint [GIVEN-expr] — `**` (exponentiation) must be checked BEFORE
+      // the generic `_PUNCT_SINGLE[ch]` lookup below, since a single `*`
+      // is ALREADY a real token (STAR — Sprint 19's qualifier wildcard,
+      // `account:*`) and `_PUNCT_SINGLE` only ever matches one character
+      // at a time. A doubled `**` is consumed here as ONE token; a lone
+      // `*` falls through unchanged to the existing STAR handling.
+      if (ch === '*' && text[i + 1] === '*') {
+        tokens.push({ type: 'STARSTAR', start, end: i + 2 });
+        i += 2;
+        continue;
+      }
+
       if (_PUNCT_SINGLE[ch]) {
         tokens.push({ type: _PUNCT_SINGLE[ch], start, end: i + 1 });
         i++;
@@ -1463,6 +1489,27 @@ export function lexAgentStatement(text) {
         }
         tokens.push({ type: 'NUMBER', value: Number(text.slice(start, j)), start, end: j });
         i = j;
+        continue;
+      }
+
+      // Sprint [GIVEN-expr] — binary MINUS for GIVEN's new arithmetic
+      // `given_rhs` alternative. Deliberately NOT added to `_PUNCT_SINGLE`
+      // (checked earlier in this branch order) — that would fire BEFORE
+      // the digit branch above ever got a chance to absorb a negative
+      // NUMBER literal (`value=-50000`), breaking every existing negative-
+      // number statement. Placed here, AFTER the digit branch, so this is
+      // only ever reached when `-` is NOT immediately followed by a digit
+      // (the digit branch's own condition already claimed that case).
+      // KNOWN, PRE-EXISTING LEXER TRAP (not introduced by this change,
+      // just newly reachable): the Sprint 10 mid-word-hyphen NAME rule
+      // below treats a digit as an ordinary word character, so `p-5`
+      // (no spaces) lexes as ONE NAME token `"p-5"`, not NAME `p` MINUS
+      // NUMBER `5` — an arithmetic subtraction against a literal needs a
+      // space before the `-` (e.g. `p - 5` or `p -5`, not `p-5`) to lex as
+      // three separate tokens.
+      if (ch === '-') {
+        tokens.push({ type: 'MINUS', start, end: i + 1 });
+        i++;
         continue;
       }
 
@@ -1568,6 +1615,21 @@ export function lexAgentStatement(text) {
     throw e;
   }
   tokens.push({ type: 'EOF', start: n, end: n });
+  // Sprint [newline-separator] — post-pass, not threaded through every
+  // individual push site above: `tokens[k].nlBefore` is true iff a `\n`
+  // occurred anywhere in the (whitespace-only) gap between the PREVIOUS
+  // token's end and this token's start. Computed unconditionally for
+  // every token stream this function ever produces (including the
+  // notify=[...]/tp_scales_json=[...] mini-lexer calls) — cheap, and a
+  // harmless no-op wherever nothing ever consults it; only the four
+  // newline-as-separator production sites (parseItemListClause,
+  // parseCallList's opt-in mode, parseListLiteral, parseMatchValue) read
+  // this field. `tokens[0]` (and a lexer that produced zero tokens before
+  // EOF) has no "previous" token — `nlBefore` stays `false`.
+  for (let k = 1; k < tokens.length; k++) {
+    tokens[k].nlBefore = text.slice(tokens[k - 1].end, tokens[k].start).includes('\n');
+  }
+  if (tokens.length) tokens[0].nlBefore = false;
   return { tokens, errors: [] };
 }
 
@@ -1719,7 +1781,37 @@ function parseMetricOrColRef(state) {
   return { kind: 'metric', metric: first, scope };
 }
 
-/** `list_literal := "[" value ("," value)* "]"` */
+/** Sprint [newline-separator] — true iff `tok` could legally START a new
+ *  GIVEN/ALERT/DO clause item or call-list call (a plain, non-reserved
+ *  NAME, with or without its own call) — used ONLY to decide whether a
+ *  bare newline (no literal separator token) should be treated as if the
+ *  separator were present. Never true for EOF/HASH/a closing bracket/a
+ *  reserved keyword (WHEN/ALERT/DO/GIVEN/NOP/ALWAYS/IN/NOT/AND/OR/TRUE/
+ *  FALSE — `_RESERVED`), so a newline immediately before any of those is
+ *  correctly left alone (falls through to whatever the existing
+ *  "expected X" error already says). NAME-only — clause items and calls
+ *  always start with a bare name; see `_looksLikeNewValueListItemStart`
+ *  for the WIDER start-set a plain `value` list literal needs (NUMBER/
+ *  STRING/LBRACKET are also valid list-item starts, neither a clause
+ *  item nor a call can ever start with one). */
+function _looksLikeNewListItemStart(tok) {
+  return tok.type === 'NAME' && !tok.reserved;
+}
+
+/** Sprint [newline-separator] — the WIDER start-set `list_literal`'s own
+ *  `value` production allows (`NUMBER | STRING | NAME | list_literal`,
+ *  see `parseValue`) — a plain value list (`[1, 2, 3]`) may start a new
+ *  item with a bare number/string/nested-list, not just a NAME. */
+function _looksLikeNewValueListItemStart(tok) {
+  return tok.type === 'NUMBER' || tok.type === 'STRING' || tok.type === 'LBRACKET' || _looksLikeNewListItemStart(tok);
+}
+
+/** `list_literal := "[" value ("," value)* "]"` — Sprint [newline-separator]:
+ *  a bare newline (no literal `,`) is also accepted between items, same
+ *  rule as every other list-of-X production in this file (see the
+ *  section-header comment on `parseItemListClause`/`parseCallList` for
+ *  the shared rationale) — a LITERAL `,` still always demands a following
+ *  item (the existing trailing-comma check below is untouched). */
 export function parseListLiteral(state) {
   const open = _peek(state);
   if (open.type !== 'LBRACKET') throw new _ParseError('expected "["', open);
@@ -1727,10 +1819,18 @@ export function parseListLiteral(state) {
   const items = [];
   if (_peek(state).type !== 'RBRACKET') {
     items.push(parseValue(state));
-    while (_peek(state).type === 'COMMA') {
-      _advance(state);
-      if (_peek(state).type === 'RBRACKET') throw new _ParseError('trailing comma in list literal', _peek(state));
-      items.push(parseValue(state));
+    while (true) {
+      if (_peek(state).type === 'COMMA') {
+        _advance(state);
+        if (_peek(state).type === 'RBRACKET') throw new _ParseError('trailing comma in list literal', _peek(state));
+        items.push(parseValue(state));
+        continue;
+      }
+      if (_peek(state).nlBefore && _looksLikeNewValueListItemStart(_peek(state))) {
+        items.push(parseValue(state));
+        continue;
+      }
+      break;
     }
   }
   const close = _peek(state);
@@ -1849,7 +1949,37 @@ export function parseLeaf(state) {
     if (!firstCall.hasCall && state.bindings) {
       const bound = state.bindings.get(firstCall.name.toLowerCase());
       if (bound) {
-        if (bound.rhsKind === 'condition') return _cloneAstNode(bound.rhsNode);
+        if (bound.rhsKind === 'condition') {
+          // Sprint [GIVEN-expr] — a bound label whose condition subtree is
+          // a BARE, operator-less `leaf`/`colref` (`op === null` — i.e. a
+          // "pure alias" GIVEN binding, e.g. `p = pnl@positions.total`,
+          // with no comparator of its own) immediately followed by a
+          // comparator here is re-attached to a FRESH leaf built from the
+          // bound metric/scope (or colref segments) plus the comparator +
+          // value just parsed — e.g. `WHEN p <= -50000`. Without this, a
+          // pure-alias label could ONLY ever be used as a whole bare WHEN
+          // condition or inside debug(...) (the pre-existing "KNOWN
+          // LIMITATION" documented below), making it structurally
+          // impossible to write `WHEN p <= -50000` at all — the
+          // motivating, explicitly-requested example this fix exists for.
+          // Deliberately narrow: does NOT extend to a REAL multi-leaf
+          // condition binding (one with its own comparator, or combined
+          // via &/|/~/between) — those still only ever splice in whole,
+          // unchanged, via the fallback `_cloneAstNode` below. Additive
+          // and zero-regression by construction: this branch is only ever
+          // reached on input that previously threw "unexpected trailing
+          // input" (a comparator left over after the bound node spliced
+          // in whole) — no previously-valid statement's parse changes.
+          const node = bound.rhsNode;
+          if (node && node.op === null && (node.type === 'leaf' || node.type === 'colref') && _isComparatorStart(_peek(state))) {
+            const op = parseComparator(state);
+            const value = parseValue(state);
+            return node.type === 'leaf'
+              ? { type: 'leaf', metric: _cloneAstNode(node.metric), scope: _cloneAstNode(node.scope), op, value }
+              : { type: 'colref', segments: _cloneAstNode(node.segments), op, value };
+          }
+          return _cloneAstNode(node);
+        }
         throw new _ParseError(
           `label '${firstCall.name}' is bound to a plain value — it cannot be used as a WHEN condition `
           + `(only a label bound to a condition, e.g. 'x = metric@scope <= value', can be)`,
@@ -2008,12 +2138,41 @@ export function parseCondition(state, depth = 0) {
   return parseOrExpr(state, depth);
 }
 
-/** `call_list := call ("," call)*` */
-function parseCallList(state) {
+/** Sprint [newline-separator] — stricter than `_looksLikeNewListItemStart`:
+ *  used ONLY by `parseCallList`'s opt-in newline mode (see that function),
+ *  where a bare NAME immediately followed by `=` is the START OF A NEW
+ *  clause_item (a label assignment) — that belongs to the OUTER
+ *  `parseItemListClause` loop, not to THIS call-list. Without this
+ *  exclusion, `ALERT telegram\nmsg_txt = "x", email` would try to parse
+ *  `msg_txt` as just another bare call name in `telegram`'s own
+ *  call-list, leaving `= "x"` as confusing unconsumed trailing input. */
+function _looksLikeNewCallStartAfterNewline(state, tok) {
+  if (!_looksLikeNewListItemStart(tok)) return false;
+  const next = state.tokens[state.pos + 1];
+  return !(next && next.type === 'EQ');
+}
+
+/** `call_list := call ("," call)*` — Sprint [newline-separator]: in
+ *  `allowNewline` mode ONLY (opt-in, see call sites), a bare newline is
+ *  also accepted in place of the `,` — see `parseItemListClause`'s
+ *  header comment for the shared rationale. `parseOrderStmt`'s bare
+ *  multi-order statement and `parseEventStmt`'s channel call_list both
+ *  call this with NO second argument (`allowNewline` defaults to
+ *  `false`), so both stay comma-only, unchanged, per the operator's
+ *  explicit instruction. */
+function parseCallList(state, { allowNewline = false } = {}) {
   const calls = [parseCall(state)];
-  while (_peek(state).type === 'COMMA') {
-    _advance(state);
-    calls.push(parseCall(state));
+  while (true) {
+    if (_peek(state).type === 'COMMA') {
+      _advance(state);
+      calls.push(parseCall(state));
+      continue;
+    }
+    if (allowNewline && _peek(state).nlBefore && _looksLikeNewCallStartAfterNewline(state, _peek(state))) {
+      calls.push(parseCall(state));
+      continue;
+    }
+    break;
   }
   return calls;
 }
@@ -2092,27 +2251,196 @@ function _cloneAstNode(node) {
  *  sugar or a plain comma-after-assignment typo" apart from "this value
  *  parse succeeded but the REAL expression continues past it" (e.g.
  *  `pnl@positions.total <= -1` — `parseValue` only ever consumes the bare
- *  NAME `pnl`, leaving `@` next, which is correctly NOT a terminator). */
+ *  NAME `pnl`, leaving `@` next, which is correctly NOT a terminator).
+ *
+ *  Sprint [newline-separator] — a token with `nlBefore` set is ALSO a
+ *  terminator, unconditionally, checked FIRST: a bare newline always ends
+ *  the current clause_item's RHS (same "newline is interchangeable with
+ *  the expected separator" rule Part 1 applies everywhere else). Without
+ *  this, `GIVEN x = 5\ny = 6` would fail to recognize `5` as a complete
+ *  `value` (the next token `y` isn't otherwise a terminator), backtrack
+ *  into the full condition grammar, and throw trying to consume `y` as a
+ *  comparator. Also reused, unchanged, by the new `parseGivenRhs`
+ *  arithmetic-expression attempt below (same "did the RHS end here"
+ *  question, same answer). */
 function _isClauseItemTerminator(tok) {
+  if (tok.nlBefore) return true;
   if (tok.type === 'SEMI' || tok.type === 'EOF' || tok.type === 'HASH' || tok.type === 'COMMA') return true;
   return tok.type === 'NAME' && !tok.hasCall && (_wordIs(tok, 'when') || _wordIs(tok, 'alert') || _wordIs(tok, 'do'));
 }
 
-/** `given_rhs := value | or_expr` — tries the narrower `value` production
- *  FIRST (the PRIMITIVE binding kind), backtracking to the full `or_expr`
- *  condition grammar (the CONDITION/dict binding kind) when `value`
- *  either fails to parse, or parses but leaves something other than a
- *  genuine item terminator right after it (e.g. `pnl@positions.total` —
- *  `parseValue` consumes only the bare NAME "pnl", then sees "@" instead
- *  of a terminator, forcing the backtrack; `(a<=1)&(b>=2)` can't even
- *  start as a `value` at all). `value` and `or_expr` share a NUMBER/
- *  STRING/NAME start set with no 1-token disambiguator, so this needs
- *  real backtracking, not lookahead. */
+// ═══════════════════════════════════════════════════════════════════════
+// Sprint [GIVEN-expr] — arithmetic/string-concat expressions, GIVEN's RHS
+// ONLY (never reachable from WHEN's own condition grammar). Classifies a
+// binding as an "operator expression" (vs. the pre-existing `value`/
+// `condition` kinds) — see `parseGivenRhs`'s own header comment for the
+// three-way backtracking order. This AST shape is internal scaffolding
+// ONLY: it is never exposed in compiled JSON (the compiled `given[]`
+// entry carries only the verbatim SOURCE TEXT, sliced by the caller,
+// `parseOneClauseItem` — see `_registerBinding`'s `rhsText` param) — its
+// only two jobs are (a) correctly delimiting how many tokens belong to
+// this RHS, and (b) letting compile-time code (`_arithContainsDynamicRead`)
+// detect/reject an inline `metric@scope`/col_ref read mixed into an
+// operator expression (the backend's `expr_eval.py` is a flat-namespace
+// evaluator with no dotted/`@` support — an inline dynamic read can never
+// be evaluated there; it must be bound to its own label first).
+//
+// arith_expr  := arith_term (("+"|"-") arith_term)*
+// arith_term  := arith_pow (("*"|"/"|"%") arith_pow)*
+// arith_pow   := arith_unary ("**" arith_pow)?      (* right-assoc *)
+// arith_unary := "-" arith_unary | arith_atom
+// arith_atom  := NUMBER | STRING | "(" arith_expr ")"
+//              | metric_ref_or_colref                (* reuses
+//                  parseMetricOrColRef verbatim — rejected later at
+//                  compile time if combined with any operator *)
+//              | NAME                                (* a reference to
+//                  an earlier GIVEN-bound label *)
+
+/** `arith_atom` — see the section header above for the full production. */
+function parseArithAtom(state, depth) {
+  const tok = _peek(state);
+  if (tok.type === 'NUMBER') { _advance(state); return { type: 'number', value: tok.value }; }
+  if (tok.type === 'STRING') { _advance(state); return { type: 'string', value: tok.value }; }
+  if (tok.type === 'LPAREN') {
+    _checkDepth(depth + 1, tok);
+    _advance(state);
+    const inner = parseArithExpr(state, depth + 1);
+    const close = _peek(state);
+    if (close.type !== 'RPAREN') throw new _ParseError('expected ")"', close);
+    _advance(state);
+    return inner;
+  }
+  if (tok.type === 'NAME') {
+    const next = state.tokens[state.pos + 1];
+    const looksLikeRef = tok.hasCall || (next && (next.type === 'AT' || next.type === 'DOT'));
+    if (looksLikeRef) {
+      const ref = parseMetricOrColRef(state);
+      return ref.kind === 'colref'
+        ? { type: 'colref_atom', segments: ref.segments }
+        : { type: 'metric_atom', metric: ref.metric, scope: ref.scope };
+    }
+    if (tok.reserved && tok.value.toLowerCase() !== 'true' && tok.value.toLowerCase() !== 'false') {
+      throw new _ParseError(`"${tok.value}" is a reserved word and cannot be used as a value here`, tok);
+    }
+    _advance(state);
+    return { type: 'name_atom', value: tok.value };
+  }
+  throw new _ParseError('expected a number, string, name, metric@scope reference, or "(...)"', tok);
+}
+
+/** `arith_unary := "-" arith_unary | arith_atom` */
+function parseArithUnary(state, depth) {
+  const tok = _peek(state);
+  if (tok.type === 'MINUS') {
+    _checkDepth(depth + 1, tok);
+    _advance(state);
+    return { type: 'neg', node: parseArithUnary(state, depth + 1) };
+  }
+  return parseArithAtom(state, depth);
+}
+
+/** `arith_pow := arith_unary ("**" arith_pow)?` — right-associative. */
+function parseArithPow(state, depth) {
+  const base = parseArithUnary(state, depth);
+  if (_peek(state).type === 'STARSTAR') {
+    _advance(state);
+    const exp = parseArithPow(state, depth);
+    return { type: 'pow', base, exp };
+  }
+  return base;
+}
+
+/** `arith_term := arith_pow (("*"|"/"|"%") arith_pow)*` — left-to-right fold. */
+function parseArithTerm(state, depth) {
+  let node = parseArithPow(state, depth);
+  while (true) {
+    const tok = _peek(state);
+    if (tok.type !== 'STAR' && tok.type !== 'SLASH' && tok.type !== 'PERCENT') break;
+    _advance(state);
+    const op = tok.type === 'STAR' ? '*' : tok.type === 'SLASH' ? '/' : '%';
+    node = { type: 'arith', op, left: node, right: parseArithPow(state, depth) };
+  }
+  return node;
+}
+
+/** `arith_expr := arith_term (("+"|"-") arith_term)*` — left-to-right fold.
+ *  Top-level entry point for Sprint [GIVEN-expr]'s arithmetic production. */
+function parseArithExpr(state, depth = 0) {
+  let node = parseArithTerm(state, depth);
+  while (true) {
+    const tok = _peek(state);
+    if (tok.type !== 'PLUS' && tok.type !== 'MINUS') break;
+    _advance(state);
+    const op = tok.type === 'PLUS' ? '+' : '-';
+    node = { type: 'arith', op, left: node, right: parseArithTerm(state, depth) };
+  }
+  return node;
+}
+
+/** True iff the ROOT of a parsed arith tree is a composite (an operator
+ *  was consumed SOMEWHERE at or above this node) — an atom that passed
+ *  through every level unchanged (no operator token matched anywhere)
+ *  keeps its own atom type, so checking just the root is sufficient; see
+ *  `parseGivenRhs`'s classification use. */
+function _arithHasOperator(node) {
+  return !!node && (node.type === 'arith' || node.type === 'pow' || node.type === 'neg');
+}
+
+/** `given_rhs := value | arith_expr | or_expr` — tries the narrower
+ *  `value` production FIRST (the PRIMITIVE binding kind, UNCHANGED from
+ *  pre-Sprint-[GIVEN-expr]), then the NEW arithmetic/string-concat
+ *  production (the "operator expression" kind), backtracking to the full
+ *  `or_expr` condition grammar (the CONDITION/dict binding kind,
+ *  UNCHANGED) when neither of the first two apply. Order matters and is
+ *  deliberate:
+ *    - A bare `metric@scope`/col_ref "pure alias" with NO operator (e.g.
+ *      `p = pnl@positions.total`) fails step 1 (NAME then "@", not a
+ *      terminator), and ALSO fails step 2 — `parseArithAtom` happily
+ *      consumes the whole metric_ref as ONE atom, but with no operator
+ *      token following it, `_arithHasOperator` is false, so step 2's own
+ *      `if` never returns — falling through UNTOUCHED to step 3, the
+ *      exact same `parseOrExpr` call pre-Sprint-[GIVEN-expr] always made.
+ *      **Zero behavior change for this case**, by construction, not by
+ *      special-casing it.
+ *    - `x = pnl@positions.total <= -5` — step 1 fails; step 2's
+ *      `parseArithAtom` consumes the metric_ref, finds no operator
+ *      matches `<=` at any arith level, returns the bare atom unchanged
+ *      (`_arithHasOperator` false) — falls through to step 3, which
+ *      parses the full comparator leaf exactly as before.
+ *    - A bare NAME referencing an EARLIER-bound label with NO operator
+ *      (e.g. `q = p`) succeeds at step 1 as a plain `value` — reclassified
+ *      inline to `'expr'` kind (see the dedicated check below): its value
+ *      is a live re-export of another binding, not its own literal text,
+ *      so it must resolve server-side like any other operator expression,
+ *      not as a literal `NAME` value. */
 function parseGivenRhs(state) {
   const save = state.pos;
   try {
     const v = parseValue(state);
-    if (_isClauseItemTerminator(_peek(state))) return { kind: 'value', node: v };
+    if (_isClauseItemTerminator(_peek(state))) {
+      // Sprint [GIVEN-expr] — `node: v` here (the ORDINARY `{type:'name',
+      // value}` ValueNode `parseValue` already produced), deliberately
+      // NOT wrapped into the internal `name_atom` arith-AST shape: this
+      // `rhs.node` becomes `ast.alertMsg`/a plain action-param arg value
+      // in several places (the Sprint-6 `msg="...", <calls>` sugar,
+      // `_resolveMessageValue`, `_resolveGivenExprRefOrNull`), every one
+      // of which pattern-matches on `valueNode.type === 'name'` — a
+      // `name_atom` shape would silently fail every one of those checks.
+      // `_collectArithNameRefs`/`_arithContainsDynamicRead` are taught to
+      // treat a plain `type: 'name'` node identically to `name_atom` for
+      // this reason (see those functions' own comments).
+      if (v.type === 'name' && state.bindings && state.bindings.has(String(v.value).toLowerCase())) {
+        return { kind: 'expr', node: v };
+      }
+      return { kind: 'value', node: v };
+    }
+  } catch { /* fall through */ }
+  state.pos = save;
+  try {
+    const node = parseArithExpr(state, 0);
+    if (_arithHasOperator(node) && _isClauseItemTerminator(_peek(state))) {
+      return { kind: 'expr', node };
+    }
   } catch { /* fall through to the condition grammar below */ }
   state.pos = save;
   const cond = parseOrExpr(state, 0);
@@ -2128,7 +2456,7 @@ function parseGivenRhs(state) {
  *  (`_checkLabelCollisions`) — the catalog isn't available yet at parse
  *  time, same "parse permissively, validate at compile time" split this
  *  file always uses. */
-function _registerBinding(state, labelTok, rhsKind, rhsNode) {
+function _registerBinding(state, labelTok, rhsKind, rhsNode, rhsText) {
   const lower = labelTok.value.toLowerCase();
   if (_RESERVED.has(lower) || lower === 'debug' || lower === 'result') {
     throw new _ParseError(`'${labelTok.value}' is a reserved word and cannot be used as a label`, labelTok);
@@ -2138,7 +2466,14 @@ function _registerBinding(state, labelTok, rhsKind, rhsNode) {
   if (state.bindings.has(lower)) {
     throw new _ParseError(`label '${labelTok.value}' is already bound in this statement — rebinding is not allowed (no shadowing)`, labelTok);
   }
-  const binding = { label: labelTok.value, rhsKind, rhsNode };
+  // Sprint [GIVEN-expr] — `rhsText` is the binding's RHS, sliced VERBATIM
+  // from the original source text (captured by the one caller,
+  // `parseOneClauseItem`, regardless of which `parseGivenRhs` branch won)
+  // — needed for an `'expr'`-kind binding's own `agent.given[].expr`
+  // entry, and for a referenced pure-alias's OWN injected entry (see
+  // `_buildGivenEntries`). Harmless/unused for `'value'`/`'condition'`
+  // kind bindings that never end up referenced by an operator expression.
+  const binding = { label: labelTok.value, rhsKind, rhsNode, rhsText };
   state.bindings.set(lower, binding);
   state.allBindings.push(binding);
 }
@@ -2177,21 +2512,44 @@ function parseOneClauseItem(state, { allowMsgDefault }) {
       const labelTok = tok;
       _advance(state); // label
       _advance(state); // "="
+      // Sprint [GIVEN-expr] — capture the RHS's own verbatim source span,
+      // regardless of which `parseGivenRhs` branch wins, for
+      // `_registerBinding`'s `rhsText` param (see that function's own
+      // comment). `rhsStartTok` is the FIRST token `parseGivenRhs` will
+      // consume; `state.tokens[state.pos - 1]` right after it returns is
+      // the LAST token it actually consumed.
+      const rhsStartTok = _peek(state);
       const rhs = parseGivenRhs(state);
+      const rhsEndTok = state.tokens[state.pos - 1];
+      const rhsText = state.text ? state.text.slice(rhsStartTok.start, rhsEndTok.end) : null;
       const after = _peek(state);
-      if (allowMsgDefault && labelTok.value.toLowerCase() === 'msg' && rhs.kind === 'value' && after.type === 'COMMA') {
-        _advance(state); // consume ","
-        const calls = parseCallList(state);
+      // Sprint [newline-separator] — the Sprint-6 `msg="...", <call_list>`
+      // sugar's own `,` ALSO accepts a bare newline instead, same rule as
+      // every other separator in this clause-item grammar (a literal ","
+      // still always works, unchanged — this only widens what else is
+      // ALSO accepted in its place).
+      // Sprint [GIVEN-expr] — `rhs.kind === 'expr'` ALSO activates this
+      // sugar now, not just `'value'` — `ALERT msg = msg_txt, telegram`
+      // (where `msg_txt` is an operator-expression GIVEN binding) is
+      // exactly the motivating, explicitly-requested use case; excluding
+      // it here would silently fall through to the generic "a comma only
+      // joins calls, never an assignment" rejection below instead.
+      const msgDefaultSugarActive = allowMsgDefault && labelTok.value.toLowerCase() === 'msg'
+        && (rhs.kind === 'value' || rhs.kind === 'expr')
+        && (after.type === 'COMMA' || (after.nlBefore && _looksLikeNewListItemStart(after)));
+      if (msgDefaultSugarActive) {
+        if (after.type === 'COMMA') _advance(state); // consume "," — a bare newline has no token to consume
+        const calls = parseCallList(state, { allowNewline: true });
         return { type: 'msgDefaultCalls', msgNode: rhs.node, calls };
       }
       if (after.type === 'COMMA') {
         throw new _ParseError(`expected ";" after a label assignment, not "," (a comma only joins calls, never an assignment)`, after);
       }
-      _registerBinding(state, labelTok, rhs.kind, rhs.node);
+      _registerBinding(state, labelTok, rhs.kind, rhs.node, rhsText);
       return { type: 'assign', label: labelTok.value };
     }
   }
-  const calls = parseCallList(state);
+  const calls = parseCallList(state, { allowNewline: true });
   return { type: 'calls', calls };
 }
 
@@ -2213,9 +2571,22 @@ function parseItemListClause(state, { allowMsgDefault = false, allowNop = true }
     return { items: [{ type: 'nop' }] };
   }
   const items = [parseOneClauseItem(state, { allowMsgDefault })];
-  while (_peek(state).type === 'SEMI') {
-    _advance(state);
-    items.push(parseOneClauseItem(state, { allowMsgDefault: false }));
+  // Sprint [newline-separator] — a bare newline is also accepted in place
+  // of the literal `;` between items — see the shared rationale on
+  // `_looksLikeNewListItemStart`. A literal `;` still always demands a
+  // following item (unchanged below); only its ABSENCE, replaced by a
+  // bare newline, is newly accepted.
+  while (true) {
+    if (_peek(state).type === 'SEMI') {
+      _advance(state);
+      items.push(parseOneClauseItem(state, { allowMsgDefault: false }));
+      continue;
+    }
+    if (_peek(state).nlBefore && _looksLikeNewListItemStart(_peek(state))) {
+      items.push(parseOneClauseItem(state, { allowMsgDefault: false }));
+      continue;
+    }
+    break;
   }
   if (items.length > 1 && items.some((it) => it.type === 'nop')) {
     throw new _ParseError('"nop" cannot be combined with other items', tok);
@@ -2403,6 +2774,12 @@ export function parseAgentStmt(state) {
  *  directly against `state`) per list entry, mirroring
  *  `_parseTpScalesJsonArg`'s own list-of-objects structure one level up,
  *  just without that function's dedicated mini-lexer. */
+/** `match_value := "[" object_literal ("," object_literal)* "]"` —
+ *  Sprint [newline-separator]: a bare newline (no literal `,`) is also
+ *  accepted between `{...}` entries — each entry always starts with a
+ *  literal `{` (LBRACE), the one start-token this list-of-X production
+ *  needs (distinct from `parseListLiteral`'s own wider value start-set
+ *  and `parseItemListClause`/`parseCallList`'s NAME-only start-set). */
 function parseMatchValue(state) {
   const open = _peek(state);
   if (open.type !== 'LBRACKET') {
@@ -2412,10 +2789,18 @@ function parseMatchValue(state) {
   const items = [];
   if (_peek(state).type !== 'RBRACKET') {
     items.push(parseObjectLiteral(state));
-    while (_peek(state).type === 'COMMA') {
-      _advance(state);
-      if (_peek(state).type === 'RBRACKET') throw new _ParseError('trailing comma in match= list', _peek(state));
-      items.push(parseObjectLiteral(state));
+    while (true) {
+      if (_peek(state).type === 'COMMA') {
+        _advance(state);
+        if (_peek(state).type === 'RBRACKET') throw new _ParseError('trailing comma in match= list', _peek(state));
+        items.push(parseObjectLiteral(state));
+        continue;
+      }
+      if (_peek(state).nlBefore && _peek(state).type === 'LBRACE') {
+        items.push(parseObjectLiteral(state));
+        continue;
+      }
+      break;
     }
   }
   const close = _peek(state);
@@ -2680,7 +3065,12 @@ function _dispatchStatement(state) {
 export function parseStatement(text) {
   const { tokens, errors: lexErrors } = lexAgentStatement(text);
   if (lexErrors.length) return { ast: null, errors: lexErrors };
-  const state = { tokens, pos: 0 };
+  // Sprint [GIVEN-expr] — `state.text` is the raw source text, needed ONLY
+  // so a GIVEN binding's RHS can be sliced back out VERBATIM (see
+  // `parseOneClauseItem`'s `rhsText` capture) for the new `agent.given[]`
+  // compiled-output shape and the decompiler's byte-for-byte round-trip.
+  // Harmless when unused (every pre-existing statement shape).
+  const state = { tokens, pos: 0, text };
   try {
     const ast = _dispatchStatement(state);
     const trailing = _peek(state);
@@ -2710,9 +3100,10 @@ export function parseStatement(text) {
  *  label suggested here is guaranteed to be exactly what the real
  *  compiler would also resolve. */
 function _collectBindingsUpToCursor(text, pos) {
-  const { tokens, errors: lexErrors } = lexAgentStatement(text.slice(0, pos));
+  const sliced = text.slice(0, pos);
+  const { tokens, errors: lexErrors } = lexAgentStatement(sliced);
   if (lexErrors.length) return new Map();
-  const state = { tokens, pos: 0 };
+  const state = { tokens, pos: 0, text: sliced };
   try { _dispatchStatement(state); } catch { /* partial parse — bindings registered before the throw still stand */ }
   return state.bindings || new Map();
 }
@@ -3713,6 +4104,14 @@ function _compileGenericActionParams(call, entry, rowRefCtx) {
       if (rowRef.error) errors.push(rowRef.error); else params[k] = rowRef.value;
       continue;
     }
+    // Sprint [GIVEN-expr] — same priority slot as the `$row` check above,
+    // for an `'expr'`-kind GIVEN binding referenced by bare NAME — see
+    // `_resolveGivenExprRefOrNull`'s own header comment.
+    const givenRef = _resolveGivenExprRefOrNull(v, call._bindingsAt, entry.paramsSchema[k], `${entry.token}.${k}`);
+    if (givenRef) {
+      if (givenRef.error) errors.push(givenRef.error); else params[k] = givenRef.value;
+      continue;
+    }
     const coerced = _coerceValueForSpec(v, entry.paramsSchema[k], k, entry.token);
     if (coerced.error) errors.push(coerced.error); else params[k] = coerced.value;
   }
@@ -3908,6 +4307,13 @@ function _compileOrderActionParams(call, entry, opts, rowRefCtx) {
       if (rowRef.error) errors.push(rowRef.error); else params[k] = rowRef.value;
       continue;
     }
+    // Sprint [GIVEN-expr] — see `_compileGenericActionParams`'s identical
+    // guard; same priority slot as the `$row` check above.
+    const givenRef = _resolveGivenExprRefOrNull(v, call._bindingsAt, entry.paramsSchema[k], `${entry.token}.${k}`);
+    if (givenRef) {
+      if (givenRef.error) errors.push(givenRef.error); else params[k] = givenRef.value;
+      continue;
+    }
     const coerced = _coerceValueForSpec(v, entry.paramsSchema[k], k, entry.token);
     if (coerced.error) errors.push(coerced.error); else params[k] = coerced.value;
   }
@@ -3973,9 +4379,19 @@ function _compileOrderActionParams(call, entry, opts, rowRefCtx) {
       if (qtyRowRef.error) { errors.push(qtyRowRef.error); return { params: null, errors }; }
       params.qty = qtyRowRef.value;
     } else {
-      const coerced = _coerceValueForSpec(qtyVal, entry.paramsSchema.qty, 'qty', entry.token);
-      if (coerced.error) { errors.push(coerced.error); return { params: null, errors }; }
-      params.qty = coerced.value;
+      // Sprint [GIVEN-expr] — same priority slot as the two generic-param
+      // loops above; `qty` is numeric, so this always surfaces the
+      // numeric/enum compile-time rejection for an operator-expression
+      // label here (there is no string-typed qty to legitimately accept).
+      const qtyGivenRef = _resolveGivenExprRefOrNull(qtyVal, call._bindingsAt, entry.paramsSchema.qty, `${entry.token}.qty`);
+      if (qtyGivenRef) {
+        if (qtyGivenRef.error) { errors.push(qtyGivenRef.error); return { params: null, errors }; }
+        params.qty = qtyGivenRef.value;
+      } else {
+        const coerced = _coerceValueForSpec(qtyVal, entry.paramsSchema.qty, 'qty', entry.token);
+        if (coerced.error) { errors.push(coerced.error); return { params: null, errors }; }
+        params.qty = coerced.value;
+      }
     }
   }
   return { params, errors: [] };
@@ -4061,6 +4477,27 @@ function _resolveChannelCall(call, catalog, stripKeys, contextLabel = 'here') {
   return { errors: [], isFragmentRef: false, entry, params: r.params, strippedArgs };
 }
 
+/** Sprint [GIVEN-expr] — mirror of `_resolveGivenExprRefOrNull`, scoped to
+ *  `msg=`/`message=` value positions (both the clause-level `ALERT msg=`
+ *  default and a channel's own `msg=`/`message=` kwarg), which resolve
+ *  through `_MESSAGE_SPEC` (`type: 'freetext'`) rather than a generic
+ *  action-param schema and so never reach `_resolveGivenExprRefOrNull` at
+ *  all. A bare NAME referencing an `'expr'`-kind GIVEN binding resolves to
+ *  the same `{"$given": name}` marker (message text is always string-
+ *  shaped, so there is no numeric/enum rejection case here — `msg=` isn't
+ *  gated by `_coerceValueForSpec`'s type system the way action params
+ *  are). Anything else (no match, or a binding that isn't `'expr'`-kind)
+ *  falls through to the EXISTING `_coerceValueForSpec(valueNode,
+ *  _MESSAGE_SPEC, ...)` path, unchanged — a pure-alias or literal/bareword
+ *  `msg=` value compiles exactly as before. */
+function _resolveMessageValue(valueNode, bindingsMap, key, label) {
+  if (valueNode && valueNode.type === 'name' && bindingsMap) {
+    const bound = bindingsMap.get(String(valueNode.value).toLowerCase());
+    if (bound && bound.rhsKind === 'expr') return { value: { '$given': String(valueNode.value).toLowerCase() } };
+  }
+  return _coerceValueForSpec(valueNode, _MESSAGE_SPEC, key, label);
+}
+
 /** `alert_clause`'s per-channel message resolution (Sprint 6):
  *    1. a channel's OWN `msg=`/`message=` kwarg (either spelling) always
  *       wins over the clause-level default;
@@ -4071,14 +4508,23 @@ function _resolveChannelCall(call, catalog, stripKeys, contextLabel = 'here') {
  *       with NO `message` key at all — byte-for-byte unchanged from the
  *       pre-Sprint-6 output, since the backend treats an absent `message`
  *       key as "use the auto-composed default" for the vast majority of
- *       real, existing agents. */
-function compileAlertClause(alertCalls, alertMsg, catalog) {
+ *       real, existing agents.
+ *
+ *  `bindingsMap` (Sprint [GIVEN-expr], new 4th param, optional — every
+ *  pre-existing call site that doesn't pass it keeps working unchanged,
+ *  `_resolveMessageValue` degrades to the old `_coerceValueForSpec`-only
+ *  path when it's absent) is the full statement's bound-label map
+ *  (`label.toLowerCase() -> binding`) — safe to use in full here (not a
+ *  per-call `_bindingsAt` snapshot) because GIVEN's own preamble always
+ *  textually precedes ALERT/DO, so every binding is already fully
+ *  resolved by the time either clause's message is compiled. */
+function compileAlertClause(alertCalls, alertMsg, catalog, bindingsMap) {
   if (alertCalls === 'nop') return { events: [], errors: [] };
   const errors = [];
 
   let defaultMessage = null;
   if (alertMsg != null) {
-    const r = _coerceValueForSpec(alertMsg, _MESSAGE_SPEC, 'msg', 'ALERT');
+    const r = _resolveMessageValue(alertMsg, bindingsMap, 'msg', 'ALERT');
     if (r.error) errors.push(r.error);
     else defaultMessage = r.value;
   }
@@ -4107,7 +4553,7 @@ function compileAlertClause(alertCalls, alertMsg, catalog) {
     }
     let ownMessage = null;
     if (msgArgs.length === 1) {
-      const r = _coerceValueForSpec(msgArgs[0].value, _MESSAGE_SPEC, msgArgs[0].key.toLowerCase(), entry.token);
+      const r = _resolveMessageValue(msgArgs[0].value, bindingsMap, msgArgs[0].key.toLowerCase(), entry.token);
       if (r.error) { errors.push(r.error); continue; }
       ownMessage = r.value;
     }
@@ -4294,6 +4740,29 @@ function _resolveRowRefOrNull(valueNode, rowRefCtx, label) {
   return { value: { '$row': canonicalName } };
 }
 
+/** Sprint [GIVEN-expr] — mirror of `_resolveRowRefOrNull` above, but for
+ *  an `'expr'`-kind (operator-expression) GIVEN binding referenced by
+ *  bare NAME as an action-param value, e.g. `DO order(..., symbol=sym,
+ *  ...)` where `sym` was computed via `GIVEN sym = ...`. Returns:
+ *    - `null` — not a GIVEN-expr-ref candidate at all (not a bare NAME,
+ *      no `bindingsAt` map threaded in, or the name matches no binding /
+ *      matches a binding that isn't `'expr'`-kind) — caller falls through
+ *      to the ordinary `_coerceValueForSpec` path, unaffected.
+ *    - `{ value: {"$given": name} }` — resolved successfully (only when
+ *      the target param's own declared schema `type` is `'string'` —
+ *      the one compile-time guard this sprint's design mandates: a
+ *      computed value can never feed a numeric/enum field).
+ *    - `{ error }` — a definite GIVEN-expr-ref whose target param is
+ *      NOT `string`-typed — never falls through to a different error. */
+function _resolveGivenExprRefOrNull(valueNode, bindingsAt, spec, label) {
+  if (!bindingsAt || !valueNode || valueNode.type !== 'name') return null;
+  const lower = String(valueNode.value).toLowerCase();
+  const bound = bindingsAt.get(lower);
+  if (!bound || bound.rhsKind !== 'expr') return null;
+  if (spec && spec.type === 'string') return { value: { '$given': lower } };
+  return { error: _err(`${label}: GIVEN label '${valueNode.value}' is a computed value; it cannot be used for a numeric/enum field.`) };
+}
+
 // ── `notify=[...]` — universal action-level kwarg (Part B, 2026-10) ────
 // Available on EVERY action-kind token (`order`/`place_order`,
 // `close_position`, `cancel_order`, `modify_order`, `cancel_all_orders`,
@@ -4362,8 +4831,19 @@ function compileDoClause(doCalls, catalog, opts, rowRefCtx) {
     }
 
     const rawName = call.name.toLowerCase();
-    const lookupName = rawName === 'order' ? 'place_order' : rawName;
-    const entry = catalog.actions.get(lookupName);
+    // Sprint [order-unify] — BOTH typed spellings (`order`/`place_order`)
+    // resolve to the exact same schema-lookup key for compiling params;
+    // `isOrderAction` (not `lookupName === 'place_order'`) now drives the
+    // branch dispatch below, since the EMITTED `type` is always the new
+    // canonical `'order'` regardless of which spelling was typed or which
+    // catalog row actually matched (tolerant lookup — tries a literal
+    // `order` catalog row first, in case the backend has seeded one,
+    // falling back to the guaranteed-present `place_order` row otherwise).
+    const isOrderAction = rawName === 'order' || rawName === 'place_order';
+    const lookupName = isOrderAction ? 'order' : rawName;
+    const entry = isOrderAction
+      ? (catalog.actions.get('order') || catalog.actions.get('place_order'))
+      : catalog.actions.get(lookupName);
     if (!entry) {
       const other = _describeKind(call.name, catalog);
       errors.push(_err(other
@@ -4373,10 +4853,15 @@ function compileDoClause(doCalls, catalog, opts, rowRefCtx) {
     }
 
     let action = null;
-    if (lookupName === 'place_order') {
+    if (isOrderAction) {
       const r = _compileOrderActionParams(call, entry, opts, rowRefCtx);
       errors.push(...r.errors);
-      if (!r.errors.length) action = { type: 'place_order', params: r.params };
+      // Sprint [order-unify] — `order` is the sole name the compiler ever
+      // EMITS going forward, regardless of which spelling was typed
+      // (`order(...)` or `place_order(...)` both compile identically) —
+      // never `'place_order'`. The backend's Phase-A dispatch tables
+      // accept both strings identically.
+      if (!r.errors.length) action = { type: 'order', params: r.params };
     } else if (lookupName === 'emit_log') {
       const r = _compileEmitLogActionParams(call, entry, rowRefCtx);
       errors.push(...r.errors);
@@ -4545,6 +5030,17 @@ function _substituteBoundArgs(call, errors) {
       errors.push(_err(`label '${arg.value.value}' is bound to a condition — only usable in WHEN or debug(...)`, arg.value));
       return arg;
     }
+    // Sprint [GIVEN-expr] — an `'expr'`-kind (operator-expression) binding
+    // is left UNTOUCHED here, deliberately — it must NOT be textually
+    // substituted (the bound `rhsNode` is this file's own internal
+    // arithmetic-AST scaffolding, not a valid `ValueNode` shape, and would
+    // corrupt the arg if spliced in directly). It is resolved later,
+    // schema-type-aware, by `_resolveGivenExprRefOrNull` inside
+    // `_compileGenericActionParams`/`_compileOrderActionParams` — only a
+    // `string`-typed param may reference it; a numeric/enum param is a
+    // compile error there, not here (this function has no visibility
+    // into the target param's own schema type).
+    if (bound.rhsKind === 'expr') return arg;
     changed = true;
     return { ...arg, value: _cloneAstNode(bound.rhsNode) };
   });
@@ -4630,6 +5126,18 @@ function _compileDebugCall(call, bindings, catalog) {
   const lower = String(refName).toLowerCase();
   const bound = bindings && bindings.get(lower);
   if (bound) {
+    // Sprint [GIVEN-expr] — an operator-expression ('expr'-kind) binding
+    // is the ONE case that now has a genuinely LIVE value server-side
+    // (the backend's new per-tick `given` evaluation step) — compiles to
+    // the new `{"$given": name}` marker, parallel to the pre-existing
+    // `{"$row": name}` case below. A PURE-ALIAS or real multi-leaf
+    // CONDITION-kind binding is UNCHANGED — still the static
+    // `_debugFormatValueNode`/`JSON.stringify(compileCondition(...))`
+    // format this function has always used for those, per the "KNOWN
+    // LIMITATION" comment above (nothing about THAT case changed).
+    if (bound.rhsKind === 'expr') {
+      return { action: { type: 'emit_log', params: { level: 'debug', message: { '$given': lower } } }, errors };
+    }
     let message;
     if (bound.rhsKind === 'value') {
       message = _debugFormatValueNode(bound.rhsNode);
@@ -4650,12 +5158,229 @@ function _compileDebugCall(call, bindings, catalog) {
   return { action: null, errors };
 }
 
+/** Sprint [GIVEN-expr] — true iff `b` is a "pure alias" GIVEN binding: a
+ *  bare `metric@scope`/col_ref reference with NO comparator of its own
+ *  (`op === null`) — i.e. the pre-existing, unchanged `rhsKind:
+ *  'condition'` shape a bare `p = pnl@positions.total` assignment has
+ *  always produced (Sprint G). Used only to decide which ALIAS bindings
+ *  must ALSO get their own `agent.given[]` entry when an operator
+ *  expression references them by name (see `_buildGivenEntries`) — a
+ *  REAL multi-leaf condition binding (its own comparator, or a &/|/~/
+ *  between combination) is never a "pure alias" and is excluded. */
+function _isPureAliasBinding(b) {
+  return !!b && b.rhsKind === 'condition' && b.rhsNode && b.rhsNode.op === null
+    && (b.rhsNode.type === 'leaf' || b.rhsNode.type === 'colref');
+}
+
+/** Sprint [GIVEN-expr] — true iff ANY node in a parsed arithmetic tree
+ *  (see `parseArithExpr`) is a `metric_atom`/`colref_atom` — i.e. an
+ *  INLINE `metric@scope`/col_ref read mixed directly into an operator
+ *  expression, e.g. `GIVEN y = "x" + pnl@positions.total`. This must be
+ *  a compile-time error: the backend's `expr_eval.py` (confirmed
+ *  read-only) is a flat-namespace Python-`ast` evaluator with no `@`/`.`
+ *  dotted-access support at all — it can never evaluate such a string.
+ *  The required fix is to bind the dynamic read to its own label FIRST
+ *  (`GIVEN p = pnl@positions.total`) and reference `p` by bare name
+ *  instead — exactly the pure-alias-referenced-by-an-operator-expression
+ *  case `_buildGivenEntries` already handles. */
+function _arithContainsDynamicRead(node) {
+  if (!node || typeof node !== 'object') return false;
+  if (node.type === 'metric_atom' || node.type === 'colref_atom') return true;
+  if (node.type === 'arith') return _arithContainsDynamicRead(node.left) || _arithContainsDynamicRead(node.right);
+  if (node.type === 'pow') return _arithContainsDynamicRead(node.base) || _arithContainsDynamicRead(node.exp);
+  if (node.type === 'neg') return _arithContainsDynamicRead(node.node);
+  return false;
+}
+
+/** Sprint [GIVEN-expr] — collect every name reference (lowercased)
+ *  anywhere in a parsed arithmetic tree into `out` — used to find which
+ *  OTHER bound labels an `'expr'`-kind binding's own expression touches,
+ *  so `_buildGivenEntries` can decide which pure-alias bindings need
+ *  their own injected `given[]` entry (see that function). Recognizes
+ *  BOTH `name_atom` (produced by `parseArithAtom`, for a genuine `+`/`-`/
+ *  etc.-combined expression) AND the plain ValueNode `type: 'name'`
+ *  shape (produced by `parseGivenRhs`'s "bare NAME referencing an
+ *  earlier binding, no operator at all" reclassification, e.g. `q = p`
+ *  — deliberately left as an ordinary ValueNode there, not wrapped, so
+ *  it also satisfies every OTHER consumer that pattern-matches on
+ *  `type === 'name'`, see that function's own comment). */
+function _collectArithNameRefs(node, out) {
+  if (!node || typeof node !== 'object') return;
+  if (node.type === 'name_atom' || node.type === 'name') { out.add(String(node.value).toLowerCase()); return; }
+  if (node.type === 'arith') { _collectArithNameRefs(node.left, out); _collectArithNameRefs(node.right, out); return; }
+  if (node.type === 'pow') { _collectArithNameRefs(node.base, out); _collectArithNameRefs(node.exp, out); return; }
+  if (node.type === 'neg') { _collectArithNameRefs(node.node, out); return; }
+}
+
+/** Sprint [GIVEN-parts] — true iff ANY node in a parsed arithmetic tree is
+ *  a STRING literal atom. This is the static, usage-independent property
+ *  that decides `given[]`'s compiled SHAPE for an `'expr'`-kind binding:
+ *  operator council decision (2026-10) — `backend/api/algo/expr_eval.py`
+ *  is a deliberately strict trust boundary (no implicit str/number
+ *  coercion — a string operand is only ever valid as a literal, a `Name`
+ *  lookup, or a `+` operand where BOTH sides are already strings) and
+ *  loosening it was explicitly rejected, since it sits directly upstream
+ *  of real order placement. A pure-arithmetic expression (numbers,
+ *  metric/colref atoms, earlier-bound names, `+ - * / % **`) still
+ *  compiles to the existing verbatim `expr` string, evaluated by
+ *  `expr_eval.py` exactly as before — zero change to that path. Anything
+ *  containing a string literal anywhere compiles to the NEW `parts[]`
+ *  shape instead (see `_flattenPlusChainToParts`), built and resolved
+ *  entirely server-side without ever going through `expr_eval.py`'s
+ *  string-coercion rules at all. */
+function _arithContainsStringLiteral(node) {
+  if (!node || typeof node !== 'object') return false;
+  if (node.type === 'string') return true;
+  if (node.type === 'arith') return _arithContainsStringLiteral(node.left) || _arithContainsStringLiteral(node.right);
+  if (node.type === 'pow') return _arithContainsStringLiteral(node.base) || _arithContainsStringLiteral(node.exp);
+  if (node.type === 'neg') return _arithContainsStringLiteral(node.node);
+  return false;
+}
+
+/** Sprint [GIVEN-parts] — flatten a string-containing arithmetic tree
+ *  into a left-to-right `parts[]` array for the new compiled shape
+ *  (`{"name": label, "parts": [...]}` ), REJECTING anything that isn't a
+ *  flat `+`-chain (a `-`/`*`/`/`/`%`/`**`/unary-minus anywhere in a tree
+ *  that ALSO contains a string literal has no sensible meaning — string
+ *  concatenation is the only operation `parts[]` exists to express, per
+ *  the explicit operator decision). Each leaf becomes exactly one part:
+ *  a STRING atom's own value (a plain string), or a NUMBER atom
+ *  stringified (a plain string — judgment call: not explicitly in the
+ *  operator's two-shape enumeration, but rejecting a literal number
+ *  mixed into a message string outright seemed needlessly restrictive;
+ *  flagged in the handback), or a `name_atom`/plain `name`-typed
+ *  reference to an earlier binding (`{"$given": "<name>"}`, the SAME
+ *  marker shape used everywhere else in this file). A `metric_atom`/
+ *  `colref_atom` leaf can never actually reach this function — the
+ *  caller (`_buildGivenEntries`) only calls this AFTER
+ *  `_arithContainsDynamicRead` has already confirmed (compile-time) that
+ *  no inline dynamic read exists anywhere in the tree; the defensive
+ *  branch below is unreachable in practice, kept only so a future caller
+ *  that skips that guard fails loud instead of producing a malformed
+ *  part. Returns the flattened array, or `null` after pushing a compile
+ *  error onto `errors` (caller checks `errors.length`, same convention
+ *  as every other compile-time check in this file). */
+function _flattenPlusChainToParts(node, errors, label) {
+  if (!node || typeof node !== 'object') return null;
+  if (node.type === 'arith') {
+    if (node.op !== '+') {
+      errors.push(_err(`GIVEN label '${label}': only string concatenation with + is supported here`));
+      return null;
+    }
+    const left = _flattenPlusChainToParts(node.left, errors, label);
+    const right = _flattenPlusChainToParts(node.right, errors, label);
+    if (!left || !right) return null;
+    return [...left, ...right];
+  }
+  if (node.type === 'pow' || node.type === 'neg') {
+    errors.push(_err(`GIVEN label '${label}': only string concatenation with + is supported here`));
+    return null;
+  }
+  if (node.type === 'string') return [node.value];
+  if (node.type === 'number') return [String(node.value)];
+  if (node.type === 'name_atom' || node.type === 'name') return [{ '$given': String(node.value).toLowerCase() }];
+  // Unreachable in practice — see docstring.
+  errors.push(_err(`GIVEN label '${label}': unsupported value inside a string-building expression`));
+  return null;
+}
+
+/** Sprint [GIVEN-expr] — build the agent's new top-level `given[]` array
+ *  from its full, ordered binding list (`ast.bindings`, i.e.
+ *  `state.allBindings` — already strict left-to-right source order, no
+ *  forward references possible per the parser's own "no shadowing/no
+ *  forward reference" rule). Two kinds of entry, BOTH rendered from the
+ *  binding's own verbatim `rhsText` (never re-derived — see
+ *  `_registerBinding`'s own comment, and the decompiler's matching
+ *  "read `expr` back verbatim" rule):
+ *    1. every `'expr'`-kind (operator-expression) binding, unconditionally,
+ *       in declaration order;
+ *    2. a pure-alias binding, but ONLY when it's actually referenced
+ *       (directly) by SOME `'expr'`-kind binding's own expression — the
+ *       backend's per-tick namespace needs that alias's own value to
+ *       resolve the name, since an `'expr'` binding's `expr` text only
+ *       ever carries the bare referenced name, never the alias's own
+ *       expanded `metric@scope` text (that would defeat the "resolve
+ *       server-side, not via text splicing" design). An alias referenced
+ *       only inside WHEN/debug(...) (the pre-existing, unchanged client-
+ *       side-substitution paths) needs no entry here at all — this is
+ *       solely for the NEW server-resolved paths.
+ *  Statements with no `'expr'`-kind binding at all (every pre-existing
+ *  GIVEN usage) produce `given: null` here — the caller only splices this
+ *  key into the compiled agent when non-null, so a statement untouched by
+ *  this sprint compiles to byte-identical JSON. Returns `{ given, errors }`
+ *  — `given` is `null` on error (the inline-dynamic-read compile error
+ *  above). */
+function _buildGivenEntries(bindings) {
+  const errors = [];
+  const byLower = new Map((bindings || []).map((b) => [b.label.toLowerCase(), b]));
+  const exprBindings = (bindings || []).filter((b) => b.rhsKind === 'expr');
+  for (const b of exprBindings) {
+    if (_arithContainsDynamicRead(b.rhsNode)) {
+      errors.push(_err(
+        `GIVEN label '${b.label}': a computed expression cannot reference a metric@scope value inline `
+        + `— bind it first (e.g. GIVEN p = pnl@positions.total) and reference 'p' here instead`
+      ));
+    }
+  }
+  if (errors.length) return { given: null, errors };
+
+  // Sprint [GIVEN-parts] — classify each expr-kind binding's COMPILED
+  // SHAPE (not its `rhsKind`, which stays `'expr'` either way — every
+  // OTHER consumer, `_resolveGivenExprRefOrNull`/`_resolveMessageValue`/
+  // `_substituteBoundArgs`/`_compileDebugCall`, keeps checking
+  // `rhsKind === 'expr'` uniformly and keeps emitting the SAME
+  // `{"$given": name}` marker regardless of parts-vs-expr — the backend
+  // resolves a NAME from its per-tick dict the same way either way, so
+  // none of those call sites need to know or care which shape produced
+  // the value). See `_arithContainsStringLiteral`'s own docstring for
+  // the "why" and the operator decision this implements.
+  const partsByLower = new Map();
+  for (const b of exprBindings) {
+    if (_arithContainsStringLiteral(b.rhsNode)) {
+      const parts = _flattenPlusChainToParts(b.rhsNode, errors, b.label);
+      if (parts) partsByLower.set(b.label.toLowerCase(), parts);
+    }
+  }
+  if (errors.length) return { given: null, errors };
+
+  const referencedAliases = new Set();
+  for (const b of exprBindings) {
+    const refs = new Set();
+    _collectArithNameRefs(b.rhsNode, refs);
+    for (const r of refs) {
+      const target = byLower.get(r);
+      if (target && _isPureAliasBinding(target)) referencedAliases.add(r);
+    }
+  }
+  const entries = [];
+  for (const b of bindings || []) {
+    const lower = b.label.toLowerCase();
+    if (b.rhsKind === 'expr') {
+      entries.push(partsByLower.has(lower)
+        ? { name: b.label, parts: partsByLower.get(lower) }
+        : { name: b.label, expr: b.rhsText });
+    } else if (referencedAliases.has(lower)) {
+      // A referenced ALIAS's own binding is always a bare metric@scope/
+      // col_ref leaf (see `_isPureAliasBinding`) — never a string
+      // literal — so it is always `expr`-shaped, never `parts`-shaped.
+      entries.push({ name: b.label, expr: b.rhsText });
+    }
+  }
+  return { given: entries.length ? entries : null, errors: [] };
+}
+
 function compileAgentStmt(ast, catalog, opts) {
   const errors = [];
   // Sprint G — bound-label collisions against real catalog names, checked
   // once up front (pure catalog lookups, no interaction with anything
   // else compiled below).
   errors.push(..._checkLabelCollisions(ast.bindings, catalog));
+  // Sprint [GIVEN-expr] — build the new `agent.given[]` array (and run
+  // its own compile-time inline-dynamic-read guard) up front too, same
+  // "pure catalog/binding-shape checks, no interaction with anything else
+  // compiled below" spirit as the collision check above.
+  const givenResult = _buildGivenEntries(ast.bindings);
+  errors.push(...givenResult.errors);
   const condResult = compileCondition(ast.condition, catalog);
   errors.push(...condResult.errors);
   // Sprint G — substitute any VALUE-kind bound label referenced as a
@@ -4665,7 +5390,12 @@ function compileAgentStmt(ast, catalog, opts) {
   // pre-Sprint-G statement (`_bindingsAt` is `undefined` everywhere).
   const alertCallsSubst = _substituteBoundArgsInCalls(ast.alertCalls, errors);
   const doCallsSubst = _substituteBoundArgsInCalls(ast.doCalls, errors);
-  const eventsResult = compileAlertClause(alertCallsSubst, ast.alertMsg, catalog);
+  // Sprint [GIVEN-expr] — the full statement's bound-label map, by lower-
+  // cased label, for `compileAlertClause`'s `msg=` resolution (see that
+  // function's own comment on why the FULL map — not a per-call
+  // `_bindingsAt` snapshot — is safe here).
+  const bindingsMap = new Map((ast.bindings || []).map((b) => [b.label.toLowerCase(), b]));
+  const eventsResult = compileAlertClause(alertCallsSubst, ast.alertMsg, catalog, bindingsMap);
   errors.push(...eventsResult.errors);
   // Sprint 16 — matched-row ($row) binding context, built from THIS
   // statement's own compiled condition tree (every real leaf's `scope`,
@@ -4709,7 +5439,15 @@ function compileAgentStmt(ast, catalog, opts) {
   const actions = actionsResult.actions ? [...actionsResult.actions, ...debugActions] : debugActions;
   return {
     kind: 'agent', errors: [],
-    agent: { conditions: condResult.conditions, events: eventsResult.events, actions, ...metaFields },
+    agent: {
+      conditions: condResult.conditions, events: eventsResult.events, actions,
+      // Sprint [GIVEN-expr] — only spliced in when non-null, so a
+      // statement with no operator-expression GIVEN binding at all
+      // (every pre-existing agent) compiles to byte-identical JSON —
+      // no stray `given: null` key.
+      ...(givenResult.given ? { given: givenResult.given } : {}),
+      ...metaFields,
+    },
   };
 }
 
@@ -4924,7 +5662,11 @@ function _compileOrderCallToLeg(call, catalog, opts) {
     errors.push(_err('only order(...) can be used standalone'));
     return { leg: null, errors };
   }
-  const entry = catalog.actions.get('place_order');
+  // Sprint [order-unify] — tolerant lookup: schema only (this compiled
+  // leg object carries no `type` field at all — ticket/basket JSON, not
+  // an agent-action dict — so there is nothing to "flip" here, only the
+  // lookup itself needs to tolerate a future literal `order` catalog row).
+  const entry = catalog.actions.get('order') || catalog.actions.get('place_order');
   if (!entry) { errors.push(_err('place_order action not found in catalog')); return { leg: null, errors }; }
 
   const { lotsArgs, call: afterLots } = _splitLotsArg(call);
@@ -5226,7 +5968,11 @@ function compileBracketStmt(ast, catalog, opts = {}) {
   if (appliesToArgs.length > 1) errors.push(_err("bracket: duplicate parameter 'applies_to'"));
   for (const a of otherArgs) errors.push(_err(`bracket: unknown parameter '${a.key}'`));
 
-  const placeOrderEntry = catalog && catalog.actions ? catalog.actions.get('place_order') : null;
+  // Sprint [order-unify] — tolerant lookup (schema-only; see
+  // `_compileOrderCallToLeg`'s identical comment).
+  const placeOrderEntry = catalog && catalog.actions
+    ? (catalog.actions.get('order') || catalog.actions.get('place_order'))
+    : null;
   const tpSlWingResult = _compileTpSlWingFields(tpSlWingArgs, 'template', 'bracket', placeOrderEntry && placeOrderEntry.mutuallyExclusiveGroups);
   errors.push(...tpSlWingResult.errors);
 
@@ -5526,6 +6272,15 @@ function _isRowRefMarker(value) {
     && typeof value['$row'] === 'string';
 }
 
+/** Sprint [GIVEN-expr] — mirror of `_isRowRefMarker` above, for the new
+ *  single-key `{"$given": "<name>"}` marker (an `'expr'`-kind GIVEN
+ *  binding referenced from an action param / `msg=` / `debug(x)`). */
+function _isGivenRefMarker(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    && Object.keys(value).length === 1
+    && typeof value['$given'] === 'string';
+}
+
 /** Render a single param value against its `params_schema` field spec —
  *  the decompile-direction mirror of `_coerceValueForSpec`. Enum values
  *  always render bare when possible (grammar's own documented
@@ -5544,6 +6299,10 @@ function _renderParamValue(value, spec) {
   // never a literal of that type, so none of the type-specific render
   // branches below apply to it.
   if (_isRowRefMarker(value)) return { text: value['$row'] };
+  // Sprint [GIVEN-expr] — same "render bare, regardless of declared
+  // schema type" treatment as the $row marker above, for the new
+  // `{"$given": name}` marker.
+  if (_isGivenRefMarker(value)) return { text: value['$given'] };
   const type = spec && spec.type;
   if (type === 'number') {
     if (typeof value === 'string') return _quoteString(value); // token_ref_ok expression
@@ -6085,11 +6844,15 @@ export function decompileEvents(events, catalog) {
     let message; // undefined = no 'message' key at all (the normal case)
     let bad = false;
     if ('message' in ev) {
-      if (typeof ev.message !== 'string') {
+      // Sprint [GIVEN-expr] — a `message` value is either a plain string
+      // (the pre-existing shape) OR the new `{"$given": name}` marker (an
+      // ALERT `msg=`/channel-own-`msg=` that resolved to an `'expr'`-kind
+      // GIVEN binding) — anything else is still malformed.
+      if (typeof ev.message === 'string' || _isGivenRefMarker(ev.message)) {
+        message = ev.message;
+      } else {
         errors.push(_err(`event '${entry.token}'.message: must be a string, got ${JSON.stringify(ev.message)}`));
         bad = true;
-      } else {
-        message = ev.message;
       }
     }
     if (bad) continue;
@@ -6097,13 +6860,23 @@ export function decompileEvents(events, catalog) {
   }
   if (errors.length) return { text: null, errors };
 
+  // Sprint [GIVEN-expr] — render a message value (string OR `$given`
+  // marker) to its `msg=...` CLI text; a marker renders bare/unquoted
+  // (the exact label name, same as `_renderParamValue`'s own treatment).
+  const _renderMsg = (m) => (_isGivenRefMarker(m) ? { text: m['$given'] } : _quoteString(m));
+  // Sprint [GIVEN-expr] — a comparison KEY for "are these two messages
+  // the same", since two distinct `{"$given": name}` OBJECTS (one per
+  // channel entry, even when they name the SAME binding) are never `===`
+  // to each other the way two identical strings are.
+  const _msgKey = (m) => (_isGivenRefMarker(m) ? `$given:${m['$given']}` : m);
+
   // Message hoisting (Sprint 6) only ever considers PLAIN channel entries —
   // a `ref: true` entry (Sprint 10) is excluded from both the numerator and
   // denominator below, since it can never carry a `message` at all.
   const plain = rendered.filter(r => !r.ref);
-  const withMsg = plain.filter(r => typeof r.message === 'string');
+  const withMsg = plain.filter(r => typeof r.message === 'string' || _isGivenRefMarker(r.message));
   if (withMsg.length > 0 && withMsg.length < plain.length) {
-    const missing = plain.find(r => typeof r.message !== 'string');
+    const missing = plain.find(r => !(typeof r.message === 'string' || _isGivenRefMarker(r.message)));
     return {
       text: null,
       errors: [_err(`channel '${missing.entry.token}' has no message while other channels in this ALERT do — this shape has no CLI representation`)],
@@ -6111,11 +6884,11 @@ export function decompileEvents(events, catalog) {
   }
 
   const uniform = withMsg.length === plain.length && plain.length > 0
-    && plain.every(r => r.message === plain[0].message);
+    && plain.every(r => _msgKey(r.message) === _msgKey(plain[0].message));
 
   let defaultPrefix = '';
   if (uniform) {
-    const q = _quoteString(plain[0].message);
+    const q = _renderMsg(plain[0].message);
     if (q.error) return { text: null, errors: [_err(q.message)] };
     defaultPrefix = `msg=${q.text}, `;
   }
@@ -6124,8 +6897,8 @@ export function decompileEvents(events, catalog) {
   for (const r of rendered) {
     if (r.ref) { parts.push(r.text); continue; }
     const argParts = [...r.argParts];
-    if (!uniform && typeof r.message === 'string') {
-      const q = _quoteString(r.message);
+    if (!uniform && (typeof r.message === 'string' || _isGivenRefMarker(r.message))) {
+      const q = _renderMsg(r.message);
       if (q.error) return { text: null, errors: [_err(q.message)] };
       argParts.push(`msg=${q.text}`);
     }
@@ -6292,7 +7065,15 @@ export function decompileActions(actions, catalog, opts = {}) {
       continue;
     }
     const lookupName = act.type.toLowerCase();
-    const entry = catalog.actions.get(lookupName);
+    // Sprint [order-unify] — tolerant catalog lookup: `order` is the sole
+    // name the compiler ever EMITS going forward (see `compileDoClause`),
+    // but stored JSON may still carry the legacy `place_order` (any
+    // pre-backfill row, or a hand-authored shape) — both must decompile
+    // identically. Falls back to the real `place_order` catalog row when
+    // looked up as `order` and the backend hasn't (yet) seeded a literal
+    // `order` row of its own.
+    const entry = catalog.actions.get(lookupName)
+      || (lookupName === 'order' ? catalog.actions.get('place_order') : null);
     if (!entry) { errors.push(_err(`unknown action '${act.type}' referenced in stored actions`)); continue; }
 
     // Part B (2026-10) — `notify=[...]` is a SIBLING key on the action
@@ -6309,10 +7090,22 @@ export function decompileActions(actions, catalog, opts = {}) {
       notifyArgText = nr.text;
     }
 
-    if (lookupName === 'place_order') {
+    // Sprint [order-unify] — a stored action's `type` may be EITHER the
+    // new canonical `'order'` or the legacy `'place_order'` (see the
+    // tolerant lookup above) — both decompile via the exact same
+    // `_decompileOrderAction` path, rendering `order(...)` either way.
+    if (lookupName === 'order' || lookupName === 'place_order') {
       const r = _decompileOrderAction(act.params, entry, opts);
       if (r.error) { errors.push(_err(r.error)); continue; }
       parts.push(_appendNotifyArgText(r.text, notifyArgText));
+      continue;
+    }
+    // Sprint [GIVEN-expr] — render the `debug(x)` sugar form when the
+    // message is the new, genuinely-live `{"$given": name}` marker (an
+    // operator-expression GIVEN binding) — byte-for-byte round-trip,
+    // same as the pre-existing `$row` case directly below.
+    if (lookupName === 'emit_log' && act.params && act.params.level === 'debug' && _isGivenRefMarker(act.params.message) && notifyArgText == null) {
+      parts.push(`debug(${act.params.message['$given']})`);
       continue;
     }
     // Sprint G — render the `debug(x)` sugar form ONLY when the ORIGINAL
@@ -6404,19 +7197,89 @@ export function decompileMetaClause(agent) {
   return { text: parts.join(' '), errors: [] };
 }
 
-export function decompileAgent({ conditions, events, actions, name = undefined, description = undefined, tags = undefined, group = undefined }, catalog, opts = {}) {
+/** Sprint [GIVEN-parts] — render a `parts[]` array (see
+ *  `_flattenPlusChainToParts`) back to its `+`-chain CLI source text —
+ *  the decompile-direction mirror. NOT "read back verbatim" the way
+ *  `expr` is (there is no stored source string for a `parts`-kind
+ *  binding at all) — this is a FRESH render straight from the parts
+ *  array, which is lossless for this flat-chain shape (every part is
+ *  either a literal string or a `{"$given": name}` reference, and both
+ *  render back unambiguously). A plain string part renders as a quoted
+ *  string literal (via `_quoteString`, same quoting rules as every other
+ *  string value in this file); a `{"$given": name}` part renders as the
+ *  bare name. Returns `{ text }` or `{ error }`. */
+function _decompileGivenPartsToExprText(parts) {
+  if (!Array.isArray(parts) || parts.length === 0) {
+    return { error: `'parts' must be a non-empty array, got ${JSON.stringify(parts)}` };
+  }
+  const pieces = [];
+  for (const p of parts) {
+    if (typeof p === 'string') {
+      const q = _quoteString(p);
+      if (q.error) return { error: q.message };
+      pieces.push(q.text);
+      continue;
+    }
+    if (_isGivenRefMarker(p)) { pieces.push(p['$given']); continue; }
+    return { error: `unrecognized 'parts' entry ${JSON.stringify(p)}` };
+  }
+  return { text: pieces.join(' + ') };
+}
+
+/** Sprint [GIVEN-expr]/[GIVEN-parts] — render `agent.given[]` back to a
+ *  leading `GIVEN name1 = expr1; name2 = expr2; ...` line. An `expr`-kind
+ *  entry reads its `expr` string back VERBATIM — never re-derived/
+ *  reformatted from any AST — the explicit architect-council watch-point
+ *  for this sprint: a round-trip mismatch here would be a silent bug. A
+ *  `parts`-kind entry (string-building — see `_arithContainsStringLiteral`'s
+ *  own docstring for why this is a separate compiled shape) has no stored
+ *  source text at all, so it is instead FRESHLY rendered from its own
+ *  `parts[]` array via `_decompileGivenPartsToExprText` — lossless for
+ *  this flat-chain shape, so the round-trip contract still holds even
+ *  though the mechanism differs. This is the ONLY place `given` round-
+ *  trips at all: a pure-alias/primitive GIVEN binding has always
+ *  decompiled via its own already-inlined expansion inside `conditions`/
+ *  `actions` (zero backend footprint, Sprint G's original design) — an
+ *  `'expr'`/`'parts'`-kind binding is new and has no other home. Returns
+ *  `{ text: '', errors: [] }` when `given` is absent/empty (every pre-
+ *  existing agent) — the overwhelming common case, zero output change. */
+function _decompileGivenPreamble(given) {
+  if (!Array.isArray(given) || given.length === 0) return { text: '', errors: [] };
+  const errors = [];
+  const parts = [];
+  for (const g of given) {
+    if (!g || typeof g.name !== 'string' || !g.name) {
+      errors.push(_err(`a 'given' entry is missing a valid 'name'`));
+      continue;
+    }
+    if (Array.isArray(g.parts)) {
+      const r = _decompileGivenPartsToExprText(g.parts);
+      if (r.error) { errors.push(_err(`given.${g.name}: ${r.error}`)); continue; }
+      parts.push(`${g.name} = ${r.text}`);
+    } else if (typeof g.expr === 'string' && g.expr !== '') {
+      parts.push(`${g.name} = ${g.expr}`);
+    } else {
+      errors.push(_err(`given.${g.name}: must carry either a non-empty 'expr' string or a 'parts' array`));
+    }
+  }
+  if (errors.length) return { text: null, errors };
+  return { text: `GIVEN ${parts.join('; ')}\n`, errors: [] };
+}
+
+export function decompileAgent({ conditions, events, actions, given = undefined, name = undefined, description = undefined, tags = undefined, group = undefined }, catalog, opts = {}) {
   const condResult = decompileCondition(conditions, catalog);
   const eventsResult = decompileEvents(events, catalog);
   const actionsResult = decompileActions(actions, catalog, opts);
   const metaResult = decompileMetaClause({ name, description, tags, group });
-  const errors = [...condResult.errors, ...eventsResult.errors, ...actionsResult.errors, ...metaResult.errors];
+  const givenResult = _decompileGivenPreamble(given);
+  const errors = [...condResult.errors, ...eventsResult.errors, ...actionsResult.errors, ...metaResult.errors, ...givenResult.errors];
   const evLen = Array.isArray(events) ? events.length : null;
   const acLen = Array.isArray(actions) ? actions.length : null;
   if (evLen === 0 && acLen === 0) errors.push(_err('an agent must have at least one of ALERT or DO'));
   if (errors.length) return { text: null, errors };
 
   const metaSuffix = metaResult.text ? ` ${metaResult.text}` : '';
-  const text = `WHEN ${condResult.text} ALERT ${eventsResult.text} DO ${actionsResult.text}${metaSuffix}`;
+  const text = `${givenResult.text}WHEN ${condResult.text} ALERT ${eventsResult.text} DO ${actionsResult.text}${metaSuffix}`;
   const roundTrip = compileAgentCliStatement(text, catalog, opts);
   if (!roundTrip.ok) {
     const detail = (roundTrip.errors && roundTrip.errors[0] && roundTrip.errors[0].message) || 'unknown error';
@@ -6968,7 +7831,17 @@ function _clauseKindFromTokenPrefix(tokens) {
 // compilers — `compileBracketStmt`/`compileTokenStmt` never go through
 // `entry.paramKeys`/`params_schema` the way `order`/`place_order` does),
 // so aliasing alone can't fix them — see `_syntheticEntryFor` below.
-const _ACTION_NAME_ALIAS = Object.freeze({ order: 'place_order' });
+// Sprint [order-unify] — relabeled, NOT functionally inverted (the
+// `_ACTION_NAME_ALIAS[key] || key` fallback at every call site already
+// resolved a directly-typed `place_order` to itself before this change,
+// via that `|| key` default — there was no functional gap to invert).
+// `order` is the sole name the compiler ever EMITS going forward (see
+// `compileDoClause`); `place_order` is the legacy spelling — still
+// accepted as typed CLI input, and still the guaranteed-present real
+// catalog row through Phase A — but never produced. Both map to the
+// real catalog key this table (and every caller below) uses for schema
+// lookup.
+const _ACTION_NAME_ALIAS = Object.freeze({ order: 'place_order', place_order: 'place_order' });
 
 // Sprint H (item 4) — synthetic, SUGGESTION-ONLY catalog-entry shapes for
 // `bracket(...)`/`token(...)`, built from the exact same constants their
@@ -6983,7 +7856,11 @@ const _ACTION_NAME_ALIAS = Object.freeze({ order: 'place_order' });
 function _syntheticEntryFor(name, catalog) {
   const lower = String(name).toLowerCase();
   if (lower === 'bracket') {
-    const placeOrderEntry = catalog && catalog.actions ? catalog.actions.get('place_order') : null;
+    // Sprint [order-unify] — tolerant lookup (suggestion-only; see
+    // `_compileOrderCallToLeg`'s identical comment).
+    const placeOrderEntry = catalog && catalog.actions
+      ? (catalog.actions.get('order') || catalog.actions.get('place_order'))
+      : null;
     const schema = { applies_to: _BRACKET_APPLIES_TO_SPEC };
     for (const k of _TPSLWING_KWARGS) schema[k] = k === 'tp_order_type' ? _TP_ORDER_TYPE_SPEC : _TPSLWING_NUMBER_SPEC;
     return {
@@ -7006,7 +7883,11 @@ function _syntheticEntryFor(name, catalog) {
     return { token: 'token', paramsSchema: schema, paramKeys: Object.keys(schema), description: 'Saved, reusable notify channel-list preset — requires #name=.', mutuallyExclusiveGroups: null };
   }
   if (lower === 'order' || lower === 'place_order') {
-    const base = catalog && catalog.actions ? catalog.actions.get('place_order') : null;
+    // Sprint [order-unify] — tolerant lookup (suggestion-only; see
+    // `_compileOrderCallToLeg`'s identical comment).
+    const base = catalog && catalog.actions
+      ? (catalog.actions.get('order') || catalog.actions.get('place_order'))
+      : null;
     if (!base) return null;
     const schema = { ...base.paramsSchema, lots: { type: 'number', description: 'Order quantity in LOTS for F&O (converted to qty via lot size) — mutually exclusive with qty=.' }, bracket: { type: 'string', description: 'Reference an existing saved bracket(...) preset by its #name=.' } };
     for (const k of _TPSLWING_KWARGS) if (!(k in schema)) schema[k] = k === 'tp_order_type' ? _TP_ORDER_TYPE_SPEC : _TPSLWING_NUMBER_SPEC;
@@ -7391,7 +8272,16 @@ function _paramOrEnumSuggestion(text, parenPos, cursor, entry) {
     // one here would hand the operator a guaranteed-to-fail completion.
     const bindings = _collectBindingsUpToCursor(text, _callNameStartBefore(text, parenPos));
     const primitiveLabels = [...bindings.values()].filter((b) => b.rhsKind === 'value').map((b) => b.label);
-    const candidates = [...enumValues, ...primitiveLabels];
+    // Sprint [GIVEN-expr] — an `'expr'`-kind (operator-expression) label
+    // is ALSO a valid value here, but ONLY for a `string`-typed param
+    // (the same compile-time restriction `_resolveGivenExprRefOrNull`
+    // enforces) — suggesting it for a numeric/enum param would hand the
+    // operator a guaranteed-to-fail completion, same rationale as the
+    // existing CONDITION-kind exclusion above.
+    const exprLabels = spec && spec.type === 'string'
+      ? [...bindings.values()].filter((b) => b.rhsKind === 'expr').map((b) => b.label)
+      : [];
+    const candidates = [...enumValues, ...primitiveLabels, ...exprLabels];
     if (!candidates.length) return _emptySuggest(cursor);
     const ranked = fuzzyFilter(valuePartial.trim(), candidates);
     // No per-VALUE description exists anywhere in the backend schema
@@ -7400,7 +8290,11 @@ function _paramOrEnumSuggestion(text, parenPos, cursor, entry) {
     // strings rather than inventing text. A bound label gets a short,
     // generated description instead of an empty one (there's no catalog
     // text to surface, but "why did this show up" is worth one line).
-    const descriptions = ranked.map((v) => (primitiveLabels.includes(v) ? 'Label bound earlier in this statement.' : ''));
+    const descriptions = ranked.map((v) => {
+      if (primitiveLabels.includes(v)) return 'Label bound earlier in this statement.';
+      if (exprLabels.includes(v)) return 'Computed label (GIVEN) bound earlier in this statement.';
+      return '';
+    });
     const kind = enumValues.length ? 'enum' : 'token';
     return { suggestions: ranked, descriptions, labels: ranked.map(() => null), replaceRange: [valueAbsStart, cursor], kind };
   }

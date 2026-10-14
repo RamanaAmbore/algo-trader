@@ -331,6 +331,18 @@ export async function submitConsoleAgent(compiledAgent, rawText) {
     conditions: compiledAgent.conditions,
     events: compiledAgent.events,
     actions: compiledAgent.actions,
+    // Sprint [GIVEN-expr] — `given` is fully driven by the CLI text, same
+    // as conditions/events/actions/tags (NOT a "backend-managed, leave
+    // unchanged when the grammar can't express it" field like
+    // schedule/cooldown/tier below in `updateConsoleAgent`) — so it is
+    // ALWAYS sent as a real, explicit value, same "|| []" convention
+    // `tags` already uses, never `undefined`. This matters more on
+    // UPDATE (see that function's own comment — an `undefined` here
+    // would mean "leave the OLD given[] in place forever" on the
+    // backend's own "absent = unchanged" convention), but kept identical
+    // here on CREATE too, for consistency / to never depend on which
+    // path a statement happens to go through.
+    given: compiledAgent.given || [],
     tags: compiledAgent.tags || [],
     group: compiledAgent.group || null,
     cli_source: rawText || '',
@@ -429,13 +441,25 @@ export async function submitConsoleToken(compiledFragment, rawText = '') {
  * Update an EXISTING agent/event agent (any kind the unified `/api/agents/`
  * endpoint accepts) from a compiled `kind:'agent'|'event'` CLI result.
  * Sends ONLY the fields the CLI grammar can express (name, description,
- * conditions, events, actions, tags, group, cli_source) — every other
- * `AgentUpdateRequest` field (schedule, cooldown, tier, topic, trade_mode,
- * lifespan_*, debounce_minutes, blackout_windows) is deliberately left
- * `undefined` so `update_agent`'s own "None/absent = leave unchanged"
- * convention preserves whatever those fields were already set to — a
- * CLI-driven Edit+Save must never silently reset a setting the grammar
- * has no syntax to express at all.
+ * conditions, events, actions, given, tags, group, cli_source) — every
+ * other `AgentUpdateRequest` field (schedule, cooldown, tier, topic,
+ * trade_mode, lifespan_*, debounce_minutes, blackout_windows) is
+ * deliberately left `undefined` so `update_agent`'s own "None/absent =
+ * leave unchanged" convention preserves whatever those fields were
+ * already set to — a CLI-driven Edit+Save must never silently reset a
+ * setting the grammar has no syntax to express at all.
+ *
+ * Sprint [GIVEN-expr] — `given` is FULLY expressible by the grammar (the
+ * CLI text is the one and only source of truth for it, exactly like
+ * conditions/events/actions), so it must NEVER be left `undefined` here —
+ * doing so would hit the exact same "None/absent = leave unchanged"
+ * convention this doc comment just described for the OTHER, deliberately-
+ * preserved fields, except wrongly: an operator who edits a statement to
+ * remove every GIVEN line and saves would have the OLD `given[]` persist
+ * on the backend forever, silently. `compiledAgent.given || []` always
+ * sends a real, explicit value (empty array when the statement has none),
+ * matching the SAME convention `tags`/`conditions`/`events`/`actions`
+ * already use.
  * @param {string} slug — the agent row being edited (unchanged by this call)
  * @param {any} compiledAgent — `compiled.agent` from compileAgentCliStatement
  * @param {string} rawText — the raw (edited) CLI text, stored as cli_source
@@ -449,6 +473,7 @@ export async function updateConsoleAgent(slug, compiledAgent, rawText) {
     conditions: compiledAgent.conditions,
     events: compiledAgent.events,
     actions: compiledAgent.actions,
+    given: compiledAgent.given || [],
     tags: compiledAgent.tags || [],
     group: compiledAgent.group || null,
     cli_source: rawText || '',

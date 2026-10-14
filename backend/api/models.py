@@ -1039,6 +1039,21 @@ class Agent(Base):
     # Actions (empty list = alert-only)
     actions: Mapped[list]        = mapped_column(JSONB, nullable=False, default=list)
 
+    # Server-evaluated GIVEN bindings (RamboQL Part 2, 2026-10) — a list
+    # of `{"name": str, "expr": str}` dicts, in declaration order, for
+    # every OPERATOR-BASED GIVEN binding the CLI compiler produced (a
+    # pure-alias binding — bare metric@scope, no operator — never
+    # reaches here; it still compiles to client-side AST substitution).
+    # Evaluated once per tick, per-agent, by
+    # `agent_engine._cycle_evaluate_given_bindings()` — see that
+    # function's own docstring. Nullable (additive `ADD COLUMN`
+    # migration on an existing table, same convention as `cli_source`/
+    # `group_name`/`bracket_config` — no DB-level default, so existing
+    # rows read back as `None`). `agent_engine.py`'s own
+    # `getattr(agent, 'given', None) or []` already treats `None`
+    # exactly like an empty/absent list.
+    given: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+
     # Evaluation config
     scope: Mapped[str]           = mapped_column(String(16), nullable=False, default="per_account")
     schedule: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, default="market_hours")

@@ -10,6 +10,7 @@ The engine handles cooldown, state transitions, and WebSocket broadcasts.
 
 import asyncio
 import html
+import re
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select, update
@@ -18,7 +19,10 @@ from backend.api.algo.events import dispatch, log_event, EvalResult
 from backend.api.algo.actions import execute, _is_row_ref_marker
 from backend.api.algo.agent_evaluator import (
     Context as V2Context, evaluate as v2_evaluate, windowed_rate,
+    _resolve_metric_fn,
 )
+from backend.api.algo.expr_eval import eval_expr, ExprError
+from backend.api.algo.grammar_registry import REGISTRY
 from backend.api.database import async_session
 from backend.api.models import Agent
 from backend.shared.helpers.ramboq_logger import get_logger
@@ -963,12 +967,37 @@ def _v2_match_to_alertrow(match: dict, *,
     thr_str     = _v2_format_threshold(kind, threshold)
     scope_label = str(row.get('account', 'TOTAL'))
 
+    # Enrichment (per-underlying breakdown lookup, static-rate pnl_history
+    # lookup) MUST use the REAL, unmasked `scope_label` — it's a join/
+    # filter key against df_positions'/alert_state's own real account
+    # codes, not display text. Masking happens ONLY on the value that
+    # actually reaches the returned `scope` field below.
     underlyings_breakdown, rate_val = _v2_enrich_position_alert(
         section, kind, scope_label, df_positions, alert_state, rate_window_min, rate_val,
     )
 
+    # Confirmed leak fix (2026-10): this was the single upstream point
+    # where a per-account (non-TOTAL) breach alert's REAL broker account
+    # code flowed into `scope`, unmasked, from here straight through
+    # `_tg_alert_body`/`_email_alert_body` to Telegram/email/ntfy with no
+    # masking call anywhere downstream — confirmed end-to-end (background.py/
+    # broker_apis.py never mask the DataFrame's `account` column upstream;
+    # `event_agents._gate_passes`, the only `mask_account_in_text()` call in
+    # that module's dispatch path, never even runs for `RICH_ALERT_AGENT`,
+    # whose action carries no `gate: True`). Masking ONCE here, after
+    # enrichment (which needs the real code), means every downstream
+    # consumer of this row's `scope` field gets the masked value for free —
+    # no need to patch `_tg_alert_body`/`_email_alert_body`/anything else
+    # that reads `scope` separately. `mask_account()` (not
+    # `mask_account_in_text()`) is the correct helper here — `scope_label`
+    # is a single discrete account value, not free-form text to scan;
+    # `mask_account()` also passes 'TOTAL' through unchanged (its own
+    # explicit special case), so the aggregate-row case is unaffected.
+    from backend.shared.helpers.utils import mask_account
+    masked_scope = mask_account(scope_label)
+
     return dict(
-        section=section, scope=scope_label, kind=kind,
+        section=section, scope=masked_scope, kind=kind,
         pnl=pnl, pct=pct, rate_val=rate_val, threshold=thr_str,
         underlyings_breakdown=underlyings_breakdown,
     )
@@ -1005,8 +1034,96 @@ def _ae_sim_notify_suppressed(agent, sim_mode: bool) -> bool:
     return False
 
 
+def _v2_rich_alert_custom_message(agent, eval_result, context: dict | None):
+    """Return the first resolved ALERT `msg=` override that applies to
+    this fire, or `None` if none of the agent's telegram/ntfy/email
+    channels carry one.
+
+    Bug fix (2026-10): `_v2_send_rich_alert` previously ALWAYS built its
+    own generic kind/threshold table for telegram/email (and ntfy, which
+    reuses the telegram body as plain text) — a channel's own `message`
+    override (Sprint 6's plain-string `msg=`, or Part 2's `{"$given":
+    name}` server-evaluated marker) was silently dropped for these three
+    channels on every REAL cycle-agent fire, since `rich_sent=True`
+    makes `dispatch()` skip exactly those three channels to avoid
+    duplicate delivery (see `_ae_dispatch_survivor_entry`'s `skip`
+    comment). Only log/websocket/inapp (which always run through
+    `dispatch()` regardless) ever showed the real custom message. This
+    made `msg=` effectively non-functional for the most common channels
+    on the most common agent kind — fixed by checking for an override
+    HERE, before the generic table is ever built, using the EXACT SAME
+    `_tags_match()` gate and `{"$given": ...}` resolution
+    (`events._resolve_given_message`) the ordinary `dispatch()` path
+    already uses for its own custom-message grouping.
+
+    Known limitation, by design of this function's existing single-
+    shared-body architecture (ONE `tg_table`/`email_table_html` pair
+    feeds telegram+ntfy+email uniformly via `RICH_ALERT_AGENT` — see
+    `event_agents.py:_render_rich_alert`): if different channels on the
+    SAME agent carry DIFFERENT custom messages, there's no way to show
+    each channel its own text at this layer — the first match found
+    (checked in telegram, ntfy, email order) wins for all three. This
+    mirrors the existing single-body constraint, not a new one; true
+    per-channel differentiation would need the same per-message-group
+    splitting `events.py:dispatch()` already does for its own (non-rich)
+    path, which is out of scope for this fix.
+
+    Masking: this path sends free-form text (an operator-authored
+    literal, or a GIVEN-computed value that could legitimately reference
+    `account_id`) straight to Telegram/email/ntfy — text that, before
+    this fix, NEVER reached those three channels at all (dispatch()
+    skipped them whenever the rich path sent). The returned string is
+    masked via `mask_account_in_text()` before returning — the SAME
+    chokepoint `events.py:_describe_actions` already uses for its own
+    free-form action-description text, per this codebase's "account
+    masking used in all alerts" invariant.
+
+    FIXED separate leak (2026-10, same commit as this override check,
+    confirmed end-to-end from source to send before the fix):
+    `background.py` (builds `sum_positions`/`df_margins`) and
+    `broker_apis.py` (the broker fetch layer) never call `mask_account`/
+    `mask_column` on the `account` column; `RICH_ALERT_AGENT`'s action
+    carries no `gate: True`, so `event_agents._gate_passes()` — the only
+    `mask_account_in_text()` call anywhere in that module's dispatch
+    path — never even runs for it (`if not gated: return rec`
+    short-circuit); `_send_channel()` then sent the renderer's tuple
+    completely unmodified. So a per-account (non-TOTAL) breach alert
+    rendered via the generic kind/threshold table shipped the REAL,
+    unmasked broker account code to Telegram/email/ntfy. Fixed at the
+    single upstream choke point instead of patching every renderer:
+    `_v2_match_to_alertrow` now masks `scope` via `mask_account()`
+    (the single-discrete-value helper — `scope` is one account code, not
+    free text to scan) AFTER the enrichment lookups that still need the
+    real unmasked code (`_v2_enrich_position_alert`'s df_positions/
+    alert_state joins) — see that function's own inline comment. Every
+    downstream consumer of a row's `scope` field (`_tg_alert_body`,
+    `_email_alert_body`, the sort key in `_ae_sort_alert_rows`) gets the
+    masked value for free.
+    """
+    if eval_result is None:
+        return None
+    from backend.api.algo.template_registry import resolve_events
+    from backend.api.algo.events import _tags_match, _resolve_given_message
+    from backend.shared.helpers.utils import mask_account_in_text
+
+    channels = resolve_events(agent.events if isinstance(agent.events, list) else [])
+    for wanted_channel in ("telegram", "ntfy", "email"):
+        for ch in channels:
+            if ch.get("channel") != wanted_channel or not ch.get("enabled", False):
+                continue
+            if not _tags_match(ch, eval_result):
+                continue
+            raw_message = ch.get("message")
+            if not raw_message:
+                continue
+            resolved = _resolve_given_message(raw_message, agent, context)
+            if resolved:
+                return mask_account_in_text(resolved) or resolved
+    return None
+
+
 async def _v2_send_rich_alert(agent, matches, now, sim_mode: bool = False,
-                              context: dict | None = None):
+                              context: dict | None = None, eval_result=None):
     """
     Render the v2 alert as the same narrow-TG + HTML-table format the legacy
     engine uses, and send through Telegram + email via alert_utils's own
@@ -1018,6 +1135,14 @@ async def _v2_send_rich_alert(agent, matches, now, sim_mode: bool = False,
     breakdown and static-alert rate enrichment can light up. Backward-
     compatible — when context is None each row builds with the bare
     section/scope/kind/pnl/threshold fields and no enrichment.
+
+    `eval_result` (the same `EvalResult` the caller also passes to
+    `dispatch()`) lets this function check for an operator-configured
+    ALERT `msg=` override BEFORE falling back to the generic kind/
+    threshold table — see `_v2_rich_alert_custom_message`'s docstring
+    for the bug this closes. `None` (the default, for any caller that
+    doesn't have one — e.g. existing tests) disables the override check
+    entirely, preserving the exact prior behavior.
     """
     # Late import avoids the agent_engine → alert_utils cycle at import time.
     from backend.shared.helpers.alert_utils import (
@@ -1048,6 +1173,13 @@ async def _v2_send_rich_alert(agent, matches, now, sim_mode: bool = False,
     if _ae_sim_notify_suppressed(agent, sim_mode):
         return True
 
+    # Operator-configured ALERT msg= override — checked FIRST, before
+    # either the "scheduled" special case or the generic kind/threshold
+    # table, so an explicit custom message always wins (an operator who
+    # set msg= on a scheduled info/low-tier agent still gets THEIR text,
+    # not the generic "Scheduled — HH:MM IST" line). See
+    # _v2_rich_alert_custom_message's docstring for the bug this fixes.
+    custom_message = _v2_rich_alert_custom_message(agent, eval_result, context)
     # Scheduled, notify-only informational agents (market-open-nse,
     # market-preclose-mcx) use an always-true `avail_margin >= -999999999`
     # leaf purely to drive their `fire_at_time` gate — there is no real
@@ -1058,7 +1190,10 @@ async def _v2_send_rich_alert(agent, matches, now, sim_mode: bool = False,
     # that text never reached Telegram/email (only the audit log/websocket
     # did), so it's surfaced here too, with the agent's own name, so the
     # operator can tell what the alert is actually about.
-    if (getattr(agent, 'fire_at_time', None)
+    if custom_message:
+        tg_body    = custom_message
+        email_html = f"<p>{html.escape(custom_message)}</p>"
+    elif (getattr(agent, 'fire_at_time', None)
             and getattr(agent, 'tier', 'medium') in ('info', 'low')):
         scheduled_line = f"{agent.name} — Scheduled — {agent.fire_at_time} IST"
         tg_body    = scheduled_line
@@ -1885,6 +2020,90 @@ async def seed_agents():
         logger.warning("Agent engine: ntfy config check failed: %s", _ntfy_cfg_err)
 
 
+async def migrate_order_action_type_rename() -> None:
+    """One-time, idempotent backfill — order/place_order unification,
+    Phase A (2026-10, see CLAUDE.md "order/place_order unification" and
+    the plan at `~/.claude/plans/purrfect-marinating-pixel.md`).
+
+    Rewrites every stored `Agent.actions` JSON array entry whose
+    `"type" == "place_order"` to `"type": "order"` — the canonical name
+    the frontend CLI compiler emits going forward. Adapted from
+    `template_registry.py:migrate_and_retire_agent_fragments()`'s
+    migrate-then-verify-then-report shape, but NOT reused as-is: this
+    rewrites values INSIDE an existing JSON array column on every row,
+    not a migrate-between-two-tables backfill.
+
+    Backend dispatch tables (`actions.py:BROKER_ACTIONS`/
+    `_LIVE_ACTION_HANDLERS`, `actions_paper.py`, `actions_sim.py`) and
+    the YAML grammar catalog already accept BOTH `"order"` and
+    `"place_order"` identically (added in the same change) — this
+    migration is a canonicalisation pass, not a behavioural fix. Safe to
+    call on every boot: a second run finds zero rows left to rewrite and
+    logs a zero-count summary.
+
+    Deliberately does NOT touch `agent_events.detail` JSON anywhere —
+    that table is a frozen historical audit log, not live dispatch data,
+    and must never be rewritten.
+
+    Run AFTER `seed_agents()` so any row freshly inserted/re-synced this
+    boot is covered by the same scan.
+    """
+    async with async_session() as session:
+        result = await session.execute(select(Agent))
+        rows = list(result.scalars().all())
+
+        rows_changed = 0
+        actions_changed = 0
+        for row in rows:
+            actions = row.actions
+            if not isinstance(actions, list) or not actions:
+                continue
+            changed_this_row = False
+            new_actions = []
+            for action in actions:
+                if isinstance(action, dict) and action.get("type") == "place_order":
+                    new_action = dict(action)
+                    new_action["type"] = "order"
+                    new_actions.append(new_action)
+                    changed_this_row = True
+                    actions_changed += 1
+                else:
+                    new_actions.append(action)
+            if changed_this_row:
+                # Reassignment (not in-place list mutation) — this is
+                # what SQLAlchemy's change-tracking actually detects on
+                # a plain (non-Mutable-wrapped) JSONB column.
+                row.actions = new_actions
+                rows_changed += 1
+
+        if rows_changed:
+            await session.commit()
+
+        # Verify — re-query and confirm zero rows still carry the literal
+        # string "place_order" as a `type` value inside `actions`.
+        verify_result = await session.execute(select(Agent))
+        residual = [
+            r.slug for r in verify_result.scalars().all()
+            if isinstance(r.actions, list) and any(
+                isinstance(a, dict) and a.get("type") == "place_order"
+                for a in r.actions
+            )
+        ]
+
+    if residual:
+        logger.critical(
+            f"order/place_order migration: {len(residual)} agent row(s) "
+            f"still carry 'place_order' after backfill — manual review "
+            f"needed: {residual}"
+        )
+    else:
+        logger.info(
+            f"order/place_order migration: rewrote {actions_changed} "
+            f"action(s) across {rows_changed} agent row(s); 0 residual "
+            f"'place_order' references"
+        )
+
+
 def _ae_segment_flags(seg_name: str, seg_cfg: dict, now) -> dict:
     """Compute open/closed/holiday/minutes_since flags for one market segment.
 
@@ -2091,6 +2310,312 @@ async def _cycle_load_agents(only_agent_ids: list[int] | None) -> list:
         return list(result.scalars().all())
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+#  GIVEN server-evaluated bindings (RamboQL Part 2, 2026-10)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# `agent.given` (a list of `{"name": str, "expr": str}` dicts, in
+# declaration order) is a NEW, backend-defensive-read-only key the
+# frontend CLI compiler produces for an OPERATOR-BASED GIVEN binding
+# (anything involving `+`/`-`/`*`/`/`/`%`/`**`, or referencing an earlier
+# GIVEN binding by name). A PURE-ALIAS binding (bare `metric@scope`, no
+# operator, no reference to another binding) never reaches this path —
+# it still compiles to today's client-side AST substitution inside
+# WHEN's own condition tree, unchanged.
+#
+# `agent.given` does not exist as a column on the `Agent` ORM model yet
+# (that frontend compiler change is separate, parallel work) — read
+# defensively via `getattr(agent, 'given', None) or []` so this whole
+# step is a true no-op until that lands and for every agent that never
+# uses GIVEN at all.
+_GIVEN_BARE_METRIC_SCOPE_RE = re.compile(
+    r"^([A-Za-z_][A-Za-z0-9_]*)@([A-Za-z_][A-Za-z0-9_.]*)$"
+)
+
+
+class _GivenUnresolvedSentinel:
+    """Marks a GIVEN binding whose value could not be resolved this tick
+    (per-row-scope Phase-1 limitation, unknown metric/scope, or a scope-
+    selector/metric-resolver runtime failure) — the warning is already
+    logged at the point this sentinel is returned; the caller simply
+    leaves the binding's name OUT of the bindings dict rather than
+    storing `None`, so a later binding referencing it by name fails with
+    `expr_eval`'s own "undefined name" `ExprError` (handled the same way
+    as any other GIVEN-evaluation failure), never silently treated as a
+    real value."""
+
+
+_GIVEN_UNRESOLVED = _GivenUnresolvedSentinel()
+
+
+def _given_binding_bare_metric_scope(expr: str) -> "re.Match | None":
+    """True iff `expr` (after stripping whitespace) is EXACTLY a bare
+    `metric@scope` reference — no operator character anywhere (the
+    fullmatch itself enforces this: a string containing `+ - * / % ( ) "
+    '` etc. cannot match this identifier-only pattern). `scope` may
+    itself contain dots (e.g. `positions.total`)."""
+    return _GIVEN_BARE_METRIC_SCOPE_RE.fullmatch(expr.strip())
+
+
+def _given_resolve_bare_metric_scope(match: "re.Match", v2_ctx, agent_slug: str):
+    """Resolve a bare `metric@scope` GIVEN binding using the EXISTING
+    scope-selector + metric-resolver machinery `agent_evaluator._eval_leaf`
+    already uses (`REGISTRY.scope()` / `_resolve_metric_fn()`) —
+    restricted to AGGREGATE scopes only (Phase 1): a scope that selects
+    more than one row this tick has no single well-defined value, so
+    that case logs a warning and returns `_GIVEN_UNRESOLVED` rather than
+    guessing which row's value to use or crashing. A scope that selects
+    zero rows (data not loaded yet this tick) resolves to `None` — same
+    "missing, not a bug" treatment every other metric resolver in this
+    codebase already uses.
+
+    Known limitation, not a new risk introduced by this feature: several
+    aggregate metrics are `.fillna(0)` upstream (the background summary
+    builder that produces `sum_positions`/`df_margins`), so a degraded/
+    partial fetch can render as a real `0.0` here rather than `None` —
+    a GIVEN-computed ALERT message built from that value could then
+    read e.g. "Loss: 0" instead of genuinely reflecting missing data.
+    This is the exact same upstream behavior every other metric/scope
+    leaf in this codebase already lives with; GIVEN just makes it
+    visible in prose (a computed message) rather than only a number on
+    a grid row.
+    """
+    metric_tok, scope_tok = match.group(1), match.group(2)
+    scope_fn = REGISTRY.scope(scope_tok)
+    metric_fn = _resolve_metric_fn(metric_tok, scope_tok)
+    if scope_fn is None or metric_fn is None:
+        logger.warning(
+            f"Agent [{agent_slug}]: GIVEN binding references unknown "
+            f"metric/scope '{metric_tok}@{scope_tok}'"
+        )
+        return _GIVEN_UNRESOLVED
+    try:
+        rows = scope_fn(v2_ctx) or []
+    except Exception as e:
+        logger.warning(
+            f"Agent [{agent_slug}]: GIVEN binding '{metric_tok}@{scope_tok}' "
+            f"scope selector failed: {e}"
+        )
+        return _GIVEN_UNRESOLVED
+    if len(rows) > 1:
+        logger.warning(
+            f"Agent [{agent_slug}]: GIVEN binding '{metric_tok}@{scope_tok}' "
+            f"references a per-row scope ({len(rows)} rows selected this "
+            f"tick) — unsupported in this phase, skipping this binding"
+        )
+        return _GIVEN_UNRESOLVED
+    if not rows:
+        return None
+    try:
+        return metric_fn(v2_ctx, rows[0])
+    except Exception as e:
+        logger.warning(
+            f"Agent [{agent_slug}]: GIVEN binding metric '{metric_tok}' "
+            f"failed on scope '{scope_tok}': {e}"
+        )
+        return _GIVEN_UNRESOLVED
+
+
+class _GivenCaseInsensitiveNamespace(dict):
+    """`eval_expr` namespace wrapper for GIVEN operator-expression
+    bindings — lowercases key lookups so an `expr` string's verbatim
+    `Name` reference (rendered exactly as the operator typed it, e.g.
+    `P` in `D = P * 2` — the decompiler's "read expr back verbatim"
+    rule means this text is never re-cased) resolves against
+    `_cycle_evaluate_given_bindings`'s `bindings` dict, which is keyed
+    by `name.lower()` (matching the frontend compiler's own lowercase-
+    everywhere convention for every REFERENCE to a binding — `$given`
+    markers in `parts`/DO-action-params/ALERT-messages are all
+    `.toLowerCase()`'d at compile time, while a binding's own `name`
+    field in the compiled JSON preserves the operator's original typed
+    case). A pure, no-op wrapper for any namespace that's already
+    all-lowercase (the common case). Does not modify `expr_eval.py`
+    itself — `_eval_name` just does `namespace[node.id]`, which Python
+    dispatches to this subclass's own `__getitem__` transparently."""
+    def __getitem__(self, key):
+        return super().__getitem__(key.lower() if isinstance(key, str) else key)
+
+    def __contains__(self, key):
+        return super().__contains__(key.lower() if isinstance(key, str) else key)
+
+
+def _given_format_part_value(value) -> str:
+    """Format an earlier-resolved GIVEN binding's value as a string
+    segment for a `parts`-array binding. A `float` with no fractional
+    part renders as a plain integer string (no trailing `.0` — e.g.
+    `-60000.0` -> `"-60000"`, matching how an operator would expect a
+    whole-number P&L to read in a message); everything else uses
+    Python's normal `str()`."""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def _given_resolve_parts(parts: list, bindings: dict, agent_slug: str):
+    """Resolve a `parts`-array GIVEN binding WITHOUT ever calling
+    `expr_eval.eval_expr`.
+
+    The frontend compiler classifies an operator-expression GIVEN
+    binding by a static property: if its arith-AST contains ANY string
+    literal anywhere, it compiles to `{"name": ..., "parts": [...]}`
+    instead of `{"name": ..., "expr": ...}` — because `eval_expr`'s
+    string-concat path is deliberately strict (no implicit str/number
+    coercion, since it sits directly upstream of real order placement),
+    so a message like `"Loss: " + p` over a NUMERIC metric `p` can never
+    evaluate via `eval_expr` at all (confirmed: raises `ExprError`).
+    Pure-number-math bindings (no string literal anywhere) keep using
+    `expr`/`eval_expr` exactly as before — zero change to that path.
+
+    A "part" is either a plain string (a literal segment, used as-is)
+    or `{"$given": "<name>"}` (a reference to an EARLIER-bound name in
+    THIS agent's own `bindings` dict — declaration order is enforced by
+    the frontend compiler and by this function's own caller, so a
+    referenced name is always already resolved by the time it's looked
+    up here). Parts are concatenated in order.
+
+    Returns the final concatenated string — RAW, deliberately NOT masked
+    here. Masking is applied at the MESSAGE boundary instead (where this
+    string is actually about to be used as alert text —
+    `events._resolve_given_message`, which both the rich-alert path
+    (`_v2_rich_alert_custom_message`) and the ordinary `dispatch()` path
+    share), not at storage time: this same `bindings` dict is also what
+    `actions.py:resolve_given_ref_params` reads for a `{"$given": name}`
+    DO-action param (e.g. a string-typed `tag`/`symbol`-adjacent field)
+    — masking the stored value here would corrupt a legitimate, non-
+    alert use of an account-shaped string (the compile-time guard
+    explicitly allows a `parts`-built value into any string-typed
+    param). Never raises: an unrecognized part shape, or a reference to
+    a name missing from `bindings` OR resolved to `None` (never
+    resolved, or its own resolution failed/returned missing data earlier
+    this tick — same missing-vs-zero convention `resolve_given_ref_params`/
+    `_resolve_given_message` already use), logs a warning and returns
+    `_GIVEN_UNRESOLVED` — same graceful "skip only this binding" contract
+    `_cycle_evaluate_given_bindings` already uses for a failed `expr`.
+    """
+    out: list[str] = []
+    for part in parts:
+        if isinstance(part, str):
+            out.append(part)
+            continue
+        if isinstance(part, dict) and len(part) == 1 and "$given" in part:
+            ref_name_raw = part["$given"]
+            # The frontend compiler always lowercases a $given reference
+            # (even though a binding's own `name` field preserves the
+            # operator's original typed case) — `bindings` is keyed by
+            # `name.lower()` for exactly this reason; lowercase here too
+            # for defense-in-depth against any other producer of this
+            # marker shape.
+            ref_name = ref_name_raw.lower() if isinstance(ref_name_raw, str) else ref_name_raw
+            if ref_name not in bindings or bindings[ref_name] is None:
+                logger.warning(
+                    f"Agent [{agent_slug}]: GIVEN parts binding references "
+                    f"'{ref_name}', which did not resolve earlier this "
+                    f"tick — skipping this binding"
+                )
+                return _GIVEN_UNRESOLVED
+            out.append(_given_format_part_value(bindings[ref_name]))
+            continue
+        logger.warning(
+            f"Agent [{agent_slug}]: GIVEN parts binding has an unrecognized "
+            f"part {part!r} — skipping this binding"
+        )
+        return _GIVEN_UNRESOLVED
+    return "".join(out)
+
+
+def _cycle_evaluate_given_bindings(agent, v2_ctx, context: dict) -> None:
+    """Evaluate this agent's `given` bindings (if any) and store the
+    result under a PER-AGENT key on the shared `context` dict:
+    `context["given"][agent.id]`.
+
+    MUST use a per-agent key, never a bare name directly on `context` —
+    `context` is the SAME dict object passed by reference to every
+    agent evaluated in this cycle (`run_cycle`'s per-agent loop), so a
+    bare name would leak agent A's bindings into agent B's.
+
+    Never raises: `run_cycle`'s own per-agent loop has NO surrounding
+    try/except (confirmed — a raised exception here would abort
+    evaluation for every subsequent agent this tick), so every failure
+    mode (a raised `ExprError`, an unresolved per-row-scope reference,
+    any other exception) is caught here, logged, and this agent simply
+    ends up with however many bindings it managed to resolve before the
+    failure (possibly zero) — never a crash.
+    """
+    given_list = getattr(agent, "given", None) or []
+    if not given_list:
+        return
+    bindings: dict = {}
+    failing_name = "?"
+    try:
+        for binding in given_list:
+            if not isinstance(binding, dict):
+                continue
+            name = binding.get("name")
+            if not name or not isinstance(name, str):
+                continue
+            failing_name = name
+            # Case-normalisation: the frontend compiler emits a binding's
+            # OWN `name` field preserving the operator's original typed
+            # case, but lowercases EVERY reference to it — `{"$given":
+            # name}` markers (parts refs, DO-action params, ALERT message
+            # markers) are all `.toLowerCase()`'d at compile time. Storing
+            # under `name.lower()` here keeps lookups by any of those
+            # lowercased references working regardless of how the
+            # operator originally capitalised the binding name.
+            name_key = name.lower()
+            parts = binding.get("parts")
+            expr = binding.get("expr")
+            if isinstance(parts, list):
+                # String-building binding (contains a string literal
+                # anywhere in its source AST, per the frontend's static
+                # classification) — resolved WITHOUT eval_expr; see
+                # _given_resolve_parts' own docstring for why.
+                value = _given_resolve_parts(parts, bindings, agent.slug)
+                if value is _GIVEN_UNRESOLVED:
+                    continue
+            elif isinstance(expr, str):
+                bare_match = _given_binding_bare_metric_scope(expr)
+                if bare_match is not None:
+                    value = _given_resolve_bare_metric_scope(bare_match, v2_ctx, agent.slug)
+                    if value is _GIVEN_UNRESOLVED:
+                        # Already logged inside the resolver. Leave `name`
+                        # OUT of `bindings` — any later binding referencing
+                        # it by name fails via eval_expr's own "undefined
+                        # name" ExprError, caught below.
+                        continue
+                else:
+                    # Pure-number-math operator expression — namespace is
+                    # every earlier-resolved binding in THIS agent's own
+                    # dict, real Python values (never text). Wrapped in
+                    # `_GivenCaseInsensitiveNamespace` since `expr`'s own
+                    # text is rendered verbatim (the decompiler's "read
+                    # expr back verbatim" rule) and may reference an
+                    # earlier name in ITS original typed case (e.g. `D =
+                    # P * 2`), which must still resolve against this
+                    # dict's lowercased keys. Never reached for a string-
+                    # literal-containing expression — the frontend
+                    # compiles those to `parts` instead (see above)
+                    # specifically because eval_expr's string-concat path
+                    # has no implicit str/number coercion.
+                    value = eval_expr(expr, _GivenCaseInsensitiveNamespace(bindings))
+            else:
+                continue
+            bindings[name_key] = value
+    except ExprError as e:
+        logger.warning(
+            f"Agent [{agent.slug}]: GIVEN binding '{failing_name}' failed "
+            f"to evaluate — {e}. GIVEN-dependent ALERT/DO fields for this "
+            f"agent are treated as unresolved this tick."
+        )
+    except Exception as e:  # defense-in-depth — never let anything else
+        # escape and abort run_cycle() for other agents.
+        logger.warning(
+            f"Agent [{agent.slug}]: unexpected error evaluating GIVEN "
+            f"bindings (last attempted: '{failing_name}') — {e}"
+        )
+    context.setdefault("given", {})[agent.id] = bindings
+
+
 def _cycle_evaluate_agent(agent, context: dict, cfg: dict, now, alert_state: dict,
                           *, bypass_schedule: bool = False) -> tuple[list, list]:
     """Build a V2Context for the agent and run the condition tree evaluator.
@@ -2132,6 +2657,11 @@ def _cycle_evaluate_agent(agent, context: dict, cfg: dict, now, alert_state: dic
         agent=agent,
         baseline_live=baseline_live,
     )
+    # Part 2 (RamboQL GIVEN upgrade) — evaluate this agent's `given`
+    # bindings (if any) BEFORE the condition tree runs, using the same
+    # V2Context just built. Never raises (see the function's own
+    # docstring) and is a true no-op for every agent without `given`.
+    _cycle_evaluate_given_bindings(agent, v2_ctx, context)
     try:
         matches = v2_evaluate(agent.conditions, v2_ctx)
         return matches, v2_ctx.observations
@@ -2878,6 +3408,7 @@ async def _ae_dispatch_survivor_entry(entry: dict, now, context: dict,
 
     rich_sent = await _v2_send_rich_alert(
         agent, matches_, now, sim_mode=sim_mode_p, context=context,
+        eval_result=result,
     )
     # Rich alert (telegram+email+ntfy table) runs first via alert_utils._dispatch
     # -> _alert_route, which already routes telegram/email/ntfy per
@@ -2888,7 +3419,8 @@ async def _ae_dispatch_survivor_entry(entry: dict, now, context: dict,
     # inapp always run via dispatch() regardless — they have no rich-path
     # equivalent.
     skip = frozenset({'telegram', 'email', 'ntfy'}) if rich_sent else frozenset()
-    await dispatch(agent, result, broadcast_fn, sim_mode=sim_mode_p, skip_channels=skip)
+    await dispatch(agent, result, broadcast_fn, sim_mode=sim_mode_p, skip_channels=skip,
+                   context=context)
     if rich_sent and broadcast_fn:
         broadcast_fn('agent_alert', {
             'slug': agent.slug,
