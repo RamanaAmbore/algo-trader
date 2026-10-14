@@ -3325,14 +3325,13 @@ button:not(:disabled):active,
      See investor/[token]/+page.svelte and (public)/+layout.svelte for
      the per-surface geometry math. */
   --b8-hairline-color: rgba(200,168,75,0.45);
-  /* Reduced 24px → 12px (2026-10 CardHeader/grid consistency pass,
-     Part D) — operator wants the hairlines closer to the content
-     column. This value also feeds the ellipse-vignette flat-zone math
-     documented per-surface in (public)/+layout.svelte and
-     investor/[token]/+page.svelte — re-check both comment blocks (flat
-     zone widths were sized against the OLD 24px offset) whenever this
-     changes again. */
-  --b8-margin-offset:  12px;
+  /* Reduced 24px → 12px → 4px (2026-10, operator: "on desktop, make
+     left and right gold borders very close the container") — this
+     value also feeds the ellipse-vignette flat-zone math documented
+     per-surface in (public)/+layout.svelte and investor/[token]/
+     +page.svelte — re-check both comment blocks whenever this changes
+     again. */
+  --b8-margin-offset:  4px;
 
   /* P&L colours */
   --card-gain-text:           #1a6b3a;
