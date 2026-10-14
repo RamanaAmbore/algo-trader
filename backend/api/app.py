@@ -20,6 +20,7 @@ from litestar import Litestar, get
 # (Python stdlib's mimetypes doesn't ship it) and rely on guess_type() for
 # the rest (PNG, SVG, ICO, etc. all come back correctly).
 mimetypes.add_type("application/manifest+json", ".webmanifest")
+from litestar.config.compression import CompressionConfig
 from litestar.config.cors import CORSConfig
 from litestar.openapi import OpenAPIConfig
 from litestar.openapi.plugins import ScalarRenderPlugin
@@ -743,10 +744,33 @@ if _perf_stats.is_enabled():
     _perf_on_startup.append(_start_perf_stats)
     _perf_on_shutdown.append(_stop_perf_stats)
 
+# Response compression (2026-10, operator bug report: symbol search
+# silently returning nothing — root-caused to GET /api/instruments, an
+# ~8.2MB uncompressed JSON dump served with no Content-Encoding at all,
+# hanging specifically when fetched through the public Cloudflare-fronted
+# hostname — confirmed healthy and fast (<70ms) when hit directly against
+# nginx/the backend, bypassing Cloudflare, so the origin itself was never
+# the bottleneck. gzip shrinks JSON payloads dramatically (typically
+# 80-90%), cutting the edge hop's transfer size from ~8.2MB to roughly
+# 1MB and removing the main plausible trigger for a large-payload CDN
+# timeout. Applied app-wide via Litestar's built-in CompressionConfig —
+# gzip needs no extra dependency (stdlib), unlike brotli. minimum_size
+# default (500 bytes) means small JSON responses are untouched.
+# Excludes /api/quotes/stream — a Server-Sent Events endpoint
+# (quote.py:quote_stream) whose whole point is flushing each tick
+# immediately; gzip's compression middleware buffers output to produce
+# compressed chunks, which would defeat (or outright break) real-time
+# streaming. CompressionMiddleware only runs for ScopeType.HTTP (SSE is
+# an HTTP response under the hood, not WEBSOCKET, so it is NOT
+# auto-excluded by scope) — this exclude pattern is the only thing that
+# actually protects it.
+compression_config = CompressionConfig(backend="gzip", exclude="/api/quotes/stream")
+
 app = Litestar(
     route_handlers=_route_handlers,
     cors_config=cors_config,
     openapi_config=openapi_config,
+    compression_config=compression_config,
     on_startup=[init_db, _rebuild_broker_connections, seed_hedge_proxies, exchange_clock_seed_and_warm, _start_kite_ticker, bg_startup, _start_write_queue, _start_event_queues, _start_log_store, _seed_event_agents, *_perf_on_startup],
     on_shutdown=[bg_shutdown, _stop_kite_ticker, _stop_write_queue, _stop_event_queues, _stop_log_store, *_perf_on_shutdown],
     before_request=_log_visitor,
