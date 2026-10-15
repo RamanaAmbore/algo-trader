@@ -100,7 +100,8 @@ async def test_error_alert_masks_account_numbers(sent, error_agent):
 def test_fill_format_golden():
     from datetime import timezone
     row = SimpleNamespace(id=101, account="ZG0790", symbol="NIFTY26OCT25000CE", exchange="NFO",
-                          transaction_type="BUY", quantity=75, fill_price=112.5, product="NRML", mode="live")
+                          transaction_type="BUY", quantity=75, fill_price=112.5, product="NRML",
+                          mode="live", engine="live")
     title, body = fill_notify.format_fill_message(
         row, when=_dt.datetime(2026, 10, 6, 4, 45, 30, tzinfo=timezone.utc))
     assert title == "Order filled: BUY 75 NIFTY26OCT25000CE"
@@ -108,6 +109,7 @@ def test_fill_format_golden():
         "Account: ZG0790",
         "BUY 75 NIFTY26OCT25000CE (NFO) @ 112.50",
         "Product: NRML",
+        "Source: LIVE",
         "Order id: 101",
         f"Time: {_FIXED_TS}",
     ])
@@ -126,16 +128,17 @@ async def test_fill_delivery_golden_via_event_agent(monkeypatch):
     records = []
     monkeypatch.setattr(fill_notify.logger, "info", lambda msg, **kw: records.append(kw["extra"]))
     row = SimpleNamespace(id=7, account="ZG0790", symbol="CRUDEOIL26OCTFUT", exchange="MCX",
-                          transaction_type="SELL", quantity=1, fill_price=8750.0, product="NRML", mode="live")
+                          transaction_type="SELL", quantity=1, fill_price=8750.0, product="NRML",
+                          mode="live", engine="live")
     await fill_notify.notify_fills([row])
     rec = {"ts": _dt.datetime(2026, 10, 6, 4, 45, 30, tzinfo=timezone.utc), "level": "INFO",
            "tags": ["orders"], "extra": records[0]}
     agent = SimpleNamespace(slug=event_agents.FILL_AGENT["slug"], **{k: event_agents.FILL_AGENT[k] for k in ("conditions", "events", "actions")})
     await event_agents.dispatch([rec], [agent])
     assert sent["ntfy"] == [("Order filled: SELL 1 CRUDEOIL26OCTFUT",
-                             f"Account: ZG0790\nSELL 1 CRUDEOIL26OCTFUT (MCX) @ 8750.00\nProduct: NRML\nOrder id: 7\nTime: {_FIXED_TS}")]
+                             f"Account: ZG0790\nSELL 1 CRUDEOIL26OCTFUT (MCX) @ 8750.00\nProduct: NRML\nSource: LIVE\nOrder id: 7\nTime: {_FIXED_TS}")]
     assert sent["tg"] == ["<b>Order filled: SELL 1 CRUDEOIL26OCTFUT</b>\n"
-                          f"Account: ZG0790\nSELL 1 CRUDEOIL26OCTFUT (MCX) @ 8750.00\nProduct: NRML\nOrder id: 7\nTime: {_FIXED_TS}"]
+                          f"Account: ZG0790\nSELL 1 CRUDEOIL26OCTFUT (MCX) @ 8750.00\nProduct: NRML\nSource: LIVE\nOrder id: 7\nTime: {_FIXED_TS}"]
 
 
 def _chase_rec():

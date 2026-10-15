@@ -36,6 +36,7 @@ def _render_fill(rec: dict) -> tuple[str, str]:
         id=extra.get("order_id"), account=extra.get("account"), symbol=extra.get("symbol"),
         exchange=extra.get("exchange"), transaction_type=extra.get("transaction_type"),
         quantity=extra.get("quantity"), fill_price=extra.get("fill_price"), product=extra.get("product"),
+        engine=extra.get("engine"),
     )
     when = rec.get("ts")
     if when is not None and when.tzinfo is None:

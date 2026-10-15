@@ -10,7 +10,7 @@ def _row(**over):
     base = dict(
         id=101, account="ZG0790", symbol="NIFTY26OCT25000CE", exchange="NFO",
         transaction_type="BUY", quantity=75, fill_price=112.5,
-        product="NRML", mode="live",
+        product="NRML", mode="live", engine="live",
     )
     base.update(over)
     return SimpleNamespace(**base)
@@ -76,3 +76,30 @@ def test_format_uses_the_given_time_in_ist():
 def test_fill_message_shows_full_account():
     title, body = fill_notify.format_fill_message(_row(account="ZG0790"))
     assert "Account: ZG0790" in body
+
+
+def test_fill_message_shows_engine_as_source_matching_agents_log_chip(logged):
+    # 2026-10-15 — telegram fill message aligned with the Agents log's own
+    # engine chip (AlgoOrder.engine), so a manual order's alert reads the
+    # same word ("MANUAL") the Agents log already shows for it.
+    _, body = fill_notify.format_fill_message(_row(engine="manual"))
+    assert "Source: MANUAL" in body
+    _, body = fill_notify.format_fill_message(_row(engine="paper"))
+    assert "Source: PAPER" in body
+
+
+def test_fill_message_defaults_source_to_manual_when_engine_missing():
+    # AlgoOrder.engine is NOT NULL with a DB-level default of "manual" —
+    # a row that somehow arrives without the attribute set still gets a
+    # sensible, non-blank Source line rather than "Source: NONE".
+    row = SimpleNamespace(id=101, account="ZG0790", symbol="NIFTY26OCT25000CE",
+                           exchange="NFO", transaction_type="BUY", quantity=75,
+                           fill_price=112.5, product="NRML")
+    _, body = fill_notify.format_fill_message(row)
+    assert "Source: MANUAL" in body
+
+
+@pytest.mark.asyncio
+async def test_engine_is_forwarded_into_the_log_extra(logged):
+    await fill_notify.notify_fills([_row(engine="manual")])
+    assert logged[0][1]["extra"]["engine"] == "manual"

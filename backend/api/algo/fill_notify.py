@@ -16,10 +16,20 @@ def format_fill_message(row, when: datetime | None = None) -> tuple[str, str]:
     qty = int(row.quantity or 0)
     symbol = str(row.symbol or "")
     title = f"Order filled: {side} {qty} {symbol}"
+    # Source line (2026-10-15, operator: "telegram log should be aligned
+    # with agents log for filled [in] order") — the Agents log's own
+    # order row already shows this order's `engine` (manual/sim/paper/
+    # live/replay/shadow/expiry — AlgoOrder.engine, NOT NULL, defaults to
+    # "manual") as a chip, but the fill telegram message never carried it
+    # at all. Mirrors the UI's own label casing/vocabulary exactly so a
+    # manually-placed order's fill alert reads "Source: MANUAL", same
+    # word the Agents log chip shows.
+    source = str(getattr(row, "engine", None) or "manual").upper()
     body = "\n".join([
         f"Account: {row.account or '-'}",
         f"{side} {qty} {symbol} ({row.exchange or '-'}) @ {float(row.fill_price or 0):.2f}",
         f"Product: {row.product or '-'}",
+        f"Source: {source}",
         f"Order id: {row.id}",
         f"Time: {format_dual_tz(when or datetime.now(timezone.utc))}",
     ])
@@ -43,6 +53,7 @@ async def notify_fills(rows: list) -> None:
                     "quantity": row.quantity,
                     "fill_price": row.fill_price,
                     "product": row.product,
+                    "engine": getattr(row, "engine", None),
                 },
             )
         except Exception as e:
