@@ -269,6 +269,39 @@ async def test_option_symbol_matches_same_month_future():
 
 
 @pytest.mark.asyncio
+async def test_option_on_its_own_expiry_day_does_not_roll_past_a_still_live_future():
+    """2026-10-15 fix (operator-reported live bug): MCX options expire
+    several business days BEFORE their same-month future — e.g. a CRUDEOIL
+    Oct option's own last trading day while the Oct future still has days
+    left. `lookup_future_for_option` must return the CURRENT month's
+    future whenever IT is still live, never rolling to next month just
+    because the paired option reached its own earlier scheduled expiry.
+    Both the current-month and next-month futures are present here so a
+    regression (rolling early) would be caught, not masked by a
+    single-candidate fallback."""
+    cur_yy, cur_mon, cur_x = _future_month(0)
+    next_yy, next_mon, next_x = _future_month(1)
+    cur_inst = _inst(f"CRUDEOIL{cur_yy}{cur_mon}FUT", "CRUDEOIL", cur_x)
+    next_inst = _inst(f"CRUDEOIL{next_yy}{next_mon}FUT", "CRUDEOIL", next_x)
+    opt_sym = f"CRUDEOIL{cur_yy}{cur_mon}5800CE"
+    # The option's OWN instrument row, already past ITS expiry (yesterday)
+    # — this is what used to force a premature roll via the now-removed
+    # `_check_option_expired` check, even while `cur_inst` (the future)
+    # is still clearly live.
+    from datetime import timedelta
+    opt_inst = _inst(opt_sym, "CRUDEOIL", (date.today() - timedelta(days=1)).isoformat())
+    items = [cur_inst, next_inst, opt_inst]
+
+    from backend.api.algo.derivatives import lookup_future_for_option
+
+    with _patch_instruments(items):
+        result = await lookup_future_for_option(opt_sym)
+
+    assert result == f"CRUDEOIL{cur_yy}{cur_mon}FUT", \
+        f"Expected current-month future (still live), got {result!r} — rolled past month early"
+
+
+@pytest.mark.asyncio
 async def test_weekly_option_falls_back_to_front_month():
     """NIFTY2762422000CE is a weekly option (no 3-letter MON token).
     lookup_future_for_option detects it as weekly → falls back to the

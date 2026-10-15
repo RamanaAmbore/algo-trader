@@ -518,6 +518,26 @@ Rule: these buttons must always live inside the shared card button-group slot. N
 
 ## Critical math guards
 
+**MCX underlying-spot future resolution must key off the FUTURE's own expiry, never the paired option's (2026-10-15, live operator-reported incident)** —
+`backend/api/algo/derivatives.py:lookup_future_for_option()` → `_resolve_monthly_option_future()` →
+`_matched_or_roll()` previously ALSO rolled the resolved underlying future to next month when the
+*option's own* instrument row showed an expiry on/before today (`_check_option_expired`, now
+deleted), even while the SAME-month future itself was still clearly live. MCX commodity options
+routinely expire ~3-5 business days BEFORE their same-month future — e.g. CRUDEOIL's October
+option's own last trading day was 2026-10-15, while the October future didn't expire until
+2026-10-19 — so this fired every single month for several days, not on a rare edge case. Live
+symptom: "option prices are correct [they use a different, unaffected lookup —
+`option_underlying_quote_key()`/`futures_symbol_for_expiry()` in the same file], underlying prices
+are not correct because of wrong future reference" — the Derivatives Snapshot/Payoff underlying
+spot silently referenced next month's future for several days every month. Fix: `_matched_or_roll()`
+now returns the matched future whenever ITS OWN expiry is still in the future
+(`inst.x > today_iso`), full stop — an option reaching its own earlier scheduled expiry says
+nothing about whether the future it's paired with is still live. Test:
+`backend/tests/test_options_spot.py:test_option_on_its_own_expiry_day_does_not_roll_past_a_still_live_future`
+(constructs both the current- and next-month future so a regression is caught, not masked by a
+single-candidate fallback — confirmed to fail against the pre-fix code, reproducing the exact
+reported bug).
+
 **F&O order qty convention** — API now accepts LOTS as input for instruments with 
 `lot_size > 1`. `backend/api/routes/orders_place.py:_ticket_validate_input` converts 
 lots → contracts (`contracts = lots × lot_size`) at the request boundary. G2 (5-lot cap, 

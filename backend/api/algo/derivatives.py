@@ -616,20 +616,6 @@ async def _load_instruments_items() -> list:
         return []
 
 
-def _check_option_expired(sym: str, items: list, today_iso: str) -> bool:
-    """Return True when the option `sym` has a known expiry on or before
-    `today_iso` (i.e. MCX commodity options that expire 5 business days
-    before the futures). Uses the O(1) instrument index."""
-    if not items:
-        return False
-    index = _instrument_index(items)
-    inst = index.get(sym)
-    if inst is None:
-        return False
-    opt_expiry = (inst.x or "")
-    return bool(opt_expiry and opt_expiry <= today_iso)
-
-
 async def _roll_past_month(
     root: str,
     items: list,
@@ -665,19 +651,35 @@ async def _matched_or_roll(
     inst,
     root: str,
     items: list,
-    opt_expired: bool,
     today_iso: str,
 ) -> str | None:
-    """Return the matched instrument's symbol when it is still live and
-    the option has not expired; otherwise roll past this month."""
+    """Return the matched instrument's symbol when its OWN (future's)
+    expiry is still live; otherwise roll past this month.
+
+    2026-10-15 fix: previously also rolled when the paired OPTION had
+    already reached its own expiry, even while the future was still
+    live — MCX commodity options routinely expire ~3-5 business days
+    BEFORE their same-month future (confirmed: CRUDEOIL Oct option
+    expiry 2026-10-15, Oct future expiry 2026-10-19), so that was the
+    EXPECTED, every-month state for several days, not an edge case —
+    yet it forced the underlying spot reference to roll to next month
+    while the current month's future was still actively tradeable.
+    Operator-reported: "today crudeoil is resolved to wrong future...
+    referring to next month future, instead of current future for
+    which active options are present." The future's own expiry is the
+    only correct signal for "is this still the right underlying
+    reference" — an option reaching ITS OWN earlier scheduled expiry
+    says nothing about whether the future it's paired with is still
+    live.
+    """
     inst_expiry = (inst.x or "")
     is_live = bool(inst_expiry and inst_expiry > today_iso)
-    if is_live and not opt_expired:
+    if is_live:
         return inst.s
     return await _roll_past_month(root, items, inst_expiry, today_iso)
 
 
-async def _resolve_monthly_option_future(sym: str, m_monthly) -> str | None:
+async def _resolve_monthly_option_future(m_monthly) -> str | None:
     """Resolve the matching future for a MONTHLY option symbol.
 
     Pass 1: exact symbol match via O(1) index (covers NSE/NFO).
@@ -691,20 +693,19 @@ async def _resolve_monthly_option_future(sym: str, m_monthly) -> str | None:
     if not items:
         return None
     today = _ist_today_iso()
-    opt_expired = _check_option_expired(sym, items, today)
     fut_sym_upper = fut_sym.upper()
     prefix = f"{root}{yy}{mon}".upper()  # e.g. CRUDEOIL26JUL
     # Pass 1: exact match (covers NSE/NFO) — O(1) via instrument index.
     exact = _instrument_index(items).get(fut_sym_upper)
     if exact is not None:
-        return await _matched_or_roll(exact, root, items, opt_expired, today)
+        return await _matched_or_roll(exact, root, items, today)
     # Pass 2: prefix match ending in FUT (covers MCX day-suffix).
     # When multiple matches exist (rare) we take the FIRST in cache order,
     # which is the contract listed closest to the canonical month.
     for inst in items:
         s = (inst.s or "").upper()
         if s.startswith(prefix) and s.endswith("FUT") and s != fut_sym_upper:
-            return await _matched_or_roll(inst, root, items, opt_expired, today)
+            return await _matched_or_roll(inst, root, items, today)
     # Cache miss — future for this month not listed yet.
     return None
 
@@ -744,7 +745,7 @@ async def lookup_future_for_option(option_symbol: str) -> str | None:
     sym = option_symbol.upper().strip()
     m_monthly = _OPT_MONTHLY.match(sym)
     if m_monthly:
-        return await _resolve_monthly_option_future(sym, m_monthly)
+        return await _resolve_monthly_option_future(m_monthly)
     m_weekly = _OPT_WEEKLY.match(sym)
     if m_weekly:
         return await _resolve_weekly_option_future(sym, m_weekly)
