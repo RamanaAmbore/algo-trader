@@ -268,10 +268,37 @@
   // (top-level keywords, a function's own param names, a short enum) is
   // exactly the "show me what's possible here" case the operator asked
   // for, so it shows immediately on 0 characters.
+  // Bug fix (2026-10, operator: "after order( ... the dropdown should
+  // show the keyword labels like account, and other keywords") — the
+  // stated intent above ("a function's own param names... shows
+  // immediately") never actually held for `order(...)`: its param list
+  // has 27 entries, comfortably over the 10-item threshold meant only
+  // for the genuinely huge metric/scope lists, so it silently fell into
+  // the "wait for 3 chars" bucket the moment it grew past other calls'
+  // smaller param sets — confirmed live (zero dropdown after `order(`,
+  // despite `suggestAgentCliAt` itself correctly returning all 27 param
+  // suggestions). `kind === 'param'` is now exempt from the size gate
+  // entirely, matching the comment's original intent for every call's
+  // own param-name list regardless of how many params it has.
+  // Bug fix #2 (2026-10, same day, operator: "when [you] press into cli
+  // text area, it should show the list of tokens ... similarly in
+  // console cli") — the SAME class of bug hit the bare top-level
+  // action/keyword list (`kind: 'token'`) on a genuinely EMPTY textarea:
+  // 16 entries (order/bracket-via-WHEN/ALERT/DO/the action catalog),
+  // also over the 10-item threshold, so clicking into a fresh CLI box
+  // showed nothing until 3 characters were typed — confirmed live the
+  // same way. Exempted ONLY for the true start-of-statement case
+  // (`value.trim() === ''`, nothing typed anywhere yet), not every
+  // `'token'` suggestion generally — a bare metric/scope-ref list
+  // midway through a longer statement (the genuinely ~40-50-entry case
+  // the original comment above was protecting against) still waits for
+  // 3 characters.
   const _LARGE_LIST_THRESHOLD = 10;
   const _MIN_CHARS_FOR_LARGE_LIST = 3;
   const _gatedBySize = $derived.by(() =>
-    suggestResult.suggestions.length > _LARGE_LIST_THRESHOLD && _partialLen < _MIN_CHARS_FOR_LARGE_LIST);
+    suggestResult.kind !== 'param'
+    && !(suggestResult.kind === 'token' && value.trim() === '')
+    && suggestResult.suggestions.length > _LARGE_LIST_THRESHOLD && _partialLen < _MIN_CHARS_FOR_LARGE_LIST);
 
   // Escape dismissal is scoped to the EXACT (cursor, text) pair recorded
   // at dismissal time — see `_dismissedAt`'s own declaration above.

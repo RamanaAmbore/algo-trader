@@ -135,13 +135,19 @@ test.describe('Item 2 — Guide link renders as a button, not a bare link', () =
   });
 
   test('Orders CLI tab Guide link has button-pill chrome', async ({ page }) => {
+    // 2026-10 — the Guide link moved from OrderCliTab's own body
+    // (.order-cli-guide-link, removed) up into SymbolPanel's .oes-tabs
+    // row (.oes-cli-guide-link), replacing LTP/CHASE for the CLI tab
+    // specifically (operator: "when cli is selected ... ltp and chase
+    // should not be displayed. in its place, trader guide button for
+    // link should be displayed").
     await page.goto('/orders', { waitUntil: 'domcontentloaded' });
 
     const cliTab = page.getByRole('tab', { name: 'CLI' });
     await expect(cliTab).toBeVisible({ timeout: TIMEOUT });
     await cliTab.click();
 
-    const guideLink = page.locator('a.order-cli-guide-link');
+    const guideLink = page.locator('a.oes-cli-guide-link');
     await expect(guideLink).toBeVisible({ timeout: TIMEOUT });
     await expect(guideLink).toHaveClass(/btn-secondary/);
     await expect(guideLink).toContainText('Trader Guide');

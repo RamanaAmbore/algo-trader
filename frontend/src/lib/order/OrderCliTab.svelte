@@ -108,9 +108,6 @@
 </script>
 
 <div class="order-cli-tab">
-  <div class="order-cli-scope-label">
-    <a href="/automation/guide" title="CLI grammar guide" class="btn-secondary order-cli-guide-link">Trader Guide</a>
-  </div>
   {#if isDemo}
     <div class="order-cli-demo">Demo view — CLI order placement disabled.</div>
   {:else if _catalogError}
@@ -132,26 +129,13 @@
 
 <style>
   .order-cli-tab { display: flex; flex-direction: column; gap: 0.4rem; }
-  /* Scope/Console-retirement text removed (2026-10, operator: "remove
-     account, exchange, symbol, console details. just keep trader guide
-     button for link and cli for order entry") — this row now holds
-     only the Guide link. */
-  .order-cli-scope-label {
-    display: flex;
-    align-items: baseline;
-  }
-  /* Guide link — small pill button (operator request, 2026-10), not a
-     bare underlined text link. `.btn-secondary` supplies the shared
-     navy/amber-hover chrome ((algo)/+layout.svelte's own
-     `.algo-content .btn-secondary` override). Same reuse pattern as
-     ConsoleTab's/Automation's matching "Trader Guide" link. */
-  .order-cli-scope-label a.order-cli-guide-link {
-    display: inline-flex;
-    align-items: center;
-    white-space: nowrap;
-    text-decoration: none;
-    color: var(--algo-slate);
-  }
+  /* .order-cli-scope-label / .order-cli-guide-link removed entirely
+     (2026-10, operator: "when cli is selected in order modal or page,
+     ltp and chase should not be displayed. in its place, trader guide
+     button for link should be displayed") — the Guide link moved up
+     into SymbolPanel's own .oes-tabs row (`.oes-cli-guide-link`,
+     replacing LTP/CHASE for the CLI tab specifically), so this body-
+     level copy would have shown the same link twice on screen. */
   .order-cli-demo,
   .order-cli-err {
     padding: 0.4rem 0.6rem;

@@ -1757,14 +1757,30 @@
 }
 
 /* ── Canonical header-label decoration — shared by CardHeader's
-   `.ch-title`, MarketPulse's `.mp-bucket-label`, SymbolPanel's
-   `.oes-modal-name`, and orders/+page.svelte's `.oc-entry-label`
-   (2026-10-13, frontend reusability sweep Part A). Each site keeps its
-   own `color` (and any other typography) rule local; only this
-   border-left + left-padding pairing was duplicated across all four. */
+   `.ch-title`, MarketPulse's `.mp-bucket-label`, and SymbolPanel's
+   `.oes-modal-name` (2026-10-13, frontend reusability sweep Part A;
+   orders/+page.svelte's `.oc-entry-label` — the fourth original
+   consumer — was removed entirely in a later pass along with that
+   page's whole Order Entry header, not just restyled). Each site keeps
+   its own `color` (and any other typography) rule local; only this
+   border-left + left-padding pairing was duplicated across all three.
+   display/align-items/align-self added (2026-10, operator: "the left
+   white border before header label does not extend the bottom of the
+   header") — every consumer sits inside a `.ch-left` flex row
+   (CardHeader.svelte) that itself now stretches to the full
+   `.card-header` height; without a matching stretch + self-centering
+   here, the label (and its border-left) still only spanned its own
+   text's natural line-height, well short of the row's actual height.
+   `align-self: stretch` makes the label's own box match `.ch-left`'s
+   full height; `display: inline-flex; align-items: center` keeps the
+   text (and any icon child, e.g. .oes-modal-name's SVG) vertically
+   centered within that now-taller box instead of sitting at its top. */
 .algo-label-decor {
   border-left: 3px solid currentColor;
   padding-left: 0.35rem;
+  display: inline-flex;
+  align-items: center;
+  align-self: stretch;
 }
 
 /* ── Per-account identity stripe (ag-col-acct) ────────────────────────────

@@ -166,6 +166,17 @@
     flex: 0 1 auto;
     min-width: 0;
     overflow-x: auto;
+    /* Stretch to .card-header's full height (2026-10, operator: "the
+       left white border before header label does not extend the
+       bottom of the header") — .card-header itself uses align-items:
+       center, so .ch-left previously shrink-wrapped to its own content
+       height (confirmed live: 19.17px vs the row's own 23.39px),
+       leaving .algo-label-decor's border-left (on .ch-title/.mp-bucket-
+       label/.oes-modal-name) shorter than the header it decorates.
+       align-self overrides the parent's align-items for this one flex
+       item only — .ch-middle/.ch-right (separate siblings) are
+       unaffected. */
+    align-self: stretch;
     scrollbar-width: none;
   }
   .ch-left::-webkit-scrollbar { display: none; }

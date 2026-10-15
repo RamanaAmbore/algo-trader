@@ -2392,14 +2392,29 @@
            label-value pairs now that both clusters sit left-aligned and
            close together. -->
       <span class="oes-tabs-divider" aria-hidden="true"></span>
-      {#if _ltp != null && _ltp > 0}
-        <span class="oes-tab-ltp"><span class="oes-tab-ltp-label">LTP</span>{priceFmt(_ltp)}</span>
-      {/if}
-      {#if _chaseEnabled}
-        <span class="oes-common-chase-label on" title="Chase is active">CHASE</span>
-        <span class="oes-chase-agg-gap">
-          <ChaseAggPicker value={_sharedChaseAgg} onChange={_setSharedChaseAgg} variant="panel" />
-        </span>
+      {#if _activeTab === 'cli'}
+        <!-- CLI tab (2026-10, operator: "when cli is selected in order
+             modal or page, ltp and chase should not be displayed. in its
+             place, trader guide button for link should be displayed")
+             — LTP/CHASE are meaningless for a CLI statement (no single
+             symbol/chase-target is "active" the way Ticket/Chain have
+             one); the Guide link takes their place in the same row
+             instead. `.oes-cli-guide-link` reuses `.oes-tab-ltp`'s own
+             row-height-parity recipe (--ctl-h floor) so it doesn't grow
+             the tab row — operator: "trader guide should not increase
+             the height of the header height. it should be fit within
+             header vertically centered." -->
+        <a href="/automation/guide" title="CLI grammar guide" class="btn-secondary oes-cli-guide-link">Trader Guide</a>
+      {:else}
+        {#if _ltp != null && _ltp > 0}
+          <span class="oes-tab-ltp"><span class="oes-tab-ltp-label">LTP</span>{priceFmt(_ltp)}</span>
+        {/if}
+        {#if _chaseEnabled}
+          <span class="oes-common-chase-label on" title="Chase is active">CHASE</span>
+          <span class="oes-chase-agg-gap">
+            <ChaseAggPicker value={_sharedChaseAgg} onChange={_setSharedChaseAgg} variant="panel" />
+          </span>
+        {/if}
       {/if}
     </div>
     {/if}
@@ -3455,21 +3470,22 @@
     letter-spacing: 0.04em;
     text-transform: uppercase;
     flex-shrink: 0;
-    display: inline-flex;
-    align-items: center;
     gap: 0.35rem;
     /* 2026-10-13 — border-left + left padding, matching every other
-       header label's decoration (.ch-title, .mp-bucket-label,
-       orders/+page.svelte's .oc-entry-label). Kept the deliberate
-       amber color (same reasoning as .oc-entry-label — "writing
-       surface / operator action" surface, not the generic neutral
-       default). Icon was briefly removed earlier the same day, then
-       restored — operator: "keep the icon back to orders modal and
-       page" — matching orders/+page.svelte's own .oc-entry-icon,
-       which was never removed.
-       Reusability sweep Part A (same day): border-left/padding-left
-       itself moved to the shared `.algo-label-decor` class (app.css);
-       this rule still owns `color` and everything else above. */
+       header label's decoration (.ch-title, .mp-bucket-label). Kept
+       the deliberate amber color — "writing surface / operator
+       action" surface, not the generic neutral default. Icon was
+       briefly removed earlier the same day, then restored — operator:
+       "keep the icon back to orders modal and page". (orders/
+       +page.svelte's own matching .oc-entry-label/.oc-entry-icon were
+       removed entirely in a later pass, along with that page's whole
+       Order Entry header — no longer a live sibling to compare
+       against.)
+       Reusability sweep Part A (same day): border-left/padding-left,
+       plus (2026-10, later pass) display/align-items/align-self for
+       the full-header-height stretch, all moved to the shared
+       `.algo-label-decor` class (app.css); this rule still owns
+       `color` and everything else above. */
   }
   .oes-modal-name-icon { color: currentColor; flex-shrink: 0; }
   /* Shared Symbol picker — replaces the static `.oes-title` placeholder
@@ -3802,6 +3818,30 @@
     letter-spacing: 0.07em;
     color: var(--c-action);
     font-weight: 700;
+  }
+  /* CLI-tab Trader Guide link — replaces LTP/CHASE in the same .oes-tabs
+     row (2026-10, see the markup comment above). Height matched to the
+     TICKET/CHAIN/CHART tabs' OWN compact variant (app.css
+     `.algo-tab--compact`, calc(--toolbar-h - 2px) — NOT --ctl-h, which
+     is ~5px taller and was the first attempt here, confirmed live via
+     getBoundingClientRect: 27.2px vs the tabs' actual 22px) — operator:
+     "trader guide should not increase the height of the header height.
+     it should be fit within header vertically centered." Padding/font-
+     size kept small enough that natural content height stays at/under
+     that floor, so box-sizing:border-box's min-height is the real
+     constraint, not fought by oversized .btn-secondary padding (same
+     class of fix the Automation page's own Trader Guide link needed
+     against Select's trigger height). */
+  .oes-cli-guide-link {
+    display: inline-flex;
+    align-items: center;
+    min-height: calc(var(--toolbar-h) - 2px);
+    box-sizing: border-box;
+    padding: 0 0.6rem;
+    font-size: var(--fs-sm);
+    white-space: nowrap;
+    text-decoration: none;
+    color: var(--algo-slate);
   }
 
   /* Basket bar — sticky bottom strip inside the modal when legs exist. */

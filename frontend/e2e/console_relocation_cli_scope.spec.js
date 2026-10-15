@@ -152,10 +152,13 @@ test.describe('Orders CLI tab — order-only scope (Sprint B)', () => {
     // trader guide button for link and cli for order entry") — the
     // underlying scope ENFORCEMENT (compiler rejects non-order
     // statements) is unchanged and covered by the sibling "rejects
-    // bracket/WHEN statements" test below. This row now holds only the
-    // Trader Guide link.
-    await expect(page.locator('.order-cli-scope-label')).toBeVisible();
-    await expect(page.locator('a.order-cli-guide-link')).toContainText('Trader Guide');
+    // bracket/WHEN statements" test below.
+    // Guide link itself later moved (2026-10, same day) out of
+    // OrderCliTab's own body entirely, up into SymbolPanel's .oes-tabs
+    // row (.oes-cli-guide-link) — replacing LTP/CHASE for the CLI tab
+    // specifically (operator: "ltp and chase should not be displayed.
+    // in its place, trader guide button for link should be displayed").
+    await expect(page.locator('a.oes-cli-guide-link')).toContainText('Trader Guide');
 
     await cli.fill('order(account="ZG0790", symbol="RELIANCE", exchange="NSE", side="SELL", qty=1, price=100)');
 
@@ -275,9 +278,10 @@ test.describe('SymbolPanel order-ticket modal — restored CLI tab (Sprint B)', 
 
     const cli = modal.locator('.agent-cli-textarea');
     await expect(cli).toBeVisible({ timeout: TIMEOUT });
-    // Scope sub-label TEXT removed (2026-10, operator request) — see
-    // the matching comment on the /orders-page test above.
-    await expect(modal.locator('a.order-cli-guide-link')).toContainText('Trader Guide');
+    // Scope sub-label TEXT removed, then the Guide link itself moved to
+    // SymbolPanel's .oes-tabs row (2026-10, operator request) — see the
+    // matching comment on the /orders-page test above.
+    await expect(modal.locator('a.oes-cli-guide-link')).toContainText('Trader Guide');
 
     await cli.fill('order(account="ZG0790", symbol="RELIANCE", exchange="NSE", side="SELL", qty=1, price=100)');
 
