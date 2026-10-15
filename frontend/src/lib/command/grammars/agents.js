@@ -8746,7 +8746,13 @@ function _bareNameCandidates(clauseKind, catalog, contextTok, text, boundaryPos)
     // after "and"/"or"/"not"/"(" (those predecessors also pass
     // `_isFreshNamePosition`, but "always" there would be a guaranteed
     // parse error per the grammar's own rule).
-    if (lastWord === 'when') { tokens.push('always'); descByToken.set('always', 'Sentinel condition — always true (schedule-only agents).'); }
+    // 2026-10-15 fix (operator: "after when in console it is not always
+    // in the dropdown") — `always` is almost certainly the operator's
+    // most common pick directly after WHEN, but `push` put it dead last
+    // among ~59 metric/scope-root candidates (confirmed live: index 58
+    // of 59, far below the dropdown's own scrollable viewport). `unshift`
+    // surfaces it first instead, without needing to scroll at all.
+    if (lastWord === 'when') { tokens.unshift('always'); descByToken.set('always', 'Sentinel condition — always true (schedule-only agents).'); }
     return { tokens, descByToken };
   }
 

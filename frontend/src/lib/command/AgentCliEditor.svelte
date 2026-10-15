@@ -305,6 +305,20 @@
     try { return isInsideOpenCall(value, cursorPos); } catch { return false; }
   });
 
+  // Same reasoning, different trigger (2026-10-15, operator: "given a =
+  // 1+1 is generating error") — `GIVEN a = 1+1` alone always fails with
+  // "an agent must have at least one of ALERT or DO" until a WHEN/ALERT/
+  // DO clause is added, same as `order(...)` always failed with
+  // "expected ')'" until closed. Matched by exact message rather than a
+  // broader "any error while focused" suppression, so a genuinely wrong
+  // statement (e.g. a typo'd metric name) still surfaces immediately —
+  // only this one "more is coming" message is deferred.
+  const _MISSING_ALERT_OR_DO_MSG = 'an agent must have at least one of ALERT or DO';
+  const _suppressMissingAlertOrDo = $derived.by(() => {
+    if (!_focused || !compiled || compiled.ok) return false;
+    return compiled.errors?.some((e) => e.message === _MISSING_ALERT_OR_DO_MSG) ?? false;
+  });
+
   // Sprint [CLI dropdown] — how many characters of the CURRENT partial
   // word have actually been typed, derived the same way the suggestion
   // engine itself derives it (`cursor - replaceRange[0]`) rather than
@@ -744,7 +758,7 @@
       </div>
     {/if}
 
-    {#if compiled && !compiled.ok && showCompileErrors && !_suppressErrorsWhileOpenCall}
+    {#if compiled && !compiled.ok && showCompileErrors && !_suppressErrorsWhileOpenCall && !_suppressMissingAlertOrDo}
       <div class="agent-cli-errors">
         <div class="agent-cli-errors-title">Errors:</div>
         <ul class="list-disc ml-4">

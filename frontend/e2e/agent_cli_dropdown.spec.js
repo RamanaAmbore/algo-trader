@@ -936,7 +936,7 @@ test.describe('Tab auto-select + default highlight + account dropdown + error su
     await expect(listBox).toHaveCSS('overflow-y', 'auto');
   });
 
-  test('typing "WHEN " (keyword + trailing space, nothing typed for the next token yet) shows the full candidate dropdown including "always"', async ({ page }) => {
+  test('typing "WHEN " (keyword + trailing space, nothing typed for the next token yet) shows the full candidate dropdown with "always" visible first — not buried below a 50+ item scroll', async ({ page }) => {
     await loginAsAdmin(page);
     await goConsole(page);
 
@@ -948,6 +948,16 @@ test.describe('Tab auto-select + default highlight + account dropdown + error su
     expect(await page.locator('.agent-cli-dropdown').count()).toBeGreaterThan(0);
     const rows = await page.locator('.agent-cli-dropdown-row').allTextContents();
     expect(rows).toContain('always');
+    // 2026-10-15 fix (operator: "after when in console it is not always
+    // in the dropdown") — "always" used to be the LAST of ~59 metric/
+    // scope candidates (confirmed live: index 58), far below the
+    // dropdown's own 15rem scrollable viewport, so it was technically
+    // present but not discoverable without scrolling. It's the
+    // operator's most likely pick directly after WHEN, so it's now
+    // surfaced first.
+    expect(rows[0]).toBe('always');
+    const alwaysRow = page.locator('.agent-cli-dropdown-row', { hasText: 'always' }).first();
+    await expect(alwaysRow).toBeInViewport();
   });
 
   test('compile errors stay hidden while the cursor is still inside an unclosed call, and reappear once focus leaves it unclosed', async ({ page }) => {
@@ -965,5 +975,25 @@ test.describe('Tab auto-select + default highlight + account dropdown + error su
     await page.locator('body').click({ position: { x: 5, y: 5 } });
     await page.waitForTimeout(400);
     await expect(page.locator('.agent-cli-errors')).toBeVisible({ timeout: 5000 });
+  });
+
+  test('"GIVEN a = 1+1" alone shows no error while focused (more clauses likely coming), reappears on blur', async ({ page }) => {
+    await loginAsAdmin(page);
+    await goConsole(page);
+
+    const textarea = page.locator('textarea.agent-cli-textarea');
+    await textarea.focus();
+    await textarea.pressSequentially('GIVEN a = 1+1', { delay: 15 });
+    await page.waitForTimeout(500);
+    // Mid-edit — "an agent must have at least one of ALERT or DO" would
+    // otherwise show here, same premature-error class as the unclosed-
+    // call case above.
+    await expect(page.locator('.agent-cli-errors')).toHaveCount(0);
+
+    await page.locator('body').click({ position: { x: 5, y: 5 } });
+    await page.waitForTimeout(400);
+    const errors = page.locator('.agent-cli-errors');
+    await expect(errors).toBeVisible({ timeout: 5000 });
+    await expect(errors).toContainText('at least one of ALERT or DO');
   });
 });
