@@ -487,3 +487,47 @@ test.describe('Part A.4 — NavTab live regression (pixel-identical to pre-chang
     expect(s.background).toBe('rgba(248, 113, 113, 0.07)');
   });
 });
+
+// ── Part 5 — .algo-label-decor rounded bar ends (2026-10-15) ────────────
+// Operator: "make the label left vertical bar's edge look like to corner
+// radius on the outer side on the top and bottom" — a genuine visual
+// change layered on top of the Part A.2 extraction above (that sweep was
+// pixel-identical by design; this one deliberately isn't). border-radius
+// on the left corners only, since the box has no border-top/right/bottom
+// to round — this curves the two free ends of the border-left bar inward.
+test.describe('Part A.5 — .algo-label-decor rounded bar ends', () => {
+  test('app.css .algo-label-decor carries border-top-left-radius + border-bottom-left-radius', () => {
+    const m = /\.algo-label-decor\s*\{([^}]*)\}/.exec(APP_CSS);
+    expect(m).not.toBeNull();
+    const body = m[1];
+    expect(body).toMatch(/border-top-left-radius:\s*2px/);
+    expect(body).toMatch(/border-bottom-left-radius:\s*2px/);
+  });
+
+  test('live: Orders page header label bar has rounded top/bottom corners', async ({ page }) => {
+    await loginAsAdmin(page);
+    await page.goto('/orders', { waitUntil: 'domcontentloaded' });
+    const label = page.locator('.algo-label-decor').first();
+    await expect(label).toBeVisible({ timeout: 10000 });
+    const s = await label.evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return { tl: cs.borderTopLeftRadius, bl: cs.borderBottomLeftRadius, borderLeftWidth: cs.borderLeftWidth };
+    });
+    expect(s.tl).toBe('2px');
+    expect(s.bl).toBe('2px');
+    expect(s.borderLeftWidth).toBe('3px');
+  });
+
+  test('live: MarketPulse bucket label (shared consumer) also picks up the rounded corners', async ({ page }) => {
+    await loginAsAdmin(page);
+    await page.goto('/pulse', { waitUntil: 'domcontentloaded' });
+    const label = page.locator('.mp-bucket-label').first();
+    await expect(label).toBeVisible({ timeout: 10000 });
+    const s = await label.evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return { tl: cs.borderTopLeftRadius, bl: cs.borderBottomLeftRadius };
+    });
+    expect(s.tl).toBe('2px');
+    expect(s.bl).toBe('2px');
+  });
+});

@@ -1781,6 +1781,14 @@
   display: inline-flex;
   align-items: center;
   align-self: stretch;
+  /* Rounded outer corners on the bar's top/bottom ends (2026-10,
+     operator: "make the label left vertical bar's edge look like
+     corner radius on the outer side on the top and bottom") — border-
+     radius on a box rounds whichever border sides are actually set, so
+     with only border-left present this curves the bar's two free ends
+     inward instead of leaving them as sharp rectangular corners. */
+  border-top-left-radius: 2px;
+  border-bottom-left-radius: 2px;
 }
 
 /* ── Per-account identity stripe (ag-col-acct) ────────────────────────────
