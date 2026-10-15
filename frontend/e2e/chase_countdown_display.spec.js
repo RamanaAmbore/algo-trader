@@ -1,15 +1,20 @@
 /**
  * chase_countdown_display.spec.js
  *
- * Verifies the chase countdown UI shows next_attempt_at properly from the 12-defect patch.
+ * Verifies the chase countdown UI shows next_attempt_at properly.
  *
- * ChaseCard.svelte (used in /orders page and other panels) now exposes timing info:
- *   - next_attempt_at and last_attempt_at are now in AlgoOrderInfo
+ * ChaseCard.svelte (used in /orders page and other panels) exposes timing info:
+ *   - next_attempt_at is in AlgoOrderInfo
  *   - ChaseCard renders a countdown timer when next_attempt_at is in the future
- *   - Age display shows how long the order has been chasing
+ *   - The "Next" column is the row's SOLE timing display — 2026-10-15 (operator:
+ *     "instead of showing up elapsed time, do count down for how much time
+ *     chase is going to wait before taking action") removed the former
+ *     elapsed-since-created "Age" display entirely; there is no longer any
+ *     age/elapsed-time rendering in this component at all.
  *
  * Three quality dimensions:
- *  1. Stale   — ChaseCard.svelte contains 'next_attempt_at' reference
+ *  1. Stale   — ChaseCard.svelte contains 'next_attempt_at' reference, and
+ *               no longer contains any elapsed/age-since-created logic
  *  2. SSOT    — /orders page displays chase cards with timing info
  *  3. UX      — countdown is visible and numeric (or absent if no active chases)
  *
@@ -96,10 +101,13 @@ test.describe('Chase countdown display', () => {
     // This verifies the component exposes the timing field from AlgoOrderInfo.
     expect(source, 'ChaseCard.svelte should reference next_attempt_at').toContain('next_attempt_at');
 
-    // Also check for last_attempt_at (age calculation).
-    const hasLastAttempt = source.includes('last_attempt_at');
-    expect(hasLastAttempt, 'ChaseCard.svelte should reference last_attempt_at for age display').toBe(true);
+    // 2026-10-15: the elapsed-since-created "Age" display and its backing
+    // `_age()` function were removed entirely — the countdown-to-next-
+    // action is now the row's sole timing display. A stale `_age(` call
+    // or a `created_at`-based elapsed calculation reappearing here would
+    // mean the removed display crept back in.
+    expect(source, 'ChaseCard.svelte should no longer have an _age() elapsed-time function').not.toMatch(/function _age\(/);
 
-    console.log('[chase_countdown_display] ChaseCard.svelte source scan verified: both timing fields present');
+    console.log('[chase_countdown_display] ChaseCard.svelte source scan verified: countdown present, elapsed-age display removed');
   });
 });

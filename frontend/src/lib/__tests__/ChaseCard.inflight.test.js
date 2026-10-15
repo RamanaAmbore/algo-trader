@@ -130,84 +130,47 @@ describe('ChaseCard in-flight guard (_poll)', () => {
   });
 });
 
-// ── Age column fix ───────────────────────────────────────────────────────
+// ── Next-action countdown (replaces the former Age/elapsed display) ─────
 //
-// Bug: the Age column rendered `_age(row.last_attempt_at || row.created_at)`.
-// `last_attempt_at` is a backend epoch-SECONDS float (not an ISO string) —
-// `Date.parse()` on a bare number returns NaN, so once a chase re-quotes
-// at least once (`last_attempt_at` becomes non-null and wins the `||`),
-// the cell permanently shows "—" for the rest of that chase's lifetime.
-// Even if parsing were fixed, `last_attempt_at` is the wrong anchor since
-// it resets on every re-quote instead of growing monotonically — the
-// correct anchor is `row.created_at` (an ISO string from a tz-aware
-// DateTime column). Separately, the age must tick every second in sync
-// with the component's existing `_nowSec` clock, not freeze between polls.
-//
-// This replicates the fixed `_age(iso, nowSec)` function as a pure
-// function — mirrors the pattern above for the in-flight guard.
+// 2026-10-15, operator: "instead of showing up elapsed time, do count
+// down for how much time chase is going to wait before taking action."
+// The former elapsed-since-created "Age" column and its `_age()` function
+// were removed entirely — this is now the row's sole timing display.
+// Mirrors ChaseCard.svelte's `_nextIn(nextAttemptAt, status, nowSec)` as a
+// pure function, same pattern as the in-flight guard above.
 
 /**
- * Mirrors the fixed ChaseCard.svelte `_age` function.
- * @param {string} iso
+ * Mirrors ChaseCard.svelte's `_nextIn` function.
+ * @param {number|null|undefined} nextAttemptAt
+ * @param {string} status
  * @param {number} nowSec
- * @returns {string}
+ * @returns {number|null}
  */
-function _age(iso, nowSec) {
-  if (!iso) return '—';
-  const t = Date.parse(iso);
-  if (!Number.isFinite(t)) return '—';
-  const s = Math.max(0, Math.floor(nowSec - t / 1000));
-  if (s < 60)    return `${s}s`;
-  if (s < 3600)  return `${Math.floor(s / 60)}m`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h`;
-  return `${Math.floor(s / 86400)}d`;
+function _nextIn(nextAttemptAt, status, nowSec) {
+  if (nextAttemptAt == null || status !== 'active') return null;
+  return Math.max(0, Math.ceil(nextAttemptAt - nowSec));
 }
 
-// Mirrors the OLD (buggy) call site: _age(row.last_attempt_at || row.created_at)
-// with the OLD single-arg _age signature that only ever read Date.now().
-function _ageOldBuggy(iso) {
-  if (!iso) return '—';
-  const t = Date.parse(iso);
-  if (!Number.isFinite(t)) return '—';
-  const s = Math.max(0, Math.floor((Date.now() - t) / 1000));
-  return `${s}s`;
-}
-
-describe('ChaseCard Age column (_age)', () => {
-  it('pre-fix: a non-null last_attempt_at epoch-seconds float shows "—" (documents the bug)', () => {
-    const row = { created_at: '2026-09-30T04:00:00Z', last_attempt_at: 1790000000.5 };
-    // Old call site: _age(row.last_attempt_at || row.created_at) — the
-    // epoch float wins the `||` and Date.parse(number) is NaN.
-    expect(_ageOldBuggy(row.last_attempt_at || row.created_at)).toBe('—');
+describe('ChaseCard next-action countdown (_nextIn)', () => {
+  it('counts down toward zero as nowSec approaches next_attempt_at', () => {
+    const nextAttemptAt = 1000;
+    expect(_nextIn(nextAttemptAt, 'active', 990)).toBe(10);
+    expect(_nextIn(nextAttemptAt, 'active', 997)).toBe(3);
+    expect(_nextIn(nextAttemptAt, 'active', 999.5)).toBe(1);
   });
 
-  it('fixed: reads from row.created_at (ISO string), never from last_attempt_at (epoch float)', () => {
-    const nowSec = Math.floor(Date.parse('2026-09-30T04:00:30Z') / 1000);
-    const row = { created_at: '2026-09-30T04:00:00Z', last_attempt_at: 1790000000.5 };
-    expect(_age(row.created_at, nowSec)).toBe('30s');
-    // Does NOT show "—" once last_attempt_at is a non-null epoch float —
-    // last_attempt_at is simply never passed to _age at all now.
-    expect(_age(row.created_at, nowSec)).not.toBe('—');
+  it('clamps to 0 rather than going negative once the attempt time has passed', () => {
+    expect(_nextIn(1000, 'active', 1005)).toBe(0);
   });
 
-  it('age increases across two ticks of the _nowSec clock with no change to created_at', () => {
-    const row = { created_at: '2026-09-30T04:00:00Z' };
-    const nowSecTick1 = Math.floor(Date.parse('2026-09-30T04:00:05Z') / 1000);
-    const nowSecTick2 = Math.floor(Date.parse('2026-09-30T04:00:06Z') / 1000);
-
-    const age1 = _age(row.created_at, nowSecTick1);
-    const age2 = _age(row.created_at, nowSecTick2);
-
-    expect(age1).toBe('5s');
-    expect(age2).toBe('6s');
-    // Numeric comparison (strip trailing unit char) confirms monotonic growth.
-    expect(parseInt(age2, 10)).toBeGreaterThan(parseInt(age1, 10));
+  it('returns null (no countdown) when the row is not active', () => {
+    expect(_nextIn(1000, 'cancelled', 990)).toBeNull();
+    expect(_nextIn(1000, 'filled', 990)).toBeNull();
   });
 
-  it('returns "—" only when created_at is missing/unparseable, not based on last_attempt_at', () => {
-    expect(_age('', 1000)).toBe('—');
-    expect(_age(null, 1000)).toBe('—');
-    expect(_age('not-a-date', 1000)).toBe('—');
+  it('returns null when there is no scheduled next attempt', () => {
+    expect(_nextIn(null, 'active', 990)).toBeNull();
+    expect(_nextIn(undefined, 'active', 990)).toBeNull();
   });
 });
 

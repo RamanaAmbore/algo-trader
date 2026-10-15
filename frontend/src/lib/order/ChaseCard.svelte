@@ -224,23 +224,19 @@
     }
   }
 
-  // Total time-in-flight since the chase was created. `created_at` is an
-  // ISO string from a tz-aware DateTime column — Date.parse handles it
-  // correctly. (`last_attempt_at` is a backend epoch-SECONDS float, not an
-  // ISO string — Date.parse on it returns NaN, and even if parsed it would
-  // be the wrong anchor since it resets on every re-quote instead of
-  // growing monotonically.) `nowSec` is threaded in from the component's
-  // existing 1-second `_nowSec` clock so this ticks every second in sync
-  // with the countdown display, instead of freezing between polls.
-  function _age(/** @type {string} */ iso, /** @type {number} */ nowSec) {
-    if (!iso) return '—';
-    const t = Date.parse(iso);
-    if (!Number.isFinite(t)) return '—';
-    const s = Math.max(0, Math.floor(nowSec - t / 1000));
-    if (s < 60)    return `${s}s`;
-    if (s < 3600)  return `${Math.floor(s / 60)}m`;
-    if (s < 86400) return `${Math.floor(s / 3600)}h`;
-    return `${Math.floor(s / 86400)}d`;
+  // Countdown to the chase's next re-quote attempt (2026-10-15, operator:
+  // "instead of showing up elapsed time, do count down for how much time
+  // chase is going to wait before taking action" — replaces the former
+  // `_age()` elapsed-since-created display, which is removed; this is now
+  // the row's sole timing column). `nowSec` is the component's existing
+  // 1-second `_nowSec` clock, so this ticks every second between polls.
+  // '—' for a row with no pending next attempt (no `next_attempt_at`, or
+  // not currently `active`) — e.g. a chase that's between poll cycles
+  // with nothing scheduled, or a terminal row.
+  function _nextIn(/** @type {number|null|undefined} */ nextAttemptAt, /** @type {string} */ status, /** @type {number} */ nowSec) {
+    if (nextAttemptAt == null || status !== 'active') return null;
+    const s = Math.max(0, Math.ceil(nextAttemptAt - nowSec));
+    return s;
   }
 
   function _modeCls(/** @type {string} */ m) {
@@ -316,7 +312,7 @@
       <span class="cc-col cc-col-sym">Symbol</span>
       <span class="cc-col cc-col-limit">Limit</span>
       <span class="cc-col cc-col-att">Attempts</span>
-      <span class="cc-col cc-col-age">Age</span>
+      <span class="cc-col cc-col-age" title="Time until the next re-quote attempt">Next</span>
       {#if !compact}
         <span class="cc-col cc-col-mode">Mode</span>
       {/if}
@@ -364,14 +360,18 @@
             <span class="cc-limit-moved">·{row.attempts || 0}</span>
           {/if}
         </span>
-        <span class="cc-col cc-col-att">{row.attempts || 0}{#if row.next_attempt_at != null && row.status === 'active'}
+        <span class="cc-col cc-col-att">{row.attempts || 0}</span>
+        <span class="cc-col cc-col-age">
+          {#if row.next_attempt_at != null && row.status === 'active'}
             {#if _nowSec < row.next_attempt_at}
-              <span class="cc-countdown" title="Seconds until next re-quote"> · {Math.max(0, Math.ceil(row.next_attempt_at - _nowSec))}s</span>
+              <span class="cc-countdown" title="Seconds until next re-quote">{_nextIn(row.next_attempt_at, row.status, _nowSec)}s</span>
             {:else}
-              <span class="cc-countdown cc-requoting" title="Re-quoting now"> · re-quoting…</span>
+              <span class="cc-countdown cc-requoting" title="Re-quoting now">re-quoting…</span>
             {/if}
-          {/if}</span>
-        <span class="cc-col cc-col-age">{_age(row.created_at, _nowSec)}</span>
+          {:else}
+            —
+          {/if}
+        </span>
         {#if !compact}
           <span class="cc-col {_modeCls(row.mode)}">{(row.mode || '?').toUpperCase()}</span>
         {/if}
@@ -433,7 +433,7 @@
               MKT
             {/if}
           </span>
-          <!-- Attempts, Age, Mode cols — empty for pending (no chase data) -->
+          <!-- Attempts, Next, Mode cols — empty for pending (no chase data) -->
           <span class="cc-col cc-col-att">—</span>
           <span class="cc-col cc-col-age">—</span>
           {#if !compact}
@@ -486,7 +486,7 @@
           </span>
           <!-- Attempts col: empty for drafts -->
           <span class="cc-col cc-col-att">—</span>
-          <!-- Age col: empty for drafts -->
+          <!-- Next col: empty for drafts -->
           <span class="cc-col cc-col-age">—</span>
           {#if !compact}
             <span class="cc-col cc-mode cc-mode-draft">DRAFT</span>
