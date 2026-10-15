@@ -961,6 +961,27 @@ class ModifyOrderResponse(msgspec.Struct):
     detail: str = "Order modified successfully"
 
 
+class CancelAllOrdersRequest(msgspec.Struct):
+    """Body for `POST /api/orders/cancel-all`. Mirrors the
+    `cancel_all_orders` agent-action params_schema (agent_grammar.yaml)
+    field-for-field — `scope="account"` without `account` is refused by
+    the shared helper (`actions_live.cancel_all_orders_scoped`)."""
+    scope: "str | None" = None
+    account: "str | None" = None
+    symbol: "str | None" = None
+    side: "str | None" = None
+
+
+class CancelAllOrdersResponse(msgspec.Struct):
+    cancelled: int
+    errors: int
+    scope: str
+    account: "str | None" = None
+    symbol: "str | None" = None
+    side: "str | None" = None
+    detail: str = "Cancel-all requested"
+
+
 class ReconcileSingleRequest(msgspec.Struct):
     """Body for per-card reconcile: which account holds the broker
     order so the route knows which Kite handle to query."""

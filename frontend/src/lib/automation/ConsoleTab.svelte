@@ -42,6 +42,7 @@
     submitConsoleAgent, submitConsoleBracket, submitConsoleToken,
     updateConsoleAgent, updateConsoleBracket, updateConsoleToken,
     resolveConsoleOrder, submitResolvedConsoleOrder,
+    submitConsoleCancelAllOrders,
     classifyConsoleStatement, dispatchConsoleStatement,
   } from '$lib/command/consoleDispatch';
 
@@ -112,6 +113,31 @@
   function _execModeForCompile() {
     return safeRead(executionMode) === 'live' ? 'live' : 'paper';
   }
+
+  // Sprint [cancel-all-cli] (2026-10) fix — a REAL, tracked derived for
+  // AgentCliEditor's own `mode` PROP specifically (never pass
+  // `_execModeForCompile()`'s result directly as a prop value — see
+  // below). `_execModeForCompile()` wraps its `executionMode` read in
+  // `safeRead()`/`untrack()` (correct for a one-off synchronous call
+  // inside an event handler, e.g. `_recompileAgentCli`/submit — see
+  // CLAUDE.md "Reactive safety"), but a template PROP expression that
+  // ONLY reads an untracked store has ZERO tracked dependencies, so
+  // Svelte evaluates it once at mount and never again — confirmed live:
+  // a plain pre-existing `order(...)` statement's "Place order" button
+  // stayed stuck on "(PAPER)" after the exact same mocked
+  // `executionMode` flip `console_relocation_cli_scope.spec.js`'s
+  // OrderCliTab tests already use successfully (that mount threads mode
+  // via SymbolPanel's own properly-tracked `$derived($executionMode ...)`
+  // — same pattern applied here). This silently blocked EVERY
+  // live-only/live-gated bare statement (bare `order(...)`, and the new
+  // `cancel_all_orders(...)`) on this ONE host from ever reflecting a
+  // post-mount LIVE flip — the button either never renders (dev, which
+  // boots to 'idle') or renders a stale/misleading label (prod, which
+  // boots to 'live'). `$executionMode` below uses Svelte's real
+  // auto-subscribe store syntax (tracked), so this derived genuinely
+  // invalidates AgentCliEditor's `mode` prop — and therefore its
+  // internal compile effect — on every real mode change.
+  const _liveModeTracked = $derived($executionMode === 'live');
 
   /** Recompiles `value` synchronously at submit time — never trusts a
    *  possibly-stale cached result (AgentCliEditor's own debounced
@@ -274,8 +300,38 @@
 
   async function _onAgentCliOrderSubmit(/** @type {any} */ _result) {
     const fresh = _recompileAgentCli();
-    if (!fresh.ok || fresh.kind !== 'order') { toast.error('CLI changed — recheck before submit'); return; }
+    if (!fresh.ok || (fresh.kind !== 'order' && fresh.kind !== 'cancel_all_orders')) {
+      toast.error('CLI changed — recheck before submit');
+      return;
+    }
+    if (fresh.kind === 'cancel_all_orders') { await _submitAgentCliCancelAll(fresh); return; }
     await _submitAgentCliOrder(fresh);
+  }
+
+  /** Submit a compiled `cancel_all_orders(...)` statement (Sprint
+   *  [cancel-all-cli], 2026-10) via the new `/api/orders/cancel-all`
+   *  route — same `onOrderSubmit` prop AgentCliEditor's own "Place
+   *  order" button already uses, branched here by `result.kind` rather
+   *  than a parallel prop. Status text reads "Cancel requested" (not
+   *  "Cancelled") — a real `CANCEL_FAILED` terminal state exists, so
+   *  claiming success prematurely would be misleading; the per-order
+   *  cancelled/error counts from the response are appended so the
+   *  operator sees the real outcome, not just that the request fired. */
+  async function _submitAgentCliCancelAll(/** @type {any} */ result) {
+    const r = await submitConsoleCancelAllOrders(result);
+    if (r.ok) {
+      const cancelled = r.response?.cancelled ?? 0;
+      const errCount = r.response?.errors ?? 0;
+      const text = `Cancel requested — ${cancelled} order${cancelled === 1 ? '' : 's'}`
+        + (errCount ? `, ${errCount} error${errCount === 1 ? '' : 's'}` : '');
+      _cliSubmitStatus = { ok: errCount === 0, text };
+      if (errCount === 0) toast.success('Cancel requested'); else toast.error(_short(text));
+      value = '';
+    } else {
+      const _err = /** @type {any} */ (r).error;
+      _cliSubmitStatus = { ok: false, text: `Cancel failed: ${_err}` };
+      toast.error(`Cancel failed: ${_short(_err)}`);
+    }
   }
 
   // Sprint C follow-up (2026-10) — CLI order placement stays inline in
@@ -332,7 +388,7 @@
     dispatchConsoleStatement(value, {
       onAgentFamily: () => {
         if (!_agentCliCompiled?.ok) return;
-        if (_agentCliCompiled.kind === 'order') return _onAgentCliOrderSubmit(_agentCliCompiled);
+        if (_agentCliCompiled.kind === 'order' || _agentCliCompiled.kind === 'cancel_all_orders') return _onAgentCliOrderSubmit(_agentCliCompiled);
         if (_agentCliCompiled.kind === 'agent' || _agentCliCompiled.kind === 'event') return _submitAgentCliAgent(_agentCliCompiled);
         if (_agentCliCompiled.kind === 'bracket') return _submitAgentCliBracket(_agentCliCompiled);
         if (_agentCliCompiled.kind === 'token') return _submitAgentCliToken(_agentCliCompiled);
@@ -429,7 +485,7 @@
         <AgentCliEditor
           bind:value
           catalog={_agentCliCatalog}
-          mode={_execModeForCompile()}
+          mode={_liveModeTracked ? 'live' : 'paper'}
           onOrderSubmit={_onAgentCliOrderSubmit}
           info={_cliInfo}
           submitStatus={_cliSubmitStatus}

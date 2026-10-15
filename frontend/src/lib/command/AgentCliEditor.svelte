@@ -33,7 +33,11 @@
    *                switching tabs can't silently overwrite whatever the
    *                Structured tab's own JSON textareas currently hold.
    *   onOrderSubmit — `(result) => void`, fired when the operator clicks
-   *                "Place order" for a `kind:'order'` compile result.
+   *                "Place order" for a `kind:'order'` compile result, OR
+   *                "Cancel orders (LIVE)" for a `kind:'cancel_all_orders'`
+   *                compile result (Sprint [cancel-all-cli], 2026-10) —
+   *                same prop, same button element; the host branches on
+   *                `result.kind` to decide which backend route to call.
    *   allowedKinds — Sprint B (2026-10, Phase 2) — optional array
    *                restricting compiled statement kinds (see
    *                `compileStatement`'s own docstring in agents.js for
@@ -164,7 +168,7 @@
   // nothing has been dismissed (or a dismissal has since been superseded).
   let _dismissedAt = $state(null);
 
-  /** @type {{ok:boolean, errors:any[], kind:string|null, agent:any, ticket:any, basket:any, template:any, fragment:any}|null} */
+  /** @type {{ok:boolean, errors:any[], kind:string|null, agent:any, ticket:any, basket:any, template:any, fragment:any, cancelAll:any}|null} */
   let compiled = $state(null);
 
   $effect(() => {
@@ -189,7 +193,7 @@
       try {
         result = compileAgentCliStatement(text, cat, { mode: m, lotSizeOf, allowedKinds });
       } catch (e) {
-        result = { ok: false, errors: [{ message: e?.message || 'compile failed' }], kind: null, agent: null, ticket: null, basket: null, template: null, fragment: null };
+        result = { ok: false, errors: [{ message: e?.message || 'compile failed' }], kind: null, agent: null, ticket: null, basket: null, template: null, fragment: null, cancelAll: null };
       }
       compiled = result;
       if (result.ok && wasDirty) onCompile?.(result);
@@ -546,7 +550,13 @@
   }
 
   function handlePlaceOrder() {
-    if (compiled?.ok && compiled.kind === 'order') onOrderSubmit?.(compiled);
+    if (!compiled?.ok) return;
+    // Sprint [cancel-all-cli] (2026-10) — `cancel_all_orders(...)` reuses
+    // this SAME submit button + `onOrderSubmit` prop plumbing rather than
+    // a parallel button/prop; the host (OrderCliTab/ConsoleTab) branches
+    // on `compiled.kind` to decide whether to call the ticket/basket
+    // order-placement path or the new `/api/orders/cancel-all` route.
+    if (compiled.kind === 'order' || compiled.kind === 'cancel_all_orders') onOrderSubmit?.(compiled);
   }
 
   // Sprint 20 (item 5) — visual position indicator for a compile/parse
@@ -584,6 +594,11 @@
     if (compiled.kind === 'order') return compiled.ticket || { groups: compiled.basket?.groups };
     if (compiled.kind === 'bracket') return compiled.template;
     if (compiled.kind === 'token') return compiled.fragment;
+    // Sprint [cancel-all-cli] — shows the resolved scope/account/symbol/
+    // side the operator is about to submit; this preview pane IS the
+    // confirm step for a destructive fleet-wide cancel (no separate
+    // confirm modal — see the compile function's own doc).
+    if (compiled.kind === 'cancel_all_orders') return compiled.cancelAll?.params || null;
     return null;
   });
 
@@ -638,6 +653,14 @@
           const lines = (compiled.basket.groups || []).flatMap((g) => (g.legs || []).map(_legSummaryText));
           return lines.length ? lines : null;
         }
+      }
+      if (compiled.kind === 'cancel_all_orders') {
+        const p = compiled.cancelAll?.params || {};
+        const parts = [`scope=${JSON.stringify(p.scope ?? 'total')}`];
+        if (p.account != null) parts.push(`account=${JSON.stringify(p.account)}`);
+        if (p.symbol != null) parts.push(`symbol=${JSON.stringify(p.symbol)}`);
+        if (p.side != null) parts.push(`side=${p.side}`);
+        return [`cancel_all_orders(${parts.join(', ')})`];
       }
     } catch { /* display-only — never block the JSON preview on this */ }
     return null;
@@ -761,6 +784,22 @@
                    field at all — resolved server-side, unknown here. -->
               Place basket order
             {/if}
+          </button>
+        {:else if compiled?.kind === 'cancel_all_orders'}
+          <!-- Sprint [cancel-all-cli] (2026-10) — SAME button element,
+               reusing `agent-cli-place-order` + `handlePlaceOrder`, per
+               the brief ("don't add a parallel button"). No "/PAPER"
+               suffix: `POST /api/orders/cancel-all` is live-only (no
+               mode param, never routes through PaperTradeEngine — see
+               `compileCancelAllOrdersStmt`'s own doc), and the compiler
+               already refuses this statement outright in paper mode, so
+               this button only ever renders once that gate has passed.
+               `--close-btn-danger-bg`/`--c-short` (destructive-action
+               tokens, same family PositionStrip's own close-position
+               button uses) signal this is a destructive cancel, distinct
+               from the green `btn-primary` order-placement button. -->
+          <button type="button" class="agent-cli-place-order agent-cli-cancel-all" onclick={handlePlaceOrder}>
+            Cancel orders (LIVE)
           </button>
         {/if}
       </div>
@@ -943,4 +982,19 @@
        nested-scrollbar-inside-a-scrollbar layout). */
   }
   .agent-cli-place-order { font-size: var(--fs-md); padding: 0.25rem 0.9rem; }
+  /* Sprint [cancel-all-cli] (2026-10) — destructive-action chrome,
+     same token family as PositionStrip's `.ps-bd-close` live-close
+     button (border/color/background all from the shared
+     --close-btn-danger-* ramp, never a one-off literal). Overrides
+     `.btn-primary`'s green chrome since this button does NOT use that
+     class (see template — it's a sibling, not a `btn-primary` variant). */
+  .agent-cli-cancel-all {
+    border: 1px solid var(--algo-red-border-soft);
+    color: var(--c-short);
+    background: var(--close-btn-danger-bg);
+    border-radius: 4px;
+    font-weight: 600;
+    transition: background 0.1s;
+  }
+  .agent-cli-cancel-all:hover { background: var(--close-btn-danger-bg-hover); }
 </style>

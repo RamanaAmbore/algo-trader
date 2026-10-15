@@ -25,7 +25,10 @@
   import AgentCliEditor from '$lib/command/AgentCliEditor.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
   import { fetchAgentCatalog, compileAgentCliStatement } from '$lib/command/grammars/agents.js';
-  import { resolveConsoleOrder, submitResolvedConsoleOrder } from '$lib/command/consoleDispatch';
+  import {
+    resolveConsoleOrder, submitResolvedConsoleOrder,
+    submitConsoleCancelAllOrders,
+  } from '$lib/command/consoleDispatch';
 
   /** @type {{
    *   mode?: 'paper'|'live',
@@ -34,7 +37,13 @@
    * }} */
   let { mode = 'paper', isDemo = false, onSubmit = undefined } = $props();
 
-  const _ALLOWED = /** @type {string[]} */ (['order']);
+  // Sprint [cancel-all-cli] (2026-10) — `cancel_all_orders(...)` widened
+  // into this order-scoped mount's own allowedKinds alongside `order`:
+  // it's a fleet/account-wide cancel, the same "no order-identification
+  // ambiguity" category the operator already places/manages orders in on
+  // this surface — never an agent/bracket/token authoring scope, which
+  // stays restricted to Automation → Console.
+  const _ALLOWED = /** @type {string[]} */ (['order', 'cancel_all_orders']);
 
   let _text = $state('');
   let _catalog = $state(/** @type {any} */ (null));
@@ -73,9 +82,39 @@
   // serve as a record of "did this actually place").
   let _submitStatus = $state(/** @type {{ok: boolean, text: string} | null} */ (null));
 
+  /** Submit a compiled `cancel_all_orders(...)` statement (Sprint
+   *  [cancel-all-cli], 2026-10) via the new `/api/orders/cancel-all`
+   *  route. No `resolveConsoleOrder`/live-confirm-modal step: the
+   *  resolved scope/account/symbol/side are already shown in
+   *  AgentCliEditor's own JSON preview — THAT is the confirm step (no
+   *  second modal), per the UX decision for this feature. Status text
+   *  reads "Cancel requested" (not "Cancelled") — a real
+   *  `CANCEL_FAILED` terminal state exists. */
+  async function _onCancelAllSubmit(/** @type {any} */ result) {
+    const r = await submitConsoleCancelAllOrders(result);
+    if (r.ok) {
+      const cancelled = r.response?.cancelled ?? 0;
+      const errCount = r.response?.errors ?? 0;
+      const text = `Cancel requested — ${cancelled} order${cancelled === 1 ? '' : 's'}`
+        + (errCount ? `, ${errCount} error${errCount === 1 ? '' : 's'}` : '');
+      _submitStatus = { ok: errCount === 0, text };
+      if (errCount === 0) toast.success('Cancel requested'); else toast.error(_short(text));
+      _text = '';
+      onSubmit?.({ mode, kind: 'cancel_all_orders', response: r.response });
+    } else {
+      const _err = /** @type {any} */ (r).error;
+      _submitStatus = { ok: false, text: `Cancel failed: ${_err}` };
+      toast.error(`Cancel failed: ${_short(_err)}`);
+    }
+  }
+
   async function _onOrderSubmit(/** @type {any} */ _result) {
     const fresh = _recompile();
-    if (!fresh.ok || fresh.kind !== 'order') { toast.error('CLI changed — recheck before submit'); return; }
+    if (!fresh.ok || (fresh.kind !== 'order' && fresh.kind !== 'cancel_all_orders')) {
+      toast.error('CLI changed — recheck before submit');
+      return;
+    }
+    if (fresh.kind === 'cancel_all_orders') { await _onCancelAllSubmit(fresh); return; }
     const resolved = await resolveConsoleOrder(fresh);
     if (!resolved.ok) {
       const _err = /** @type {any} */ (resolved).error;

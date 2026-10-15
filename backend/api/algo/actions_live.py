@@ -1079,12 +1079,26 @@ async def _action_live_cancel_order(agent, context: dict, params: dict):
     `_al_modify_write_reject` already applies for modify_order failures —
     a row already FILLED/REJECTED must never be overwritten to CANCELLED
     by a late/duplicate cancel confirmation.
+
+    2026-10 fix (chase mark_killed gap): also calls
+    `chase.mark_killed(order_id)` -- without this, chase's poll loop sees
+    the resulting CANCELLED status, `is_killed()` reports False (nothing
+    had ever recorded this id as operator-killed), and it takes the
+    `cancelled_continue` branch, silently re-placing the order at a fresh
+    price. Marked BEFORE the broker call (not after) deliberately mirroring
+    `_rco_kill_live_mode` (routes/orders.py) -- this function awaits
+    `run_in_executor` for the actual cancel, which yields the event loop,
+    so a chase poll could land and read `is_killed()` DURING that await;
+    marking first closes that window. Never unmarked on cancel failure --
+    failing toward "chase won't re-place" is the safe direction even if
+    the cancel actually failed to land at the broker.
     """
     import asyncio
     from backend.brokers import get_broker
     from sqlalchemy import select as sql_select
     from backend.api.database import async_session
     from backend.api.models import AlgoOrder, ALGO_ORDER_FINAL_STATUSES
+    from backend.api.algo.chase import mark_killed
 
     account  = str(params.get("account") or "")
     order_id = str(params.get("broker_order_id") or params.get("order_id") or "")
@@ -1097,6 +1111,16 @@ async def _action_live_cancel_order(agent, context: dict, params: dict):
 
     broker = get_broker(account)
     loop = asyncio.get_running_loop()
+
+    # Mark BEFORE the broker call (not after): run_in_executor below
+    # yields the event loop while the cancel is in flight, and a chase
+    # poll landing during that window must already see is_killed()==True.
+    # Never unmarked on failure -- failing toward "chase won't re-place"
+    # is the safe direction even if the cancel call below raises.
+    try:
+        mark_killed(order_id)
+    except Exception:
+        pass
 
     await loop.run_in_executor(
         None, lambda: broker.cancel_order(order_id, variety=variety)
@@ -1147,7 +1171,23 @@ async def _al_cancel_broker_orders(
     `cancel_all_orders(scope=account, account=X, symbol=Y)` cancelled
     EVERY open order on account X, including manual orders unrelated to
     the agent, instead of only orders on symbol Y.
+
+    2026-10 fix (chase mark_killed gap): every open order this function
+    attempts to cancel now also calls `chase.mark_killed(oid)` so chase's
+    poll loop recognises the cancel as operator-initiated and never
+    silently re-places it at a fresh price. Marked BEFORE the
+    `run_in_executor` cancel call (not after/on success only), mirroring
+    `_action_live_cancel_order`'s identical fix and for the same reason:
+    `run_in_executor` yields the event loop while the cancel is in
+    flight, so a chase poll could land and read `is_killed()` DURING
+    that window. Marking is deliberately NOT reversed when the cancel
+    attempt itself raises — every order in this loop was explicitly
+    selected by the operator's cancel-all scope, so failing toward
+    "chase won't re-place" matches that intent even if the broker call
+    for this particular order failed to land.
     """
+    from backend.api.algo.chase import mark_killed
+
     acct = broker.account
     if scope_account and acct != scope_account:
         return 0, 0
@@ -1176,6 +1216,12 @@ async def _al_cancel_broker_orders(
             variety = str(o.get("variety") or "regular")
             if not oid:
                 continue
+            # Mark BEFORE attempting the cancel -- see docstring. Not
+            # unmarked on failure below.
+            try:
+                mark_killed(oid)
+            except Exception:
+                pass
             try:
                 await loop.run_in_executor(
                     None,
@@ -1190,20 +1236,36 @@ async def _al_cancel_broker_orders(
                     f"[LIVE] cancel_all_orders: failed to cancel {oid} [{acct}]: {e}"
                 )
     except Exception as e:
+        # Count this as an error too, not just a log line -- a listing
+        # failure must never present as "0 cancelled, 0 errors" (reads
+        # identically to "nothing to cancel"), especially now that the
+        # new /api/orders/cancel-all route surfaces these counts directly
+        # to the operator after a destructive action.
+        errors += 1
         logger.error(f"[LIVE] cancel_all_orders: order list failed for [{acct}]: {e}")
 
     return cancelled, errors
 
 
-async def _action_live_cancel_all_orders(agent, context: dict, params: dict):
+async def cancel_all_orders_scoped(
+    scope: "str | None" = None,
+    account: "str | None" = None,
+    symbol: "str | None" = None,
+    side: "str | None" = None,
+) -> "tuple[int, int]":
     """
-    Cancel every open order across all accounts (or a scoped account),
-    optionally narrowed by `symbol`/`side`.
+    Shared implementation of "cancel every open order across all accounts
+    (or a scoped account), optionally narrowed by `symbol`/`side`".
+
+    Extracted from `_action_live_cancel_all_orders` (2026-10) so the agent
+    DO-action path AND the `POST /api/orders/cancel-all` REST route call
+    the exact same scope/account/symbol/side narrowing logic — no
+    duplicated refusal rule to drift out of sync.
 
     Routes through the Broker registry — broker.orders() lists the
     account's open orders, broker.cancel_order() fires the cancel. All
     calls are wrapped in run_in_executor since the underlying SDKs are
-    synchronous.  Returns aggregate cancelled count via log.
+    synchronous. Returns `(total_cancelled, total_errors)`.
 
     2026-10 audit fix: `symbol`/`side` (both documented in the
     `cancel_all_orders` params_schema, `agent_grammar.yaml`) used to be
@@ -1224,15 +1286,13 @@ async def _action_live_cancel_all_orders(agent, context: dict, params: dict):
     from backend.brokers.registry import all_brokers
 
     loop = asyncio.get_running_loop()
-    scope = str(params.get("scope") or "total").lower()
-    scope_account = str(params.get("account") or "")
+    scope = str(scope or "total").lower()
+    scope_account = str(account or "")
     if scope == "account" and not scope_account:
         raise ValueError(
             "cancel_all_orders: account is required when scope=account"
         )
-    symbol = params.get("symbol")
     symbol = str(symbol) if symbol else None
-    side = params.get("side")
     side = str(side).upper() if side else None
 
     total_cancelled = 0
@@ -1245,8 +1305,29 @@ async def _action_live_cancel_all_orders(agent, context: dict, params: dict):
         total_cancelled += cancelled
         total_errors    += errors
 
+    return total_cancelled, total_errors
+
+
+async def _action_live_cancel_all_orders(agent, context: dict, params: dict):
+    """
+    Agent DO-action wrapper around `cancel_all_orders_scoped` — reads the
+    agent-grammar params (`scope`/`account`/`symbol`/`side`) and logs the
+    aggregate result tagged with the firing agent's slug.
+
+    See `cancel_all_orders_scoped`'s own docstring for the narrowing/
+    refusal semantics (unchanged by this extraction).
+    """
+    scope = params.get("scope")
+    scope_account = params.get("account")
+    symbol = params.get("symbol")
+    side = params.get("side")
+
+    total_cancelled, total_errors = await cancel_all_orders_scoped(
+        scope=scope, account=scope_account, symbol=symbol, side=side,
+    )
+
     logger.info(f"[LIVE] cancel_all_orders complete: {total_cancelled} cancelled, "
-                f"{total_errors} errors (agent={agent.slug}, scope={scope}, "
+                f"{total_errors} errors (agent={agent.slug}, scope={scope or 'total'}, "
                 f"symbol={symbol}, side={side})")
 
 

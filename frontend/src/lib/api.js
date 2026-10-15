@@ -955,6 +955,16 @@ export async function checkOrderSpread({ tradingsymbol, exchange, maxSpreadPct, 
   return _get(`/orders/spread-check?${p}`, { auth: true, signal });
 }
 
+/** POST /api/orders/cancel-all — fleet/account-wide cancel-all, optionally
+ *  narrowed by symbol/side (Sprint [cancel-all-cli], 2026-10). Live-only —
+ *  the backend route has no `mode` param and never routes through
+ *  PaperTradeEngine (`backend/api/algo/actions_live.py:cancel_all_orders_scoped`).
+ *  Request:  { scope?, account?, symbol?, side? }
+ *  Response: { cancelled, errors, scope, account?, symbol?, side?, detail } */
+export async function cancelAllOrders(payload) {
+  return _post('/orders/cancel-all', payload, { auth: true });
+}
+
 /** POST /api/orders/basket — place all legs in one atomic backend call.
  *  Request:  { groups: [{ account, legs: [...] }] }
  *  Response: { groups: [{ account, basket_id, results: [...], margin_required, margin_available }] } */

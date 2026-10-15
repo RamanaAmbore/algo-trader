@@ -45,7 +45,7 @@
 // gap) — flagged here, not patched here.
 
 import {
-  placeTicketOrder, placeBasket,
+  placeTicketOrder, placeBasket, cancelAllOrders,
   createAgent, updateAgent,
   createOrderTemplate, patchOrderTemplate,
 } from '$lib/api';
@@ -70,8 +70,14 @@ const _AGENT_HEAD_RE = /^(when|alert|do|given)\b/i;
 // before the operator has finished typing the closing paren. `token(...)`
 // added Sprint 14 — without it, a `token(kind=notify) ...` statement typed
 // into the legacy CommandLineTab fell through to 'legacy' and got POSTed
-// to /api/admin/exec as a shell command.
-const _AGENT_CALL_RE = /^(order|place_order|bracket|token)\s*\(/i;
+// to /api/admin/exec as a shell command. `cancel_all_orders(...)` added
+// Sprint [cancel-all-cli] (2026-10) for the identical reason — without
+// it, compile errors would be hidden (ConsoleTab's `showCompileErrors`
+// gates on `_classify === 'agents'`), a spurious "Run shell command"
+// fallback button would render alongside the real Cancel button, and
+// Ctrl/Cmd+Enter would POST the raw text to /api/admin/exec instead of
+// submitting the cancel-all request.
+const _AGENT_CALL_RE = /^(order|place_order|bracket|token|cancel_all_orders)\s*\(/i;
 
 /**
  * Classify a raw CLI statement by its head tokens alone — cheap regex
@@ -284,6 +290,28 @@ export async function submitConsoleOrder(compiled, opts = {}) {
   const resolved = await resolveConsoleOrder(compiled);
   if (!resolved.ok) return /** @type {{ok:false, error:string}} */ (resolved);
   return submitResolvedConsoleOrder(resolved, opts);
+}
+
+/**
+ * Submit a compiled `cancel_all_orders(...)` statement (Sprint
+ * [cancel-all-cli], 2026-10) via `POST /api/orders/cancel-all` — live-only,
+ * no `bracket=`/template resolution step (the `cancel_all_orders`
+ * params_schema has no such field), so this is a thin wrapper, not a
+ * `resolveConsoleOrder`-style two-step pipeline. Mirrors
+ * `submitResolvedConsoleOrder`'s own try/catch-to-structured-error
+ * convention so callers never need a bare `try` of their own.
+ * @param {{cancelAll:{mode:string, params:any}}} compiled
+ * @returns {Promise<{ok:true, response:any} | {ok:false, error:string}>}
+ */
+export async function submitConsoleCancelAllOrders(compiled) {
+  const params = compiled?.cancelAll?.params;
+  if (!params) return { ok: false, error: 'nothing to submit' };
+  try {
+    const response = await cancelAllOrders(params);
+    return { ok: true, response };
+  } catch (e) {
+    return { ok: false, error: e?.message || 'cancel-all failed' };
+  }
 }
 
 /** Slugify an agent `#name=` value into a URL/DB-safe slug — console has

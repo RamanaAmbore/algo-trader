@@ -38,6 +38,8 @@ from backend.api.schemas import (
     BasketMarginResponse,
     BasketOrderRequest,
     BasketOrderResponse,
+    CancelAllOrdersRequest,
+    CancelAllOrdersResponse,
     CancelOrderResponse,
     DraftOrderCreateResponse,
     DraftOrderPatchRequest,
@@ -2673,12 +2675,72 @@ class OrdersController(Controller):
                 broker.cancel_order(order_id, variety=variety, exchange=_exchange)
             else:
                 broker.cancel_order(order_id, variety=variety)
+            # 2026-10 fix (chase mark_killed gap): on a successful broker
+            # cancel, tell chase's poll loop this id was an
+            # operator-initiated kill — without this, chase sees the
+            # resulting CANCELLED status, is_killed() reports False, and
+            # it silently re-places the order at a fresh price. Marking
+            # AFTER (not before, unlike the actions_live.py paths) is
+            # safe here specifically because broker.cancel_order() above
+            # is a plain synchronous call with no `await` between it and
+            # this line — no event-loop yield for a chase poll to land in.
+            try:
+                from backend.api.algo.chase import mark_killed
+                mark_killed(order_id)
+            except Exception:
+                pass
             invalidate("orders")
             logger.info(f"Order cancelled: {order_id} [{masked}]")
             return CancelOrderResponse(order_id=order_id)
         except Exception as e:
             logger.error(f"Cancel order failed [{masked}] {order_id}: {e}")
             raise HTTPException(status_code=400, detail=str(e))
+
+    @post("/cancel-all")
+    async def cancel_all_orders(
+        self,
+        data: CancelAllOrdersRequest,
+        request: Request,
+    ) -> CancelAllOrdersResponse:
+        """Fleet/account-wide cancel-all, optionally narrowed by
+        `symbol`/`side`. Shares its underlying implementation
+        (`actions_live.cancel_all_orders_scoped`) with the
+        `cancel_all_orders` agent DO-action — same scope/account
+        narrowing, same `scope="account"` without `account` refusal.
+
+        Same RBAC pattern as the single-order `cancel_order` route above
+        (demo refused, admin-only) — deliberately NOT a bare/unauthenticated
+        endpoint despite its destructive, fleet-wide blast radius.
+        """
+        if getattr(request.state, "is_demo", False):
+            raise HTTPException(status_code=403,
+                detail="Demo: cannot cancel orders.")
+        if not is_admin_request(request):
+            raise HTTPException(status_code=403,
+                detail="Admin access required to cancel orders.")
+
+        from backend.api.algo.actions_live import cancel_all_orders_scoped
+
+        scope = str(data.scope or "total").lower()
+        try:
+            cancelled, errors = await cancel_all_orders_scoped(
+                scope=scope, account=data.account,
+                symbol=data.symbol, side=data.side,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        invalidate("orders")
+        masked_acct = mask_account(data.account) if data.account else None
+        logger.info(
+            f"cancel-all: {cancelled} cancelled, {errors} errors "
+            f"(scope={scope}, account={masked_acct}, symbol={data.symbol}, "
+            f"side={data.side})"
+        )
+        return CancelAllOrdersResponse(
+            cancelled=cancelled, errors=errors, scope=scope,
+            account=data.account, symbol=data.symbol, side=data.side,
+        )
 
     @post("/pair", guards=[admin_guard])
     async def pair_orders(

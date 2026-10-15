@@ -2980,6 +2980,34 @@ export function parseOrderStmt(state) {
  *  "order". A trailing comma (an attempt at a bracket call_list) is
  *  rejected with its own, analogous message rather than silently being
  *  swallowed by `parseCallList`. */
+/** `cancel_all_orders_stmt := call meta_item*` — Sprint [cancel-all-cli]
+ *  (2026-10). A SINGLE `cancel_all_orders(...)` call, restricted to
+ *  standalone use, EXACTLY mirroring `parseBracketStmt`'s own "only
+ *  bracket(...) can be used standalone" rule/error-message style above,
+ *  just naming "cancel_all_orders" instead of "bracket". `meta` is parsed
+ *  (never rejected here) but is a compile-time error — see
+ *  `compileCancelAllOrdersStmt` — a bare fleet-wide cancel has no
+ *  agent/bracket to attach a name/description/tag/group to, same
+ *  convention `parseOrderStmt`/`compileOrderStmt` already established for
+ *  a bare `order(...)` statement. */
+export function parseCancelAllOrdersStmt(state) {
+  const call = parseCall(state);
+  if (call.name.toLowerCase() !== 'cancel_all_orders') {
+    throw new _ParseError(
+      'only cancel_all_orders(...) can be used standalone — wrap other actions in a WHEN ... DO ... agent',
+      { start: call.start },
+    );
+  }
+  if (_peek(state).type === 'COMMA') {
+    throw new _ParseError(
+      'only a single cancel_all_orders(...) can be used standalone — wrap other actions in a WHEN ... DO ... agent',
+      _peek(state),
+    );
+  }
+  const meta = parseMetaClause(state);
+  return { kind: 'cancel_all_orders', call, meta };
+}
+
 export function parseBracketStmt(state) {
   const call = parseCall(state);
   if (call.name.toLowerCase() !== 'bracket') {
@@ -3093,10 +3121,19 @@ function _dispatchStatement(state) {
     && (_wordIs(first, 'when') || _wordIs(first, 'alert') || _wordIs(first, 'do') || _wordIs(first, 'given'));
   const isBracketStmt = !isEventStmt && !isAgentStmt && first.type === 'NAME' && first.hasCall && _wordIs(first, 'bracket');
   const isTokenStmt = !isEventStmt && !isAgentStmt && !isBracketStmt && first.type === 'NAME' && first.hasCall && _wordIs(first, 'token');
+  // Sprint [cancel-all-cli] (2026-10) — a leading `cancel_all_orders(...)`
+  // call is likewise never a real metric/scope/channel/action-as-order-leg
+  // name, so it dispatches straight to its own standalone-statement parser,
+  // same as bracket/token above — rather than falling through to
+  // `parseOrderStmt`, which would reject it ("only order(...) can be used
+  // standalone").
+  const isCancelAllOrdersStmt = !isEventStmt && !isAgentStmt && !isBracketStmt && !isTokenStmt
+    && first.type === 'NAME' && first.hasCall && _wordIs(first, 'cancel_all_orders');
   return isEventStmt ? parseEventStmt(state)
     : isAgentStmt ? parseAgentStmt(state)
     : isBracketStmt ? parseBracketStmt(state)
     : isTokenStmt ? parseTokenStmt(state)
+    : isCancelAllOrdersStmt ? parseCancelAllOrdersStmt(state)
     : parseOrderStmt(state);
 }
 
@@ -6123,6 +6160,73 @@ function compileTokenStmt(ast, catalog, opts = {}) {
   return { errors: [], fragment };
 }
 
+/** Compile a standalone `cancel_all_orders(...)` call to a
+ *  `{mode:'live', params:{scope, account?, symbol?, side?}}` object — the
+ *  SAME shape `POST /api/orders/cancel-all`
+ *  (`backend/api/schemas.py:CancelAllOrdersRequest`) accepts — Sprint
+ *  [cancel-all-cli] (2026-10). Reuses `cancel_all_orders`'s EXISTING
+ *  `grammar_kind=action` params_schema (`agent_grammar.yaml`) via
+ *  `_compileGenericActionParams`, the SAME path a `DO cancel_all_orders(...)`
+ *  action already compiles through — no second schema to drift out of
+ *  sync. `rowRefCtx` is always `null` here: a bare statement has no WHEN
+ *  condition to bind a matched row from, so `$row`-style references are
+ *  never meaningful on this path (mirrors `compileBracketStmt`'s own
+ *  always-null rowRefCtx usage).
+ *
+ *  Live-only safety gate: `POST /api/orders/cancel-all` has no `mode`
+ *  parameter and never routes through `PaperTradeEngine` — it only ever
+ *  cancels real broker orders (confirmed directly against
+ *  `backend/api/routes/orders.py` + `actions_live.cancel_all_orders_scoped`).
+ *  A paper-mode (or missing-mode) compile is refused outright with a clear
+ *  message — this file's established convention for scope restrictions
+ *  (see `compileStatement`'s own doc: "the UI never hides a button to
+ *  fake this restriction, it relies on the compiler refusing the
+ *  statement outright") — mirrors `compileOrderStmt`'s own `!opts.mode`
+ *  refusal for the analogous bare-order case.
+ *
+ *  `scope="account"` without `account` is refused here too — a
+ *  client-side mirror of `cancel_all_orders_scoped`'s own server-side
+ *  `ValueError` (`actions_live.py`) — surfaced immediately in the UI
+ *  rather than only after a round trip to the backend. `scope` defaults
+ *  to `'total'` (matching the catalog's own declared default) when
+ *  omitted, since this compiler applies no params_schema `default`s
+ *  generically (`_compileGenericActionParams` only maps/coerces values
+ *  actually TYPED) — explicit here so the JSON preview always shows the
+ *  real scope that will be submitted, never a silently-absent key. */
+function compileCancelAllOrdersStmt(ast, catalog, opts = {}) {
+  const errors = [];
+  const call = ast.call;
+  if (!call || call.name.toLowerCase() !== 'cancel_all_orders') {
+    errors.push(_err('only cancel_all_orders(...) can be used standalone'));
+    return { errors, cancelAll: null };
+  }
+  if (ast.meta && ast.meta.length) {
+    errors.push(_err('meta tags only apply to agents/brackets, not a bare cancel_all_orders statement'));
+  }
+  if (!opts.mode) {
+    errors.push(_err('mode ("paper"|"live") is required to compile a bare cancel_all_orders statement'));
+  } else if (opts.mode !== 'live') {
+    errors.push(_err('cancel_all_orders is a live-only action — not available in paper mode'));
+  }
+  if (errors.length) return { errors, cancelAll: null };
+
+  const entry = catalog && catalog.actions ? catalog.actions.get('cancel_all_orders') : null;
+  if (!entry) {
+    errors.push(_err('cancel_all_orders: action not found in catalog'));
+    return { errors, cancelAll: null };
+  }
+  const r = _compileGenericActionParams(call, entry, null);
+  errors.push(...r.errors);
+  if (errors.length) return { errors, cancelAll: null };
+
+  const params = { scope: 'total', ...r.params };
+  if (String(params.scope).toLowerCase() === 'account' && !params.account) {
+    errors.push(_err('cancel_all_orders: account is required when scope=account'));
+    return { errors, cancelAll: null };
+  }
+  return { errors: [], cancelAll: { mode: 'live', params } };
+}
+
 /** Compile an already-parsed AST (from `parseStatement`) to its JSON
  *  request shape. Returns `{ kind, errors, agent, ticket, basket,
  *  template, fragment }` — non-empty `errors` means every payload field is
@@ -6147,27 +6251,31 @@ export function compileStatement(ast, catalog, opts = {}) {
     return {
       kind: ast.kind,
       errors: [_err('author agents/brackets on Automation → Console')],
-      agent: null, ticket: null, basket: null, template: null, fragment: null,
+      agent: null, ticket: null, basket: null, template: null, fragment: null, cancelAll: null,
     };
   }
   if (ast.kind === 'agent') {
     const r = compileAgentStmt(ast, catalog, opts);
-    return { kind: 'agent', errors: r.errors, agent: r.agent, ticket: null, basket: null, template: null, fragment: null };
+    return { kind: 'agent', errors: r.errors, agent: r.agent, ticket: null, basket: null, template: null, fragment: null, cancelAll: null };
   }
   if (ast.kind === 'event') {
     const r = compileEventStmt(ast, catalog);
-    return { kind: 'event', errors: r.errors, agent: r.agent, ticket: null, basket: null, template: null, fragment: null };
+    return { kind: 'event', errors: r.errors, agent: r.agent, ticket: null, basket: null, template: null, fragment: null, cancelAll: null };
   }
   if (ast.kind === 'bracket') {
     const r = compileBracketStmt(ast, catalog, opts);
-    return { kind: 'bracket', errors: r.errors, agent: null, ticket: null, basket: null, template: r.template, fragment: null };
+    return { kind: 'bracket', errors: r.errors, agent: null, ticket: null, basket: null, template: r.template, fragment: null, cancelAll: null };
   }
   if (ast.kind === 'token') {
     const r = compileTokenStmt(ast, catalog, opts);
-    return { kind: 'token', errors: r.errors, agent: null, ticket: null, basket: null, template: null, fragment: r.fragment };
+    return { kind: 'token', errors: r.errors, agent: null, ticket: null, basket: null, template: null, fragment: r.fragment, cancelAll: null };
+  }
+  if (ast.kind === 'cancel_all_orders') {
+    const r = compileCancelAllOrdersStmt(ast, catalog, opts);
+    return { kind: 'cancel_all_orders', errors: r.errors, agent: null, ticket: null, basket: null, template: null, fragment: null, cancelAll: r.cancelAll };
   }
   const r = compileOrderStmt(ast, catalog, opts);
-  return { ...r, template: null, fragment: null };
+  return { ...r, template: null, fragment: null, cancelAll: null };
 }
 
 /** One-shot parse + compile — the main entry point for Sprint 4's UI and
@@ -6181,16 +6289,17 @@ export function compileStatement(ast, catalog, opts = {}) {
 export function compileAgentCliStatement(text, catalog, opts = {}) {
   const { ast, errors: parseErrors } = parseStatement(text);
   if (parseErrors.length) {
-    return { ok: false, errors: parseErrors, kind: null, agent: null, ticket: null, basket: null, template: null, fragment: null };
+    return { ok: false, errors: parseErrors, kind: null, agent: null, ticket: null, basket: null, template: null, fragment: null, cancelAll: null };
   }
   const result = compileStatement(ast, catalog, opts);
   if (result.errors && result.errors.length) {
-    return { ok: false, errors: result.errors, kind: result.kind, agent: null, ticket: null, basket: null, template: null, fragment: null };
+    return { ok: false, errors: result.errors, kind: result.kind, agent: null, ticket: null, basket: null, template: null, fragment: null, cancelAll: null };
   }
   return {
     ok: true, errors: [], kind: result.kind,
     agent: result.agent || null, ticket: result.ticket || null, basket: result.basket || null,
     template: result.template || null, fragment: result.fragment || null,
+    cancelAll: result.cancelAll || null,
   };
 }
 
