@@ -232,7 +232,12 @@ test.describe('Item 3 — Workspace header removed; Console/Agents tab row carri
       const children = Array.from(el.children);
       const order = children.map((c) => {
         if (c.classList.contains('aw-tabs-wrap')) return 'tabs';
-        if (c.classList.contains('rbq-select')) return 'dropdown';
+        // 2026-10-15 — Select is now wrapped in `.aw-kind-select` (a
+        // scoping span for the --ctl-h height/width override, since
+        // Select.svelte has no class/style passthrough prop) — the
+        // direct .ch-left child is the wrapper, not `.rbq-select`
+        // itself anymore.
+        if (c.classList.contains('aw-kind-select') || c.classList.contains('rbq-select')) return 'dropdown';
         if (c.classList.contains('console-guide-btn')) return 'guide';
         return 'other';
       });
@@ -256,6 +261,34 @@ test.describe('Item 3 — Workspace header removed; Console/Agents tab row carri
     // vertical centers aligned within 1px.
     expect(Math.abs(info.selectHeight - info.guideHeight)).toBeLessThanOrEqual(1);
     expect(Math.abs(info.selectCenterY - info.guideCenterY)).toBeLessThanOrEqual(1);
+  });
+
+  // 2026-10-15 — operator: "console dropdown and trader guide elements on
+  // header should look like order cli header in terms of size, position,
+  // and vertical alignment. the dropdown width should be expanded
+  // further." Both elements now converge on the SAME --ctl-h (1.7rem ≈
+  // 27.2px) floor the Orders CLI tab's own `.oes-cli-guide-link` uses
+  // (fixed earlier this session) — not just parity with EACH OTHER
+  // (already covered above), but matching that external reference, and
+  // the kind-select is no longer clipped/cramped at its old ~61.5px
+  // natural width.
+  test('kind-dropdown and Guide link height matches the Orders CLI tab reference (--ctl-h), and dropdown width is expanded', async ({ page }) => {
+    await page.goto('/automation?tab=console', { waitUntil: 'domcontentloaded' });
+    const select = page.locator('.aw-kind-select .rbq-select-trigger');
+    const guide = page.locator('.console-guide-btn');
+    await expect(select).toBeVisible({ timeout: TIMEOUT });
+
+    const selectBox = await select.boundingBox();
+    const guideBox = await guide.boundingBox();
+    // Orders CLI tab's own reference height, confirmed live earlier this
+    // session: 27.1875px (--ctl-h: 1.7rem at 16px root).
+    expect(selectBox.height).toBeGreaterThan(26);
+    expect(selectBox.height).toBeLessThan(29);
+    expect(guideBox.height).toBeGreaterThan(26);
+    expect(guideBox.height).toBeLessThan(29);
+    // Width expanded well past the old ~61.5px natural width — wide
+    // enough that "Bracket" (the longest kind label) isn't cramped.
+    expect(selectBox.width).toBeGreaterThan(100);
   });
 
   test('the kind-dropdown + Guide link are console-only — absent on the Agents tab', async ({ page }) => {

@@ -638,12 +638,14 @@
     {#snippet left()}
       <AutomationTabs value={activeTab} onChange={setActiveTab} />
       {#if activeTab === 'console'}
-        <Select
-          value={_kindHint}
-          options={_KIND_OPTIONS.map((k) => ({ value: k, label: _KIND_LABELS[k] }))}
-          ariaLabel="Statement kind"
-          onValueChange={_pickKind}
-        />
+        <span class="aw-kind-select">
+          <Select
+            value={_kindHint}
+            options={_KIND_OPTIONS.map((k) => ({ value: k, label: _KIND_LABELS[k] }))}
+            ariaLabel="Statement kind"
+            onValueChange={_pickKind}
+          />
+        </span>
         <a href="/automation/guide" title="CLI grammar guide" class="btn-secondary console-guide-btn">Trader Guide</a>
       {/if}
     {/snippet}
@@ -964,33 +966,48 @@
     flex-direction: column;
     min-height: 0;
   }
-  /* Guide link — styled as a small pill button (operator request,
-     2026-10), relocated here from ConsoleTab.svelte alongside the
-     statement-kind dropdown it now shares a row with. `.btn-secondary`
-     supplies the shared navy/amber-hover chrome ((algo)/+layout.svelte's
-     `.algo-content .btn-secondary` override); this scoped class only
-     fixes up anchor-specific box rendering (inline-flex + no implicit
-     underline). */
+  /* Guide link + kind-select — sized/aligned to match the Orders CLI
+     tab's own reference convention (2026-10-15, operator: "console
+     dropdown and trader guide elements on header should look like
+     order cli header in terms of size, position, and vertical
+     alignment") — `.oes-cli-guide-link` (SymbolPanel.svelte /
+     OrderCliTab.svelte) uses `min-height: var(--ctl-h, 1.7rem)` with
+     ZERO vertical padding (height comes purely from min-height, not
+     from padding), not the `.btn-secondary`-derived vertical padding
+     this recipe used before. That earlier recipe (0.25rem vertical
+     padding, converging on Select's own then-24.8px natural height)
+     is why Automation's header row (33.6px) measured taller than the
+     Orders CLI tab's reference row (28.2px) — this still isn't 0.6rem
+     horizontal + min-height, it's padding-driven height, same class of
+     mismatch the CLI-tab fix (earlier this session) already corrected
+     once on Orders. Converging both elements on the SAME --ctl-h floor
+     here fixes the height mismatch at the source instead of fighting
+     it with a different padding recipe per element. */
   .console-guide-btn {
     display: inline-flex;
     align-items: center;
     white-space: nowrap;
     text-decoration: none;
-    /* Height parity with the statement-kind Select it now sits beside
-       (2026-10, operator: "dropdown, trader guide should be of same
-       height and should be vertically centered") — the generic
-       `.btn-secondary` recipe's own padding/font-size (0.3rem/0.85rem,
-       0.75rem font) renders taller than Select's trigger (confirmed via
-       live measurement: 29.6px vs 24.8px even with a matching
-       min-height, since min-height can't shrink content that's
-       naturally taller). Overriding padding + font-size to the SAME
-       values Select's own trigger uses (`$lib/Select.svelte`'s
-       `.rbq-select-trigger`: 0.25rem vertical padding, --fs-sm font)
-       converges both to the same natural height instead of fighting it
-       with min-height. `.ch-left`'s own `align-items: center` then
-       centers the whole group on one baseline. */
-    padding: 0.25rem 0.6rem;
+    min-height: 1.7rem;
+    padding: 0 0.6rem;
     font-size: var(--fs-sm);
+    box-sizing: border-box;
+  }
+  /* Scopes the shared $lib/Select.svelte's trigger to the SAME --ctl-h
+     floor as .console-guide-btn above, and widens it — "Bracket" (the
+     longest kind label) was clipping/cramped at the component's own
+     natural ~61px width (operator: "the dropdown width should be
+     expanded further"). Select.svelte has no `class`/style passthrough
+     prop, so this is scoped via the wrapping <span> in the markup
+     rather than touching the shared component (narrower blast radius —
+     Select is also used on /admin/settings). */
+  .aw-kind-select {
+    display: inline-flex;
+    min-width: 7.5rem;
+  }
+  .aw-kind-select :global(.rbq-select-trigger) {
+    min-height: 1.7rem;
+    padding: 0 0.5rem 0 0.4rem;
     box-sizing: border-box;
   }
   /* ── Agent group grid — uses canonical .page-grid for layout ───────
