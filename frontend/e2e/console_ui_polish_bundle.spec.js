@@ -231,7 +231,13 @@ test.describe('Item 3 — Workspace header removed; Console/Agents tab row carri
     const info = await left.evaluate((el) => {
       const children = Array.from(el.children);
       const order = children.map((c) => {
-        if (c.classList.contains('aw-tabs-wrap')) return 'tabs';
+        // 2026-10-15 — AutomationTabs is now wrapped in `.aw-tabs-in-
+        // header` (a scoping span that zeroes the shared `.aw-tabs-wrap`
+        // component's own bottom margin, which otherwise ate the
+        // vertical-centering space in this CardHeader context) — the
+        // direct `.ch-left` child is the wrapper, not `.aw-tabs-wrap`
+        // itself anymore.
+        if (c.classList.contains('aw-tabs-in-header') || c.classList.contains('aw-tabs-wrap')) return 'tabs';
         // 2026-10-15 — Select is now wrapped in `.aw-kind-select` (a
         // scoping span for the --ctl-h height/width override, since
         // Select.svelte has no class/style passthrough prop) — the
@@ -289,6 +295,36 @@ test.describe('Item 3 — Workspace header removed; Console/Agents tab row carri
     // Width expanded well past the old ~61.5px natural width — wide
     // enough that "Bracket" (the longest kind label) isn't cramped.
     expect(selectBox.width).toBeGreaterThan(100);
+  });
+
+  // 2026-10-15 — operator: "I want trader guide and dropdown control in
+  // console/agents tab header to be aligned with tab text." The CONSOLE/
+  // AGENTS tab text used to sit flush to the TOP of `.ch-left` instead of
+  // vertically centered like Select/Guide — root cause was
+  // AutomationTabs.svelte's `.aw-tabs-wrap` bottom margin (meant for
+  // page-body spacing in its original standalone usage) being counted in
+  // the flex cross-axis sizing here, consuming the space `align-items:
+  // center` needed to center the wrapper. Zeroed in this CardHeader-only
+  // context via a scoped `.aw-tabs-in-header` wrapper.
+  test('CONSOLE/AGENTS tab text is vertically centered with the kind-dropdown/Guide link, not flush to the top', async ({ page }) => {
+    await page.goto('/automation?tab=console', { waitUntil: 'domcontentloaded' });
+    const select = page.locator('.aw-kind-select .rbq-select-trigger');
+    await expect(select).toBeVisible({ timeout: TIMEOUT });
+
+    const info = await page.evaluate(() => {
+      const tabs = Array.from(document.querySelectorAll('.algo-tabs-strip .algo-tab'));
+      const consoleBtn = tabs.find((b) => b.textContent.trim().toLowerCase() === 'console');
+      const select = document.querySelector('.rbq-select-trigger');
+      const g = (el) => {
+        const r = el.getBoundingClientRect();
+        return r.top + r.height / 2;
+      };
+      return { tabCenter: consoleBtn ? g(consoleBtn) : null, selectCenter: select ? g(select) : null };
+    });
+    expect(info.tabCenter).not.toBeNull();
+    // Within 1px — same sub-pixel tolerance the pre-existing Select-vs-
+    // Guide parity test above already uses.
+    expect(Math.abs(info.tabCenter - info.selectCenter)).toBeLessThanOrEqual(1);
   });
 
   test('the kind-dropdown + Guide link are console-only — absent on the Agents tab', async ({ page }) => {

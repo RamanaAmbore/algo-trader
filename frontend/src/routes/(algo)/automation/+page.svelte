@@ -636,7 +636,7 @@
 <section class="aw-view">
   <CardHeader showControls={false}>
     {#snippet left()}
-      <AutomationTabs value={activeTab} onChange={setActiveTab} />
+      <span class="aw-tabs-in-header"><AutomationTabs value={activeTab} onChange={setActiveTab} /></span>
       {#if activeTab === 'console'}
         <span class="aw-kind-select">
           <Select
@@ -1009,6 +1009,30 @@
     min-height: 1.7rem;
     padding: 0 0.5rem 0 0.4rem;
     box-sizing: border-box;
+  }
+  /* 2026-10-15 — operator: "I want trader guide and dropdown control in
+     console/agents tab header to be aligned with tab text, increasing
+     the height of the header like ticket/chain/cli tab header." Live
+     measurement found the CONSOLE/AGENTS tab text sitting flush to the
+     TOP of `.ch-left` (not vertically centered with Select/Guide, which
+     DO correctly center via `.ch-left`'s own `align-items: center`) —
+     root cause: `AutomationTabs.svelte`'s `.aw-tabs-wrap` carries
+     `margin: 0 0 0.6rem 0` (meant for page-body spacing below the strip
+     in its original standalone usage), and that bottom margin is
+     counted as part of the flex item's cross-axis box here, consuming
+     almost the entire gap `align-items: center` would otherwise use to
+     push the wrapper down — leaving it pinned near the top instead.
+     Zeroing the margin ONLY in this CardHeader context (not touching
+     the shared component) lets `align-items: center` center the tab
+     strip the same way it already centers Select/Guide, matching the
+     Orders Ticket/Chain/CLI tab row's own reference behavior (confirmed
+     live: tab text center there already matches LTP/CHASE center
+     exactly). */
+  .aw-tabs-in-header {
+    display: inline-flex;
+  }
+  .aw-tabs-in-header :global(.aw-tabs-wrap) {
+    margin: 0;
   }
   /* ── Agent group grid — uses canonical .page-grid for layout ───────
      Overrides auto-fill with a fixed 2-column layout on desktop so each
