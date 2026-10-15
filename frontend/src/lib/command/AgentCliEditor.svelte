@@ -87,6 +87,7 @@
   } from '$lib/command/grammars/agents.js';
   import { pushLayer, popLayer } from '$lib/utils/layerStack.js';
   import { getAccountsSync } from '$lib/data/accounts.js';
+  import { suggestTradingsymbols } from '$lib/data/instruments.js';
 
   /** @type {{
    *   value: string, catalog: any, lotSizeOf?: (sym: string) => number|null,
@@ -212,7 +213,14 @@
     // ids are runtime, operator-specific data) — threaded in here from
     // the live account list so the dropdown still shows real choices
     // instead of forcing free-typing (2026-10-15, operator request).
-    const opts = { accountIds: getAccountsSync().map((a) => a.account_id) };
+    // `symbol=` is the same case but with a ~90k-row universe — a lazy
+    // resolver (not an eager array) so every suggestResult recompute
+    // doesn't pay for the full instrument list; `_paramOrEnumSuggestion`
+    // only calls it once 3+ characters are typed.
+    const opts = {
+      accountIds: getAccountsSync().map((a) => a.account_id),
+      suggestSymbols: (prefix) => suggestTradingsymbols(prefix, 50),
+    };
     try { return suggestAgentCliAt(value, cursorPos, catalog, opts); }
     catch { return { suggestions: [], descriptions: [], labels: [], replaceRange: [cursorPos, cursorPos], kind: null }; }
   });

@@ -56,6 +56,7 @@ let _byTradingsymbol  = null;  // Map<string, Instrument>
 let _exchangesBySymbol = null; // Map<string, string[]> — multi-listing index for dual-listed equities (RELIANCE on NSE+BSE, etc.)
 let _underlyings      = null;  // Set<string>
 let _underlyingsSorted = null; // sorted array for prefix scan
+let _tradingsymbolsSorted = null; // sorted array of all tradingsymbols for prefix scan
 let _byUnderlyingType = null;  // Map<`${u}|${t}`, Instrument[]>
 let _loadPromise      = null;
 
@@ -142,6 +143,7 @@ function _buildIndexes(items) {
   _underlyings       = underlyings;
   _byUnderlyingType  = byUnderlyingType;
   _underlyingsSorted = Array.from(underlyings).sort();
+  _tradingsymbolsSorted = Array.from(byTradingsymbol.keys()).sort();
   _setExpiryLookup((sym) => {
     const inst = _byTradingsymbol?.get(String(sym || '').toUpperCase());
     return inst?.x || null;
@@ -222,6 +224,19 @@ function _prefixMatch(sortedArr, prefix, limit = 20) {
 export function suggestUnderlyings(prefix, limit = 20) {
   if (!_underlyingsSorted) return [];
   return _prefixMatch(_underlyingsSorted, prefix, limit);
+}
+
+/** Suggest full tradingsymbols (e.g. "NIFTY26APR22500CE", "RELIANCE")
+ *  matching the given prefix (case-insensitive) — the CLI's `symbol=`
+ *  value dropdown (2026-10-15, operator request). Unlike
+ *  `suggestUnderlyings` (a few hundred underlyings), the full
+ *  tradingsymbol universe is ~90k rows, so callers MUST pass a
+ *  non-empty prefix of meaningful length — an empty/short prefix
+ *  still works here (returns the first `limit` alphabetically) but
+ *  callers decide the "how many chars before suggesting" threshold. */
+export function suggestTradingsymbols(prefix, limit = 50) {
+  if (!_tradingsymbolsSorted) return [];
+  return _prefixMatch(_tradingsymbolsSorted, prefix, limit);
 }
 
 /**

@@ -910,6 +910,32 @@ test.describe('Tab auto-select + default highlight + account dropdown + error su
     for (const r of rows) expect(r).toMatch(/^[A-Z0-9]+$/);
   });
 
+  test('symbol= shows no dropdown under 3 characters, then real tradingsymbols starting with the typed prefix once 3+ are typed, scrollable', async ({ page }) => {
+    await loginAsAdmin(page);
+    await goConsole(page);
+
+    const textarea = page.locator('textarea.agent-cli-textarea');
+    await textarea.focus();
+    await textarea.pressSequentially('order(account="ZG0790", symbol=', { delay: 15 });
+    await page.waitForTimeout(400);
+
+    await textarea.pressSequentially('NI', { delay: 15 });
+    await page.waitForTimeout(300);
+    expect(await page.locator('.agent-cli-dropdown').count()).toBe(0);
+
+    await textarea.pressSequentially('F', { delay: 15 });
+    await page.waitForTimeout(400);
+    expect(await page.locator('.agent-cli-dropdown').count()).toBeGreaterThan(0);
+    const rows = await page.locator('.agent-cli-dropdown-row').allTextContents();
+    expect(rows.length).toBeGreaterThan(0);
+    for (const r of rows) expect(r.toUpperCase().startsWith('NIF')).toBe(true);
+
+    // Scrollable, not clipped to whatever fits — the candidate universe is
+    // ~90k tradingsymbols, far more than any fixed-height panel can show.
+    const listBox = page.locator('.agent-cli-dropdown-list');
+    await expect(listBox).toHaveCSS('overflow-y', 'auto');
+  });
+
   test('compile errors stay hidden while the cursor is still inside an unclosed call, and reappear once focus leaves it unclosed', async ({ page }) => {
     await loginAsAdmin(page);
     await goConsole(page);

@@ -8337,8 +8337,19 @@ function _paramOrEnumSuggestion(text, parenPos, cursor, entry, opts = {}) {
     // `opts.accountIds` (threaded from the UI layer, which DOES have live
     // account data via `getAccountsSync()`) stands in for a real schema
     // enum here, same shape/behavior as one once candidates exist.
+    // `symbol` is the same "runtime data, not a static enum" case as
+    // `account` above, but the candidate universe is ~90k tradingsymbols
+    // (not a few operator accounts) — too large to eagerly thread as an
+    // array on every suggestion recompute. `opts.suggestSymbols(prefix)`
+    // is a lazy resolver instead (backed by instruments.js's sorted
+    // prefix-scan index), called ONLY once 3+ characters are typed
+    // (2026-10-15, operator: "when 3 keys are typed, it should show the
+    // symbols starting with that characters") — below that, no symbol
+    // candidates are suggested at all (not a smaller/noisier list).
+    const _symbolPrefix = valuePartial.trim();
     const enumValues = (spec && spec.type === 'enum' && Array.isArray(spec.enum)) ? spec.enum
       : (realKey === 'account' && Array.isArray(opts.accountIds) && opts.accountIds.length) ? opts.accountIds
+      : (realKey === 'symbol' && typeof opts.suggestSymbols === 'function' && _symbolPrefix.length >= 3) ? opts.suggestSymbols(_symbolPrefix)
       : [];
     // Sprint H (item 8) — a bound label (GIVEN, or a label assignment
     // inside ALERT/DO's own item list) is a valid value ANYWHERE an
