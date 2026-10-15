@@ -994,16 +994,25 @@
     box-sizing: border-box;
   }
   /* Scopes the shared $lib/Select.svelte's trigger to the SAME --ctl-h
-     floor as .console-guide-btn above, and widens it — "Bracket" (the
-     longest kind label) was clipping/cramped at the component's own
-     natural ~61px width (operator: "the dropdown width should be
-     expanded further"). Select.svelte has no `class`/style passthrough
-     prop, so this is scoped via the wrapping <span> in the markup
-     rather than touching the shared component (narrower blast radius —
-     Select is also used on /admin/settings). */
+     floor as .console-guide-btn above. Select.svelte has no `class`/
+     style passthrough prop, so this is scoped via the wrapping <span>
+     in the markup rather than touching the shared component (narrower
+     blast radius — Select is also used on /admin/settings).
+     2026-10-15 — operator follow-up: width reduced 20% from the first
+     pass's 7.5rem (still comfortably fits "Bracket", the longest kind
+     label) down to 6rem; "it is touching the lower border of the
+     header" — the trigger's own 1.7rem min-height left only ~1px
+     clearance from the header's 1px bottom border at the achieved
+     28.1875px row height (confirmed live) — a 1px vertical margin now
+     gives real breathing room without changing the overall row height
+     target from the earlier alignment fix; margin-right adds the
+     requested gap before the Trader Guide link (separate from
+     `.ch-left`'s own smaller `--ch-gap` default, which otherwise spaces
+     every header child identically). */
   .aw-kind-select {
     display: inline-flex;
-    min-width: 7.5rem;
+    min-width: 6rem;
+    margin: 1px 0.5rem 1px 0;
   }
   .aw-kind-select :global(.rbq-select-trigger) {
     min-height: 1.7rem;

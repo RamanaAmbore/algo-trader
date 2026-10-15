@@ -278,7 +278,7 @@ test.describe('Item 3 — Workspace header removed; Console/Agents tab row carri
   // (already covered above), but matching that external reference, and
   // the kind-select is no longer clipped/cramped at its old ~61.5px
   // natural width.
-  test('kind-dropdown and Guide link height matches the Orders CLI tab reference (--ctl-h), and dropdown width is expanded', async ({ page }) => {
+  test('kind-dropdown and Guide link height matches the Orders CLI tab reference (--ctl-h), width is 6rem (reduced 20% from the first pass), with a gap before Trader Guide', async ({ page }) => {
     await page.goto('/automation?tab=console', { waitUntil: 'domcontentloaded' });
     const select = page.locator('.aw-kind-select .rbq-select-trigger');
     const guide = page.locator('.console-guide-btn');
@@ -292,9 +292,16 @@ test.describe('Item 3 — Workspace header removed; Console/Agents tab row carri
     expect(selectBox.height).toBeLessThan(29);
     expect(guideBox.height).toBeGreaterThan(26);
     expect(guideBox.height).toBeLessThan(29);
-    // Width expanded well past the old ~61.5px natural width — wide
-    // enough that "Bracket" (the longest kind label) isn't cramped.
-    expect(selectBox.width).toBeGreaterThan(100);
+    // 2026-10-15 operator follow-up: "rdudce the width of dropdown by
+    // 20%" — down from the first pass's 7.5rem (120px) to 6rem (96px),
+    // still wide enough that "Bracket" (the longest kind label) isn't
+    // cramped.
+    expect(selectBox.width).toBeGreaterThan(90);
+    expect(selectBox.width).toBeLessThan(100);
+    // "add additional space after the dropdown and before trader guide"
+    // — a real gap now exists beyond `.ch-left`'s own smaller default
+    // --ch-gap spacing.
+    expect(guideBox.x - (selectBox.x + selectBox.width)).toBeGreaterThan(10);
   });
 
   // 2026-10-15 — operator: "I want trader guide and dropdown control in
