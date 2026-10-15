@@ -334,17 +334,30 @@
   // 16 entries (order/bracket-via-WHEN/ALERT/DO/the action catalog),
   // also over the 10-item threshold, so clicking into a fresh CLI box
   // showed nothing until 3 characters were typed — confirmed live the
-  // same way. Exempted ONLY for the true start-of-statement case
-  // (`value.trim() === ''`, nothing typed anywhere yet), not every
-  // `'token'` suggestion generally — a bare metric/scope-ref list
-  // midway through a longer statement (the genuinely ~40-50-entry case
-  // the original comment above was protecting against) still waits for
-  // 3 characters.
+  // same way. Originally exempted ONLY for the true start-of-statement
+  // case (`value.trim() === ''`), not every `'token'` suggestion
+  // generally — a bare metric/scope-ref list midway through a longer
+  // statement was deliberately left gated.
+  // Bug fix #3 (2026-10-15, operator: "when WHEN is typed, the dropdown
+  // should show the possible values like always and other tokens... does
+  // it happen now?") — confirmed live it did NOT: `suggestAgentCliAt`
+  // correctly returns `["pnl", "positions", ..., "always"]` for `"WHEN "`
+  // (kind:'token'), but `value.trim() === ''` is false there (the
+  // textarea isn't empty, it has "WHEN " in it), so bug #2's narrow fix
+  // never covered this — any "next token not started yet" position
+  // right after a keyword stayed gated exactly like the original #2 bug.
+  // Widened from `value.trim() === ''` to `_partialLen === 0` — "0
+  // characters typed for the upcoming token" is the real, general
+  // condition the very first comment on this block already described
+  // ("shows immediately on 0 characters"); the dropdown's own scrollable
+  // max-height (`.agent-cli-dropdown-list`, 15rem) makes even a genuinely
+  // large metric/scope list (~40-50 entries) usable here now, the same
+  // way it was extended for `symbol=`'s ~90k-row list.
   const _LARGE_LIST_THRESHOLD = 10;
   const _MIN_CHARS_FOR_LARGE_LIST = 3;
   const _gatedBySize = $derived.by(() =>
     suggestResult.kind !== 'param'
-    && !(suggestResult.kind === 'token' && value.trim() === '')
+    && !(suggestResult.kind === 'token' && _partialLen === 0)
     && suggestResult.suggestions.length > _LARGE_LIST_THRESHOLD && _partialLen < _MIN_CHARS_FOR_LARGE_LIST);
 
   // Escape dismissal is scoped to the EXACT (cursor, text) pair recorded

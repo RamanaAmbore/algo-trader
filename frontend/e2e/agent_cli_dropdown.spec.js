@@ -936,6 +936,20 @@ test.describe('Tab auto-select + default highlight + account dropdown + error su
     await expect(listBox).toHaveCSS('overflow-y', 'auto');
   });
 
+  test('typing "WHEN " (keyword + trailing space, nothing typed for the next token yet) shows the full candidate dropdown including "always"', async ({ page }) => {
+    await loginAsAdmin(page);
+    await goConsole(page);
+
+    const textarea = page.locator('textarea.agent-cli-textarea');
+    await textarea.focus();
+    await textarea.pressSequentially('WHEN ', { delay: 15 });
+    await page.waitForTimeout(400);
+
+    expect(await page.locator('.agent-cli-dropdown').count()).toBeGreaterThan(0);
+    const rows = await page.locator('.agent-cli-dropdown-row').allTextContents();
+    expect(rows).toContain('always');
+  });
+
   test('compile errors stay hidden while the cursor is still inside an unclosed call, and reappear once focus leaves it unclosed', async ({ page }) => {
     await loginAsAdmin(page);
     await goConsole(page);
