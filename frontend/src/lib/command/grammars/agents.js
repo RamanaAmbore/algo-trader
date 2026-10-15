@@ -8307,7 +8307,7 @@ function _callNameStartBefore(text, parenPos) {
 
 /** Suggest param-name or enum-value completions for the call whose "("
  *  sits at `parenPos`, given everything typed so far up to `cursor`. */
-function _paramOrEnumSuggestion(text, parenPos, cursor, entry) {
+function _paramOrEnumSuggestion(text, parenPos, cursor, entry, opts = {}) {
   const innerSoFar = text.slice(parenPos + 1, cursor);
   const segments = _splitTopLevelCommasWithOffsets(innerSoFar);
   const usedKeys = new Set();
@@ -8329,7 +8329,17 @@ function _paramOrEnumSuggestion(text, parenPos, cursor, entry) {
     const valueAbsStart = lastAbsStart + eqIdx + 1;
     const valuePartialRaw = text.slice(valueAbsStart, cursor);
     const valuePartial = valuePartialRaw.replace(/^['"]/, '');
-    const enumValues = (spec && spec.type === 'enum' && Array.isArray(spec.enum)) ? spec.enum : [];
+    // `account` is declared `type: string` in the grammar YAML (its real
+    // values are the operator's own broker accounts — runtime data, not
+    // something a static grammar schema can enumerate) — 2026-10-15,
+    // operator: "when account= is shown since the accounts are a list of
+    // possible values, it should show the dropdown of the accounts."
+    // `opts.accountIds` (threaded from the UI layer, which DOES have live
+    // account data via `getAccountsSync()`) stands in for a real schema
+    // enum here, same shape/behavior as one once candidates exist.
+    const enumValues = (spec && spec.type === 'enum' && Array.isArray(spec.enum)) ? spec.enum
+      : (realKey === 'account' && Array.isArray(opts.accountIds) && opts.accountIds.length) ? opts.accountIds
+      : [];
     // Sprint H (item 8) — a bound label (GIVEN, or a label assignment
     // inside ALERT/DO's own item list) is a valid value ANYWHERE an
     // ordinary call argument's value goes — `_substituteBoundArgs`
@@ -8710,7 +8720,7 @@ function _suggestDebugArg(text, parenPos, pos, catalog) {
   };
 }
 
-function _suggestAgentCliAtImpl(text, cursor, catalog) {
+function _suggestAgentCliAtImpl(text, cursor, catalog, opts = {}) {
   if (typeof text !== 'string') return _emptySuggest(0);
   const n = text.length;
   const pos = Math.max(0, Math.min(Number(cursor) || 0, n));
@@ -8731,7 +8741,7 @@ function _suggestAgentCliAtImpl(text, cursor, catalog) {
     const clauseKind = prefixLex.errors.length ? null : _clauseKindFromTokenPrefix(prefixLex.tokens);
     const entry = _lookupAnyCatalogEntry(name, catalog, clauseKind, scopeHint);
     if (!entry) return _emptySuggest(pos);
-    return _paramOrEnumSuggestion(text, openCall.parenPos, pos, entry);
+    return _paramOrEnumSuggestion(text, openCall.parenPos, pos, entry, opts);
   }
 
   // 2. Not inside a call — bare metric/channel/action NAME being typed.
@@ -8887,9 +8897,9 @@ function _isFreshNamePosition(lastTok) {
  *  the long compound token string `suggestions[i]` actually holds (e.g.
  *  `"positions.total.pnl"`) — the UI shows `labels[i] || suggestions[i]`.
  *  See the section header above for the design rationale. */
-export function suggestAgentCliAt(text, cursor, catalog) {
+export function suggestAgentCliAt(text, cursor, catalog, opts = {}) {
   try {
-    return _suggestAgentCliAtImpl(text, cursor, catalog);
+    return _suggestAgentCliAtImpl(text, cursor, catalog, opts);
   } catch {
     return _emptySuggest(Number(cursor) || 0);
   }

@@ -86,6 +86,7 @@
     lookupAgentCliEntry, isInsideOpenCall,
   } from '$lib/command/grammars/agents.js';
   import { pushLayer, popLayer } from '$lib/utils/layerStack.js';
+  import { getAccountsSync } from '$lib/data/accounts.js';
 
   /** @type {{
    *   value: string, catalog: any, lotSizeOf?: (sym: string) => number|null,
@@ -207,7 +208,12 @@
 
   const suggestResult = $derived.by(() => {
     if (!catalog) return { suggestions: [], descriptions: [], labels: [], replaceRange: [cursorPos, cursorPos], kind: null };
-    try { return suggestAgentCliAt(value, cursorPos, catalog); }
+    // `account=` has no static enum in the grammar schema (real account
+    // ids are runtime, operator-specific data) — threaded in here from
+    // the live account list so the dropdown still shows real choices
+    // instead of forcing free-typing (2026-10-15, operator request).
+    const opts = { accountIds: getAccountsSync().map((a) => a.account_id) };
+    try { return suggestAgentCliAt(value, cursorPos, catalog, opts); }
     catch { return { suggestions: [], descriptions: [], labels: [], replaceRange: [cursorPos, cursorPos], kind: null }; }
   });
 
@@ -250,9 +256,42 @@
   // Every time `suggestResult` is recomputed (new object identity on every
   // keystroke/cursor-move — `_suggestAgentCliAtImpl` never returns a cached
   // reference), the candidate list has effectively changed underneath
-  // `_activeIndex` — reset to "nothing active" rather than risk pointing
-  // at an unrelated row a stale index happened to still be in-range for.
+  // `_activeIndex` — reset to "nothing EXPLICITLY active" rather than risk
+  // pointing at an unrelated row a stale index happened to still be
+  // in-range for. Deliberately stays -1 here (NOT reset to 0) — Enter's
+  // handler below gates on this exact state to decide whether a bare
+  // Enter should insert a newline (multi-line GIVEN/WHEN/ALERT/DO
+  // statements need this) or accept a suggestion; defaulting this to 0
+  // would silently hijack every first Enter press after a dropdown opens.
+  // The row-0-highlighted-by-default / Tab-accepts-it behavior (2026-10-15,
+  // operator: "when multiple tokens match, in the dropdown the first
+  // match should be highlighted, if tab entered it should be selected")
+  // is handled separately below via `_displayActiveIndex` (visual only)
+  // and the Tab-specific branch in `handleKeydown` — neither touches
+  // Enter's behavior.
   $effect(() => { suggestResult; _activeIndex = -1; });
+
+  // Visual-only "which row looks highlighted" — row 0 whenever nothing has
+  // been explicitly arrow-navigated/hovered yet (so the operator can SEE
+  // what Tab will pick), falling back to the real `_activeIndex` once they
+  // navigate. Never read by Enter's handler — see the effect above.
+  const _displayActiveIndex = $derived(_activeIndex >= 0 ? _activeIndex : (suggestResult.suggestions.length ? 0 : -1));
+
+  // Suppress the compile-error block while the operator is still actively
+  // typing INSIDE an unclosed call (2026-10-15, operator: "while selecting
+  // order(, it also shows error message right bracket required, that give
+  // wrong information... User might be selecting more keywords and values
+  // before typing )"). A statement like `order(account="ZG0790"` is
+  // compiled (debounced) on every keystroke same as always, and ALWAYS
+  // fails with "expected ')'" until the closing paren lands — that's not a
+  // real defect, it's the expected shape of an in-progress statement, so
+  // showing it as an error is actively misleading mid-edit. Gated on
+  // `_focused` too: once the operator clicks away leaving a call genuinely
+  // unclosed, that abandoned state IS worth surfacing as an error again.
+  const _suppressErrorsWhileOpenCall = $derived.by(() => {
+    if (!_focused) return false;
+    try { return isInsideOpenCall(value, cursorPos); } catch { return false; }
+  });
 
   // Sprint [CLI dropdown] — how many characters of the CURRENT partial
   // word have actually been typed, derived the same way the suggestion
@@ -614,8 +653,8 @@
                  through the whole click (the button never steals focus),
                  so `_focused` never flips false and `_showDropdown` never
                  collapses out from under the click before `onclick` fires. -->
-            <button type="button" class="agent-cli-dropdown-row" class:is-active={i === _activeIndex}
-                    role="option" aria-selected={i === _activeIndex}
+            <button type="button" class="agent-cli-dropdown-row" class:is-active={i === _displayActiveIndex}
+                    role="option" aria-selected={i === _displayActiveIndex}
                     data-testid="agent-cli-dropdown-row"
                     onmousedown={(e) => e.preventDefault()}
                     onclick={() => applySuggestion(s)}
@@ -661,7 +700,7 @@
       </div>
     {/if}
 
-    {#if compiled && !compiled.ok && showCompileErrors}
+    {#if compiled && !compiled.ok && showCompileErrors && !_suppressErrorsWhileOpenCall}
       <div class="agent-cli-errors">
         <div class="agent-cli-errors-title">Errors:</div>
         <ul class="list-disc ml-4">

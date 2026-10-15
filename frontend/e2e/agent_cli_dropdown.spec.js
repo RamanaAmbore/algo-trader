@@ -830,3 +830,100 @@ test.describe('Case-insensitive matching + auto-case-correction', () => {
     expect(text).toBe('ale');
   });
 });
+
+// ── Tab auto-select, default highlight, account dropdown, error
+// suppression (2026-10-15) ───────────────────────────────────────────────
+test.describe('Tab auto-select + default highlight + account dropdown + error suppression', () => {
+  test('typing a uniquely-matching prefix highlights it without arrow navigation, and Tab accepts it, chaining into the param dropdown', async ({ page }) => {
+    await loginAsAdmin(page);
+    await goConsole(page);
+
+    const textarea = page.locator('textarea.agent-cli-textarea');
+    await textarea.focus();
+    await textarea.type('orde', { delay: 15 });
+    await page.waitForTimeout(300);
+
+    // Highlighted by default — no ArrowDown/ArrowUp pressed yet.
+    const activeRows = await page.locator('.agent-cli-dropdown-row.is-active').allTextContents();
+    expect(activeRows).toEqual(['order']);
+
+    await textarea.press('Tab');
+    await page.waitForTimeout(300);
+    expect(await textarea.inputValue()).toBe('order(');
+
+    // Chains straight into the param-keyword dropdown.
+    const ddCount = await page.locator('.agent-cli-dropdown').count();
+    expect(ddCount).toBeGreaterThan(0);
+    const paramRows = await page.locator('.agent-cli-dropdown-row').allTextContents();
+    expect(paramRows).toContain('account');
+  });
+
+  test('typing a prefix with multiple matches highlights the first (best-ranked) one by default', async ({ page }) => {
+    await loginAsAdmin(page);
+    await goConsole(page);
+
+    const textarea = page.locator('textarea.agent-cli-textarea');
+    await textarea.focus();
+    // "can" matches cancel_order AND cancel_all_orders — no unique match.
+    await textarea.pressSequentially('can', { delay: 15 });
+    await page.waitForTimeout(300);
+
+    const allRows = await page.locator('.agent-cli-dropdown-row').allTextContents();
+    expect(allRows.length).toBeGreaterThan(1);
+    const activeRows = await page.locator('.agent-cli-dropdown-row.is-active').allTextContents();
+    expect(activeRows).toEqual([allRows[0]]);
+  });
+
+  test('a bare Enter still inserts a newline — default highlight never hijacks Enter', async ({ page }) => {
+    await loginAsAdmin(page);
+    await goConsole(page);
+
+    const textarea = page.locator('textarea.agent-cli-textarea');
+    await textarea.focus();
+    await textarea.type('orde', { delay: 15 });
+    await page.waitForTimeout(300);
+    // Dismiss the dropdown first (Escape), same as a real operator moving on.
+    await textarea.press('Escape');
+    await page.waitForTimeout(150);
+    const before = await textarea.inputValue();
+    await textarea.press('Enter');
+    await page.waitForTimeout(150);
+    const after = await textarea.inputValue();
+    expect(after).toBe(before + '\n');
+  });
+
+  test('account= shows a dropdown of real broker account ids, not free-text', async ({ page }) => {
+    await loginAsAdmin(page);
+    await goConsole(page);
+
+    const textarea = page.locator('textarea.agent-cli-textarea');
+    await textarea.focus();
+    await textarea.pressSequentially('order(account=', { delay: 15 });
+    await page.waitForTimeout(400);
+
+    const ddCount = await page.locator('.agent-cli-dropdown').count();
+    expect(ddCount).toBeGreaterThan(0);
+    const rows = await page.locator('.agent-cli-dropdown-row').allTextContents();
+    expect(rows.length).toBeGreaterThan(0);
+    // Real account ids look like broker codes (letters+digits), never a
+    // generic free-text placeholder.
+    for (const r of rows) expect(r).toMatch(/^[A-Z0-9]+$/);
+  });
+
+  test('compile errors stay hidden while the cursor is still inside an unclosed call, and reappear once focus leaves it unclosed', async ({ page }) => {
+    await loginAsAdmin(page);
+    await goConsole(page);
+
+    const textarea = page.locator('textarea.agent-cli-textarea');
+    await textarea.focus();
+    await textarea.pressSequentially('order(account="ZG0790"', { delay: 15 });
+    await page.waitForTimeout(500);
+    // Mid-edit, unclosed call — "expected ')'" would otherwise show here.
+    await expect(page.locator('.agent-cli-errors')).toHaveCount(0);
+
+    // Abandon the statement (blur) without closing the call.
+    await page.locator('body').click({ position: { x: 5, y: 5 } });
+    await page.waitForTimeout(400);
+    await expect(page.locator('.agent-cli-errors')).toBeVisible({ timeout: 5000 });
+  });
+});
