@@ -8106,6 +8106,42 @@ export function lookupAgentCliEntry(name, catalog, clauseKind = null, scopeHint 
   return _lookupAnyCatalogEntry(name, catalog, clauseKind, scopeHint);
 }
 
+// Bare top-level statement tokens that map to a specific `allowedKinds`
+// entry directly (checked by exact name, case-insensitive) — everything
+// else that's a real `catalog.actions` entry, plus every clause-head
+// keyword/connective, is only reachable inside a full WHEN/ALERT/DO
+// agent statement, so it maps to 'agent'.
+const _ACTION_TOKEN_KIND = { order: 'order', place_order: 'order', cancel_all_orders: 'cancel_all_orders', bracket: 'bracket' };
+const _CLAUSE_HEAD_TOKENS = new Set(['GIVEN', 'WHEN', 'ALERT', 'DO', '&', '|', 'always']);
+
+/** Filters a bare-top-level suggestion list down to tokens the host
+ *  editor's `allowedKinds` restriction (Sprint B's order-scoped CLI
+ *  mounts) can actually reach — 2026-10-15 fix (operator: "does the
+ *  dropdown for orders cli, non order related tokens functions. check
+ *  it"): confirmed live the Orders CLI tab's bare-start dropdown
+ *  suggested the FULL catalog.actions list (modify_order, monitor_order,
+ *  close_position, chase_close_positions, expiry_auto_close, set_flag)
+ *  plus GIVEN/WHEN/ALERT/DO, every one of which the compiler was
+ *  ALREADY correctly rejecting at submit time via `allowedKinds` — the
+ *  suggestions themselves just never reflected that restriction. `null`/
+ *  undefined `allowedKinds` (the unrestricted Automation Console mount)
+ *  passes every token through unchanged. Metric/channel/scope-root/
+ *  bound-label names (everything NOT a clause-head keyword and NOT a
+ *  real `catalog.actions` entry) are never touched here — those only
+ *  ever appear in a DIFFERENT clauseKind branch (when/given/alert) that
+ *  is itself only reachable after typing WHEN/GIVEN/ALERT, which this
+ *  same filter already gates upstream. */
+function _filterTokensByAllowedKinds(tokens, allowedKinds, catalog) {
+  if (!allowedKinds) return tokens;
+  return tokens.filter((t) => {
+    if (_CLAUSE_HEAD_TOKENS.has(t)) return allowedKinds.includes('agent');
+    const mapped = _ACTION_TOKEN_KIND[String(t).toLowerCase()];
+    if (mapped) return allowedKinds.includes(mapped);
+    if (catalog && catalog.actions && catalog.actions.has(String(t).toLowerCase())) return allowedKinds.includes('agent');
+    return true;
+  });
+}
+
 function _candidateTokensForClause(clauseKind, catalog) {
   if (!catalog) return null;
   if (clauseKind === 'when' || clauseKind === 'given') return [...catalog.metrics.values()].map((e) => e.token);
@@ -8962,7 +8998,7 @@ function _suggestAgentCliAtImpl(text, cursor, catalog, opts = {}) {
     // that can still apply here is a clause-head keyword or boolean
     // connective (Sprint H items 1/3), via a real speculative parse
     // rather than a token-pattern heuristic.
-    const kws = _clauseBoundaryKeywordCandidates(text, pos, effectiveReal);
+    const kws = _filterTokensByAllowedKinds(_clauseBoundaryKeywordCandidates(text, pos, effectiveReal), opts.allowedKinds, catalog);
     if (!kws.length) return _emptySuggest(pos);
     return { suggestions: kws, descriptions: kws.map(() => ''), labels: kws.map(() => null), replaceRange: [pos, pos], kind: 'keyword', hint: null };
   }
@@ -8975,9 +9011,23 @@ function _suggestAgentCliAtImpl(text, cursor, catalog, opts = {}) {
   // complete leaf).
   const { tokens: baseCandidates, descByToken } = _bareNameCandidates(clauseKind, catalog, contextTok, text, replaceStart);
   const headKeywords = _clauseBoundaryKeywordCandidates(text, replaceStart, effectiveReal);
-  const allTokens = [...baseCandidates, ...headKeywords];
-  if (!allTokens.length) return _emptySuggest(pos);
-  const ranked = fuzzyFilter(partial, allTokens);
+  // 2026-10-15 fix (operator: "does the dropdown for orders cli, non
+  // order related tokens functions. check it") — confirmed live: the
+  // Orders CLI tab's bare-start dropdown suggested the FULL
+  // catalog.actions list (modify_order, monitor_order, close_position,
+  // chase_close_positions, expiry_auto_close, set_flag, debug, nop) PLUS
+  // GIVEN/WHEN/ALERT/DO, even though this editor's `allowedKinds` ONLY
+  // permits `order`/`cancel_all_orders` bare statements — every one of
+  // those suggestions was guaranteed to fail at compile time with the
+  // scope-rejection error (already correctly enforced there, just never
+  // reflected back into the SUGGESTIONS themselves). Filtered at the
+  // single combination point both the clause-boundary keywords (d, above)
+  // and the ordinary bare-name candidates (here) pass through, so neither
+  // list offers something the compiler is certain to reject on this mount.
+  const allTokens = [...baseCandidates, ..._filterTokensByAllowedKinds(headKeywords, opts.allowedKinds, catalog)];
+  const filteredTokens = _filterTokensByAllowedKinds(allTokens, opts.allowedKinds, catalog);
+  if (!filteredTokens.length) return _emptySuggest(pos);
+  const ranked = fuzzyFilter(partial, filteredTokens);
   const descriptions = ranked.map((t) => descByToken.get(t) || '');
   return { suggestions: ranked, descriptions, labels: ranked.map(() => null), replaceRange: [replaceStart, pos], kind: 'token', hint: null };
 }

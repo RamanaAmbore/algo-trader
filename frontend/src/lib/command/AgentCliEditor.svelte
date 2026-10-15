@@ -221,9 +221,15 @@
     // resolver (not an eager array) so every suggestResult recompute
     // doesn't pay for the full instrument list; `_paramOrEnumSuggestion`
     // only calls it once 3+ characters are typed.
+    // 2026-10-15 — `allowedKinds` (already threaded into the COMPILE
+    // call's own opts below) now ALSO reaches the suggestion engine, so
+    // an order-scoped mount's dropdown never offers a bare statement
+    // kind the compiler is guaranteed to reject (operator: "does the
+    // dropdown for orders cli, non order related tokens functions").
     const opts = {
       accountIds: getAccountsSync().map((a) => a.account_id),
       suggestSymbols: (prefix) => suggestTradingsymbols(prefix, 50),
+      allowedKinds,
     };
     try { return suggestAgentCliAt(value, cursorPos, catalog, opts); }
     catch { return { suggestions: [], descriptions: [], labels: [], replaceRange: [cursorPos, cursorPos], kind: null }; }

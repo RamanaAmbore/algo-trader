@@ -251,6 +251,35 @@ test.describe('Orders CLI tab — order-only scope (Sprint B)', () => {
     await expect(errors).toBeVisible({ timeout: TIMEOUT });
     await expect(errors).toContainText(/Automation.*Console/i);
   });
+
+  // 2026-10-15 — operator: "does the dropdown for orders cli, non order
+  // related tokens functions. check it" — confirmed live the bare-start
+  // SUGGESTION dropdown offered the full catalog.actions list
+  // (modify_order, monitor_order, close_position, etc.) plus GIVEN/WHEN/
+  // ALERT/DO, every one of which the compiler was ALREADY correctly
+  // rejecting (the test above proves that) — the suggestions themselves
+  // just never reflected the restriction, so the operator saw dropdown
+  // options that were guaranteed to fail if picked.
+  test('bare-start dropdown only ever offers order/cancel_all_orders — never agent/bracket tokens that the compiler would reject anyway', async ({ page }) => {
+    await page.goto('/orders');
+    await page.waitForLoadState('networkidle');
+
+    const cliTab = page.getByRole('tab', { name: 'CLI' });
+    await expect(cliTab).toBeVisible({ timeout: TIMEOUT });
+    await cliTab.click();
+
+    const cli = page.locator('.agent-cli-textarea');
+    await expect(cli).toBeVisible({ timeout: TIMEOUT });
+    await cli.focus();
+    await expect(page.locator('.agent-cli-dropdown')).toBeVisible({ timeout: TIMEOUT });
+
+    const rows = await page.locator('.agent-cli-dropdown-row').allTextContents();
+    expect(rows.sort()).toEqual(['cancel_all_orders', 'order', 'place_order']);
+    expect(rows).not.toContain('WHEN');
+    expect(rows).not.toContain('GIVEN');
+    expect(rows).not.toContain('modify_order');
+    expect(rows).not.toContain('bracket');
+  });
 });
 
 test.describe('SymbolPanel order-ticket modal — restored CLI tab (Sprint B)', () => {
