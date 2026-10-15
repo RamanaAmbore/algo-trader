@@ -1160,24 +1160,23 @@
   // ── Agents tab — Level + Kind filters (Sprint G addendum, `debug(x)`) ──
   // Two independent, AND-combined filter dimensions so a `debug(x)` CLI
   // statement's entries don't clutter the Agents tab by default, while
-  // still being easy to surface when actively debugging. Chip-row UI
-  // (reuses the existing `.om-chip` shape from the Order-tab mode strip
-  // above) rather than a <select> dropdown — matches this file's own
-  // established convention for tab-scoped filter controls.
+  // still being easy to surface when actively debugging.
   //
   // Level: multi-select toggle (any subset may be active at once) —
   // a single min-level threshold wouldn't let an operator isolate just
   // DEBUG without also losing ERROR/CRITICAL visibility. Default hides
   // DEBUG only; every other level is on.
-  const _AGENT_LEVEL_TABS = _LOG_LEVELS.map(id => [id, id[0].toUpperCase() + id.slice(1)]);
+  // Chip-row UI removed entirely (2026-10, operator: "remove log info
+  // level buttons and the other buttons like bracket, order, alert,
+  // etc in the agents log panel") — `_AGENT_LEVEL_TABS`/
+  // `_toggleAgentLevel` (the button-array + click-handler the removed
+  // UI used) went with it, since nothing else referenced them. The
+  // filter STATE itself (`_agentLevelFilter`, still read by `_agentRows`
+  // below) and its default (DEBUG hidden, everything else shown) are
+  // unchanged — removing the toggle just freezes it at that default.
   const _AGENT_LEVEL_LS_KEY = 'ramboq.logpanel.agentLevelFilter';
   /** @type {Set<string>} */
   let _agentLevelFilter = $state(new Set(['info', 'warning', 'error', 'critical']));
-  function _toggleAgentLevel(/** @type {string} */ level) {
-    const next = new Set(_agentLevelFilter);
-    if (next.has(level)) next.delete(level); else next.add(level);
-    _agentLevelFilter = next;
-  }
 
   // Kind: single-select narrowing (default 'all' — never hides anything
   // by default, unlike Level above). See `_agentKindBucket()` for the
@@ -2138,37 +2137,6 @@
      changed. Audit defect #11 (the old @html-joined-string
      approach destroyed all row DOM identity on every poll,
      killing text selection inside the log). -->
-{#if logTab === 'agent'}
-  <!-- Agents-tab Level + Kind filter bar (Sprint G addendum, `debug(x)`).
-       Level is multi-select (toggle any subset); Kind is single-select
-       narrowing with an 'All' default. Both AND together and with every
-       other existing filter (see _agentRows above). -->
-  <div class="agent-filter-bar" data-testid="agent-filter-bar">
-    <span class="agent-filter-label">Level</span>
-    <div class="agent-filter-group" role="group" aria-label="Agent log level filter">
-      {#each _AGENT_LEVEL_TABS as [val, label]}
-        <button type="button"
-                class="om-chip agent-filter-chip {_agentLevelFilter.has(val) ? 'om-on agent-chip-on' : ''}"
-                aria-pressed={_agentLevelFilter.has(val)}
-                data-testid="agent-level-chip-{val}"
-                onclick={() => _toggleAgentLevel(val)}>
-          {label}
-        </button>
-      {/each}
-    </div>
-    <span class="agent-filter-label">Kind</span>
-    <div class="agent-filter-group" role="group" aria-label="Agent log kind filter">
-      {#each _AGENT_KIND_TABS as [val, label]}
-        <button type="button"
-                class="om-chip agent-filter-chip {_agentKindFilter === val ? 'om-on agent-chip-on' : ''}"
-                aria-pressed={_agentKindFilter === val}
-                data-testid="agent-kind-chip-{val}"
-                onclick={() => _agentKindFilter = val}>
-          {label}
-        </button>
-      {/each}
-    </div>
-  </div>
 {/if}
 <div class="log-panel log-rows {heightClass} {multiColumn && logTab !== 'order' ? 'lp-multicol' : ''}">
   {#if logTab === 'terminal'}
@@ -2218,7 +2186,6 @@
     {/if}
   {/if}
 </div>
-{/if}
 </div><!-- /.lp-body-wrap -->
 
 {#if _chartModalSym}
@@ -2792,35 +2759,11 @@
   /* Replay — canonical green var(--c-long) */
   .om-chip.om-on.om-chip-replay { background: rgba(74,222,128,0.14); color: var(--c-long); border-color: rgba(74,222,128,0.45); }
 
-  /* Agents-tab Level/Kind filter bar (Sprint G addendum, `debug(x)`).
-     Reuses the `.om-chip` shape from the Order-tab mode strip above;
-     the generic "on" tint is action-amber (toggle/narrowing affordance),
-     distinct from the mode-specific colours the Order-tab chips use. */
-  .agent-filter-bar {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    flex-wrap: wrap;
-    padding: 0.18rem 0;
-    margin-bottom: 0.2rem;
-    border-bottom: 1px dashed rgba(251,191,36,0.12);
-  }
-  .agent-filter-group { display: inline-flex; }
-  .agent-filter-group > .om-chip ~ .om-chip { margin-left: 0; }
-  .agent-filter-label {
-    font-family: var(--font-numeric);
-    font-size: var(--fs-xs);
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--algo-slate-muted);
-    margin-right: 0.1rem;
-  }
-  .om-chip.agent-filter-chip.om-on.agent-chip-on {
-    background: var(--c-action-14);
-    color: var(--c-action);
-    border-color: rgba(251,191,36,0.45);
-  }
+  /* Agents-tab Level/Kind filter bar CSS removed (2026-10, operator:
+     "remove log info level buttons and the other buttons like bracket,
+     order, alert, etc in the agents log panel") — .agent-filter-bar/
+     .agent-filter-group/.agent-filter-label/.agent-filter-chip no
+     longer have any markup to style. */
 
   /* Preflight verdict chip — ✓ when basket_margin / Kite preflight
      accepted the order, ✗ when it pushed back. Hover the chip to see

@@ -3820,22 +3820,22 @@
     font-weight: 700;
   }
   /* CLI-tab Trader Guide link — replaces LTP/CHASE in the same .oes-tabs
-     row (2026-10, see the markup comment above). Height matched to the
-     TICKET/CHAIN/CHART tabs' OWN compact variant (app.css
-     `.algo-tab--compact`, calc(--toolbar-h - 2px) — NOT --ctl-h, which
-     is ~5px taller and was the first attempt here, confirmed live via
-     getBoundingClientRect: 27.2px vs the tabs' actual 22px) — operator:
-     "trader guide should not increase the height of the header height.
-     it should be fit within header vertically centered." Padding/font-
-     size kept small enough that natural content height stays at/under
-     that floor, so box-sizing:border-box's min-height is the real
-     constraint, not fought by oversized .btn-secondary padding (same
-     class of fix the Automation page's own Trader Guide link needed
-     against Select's trigger height). */
+     row (2026-10). Height matched to `.oes-tab-ltp`/`.oes-common-chase-
+     label`'s own --ctl-h floor (27.2px), NOT the tab buttons' own
+     22px compact height — live getBoundingClientRect measurement
+     (2026-10-15 regression fix) confirmed the TRUE .oes-tabs row height
+     on Ticket/Chart (28.2px) is governed by CHASE/LTP's --ctl-h floor,
+     not by .algo-tab's shorter compact height. An earlier attempt at
+     this fix matched the tab buttons instead (22px), which shrank the
+     whole row by ~5px only on the CLI tab — operator: "when cli is
+     selected the header height is getting reduced." Matching --ctl-h
+     here keeps the row height IDENTICAL across all four tabs, which is
+     what "trader guide should not increase the height of the header
+     height" actually meant — not matching the tab buttons specifically. */
   .oes-cli-guide-link {
     display: inline-flex;
     align-items: center;
-    min-height: calc(var(--toolbar-h) - 2px);
+    min-height: var(--ctl-h, 1.7rem);
     box-sizing: border-box;
     padding: 0 0.6rem;
     font-size: var(--fs-sm);

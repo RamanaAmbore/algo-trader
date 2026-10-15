@@ -457,6 +457,25 @@
       _activeIndex = Math.max(_activeIndex - 1, 0);
       return;
     }
+    // Tab auto-selects the top (best-match) suggestion when nothing has
+    // been arrow-navigated yet (2026-10-15, operator: "the tab should
+    // automatically select the matching token in the dropdown") — Tab is
+    // the operator's "accept the obvious completion" key, distinct from
+    // Enter (which still requires an explicit arrow-key selection, per
+    // the brief's original "dropdown open" vs "suggestion active"
+    // distinction above). This is also what makes the chained
+    // auto-advance work for a function like `order`: applySuggestion's
+    // existing `_autoAdvanceExtra('token', ...)` branch already inserts
+    // `(` for a call with required params, and the next keystroke's
+    // reactive `suggestResult` recompute (cursor now inside an open call)
+    // already yields kind:'param' — that chain was always wired, it just
+    // never fired because Tab previously did nothing without a prior
+    // arrow-key press.
+    if (e.key === 'Tab' && _activeIndex < 0 && list.length) {
+      e.preventDefault();
+      applySuggestion(list[0]);
+      return;
+    }
     if (e.key === 'Enter' || e.key === 'Tab') {
       if (_activeIndex < 0) return; // nothing active — let the key behave normally
       const s = list[_activeIndex];
