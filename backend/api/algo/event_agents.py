@@ -411,19 +411,7 @@ async def _dispatch_agent(agent, records: list[dict]) -> int:
             continue
         out = render(to_render)
         channels = out[4] if len(out) > 4 else (agent.events or [])
-        # 2026-10-16 fix — a record carrying a real triggering agent's
-        # `tier` (currently only rich_alert records, via
-        # _v2_send_rich_alert's logged extras) overrides ntfy priority
-        # for THIS record, resolved from that real tier rather than
-        # `agent`'s own (RICH_ALERT_AGENT is a generic multiplexer,
-        # always tier="medium"). Only applies when the channel itself
-        # sets no explicit priority — an operator-configured per-channel
-        # priority (e.g. a future non-rich_alert event agent) still wins.
-        rec_tier = (rec.get("extra") or {}).get("tier")
-        rec_priority = None
-        if rec_tier:
-            from backend.shared.helpers.alert_utils import _TIER_TO_NTFY_PRIORITY
-            rec_priority = _TIER_TO_NTFY_PRIORITY.get(rec_tier)
+        rec_priority = _rec_tracked_ntfy_priority(rec)
         for ch in channels:
             # A `_log_only` record is one the branch gate or sim-notify
             # gate would normally have suppressed entirely — 'log' is
@@ -432,13 +420,36 @@ async def _dispatch_agent(agent, records: list[dict]) -> int:
             # fire. See dispatch_rows docstring for the full rationale.
             if log_only and (not isinstance(ch, dict) or ch.get("channel") != "log"):
                 continue
-            eff_ch = ch
-            if (rec_priority and isinstance(ch, dict)
-                    and ch.get("channel") == "ntfy" and not ch.get("priority")):
-                eff_ch = {**ch, "priority": rec_priority}
+            eff_ch = _channel_with_tracked_priority(ch, rec_priority)
             if await _send_channel(eff_ch, out, agent):
                 sent += 1
     return sent
+
+
+def _rec_tracked_ntfy_priority(rec: dict) -> "str | None":
+    """2026-10-16 fix — a record carrying a real triggering agent's
+    `tier` (currently only rich_alert records, via
+    _v2_send_rich_alert's logged extras) resolves an ntfy priority
+    override for that record, from the REAL tier rather than the
+    dispatching agent's own (RICH_ALERT_AGENT is a generic multiplexer,
+    always tier="medium"). Extracted from `_dispatch_agent` to keep it
+    below the complexity gate."""
+    rec_tier = (rec.get("extra") or {}).get("tier")
+    if not rec_tier:
+        return None
+    from backend.shared.helpers.alert_utils import _TIER_TO_NTFY_PRIORITY
+    return _TIER_TO_NTFY_PRIORITY.get(rec_tier)
+
+
+def _channel_with_tracked_priority(ch: dict, rec_priority: "str | None") -> dict:
+    """Apply `rec_priority` to an ntfy channel entry that sets no
+    explicit priority of its own — an operator-configured per-channel
+    priority always wins. Extracted from `_dispatch_agent` to keep it
+    below the complexity gate."""
+    if (rec_priority and isinstance(ch, dict)
+            and ch.get("channel") == "ntfy" and not ch.get("priority")):
+        return {**ch, "priority": rec_priority}
+    return ch
 
 
 async def dispatch(records: list[dict], agents: list) -> int:

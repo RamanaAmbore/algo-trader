@@ -121,12 +121,31 @@ Defined as constants in `event_agents.py` and upserted at API startup.
 | `template-attach-fail-alert` | orders, WARNING, template_attach_fail | template_attach_fail | telegram, ntfy urgent |
 | `mcp-ping-alert` | mcp, INFO, mcp_ping | mcp_ping | telegram |
 | `deploy-sync-alert` | deploy, WARNING, deploy_out_of_sync | deploy_sync | ntfy high |
-| `agent-alert-rich` | agent, INFO, rich_alert | rich_alert | telegram, ntfy urgent, email |
+| `agent-alert-rich` | agent, INFO, rich_alert | rich_alert | telegram, ntfy (dynamic priority), email |
 | `market-summary` | summary, INFO, summary | summary | telegram_info, email |
 
 Channel entries may set `priority` (ntfy) and `gate` (default true). `gate:
 false` skips the capability flag check, to keep the same behaviour as the
 direct code it replaced.
+
+**`agent-alert-rich`'s ntfy priority is dynamic, not a static table entry
+(2026-10-16 fix)** — every other row's `ntfy urgent`/`ntfy high` above IS a
+static per-channel priority, correct for that one specific event. This row
+is different: `agent-alert-rich` is a generic multiplexer that renders
+EVERY cycle agent's alert (any tier), so a static priority here would be
+wrong for most of them. Before this fix it was hardcoded `ntfy urgent`
+unconditionally — since `send_ntfy_alert` sends an urgent-priority push 3x
+in a row, every single cycle-agent alert (including routine info-tier
+scheduled notifications like `market-open-nse`) got that treatment. Live
+incident: operator saw 3 ntfy pushes for one "NSE market open" alert. Fix:
+`_v2_send_rich_alert` (`agent_engine.py`) now threads the REAL triggering
+agent's `tier` into the log record's `extra["tier"]`; `agent-alert-rich`'s
+own channel entry carries no priority at all; `event_agents.py:
+_dispatch_agent()` resolves priority per-record from that tracked tier via
+`_TIER_TO_NTFY_PRIORITY` (`critical→urgent, high→high, medium→default,
+low→low, info→low`), falling back to the old `agent.tier`-based resolution
+only when a record carries no tier (e.g. any other renderer, none of which
+are generic multiplexers).
 
 ### 3.4 Channels
 
