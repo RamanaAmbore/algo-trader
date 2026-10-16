@@ -383,3 +383,65 @@ describe('mergeHoldingRows — row.close reads prev_close, not the removed close
     expect(result.close == null).toBe(true);
   });
 });
+
+// ============================================================================
+// mergePositionRows — position-state field propagation (2026-10 fix)
+//
+// is_orphan/pair_group_key/pin_group_key/has_gtt were never copied from the
+// raw broker row onto the aggregated pulse row, so MarketPulse's "St"
+// column (pulseColumns.js) and the row-pos-orphan/row-pos-paired CSS
+// classes (MarketPulse.svelte's _sourceRowClasses) were structurally dead
+// — every position showed as unpaired regardless of real backend state.
+// Fields are only trustworthy while exactly one account contributes to the
+// aggregated row; once a second account merges in, they reset to null
+// (ambiguous — never guessed via OR/winner-takes-all).
+// ============================================================================
+
+describe('mergePositionRows — position-state field propagation (2026-10 fix)', () => {
+  it('single-account row carries is_orphan/pair_group_key/pin_group_key/has_gtt from the raw row', () => {
+    const byKey = {};
+    const row = makeOvernightPositionRow({
+      account: 'ACC1', is_orphan: false, pair_group_key: 'P1', pin_group_key: 'PIN4', has_gtt: true,
+    });
+    mergePositionRows(byKey, [row], true, {}, makeCtx());
+    const result = byKey['NIFTY25AUG24000CE__pos'];
+    expect(result.is_orphan).toBe(false);
+    expect(result.pair_group_key).toBe('P1');
+    expect(result.pin_group_key).toBe('PIN4');
+    expect(result.has_gtt).toBe(true);
+  });
+
+  it('single-account orphan row carries is_orphan=true with no pair/pin key', () => {
+    const byKey = {};
+    const row = makeOvernightPositionRow({ account: 'ACC1', is_orphan: true });
+    mergePositionRows(byKey, [row], true, {}, makeCtx());
+    const result = byKey['NIFTY25AUG24000CE__pos'];
+    expect(result.is_orphan).toBe(true);
+    expect(result.pair_group_key).toBeNull();
+    expect(result.pin_group_key).toBeNull();
+    expect(result.has_gtt).toBe(false);
+  });
+
+  it('two-account row for the same symbol resets all four fields to null (ambiguous)', () => {
+    const byKey = {};
+    const rowA = makeOvernightPositionRow({ account: 'ACC1', pair_group_key: 'P1', has_gtt: true });
+    const rowB = makeOvernightPositionRow({ account: 'ACC2', pair_group_key: 'P7', is_orphan: true });
+    mergePositionRows(byKey, [rowA, rowB], true, {}, makeCtx());
+    const result = byKey['NIFTY25AUG24000CE__pos'];
+    expect(result.accounts.size).toBe(2);
+    expect(result.is_orphan).toBeNull();
+    expect(result.pair_group_key).toBeNull();
+    expect(result.pin_group_key).toBeNull();
+    expect(result.has_gtt).toBeNull();
+  });
+
+  it('repeated rows for the SAME account (e.g. a closed/open split) keep the single-account fields', () => {
+    const byKey = {};
+    const rowA = makeOvernightPositionRow({ account: 'ACC1', pair_group_key: 'P2', has_gtt: false });
+    const rowB = makeOvernightPositionRow({ account: 'ACC1', pair_group_key: 'P2', has_gtt: false });
+    mergePositionRows(byKey, [rowA, rowB], true, {}, makeCtx());
+    const result = byKey['NIFTY25AUG24000CE__pos'];
+    expect(result.accounts.size).toBe(1);
+    expect(result.pair_group_key).toBe('P2');
+  });
+});

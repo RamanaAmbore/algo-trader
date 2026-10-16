@@ -1,13 +1,10 @@
 <script>
-  import { computePairPreview } from '$lib/order/pairModalUtils.js';
   import { portal } from '$lib/portal';
   import { pushLayer, popLayer } from '$lib/utils/layerStack.js';
   import Select from '$lib/Select.svelte';
 
   let {
     open = $bindable(false),
-    symbolHint = '',
-    pairedCandidates = [],
   } = $props();
 
   // Escape-stack coordinator (layerStack.js) — this modal previously had
@@ -44,41 +41,22 @@
 
   const unlinked = $derived(orders.filter(o => o.parent_order_id == null));
 
-  /** Filter orders by symbolHint and account from pairedCandidates[0] */
-  const filteredParentOrders = $derived.by(() => {
-    const hint = symbolHint.trim().toLowerCase();
-    const acct = pairedCandidates[0]?.account ?? '';
-    return orders.filter(o => {
-      const sym = (o.symbol ?? o.tradingsymbol ?? '').toLowerCase();
-      if (hint && !sym.includes(hint)) return false;
-      if (acct && o.account && o.account !== acct) return false;
-      return true;
-    });
-  });
-
-  /** Filter unlinked orders by account from pairedCandidates[0] */
-  const filteredChildOrders = $derived.by(() => {
-    const acct = pairedCandidates[0]?.account ?? '';
-    return unlinked.filter(o => {
-      if (acct && o.account && o.account !== acct) return false;
-      return true;
-    });
-  });
-
   // Select component option lists — label() is defined further below but
   // hoisted at call time, same as the native <select> `{#each}` blocks
-  // these replace. Child list additionally excludes whichever order is
-  // currently picked as the parent (same filter the old `{#if}` inside
-  // the each block applied).
-  const parentOptions = $derived(filteredParentOrders.map(o => ({ value: String(o.id), label: label(o) })));
+  // these replace. Child list excludes whichever order is currently
+  // picked as the parent (same filter the old `{#if}` inside the each
+  // block applied). Previously these filtered by `symbolHint`/the
+  // checkbox-select-2-legs `pairedCandidates` prop — both props were
+  // retired (2026-10, derivatives page's own "⟷ Pair" checkbox flow was
+  // replaced by PositionPinPicker; this modal's one remaining real
+  // caller, MarketPulse.svelte's "⟷ Pair" button, never passed either
+  // prop) so the filtering collapsed to a no-op and was removed.
+  const parentOptions = $derived(orders.map(o => ({ value: String(o.id), label: label(o) })));
   const childOptions = $derived(
-    filteredChildOrders
+    unlinked
       .filter(o => String(o.id) !== parentId)
       .map(o => ({ value: String(o.id), label: label(o) }))
   );
-
-  /** Preview quantities derived from pairedCandidates */
-  const preview = $derived(computePairPreview(pairedCandidates));
 
   async function submit() {
     if (!parentId || !childId || parentId === childId) return;
@@ -98,17 +76,6 @@
   function label(o) {
     return `#${o.id} ${o.symbol ?? o.tradingsymbol ?? ''} [${o.status}]`;
   }
-
-  /** Direction character for a candidate quantity */
-  function dirChar(/** @type {any} */ c) {
-    const q = c?.quantity ?? c?.qty_pos ?? 0;
-    return q >= 0 ? '+' : '−';
-  }
-
-  /** Account short label — last 4 chars */
-  function acctShort(/** @type {string|undefined} */ acct) {
-    return acct ? String(acct).slice(-4) : '—';
-  }
 </script>
 
 {#if open}
@@ -120,32 +87,6 @@
       </div>
       {#if error}<div class="opm-error">{error}</div>{/if}
       {#if success}<div class="opm-success">{success}</div>{/if}
-
-      {#if pairedCandidates.length >= 2}
-        <div class="opm-preview">
-          <div class="opm-preview-title">Position Preview</div>
-          <div class="opm-preview-leg">
-            <span class="opm-preview-label">Leg A</span>
-            <span class="opm-preview-acct">{acctShort(pairedCandidates[0]?.account)}</span>
-            <span class="opm-preview-sym">{pairedCandidates[0]?.symbol ?? pairedCandidates[0]?.tradingsymbol ?? '—'}</span>
-            <span class="opm-preview-qty">{dirChar(pairedCandidates[0])}{preview.qty_a} lots</span>
-          </div>
-          <div class="opm-preview-leg">
-            <span class="opm-preview-label">Leg B</span>
-            <span class="opm-preview-acct">{acctShort(pairedCandidates[1]?.account)}</span>
-            <span class="opm-preview-sym">{pairedCandidates[1]?.symbol ?? pairedCandidates[1]?.tradingsymbol ?? '—'}</span>
-            <span class="opm-preview-qty">{dirChar(pairedCandidates[1])}{preview.qty_b} lots</span>
-          </div>
-          <div class="opm-preview-row opm-matched">
-            <span class="opm-preview-label">Matched</span>
-            <span class="opm-preview-qty-val">{preview.proposedPairedQty} lots</span>
-          </div>
-          <div class="opm-preview-row" class:opm-orphan={preview.orphanQty > 0}>
-            <span class="opm-preview-label">Orphan</span>
-            <span class="opm-preview-qty-val">{preview.orphanQty} lots</span>
-          </div>
-        </div>
-      {/if}
 
       <div class="opm-field">
         <label class="opm-label" for="opm-parent-sel">Parent order</label>
@@ -163,6 +104,11 @@
                 placeholder="Select child order"
                 options={childOptions} />
       </div>
+      <div class="opm-warn">
+        Pairing these orders will suppress automatic take-profit / template
+        attachment on the child order.
+      </div>
+
       <div class="opm-actions">
         <button class="opm-cancel" onclick={() => open = false}>Cancel</button>
         <button class="opm-submit" onclick={submit}
@@ -230,53 +176,14 @@
   .opm-error { font-size: var(--fs-lg); color: #fb7185; }
   .opm-success { font-size: var(--fs-lg); color: #6bb365; }
 
-  /* Position preview panel */
-  .opm-preview {
-    background: color-mix(in srgb, var(--text-med) 5%, transparent);
-    border: 1px solid color-mix(in srgb, var(--text-med) 15%, transparent);
+  /* Side-effect disclosure (2026-10) — pairing two orders here suppresses
+     the child order's own automatic take-profit/template attachment, a
+     real behavior change the operator should see before submitting. */
+  .opm-warn {
+    font-size: var(--fs-md); color: var(--c-action);
+    background: color-mix(in srgb, var(--c-action) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--c-action) 30%, transparent);
     border-radius: 5px;
-    padding: 0.55rem 0.7rem;
-    display: flex; flex-direction: column; gap: 0.3rem;
-    font-size: var(--fs-lg);
-  }
-  .opm-preview-title {
-    font-size: var(--fs-md); font-weight: 600; text-transform: uppercase;
-    letter-spacing: 0.06em; color: var(--text-lo);
-    margin-bottom: 0.15rem;
-  }
-  .opm-preview-leg {
-    display: flex; align-items: center; gap: 0.5rem;
-    color: var(--text-med);
-  }
-  .opm-preview-label {
-    font-size: var(--fs-md); font-weight: 600; color: var(--text-muted);
-    min-width: 2.8rem; text-transform: uppercase; letter-spacing: 0.04em;
-  }
-  .opm-preview-acct {
-    font-family: monospace; font-size: var(--fs-md);
-    color: var(--text-lo); min-width: 2.6rem;
-  }
-  .opm-preview-sym {
-    font-family: monospace; font-size: var(--fs-md);
-    color: var(--text-med); flex: 1; overflow: hidden;
-    text-overflow: ellipsis; white-space: nowrap;
-  }
-  .opm-preview-qty {
-    font-family: monospace; font-size: var(--fs-md);
-    color: var(--text-med); white-space: nowrap;
-  }
-  .opm-preview-row {
-    display: flex; align-items: center; gap: 0.5rem;
-    padding: 0.15rem 0.35rem; border-radius: 3px;
-    background: rgba(34,211,238,0.10);
-    color: var(--c-info);
-  }
-  .opm-preview-qty-val {
-    font-family: monospace; font-size: var(--fs-md); font-weight: 600;
-    margin-left: auto;
-  }
-  .opm-orphan {
-    background: rgba(251,191,36,0.12);
-    color: var(--c-action);
+    padding: 0.4rem 0.6rem;
   }
 </style>

@@ -1,112 +1,272 @@
-# Plan: Panel header + grid consistency — shared CSS variables for border/gap, grid header look, and CardHeader padding
+# Plan: Real orphan/paired-position display + persisted manual pin (Round 1)
 
-## Task
+## Context
 
-Five related visual-consistency fixes, all confirmed via investigation (not
-assumed), full rationale in `~/.claude/plans/purrfect-marinating-pixel.md` — read it
-for complete context before starting:
-(A) a shared gap variable fixing a "double border" stacking artifact where a grid
-sits directly below a CardHeader with zero gap; (B) shared grid-header-look CSS
-variables (background/font-size/weight/letter-spacing/height) standardizing every
-grid-style header in the app on the Derivatives Legs/Exp-close table's
-already-good-looking values; (C) removing 3 divergent local `--ch-padding`
-overrides so CardHeader's height is identical everywhere, while preserving every
-panel's own intentional label color; (D) moving the public site's desktop gold
-hairlines closer to the content column; (E) fixing the CLI dropdown's
-hover-description tooltip so it overlays instead of shifting content below it.
+Operator: the Legs grid's "O" orphan marker is currently decorative (always
+orphan), wants a proper icon for orphan vs. paired state, and wants to be
+able to select a position and manually assign a paired position to it —
+"there is partially built functionality for it." Stated long-term goal:
+"going forward, chase, bracket and paired positions are important."
+
+Two read-only investigations + a 4-agent council (architect, risk, UX,
+devil's advocate) ran against the actual code before this plan was written.
+Key findings, all converging on the same shape:
+
+- **Three independent, non-interacting "pairing" concepts already exist.**
+  Only one is real and live: `backend/api/routes/positions.py:_auto_pair_positions()`
+  (quantity-waterfall by root symbol, ephemeral — recomputed every request,
+  no persisted identity) feeds MarketPulse's Positions bucket + PerformancePage
+  correctly. A second (`_classify_mcx_group`/`_scope_positions_expiring_today_mcx_unhedged`
+  in expiry.py/grammar.py) is a *different*, CE/PE-net algorithm used only
+  for MCX expiry auto-close and disagrees in principle with the first. A
+  third, `POST /api/orders/pair` + `OrderPairModal.svelte`, is fully built
+  and admin-guarded but pairs ORDERS (not positions) via `AlgoOrder.parent_order_id`
+  — a column chase.py already overloads to mean "this order already has a
+  child, skip TP/template auto-attach." Calling the existing "Pair" button
+  today silently disables TP/template protection on the child order, with
+  zero operator-facing indication, and has no effect on any orphan/paired
+  badge anywhere.
+- **The specific bug the operator is looking at** is narrower than "the
+  pairing logic has gaps": `buildPositionRowFromBroker()` in
+  `frontend/src/lib/data/expiryPnl.js:243-288` strips `is_orphan`/
+  `pair_group_key`/`has_gtt` via an explicit field whitelist before the
+  derivatives Legs grid's pipeline ever sees them — so `CandidateLegRow.svelte`
+  always falls through to the amber `'○'` glyph, regardless of real state.
+  The sibling MarketPulse/PerformancePage grids already show the REAL data
+  correctly via the same `_auto_pair_positions` computation.
+- **Council consensus (architect, risk, UX, devil's advocate — all four
+  independently converged on this):** do NOT retrofit `_auto_pair_positions`
+  with new type-aware semantics in this round — keep it as the unchanged
+  netting SSOT for MarketPulse/PerformancePage/Legs-grid display. Do NOT
+  wire chase/bracket to consult any pairing concept yet — the two existing
+  algorithms disagree and reconciling them is a separate, larger decision;
+  risk's agent built a concrete scenario where acting on the wrong/stale
+  pairing signal leaves a position naked with no stop (~₹40k unguarded
+  loss example). Do NOT reuse `AlgoOrder.oco_pair_id` (reserved for a
+  different future feature, zero writers today) or `parent_order_id`
+  (already overloaded) for a new persisted manual-pin concept — it needs
+  its own table. Do NOT leave `/api/orders/pair`'s silent TP/template
+  side-effect undisclosed.
+
+This round ships the real, safe, high-value slice every council member
+agreed on: fix the Legs-grid display bug with the EXISTING correct data
+(no new algorithm), add real icons, build a genuinely persisted
+operator-pin feature with its own table and an unpair action (neither
+exists today), surface the `/api/orders/pair` side effect instead of
+hiding it, and reach the entry point from both pages regardless of
+draft/live state. Chase/bracket pairing-awareness and algorithm
+reconciliation are explicitly deferred to a future round — flagged below,
+not silently dropped.
+
+## History (git archaeology — operator asked "what happened to it,
+## refer to previous commits")
+
+The Legs-grid pairing display was **never accidentally removed** — the
+operator's instinct that it used to work was correct, but the chip
+markup itself has survived two refactors untouched; only the DATA
+feeding it was ever missing for this one surface.
+
+- `6f374a1a` (Aug 14) — original design: pairing was order-based
+  (`AlgoOrder.parent_order_id`), with `is_orphan`/`pair_group_key`
+  meaning "no open AlgoOrder tracks this position." Manual "Pair"
+  button + modal added to both MarketPulse and the Legs grid.
+- `382f3205` (Aug 15, next day) — **deliberate redesign**: replaced the
+  order-based pairing with the quantity-waterfall algorithm in use
+  today (`_auto_pair_positions`). This SAME commit wired real
+  `pair_group_key`/`orphan_qty`/`paired_qty` chips directly into the
+  Legs grid (`CandidateLegRow.svelte`) and a pair-group sort in
+  `+page.svelte` — at this point the Legs grid display was genuinely
+  wired and working.
+- Sometime after that, the Legs grid's own data pipeline
+  (`buildCandidatePositions` → `buildPositionRowFromBroker` in
+  `expiryPnl.js`) was built with an explicit field whitelist that never
+  included these fields — confirmed via `git log -S` (the field names
+  never appear anywhere in that file's history). The chips kept
+  rendering; the data feeding them silently went missing.
+- `56712d19` (Sep 26, "Commit 9 completion") — an audit pass **found
+  and explicitly documented** that the pair-group sort was dead
+  ("`buildCandidatePositions` output rows never carry `pair_group_key`
+  ... a guaranteed-stable no-op") and removed just the sort. Did not
+  touch the chip markup.
+- `897baee0` — consolidated the original two chips into the single
+  state-column cell seen today (`'GTT'` / `pair_group_key` / `'○'`
+  fallback) — why every row has shown `'○'` ever since.
+
+**On "it should be present in positions too"**: it already is —
+MarketPulse's Positions bucket (and PerformancePage) read the real
+`_auto_pair_positions` output correctly today, confirmed by both
+investigation agents independently. This plan's section 2 brings the
+Legs grid up to the SAME standard those two surfaces already meet —
+not a new capability, closing a gap unique to one page's pipeline.
+
+## Approach
+
+### 1. Backend — new persisted manual-pin table + API
+
+- New table `position_pairs`: `id`, `account`, `symbol_a`, `symbol_b`,
+  `created_by`, `created_at`, `active` (bool). Keyed on
+  `(account, symbol_a, symbol_b)` with a uniqueness constraint on the
+  unordered pair per account (store normalized so A/B order doesn't
+  create duplicates). Migration in `backend/api/database.py`.
+- `GET /api/positions` (both `_auto_pair_positions` call sites —
+  `positions.py:591` and `:1317`) — after computing the existing
+  quantity-waterfall `pair_group_key`/`is_orphan`/`paired_qty`/`orphan_qty`,
+  overlay any ACTIVE `position_pairs` row matching the account+symbol: a
+  pinned pair gets its own distinct `pin_group_key` field (new, separate
+  from `pair_group_key` — never collide the two concepts under one name,
+  per the architect's explicit guidance) so the frontend can render
+  "operator-pinned" differently from "auto-detected."
+- New routes: `POST /api/positions/pin` (`{account, symbol_a, symbol_b}`)
+  and `DELETE /api/positions/pin/{id}` (unpair — does not exist today).
+  Same admin-guard pattern as the existing `/api/orders/pair` route.
+  400 if either symbol isn't a real open position for that account at
+  call time (no pinning phantom/closed positions).
+- `PositionRow` schema (`backend/api/schemas.py`): add `pin_group_key:
+  Optional[str] = None`.
+
+### 2. Frontend — fix the Legs-grid data-wiring bug (no new algorithm)
+
+- `frontend/src/lib/data/expiryPnl.js:buildPositionRowFromBroker()` —
+  add `is_orphan`, `pair_group_key`, `pin_group_key`, `has_gtt` to the
+  field whitelist so they survive into `buildCandidatePositions()`'s
+  spread (`frontend/src/lib/derivatives/pageLoad.js:312-414`). This is
+  the entire fix for "the Legs grid always shows orphan" — reusing the
+  exact same real, server-computed data MarketPulse/PerformancePage
+  already render correctly, per architect's "keep #1 unchanged, don't
+  invent new semantics silently" guidance.
+
+### 3. Frontend — icon/glyph fix + shared helper (both grids)
+
+- New shared helper (e.g. `frontend/src/lib/data/positionStateBadge.js`):
+  `positionStateBadge(row) → {glyph, color, tooltip}` consuming `has_gtt`
+  / `pin_group_key` / `pair_group_key` in that priority order. Replace
+  the duplicated inline color/glyph logic in `CandidateLegRow.svelte:244-257`
+  and `pulseColumns.js:572-593` with calls to this helper, and switch the
+  hardcoded hex/rgba literals to the existing `app.css` tokens
+  (`--algo-amber`, `--algo-cyan`, `--algo-green` + bg/border variants).
+- Orphan glyph: replace `'○'` (reads as the letter "O") with a distinct,
+  non-ambiguous glyph that has no color-emoji presentation variant on
+  macOS/Safari (verify rendering; force text-presentation with U+FE0E if
+  needed). Paired (auto-detected) keeps showing its group id (`P1`/`P2`)
+  — per UX, the operator needs to see which rows are linked, a bare icon
+  loses that. Pinned (operator-set) gets its own visually distinct
+  treatment (e.g. a border/pin-mark variant of the paired badge) so it's
+  never confused with an auto-detected pair that could silently reshuffle
+  on the next poll.
+
+### 4. Frontend — reachable pin/unpair UI on both pages
+
+- Make the state badge itself clickable (mouse + touch) on both the
+  derivatives Legs grid and MarketPulse's Positions bucket, opening a
+  lightweight picker scoped to the SAME account's other open positions
+  — not gated behind draft-row existence like today's `⟷ Pair` button
+  (`+page.svelte:5459-5461`, currently inside the Drafts-only card header).
+  Also add "Pair with…" to `SymbolContextMenu` where it's already wired
+  (`+page.svelte:5863`/`6402`) as a second entry point.
+  Calls the new `POST /api/positions/pin`.
+- Unpair: a visible action on a pinned row's badge/context menu, calling
+  `DELETE /api/positions/pin/{id}`.
+- Retire the position-selection path inside `OrderPairModal.svelte`
+  (checkbox-select-2-legs → this modal) since it never actually paired
+  positions — replace its call sites with the new direct pin action.
+  Leave `OrderPairModal`'s own order-to-order pairing form and
+  `POST /api/orders/pair` endpoint itself untouched (see #5).
+
+### 5. Surface (don't silently fix) the `/api/orders/pair` side effect
+
+- `OrderPairModal.svelte` — add a visible inline warning when the modal
+  is used for its existing order-pairing purpose: "Pairing these orders
+  will suppress automatic take-profit / template attachment on the
+  child order." No backend behavior change in this round — this is the
+  minimal safe disclosure risk's and devil's agents both insisted on,
+  short of the larger migration/deprecation decision (explicitly
+  deferred, see below).
+
+### 6. Docs
+
+- `CLAUDE.md` — new entry documenting: the `position_pairs` table and
+  its routes, the `pin_group_key` vs `pair_group_key` distinction (never
+  collide the two names), the Legs-grid whitelist fix, and the explicit
+  invariant that chase/bracket must NOT consult any pairing field yet.
+- `docs/specs/PULSE_SPEC.md` — note the new `pin_group_key` field and
+  badge semantics.
+
+## Explicitly deferred (flag to operator, do not silently build or drop)
+
+- **Chase/bracket consuming pairing state for execution decisions** (e.g.
+  skip an individual stop because "the pair" is the real risk unit, or
+  size a bracket off the pair's net delta). Blocked on reconciling —
+  or an explicit operator decision not to reconcile — the two disagreeing
+  automatic algorithms (`_auto_pair_positions` quantity-waterfall vs.
+  `_classify_mcx_group` CE/PE-net). Candidate simpler path for a future
+  round: chase/bracket could consult ONLY the new operator-pinned
+  `position_pairs` table (unambiguous, operator-confirmed) rather than
+  either automatic algorithm — but that's the operator's call.
+- **Deprecating or changing `/api/orders/pair`'s actual behavior** (vs.
+  just disclosing its side effect, #5 above) — it's live, admin-guarded,
+  and something may already depend on its current behavior; auditing
+  its real callers first is its own task.
+- **Reconciling the two automatic pairing algorithms into one.**
+
+## Critical files
+
+- `backend/api/database.py` — new `position_pairs` table migration
+- `backend/api/routes/positions.py` — `_auto_pair_positions` call sites,
+  new pin/unpair routes
+- `backend/api/schemas.py` — `PositionRow.pin_group_key`
+- `frontend/src/lib/data/expiryPnl.js` — whitelist fix
+- `frontend/src/lib/data/positionStateBadge.js` — new shared helper
+- `frontend/src/routes/(algo)/admin/derivatives/CandidateLegRow.svelte`,
+  `+page.svelte` — badge rendering, pin entry point, SymbolContextMenu item
+- `frontend/src/lib/data/pulseColumns.js`, `frontend/src/lib/MarketPulse.svelte`,
+  `frontend/src/lib/PerformancePage.svelte` — badge rendering, pin entry point
+- `frontend/src/lib/order/OrderPairModal.svelte` — side-effect warning,
+  retire the position-checkbox path
+- `CLAUDE.md`, `docs/specs/PULSE_SPEC.md`
 
 ## Agents
 
-- backend: skip
-- frontend: Implement all 5 parts from the plan doc.
-  (A) In `frontend/src/app.css`, add `--grid-header-gap: 0.4rem`. In
-  `frontend/src/lib/MarketPulse.svelte`, add `margin-top: var(--grid-header-gap)`
-  to the `.bucket-grid`/`.summary-grid`/`.funds-grid` wrapper rule(s) (whichever
-  CSS selector actually wraps these elements directly below their CardHeader).
-  In `frontend/src/lib/NavBreakdown.svelte`, add the same `margin-top` to
-  `.nav-bd-wrap`. Then, now that a real gap exists, make each grid's own border
-  render as a complete, clean frame: confirm `.ag-root-wrapper`'s internal border
-  is zeroed consistently in both MarketPulse (already done) and NavBreakdown
-  (currently missing — add it), so the visible border around each grid is exactly
-  ONE line (the `.ag-theme-algo` class's own border), not zero and not multiple.
-  (B) In `frontend/src/app.css`, add `--grid-header-bg: rgba(15,23,42,0.65)`,
-  `--grid-header-font-size: 0.65rem`, `--grid-header-font-weight: 800`,
-  `--grid-header-letter-spacing: 0.06em`, `--grid-header-height: 30px`. Update
-  `.ag-theme-algo .ag-header`'s background/font-size/font-weight/letter-spacing
-  declarations and `--ag-header-height` to reference these new variables instead
-  of their current hardcoded literals. Then update
-  `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`'s `.cand-headrow` and
-  `.byund-headrow` rules to ALSO reference these same new variables instead of
-  their own separately-hardcoded (currently matching) values — single source of
-  truth, not a coincidental match. After this change, visually confirm every real
-  ag-Grid consumer app-wide (MarketPulse, NavBreakdown, BrokerHealthBadge,
-  PerformancePage's embedded-banner mode) still reads correctly at the new
-  darker/bolder look — not just the panels named in the original complaint.
-  (C) Remove the `--ch-padding` override in `MarketPulse.svelte`'s `.mp-bucket-wrap`
-  rule, the inline `style="--ch-padding:..."` on `SymbolPanel.svelte`'s
-  order-ticket-modal CardHeader wrapper, and the inline `style="--ch-padding:..."`
-  on `frontend/src/routes/(algo)/orders/+page.svelte`'s outer Order-Entry section —
-  all three should inherit the shared body-level default. Do NOT touch any `color`
-  rule on `.mp-bucket-label`, `.oes-modal-name`, or `.oc-entry-label` — those
-  colors are confirmed intentional and must survive unchanged. For
-  `.oc-entry-label`'s letter-spacing (currently `0.08em`, double the shared
-  `0.04em` default): either converge it to `0.04em` or state a real reason to keep
-  it distinct in your handback — don't silently pick either way.
-  (D) In `frontend/src/routes/(algo... wait this is public)/layout — in
-  `frontend/src/routes/(public)/+layout.svelte`, reduce `--b8-margin-offset`'s
-  value from `24px` to `12px` (starting point — adjust after a visual check if it
-  looks wrong). This value feeds into the ellipse-vignette flat-zone math
-  documented in the same comment block (B8 decoration) — re-read that comment,
-  confirm the vignette still reads cleanly at the new offset, not just the
-  hairline position in isolation.
-  (E) In `frontend/src/lib/command/AgentCliEditor.svelte`, move the
-  `.agent-cli-suggest-desc` element (currently rendered in normal document flow
-  right after `.agent-cli-input-wrap` closes, lines ~546-548, appearing via
-  `{#if _hoverDesc}`) so it renders INSIDE `.agent-cli-dropdown` instead (e.g. as a
-  description footer row within that already-correctly-`position:absolute` panel,
-  shown only while `_hoverDesc` is set) — so it overlays rather than occupying
-  flow and shifting the compile-errors/JSON-preview area below it.
-  For every change, start a local dev server and visually confirm the before/after
-  look in a real browser — this is a visual-design change; svelte-check passing
-  alone is not sufficient evidence of correctness. Run `npx svelte-check --output
-  machine` (0 errors required) and `npx vitest run` (full suite, 0 regressions)
-  before finishing.
+- backend: implement the `position_pairs` table/migration, overlay logic
+  in both `_auto_pair_positions` call sites, `POST /api/positions/pin` +
+  `DELETE /api/positions/pin/{id}` routes, `PositionRow.pin_group_key`
+  schema field — per section 1 above.
+- frontend: `expiryPnl.js` whitelist fix (section 2); new
+  `positionStateBadge.js` helper + glyph/color consolidation in
+  `CandidateLegRow.svelte`/`pulseColumns.js` (section 3); clickable
+  badge + context-menu pin/unpair entry points on both pages, retire
+  `OrderPairModal`'s position-checkbox path (section 4); side-effect
+  warning in `OrderPairModal.svelte` (section 5).
 - broker: skip
-- doc: skip
-- backend-test: skip
-- playwright: Add/update coverage for: (a) no visible gap/overlap between
-  CardHeader and a grid on MarketPulse's Positions panel and NavBreakdown
-  post-fix, confirming a deliberate small gap now exists (bounding-box check);
-  (b) the real ag-Grid header's computed background-color/font-size/font-weight on
-  at least 2 real ag-Grid panels (MarketPulse, NavBreakdown) now match the new
-  shared variable values, and the Derivatives hand-rolled tables render identically
-  to before (same computed values, now variable-driven); (c) CardHeader padding is
-  identical across MarketPulse/SymbolPanel-modal/Orders-page/Derivatives/
-  Automation/Dashboard; (d) label text colors on MarketPulse buckets, SymbolPanel
-  modal, and Orders page are UNCHANGED (regression guard); (e) hovering a CLI
-  dropdown suggestion row does not shift the compile-errors/JSON-preview area
-  below it (bounding-box of that area before/after hover, must be identical).
+- doc: CLAUDE.md + PULSE_SPEC.md updates (section 6)
+- backend-test: pytest coverage for the new table, overlay logic, pin/
+  unpair routes — happy path, duplicate-pin rejection, phantom-symbol
+  400, unpair clears `pin_group_key` on next fetch.
+- playwright: badge glyph rendering (orphan/paired/pinned visually
+  distinct), pin flow from both pages (Legs grid + MarketPulse), unpair
+  flow, OrderPairModal warning text renders.
 
 ## Tests
 
-- pytest: no
+- pytest: yes
 - svelte-check: yes
 - playwright: yes
 
 ## Commit message
 
-fix(ui): standardize grid-adjacency gap, grid header look, and CardHeader padding via shared CSS variables; fix CLI dropdown layout shift; tighten public-site hairline spacing
+fix(positions): wire real orphan/paired state into Legs grid, add persisted manual pin + unpair, disclose /api/orders/pair's TP-suppression side effect
 
 ## Done when
 
-- No panel with a grid/table directly below its CardHeader shows a stacked/
-  thickened double-border — a consistent gap exists everywhere, matching the
-  Derivatives reference pattern.
-- Every grid-style header in the app shares the same background/font/height,
-  driven by one set of CSS variables.
-- CardHeader's padding/height is identical across every panel, with each panel's
-  intentional label colors preserved.
-- The public site's desktop gold hairlines sit closer to the content column.
-- Hovering a CLI dropdown suggestion never shifts content below it.
-- svelte-check 0 errors, full Vitest suite green, new/updated Playwright specs
-  green, visually confirmed in a real browser.
+- Legs grid shows the real GTT/paired/orphan state for every row
+  (matching MarketPulse/PerformancePage), not a hardcoded orphan glyph.
+- Orphan/paired/pinned glyphs are visually distinct from each other and
+  from a plain letter "O".
+- Operator can select a position on either the Legs grid or MarketPulse
+  Positions bucket and pin it to another open position in the same
+  account; the pin persists across polls/reloads and is visually
+  distinguishable from an auto-detected pair.
+- Operator can unpair a pinned pair from either surface.
+- `OrderPairModal` discloses its TP/template-suppression side effect
+  before submit.
+- Chase/bracket code is untouched — no new pairing-field reads anywhere
+  in `chase.py`, `template_attach.py`, `bracket_registry.py`.

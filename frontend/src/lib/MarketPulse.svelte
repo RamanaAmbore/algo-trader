@@ -99,6 +99,8 @@
   import ChartModal from '$lib/ChartModal.svelte';
   import AddToPulseModal from '$lib/AddToPulseModal.svelte';
   import OrderPairModal from '$lib/order/OrderPairModal.svelte';
+  import PositionPinPicker from '$lib/order/PositionPinPicker.svelte';
+  import { pinPickerCandidatesFromRows } from '$lib/data/pinPickerCandidates.js';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
   import { baseDayPnlForPosition, dayChangePct } from '$lib/data/nav';
   import { getProvisionalPositions, applyFill, clearFill, clearAll as clearAllProvisional } from '$lib/data/provisionalPositions.svelte.js';
@@ -3984,6 +3986,31 @@
       );
       return true;
     }
+    // Position-state badge (GTT/pinned/paired/orphan) — opens
+    // PositionPinPicker. Always consumed (returns true) so a click never
+    // falls through to the order ticket, even when resolution below
+    // can't actually open the picker (demo session, masked account).
+    // The badge only renders (pulseColumns.js's `pos_state` column) when
+    // the row's `accounts` Set has exactly one member — pulseUnified.js
+    // resets pin_group_key/pair_group_key/has_gtt/is_orphan to null the
+    // moment a second account merges into the same symbol row, so a
+    // visible badge structurally guarantees a resolvable single account.
+    const pinBtn = target?.closest?.('.pos-state-badge-btn');
+    if (pinBtn) {
+      ev.event?.stopPropagation?.();
+      const row = ev.data;
+      const acctSet = row?.accounts;
+      const acct = (acctSet instanceof Set && acctSet.size === 1) ? [...acctSet][0] : '';
+      const sym = String(row?.tradingsymbol || '');
+      // Pinning is an admin/auth-gated write (same guard as
+      // _openTicketFromRow's isRealAcct check) — a demo session or a
+      // masked account id ('#'-containing) can't actually call
+      // /api/positions/pin, so don't open a picker that can only fail.
+      if (!isDemo && acct && !String(acct).includes('#') && sym) {
+        _pinPicker = { account: acct, symbol: sym, pinGroupKey: row?.pin_group_key ?? null };
+      }
+      return true;
+    }
     return false;
   }
 
@@ -4145,6 +4172,21 @@
 
   // Pair-orders modal state — opened by the "Pair" button in the Positions header.
   let _pairModalOpen = $state(false);
+
+  // Position pin/unpin picker state (2026-10) — opened from the Positions
+  // bucket's `.pos-state-badge-btn` click (`_tryHandleRowButton` below).
+  // Mirrors the derivatives page's own `_pinPicker`/`_openPinPicker`
+  // wiring (frontend/src/routes/(algo)/admin/derivatives/+page.svelte),
+  // but candidates are derived from `positions` — the RAW per-account
+  // rows (pulsePositionsStore.value) — not the Positions bucket's own
+  // ag-Grid rows, which are aggregated per-symbol ACROSS accounts
+  // (pulseUnified.js's mergePositionRows) and so can't answer "what
+  // else is open in this account".
+  /** @type {{ account: string, symbol: string, pinGroupKey: string|null } | null} */
+  let _pinPicker = $state(null);
+  const _pinPickerCandidates = $derived.by(() =>
+    _pinPicker ? pinPickerCandidatesFromRows(positions, _pinPicker.account, _pinPicker.symbol) : []
+  );
 
   // Chart modal state — opened by the "Chart →" context-menu item.
   // Does NOT go through SymbolPanel (the chart tab was retired from
@@ -4644,6 +4686,22 @@
     symbol={_chartModalSym}
     exchange={_chartModalExch}
     onClose={_closeChartModal}
+  />
+{/if}
+
+{#if _pinPicker}
+  <PositionPinPicker
+    open={true}
+    account={_pinPicker.account}
+    sourceSymbol={_pinPicker.symbol}
+    pinGroupKey={_pinPicker.pinGroupKey}
+    candidates={_pinPickerCandidates}
+    onDone={(action) => {
+      toast.success(action === 'pinned' ? 'Positions pinned' : 'Positions unpinned');
+      _pinPicker = null;
+      loadPulse({ force: true, fresh: true });
+    }}
+    onClose={() => { _pinPicker = null; }}
   />
 {/if}
 

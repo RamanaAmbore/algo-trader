@@ -44,10 +44,21 @@ function makeOpts() {
 }
 
 // ---------------------------------------------------------------------------
-// Fix 1 — pos_state cellRenderer qty_pos fallback (defensive orphan marker)
+// pos_state cellRenderer / cellStyle — now delegates to the shared
+// positionStateBadge.js helper (2026-10 fix). Previously this column
+// defaulted every non-GTT/non-paired row to a hardcoded orphan marker
+// regardless of real state (is_orphan/pair_group_key/has_gtt were never
+// actually wired through the pipeline before that fix) — the canonical
+// contract (matching PerformancePage.svelte's own copy) gates strictly on
+// `is_orphan`, returning no badge/button at all otherwise. cellRenderer
+// now returns a real <button> HTML string (ag-Grid sets it via
+// innerHTML) rather than a bare glyph string, so it stays mouse- AND
+// touch-activatable and keyboard-focusable — see
+// positionStateBadge.test.js for full priority-order coverage; these
+// tests only confirm the column wires that helper in correctly.
 // ---------------------------------------------------------------------------
 
-describe('mkRightColDefs — pos_state cellRenderer quantity fallback (Fix 1)', () => {
+describe('mkRightColDefs — pos_state cellRenderer (delegates to positionStateBadge)', () => {
   function getPosStateCol() {
     const cols = mkRightColDefs(makeOpts());
     const col = cols.find(c => c.colId === 'pos_state');
@@ -55,40 +66,50 @@ describe('mkRightColDefs — pos_state cellRenderer quantity fallback (Fix 1)', 
     return col;
   }
 
-  // cellRenderer tests
-  it('returns "○" when quantity is defined but has_gtt/pair_group_key/is_orphan are all falsy', () => {
-    const col = getPosStateCol();
-    const result = col.cellRenderer({ data: { quantity: 10 } });
-    expect(result).toBe('○');
-  });
-
-  it('returns "○" when quantity is 0 (defined but zero)', () => {
-    const col = getPosStateCol();
-    const result = col.cellRenderer({ data: { quantity: 0 } });
-    expect(result).toBe('○');
-  });
-
-  it('returns "○" for any non-total, non-GTT, non-paired row (unconditional orphan)', () => {
-    const col = getPosStateCol();
-    const result = col.cellRenderer({ data: { qty_hold: 5 } });
-    expect(result).toBe('○');
-  });
-
-  it('quantity fallback does NOT fire when is_orphan is true (is_orphan takes priority)', () => {
+  it('returns a real <button> with data-pos-state="orphan" when is_orphan is true', () => {
     const col = getPosStateCol();
     const result = col.cellRenderer({ data: { is_orphan: true, quantity: 10 } });
-    expect(result).toBe('○'); // same output, but via the is_orphan branch
+    expect(result).toContain('<button');
+    expect(result).toContain('data-pos-state="orphan"');
+    expect(result).toContain('pos-state-badge-btn');
   });
 
-  it('quantity fallback does NOT fire when pair_group_key is set (pair takes priority)', () => {
+  it('returns "" (no badge) when quantity is defined but no state flags are set', () => {
+    const col = getPosStateCol();
+    const result = col.cellRenderer({ data: { quantity: 10 } });
+    expect(result).toBe('');
+  });
+
+  it('returns "" for any row with no position-state flags, regardless of other fields', () => {
+    const col = getPosStateCol();
+    const result = col.cellRenderer({ data: { qty_hold: 5 } });
+    expect(result).toBe('');
+  });
+
+  it('pair_group_key button shows the group id as its text and data-pos-state="paired"', () => {
     const col = getPosStateCol();
     const result = col.cellRenderer({ data: { pair_group_key: 'P1', quantity: 10 } });
-    expect(result).toBe('P1');
+    expect(result).toContain('>P1<');
+    expect(result).toContain('data-pos-state="paired"');
   });
 
-  it('returns "" for _isTotal rows regardless of quantity', () => {
+  it('pin_group_key button shows data-pos-state="pinned" and outranks pair_group_key', () => {
     const col = getPosStateCol();
-    const result = col.cellRenderer({ data: { _isTotal: true, quantity: 10 } });
+    const result = col.cellRenderer({ data: { pin_group_key: 'PIN3', pair_group_key: 'P1' } });
+    expect(result).toContain('data-pos-state="pinned"');
+    expect(result).toContain('>PIN3<');
+  });
+
+  it('has_gtt button shows "GTT" text and data-pos-state="gtt"', () => {
+    const col = getPosStateCol();
+    const result = col.cellRenderer({ data: { has_gtt: true, quantity: 10 } });
+    expect(result).toContain('>GTT<');
+    expect(result).toContain('data-pos-state="gtt"');
+  });
+
+  it('returns "" for _isTotal rows regardless of flags', () => {
+    const col = getPosStateCol();
+    const result = col.cellRenderer({ data: { _isTotal: true, has_gtt: true, quantity: 10 } });
     expect(result).toBe('');
   });
 
@@ -98,36 +119,39 @@ describe('mkRightColDefs — pos_state cellRenderer quantity fallback (Fix 1)', 
     expect(result).toBe('');
   });
 
-  // any non-GTT, non-paired row shows ○ regardless of which fields are present
-  it('returns "○" even when only qty_pos field is present (unconditional orphan)', () => {
+  it('HTML-escapes the glyph/tooltip when interpolated (defensive, innerHTML sink)', () => {
     const col = getPosStateCol();
-    const result = col.cellRenderer({ data: { qty_pos: 10 } });
-    expect(result).toBe('○');
+    const result = col.cellRenderer({ data: { pair_group_key: '<x>' } });
+    expect(result).not.toContain('<x>');
+    expect(result).toContain('&lt;x&gt;');
   });
 
-  // cellStyle tests — amber background when quantity is defined
-  it('cellStyle returns amber background when quantity is defined and no other flags', () => {
+  // cellStyle tests — delegates to the same helper, so no background/color
+  // when there's no real state.
+  it('cellStyle returns {} when no state flags are set', () => {
     const col = getPosStateCol();
     const result = col.cellStyle({ data: { quantity: 5 } });
-    expect(result).toEqual({ background: 'rgba(251,191,36,0.15)', color: '#fbbf24' });
+    expect(result).toEqual({});
   });
 
-  it('cellStyle returns amber for any non-total, non-GTT, non-paired row', () => {
-    const col = getPosStateCol();
-    const result = col.cellStyle({ data: { qty_hold: 5 } });
-    expect(result).toEqual({ background: 'rgba(251,191,36,0.15)', color: '#fbbf24' });
-  });
-
-  it('cellStyle amber does NOT fire when is_orphan is true (is_orphan takes priority)', () => {
+  it('cellStyle returns amber background+color when is_orphan is true', () => {
     const col = getPosStateCol();
     const result = col.cellStyle({ data: { is_orphan: true, quantity: 10 } });
-    expect(result).toEqual({ background: 'rgba(251,191,36,0.15)', color: '#fbbf24' });
+    expect(result).toEqual({ background: 'var(--algo-amber-bg)', color: 'var(--algo-amber)' });
   });
 
   it('cellStyle returns green when has_gtt is true regardless of quantity', () => {
     const col = getPosStateCol();
     const result = col.cellStyle({ data: { has_gtt: true, quantity: 10 } });
     expect(result).toEqual({ background: 'var(--algo-green-badge)', color: 'var(--algo-green)' });
+  });
+
+  it('cellStyle includes a border for pinned (distinct from auto-paired, no border)', () => {
+    const col = getPosStateCol();
+    const pinned = col.cellStyle({ data: { pin_group_key: 'PIN1' } });
+    const paired = col.cellStyle({ data: { pair_group_key: 'P1' } });
+    expect(pinned.border).toBeTruthy();
+    expect(paired.border).toBeUndefined();
   });
 
   it('cellStyle returns {} for _isTotal rows regardless of quantity', () => {
@@ -186,10 +210,11 @@ describe('mkRightColDefs — pos_state column (Fix 2 original)', () => {
     expect(cols[0].hide).toBe(false);
   });
 
-  it('pos_state column headerTooltip includes P1/P2 and amber/cyan/green language', () => {
+  it('pos_state column headerTooltip includes pinned/paired/amber/cyan/green language', () => {
     const cols = mkRightColDefs(makeOpts());
     const tooltip = cols[0].headerTooltip ?? '';
-    expect(tooltip).toContain('P1/P2');
+    expect(tooltip).toContain('Pinned');
+    expect(tooltip).toContain('paired');
     expect(tooltip).toContain('cyan');
     expect(tooltip).toContain('amber');
     expect(tooltip).toContain('green');

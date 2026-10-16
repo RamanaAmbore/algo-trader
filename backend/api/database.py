@@ -107,7 +107,7 @@ async def _migrate_create_tables(conn) -> None:
         GrammarToken, Setting, DailyBook, Watchlist, WatchlistItem, VisitorLog,
         CodeMetricsSnapshot, MarketLifecycleEvent, MarketHoliday,
         MarketSpecialSession, BrokerAccount, PerfSnapshot, AppMessage,
-        ExchangeSchedule,
+        ExchangeSchedule, PositionPair,
     )
     from sqlalchemy import text
     _branch_local_tables = [
@@ -839,6 +839,45 @@ async def _migrate_exchange_schedule_table(conn) -> None:
     """))
 
 
+async def _migrate_position_pairs_table(conn) -> None:
+    """Idempotent — create position_pairs table + partial unique index.
+
+    Mirrors `_migrate_exchange_schedule_table`'s dual-defense pattern:
+    `_migrate_create_tables` (via `create_all`) creates the base table
+    from the `PositionPair` ORM model's columns; this function is the
+    defensive raw-DDL pass that guarantees the PARTIAL unique index
+    exists even on a deployment where `create_all` ran before this
+    index was added to the model (plain `Base.metadata.create_all` does
+    not reliably emit `postgresql_where` partial indexes via the ORM
+    `Index(...)` construct on every SQLAlchemy/driver combination — raw
+    DDL here is the authoritative source of truth for this index).
+
+    The index is partial (`WHERE active`) so a soft-deleted pair
+    (active=False) never blocks re-creating the same unordered
+    (account, symbol_a, symbol_b) pin.
+    """
+    from sqlalchemy import text as _text
+    await conn.execute(_text("""
+        CREATE TABLE IF NOT EXISTS position_pairs (
+            id         SERIAL PRIMARY KEY,
+            account    VARCHAR(32) NOT NULL,
+            symbol_a   VARCHAR(64) NOT NULL,
+            symbol_b   VARCHAR(64) NOT NULL,
+            created_by VARCHAR(64) NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            active     BOOLEAN     NOT NULL DEFAULT TRUE
+        )
+    """))
+    await conn.execute(_text("""
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_position_pairs_active
+        ON position_pairs (account, symbol_a, symbol_b)
+        WHERE active
+    """))
+    await conn.execute(_text(
+        "CREATE INDEX IF NOT EXISTS ix_position_pairs_account ON position_pairs (account)"
+    ))
+
+
 async def _migrate_algo_orders_gtt_order_id(conn) -> None:
     """Add gtt_order_id column to algo_orders if not present."""
     from sqlalchemy import text
@@ -1188,6 +1227,7 @@ async def init_db() -> None:
         await _migrate_order_templates_group_and_tags(conn)
         await _migrate_agents_bracket_columns(conn)
         await _migrate_agents_given(conn)
+        await _migrate_position_pairs_table(conn)
     logger.info("Database: tables verified")
 
     # Sprint 1a — CONCURRENTLY index creation. MUST run after the

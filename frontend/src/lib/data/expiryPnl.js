@@ -285,6 +285,21 @@ export function buildPositionRowFromBroker(p, source) {
     day_buy_value:      Number(p?.day_buy_value || 0),
     day_sell_value:     Number(p?.day_sell_value || 0),
     prev_settlement_pnl: p?.prev_settlement_pnl != null ? Number(p.prev_settlement_pnl) : null,
+    // Position-state fields (2026-10 fix) — previously dropped by this
+    // whitelist, so the derivatives Legs grid's pipeline
+    // (buildCandidatePositions in pageLoad.js) never saw them even
+    // though the backend has shipped them on PositionRow all along.
+    // MarketPulse/PerformancePage read the SAME field names directly off
+    // their own (differently-sourced) row objects — see
+    // positionStateBadge.js for the shared priority/glyph logic every
+    // consumer now funnels through. `pin_group_key` is the operator-set
+    // manual pin (POST /api/positions/pin); `pair_group_key` is the
+    // backend's auto-detected lot-waterfall pairing; `has_gtt`/`is_orphan`
+    // are backend-computed booleans.
+    is_orphan:       p?.is_orphan === true,
+    pair_group_key:  p?.pair_group_key ?? null,
+    pin_group_key:   p?.pin_group_key ?? null,
+    has_gtt:         p?.has_gtt === true,
   };
 }
 

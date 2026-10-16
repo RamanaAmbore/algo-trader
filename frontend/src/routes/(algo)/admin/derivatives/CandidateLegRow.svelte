@@ -34,6 +34,7 @@
   import { priceFmt, pctFmt, aggCompact, ltpDayClass, qtyFmt } from '$lib/format';
   import { longPress }              from '$lib/actions/longPress.js';
   import { legPnlDisplay }          from '$lib/data/derivativesMath.js';
+  import { positionStateBadge }     from '$lib/data/positionStateBadge.js';
 
   const BAND_LABELS = { close: 'ITM ON EXPIRY', netted: 'NETTED', otm: 'OUT OF THE MONEY' };
 
@@ -59,6 +60,7 @@
    *   onRemoveDraft: (draftId: any) => void,
    *   onOpenChartTicket: (c: any) => void,
    *   onContextMenu: (c: any, ev: MouseEvent | PointerEvent) => void,
+   *   onPinClick?: (c: any) => void,
    *   pendingQty?: number,
    * }}
    */
@@ -84,6 +86,7 @@
     onRemoveDraft,
     onOpenChartTicket,
     onContextMenu,
+    onPinClick = null,
   } = $props();
 
   // ── Derived locals (identical logic to what was in {@const} blocks) ───
@@ -150,6 +153,11 @@
       ? null
       : legPnlDisplay(c, ltp, cost, displayQty, _ltpFromFallback, c._residualQty != null)
   );
+
+  // Shared priority logic (GTT > pinned > auto-paired > orphan) — see
+  // positionStateBadge.js. Null state renders no badge/button at all
+  // (e.g. a draft row, which never carries real position-state fields).
+  const _stateBadge = $derived(positionStateBadge(c));
 
   const dir        = $derived(displayQty < 0 ? 'short' : displayQty > 0 ? 'long' : 'flat');
   const isClosable = $derived(!isClosed && c.source !== 'draft');
@@ -242,18 +250,30 @@
            onToggleEnabled(c, checked);
          }} />
   <!-- Position state indicator — second column (38px state track).
-       Three states: GTT (green) / Paired (cyan) / Orphan (amber).
-       Maps to the second grid-template-columns track. -->
-  <span class="cand-state-cell" style:background={
-    c.has_gtt ? 'var(--algo-green-badge)' :
-    c.pair_group_key ? 'rgba(34,211,238,0.18)' :
-    'rgba(251,191,36,0.15)'
-  } style:color={
-    c.has_gtt ? 'var(--algo-green)' :
-    c.pair_group_key ? '#67e8f9' :
-    '#fbbf24'
-  }>
-    {c.has_gtt ? 'GTT' : c.pair_group_key ?? '○'}
+       Four states: GTT (green) / Pinned (cyan, manual) / Auto-paired
+       (cyan) / Orphan (amber diamond). Null state (e.g. a draft row)
+       renders an empty cell, no button. Maps to the second
+       grid-template-columns track. Real <button> (not onclick on a
+       styled span) so mouse AND touch activate it; stopPropagation on
+       BOTH click and keydown so it never falls through to the row's own
+       onclick/onkeydown row-activation handlers (Enter on a focused
+       button bubbles a keydown to the row before the button's own
+       synthetic click fires). -->
+  <span class="cand-state-cell"
+    style:background={_stateBadge.bg || null}
+    style:color={_stateBadge.color || null}
+    style:border={_stateBadge.border || null}>
+    {#if _stateBadge.state != null && onPinClick}
+      <button type="button" class="cand-state-badge-btn"
+        data-pos-state={_stateBadge.state}
+        title={_stateBadge.tooltip}
+        onclick={(e) => { e.stopPropagation(); onPinClick(c); }}
+        onkeydown={(e) => e.stopPropagation()}>
+        {_stateBadge.glyph}
+      </button>
+    {:else}
+      {_stateBadge.glyph}
+    {/if}
   </span>
   <!-- svelte-ignore a11y_interactive_supports_focus -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -443,6 +463,27 @@
     border-radius: 2px;
     min-height: 1.2rem;
   }
+  /* State badge button — fills the state-cell track, transparent so the
+     cell's own background/color/border (set inline from
+     positionStateBadge.js) show through unchanged from the pre-button
+     plain-text rendering. Real <button> for mouse+touch+keyboard. */
+  .cand-state-badge-btn {
+    width: 100%;
+    height: 100%;
+    min-height: 1.2rem;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    letter-spacing: inherit;
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+  .cand-state-badge-btn:hover,
+  .cand-state-badge-btn:focus-visible {
+    background: rgba(255,255,255,0.10);
+  }
 
   /* 2026-09-28 audit fix — Svelte scoped CSS is per-component: a rule
      defined in the PARENT (+page.svelte) never reaches elements rendered
@@ -615,6 +656,25 @@
     width: 0.9rem;
     height: 0.9rem;
     cursor: pointer;
+    /* Vertical-centering fix (2026-10) — every other direct child of
+       .cand-row is a <span> with its own `display:flex;
+       align-items:center` (see `.cand-row > span` above), so the
+       parent grid's `align-items: stretch` only ever needs to size
+       those spans to the row's full height — the flex centering inside
+       each span handles vertical alignment of its own content. The
+       checkbox is the ONE direct child that's a bare replaced <input>,
+       not a span: per the CSS Grid spec, stretch does not apply to
+       replaced elements with an intrinsic size, so it fell back to
+       'start' (pinned to the top of the row) instead of sitting on the
+       same vertical center line as every other cell. Scoped fix (not a
+       `.cand-row { align-items: center }` change) — stretch is
+       load-bearing for every span's full-height background tint/border
+       (cand-pnl, cand-sym-acct, the per-cell divider rule below); a
+       blanket align-items:center would shrink every span to its text's
+       line-height and strip those full-height treatments. */
+    align-self: center;
+    justify-self: center;
+    margin: 0;
   }
 
   /* ── Symbol cell ──────────────────────────────────────────────────── */

@@ -16,6 +16,19 @@
 
 import { aggCompact, ltpDayClass } from '$lib/format.js';
 import { dayChangePct } from '$lib/data/nav.js';
+import { positionStateBadge } from '$lib/data/positionStateBadge.js';
+
+/** Minimal HTML-escape for values interpolated into a cellRenderer's
+ *  returned string (ag-Grid sets it via innerHTML) — the glyph is a
+ *  backend-controlled group id (e.g. "P1"/"PIN4") in practice, but this
+ *  column renders it raw either way, so escape defensively. */
+function _escHtml(/** @type {string} */ s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
 
 // ─── Pure helpers ────────────────────────────────────────────────────
 
@@ -574,20 +587,30 @@ export function mkRightColDefs({
       hide: false,
       width: 28, minWidth: 28, maxWidth: 28,
       pinned: 'left', resizable: false, sortable: false, suppressMovable: true,
-      headerTooltip: 'Position state: Paired (P1/P2 cyan) · Orphan (○ amber) · GTT (green)',
+      headerTooltip: 'Position state: GTT (green) · Pinned (cyan, manual) · Auto-paired (cyan) · Orphan (◇ amber). Click to pin/unpin.',
+      // Shared priority logic (GTT > pinned > auto-paired > orphan) lives
+      // in positionStateBadge.js — PerformancePage.svelte carries its own
+      // separate copy (not converted here, out of scope).
       cellStyle: (p) => {
-        const d = p.data;
-        if (!d || d._isTotal) return {};
-        if (d.has_gtt)        return { background: 'var(--algo-green-badge)',  color: 'var(--algo-green)' };
-        if (d.pair_group_key) return { background: 'rgba(34,211,238,0.18)', color: '#67e8f9' };
-        return { background: 'rgba(251,191,36,0.15)', color: '#fbbf24' };
+        const badge = positionStateBadge(p.data);
+        if (badge.state == null) return {};
+        /** @type {Record<string, string>} */
+        const style = { background: badge.bg, color: badge.color };
+        if (badge.border) style.border = badge.border;
+        return style;
       },
+      // Real <button> (not a styled span) so mouse AND touch activate it,
+      // and it's keyboard-focusable — returned as an HTML string (ag-Grid
+      // sets this via innerHTML) rather than built with
+      // document.createElement so the renderer stays unit-testable under
+      // this suite's node Vitest environment (no DOM available). Click
+      // routing lives in MarketPulse.svelte's `_tryHandleRowButton`
+      // (`.pos-state-badge-btn` closest-check), matching the existing
+      // `.sym-actions`/`.sym-move` convention in the same file.
       cellRenderer: (p) => {
-        const d = p.data;
-        if (!d || d._isTotal) return '';
-        if (d.has_gtt)        return 'GTT';
-        if (d.pair_group_key) return d.pair_group_key;
-        return '○';
+        const badge = positionStateBadge(p.data);
+        if (badge.state == null) return '';
+        return `<button type="button" class="pos-state-badge-btn" data-pos-state="${badge.state}" title="${_escHtml(badge.tooltip)}">${_escHtml(badge.glyph)}</button>`;
       },
       cellClass: 'ag-cell-pair-state',
     },

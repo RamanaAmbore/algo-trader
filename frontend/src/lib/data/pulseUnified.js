@@ -446,6 +446,30 @@ export function mergePositionRows(byKey, pos, includePos, cq, ctx) {
     // column. Multi-account rows show the combined overnight carry.
     row.overnight_qty = (row.overnight_qty ?? 0) + (Number(r.overnight_quantity) || 0);
     if (r.account) row.accounts.add(String(r.account));
+    // Position-state fields (2026-10 fix) — is_orphan/pair_group_key/
+    // pin_group_key/has_gtt are per-ACCOUNT backend signals (PositionRow),
+    // but this row is aggregated across every account holding the same
+    // symbol. They're only meaningful while exactly one account
+    // contributes: the moment a second account's leg merges into the same
+    // symbol row, "which account's pair/pin applies" becomes ambiguous, so
+    // the fields are reset to null rather than guessing (OR-ing booleans
+    // or picking a winning key would misrepresent the state). This mirrors
+    // PerformancePage.svelte's own positions grid, which never aggregates
+    // across accounts in the first place (one row per account+symbol) and
+    // so never hits this ambiguity — the SAME four fields read there
+    // (positionStateBadge.js consumers) come straight off the raw broker
+    // row.
+    if (row.accounts.size === 1) {
+      row.is_orphan      = r.is_orphan === true;
+      row.pair_group_key = r.pair_group_key ?? null;
+      row.pin_group_key  = r.pin_group_key ?? null;
+      row.has_gtt        = r.has_gtt === true;
+    } else {
+      row.is_orphan      = null;
+      row.pair_group_key = null;
+      row.pin_group_key  = null;
+      row.has_gtt        = null;
+    }
     // Market fields — symbolStore first, then contracts quote bag fallback.
     const snap  = snapOf(sym);
     const liveQ = cq?.[`${exch}:${sym}`];

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { pairGroupSort } from '../../data/pairGroupSort.js';
+import { pairGroupSort, sortRowsByPairGroup } from '../../data/pairGroupSort.js';
+import { positionStateBadge } from '../../data/positionStateBadge.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -128,104 +129,126 @@ describe('pairGroupSort — stable within-group ordering', () => {
 });
 
 // ---------------------------------------------------------------------------
-// pos_state cell logic — mirrors the cellStyle / cellRenderer used in
-// pulseColumns.js mkRightColDefs and PerformancePage positionsCols.
-// Extracted here as pure functions so they can be unit-tested without
-// importing ag-Grid or mounting a Svelte component.
+// pos_state cell logic — this file used to carry its own local mirrors of
+// the cellStyle/cellRenderer logic used by pulseColumns.js/PerformancePage
+// (`posStateCellStyle`/`posStateCellRenderer`, now removed). Both real
+// sites now delegate to the shared `positionStateBadge.js` helper
+// (2026-10 fix) — see positionStateBadge.test.js for the full priority-
+// order + glyph test suite. These tests just confirm THIS file's own
+// pairGroupSort-adjacent expectations (GTT > pinned > paired > orphan,
+// stale "○"/hex literals retired) still hold against the real helper.
 // ---------------------------------------------------------------------------
 
-/**
- * Mirror of the pos_state cellStyle function used in pulseColumns.js and
- * PerformancePage.svelte.
- * @param {any} data  — row data object
- * @returns {{ background?: string, color?: string }}
- */
-function posStateCellStyle(data) {
-  if (!data || data._isTotal) return {};
-  if (data.has_gtt)        return { background: 'rgba(74,222,128,0.20)',  color: '#4ade80' };
-  if (data.pair_group_key) return { background: 'rgba(34,211,238,0.18)', color: '#67e8f9' };
-  if (data.is_orphan)      return { background: 'rgba(251,191,36,0.15)', color: '#fbbf24' };
-  return {};
-}
-
-/**
- * Mirror of the pos_state cellRenderer function used in pulseColumns.js and
- * PerformancePage.svelte.
- * @param {any} data  — row data object
- * @returns {string}
- */
-function posStateCellRenderer(data) {
-  if (!data || data._isTotal) return '';
-  if (data.has_gtt)        return 'GTT';
-  if (data.pair_group_key) return data.pair_group_key;
-  if (data.is_orphan)      return '○';
-  return '';
-}
-
-describe('pos_state — cellStyle priority order', () => {
-  it('returns green GTT style when has_gtt is truthy', () => {
-    const style = posStateCellStyle({ has_gtt: true, pair_group_key: 'P1', is_orphan: false });
-    expect(style.color).toBe('#4ade80');
-    expect(style.background).toContain('74,222,128');
+describe('positionStateBadge — priority order (via the real shared helper)', () => {
+  it('returns gtt state when has_gtt is truthy', () => {
+    const b = positionStateBadge({ has_gtt: true, pair_group_key: 'P1', is_orphan: false });
+    expect(b.state).toBe('gtt');
+    expect(b.color).toBe('var(--algo-green)');
   });
 
-  it('returns cyan paired style when pair_group_key is set and has_gtt is false', () => {
-    const style = posStateCellStyle({ has_gtt: false, pair_group_key: 'P1', is_orphan: false });
-    expect(style.color).toBe('#67e8f9');
-    expect(style.background).toContain('34,211,238');
+  it('returns paired state when pair_group_key is set and has_gtt is false', () => {
+    const b = positionStateBadge({ has_gtt: false, pair_group_key: 'P1', is_orphan: false });
+    expect(b.state).toBe('paired');
+    expect(b.color).toBe('var(--algo-cyan-text)');
   });
 
-  it('returns amber orphan style when is_orphan is true and no key/gtt', () => {
-    const style = posStateCellStyle({ has_gtt: false, pair_group_key: null, is_orphan: true });
-    expect(style.color).toBe('#fbbf24');
-    expect(style.background).toContain('251,191,36');
+  it('returns orphan state when is_orphan is true and no key/gtt', () => {
+    const b = positionStateBadge({ has_gtt: false, pair_group_key: null, is_orphan: true });
+    expect(b.state).toBe('orphan');
+    expect(b.color).toBe('var(--algo-amber)');
   });
 
-  it('returns empty style when no state flags are set', () => {
-    const style = posStateCellStyle({ has_gtt: false, pair_group_key: null, is_orphan: false });
-    expect(style).toEqual({});
+  it('returns null state when no state flags are set', () => {
+    const b = positionStateBadge({ has_gtt: false, pair_group_key: null, is_orphan: false });
+    expect(b.state).toBeNull();
   });
 
-  it('returns empty style for _isTotal rows', () => {
-    const style = posStateCellStyle({ _isTotal: true, has_gtt: true, pair_group_key: 'P1' });
-    expect(style).toEqual({});
+  it('returns null state for _isTotal rows', () => {
+    const b = positionStateBadge({ _isTotal: true, has_gtt: true, pair_group_key: 'P1' });
+    expect(b.state).toBeNull();
   });
 
-  it('returns empty style for null data', () => {
-    expect(posStateCellStyle(null)).toEqual({});
-    expect(posStateCellStyle(undefined)).toEqual({});
+  it('returns null state for null/undefined data', () => {
+    expect(positionStateBadge(null).state).toBeNull();
+    expect(positionStateBadge(undefined).state).toBeNull();
   });
 
   it('GTT takes priority over pair_group_key (both set)', () => {
-    // has_gtt wins in the priority chain
-    const style = posStateCellStyle({ has_gtt: true, pair_group_key: 'P1', is_orphan: true });
-    expect(style.color).toBe('#4ade80');
+    const b = positionStateBadge({ has_gtt: true, pair_group_key: 'P1', is_orphan: true });
+    expect(b.state).toBe('gtt');
+  });
+
+  it('pinned takes priority over auto-paired (both keys set)', () => {
+    const b = positionStateBadge({ pin_group_key: 'PIN1', pair_group_key: 'P1' });
+    expect(b.state).toBe('pinned');
   });
 });
 
-describe('pos_state — cellRenderer text', () => {
-  it('returns "GTT" for has_gtt rows', () => {
-    expect(posStateCellRenderer({ has_gtt: true })).toBe('GTT');
+// ---------------------------------------------------------------------------
+// sortRowsByPairGroup — pure-array variant for the derivatives Legs grid
+// (hand-rolled {#each}, not ag-Grid IRowNode[]). Restores the grouping
+// that was removed as dead code in commit 56712d19 (the data never
+// reached this page's pipeline before the 2026-10 whitelist fix).
+// ---------------------------------------------------------------------------
+
+describe('sortRowsByPairGroup — array variant, group ordering', () => {
+  function row(symbol, pair_group_key = null, account = 'ACC1') {
+    return { symbol, pair_group_key, account };
+  }
+
+  it('places P1 rows before P2 rows before orphan (no key) rows', () => {
+    const orphan = row('NIFTY25JUN24000PE', null);
+    const p2     = row('NIFTY25JUN25000CE', 'P2');
+    const p1     = row('NIFTY25JUN24500CE', 'P1');
+
+    const sorted = sortRowsByPairGroup([orphan, p2, p1]);
+
+    expect(sorted[0]).toBe(p1);
+    expect(sorted[1]).toBe(p2);
+    expect(sorted[2]).toBe(orphan);
   });
 
-  it('returns pair_group_key text for paired rows', () => {
-    expect(posStateCellRenderer({ has_gtt: false, pair_group_key: 'P2' })).toBe('P2');
+  it('preserves original index order within a group (stable sort)', () => {
+    const first  = row('FIRST',  'P1');
+    const second = row('SECOND', 'P1');
+    const third  = row('THIRD',  'P1');
+    const orphan = row('ORPH',   null);
+
+    const sorted = sortRowsByPairGroup([orphan, first, second, third]);
+
+    expect(sorted[0]).toBe(first);
+    expect(sorted[1]).toBe(second);
+    expect(sorted[2]).toBe(third);
+    expect(sorted[3]).toBe(orphan);
   });
 
-  it('returns ○ for orphan rows', () => {
-    expect(posStateCellRenderer({ has_gtt: false, pair_group_key: null, is_orphan: true })).toBe('○');
+  it('does not mutate the input array', () => {
+    const input = [row('A', null), row('B', 'P1')];
+    const inputCopy = [...input];
+    sortRowsByPairGroup(input);
+    expect(input).toEqual(inputCopy);
   });
 
-  it('returns empty string for plain rows with no state', () => {
-    expect(posStateCellRenderer({ has_gtt: false, pair_group_key: null, is_orphan: false })).toBe('');
+  it('returns [] for empty/null/undefined input without throwing', () => {
+    expect(sortRowsByPairGroup([])).toEqual([]);
+    expect(sortRowsByPairGroup(null)).toEqual([]);
+    expect(sortRowsByPairGroup(undefined)).toEqual([]);
   });
 
-  it('returns empty string for _isTotal rows', () => {
-    expect(posStateCellRenderer({ _isTotal: true, has_gtt: true, pair_group_key: 'P1' })).toBe('');
-  });
+  it('keys on account+pair_group_key, so two accounts\' unrelated "P1" groups do not interleave', () => {
+    const acc1p1a = row('ACC1_LEG_A', 'P1', 'ACC1');
+    const acc1p1b = row('ACC1_LEG_B', 'P1', 'ACC1');
+    const acc2p1a = row('ACC2_LEG_A', 'P1', 'ACC2');
+    const acc2p1b = row('ACC2_LEG_B', 'P1', 'ACC2');
 
-  it('returns empty string for null/undefined data', () => {
-    expect(posStateCellRenderer(null)).toBe('');
-    expect(posStateCellRenderer(undefined)).toBe('');
+    // Interleaved input across accounts.
+    const sorted = sortRowsByPairGroup([acc1p1a, acc2p1a, acc1p1b, acc2p1b]);
+
+    // ACC1's P1 pair stays adjacent; ACC2's P1 pair stays adjacent — the
+    // two groups are NOT merged into one four-row block.
+    const acc1Idx = [sorted.indexOf(acc1p1a), sorted.indexOf(acc1p1b)].sort();
+    const acc2Idx = [sorted.indexOf(acc2p1a), sorted.indexOf(acc2p1b)].sort();
+    expect(acc1Idx[1] - acc1Idx[0]).toBe(1); // adjacent
+    expect(acc2Idx[1] - acc2Idx[0]).toBe(1); // adjacent
   });
 });

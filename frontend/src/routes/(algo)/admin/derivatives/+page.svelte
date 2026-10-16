@@ -62,8 +62,9 @@
   import { exportRowsToCsv } from '$lib/utils/csvExport.js';
   import { RISK_FREE_R as _RISK_FREE_R, normCdf as _normCdf, probAbove as _probAbove, expectedValueOnCurve as _expectedValueOnCurve, multilegPopOnCurve as _multilegPopOnCurve } from '$lib/data/riskMath.js';
   import ChartModal from '$lib/ChartModal.svelte';
-  import OrderPairModal from '$lib/order/OrderPairModal.svelte';
-  import { computePairEnabled } from '$lib/order/pairModalUtils.js';
+  import PositionPinPicker from '$lib/order/PositionPinPicker.svelte';
+  import { sortRowsByPairGroup } from '$lib/data/pairGroupSort.js';
+  import { toast } from '$lib/data/toastStore.svelte.js';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
   import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
   import ActivityLogModal from '$lib/ActivityLogModal.svelte';
@@ -100,15 +101,48 @@
     _chartModalExch = String(exchange || '');
   }
 
-  // Pair-orders modal state — opened by the "Pair" button in the Drafts leg-headrow.
-  let _legPairModalOpen = $state(false);
+  // Position pin/unpair picker state (2026-10) — opened from a
+  // CandidateLegRow state-badge click or from SymbolContextMenu's
+  // "Pair with…"/"Unpair" entry. Replaces the retired checkbox-select-2-
+  // legs "⟷ Pair" flow (OrderPairModal's position-preview panel never
+  // actually paired positions — only orders — so it was dead/misleading;
+  // see OrderPairModal.svelte's own docstring for what's kept).
+  /** @type {{ account: string, symbol: string, pinGroupKey: string|null } | null} */
+  let _pinPicker = $state(null);
+  const _pinPickerCandidates = $derived.by(() => {
+    if (!_pinPicker) return [];
+    const acct = _pinPicker.account;
+    const sym  = String(_pinPicker.symbol || '').toUpperCase();
+    return positions
+      .filter(p => p.account === acct
+        && Number(p.qty || 0) !== 0
+        && String(p.symbol || '').toUpperCase() !== sym)
+      .map(p => ({ symbol: p.symbol, account: p.account, qty: p.qty }));
+  });
+  /** Opens the pin picker for a candidate row (badge click) or a
+   *  resolved {account, symbol, pinGroupKey} tuple (context menu). */
+  function _openPinPicker(/** @type {any} */ c) {
+    _pinPicker = {
+      account: c.account,
+      symbol: c.symbol,
+      pinGroupKey: c.pin_group_key ?? c.pinGroupKey ?? null,
+    };
+  }
 
   // Context menu state — right-click / long-press on any candidate symbol.
-  /** @type {{ symbol: string, exchange: string, x: number, y: number } | null} */
+  /** @type {{ symbol: string, exchange: string, x: number, y: number, account?: string, pinGroupKey?: string|null } | null} */
   let _ctxMenu = $state(null);
   /** @type {'place-order' | 'chart' | 'log' | null} */ let _ctxAction = $state(null);
   /** @type {string} */ let _ctxSym  = $state('');
   /** @type {string} */ let _ctxExch = $state('');
+  // Pin-picker context, captured alongside _ctxMenu at the SAME point
+  // (the right-click handler below), but in a SEPARATE state var that
+  // SymbolContextMenu's onClose does NOT null out. SymbolContextMenu's
+  // own _fire() calls onClose() (which nulls _ctxMenu) BEFORE onAction()
+  // — so reading _ctxMenu from inside onAction would already see null;
+  // this stash is what the 'pin' branch of onAction actually reads.
+  /** @type {{ account: string, symbol: string, pinGroupKey: string|null } | null} */
+  let _ctxPinInfo = $state(null);
 
   // Source card semantics (v4): no more single-vs-multi distinction.
   // Everything is multi-leg. One leg analyses fine through the strategy
@@ -738,12 +772,24 @@
       const q = _filterLegs.toUpperCase();
       rows = rows.filter(c => String(c.symbol || '').toUpperCase().includes(q));
     }
-    // Pair-group sort removed (2026-09 Commit 9) — dead code: candidate
-    // rows built by buildCandidatePositions never carry `pair_group_key`
-    // (that field is a MarketPulse/PerformancePage-specific enrichment,
-    // not something this page's pipeline ever attaches), so `ka`/`kb`
-    // were ALWAYS both 'ZZZZ_orphan' — a guaranteed-stable no-op sort on
-    // every recompute.
+    // Pair-group sort (2026-10, restored) — the 2026-09 Commit 9 removal
+    // was correct AT THE TIME: candidate rows built by
+    // buildCandidatePositions never carried `pair_group_key` (stripped by
+    // expiryPnl.js's old field whitelist before it ever reached this
+    // pipeline), so the sort was a guaranteed-stable no-op. That whitelist
+    // gap is now fixed (buildPositionRowFromBroker carries is_orphan/
+    // pair_group_key/pin_group_key/has_gtt through), so rows sharing a
+    // pair_group_key now sort adjacent to each other — the operator's
+    // "treat the paired set as a single group" request. Only applied to
+    // the Legs tab (legsTab !== 'expiry') — the Exp Close tab already has
+    // its OWN pairing/grouping via _band/_pairId (theta-DESC ordering,
+    // netted-band pair tints), which this would otherwise interleave with
+    // and duplicate band headers. Not applied to `pin_group_key` — the
+    // operator's grouping ask was specifically scoped to the auto-paired
+    // case.
+    if (legsTab !== 'expiry') {
+      rows = sortRowsByPairGroup(rows);
+    }
     return rows;
   });
 
@@ -1835,14 +1881,6 @@
       draftStorePositions:  getDraftPositions(),
     });
   });
-
-  // Derived pair-button state — recomputes when enabledSymbols or candidatePositions change.
-  const _pairState = $derived.by(() =>
-    computePairEnabled(candidatePositions, _isLegEnabled)
-  );
-  const _pairEnabled        = $derived(_pairState.pairEnabled);
-  const _pairedCandidates   = $derived(_pairState.pairedCandidates);
-  const _firstCheckedSymbol = $derived(_pairState.firstCheckedSymbol);
 
   /** Count of opt/fut/eq rows that would have matched the underlying +
    *  expiry filter but are hidden by the account filter. Surfaces a
@@ -5456,9 +5494,12 @@
         <span>Avg cost</span>
         <span>LTP</span>
         <span>Source</span>
-        <button class="leg-pair-btn" onclick={() => _legPairModalOpen = true}
-          disabled={!_pairEnabled}
-          title={_pairEnabled ? 'Pair selected positions' : 'Select 2 positions from the same account to pair'}>⟷ Pair</button>
+        <!-- Retired 2026-10: the checkbox-select-2-legs "⟷ Pair" flow
+             never actually paired positions (only orders, via
+             OrderPairModal) — see PositionPinPicker.svelte's docstring.
+             Blank spacer keeps this header's 6-column grid aligned with
+             each draft row's trailing .leg-del column below. -->
+        <span></span>
       </div>
       {#each drafts as _d, i (drafts[i].id)}
         <div class="leg-row">
@@ -5861,8 +5902,10 @@
                 account:   _rowTicketAccount(candidate),
               })}
               onContextMenu={(candidate, ev) => {
-                _ctxMenu = { symbol: candidate.symbol, exchange: candidate.exchange || 'NFO', x: ev.clientX, y: ev.clientY };
+                _ctxMenu = { symbol: candidate.symbol, exchange: candidate.exchange || 'NFO', x: ev.clientX, y: ev.clientY, account: candidate.account, pinGroupKey: candidate.pin_group_key ?? null };
+                _ctxPinInfo = { account: candidate.account, symbol: candidate.symbol, pinGroupKey: candidate.pin_group_key ?? null };
               }}
+              onPinClick={_openPinPicker}
             />
           {/each}
           {#if displayedCandidates.length === 0}
@@ -6404,8 +6447,17 @@
     exchange={_ctxMenu?.exchange}
     x={_ctxMenu?.x}
     y={_ctxMenu?.y}
+    canPin={!!_ctxMenu?.account}
+    isPinned={!!_ctxMenu?.pinGroupKey}
     onClose={() => { _ctxMenu = null; }}
     onAction={(action, sym, exch) => {
+      if (action === 'pin') {
+        // _ctxPinInfo (not _ctxMenu) — see its declaration comment above
+        // for why: onClose() (which nulls _ctxMenu) already ran by now.
+        if (_ctxPinInfo) _openPinPicker(_ctxPinInfo);
+        _ctxMenu = null;
+        return;
+      }
       _ctxSym  = sym;
       _ctxExch = exch;
       _ctxAction = /** @type {any} */ (action);
@@ -6438,8 +6490,20 @@
   <ActivityLogModal onClose={() => { _ctxAction = null; }} />
 {/if}
 
-{#if _legPairModalOpen}
-  <OrderPairModal bind:open={_legPairModalOpen} symbolHint={_firstCheckedSymbol} pairedCandidates={_pairedCandidates} />
+{#if _pinPicker}
+  <PositionPinPicker
+    open={true}
+    account={_pinPicker.account}
+    sourceSymbol={_pinPicker.symbol}
+    pinGroupKey={_pinPicker.pinGroupKey}
+    candidates={_pinPickerCandidates}
+    onDone={(action) => {
+      toast.success(action === 'pinned' ? 'Positions pinned' : 'Positions unpinned');
+      _pinPicker = null;
+      loadPositions({ fresh: true });
+    }}
+    onClose={() => { _pinPicker = null; }}
+  />
 {/if}
 
 <style>
@@ -6954,17 +7018,6 @@
     padding-bottom: 0.15rem;
     border-bottom: 1px solid rgba(251,191,36,0.18);
   }
-  .leg-pair-btn {
-    font-size: var(--fs-lg);
-    padding: 0.18rem 0.55rem;
-    border-radius: 3px;
-    border: 1px solid rgba(190,210,240,0.55);
-    background: rgba(160,185,220,0.08);
-    color: rgba(190,210,240,0.95);
-    cursor: pointer;
-  }
-  .leg-pair-btn:hover { border-color: rgba(160,185,220,0.5); color: #e2eeff; }
-  .leg-pair-btn:disabled { opacity: 0.35; cursor: not-allowed; }
   :global(.leg-row .field-input) {
     font-size: var(--fs-sm);
     padding: 0.25rem 0.4rem;
