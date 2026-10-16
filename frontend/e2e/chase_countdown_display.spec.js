@@ -110,4 +110,30 @@ test.describe('Chase countdown display', () => {
 
     console.log('[chase_countdown_display] ChaseCard.svelte source scan verified: countdown present, elapsed-age display removed');
   });
+
+  test('4-Mobile: the Next/countdown column has a locked minimum width so it never shrinks to an unreadable sliver', () => {
+    // 2026-10-16 fix — operator: "the count time is not visible on
+    // mobile for chase. previously it was visible while incrementing
+    // elapsed time in seconds." The age/countdown column's grid track
+    // was `minmax(0, 0.6fr)` — with 8 other columns competing for space
+    // on a narrow phone viewport, it could shrink arbitrarily close to
+    // 0 under `.cc-col`'s own `overflow: hidden`, rendering the
+    // countdown illegible. Locked to a real minimum (2.1rem — enough
+    // for "999s") in BOTH the default and .cc-compact grid templates,
+    // the same "locked min so it always fits" convention the kill
+    // button's own column already used.
+    const chaseCardPath = '/Users/ramanambore/projects/ramboq/frontend/src/lib/order/ChaseCard.svelte';
+    let source = '';
+    try {
+      source = readFileSync(chaseCardPath, 'utf-8');
+    } catch (e) {
+      test.skip(true, `Could not read ChaseCard.svelte: ${e.message}`);
+      return;
+    }
+    const ageTracks = source.match(/minmax\([^)]*\)\s*\/\*\s*age[^*]*\*\//g) || [];
+    expect(ageTracks.length, 'expected one age-column track in each of .cc-row and .cc-compact .cc-row').toBe(2);
+    for (const track of ageTracks) {
+      expect(track, `age column track must not use a 0 minimum: ${track}`).not.toMatch(/minmax\(0,/);
+    }
+  });
 });

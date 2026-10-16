@@ -583,14 +583,20 @@
        card on common viewports. minmax(0, ...) lets cells shrink
        past their content with text-overflow:ellipsis. */
     grid-template-columns:
-      minmax(0, 1.4fr)   /* acct  */
-      minmax(0, 0.6fr)   /* side  */
-      minmax(0, 0.6fr)   /* qty   */
-      minmax(0, 2.4fr)   /* sym   */
-      minmax(0, 1fr)     /* limit */
-      minmax(0, 0.8fr)   /* att   */
-      minmax(0, 0.6fr)   /* age   */
-      minmax(0, 0.8fr)   /* mode  */
+      minmax(0, 1.4fr)     /* acct  */
+      minmax(0, 0.6fr)     /* side  */
+      minmax(0, 0.6fr)     /* qty   */
+      minmax(0, 2.4fr)     /* sym   */
+      minmax(0, 1fr)       /* limit */
+      minmax(0, 0.8fr)     /* att   */
+      /* 2026-10-16 fix — locked min so the countdown ("Next") stays
+         legible on narrow (mobile) viewports instead of shrinking to
+         an unreadable sliver under flex pressure from the other 8
+         columns. Same "locked min so it always fits" rationale as the
+         kill button's own minmax below. Operator: "the count time is
+         not visible on mobile for chase." */
+      minmax(2.1rem, 0.6fr) /* age   */
+      minmax(0, 0.8fr)     /* mode  */
       minmax(2.6rem, auto); /* kill — locked min so the button always fits */
     column-gap: 0.4rem;
     align-items: center;
@@ -605,7 +611,7 @@
     grid-template-columns:
       minmax(0, 1.4fr) minmax(0, 0.6fr) minmax(0, 0.6fr)
       minmax(0, 2.4fr) minmax(0, 1fr) minmax(0, 0.8fr)
-      minmax(0, 0.6fr)   /* age — always shown now */
+      minmax(2.1rem, 0.6fr)   /* age — always shown now, locked min (2026-10-16) */
       minmax(2.6rem, auto);
   }
   /* Child rows — auto-attached legs of the parent above (typically
