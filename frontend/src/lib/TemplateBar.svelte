@@ -1,5 +1,6 @@
 <script>
   import Select from '$lib/Select.svelte';
+  import InfoHint from '$lib/InfoHint.svelte';
 
   /**
    * TemplateBar — "On fill" template pick + param override row.
@@ -206,6 +207,8 @@
     <span class="oes-tpl-button-dot" aria-hidden="true"></span>
     Bracket
   </button>
+  <InfoHint popup panel title="Bracket"
+    text="A saved exit-rule preset (TP / SL / Wing) attached automatically when this order fills. <b>Default</b> (filled dot) picks the side-aware default bracket for the current symbol type. <b>None</b> (dim dot, click again to toggle) — entry only, nothing attaches on fill. Use the expand arrow (when a bracket is active) to override TP%/SL%/Wing for this one order without editing the saved preset." />
   {#if !shellUsingNone && selectedTemplate}
     <!-- #30 expand toggle — reveals the full param set.
          Operator (2026-09-30): "template expand button look too

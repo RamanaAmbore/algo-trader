@@ -3088,6 +3088,8 @@
                    onchange={(e) => _onDraftToggleChange(/** @type {HTMLInputElement} */ (e.currentTarget).checked)} />
             <span class="ot-draft-label" class:on={_draftMode}>DRAFT</span>
           </label>
+          <InfoHint popup panel title="Draft"
+            text="When ON, Submit adds this leg to the session payoff chart instead of placing a real broker order — nothing is sent to the exchange. Useful for sketching a strategy before committing. Mutually exclusive with Bracket — turning Draft on clears any active bracket (no exit-rule attach is meaningful for a leg that was never actually placed)." />
         {/if}
       </div>
     {/if}

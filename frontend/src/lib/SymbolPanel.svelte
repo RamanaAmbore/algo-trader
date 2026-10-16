@@ -63,6 +63,7 @@
   import { isMarketOpen, isNseOpen, isMcxOpen } from '$lib/marketHours';
   import AlgoTabs from '$lib/AlgoTabs.svelte';
   import CardHeader from '$lib/CardHeader.svelte';
+  import InfoHint from '$lib/InfoHint.svelte';
   import { liveSnap } from '$lib/data/symbolStore.svelte.js';
   import RefreshButton from '$lib/RefreshButton.svelte';
 
@@ -2434,6 +2435,8 @@
         {/if}
         {#if _chaseEnabled}
           <span class="oes-common-chase-label on" title="Chase is active">CHASE</span>
+          <InfoHint popup panel title="Chase"
+            text="Chase is automatic for every limit order (on for LIMIT/SL order types, Chain legs are always limit) — re-quotes the price each interval until filled or max attempts is reached. Wait time between re-quotes depends on the aggressiveness picker beside it: <b>Low</b> — 30s, patient, eases into the spread (30 attempts max). <b>Med</b> — 20s, balanced (20 attempts max). <b>High</b> — 10s, crosses the spread fast (10 attempts max)." />
           <span class="oes-chase-agg-gap">
             <ChaseAggPicker value={_sharedChaseAgg} onChange={_setSharedChaseAgg} variant="panel" />
           </span>
