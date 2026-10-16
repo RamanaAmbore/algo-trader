@@ -3,7 +3,7 @@
 Single source of truth for the `/pulse` page behavior across all market states, user states,
 and data sources. Code, tests, and documentation must stay in sync with this file.
 
-**Version**: 1.22 — 2026-09-24  
+**Version**: 1.23 — 2026-10-16  
 **Owner**: Platform  
 **Linked files**: `frontend/src/lib/MarketPulse.svelte` · `frontend/src/lib/data/marketDataStores.svelte.js` · `frontend/src/lib/data/positionsDayPnlStore.svelte.js` · `frontend/src/lib/data/holdingsDayPnlStore.svelte.js` · `frontend/src/app.css` · `frontend/src/lib/data/quoteStream.js` · `backend/api/background.py` · `backend/api/routes/quote.py` · `backend/api/routes/watchlist.py` · `backend/api/helpers/snapshot_gate.py` · `backend/api/algo/daily_snapshot.py` · `backend/api/routes/holdings.py`
 
@@ -163,8 +163,10 @@ See Section 5 for DB-first policy and fallback ladder.
 
 **PositionRow schema (additions Aug 2026)**:
 - `previous_close: float = 0.0` — frozen prior-session settlement price from `COALESCE(daily_book.previous_close, daily_book.ltp)` written by `_override_stale_close_from_snapshot()`. Frontend prefers this (official settlement, write-once) over `close_price` (Kite's mutable field) for day P&L computation via `(ltp − previous_close) × qty`. Matches holdings fix (75a335f7); prevents positions day P&L zeroing at NSE settlement
-- `is_orphan: bool` — True when no open AlgoOrder (status=OPEN) matches this position's (account, tradingsymbol). Positions without a parent order are considered orphaned; shown with coral "O" badge in MarketPulse grid
-- `pair_group_key: str | None` — shared root AlgoOrder ID for positions linked via parent-child relationship. When two orders are paired via `POST /api/orders/pair`, child rows share the same `pair_group_key` as the parent. Null when no AlgoOrder matches this position. Used by `postSortRows` callback to keep paired positions (parent + child) adjacent in sort order regardless of column sort direction
+- `is_orphan: bool` — True for the unmatched remainder of `_auto_pair_positions()`'s lot-waterfall (see `pair_group_key` below) — NOT related to `AlgoOrder`/`POST /api/orders/pair` (that's a separate, order-level pairing concept with no effect on this field). Shown with diamond glyph "◇" badge in Pulse Positions grid and Derivatives Legs grid
+- `pair_group_key: str | None` — **auto-detected**, computed by `_auto_pair_positions()` (`backend/api/routes/positions.py`): groups rows by `(account, root_symbol)`, waterfall-matches longs vs shorts by quantity (largest first), assigns sequential keys `"P1"`, `"P2"`, etc. per match; the unmatched remainder on a row becomes `orphan_qty` and sets `is_orphan=True`. Has nothing to do with `AlgoOrder.parent_order_id`/`POST /api/orders/pair` (a separate order-level pairing concept, used only to suppress TP/template attachment on a child order — see §19). Used by `postSortRows`/`pairGroupSort.js` to keep paired positions adjacent in sort order regardless of column sort direction. Ephemeral — recomputed on every request from the broker book and can reshuffle when fills/quantity change
+- `pin_group_key: str | None` (Oct 2026) — **operator-persisted** manual pin linking two open positions of the same account via the `position_pairs` table. Formatted as `"PIN{id}"` where `id` is the `position_pairs.id` row. Distinct from `pair_group_key` (auto-detected); a position can carry both. Pinned pairs persist across server restarts and only change when operator explicitly unlinks via `DELETE /api/positions/pin/{id}`. Two positions sharing a `pin_group_key` are visually grouped with the same cyan badge in the Legs grid; clicking the badge opens `PositionPinPicker.svelte` to unpin
+- `has_gtt: bool` — True when a valid GTT (target or stop-loss) order is attached to this position (checked at request time). Positions with an active GTT are shown with green "GTT" badge. Highest priority in position-state badge rendering (GTT > pinned > auto-paired > orphan)
 
 **Day P&L computation — Snapshot & Live Paths (STALE — snapshot-reading details, 2026-09 redesign)**
 
@@ -1147,19 +1149,28 @@ columns:
 today" (LTP, Chg%, day%) and "what my portfolio did" (Day P&L, P&L, Exp P&L). 
 Helps operators quickly scan grids by visual region.
 
-**Orphan badge** (Aug 2026):
-- Coral "O" badge (class `badge-o`) shown in symbol or status column when `is_orphan=true`
-- Indicates position has no matching open AlgoOrder (status=OPEN) for its (account, tradingsymbol)
-- Visual cue for operators to establish a parent-child relationship via the OrderPairModal if needed
+**Position state (St) column and badge rendering** (Aug 2026, re-engineered 2026-10-16):
 
-**Position state (St) column renderer** (Aug 2026):
-- Displays `'○'` (hollow circle, UTF-8 U+25CB) for all position rows with `quantity !== undefined`
-- Defensive fallback: renders `'○'` even if `is_orphan`, `pair_group_key`, or `has_gtt` fields are
-  missing (handles unenriched/partially-loaded rows gracefully). Every position row carries a
-  `quantity` field, so '○' will appear in St column for every data row in the grid
+Priority order (highest wins): GTT > pinned > auto-paired > orphan > (none).
+Shared badge logic: `frontend/src/lib/data/positionStateBadge.js:positionStateBadge(row)`.
+Grid-specific cell renderers: ag-Grid `pulseColumns.js` (MarketPulse Positions), hand-rolled
+`CandidateLegRow.svelte` (Derivatives Legs grid).
+
+| State | Badge Glyph | CSS class | Tooltip | Action |
+|---|---|---|---|---|
+| **GTT** | "GTT" (text) | `badge-gtt` / `--algo-green-badge` | "Protected by a GTT stop-loss / target order." | (display only) |
+| **Pinned** | `PIN{id}` (format: `PIN123`) | `badge-pinned` / `--algo-cyan-bg-strong` + solid border | "Pinned pair PIN123 — manually linked, won't change on next poll. Click to unpin." | Click → `PositionPinPicker.svelte` → `DELETE /api/positions/pin/{id}` |
+| **Auto-paired** | `P1`, `P2`, etc. (group key) | `badge-paired` / `--algo-cyan-bg` | "Auto-paired P1 — detected automatically, may change on next poll. Click to pin." | Click → `PositionPinPicker.svelte` → `POST /api/positions/pin` |
+| **Orphan** | "◇︎" (WHITE DIAMOND U+25C7 + text-presentation selector) | `badge-orphan` / `--algo-amber-bg` | "Unpaired position — no GTT, no pair. Click to pair with another leg." | Click → `PositionPinPicker.svelte` (shows unpaired positions as candidates to pin) |
+| **(none)** | "" (empty) | — | (not a position row: watchlist, mover, holding, TOTAL) | — |
+
+**Rendering details**:
+- St column displays glyph + color ONLY for position rows (`_majorGroup === 'positions'`); holdings, watchlist, movers, and TOTAL rows show no badge
+- Column visible in Positions grid; hidden in Holdings grid (St column filtered out via `hide: true`)
+- `positionStateBadge(row)` returns `{ state, glyph, color, bg, border, tooltip }` or `null` for non-position rows
+- Defensive fallback: `null` state is rendered as empty (no glyph, no button) — callers never force a default glyph
+- Derivatives Legs grid: checkbox renders before St cell for tab-order accessibility; St badge follows
 - Column is visible in positions grid only; hidden in holdings grid
-- Used in derivatives Legs grid (CandidateLegRow) with checkbox rendering before St cell for proper
-  accessibility and tab order
 
 **Numeric header style** — `numericHdr` CSS class for right-aligned headers matching data cells
 
@@ -1281,6 +1292,14 @@ buttons on a mover row or uses the UI to set a custom group ranking:
   operators see related positions together
 - Rationale: parent-child order relationships should remain visible on the grid regardless 
   of operator sort preferences
+
+**Pair-group sort restoration (Oct 2026, commit 09ec8c6f)** — Derivatives Legs grid 
+(`frontend/src/lib/data/pairGroupSort.js:sortRowsByPairGroup()`) now applies sort key 
+`${account}|${pair_group_key}` to keep auto-paired legs adjacent by account scope. Manual 
+pins (`pin_group_key`) do NOT participate in sort order; they are display badges only. 
+Rationale: auto-pair groups are ephemeral and can shift on poll cycles (lot-waterfall 
+matching); sort adjacency helps operators track which legs belong together. Manual pins 
+persist independently and don't affect row order.
 
 **Preserve order of** — ag-Grid's per-column sorts (Day P&L, P&L %, volume, etc.) apply BEFORE 
 regrouping; no re-sort happens inside groups. If the operator sorted by P&L descending, 
@@ -1787,6 +1806,7 @@ click coordinates. Keyboard-dismissible (Esc key) and auto-closes on click-outsi
 - **Add to Watchlist** — SymbolSearchInput popup to pick a list; deduped against positions/holdings
 - **Remove from Watchlist** — removes the row's watchlist-item link (not from positions/holdings)
 - **Detach from Group** — unlinks the symbol from its underlying group (sorts individually)
+- **Pair with…** (Oct 2026, positions grid only) — opens `PositionPinPicker.svelte` to manually pin this position with another open position. Shown only when `canPin` prop is true (position rows). If position already has a `pin_group_key`, label changes to **Unpin** and calls `DELETE /api/positions/pin/{id}`
 - **View Payoff** — derivatives-only; opens analytics overlay (Greeks + P&L curve)
 
 **Visibility gates**:
@@ -2491,3 +2511,4 @@ See `PULSE_SPEC.md §9 Known Defects` section (BD1–BD4 fixed in `b1d7654c`, D1
 | 2026-09-21 | v1.19 MarketPulse ▲/▼ group ordering + Case 3 day P&L fix (commit 951c7b2e): (1) **§15 Row Grouping (postSortGroups)** — new subsection "Manual group order override" documents `groupOrder` rank map populated when operator clicks ▲/▼ on movers. Groups with assigned ranks sort by rank value (lower=higher), no-rank groups follow alphabetically. Affects positions/holdings/watchlist grid row order. Movers grid unaffected (|change_pct| sort priority). Operator-curated ranking persists across reloads. (2) **§4.4 Flat row hygiene + §17.0 new subsection** — updated to document three canonical Day P&L cases. Case 3 (closed intraday, oq=0 qty=0 pnl≠0) now shows realised P&L instead of 0. Hygiene (commit ed63b9fe) only zeroes `day_change_val` when `abs(pnl) < 0.005` (break-even). When realised gain/loss exists (pnl ≥ 0.005), `day_change_val` preserved. Fixes same-day close positions showing ₹0 instead of actual P&L. Impact: Pulse positions grid, Derivatives Legs grid (CandidateLegRow), NavStrip P pill, Dashboard show correct realised P&L for round-trip closes. |
 | 2026-09-22 | v1.20 Visual polish fixes — sparkline borders + mobile row height + account stripe + symbol direction bars (commit 7ccb2e50): (1) **§18 Sparkline border parity** — LTP cells in gainers/losers right-grid now render `box-shadow: inset 1px 0 0 0 rgba(126,151,184,0.40)` (neutral slate) instead of `none`, matching pinned/watchlist left-grid visual weight and ensuring consistent column separation across all six grids. (2) **§14.5 Mobile row height configuration** — new subsection documents rowHeight set at ag-Grid JS level (`rowHeight: _isMobile ? 36 : 28`) for all Pulse grids, Dashboard mini-grids, NavBreakdown. Removed former CSS override (`:global(.ag-theme-algo .ag-row) { min-height: 36px }`), eliminating CSS–JS mismatch that caused visible horizontal gaps between rows on mobile (<720px). (3) **§14 Account column (trailing) styling** — account column now uses CSS class `ag-col-acct` + injected `--acct-stripe` property (3px left-border stripe) instead of text color, matching PerformancePage canonical treatment. (4) **§14 Symbol column direction bars** — left grids (Pinned, Watchlist, Winners, Losers) now have `cellClassRules: { chg-up, chg-down }` driven by `change_pct`, enabling 2px right-edge direction bar on all symbol cells via `ag-col-sym-left::after` pseudo-element. Plain `ag-col-sym-left` now has `position: relative` in app.css for proper pseudo-element positioning. Impact: unified visual polish across MarketPulse; mobile users see gap-free grids; column styling consistent across all surfaces. |
 | 2026-09-22 | v1.21 Column border refinements + directional cell backgrounds (commit 516937c5): §14.6 new subsection documents four CSS-layer visual fixes. (1) **Symbol column right border (neutral state)** — `.ag-col-sym` and `.ag-col-sym-left` now have `border-right: 0 !important`; in neutral state no right edge displays, in directional state (chg-up/chg-down) only the 2px `::after` bar shows; sparkline column's amber left-boundary serves as separator. (2) **Account column left border removed** — `.ag-col-acct` now has `border-left: 0 !important`; all Pulse grids (MarketPulse, PerformancePage, NavBreakdown) have no left stripe; `--acct-stripe` variable preserved for future reuse. (3) **Underlying root symbol bar** — `row-und` rows (NIFTY, BANKNIFTY header rows in Snapshot/Positions grid) now display purple `::after` right-edge bar (`rgba(192,132,252,0.80)`) on `.ag-col-sym` cell, matching visual pattern of `row-pos-orphan` (amber) and `row-pos-paired` (cyan) leg rows. (4) **Legs and expiry-close directional backgrounds** — CandidateLegRow `.cand-sym-acct` now shows directional tints: `cand-row-long` → `rgba(74,222,128,0.10)` green for long, `cand-row-short` → `rgba(248,113,113,0.10)` red for short, `expiry-band-close` → `rgba(251,191,36,0.12)` amber for expiry-close (previously only 14% per-account color-mix). Impact: refined visual hierarchy across MarketPulse + derivatives admin pages; cleaner column borders, directional bars + backgrounds carry clearer semantic meaning; no functional changes, pure CSS refinement. |
+| 2026-10-16 | v1.23 Position manual pinning + position-state badge SSOT (commit 09ec8c6f): (1) **§4.4 PositionRow schema** — added three new fields: `pin_group_key: str\|None` (operator-persisted manual pair linking via `position_pairs` table, formatted `"PIN{id}"`), `pair_group_key` clarified as **auto-detected** lot-waterfall link (ephemeral, recomputed per request), and `has_gtt: bool` (active GTT order attached). Position can carry both auto-paired and manually pinned states simultaneously. (2) **§14 Position state (St) column and badge rendering** — replaced hardcoded glyph with real priority-based badge system: GTT (green, text "GTT") > pinned (cyan+border, `PIN123`) > auto-paired (cyan, `P1`/`P2`) > orphan (amber, diamond glyph `◇︎`). New shared SSOT `positionStateBadge(row)` helper in `frontend/src/lib/data/positionStateBadge.js` consumed by MarketPulse Positions grid (`pulseColumns.js`) and Derivatives Legs grid (`CandidateLegRow.svelte`). Clicking badge opens `PositionPinPicker.svelte` to pin/unpin. (3) **§15 Pair-group sort restoration** — Derivatives Legs grid sort (`pairGroupSort.js:sortRowsByPairGroup()`) keyed on `${account}|${pair_group_key}` (auto-pair grouping only); manual pins (`pin_group_key`) do NOT participate in sort order. (4) **§19 Symbol Context Menu** — "Pair with…" (or "Unpin" if already pinned) entry added for positions rows; opens `PositionPinPicker.svelte` and routes to `POST /api/positions/pin` or `DELETE /api/positions/pin/{id}`. (5) **§4.4 expiryPnl.js whitelist** — fixed Legs grid data pipeline to allow `has_gtt`, `pin_group_key`, `pair_group_key`, `is_orphan` fields through to consumers (was stripping them, causing grid to render no badges). Tests: `backend/tests/test_positions_pin.py`, `frontend/e2e/position_pin_pairing.spec.js`, `frontend/src/lib/__tests__/data/positionStateBadge.test.js`. Impact: operators can now manually link related positions for persistent visual grouping; position state display unified across Pulse and derivatives pages with clear badge priority hierarchy. Invariant: chase/bracket/template_attach code deliberately does NOT consult `pin_group_key` or `pair_group_key` fields yet (deferred per architecture council); only AlgoOrder parent-linkage suppresses TP/template on child orders. |
