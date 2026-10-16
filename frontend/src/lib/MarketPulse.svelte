@@ -23,6 +23,7 @@
   } from '$lib/api';
   import { visibleInterval, marketAwareInterval, withGuard, connStatus, authStore, selectedStrategyId, strategyOpenSymbols, ltpFlashPct, loadLtpFlashPct } from '$lib/stores';
   import { isMarketOpen } from '$lib/marketHours';
+  import { toast } from '$lib/data/toastStore.svelte.js';
   import StrategyPicker from '$lib/StrategyPicker.svelte';
   import AlgoTabs from '$lib/AlgoTabs.svelte';
   import ModalShell from '$lib/ModalShell.svelte';
@@ -4563,7 +4564,22 @@
 {#if allowOrders && ticketProps}
   <SymbolPanel
     {...ticketProps}
-    onSubmit={() => closeTicket()}
+    onSubmit={(payload) => {
+      // 2026-10-16 fix — this was the one SymbolPanel host that closed
+      // the modal on every onSubmit call. SymbolPanel's own
+      // submitBasket() fires onSubmit ONCE PER PLACED LEG (same shape
+      // as a single-order submit), so a multi-leg Chain basket closed
+      // the modal after the FIRST leg even though every leg genuinely
+      // placed — operator: "instead of showing the order status and
+      // keeping the order modal open, it closed it though it placed
+      // the order successfully." derivatives/+page.svelte and
+      // orders/+page.svelte never close on submit either (toast/
+      // refresh only) — matching that pattern here, not the old
+      // unconditional close.
+      const sym = String(payload?.symbol || '');
+      const side = String(payload?.side || '');
+      toast.success(sym ? `${side} ${sym} placed` : 'Order placed');
+    }}
     onClose={closeTicket}
     onAddToWatchlist={async (sym, exch) => {
       // Adds the symbol to whichever watchlist the operator currently

@@ -972,13 +972,11 @@
     _templates.length > 0 && action === 'open'
     && !!((_localSymbol || '').trim() || basketLegs.length > 0)
   );
-  // Shared TemplateBar handlers — single source for both the Chain tab's
-  // embedded <TemplateBar> (inside OptionChainTab) and the Ticket tab's
-  // shell-level one (2026-10-16 fix: the toggle was relocated into
-  // OptionChainTab's expiry row on 2026-09-30 for Chain's own layout
-  // reasons, but nothing was left rendering it for the Ticket tab —
-  // operator: "what happened to bracket option in order ticket. it no
-  // longer shows." Extracted so both render sites can never drift).
+  // Shared TemplateBar handlers — single source of truth passed down
+  // into BOTH tabs' own mounts: OptionChainTab (Chain) and OrderTicket
+  // itself (Ticket, 2026-10-16 4th-and-final re-wire — see
+  // OrderTicket.svelte's own chase-row for where the Ticket copy
+  // actually renders; nothing shell-level here any more).
   function _onTemplSelectDefault() {
     if (_sideAwareDefault) {
       _sharedTemplateId = _sideAwareDefault.id;
@@ -2602,6 +2600,14 @@
             defaultChase={_sharedChase}
             defaultChaseAgg={_sharedChaseAgg}
             modeChaseHidden={true}
+            bind:templateId={_sharedTemplateId}
+            bind:tpOverride={_sharedTpOverride}
+            bind:slOverride={_sharedSlOverride}
+            bind:wingStrikeOffsetOverride={_sharedWingStrikeOffsetOverride}
+            bind:wingPremPctOverride={_sharedWingPremPctOverride}
+            onSelectDefault={_onTemplSelectDefault}
+            onSelectNone={_onTemplSelectNone}
+            onSelectTemplate={_onTemplSelectTemplate}
             onMarginUpdate={showCommonActions ? _onMarginUpdate : null}
             onPreviewPlanUpdate={(plan, loading, err, capW) => {
               _modalPreviewPlan    = plan;
@@ -2741,36 +2747,15 @@
          and the focused-leg's symbol (last-leg by default) for the
          CE/PE regex via _appliesToFor — falling back through
          _localSymbol when no legs are staged. -->
-    <!-- Templ toggle — relocated into OptionChainTab's expiry row for
-         the Chain tab (2026-09-30), rendered HERE at shell level for the
-         Ticket tab (2026-10-16 fix: nothing had rendered it for Ticket
-         since that relocation — operator: "what happened to bracket
-         option in order ticket. it no longer shows"). Chain already has
-         its own copy via <OptionChainTab>, so this is gated to the
-         Ticket tab only to avoid a duplicate. Same `_showTemplateBar`
-         (unconditionally true) / `_showDemoTplNote` gates Chain uses,
-         and the same `_onTemplSelect*` handlers — single source, never
-         drifts between the two render sites. -->
-    {#if _activeTab === 'ticket'}
-      {#if _showDemoTplNote}
-        <span class="oct-tpl-demo-note">Exit rules (TP / SL / Wing) not available in demo.</span>
-      {:else if _showTemplateBar}
-        <TemplateBar
-          selectedTemplate={_selectedTemplate}
-          sideAwareDefault={_sideAwareDefault}
-          nonNoneTemplates={_nonNoneTemplates}
-          showsWing={_sharedTplShowsWing}
-          shellUsingNone={_shellUsingNone}
-          bind:tpOverride={_sharedTpOverride}
-          bind:slOverride={_sharedSlOverride}
-          bind:wingStrikeOffsetOverride={_sharedWingStrikeOffsetOverride}
-          bind:wingPremPctOverride={_sharedWingPremPctOverride}
-          bind:spreadMaxPctOverride={_sharedSpreadMaxPctOverride}
-          onSelectDefault={_onTemplSelectDefault}
-          onSelectNone={_onTemplSelectNone}
-          onSelectTemplate={_onTemplSelectTemplate} />
-      {/if}
-    {/if}
+    <!-- Templ toggle — Chain renders its own copy via <OptionChainTab>'s
+         expiry row (2026-09-30). Ticket's copy (2026-10-16, 4th and
+         final decision on this exact question — see
+         CLAUDE.md/.claude/PLAN.md history) now renders INSIDE
+         OrderTicket.svelte itself, on the same row as CHASE/DRAFT
+         (operator: "keep bracket before draft on the same row"), using
+         the templateId/override bindings + onSelect* callbacks passed
+         into <OrderTicket> above — not here at shell level, to avoid a
+         duplicate. Nothing shell-level to render for Ticket any more. -->
 
     <!-- On-fill preview chip + cap-warning strip, which stays at shell
          level (depends on several shell-only state vars) and keeps its

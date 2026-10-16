@@ -197,51 +197,66 @@ test.describe('Ticket/Chain template severance', () => {
     expect(SYMBOL_PANEL).not.toMatch(/\{#if _showTemplateBar && !_isDemo/);
   });
 
-  test('Templ toggle mounts inside OptionChainTab (Chain) AND SymbolPanel (Ticket only, 2026-10-16 fix)', () => {
-    // 2026-10-16 regression fix — this test used to assert <TemplateBar>
-    // was EXCLUSIVELY mounted inside OptionChainTab, entirely absent from
-    // SymbolPanel.svelte. That invariant was itself the cause of a real
-    // regression: nothing was left rendering the toggle for the Ticket
-    // tab at all. Operator: "what happened to bracket option in order
-    // ticket. it no longer shows." SymbolPanel now ALSO mounts
-    // <TemplateBar> directly, gated to `_activeTab === 'ticket'` so it
-    // never duplicates Chain's own embedded copy — see the next test.
+  test('Templ toggle mounts inside OptionChainTab (Chain) AND OrderTicket itself (Ticket, 2026-10-16 4th-and-final re-wire)', () => {
+    // 2026-10-16 — this test previously went through two shapes in one
+    // day: first asserting <TemplateBar> was EXCLUSIVELY in
+    // OptionChainTab (the 2026-09-29 severance, operator's "3rd
+    // reversal"), then briefly a shell-level SymbolPanel mount gated on
+    // the Ticket tab (a same-day interim fix). Operator's 4th and final
+    // call ("fully re-wire it"): the Ticket tab's copy lives INSIDE
+    // OrderTicket.svelte itself now, on the same row as CHASE/DRAFT
+    // ("keep bracket before draft on the same row"), not at shell
+    // level — see the next test for its exact gating.
     expect(CHAIN_TAB).toMatch(/<TemplateBar/);
-    expect(SYMBOL_PANEL).toMatch(/<TemplateBar/);
-    expect(SYMBOL_PANEL).toMatch(/import TemplateBar\s+from/);
+    expect(ORDER_TICKET).toMatch(/<TemplateBar/);
+    expect(ORDER_TICKET).toMatch(/import TemplateBar\s+from/);
+    // SymbolPanel no longer mounts it directly — only passes the
+    // shared state/handlers down into <OrderTicket> and <OptionChainTab>.
+    expect(SYMBOL_PANEL).not.toMatch(/<TemplateBar/);
   });
 
-  test("SymbolPanel's TemplateBar mount is gated to the Ticket tab only — never duplicates Chain's own copy", () => {
-    const mount = SYMBOL_PANEL.match(/\{#if _activeTab === 'ticket'\}[\s\S]{0,600}?<TemplateBar[\s\S]{0,700}?\/>/)?.[0] ?? '';
-    expect(mount, "SymbolPanel's gated <TemplateBar> mount").not.toBe('');
-    // Must sit behind the Ticket-tab check, and reuse the exact same
-    // always-true gate / handlers Chain uses — never a second, drifted
-    // copy of the toggle logic.
-    expect(mount).toMatch(/_showTemplateBar/);
-    expect(mount).toMatch(/onSelectDefault=\{_onTemplSelectDefault\}/);
-    expect(mount).toMatch(/onSelectNone=\{_onTemplSelectNone\}/);
-    expect(mount).toMatch(/onSelectTemplate=\{_onTemplSelectTemplate\}/);
+  test("OrderTicket's own TemplateBar mount is gated on !suspended — never a duplicate, invisible copy while Chain is active", () => {
+    // OrderTicket stays mounted (display:none) while Chain is active, so
+    // without this gate a second <TemplateBar> — bound to the SAME
+    // shared templateId — existed in the DOM at all times, hidden but
+    // still real. Any selector's .first() (tests, future code) could
+    // resolve to the wrong one. Gated with {#if}, not left to the
+    // ancestor's CSS alone, same pattern CHASE/DRAFT already use in
+    // this row.
+    const mount = ORDER_TICKET.match(/\{:else if !suspended && !_isCloseOrder\}[\s\S]{0,1500}?<TemplateBar[\s\S]{0,700}?\/>/)?.[0] ?? '';
+    expect(mount, "OrderTicket's gated <TemplateBar> mount").not.toBe('');
+    expect(mount).toMatch(/onSelectDefault=\{_onBracketSelectDefault\}/);
+    expect(mount).toMatch(/onSelectNone=\{_onBracketSelectNone\}/);
+    expect(mount).toMatch(/onSelectTemplate=\{_onBracketSelectTemplate\}/);
   });
 
-  test('OrderTicket mount no longer auto-selects a template', () => {
+  test('OrderTicket mount re-fetches templates but does NOT call the old auto-select (shell owns auto-selection now that templateId is shared again)', () => {
+    // 2026-10-16 — partial reversal of the 2026-09-29 severance: the
+    // templates fetch is restored (needed for this component's own
+    // _selectedTemplate/_defaultTemplate/_nonNoneTemplates to resolve),
+    // but _autoSelectTemplate() itself is deliberately NOT called from
+    // onMount — when embedded, SymbolPanel's own side/scope-tracking
+    // $effect is the single owner of auto-selecting a default; calling
+    // it from both places would be two competing writers to the same
+    // bound value.
     const rawMountFn = ORDER_TICKET.match(/onMount\(\(\) => \{[\s\S]*?\n  \}\);/)?.[0] ?? '';
     expect(rawMountFn, 'onMount body').not.toBe('');
-    // Strip comment-only lines — the removal is explained in a code
-    // comment that itself mentions the old call names in prose.
     const mountFn = rawMountFn
       .split('\n')
       .filter((line) => !/^\s*(\/\/|\*)/.test(line))
       .join('\n');
+    expect(mountFn, 'onMount executable body must call loadOrderTemplates()')
+      .toMatch(/loadOrderTemplates\(\)/);
     expect(mountFn, 'onMount executable body must not call _autoSelectTemplate()')
       .not.toMatch(/_autoSelectTemplate\(\)/);
-    expect(mountFn, 'onMount executable body must not call loadOrderTemplates()')
-      .not.toMatch(/loadOrderTemplates\(\)/);
   });
 
-  test('OrderTicket submit payload always sends template_id: null (not just for close orders)', () => {
-    expect(ORDER_TICKET).toMatch(/templateId:\s*null,/);
-    // The old conditional form (`_isCloseOrder ? null : templateId`) must be gone.
-    expect(ORDER_TICKET).not.toMatch(/templateId:\s*_isCloseOrder\s*\?\s*null\s*:\s*templateId/);
+  test('OrderTicket submit payload sends the real templateId (close orders excepted) — not hardcoded null any more', () => {
+    // 2026-10-16 — reverses the 2026-09-29 severance's unconditional
+    // null. Restores the original close-order guard: template attach
+    // never applies when reducing/closing a position.
+    expect(ORDER_TICKET).toMatch(/templateId:\s*_isCloseOrder\s*\?\s*null\s*:\s*templateId,/);
+    expect(ORDER_TICKET).not.toMatch(/templateId:\s*null,\n\s*tpOverride/);
   });
 
   test('side-aware Default resolution survives the severance — still wired into the Chain-only TemplateBar', () => {
@@ -296,12 +311,17 @@ test.describe('Ticket/Chain template severance', () => {
     expect(swapEffectBlock).toMatch(/_currentScope\(\)/);
   });
 
-  test('Chain tab still owns the shared templateId binding (severance is Ticket-only)', () => {
-    expect(SYMBOL_PANEL).toContain('bind:templateId={_sharedTemplateId}');
-    // Only one bind:templateId consumer should exist in the shell markup
-    // (OptionChainTab) — OrderTicket's mount no longer receives it.
-    const bindCount = (SYMBOL_PANEL.match(/bind:templateId=/g) || []).length;
-    expect(bindCount, 'exactly one bind:templateId in SymbolPanel (Chain only)').toBe(1);
+  test('Both Chain and Ticket bind the SAME shared templateId (2026-10-16 re-wire — severance fully reversed)', () => {
+    // 2026-10-16 — the severance's "Ticket-only" scoping is gone: both
+    // tabs now bind the identical _sharedTemplateId, same as the
+    // pre-severance design. Exactly 2 consumers (OptionChainTab +
+    // OrderTicket), both the SAME variable — never two independently-
+    // tracked copies that could drift.
+    const binds = SYMBOL_PANEL.match(/bind:templateId=\{[^}]+\}/g) || [];
+    expect(binds.length, 'exactly 2 bind:templateId in SymbolPanel (Chain + Ticket)').toBe(2);
+    for (const b of binds) {
+      expect(b).toBe('bind:templateId={_sharedTemplateId}');
+    }
   });
 });
 

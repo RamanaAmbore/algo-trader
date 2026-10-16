@@ -276,9 +276,19 @@ test.describe('No impact on the Ticket tab / OrderTicket submit path', () => {
     expect(shellSrc).toContain("} else if (_activeTab === 'ticket') {\n                _modalFireSubmit();");
   });
 
-  test('OrderTicket.svelte does not mount TemplateBar (Spread% field is Chain-only)', () => {
+  test('Spread% field stays Chain-only even after the 2026-10-16 Ticket/template re-wire', () => {
+    // 2026-10-16 — OrderTicket DOES mount <TemplateBar> now (the Ticket/
+    // Draft mutual-exclusion fix, operator: "keep bracket before draft
+    // on the same row"), reversing the 2026-09-29 severance this test
+    // used to assert. Spread% itself is still Chain-only by design
+    // (TemplateBar's own doc comment: "Chain-only pre-submit gate") —
+    // confirm OrderTicket's mount doesn't bind spreadMaxPctOverride,
+    // the narrower claim this test is actually about.
     const orderTicketSrc = readFileSync(`${ROOT}/order/OrderTicket.svelte`, 'utf-8');
-    expect(orderTicketSrc).not.toContain('<TemplateBar');
+    expect(orderTicketSrc).toContain('<TemplateBar');
+    const mountIdx = orderTicketSrc.indexOf('<TemplateBar');
+    const mountBlock = orderTicketSrc.slice(mountIdx, mountIdx + 700);
+    expect(mountBlock).not.toContain('spreadMaxPctOverride');
   });
 });
 

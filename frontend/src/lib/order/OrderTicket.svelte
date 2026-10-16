@@ -28,6 +28,7 @@
   import { get } from 'svelte/store';
   import OrderDepth from './OrderDepth.svelte';
   import ChaseAggPicker from './ChaseAggPicker.svelte';
+  import TemplateBar from '$lib/TemplateBar.svelte';
   import QtyInput from './QtyInput.svelte';
   import Select from '$lib/Select.svelte';
   import OrderKnobsRow from '$lib/order/OrderKnobsRow.svelte';
@@ -126,6 +127,9 @@
    *   defaultChase?: boolean,
    *   defaultChaseAgg?: 'low' | 'med' | 'high',
    *   initialDraftId?: number | null,
+   *   onSelectDefault?: () => void,
+   *   onSelectNone?: () => void,
+   *   onSelectTemplate?: (id: number) => void,
    * }} */
   let {
     symbol,
@@ -305,6 +309,16 @@
     // untouched (2026-10 fix — closing used to discard it). When null
     // (default) the "Add to Payoff" path creates a new entry.
     initialDraftId            = /** @type {number|null} */ (null),
+    // 2026-10-16 — Bracket toggle moved onto the same row as CHASE/DRAFT
+    // (operator: "keep bracket before draft on the same row"). These
+    // three callbacks mirror the shell's own _onTemplSelectDefault/
+    // _onTemplSelectNone/_onTemplSelectTemplate so the shared per-scope
+    // remembered-pref bookkeeping stays correct when embedded. Undefined
+    // (standalone mount, no shell) falls back to mutating the bindable
+    // `templateId` prop directly.
+    onSelectDefault  = /** @type {(() => void)|undefined} */ (undefined),
+    onSelectNone     = /** @type {(() => void)|undefined} */ (undefined),
+    onSelectTemplate = /** @type {((id: number) => void)|undefined} */ (undefined),
   } = $props();
 
   // E1: focus ping — when PageHeaderActions increments the store while
@@ -955,6 +969,46 @@
     _selectedTemplate?.slug === 'none' || templateId === null
   );
 
+  // 2026-10-16 — Bracket toggle, now rendered inline on the CHASE/DRAFT
+  // row (see .ot-chase-row below) instead of only via the shell's
+  // post-tab-body container. Reuses this component's own already-
+  // complete local template state (_templates/_selectedTemplate/
+  // _defaultTemplate/_isUsingNone all existed already — nothing new to
+  // fetch) so the embedded <TemplateBar> mount needs only two small
+  // additional derived values TemplateBar itself requires.
+  const _nonNoneTemplates = $derived(_templates.filter(t => t.slug !== 'none'));
+  const _showsWing = $derived(
+    !!_selectedTemplate &&
+    (_selectedTemplate.wing_strike_offset != null || _selectedTemplate.wing_premium_pct != null)
+  );
+
+  // Mutual exclusion (operator: "only one can be active or both can be
+  // inactive") — Bracket and Draft can never both be ON. Draft turning
+  // ON deactivates an active Bracket; Bracket turning ON (picking
+  // Default) turns Draft OFF. Both OFF simultaneously is the normal
+  // rest state and is left alone.
+  function _onBracketSelectDefault() {
+    if (_draftMode) _draftMode = false;
+    if (onSelectDefault) onSelectDefault();
+    else templateId = _defaultTemplate?.id ?? null;
+  }
+  function _onBracketSelectNone() {
+    if (onSelectNone) onSelectNone();
+    else templateId = null;
+  }
+  function _onDraftToggleChange(/** @type {boolean} */ checked) {
+    _draftMode = checked;
+    if (checked && !_isUsingNone) {
+      if (onSelectNone) onSelectNone();
+      else templateId = null;
+    }
+  }
+  function _onBracketSelectTemplate(/** @type {number} */ id) {
+    if (_draftMode) _draftMode = false;
+    if (onSelectTemplate) onSelectTemplate(id);
+    else templateId = id;
+  }
+
   // #16 — side-flip template change flash. Set to true when _autoSelectTemplate
   // fires due to a scope mismatch (side/symbol change); auto-clears after 1.2s.
   let _templateChanged = $state(false);
@@ -1010,7 +1064,12 @@
   // Close orders must never carry a template — clear templateId
   // reactively so any previously-selected template doesn't slip through
   // if the action prop changes to 'close' while the ticket is open.
+  // Gated on `suspended` for the same reason as the re-validation
+  // effect below — OrderTicket stays mounted while Chain is active, so
+  // without this gate an `action` change elsewhere could reset the
+  // SHARED templateId out from under the Chain tab.
   $effect(() => {
+    if (suspended) return;
     if (action === 'close' && templateId !== null) {
       templateId = null;
     }
@@ -1038,6 +1097,17 @@
     // off templateId + _templates, so we don't need to depend on it
     // here — re-validate purely against the current leg shape.
     const newScope = _appliesToFor(_side, _resolvedSymbol || symbol);
+    // 2026-10-16 — gate on `suspended` (same convention as the
+    // preflight effect above). OrderTicket stays mounted with
+    // display:none while Chain is active, so without this gate this
+    // effect kept firing on every Chain-tab side/symbol change too —
+    // now that templateId is a real shared binding again (the Ticket/
+    // template re-wire), it was resetting the SHARED _sharedTemplateId
+    // and calling this component's OWN _autoSelectTemplate() behind
+    // Chain's back, fighting the shell's own scope-tracking effect
+    // for the exact same value. Only the visually active tab may
+    // touch the shared template state.
+    if (suspended) return;
     untrack(() => {
       const current = _templates.find(t => t.id === templateId);
       if (!current) return;             // no templateId or templates not loaded
@@ -2234,13 +2304,15 @@
           lots: _lots,
           lotSize: _lotSize,
           currentQty,
-          // Operator (2026-09-29): "order ticket is not wired to
-          // template" — unconditionally null, not just for close
-          // orders. Ticket-tab submissions never carry a template
-          // regardless of any internal templateId state (which itself
-          // stays null now that auto-select is disabled — see this
-          // component's onMount).
-          templateId: null,
+          // 2026-10-16 — re-wired (4th and final decision, superseding
+          // the 2026-09-29 severance comment this replaced). Close
+          // orders never carry a template (template attach doesn't
+          // apply when reducing/closing a position — matches every
+          // other _isCloseOrder gate on template-adjacent UI in this
+          // file); otherwise send the real bound templateId so the
+          // operator's Bracket selection on this tab actually attaches
+          // TP/SL/Wing GTTs on fill, same as Chain.
+          templateId: _isCloseOrder ? null : templateId,
           tpOverride,
           slOverride,
           wingPremPctOverride,
@@ -2421,15 +2493,27 @@
     // is the canonical TP/SL surface now; setting is preserved server-
     // side for back-compat but the modal no longer reads it.
 
-    // Operator (2026-09-29): "order ticket is not wired to template" —
-    // the Ticket tab places/closes positions with no template attach at
-    // all; template selection is Chain-only now (TemplateBar renders
-    // only for _activeTab === 'chain' in SymbolPanel.svelte). Dropped
-    // the loadOrderTemplates()/_autoSelectTemplate() call that used to
-    // run on every OrderTicket mount — templateId stays null for this
-    // component's whole lifetime, and the submit payload below sends
-    // template_id: null unconditionally as a second, independent
-    // guarantee regardless of this change.
+    // 2026-10-16 — Ticket/template re-wire, 4th and final decision on
+    // this exact question (superseding the 2026-09-29 severance above,
+    // operator: "fully re-wire it"). Restores the templates fetch so
+    // this component's own _selectedTemplate/_defaultTemplate/
+    // _nonNoneTemplates resolve correctly for the Bracket toggle now
+    // rendered on the CHASE/DRAFT row. Deliberately does NOT restore
+    // the old _autoSelectTemplate() call alongside it — when embedded
+    // (templateId bound from SymbolPanel), the SHELL's own side/scope-
+    // tracking $effect is the single owner of auto-selection; running
+    // both here and in the shell would be two competing writers to the
+    // same bound value. Standalone mounts (templateId unbound) simply
+    // start at the bindable default (null / "None") until the operator
+    // clicks the toggle — no auto-select regression there since
+    // standalone OrderTicket never auto-selected via this path either
+    // (it's embedded-only legacy behavior, per the shell's own prior
+    // _onTemplSelectDefault/scope-effect design).
+    loadOrderTemplates()
+      .then(/** @param {any[]} rows */ (rows) => {
+        _templates = rows.filter(t => t.is_active);
+      })
+      .catch(() => { /* silent — picker stays empty */ });
 
     return () => _escCleanup?.();
   });
@@ -2927,17 +3011,25 @@
          so the operator can toggle chase while watching the depth
          rather than hunting for it in the card header middle slot.
          Only shown when limit price is relevant + not hidden by host. -->
-    <!-- CHASE + DRAFT share one row. Each has its own gate: CHASE is
+    <!-- CHASE + BRACKET + DRAFT share one row. Each has its own gate: CHASE is
          hidden by `modeChaseHidden` (host renders its own toolbar), DRAFT
          by `hideDraftToggle` (2026-10 fix — it used to be nested under
          the CHASE gate, so SymbolPanel's modeChaseHidden={true} made it
-         unreachable). The row renders when either control is visible.
-         DRAFT is F&O only, mutually exclusive with Chase.
-         When ON, the submit button adds the leg to the session payoff
-         draft store (payoffDrafts) instead of routing to the broker.
-         The derivatives page merges these into candidatePositions so
-         the payoff curve updates immediately. -->
-    {#if showLimit && (!modeChaseHidden || showDraftToggle)}
+         unreachable). BRACKET (2026-10-16 fix, operator: "keep bracket
+         before draft on the same row") sits between CHASE and DRAFT —
+         hidden for close orders (template attach doesn't apply there,
+         matching the other template-adjacent UI below) and in demo mode.
+         The row renders when any control is visible.
+         BRACKET and DRAFT are mutually exclusive (operator: "only one
+         can be active or both can be inactive") — see
+         _onBracketSelectDefault/_onBracketSelectNone/_onDraftToggleChange/_onBracketSelectTemplate
+         above: turning one ON auto-turns the other OFF; both OFF is the
+         normal rest state. DRAFT is also mutually exclusive with Chase.
+         When DRAFT is ON, the submit button adds the leg to the session
+         payoff draft store (payoffDrafts) instead of routing to the
+         broker. The derivatives page merges these into candidatePositions
+         so the payoff curve updates immediately. -->
+    {#if showLimit && (!modeChaseHidden || showDraftToggle || (!_isCloseOrder && !_isDemo))}
       <div class="ot-chase-row">
         {#if !modeChaseHidden}
           <label class="ot-chase-toggle"
@@ -2952,15 +3044,48 @@
             <ChaseAggPicker value={_chaseAgg} onChange={_setChaseAgg} />
           {/if}
         {/if}
+        {#if !suspended && _isDemo}
+          <span class="oct-tpl-demo-note">Exit rules (TP / SL / Wing) not available in demo.</span>
+        {:else if !suspended && !_isCloseOrder}
+          <!-- 2026-10-16 — gated on `!suspended` (not just the ancestor's
+               CSS display:none) so this <TemplateBar> is fully UNMOUNTED,
+               not merely hidden, while Chain is active. OrderTicket's
+               body stays mounted for its margin-preflight effect (see
+               the comment above .oes-ticket-body in SymbolPanel.svelte),
+               but without this gate a second, invisible .oes-tpl-button
+               existed in the DOM at all times — Playwright's/any
+               selector's .first() could resolve to the hidden Ticket
+               copy instead of Chain's visible one. Bracket is the only
+               control in this row bound to SHARED (shell) state, so
+               it's the only one that needed this — DRAFT is local-only
+               state and CHASE never even reaches this component when
+               embedded (modeChaseHidden is hardcoded true at the
+               SymbolPanel mount site; it renders via a separate
+               shell-level control instead). -->
+          <TemplateBar
+            selectedTemplate={_selectedTemplate}
+            sideAwareDefault={_defaultTemplate}
+            nonNoneTemplates={_nonNoneTemplates}
+            showsWing={_showsWing}
+            shellUsingNone={_isUsingNone}
+            bind:tpOverride
+            bind:slOverride
+            bind:wingStrikeOffsetOverride
+            bind:wingPremPctOverride
+            bind:slTrailPctOverride
+            bind:tpOrderTypeOverride
+            bind:tpScalesJsonOverride
+            onSelectDefault={_onBracketSelectDefault}
+            onSelectNone={_onBracketSelectNone}
+            onSelectTemplate={_onBracketSelectTemplate} />
+        {/if}
         {#if showDraftToggle}
           <label class="ot-draft-toggle"
                  title={_draftMode
                    ? 'Draft ON — submit adds this leg to the payoff chart without placing an order'
                    : 'Draft OFF — submit routes to broker normally'}>
             <input type="checkbox" checked={_draftMode}
-                   onchange={(e) => {
-                     _draftMode = /** @type {HTMLInputElement} */ (e.currentTarget).checked;
-                   }} />
+                   onchange={(e) => _onDraftToggleChange(/** @type {HTMLInputElement} */ (e.currentTarget).checked)} />
             <span class="ot-draft-label" class:on={_draftMode}>DRAFT</span>
           </label>
         {/if}
@@ -3450,6 +3575,16 @@
     gap: 0.5rem;
     margin: 0.3rem 0 0.2rem;
     flex-wrap: wrap;
+  }
+
+  /* 2026-10-16 — Bracket toggle's demo-mode note, same row. Mirrors
+     OptionChainTab.svelte's .oct-tpl-demo-note exactly (Svelte scopes
+     styles per-component, so this needs its own copy here). */
+  .oct-tpl-demo-note {
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
+    color: var(--text-lo);
+    font-style: italic;
   }
 
   /* D2: wing warning */
