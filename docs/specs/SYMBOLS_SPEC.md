@@ -50,8 +50,10 @@ Three functions in `backend/api/algo/symbol_resolver.py` are the canonical sourc
 of truth for all symbol mapping:
 
 **`list_active_futures(root, exchange, limit=2)`** — Returns the next `limit`
-non-expired futures contracts sorted ascending by expiry. A contract on its expiry date
-(settling today IST) is excluded so callers never read settlement prices as live spot.
+non-expired futures contracts sorted ascending by expiry. A contract remains active
+through its own entire expiry day and is excluded only AFTER the next trading day's
+08:00 IST market open. (MCX-gated: uses `is_mcx_future_still_current()` helper in
+`backend/api/algo/expiry_freeze.py`; NSE/NFO/CDS use plain date compare.)
 Returns empty list if the instruments cache is cold or no contracts match.
 
 **`resolve_symbol(virtual, exchange)`** — Maps a virtual root to the real tradingsymbol.
@@ -75,12 +77,13 @@ On any given day, multiple MCX/CDS contracts may exist in the instruments cache:
 active front-month (e.g. CRUDEOIL26JUNFUT), active back-month (CRUDEOIL26JULFUT),
 and settling today (CRUDEOIL26MAYFUT if today is May 20).
 
-**Settling-contract exclusion rule**: When `inst.x > today_iso` (ISO date string, IST),
-the contract is considered active. Contracts with `inst.x <= today_iso` are excluded.
-
-This ensures `list_active_futures` never returns a contract on its own expiry day,
-preventing operators from accidentally trading settlement prices as if they were
-live spot prices.
+**Settling-contract exclusion rule**: A contract whose own expiry is today or earlier
+(through the closed overnight window) is still considered the active front-month
+contract. It is excluded only once the next trading day's 08:00 IST market open has
+passed. (MCX-gated: uses `is_mcx_future_still_current(expiry_iso, now_ist=None)` helper
+in `backend/api/algo/expiry_freeze.py`; NSE/NFO/CDS use plain date compare.) This
+ensures operators can trade the current contract through its entire expiry day, and
+rollover to the next contract happens at session open, not at midnight.
 
 **`_MONTHLY_FUT_RE` regex filter**: Only contracts matching `^[A-Z]+\d{2}[A-Z]{3}FUT$`
 are considered for resolution. CDS weekly contracts (USDINR26710FUT) are filtered out,
@@ -205,9 +208,9 @@ after the trader desk verifies the contract size.
 
 **Instruments cache lag**: All active futures on a root have expired but the 24-hour
 cache hasn't refreshed yet. Resolution falls back to `_list_all_futures_fallback`
-which includes expiring-today contracts (without the `inst.x > today_iso` gate).
-Returns the most-recently-listed contract; operator sees the stale contract for a
-few hours until the daily 08:00 IST refresh.
+which includes expiring-today contracts (bypassing the `is_mcx_future_still_current()`
+exclusion gate during cache-lag recovery). Returns the most-recently-listed contract;
+operator sees the stale contract for a few hours until the daily 08:00 IST refresh.
 
 **Cold boot**: Instruments cache has never been warmed. Resolution returns the virtual
 symbol unchanged (identity mapping). The cache warms at startup so this is rare;
