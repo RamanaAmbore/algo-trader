@@ -3,26 +3,38 @@ Near-month futures rollover tests.
 
 Verifies that all three resolver paths — ``_resolve_mcx_commodity``,
 ``_resolve_cds_currency`` (watchlist.py) and
-``lookup_mcx_front_month_future`` (derivatives.py) — skip the expiring
-contract on rollover day and pick the next-month contract.
+``lookup_mcx_front_month_future`` (derivatives.py) — stay on the current
+contract through its own entire expiry day and roll to the next-month
+contract only once the next trading day's 08:00 IST market open has
+passed.
 
-Key invariants:
-  - BEFORE expiry date  → return front-month (JUN).
-  - ON expiry date      → skip JUN (settling), return JUL.
-  - DAY AFTER expiry    → return JUL.
-  - All-expired fallback → return last listed contract (not None).
+Key invariants (2026-10-16 fix — see CLAUDE.md "MCX virtual-root /
+underlying-spot future resolution must stay on the current contract
+through its OWN entire expiry day"):
+  - BEFORE expiry date        → return front-month (JUN).
+  - ON expiry date itself     → still JUN (settling happens later that
+                                 day; the contract is live all day).
+  - DAY AFTER expiry, past
+    next market-open 08:00
+    IST                       → return JUL.
+  - All-expired fallback      → return last listed contract (not None).
   - CDS path mirrors MCX path on rollover day.
 
-SSOT: every assert mirrors the identical ``inst.x > today_iso`` rule used
-by ``lookup_mcx_front_month_future`` and now also by both watchlist
-resolvers after the expiry-rollover fix.
-Performance: zero I/O — instruments cache is monkey-patched in-process.
-Stale code: no duplicate filtering logic; both paths delegated to shared
-``inst.x > today_iso`` rule.
+SSOT: every MCX assert mirrors the shared `is_mcx_future_still_current()`
+helper (`backend/api/algo/expiry_freeze.py`) now used by
+`lookup_mcx_front_month_future` (via `symbol_resolver.list_active_futures`)
+and both watchlist resolvers.
+Performance: zero I/O for the common (not-yet-expired) case — only a
+contract whose expiry is on/before "today" consults the holiday-calendar-
+backed `next_market_open_ist()`.
+Stale code: no duplicate filtering logic; all MCX paths delegate to the
+one shared helper.
 Reuse: uses the canonical public API — ``_resolve_mcx_commodity``,
 ``_resolve_cds_currency``, ``lookup_mcx_front_month_future``.
-UX: on rollover day the operator's watchlist LTP panel resolves to the JUL
-contract automatically; test confirms the exact symbol returned.
+UX: on its own expiry day the operator's watchlist LTP panel keeps
+resolving to the current (settling-today) contract, exactly matching
+what's still live and tradeable; only the next session's 08:00 IST open
+rolls it to JUL. Test confirms the exact symbol returned at each stage.
 """
 
 from __future__ import annotations
@@ -138,16 +150,18 @@ def test_mcx_before_expiry_returns_jun():
         f"day before expiry should still be JUN, got {result!r}")
 
 
-def test_mcx_on_expiry_day_skips_jun_picks_jul():
-    """On expiry day (2026-06-30) JUN contract is settling — must roll to JUL."""
+def test_mcx_on_its_own_expiry_day_stays_on_jun():
+    """2026-10-16 fix: on its OWN expiry day (2026-06-30) JUN is still
+    settling LATER that day — it stays the resolved contract all day,
+    only rolling at the next trading day's 08:00 IST open."""
     from backend.api.routes.watchlist import _resolve_mcx_commodity
 
     with ExitStack() as stack:
         for cm in _patch_watchlist(_CRUDEOIL_INSTRUMENTS, "2026-06-30"):
             stack.enter_context(cm)
         result = asyncio.run(_resolve_mcx_commodity("CRUDEOIL"))
-    assert result == "CRUDEOIL26JULFUT", (
-        f"on expiry day JUN must be skipped, expected JUL, got {result!r}")
+    assert result == "CRUDEOIL26JUNFUT", (
+        f"on its own expiry day JUN must stay resolved, got {result!r}")
 
 
 def test_mcx_day_after_expiry_returns_jul():
@@ -254,15 +268,16 @@ def test_derivatives_front_month_before_expiry():
     assert result == "CRUDEOIL26JUNFUT"
 
 
-def test_derivatives_front_month_on_expiry_day_rolls():
-    """On expiry day the derivatives resolver already skips JUN — regression guard."""
+def test_derivatives_front_month_on_its_own_expiry_day_stays_on_jun():
+    """2026-10-16 fix: the derivatives resolver also stays on JUN through
+    its own expiry day — regression guard, mirrors the watchlist test."""
     from backend.api.algo.derivatives import lookup_mcx_front_month_future
 
     with ExitStack() as stack:
         for cm in _patch_derivatives(_CRUDEOIL_INSTRUMENTS, "2026-06-30"):
             stack.enter_context(cm)
         result = asyncio.run(lookup_mcx_front_month_future("CRUDEOIL"))
-    assert result == "CRUDEOIL26JULFUT"
+    assert result == "CRUDEOIL26JUNFUT"
 
 
 # ---------------------------------------------------------------------------

@@ -308,6 +308,54 @@ async def next_market_open_ist(after_date: date, exchange: str = "MCX") -> datet
     return datetime(d.year, d.month, d.day, 8, 0, tzinfo=_IST)
 
 
+async def is_mcx_future_still_current(
+    expiry_iso: "str | None", now_ist: "datetime | None" = None,
+) -> bool:
+    """True when an MCX future whose REAL listed expiry is *expiry_iso*
+    (YYYY-MM-DD, straight from the instruments cache's own `x` field —
+    deliberately NOT re-derived from symbol text, unlike
+    `is_live_row_past_freeze_window`'s futures-expiry approximation,
+    since every caller here already has the instrument row in hand)
+    should still be treated as the live/front-month contract right now.
+
+    2026-10-16 incident: the virtual-root/underlying-spot resolvers
+    (`symbol_resolver.list_active_futures`, `derivatives._matched_or_roll`,
+    `derivatives.lookup_mcx_future_for_expiry`) all excluded a future via
+    a bare `inst.x > today_iso` string compare — which rolls to NEXT
+    month's future at the very FIRST MOMENT of the current future's own
+    expiry day, hours before settlement even happens. Operator: "on
+    expiry day, it should continue to use the current day underlying...
+    [o]nly on the next market open day at 8:00 AM it should be reset to
+    next month future." This mirrors the existing position-side freeze
+    rule (`expiry_status`, `is_live_row_past_freeze_window`) applied to
+    the FUTURE-selection side instead: a contract stays current through
+    its own entire expiry day and the whole closed overnight window
+    (23:31→08:00 IST), rolling only once the next trading day's 08:00
+    IST open has passed.
+
+    MCX-only by design — operator: "virtual root anyway will not app[l]y
+    to non-mcx." Callers for other exchanges keep their existing plain
+    `expiry > today` compare unchanged.
+    """
+    if not expiry_iso:
+        return False
+    if now_ist is None:
+        # Lazy import (not the module-level `datetime` bound at import
+        # time) so tests that `patch("datetime.datetime", ...)` — the
+        # established convention in this codebase, e.g.
+        # symbol_resolver._ist_today_iso — take effect here too.
+        from datetime import datetime as _dt
+        try:
+            now_ist = _dt.now(_IST)
+        except Exception:
+            now_ist = _dt.utcnow()
+    expiry = date.fromisoformat(expiry_iso)
+    if expiry >= now_ist.date():
+        return True
+    boundary = await next_market_open_ist(expiry, exchange="MCX")
+    return now_ist < boundary
+
+
 async def is_live_row_past_freeze_window(
     symbol: str, exchange: "str | None", now_ist: datetime,
 ) -> bool:

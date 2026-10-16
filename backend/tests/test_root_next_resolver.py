@@ -113,8 +113,14 @@ def test_list_active_futures_limit_1():
     assert result == ["CRUDEOIL26JUNFUT"]
 
 
-def test_list_active_futures_skips_expiry_day():
-    """On expiry day JUN is excluded; front-month becomes JUL."""
+def test_list_active_futures_stays_on_expiry_day_front_month():
+    """2026-10-16 fix: on its OWN expiry day, JUN stays front-month —
+    it only rolls to JUL once the next trading day's 08:00 IST open has
+    passed. Operator: "on expiry day, it should continue to use the
+    current day underlying... [o]nly on the next market open day at
+    8:00 AM it should be reset to next month future." Superseded the
+    prior (bare calendar-date) behavior of rolling at the first moment
+    of expiry day, hours before settlement."""
     from backend.api.algo.symbol_resolver import list_active_futures
 
     with ExitStack() as stack:
@@ -122,8 +128,31 @@ def test_list_active_futures_skips_expiry_day():
             stack.enter_context(cm)
         result = asyncio.run(list_active_futures("CRUDEOIL", "MCX", limit=2))
 
+    assert result == ["CRUDEOIL26JUNFUT", "CRUDEOIL26JULFUT"], (
+        f"On its own expiry day JUN must stay front-month; expected "
+        f"[JUN, JUL], got {result}")
+
+
+def test_list_active_futures_rolls_after_next_market_open():
+    """The day AFTER expiry, once past the 08:00 IST market-open
+    boundary, JUN finally rolls out and JUL becomes front-month."""
+    from backend.api.algo.symbol_resolver import list_active_futures
+
+    async def _no_holidays(exchange, year=None):
+        return set()
+
+    with ExitStack() as stack:
+        for cm in _patch_resolver(_CRUDEOIL, "2026-07-01"):  # day after JUN expiry
+            stack.enter_context(cm)
+        stack.enter_context(patch(
+            "backend.api.persistence.holidays_store.get_or_fetch_holidays",
+            side_effect=_no_holidays,
+        ))
+        result = asyncio.run(list_active_futures("CRUDEOIL", "MCX", limit=2))
+
     assert result == ["CRUDEOIL26JULFUT", "CRUDEOIL26AUGFUT"], (
-        f"On expiry day JUN must be skipped; expected [JUL, AUG], got {result}")
+        f"Past the next market-open boundary JUN must roll off; expected "
+        f"[JUL, AUG], got {result}")
 
 
 def test_list_active_futures_unknown_root_empty():
@@ -218,8 +247,10 @@ def test_resolve_symbol_back_month_only_one_contract():
     assert result == "CRUDEOIL26JUNFUT"
 
 
-def test_resolve_symbol_rolls_on_expiry_day():
-    """On expiry day, resolve_symbol returns the new front-month."""
+def test_resolve_symbol_stays_on_expiry_day_front_month():
+    """2026-10-16 fix: on its own expiry day, resolve_symbol still
+    returns the current (expiring) contract — see
+    test_list_active_futures_stays_on_expiry_day_front_month."""
     from backend.api.algo.symbol_resolver import resolve_symbol
 
     with ExitStack() as stack:
@@ -227,8 +258,9 @@ def test_resolve_symbol_rolls_on_expiry_day():
             stack.enter_context(cm)
         result = asyncio.run(resolve_symbol("CRUDEOIL", "MCX"))
 
-    assert result == "CRUDEOIL26JULFUT", (
-        f"On expiry day CRUDEOIL should resolve to JUL, got {result!r}")
+    assert result == "CRUDEOIL26JUNFUT", (
+        f"On its own expiry day CRUDEOIL should still resolve to JUN, "
+        f"got {result!r}")
 
 
 def test_resolve_symbol_cds_pair():

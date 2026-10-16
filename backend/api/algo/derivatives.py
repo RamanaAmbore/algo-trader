@@ -673,7 +673,16 @@ async def _matched_or_roll(
     live.
     """
     inst_expiry = (inst.x or "")
-    is_live = bool(inst_expiry and inst_expiry > today_iso)
+    if inst.e == "MCX":
+        # 2026-10-16 fix — the future's own expiry day (and the closed
+        # overnight window after it) still counts as live; only the
+        # next market-open 08:00 IST rolls to next month. Operator: "on
+        # expiry day, it should continue to use the current day
+        # underlying." Non-MCX (NSE/NFO) keeps the plain date compare.
+        from backend.api.algo.expiry_freeze import is_mcx_future_still_current
+        is_live = bool(inst_expiry) and await is_mcx_future_still_current(inst_expiry)
+    else:
+        is_live = bool(inst_expiry and inst_expiry > today_iso)
     if is_live:
         return inst.s
     return await _roll_past_month(root, items, inst_expiry, today_iso)
@@ -790,22 +799,28 @@ async def lookup_mcx_future_for_expiry(underlying: str,
         items = []
     if not items:
         return None
-    # Today (IST) — gate out settling-today contracts. Same rollover
-    # rule lookup_mcx_front_month_future enforces; operator: "when
-    # options expire consider the next crudeoil future as the spot."
-    from datetime import datetime as _dt
-    try:
-        _today_iso = _dt.now(ZoneInfo("Asia/Kolkata")).date().isoformat()
-    except Exception:
-        _today_iso = _dt.utcnow().date().isoformat()
+    # 2026-10-16 fix — a future settling TODAY is still the correct live
+    # anchor through its own entire expiry day + the closed overnight
+    # window; it only rolls to next month at the next market-open 08:00
+    # IST (is_mcx_future_still_current, same rule as
+    # list_active_futures/_matched_or_roll). Superseded: this used to
+    # unconditionally exclude any today-expiring contract on the
+    # now-corrected assumption that an expiring OPTION's target_expiry
+    # should always roll the future too — that was the exact bug fixed
+    # 2026-10-15 in _matched_or_roll (CRUDEOIL incident); this sibling
+    # function carried the same stale assumption.
+    from backend.api.algo.expiry_freeze import is_mcx_future_still_current
     target_u = underlying.upper()
-    candidates = [
+    base_candidates = [
         inst for inst in items
         if (inst.e == "MCX"
             and inst.t == "FUT"
             and (inst.u or "").upper() == target_u
-            and inst.x
-            and inst.x > _today_iso)
+            and inst.x)
+    ]
+    candidates = [
+        inst for inst in base_candidates
+        if await is_mcx_future_still_current(inst.x)
     ]
     if not candidates:
         return None

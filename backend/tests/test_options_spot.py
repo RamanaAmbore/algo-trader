@@ -302,6 +302,58 @@ async def test_option_on_its_own_expiry_day_does_not_roll_past_a_still_live_futu
 
 
 @pytest.mark.asyncio
+async def test_future_still_resolves_on_its_own_expiry_day():
+    """2026-10-16 fix: when the FUTURE ITSELF (not just the paired
+    option, the 2026-10-15 fix above) reaches its own expiry day,
+    lookup_future_for_option must still return it — only the next
+    trading day's 08:00 IST open rolls to next month. Operator: "on
+    expiry day, it should continue to use the current day underlying...
+    [o]nly on the next market open day at 8:00 AM it should be reset to
+    next month future." Both the expiring-today and next-month futures
+    are present so a regression (rolling early) would be caught, not
+    masked by a single-candidate fallback."""
+    from zoneinfo import ZoneInfo
+    import datetime as _dt_mod
+    today_ist_iso = _dt_mod.datetime.now(ZoneInfo("Asia/Kolkata")).date().isoformat()
+    cur_yy, cur_mon, _ = _future_month(0)
+    next_yy, next_mon, next_x = _future_month(1)
+    cur_inst = _inst(f"CRUDEOIL{cur_yy}{cur_mon}FUT", "CRUDEOIL", today_ist_iso)
+    next_inst = _inst(f"CRUDEOIL{next_yy}{next_mon}FUT", "CRUDEOIL", next_x)
+    opt_sym = f"CRUDEOIL{cur_yy}{cur_mon}5800CE"
+    # Option itself also expiring today — the common real-world case.
+    opt_inst = _inst(opt_sym, "CRUDEOIL", today_ist_iso)
+    items = [cur_inst, next_inst, opt_inst]
+
+    from backend.api.algo.derivatives import lookup_future_for_option
+
+    with _patch_instruments(items):
+        result = await lookup_future_for_option(opt_sym)
+
+    assert result == f"CRUDEOIL{cur_yy}{cur_mon}FUT", (
+        f"Future still live through its own expiry day; expected "
+        f"CRUDEOIL{cur_yy}{cur_mon}FUT, got {result!r}")
+
+
+@pytest.mark.asyncio
+async def test_lookup_mcx_future_for_expiry_includes_contract_expiring_today():
+    """2026-10-16 fix: lookup_mcx_future_for_expiry must not exclude a
+    future whose own expiry is today — it's still correctly tradeable
+    through its entire expiry day and the closed overnight window."""
+    from backend.api.algo.derivatives import lookup_mcx_future_for_expiry
+    from zoneinfo import ZoneInfo
+    import datetime as _dt_mod
+    today = _dt_mod.datetime.now(ZoneInfo("Asia/Kolkata")).date()
+    cur_inst = _inst("CRUDEOIL26OCTFUT", "CRUDEOIL", today.isoformat())
+    items = [cur_inst]
+
+    with _patch_instruments(items):
+        result = await lookup_mcx_future_for_expiry("CRUDEOIL", today)
+
+    assert result == "CRUDEOIL26OCTFUT", (
+        f"Expected the today-expiring future to still be selectable, got {result!r}")
+
+
+@pytest.mark.asyncio
 async def test_weekly_option_falls_back_to_front_month():
     """NIFTY2762422000CE is a weekly option (no 3-letter MON token).
     lookup_future_for_option detects it as weekly → falls back to the

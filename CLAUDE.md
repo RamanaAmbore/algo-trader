@@ -538,7 +538,40 @@ nothing about whether the future it's paired with is still live. Test:
 `backend/tests/test_options_spot.py:test_option_on_its_own_expiry_day_does_not_roll_past_a_still_live_future`
 (constructs both the current- and next-month future so a regression is caught, not masked by a
 single-candidate fallback — confirmed to fail against the pre-fix code, reproducing the exact
-reported bug).
+reported bug). **The `inst.x > today_iso` compare above was itself superseded the very next day
+— see the entry immediately below.**
+
+**MCX virtual-root / underlying-spot future resolution must stay on the current contract through its OWN entire expiry day, rolling only at next market-open 08:00 IST (2026-10-16, live operator-reported incident, amends the entry above)** —
+The fix directly above only addressed the PAIRED OPTION's expiry rolling the future early; the
+future's OWN `inst.x > today_iso` compare it introduced had the exact same bug class one level
+up — on the FUTURE's own expiry day, `inst.x > today_iso` is False the moment the calendar date
+rolls over to the expiry date (hours before settlement), so the virtual root/underlying-spot
+resolver rolled to next month's future immediately, not at session close. Operator: "on expiry
+day, [the virtual root] should continue to use the current day underlying... [o]nly on the next
+market open day at 8:00 AM it should be reset to next month future." Three sites carried this
+pattern — all now delegate to a single new helper, `is_mcx_future_still_current(expiry_iso,
+now_ist=None)` in `backend/api/algo/expiry_freeze.py` (mirrors the existing position-side freeze
+rule `expiry_status`/`is_live_row_past_freeze_window`, but takes the real instrument `inst.x`
+directly rather than re-deriving expiry from symbol text): (1) `symbol_resolver.list_active_futures()`
+— MCX-conditional branch, feeds `background.py:_add_mcx_spot_anchors()` (the virtual-root ticker
+alias — the originally reported symptom), `resolve_symbol()`, `lookup_mcx_front_month_future()`,
+and watchlist.py/symbols.py MCX lookups, all for free since they delegate to this one function;
+(2) `derivatives._matched_or_roll()` — gated on `inst.e == "MCX"` so NSE/NFO monthly-option
+resolution (which also calls this function) keeps its plain `expiry > today` compare unchanged;
+(3) `derivatives.lookup_mcx_future_for_expiry()` — its own inline filter carried a now-corrected
+stale comment ("operator: 'when options expire consider the next crudeoil future as the spot'")
+reflecting the exact pre-2026-10-15 assumption already proven wrong. MCX-only by design —
+operator: "virtual root anyway will not app[l]y to non-mcx" — `_next_nse_future()` (NSE/NFO) is
+untouched. Tests: `test_root_next_resolver.py::test_list_active_futures_stays_on_expiry_day_front_month`
++ `test_list_active_futures_rolls_after_next_market_open` + `test_resolve_symbol_stays_on_expiry_day_front_month`,
+`test_options_spot.py::test_future_still_resolves_on_its_own_expiry_day` +
+`test_lookup_mcx_future_for_expiry_includes_contract_expiring_today` +
+`test_near_month_rollover.py::test_mcx_on_its_own_expiry_day_stays_on_jun` +
+`test_derivatives_front_month_on_its_own_expiry_day_stays_on_jun` (all confirmed to fail
+against pre-fix code). Invariant: an MCX future is "current" for virtual-root/underlying-spot
+purposes through its own entire expiry day and the whole closed overnight window (23:31→08:00
+IST); it rolls to the next listed contract only once the next trading day's 08:00 IST open has
+passed — never at the bare calendar-date boundary.
 
 **F&O order qty convention** — API now accepts LOTS as input for instruments with 
 `lot_size > 1`. `backend/api/routes/orders_place.py:_ticket_validate_input` converts 

@@ -160,15 +160,26 @@ async def list_active_futures(
     target_u = root.upper()
     exch_upper = exchange.upper()
 
-    candidates = [
+    base_candidates = [
         inst for inst in items
         if (inst.e == exch_upper
             and inst.t == "FUT"
             and (inst.u or "").upper() == target_u
             and inst.x
-            and inst.x > today_iso
             and _MONTHLY_FUT_RE.match((inst.s or "").upper()))
     ]
+    if exch_upper == "MCX":
+        # 2026-10-16 fix — stay on the current contract through its own
+        # expiry day + the closed overnight window, rolling only at next
+        # market open 08:00 IST. See is_mcx_future_still_current's
+        # docstring. Non-MCX exchanges keep the plain date compare below.
+        from backend.api.algo.expiry_freeze import is_mcx_future_still_current
+        candidates = [
+            inst for inst in base_candidates
+            if await is_mcx_future_still_current(inst.x)
+        ]
+    else:
+        candidates = [inst for inst in base_candidates if inst.x > today_iso]
     if not candidates:
         return []
     candidates.sort(key=lambda i: i.x or "")
