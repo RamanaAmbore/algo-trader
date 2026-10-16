@@ -197,15 +197,30 @@ test.describe('Ticket/Chain template severance', () => {
     expect(SYMBOL_PANEL).not.toMatch(/\{#if _showTemplateBar && !_isDemo/);
   });
 
-  test('Templ toggle mounts inside OptionChainTab, never SymbolPanel', () => {
-    // <TemplateBar (the real Svelte component mount, tag-open) must
-    // exist in OptionChainTab.svelte and be entirely absent from
-    // SymbolPanel.svelte — only pass-through prop names (showTemplateBar,
-    // _showTemplateBar, etc.) may reference the word "TemplateBar" there.
+  test('Templ toggle mounts inside OptionChainTab (Chain) AND SymbolPanel (Ticket only, 2026-10-16 fix)', () => {
+    // 2026-10-16 regression fix — this test used to assert <TemplateBar>
+    // was EXCLUSIVELY mounted inside OptionChainTab, entirely absent from
+    // SymbolPanel.svelte. That invariant was itself the cause of a real
+    // regression: nothing was left rendering the toggle for the Ticket
+    // tab at all. Operator: "what happened to bracket option in order
+    // ticket. it no longer shows." SymbolPanel now ALSO mounts
+    // <TemplateBar> directly, gated to `_activeTab === 'ticket'` so it
+    // never duplicates Chain's own embedded copy — see the next test.
     expect(CHAIN_TAB).toMatch(/<TemplateBar/);
-    expect(SYMBOL_PANEL).not.toContain('<TemplateBar');
-    // SymbolPanel no longer imports the component directly.
-    expect(SYMBOL_PANEL).not.toMatch(/import TemplateBar\s+from/);
+    expect(SYMBOL_PANEL).toMatch(/<TemplateBar/);
+    expect(SYMBOL_PANEL).toMatch(/import TemplateBar\s+from/);
+  });
+
+  test("SymbolPanel's TemplateBar mount is gated to the Ticket tab only — never duplicates Chain's own copy", () => {
+    const mount = SYMBOL_PANEL.match(/\{#if _activeTab === 'ticket'\}[\s\S]{0,600}?<TemplateBar[\s\S]{0,700}?\/>/)?.[0] ?? '';
+    expect(mount, "SymbolPanel's gated <TemplateBar> mount").not.toBe('');
+    // Must sit behind the Ticket-tab check, and reuse the exact same
+    // always-true gate / handlers Chain uses — never a second, drifted
+    // copy of the toggle logic.
+    expect(mount).toMatch(/_showTemplateBar/);
+    expect(mount).toMatch(/onSelectDefault=\{_onTemplSelectDefault\}/);
+    expect(mount).toMatch(/onSelectNone=\{_onTemplSelectNone\}/);
+    expect(mount).toMatch(/onSelectTemplate=\{_onTemplSelectTemplate\}/);
   });
 
   test('OrderTicket mount no longer auto-selects a template', () => {
@@ -869,19 +884,33 @@ test.describe('Templ toggle — always-enabled + unconditional-in-Chain + per-sc
     expect(SYMBOL_PANEL).toMatch(/const _TEMPL_PREF_KEY = 'ramboq_templ_pref_v1'/);
     expect(SYMBOL_PANEL).toMatch(/function _readTemplPref\(scope\)/);
     expect(SYMBOL_PANEL).toMatch(/function _writeTemplPref\(scope, value\)/);
-    // Limits bumped 220 → 600 (2026-09-30, bug-2 fix) — each handler
-    // grew a `_templExplicitThisSession = true;` write (+ a comment on
-    // the Default handler) marking the operator's explicit in-session
-    // choice so a later scope change doesn't silently override it.
-    const onSelectDefaultBlock = SYMBOL_PANEL.match(/onSelectDefault=\{[\s\S]{0,600}?\}\}/)?.[0] ?? '';
-    const onSelectNoneBlock = SYMBOL_PANEL.match(/onSelectNone=\{[\s\S]{0,600}?\}\}/)?.[0] ?? '';
-    const onSelectTemplateBlock = SYMBOL_PANEL.match(/onSelectTemplate=\{[\s\S]{0,600}?\}\}/)?.[0] ?? '';
+    // 2026-10-16 fix — the three onSelect* handlers were extracted out
+    // of their inline `onSelectX={() => { ... }}` prop form into named
+    // functions (`_onTemplSelect*`) so both the Chain tab's embedded
+    // <TemplateBar> (inside OptionChainTab) and the Ticket tab's
+    // shell-level one (the regression fix — see the "Templ toggle
+    // mounts inside OptionChainTab (Chain) AND SymbolPanel (Ticket
+    // only)" test above) share one source of truth instead of risking
+    // two copies drifting apart. Match the named-function bodies
+    // directly rather than an inline prop block.
+    const onSelectDefaultBlock = SYMBOL_PANEL.match(/function _onTemplSelectDefault\(\)\s*\{[\s\S]{0,400}?\n  \}/)?.[0] ?? '';
+    const onSelectNoneBlock = SYMBOL_PANEL.match(/function _onTemplSelectNone\(\)\s*\{[\s\S]{0,400}?\n  \}/)?.[0] ?? '';
+    const onSelectTemplateBlock = SYMBOL_PANEL.match(/function _onTemplSelectTemplate\([\s\S]{0,400}?\n  \}/)?.[0] ?? '';
     expect(onSelectDefaultBlock, 'onSelectDefault handler').not.toBe('');
     expect(onSelectNoneBlock, 'onSelectNone handler').not.toBe('');
     expect(onSelectTemplateBlock, 'onSelectTemplate handler').not.toBe('');
     expect(onSelectDefaultBlock).toMatch(/_writeTemplPref\(_currentScope\(\), 'on'\)/);
     expect(onSelectNoneBlock).toMatch(/_writeTemplPref\(_currentScope\(\), 'none'\)/);
     expect(onSelectTemplateBlock).toMatch(/_writeTemplPref\(_currentScope\(\), id\)/);
+    // Both <TemplateBar> mounts (Chain, via OptionChainTab; Ticket, at
+    // shell level) must reference these SAME named handlers, not a
+    // second inline/duplicated copy.
+    expect(CHAIN_TAB).toMatch(/\{onSelectDefault\}/);
+    expect(CHAIN_TAB).toMatch(/\{onSelectNone\}/);
+    expect(CHAIN_TAB).toMatch(/\{onSelectTemplate\}/);
+    expect(SYMBOL_PANEL).toMatch(/onSelectDefault=\{_onTemplSelectDefault\}/);
+    expect(SYMBOL_PANEL).toMatch(/onSelectNone=\{_onTemplSelectNone\}/);
+    expect(SYMBOL_PANEL).toMatch(/onSelectTemplate=\{_onTemplSelectTemplate\}/);
     // The scope-resolution effect only READS the pref — it never writes
     // one (writes are confined to the three handlers above).
     // Limit bumped 2400 → 5000 (2026-09-30, bug-2 fix) — see matching
@@ -1273,9 +1302,12 @@ test.describe('Bug 2 (2026-09-30) — explicit in-session Templ choice survives 
     expect(SYMBOL_PANEL).toMatch(
       /const pref = _templExplicitThisSession \? undefined : _readTemplPref\(scope\)/
     );
-    const onSelectDefaultBlock = SYMBOL_PANEL.match(/onSelectDefault=\{[\s\S]{0,600}?\}\}/)?.[0] ?? '';
-    const onSelectNoneBlock = SYMBOL_PANEL.match(/onSelectNone=\{[\s\S]{0,600}?\}\}/)?.[0] ?? '';
-    const onSelectTemplateBlock = SYMBOL_PANEL.match(/onSelectTemplate=\{[\s\S]{0,600}?\}\}/)?.[0] ?? '';
+    // 2026-10-16 fix — named functions now, not inline props (see the
+    // matching note in the "source: _readTemplPref/_writeTemplPref..."
+    // test above).
+    const onSelectDefaultBlock = SYMBOL_PANEL.match(/function _onTemplSelectDefault\(\)\s*\{[\s\S]{0,400}?\n  \}/)?.[0] ?? '';
+    const onSelectNoneBlock = SYMBOL_PANEL.match(/function _onTemplSelectNone\(\)\s*\{[\s\S]{0,400}?\n  \}/)?.[0] ?? '';
+    const onSelectTemplateBlock = SYMBOL_PANEL.match(/function _onTemplSelectTemplate\([\s\S]{0,400}?\n  \}/)?.[0] ?? '';
     expect(onSelectDefaultBlock).toMatch(/_templExplicitThisSession = true/);
     expect(onSelectNoneBlock).toMatch(/_templExplicitThisSession = true/);
     expect(onSelectTemplateBlock).toMatch(/_templExplicitThisSession = true/);

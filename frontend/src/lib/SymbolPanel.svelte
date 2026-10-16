@@ -43,6 +43,7 @@
   import { priceFmt, aggFmt as aggFmtMargin, qtyFmt } from '$lib/format';
   import OrderTicket      from '$lib/order/OrderTicket.svelte';
   import OptionChainTab   from '$lib/order/OptionChainTab.svelte';
+  import TemplateBar      from '$lib/TemplateBar.svelte';
   import OrderCliTab      from '$lib/order/OrderCliTab.svelte';
   import ChaseCard       from '$lib/order/ChaseCard.svelte';
   import ChaseAggPicker  from '$lib/order/ChaseAggPicker.svelte';
@@ -971,6 +972,30 @@
     _templates.length > 0 && action === 'open'
     && !!((_localSymbol || '').trim() || basketLegs.length > 0)
   );
+  // Shared TemplateBar handlers — single source for both the Chain tab's
+  // embedded <TemplateBar> (inside OptionChainTab) and the Ticket tab's
+  // shell-level one (2026-10-16 fix: the toggle was relocated into
+  // OptionChainTab's expiry row on 2026-09-30 for Chain's own layout
+  // reasons, but nothing was left rendering it for the Ticket tab —
+  // operator: "what happened to bracket option in order ticket. it no
+  // longer shows." Extracted so both render sites can never drift).
+  function _onTemplSelectDefault() {
+    if (_sideAwareDefault) {
+      _sharedTemplateId = _sideAwareDefault.id;
+      _writeTemplPref(_currentScope(), 'on');
+      _templExplicitThisSession = true;
+    }
+  }
+  function _onTemplSelectNone() {
+    _sharedTemplateId = null;
+    _writeTemplPref(_currentScope(), 'none');
+    _templExplicitThisSession = true;
+  }
+  function _onTemplSelectTemplate(/** @type {number} */ id) {
+    _sharedTemplateId = id;
+    _writeTemplPref(_currentScope(), id);
+    _templExplicitThisSession = true;
+  }
   // Side-scope helper — mirrors OrderTicket's `_appliesToFor` so the
   // shell can decide whether the active template matches the operator's
   // current direction. Returns 'sell_option' for SELL CE/PE legs (the
@@ -2636,26 +2661,9 @@
           bind:wingStrikeOffsetOverride={_sharedWingStrikeOffsetOverride}
           bind:wingPremPctOverride={_sharedWingPremPctOverride}
           bind:spreadMaxPctOverride={_sharedSpreadMaxPctOverride}
-          onSelectDefault={() => {
-            if (_sideAwareDefault) {
-              _sharedTemplateId = _sideAwareDefault.id;
-              _writeTemplPref(_currentScope(), 'on');
-              // Bug fix (2026-09-30) — mark this an explicit in-session
-              // choice so a later scope change (new leg, different side)
-              // doesn't silently re-consult an unrelated remembered pref.
-              _templExplicitThisSession = true;
-            }
-          }}
-          onSelectNone={() => {
-            _sharedTemplateId = null;
-            _writeTemplPref(_currentScope(), 'none');
-            _templExplicitThisSession = true;
-          }}
-          onSelectTemplate={(id) => {
-            _sharedTemplateId = id;
-            _writeTemplPref(_currentScope(), id);
-            _templExplicitThisSession = true;
-          }}
+          onSelectDefault={_onTemplSelectDefault}
+          onSelectNone={_onTemplSelectNone}
+          onSelectTemplate={_onTemplSelectTemplate}
           {accounts}
           refreshKey={_chainBump}
           basketLegs={basketLegs}
@@ -2733,24 +2741,48 @@
          and the focused-leg's symbol (last-leg by default) for the
          CE/PE regex via _appliesToFor — falling back through
          _localSymbol when no legs are staged. -->
-    <!-- Templ toggle itself relocated into OptionChainTab's expiry row
-         (2026-09-30, incl. the demo-mode note this row used to render
-         in its place) — see `<OptionChainTab>`'s `showTemplateBar` prop
-         above, now unconditionally `true` (2026-09-30 follow-up,
-         operator: "Templ toggle should show unconditionally in
-         Chain") / `showDemoTplNote` gated on
-         `_isDemo && action === 'open' && (symbol-or-legs)`. What's left
-         here is ONLY the on-fill preview chip + cap-warning strip,
-         which stays at shell level (depends on several shell-only
-         state vars) and keeps its OWN separate `_showTemplatePreview`
-         gate (templates loaded + action='open' + symbol-or-legs) so it
-         doesn't render with nothing to preview now that the toggle's
-         own gate is unconditional — additionally gated on `!_isDemo`
-         (never shown during demo, matching the old else-if's demo-wins
-         precedence) and `!_shellUsingNone` (an empty bordered box with
-         no content would otherwise render when the operator has
-         explicitly picked "None", since the preview/cap-warning
-         content below is itself gated on `!_shellUsingNone`). -->
+    <!-- Templ toggle — relocated into OptionChainTab's expiry row for
+         the Chain tab (2026-09-30), rendered HERE at shell level for the
+         Ticket tab (2026-10-16 fix: nothing had rendered it for Ticket
+         since that relocation — operator: "what happened to bracket
+         option in order ticket. it no longer shows"). Chain already has
+         its own copy via <OptionChainTab>, so this is gated to the
+         Ticket tab only to avoid a duplicate. Same `_showTemplateBar`
+         (unconditionally true) / `_showDemoTplNote` gates Chain uses,
+         and the same `_onTemplSelect*` handlers — single source, never
+         drifts between the two render sites. -->
+    {#if _activeTab === 'ticket'}
+      {#if _showDemoTplNote}
+        <span class="oct-tpl-demo-note">Exit rules (TP / SL / Wing) not available in demo.</span>
+      {:else if _showTemplateBar}
+        <TemplateBar
+          selectedTemplate={_selectedTemplate}
+          sideAwareDefault={_sideAwareDefault}
+          nonNoneTemplates={_nonNoneTemplates}
+          showsWing={_sharedTplShowsWing}
+          shellUsingNone={_shellUsingNone}
+          bind:tpOverride={_sharedTpOverride}
+          bind:slOverride={_sharedSlOverride}
+          bind:wingStrikeOffsetOverride={_sharedWingStrikeOffsetOverride}
+          bind:wingPremPctOverride={_sharedWingPremPctOverride}
+          bind:spreadMaxPctOverride={_sharedSpreadMaxPctOverride}
+          onSelectDefault={_onTemplSelectDefault}
+          onSelectNone={_onTemplSelectNone}
+          onSelectTemplate={_onTemplSelectTemplate} />
+      {/if}
+    {/if}
+
+    <!-- On-fill preview chip + cap-warning strip, which stays at shell
+         level (depends on several shell-only state vars) and keeps its
+         OWN separate `_showTemplatePreview` gate (templates loaded +
+         action='open' + symbol-or-legs) so it doesn't render with
+         nothing to preview now that the toggle's own gate is
+         unconditional — additionally gated on `!_isDemo` (never shown
+         during demo, matching the old else-if's demo-wins precedence)
+         and `!_shellUsingNone` (an empty bordered box with no content
+         would otherwise render when the operator has explicitly picked
+         "None", since the preview/cap-warning content below is itself
+         gated on `!_shellUsingNone`). -->
     {#if _showTemplatePreview && !_isDemo && !_shellUsingNone}
       <div class="oes-basket-tpl-row oes-basket-tpl-row-shell"
            title={_selectedTemplate

@@ -108,7 +108,13 @@ test.describe('Stale-code: single toggle button replaces the old Default/None pi
   test('SymbolPanel passes nonNoneTemplates and onSelectTemplate down through OptionChainTab', () => {
     const src = readFileSync(SYMBOL_PANEL_PATH, 'utf8');
     expect(src).toMatch(/nonNoneTemplates=\{_nonNoneTemplates\}/);
-    const handler = src.match(/onSelectTemplate=\{[\s\S]{0,160}?\}\}/)?.[0] ?? '';
+    expect(src).toMatch(/onSelectTemplate=\{_onTemplSelectTemplate\}/);
+    // 2026-10-16 fix — the handler was extracted into a named function
+    // (`_onTemplSelectTemplate`) so the Ticket tab's shell-level
+    // <TemplateBar> mount (the regression fix) and Chain's embedded one
+    // share one source of truth instead of inline-duplicating the
+    // logic. Match the named function's body directly.
+    const handler = src.match(/function _onTemplSelectTemplate\([\s\S]{0,400}?\n  \}/)?.[0] ?? '';
     expect(handler, 'onSelectTemplate handler').not.toBe('');
     expect(handler).toMatch(/_sharedTemplateId\s*=\s*id/);
     // 2026-09-30 — also persists the operator's specific-template pick
