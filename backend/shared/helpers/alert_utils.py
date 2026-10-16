@@ -1133,6 +1133,16 @@ _TIER_TO_NTFY_PRIORITY = {
     "high":     "high",
     "medium":   "default",
     "low":      "low",
+    # 2026-10-16 fix — "info" (the built-in scheduled/notify-only agents,
+    # e.g. market-open-nse) was missing here entirely. Without an
+    # explicit mapping, priority resolution fell through to
+    # send_ntfy_alert's own clock-based day/night default, which is
+    # "urgent" for essentially the whole IST trading day (22:00-07:00 ET
+    # == daytime IST) — triggering urgent's 3x-repeat-send behavior for
+    # a routine "market opened" notification. "low" matches info's own
+    # "routine, no action needed" semantics and send_ntfy_alert's
+    # single-send (non-urgent) path.
+    "info":     "low",
 }
 
 

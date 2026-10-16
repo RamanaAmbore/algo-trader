@@ -322,6 +322,33 @@ degrades gracefully to `fn: None` when `resolver` is falsy, so `REGISTRY.actions
 tokens is `{token: {"fn": None, "params_schema": {...}}}` on both fresh and already-seeded
 databases.
 
+**Rich-alert ntfy priority must come from the REAL triggering agent's tier, never hardcoded or from the dispatcher's own (2026-10-16, live operator-reported incident)** —
+`backend/api/algo/event_agents.py:RICH_ALERT_AGENT` is the one dispatcher that delivers
+telegram/ntfy/email for EVERY agent's alerts in the system (a generic fan-out multiplexer,
+itself always `tier="medium"`) — it is NOT the real triggering agent. Its ntfy channel used to
+hardcode `"priority": "urgent"` unconditionally. `send_ntfy_alert()` (`alert_utils.py`)
+deliberately sends an urgent-priority push 3 TIMES in a row (`send_count = 3 if priority ==
+"urgent" else 1`) so a genuinely critical alert isn't missed on a phone in Do-Not-Disturb — the
+hardcode meant EVERY alert, including routine info-tier scheduled notifications
+(`market-open-nse`/`market-preclose-mcx`), got this treatment. Live symptom: operator saw 3 ntfy
+pushes for one "NSE market open" notification. Fix, three pieces: (1) `_v2_send_rich_alert()`
+(`agent_engine.py`) now threads the real agent's `tier` into its logged extras (the log record
+`RICH_ALERT_AGENT` matches on). (2) `RICH_ALERT_AGENT`'s ntfy channel no longer hardcodes a
+priority. (3) `event_agents.py:_dispatch_agent()`'s per-channel loop resolves ntfy priority from
+the record's carried-through `tier` (via `_TIER_TO_NTFY_PRIORITY`, now including an explicit
+`"info": "low"` entry — it was previously left unmapped on the assumption that falling through to
+`send_ntfy_alert`'s own clock-based day/night default was safe; that default is "urgent" for
+essentially the whole IST trading day, so an unmapped tier silently got the same 3x treatment) —
+only when the channel itself sets no explicit priority, so a future per-channel override still
+wins. Any OTHER log-driven event agent whose records don't carry a `tier` (fill/error/
+chase_cancel/etc.) is unaffected — falls through exactly as before, using `_send_channel`'s
+existing `agent.tier` fallback (correct for those, since each is tied to one real event, not a
+generic multiplexer). Tests: `test_alert_golden.py::test_rich_alert_priority_resolved_from_tracked_tier`
+(all 5 real tiers, confirmed to fail pre-fix for every tier except critical) +
+`test_notification_header_and_priority.py::TestTierToNtfyPriorityMapping`. Invariant: a generic
+multiplexer agent (one that renders OTHER agents' alerts) must never use its own tier/hardcoded
+priority for a per-record notification — only the real triggering agent's tier.
+
 **Alert evaluation and latching** (2026-09, fixes 11 confirmed loss/rate-of-change condition bugs) —
 Agent condition evaluation enforces three critical invariants via the alert engine 
 ([`backend/api/algo/agent_engine.py`](backend/api/algo/agent_engine.py)):

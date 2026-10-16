@@ -411,6 +411,19 @@ async def _dispatch_agent(agent, records: list[dict]) -> int:
             continue
         out = render(to_render)
         channels = out[4] if len(out) > 4 else (agent.events or [])
+        # 2026-10-16 fix — a record carrying a real triggering agent's
+        # `tier` (currently only rich_alert records, via
+        # _v2_send_rich_alert's logged extras) overrides ntfy priority
+        # for THIS record, resolved from that real tier rather than
+        # `agent`'s own (RICH_ALERT_AGENT is a generic multiplexer,
+        # always tier="medium"). Only applies when the channel itself
+        # sets no explicit priority — an operator-configured per-channel
+        # priority (e.g. a future non-rich_alert event agent) still wins.
+        rec_tier = (rec.get("extra") or {}).get("tier")
+        rec_priority = None
+        if rec_tier:
+            from backend.shared.helpers.alert_utils import _TIER_TO_NTFY_PRIORITY
+            rec_priority = _TIER_TO_NTFY_PRIORITY.get(rec_tier)
         for ch in channels:
             # A `_log_only` record is one the branch gate or sim-notify
             # gate would normally have suppressed entirely — 'log' is
@@ -419,7 +432,11 @@ async def _dispatch_agent(agent, records: list[dict]) -> int:
             # fire. See dispatch_rows docstring for the full rationale.
             if log_only and (not isinstance(ch, dict) or ch.get("channel") != "log"):
                 continue
-            if await _send_channel(ch, out, agent):
+            eff_ch = ch
+            if (rec_priority and isinstance(ch, dict)
+                    and ch.get("channel") == "ntfy" and not ch.get("priority")):
+                eff_ch = {**ch, "priority": rec_priority}
+            if await _send_channel(eff_ch, out, agent):
                 sent += 1
     return sent
 
@@ -606,7 +623,16 @@ RICH_ALERT_AGENT = {
     "conditions": {"log": {"tag": "agent", "min_level": "INFO", "where": {"alert_event": "rich_alert"}}},
     "events": [
         {"channel": "telegram", "enabled": True, "gate": False},
-        {"channel": "ntfy", "enabled": True, "priority": "urgent", "gate": False},
+        # 2026-10-16 fix — no hardcoded priority. This agent fans out
+        # EVERY other agent's alerts (it's a generic multiplexer, always
+        # tier="medium" itself), so a hardcoded "urgent" here forced
+        # send_ntfy_alert's 3x-repeat-send behavior onto every single
+        # alert regardless of the real triggering agent's own tier —
+        # live incident: a routine info-tier scheduled notification
+        # (market-open-nse) pushed 3 ntfy alerts. _dispatch_agent below
+        # resolves the real priority from the record's own carried-
+        # through `tier` (see _v2_send_rich_alert's logged extras).
+        {"channel": "ntfy", "enabled": True, "gate": False},
         {"channel": "email", "enabled": True, "gate": False},
     ],
     "actions": [{"type": "render", "render": "rich_alert"}],

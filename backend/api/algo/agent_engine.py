@@ -1219,6 +1219,13 @@ async def _v2_send_rich_alert(agent, matches, now, sim_mode: bool = False,
                 "ist_display": timestamp_display(), "tg_table": tg_body,
                 "email_table_html": email_html, "subject_detail": subject,
                 "sim_mode": bool(sim_mode), "mode_tag": mode_tag,
+                # 2026-10-16 fix — the REAL triggering agent's tier, so
+                # event_agents.py's RICH_ALERT_AGENT (a generic fan-out
+                # dispatcher for every agent's alerts, itself always
+                # tier="medium") can resolve ntfy priority from the
+                # real agent instead of a hardcoded "urgent" or its own
+                # tier. See _dispatch_agent's per-channel loop.
+                "tier": getattr(agent, "tier", None),
             },
         )
     except Exception as e:

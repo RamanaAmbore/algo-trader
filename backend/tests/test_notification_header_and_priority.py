@@ -75,16 +75,27 @@ class TestTierToNtfyPriorityMapping:
         ("high", "high"),
         ("medium", "default"),
         ("low", "low"),
+        # 2026-10-16 fix — "info" used to be deliberately left unmapped,
+        # on the assumption that falling through to send_ntfy_alert's
+        # own clock-based day/night default was fine. It wasn't: that
+        # default is "urgent" for essentially the whole IST trading day
+        # (22:00-07:00 ET == daytime IST), so a routine info-tier
+        # scheduled notification (market-open-nse) got the "urgent"
+        # 3x-repeat-send treatment meant for genuinely critical alerts —
+        # live incident: operator saw 3 ntfy pushes for one market-open
+        # notification. "info" now maps explicitly to "low".
+        ("info", "low"),
     ])
     def test_every_real_tier_maps(self, tier, expected):
         assert _TIER_TO_NTFY_PRIORITY.get(tier) == expected
 
     def test_unknown_tier_maps_to_none_not_a_guessed_default(self):
-        # .get() with no second arg -> None for an unmapped tier (e.g. the
-        # "info" pseudo-tier some defensive getattr() fallbacks use) — the
-        # CALLER is responsible for omitting the priority kwarg when this
-        # is None, letting send_ntfy_alert's own clock-based default apply.
-        assert _TIER_TO_NTFY_PRIORITY.get("info") is None
+        # .get() with no second arg -> None for a genuinely UNRECOGNIZED
+        # tier (not "info", which is now an explicitly mapped real tier
+        # — see test_every_real_tier_maps above) — the CALLER is
+        # responsible for omitting the priority kwarg when this is
+        # None, letting send_ntfy_alert's own clock-based default apply.
+        assert _TIER_TO_NTFY_PRIORITY.get("not-a-real-tier") is None
         assert _TIER_TO_NTFY_PRIORITY.get(None) is None
 
 

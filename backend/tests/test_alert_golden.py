@@ -398,11 +398,62 @@ async def test_rich_alert_matches_the_pre_migration_dispatch(monkeypatch, name, 
     agent = SimpleNamespace(slug="agent-alert-rich",
                             **{k: event_agents.RICH_ALERT_AGENT[k] for k in ("conditions", "events", "actions")})
     await event_agents.dispatch([rec], [agent])
-    assert sent["ntfy"][0][0] == expected_title and sent["ntfy"][0][2] == "urgent"
+    # 2026-10-16 fix — RICH_ALERT_AGENT's ntfy channel no longer
+    # hardcodes priority="urgent" (that hardcode forced every single
+    # alert through send_ntfy_alert's 3x-repeat-send behavior
+    # regardless of the real triggering agent's tier — live incident:
+    # a routine market-open-nse notification sent 3 ntfy pushes). This
+    # fixture's `rec["extra"]` deliberately carries no `tier` (the
+    # "pre-migration" shape this golden test locks in) and the
+    # SimpleNamespace `agent` fixture here has no `.tier` attribute
+    # either, so priority correctly falls through to None (no override
+    # — send_ntfy_alert's own clock-based default would apply in
+    # production; this test mocks that call, so None is exactly what's
+    # recorded). See test_rich_alert_priority_resolved_from_tracked_tier
+    # below for the fixed path WITH a tier present.
+    assert sent["ntfy"][0][0] == expected_title and sent["ntfy"][0][2] is None
     assert sent["tg"][0].startswith(expected_tg_head)
     subj, body = sent["mail"][0][2], sent["mail"][0][3]
     assert subj == expected_subject
     assert hashlib.sha256(body.encode()).hexdigest() == expected_sha
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tier, expected_priority", [
+    ("critical", "urgent"),
+    ("high", "high"),
+    ("medium", "default"),
+    ("low", "low"),
+    ("info", "low"),
+])
+async def test_rich_alert_priority_resolved_from_tracked_tier(monkeypatch, tier, expected_priority):
+    """2026-10-16 fix — a rich_alert record carrying the real triggering
+    agent's `tier` (via _v2_send_rich_alert's logged extras) resolves
+    ntfy priority from THAT tier, not RICH_ALERT_AGENT's own (always
+    "medium") and not a hardcoded "urgent". Confirms the live incident
+    (market-open-nse, tier="info", sent 3 ntfy pushes) is fixed:
+    "info" now resolves to "low" — a single, non-urgent send."""
+    from backend.api.algo import event_agents
+    import backend.shared.helpers.utils as u
+    sent = {"ntfy": []}
+    monkeypatch.setattr(u, "is_enabled", lambda cap: True)
+    monkeypatch.setitem(event_agents.CHANNELS, "telegram",
+                        ("telegram", lambda t, b, tg=None, **k: None))
+    monkeypatch.setitem(event_agents.CHANNELS, "ntfy",
+                        ("ntfy", lambda t, b, tg=None, priority=None: sent["ntfy"].append(priority)))
+    monkeypatch.setattr(event_agents, "_channel_enabled", lambda cap: True)
+    rec = {"ts": _dt.datetime(2026, 10, 6, 9, 0, tzinfo=_dt.timezone.utc), "level": "INFO",
+           "logger": "backend.api.algo.agent_engine", "message": "x", "tags": ["info", "agent"],
+           "extra": {"tags": ["agent"], "alert_event": "rich_alert", "agent_slug": "market-open-nse",
+                     "ist_display": "10:15:30 IST", "tg_table": "x", "email_table_html": "x",
+                     "subject_detail": "x", "sim_mode": False, "mode_tag": "", "tier": tier}}
+    agent = SimpleNamespace(slug="agent-alert-rich", tier="medium",
+                            **{k: event_agents.RICH_ALERT_AGENT[k] for k in ("conditions", "events", "actions")})
+    await event_agents.dispatch([rec], [agent])
+    assert sent["ntfy"][0] == expected_priority, (
+        f"tier={tier!r} should resolve ntfy priority to {expected_priority!r}, "
+        f"got {sent['ntfy'][0]!r} (RICH_ALERT_AGENT's own tier='medium' must "
+        f"never be used when a real tier is tracked on the record)")
 
 
 @pytest.mark.asyncio
