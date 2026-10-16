@@ -453,6 +453,53 @@ describe('real builtin agents — never authored via the CLI', () => {
     expect(recompiled.agent).toEqual(agentJson);
   });
 
+  it('loss-positions-total: flat {any:[4 leaves]} — day_val/day_pct/pnl_rate_abs/pnl_rate_pct all @ positions.total, generic OR. Decompiles + recompiles to the left-nested binary equivalent (same convention as the 25-leaf AND-chain test above — the grammar\'s own chain-builder never produces flat N>2, so a flat N>2 INPUT normalizes to nested pairs on round-trip; semantically identical OR composition, not a behavior change)', () => {
+    const agentJson = {
+      conditions: { any: [
+        { metric: 'day_val', scope: 'positions.total', op: '<=', value: -50000 },
+        { metric: 'day_pct', scope: 'positions.total', op: '<=', value: -2.0 },
+        { metric: 'pnl_rate_abs', scope: 'positions.total', op: '<=', value: -6000 },
+        { metric: 'pnl_rate_pct', scope: 'positions.total', op: '<=', value: -0.25 },
+      ] },
+      events: [{ channel: 'telegram', enabled: true }, { channel: 'log', enabled: true }, { channel: 'ntfy', enabled: true, priority: 'urgent' }],
+      actions: [],
+    };
+    const dec = decompile(agentJson);
+    expect(dec.errors).toEqual([]);
+    const recompiled = compile(dec.text);
+    expect(recompiled.ok).toBe(true);
+    expect(recompiled.agent.conditions).toEqual({ any: [
+      { any: [
+        { any: [
+          { metric: 'day_val', scope: 'positions.total', op: '<=', value: -50000 },
+          { metric: 'day_pct', scope: 'positions.total', op: '<=', value: -2.0 },
+        ] },
+        { metric: 'pnl_rate_abs', scope: 'positions.total', op: '<=', value: -6000 },
+      ] },
+      { metric: 'pnl_rate_pct', scope: 'positions.total', op: '<=', value: -0.25 },
+    ] });
+    expect(recompiled.agent.events).toEqual(agentJson.events);
+    expect(recompiled.agent.actions).toEqual(agentJson.actions);
+  });
+
+  it('expiry-day-positions-alert: plain (unwrapped) days_until_expiry leaf on positions.expiring_today — 4-channel events, actions=[]', () => {
+    const agentJson = {
+      conditions: { metric: 'days_until_expiry', scope: 'positions.expiring_today', op: '<=', value: 1.5 },
+      events: [
+        { channel: 'telegram', enabled: true },
+        { channel: 'email', enabled: true },
+        { channel: 'log', enabled: true },
+        { channel: 'ntfy', enabled: true },
+      ],
+      actions: [],
+    };
+    const dec = decompile(agentJson);
+    expect(dec.errors).toEqual([]);
+    const recompiled = compile(dec.text);
+    expect(recompiled.ok).toBe(true);
+    expect(recompiled.agent).toEqual(agentJson);
+  });
+
   it('loss-pos-total-auto-close: plain (unwrapped) leaf + a generic non-place_order action with enum/number/number params', () => {
     const agentJson = {
       conditions: { metric: 'pnl', scope: 'positions.total', op: '<=', value: -50000 },
