@@ -73,6 +73,23 @@ const LOT_ROWS = [
   },
 ];
 
+// Intraday round-trip on an unrelated root (BANKNIFTY, isolated from the
+// NIFTY group above so it can't shift the NIFTY waterfall's P1/P2
+// numbering, and kept OUT of the shared LOT_ROWS fixture so it can't shift
+// the MarketPulse TOTAL row's day P&L in test (b)/(c)) — bought 100, sold
+// 80 today, net long 20 still open. `splitClosedReopened` (expiryPnl.js)
+// tags the two pieces `_splitTag` 'closed'/'open' and neither gets a
+// `lot_piece_label` (that's lotPairSplit.js's own, DIFFERENT split
+// mechanism) — before the enKey fix this pair collided on
+// `${account}|${symbol}|` (test (g) below, which mocks its own response).
+const SPLIT_TAG_ROW = {
+  tradingsymbol: 'BANKNIFTY26JUN50000CE', symbol: 'BANKNIFTY26JUN50000CE', exchange: 'NFO',
+  account: ACCT, product: 'NRML', quantity: 20, average_price: 100, last_price: 101,
+  pnl: 80, realised: 80, unrealised: 0, day_pnl: 80, prev_settlement_pnl: 0,
+  close_price: 100, overnight_quantity: 0,
+  day_buy_quantity: 100, day_sell_quantity: 80, day_buy_value: 10000, day_sell_value: 8080,
+};
+
 const POSITIONS_RE = /\/api\/positions\/(\?.*)?$/;
 
 /**
@@ -202,6 +219,46 @@ test.describe('Lot-pairing split — Derivatives Legs grid', () => {
     await expect(hdr).toHaveCount(1, { timeout: TIMEOUT });
     const textAlign = await hdr.evaluate((el) => getComputedStyle(el).textAlign);
     expect(textAlign).toBe('center');
+  });
+
+  test('(g) toggling the CLOSED piece\'s checkbox does not toggle the OPEN sibling (enKey _splitTag collision regression)', async ({ page }) => {
+    // Sibling regression to (e) — a DIFFERENT split mechanism
+    // (splitClosedReopened's closed/open pieces, expiryPnl.js) shares the
+    // same `${account}|${symbol}` base as lotPairSplit.js's P1/P2/Unmatched
+    // pieces but tags via `_splitTag`, not `lot_piece_label`. Before the
+    // 2026-10-17 fix, `enKey` only disambiguated on `lot_piece_label`, so
+    // these two pieces (neither carrying one) still collided on one
+    // `enabledSymbols` entry.
+    // Own route override, scoped to this test only — [...LOT_ROWS, SPLIT_TAG_ROW]
+    // keeps the shared fixture's other tests (whose totals/counts are
+    // pinned to exactly the original 3 rows) unaffected.
+    await page.route(POSITIONS_RE, async (route) => {
+      if (route.request().method() !== 'GET') { await route.continue(); return; }
+      let body = { rows: [] };
+      try {
+        const real = await route.fetch();
+        body = { ...(await real.json()) };
+      } catch (_) { /* backend unreachable — minimal envelope below */ }
+      body.rows = [...LOT_ROWS, SPLIT_TAG_ROW];
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
+    });
+    await page.goto('/admin/derivatives?u=BANKNIFTY', { waitUntil: 'domcontentloaded' });
+    const closedRow = page.locator('.cand-row:has(.cand-split-closed)');
+    const openRow = page.locator('.cand-row:has(.cand-split-open)');
+    await expect(closedRow).toHaveCount(1, { timeout: TIMEOUT });
+    await expect(openRow).toHaveCount(1, { timeout: TIMEOUT });
+    const closedCheck = closedRow.locator('input[type="checkbox"]');
+    const openCheck = openRow.locator('input[type="checkbox"]');
+    await expect(closedCheck).toBeChecked();
+    await expect(openCheck).toBeChecked();
+
+    await closedCheck.uncheck();
+    await expect(closedCheck).not.toBeChecked();
+    await expect(openCheck).toBeChecked();
+
+    await openCheck.uncheck();
+    await expect(closedCheck).not.toBeChecked();
+    await expect(openCheck).not.toBeChecked();
   });
 });
 

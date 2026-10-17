@@ -516,12 +516,26 @@
   // across accounts: a NIFTY24DEC25000PE held in both ZG#### and
   // ZJ#### would share one checkbox, and the candidatesActualPnl
   // counter summed both rows even though only one was "checked".
-  // lot_piece_label disambiguates lot-split pieces (lotPairSplit.js) —
-  // without it, a position split into P1/P2/Unmatched display rows
-  // shares one account+symbol key, so toggling one piece's checkbox
-  // silently toggled every sibling piece too (reported as "selecting
-  // one row selects an additional row").
-  function enKey(c) { return `${c.account || ''}|${c.symbol || ''}|${c.lot_piece_label || ''}`; }
+  //
+  // Split-piece discriminators are appended ONLY when present, never as
+  // an always-there trailing `|` (2026-10-17 fix — the original
+  // `${account}|${symbol}|${lot_piece_label || ''}` form always emitted
+  // a trailing empty segment for every UNSPLIT row, e.g. "ZG1234|NIFTY...|",
+  // silently changing every existing key's shape from the pre-fix
+  // "ZG1234|NIFTY..." — `_eqMemory`'s localStorage entries were persisted
+  // under the OLD shape, so every previously-checked eq leg looked up a
+  // key that no longer existed and silently defaulted back to unchecked).
+  // `_splitTag` ('closed'/'open' from splitClosedReopened, see
+  // expiryPnl.js) disambiguates a DIFFERENT split mechanism than
+  // lot_piece_label (lotPairSplit.js) — both can be set on the same piece
+  // (lot-pairing runs AFTER close/reopen splitting in pageLoad.js) and
+  // either alone was enough to collide two display rows onto one checkbox
+  // (reported as "selecting one row selects multiple split rows").
+  function enKey(c) {
+    const base = `${c.account || ''}|${c.symbol || ''}`;
+    const sfx = [c._splitTag, c.lot_piece_label].filter(Boolean).join('|');
+    return sfx ? `${base}|${sfx}` : base;
+  }
 
   /** Long-term memory of eq-leg checkbox choices, keyed by enKey(c).
    *  Survives across page reloads (localStorage, no TTL), so an
