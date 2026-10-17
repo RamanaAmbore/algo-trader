@@ -842,7 +842,9 @@
           </span>
           <button class="ps-bd-close" onclick={() => (_breakdown.open = false)} aria-label="Close">×</button>
         </div>
-        <NavBreakdown activeSlot={_breakdown.slot} expiryByAcct={positionsDerivedStore.expiryByAcct} />
+        <div class="ps-bd-body">
+          <NavBreakdown activeSlot={_breakdown.slot} expiryByAcct={positionsDerivedStore.expiryByAcct} />
+        </div>
       </div>
     </div>
   {/if}
@@ -1114,7 +1116,31 @@
     position: fixed;
     width: min(25.2rem, calc(100vw - 16px));
     max-height: 70vh;
-    overflow-y: auto;
+    /* 2026-10-17 fix (operator: "the x button location... they are not
+       at the right side. there is a gap") — this used to put
+       `overflow-y: auto` directly on THIS element, the same one that
+       also contains `.ps-bd-header`/`.ps-bd-close`. Every other
+       dark-theme popup on the algo side (BrokerHealthBadge, ChartModal,
+       ActivityLogModal, AddToPulseModal, AgentFireModal — the
+       `.algo-modal`/canonical-modal-header convention) keeps the header
+       OUTSIDE any scrolling container, with only an inner body div
+       scrolling — so the header's own right-padding (0.85rem, from
+       `canonical-modal-header`) is always what determines the close
+       button's distance from the panel's true right edge. Here, when
+       `NavBreakdown`'s content was tall enough to trigger a scrollbar,
+       the scrollbar's own gutter width ate into the shared scrolling
+       box's content area — INCLUDING the header's row, since it shared
+       the same scroll container — visibly pushing `.ps-bd-close` left
+       of where every other modal's close button sits, inconsistent
+       purely depending on whether the content happened to be tall
+       enough to scroll. Fixed by switching to the SAME recipe
+       `.algo-modal` itself uses (`overflow: hidden` + flex column) and
+       moving the scrollable area to the new `.ps-bd-body` wrapper below
+       (mirrors `.bh-modal-body`) — the header never scrolls, regardless
+       of how tall `NavBreakdown` renders. */
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
     /* fix(ui): unify with BrokerHealthBadge's .algo-modal (app.css's
        canonical dark-popup recipe uses var(--card-bg-gradient) directly —
        the established convention across ~10 other dark-theme popup/card
@@ -1126,15 +1152,20 @@
        (2026-10 card-chrome audit) — the prior `var(--border-color, …)`
        referenced a token defined nowhere in app.css, so this rule always
        rendered its fallback (a near-invisible white hairline), never the
-       amber halo the comment above claimed. Not using the .algo-modal
-       class itself: its `overflow: hidden` + `display: flex` would break
-       this panel's own `overflow-y: auto` scroll. */
+       amber halo the comment above claimed. */
     background: var(--card-bg-gradient);
     border: 1px solid rgba(251, 191, 36, 0.55);
     border-radius: 6px;
     box-shadow: 0 8px 32px rgba(0,0,0,0.5);
     z-index: var(--z-drawer);
-    /* No padding — NavBreakdown header provides its own internal spacing. */
+    /* No padding on the panel itself — the header provides its own
+       internal spacing (canonical-modal-header) and the body wrapper
+       below provides its own. */
     padding: 0;
+  }
+  .ps-bd-body {
+    overflow-y: auto;
+    flex: 1 1 auto;
+    min-height: 0;
   }
 </style>
