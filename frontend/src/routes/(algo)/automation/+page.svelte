@@ -1068,8 +1068,17 @@
      every header child identically). */
   .aw-kind-select {
     display: inline-flex;
-    min-width: 6rem;
+    /* 2026-10-17 (operator: "add a slight background... reduce its width
+       by 10%") — min-width trimmed 6rem -> 5.4rem; background/radius/
+       padding give the control a faint "chip" separation from the
+       CardHeader row behind it (the Select trigger's own navy gradient,
+       Select.svelte, reads almost flush against this header's similar
+       dark tone without it). */
+    min-width: 5.4rem;
     margin: 1px 0.5rem 1px 0;
+    background: rgba(255,255,255,0.04);
+    border-radius: 4px;
+    padding: 1px;
   }
   .aw-kind-select :global(.rbq-select-trigger) {
     min-height: 1.7rem;
