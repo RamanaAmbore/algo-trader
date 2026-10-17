@@ -445,3 +445,56 @@ describe('mergePositionRows — position-state field propagation (2026-10 fix)',
     expect(result.pair_group_key).toBe('P2');
   });
 });
+
+// ============================================================================
+// mergePositionRows — lot-pairing split pieces get a composite bucket key
+// (2026-10 lotPairSplit.js wiring)
+//
+// Two pieces of the SAME account+symbol (produced by splitPairedLots when a
+// row spans 2+ pair groups) would otherwise collide into ONE byKey bucket
+// (keyed by bare tradingsymbol), silently recreating the exact backend bug
+// this split exists to fix. Composite key (symbol+account+piece label)
+// keeps each piece its own row.
+// ============================================================================
+
+describe('mergePositionRows — lot-split pieces (_isLotSplit) get distinct buckets', () => {
+  it('two _isLotSplit pieces of the same account+symbol land in separate byKey entries', () => {
+    const byKey = {};
+    const pieceP1 = makeOvernightPositionRow({
+      account: 'ACC1', quantity: 20, is_orphan: false,
+      pair_group_key: 'P1', _isLotSplit: true, lot_piece_label: 'P1',
+    });
+    const pieceP2 = makeOvernightPositionRow({
+      account: 'ACC1', quantity: 30, is_orphan: false,
+      pair_group_key: 'P2', _isLotSplit: true, lot_piece_label: 'P2',
+    });
+    mergePositionRows(byKey, [pieceP1, pieceP2], true, {}, makeCtx());
+
+    const keyP1 = 'NIFTY25AUG24000CE::ACC1::P1__pos';
+    const keyP2 = 'NIFTY25AUG24000CE::ACC1::P2__pos';
+    expect(byKey[keyP1]).toBeDefined();
+    expect(byKey[keyP2]).toBeDefined();
+    expect(byKey[keyP1]).not.toBe(byKey[keyP2]);
+    // The real tradingsymbol is preserved on each piece (never overwritten
+    // by the composite lookup key) — order placement / symbol lookups
+    // downstream must keep working.
+    expect(byKey[keyP1].tradingsymbol).toBe('NIFTY25AUG24000CE');
+    expect(byKey[keyP2].tradingsymbol).toBe('NIFTY25AUG24000CE');
+    expect(byKey[keyP1].pair_group_key).toBe('P1');
+    expect(byKey[keyP2].pair_group_key).toBe('P2');
+    expect(byKey[keyP1]._isLotSplit).toBe(true);
+    expect(byKey[keyP1].lot_piece_label).toBe('P1');
+    expect(byKey[keyP2].lot_piece_label).toBe('P2');
+    // Bare byKey['SYMBOL__pos'] (the non-split key) must NOT have been
+    // populated — confirms the pieces never fell back to the plain key.
+    expect(byKey['NIFTY25AUG24000CE__pos']).toBeUndefined();
+  });
+
+  it('a non-split row for the same symbol still uses the plain bare-symbol key (backward compatible)', () => {
+    const byKey = {};
+    const row = makeOvernightPositionRow({ account: 'ACC1', pair_group_key: 'P1' });
+    mergePositionRows(byKey, [row], true, {}, makeCtx());
+    expect(byKey['NIFTY25AUG24000CE__pos']).toBeDefined();
+    expect(byKey['NIFTY25AUG24000CE__pos']._isLotSplit).toBeUndefined();
+  });
+});

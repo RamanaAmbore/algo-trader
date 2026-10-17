@@ -14,6 +14,7 @@
 import { todayIST } from '$lib/dateFormat.js';
 import { buildAcctMatcher, isFOSymbol } from '$lib/data/derivativesMath.js';
 import { buildPositionRowFromBroker, splitClosedReopened, isExpiredHeldContract, expiredLegFrozenPnl, expiryPnlWithRealised } from '$lib/data/expiryPnl.js';
+import { splitPairedLots } from '$lib/data/lotPairSplit.js';
 
 // splitClosedReopened + buildPositionRowFromBroker moved to
 // $lib/data/expiryPnl.js (2026-09 SSOT fix) so portfolioStore.svelte.js can
@@ -182,16 +183,27 @@ export function storeRowKey(p) {
  * to match) hasn't run yet; using a piece index against a
  * differently-shaped pieces array would silently read the wrong piece.
  *
- * @param {{_storeKey?:string, _pieceIndex?:number, _pieceCount?:number, _storeExpPnl?:number|null}} c
+ * `c._lotFraction` (lotPairSplit.js, only set on a genuine lot-pairing
+ * split piece) scales the result down to this piece's own share — every
+ * lot-piece of one pre-lot-split row carries the SAME `_storeKey`/
+ * `_pieceIndex` (they all point at the same underlying open piece's live
+ * Exp P&L), so without this scaling each piece would independently report
+ * the FULL value and the Legs-grid TOTAL would inflate by a multiple of
+ * the real number.
+ *
+ * @param {{_storeKey?:string, _pieceIndex?:number, _pieceCount?:number, _storeExpPnl?:number|null, _lotFraction?:number}} c
  * @param {Record<string, Array<number|null>|null>} piecesByKey
  * @returns {number|null}
  */
 export function liveStoreExpPnl(c, piecesByKey) {
+  const frac = c?._lotFraction ?? 1;
   const pieces = piecesByKey?.[c?._storeKey];
   if (Array.isArray(pieces) && pieces.length === c?._pieceCount) {
-    return pieces[c._pieceIndex] ?? null;
+    const v = pieces[c._pieceIndex];
+    return v == null ? null : v * frac;
   }
-  return c?._storeExpPnl ?? null;
+  const v = c?._storeExpPnl;
+  return v == null ? null : v * frac;
 }
 
 /**
@@ -221,7 +233,7 @@ export function liveStoreExpPnl(c, piecesByKey) {
  * @returns {any[]}
  */
 export function buildPagePositionRows(storeRows, simRows = []) {
-  const merged = [];
+  const preLot = [];
   for (const p of storeRows || []) {
     const sym = p?.tradingsymbol || p?.symbol;
     if (!sym) continue;
@@ -248,9 +260,26 @@ export function buildPagePositionRows(storeRows, simRows = []) {
       row._storeKey     = key;
       row._pieceIndex   = i;
       row._pieceCount   = pieces.length;
-      merged.push(row);
+      preLot.push(row);
     });
   }
+  // Lot-pairing split (lotPairSplit.js) runs AFTER splitClosedReopened, over
+  // the WHOLE collected piece set (pairing happens ACROSS different
+  // positions within an account+root group, not within one position) —
+  // deliberately NOT before: a pre-split closed piece already has qty=0
+  // (excluded from matching, same as the backend's own "q==0: no action"
+  // rule) and the open piece carries the position's CURRENT quantity, which
+  // is exactly what the backend's own waterfall matches against. Running
+  // lot-split first would hand splitClosedReopened a piece still carrying
+  // the FULL day_buy/day_sell history on a fractional qty, double-decomposing
+  // the same closed P&L across every lot-piece.
+  //
+  // `_storeKey`/`_pieceIndex`/`_pieceCount`/`_storeExpPnl` are copied
+  // verbatim (spread) onto every lot-piece by splitPairedLots, each still
+  // pointing at the SAME pre-lot-split open piece's live Exp P&L — the
+  // piece's own `_lotFraction` (set only on genuine lot-splits) scales that
+  // shared value down to this piece's share; see `liveStoreExpPnl` below.
+  const merged = splitPairedLots(preLot);
   return [...merged, ...simRows];
 }
 

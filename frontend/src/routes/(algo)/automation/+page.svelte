@@ -469,14 +469,6 @@
     return out;
   }
 
-  function leafLabel(/** @type {any} */ node) {
-    if (!node || !node.metric || !node.scope) return JSON.stringify(node);
-    const v = typeof node.value === 'number' && Math.abs(node.value) >= 1000
-      ? `₹${node.value.toLocaleString('en-IN')}`
-      : JSON.stringify(node.value);
-    return `${node.metric}@${node.scope} ${node.op || '?'} ${v}`;
-  }
-
   function connectWS() {
     if (_wsDestroyed) return;
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -657,43 +649,13 @@
 
     <StaleBanner {error} hasData={agents.length > 0} label="Agents" />
 
-<!-- Recursive tree renderer used by both the normal expanded view and the
-     inline editor. Grammar nodes are:
-       { all: [...] } | { any: [...] } | { not: node } | { metric, scope, op, value } -->
-{#snippet renderCondNode(/** @type {any} */ node)}
-  {#if !node || typeof node !== 'object'}
-    <div class="tree-leaf">{JSON.stringify(node)}</div>
-  {:else if Array.isArray(node.all)}
-    <div class="tree-node tree-node-all">
-      <div class="tree-op">ALL</div>
-      <div class="tree-children">
-        {#each node.all as child}{@render renderCondNode(child)}{/each}
-      </div>
-    </div>
-  {:else if Array.isArray(node.any)}
-    <div class="tree-node tree-node-any">
-      <div class="tree-op">ANY</div>
-      <div class="tree-children">
-        {#each node.any as child}{@render renderCondNode(child)}{/each}
-      </div>
-    </div>
-  {:else if node.not !== undefined}
-    <div class="tree-node tree-node-not">
-      <div class="tree-op">NOT</div>
-      <div class="tree-children">{@render renderCondNode(node.not)}</div>
-    </div>
-  {:else}
-    <div class="tree-leaf">{leafLabel(node)}</div>
-  {/if}
-{/snippet}
-
 <!-- Per-row "view" body — shared across all four kinds. Agents/Alerts/
      Templates all share the Agent-row (`AgentInfo`) condition/events
      shape (a Token's `conditions`/`events` ARE an agent's, per
      template_registry.py's `_tr_fragment_to_agent_fields` — reusing
-     `renderCondNode`/`channelSummary` here is not a coincidence, it's
-     the same underlying shape). Brackets have their own distinct
-     TP/SL/Wing shape, rendered separately below. -->
+     `channelSummary` here is not a coincidence, it's the same
+     underlying shape). Brackets have their own distinct TP/SL/Wing
+     shape, rendered separately below. -->
 {#snippet agentRowView(/** @type {any} */ agent)}
   {@const _aiMeta = parseAIDescription(agent.description)}
   {#if _aiMeta.prompt || _aiMeta.why}
@@ -710,13 +672,6 @@
     </div>
   {:else if agent.description}
     <div class="text-[length:var(--fs-sm)] text-[var(--c-muted)] italic mt-1.5 mb-1">{agent.description}</div>
-  {/if}
-
-  <div class="preview-section-label mt-1">Condition</div>
-  {#if agent.conditions && Object.keys(agent.conditions).length}
-    <div class="preview-tree">{@render renderCondNode(agent.conditions)}</div>
-  {:else}
-    <div class="text-[length:var(--fs-sm)] text-[var(--c-muted)] italic">no conditions</div>
   {/if}
 
   <div class="text-[length:var(--fs-sm)] text-[var(--c-muted)] mt-2 mb-1 flex items-center flex-wrap gap-x-2 gap-y-0.5">
@@ -1310,7 +1265,6 @@
     font-family: var(--font-numeric);
     font-size: var(--fs-sm);
   }
-  .preview-tree { font-family: var(--font-numeric); }
   /* Nested node pattern — indent on the left, operator badge at top, children below */
   :global(.tree-node) {
     border-left: 2px solid rgba(255,255,255,0.12);

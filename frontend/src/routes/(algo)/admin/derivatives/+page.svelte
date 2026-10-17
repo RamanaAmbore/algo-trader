@@ -5868,7 +5868,7 @@
                still collapses to a single auto-sized row exactly like
                the flat row list did pre-wrapper. -->
           <div class="cand-body-rows">
-          {#each displayedCandidates as c, _ci (c.source + '|' + c.account + '|' + c.symbol + '|' + (c._splitTag ?? _ci) + '|' + (c._pairId ?? '') + '|' + (c._band ?? '') + '|' + (c.draftId != null ? c.draftId : _ci))}
+          {#each displayedCandidates as c, _ci (c.source + '|' + c.account + '|' + c.symbol + '|' + (c._splitTag ?? _ci) + '|' + (c.lot_piece_label ?? '') + '|' + (c._pairId ?? '') + '|' + (c._band ?? '') + '|' + (c.draftId != null ? c.draftId : _ci))}
             <CandidateLegRow
               {c}
               ci={_ci}

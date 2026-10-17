@@ -427,7 +427,18 @@ export function mergePositionRows(byKey, pos, includePos, cq, ctx) {
     const exch = r.exchange || 'NFO';
     const sym  = String(r.symbol || r.tradingsymbol || '').toUpperCase();
     if (!sym) continue;
-    const row = get(sym, 'positions');
+    // Lot-pairing split pieces (splitPairedLots, lotPairSplit.js) share the
+    // SAME tradingsymbol+account as their sibling piece(s) — bucketing them
+    // by bare `sym` would merge them straight back into one row, discarding
+    // the per-piece pair_group_key the split exists to preserve. Composite
+    // key (symbol+account+piece label) keeps each piece its own row; this
+    // also becomes the row's own `.key` (via makeRowFactory), which
+    // pulseRowId() already prefers for ag-Grid row identity — no change
+    // needed there.
+    const lookupKey = r._isLotSplit
+      ? `${sym}::${String(r.account ?? '')}::${r.lot_piece_label}`
+      : sym;
+    const row = get(lookupKey, 'positions');
     row.exchange      = row.exchange || exch;
     row.tradingsymbol = sym;
     // quote_symbol carries the full contract key (e.g. CRUDEOIL25AUGFUT)
@@ -469,6 +480,15 @@ export function mergePositionRows(byKey, pos, includePos, cq, ctx) {
       row.pair_group_key = null;
       row.pin_group_key  = null;
       row.has_gtt        = null;
+    }
+    // A composite-keyed lot-split piece is always single-account by
+    // construction (account is baked into lookupKey), so the fields above
+    // always take the single-account branch for it — propagate the split
+    // markers too so symRenderer/_symCellBadges (MarketPulse.svelte) can
+    // show the piece label.
+    if (r._isLotSplit) {
+      row._isLotSplit     = true;
+      row.lot_piece_label = r.lot_piece_label;
     }
     // Market fields — symbolStore first, then contracts quote bag fallback.
     const snap  = snapOf(sym);

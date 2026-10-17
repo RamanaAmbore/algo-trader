@@ -909,6 +909,69 @@ describe('buildPagePositionRows', () => {
       expect('_storeExpPnl' in pageRows[0]).toBe(false);
     });
   });
+
+  // ==========================================================================
+  // Lot-pairing split wiring (2026-10, lotPairSplit.js) — pairing runs AFTER
+  // splitClosedReopened, over the whole collected piece set, so it can match
+  // across DIFFERENT raw positions within the same account+root.
+  // ==========================================================================
+
+  describe('lot-pairing split wiring (splitPairedLots applied after splitClosedReopened)', () => {
+    it('one long row spanning two different same-account short rows splits into 2 pieces; the two shorts stay correctly paired', () => {
+      const storeRows = [
+        { tradingsymbol: 'CRUDEOIL26OCTFUT', account: 'ACC1', quantity: 3, average_price: 6000, exchange: 'MCX' },
+        { tradingsymbol: 'CRUDEOIL26NOVFUT', account: 'ACC1', quantity: -2, average_price: 6050, exchange: 'MCX' },
+        { tradingsymbol: 'CRUDEOIL26DECFUT', account: 'ACC1', quantity: -1, average_price: 6100, exchange: 'MCX' },
+      ];
+      const rows = buildPagePositionRows(storeRows);
+
+      const longPieces = rows.filter(r => r.symbol === 'CRUDEOIL26OCTFUT');
+      expect(longPieces.length).toBe(2);
+      expect(longPieces.map(r => r.pair_group_key).sort()).toEqual(['P1', 'P2']);
+
+      const shortA = rows.find(r => r.symbol === 'CRUDEOIL26NOVFUT');
+      const shortB = rows.find(r => r.symbol === 'CRUDEOIL26DECFUT');
+      expect(shortA.pair_group_key).toBe('P1');
+      expect(shortA.is_orphan).toBe(false);
+      expect(shortB.pair_group_key).toBe('P2');
+      expect(shortB.is_orphan).toBe(false);
+    });
+
+    it('lot-split pieces each carry a _lotFraction that scales liveStoreExpPnl relative to the shared pre-split value', () => {
+      const raw = { tradingsymbol: 'CRUDEOIL26OCTFUT', account: 'ACC1', quantity: 3, average_price: 6000, exchange: 'MCX' };
+      const shortA = { tradingsymbol: 'CRUDEOIL26NOVFUT', account: 'ACC1', quantity: -2, average_price: 6050, exchange: 'MCX' };
+      const shortB = { tradingsymbol: 'CRUDEOIL26DECFUT', account: 'ACC1', quantity: -1, average_price: 6100, exchange: 'MCX' };
+      const rows = buildPagePositionRows([raw, shortA, shortB]);
+
+      const longPieces = rows.filter(r => r.symbol === 'CRUDEOIL26OCTFUT');
+      const p1 = longPieces.find(r => r.pair_group_key === 'P1');
+      const p2 = longPieces.find(r => r.pair_group_key === 'P2');
+      // 3 total: 2/3 matched into P1, 1/3 into P2.
+      expect(p1._lotFraction).toBeCloseTo(2 / 3, 6);
+      expect(p2._lotFraction).toBeCloseTo(1 / 3, 6);
+
+      // Both pieces point at the SAME pre-split store key/index (they
+      // share one underlying open piece's live Exp P&L) — liveStoreExpPnl
+      // must scale, not return the full value twice.
+      expect(p1._storeKey).toBe(p2._storeKey);
+      const piecesByKey = { [p1._storeKey]: [500] }; // live store says 500 for this piece
+      expect(liveStoreExpPnl(p1, piecesByKey)).toBeCloseTo(500 * (2 / 3), 6);
+      expect(liveStoreExpPnl(p2, piecesByKey)).toBeCloseTo(500 * (1 / 3), 6);
+      // Sum of the two scaled pieces reconstructs the full shared value.
+      expect(liveStoreExpPnl(p1, piecesByKey) + liveStoreExpPnl(p2, piecesByKey)).toBeCloseTo(500, 6);
+    });
+
+    it('rows with no opposite-side match in their account+root are unaffected (existing single-position tests stay correct)', () => {
+      const storeRows = [{
+        tradingsymbol: 'NIFTY25SEP24000CE', account: 'ACC1', quantity: 5,
+        overnight_quantity: 10, day_sell_quantity: 5, day_sell_value: 5 * 220,
+        average_price: 200, prev_close: 210, pnl: 150, exchange: 'NFO',
+      }];
+      const rows = buildPagePositionRows(storeRows);
+      expect(rows.length).toBe(2); // closed + open, from splitClosedReopened alone
+      expect(rows.every(r => r._isLotSplit === undefined)).toBe(true);
+    });
+  });
 });
 
 // ============================================================================

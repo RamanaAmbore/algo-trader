@@ -1,0 +1,181 @@
+import { describe, it, expect } from 'vitest';
+import { splitPairedLots } from '../../data/lotPairSplit.js';
+
+/** @param {Partial<any>} overrides */
+function row(overrides) {
+  return {
+    account: 'ACC1',
+    tradingsymbol: 'SYM',
+    exchange: 'NFO',
+    quantity: 0,
+    pnl: 0,
+    realised: 0,
+    unrealised: 0,
+    day_change_val: 0,
+    is_orphan: false,
+    pair_group_key: null,
+    paired_qty: 0,
+    orphan_qty: 0,
+    ...overrides,
+  };
+}
+
+describe('splitPairedLots — clean single-group match', () => {
+  it('row already carrying the correct pairing fields is returned by the same reference (no wrap)', () => {
+    const long = row({
+      tradingsymbol: 'NIFTY26JUN24000CE', quantity: 100,
+      pair_group_key: 'P1', paired_qty: 100, orphan_qty: 0, is_orphan: false,
+    });
+    const short = row({
+      tradingsymbol: 'NIFTY26JUN24500CE', quantity: -100,
+      pair_group_key: 'P1', paired_qty: 100, orphan_qty: 0, is_orphan: false,
+    });
+
+    const out = splitPairedLots([long, short]);
+
+    expect(out).toHaveLength(2);
+    expect(out[0]).toBe(long);
+    expect(out[1]).toBe(short);
+    expect(out[0].pair_group_key).toBe('P1');
+    expect(out[1].pair_group_key).toBe('P1');
+    expect(out[0].is_orphan).toBe(false);
+    expect(out[1].is_orphan).toBe(false);
+  });
+
+  it('a row carrying STALE/incorrect pairing fields gets corrected via a copy (never silently trusted)', () => {
+    // Defaults seed pair_group_key: null / paired_qty: 0 — deliberately
+    // stale relative to the freshly-derived P1/100 match.
+    const long = row({ tradingsymbol: 'NIFTY26JUN24000CE', quantity: 100 });
+    const short = row({ tradingsymbol: 'NIFTY26JUN24500CE', quantity: -100 });
+
+    const out = splitPairedLots([long, short]);
+
+    expect(out).toHaveLength(2);
+    expect(out[0]).not.toBe(long);  // corrected copy, not the stale original
+    expect(out[1]).not.toBe(short);
+    expect(out[0].pair_group_key).toBe('P1');
+    expect(out[1].pair_group_key).toBe('P1');
+    expect(out[0].paired_qty).toBe(100);
+    expect(out[0].is_orphan).toBe(false);
+    expect(out[1].is_orphan).toBe(false);
+  });
+
+  it('flat (quantity 0) rows pass through completely untouched', () => {
+    const flat = row({ tradingsymbol: 'NIFTY26JUN24000CE', quantity: 0, pair_group_key: 'STALE' });
+    const out = splitPairedLots([flat]);
+    expect(out[0]).toBe(flat);
+    expect(out[0].pair_group_key).toBe('STALE'); // untouched, not "corrected"
+  });
+});
+
+describe('splitPairedLots — the reported bug scenario', () => {
+  it('one long (300) matched against two different shorts (200 + 100) splits the long into 2 pieces; both shorts stay correctly paired', () => {
+    const longRow = row({ tradingsymbol: 'CRUDEOIL26OCTFUT', quantity: 300, account: 'ACC1' });
+    const shortA  = row({ tradingsymbol: 'CRUDEOIL26NOVFUT', quantity: -200, account: 'ACC1' });
+    const shortB  = row({ tradingsymbol: 'CRUDEOIL26DECFUT', quantity: -100, account: 'ACC1' });
+
+    const out = splitPairedLots([longRow, shortA, shortB]);
+
+    const longPieces = out.filter(r => r.tradingsymbol === 'CRUDEOIL26OCTFUT');
+    const shortAOut  = out.find(r => r.tradingsymbol === 'CRUDEOIL26NOVFUT');
+    const shortBOut  = out.find(r => r.tradingsymbol === 'CRUDEOIL26DECFUT');
+
+    // Long row spans 2 groups -> split into 2 pieces (bigger match ranked P1).
+    expect(longPieces).toHaveLength(2);
+    const byLabel = Object.fromEntries(longPieces.map(p => [p.pair_group_key, p]));
+    expect(byLabel['P1'].quantity).toBe(200);
+    expect(byLabel['P2'].quantity).toBe(100);
+    expect(byLabel['P1']._isLotSplit).toBe(true);
+    expect(byLabel['P2']._isLotSplit).toBe(true);
+
+    // Both shorts remain correctly paired (not orphaned), each a clean
+    // single-piece match with the SAME label the long's corresponding
+    // piece carries.
+    expect(shortAOut.pair_group_key).toBe('P1');
+    expect(shortAOut.is_orphan).toBe(false);
+    expect(shortBOut.pair_group_key).toBe('P2');
+    expect(shortBOut.is_orphan).toBe(false);
+  });
+});
+
+describe('splitPairedLots — partial match with leftover', () => {
+  it('a row partially matched leaves a matched piece + an orphan piece', () => {
+    const longRow = row({ tradingsymbol: 'NIFTY26JUN24000CE', quantity: 150 });
+    const shortRow = row({ tradingsymbol: 'NIFTY26JUN24500CE', quantity: -100 });
+
+    const out = splitPairedLots([longRow, shortRow]);
+
+    const longPieces = out.filter(r => r.tradingsymbol === 'NIFTY26JUN24000CE');
+    expect(longPieces).toHaveLength(2);
+    const matched = longPieces.find(p => p.pair_group_key === 'P1');
+    const orphan  = longPieces.find(p => p.is_orphan);
+    expect(matched.quantity).toBe(100);
+    expect(matched.is_orphan).toBe(false);
+    expect(orphan.quantity).toBe(50);
+    expect(orphan.pair_group_key).toBeNull();
+    expect(orphan.lot_piece_label).toBe('Unmatched');
+
+    const shortOut = out.find(r => r.tradingsymbol === 'NIFTY26JUN24500CE');
+    expect(shortOut.pair_group_key).toBe('P1');
+    expect(shortOut.is_orphan).toBe(false);
+  });
+});
+
+describe('splitPairedLots — pro-rating invariant', () => {
+  it('pnl/realised/unrealised/day_change_val sum across pieces equal the original row', () => {
+    const longRow = row({
+      tradingsymbol: 'CRUDEOIL26OCTFUT', quantity: 300,
+      pnl: 1234.56, realised: 500.11, unrealised: 734.45, day_change_val: 999.99,
+      prev_settlement_pnl: 222.22, overnight_quantity: 300,
+    });
+    const shortA = row({ tradingsymbol: 'CRUDEOIL26NOVFUT', quantity: -200 });
+    const shortB = row({ tradingsymbol: 'CRUDEOIL26DECFUT', quantity: -100 });
+
+    const out = splitPairedLots([longRow, shortA, shortB]);
+    const pieces = out.filter(r => r.tradingsymbol === 'CRUDEOIL26OCTFUT');
+    expect(pieces).toHaveLength(2);
+
+    for (const f of ['pnl', 'realised', 'unrealised', 'day_change_val', 'prev_settlement_pnl', 'overnight_quantity']) {
+      const sum = pieces.reduce((s, p) => s + Number(p[f]), 0);
+      expect(sum).toBeCloseTo(longRow[f], 6);
+    }
+    // qty sums back exactly too
+    expect(pieces.reduce((s, p) => s + p.quantity, 0)).toBe(300);
+  });
+});
+
+describe('splitPairedLots — order independence (stability)', () => {
+  it('produces identical labels regardless of input array order', () => {
+    const longRow = row({ tradingsymbol: 'CRUDEOIL26OCTFUT', quantity: 300, account: 'ACC1' });
+    const shortA  = row({ tradingsymbol: 'CRUDEOIL26NOVFUT', quantity: -200, account: 'ACC1' });
+    const shortB  = row({ tradingsymbol: 'CRUDEOIL26DECFUT', quantity: -100, account: 'ACC1' });
+
+    const outA = splitPairedLots([longRow, shortA, shortB]);
+    const outB = splitPairedLots([shortB, longRow, shortA]);
+
+    const labelsA = Object.fromEntries(
+      outA.map(r => [`${r.tradingsymbol}:${r.quantity}`, r.pair_group_key])
+    );
+    const labelsB = Object.fromEntries(
+      outB.map(r => [`${r.tradingsymbol}:${r.quantity}`, r.pair_group_key])
+    );
+    expect(labelsB).toEqual(labelsA);
+  });
+
+  it('breaks ties deterministically by symbol when two match events have equal qty', () => {
+    // longs [100, 100] vs shorts [101, 99] — tie-qty structure exercised
+    // via the tie-break-by-symbol rule in both match order and labelling.
+    const l1 = row({ tradingsymbol: 'NIFTY26JUNAAA', quantity: 100, account: 'ACC1' });
+    const l2 = row({ tradingsymbol: 'NIFTY26JUNBBB', quantity: 100, account: 'ACC1' });
+    const s1 = row({ tradingsymbol: 'NIFTY26JUNCCC', quantity: -101, account: 'ACC1' });
+    const s2 = row({ tradingsymbol: 'NIFTY26JUNDDD', quantity: -99, account: 'ACC1' });
+
+    const outFwd = splitPairedLots([l1, l2, s1, s2]);
+    const outRev = splitPairedLots([s2, s1, l2, l1]);
+
+    const keyFn = (r) => `${r.tradingsymbol}:${r.quantity}`;
+    const labelsFwd = Object.fromEntries(outFwd.map(r => [keyFn(r), r.pair_group_key]));
+    const labelsRev = Object.fromEntries(outRev.map(r => [keyFn(r), r.pair_group_key]));
+    expect(labelsRev).toEqual(labelsFwd);
+  });
+});
