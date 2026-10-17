@@ -1071,22 +1071,34 @@
     /* 2026-10-17 (operator: "add a slight background... reduce its width
        by 10%", then: "dropdown and trade guide should be of same height
        ... dropdown box needs a shaded background to differentiate it
-       from trade guide") — min-width trimmed 6rem -> 5.4rem. The shading
-       is a `box-shadow` HALO, not a padded background box — box-shadow
-       paints outside the element's own layout box without adding to its
-       size, so this wrapper's rendered height stays IDENTICAL to the
-       Select trigger's own height (and therefore to .console-guide-btn's
-       height, both pinned to --ctl-h elsewhere) instead of the earlier
-       padding-based version, which added 2px the Guide link didn't have. */
+       from trade guide") — min-width trimmed 6rem -> 5.4rem. */
     min-width: 5.4rem;
     margin: 1px 0.5rem 1px 0;
     border-radius: 4px;
-    box-shadow: 0 0 0 3px rgba(255,255,255,0.09);
   }
   .aw-kind-select :global(.rbq-select-trigger) {
     min-height: 1.7rem;
     padding: 0 0.5rem 0 0.4rem;
     box-sizing: border-box;
+    /* 2026-10-17 follow-up (operator: "you added shade around it. i
+       want shade inside the dropdown which looks like a button... remove
+       shade around it") — the previous pass used an outer box-shadow
+       HALO on `.aw-kind-select` (painted OUTSIDE the trigger's own
+       layout box, like a glow ring around it) specifically so the
+       wrapper's rendered height stayed byte-for-byte identical to
+       `.console-guide-btn`'s. That approach read as a halo AROUND the
+       control, not a fill INSIDE it — removed entirely (see above).
+       Replaced with a lighter background-color directly on the trigger
+       itself: a `background-color`/`background` override never changes
+       box-model height (unlike the earlier padding-based attempt this
+       whole thread started from), so the same-height-as-Guide invariant
+       holds without needing the halo trick at all. The trigger's base
+       navy gradient (Select.svelte's `.rbq-select-trigger`) is close
+       enough in tone to the dark CardHeader that it read as flush/
+       invisible — this lighter fill is what actually differentiates the
+       control AND reads as "a button" (a real inside fill, not just an
+       outline like the Guide link's own transparent/border-only style). */
+    background: rgba(255,255,255,0.10);
   }
   /* 2026-10-15 — operator: "I want trader guide and dropdown control in
      console/agents tab header to be aligned with tab text, increasing
