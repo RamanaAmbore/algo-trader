@@ -587,6 +587,12 @@ export function mkRightColDefs({
       hide: false,
       width: 28, minWidth: 28, maxWidth: 28,
       pinned: 'left', resizable: false, sortable: false, suppressMovable: true,
+      // Body badge is flex-centered (.ag-cell-pair-state in app.css); the
+      // header label had no matching override and sat left-aligned in
+      // the 28px track (operator: "st header also should be centered
+      // horizontally"). Mirrors the existing .ag-header-cell-spark
+      // center-override pattern in app.css.
+      headerClass: 'ag-header-cell-state',
       headerTooltip: 'Position state: GTT (green) · Pinned (cyan, manual) · Auto-paired (cyan) · Orphan (◇ amber). Click to pin/unpin.',
       // Shared priority logic (GTT > pinned > auto-paired > orphan) lives
       // in positionStateBadge.js — PerformancePage.svelte carries its own

@@ -1454,6 +1454,18 @@
   text-align: center !important;
 }
 
+/* St (position-state) column header — same centering override, matching
+   the already-centered .ag-cell-pair-state body cell (2026-10). */
+.ag-theme-ramboq .ag-header-cell-state .ag-header-cell-label,
+.ag-theme-algo .ag-header-cell-state .ag-header-cell-label {
+  justify-content: center !important;
+  text-align: center !important;
+}
+.ag-theme-ramboq .ag-header-cell-state .ag-header-cell-text,
+.ag-theme-algo .ag-header-cell-state .ag-header-cell-text {
+  text-align: center !important;
+}
+
 /* AG Grid: show blank row when no data */
 .ag-theme-ramboq .ag-overlay-no-rows-wrapper {
   padding: 8px;

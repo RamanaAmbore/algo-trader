@@ -226,6 +226,7 @@
      class:expiry-band-netted={legsTab === 'expiry' && c._band === 'netted'}
      class:expiry-band-otm={legsTab === 'expiry' && c._band === 'otm'}
      data-pair-tint={legsTab === 'expiry' && c._band === 'netted' ? (c._pairTint ?? 0) : null}
+     data-lot-piece={c.lot_piece_label || null}
      class:cand-row-equity-close={c._expiryStatus === 'equity-close'}
      class:cand-row-commodity-close={c._expiryStatus === 'commodity-close'}
      role="button"

@@ -516,7 +516,12 @@
   // across accounts: a NIFTY24DEC25000PE held in both ZG#### and
   // ZJ#### would share one checkbox, and the candidatesActualPnl
   // counter summed both rows even though only one was "checked".
-  function enKey(c) { return `${c.account || ''}|${c.symbol || ''}`; }
+  // lot_piece_label disambiguates lot-split pieces (lotPairSplit.js) —
+  // without it, a position split into P1/P2/Unmatched display rows
+  // shares one account+symbol key, so toggling one piece's checkbox
+  // silently toggled every sibling piece too (reported as "selecting
+  // one row selects an additional row").
+  function enKey(c) { return `${c.account || ''}|${c.symbol || ''}|${c.lot_piece_label || ''}`; }
 
   /** Long-term memory of eq-leg checkbox choices, keyed by enKey(c).
    *  Survives across page reloads (localStorage, no TTL), so an
@@ -5813,7 +5818,7 @@
                    bind:this={allCandidatesEl}
                    onclick={(e) => { e.stopPropagation(); toggleAllCandidates(); }} />
             <!-- State column header — matches second grid-template-columns track (28px). -->
-            <span title="Position state: GTT (green) / Paired (cyan) / Orphan (amber)">St</span>
+            <span class="cand-state-hdr" title="Position state: GTT (green) / Paired (cyan) / Orphan (amber)">St</span>
             <!-- Symbol header — hyphenated form below carries the
                  expiry month inline (e.g. NIFTY-26JUN-22000-CE) so a
                  separate Expiry column would be redundant. -->
@@ -7719,6 +7724,15 @@
      trade panels) so digits in different rows line up cleanly under
      each column header. The .cand-row > .num portion moved to
      CandidateLegRow.svelte. */
+  /* State column header ("St") — body cell (.cand-state-cell in
+     CandidateLegRow.svelte) is flex-centered; the header label had no
+     matching override so it sat left-aligned in the 28px track while
+     the badge glyph below it was centered (operator: "st header also
+     should be centered horizontally"). */
+  .cand-state-hdr {
+    text-align: center;
+    justify-self: center;
+  }
   .cand-headrow > .num {
     text-align: right;
     justify-self: end;

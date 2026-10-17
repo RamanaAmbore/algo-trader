@@ -1201,6 +1201,19 @@ Derivatives Legs grid; `PerformancePage` is not wired (own badge logic, delibera
   `mergePositionRows()` (`pulseUnified.js`) does not collapse them back into one row.
 - **Scope**: `_isLotSplit` and `lot_piece_label` exist only at the display layer. The
   `/api/positions` response and its schema are unchanged. Flat rows (qty 0) always pass through.
+- **Legs grid payoff-enable checkbox key fix (2026-10)**: the Derivatives Legs grid's own
+  per-row "included in payoff" checkbox (distinct from the St badge) is keyed by
+  `enKey(c) = account|symbol` in `+page.svelte`. Lot-split pieces of one broker row share
+  that account+symbol, so toggling one piece's checkbox silently toggled every sibling piece
+  too — reported as "selecting one row selects an additional row." Fixed by folding
+  `lot_piece_label` into `enKey` (`account|symbol|lot_piece_label`); non-split rows are
+  unaffected since `lot_piece_label` is empty for them. `CandidateLegRow.svelte`'s row `div`
+  also now carries `data-lot-piece` for disambiguation (test hook).
+- **St column header centering (2026-10)**: the St header label sat left-aligned while the
+  body badge was already flex-centered. Fixed with a `.cand-state-hdr` rule (Legs grid,
+  `+page.svelte`) and an `ag-header-cell-state` `headerClass` (MarketPulse Positions grid,
+  `pulseColumns.js` + `app.css`), mirroring the existing `.ag-header-cell-spark` centering
+  precedent.
 - Full derivation rules and the backend gap it corrects: see §4.4 `pair_group_key` above.
 
 **Numeric header style** — `numericHdr` CSS class for right-aligned headers matching data cells

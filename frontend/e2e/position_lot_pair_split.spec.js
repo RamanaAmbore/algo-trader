@@ -33,6 +33,12 @@
  *   (d) Derivatives Legs grid has no `.cand-lotsplit-tag` chip; the St-column
  *       badges show the correct `paired` state (P1 x2, P2 x2 — the split
  *       pieces plus their single-row counterparty legs) for the split leg.
+ *   (e) Toggling one split piece's checkbox doesn't toggle its sibling piece
+ *       — regression guard for an `enKey(c)` collision (2026-10) where the
+ *       key was `${account}|${symbol}` only, so both lot-split display rows
+ *       of one position shared a single enabledSymbols entry.
+ *   (f) St column header is horizontally centered in both grids, matching
+ *       the already-centered body badge (2026-10 cosmetic fix).
  *
  * Run:
  *   npx playwright test e2e/position_lot_pair_split.spec.js --project=chromium-desktop
@@ -160,5 +166,52 @@ test.describe('Lot-pairing split — Derivatives Legs grid', () => {
     await expect(paired).toHaveCount(4, { timeout: TIMEOUT });
     const texts = (await paired.allTextContents()).map((t) => t.trim()).sort();
     expect(texts).toEqual(['P1', 'P1', 'P2', 'P2']);
+  });
+
+  test('(e) toggling one split piece\'s checkbox does not toggle its sibling piece (enKey collision regression)', async ({ page }) => {
+    // Regression guard for the `enKey(c)` composite key in +page.svelte —
+    // before the fix it was `${account}|${symbol}` only, so the two
+    // lot-split display rows of 24000CE (P1, P2) shared ONE enabledSymbols
+    // entry: unchecking P1's checkbox silently unchecked P2's too (reported
+    // as "when you select one row in legs, it selects... an additional
+    // row"). `data-lot-piece` on `.cand-row` (CandidateLegRow.svelte)
+    // disambiguates the two rows for this test — only split pieces carry
+    // it, so it unambiguously targets P1 vs P2 of the SAME symbol.
+    await page.goto('/admin/derivatives?u=NIFTY', { waitUntil: 'domcontentloaded' });
+    const p1Row = page.locator('.cand-row[data-lot-piece="P1"]');
+    const p2Row = page.locator('.cand-row[data-lot-piece="P2"]');
+    await expect(p1Row).toHaveCount(1, { timeout: TIMEOUT });
+    await expect(p2Row).toHaveCount(1, { timeout: TIMEOUT });
+    const p1Check = p1Row.locator('input[type="checkbox"]');
+    const p2Check = p2Row.locator('input[type="checkbox"]');
+    await expect(p1Check).toBeChecked();
+    await expect(p2Check).toBeChecked();
+
+    await p1Check.uncheck();
+    await expect(p1Check).not.toBeChecked();
+    await expect(p2Check).toBeChecked();
+
+    await p2Check.uncheck();
+    await expect(p1Check).not.toBeChecked();
+    await expect(p2Check).not.toBeChecked();
+  });
+
+  test('(f) St column header is horizontally centered, matching the centered body badge', async ({ page }) => {
+    await page.goto('/admin/derivatives?u=NIFTY', { waitUntil: 'domcontentloaded' });
+    const hdr = page.locator('.cand-headrow .cand-state-hdr');
+    await expect(hdr).toHaveCount(1, { timeout: TIMEOUT });
+    const textAlign = await hdr.evaluate((el) => getComputedStyle(el).textAlign);
+    expect(textAlign).toBe('center');
+  });
+});
+
+test.describe('St column header centering — MarketPulse Positions grid', () => {
+  test('header label is centered, matching the centered .ag-cell-pair-state body badge', async ({ page }) => {
+    await page.goto('/pulse', { waitUntil: 'domcontentloaded' });
+    await pulseSplitStateLabels(page);
+    const hdrLabel = page.locator('[col-id="pos_state"] .ag-header-cell-label');
+    await expect(hdrLabel).toHaveCount(1, { timeout: TIMEOUT });
+    const justify = await hdrLabel.evaluate((el) => getComputedStyle(el).justifyContent);
+    expect(justify).toBe('center');
   });
 });
