@@ -581,6 +581,24 @@ above any symbol held in 2+ accounts, showing combined qty, day P&L, and Exp P&L
 display-only and never feeds TOTAL-row or account rollups. Spec:
 [PULSE_SPEC.md](docs/specs/PULSE_SPEC.md) §14 "Per-account rows and symbol subtotals".
 
+**Underlying-block-order preservation in grid sort composition (2026-10-17, commits
+929a772c, 2bd4b3dc)** — MarketPulse's Positions grid and PerformancePage's Positions grid
+both apply a two-layer sort composition: underlying-block grouping (options CE/PE cluster
+with their underlying root), then intra-block account-and-pair ordering. Two separate bugs
+corrupted the block order when an account-scoped sort ran. (1) MarketPulse
+(`_pairGroupPostSort`): the function called a bare `pairGroupSort(params.nodes)` BEFORE
+the block-anchor computation, discarding the upstream underlying-block structure; the sort
+result fed into `postSortGroups2Level()`, which tried to re-anchor blocks but read corrupted
+data. Fix: compose underlying-block preservation with account-then-pair ordering applied ONLY
+WITHIN each block. Also fixed `pairGroupSort.js`'s orphan branch to be account-scoped: before,
+a bare global key clumped every account's orphans together at the very end; now each
+account's orphans sort to the end of that account's own cluster. (2) PerformancePage
+(`frontend/src/routes/(algo)/admin/perf/+page.svelte`): the existing `pairGroupSort(params.nodes);
+postSortGroups2Level(params)` sequence also ran the pair sort before the block anchor
+computation. Fix: drop the `pairGroupSort` call entirely — `postSortGroups2Level`'s own sort
+fully overwrites intra-block order anyway, making the earlier pass redundant and harmful.
+Invariant: never let an account/pair sort run before a block-anchor computation reads the
+result — composition order is critical to preserve cross-option grouping.
 
 ---
 

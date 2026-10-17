@@ -1175,6 +1175,7 @@ Grid-specific cell renderers: ag-Grid `pulseColumns.js` (MarketPulse Positions),
 - Defensive fallback: `null` state is rendered as empty (no glyph, no button) — callers never force a default glyph
 - Derivatives Legs grid: checkbox renders before St cell for tab-order accessibility; St badge follows
 - Column is visible in positions grid only; hidden in holdings grid
+- **Info trigger (Oct 2026, commit f5aa9667)** — A separate small "i" info icon (distinct from the badge's own click-to-pin action) appears alongside the St badge in both MarketPulse's Positions grid and the Derivatives Legs grid. Clicking the info icon shows a tooltip with the per-state meaning (e.g., "Protected by a GTT…", "Auto-paired P1 — detected automatically…"), the same text already defined in `positionStateBadge.js:badge.tooltip`
 
 **Lot-split display (Oct 2026, frontend-only)**:
 
@@ -1360,13 +1361,24 @@ buttons on a mover row or uses the UI to set a custom group ranking:
 - Rationale: parent-child order relationships should remain visible on the grid regardless 
   of operator sort preferences
 
-**Pair-group sort restoration (Oct 2026, commit 09ec8c6f)** — Derivatives Legs grid 
-(`frontend/src/lib/data/pairGroupSort.js:sortRowsByPairGroup()`) now applies sort key 
-`${account}|${pair_group_key}` to keep auto-paired legs adjacent by account scope. Manual 
-pins (`pin_group_key`) do NOT participate in sort order; they are display badges only. 
-Rationale: auto-pair groups are ephemeral and can shift on poll cycles (lot-waterfall 
-matching); sort adjacency helps operators track which legs belong together. Manual pins 
-persist independently and don't affect row order.
+**Pair-group sort restoration with account-scoped composition (Oct 2026, commits 
+09ec8c6f, 929a772c, 2bd4b3dc)** — The sort adjacency system now preserves underlying-block 
+grouping while applying account-then-pair ordering within each block. 
+`pairGroupSort.js:sortRowsByPairGroup()` (Derivatives Legs grid) applies sort key 
+`${account}|${pair_group_key}` to keep auto-paired legs adjacent by account scope. 
+`_pairGroupPostSort()` (MarketPulse Positions grid) composes underlying-block preservation 
+with account-then-pair ordering applied only WITHIN each block (never across blocks), and 
+the `pairGroupSort.js` orphan branch is now account-scoped (previously a bare global key 
+clumped every account's orphans together at the end instead of each account's own orphans 
+sorting to the end of that account's own cluster). PerformancePage's Positions grid (commit 
+2bd4b3dc) fixes the same bug by dropping a redundant earlier `pairGroupSort()` call that 
+corrupted the block-anchor computation — composition is now consistent across both pages. 
+Manual pins (`pin_group_key`) do NOT participate in sort order; they are display badges only. 
+Invariant: account is the PRIMARY sort segment (operator-specified), then pair group within 
+account, with that account's orphans last within its own cluster. Rationale: auto-pair groups 
+are ephemeral and can shift on poll cycles (lot-waterfall matching); sort adjacency helps 
+operators track which legs belong together. Manual pins persist independently and don't affect 
+row order.
 
 **Preserve order of** — ag-Grid's per-column sorts (Day P&L, P&L %, volume, etc.) apply BEFORE 
 regrouping; no re-sort happens inside groups. If the operator sorted by P&L descending, 
