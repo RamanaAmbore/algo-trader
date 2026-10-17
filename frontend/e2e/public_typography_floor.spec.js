@@ -14,6 +14,16 @@
 // .pub-brand-name (fixed-size brand wordmark), signin's .pw-toggle
 // (show/hide password control).
 //
+// .pub-brand-tagline reversal (2026-10-17) — this selector was the
+// ORIGINAL motivating case for the floor above (see header, "confirmed-
+// worst named in the plan"). Operator later asked to shrink it again on
+// desktop specifically: at 0.7rem it read as big as .pub-brand-name
+// (0.78rem), flattening the lockup's name > sub > tagline hierarchy.
+// Reduced to 0.62rem and now exempted below for the SAME reason
+// .pub-brand-name/.pub-brand-sub already are — it's read as part of the
+// fixed-size brand wordmark, not a data/credibility label. Mobile's
+// already-exempt 0.52rem value (under .pub-brand-mobile) is unaffected.
+//
 // P0 contrast audit follow-up (2026-10): /signin and /market had no
 // floor guard at all, which is why a sub-floor regression on those two
 // pages (text-[0.65rem]/text-[0.62rem] labels, since raised to 0.7rem)
@@ -60,7 +70,7 @@ async function sweepSmallText(page, floorPx) {
       // stylized logotype, not a data/credibility label — same
       // reasoning as the file header comment) and the role-chip badge.
       const cls = typeof el.className === 'string' ? el.className : '';
-      if (/\b(pub-brand-name|pub-brand-sub|pub-user-role|pw-toggle)\b/.test(cls)) continue;
+      if (/\b(pub-brand-name|pub-brand-sub|pub-brand-tagline|pub-user-role|pw-toggle)\b/.test(cls)) continue;
       const style = getComputedStyle(el);
       if (style.display === 'none' || style.visibility === 'hidden') continue;
       // getComputedStyle only reports the ELEMENT'S OWN display/visibility —
@@ -150,6 +160,26 @@ test('mobile (360px) — brand tagline renders at the 0.52rem exempt size, singl
   // instead of silently passing the overflow-only check above.
   expect(metrics.fontSize, `expected 0.52rem (8.32px), got ${metrics.fontSize}px`).toBeCloseTo(8.32, 1);
   expect(metrics.lineCount, 'tagline must render on a single line, not wrap').toBe(1);
+});
+
+test('desktop (1400px) — brand tagline renders at the 0.62rem exempt size, smaller than the brand name', async ({ page }) => {
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(500);
+  const metrics = await page.evaluate(() => {
+    const tagline = document.querySelector('.pub-brand:not(.pub-brand-mobile) .pub-brand-tagline');
+    const name = document.querySelector('.pub-brand:not(.pub-brand-mobile) .pub-brand-name');
+    return {
+      tagline: tagline ? parseFloat(getComputedStyle(tagline).fontSize) : null,
+      name: name ? parseFloat(getComputedStyle(name).fontSize) : null,
+    };
+  });
+  expect(metrics.tagline, '.pub-brand-tagline not found').not.toBeNull();
+  // 0.62rem at the default 16px root = 9.92px (below the 11.2px B2
+  // floor, but explicitly exempted above — see header comment).
+  expect(metrics.tagline, `expected 0.62rem (9.92px), got ${metrics.tagline}px`).toBeCloseTo(9.92, 1);
+  expect(metrics.tagline, 'tagline must read smaller than the brand name, not equal/larger')
+    .toBeLessThan(metrics.name);
 });
 
 test('mobile (360px) — brand name/sub text-stroke thinned to 0.4px, desktop untouched', async ({ page }) => {

@@ -465,9 +465,18 @@
     margin: 0.12rem 0 0.08rem;
   }
   .pub-brand-tagline {
-    /* B2: 0.4rem (~6.4px) was far below the 0.7rem legibility floor —
-       one of the two confirmed-worst violations named in the plan. */
-    font-size: 0.7rem;
+    /* B2 (2026-09): raised from 0.4rem (~6.4px, far below the 0.7rem
+       legibility floor) to 0.7rem — one of the two confirmed-worst
+       violations named in that plan.
+       Operator (2026-10-17): at 0.7rem the tagline read as big as
+       .pub-brand-name (0.78rem) itself, undermining the lockup's size
+       hierarchy (name > sub > tagline). Nudged down to 0.62rem —
+       still well above B2's original ~6.4px problem, but now reasoned
+       as part of the FIXED-SIZE BRAND WORDMARK (like .pub-brand-name/
+       .pub-brand-sub, already exempt from the legibility-floor sweep
+       below), not a data/credibility label — exempted in
+       public_typography_floor.spec.js accordingly. */
+    font-size: 0.62rem;
     font-weight: 500;
     color: rgba(255,255,255,0.82);
     letter-spacing: 0.02em;
