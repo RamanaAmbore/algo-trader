@@ -1104,6 +1104,9 @@ now caches + returns a `stale` flag; `/api/nav/by-account` masks `errors` for no
 `POST /api/nav/compute` returns `written: bool`. See `write_nav_snapshot`'s own docstring 
 (nav.py, lines 937–1007) for the full reasoning and edge cases.
 
+**Dismissible overlay layout and keyboard handling (2026-10-17, commits b1d5979d + 92d29cbe)** —
+`PositionStrip.svelte`'s NavBreakdown popup (opened by clicking the P/M/C/H pills in the top NavStrip summary) had two structural defects in one investigation. (1) **Header/close-button placement**: the popup's header (containing the close button) and content were both children of the same element with `overflow-y: auto`, so tall content triggered a scrollbar that ate into the header's flex width, pushing the close button away from the panel's right edge — visually inconsistent with every other dark-theme popup in the app (which keep headers outside scrolling containers). Fixed: outer panel switched to `overflow: hidden` + flex column layout, with a new inner `.ps-bd-body` wrapper delegated to do the actual scrolling. (2) **Escape-key handling**: Escape registration lived as a raw `onkeydown` handler on a non-focusable `<div>` overlay, which can never actually receive keyboard focus or events; the popup couldn't be dismissed via Escape in real usage. Fixed: migrated to the shared `layerStack.js` Escape-stack coordinator (same pattern `PositionPinPicker.svelte` already uses), which listens once at the `document` capture phase independent of per-element focus. Invariant: (a) any dismissible overlay must keep its header/close-button OUTSIDE any element with `overflow-y: auto` (scrollbar gutter shrinks shared flex siblings), and (b) any dismissible overlay must register Escape via the shared `layerStack.js` coordinator via `pushLayer()/popLayer()`, never a raw per-element `onkeydown` on a non-focusable element.
+
 ---
 
 ## Common Tasks — Where to Make Changes
