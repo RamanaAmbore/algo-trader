@@ -69,6 +69,8 @@
   import InfoHint from '$lib/InfoHint.svelte';
   import { liveSnap } from '$lib/data/symbolStore.svelte.js';
   import RefreshButton from '$lib/RefreshButton.svelte';
+  import { resolveUnderlyingTradingsymbol } from '$lib/data/resolveUnderlying.js';
+  import { findNearestFuture, instrumentsCacheVersion } from '$lib/data/instruments.js';
 
   // Templ toggle — remembers the operator's last on/off/specific-
   // template choice PER SIDE-SCOPE (buy_option / sell_option / buy_any
@@ -509,12 +511,36 @@
   // Chain tab shows root LTP (e.g. CRUDEOIL for any CRUDEOIL future);
   // Ticket + Chart tabs show the contract's own LTP so the header price
   // reflects the exact instrument the operator is viewing / trading.
-  const _ltpSym = $derived(
-    _activeTab === 'chain'
-      ? (_parseRoot(_localSymbol) || _localSymbol)
-      : _localSymbol
+  //
+  // 2026-10-17 fix (operator: "when chain is pressed the ltp field is
+  // getting erased") — the bare root (`_parseRoot(_localSymbol)`, e.g.
+  // "NIFTY") is NOT itself a live-ticked quote key for an index
+  // underlying (Kite ticks it under "NIFTY 50") or for an unheld/cold
+  // MCX commodity (no virtual-root alias published yet) — `liveSnap`
+  // on the bare root silently resolved to null, erasing the field.
+  // `resolveUnderlyingTradingsymbol` (same SSOT Snapshot/Payoff/NavStrip
+  // use — see CLAUDE.md "Underlying spot resolution") maps the root to
+  // its real tradeable/quote-key tradingsymbol first (index spot key,
+  // MCX/CDS nearest future, or the root unchanged for everything else);
+  // falling back to the bare root keeps today's working case (a
+  // commodity WITH a published virtual-root alias) unaffected.
+  // `$instrumentsCacheVersion` dependency mirrors OrderTicket's `_dte` —
+  // `findNearestFuture` reads a non-reactive module-level cache, so
+  // without it a cold-cache resolution (bare root, wrong) never
+  // re-resolves once instruments finish loading.
+  const _ltpSym = $derived.by(() => {
+    /* eslint-disable-next-line @typescript-eslint/no-unused-expressions */
+    $instrumentsCacheVersion;
+    if (_activeTab !== 'chain') return _localSymbol;
+    const root = _parseRoot(_localSymbol) || _localSymbol;
+    if (!root) return _localSymbol;
+    return resolveUnderlyingTradingsymbol(root, findNearestFuture) || root;
+  });
+  const _ltp = $derived(
+    liveSnap(_ltpSym)?.ltp
+    ?? (_activeTab === 'chain' ? liveSnap(_parseRoot(_localSymbol) || _localSymbol)?.ltp : null)
+    ?? null
   );
-  const _ltp = $derived(liveSnap(_ltpSym)?.ltp ?? null);
 
   // Tab-activation refresh bumps. Operator request: "when chain tab is
   // pressed, the chain details need to be refreshed. when order ticket
