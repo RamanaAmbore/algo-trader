@@ -68,11 +68,15 @@ const _NONE = Object.freeze({
  *   pair_group_key?: string|null,
  *   is_orphan?: boolean|null,
  *   _isTotal?: boolean,
+ *   _isSubtotal?: boolean,
  * } | null | undefined} row
  * @returns {PositionStateBadge}
  */
 export function positionStateBadge(row) {
-  if (!row || row._isTotal) return _NONE;
+  // 2026-10 Part A: a symbol-subtotal row (buildPositionsDisplayRows,
+  // pulseUnified.js) represents 2+ accounts at once, so no single
+  // orphan/pair/pin/GTT state applies — same "no state" treatment as TOTAL.
+  if (!row || row._isTotal || row._isSubtotal) return _NONE;
 
   if (row.has_gtt) {
     return {

@@ -88,9 +88,13 @@ def test_root_symbol_nifty_future():
 def test_auto_pair_basic():
     from backend.api.routes.positions import _auto_pair_positions
 
+    # Same root ("NIFTY") and same option type (both futures, i.e. both
+    # _option_type()==None) so this stays in one waterfall group under the
+    # CE/PE-aware grouping — exercises the basic waterfall, not the
+    # cross-type guard (see test_order_pair.py's CE/PE-specific tests below).
     rows = [
         _make_row("ZG0790", "NIFTY24AUGFUT", "NFO", 2),
-        _make_row("ZG0790", "NIFTY24800CE", "NFO", -2),
+        _make_row("ZG0790", "NIFTY24SEPFUT", "NFO", -2),
     ]
     result = _auto_pair_positions(rows)
     assert len(result) == 2
@@ -116,9 +120,11 @@ def test_auto_pair_basic():
 def test_auto_pair_lot_split():
     from backend.api.routes.positions import _auto_pair_positions
 
+    # Both futures (same root, same option_type=None) so this stays in one
+    # waterfall group under the CE/PE-aware grouping.
     rows = [
         _make_row("ZG0790", "NIFTY24AUGFUT", "NFO", 3),
-        _make_row("ZG0790", "NIFTY24800CE", "NFO", -2),
+        _make_row("ZG0790", "NIFTY24SEPFUT", "NFO", -2),
     ]
     result = _auto_pair_positions(rows)
 
@@ -145,11 +151,13 @@ def test_auto_pair_lot_split():
 def test_auto_pair_two_pairs():
     from backend.api.routes.positions import _auto_pair_positions
 
+    # All four legs are CE (same option_type), different strikes, same
+    # root — stays in one waterfall group under the CE/PE-aware grouping.
     rows = [
         _make_row("ZG0790", "NIFTY24800CE", "NFO", 2),   # long 2
         _make_row("ZG0790", "NIFTY24900CE", "NFO", 1),   # long 1
-        _make_row("ZG0790", "NIFTY24AUGFUT", "NFO", -2), # short 2
-        _make_row("ZG0790", "NIFTY24700PE", "NFO", -1),  # short 1
+        _make_row("ZG0790", "NIFTY25000CE", "NFO", -2),  # short 2
+        _make_row("ZG0790", "NIFTY24700CE", "NFO", -1),  # short 1
     ]
     result = _auto_pair_positions(rows)
 
@@ -447,6 +455,8 @@ def test_auto_pair_longs_q_waterfall_advance():
     from backend.api.routes.positions import _auto_pair_positions
 
     # long 1 (2 lots), long 2 (1 lot), short 1 (2 lots), short 2 (1 lot)
+    # All four legs are CE (same option_type), different strikes, same
+    # root — stays in one waterfall group under the CE/PE-aware grouping.
     # After sorting largest-first:
     #   longs_q:  [(idx0, 2), (idx1, 1)]
     #   shorts_q: [(idx2, 2), (idx3, 1)]
@@ -455,8 +465,8 @@ def test_auto_pair_longs_q_waterfall_advance():
     rows = [
         _make_row("ZG0790", "NIFTY24800CE", "NFO", 2),   # long 2
         _make_row("ZG0790", "NIFTY24900CE", "NFO", 1),   # long 1
-        _make_row("ZG0790", "NIFTY24AUGFUT", "NFO", -2), # short 2
-        _make_row("ZG0790", "NIFTY24700PE", "NFO", -1),  # short 1
+        _make_row("ZG0790", "NIFTY25000CE", "NFO", -2),  # short 2
+        _make_row("ZG0790", "NIFTY24700CE", "NFO", -1),  # short 1
     ]
     # This call must terminate (not infinite-loop).
     result = _auto_pair_positions(rows)

@@ -29,7 +29,10 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { mergePositionRows, mergeHoldingRows, makeRowFactory } from '../../data/pulseUnified.js';
+import {
+  mergePositionRows, mergeHoldingRows, makeRowFactory, mergeUnderlyingAnchors,
+  totalsRowFor, buildPositionsDisplayRows,
+} from '../../data/pulseUnified.js';
 import { baseDayPnlForPosition } from '$lib/data/nav.js';
 
 // ── Shared test fixtures ──────────────────────────────────────────────────────
@@ -87,7 +90,10 @@ describe('mergePositionRows — day_pnl is poll-only, no live-tick input (§1)',
 
     mergePositionRows(byKey, [row], true, {}, ctx);
 
-    const result = byKey['NIFTY25AUG24000CE__pos'];
+    // 2026-10 Part A: lookupKey is always `${sym}::${account}` — this
+    // fixture has no `account` override, so the key carries an empty
+    // account segment.
+    const result = byKey['NIFTY25AUG24000CE::__pos'];
     expect(result).toBeDefined();
     expect(result.day_pnl).toBe(300);
     expect(result.day_pnl).not.toBe(800);
@@ -102,7 +108,7 @@ describe('mergePositionRows — day_pnl is poll-only, no live-tick input (§1)',
       const byKey = {};
       const ctx = makeCtx({ CRUDEOIL25AUGFUT: { ltp } });
       mergePositionRows(byKey, [row], true, {}, ctx);
-      return byKey['CRUDEOIL25AUGFUT__pos'].day_pnl;
+      return byKey['CRUDEOIL25AUGFUT::__pos'].day_pnl;
     };
 
     const first  = run(6200);
@@ -120,7 +126,7 @@ describe('mergePositionRows — day_pnl is poll-only, no live-tick input (§1)',
 
     mergePositionRows(byKey, [row], true, {}, ctx);
 
-    const result = byKey['NIFTY25AUG24000CE__pos'];
+    const result = byKey['NIFTY25AUG24000CE::__pos'];
     expect(result.day_pnl).toBe(300);
   });
 });
@@ -385,16 +391,21 @@ describe('mergeHoldingRows — row.close reads prev_close, not the removed close
 });
 
 // ============================================================================
-// mergePositionRows — position-state field propagation (2026-10 fix)
+// mergePositionRows — position-state field propagation (2026-10 fix,
+// REWRITTEN 2026-10 Part A)
 //
 // is_orphan/pair_group_key/pin_group_key/has_gtt were never copied from the
 // raw broker row onto the aggregated pulse row, so MarketPulse's "St"
 // column (pulseColumns.js) and the row-pos-orphan/row-pos-paired CSS
 // classes (MarketPulse.svelte's _sourceRowClasses) were structurally dead
 // — every position showed as unpaired regardless of real backend state.
-// Fields are only trustworthy while exactly one account contributes to the
-// aggregated row; once a second account merges in, they reset to null
-// (ambiguous — never guessed via OR/winner-takes-all).
+//
+// Part A (2026-10) made every position row single-account BY CONSTRUCTION
+// (lookupKey always bakes in the account) — a symbol held in 2+ accounts
+// now produces 2+ SEPARATE rows instead of one ambiguous merged row, so
+// the old "resets to null once a second account merges in" test below is
+// INVERTED: these fields are now always trustworthy, straight off the raw
+// row, regardless of how many OTHER accounts also hold the same symbol.
 // ============================================================================
 
 describe('mergePositionRows — position-state field propagation (2026-10 fix)', () => {
@@ -404,7 +415,7 @@ describe('mergePositionRows — position-state field propagation (2026-10 fix)',
       account: 'ACC1', is_orphan: false, pair_group_key: 'P1', pin_group_key: 'PIN4', has_gtt: true,
     });
     mergePositionRows(byKey, [row], true, {}, makeCtx());
-    const result = byKey['NIFTY25AUG24000CE__pos'];
+    const result = byKey['NIFTY25AUG24000CE::ACC1__pos'];
     expect(result.is_orphan).toBe(false);
     expect(result.pair_group_key).toBe('P1');
     expect(result.pin_group_key).toBe('PIN4');
@@ -415,32 +426,50 @@ describe('mergePositionRows — position-state field propagation (2026-10 fix)',
     const byKey = {};
     const row = makeOvernightPositionRow({ account: 'ACC1', is_orphan: true });
     mergePositionRows(byKey, [row], true, {}, makeCtx());
-    const result = byKey['NIFTY25AUG24000CE__pos'];
+    const result = byKey['NIFTY25AUG24000CE::ACC1__pos'];
     expect(result.is_orphan).toBe(true);
     expect(result.pair_group_key).toBeNull();
     expect(result.pin_group_key).toBeNull();
     expect(result.has_gtt).toBe(false);
   });
 
-  it('two-account row for the same symbol resets all four fields to null (ambiguous)', () => {
+  it('two accounts holding the same symbol produce TWO separate rows, each carrying its own correct state (2026-10 Part A — was a single merged/nulled row)', () => {
     const byKey = {};
     const rowA = makeOvernightPositionRow({ account: 'ACC1', pair_group_key: 'P1', has_gtt: true });
     const rowB = makeOvernightPositionRow({ account: 'ACC2', pair_group_key: 'P7', is_orphan: true });
     mergePositionRows(byKey, [rowA, rowB], true, {}, makeCtx());
-    const result = byKey['NIFTY25AUG24000CE__pos'];
-    expect(result.accounts.size).toBe(2);
-    expect(result.is_orphan).toBeNull();
-    expect(result.pair_group_key).toBeNull();
-    expect(result.pin_group_key).toBeNull();
-    expect(result.has_gtt).toBeNull();
+
+    const resultA = byKey['NIFTY25AUG24000CE::ACC1__pos'];
+    const resultB = byKey['NIFTY25AUG24000CE::ACC2__pos'];
+    expect(resultA).toBeDefined();
+    expect(resultB).toBeDefined();
+    expect(resultA).not.toBe(resultB);
+
+    // Each row is single-account (never merged) — accounts.size is always 1.
+    expect(resultA.accounts.size).toBe(1);
+    expect(resultB.accounts.size).toBe(1);
+
+    // ACC1's row keeps its own pair_group_key/has_gtt, not nulled.
+    expect(resultA.pair_group_key).toBe('P1');
+    expect(resultA.has_gtt).toBe(true);
+    expect(resultA.is_orphan).toBe(false);
+
+    // ACC2's row keeps its own pair_group_key/is_orphan, not nulled.
+    expect(resultB.pair_group_key).toBe('P7');
+    expect(resultB.is_orphan).toBe(true);
+    expect(resultB.has_gtt).toBe(false);
+
+    // The bare (no-account) lookup key is never populated — Part A always
+    // bakes the account into the key, even when there's only one row.
+    expect(byKey['NIFTY25AUG24000CE__pos']).toBeUndefined();
   });
 
-  it('repeated rows for the SAME account (e.g. a closed/open split) keep the single-account fields', () => {
+  it('repeated rows for the SAME account (e.g. a closed/open split) merge into one row and keep the single-account fields', () => {
     const byKey = {};
     const rowA = makeOvernightPositionRow({ account: 'ACC1', pair_group_key: 'P2', has_gtt: false });
     const rowB = makeOvernightPositionRow({ account: 'ACC1', pair_group_key: 'P2', has_gtt: false });
     mergePositionRows(byKey, [rowA, rowB], true, {}, makeCtx());
-    const result = byKey['NIFTY25AUG24000CE__pos'];
+    const result = byKey['NIFTY25AUG24000CE::ACC1__pos'];
     expect(result.accounts.size).toBe(1);
     expect(result.pair_group_key).toBe('P2');
   });
@@ -485,16 +514,163 @@ describe('mergePositionRows — lot-split pieces (_isLotSplit) get distinct buck
     expect(byKey[keyP1]._isLotSplit).toBe(true);
     expect(byKey[keyP1].lot_piece_label).toBe('P1');
     expect(byKey[keyP2].lot_piece_label).toBe('P2');
-    // Bare byKey['SYMBOL__pos'] (the non-split key) must NOT have been
-    // populated — confirms the pieces never fell back to the plain key.
-    expect(byKey['NIFTY25AUG24000CE__pos']).toBeUndefined();
+    // Bare byKey['SYMBOL::ACC1__pos'] (the non-split base key, no piece
+    // label) must NOT have been populated — confirms the pieces never
+    // fell back to the unsuffixed key.
+    expect(byKey['NIFTY25AUG24000CE::ACC1__pos']).toBeUndefined();
   });
 
-  it('a non-split row for the same symbol still uses the plain bare-symbol key (backward compatible)', () => {
+  it('a non-split row for the same symbol uses the base symbol::account key (no lot-piece suffix)', () => {
     const byKey = {};
     const row = makeOvernightPositionRow({ account: 'ACC1', pair_group_key: 'P1' });
     mergePositionRows(byKey, [row], true, {}, makeCtx());
-    expect(byKey['NIFTY25AUG24000CE__pos']).toBeDefined();
-    expect(byKey['NIFTY25AUG24000CE__pos']._isLotSplit).toBeUndefined();
+    expect(byKey['NIFTY25AUG24000CE::ACC1__pos']).toBeDefined();
+    expect(byKey['NIFTY25AUG24000CE::ACC1__pos']._isLotSplit).toBeUndefined();
+  });
+});
+
+// ============================================================================
+// mergePositionRows — one row per account, no cross-account merge
+// (2026-10 Part A)
+// ============================================================================
+
+describe('mergePositionRows — one row per account, no cross-account merge (2026-10 Part A)', () => {
+  it('two accounts holding the same symbol produce two rows, each with its own qty/avg/day_pnl', () => {
+    const byKey = {};
+    const rowA = makeOvernightPositionRow({ account: 'ACC1', quantity: 50, average_price: 120 });
+    const rowB = makeOvernightPositionRow({ account: 'ACC2', quantity: 30, average_price: 110 });
+    mergePositionRows(byKey, [rowA, rowB], true, {}, makeCtx());
+
+    const resultA = byKey['NIFTY25AUG24000CE::ACC1__pos'];
+    const resultB = byKey['NIFTY25AUG24000CE::ACC2__pos'];
+    expect(resultA).toBeDefined();
+    expect(resultB).toBeDefined();
+    expect(resultA).not.toBe(resultB);
+    expect(resultA.qty_pos).toBe(50);
+    expect(resultB.qty_pos).toBe(30);
+    expect(resultA.accounts.has('ACC1')).toBe(true);
+    expect(resultA.accounts.has('ACC2')).toBe(false);
+    expect(resultB.accounts.has('ACC2')).toBe(true);
+    expect(resultB.accounts.has('ACC1')).toBe(false);
+    // Each row's own day_pnl — no cross-contamination between the two
+    // account rows.
+    expect(resultA.day_pnl).toBe(baseDayPnlForPosition(rowA));
+    expect(resultB.day_pnl).toBe(baseDayPnlForPosition(rowB));
+  });
+});
+
+// ============================================================================
+// mergeUnderlyingAnchors — does not duplicate an existing per-account
+// position row (2026-10 Part A follow-up)
+//
+// Positions rows are now keyed `${symbol}::${account}`, not bare symbol.
+// An underlying anchor whose own tradingsymbol happens to match a REAL
+// held position (e.g. an MCX option's underlying anchor resolves to the
+// same future contract the operator also holds directly) must enrich
+// that existing row in place, not create a second bare-keyed row.
+// ============================================================================
+
+describe('mergeUnderlyingAnchors — does not duplicate an existing per-account position row (2026-10 Part A)', () => {
+  it('enriches the existing per-account future row in place instead of creating a second bare-keyed row', () => {
+    const byKey = {};
+    const futureRow = makeOvernightPositionRow({
+      tradingsymbol: 'CRUDEOIL26JUNFUT', account: 'ACC1', exchange: 'MCX',
+    });
+    const optionRow = makeOvernightPositionRow({
+      tradingsymbol: 'CRUDEOIL26JUN10500CE', account: 'ACC1', exchange: 'MCX',
+    });
+    mergePositionRows(byKey, [futureRow, optionRow], true, {}, makeCtx());
+
+    const uq = {
+      CRUDEOIL: {
+        ltp: 6500,
+        _resolved: {
+          tradingsymbol: 'CRUDEOIL26JUNFUT',
+          exchange: 'MCX',
+          displayUnderlying: 'CRUDEOIL',
+          kind: 'fut',
+          _major: 'positions',
+        },
+      },
+    };
+
+    mergeUnderlyingAnchors(byKey, uq, [futureRow, optionRow], [], true, true, { getInst: null });
+
+    // Exactly one row carries the future's own tradingsymbol — no second,
+    // spot-only anchor row was created alongside the real position row.
+    const matches = Object.values(byKey).filter(
+      (r) => r._majorGroup === 'positions' && r.tradingsymbol === 'CRUDEOIL26JUNFUT');
+    expect(matches.length).toBe(1);
+    expect(byKey['CRUDEOIL26JUNFUT::ACC1__pos']).toBeDefined();
+    expect(byKey['CRUDEOIL26JUNFUT__pos']).toBeUndefined();
+    // The real position row was enriched with the anchor's own fields.
+    expect(matches[0].src.u).toBe(true);
+    expect(matches[0].ltp).toBe(6500);
+  });
+});
+
+// ============================================================================
+// totalsRowFor — Exp P&L dedup across split account-rows
+// (2026-10 Part A, Change 2 — required fix alongside the per-account split)
+// ============================================================================
+
+describe('totalsRowFor — Exp P&L dedup across split account-rows (2026-10 Part A, Change 2)', () => {
+  it('a symbol split into 2 account-rows contributes its cross-account Exp P&L exactly once to TOTAL', () => {
+    const rowA = { tradingsymbol: 'NIFTY25AUG24000CE', qty_pos: 50, day_pnl: 100, pnl: 200, _cost_basis: 0, _prev_market_value: 0 };
+    const rowB = { tradingsymbol: 'NIFTY25AUG24000CE', qty_pos: 30, day_pnl: 60,  pnl: 90,  _cost_basis: 0, _prev_market_value: 0 };
+    // Already a cross-account total (same shape as MarketPulse.svelte's
+    // _filteredExpPnlByKey) — must be added ONCE regardless of how many
+    // account-rows represent this symbol.
+    const expPnlByKey = { NIFTY25AUG24000CE: { exp_pnl: 500, extrinsic: 20 } };
+
+    const splitTotal = totalsRowFor([rowA, rowB], 'positions', 'TOTAL Positions', expPnlByKey);
+
+    // Un-split single-row-equivalent (one account, combined qty) must
+    // produce the SAME TOTAL Exp P&L.
+    const singleRow = { tradingsymbol: 'NIFTY25AUG24000CE', qty_pos: 80, day_pnl: 160, pnl: 290, _cost_basis: 0, _prev_market_value: 0 };
+    const unsplitTotal = totalsRowFor([singleRow], 'positions', 'TOTAL Positions', expPnlByKey);
+
+    expect(splitTotal.exp_pnl).toBe(500);
+    expect(splitTotal.exp_pnl).toBe(unsplitTotal.exp_pnl);
+    // A naive once-per-row sum would have doubled it to 1000.
+    expect(splitTotal.exp_pnl).not.toBe(1000);
+  });
+});
+
+// ============================================================================
+// buildPositionsDisplayRows — symbol-subtotal rows
+// (2026-10 Part A, Change 3)
+// ============================================================================
+
+describe('buildPositionsDisplayRows — symbol-subtotal rows (2026-10 Part A, Change 3)', () => {
+  it('inserts one subtotal row above a symbol split across 2+ accounts, with combined qty/day_pnl/exp_pnl', () => {
+    const rowA = { key: 'SYM::ACC1__pos', tradingsymbol: 'NIFTY25AUG24000CE', accounts: new Set(['ACC1']), qty_pos: 50, day_pnl: 100 };
+    const rowB = { key: 'SYM::ACC2__pos', tradingsymbol: 'NIFTY25AUG24000CE', accounts: new Set(['ACC2']), qty_pos: 30, day_pnl: 60 };
+    const expPnlByKey = { NIFTY25AUG24000CE: { exp_pnl: 500, extrinsic: 20 } };
+
+    const display = buildPositionsDisplayRows([rowA, rowB], expPnlByKey);
+    expect(display.length).toBe(3);
+    expect(display[0]._isSubtotal).toBe(true);
+    expect(display[0]._majorGroup).toBe('positions');
+    expect(display[0].qty_pos).toBe(80);
+    expect(display[0].day_pnl).toBe(160);
+    expect(display[0].exp_pnl).toBe(500);
+    expect(display[1]).toBe(rowA);
+    expect(display[2]).toBe(rowB);
+  });
+
+  it('a symbol held in a single account produces no subtotal row', () => {
+    const rowA = { key: 'SYM::ACC1__pos', tradingsymbol: 'NIFTY25AUG24000CE', accounts: new Set(['ACC1']), qty_pos: 50, day_pnl: 100 };
+    const display = buildPositionsDisplayRows([rowA], {});
+    expect(display.length).toBe(1);
+    expect(display[0]).toBe(rowA);
+  });
+
+  it('lot-split pieces of the SAME account (one distinct account) produce no subtotal row', () => {
+    const p1 = { key: 'SYM::ACC1::P1__pos', tradingsymbol: 'NIFTY25AUG24000CE', accounts: new Set(['ACC1']), qty_pos: 20, day_pnl: 40, _isLotSplit: true, lot_piece_label: 'P1' };
+    const p2 = { key: 'SYM::ACC1::P2__pos', tradingsymbol: 'NIFTY25AUG24000CE', accounts: new Set(['ACC1']), qty_pos: 30, day_pnl: 60, _isLotSplit: true, lot_piece_label: 'P2' };
+    const display = buildPositionsDisplayRows([p1, p2], {});
+    expect(display.length).toBe(2);
+    expect(display.every((r) => !r._isSubtotal)).toBe(true);
   });
 });

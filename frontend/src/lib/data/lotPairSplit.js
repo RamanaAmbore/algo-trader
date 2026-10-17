@@ -34,6 +34,25 @@
  *      "CRUDEOIL26NOVFUT" → "CRUDEOIL" — the calendar-spread case the
  *      backend groups together), and needs no seeded instruments cache.
  *
+ *   1b. Grouping key is now `(account, root, optType)`, not `(account,
+ *      root)` — mirrors `backend/api/routes/positions.py:_auto_pair_positions`'s
+ *      own 2026-10 fix for the identical bug (same change, same root cause,
+ *      kept in parity on both sides): without the option-type dimension, a
+ *      long CE and a short PE of the same root/account/magnitude waterfall-
+ *      matched as if they were a real pair, even though a call and a put
+ *      are economically unrelated instruments. `optType` comes from
+ *      `decomposeSymbol(sym).optType` when it successfully parses the
+ *      symbol as a real option/future (`kind === 'opt'|'fut'`) — which also
+ *      yields the correctly-stripped `root` for that same symbol. For a
+ *      symbol `decomposeSymbol` can't parse as F&O at all (no expiry month
+ *      token — synthetic/abbreviated symbols only; every real Kite
+ *      tradingsymbol always carries one), `_rootAndOptType()` falls back to
+ *      a standalone port of the backend's own `_EXPIRY_RE`/`_root_symbol`/
+ *      `_option_type` suffix-stripping regexes so the two algorithms still
+ *      agree even on a symbol neither parser can fully decompose. Futures/
+ *      equity rows (`optType` null either way) are unaffected — the new
+ *      dimension is a no-op for them, same as the backend fix.
+ *
  *   2. A row that cleanly matches into exactly ONE group, with no leftover,
  *      is NOT always returned as the same reference. This module's own
  *      rank-by-size labelling can legitimately assign a different "Pn"
@@ -103,10 +122,37 @@ function _qtyOf(row) {
   return Number(v) || 0;
 }
 
+// Fallback port of the backend's own suffix-stripping regexes
+// (`backend/api/routes/positions.py:_EXPIRY_RE` / `_root_symbol` /
+// `_option_type`) — used ONLY when `decomposeSymbol` can't parse `sym` as a
+// real option/future (i.e. it has no expiry month token at all). Every real
+// Kite tradingsymbol carries one, so this path exists purely to keep the
+// two algorithms in agreement on synthetic/abbreviated test symbols too.
+const _EXPIRY_FALLBACK_RE = /\d{2}[A-Z]{3,}\d*(CE|PE|FUT|OPT|BE|BEF)?$|\d+(CE|PE|FUT|OPT|BE|BEF)$/i;
+
 /** @param {string} sym @returns {string} */
-function _rootOf(sym) {
+function _rootFallback(sym) {
+  const s = sym.toUpperCase().replace(_EXPIRY_FALLBACK_RE, '').replace(/\d+$/, '');
+  return s || sym.toUpperCase();
+}
+
+/** @param {string} sym @returns {'CE'|'PE'|null} */
+function _optTypeFallback(sym) {
+  const s = sym.toUpperCase();
+  if (!/\d(CE|PE)$/.test(s)) return null; // requires a digit before the suffix — "BAJFINANCE" must not match
+  return s.endsWith('CE') ? 'CE' : 'PE';
+}
+
+/**
+ * @param {string} sym
+ * @returns {{root: string, optType: 'CE'|'PE'|null}}
+ */
+function _rootAndOptType(sym) {
   const d = decomposeSymbol(sym);
-  return d?.root || sym;
+  if (d && (d.kind === 'opt' || d.kind === 'fut')) {
+    return { root: d.root || sym, optType: d.optType ?? null };
+  }
+  return { root: _rootFallback(sym), optType: _optTypeFallback(sym) };
 }
 
 /**
@@ -122,7 +168,8 @@ export function splitPairedLots(rows) {
     const sym = _symOf(r);
     if (!sym) return;
     if (_qtyOf(r) === 0) return; // flat rows never participate in matching
-    const key = `${r?.account ?? ''}|${_rootOf(sym)}`;
+    const { root, optType } = _rootAndOptType(sym);
+    const key = `${r?.account ?? ''}|${root}|${optType ?? ''}`;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(i);
   });

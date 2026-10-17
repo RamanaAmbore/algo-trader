@@ -16,6 +16,11 @@
 //   6. tagWatchedIndices
 //   7. finalizeRows
 //   8. sortUnifiedRows
+//   9. blankTotalsAcc / accumTotalsRow / totalsRowFor — pure TOTAL-row
+//      accumulator, extracted from MarketPulse.svelte so it's unit-testable
+//      without mounting the component (2026-10 Part A)
+//   10. buildPositionsDisplayRows — symbol-subtotal row injection for the
+//       Positions grid's rowData only (2026-10 Part A)
 //
 // Shared utilities (also exported for unit tests):
 //   parseSymbolFallback, parseSymbol, fillSymbolMeta, makeRowFactory
@@ -404,7 +409,15 @@ export function mergeWatchlistRows(byKey, actLists, ctx) {
 /**
  * Section 2 — merge position rows (major: 'positions').
  *
- * Multi-account positions for the same symbol merge into one row.
+ * One display row PER (account, symbol) — 2026-10 "Part A" change.
+ * Positions for the same symbol held in different accounts no longer
+ * merge into a single cross-account row; this matches the Derivatives
+ * Legs grid and PerformancePage.svelte, which already key by
+ * account+tradingsymbol and never aggregate across accounts. A
+ * symbol's combined cross-account exposure is instead surfaced via a
+ * separate symbol-subtotal row built by `buildPositionsDisplayRows`
+ * (Section 2b below) for display only — it is NOT inserted here and
+ * never feeds TOTAL-row accumulation.
  * Includes the Day P&L recompute (poll-only — §1, no live-tick delta),
  * realised-today carry, Contract A branch, and price_source / is_animating
  * propagation.
@@ -427,17 +440,19 @@ export function mergePositionRows(byKey, pos, includePos, cq, ctx) {
     const exch = r.exchange || 'NFO';
     const sym  = String(r.symbol || r.tradingsymbol || '').toUpperCase();
     if (!sym) continue;
-    // Lot-pairing split pieces (splitPairedLots, lotPairSplit.js) share the
-    // SAME tradingsymbol+account as their sibling piece(s) — bucketing them
-    // by bare `sym` would merge them straight back into one row, discarding
-    // the per-piece pair_group_key the split exists to preserve. Composite
-    // key (symbol+account+piece label) keeps each piece its own row; this
-    // also becomes the row's own `.key` (via makeRowFactory), which
-    // pulseRowId() already prefers for ag-Grid row identity — no change
-    // needed there.
+    // Base key is always symbol+account (2026-10 Part A — one row per
+    // account, no cross-account merge). Lot-pairing split pieces
+    // (splitPairedLots, lotPairSplit.js) additionally share the SAME
+    // tradingsymbol+account as their sibling piece(s) — bucketing them
+    // by the base key alone would merge them straight back into one
+    // row, discarding the per-piece pair_group_key the split exists to
+    // preserve, so a split piece appends its own `::${lot_piece_label}`
+    // on top. The composite key also becomes the row's own `.key` (via
+    // makeRowFactory), which pulseRowId() already prefers for ag-Grid
+    // row identity — no change needed there.
     const lookupKey = r._isLotSplit
       ? `${sym}::${String(r.account ?? '')}::${r.lot_piece_label}`
-      : sym;
+      : `${sym}::${String(r.account ?? '')}`;
     const row = get(lookupKey, 'positions');
     row.exchange      = row.exchange || exch;
     row.tradingsymbol = sym;
@@ -457,30 +472,22 @@ export function mergePositionRows(byKey, pos, includePos, cq, ctx) {
     // column. Multi-account rows show the combined overnight carry.
     row.overnight_qty = (row.overnight_qty ?? 0) + (Number(r.overnight_quantity) || 0);
     if (r.account) row.accounts.add(String(r.account));
-    // Position-state fields (2026-10 fix) — is_orphan/pair_group_key/
-    // pin_group_key/has_gtt are per-ACCOUNT backend signals (PositionRow),
-    // but this row is aggregated across every account holding the same
-    // symbol. They're only meaningful while exactly one account
-    // contributes: the moment a second account's leg merges into the same
-    // symbol row, "which account's pair/pin applies" becomes ambiguous, so
-    // the fields are reset to null rather than guessing (OR-ing booleans
-    // or picking a winning key would misrepresent the state). This mirrors
-    // PerformancePage.svelte's own positions grid, which never aggregates
-    // across accounts in the first place (one row per account+symbol) and
-    // so never hits this ambiguity — the SAME four fields read there
-    // (positionStateBadge.js consumers) come straight off the raw broker
-    // row.
-    if (row.accounts.size === 1) {
-      row.is_orphan      = r.is_orphan === true;
-      row.pair_group_key = r.pair_group_key ?? null;
-      row.pin_group_key  = r.pin_group_key ?? null;
-      row.has_gtt        = r.has_gtt === true;
-    } else {
-      row.is_orphan      = null;
-      row.pair_group_key = null;
-      row.pin_group_key  = null;
-      row.has_gtt        = null;
-    }
+    // Position-state fields — is_orphan/pair_group_key/pin_group_key/
+    // has_gtt are per-ACCOUNT backend signals (PositionRow). Prior to
+    // 2026-10 Part A, this row could be aggregated across every account
+    // holding the same symbol, so these fields were only trustworthy
+    // while exactly one account contributed and were reset to null the
+    // moment a second account merged in (ambiguity guard). Part A made
+    // every row single-account BY CONSTRUCTION (lookupKey always bakes
+    // in the account — see above), so `row.accounts.size` can no longer
+    // exceed 1 here and the ambiguity this guarded against is
+    // structurally impossible — assign straight from the raw row,
+    // unconditionally. This mirrors PerformancePage.svelte's own
+    // positions grid, which has never aggregated across accounts.
+    row.is_orphan      = r.is_orphan === true;
+    row.pair_group_key = r.pair_group_key ?? null;
+    row.pin_group_key  = r.pin_group_key ?? null;
+    row.has_gtt        = r.has_gtt === true;
     // A composite-keyed lot-split piece is always single-account by
     // construction (account is baked into lookupKey), so the fields above
     // always take the single-account branch for it — propagate the split
@@ -675,6 +682,34 @@ export function mergeUnderlyingAnchors(byKey, uq, pos, hold, includePos, include
     const _uKey = String(info.displayUnderlying || info.underlying_group || '').toUpperCase();
     if (anchorMajor === 'positions' && _uKey && !posOptUnderlyings.has(_uKey)) continue;
     if (anchorMajor === 'holdings'  && _uKey && !holdOptUnderlyings.has(_uKey)) continue;
+    // 2026-10 Part A follow-up: Positions rows are now keyed
+    // `${symbol}::${account}` (one row per account), never bare symbol,
+    // so `get(info.tradingsymbol, 'positions')` below would no longer
+    // find/merge into an existing held-position row that happens to
+    // share the anchor's own tradingsymbol (e.g. an MCX option's
+    // underlying anchor resolves to the SAME future contract the
+    // operator also holds directly) — it would instead silently create
+    // a SECOND, spot-only row for that exact symbol, duplicating it in
+    // the Positions grid. Holdings anchors are unaffected (mergeHoldingRows
+    // still keys by bare symbol, unchanged by Part A). When one or more
+    // real position rows already carry this exact tradingsymbol, enrich
+    // each of them in place and skip creating the bare-keyed row;
+    // otherwise fall back to the original bare-keyed anchor-only row
+    // (the common case — no position exists for this exact symbol).
+    const existingPosRows = anchorMajor === 'positions'
+      ? Object.values(byKey).filter(
+          (r) => r._majorGroup === 'positions' && r.tradingsymbol === info.tradingsymbol)
+      : [];
+    if (existingPosRows.length > 0) {
+      for (const row of existingPosRows) {
+        row.exchange   = row.exchange || info.exchange;
+        row.src.u      = true;
+        row.underlying = info.displayUnderlying || info.underlying_group;
+        row.kind       = info.kind;
+        _applyUnderlyingQuoteFields(row, q);
+      }
+      continue;
+    }
     const row = get(info.tradingsymbol, anchorMajor);
     row.exchange      = row.exchange || info.exchange;
     row.tradingsymbol = info.tradingsymbol;
@@ -886,5 +921,173 @@ export function sortUnifiedRows(out, groupOrder, detachedSymbols) {
     if (ga !== gb) return _compareGroups(ga, gb, rankOf);
     return _compareSameGroup(a, b);
   });
+  return out;
+}
+
+/**
+ * Section 9 — TOTAL-row accumulator for the Positions / Holdings grids.
+ * Extracted from MarketPulse.svelte (2026-10 Part A) so it's a pure,
+ * Vitest-reachable function rather than a closure inside the .svelte file.
+ */
+
+/**
+ * Fresh accumulator seed for accumTotalsRow/totalsRowFor.
+ * `_countedExpSyms` is a per-pass dedup guard (see accumTotalsRow) — it
+ * lives on the accumulator object so a fresh pass always resets it by
+ * construction (no module-level state to forget to clear).
+ */
+export function blankTotalsAcc() {
+  return {
+    day_pnl: 0, pnl: 0, cost: 0, prevMktVal: 0,
+    invSum: 0, curSum: 0, qty_pos: 0, qty_hold: 0,
+    exp_pnl: 0,
+    anyDayPnl: false, anyPnl: false, anyInv: false, anyCur: false,
+    _countedExpSyms: new Set(),
+  };
+}
+
+/**
+ * Accumulate one display row into `acc` (mutates in place).
+ *
+ * `expPnlByKey` is the bare-tradingsymbol → {exp_pnl, extrinsic} map
+ * (MarketPulse.svelte's `_filteredExpPnlByKey`) — already a cross-account
+ * total for the currently-filtered accounts.
+ *
+ * 2026-10 Part A dedup guard: `mergePositionRows` now produces one row
+ * PER ACCOUNT for a symbol held in multiple accounts, so this function
+ * can be called N times for the same bare symbol in one `rows` pass.
+ * `expPnlByKey[sym]` is already the full cross-account total — adding it
+ * once per contributing row would inflate the TOTAL by N×. `_countedExpSyms`
+ * tracks which bare symbols have already contributed to THIS accumulation
+ * pass so each unique symbol's cross-account Exp P&L is added exactly once,
+ * regardless of how many account-rows now represent it.
+ *
+ * @param {ReturnType<typeof blankTotalsAcc>} acc
+ * @param {any} r
+ * @param {Record<string, {exp_pnl: number|null, extrinsic: number|null}>} [expPnlByKey]
+ */
+export function accumTotalsRow(acc, r, expPnlByKey) {
+  const rowPnl    = r.pnl     ?? r._broker_pnl;
+  const rowDayPnl = r.day_pnl ?? r._broker_day_pnl;
+  if (rowDayPnl != null) { acc.day_pnl += Number(rowDayPnl) || 0; acc.anyDayPnl = true; }
+  if (rowPnl    != null) { acc.pnl     += Number(rowPnl)    || 0; acc.anyPnl    = true; }
+  acc.cost       += Math.abs(Number(r._cost_basis)        || 0);
+  acc.prevMktVal += Math.abs(Number(r._prev_market_value) || 0);
+  if (r.inv_val != null) { acc.invSum += Number(r.inv_val) || 0; acc.anyInv = true; }
+  if (r.cur_val != null) { acc.curSum += Number(r.cur_val) || 0; acc.anyCur = true; }
+  acc.qty_pos  += Number(r.qty_pos)  || 0;
+  acc.qty_hold += Number(r.qty_hold) || 0;
+  if (r.qty_pos) {
+    const sym = String(r.tradingsymbol || '').toUpperCase();
+    if (!acc._countedExpSyms.has(sym)) {
+      acc._countedExpSyms.add(sym);
+      acc.exp_pnl += Number(expPnlByKey?.[sym]?.exp_pnl) || 0;
+    }
+  }
+}
+
+/**
+ * Build the TOTAL row for one major (positions / holdings). Wrapped in an
+ * array by the caller for direct use as ag-Grid `pinnedBottomRowData`.
+ *
+ * @param {any[]} rows
+ * @param {string} major
+ * @param {string} label
+ * @param {Record<string, {exp_pnl: number|null, extrinsic: number|null}>} [expPnlByKey]
+ * @returns {any|null}
+ */
+export function totalsRowFor(rows, major, label, expPnlByKey) {
+  if (!rows?.length) return null;
+  const acc = blankTotalsAcc();
+  for (const r of rows) accumTotalsRow(acc, r, expPnlByKey);
+  return {
+    key: `__total_${major}`,
+    _isTotal: true,
+    _majorGroup: major,
+    tradingsymbol: label,
+    day_pnl:  acc.anyDayPnl ? acc.day_pnl : null,
+    pnl:      acc.anyPnl    ? acc.pnl     : null,
+    _cost_basis: acc.cost,
+    _prev_market_value: acc.prevMktVal,
+    inv_val:  acc.anyInv ? acc.invSum : null,
+    cur_val:  acc.anyCur ? acc.curSum : null,
+    qty_pos: acc.qty_pos, qty_hold: acc.qty_hold,
+    exp_pnl: acc.exp_pnl || null,
+  };
+}
+
+/**
+ * Section 10 — symbol-subtotal rows for the Positions grid's rowData.
+ *
+ * 2026-10 Part A: after mergePositionRows stopped aggregating a symbol
+ * held in multiple accounts into one row, the "total exposure to this
+ * symbol across all my accounts" at-a-glance read that the old aggregated
+ * row used to provide for free is gone. This inserts a thin subtotal row
+ * immediately above a symbol's split account-rows, but ONLY when that
+ * symbol has 2+ DISTINCT CONTRIBUTING ACCOUNTS in the currently-displayed
+ * set — a symbol held in a single account (including one split into
+ * multiple lot-pairing pieces, which share ONE account) looks exactly as
+ * it did before, no new row.
+ *
+ * Requires `positionsRows` to already be grouped by tradingsymbol (true of
+ * MarketPulse's own pipeline — sortUnifiedRows's tie-break always clusters
+ * identical tradingsymbols together, and this function's own single pass
+ * relies on that adjacency rather than re-sorting).
+ *
+ * The returned array is for DISPLAY ONLY (ag-Grid rowData) — it must never
+ * be passed to totalsRowFor/accumTotalsRow (that would double-count both
+ * the subtotal row's own values AND the real per-account rows beneath it).
+ *
+ * @param {any[]} positionsRows  already-sorted per-account position rows
+ * @param {Record<string, {exp_pnl: number|null, extrinsic: number|null}>} [expPnlByKey]
+ * @returns {any[]}
+ */
+export function buildPositionsDisplayRows(positionsRows, expPnlByKey) {
+  const out = [];
+  let i = 0;
+  while (i < positionsRows.length) {
+    const sym = String(positionsRows[i].tradingsymbol || '').toUpperCase();
+    const acctSet = new Set();
+    let qtySum = 0, dayPnlSum = 0, anyDay = false;
+    let j = i;
+    while (j < positionsRows.length
+           && String(positionsRows[j].tradingsymbol || '').toUpperCase() === sym) {
+      const r = positionsRows[j];
+      if (r.accounts instanceof Set) {
+        for (const a of r.accounts) acctSet.add(a);
+      }
+      qtySum += Number(r.qty_pos) || 0;
+      if (r.day_pnl != null) { dayPnlSum += Number(r.day_pnl) || 0; anyDay = true; }
+      j++;
+    }
+    if (acctSet.size >= 2) {
+      const first = positionsRows[i];
+      out.push({
+        key: `__subtotal_pos_${sym}`,
+        _isSubtotal: true,
+        _majorGroup: 'positions',
+        tradingsymbol: first.tradingsymbol,
+        exchange: first.exchange,
+        underlying: first.underlying,
+        kind: first.kind,
+        opt_type: first.opt_type,
+        strike: first.strike,
+        expiry: first.expiry,
+        // No src flags set — this is a synthetic summary row, not a real
+        // position/holding/watchlist/underlying/mover row, so it opts out
+        // of every directional tint branch in MarketPulse's getRowClass /
+        // _sourceRowClasses (its own `.mp-subtotal-row` class carries the
+        // visual treatment instead).
+        src: { w: false, h: false, p: false, u: false, m: false },
+        accounts: new Set(),
+        qty_pos: qtySum,
+        qty_hold: 0,
+        day_pnl: anyDay ? dayPnlSum : null,
+        exp_pnl: expPnlByKey?.[sym]?.exp_pnl ?? null,
+      });
+    }
+    for (let k = i; k < j; k++) out.push(positionsRows[k]);
+    i = j;
+  }
   return out;
 }

@@ -9,7 +9,7 @@ which would cause an infinite loop. These tests verify the fix holds.
 """
 
 import pytest
-from backend.api.routes.positions import _auto_pair_positions, _root_symbol
+from backend.api.routes.positions import _auto_pair_positions, _option_type, _root_symbol
 from backend.api.schemas import PositionRow
 
 
@@ -451,3 +451,156 @@ def test_auto_pair_multiple_entries_same_symbol():
     assert qty2_row.is_orphan is True, "qty=2 should be orphan (never paired)"
     assert qty2_row.pair_group_key is None, "orphan qty=2 should have no pair_group_key"
     assert qty2_row.orphan_qty == 2, "orphan qty=2 should have orphan_qty=2"
+
+
+# ---------------------------------------------------------------------------
+# Option-type extraction
+# ---------------------------------------------------------------------------
+
+def test_option_type_detects_ce():
+    assert _option_type("NIFTY24800CE") == "CE"
+
+
+def test_option_type_detects_pe():
+    assert _option_type("NIFTY24800PE") == "PE"
+
+
+def test_option_type_none_for_futures():
+    assert _option_type("BANKNIFTY24AUGFUT") is None
+
+
+def test_option_type_none_for_equity():
+    assert _option_type("INFY") is None
+
+
+def test_option_type_none_for_equity_ending_in_ce_or_pe_literally():
+    """RELIANCE/BAJFINANCE literally end in "CE" — a bare `endswith("CE")`
+    would misclassify them as call options, silently grouping an equity
+    holding with real CE option legs sharing the same root. Requires a
+    digit immediately before the suffix (the strike) to guard against this."""
+    assert _option_type("RELIANCE") is None
+    assert _option_type("BAJFINANCE") is None
+
+
+def test_auto_pair_equity_ending_in_ce_does_not_group_with_real_ce_option():
+    """RELIANCE (equity, falsely suffix-matches "CE") must NOT land in the
+    same (account, root, option_type) group as a real RELIANCE CE option —
+    confirms the digit-anchored _option_type fix at the _auto_pair_positions
+    level, not just the helper in isolation."""
+    equity_long = _make_position(account="ZG0001", tradingsymbol="RELIANCE", quantity=10)
+    option_short = _make_position(account="ZG0001", tradingsymbol="RELIANCE24800CE", quantity=-10)
+    result = _auto_pair_positions([equity_long, option_short])
+    # _root_symbol("RELIANCE") == "RELIANCE" but _root_symbol("RELIANCE24800CE")
+    # strips to "RELIANCE" too — same root, same account, opposite sign,
+    # same magnitude. Only the option_type dimension (None vs "CE") keeps
+    # them apart; if _option_type wrongly returned "CE" for the equity leg,
+    # these would falsely pair.
+    assert result[0].is_orphan is True
+    assert result[0].pair_group_key is None
+    assert result[1].is_orphan is True
+    assert result[1].pair_group_key is None
+
+
+# ---------------------------------------------------------------------------
+# Test 11: CE/PE-aware grouping — same root, opposite sign, DIFFERENT option
+# type must NEVER pair (the bug being fixed). Fixture shared with the
+# frontend parity test (lotPairSplit.js) — do not rename symbols/quantities.
+# ---------------------------------------------------------------------------
+
+def test_auto_pair_ce_never_pairs_with_pe_same_root_same_account():
+    """Long CE + short PE, same root/account, equal magnitude — must NOT pair.
+
+    Under the old (account, root_symbol)-only grouping, these would have
+    wrongly waterfall-matched (same root "NIFTY" after stripping, opposite
+    sign, equal magnitude). The option_type-aware grouping keeps them in
+    separate buckets so neither is ever touched by the waterfall.
+    """
+    positions = [
+        _make_position(account="ZG0001", tradingsymbol="NIFTY24000CE", quantity=30),
+        _make_position(account="ZG0001", tradingsymbol="NIFTY27000PE", quantity=-30),
+    ]
+
+    result = _auto_pair_positions(positions)
+
+    assert len(result) == 2, "result length must match input"
+    ce_row = next(r for r in result if r.tradingsymbol == "NIFTY24000CE")
+    pe_row = next(r for r in result if r.tradingsymbol == "NIFTY27000PE")
+
+    assert ce_row.is_orphan is True, "long CE must be orphan — must not cross-pair with PE"
+    assert pe_row.is_orphan is True, "short PE must be orphan — must not cross-pair with CE"
+    assert ce_row.pair_group_key is None, "long CE must have no pair_group_key"
+    assert pe_row.pair_group_key is None, "short PE must have no pair_group_key"
+
+
+def test_auto_pair_ce_with_ce_same_type_still_pairs():
+    """Long CE + short CE, same root/account — same option type, must still pair."""
+    positions = [
+        _make_position(account="ZG0001", tradingsymbol="NIFTY24000CE", quantity=100),
+        _make_position(account="ZG0001", tradingsymbol="NIFTY24500CE", quantity=-100),
+    ]
+
+    result = _auto_pair_positions(positions)
+
+    assert len(result) == 2, "result length must match input"
+    long_row = next(r for r in result if r.tradingsymbol == "NIFTY24000CE")
+    short_row = next(r for r in result if r.tradingsymbol == "NIFTY24500CE")
+
+    assert long_row.pair_group_key is not None, "long CE should be paired"
+    assert long_row.pair_group_key == short_row.pair_group_key, "both legs share the same pair_group_key"
+    assert long_row.is_orphan is False
+    assert short_row.is_orphan is False
+    assert long_row.paired_qty == 100
+    assert short_row.paired_qty == 100
+    assert long_row.orphan_qty == 0
+    assert short_row.orphan_qty == 0
+
+
+def test_auto_pair_pe_with_pe_same_type_still_pairs():
+    """Long PE + short PE, same root/account — same option type, must still pair."""
+    positions = [
+        _make_position(account="ZG0001", tradingsymbol="NIFTY25000PE", quantity=50),
+        _make_position(account="ZG0001", tradingsymbol="NIFTY25500PE", quantity=-50),
+    ]
+
+    result = _auto_pair_positions(positions)
+
+    assert len(result) == 2, "result length must match input"
+    long_row = next(r for r in result if r.tradingsymbol == "NIFTY25000PE")
+    short_row = next(r for r in result if r.tradingsymbol == "NIFTY25500PE")
+
+    assert long_row.pair_group_key is not None, "long PE should be paired"
+    assert long_row.pair_group_key == short_row.pair_group_key, "both legs share the same pair_group_key"
+    assert long_row.is_orphan is False
+    assert short_row.is_orphan is False
+    assert long_row.paired_qty == 50
+    assert short_row.paired_qty == 50
+    assert long_row.orphan_qty == 0
+    assert short_row.orphan_qty == 0
+
+
+def test_auto_pair_futures_unaffected_by_option_type_grouping():
+    """Futures (no CE/PE suffix) keep pairing within their own root, as before.
+
+    Both legs have _option_type() == None, so they land in the same
+    (account, root, None) bucket exactly as the old (account, root) bucket
+    would have — the new grouping dimension is a no-op for futures/equity.
+    """
+    positions = [
+        _make_position(account="ZG0001", tradingsymbol="NIFTY24JUNFUT", quantity=20),
+        _make_position(account="ZG0001", tradingsymbol="NIFTY24JULFUT", quantity=-20),
+    ]
+
+    result = _auto_pair_positions(positions)
+
+    assert len(result) == 2, "result length must match input"
+    long_row = next(r for r in result if r.tradingsymbol == "NIFTY24JUNFUT")
+    short_row = next(r for r in result if r.tradingsymbol == "NIFTY24JULFUT")
+
+    assert _option_type(long_row.tradingsymbol) is None
+    assert _option_type(short_row.tradingsymbol) is None
+    assert long_row.pair_group_key is not None, "futures long should be paired"
+    assert long_row.pair_group_key == short_row.pair_group_key, "both legs share the same pair_group_key"
+    assert long_row.is_orphan is False
+    assert short_row.is_orphan is False
+    assert long_row.paired_qty == 20
+    assert short_row.paired_qty == 20

@@ -117,6 +117,7 @@
     mergeWatchlistRows, mergePositionRows, mergeHoldingRows,
     mergeUnderlyingAnchors, mergeMoverRows, tagWatchedIndices,
     finalizeRows, sortUnifiedRows,
+    totalsRowFor, buildPositionsDisplayRows,
   } from '$lib/data/pulseUnified';
   import {
     collectUnderlyings, assembleQuoteKeys, buildQuoteMaps, planAccountSeeding,
@@ -686,6 +687,48 @@
     }
     return map;
   });
+  // 2026-10 Part A follow-up: sibling of `_filteredExpPnlByKey`, keyed
+  // `${account}|${symbol}` instead of bare symbol. After mergePositionRows
+  // started producing one row PER ACCOUNT for a symbol held in 2+
+  // accounts, the Exp P&L / Extrinsic cell renderers (mkExpPnlCol /
+  // mkExtrinsicCol, pulseColumns.js) can no longer use the bare-symbol
+  // map for ordinary per-account rows — that map is ALREADY a
+  // cross-account total, so every split row would show the full combined
+  // value instead of just its own account's share. `_filteredExpPnlByKey`
+  // itself is still correct and still used — for the TOTAL row and the
+  // symbol-subtotal row (buildPositionsDisplayRows), both of which
+  // genuinely want the cross-account total.
+  const _filteredExpPnlByAcctKey = $derived.by(() => {
+    const allow = positionsAccounts.length === 0
+      ? null
+      : new Set(positionsAccounts.map(a => String(a).toUpperCase()));
+    /** @type {Record<string, {exp_pnl: number|null, extrinsic: number|null}>} */
+    const map = {};
+    for (const row of positionsDerivedStore.expPnlRows) {
+      if (allow && !allow.has(row.account)) continue;
+      const key = `${row.account}|${row.symbol}`;
+      const bk = (map[key] ??= { exp_pnl: null, extrinsic: null });
+      if (row.exp_pnl   != null) bk.exp_pnl   = (bk.exp_pnl   ?? 0) + row.exp_pnl;
+      if (row.extrinsic != null) bk.extrinsic = (bk.extrinsic ?? 0) + row.extrinsic;
+    }
+    return map;
+  });
+  // Row-aware Exp P&L/Extrinsic accessor passed to mkExpPnlCol/mkExtrinsicCol
+  // (pulseColumns.js) as `getExpPnlForRow`. Resolves the row's own single
+  // account (leadAccount — every positions row is single-account by
+  // construction post-Part-A) and looks up the matching per-account entry;
+  // falls back to the bare-symbol cross-account map for any row that
+  // genuinely has no single account (defensive only — shouldn't occur for
+  // real position rows).
+  function _expPnlForRow(data) {
+    const sym = String(data?.tradingsymbol || '').toUpperCase();
+    const acct = leadAccount(data);
+    if (acct) {
+      const hit = _filteredExpPnlByAcctKey[`${String(acct).toUpperCase()}|${sym}`];
+      if (hit) return hit;
+    }
+    return _filteredExpPnlByKey[sym] ?? null;
+  }
   // Funds strip is rendered above the two cards — it's not owned by
   // either one. Scope = UNION of both pickers (so an account selected
   // in either card surfaces in Funds). Empty + empty = show all.
@@ -1945,6 +1988,16 @@
   const watchCounts = $derived(_rowBuckets.counts);
   const positionsRows  = $derived(_rowBuckets.positions);
   const holdingsRows   = $derived(_rowBuckets.holdings);
+  // Display-only array for the Positions grid's rowData — `positionsRows`
+  // plus a thin symbol-subtotal row above any symbol split across 2+
+  // accounts (2026-10 Part A; see buildPositionsDisplayRows's docstring,
+  // pulseUnified.js). `positionsRows` itself stays untouched and MUST
+  // keep feeding `_totalsRowFor`/`_bRowsPositions`'s sibling accumulation
+  // loops below unchanged — inserting subtotal rows there would
+  // double-count both the TOTAL row and the per-row tick-flash loop.
+  const _positionsDisplayRows = $derived(
+    buildPositionsDisplayRows(positionsRows, _filteredExpPnlByKey)
+  );
   // Set of watchlist list-ids that are flagged `is_global`. Hoisted out
   // of `symRenderer` so the per-row `lists.find(l => l.id === ... &&
   // l.is_global)` linear scan becomes an O(1) `Set.has()`. With ~50
@@ -2072,75 +2125,17 @@
   const winRows  = $derived(_topRowsFor('winners', _effWinTab));
   const loseRows = $derived(_topRowsFor('losers',  _effLoseTab));
 
-  // ── _totalsRowFor helpers ─────────────────────────────────────────
-  // Seed a blank accumulator for _accumTotalsRow.
-  function _blankTotalsAcc() {
-    return {
-      day_pnl: 0, pnl: 0, cost: 0, prevMktVal: 0,
-      invSum: 0, curSum: 0, qty_pos: 0, qty_hold: 0,
-      exp_pnl: 0,
-      anyDayPnl: false, anyPnl: false, anyInv: false, anyCur: false,
-    };
-  }
-
-  // Accumulate one row into acc (mutates in place).
-  // Prefers live-recomputed r.pnl / r.day_pnl over the frozen broker
-  // snapshot (_broker_pnl / _broker_day_pnl) so the TOTAL tracks whatever
-  // cadence the individual row uses: r.pnl (lifetime P&L, both positions
-  // and holdings) is still SSE-tick-driven by design — a distinct metric
-  // from Day P&L. r.day_pnl (both positions AND holdings) is poll-only
-  // (§1 redesign / item-8 fix, mirrors portfolioStore's _posTier2/
-  // _holdTier1 and NavStrip P/H) — using r._broker_pnl for the TOTAL
-  // would leave it frozen while individual rows update either way.
-  // anyDayPnl/anyPnl/anyInv/anyCur flags decide null vs 0 in the return.
-  // 2026-09-27 audit fix: positionsDerivedStore.byKey[sym]/`.get(sym)` is
-  // a firm-wide CROSS-ACCOUNT aggregate with no awareness of this card's
-  // account filter — summed the exp_pnl of EVERY account holding that
-  // symbol regardless of the operator's picked account(s). Uses
-  // _filteredExpPnlByKey instead (summed only over the currently-filtered
-  // accounts, same scoping scopedPositions already applies to the rows
-  // themselves), so the TOTAL row's exp_pnl agrees with the qty/P&L
-  // totals it sits alongside.
-  function _accumTotalsRow(/** @type {ReturnType<typeof _blankTotalsAcc>} */ acc, /** @type {any} */ r) {
-    const rowPnl    = r.pnl     ?? r._broker_pnl;
-    const rowDayPnl = r.day_pnl ?? r._broker_day_pnl;
-    if (rowDayPnl != null) { acc.day_pnl += Number(rowDayPnl) || 0; acc.anyDayPnl = true; }
-    if (rowPnl    != null) { acc.pnl     += Number(rowPnl)    || 0; acc.anyPnl    = true; }
-    acc.cost       += Math.abs(Number(r._cost_basis)        || 0);
-    acc.prevMktVal += Math.abs(Number(r._prev_market_value) || 0);
-    if (r.inv_val != null) { acc.invSum += Number(r.inv_val) || 0; acc.anyInv = true; }
-    if (r.cur_val != null) { acc.curSum += Number(r.cur_val) || 0; acc.anyCur = true; }
-    acc.qty_pos  += Number(r.qty_pos)  || 0;
-    acc.qty_hold += Number(r.qty_hold) || 0;
-    // Exp P&L totals — filtered per-symbol lookup, not firm-wide.
-    if (r.qty_pos) {
-      const sym = String(r.tradingsymbol || '').toUpperCase();
-      acc.exp_pnl += Number(_filteredExpPnlByKey[sym]?.exp_pnl) || 0;
-    }
-  }
-
-  // TOTAL row for one major (positions / holdings). Each carries
-  // summed day_pnl + pnl + cost_basis so the Day P&L % and P&L %
-  // columns auto-derive via their valueGetters. Wrapped in an array
-  // for direct use as pinnedBottomRowData.
+  // ── _totalsRowFor ────────────────────────────────────────────────
+  // TOTAL row for one major (positions / holdings). Thin wrapper around
+  // pulseUnified.js's pure totalsRowFor/accumTotalsRow/blankTotalsAcc
+  // (extracted 2026-10 Part A so the TOTAL-row math — including the
+  // per-symbol Exp P&L dedup guard, see totalsRowFor's own docstring —
+  // is Vitest-reachable without mounting this component). MUST always be
+  // called with `positionsRows`/`holdingsRows` (the real per-account rows,
+  // never `_positionsDisplayRows`, which also carries synthetic
+  // symbol-subtotal rows that would double-count here).
   function _totalsRowFor(rows, major, label) {
-    if (!rows.length) return null;
-    const acc = _blankTotalsAcc();
-    for (const r of rows) _accumTotalsRow(acc, r);
-    return {
-      key: `__total_${major}`,
-      _isTotal: true,
-      _majorGroup: major,
-      tradingsymbol: label,
-      day_pnl:  acc.anyDayPnl ? acc.day_pnl : null,
-      pnl:      acc.anyPnl    ? acc.pnl     : null,
-      _cost_basis: acc.cost,
-      _prev_market_value: acc.prevMktVal,
-      inv_val:  acc.anyInv ? acc.invSum : null,
-      cur_val:  acc.anyCur ? acc.curSum : null,
-      qty_pos: acc.qty_pos, qty_hold: acc.qty_hold,
-      exp_pnl: acc.exp_pnl || null,
-    };
+    return totalsRowFor(rows, major, label, _filteredExpPnlByKey);
   }
   const positionsTotalRows = $derived.by(() => {
     const t = _totalsRowFor(positionsRows, 'positions', 'TOTAL Positions');
@@ -2184,8 +2179,10 @@
     topTab === 'pinned' ? pinnedRows.length : watchRows.length));
   const _bRowsWinners   = $derived(Math.max(1, winRows.length));
   const _bRowsLosers    = $derived(Math.max(1, loseRows.length));
-  // +1 for the pinned TOTAL row at the bottom of each book grid.
-  const _bRowsPositions = $derived(Math.max(1, positionsRows.length + 1));
+  // +1 for the pinned TOTAL row at the bottom of each book grid. Uses the
+  // display row count (includes any symbol-subtotal rows) so proportional
+  // sizing reflects what's actually rendered.
+  const _bRowsPositions = $derived(Math.max(1, _positionsDisplayRows.length + 1));
   const _bRowsHoldings  = $derived(Math.max(1, holdingsRows.length  + 1));
 
   // Compact "DD Mon HH:MM IST" label for the movers closed-hours snapshot.
@@ -2237,14 +2234,17 @@
   } });
   $effect(() => { if (gridPositionsReady && gridPositions) {
     // Read reactive deps BEFORE untrack so the effect re-fires on changes.
-    const pRows      = positionsRows;
+    // `_positionsDisplayRows` (not `positionsRows`) feeds the grid's actual
+    // rowData — it carries the same per-account rows plus any
+    // symbol-subtotal rows (2026-10 Part A).
+    const pRows      = _positionsDisplayRows;
     const pTotalRows = positionsTotalRows;
     untrack(() => {
       // Tick-flash: call _mpFlash.update() for each row's P&L fields before
       // writing rowData. Wrapped in untrack() to prevent the $state write
       // inside flash.update() from registering as a dep and looping.
       for (const r of pRows) {
-        if (r._isTotal) continue;
+        if (r._isTotal || r._isSubtotal) continue;
         const sym = r.tradingsymbol;
         if (!sym) continue;
         if (r.day_pnl     != null) _mpFlash.update(`${sym}:day_pnl`,     Number(r.day_pnl));
@@ -3654,6 +3654,12 @@
       classes.push('mp-total-row');
       classes.push(`mp-total-${r._majorGroup || 'misc'}`);
     }
+    // Symbol-subtotal row (2026-10 Part A) — thin group-header stratum
+    // above a symbol's per-account rows when it's split across 2+
+    // accounts. Opts out of the directional/source classes below
+    // (`_sourceRowClasses` already no-ops on it since its `src` flags
+    // are all false) in favour of its own muted treatment.
+    if (r._isSubtotal) classes.push('mp-subtotal-row');
     if (r._pinFirst && r._pinCategory) classes.push(`pin-divider pin-cat-${r._pinCategory}`);
     if (r._majorFirst && r._majorGroup && r._majorGroup !== 'pinned')
       classes.push(`major-divider major-${r._majorGroup}`);
@@ -3718,10 +3724,11 @@
       pnlCellClass, dirCellClass, pctFmtGrid, aggFmtGrid, numFmt, qtyFmt,
       lotsForRow, fmtLots,
       // 2026-09-27 audit fix: was positionsDerivedStore.byKey (firm-wide,
-      // filter-unaware) — now the account-filtered per-symbol map so
-      // mkExpPnlCol/mkExtrinsicCol's Exp P&L/Extrinsic agree with the
-      // rest of the (already account-filtered) row.
-      getDerivedByKey: () => _filteredExpPnlByKey,
+      // filter-unaware) — now account-filtered. 2026-10 Part A follow-up:
+      // row-aware (_expPnlForRow resolves the row's own single account)
+      // so a symbol split into N per-account rows doesn't show the full
+      // cross-account total on every one of them.
+      getExpPnlForRow: _expPnlForRow,
       getMpFlash: () => _mpFlash,
       getLtpFlashUp: () => _ltpFlashUp,
       getLtpFlashDown: () => _ltpFlashDown,
@@ -5501,6 +5508,29 @@
      get a per-day sign indicator (the operator reads the TOTAL P&L
      value directly). */
   :global(.ag-theme-algo .mp-total-row .ag-col-sym::after) {
+    display: none !important;
+  }
+  /* Symbol-subtotal row (2026-10 Part A) — thin group-header stratum
+     above a symbol's per-account rows when the symbol is split across
+     2+ accounts. Deliberately a DIFFERENT, quieter hue from the TOTAL
+     row's amber footer (`--c-action`) so the two never read as the same
+     kind of row — info/sky (`--c-info`) at low opacity, no uppercase
+     transform (this is a sub-header, not the grand total). */
+  :global(.ag-theme-algo .mp-subtotal-row) {
+    font-weight: 600;
+    background:
+      linear-gradient(rgba(125, 211, 252, 0.14), rgba(125, 211, 252, 0.14)),
+      #1d2a44 !important;
+    border-top: 1px solid rgba(125, 211, 252, 0.45) !important;
+  }
+  :global(.mp-bucket-wrap .ag-theme-algo .mp-subtotal-row .ag-cell) {
+    border-right: 0 !important;
+  }
+  :global(.ag-theme-algo .mp-subtotal-row .ag-col-sym) {
+    background-color: rgba(125, 211, 252, 0.12) !important;
+  }
+  /* Hide the day-P&L mini-bar on subtotal rows — same reasoning as TOTAL. */
+  :global(.ag-theme-algo .mp-subtotal-row .ag-col-sym::after) {
     display: none !important;
   }
   /* Flat-mode wrapper — used by /pulse to drop the .algo-status-card

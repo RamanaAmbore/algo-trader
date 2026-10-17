@@ -100,10 +100,48 @@ def _root_symbol(tradingsymbol: str) -> str:
     return s or tradingsymbol.upper()
 
 
+def _option_type(tradingsymbol: str) -> "str | None":
+    """Derive CE/PE option type from the tradingsymbol's own suffix.
+
+    Deliberately a plain suffix check on the string itself (same mechanism
+    as `_root_symbol` above) — NOT an instruments-cache/metadata lookup. A
+    cache lookup could return None for an expired/unparseable contract, and
+    two unrelated Nones would silently re-collide back into the same group,
+    reintroducing a milder version of the CE/PE cross-pairing bug this
+    function exists to prevent.
+
+    Requires a DIGIT immediately before the CE/PE suffix (the strike), not
+    a bare `endswith` — an equity tradingsymbol like "RELIANCE" or
+    "BAJFINANCE" also ends in "CE" and would otherwise be misclassified as
+    a call option, silently grouping it with real CE option legs sharing
+    the same (account, root) and risking a false pair. Mirrors the
+    frontend's `_optTypeFallback` (`lotPairSplit.js`) which has the same
+    digit-anchored requirement for the same reason.
+
+    Examples:
+        NIFTY24800CE      → "CE"
+        NIFTY24800PE      → "PE"
+        BANKNIFTY24AUGFUT → None
+        INFY              → None
+        RELIANCE          → None  (equity — ends in "CE" but no strike digit)
+    """
+    s = tradingsymbol.upper()
+    if re.search(r"\dCE$", s):
+        return "CE"
+    if re.search(r"\dPE$", s):
+        return "PE"
+    return None
+
+
 def _auto_pair_positions(rows: "list[PositionRow]") -> "list[PositionRow]":
     """Lot-waterfall auto-pairing.
 
-    Groups rows by (account, root_symbol). Within each group, waterfall-matches
+    Groups rows by (account, root_symbol, option_type). The option_type
+    dimension (CE / PE / None for futures-equity) is required so that a CE
+    leg can never be waterfall-matched against a PE leg of the same
+    root/account just because they happen to have opposite sign and equal
+    magnitude — CE and PE are economically unrelated instruments and must
+    never be treated as a "pair". Within each group, waterfall-matches
     longs vs shorts by quantity (largest first). Each matched pair gets a
     sequential key "P1", "P2" etc. Unmatched remainder → is_orphan=True.
 
@@ -115,19 +153,19 @@ def _auto_pair_positions(rows: "list[PositionRow]") -> "list[PositionRow]":
     if not rows:
         return rows
 
-    # Group rows by (account, root_symbol). We work on indices so we can
-    # accumulate replacements without mutating the original list.
+    # Group rows by (account, root_symbol, option_type). We work on indices
+    # so we can accumulate replacements without mutating the original list.
     from collections import defaultdict
-    groups: dict[tuple[str, str], list[int]] = defaultdict(list)
+    groups: dict[tuple[str, str, "str | None"], list[int]] = defaultdict(list)
     for i, r in enumerate(rows):
-        key = (r.account, _root_symbol(r.tradingsymbol))
+        key = (r.account, _root_symbol(r.tradingsymbol), _option_type(r.tradingsymbol))
         groups[key].append(i)
 
     # Build the result list pre-populated with the originals; we will
     # replace individual entries as we go.
     result: list[PositionRow] = list(rows)
 
-    for (_account, _root), indices in groups.items():
+    for (_account, _root, _opt_type), indices in groups.items():
         # Partition into longs, shorts, and flat (quantity == 0).
         longs: list[tuple[int, int]] = []   # (original_index, abs_qty)
         shorts: list[tuple[int, int]] = []

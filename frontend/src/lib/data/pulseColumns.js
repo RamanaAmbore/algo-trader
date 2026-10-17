@@ -168,7 +168,7 @@ export function mkSymColRight({ symRenderer }) {
       'chg-down': p => (p.data?.change_pct ?? 0) < 0,
     },
     cellStyle: (p) => {
-      if (p.data?._isTotal) return {};
+      if (p.data?._isTotal || p.data?._isSubtotal) return {};
       const color = p.data?._acctColor ?? null;
       if (!color) return {};
       return { '--mp-sym-acct-color': color };
@@ -186,7 +186,7 @@ export function mkSparkCol({ sparkRenderer }) {
   return {
     field: 'tradingsymbol', headerName: '5d', width: 44, minWidth: 44,
     maxWidth: 48, colId: 'sparkline',
-    cellRenderer: (p) => p.data?._isTotal ? '' : sparkRenderer(p),
+    cellRenderer: (p) => (p.data?._isTotal || p.data?._isSubtotal) ? '' : sparkRenderer(p),
     sortable: false, resizable: false,
     cellClass: 'spark-cell',
     headerClass: 'ag-header-cell-spark',
@@ -258,7 +258,7 @@ function _ltpHeatClasses(ltp, avg, prev) {
 // `resolveCellLtp` is the pre-bound resolver from mkResolveCellLtp so it sees
 // the current live-snap map at render time (not a frozen snapshot).
 function _ltpCellClass(p, RA, resolveCellLtp, getLtpFlashUp, getLtpFlashDown) {
-  if (!p.data || p.data._isTotal) return RA;
+  if (!p.data || p.data._isTotal || p.data._isSubtotal) return RA;
   // Prefer quote_symbol over tradingsymbol so MCX mover rows (where
   // tradingsymbol is the bare commodity root e.g. "CRUDEOIL") look up
   // the flash Set using the full contract key "CRUDEOIL25AUGFUT" that
@@ -320,7 +320,7 @@ export function mkLtpCol({ getLiveLtpSnap, getLtpFlashUp, getLtpFlashDown, numFm
     type: 'numericColumn', headerClass: numericHdr,
     cellClass: (p) => _ltpCellClass(p, RA, resolveCellLtp, getLtpFlashUp, getLtpFlashDown),
     valueGetter: resolveCellLtp,
-    valueFormatter: (p) => p.data?._isTotal ? '' : numFmt({ value: p.value }),
+    valueFormatter: (p) => (p.data?._isTotal || p.data?._isSubtotal) ? '' : numFmt({ value: p.value }),
     tooltipValueGetter: (p) => p.value == null ? 'No live price' : null,
   };
 }
@@ -336,7 +336,7 @@ export function mkPrevCol({ RA, numericHdr, numFmt }) {
     field: 'close', headerName: 'P.Close', width: 68, minWidth: 68, maxWidth: 84,
     type: 'numericColumn', headerClass: numericHdr,
     cellClass: `${RA} cell-muted`,
-    valueFormatter: (p) => p.data?._isTotal ? '' : numFmt({ value: p.value }),
+    valueFormatter: (p) => (p.data?._isTotal || p.data?._isSubtotal) ? '' : numFmt({ value: p.value }),
   };
 }
 
@@ -349,7 +349,7 @@ export function mkOpenCol({ RA, numericHdr, numFmt }) {
     field: 'open', headerName: 'Open', width: 68, minWidth: 68, maxWidth: 90,
     type: 'numericColumn', headerClass: numericHdr,
     cellClass: `${RA} cell-muted`,
-    valueFormatter: (p) => p.data?._isTotal ? '' : numFmt({ value: p.value }),
+    valueFormatter: (p) => (p.data?._isTotal || p.data?._isSubtotal) ? '' : numFmt({ value: p.value }),
   };
 }
 
@@ -412,7 +412,7 @@ export function mkAcctColTrailing({ RA }) {
     width: 86, minWidth: 70, maxWidth: 110,
     cellClass: 'mp-acct-cell',
     valueGetter: (p) => {
-      if (p.data?._isTotal) return '';
+      if (p.data?._isTotal || p.data?._isSubtotal) return '';
       const accts = p.data?.accounts;
       if (!accts) return '';
       const list = accts instanceof Set ? Array.from(accts) : Array.isArray(accts) ? accts : [];
@@ -563,7 +563,7 @@ function _overnightQtyValueGetter(p) {
  *   qtyFmt: (v: number) => string,
  *   lotsForRow: (row: any) => number|null,
  *   fmtLots: (v: number|null|undefined) => string,
- *   getDerivedByKey?: () => Record<string, {exp_pnl: number|null, extrinsic: number|null}>,
+ *   getExpPnlForRow?: (row: any) => {exp_pnl: number|null, extrinsic: number|null}|null,
  *   getMpFlash?: () => ReturnType<typeof import('$lib/data/tickFlash.svelte.js').createTickFlash>,
  *   getLtpFlashUp?: () => Set<string>,
  *   getLtpFlashDown?: () => Set<string>,
@@ -576,7 +576,7 @@ export function mkRightColDefs({
   RA, numericHdr,
   pnlCellClass, dirCellClass, pctFmtGrid, aggFmtGrid, numFmt, qtyFmt,
   lotsForRow, fmtLots,
-  getDerivedByKey,
+  getExpPnlForRow,
   getMpFlash,
   getLtpFlashUp,
   getLtpFlashDown,
@@ -626,7 +626,7 @@ export function mkRightColDefs({
     { field: 'day_pnl_pct', headerName: 'Chg %', colId: 'day_pnl_pct',
       width: 64, type: 'numericColumn', headerClass: numericHdr,
       cellClass: (p) => {
-        if (!p.data || p.data._isTotal) return RA;
+        if (!p.data || p.data._isTotal || p.data._isSubtotal) return RA;
         const sym = String(p.data.quote_symbol || p.data.tradingsymbol || '').toUpperCase();
         const base = `${RA} ${dirCls(p.value)} chg-right-sep`;
         if (getLtpFlashUp && getLtpFlashUp().has(sym)) return `${RA} ${dirCls(p.value)} chg-right-sep tf-up`;
@@ -660,11 +660,15 @@ export function mkRightColDefs({
       // Directional tint mirrors LTP/P&L cells: long (net qty > 0) = green,
       // short (net qty < 0) = red, flat/total = plain RA.
       cellClass: (p) => {
-        if (!p.data || p.data._isTotal) return RA;
+        if (!p.data || p.data._isTotal || p.data._isSubtotal) return RA;
         const qty = (Number(p.data.qty_pos) || 0) + (Number(p.data.qty_hold) || 0);
         return `${RA} ${dirCls(qty)}`;
       },
-      valueFormatter: (p) => p.data?._isTotal ? '' : numFmt({ value: p.value }),
+      // Subtotal rows don't carry a combined avg_combined (summing averages
+      // across accounts isn't meaningful the way summing qty/day_pnl is) —
+      // blank it the same as TOTAL rather than showing an undefined-derived
+      // value.
+      valueFormatter: (p) => (p.data?._isTotal || p.data?._isSubtotal) ? '' : numFmt({ value: p.value }),
       headerTooltip: 'Weighted average entry across positions + holdings.' },
     prevCol,
     { field: 'day_pnl', headerName: 'Day P&L', width: 58, minWidth: 45, maxWidth: 72,
@@ -675,7 +679,7 @@ export function mkRightColDefs({
       type: 'numericColumn', headerClass: numericHdr,
       cellClass: (p) => pnlCellClass(p, 'pnl'),
       valueFormatter: aggFmtGrid },
-    ...(getDerivedByKey ? [mkExpPnlCol(getDerivedByKey, { RA: /** @type {string} */ (RA), numericHdr }), mkExtrinsicCol(getDerivedByKey, { RA: /** @type {string} */ (RA), numericHdr })] : []),
+    ...(getExpPnlForRow ? [mkExpPnlCol(getExpPnlForRow, { RA: /** @type {string} */ (RA), numericHdr }), mkExtrinsicCol(getExpPnlForRow, { RA: /** @type {string} */ (RA), numericHdr })] : []),
     { field: 'pnl_pct', headerName: 'P&L %', colId: 'pnl_pct',
       width: 64, type: 'numericColumn', headerClass: numericHdr,
       cellClass: (p) => `${RA} ${dirCls(p.value)}`,
@@ -789,20 +793,27 @@ export function mkHoldSummaryCols({ RA, numericHdr, pnlCellClass, dirCellClass, 
 // ─── Exp P&L + Extrinsic columns ──────────────────────────────────
 
 /**
- * Exp P&L column — reads `getDerivedByKey()[sym].exp_pnl`.
+ * Exp P&L column — reads `getExpPnlForRow(row).exp_pnl`.
  * Blank for non-derivative rows (exp_pnl === null).
  *
  * 2026-09-27 audit fix: previously imported positionsDerivedStore
  * directly and read `.get(sym)` — a firm-wide, filter-unaware,
  * cross-account aggregate (every row for a symbol held in 2+ accounts
  * showed the SAME combined value, regardless of the operator's account
- * filter). `getDerivedByKey` is now an accessor the caller wires to an
- * ALREADY account-filtered per-symbol map (see MarketPulse.svelte's
- * `_filteredExpPnlByKey`) — this factory just reads through it, so it
- * has no opinion of its own about which accounts are in scope.
- * @param {() => Record<string, {exp_pnl: number|null, extrinsic: number|null}>} getDerivedByKey
+ * filter).
+ *
+ * 2026-10 Part A follow-up: positions rows are now one-per-account, so a
+ * bare-symbol lookup (the original fix above) would show the FULL
+ * cross-account total on EVERY account's own row again — just a
+ * differently-shaped repeat of the same bug. `getExpPnlForRow` is now a
+ * row-aware accessor (see MarketPulse.svelte's `_expPnlForRow`) that
+ * resolves the row's own single account and looks up the matching
+ * per-(account,symbol) entry; the TOTAL and symbol-subtotal rows instead
+ * carry their own pre-summed `exp_pnl` field directly (see below) and
+ * never call into this accessor.
+ * @param {(row: any) => {exp_pnl: number|null, extrinsic: number|null}|null} getExpPnlForRow
  */
-export function mkExpPnlCol(getDerivedByKey, { RA = /** @type {string} */ ('ag-right-aligned-cell'), numericHdr = '' } = {}) {
+export function mkExpPnlCol(getExpPnlForRow, { RA = /** @type {string} */ ('ag-right-aligned-cell'), numericHdr = '' } = {}) {
   const raStr = /** @type {string} */ (RA);
   return {
     headerName: 'Exp P&L',
@@ -811,13 +822,15 @@ export function mkExpPnlCol(getDerivedByKey, { RA = /** @type {string} */ ('ag-r
     type: 'numericColumn',
     headerClass: numericHdr,
     valueGetter: p => {
-      // TOTAL row carries the pre-summed exp_pnl from _totalsRowFor.
-      if (p.data?._isTotal) return p.data.exp_pnl ?? null;
+      // TOTAL / symbol-subtotal rows carry their own pre-summed exp_pnl
+      // (totalsRowFor / buildPositionsDisplayRows, pulseUnified.js) —
+      // read it directly rather than resolving a per-account key that
+      // doesn't apply to either row type.
+      if (p.data?._isTotal || p.data?._isSubtotal) return p.data.exp_pnl ?? null;
       // Non-derivative rows (holdings, equity positions) have no expiry
       // exposure — hide rather than show "—".
       if (!p.data?.qty_pos) return null;
-      const sym = String(p.data?.tradingsymbol || '').toUpperCase();
-      return getDerivedByKey()[sym]?.exp_pnl ?? null;
+      return getExpPnlForRow(p.data)?.exp_pnl ?? null;
     },
     cellClass: p => `${raStr} ${dirCls(p.value)} mp-pnl-cell`,
     valueFormatter: p => p.value != null ? aggCompact(p.value) : '',
@@ -826,12 +839,12 @@ export function mkExpPnlCol(getDerivedByKey, { RA = /** @type {string} */ ('ag-r
 }
 
 /**
- * Extrinsic column — reads `getDerivedByKey()[sym].extrinsic`.
+ * Extrinsic column — reads `getExpPnlForRow(row).extrinsic`.
  * Blank for non-derivative rows (extrinsic === null). See mkExpPnlCol's
- * docstring for the 2026-09-27 account-filter fix this shares.
- * @param {() => Record<string, {exp_pnl: number|null, extrinsic: number|null}>} getDerivedByKey
+ * docstring for the 2026-09-27 / 2026-10 account-filter fixes this shares.
+ * @param {(row: any) => {exp_pnl: number|null, extrinsic: number|null}|null} getExpPnlForRow
  */
-export function mkExtrinsicCol(getDerivedByKey, { RA = /** @type {string} */ ('ag-right-aligned-cell'), numericHdr = '' } = {}) {
+export function mkExtrinsicCol(getExpPnlForRow, { RA = /** @type {string} */ ('ag-right-aligned-cell'), numericHdr = '' } = {}) {
   const raStr = /** @type {string} */ (RA);
   return {
     headerName: 'Extrinsic',
@@ -840,12 +853,12 @@ export function mkExtrinsicCol(getDerivedByKey, { RA = /** @type {string} */ ('a
     type: 'numericColumn',
     headerClass: numericHdr,
     valueGetter: p => {
-      // TOTAL row: extrinsic is not summed (doesn't apply to the aggregate).
-      if (p.data?._isTotal) return null;
+      // TOTAL / symbol-subtotal rows: extrinsic is not summed (doesn't
+      // apply to either aggregate).
+      if (p.data?._isTotal || p.data?._isSubtotal) return null;
       // Only meaningful for derivative positions.
       if (!p.data?.qty_pos) return null;
-      const sym = String(p.data?.tradingsymbol || '').toUpperCase();
-      return getDerivedByKey()[sym]?.extrinsic ?? null;
+      return getExpPnlForRow(p.data)?.extrinsic ?? null;
     },
     cellClass: `${raStr} cell-muted`,
     valueFormatter: p => p.value != null ? aggCompact(p.value) : '',

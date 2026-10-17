@@ -144,6 +144,104 @@ describe('splitPairedLots — pro-rating invariant', () => {
   });
 });
 
+describe('splitPairedLots — CE/PE cross-pairing bug (2026-10 fix, parity with backend test_auto_pair_ce_never_pairs_with_pe_same_root_same_account)', () => {
+  // Fixture shared with backend/tests/test_positions_auto_pair.py's
+  // CE/PE-aware grouping tests — same account string, same tradingsymbols,
+  // same quantities, so a human can compare the two test files side by
+  // side. NOTE: these specific symbols (no expiry month token) don't parse
+  // via `decomposeSymbol` as real F&O contracts — they exercise this
+  // module's fallback root/optType derivation (mirrors the backend's own
+  // suffix-only `_root_symbol`/`_option_type`), not the primary
+  // `decomposeSymbol` path. See the CE/PE-cross-pair test further below
+  // for the same guarantee on a real Kite-format symbol.
+  it('Case 1 — long CE + short PE, same root/account, equal magnitude, must NOT pair', () => {
+    const ceRow = row({ account: 'ZG0001', tradingsymbol: 'NIFTY24000CE', quantity: 30 });
+    const peRow = row({ account: 'ZG0001', tradingsymbol: 'NIFTY27000PE', quantity: -30 });
+
+    const out = splitPairedLots([ceRow, peRow]);
+
+    expect(out).toHaveLength(2);
+    const ceOut = out.find(r => r.tradingsymbol === 'NIFTY24000CE');
+    const peOut = out.find(r => r.tradingsymbol === 'NIFTY27000PE');
+    expect(ceOut.is_orphan).toBe(true);
+    expect(peOut.is_orphan).toBe(true);
+    expect(ceOut.pair_group_key).toBeNull();
+    expect(peOut.pair_group_key).toBeNull();
+    expect(ceOut.orphan_qty).toBe(30);
+    expect(peOut.orphan_qty).toBe(30);
+  });
+
+  it('Case 2 — long CE + short CE, same root/account, same option type, must still pair', () => {
+    const longRow = row({ account: 'ZG0001', tradingsymbol: 'NIFTY24000CE', quantity: 100 });
+    const shortRow = row({ account: 'ZG0001', tradingsymbol: 'NIFTY24500CE', quantity: -100 });
+
+    const out = splitPairedLots([longRow, shortRow]);
+
+    expect(out).toHaveLength(2);
+    const longOut = out.find(r => r.tradingsymbol === 'NIFTY24000CE');
+    const shortOut = out.find(r => r.tradingsymbol === 'NIFTY24500CE');
+    expect(longOut.pair_group_key).toBe('P1');
+    expect(shortOut.pair_group_key).toBe('P1');
+    expect(longOut.is_orphan).toBe(false);
+    expect(shortOut.is_orphan).toBe(false);
+    expect(longOut.paired_qty).toBe(100);
+    expect(shortOut.paired_qty).toBe(100);
+    expect(longOut.orphan_qty).toBe(0);
+    expect(shortOut.orphan_qty).toBe(0);
+  });
+
+  it('Case 3 — long PE + short PE, same root/account, same option type, must still pair', () => {
+    const longRow = row({ account: 'ZG0001', tradingsymbol: 'NIFTY25000PE', quantity: 50 });
+    const shortRow = row({ account: 'ZG0001', tradingsymbol: 'NIFTY25500PE', quantity: -50 });
+
+    const out = splitPairedLots([longRow, shortRow]);
+
+    expect(out).toHaveLength(2);
+    const longOut = out.find(r => r.tradingsymbol === 'NIFTY25000PE');
+    const shortOut = out.find(r => r.tradingsymbol === 'NIFTY25500PE');
+    expect(longOut.pair_group_key).toBe('P1');
+    expect(shortOut.pair_group_key).toBe('P1');
+    expect(longOut.is_orphan).toBe(false);
+    expect(shortOut.is_orphan).toBe(false);
+    expect(longOut.paired_qty).toBe(50);
+    expect(shortOut.paired_qty).toBe(50);
+    expect(longOut.orphan_qty).toBe(0);
+    expect(shortOut.orphan_qty).toBe(0);
+  });
+
+  it('futures (no CE/PE suffix) are unaffected by the option-type grouping dimension', () => {
+    const longRow = row({ account: 'ZG0001', tradingsymbol: 'NIFTY24JUNFUT', quantity: 20 });
+    const shortRow = row({ account: 'ZG0001', tradingsymbol: 'NIFTY24JULFUT', quantity: -20 });
+
+    const out = splitPairedLots([longRow, shortRow]);
+
+    expect(out).toHaveLength(2);
+    const longOut = out.find(r => r.tradingsymbol === 'NIFTY24JUNFUT');
+    const shortOut = out.find(r => r.tradingsymbol === 'NIFTY24JULFUT');
+    expect(longOut.pair_group_key).toBe('P1');
+    expect(shortOut.pair_group_key).toBe('P1');
+    expect(longOut.is_orphan).toBe(false);
+    expect(shortOut.is_orphan).toBe(false);
+    expect(longOut.paired_qty).toBe(20);
+    expect(shortOut.paired_qty).toBe(20);
+  });
+
+  it('a real Kite-format CE and PE of the same root/account/magnitude do not cross-pair (primary decomposeSymbol path, not the fallback)', () => {
+    const ceRow = row({ account: 'ZG0001', tradingsymbol: 'NIFTY26JUN24000CE', quantity: 30 });
+    const peRow = row({ account: 'ZG0001', tradingsymbol: 'NIFTY26JUN27000PE', quantity: -30 });
+
+    const out = splitPairedLots([ceRow, peRow]);
+
+    expect(out).toHaveLength(2);
+    const ceOut = out.find(r => r.tradingsymbol === 'NIFTY26JUN24000CE');
+    const peOut = out.find(r => r.tradingsymbol === 'NIFTY26JUN27000PE');
+    expect(ceOut.is_orphan).toBe(true);
+    expect(peOut.is_orphan).toBe(true);
+    expect(ceOut.pair_group_key).toBeNull();
+    expect(peOut.pair_group_key).toBeNull();
+  });
+});
+
 describe('splitPairedLots — order independence (stability)', () => {
   it('produces identical labels regardless of input array order', () => {
     const longRow = row({ tradingsymbol: 'CRUDEOIL26OCTFUT', quantity: 300, account: 'ACC1' });
