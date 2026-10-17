@@ -5,18 +5,23 @@
  * consistency fix (no browser needed — same pattern as
  * algo_consistency.spec.js's literal-grep tests):
  *
- *   1. The Agents page's `agent.long_name` label ("when: ... — do: ...")
- *      previously used `--algo-slate-muted` (55%-opacity translucent
- *      white, low contrast). The Agent Templates page's comparable
- *      name/description text used hardcoded off-palette
+ *   1. (2026-10-17) The Agents page's collapsed row used to show a
+ *      `{agent.long_name}` label ("when: ... — do: ...") directly under
+ *      the agent name — operator: "I just want to see name and
+ *      description which is already displayed... it is cluttering the
+ *      card." The `{agent.long_name}` span was removed from the
+ *      collapsed row header entirely; the `long_name` field itself is
+ *      untouched (still used by the Edit form / decompile flow). This
+ *      test now guards against reintroducing it there.
+ *   2. Agent Templates page had hardcoded off-palette
  *      `rgba(180,200,230,α)` literals with inconsistent alpha across
- *      sites — meaning the two pages rendered visibly different colors
- *      for the same semantic role. Both now use the shared `--c-muted`
- *      token.
- *   2. Agent Templates' `.frag-name` was `--fs-md` (0.65rem) while the
+ *      sites for name/description text — meaning the two pages
+ *      rendered visibly different colors for the same semantic role.
+ *      Now uses the shared `--c-muted` token.
+ *   3. Agent Templates' `.frag-name` was `--fs-md` (0.65rem) while the
  *      Agents page's comparable primary label was `--fs-lg` (0.72rem) —
  *      now both `--fs-lg`.
- *   3. LogPanel's shared `.log-row-msg` rule was `--fs-base` (14px), a
+ *   4. LogPanel's shared `.log-row-msg` rule was `--fs-base` (14px), a
  *      noticeably bigger jump than the rest of the app's compact-density
  *      scale — now `--fs-lg`, propagating to every one of its ~25 mount
  *      sites (OrderBook, OrderTicket, SymbolPanel, /activity, /dashboard,
@@ -38,11 +43,9 @@ const AGENT_TEMPLATES_PAGE = fs.readFileSync(
 const LOG_PANEL = fs.readFileSync(path.join('src/lib', 'LogPanel.svelte'), 'utf-8');
 
 test.describe('Agent label color/size consistency (2026-10 fix)', () => {
-  test('Agents page long_name label uses --c-muted, not the low-contrast --algo-slate-muted', () => {
-    expect(AGENTS_PAGE).toMatch(/\{agent\.long_name\}/);
-    const styleLine = AGENTS_PAGE.split('\n').find((l) => l.includes('{agent.long_name}')) ?? '';
-    expect(styleLine, 'long_name <span> line').toMatch(/color:\s*var\(--c-muted\)/);
-    expect(styleLine).not.toMatch(/--algo-slate-muted/);
+  test('Agents page collapsed row no longer shows the long_name ("when:...do:...") label — declutter fix', () => {
+    expect(AGENTS_PAGE).not.toMatch(/\{row\.long_name\}/);
+    expect(AGENTS_PAGE).not.toMatch(/\{agent\.long_name\}/);
   });
 
   test('Agent Templates page has zero remaining hardcoded rgba(180,200,230,α) text-color literals', () => {

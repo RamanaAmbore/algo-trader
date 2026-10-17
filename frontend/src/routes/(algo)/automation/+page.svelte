@@ -904,9 +904,6 @@
           {/if}
           <span class="flex-1 min-w-0 flex flex-col leading-tight">
             <span class="text-[length:var(--fs-sm)] text-[var(--c-action)] truncate">{row.name}</span>
-            {#if row.long_name}
-              <span class="text-[length:var(--fs-sm)] font-mono truncate" style="color: var(--c-muted)">{row.long_name}</span>
-            {/if}
           </span>
           <DisclosureChevron open={isOpen} ariaLabel={isOpen ? 'Collapse row' : 'Expand row'} />
         </div>
