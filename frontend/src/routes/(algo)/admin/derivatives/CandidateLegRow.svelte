@@ -339,14 +339,6 @@
       <span class="cand-split-tag cand-split-open"
             title="Currently open portion after today's close-and-reopen">OPEN</span>
     {/if}
-    {#if c._isLotSplit}
-      <!-- Lot-pairing split piece (lotPairSplit.js) — this row is PART of
-           one broker position, pro-rated by the matched/unmatched lot
-           count against a sibling piece (same symbol+account, different
-           pair_group_key), not a separate real position. -->
-      <span class="cand-split-tag cand-lotsplit-tag"
-            title="Lot-pairing split piece {c.lot_piece_label} — part of this position's quantity, pro-rated">{c.lot_piece_label}</span>
-    {/if}
     {#if c._provisional}
       <!-- Provisional (~) chip — fill received from broker event but the
            broker positions API has not yet reflected this position.
@@ -802,15 +794,6 @@
     color: var(--c-long);
     background: var(--algo-green-bg);
     border: 1px solid rgba(74, 222, 128, 0.45);
-  }
-  /* Lot-pairing split-piece label — same cyan family as
-     positionStateBadge.js's "paired" state (pair_group_key), since this
-     chip exists specifically to disambiguate two pieces of ONE position
-     that each belong to a different pair group. */
-  .cand-lotsplit-tag {
-    color: var(--algo-cyan-text);
-    background: var(--algo-cyan-bg);
-    border: 1px solid var(--algo-cyan-border);
   }
   /* Provisional (~) and draft-store (D) chips — amber palette signals
      "non-confirmed / awaiting settlement". Both chips use the same

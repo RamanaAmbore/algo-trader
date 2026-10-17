@@ -3393,13 +3393,6 @@
     if (row.src?.p && row.is_orphan) {
       badges.push(`<span class="sym-badge badge-o" title="No active order tracking this position">O</span>`);
     }
-    if (row._isLotSplit) {
-      // Lot-pairing split piece (lotPairSplit.js) — this row is PART of a
-      // real position, pro-rated by the matched/unmatched lot count, not
-      // a separate real position. The label (e.g. "P1"/"Unmatched")
-      // disambiguates it from its sibling piece(s) of the SAME instrument.
-      badges.push(`<span class="sym-badge badge-lotsplit" title="Lot-pairing split piece ${row.lot_piece_label} — part of this position's quantity, pro-rated">${row.lot_piece_label}</span>`);
-    }
     const badgeHtml = badges.length ? `<span class="sym-badges">${badges.join('')}</span>` : '';
     return { lotChip, badgeHtml };
   }
@@ -4885,14 +4878,6 @@
     background: rgba(251,113,133,0.18);
     color: #fb7185;
     border: 1px solid rgba(251,113,133,0.4);
-  }
-  /* Lot-pairing split-piece label (lotPairSplit.js) — same cyan family as
-     positionStateBadge.js's "paired" state so a split piece visually
-     reads as "part of a pair group", not a separate position. */
-  :global(.badge-lotsplit) {
-    color: var(--algo-cyan-text);
-    background: var(--algo-cyan-bg);
-    border: 1px solid var(--algo-cyan-border);
   }
   /* Covered-call lot-count badge — green pill with the number of whole
      lots the operator holds. Same pill family as the H/P/W/U badges so

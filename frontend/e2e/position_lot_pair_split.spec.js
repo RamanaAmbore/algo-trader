@@ -3,8 +3,16 @@
  *
  * Regression guard for the client-side lot-pairing split
  * (`frontend/src/lib/data/lotPairSplit.js:splitPairedLots`), wired into:
- *   - MarketPulse Positions grid  (`.badge-lotsplit` chip via _symCellBadges)
- *   - Derivatives Legs grid       (`.cand-lotsplit-tag` chip in CandidateLegRow)
+ *   - MarketPulse Positions grid  (one display row per split piece)
+ *   - Derivatives Legs grid       (one row per split piece in CandidateLegRow)
+ *
+ * The redundant cyan `.badge-lotsplit` / `.cand-lotsplit-tag` chips that
+ * originally shipped alongside this feature were removed as duplicative of
+ * the existing St-column badge (`positionStateBadge.js`) — for the
+ * "Unmatched" leftover piece specifically, the cyan chip visually read as
+ * "paired" even though the St column correctly showed the amber orphan
+ * state right next to it. This spec now asserts those chips are ABSENT and
+ * that the St-column badge shows the correct state for each split piece.
  *
  * Fixture (one account, one NIFTY root, mocked via page.route on
  * GET /api/positions/ — the same interception precedent as
@@ -12,17 +20,19 @@
  *   NIFTY26JUN24000CE  qty +150   pnl  150   -> splits into P1 (100) + P2 (50)
  *   NIFTY26JUN24500CE  qty -100   pnl  100   -> single pair, P1 counterparty
  *   NIFTY26JUN24600CE  qty  -50   pnl    0   -> single pair, P2 counterparty
- * Expected after split: 3 display rows for 2 broker positions; the split
+ * Expected after split: 4 display rows for 3 broker positions; the split
  * pieces of 24000CE carry pnl 100 (P1) + 50 (P2); Σ pnl stays 250 (a
  * double-count of the split would read 400).
  *
  * Covers:
- *   (a) Pulse Positions grid shows one `.badge-lotsplit` chip per split
- *       piece, with labels P1 and P2.
- *   (b) The Positions TOTAL row P&L equals the un-split sum (2500 -> "2,500").
- *   (c) Labels are identical across three consecutive positions loads
- *       (stable keys — no flicker between polls).
- *   (d) Derivatives Legs grid shows the same P1/P2 `.cand-lotsplit-tag` chips.
+ *   (a) Pulse Positions grid has no `.badge-lotsplit` chip; the St column
+ *       shows the correct `paired` state (P1/P2) for each split piece.
+ *   (b) The Positions TOTAL row day P&L equals the un-split sum (250).
+ *   (c) St-column pair labels for the split pieces are stable across three
+ *       consecutive positions loads (stable keys — no flicker between polls).
+ *   (d) Derivatives Legs grid has no `.cand-lotsplit-tag` chip; the St-column
+ *       badges show the correct `paired` state (P1 x2, P2 x2 — the split
+ *       pieces plus their single-row counterparty legs) for the split leg.
  *
  * Run:
  *   npx playwright test e2e/position_lot_pair_split.spec.js --project=chromium-desktop
@@ -79,11 +89,26 @@ async function mockPositions(/** @type {import('@playwright/test').Page} */ page
   });
 }
 
-/** Sorted labels of every lot-split chip currently in the Pulse Positions grid. */
-async function pulseLabels(/** @type {import('@playwright/test').Page} */ page) {
-  await expect(page.locator('.badge-lotsplit')).toHaveCount(2, { timeout: TIMEOUT });
-  const texts = await page.locator('.badge-lotsplit').allTextContents();
-  return texts.map((t) => t.trim()).sort();
+// The 24000CE row splits into two display rows keyed
+// `${symbol}::${account}::${label}` (mergePositionRows composite key,
+// pulseUnified.js) with the Positions-bucket suffix (`BUCKET_SUFFIX.positions`,
+// pulseUnified.js) appended — this IS the ag-Grid `row-id` (pulseRowId reads
+// `data.key`). Scoping assertions to these two row-ids (rather than every
+// `paired`-state badge in the grid, which also includes the two
+// counterparty rows' own single-row P1/P2 badges) keeps the check as
+// precise as the old `.badge-lotsplit`-count assertion was.
+const SPLIT_SYM = 'NIFTY26JUN24000CE';
+const P1_ROW_ID = `${SPLIT_SYM}::${ACCT}::P1__pos`;
+const P2_ROW_ID = `${SPLIT_SYM}::${ACCT}::P2__pos`;
+
+/** Sorted St-column glyph text for the two lot-split display rows of the split leg. */
+async function pulseSplitStateLabels(/** @type {import('@playwright/test').Page} */ page) {
+  const p1 = page.locator(`[row-id="${P1_ROW_ID}"] .pos-state-badge-btn`);
+  const p2 = page.locator(`[row-id="${P2_ROW_ID}"] .pos-state-badge-btn`);
+  await expect(p1).toHaveCount(1, { timeout: TIMEOUT });
+  await expect(p2).toHaveCount(1, { timeout: TIMEOUT });
+  const texts = await Promise.all([p1.textContent(), p2.textContent()]);
+  return texts.map((t) => (t || '').trim()).sort();
 }
 
 test.beforeEach(async ({ page }) => {
@@ -92,41 +117,48 @@ test.beforeEach(async ({ page }) => {
 });
 
 test.describe('Lot-pairing split — MarketPulse Positions grid', () => {
-  test('(a) one broker position split into P1/P2 display rows, each with a .badge-lotsplit chip', async ({ page }) => {
+  test('(a) one broker position split into P1/P2 display rows; no redundant chip, St column shows correct paired state', async ({ page }) => {
     await page.goto('/pulse', { waitUntil: 'domcontentloaded' });
-    const labels = await pulseLabels(page);
+    const labels = await pulseSplitStateLabels(page);
     expect(labels).toEqual(['P1', 'P2']);
+    // Redundant chip removed (2026-10) — St column above is now the sole
+    // signal for split-piece pairing state.
+    await expect(page.locator('.badge-lotsplit')).toHaveCount(0);
   });
 
   test('(b) Positions TOTAL day P&L is unchanged by the split (sum of raw pnl = 250)', async ({ page }) => {
     await page.goto('/pulse', { waitUntil: 'domcontentloaded' });
-    await pulseLabels(page);
+    await pulseSplitStateLabels(page);
     // The TOTAL pinned row is split across a left (symbol) grid and a right
     // (numeric) grid — the numeric cells live in the right grid's row.
     const totalDayPnl = page.locator('[row-id="__total_positions"] [col-id="day_pnl"]');
     await expect(totalDayPnl).toHaveText(/^\+?250$/, { timeout: TIMEOUT });
   });
 
-  test('(c) lot_piece_label values are stable across three consecutive positions loads', async ({ page }) => {
+  test('(c) St-column pair labels for the split pieces are stable across three consecutive positions loads', async ({ page }) => {
     await page.goto('/pulse', { waitUntil: 'domcontentloaded' });
-    const first = await pulseLabels(page);
+    const first = await pulseSplitStateLabels(page);
 
     for (let i = 0; i < 2; i++) {
       const resp = page.waitForResponse((r) => POSITIONS_RE.test(r.url()) && r.request().method() === 'GET');
       await page.reload({ waitUntil: 'domcontentloaded' });
       await resp;
-      expect(await pulseLabels(page)).toEqual(first);
+      expect(await pulseSplitStateLabels(page)).toEqual(first);
     }
     expect(first).toEqual(['P1', 'P2']);
   });
 });
 
 test.describe('Lot-pairing split — Derivatives Legs grid', () => {
-  test('(d) Legs grid shows the same P1/P2 .cand-lotsplit-tag chips for the split leg', async ({ page }) => {
+  test('(d) Legs grid has no redundant chip; St-column badges show correct paired state for the split leg', async ({ page }) => {
     await page.goto('/admin/derivatives?u=NIFTY', { waitUntil: 'domcontentloaded' });
-    const tags = page.locator('.cand-lotsplit-tag');
-    await expect(tags).toHaveCount(2, { timeout: TIMEOUT });
-    const texts = (await tags.allTextContents()).map((t) => t.trim()).sort();
-    expect(texts).toEqual(['P1', 'P2']);
+    // Redundant chip removed (2026-10).
+    await expect(page.locator('.cand-lotsplit-tag')).toHaveCount(0);
+    // 4 `paired` St badges: the split leg's two pieces (P1, P2) plus the
+    // two single-row counterparty legs (24500CE -> P1, 24600CE -> P2).
+    const paired = page.locator('.cand-state-badge-btn[data-pos-state="paired"]');
+    await expect(paired).toHaveCount(4, { timeout: TIMEOUT });
+    const texts = (await paired.allTextContents()).map((t) => t.trim()).sort();
+    expect(texts).toEqual(['P1', 'P1', 'P2', 'P2']);
   });
 });
