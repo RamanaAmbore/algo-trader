@@ -73,18 +73,25 @@ const LOT_ROWS = [
   },
 ];
 
-// Intraday round-trip on an unrelated root (BANKNIFTY, isolated from the
-// NIFTY group above so it can't shift the NIFTY waterfall's P1/P2
-// numbering, and kept OUT of the shared LOT_ROWS fixture so it can't shift
-// the MarketPulse TOTAL row's day P&L in test (b)/(c)) — bought 100, sold
-// 80 today, net long 20 still open. `splitClosedReopened` (expiryPnl.js)
-// tags the two pieces `_splitTag` 'closed'/'open' and neither gets a
-// `lot_piece_label` (that's lotPairSplit.js's own, DIFFERENT split
-// mechanism) — before the enKey fix this pair collided on
-// `${account}|${symbol}|` (test (g) below, which mocks its own response).
+// Intraday round-trip on a DIFFERENT account from LOT_ROWS's ACCT (not a
+// different root — an earlier version of this fixture used a BANKNIFTY
+// symbol to isolate it from the NIFTY waterfall, but BANKNIFTY26JUN50000CE
+// never rendered a single row — it isn't the real NIFTY26JUN* shape every
+// OTHER test in this file already proves renders correctly, so the "u="
+// underlying picker never resolved it. A different account on the SAME
+// proven NIFTY26JUN* symbol shape gives the identical isolation — a
+// different account is its own (account, root, option_type) group
+// regardless of root — without depending on an unproven symbol shape)
+// — bought 100, sold 80 today, net long 20 still open.
+// `splitClosedReopened` (expiryPnl.js) tags the two pieces `_splitTag`
+// 'closed'/'open' and neither gets a `lot_piece_label` (that's
+// lotPairSplit.js's own, DIFFERENT split mechanism) — before the enKey fix
+// this pair collided on `${account}|${symbol}|` (test (g) below, which
+// mocks its own response).
+const SPLIT_TAG_ACCT = 'ZG9999';
 const SPLIT_TAG_ROW = {
-  tradingsymbol: 'BANKNIFTY26JUN50000CE', symbol: 'BANKNIFTY26JUN50000CE', exchange: 'NFO',
-  account: ACCT, product: 'NRML', quantity: 20, average_price: 100, last_price: 101,
+  tradingsymbol: 'NIFTY26JUN25500CE', symbol: 'NIFTY26JUN25500CE', exchange: 'NFO',
+  account: SPLIT_TAG_ACCT, product: 'NRML', quantity: 20, average_price: 100, last_price: 101,
   pnl: 80, realised: 80, unrealised: 0, day_pnl: 80, prev_settlement_pnl: 0,
   close_price: 100, overnight_quantity: 0,
   day_buy_quantity: 100, day_sell_quantity: 80, day_buy_value: 10000, day_sell_value: 8080,
@@ -221,6 +228,35 @@ test.describe('Lot-pairing split — Derivatives Legs grid', () => {
     expect(textAlign).toBe('center');
   });
 
+  test('(h) payoff checkbox is centered within its own grid column, not flush to the card edge', async ({ page }) => {
+    // Operator (2026-10-17): "each checkbox data rows should be centered
+    // vertically and horizontally center in legs". Root cause: the
+    // checkbox's grid-template-columns track was `auto` (shrink-to-fit the
+    // checkbox's own content), leaving no slack for CandidateLegRow.svelte's
+    // existing `justify-self: center` to center within — the checkbox sat
+    // flush against the card's left edge. Fixed by giving the column a
+    // real minimum width (`minmax(28px, max-content)`, matching the
+    // adjacent pos-state column).
+    await page.goto('/admin/derivatives?u=NIFTY', { waitUntil: 'domcontentloaded' });
+    const row = page.locator('.cand-row').first();
+    const cb = row.locator('input[type="checkbox"]').first();
+    await expect(cb).toBeVisible({ timeout: TIMEOUT });
+    const [rowBox, cbBox] = await Promise.all([row.boundingBox(), cb.boundingBox()]);
+    const leftGap = cbBox.x - rowBox.x;
+    const rightGap = (rowBox.x + 28) - (cbBox.x + cbBox.width);
+    // Symmetric left/right gap within the 28px checkbox column (±1.5px
+    // tolerance for sub-pixel rendering) — confirms real horizontal
+    // centering, not flush-left.
+    expect(Math.abs(leftGap - rightGap), `leftGap=${leftGap} rightGap=${rightGap}`).toBeLessThan(1.5);
+    // Vertical centering within the row (±1.5px tolerance — the native
+    // checkbox's rendered height is an odd fractional value, so perfect
+    // sub-pixel symmetry isn't achievable; this still catches a real
+    // top-pinned/bottom-pinned regression, which would be off by several px).
+    const topGap = cbBox.y - rowBox.y;
+    const bottomGap = (rowBox.y + rowBox.height) - (cbBox.y + cbBox.height);
+    expect(Math.abs(topGap - bottomGap), `topGap=${topGap} bottomGap=${bottomGap}`).toBeLessThan(1.5);
+  });
+
   test('(g) toggling the CLOSED piece\'s checkbox does not toggle the OPEN sibling (enKey _splitTag collision regression)', async ({ page }) => {
     // Sibling regression to (e) — a DIFFERENT split mechanism
     // (splitClosedReopened's closed/open pieces, expiryPnl.js) shares the
@@ -242,7 +278,7 @@ test.describe('Lot-pairing split — Derivatives Legs grid', () => {
       body.rows = [...LOT_ROWS, SPLIT_TAG_ROW];
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
     });
-    await page.goto('/admin/derivatives?u=BANKNIFTY', { waitUntil: 'domcontentloaded' });
+    await page.goto('/admin/derivatives?u=NIFTY', { waitUntil: 'domcontentloaded' });
     const closedRow = page.locator('.cand-row:has(.cand-split-closed)');
     const openRow = page.locator('.cand-row:has(.cand-split-open)');
     await expect(closedRow).toHaveCount(1, { timeout: TIMEOUT });

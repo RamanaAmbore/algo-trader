@@ -7573,7 +7573,14 @@
        via formatSymbol(). Operator no longer needs a separate column;
        saves ~58 px of horizontal real estate per row. */
     grid-template-columns:
-      auto                                 /* checkbox */
+      minmax(28px, max-content)            /* checkbox — fixed-ish width so
+                                               justify-self:center (CandidateLegRow.svelte)
+                                               has real room to center within; `auto` sized
+                                               to the checkbox's own content, leaving it
+                                               flush against the card's left edge instead
+                                               of visually centered (operator: "each
+                                               checkbox data row should be centered
+                                               vertically and horizontally in legs") */
       28px                                 /* pos state (GTT / paired / orphan) */
       minmax(max-content, max-content)     /* symbol (hyphenated, carries expiry) */
       minmax(62px, max-content)            /* ltp */
