@@ -564,6 +564,23 @@ principle and reconciling them is a separate, larger decision; the existing
 `AlgoOrder.parent_order_id`) remains the only pairing signal any execution
 path reads today.
 
+**Auto-pairing is CE/PE-aware, and the Positions grid is per-account (2026-10-17, commit
+8a59a17e, amends existing entry)** — The lot-waterfall grouping key in
+`_auto_pair_positions()` (`backend/api/routes/positions.py`) and in `splitPairedLots()`
+(`frontend/src/lib/data/lotPairSplit.js`) is now `(account, root_symbol, option_type)`, with
+`option_type` ∈ CE / PE / None. A CE leg can never waterfall-match a PE leg of the same root,
+account, and quantity, so a short PE no longer falsely pairs with a long CE. `option_type` comes
+from a digit-anchored suffix regex (`_option_type()` backend, `_optTypeFallback()` frontend), not
+a plain `endswith('CE')`, so equity tickers that happen to end in "CE" or "PE" (RELIANCE,
+BAJFINANCE) are never misread as options. Futures and equity rows carry `option_type = None` and
+group as before. Grid side: MarketPulse's Positions grid now keys every row by `(account, symbol)`
+(`mergePositionRows()` in `frontend/src/lib/data/pulseUnified.js`), not only lot-split pieces, so
+a symbol held in two accounts shows one row per account. To keep the cross-account exposure read,
+`buildPositionsDisplayRows()` injects a symbol-subtotal row (`_isSubtotal`, `.mp-subtotal-row`)
+above any symbol held in 2+ accounts, showing combined qty, day P&L, and Exp P&L. The subtotal is
+display-only and never feeds TOTAL-row or account rollups. Spec:
+[PULSE_SPEC.md](docs/specs/PULSE_SPEC.md) §14 "Per-account rows and symbol subtotals".
+
 
 ---
 

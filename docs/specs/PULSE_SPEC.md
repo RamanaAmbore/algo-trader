@@ -164,7 +164,7 @@ See Section 5 for DB-first policy and fallback ladder.
 **PositionRow schema (additions Aug 2026)**:
 - `previous_close: float = 0.0` — frozen prior-session settlement price from `COALESCE(daily_book.previous_close, daily_book.ltp)` written by `_override_stale_close_from_snapshot()`. Frontend prefers this (official settlement, write-once) over `close_price` (Kite's mutable field) for day P&L computation via `(ltp − previous_close) × qty`. Matches holdings fix (75a335f7); prevents positions day P&L zeroing at NSE settlement
 - `is_orphan: bool` — True for the unmatched remainder of `_auto_pair_positions()`'s lot-waterfall (see `pair_group_key` below) — NOT related to `AlgoOrder`/`POST /api/orders/pair` (that's a separate, order-level pairing concept with no effect on this field). Shown with diamond glyph "◇" badge in Pulse Positions grid and Derivatives Legs grid
-- `pair_group_key: str | None` — **auto-detected**, computed by `_auto_pair_positions()` (`backend/api/routes/positions.py`): groups rows by `(account, root_symbol)`, waterfall-matches longs vs shorts by quantity (largest first), assigns sequential keys `"P1"`, `"P2"`, etc. per match; the unmatched remainder on a row becomes `orphan_qty` and sets `is_orphan=True`. Has nothing to do with `AlgoOrder.parent_order_id`/`POST /api/orders/pair` (a separate order-level pairing concept, used only to suppress TP/template attachment on a child order — see §19). Used by `postSortRows`/`pairGroupSort.js` to keep paired positions adjacent in sort order regardless of column sort direction. Ephemeral — recomputed on every request from the broker book and can reshuffle when fills/quantity change. **Known backend gap (Oct 2026)**: when one row
+- `pair_group_key: str | None` — **auto-detected**, computed by `_auto_pair_positions()` (`backend/api/routes/positions.py`): groups rows by `(account, root_symbol, option_type)` (CE/PE/None — CE never pairs with PE; see §14 "Per-account rows and symbol subtotals"), waterfall-matches longs vs shorts by quantity (largest first), assigns sequential keys `"P1"`, `"P2"`, etc. per match; the unmatched remainder on a row becomes `orphan_qty` and sets `is_orphan=True`. Has nothing to do with `AlgoOrder.parent_order_id`/`POST /api/orders/pair` (a separate order-level pairing concept, used only to suppress TP/template attachment on a child order — see §19). Used by `postSortRows`/`pairGroupSort.js` to keep paired positions adjacent in sort order regardless of column sort direction. Ephemeral — recomputed on every request from the broker book and can reshuffle when fills/quantity change. **Known backend gap (Oct 2026)**: when one row
   waterfall-matches against 2+ counterparties, the backend overwrites its pairing fields on each
   match, so only the last group survives. The frontend re-derives this field via
   `splitPairedLots()` (`frontend/src/lib/data/lotPairSplit.js`) before display, and splits such a
@@ -1215,6 +1215,29 @@ Derivatives Legs grid; `PerformancePage` is not wired (own badge logic, delibera
   `pulseColumns.js` + `app.css`), mirroring the existing `.ag-header-cell-spark` centering
   precedent.
 - Full derivation rules and the backend gap it corrects: see §4.4 `pair_group_key` above.
+
+**Per-account rows and symbol subtotals (2026-10-17, commit 8a59a17e)**:
+- **One row per (account, symbol)**: the MarketPulse Positions grid no longer merges a symbol held
+  in several accounts into one cross-account row. `mergePositionRows()` (`pulseUnified.js`) keys
+  each position row `symbol::account` (lot-split pieces append `::label`). This matches the
+  Derivatives Legs grid and `PerformancePage`, which already key by account + tradingsymbol.
+- **Symbol-subtotal row**: `buildPositionsDisplayRows()` (`pulseUnified.js`, Section 10) inserts a
+  thin summary row directly above a symbol's account rows, but only when that symbol is held in
+  2+ distinct accounts. The row carries `_isSubtotal: true` and the `.mp-subtotal-row` class.
+  It shows combined qty, combined day P&L, and Exp P&L (looked up per symbol from `expPnlByKey`).
+  The row object carries only those values, so its other value columns render blank. A symbol
+  held in one account, including one split into lot pieces (which share an account), gets no
+  subtotal row.
+- **Display only**: the subtotal row never feeds TOTAL-row accumulation or account rollups.
+  Those keep summing the real per-account rows, so nothing is double-counted.
+- **CE/PE-aware auto-pairing**: the lot-waterfall grouping key is now
+  `(account, root_symbol, option_type)` in both `_auto_pair_positions()` (`positions.py`) and
+  `splitPairedLots()` (`lotPairSplit.js`). CE pairs only with CE and PE only with PE, so a short PE
+  can no longer falsely pair with a long CE of the same root and quantity. Futures and equity rows
+  carry no option type and group as before.
+- **Option type derivation**: `_option_type()` (`positions.py`) and `_optTypeFallback()`
+  (`lotPairSplit.js`) require a digit before the `CE`/`PE` suffix. A plain `endswith` check would
+  misread equity tickers such as `RELIANCE` or `BAJFINANCE` as call options.
 
 **Numeric header style** — `numericHdr` CSS class for right-aligned headers matching data cells
 
