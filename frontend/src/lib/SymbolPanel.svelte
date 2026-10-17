@@ -942,6 +942,20 @@
   // setter which assigns directly to the prop.
   const _sharedChaseAgg = $derived(chaseAgg);
   function _setSharedChaseAgg(/** @type {'low'|'med'|'high'} */ v) { chaseAgg = v; }
+
+  // Chase tooltip trigger (2026-10-17, operator: "remove tool tip with
+  // circle around i, make the labels themselves as tooltips. do it for
+  // chase") — CHASE's label is plain, non-interactive text (the actual
+  // toggle is a separate control elsewhere), so per the general rule it
+  // becomes the tooltip trigger itself instead of needing a separate
+  // "(i)" InfoHint chip. Same hideButton+anchor+bind:open pattern
+  // OptionsPayoff.svelte's own click-to-pin stat tooltips already use.
+  /** @type {HTMLElement | null} */
+  let _chaseInfoAnchor = $state(null);
+  let _chaseInfoOpen = $state(false);
+  function _chaseInfoKeydown(/** @type {KeyboardEvent} */ e) {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); _chaseInfoOpen = !_chaseInfoOpen; }
+  }
   // Shared template — applied to every leg in the basket on submit.
   // Operator picks once from the bar; submitBasket threads the id
   // into each BasketLeg's `template_id` so the backend runs the
@@ -2463,8 +2477,13 @@
           <span class="oes-tab-ltp"><span class="oes-tab-ltp-label">LTP</span>{priceFmt(_ltp)}</span>
         {/if}
         {#if _chaseEnabled}
-          <span class="oes-common-chase-label on" title="Chase is active">CHASE</span>
-          <InfoHint popup panel title="Chase"
+          <span class="oes-common-chase-label on" bind:this={_chaseInfoAnchor}
+                role="button" tabindex="0" aria-expanded={_chaseInfoOpen}
+                title="Chase is active — click for details"
+                onclick={() => { _chaseInfoOpen = !_chaseInfoOpen; }}
+                onkeydown={_chaseInfoKeydown}>CHASE</span>
+          <InfoHint popup hideButton id="chase-info-hint" anchor={_chaseInfoAnchor} bind:open={_chaseInfoOpen}
+            panel title="Chase"
             text="Chase is automatic for every limit order (on for LIMIT/SL order types, Chain legs are always limit) — re-quotes the price each interval until filled or max attempts is reached. Wait time between re-quotes depends on the aggressiveness picker beside it: <b>Low</b> — 30s, patient, eases into the spread (30 attempts max). <b>Med</b> — 20s, balanced (20 attempts max). <b>High</b> — 10s, crosses the spread fast (10 attempts max)." />
           <span class="oes-chase-agg-gap">
             <ChaseAggPicker value={_sharedChaseAgg} onChange={_setSharedChaseAgg} variant="panel" />
@@ -4979,6 +4998,9 @@
     align-items: center;
     min-height: var(--ctl-h, 1.7rem);
     box-sizing: border-box;
+    /* 2026-10-17 — the label itself is now the tooltip trigger (the
+       removed "(i)" InfoHint chip's click target moved onto this text). */
+    cursor: pointer;
   }
   .oes-common-chase-label.on { color: var(--c-action); }
   /* .oes-tabs has gap:0 (each child owns its own spacing) — the CHASE
