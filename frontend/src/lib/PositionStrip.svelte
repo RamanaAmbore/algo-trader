@@ -28,6 +28,7 @@
   // just moved). positionsDayPnlStore is a backward-compat shim over portfolioStore.
   import NavBreakdown from '$lib/NavBreakdown.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
+  import { pushLayer, popLayer } from '$lib/utils/layerStack.js';
   import { debugLog } from '$lib/debug/debugLog.js';
 
   // Reactive views into the three-tier stores. The stores pre-populate from
@@ -180,6 +181,25 @@
       : rect.top - maxH - 4;
     _breakdown = { open: true, slot, left, top };
   }
+
+  // 2026-10-17 fix — found while verifying the close-button gap fix
+  // below: the breakdown overlay's own `onkeydown={(e) => e.key ===
+  // 'Escape' && ...}` (on `.ps-breakdown-overlay`, a plain non-focusable
+  // `<div>`) can never actually fire from a real keypress — nothing
+  // auto-focuses that div or a descendant on open, so Escape has no
+  // element to bubble from. Reproduced live (not flaky): the ESC-closes
+  // assertion in navstrip_breakdown_close_button_gap.spec.js failed
+  // 3/3 runs before this fix. Migrated to the shared `layerStack.js`
+  // Escape-stack coordinator instead (same convention PositionPinPicker
+  // already uses) — it listens once at `document` capture phase,
+  // independent of focus, and only the top-of-stack layer's callback
+  // runs, so it also can't double-fire alongside another overlay's
+  // Escape handler.
+  $effect(() => {
+    if (!_breakdown.open) return;
+    const id = pushLayer(() => { _breakdown = { ..._breakdown, open: false }; });
+    return () => popLayer(id);
+  });
 
   async function _load() {
     try {
@@ -824,10 +844,10 @@
     >
   </span>
   {#if _breakdown.open}
-    <!-- svelte-ignore a11y_no_noninteractive_element_interactions a11y_click_events_have_key_events -->
+    <!-- Escape handled by the layerStack coordinator (the $effect above)
+         instead of a local onkeydown — see that effect's comment. -->
     <div class="ps-breakdown-overlay" role="presentation"
-         onclick={() => (_breakdown.open = false)}
-         onkeydown={(e) => e.key === 'Escape' && (_breakdown.open = false)}>
+         onclick={() => (_breakdown.open = false)}>
       <div class="ps-breakdown-panel"
            style="left:{_breakdown.left}px; top:{_breakdown.top}px"
            role="dialog" tabindex="-1"
