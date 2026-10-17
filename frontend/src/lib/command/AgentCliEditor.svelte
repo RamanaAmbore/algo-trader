@@ -87,7 +87,7 @@
   import {
     compileAgentCliStatement, suggestAgentCliAt, describeErrorPosition,
     decompileAgent, decompileEventAgent, decompileBracket, decompileToken,
-    lookupAgentCliEntry, isInsideOpenCall,
+    lookupAgentCliEntry, isInsideOpenCall, describeTokenAt, lexAgentStatement,
   } from '$lib/command/grammars/agents.js';
   import { pushLayer, popLayer } from '$lib/utils/layerStack.js';
   import { getAccountsSync } from '$lib/data/accounts.js';
@@ -168,6 +168,89 @@
   // nothing has been dismissed (or a dismissal has since been superseded).
   let _dismissedAt = $state(null);
 
+  // Click-to-describe an ALREADY-TYPED token (.claude/PLAN.md, "Click-to-
+  // describe already-entered CLI tokens") — distinct from `_hoverLabel`/
+  // `_hoverDesc` above, which are keyed to the LIVE dropdown's current
+  // candidate list and would show a wrong/missing description for an
+  // arbitrary already-typed token the operator just clicked on (confirmed
+  // independently by architect/risk/devil's-advocate during the council
+  // review). Deliberately a plain `$state` written imperatively inside a
+  // dedicated click handler, NOT a `$derived` tracking `value`/`cursorPos`
+  // — a `$derived` would re-run (and potentially flip the panel on/off)
+  // on every keystroke for no reason; this should only ever change on an
+  // explicit click or an explicit dismissal.
+  // `_clickDescResult` is shared by BOTH surfaces that support
+  // click-to-describe in this component — the live textarea (Part 1) and
+  // the read-only "Generated statement(s)" preview below (`canonicalLines`)
+  // — rather than inventing a second state var; `_clickDescSource` records
+  // which one produced the current result, since each renders its panel
+  // in a different place (textarea: floating, anchored below the input;
+  // preview: inline, right after the clicked line, so it structurally can
+  // never cover the Place-order/Cancel-all buttons further down).
+  /** @type {{name:string, description:string, token:string, kind:string}|null} */
+  let _clickDescResult = $state(null);
+  /** @type {'textarea'|'preview'|null} */
+  let _clickDescSource = $state(null);
+
+  /** New dedicated click handler for the textarea — separate from
+   *  `_updateCursor` (which also fires on every keyup/focus, not just a
+   *  click; bolting this onto it was flagged independently by perf/UX/
+   *  risk during the council review). Called AFTER `_updateCursor` so
+   *  `textareaEl.selectionStart` already reflects this exact click. */
+  function _onTokenClick() {
+    _clickDescSource = 'textarea';
+    if (!catalog || !textareaEl) { _clickDescResult = null; return; }
+    const pos = textareaEl.selectionStart ?? cursorPos;
+    try { _clickDescResult = describeTokenAt(value, pos, catalog); }
+    catch { _clickDescResult = null; }
+    // Reinterprets the council's literal "dropdown wins" precedence rule —
+    // live-verified via Playwright + a debug probe (2026-10-17) that the
+    // rule AS LITERALLY STATED makes param-key describe unreachable in
+    // practice: ANY click landing inside a call's already-typed args puts
+    // the cursor in an open-call context, so `suggestAgentCliAt` ALWAYS
+    // returns non-empty `kind:'param'` candidates there (the already-typed
+    // prefix trivially fuzzy-matches itself), and `_gatedBySize` exempts
+    // `'param'` from the large-list size gate — so the dropdown reopens
+    // from the SAME click that produced a real describe result, on
+    // essentially every param-key click, permanently suppressing the
+    // describe panel for the single most useful case the plan's own Tests
+    // section lists first ("KEY-token inside an open/closed call"). Fix:
+    // reuse the EXISTING `_dismissedAt` mechanism (already designed for
+    // "suppress the dropdown until cursor or text changes", today only
+    // written by Escape) — scoped to this EXACT (cursor, text) pair, so a
+    // later cursor move or keystroke immediately re-qualifies the dropdown
+    // again (via `_dismissed`'s own exact-match check), same as any other
+    // dismissal. Only set when a result was actually found — a null
+    // result (click on whitespace, or into an empty/undescribable
+    // position) leaves the dropdown untouched, preserving the earlier,
+    // independent fix that clicking into the box shows the token list.
+    if (_clickDescResult) _dismissedAt = { pos: cursorPos, text: value };
+  }
+
+  // `_showDescribePanel` (the precedence rule against the live dropdown)
+  // is declared further below, right after `_showDropdown` itself —
+  // `$derived` is evaluated lazily/on-read, but a block-scoped `const`
+  // still can't be referenced before ITS OWN declaration is reached at
+  // module-eval time, so this can't live here ahead of `_showDropdown`.
+
+  // Escape-stack entry (same `layerStack.js` coordinator the dropdown
+  // above already uses) — dismisses whichever describe panel (textarea
+  // OR preview) is currently showing without closing the host order-
+  // ticket modal (SymbolPanel) Escape would otherwise bubble to. Tracks
+  // `_clickDescResult` alone (not `_showDescribePanel`) so the preview
+  // panel — which is never suppressed by the dropdown precedence rule
+  // above — also gets an Escape-dismiss entry.
+  /** @type {string | null} */
+  let _describeEscapeLayerId = null;
+  $effect(() => {
+    if (_clickDescResult) {
+      _describeEscapeLayerId = pushLayer(() => { _clickDescResult = null; _clickDescSource = null; });
+    } else if (_describeEscapeLayerId) {
+      popLayer(_describeEscapeLayerId);
+      _describeEscapeLayerId = null;
+    }
+  });
+
   /** @type {{ok:boolean, errors:any[], kind:string|null, agent:any, ticket:any, basket:any, template:any, fragment:any, cancelAll:any}|null} */
   let compiled = $state(null);
 
@@ -209,6 +292,10 @@
     dirty = true;
     _updateCursor();
     _autoCorrectCase();
+    // Dismiss rule — any further typing invalidates whichever
+    // click-to-describe panel (textarea or preview) is currently showing.
+    _clickDescResult = null;
+    _clickDescSource = null;
   }
 
   const suggestResult = $derived.by(() => {
@@ -391,6 +478,25 @@
 
   const _showDropdown = $derived.by(() =>
     _focused && suggestResult.suggestions.length > 0 && !_gatedBySize && !_dismissed);
+
+  // Click-to-describe precedence rule (council-confirmed, .claude/PLAN.md)
+  // — a click inside the textarea can ALSO cause the live autocomplete
+  // dropdown to become visible on the very same click (e.g. clicking into
+  // an already-partially-typed word); the dropdown wins so the two panels
+  // never compete for the same space. Only gates the TEXTAREA's own
+  // floating panel — the read-only preview's inline panel further below
+  // has no dropdown to conflict with and is never suppressed by this.
+  // `_onTokenClick`'s own `_dismissedAt` write (see its comment) already
+  // keeps `_showDropdown` false for the SAME click that found a real
+  // describe result, so in practice this `!_showDropdown` check here is
+  // the safety net for the genuinely-concurrent case — a SUBSEQUENT
+  // keystroke/cursor-move reopening the dropdown while a stale describe
+  // result from an earlier click hasn't been cleared yet (shouldn't
+  // normally happen, since `handleInput` clears `_clickDescResult` on
+  // every keystroke too, but this stays correct even if that ordering
+  // ever changes).
+  const _showDescribePanel = $derived(
+    !!_clickDescResult && _clickDescSource === 'textarea' && !_showDropdown);
 
   // Escape-stack coordinator (layerStack.js, same pattern Select.svelte's
   // own dropdown uses) — this dropdown is its own dismissible layer,
@@ -685,6 +791,78 @@
     } catch { /* display-only — never block the JSON preview on this */ }
     return null;
   });
+
+  // Click-to-describe on the read-only "Generated statement(s)" preview
+  // (.claude/PLAN.md, Part 1) — scoped to the decompile kinds that
+  // actually render real parseable grammar text (`agent`/`event`/
+  // `bracket`/`token`); `order`/`cancel_all_orders` build a hand-written
+  // SUMMARY string via `_legSummaryText`/the inline cancel-all branch
+  // above, not grammar text `describeTokenAt` could ever resolve against,
+  // so those two kinds are deliberately left as plain, non-clickable text
+  // (their own leg/param values are already shown directly).
+  const _canonicalClickable = $derived(
+    compiled?.kind === 'agent' || compiled?.kind === 'event'
+    || compiled?.kind === 'bracket' || compiled?.kind === 'token');
+
+  /** Splits one canonical preview `line` into displayable segments —
+   *  non-clickable gap text (whitespace/punctuation between tokens) and
+   *  clickable NAME-token spans, each carrying the absolute `pos` to pass
+   *  to `describeTokenAt(line, pos, catalog)`. Reuses the SAME lexer the
+   *  grammar engine itself uses (not a second hand-rolled tokenizer), so
+   *  this can never drift out of sync with what `describeTokenAt` itself
+   *  considers a token. A call's own `(...)` (including every arg inside
+   *  it) is ONE clickable span at this granularity — simpler than a
+   *  second, nested round of span-splitting for a read-only preview, and
+   *  keeps one consistent "click a token, see what it means" model rather
+   *  than inventing per-field precision only here (the SAME call, pre-
+   *  decompile, already gets full per-param precision in the live
+   *  textarea above). Falls back to one plain, non-clickable segment on
+   *  any lex failure (should not happen for canonical, already-compiled
+   *  text, but this is cosmetic-only — never worth a thrown error). */
+  function _lineSegments(/** @type {string} */ line) {
+    try {
+      const { tokens, errors } = lexAgentStatement(line);
+      if (errors.length || !tokens.length) return [{ text: line, clickable: false, pos: 0 }];
+      const real = tokens[tokens.length - 1].type === 'EOF' ? tokens.slice(0, -1) : tokens;
+      const segs = [];
+      let cursor = 0;
+      for (const t of real) {
+        if (t.start > cursor) segs.push({ text: line.slice(cursor, t.start), clickable: false, pos: 0 });
+        segs.push({ text: line.slice(t.start, t.end), clickable: t.type === 'NAME', pos: t.start });
+        cursor = t.end;
+      }
+      if (cursor < line.length) segs.push({ text: line.slice(cursor), clickable: false, pos: 0 });
+      return segs;
+    } catch {
+      return [{ text: line, clickable: false, pos: 0 }];
+    }
+  }
+
+  function _onPreviewTokenClick(/** @type {string} */ line, /** @type {number} */ pos) {
+    _clickDescSource = 'preview';
+    if (!catalog) { _clickDescResult = null; return; }
+    try { _clickDescResult = describeTokenAt(line, pos, catalog); }
+    catch { _clickDescResult = null; }
+  }
+
+  // Click-outside dismiss for the preview panel specifically (the
+  // textarea's own panel is already dismissed via its `onblur` handler
+  // above — the preview tokens live outside the textarea entirely, so
+  // blur doesn't fire for a click that lands there). Mirrors InfoHint's
+  // own click-outside convention. Escape is still handled by the shared
+  // `layerStack` effect above (keyed on `_clickDescResult` regardless of
+  // source), not duplicated here.
+  $effect(() => {
+    if (_clickDescSource !== 'preview' || !_clickDescResult) return;
+    function onDocClick(/** @type {MouseEvent} */ e) {
+      const t = /** @type {Node} */ (e.target);
+      if (t && t instanceof Element && t.closest('.agent-cli-canonical')) return;
+      _clickDescResult = null;
+      _clickDescSource = null;
+    }
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  });
 </script>
 
 <div class="agent-cli-editor">
@@ -693,10 +871,10 @@
       bind:this={textareaEl}
       bind:value
       oninput={handleInput}
-      onclick={_updateCursor}
+      onclick={() => { _updateCursor(); _onTokenClick(); }}
       onkeyup={_updateCursor}
       onfocus={() => { _focused = true; _updateCursor(); }}
-      onblur={() => { _focused = false; }}
+      onblur={() => { _focused = false; _clickDescResult = null; _clickDescSource = null; }}
       onkeydown={handleKeydown}
       class="agent-cli-textarea field-input font-mono text-[length:var(--fs-sm)]"
       rows="6"
@@ -744,6 +922,28 @@
         {/if}
       </div>
     {/if}
+
+    <!-- Click-to-describe panel (.claude/PLAN.md) — deliberately a SIBLING
+         of the `{#if _showDropdown}` block above, never nested inside it:
+         that block doesn't exist in the DOM at all while no dropdown
+         candidates are showing, so nesting this here would make the
+         describe panel structurally unable to render whenever the
+         dropdown itself is closed — exactly the opposite of when this
+         panel is actually needed (precedence rule: dropdown wins only
+         when BOTH would otherwise show, via `_showDescribePanel`'s own
+         `!_showDropdown` check above, not by DOM placement). Anchored the
+         same way the dropdown is (`top: 100%` of this wrapper) with a
+         small `max-height` clamp (see CSS) — comfortably within one
+         textarea-height band below the input, nowhere near the Place
+         order/Cancel-all buttons further down inside `.agent-cli-result`. -->
+    {#if _showDescribePanel}
+      <div class="agent-cli-describe-panel" data-testid="agent-cli-describe-panel">
+        <div class="agent-cli-describe-name">{_clickDescResult.name}</div>
+        {#if _clickDescResult.description}
+          <div class="agent-cli-describe-text">{_clickDescResult.description}</div>
+        {/if}
+      </div>
+    {/if}
   </div>
 
   <!-- Sprint C (2026-10, Phase 2 "Automation redesign") — the result area
@@ -788,8 +988,36 @@
           <div class="agent-cli-canonical">
             <div class="agent-cli-canonical-title">Generated statement{canonicalLines.length > 1 ? 's' : ''}:</div>
             {#each canonicalLines as line, i (i)}
-              <pre class="agent-cli-canonical-line">{line}</pre>
+              {#if _canonicalClickable}
+                <!-- Click-to-describe (.claude/PLAN.md) — each NAME-shaped
+                     lexer token becomes its own clickable span; everything
+                     else (whitespace/punctuation/literals) stays plain
+                     text. Keyboard-reachable (role=button + Enter/Space)
+                     for the same reason every other clickable control in
+                     this app is. -->
+                <pre class="agent-cli-canonical-line">{#each _lineSegments(line) as seg}{#if seg.clickable}<span
+                      class="agent-cli-canonical-token"
+                      role="button" tabindex="0"
+                      data-testid="agent-cli-canonical-token"
+                      onclick={() => _onPreviewTokenClick(line, seg.pos)}
+                      onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); _onPreviewTokenClick(line, seg.pos); } }}
+                    >{seg.text}</span>{:else}{seg.text}{/if}{/each}</pre>
+              {:else}
+                <pre class="agent-cli-canonical-line">{line}</pre>
+              {/if}
             {/each}
+            {#if _clickDescResult && _clickDescSource === 'preview'}
+              <!-- Inline, normal-flow placement (NOT position:absolute) —
+                   this naturally pushes the JSON preview + Place-order/
+                   Cancel-all buttons below it DOWN, rather than floating
+                   on top and risking a visual overlap with them. -->
+              <div class="agent-cli-describe-panel agent-cli-describe-panel-inline" data-testid="agent-cli-describe-panel-preview">
+                <div class="agent-cli-describe-name">{_clickDescResult.name}</div>
+                {#if _clickDescResult.description}
+                  <div class="agent-cli-describe-text">{_clickDescResult.description}</div>
+                {/if}
+              </div>
+            {/if}
           </div>
         {/if}
         <pre class="agent-cli-preview-json">{JSON.stringify(previewPayload, null, 2)}</pre>
@@ -913,6 +1141,65 @@
        required_if/mutually-exclusive line appended on its own newline
        (see _paramConstraintText in agents.js) — preserve it. */
     white-space: pre-line;
+  }
+  /* Click-to-describe panel (.claude/PLAN.md) — distinct accent color
+     (sky, not the dropdown's amber) so the two mechanisms read as
+     visually different affordances even though they share the same
+     anchored-below-the-input placement convention. Floating variant
+     (textarea): anchored the same way `.agent-cli-dropdown` is, but with
+     a small `max-height` clamp — comfortably within one textarea-height
+     band below the input, nowhere near the Place order/Cancel-all
+     buttons further down inside `.agent-cli-result` (placement guard). */
+  .agent-cli-describe-panel {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    margin-top: 0.2rem;
+    z-index: var(--z-dropdown);
+    max-height: 5rem;
+    overflow-y: auto;
+    padding: 0.4rem 0.6rem;
+    border-radius: 4px;
+    background: rgba(15,23,42,0.95);
+    border: 1.5px solid var(--algo-sky-border-soft, rgba(125,211,252,0.35));
+    box-shadow: 0 10px 28px rgba(0,0,0,0.55);
+  }
+  /* Inline variant (Generated-statement preview) — normal document flow,
+     NOT position:absolute, so it structurally pushes the JSON preview +
+     Place-order/Cancel-all buttons below it DOWN rather than floating
+     over them; no max-height needed since nothing is clamped underneath. */
+  .agent-cli-describe-panel-inline {
+    position: static;
+    margin: 0.3rem 0 0.4rem 0;
+    max-height: none;
+    overflow-y: visible;
+    box-shadow: none;
+  }
+  .agent-cli-describe-name {
+    font-family: var(--font-mono, monospace);
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    color: var(--algo-sky);
+  }
+  .agent-cli-describe-text {
+    font-size: var(--fs-xs);
+    color: var(--algo-muted);
+    white-space: pre-line;
+    margin-top: 0.15rem;
+  }
+  /* Clickable token span inside the "Generated statement(s)" preview —
+     subtle dotted underline (not a full button chrome) so the preview
+     still reads primarily as TEXT, with just enough affordance to signal
+     it's clickable. */
+  .agent-cli-canonical-token {
+    cursor: pointer;
+    border-bottom: 1px dotted var(--algo-sky-border-soft, rgba(125,211,252,0.5));
+  }
+  .agent-cli-canonical-token:hover,
+  .agent-cli-canonical-token:focus-visible {
+    color: var(--algo-sky);
+    background: rgba(125,211,252,0.12);
   }
   .agent-cli-errors {
     padding: 0.4rem 0.6rem; border-radius: 0.3rem;

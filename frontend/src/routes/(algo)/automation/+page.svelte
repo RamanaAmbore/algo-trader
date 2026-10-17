@@ -27,8 +27,9 @@
   } from '$lib/data/automationKinds.js';
   import {
     fetchAgentCatalog, decompileAgent, decompileEventAgent,
-    decompileBracket, decompileToken,
+    decompileBracket, decompileToken, lookupAgentCliEntry,
   } from '$lib/command/grammars/agents.js';
+  import { pushLayer, popLayer } from '$lib/utils/layerStack.js';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
 
@@ -211,6 +212,11 @@
 
   function toggleRowView(/** @type {string} */ key) {
     _expandedRowKey = _expandedRowKey === key ? null : key;
+    // A row collapsing removes its JSON-preview click-to-describe panel
+    // from the DOM — clear the state (and its Escape-layer entry, via the
+    // `$effect` below) so it can't dangle across an unrelated row's later
+    // expand.
+    _paramDescResult = null;
   }
 
   // One shared CLI-catalog fetch for Edit's decompile step — separate
@@ -222,6 +228,77 @@
     if (_editCatalog) return _editCatalog;
     _editCatalog = await fetchAgentCatalog();
     return _editCatalog;
+  }
+
+  // Click-to-describe on the Automation page's read-only JSON-preview card
+  // (.claude/PLAN.md, Part 2) — a DIFFERENT surface from AgentCliEditor's
+  // own CLI-grammar-text click-to-describe (`describeTokenAt`): this is
+  // plain `JSON.stringify(a.params, null, 2)` text, not parseable grammar
+  // text, so `describeTokenAt` does not apply here. Resolves a top-level
+  // JSON key's description via the SAME catalog data
+  // (`lookupAgentCliEntry(...).paramsSchema`), just keyed by the JSON
+  // field name directly instead of by lexer token — no new description
+  // table. Reuses the SAME dedicated-`$state` + dismiss pattern
+  // AgentCliEditor's own click-to-describe uses (dedicated `$state`
+  // written imperatively inside a click handler, dedicated Escape-layer
+  // entry, click-outside dismiss) rather than inventing a third pattern.
+  /** @type {{name:string, description:string}|null} */
+  let _paramDescResult = $state(null);
+
+  async function _onParamKeyClick(/** @type {string} */ actionType, /** @type {string} */ key) {
+    let catalog;
+    try { catalog = await _ensureEditCatalog(); } catch { _paramDescResult = null; return; }
+    const entry = lookupAgentCliEntry(actionType, catalog);
+    const spec = entry?.paramsSchema?.[key];
+    _paramDescResult = spec ? { name: key, description: spec.description || '' } : null;
+  }
+
+  // Escape-stack entry (same `layerStack.js` coordinator AgentCliEditor's
+  // own click-to-describe panel uses) so Escape dismisses this panel
+  // without bubbling to any host modal.
+  /** @type {string | null} */
+  let _paramDescEscapeLayerId = null;
+  $effect(() => {
+    if (_paramDescResult) {
+      _paramDescEscapeLayerId = pushLayer(() => { _paramDescResult = null; });
+    } else if (_paramDescEscapeLayerId) {
+      popLayer(_paramDescEscapeLayerId);
+      _paramDescEscapeLayerId = null;
+    }
+  });
+
+  // Click-outside dismiss — mirrors AgentCliEditor's own preview-panel
+  // click-outside convention (InfoHint's pattern). `.preview-action`
+  // wraps every action's own type label + params block, including the
+  // clickable key spans — a click landing anywhere else on the page
+  // dismisses the panel.
+  $effect(() => {
+    if (!_paramDescResult) return;
+    function onDocClick(/** @type {MouseEvent} */ e) {
+      const t = /** @type {Node} */ (e.target);
+      if (t && t instanceof Element && t.closest('.preview-action')) return;
+      _paramDescResult = null;
+    }
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  });
+
+  /** Splits one action's pretty-printed `JSON.stringify(params, null, 2)`
+   *  text into displayable lines, flagging ONLY a top-level key line
+   *  (exactly 2-space indent, `"key": ...`) as clickable — a nested
+   *  object/array's own inner keys (4+ space indent) stay plain text, per
+   *  the plan's explicit "top-level JSON keys" scope. Regex-based rather
+   *  than a real JSON-position parse since the display text IS already
+   *  the canonical `JSON.stringify` output with a fixed, known shape
+   *  (2-space indent step) — simpler than parsing the object and
+   *  re-serializing with position tracking for a read-only preview. */
+  function _paramJsonLines(/** @type {any} */ params) {
+    const text = JSON.stringify(params, null, 2);
+    return text.split('\n').map((line) => {
+      const m = /^(\s{2})"([A-Za-z0-9_]+)":(.*)$/.exec(line);
+      if (!m) return { text: line, clickable: false, key: null };
+      return { indent: m[1], key: m[2], rest: m[3], clickable: true };
+    });
   }
 
   /** Edit action for any row, any kind — decompiles the row's current
@@ -695,10 +772,38 @@
           <div class="preview-action">
             <span class="preview-action-type">{a.type || '?'}</span>
             {#if a.params && Object.keys(a.params).length}
-              <pre class="preview-action-params">{JSON.stringify(a.params, null, 2)}</pre>
+              <!-- Click-to-describe (.claude/PLAN.md, Part 2) — each
+                   top-level JSON key becomes its own clickable span;
+                   everything else (braces/quotes/values/nested content)
+                   stays plain text, preserving the exact JSON.stringify
+                   look. -->
+              <!-- `{#if i > 0}{'\n'}{/if}` PREFIXES a newline before every
+                   line except the first (an explicit `{'\n'}` EXPRESSION,
+                   not a literal newline char in the markup — the latter
+                   is trimmed away as insignificant whitespace, which is
+                   exactly what tripped svelte-check's own "Empty block"
+                   warning here), rather than suffixing one after every
+                   line including the last — reconstructs the original
+                   `JSON.stringify` text byte-for-byte (no spurious
+                   trailing blank line). -->
+              <pre class="preview-action-params">{#each _paramJsonLines(a.params) as line, i}{#if i > 0}{'\n'}{/if}{#if line.clickable}{line.indent}<span
+                    class="preview-action-param-key"
+                    role="button" tabindex="0"
+                    data-testid="agent-param-key"
+                    onclick={() => _onParamKeyClick(a.type, line.key)}
+                    onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); _onParamKeyClick(a.type, line.key); } }}
+                  >"{line.key}"</span>:{line.rest}{:else}{line.text}{/if}{/each}</pre>
             {/if}
           </div>
         {/each}
+        {#if _paramDescResult}
+          <div class="preview-action-desc" data-testid="agent-param-desc">
+            <span class="preview-action-desc-name">{_paramDescResult.name}</span>
+            {#if _paramDescResult.description}
+              <span class="preview-action-desc-text">{_paramDescResult.description}</span>
+            {/if}
+          </div>
+        {/if}
       </div>
     {:else}
       <div class="text-[length:var(--fs-sm)] text-[var(--c-muted)] italic">alert-only (no actions)</div>
@@ -1364,6 +1469,36 @@
     white-space: pre-wrap;
     word-break: break-word;
   }
+  /* Click-to-describe (.claude/PLAN.md, Part 2) — subtle dotted
+     underline on a top-level JSON key, same visual convention as
+     AgentCliEditor's own `.agent-cli-canonical-token` so the two
+     click-to-describe surfaces read consistently across the app. */
+  .preview-action-param-key {
+    cursor: pointer;
+    border-bottom: 1px dotted var(--algo-sky-border-soft, rgba(125,211,252,0.5));
+  }
+  .preview-action-param-key:hover,
+  .preview-action-param-key:focus-visible {
+    color: var(--algo-sky);
+    background: rgba(125,211,252,0.12);
+  }
+  .preview-action-desc {
+    font-size: var(--fs-xs);
+    background: rgba(15,23,42,0.5);
+    border: 1px solid var(--algo-sky-border-soft, rgba(125,211,252,0.3));
+    border-radius: 3px;
+    padding: 0.3rem 0.45rem;
+    margin-top: 0.3rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+  }
+  .preview-action-desc-name {
+    font-family: var(--font-mono, monospace);
+    font-weight: 600;
+    color: var(--algo-sky);
+  }
+  .preview-action-desc-text { color: var(--algo-muted); }
 
   /* Tier badge — non-editable mini-pill rendered in each agent's row to
      surface severity at a glance. Same colour family as the edit pills

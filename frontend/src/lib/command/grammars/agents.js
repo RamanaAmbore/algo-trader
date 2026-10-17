@@ -9080,3 +9080,277 @@ export function suggestAgentCliAt(text, cursor, catalog, opts = {}) {
     return _emptySuggest(Number(cursor) || 0);
   }
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// (f) Click-to-describe an ALREADY-TYPED token (distinct from the live
+//     autocomplete dropdown above, which only ever describes a candidate
+//     while it's still being typed). See `describeTokenAt`'s own doc
+//     comment below for the full design — this section is purely
+//     additive and reuses `_findOpenCallAt`/`_lookupAnyCatalogEntry`/
+//     `_clauseKindFromTokenPrefix`/`_collectBindingsUpToCursor` exactly
+//     as they already stand (no internal change to any of the four).
+// ═══════════════════════════════════════════════════════════════════════
+
+/** Forward scan from a click position `pos` to a safe slice end for
+ *  `describeTokenAt`'s tier-2 lex fallback — extends just far enough to
+ *  close out whatever call-paren nesting is already open AT `pos` (so the
+ *  slice up to the returned offset is balanced and lexes cleanly), then
+ *  stops at the next top-level whitespace gap once paren depth returns to
+ *  (or starts at) zero. Quote-aware so a comma/paren INSIDE a string
+ *  value never miscounts. Mirrors `_suggestAgentCliAtImpl`'s own "lex a
+ *  self-contained slice, not the whole possibly-broken text" strategy —
+ *  just extended forward from an already-typed click position instead of
+ *  backward from a live typing cursor (which never needs to look ahead of
+ *  itself). */
+function _probeSliceEndAt(text, pos) {
+  const n = text.length;
+  let i = Math.max(0, Math.min(pos, n));
+  let depth = 0;
+  let inQuote = null;
+  while (i < n) {
+    const ch = text[i];
+    if (inQuote) { i++; if (ch === inQuote) inQuote = null; continue; }
+    if (ch === '"' || ch === "'") { inQuote = ch; i++; continue; }
+    if (ch === '(') { depth++; i++; continue; }
+    if (ch === ')') { i++; depth--; if (depth <= 0) break; continue; }
+    if (depth <= 0 && /\s/.test(ch)) break;
+    i++;
+  }
+  return i;
+}
+
+/** Quote-aware scan for the TEXT content of the call whose "(" sits at
+ *  `parenPos`, stopping at its matching ")" when one exists, or at
+ *  end-of-text for a genuinely still-open call. Used only by
+ *  `_describeOpenCallParam`'s tier-3 fallback — distinct from
+ *  `_findOpenCallAt` (which only locates the open paren, quote-aware but
+ *  cursor-bounded) and from the lexer's own per-call paren-matching
+ *  (which throws rather than degrading when a call never closes). */
+function _scanCallArgsText(text, parenPos) {
+  const n = text.length;
+  let i = parenPos + 1;
+  let depth = 1;
+  let inQuote = null;
+  while (i < n && depth > 0) {
+    const ch = text[i];
+    if (inQuote) { if (ch === inQuote) inQuote = null; i++; continue; }
+    if (ch === '"' || ch === "'") { inQuote = ch; i++; continue; }
+    else if (ch === '(') depth++;
+    else if (ch === ')') depth--;
+    i++;
+  }
+  const end = depth > 0 ? n : i - 1;
+  return text.slice(parenPos + 1, end);
+}
+
+/** Render a GIVEN/ALERT/DO label binding (as collected by
+ *  `_collectBindingsUpToCursor`) into a `describeTokenAt` result — the
+ *  "GIVEN-bound label used elsewhere" case called out as a confirmed
+ *  coverage gap in the original design (a plain catalog lookup never
+ *  checks bindings at all). */
+function _describeBinding(binding) {
+  const rhs = String(binding.rhsText || '').trim();
+  const description = rhs ? `Bound via GIVEN — ${binding.label} = ${rhs}` : `Bound via GIVEN — ${binding.label}`;
+  return { name: binding.label, description, token: binding.label, kind: 'binding' };
+}
+
+/** Resolve a param-key description for a position `pos` (absolute offset
+ *  in `text`) known to sit INSIDE a CLOSED call's `(...)` — `coveringTok`
+ *  is the NAME token (`hasCall: true`) found by `describeTokenAt`'s own
+ *  covering-token scan. Scans `coveringTok.args` directly (each ArgEntry
+ *  already carries its own `keyStart`/`value.start`/`value.end`) rather
+ *  than re-tokenizing — NOTE these positions are relative to the call's
+ *  OWN inner text (right after "("), not absolute in `text`, so every
+ *  comparison below shifts `pos` into that same relative frame via
+ *  `innerStart` first. Returns `null` when the call has no catalog entry
+ *  (e.g. `debug(...)`, which takes a bare label/column reference, not a
+ *  schema kwarg) or when no arg actually covers `pos` (a comma/space gap
+ *  between args). */
+function _describeClosedCallArg(coveringTok, text, pos, catalog, clauseKind) {
+  const scopeHint = _nearestNonSpaceBefore(text, coveringTok.start) === '@'
+    || _nearestNonSpaceBefore(text, coveringTok.start) === '.';
+  const entry = _lookupAnyCatalogEntry(coveringTok.value, catalog, clauseKind, scopeHint);
+  if (!entry || !Array.isArray(coveringTok.args)) return null;
+  const innerStart = coveringTok.start + String(coveringTok.value).length + 1;
+  const relPos = pos - innerStart;
+  for (const arg of coveringTok.args) {
+    const keyLen = String(arg.key || '').length;
+    const lo = Math.min(arg.keyStart, arg.value.start);
+    const hi = Math.max(arg.value.end, arg.keyStart + keyLen);
+    if (relPos < lo || relPos >= hi) continue;
+    const rawKey = String(arg.key || '').toLowerCase();
+    const realKey = _ALIAS_TO_REAL[rawKey] || rawKey;
+    const spec = entry.paramsSchema && entry.paramsSchema[realKey];
+    if (!spec) return null;
+    return { name: realKey, description: spec.description || '', token: coveringTok.value, kind: 'param' };
+  }
+  return null;
+}
+
+/** `true` iff `pos` sits inside a quoted-string literal that is still
+ *  open at that point, scanning `text` from the very start (unlike
+ *  `_probeSliceEndAt`'s forward-only scan, which has no way to know a
+ *  quote was already open before the position it starts from). Used only
+ *  to gate the tier-3 open-call fallback — see its own comment. */
+function _isInsideOpenQuoteAt(text, pos) {
+  let inQuote = null;
+  const n = Math.min(pos, text.length);
+  for (let i = 0; i < n; i++) {
+    const ch = text[i];
+    if (inQuote) { if (ch === inQuote) inQuote = null; continue; }
+    if (ch === '"' || ch === "'") inQuote = ch;
+  }
+  return inQuote !== null;
+}
+
+/** Tier-3 fallback for `describeTokenAt` — reached only when BOTH lex
+ *  tiers (full text, then the tier-2 probe slice) threw, meaning the call
+ *  enclosing `pos` can't be lexed as a clean, closed token at all (it's
+ *  genuinely still open — the realistic "operator clicked an already-typed
+ *  param name while still mid-edit on this very call" case). Reuses
+ *  `_findOpenCallAt` + the same raw-text key=value scan
+ *  `_paramOrEnumSuggestion` already does for live autocomplete, adapted to
+ *  resolve "which already-typed key covers this position" instead of
+ *  "what completes at the cursor". */
+function _describeOpenCallParam(text, pos, catalog) {
+  // Guard against the "unterminated string spanning the click position"
+  // failure mode called out in `describeTokenAt`'s own doc comment: once
+  // a quote never closes, every quote-aware scan below (comma-splitting,
+  // top-level "=" detection) treats everything AFTER it as still inside
+  // that one string, so a later, unrelated "=" earlier in the text (e.g.
+  // an EARLIER param's own key) can wrongly appear to be the "last
+  // top-level one" and get matched instead of returning no match. Bail
+  // out before ever reaching that ambiguity, rather than resolve to a
+  // description that may not actually belong to the clicked token.
+  if (_isInsideOpenQuoteAt(text, pos)) return null;
+  const openCall = _findOpenCallAt(text, pos);
+  if (!openCall) return null;
+  const name = text.slice(openCall.nameStart, openCall.nameEnd);
+  if (name.toLowerCase() === 'debug') return null; // no catalog entry — a bare label/column ref, not a kwarg
+  const scopeHint = _nearestNonSpaceBefore(text, openCall.nameStart) === '@'
+    || _nearestNonSpaceBefore(text, openCall.nameStart) === '.';
+  const prefixLex = lexAgentStatement(text.slice(0, openCall.nameStart));
+  const clauseKind = prefixLex.errors.length ? null : _clauseKindFromTokenPrefix(prefixLex.tokens);
+  const entry = _lookupAnyCatalogEntry(name, catalog, clauseKind, scopeHint);
+  if (!entry) return null;
+  const innerText = _scanCallArgsText(text, openCall.parenPos);
+  const segments = _splitTopLevelCommasWithOffsets(innerText);
+  for (const seg of segments) {
+    const segAbsStart = openCall.parenPos + 1 + seg.start;
+    const segAbsEnd = segAbsStart + seg.text.length;
+    if (pos < segAbsStart || pos > segAbsEnd) continue;
+    const eq = _findTopLevelEquals(seg.text);
+    if (eq < 0) return null;
+    const rawKey = seg.text.slice(0, eq).trim().toLowerCase();
+    if (!rawKey) return null;
+    const realKey = _ALIAS_TO_REAL[rawKey] || rawKey;
+    const spec = entry.paramsSchema && entry.paramsSchema[realKey];
+    if (!spec) return null;
+    return { name: realKey, description: spec.description || '', token: name, kind: 'param' };
+  }
+  return null;
+}
+
+function _describeTokenAtImpl(text, pos, catalog) {
+  if (typeof text !== 'string') return null;
+  const n = text.length;
+  const p = Math.max(0, Math.min(Number(pos) || 0, n));
+
+  let tokens = null;
+  const tier1 = lexAgentStatement(text);
+  if (!tier1.errors.length) {
+    tokens = tier1.tokens;
+  } else {
+    const probeEnd = _probeSliceEndAt(text, p);
+    const tier2 = lexAgentStatement(text.slice(0, probeEnd));
+    if (!tier2.errors.length) tokens = tier2.tokens;
+  }
+
+  if (tokens) {
+    const real = tokens.length && tokens[tokens.length - 1].type === 'EOF' ? tokens.slice(0, -1) : tokens;
+    let idx = -1;
+    for (let i = 0; i < real.length; i++) {
+      const t = real[i];
+      if (p >= t.start && p < t.end) { idx = i; break; }
+    }
+    if (idx < 0 && real.length && p === n) {
+      const last = real[real.length - 1];
+      if (last.end === n) idx = real.length - 1;
+    }
+    if (idx >= 0) {
+      const covering = real[idx];
+      if (covering.type !== 'NAME') return null; // literal/punctuation — no tooltip
+      const clauseKind = _clauseKindFromTokenPrefix(real.slice(0, idx + 1));
+      const nameEnd = covering.start + String(covering.value).length;
+      if (covering.hasCall && p > nameEnd) {
+        // Inside this (closed) call's own parens — resolve a param key,
+        // never a bound-label match on the call's own NAME (that check
+        // only applies to a bare reference, handled below).
+        return _describeClosedCallArg(covering, text, p, catalog, clauseKind);
+      }
+      const bindings = _collectBindingsUpToCursor(text, p);
+      const lower = String(covering.value).toLowerCase();
+      if (bindings.has(lower)) return _describeBinding(bindings.get(lower));
+      const scopeHint = _nearestNonSpaceBefore(text, covering.start) === '@'
+        || _nearestNonSpaceBefore(text, covering.start) === '.';
+      const entry = _lookupAnyCatalogEntry(covering.value, catalog, clauseKind, scopeHint);
+      if (!entry) return null;
+      return { name: entry.token || covering.value, description: entry.description || '', token: covering.value, kind: 'token' };
+    }
+    // `pos` sits in a whitespace/comma gap the successful lex still
+    // produced tokens for — fall through to the tier-3 open-call probe
+    // below (safe: it degrades to `null` for a genuine gap/punctuation
+    // click that isn't inside any call's parens at all).
+  }
+
+  return _describeOpenCallParam(text, p, catalog);
+}
+
+/** Click-to-describe an already-typed CLI token — resolves whatever sits
+ *  at `pos` (an absolute offset into `text`, e.g. the textarea's
+ *  `selectionStart` at the click point) to a short description, WITHOUT
+ *  touching `text`/selection/compile output in any way (pure read-only
+ *  lookup — never throws, mirrors `suggestAgentCliAt`'s own try/catch
+ *  shape). Distinct from `suggestAgentCliAt`: that function describes a
+ *  CANDIDATE while it's still being typed (keyed off the live cursor and
+ *  the dropdown's own suggestion list); this one describes whatever is
+ *  ALREADY sitting at an arbitrary position, including a token the
+ *  operator typed long ago and is now just clicking on to recall what it
+ *  means.
+ *
+ *  Resolution order: (1) lex `text` in full; if that throws (e.g. a
+ *  LATER, unrelated unclosed call elsewhere in the statement — the
+ *  realistic "in-progress agent" case, since a single unclosed paren
+ *  ANYWHERE fails `lexAgentStatement`'s whole-text lex), fall back to
+ *  lexing just a forward-extended slice around `pos` (`_probeSliceEndAt`)
+ *  — a self-contained prefix that excludes whatever's broken later. If
+ *  BOTH throw (e.g. an unterminated string spanning `pos`, or the call
+ *  enclosing `pos` is itself genuinely still open), fall back once more to
+ *  `_findOpenCallAt` + a raw-text key=value scan (same mechanism
+ *  `suggestAgentCliAt` already uses for live typing) before finally
+ *  giving up and returning `null`. (2) Find the token whose `[start,end)`
+ *  covers `pos` — a NAME token only; a literal/punctuation token (and any
+ *  position landing in a pure whitespace gap outside a call) returns
+ *  `null`. (3) Derive clause context via the existing
+ *  `_clauseKindFromTokenPrefix`. (4) Check `_collectBindingsUpToCursor`
+ *  FIRST — a GIVEN/ALERT/DO-bound label referenced elsewhere describes as
+ *  the binding itself, not a catalog lookup (`_lookupAnyCatalogEntry`
+ *  never consults bindings). (5) For a position inside a CLOSED call's own
+ *  `(...)`, scan its pre-parsed `.args` for the one covering `pos` and
+ *  resolve via that call's `paramsSchema`; for a position inside a
+ *  still-OPEN call, the same resolution via the tier-3 fallback above.
+ *  (6) Otherwise resolve the covering token's own name via the existing
+ *  `lookupAgentCliEntry`/`_lookupAnyCatalogEntry`, same as the dropdown's
+ *  hover-description path.
+ *
+ *  Returns `{ name, description, token, kind }` — `kind` is
+ *  `'token'` (plain metric/scope/channel/action name), `'param'` (a call's
+ *  kwarg key), or `'binding'` (a GIVEN/ALERT/DO-bound label reference) —
+ *  or `null` when nothing describable sits at `pos`. */
+export function describeTokenAt(text, pos, catalog) {
+  try {
+    return _describeTokenAtImpl(text, pos, catalog);
+  } catch {
+    return null;
+  }
+}
