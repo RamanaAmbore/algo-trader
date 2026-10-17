@@ -2,6 +2,19 @@ import { describe, it, expect } from 'vitest';
 import { pairGroupSort, sortRowsByPairGroup } from '../../data/pairGroupSort.js';
 import { positionStateBadge } from '../../data/positionStateBadge.js';
 
+/**
+ * Build a minimal IRowNode-like object carrying an `accounts` Set —
+ * the MarketPulse row shape (pulseUnified.js:mergePositionRows), as
+ * opposed to `makeNode()` below (no account field at all, used by the
+ * pre-existing single-account-implied tests).
+ * @param {string} symbol
+ * @param {string|null} pair_group_key
+ * @param {string} account
+ */
+function makeAcctNode(symbol, pair_group_key, account) {
+  return { data: { tradingsymbol: symbol, pair_group_key, accounts: new Set([account]) } };
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -83,6 +96,73 @@ describe('pairGroupSort — group ordering', () => {
   it('handles null/undefined rowNodes without throwing', () => {
     expect(() => pairGroupSort(null)).not.toThrow();
     expect(() => pairGroupSort(undefined)).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// pairGroupSort — account-first ordering (2026-10-17 fix)
+//
+// Operator: "the positions and legs sort order should be on account and
+// then pairs, unpaired showing the last within the account". Before this
+// fix, the orphan key was a bare global `'ZZZZ_orphan'` constant with no
+// account segment — every account's unpaired rows collapsed to the SAME
+// key and clumped together at the very end of the WHOLE grid, instead of
+// each account's own orphans sorting to the end of THAT account's own
+// cluster. MarketPulse rows carry `data.accounts` (a Set, resolved via
+// `leadAccount()`), not a singular `data.account` — makeAcctNode() above
+// mirrors that real shape.
+// ---------------------------------------------------------------------------
+
+describe('pairGroupSort — account-first ordering (2026-10-17 fix)', () => {
+  it('rows are grouped by account FIRST — two accounts never interleave even with matching pair labels', () => {
+    const accAp1 = makeAcctNode('A_LEG1', 'P1', 'ACC_A');
+    const accBp1 = makeAcctNode('B_LEG1', 'P1', 'ACC_B');
+    const accAp2 = makeAcctNode('A_LEG2', 'P2', 'ACC_A');
+    const accBp2 = makeAcctNode('B_LEG2', 'P2', 'ACC_B');
+
+    // Interleaved input across accounts.
+    const nodes = [accBp1, accAp1, accBp2, accAp2];
+    pairGroupSort(nodes);
+
+    // ACC_A's rows (any pair label) must all sort before ACC_B's — account
+    // is the primary key, not pair_group_key.
+    const accASyms = nodes.filter(n => n.data.tradingsymbol.startsWith('A_')).map(n => n.data.tradingsymbol);
+    const accBSyms = nodes.filter(n => n.data.tradingsymbol.startsWith('B_')).map(n => n.data.tradingsymbol);
+    const lastAccAIdx = Math.max(...accASyms.map(s => nodes.findIndex(n => n.data.tradingsymbol === s)));
+    const firstAccBIdx = Math.min(...accBSyms.map(s => nodes.findIndex(n => n.data.tradingsymbol === s)));
+    expect(lastAccAIdx).toBeLessThan(firstAccBIdx);
+  });
+
+  it("an account's own orphan row sorts to the end of THAT account's cluster, not to the very end of the whole grid", () => {
+    const accAp1    = makeAcctNode('A_PAIRED', 'P1', 'ACC_A');
+    const accAorphan = makeAcctNode('A_ORPHAN', null, 'ACC_A');
+    const accBp1    = makeAcctNode('B_PAIRED', 'P2', 'ACC_B'); // global numbering — different label, same account
+
+    // ACC_A's orphan must sort BEFORE ACC_B's rows entirely (account is
+    // primary), even though it's last WITHIN ACC_A's own cluster.
+    const nodes = [accBp1, accAorphan, accAp1];
+    pairGroupSort(nodes);
+
+    const symbols = nodes.map(n => n.data.tradingsymbol);
+    expect(symbols).toEqual(['A_PAIRED', 'A_ORPHAN', 'B_PAIRED']);
+  });
+
+  it('two different accounts each with ONLY an orphan row do not clump together at the global end', () => {
+    // This is the exact bug: before the fix, both orphans keyed to the
+    // same bare 'ZZZZ_orphan' constant and could land adjacent to each
+    // other regardless of account, instead of each sorting within its
+    // own account's position in the overall account ordering.
+    const accAp1     = makeAcctNode('A_PAIRED', 'P1', 'ACC_A');
+    const accAorphan = makeAcctNode('A_ORPHAN', null, 'ACC_A');
+    const accBorphan = makeAcctNode('B_ORPHAN', null, 'ACC_B');
+
+    const nodes = [accBorphan, accAorphan, accAp1];
+    pairGroupSort(nodes);
+
+    // ACC_A's cluster (paired then orphan) stays together and sorts
+    // before ACC_B's orphan — not "all orphans together regardless of account".
+    const symbols = nodes.map(n => n.data.tradingsymbol);
+    expect(symbols).toEqual(['A_PAIRED', 'A_ORPHAN', 'B_ORPHAN']);
   });
 });
 
@@ -250,5 +330,25 @@ describe('sortRowsByPairGroup — array variant, group ordering', () => {
     const acc2Idx = [sorted.indexOf(acc2p1a), sorted.indexOf(acc2p1b)].sort();
     expect(acc1Idx[1] - acc1Idx[0]).toBe(1); // adjacent
     expect(acc2Idx[1] - acc2Idx[0]).toBe(1); // adjacent
+  });
+
+  it("an account's own orphan leg sorts to the end of THAT account's cluster, not the global end of the grid (2026-10-17 fix)", () => {
+    const accAPaired = row('A_PAIRED', 'P1', 'ACC_A');
+    const accAOrphan = row('A_ORPHAN', null, 'ACC_A');
+    const accBPaired = row('B_PAIRED', 'P2', 'ACC_B'); // global numbering, different account
+
+    const sorted = sortRowsByPairGroup([accBPaired, accAOrphan, accAPaired]);
+
+    expect(sorted.map(r => r.symbol)).toEqual(['A_PAIRED', 'A_ORPHAN', 'B_PAIRED']);
+  });
+
+  it('two accounts each with only an orphan leg do not clump together — each sorts within its own account position', () => {
+    const accAPaired = row('A_PAIRED', 'P1', 'ACC_A');
+    const accAOrphan = row('A_ORPHAN', null, 'ACC_A');
+    const accBOrphan = row('B_ORPHAN', null, 'ACC_B');
+
+    const sorted = sortRowsByPairGroup([accBOrphan, accAOrphan, accAPaired]);
+
+    expect(sorted.map(r => r.symbol)).toEqual(['A_PAIRED', 'A_ORPHAN', 'B_ORPHAN']);
   });
 });

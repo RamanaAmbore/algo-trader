@@ -3784,13 +3784,55 @@
     // without F&O coverage) keep their post-sort position individually.
     // postSortGroups imported from $lib/data/pulseGridSetup — pure fn, no closure.
 
-    // Pair-group post-sort: keeps rows that share the same `pair_group_key`
-    // clustered together. Within each group the relative order coming in is
-    // preserved; the first group member encountered anchors the cluster's
-    // position and subsequent members of the same key are spliced in right
-    // after it. Rows without a key keep their individual post-sort position.
+    // Pair-group post-sort for the Positions grid.
+    //
+    // 2026-10-17 fix (operator: "gold is showing below, it should be the
+    // first one as an underlying") — this used to call bare
+    // `pairGroupSort(params.nodes)`, which re-sorts the WHOLE row set by
+    // `${account}|${pair_group_key}` with no regard for `underlying` at
+    // all, completely discarding the underlying-block order/`groupOrder`
+    // that `sortUnifiedRows` (pulseUnified.js) already established
+    // upstream — GOLD's own cluster could land anywhere depending purely
+    // on its accounts'/pairs' alphabetical position, same bug class
+    // `postSortGroups` (the OTHER bucket grids' default) exists to
+    // prevent. Fixed by composing both: underlying blocks keep their
+    // incoming (first-appearance) relative order — exactly like
+    // `postSortGroups` — and ONLY the rows WITHIN each underlying's own
+    // block get re-ordered by account-then-pair (the operator's other
+    // 2026-10-17 ask: "the positions and legs sort order should be on
+    // account and then pairs, unpaired showing the last within the
+    // account"). Rows with no `underlying` (cash equity etc.) are
+    // treated as their own single-row "group" so they still get the
+    // account+pair ordering among themselves without being pulled into
+    // an unrelated underlying's block.
     function _pairGroupPostSort(params) {
-      pairGroupSort(params.nodes);
+      const { nodes, api } = params;
+      if (api?.getColumnState().some(col => col.sort != null)) return; // respect user column sort
+      if (!nodes || nodes.length === 0) return;
+
+      /** @type {Map<string, import('ag-grid-community').IRowNode[]>} */
+      const byUnderlying = new Map();
+      const orderedKeys = [];
+      for (const n of nodes) {
+        const u = String(n.data?.underlying || '').toUpperCase() || `__row_${orderedKeys.length}_${n.id ?? ''}`;
+        if (!byUnderlying.has(u)) { byUnderlying.set(u, []); orderedKeys.push(u); }
+        byUnderlying.get(u).push(n);
+      }
+      // Anchor each underlying block at its first member's CURRENT
+      // position (preserves sortUnifiedRows'/groupOrder's ordering,
+      // exactly like postSortGroups does), then pair-sort the members
+      // WITHIN that block only.
+      const firstIdxOf = new Map(orderedKeys.map(k => [k, nodes.indexOf(byUnderlying.get(k)[0])]));
+      orderedKeys.sort((a, b) => firstIdxOf.get(a) - firstIdxOf.get(b));
+
+      const out = [];
+      for (const k of orderedKeys) {
+        const group = byUnderlying.get(k);
+        pairGroupSort(group);
+        out.push(...group);
+      }
+      nodes.length = 0;
+      for (const n of out) nodes.push(n);
     }
 
     // Factory: every per-bucket grid shares the same shape (height
