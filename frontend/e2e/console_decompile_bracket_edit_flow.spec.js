@@ -168,6 +168,21 @@ test.describe('Brackets kind-card row → Edit → decompileBracket → Console 
     const cancelBtn = page.locator('.console-edit-cancel');
     await expect(cancelBtn).toBeVisible({ timeout: TIMEOUT });
     await expect(cancelBtn).toHaveText('Cancel edit');
+    // Operator (2026-10-17): "I want cancel edit to look like a button" —
+    // was an underlined bare-text link (no border/background/padding).
+    // Assert real button chrome now: a visible border and a non-transparent
+    // background, not the old underline-link look.
+    const cancelStyle = await cancelBtn.evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return {
+        borderWidth: cs.borderTopWidth,
+        textDecoration: cs.textDecorationLine,
+        background: cs.backgroundColor,
+      };
+    });
+    expect(cancelStyle.borderWidth).not.toBe('0px');
+    expect(cancelStyle.textDecoration).toBe('none');
+    expect(cancelStyle.background).not.toBe('rgba(0, 0, 0, 0)');
     const actionsRow = page.locator('.console-agent-cli-actions');
     await expect(actionsRow).toBeVisible({ timeout: TIMEOUT });
     await expect(actionsRow.locator('.console-edit-cancel')).toHaveCount(1);

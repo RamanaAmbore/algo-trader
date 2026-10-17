@@ -554,14 +554,26 @@
     gap: 0.75rem;
     margin-top: 0.3rem;
   }
+  /* Operator (2026-10-17): "I want cancel edit to look like a button" —
+     was an underlined bare-text link (no border/background/padding).
+     Now a real outlined secondary button, same height/padding family as
+     its sibling .console-agent-cli-btn (Save/Create), so the two sit
+     visually paired in the same action row — amber-outline, not filled,
+     so it still reads as the LESS prominent action next to Save/Create's
+     solid btn-primary fill. */
   .console-edit-cancel {
-    font-size: var(--fs-xs);
+    font-size: var(--fs-md);
     font-weight: 600;
-    text-decoration: underline;
     color: var(--algo-amber);
-    background: none;
-    border: none;
+    background: rgba(251, 191, 36, 0.08);
+    border: 1px solid rgba(251, 191, 36, 0.4);
+    border-radius: 0.375rem;
     cursor: pointer;
-    padding: 0;
+    padding: 0.25rem 0.9rem;
+    transition: background-color 0.05s, border-color 0.05s;
+  }
+  .console-edit-cancel:hover {
+    background: rgba(251, 191, 36, 0.16);
+    border-color: rgba(251, 191, 36, 0.6);
   }
 </style>
