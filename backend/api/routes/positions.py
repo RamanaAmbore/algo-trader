@@ -142,8 +142,16 @@ def _auto_pair_positions(rows: "list[PositionRow]") -> "list[PositionRow]":
     root/account just because they happen to have opposite sign and equal
     magnitude — CE and PE are economically unrelated instruments and must
     never be treated as a "pair". Within each group, waterfall-matches
-    longs vs shorts by quantity (largest first). Each matched pair gets a
-    sequential key "P1", "P2" etc. Unmatched remainder → is_orphan=True.
+    longs vs shorts by quantity (largest first).
+
+    Pair labels ("P1", "P2", ...) are GLOBALLY sequential across every
+    group, not reset to "P1" at the start of each one (operator, 2026-10-17:
+    "every group in legs and positions has p1... each group should have a
+    different value"). Groups are visited in a DETERMINISTIC sort order
+    (account, root, option_type) — not raw dict/insertion order, which
+    depends on whatever order the broker API happened to return rows in —
+    so the same position book always produces the same global numbering
+    regardless of API response ordering. Unmatched remainder → is_orphan=True.
 
     paired_qty = lots matched into the pair
     orphan_qty = abs(quantity) - paired_qty (unmatched lots on this row)
@@ -165,7 +173,15 @@ def _auto_pair_positions(rows: "list[PositionRow]") -> "list[PositionRow]":
     # replace individual entries as we go.
     result: list[PositionRow] = list(rows)
 
-    for (_account, _root, _opt_type), indices in groups.items():
+    # Global pair counter — shared across every group so labels never
+    # restart at "P1" for a second root/option-type bucket. Groups are
+    # sorted by key (option_type's `None` coerced to '' — a bare string
+    # compare, since None < str comparisons raise in Python 3) so the
+    # numbering is reproducible regardless of row arrival order.
+    pair_n = 1
+    for (_account, _root, _opt_type), indices in sorted(
+        groups.items(), key=lambda kv: (kv[0][0], kv[0][1], kv[0][2] or "")
+    ):
         # Partition into longs, shorts, and flat (quantity == 0).
         longs: list[tuple[int, int]] = []   # (original_index, abs_qty)
         shorts: list[tuple[int, int]] = []
@@ -182,8 +198,8 @@ def _auto_pair_positions(rows: "list[PositionRow]") -> "list[PositionRow]":
         longs.sort(key=lambda t: t[1], reverse=True)
         shorts.sort(key=lambda t: t[1], reverse=True)
 
-        # Waterfall matching.
-        pair_n = 1
+        # Waterfall matching. `pair_n` is the GLOBAL counter from outside
+        # this loop — intentionally not reset here (see docstring).
         # Use mutable lists of [index, remaining_qty] for in-place reduction.
         longs_q: list[list] = [[i, q] for i, q in longs]
         shorts_q: list[list] = [[i, q] for i, q in shorts]

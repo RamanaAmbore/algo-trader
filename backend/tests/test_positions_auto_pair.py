@@ -604,3 +604,57 @@ def test_auto_pair_futures_unaffected_by_option_type_grouping():
     assert short_row.is_orphan is False
     assert long_row.paired_qty == 20
     assert short_row.paired_qty == 20
+
+
+def test_auto_pair_labels_are_globally_sequential_not_reset_per_group():
+    """Operator (2026-10-17): "every group in legs and positions has p1...
+    each group should have a different value for st like p1, p2, p3".
+
+    Two independent, unrelated pairs — a NIFTY CE pair and a BANKNIFTY CE
+    pair (different roots, so always different groups) — must get
+    DIFFERENT global labels ("P1"/"P2"), not both independently "P1".
+    """
+    positions = [
+        _make_position(account="ZG0001", tradingsymbol="BANKNIFTY45000CE", quantity=10),
+        _make_position(account="ZG0001", tradingsymbol="BANKNIFTY45500CE", quantity=-10),
+        _make_position(account="ZG0001", tradingsymbol="NIFTY24000CE", quantity=5),
+        _make_position(account="ZG0001", tradingsymbol="NIFTY24500CE", quantity=-5),
+    ]
+
+    result = _auto_pair_positions(positions)
+
+    bank_long  = next(r for r in result if r.tradingsymbol == "BANKNIFTY45000CE")
+    bank_short = next(r for r in result if r.tradingsymbol == "BANKNIFTY45500CE")
+    nifty_long  = next(r for r in result if r.tradingsymbol == "NIFTY24000CE")
+    nifty_short = next(r for r in result if r.tradingsymbol == "NIFTY24500CE")
+
+    assert bank_long.pair_group_key == bank_short.pair_group_key
+    assert nifty_long.pair_group_key == nifty_short.pair_group_key
+    assert bank_long.pair_group_key != nifty_long.pair_group_key, (
+        f"two unrelated pairs must not both be labelled {bank_long.pair_group_key!r} — "
+        f"got BANKNIFTY={bank_long.pair_group_key!r}, NIFTY={nifty_long.pair_group_key!r}"
+    )
+    # Groups are visited sorted by (account, root, option_type) — "BANKNIFTY"
+    # sorts before "NIFTY" alphabetically, so BANKNIFTY's pair gets P1 and
+    # NIFTY's gets P2, deterministically regardless of input row order.
+    assert bank_long.pair_group_key == "P1"
+    assert nifty_long.pair_group_key == "P2"
+
+
+def test_auto_pair_global_numbering_is_order_independent():
+    """The SAME position set, with rows in a different arrival order,
+    must produce the SAME global pair labels — groups are sorted by key,
+    not visited in row/dict insertion order."""
+    def _run(positions):
+        result = _auto_pair_positions(positions)
+        return {r.tradingsymbol: r.pair_group_key for r in result}
+
+    forward = [
+        _make_position(account="ZG0001", tradingsymbol="BANKNIFTY45000CE", quantity=10),
+        _make_position(account="ZG0001", tradingsymbol="BANKNIFTY45500CE", quantity=-10),
+        _make_position(account="ZG0001", tradingsymbol="NIFTY24000CE", quantity=5),
+        _make_position(account="ZG0001", tradingsymbol="NIFTY24500CE", quantity=-5),
+    ]
+    reversed_ = list(reversed(forward))
+
+    assert _run(forward) == _run(reversed_)

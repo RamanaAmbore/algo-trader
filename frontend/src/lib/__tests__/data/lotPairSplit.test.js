@@ -277,3 +277,39 @@ describe('splitPairedLots — order independence (stability)', () => {
     expect(labelsRev).toEqual(labelsFwd);
   });
 });
+
+describe('splitPairedLots — global pair numbering (2026-10-17 fix, parity with backend test_auto_pair_labels_are_globally_sequential_not_reset_per_group)', () => {
+  it('two unrelated pairs (different roots) get DIFFERENT labels, not both "P1"', () => {
+    // Operator: "every group in legs and positions has p1... each group
+    // should have a different value for st like p1, p2, p3".
+    const bankLong  = row({ tradingsymbol: 'BANKNIFTY45000CE', quantity: 10, account: 'ZG0001' });
+    const bankShort = row({ tradingsymbol: 'BANKNIFTY45500CE', quantity: -10, account: 'ZG0001' });
+    const niftyLong  = row({ tradingsymbol: 'NIFTY24000CE', quantity: 5, account: 'ZG0001' });
+    const niftyShort = row({ tradingsymbol: 'NIFTY24500CE', quantity: -5, account: 'ZG0001' });
+
+    const out = splitPairedLots([bankLong, bankShort, niftyLong, niftyShort]);
+    const byKey = (ts) => out.find(r => r.tradingsymbol === ts);
+
+    expect(byKey('BANKNIFTY45000CE').pair_group_key).toBe(byKey('BANKNIFTY45500CE').pair_group_key);
+    expect(byKey('NIFTY24000CE').pair_group_key).toBe(byKey('NIFTY24500CE').pair_group_key);
+    expect(byKey('BANKNIFTY45000CE').pair_group_key).not.toBe(byKey('NIFTY24000CE').pair_group_key);
+    // Groups sorted by (account, root, optType) — "BANKNIFTY" < "NIFTY"
+    // alphabetically, so BANKNIFTY's pair is P1, NIFTY's is P2.
+    expect(byKey('BANKNIFTY45000CE').pair_group_key).toBe('P1');
+    expect(byKey('NIFTY24000CE').pair_group_key).toBe('P2');
+  });
+
+  it('global numbering is order-independent, matching the within-group order-independence guarantee', () => {
+    const bankLong  = row({ tradingsymbol: 'BANKNIFTY45000CE', quantity: 10, account: 'ZG0001' });
+    const bankShort = row({ tradingsymbol: 'BANKNIFTY45500CE', quantity: -10, account: 'ZG0001' });
+    const niftyLong  = row({ tradingsymbol: 'NIFTY24000CE', quantity: 5, account: 'ZG0001' });
+    const niftyShort = row({ tradingsymbol: 'NIFTY24500CE', quantity: -5, account: 'ZG0001' });
+
+    const keyFn = (r) => `${r.tradingsymbol}:${r.quantity}`;
+    const outFwd = splitPairedLots([bankLong, bankShort, niftyLong, niftyShort]);
+    const outRev = splitPairedLots([niftyShort, niftyLong, bankShort, bankLong]);
+    const labelsFwd = Object.fromEntries(outFwd.map(r => [keyFn(r), r.pair_group_key]));
+    const labelsRev = Object.fromEntries(outRev.map(r => [keyFn(r), r.pair_group_key]));
+    expect(labelsRev).toEqual(labelsFwd);
+  });
+});

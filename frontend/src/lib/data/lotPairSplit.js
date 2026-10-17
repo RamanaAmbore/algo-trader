@@ -180,7 +180,17 @@ export function splitPairedLots(rows) {
   /** @type {Map<number, number>} idx -> leftover unsigned qty */
   const leftoverByIdx = new Map();
 
-  for (const indices of groups.values()) {
+  // Global pair counter — shared across every group so labels never
+  // restart at "P1" for a second root/option-type bucket (operator,
+  // 2026-10-17: "every group in legs and positions has p1... each group
+  // should have a different value"). Groups are visited in sorted key
+  // order (not Map insertion order, which follows row arrival order from
+  // the API) so the numbering is reproducible — mirrors the backend's
+  // identical fix in `_auto_pair_positions()` (positions.py).
+  let _pairN = 1;
+  const _sortedGroupKeys = [...groups.keys()].sort();
+  for (const _groupKey of _sortedGroupKeys) {
+    const indices = groups.get(_groupKey);
     const longs = [];
     const shorts = [];
     for (const i of indices) {
@@ -221,8 +231,8 @@ export function splitPairedLots(rows) {
       const bKey = [_symOf(rows[b.longIdx]), _symOf(rows[b.shortIdx])].sort().join('|');
       return aKey < bKey ? -1 : (aKey > bKey ? 1 : 0);
     });
-    ranked.forEach((e, rank) => {
-      const label = `P${rank + 1}`;
+    ranked.forEach((e) => {
+      const label = `P${_pairN++}`;
       if (!matchesByIdx.has(e.longIdx)) matchesByIdx.set(e.longIdx, []);
       if (!matchesByIdx.has(e.shortIdx)) matchesByIdx.set(e.shortIdx, []);
       matchesByIdx.get(e.longIdx).push({ label, qty: e.qty });
