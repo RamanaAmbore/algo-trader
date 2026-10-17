@@ -1,28 +1,21 @@
 <script>
   // ConsoleTab — Automation's Console tab (Sprint B, 2026-10, Phase 2
-  // "Console retirement"; re-unified Sprint I Phase 1, 2026-10-11, "unify
-  // console's two CLI boxes into one window via a dispatch layer").
-  // Ported body of the retired `/console` route
+  // "Console retirement"). Ported body of the retired `/console` route
   // (frontend/src/routes/(algo)/console/+page.svelte, now a redirect to
   // `/automation?tab=console`) — ONE visible CLI textbox (AgentCliEditor,
   // agents.js grammar — FULL statement scope: order, bracket, agent,
   // event, token — no `allowedKinds` restriction, unlike the two
   // order-scoped mounts added in Sprint B on /orders and the SymbolPanel
-  // order-ticket modal, see OrderCliTab.svelte), backed by a dispatch
-  // layer (`consoleDispatch.js:dispatchConsoleStatement`) that tries the
-  // generic grammar first and falls back to the legacy positional
-  // orders.js grammar (CommandLineTab, mounted `headless` — see that
-  // component's own prop doc) for anything it doesn't recognize
-  // (buy/sell/cancel/modify, `agent ...` interpret, raw shell).
+  // order-ticket modal, see OrderCliTab.svelte).
   //
-  // Phase 1 of 2, explicitly: the legacy parser is NOT deleted or
-  // retired — it becomes invisible fallback machinery behind the one
-  // visible box. Full retirement (Phase 2) is gated on a parity
-  // checklist that hasn't passed yet (cancel/modify verbs ACTUALLY doing
-  // something — see CommandLineTab.svelte's `runExternal` doc, they are
-  // pre-existing no-ops today — agent-ai /interpret, /api/admin/exec
-  // passthrough, up-arrow recall — which does not exist anywhere in this
-  // CLI stack today, Phase 1 or before; there is nothing to lose here).
+  // 2026-10-17 (operator-confirmed deletion) — the legacy positional
+  // orders.js grammar (buy/sell/modify/cancel, `agent ...` interpret,
+  // raw `/api/admin/exec` shell passthrough) and its hidden CommandLineTab
+  // host were removed entirely, along with CommandBar.svelte. Text that
+  // doesn't classify as agent-family (`consoleDispatch.js:
+  // classifyConsoleStatement` → 'unsupported') now shows a short inline
+  // hint instead of falling back to any execution path — there is no
+  // second grammar left to route to.
   //
   // The page-level Activity log (5-tab ActivityLogSurface) that used to
   // render below the command bars on /console is NOT re-ported here —
@@ -34,7 +27,6 @@
   import { authStore, executionMode } from '$lib/stores';
   import { toast } from '$lib/data/toastStore.svelte.js';
   import { safeRead } from '$lib/utils/safeRead.js';
-  import CommandLineTab from '$lib/order/CommandLineTab.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
   import AgentCliEditor from '$lib/command/AgentCliEditor.svelte';
   import { fetchAgentCatalog, compileAgentCliStatement } from '$lib/command/grammars/agents.js';
@@ -87,24 +79,14 @@
       .catch(() => { _agentCliCatalogError = 'CLI catalog unavailable'; });
   });
 
-  // Sprint I Phase 1 (2026-10-11) — the ONE typed textbox is now always
-  // AgentCliEditor's own `value`; CommandLineTab is mounted `headless`
-  // (see below) and driven programmatically via `runExternal`, so there
-  // is no longer a separate bar an operator could type agent-family
-  // syntax into for a hand-off — the old `_onAgentStatement` hand-off
-  // (`onAgentStatement` prop) is unreachable from this mount and was
-  // removed; CommandLineTab.svelte keeps the prop itself as a generic,
-  // self-contained extension point (same idiom as its unused
-  // `onParsedOrder`/`onAddToBasket` props) for any future caller that
-  // mounts it visibly again.
-
   /** Live classification of the single textbox's current text — 'agents'
    *  routes through the existing compileAgentCliStatement flow below
-   *  unchanged; 'orders'/'legacy' route through the CommandLineTab
-   *  fallback; 'empty' shows neither action button. */
+   *  unchanged; 'unsupported' shows an inline hint (no execution path
+   *  exists for non-agent-family text — see consoleDispatch.js's own
+   *  header); 'empty' shows neither action button nor the hint. */
   const _classify = $derived(classifyConsoleStatement(value));
 
-  // Sprint I Phase 1 follow-up's statement-kind hint selector (pills) was
+  // Statement-kind hint selector (pills) was
   // relocated to the page level (2026-10, `/automation/+page.svelte`) as
   // a dropdown sharing the Console/Agents tab row — it only ever operated
   // on `value` (bindable, already owned by the page) with zero other
@@ -336,46 +318,44 @@
 
   // Sprint C follow-up (2026-10) — CLI order placement stays inline in
   // this panel, matching agent/bracket/token submission (see
-  // `_submitAgentCliOrder` above). A prior SymbolPanel-ticket-MODAL hand-
-  // off (`onParsedOrder` → `_ticketProps`) was removed here: audit found
-  // `CommandLineTab`'s own `runParsed` never actually calls its
-  // `onParsedOrder` prop (buy/sell submits directly via
-  // `_submitPlaceOrder`, writing to its own `cmdHistory`) — the modal
-  // mount was dead code, unreachable from any real operator action.
+  // `_submitAgentCliOrder` above).
 
-  // Sprint I Phase 1 (2026-10-11) — the hidden (`headless`) legacy
-  // CommandLineTab instance, driven programmatically. `bind:this` gives
-  // us its exported `runExternal`.
-  let _cltRef = $state(/** @type {{ runExternal: (raw: string) => Promise<{ok:boolean,error?:string}> } | null} */ (null));
+  /** True only once the regex-based `classifyConsoleStatement` AND the
+   *  real agents.js compiler both agree the typed text isn't agent-
+   *  family — defends against the two implementations ever drifting
+   *  (a future statement head the compiler accepts but the classify
+   *  regex doesn't yet know about must never show "unsupported" next
+   *  to a working Place-order/Create-agent button). */
+  const _trulyUnsupported = $derived(_classify === 'unsupported' && !_agentCliCompiled?.ok);
 
-  /** Button label for the legacy-fallback action — '' when the current
-   *  text isn't fallback-eligible (agent-family or empty), which also
-   *  gates the button's visibility in the markup below. */
-  const _fallbackLabel = $derived(
-    _classify === 'orders' ? 'Submit order' : _classify === 'legacy' ? 'Run shell command' : ''
+  /** Short, informational hint shown when the typed text doesn't
+   *  classify as agent-family syntax — there is no execution path left
+   *  for it (the legacy positional orders.js grammar and its shell/
+   *  `agent ...` interpret fallback were removed 2026-10-17). Gated on
+   *  `/[\s(]/` (first word "complete" — a space or an opening paren) so
+   *  the hint doesn't flash on every keystroke while the operator is
+   *  still typing a valid head word (`W` before `WHEN`, `o` before
+   *  `order(`, etc.) — almost every agent-family statement classifies
+   *  'unsupported' for its first few characters. Kept short (~35 chars)
+   *  per the project's error-banner convention; the substring
+   *  "Unsupported syntax" is asserted by console_unify_cli_dispatch.spec.js. */
+  const _unsupportedHint = $derived(
+    _trulyUnsupported && /[\s(]/.test(value.trim())
+      ? 'Unsupported syntax — try order(...).'
+      : ''
   );
 
-  /** Fires the legacy orders.js parser on the current `value` via the
-   *  hidden CommandLineTab's `runExternal`. Mirrors the agent-family
-   *  submit functions' own conventions: clear + success toast + status
-   *  line on success; preserve the text (so the operator can fix +
-   *  retry) + error toast + status line on failure. The actual
-   *  success/failure DETAIL for buy/sell/shell/`agent ...` output always
-   *  lands in the still-visible `clt-history` list below — this status
-   *  line is a short, consistent confirmation that something happened,
-   *  not a duplicate of that detail. */
-  async function _submitLegacyFallback() {
-    const raw = value;
-    if (!raw || !raw.trim()) return;
-    const r = await _cltRef?.runExternal(raw);
-    if (r && r.ok === false) {
-      _cliSubmitStatus = { ok: false, text: `Command failed: ${_short(r.error)}` };
-      toast.error(_short(r.error));
-      return;
-    }
-    _cliSubmitStatus = { ok: true, text: 'Sent — see command history below.' };
-    toast.success('Command sent');
-    value = '';
+  /** Fires on Ctrl/Cmd+Enter (or any `onUnsupported` dispatch) for text
+   *  that doesn't classify as agent-family — shows a short toast, same
+   *  status-line convention the agent-family submit functions use, but
+   *  never calls any API. Unlike `_unsupportedHint`, this fires even for
+   *  single-word input — pressing Ctrl/Cmd+Enter is a deliberate submit
+   *  attempt, not a typing-in-progress snapshot. */
+  function _notifyUnsupported() {
+    if (!value || !value.trim()) return;
+    if (!_trulyUnsupported) return; // the real compiler disagrees — never show a false error
+    _cliSubmitStatus = { ok: false, text: 'Unsupported syntax' };
+    toast.error('Unsupported syntax');
   }
 
   /** Single entry point for "do whatever the current text's own action
@@ -393,20 +373,20 @@
         if (_agentCliCompiled.kind === 'bracket') return _submitAgentCliBracket(_agentCliCompiled);
         if (_agentCliCompiled.kind === 'token') return _submitAgentCliToken(_agentCliCompiled);
       },
-      onLegacyFallback: () => _submitLegacyFallback(),
+      onUnsupported: () => _notifyUnsupported(),
     });
   }
 
-  // Sprint I Phase 1 — Ctrl/Cmd+Enter keyboard submit. AgentCliEditor's
-  // own textarea deliberately treats a bare Enter as a literal newline
-  // (multi-line statements are valid grammar — see agents.js's own
-  // "Newlines count as ordinary whitespace" lexer rule), so submission
-  // has always been button-driven for the agent-family path; this adds
-  // a keyboard EQUIVALENT of whichever button is currently showing,
-  // rather than changing Enter's own meaning. Attached on this
-  // component's own wrapper div (NOT inside AgentCliEditor, which is
-  // also used, unmodified, by the order-scoped OrderCliTab mounts) so
-  // keydown simply bubbles up from the textarea.
+  // Ctrl/Cmd+Enter keyboard submit. AgentCliEditor's own textarea
+  // deliberately treats a bare Enter as a literal newline (multi-line
+  // statements are valid grammar — see agents.js's own "Newlines count
+  // as ordinary whitespace" lexer rule), so submission has always been
+  // button-driven for the agent-family path; this adds a keyboard
+  // EQUIVALENT of whichever button is currently showing, rather than
+  // changing Enter's own meaning. Attached on this component's own
+  // wrapper div (NOT inside AgentCliEditor, which is also used,
+  // unmodified, by the order-scoped OrderCliTab mounts) so keydown
+  // simply bubbles up from the textarea.
   function _onWrapperKeydown(/** @type {KeyboardEvent} */ e) {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
       e.preventDefault();
@@ -444,29 +424,14 @@
          Console/Agents tab row as a decorated CardHeader (see
          `/automation/+page.svelte`) instead of two separate rows here. -->
 
-    <!-- Sprint I Phase 1 — the legacy positional orders.js parser, kept
-         mounted `headless` (no visible input of its own) purely so its
-         `runExternal()` and result/history list stay available as the
-         fallback path for anything the generic grammar below doesn't
-         recognize (buy/sell/modify/cancel, `agent ...` interpret, raw
-         shell). See CommandLineTab.svelte's own `headless` prop doc. -->
-    <CommandLineTab
-      bind:this={_cltRef}
-      headless
-      prefillSide=""
-      prefillAccount=""
-      prefillSymbol=""
-      prefillQty={0}
-      prefillPrice={0}
-      prefillOrderType="LIMIT" />
-
     <!-- The ONE visible CLI textbox — WHEN/GIVEN/ALERT/DO agents, bare
          order(...)/place_order(...), bracket(...), and token(...) — full
          statement scope, no allowedKinds restriction (this is the
          un-restricted Console mount; the order-only mounts live on
          /orders and the SymbolPanel modal via OrderCliTab). Anything
-         that doesn't classify as agent-family falls back to the hidden
-         CommandLineTab above via `_submitLegacyFallback`/`_primaryAction`. -->
+         that doesn't classify as agent-family shows `_unsupportedHint`
+         below instead — there is no second grammar left to fall back to
+         (see consoleDispatch.js's own header, 2026-10-17). -->
     <div class="console-agent-cli-wrap">
       {#if editTarget}
         <!-- Sprint C — visible even while the catalog is still loading, so
@@ -512,12 +477,13 @@
               onclick={() => _submitAgentCliToken(_agentCliCompiled)}>
               {editTarget && editTarget.rowKind === 'template' ? 'Save' : 'Create token'}
             </button>
-          {:else if !isDemo && !editTarget && _fallbackLabel}
-            <!-- Sprint I Phase 1 — legacy-grammar fallback action. Gated on
-                 !editTarget: editing an existing row only ever recompiles
-                 as agent/event/bracket/token, never a raw legacy command. -->
-            <button type="button" class="btn-secondary console-agent-cli-btn console-fallback-btn"
-              onclick={_submitLegacyFallback}>{_fallbackLabel}</button>
+          {:else if !isDemo && !editTarget && _unsupportedHint}
+            <!-- No execution path exists for non-agent-family text (see
+                 consoleDispatch.js's header, 2026-10-17) — informational
+                 text only, never a clickable action. Gated on !editTarget:
+                 editing an existing row only ever recompiles as
+                 agent/event/bracket/token, never unsupported text. -->
+            <span class="console-unsupported-hint">{_unsupportedHint}</span>
           {/if}
         </div>
       {/if}
@@ -557,6 +523,12 @@
   .console-agent-cli-btn {
     font-size: var(--fs-md);
     padding: 0.25rem 0.9rem;
+  }
+  /* Informational — not an action. Muted, not red/amber, so it never
+     reads as an error state or a clickable affordance. */
+  .console-unsupported-hint {
+    font-size: var(--fs-xs);
+    color: var(--algo-muted);
   }
   .console-edit-banner {
     display: flex;

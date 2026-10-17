@@ -1,24 +1,18 @@
-// Console dispatch layer (Sprint 9) — sits ahead of BOTH CLI grammars on
-// /console. Decides, from the raw typed text alone, whether a statement
-// belongs to the positional orders.js grammar (buy/sell/modify/cancel) or
-// the call-style agents.js grammar (WHEN/ALERT/DO, bare order(...)/
-// place_order(...)/bracket(...)) — then, for the orders path, resolves any
+// Console dispatch layer — sits ahead of the agents.js call-style grammar
+// on /automation's Console tab. Decides, from the raw typed text alone,
+// whether a statement is agent-family syntax (WHEN/ALERT/DO/GIVEN, bare
+// order(...)/place_order(...)/bracket(...)/token(...)/cancel_all_orders(...))
+// or anything else — then, for the order-compile path, resolves any
 // `bracket="slug"` reference to a real numeric `template_id` before a
 // ticket/basket request is ever built.
 //
-// Deliberately NOT a merge of the two grammars (confirmed out of scope in
-// an earlier investigation — see .claude/PLAN.md history) — this module
-// only classifies + (for the order-compile path) resolves + submits via
-// the EXACT SAME API calls the existing Ticket/basket UI already uses.
-// No parallel execution path is introduced.
-//
-// Sprint I Phase 1 (2026-10-11) — `dispatchConsoleStatement` (below) is
-// the thin top-level router ConsoleTab.svelte now calls to decide between
-// its own generic-grammar flow and CommandLineTab's headless
-// `runExternal` fallback, collapsing the two previously-separate VISIBLE
-// input boxes into one. The legacy orders.js parser itself is unchanged
-// and not retired — see that function's own doc for the Phase 1/Phase 2
-// split.
+// The legacy positional orders.js grammar (buy/sell/modify/cancel,
+// `agent list`/`agent status` interpret, raw `/api/admin/exec` shell
+// passthrough) and its hidden CommandLineTab host were removed entirely
+// (2026-10-17, operator-confirmed deletion — see the 2026-10-17 entry in
+// docs/specs/AUTOMATION_SPEC.md's change log). `classifyConsoleStatement`
+// now only distinguishes real agent-family syntax from everything else;
+// there is no second grammar or fallback execution path left to route to.
 //
 // ── `bracket="slug"` resolution — KNOWN GAP, do not silently "fix" ─────
 // The one existing server-side resolver for this exact reference shape
@@ -55,28 +49,20 @@ import { loadOrderTemplates, reloadOrderTemplates } from '$lib/data/templates';
 // (a) Classification
 // ─────────────────────────────────────────────────────────────────────────
 
-const _ORDER_VERBS = new Set(['buy', 'sell', 'modify', 'cancel']);
 // WHEN / ALERT / DO / GIVEN are agent_stmt's clause keywords — matching
 // any one of them as the FIRST word is unambiguous because none of them
-// can ever be a real order verb or a bare order/place_order/bracket call
-// name (agents.js's own _RESERVED set). `given` added Sprint I Phase 1
-// (2026-10-11) — Sprint G's GIVEN preamble (agents.js) was missing here,
-// so `GIVEN x = ...; WHEN x ...` misclassified as 'legacy' and would
-// have been POSTed to /api/admin/exec as a shell command.
+// can ever be a bare order/place_order/bracket call name (agents.js's
+// own _RESERVED set).
 const _AGENT_HEAD_RE = /^(when|alert|do|given)\b/i;
 // A bare `order(...)`/`place_order(...)`/`bracket(...)`/`token(...)` call —
 // matched on just the "name(" prefix (not a balanced-paren scan) so a
 // STILL-BEING-TYPED statement like `order(acct=` classifies correctly
-// before the operator has finished typing the closing paren. `token(...)`
-// added Sprint 14 — without it, a `token(kind=notify) ...` statement typed
-// into the legacy CommandLineTab fell through to 'legacy' and got POSTed
-// to /api/admin/exec as a shell command. `cancel_all_orders(...)` added
-// Sprint [cancel-all-cli] (2026-10) for the identical reason — without
-// it, compile errors would be hidden (ConsoleTab's `showCompileErrors`
-// gates on `_classify === 'agents'`), a spurious "Run shell command"
-// fallback button would render alongside the real Cancel button, and
-// Ctrl/Cmd+Enter would POST the raw text to /api/admin/exec instead of
-// submitting the cancel-all request.
+// before the operator has finished typing the closing paren. Any of
+// these five names NOT appearing here would classify 'unsupported'
+// instead of 'agents' — which hides AgentCliEditor's own compile-error
+// block (ConsoleTab's `showCompileErrors` gates on `_classify ===
+// 'agents'`) and shows the "unsupported syntax" hint instead, even
+// though the statement is genuinely agent-family and just mid-typed.
 const _AGENT_CALL_RE = /^(order|place_order|bracket|token|cancel_all_orders)\s*\(/i;
 
 /**
@@ -85,55 +71,46 @@ const _AGENT_CALL_RE = /^(order|place_order|bracket|token|cancel_all_orders)\s*\
  * on unbalanced parens, which would misclassify a statement that's only
  * half-typed).
  * @param {string} text
- * @returns {'orders'|'agents'|'legacy'|'empty'}
+ * @returns {'agents'|'unsupported'|'empty'}
  */
 export function classifyConsoleStatement(text) {
   const t = String(text == null ? '' : text).trim();
   if (!t) return 'empty';
   if (_AGENT_HEAD_RE.test(t)) return 'agents';
   if (_AGENT_CALL_RE.test(t)) return 'agents';
-  const head = (t.split(/\s+/)[0] || '').toLowerCase();
-  if (_ORDER_VERBS.has(head)) return 'orders';
-  // Anything else (shell commands, `agent list`/`agent status`, etc.)
-  // keeps flowing through CommandLineTab's existing raw-command handling
-  // (interpretAgent / POST /api/admin/exec) — zero behaviour change.
-  return 'legacy';
+  // Anything else (the retired positional buy/sell/modify/cancel
+  // grammar, `agent list`/`agent status` interpret text, raw shell
+  // commands, or just unrecognized text) has no execution path left to
+  // route to — see this module's header. The caller shows a short,
+  // informational "unsupported syntax" hint instead of silently doing
+  // nothing or throwing.
+  return 'unsupported';
 }
 
 /**
- * Sprint I (2026-10-11, Phase 1 "unify console's two CLI boxes into one
- * window via a dispatch layer") — the one function that decides which of
- * the two live CLI parsers handles a given raw statement typed into
- * Console's SINGLE visible textbox. Thin wrapper over
+ * The one function that decides what a given raw statement typed into
+ * Console's single visible textbox should do. Thin wrapper over
  * `classifyConsoleStatement` (reused, not re-implemented): 'agents' routes
  * to the caller's own generic-grammar flow (`compileAgentCliStatement` —
  * already fully wired in ConsoleTab.svelte, untouched by this function);
- * anything else ('orders': buy/sell/modify/cancel, or 'legacy': `agent
- * ...` interpret / shell passthrough) routes to the caller's legacy
- * fallback (CommandLineTab's `runExternal`, invoked headless). 'empty'
- * text calls neither callback.
+ * 'unsupported' routes to the caller's own hint/toast handler (no
+ * execution path exists for non-agent-family text — see this module's
+ * header). 'empty' text calls neither callback.
  *
  * Deliberately does NOT itself call compileAgentCliStatement / submit /
- * fetch — both callbacks own their own compile + submission mechanics
- * exactly as before this sprint; this is pure routing so it stays trivial
- * to unit-test in isolation (see consoleDispatch.test.js).
- *
- * Phase 1 explicitly keeps BOTH parsers alive side by side — this is not
- * a merge of the two grammars (out of scope, confirmed in an earlier
- * investigation). Phase 2 (gated on the Sprint F parity checklist —
- * cancel/modify verbs, recall, /interpret AI-draft, /api/admin/exec
- * passthrough — actually passing) will retire this function along with
- * the legacy fallback branch entirely.
+ * fetch — the `onAgentFamily` callback owns its own compile + submission
+ * mechanics; this is pure routing so it stays trivial to unit-test in
+ * isolation (see consoleDispatch.test.js).
  *
  * @param {string} text
- * @param {{onAgentFamily?: () => any, onLegacyFallback?: () => any}} handlers
+ * @param {{onAgentFamily?: () => any, onUnsupported?: () => any}} handlers
  * @returns {any} whatever the invoked callback returns (undefined for 'empty')
  */
-export function dispatchConsoleStatement(text, { onAgentFamily, onLegacyFallback } = {}) {
+export function dispatchConsoleStatement(text, { onAgentFamily, onUnsupported } = {}) {
   const kind = classifyConsoleStatement(text);
   if (kind === 'agents') return onAgentFamily?.();
   if (kind === 'empty') return undefined;
-  return onLegacyFallback?.();
+  return onUnsupported?.();
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -253,8 +230,8 @@ export async function resolveConsoleOrder(compiled) {
  * Ticket/basket UI already makes. `mode` overrides whatever the compiler
  * baked into `resolved.ticket.mode` (AgentCliEditor only ever threads
  * 'paper'|'live' through its own `mode` prop, which would silently
- * collapse shadow/sim/replay to paper — same override CommandLineTab's
- * own `_submitPlaceOrder` already applies via the `executionMode` store).
+ * collapse shadow/sim/replay to paper — the caller reads the real
+ * `executionMode` store and passes it through explicitly instead).
  * @param {{ticket:any, basket:any}} resolved
  * @param {{mode?: string, source?: string}} opts
  * @returns {Promise<{ok:true, kind:'basket'|'ticket', response:any} | {ok:false, error:string}>}

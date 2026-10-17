@@ -4,14 +4,19 @@
  * Sprint 2b (docs/proposals/SPRINT2_LAYER_INTEGRATION.md §3/§4.4) —
  * "source" plumbing for order placement. TicketOrderRequest/BasketLeg
  * already had a `source` field on the backend schema, but no frontend
- * caller ever sent one. This file covers the three placement call
- * sites that build their own request-literal inline (OptionChainTab,
- * CommandLineTab, SymbolPanel's basket submit) rather than going
- * through the shared `buildPlacePayload` helper (covered separately in
- * orderTicketSubmit.test.js).
+ * caller ever sent one. This file covers the placement call sites that
+ * build their own request-literal inline (OptionChainTab, SymbolPanel's
+ * basket submit) rather than going through the shared `buildPlacePayload`
+ * helper (covered separately in orderTicketSubmit.test.js).
  *
- * None of these three components have an existing mount harness in
- * this repo (no @testing-library/svelte, vitest runs in the `node`
+ * CommandLineTab.svelte's own `source: 'command'` coverage was removed
+ * here when that component was deleted entirely (2026-10-17,
+ * operator-confirmed removal of the legacy positional Console CLI
+ * fallback — see the 2026-10-17 entry in docs/specs/AUTOMATION_SPEC.md's
+ * change log).
+ *
+ * Neither remaining component has an existing mount harness in this
+ * repo (no @testing-library/svelte, vitest runs in the `node`
  * environment per vitest.config.js) — same constraint documented in
  * InfoHint.sourceAudit.test.js. This file follows that file's
  * established source-audit pattern: import the raw `.svelte` text via
@@ -32,7 +37,6 @@
 
 import { describe, it, expect } from 'vitest';
 import OPTION_CHAIN_SRC from '../order/OptionChainTab.svelte?raw';
-import COMMAND_LINE_SRC from '../order/CommandLineTab.svelte?raw';
 import SYMBOL_PANEL_SRC from '../SymbolPanel.svelte?raw';
 
 describe('OptionChainTab.svelte — _placeOneLeg tags source="chain"', () => {
@@ -47,21 +51,6 @@ describe('OptionChainTab.svelte — _placeOneLeg tags source="chain"', () => {
 
   it('the placeTicketOrder() call inside _placeOneLeg sets source: \'chain\'', () => {
     expect(block).toMatch(/placeTicketOrder\(\{[\s\S]*source:\s*'chain'[\s\S]*?\}\);/);
-  });
-});
-
-describe('CommandLineTab.svelte — _submitPlaceOrder tags source="command"', () => {
-  const start = COMMAND_LINE_SRC.indexOf('async function _submitPlaceOrder');
-  const end   = COMMAND_LINE_SRC.indexOf('async function runParsed', start);
-  const block = COMMAND_LINE_SRC.slice(start, end);
-
-  it('_submitPlaceOrder exists and is non-empty (sanity check on the slice bounds)', () => {
-    expect(start).toBeGreaterThan(-1);
-    expect(end).toBeGreaterThan(start);
-  });
-
-  it('the placeTicketOrder() call inside _submitPlaceOrder sets source: \'command\'', () => {
-    expect(block).toMatch(/placeTicketOrder\(\{[\s\S]*source:\s*'command'[\s\S]*?\}\);/);
   });
 });
 

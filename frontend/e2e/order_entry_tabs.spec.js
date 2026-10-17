@@ -1,11 +1,23 @@
 /**
  * Order entry — three-tab shell smoke.
  *
- * Verifies the Terminal page (/console) renders the inline OrderEntryShell
- * with all three tabs, that switching tabs updates the active surface, and
- * that the basket bar pattern is wired up. Demo-session friendly — no
- * actual broker calls happen, but every DOM affordance the operator
- * needs to PLACE an order is exercised.
+ * STALE WARNING (pre-existing, not caused by this task): `/console` was
+ * retired as a standalone route in Sprint B (2026-10, "Console
+ * retirement") and now 308-redirects to `/automation?tab=console` — it
+ * no longer renders the inline three-tab OrderEntryShell these tests
+ * describe (Command line / Order ticket / Chain). Every test below that
+ * `page.goto('/console')`s and expects those tabs was already broken by
+ * that redirect before this task touched anything; none of them have
+ * been fixed here — flagged per the operator's own task scope ("the
+ * file's other `/console` assumptions were already stale before this
+ * task; flag them, don't fix them").
+ *
+ * The two tests that were ONLY about the now-deleted "Command line" tab
+ * and CommandBar.svelte chip dropdown (2026-10-17, operator-confirmed
+ * removal — see docs/specs/AUTOMATION_SPEC.md's 2026-10-17 change-log
+ * row) were removed below, since that surface no longer exists in any
+ * form to fix forward to. The remaining tests are left as-is (still
+ * broken by the pre-existing redirect, unrelated to this task).
  *
  * Run against prod: PLAYWRIGHT_BASE_URL=https://ramboq.com npx playwright test order_entry_tabs
  */
@@ -15,26 +27,6 @@ import { test, expect } from '@playwright/test';
 const TIMEOUT = 30_000;
 
 test.describe('Order entry — 3 tabs', () => {
-
-  test('Terminal page renders 3 colour-coded tabs', async ({ page }) => {
-    await page.goto('/console');
-    // Demo session anonymous on prod is allowed; non-prod will redirect to signin.
-    if (page.url().includes('/signin')) {
-      test.skip(true, 'signin gate — set credentials to run beyond demo');
-    }
-
-    // Three tabs visible
-    const cmdTab    = page.getByRole('tab', { name: /Command line/i });
-    const ticketTab = page.getByRole('tab', { name: /Order ticket/i });
-    const chainTab  = page.getByRole('tab', { name: /Chain/i });
-
-    await expect(cmdTab).toBeVisible({ timeout: TIMEOUT });
-    await expect(ticketTab).toBeVisible();
-    await expect(chainTab).toBeVisible();
-
-    // Default is Command (defaultTab='command' on /console)
-    await expect(cmdTab).toHaveAttribute('aria-selected', 'true');
-  });
 
   test('switching tabs swaps active surface', async ({ page }) => {
     await page.goto('/console');
@@ -51,21 +43,6 @@ test.describe('Order entry — 3 tabs', () => {
     const chainTab = page.getByRole('tab', { name: /Chain/i });
     await chainTab.click();
     await expect(chainTab).toHaveAttribute('aria-selected', 'true');
-  });
-
-  test('Command tab has CommandBar with chip dropdown', async ({ page }) => {
-    await page.goto('/console');
-    if (page.url().includes('/signin')) test.skip(true, 'signin gate');
-
-    // CommandBar's textarea gets focus when clicked; chip dropdown
-    // opens on input change. We verify the textarea exists.
-    const cmdInput = page.locator('textarea').first();
-    await expect(cmdInput).toBeVisible({ timeout: TIMEOUT });
-    await cmdInput.click();
-    // pressSequentially fires keydown/keyup so CommandBar's suggestion
-    // logic runs (.fill sets value without those events).
-    await cmdInput.pressSequentially('buy ', { delay: 30 });
-    await expect(page.locator('.cmd-suggest').first()).toBeVisible({ timeout: 5000 });
   });
 
   test('basket bar appears when a leg is added (Chain tab)', async ({ page }) => {

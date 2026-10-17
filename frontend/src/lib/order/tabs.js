@@ -27,8 +27,11 @@
 // — see agents.js:compileStatement) so bracket/agent/token syntax is
 // rejected with a clear message rather than silently doing nothing. It
 // never reintroduces the old positional-only CommandLineTab/orders.js
-// grammar this tab replaced in 2026-06 — that component stays mounted
-// only on /automation's Console tab (full scope), unaffected by this.
+// grammar this tab replaced in 2026-06 — that component (and its
+// CommandBar.svelte host and orders.js grammar) was deleted entirely
+// on 2026-10-17 (operator-confirmed removal — see the 2026-10-17 entry
+// in docs/specs/AUTOMATION_SPEC.md's change log); no
+// surface in the app mounts it anymore.
 export const ORDER_TABS = /** @type {const} */ ([
   { id: /** @type {'ticket'}  */ ('ticket'),  label: 'Ticket' },
   { id: /** @type {'chain'}   */ ('chain'),   label: 'Chain'  },

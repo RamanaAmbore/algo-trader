@@ -4,10 +4,16 @@
  * dispatch layer).
  *
  * Covers:
- *   - classifyConsoleStatement: routes a `buy ...`-style statement to the
- *     orders.js positional grammar, and a WHEN/ALERT/DO/bare
- *     order(.../place_order(.../bracket(... statement to the agents.js
- *     call-style grammar — including a still-being-typed partial call.
+ *   - classifyConsoleStatement: recognizes a WHEN/ALERT/DO/GIVEN/bare
+ *     order(.../place_order(.../bracket(.../token(.../cancel_all_orders(...
+ *     statement — including a still-being-typed partial call — as
+ *     agent-family ('agents'); everything else (the retired positional
+ *     buy/sell/modify/cancel grammar, `agent list` interpret text, raw
+ *     shell commands, or just unrecognized text) classifies 'unsupported'
+ *     (2026-10-17 — the legacy orders.js grammar, CommandBar.svelte and
+ *     CommandLineTab.svelte were deleted entirely, operator-confirmed;
+ *     see the 2026-10-17 entry in docs/specs/AUTOMATION_SPEC.md's change
+ *     log).
  *   - resolveBracketTemplateRefs: a `bracket="slug"` reference resolves
  *     to the correct numeric `template_id` for both a single ticket and
  *     a multi-leg basket; an unknown slug (or a leg carrying both
@@ -75,11 +81,11 @@ beforeEach(() => {
 // ── classifyConsoleStatement ─────────────────────────────────────────────
 
 describe('classifyConsoleStatement', () => {
-  it('routes buy/sell/modify/cancel (any case) to the orders grammar', () => {
-    expect(classifyConsoleStatement('buy ZG0790 NIFTY 5')).toBe('orders');
-    expect(classifyConsoleStatement('Sell ZG0790 NIFTY 5')).toBe('orders');
-    expect(classifyConsoleStatement('MODIFY ABC123')).toBe('orders');
-    expect(classifyConsoleStatement('cancel ABC123')).toBe('orders');
+  it('classifies the retired positional buy/sell/modify/cancel grammar as unsupported (any case)', () => {
+    expect(classifyConsoleStatement('buy ZG0790 NIFTY 5')).toBe('unsupported');
+    expect(classifyConsoleStatement('Sell ZG0790 NIFTY 5')).toBe('unsupported');
+    expect(classifyConsoleStatement('MODIFY ABC123')).toBe('unsupported');
+    expect(classifyConsoleStatement('cancel ABC123')).toBe('unsupported');
   });
 
   it('routes WHEN/ALERT/DO (any case) to the agent-family grammar', () => {
@@ -104,9 +110,9 @@ describe('classifyConsoleStatement', () => {
     expect(classifyConsoleStatement('token(kind=')).toBe('agents');
   });
 
-  it('leaves unrelated text (agent interpret / shell) classified as legacy', () => {
-    expect(classifyConsoleStatement('agent list')).toBe('legacy');
-    expect(classifyConsoleStatement('ls -la')).toBe('legacy');
+  it('classifies unrelated text (agent interpret / shell) as unsupported', () => {
+    expect(classifyConsoleStatement('agent list')).toBe('unsupported');
+    expect(classifyConsoleStatement('ls -la')).toBe('unsupported');
   });
 
   it('classifies empty/whitespace-only text as empty', () => {
@@ -140,42 +146,42 @@ describe('classifyConsoleStatement', () => {
     expect(classifyConsoleStatement('ALERT log_tag=error, render=error, telegram')).toBe('agents');
   });
 
-  it('classifies an unrelated shell-style command as legacy', () => {
-    expect(classifyConsoleStatement('docker ps')).toBe('legacy');
+  it('classifies an unrelated shell-style command as unsupported', () => {
+    expect(classifyConsoleStatement('docker ps')).toBe('unsupported');
   });
 });
 
 describe('dispatchConsoleStatement', () => {
-  it('routes agent-family text to onAgentFamily, never onLegacyFallback', () => {
+  it('routes agent-family text to onAgentFamily, never onUnsupported', () => {
     const onAgentFamily = vi.fn(() => 'agent-result');
-    const onLegacyFallback = vi.fn();
-    const r = dispatchConsoleStatement('order(account="ZG0790")', { onAgentFamily, onLegacyFallback });
+    const onUnsupported = vi.fn();
+    const r = dispatchConsoleStatement('order(account="ZG0790")', { onAgentFamily, onUnsupported });
     expect(onAgentFamily).toHaveBeenCalledTimes(1);
-    expect(onLegacyFallback).not.toHaveBeenCalled();
+    expect(onUnsupported).not.toHaveBeenCalled();
     expect(r).toBe('agent-result');
   });
 
-  it('routes orders-grammar text (buy/sell/modify/cancel) to onLegacyFallback', () => {
+  it('routes the retired positional grammar (buy/sell/modify/cancel) to onUnsupported', () => {
     const onAgentFamily = vi.fn();
-    const onLegacyFallback = vi.fn(() => 'legacy-result');
-    const r = dispatchConsoleStatement('buy ZG0790 NIFTY 5', { onAgentFamily, onLegacyFallback });
-    expect(onLegacyFallback).toHaveBeenCalledTimes(1);
+    const onUnsupported = vi.fn(() => 'unsupported-result');
+    const r = dispatchConsoleStatement('buy ZG0790 NIFTY 5', { onAgentFamily, onUnsupported });
+    expect(onUnsupported).toHaveBeenCalledTimes(1);
     expect(onAgentFamily).not.toHaveBeenCalled();
-    expect(r).toBe('legacy-result');
+    expect(r).toBe('unsupported-result');
   });
 
-  it('routes unrelated/shell text to onLegacyFallback', () => {
-    const onLegacyFallback = vi.fn();
-    dispatchConsoleStatement('docker ps', { onLegacyFallback });
-    expect(onLegacyFallback).toHaveBeenCalledTimes(1);
+  it('routes unrelated/shell text to onUnsupported', () => {
+    const onUnsupported = vi.fn();
+    dispatchConsoleStatement('docker ps', { onUnsupported });
+    expect(onUnsupported).toHaveBeenCalledTimes(1);
   });
 
   it('calls neither callback for empty text', () => {
     const onAgentFamily = vi.fn();
-    const onLegacyFallback = vi.fn();
-    const r = dispatchConsoleStatement('   ', { onAgentFamily, onLegacyFallback });
+    const onUnsupported = vi.fn();
+    const r = dispatchConsoleStatement('   ', { onAgentFamily, onUnsupported });
     expect(onAgentFamily).not.toHaveBeenCalled();
-    expect(onLegacyFallback).not.toHaveBeenCalled();
+    expect(onUnsupported).not.toHaveBeenCalled();
     expect(r).toBeUndefined();
   });
 

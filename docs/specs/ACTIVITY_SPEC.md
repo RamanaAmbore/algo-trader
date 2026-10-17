@@ -152,7 +152,7 @@ instance (modal, page, card).
 | `symbolFilter` | `Set<string> \| null` | `null` | Order tab symbol scope (from /orders strategy filter); when null all symbols pass; empty Set means "show no rows"; non-empty Set filters to symbols in the set (upper case) |
 | `simScope` | `boolean` | `false` | Scope Agent tab to sim-mode events only (when true, overrides `gateByMode` and forces `fetchSimEvents` instead of `fetchRecentAgentEvents`) |
 | `mode` | `string \| null` | `null` | Execution mode override; when set, auto-flips tab (sim → 'simulator' tab; others → 'order' tab) and filters Order rows to matching mode. Fires only on mode CHANGE via `_lastMode` gate |
-| `cmdHistory` | `Array<{status, message, fields?, time}>` | `[]` | Terminal tab command history (from CommandLineTab or other sources) |
+| `cmdHistory` | `Array<{status, message, fields?, time}>` | `[]` | Terminal tab command history. No current caller passes a non-empty array — the legacy CommandLineTab source that used to feed this was deleted 2026-10-17 (see the 2026-10-17 entry in this doc's own sibling, docs/specs/AUTOMATION_SPEC.md's change log); LogPanel still renders it when present |
 | `hideInlineAccountFilter` | `boolean` | `false` | Hide the account dropdown in the tab row (set by ActivityLogModal which renders its own dropdown in the header instead) |
 | `heightClass` | `string` | `'flex-1 min-h-0'` | Tailwind class for LogPanel height (flex-fill by default) |
 | `onTabChange` | `(tab: string) => void` | `() => {}` | Callback when user clicks a tab; parent should update `defaultTab` and/or `activityStore.activeTab` |

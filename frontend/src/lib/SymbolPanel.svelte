@@ -11,12 +11,15 @@
   // surfaces: OrderEntryShell (tabbed order entry), SymbolChartModal
   // (standalone chart popup), and SymbolActions (the ⋯ row-menu).
   //
-  // Three tabs:
+  // Tabs (see $lib/order/tabs.js ORDER_TABS for the current set):
   //   ticket   — single-leg OrderTicket. Default for trade intent.
   //   chain    — option-chain basket builder (OptionChainTab).
   //              Disabled for cash-equity symbols.
-  //   command  — terminal-style command input (CommandLineTab).
-  //              Power-user surface; lands last in the tab strip.
+  //   cli      — agent-family CLI (OrderCliTab/AgentCliEditor), scoped
+  //              to order(...)/place_order(...) statements only.
+  //              Power-user surface; lands last in the tab strip. The
+  //              older positional-grammar `command` tab (CommandLineTab)
+  //              was retired 2026-06 and deleted entirely 2026-10-17.
   //
   // Chart moved to ChartModal (launched via the chart-icon button
   // in the panel header) and the /charts page so the history

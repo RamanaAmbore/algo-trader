@@ -444,7 +444,6 @@ const PHASE2_FILES = [
   path.join('src/lib', 'LogPanel.svelte'),
   path.join('src/lib', 'BrokerHealthBadge.svelte'),
   path.join('src/lib', 'Select.svelte'),
-  path.join('src/lib', 'CommandBar.svelte'),
   path.join('src/lib', 'NavTab.svelte'),
   path.join('src/lib', 'PnlAnalysis.svelte'),
   path.join('src/lib', 'NavBreakdown.svelte'),
@@ -456,7 +455,6 @@ const PHASE2_FILES = [
   path.join('src/lib', 'PnlPanel.svelte'),
   path.join('src/lib', 'MultiPriceChart.svelte'),
   path.join('src/lib/order', 'ChaseCard.svelte'),
-  path.join('src/lib/order', 'CommandLineTab.svelte'),
   path.join('src/lib/order', 'OrderTimelineDrawer.svelte'),
   // 2026-10 P1 audit fix — were missing from this array, so any raw-hex
   // regression in these 3 files was invisible to the guard below.
@@ -477,7 +475,6 @@ const TOKEN_FLOOR_P2 = {
   'LogPanel.svelte': 22,
   'BrokerHealthBadge.svelte': 16,
   'Select.svelte': 8,
-  'CommandBar.svelte': 10,
 };
 
 /** Phase-2 banned hex — same set as Phase-1 minus sky (#7dd3fc) which

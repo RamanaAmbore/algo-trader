@@ -91,8 +91,7 @@
     onClearBasket  = /** @type {(() => void)|undefined} */ (undefined),
     // When Place mode is enabled, +/− route through this instead of
     // staging into the basket — the shell flips to the Ticket tab
-    // pre-filled with the leg, mirroring CommandLineTab's
-    // BUY/SELL → Ticket flow.
+    // pre-filled with the leg.
     onPlaceLeg     = /** @type {((p: any) => void)|undefined} */ (undefined),
     // Pushed back to OrderEntryShell when the operator changes the
     // routable account from this tab — shell syncs the other tabs

@@ -120,8 +120,11 @@
      */
     gateByMode          = true,
     /**
-     * Command history entries fed into the Terminal tab
-     * (CommandLineTab integration).
+     * Command history entries fed into the Terminal tab. No current
+     * caller passes a non-empty array (the legacy CommandLineTab source
+     * that used to feed this was deleted 2026-10-17 — see the 2026-10-17
+     * entry in docs/specs/AUTOMATION_SPEC.md's change log) —
+     * left in place since LogPanel still renders it when present.
      * @type {Array<{status: string, message: string, fields?: Record<string,string>, time: string}>}
      */
     cmdHistory          = /** @type {Array<{status: string, message: string, fields?: Record<string,string>, time: string}>} */ ([]),
