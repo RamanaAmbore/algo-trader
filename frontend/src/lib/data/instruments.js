@@ -1,6 +1,6 @@
 import { writable } from 'svelte/store';
 import { _setExpiryLookup } from './decomposeSymbol.js';
-import { seedRootMapFromInstruments } from './rootOf.js';
+import { seedRootMapFromInstruments, getVirtualRoots } from './rootOf.js';
 
 /**
  * Reactive signal bumped once each time `_buildIndexes` finishes — i.e.
@@ -233,10 +233,32 @@ export function suggestUnderlyings(prefix, limit = 20) {
  *  tradingsymbol universe is ~90k rows, so callers MUST pass a
  *  non-empty prefix of meaningful length — an empty/short prefix
  *  still works here (returns the first `limit` alphabetically) but
- *  callers decide the "how many chars before suggesting" threshold. */
+ *  callers decide the "how many chars before suggesting" threshold.
+ *
+ *  Virtual roots (GOLD / GOLD_NEXT / CRUDEOIL / CRUDEOIL_NEXT, etc.)
+ *  are injected ahead of real tradingsymbol matches (2026-10-17,
+ *  operator: "does agent cli recognize virtual roots? ... does it show
+ *  in dropdown. this should be consistent across") — `searchByPrefix`
+ *  (the picker every OTHER symbol-entry surface in the app uses —
+ *  Order Ticket, Chain, watchlist add) already injects these; this was
+ *  the one dropdown that didn't, so a bare root like "CRUDEOIL" never
+ *  showed up while typing a CLI `symbol=` value. Synchronous (unlike
+ *  `searchByPrefix`, which awaits `loadInstruments()` + a dynamic
+ *  import) because this function must stay sync for the CLI's
+ *  keystroke-driven suggestion list — `getVirtualRoots` itself is a
+ *  pure, already-synchronous function, so no async boundary is needed. */
 export function suggestTradingsymbols(prefix, limit = 50) {
   if (!_tradingsymbolsSorted) return [];
-  return _prefixMatch(_tradingsymbolsSorted, prefix, limit);
+  const p = String(prefix || '').toUpperCase();
+  const virt = [];
+  for (const exch of ['MCX', 'CDS']) {
+    for (const v of getVirtualRoots(exch)) {
+      if (!p || v.s.startsWith(p)) virt.push(v.s);
+    }
+  }
+  virt.sort();
+  const real = _prefixMatch(_tradingsymbolsSorted, prefix, limit);
+  return [...virt, ...real].slice(0, limit);
 }
 
 /**

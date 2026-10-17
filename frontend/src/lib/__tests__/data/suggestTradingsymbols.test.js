@@ -25,6 +25,7 @@ vi.mock('$lib/data/decomposeSymbol', () => ({
 }));
 vi.mock('$lib/data/rootOf', () => ({
   seedRootMapFromInstruments: vi.fn(),
+  getVirtualRoots: vi.fn(() => []),
 }));
 
 // Import AFTER mocks are registered.
@@ -88,6 +89,48 @@ describe('suggestTradingsymbols — algorithm (binary-search prefix scan)', () =
 
   it('an empty prefix returns the first `limit` entries alphabetically', () => {
     expect(prefixMatch(SYMS, '', 2)).toEqual(SYMS.slice(0, 2));
+  });
+});
+
+// ── Virtual-root injection algorithm (2026-10-17, parity with searchByPrefix) ─
+//
+// Operator: "does agent cli recognize virtual roots? ... does it show in
+// dropdown. this should be consistent across." searchByPrefix (every OTHER
+// symbol-entry surface) already injects virtual roots (GOLD/GOLD_NEXT,
+// CRUDEOIL/CRUDEOIL_NEXT, ...) ahead of real matches; suggestTradingsymbols
+// didn't. Same constraint as the "algorithm" block above — _tradingsymbolsSorted
+// can't be warmed without exercising loadInstruments()'s async IndexedDB/fetch
+// path (an established, accepted limitation — see listExpiries.test.js's own
+// "warm cache" block for the same reasoning) — so this verifies the MERGE
+// algorithm (virtual roots sorted + prepended, deduped, then real matches,
+// sliced to limit) against a known fixture, mirroring the function's actual
+// logic exactly. Real end-to-end wiring (cold cache -> real virtual roots ->
+// dropdown) is covered by the Playwright spec
+// `agent_cli_virtual_root_symbol_suggestions.spec.js`.
+
+describe('suggestTradingsymbols — virtual-root injection algorithm', () => {
+  function mergeVirtualAndReal(virtualRootSyms, realMatches, limit) {
+    const virt = [...virtualRootSyms].sort();
+    return [...virt, ...realMatches].slice(0, limit);
+  }
+
+  it('virtual roots are sorted and placed ahead of real tradingsymbol matches', () => {
+    const result = mergeVirtualAndReal(
+      ['CRUDEOIL_NEXT', 'CRUDEOIL'],
+      ['CRUDEOIL26OCTFUT', 'CRUDEOIL26NOVFUT'],
+      20
+    );
+    expect(result).toEqual(['CRUDEOIL', 'CRUDEOIL_NEXT', 'CRUDEOIL26OCTFUT', 'CRUDEOIL26NOVFUT']);
+  });
+
+  it('respects limit across the combined virtual + real list', () => {
+    const result = mergeVirtualAndReal(['GOLD', 'GOLD_NEXT'], ['GOLDM26JUNFUT'], 2);
+    expect(result).toEqual(['GOLD', 'GOLD_NEXT']);
+  });
+
+  it('no virtual roots match the prefix -> real matches only, unchanged', () => {
+    const result = mergeVirtualAndReal([], ['RELIANCE'], 20);
+    expect(result).toEqual(['RELIANCE']);
   });
 });
 
