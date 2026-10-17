@@ -76,7 +76,6 @@
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
   import { mkWeightPctCol, mkDeltaCol, mkThetaCol, mkNavBreakdownCols, _tcFlashClass } from '$lib/data/pulseColumns.js';
   import { postSortGroups2Level } from '$lib/data/pulseGridSetup.js';
-  import { pairGroupSort } from '$lib/data/pairGroupSort.js';
   import { holdingsDayPnlStore } from '$lib/data/holdingsDayPnlStore.svelte.js';
 
   // ModuleRegistry is registered inside onMount after the dynamic import.
@@ -1300,7 +1299,20 @@
     });
     positionsSummaryGrid = makeGrid(positionsSummaryEl, positionsSummaryCols);
     positionsAllGrid     = makeGrid(positionsAllEl,     positionsCols, [], (r) => openOrderTicket(r, 'positions'), {
-      postSortRows: (params) => { pairGroupSort(params.nodes); postSortGroups2Level(params); },
+      // 2026-10-17 fix (found via self-audit while fixing the same bug
+      // class in MarketPulse — see `_pairGroupPostSort`): used to call
+      // `pairGroupSort(params.nodes)` BEFORE `postSortGroups2Level`,
+      // which scrambled row order by `${account}|${pair_group_key}`
+      // with no regard for `underlying`, so `postSortGroups2Level`'s
+      // own block-anchor computation (`nodes.indexOf(...)`) read an
+      // already-corrupted order — an underlying could jump ahead purely
+      // because its account/pair key sorted alphabetically earlier
+      // (same symptom as the MarketPulse "gold should be first" bug).
+      // `postSortGroups2Level`'s own intra-block sort (FUT/EQ → CE → PE,
+      // then expiry/strike) fully overwrites whatever intra-block order
+      // `pairGroupSort` produced anyway, so the call achieved nothing
+      // but the corruption — dropped entirely, not reordered.
+      postSortRows: (params) => { postSortGroups2Level(params); },
       onFilterChanged: () => _applyPinnedTotal(positionsAllGrid, _lastPositionsTotal),
     });
     fundsGrid            = makeGrid(fundsEl,             fundsCols, [], null, { rowClassRules: fundsRowClassRules });
