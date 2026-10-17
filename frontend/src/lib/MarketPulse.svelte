@@ -100,6 +100,7 @@
   import AddToPulseModal from '$lib/AddToPulseModal.svelte';
   import OrderPairModal from '$lib/order/OrderPairModal.svelte';
   import PositionPinPicker from '$lib/order/PositionPinPicker.svelte';
+  import InfoHint from '$lib/InfoHint.svelte';
   import { pinPickerCandidatesFromRows } from '$lib/data/pinPickerCandidates.js';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
   import { baseDayPnlForPosition, dayChangePct } from '$lib/data/nav';
@@ -4052,6 +4053,22 @@
     // resets pin_group_key/pair_group_key/has_gtt/is_orphan to null the
     // moment a second account merges into the same symbol row, so a
     // visible badge structurally guarantees a resolvable single account.
+    // Info trigger (2026-10-17, operator: "make the group name labels
+    // tooltips when clicked") — a SEPARATE click target from the badge
+    // button right below, since that one already opens the pin/unpin
+    // picker (per the label-vs-icon rule: a label that's already
+    // interactive gets a separate "(i)" icon instead of overloading its
+    // own click). Just shows the SAME generic explanation text the
+    // badge's own `title=` hover tooltip already carries, click/touch-
+    // accessible via `_stateInfoText`.
+    const infoBtn = target?.closest?.('.pos-state-info-btn');
+    if (infoBtn) {
+      ev.event?.stopPropagation?.();
+      _stateInfoText = infoBtn.getAttribute('data-tooltip-text') || '';
+      _stateInfoAnchor = /** @type {HTMLElement} */ (infoBtn);
+      _stateInfoOpen = true;
+      return true;
+    }
     const pinBtn = target?.closest?.('.pos-state-badge-btn');
     if (pinBtn) {
       ev.event?.stopPropagation?.();
@@ -4241,6 +4258,20 @@
   // else is open in this account".
   /** @type {{ account: string, symbol: string, pinGroupKey: string|null } | null} */
   let _pinPicker = $state(null);
+
+  // Generic "what does this state mean" popup (2026-10-17) — set by
+  // `.pos-state-info-btn` clicks (see `_tryHandleRowButton` above). Reuses
+  // the real InfoHint component (hideButton + anchor + bind:open, same
+  // pattern as SymbolPanel's CHASE tooltip) rather than a bespoke popup —
+  // `anchor` is the clicked DOM button itself (ag-Grid cellRenderer HTML
+  // is real DOM once mounted, so `target` from the grid's click event is
+  // a usable anchor element). Content is always the SAME static text
+  // already on `badge.tooltip` — no per-row lookup (operator confirmed:
+  // generic meaning per label type, not a per-instance counterparty
+  // lookup).
+  let _stateInfoAnchor = $state(/** @type {HTMLElement | null} */ (null));
+  let _stateInfoOpen = $state(false);
+  let _stateInfoText = $state('');
   const _pinPickerCandidates = $derived.by(() =>
     _pinPicker ? pinPickerCandidatesFromRows(positions, _pinPicker.account, _pinPicker.symbol) : []
   );
@@ -4736,6 +4767,16 @@
 
 {#if _pairModalOpen}
   <OrderPairModal bind:open={_pairModalOpen} />
+{/if}
+
+<!-- Position-state "what does this mean" info popup (2026-10-17) — only
+     mounted once `_stateInfoAnchor` is set (the clicked .pos-state-info-btn
+     DOM element), since InfoHint's `anchor` prop needs a real element to
+     position against. hideButton: the "i" trigger lives in the ag-Grid
+     cell's own HTML, not inside InfoHint itself. -->
+{#if _stateInfoAnchor}
+  <InfoHint popup hideButton id="pos-state-info-hint" anchor={_stateInfoAnchor} bind:open={_stateInfoOpen}
+    panel title="Position state" text={_stateInfoText} />
 {/if}
 
 {#if _chartModalOpen}

@@ -7581,7 +7581,12 @@
                                                of visually centered (operator: "each
                                                checkbox data row should be centered
                                                vertically and horizontally in legs") */
-      28px                                 /* pos state (GTT / paired / orphan) */
+      40px                                 /* pos state (GTT / paired / orphan) — widened
+                                               28->40px (2026-10-17) to fit the new
+                                               click-to-show-meaning "i" trigger
+                                               (CandidateLegRow.svelte) alongside the
+                                               state badge button, which is already
+                                               clickable (opens the pin/unpin picker) */
       minmax(max-content, max-content)     /* symbol (hyphenated, carries expiry) */
       minmax(62px, max-content)            /* ltp */
       minmax(48px, max-content)            /* chg % */

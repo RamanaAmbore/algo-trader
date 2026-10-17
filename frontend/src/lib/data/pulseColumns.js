@@ -585,7 +585,13 @@ export function mkRightColDefs({
   return /** @type {any[]} */ ([
     { headerName: 'St', field: 'pair_group_key', colId: 'pos_state',
       hide: false,
-      width: 28, minWidth: 28, maxWidth: 28,
+      // Widened 28 -> 40px (2026-10-17, operator: "make the group name
+      // labels tooltips when clicked") — the badge glyph itself is
+      // ALREADY clickable (opens the pin/unpin picker), so per the
+      // label-vs-icon rule a SEPARATE small info trigger is needed
+      // (`.pos-state-info-btn`), not an overload of the badge's own
+      // click. 28px had no room for a second element.
+      width: 40, minWidth: 40, maxWidth: 40,
       pinned: 'left', resizable: false, sortable: false, suppressMovable: true,
       // Body badge is flex-centered (.ag-cell-pair-state in app.css); the
       // header label had no matching override and sat left-aligned in
@@ -616,7 +622,12 @@ export function mkRightColDefs({
       cellRenderer: (p) => {
         const badge = positionStateBadge(p.data);
         if (badge.state == null) return '';
-        return `<button type="button" class="pos-state-badge-btn" data-pos-state="${badge.state}" title="${_escHtml(badge.tooltip)}">${_escHtml(badge.glyph)}</button>`;
+        // `.pos-state-info-btn` click is routed in MarketPulse.svelte's
+        // central handler (same `.closest()` convention as `.pos-state-
+        // badge-btn`) to a simple generic-text popup — the badge button
+        // itself stays wired to the pin/unpin picker, unchanged.
+        return `<button type="button" class="pos-state-badge-btn" data-pos-state="${badge.state}" title="${_escHtml(badge.tooltip)}">${_escHtml(badge.glyph)}</button>`
+          + `<button type="button" class="pos-state-info-btn" data-tooltip-text="${_escHtml(badge.tooltip)}" aria-label="What does this mean?">i</button>`;
       },
       cellClass: 'ag-cell-pair-state',
     },
