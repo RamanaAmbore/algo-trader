@@ -1069,16 +1069,19 @@
   .aw-kind-select {
     display: inline-flex;
     /* 2026-10-17 (operator: "add a slight background... reduce its width
-       by 10%") — min-width trimmed 6rem -> 5.4rem; background/radius/
-       padding give the control a faint "chip" separation from the
-       CardHeader row behind it (the Select trigger's own navy gradient,
-       Select.svelte, reads almost flush against this header's similar
-       dark tone without it). */
+       by 10%", then: "dropdown and trade guide should be of same height
+       ... dropdown box needs a shaded background to differentiate it
+       from trade guide") — min-width trimmed 6rem -> 5.4rem. The shading
+       is a `box-shadow` HALO, not a padded background box — box-shadow
+       paints outside the element's own layout box without adding to its
+       size, so this wrapper's rendered height stays IDENTICAL to the
+       Select trigger's own height (and therefore to .console-guide-btn's
+       height, both pinned to --ctl-h elsewhere) instead of the earlier
+       padding-based version, which added 2px the Guide link didn't have. */
     min-width: 5.4rem;
     margin: 1px 0.5rem 1px 0;
-    background: rgba(255,255,255,0.04);
     border-radius: 4px;
-    padding: 1px;
+    box-shadow: 0 0 0 3px rgba(255,255,255,0.09);
   }
   .aw-kind-select :global(.rbq-select-trigger) {
     min-height: 1.7rem;

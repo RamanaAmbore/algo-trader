@@ -305,6 +305,29 @@ test.describe('Item 3 — Workspace header removed; Console/Agents tab row carri
     expect(guideBox.x - (selectBox.x + selectBox.width)).toBeGreaterThan(10);
   });
 
+  // 2026-10-17 operator follow-up: "the dropdown and trade guide should
+  // be of same height... the dropdown box needs to have a shaded
+  // background to differentiate it from trade guide which is just a
+  // button for a link." The wrapper's shading is a box-shadow HALO (not
+  // a padded background box) specifically so it paints outside the
+  // layout box without adding to the wrapper's rendered height — a
+  // padding-based version earlier made the wrapper 2px taller than the
+  // Guide link.
+  test('kind-dropdown wrapper is EXACTLY the same height as Trader Guide, with a visible shaded box-shadow halo', async ({ page }) => {
+    await page.goto('/automation?tab=console', { waitUntil: 'domcontentloaded' });
+    const wrap = page.locator('.aw-kind-select');
+    const guide = page.locator('.console-guide-btn');
+    await expect(wrap).toBeVisible({ timeout: TIMEOUT });
+
+    const [wrapBox, guideBox, boxShadow] = await Promise.all([
+      wrap.boundingBox(),
+      guide.boundingBox(),
+      wrap.evaluate((el) => getComputedStyle(el).boxShadow),
+    ]);
+    expect(Math.abs(wrapBox.height - guideBox.height), `wrap=${wrapBox.height} guide=${guideBox.height}`).toBeLessThan(0.5);
+    expect(boxShadow, 'dropdown wrapper must have a visible shaded box-shadow').not.toBe('none');
+  });
+
   // 2026-10-15 — operator: "I want trader guide and dropdown control in
   // console/agents tab header to be aligned with tab text." The CONSOLE/
   // AGENTS tab text used to sit flush to the TOP of `.ch-left` instead of
