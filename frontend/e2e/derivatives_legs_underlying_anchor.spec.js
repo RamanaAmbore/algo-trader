@@ -196,6 +196,37 @@ test.describe('Derivatives Legs grid — underlying-anchor row (sync with Positi
     expect(boxShadow).not.toBe('none');
   });
 
+  test('the anchor row\'s text is vertically centered, same as a real leg row (2026-10-18 follow-up, operator: "gold text is not vertically centered" — the anchor row\'s span cells were missing display:flex/align-items:center that real rows already have)', async ({ page }) => {
+    await loginAsAdmin(page);
+    await _mockEndpoints(page);
+    await page.goto(DERIV_URL, { waitUntil: 'domcontentloaded' });
+
+    const anchor = page.locator('.cand-body-rows > .cand-row-underlying-anchor');
+    await expect(anchor).toBeVisible({ timeout: 15_000 });
+
+    const info = await anchor.evaluate((row) => {
+      const rowBox = row.getBoundingClientRect();
+      const label = row.querySelector('.cand-anchor-label');
+      const cs = getComputedStyle(label);
+      const textNode = Array.from(label.childNodes).find((n) => n.nodeType === 3 && n.textContent.trim());
+      const r = document.createRange();
+      r.selectNodeContents(textNode);
+      const textBox = r.getBoundingClientRect();
+      return {
+        display: cs.display,
+        alignItems: cs.alignItems,
+        topGap: textBox.top - rowBox.top,
+        bottomGap: rowBox.bottom - textBox.bottom,
+      };
+    });
+    expect(info.display).toBe('flex');
+    expect(info.alignItems).toBe('center');
+    // Symmetric top/bottom gap is the actual proof of centering, not just
+    // the CSS properties being present — small sub-pixel/font-metric slack
+    // is fine, a one-sided gap (the pre-fix bug) is not.
+    expect(Math.abs(info.topGap - info.bottomGap)).toBeLessThanOrEqual(3);
+  });
+
   test('the anchor row\'s background uses the SAME --c-underlying-bg token Positions\' own row-und treatment uses (2026-10-18 follow-up)', async ({ page }) => {
     await loginAsAdmin(page);
     await _mockEndpoints(page);

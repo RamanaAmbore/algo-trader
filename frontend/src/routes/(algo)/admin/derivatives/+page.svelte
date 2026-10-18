@@ -7723,8 +7723,18 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    /* Vertical centering (2026-10-18 follow-up, operator: "gold text is
+       not vertically centered") — missing from this rule is why: the
+       row stretches each span to the full row height via the grid's
+       `align-items: stretch`, but without flex on the span itself, a
+       plain block/inline text node stays top-anchored inside that
+       taller box instead of centering. CandidateLegRow.svelte's own
+       `.cand-row > span` already does this (can't be reused directly,
+       different component's scoped class). */
+    display: flex;
+    align-items: center;
   }
-  .cand-row-underlying-anchor > span.num { text-align: right; }
+  .cand-row-underlying-anchor > span.num { text-align: right; justify-content: flex-end; }
   /* Checkbox cell — always-checked, disabled ("protected": visually
      present for row-shape consistency with every other leg row, but
      can't be unchecked since this row was never part of the real
