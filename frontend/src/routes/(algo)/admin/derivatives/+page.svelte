@@ -5903,7 +5903,7 @@
               </span>
               <span class="cand-anchor-label">{formatPositionSymbol(legsUnderlyingAnchor.resolvedTs || legsUnderlyingAnchor.underlying, legsUnderlyingAnchor.exchange)}</span>
               <span class="num tf-cell {ltpDayClass(legsUnderlyingAnchor.pct)}">{legsUnderlyingAnchor.ltp != null ? priceFmt(legsUnderlyingAnchor.ltp) : '—'}</span>
-              <span class="num tf-cell {ltpDayClass(legsUnderlyingAnchor.pct)}">{legsUnderlyingAnchor.pct != null ? pctFmt(legsUnderlyingAnchor.pct) + '%' : '—'}</span>
+              <span class="num tf-cell cand-anchor-chg-sep {ltpDayClass(legsUnderlyingAnchor.pct)}">{legsUnderlyingAnchor.pct != null ? pctFmt(legsUnderlyingAnchor.pct) + '%' : '—'}</span>
               <span class="num"></span>
               <span class="num"></span>
               <span class="num"></span>
@@ -7789,6 +7789,15 @@
   }
   .cand-row-underlying-anchor.cand-anchor-up   .cand-anchor-label::after { background: rgba(74, 222, 128, 0.85); }
   .cand-row-underlying-anchor.cand-anchor-down .cand-anchor-label::after { background: rgba(248, 113, 113, 0.85); }
+  /* Chg% column right-edge divider — every real leg row's Chg% cell
+     carries this same plain gray separator (CandidateLegRow.svelte's
+     own `.cand-chg-sep`; can't be reused directly here, different
+     component's scoped class) marking the boundary into the Lots/Qty
+     block. 2026-10-18 follow-up, operator: "in legs, after chg% there
+     is a vertical bar for other rows. do the same for gold." */
+  .cand-anchor-chg-sep {
+    box-shadow: inset -1px 0 0 0 var(--algo-muted-border);
+  }
   /* cand-split-tag, cand-eq-tag, cand-proxy-tag, cand-row.cand-eq, and
      all cand-row variant styles moved to CandidateLegRow.svelte. */
   /* Cell-level truncation for the header row's numeric cells. The same

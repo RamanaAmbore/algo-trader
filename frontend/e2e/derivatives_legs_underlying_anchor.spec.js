@@ -183,6 +183,19 @@ test.describe('Derivatives Legs grid — underlying-anchor row (sync with Positi
     expect(boxShadow).not.toBe('none');
   });
 
+  test('the anchor row\'s Chg% cell has the same right-edge divider every real leg\'s Chg% cell has (2026-10-18 follow-up, operator: "after chg% there is a vertical bar for other rows. do the same for gold")', async ({ page }) => {
+    await loginAsAdmin(page);
+    await _mockEndpoints(page);
+    await page.goto(DERIV_URL, { waitUntil: 'domcontentloaded' });
+
+    const anchor = page.locator('.cand-body-rows > .cand-row-underlying-anchor');
+    await expect(anchor).toBeVisible({ timeout: 15_000 });
+    const chgCell = anchor.locator('.cand-anchor-chg-sep');
+    await expect(chgCell).toHaveCount(1);
+    const boxShadow = await chgCell.evaluate((el) => getComputedStyle(el).boxShadow);
+    expect(boxShadow).not.toBe('none');
+  });
+
   test('the anchor row\'s background uses the SAME --c-underlying-bg token Positions\' own row-und treatment uses (2026-10-18 follow-up)', async ({ page }) => {
     await loginAsAdmin(page);
     await _mockEndpoints(page);
