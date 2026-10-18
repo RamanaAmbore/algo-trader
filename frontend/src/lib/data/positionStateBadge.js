@@ -26,7 +26,7 @@
  * conventions documented in CLAUDE.md.
  *
  * @typedef {{
- *   state: 'gtt'|'paired'|'orphan'|null,
+ *   state: 'gtt'|'paired'|'orphan'|'anchor'|null,
  *   glyph: string,
  *   color: string,
  *   bg: string,
@@ -45,6 +45,12 @@
  */
 export const ORPHAN_GLYPH = '◇︎';
 
+/** Underlying-anchor glyph — "X" (2026-10-18, operator: "make st as x,
+ *  with similar coding like o"). Same badge mechanism as the orphan "O"
+ *  state (button + inline bg/color via cellStyle), distinct muted/gray
+ *  color so it never reads as a real position state. */
+export const ANCHOR_GLYPH = 'X';
+
 /** No state — row isn't part of the positions book (watchlist/mover/holding/total). */
 const _NONE = Object.freeze({
   state: null, glyph: '', color: '', bg: '', border: null, tooltip: '',
@@ -56,11 +62,29 @@ const _NONE = Object.freeze({
  *   pair_group_key?: string|null,
  *   is_orphan?: boolean|null,
  *   _isTotal?: boolean,
+ *   _isUnderlyingAnchor?: boolean,
  * } | null | undefined} row
  * @returns {PositionStateBadge}
  */
 export function positionStateBadge(row) {
   if (!row || row._isTotal) return _NONE;
+
+  // Underlying-anchor row (mergeUnderlyingAnchors / the derivatives Legs
+  // grid's own anchor row) — not a real position, so it structurally
+  // never carries has_gtt/pair_group_key/is_orphan, but checked first
+  // regardless since "this isn't a real position at all" outranks any of
+  // those. Same badge mechanism as the other three states; a distinct
+  // muted/gray color so it never reads as a real position state.
+  if (row._isUnderlyingAnchor) {
+    return {
+      state: 'anchor',
+      glyph: ANCHOR_GLYPH,
+      color: 'var(--algo-muted)',
+      bg: 'var(--algo-muted-bg)',
+      border: null,
+      tooltip: 'Underlying reference — not a held position.',
+    };
+  }
 
   if (row.has_gtt) {
     return {

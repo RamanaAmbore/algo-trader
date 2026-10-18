@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { positionStateBadge, ORPHAN_GLYPH } from '../../data/positionStateBadge.js';
+import { positionStateBadge, ORPHAN_GLYPH, ANCHOR_GLYPH } from '../../data/positionStateBadge.js';
 
 describe('positionStateBadge — priority order (GTT > paired > orphan)', () => {
   it('returns gtt state when has_gtt is true, regardless of other flags', () => {
@@ -89,5 +89,41 @@ describe('positionStateBadge — tooltip content', () => {
   it('orphan tooltip mentions pairing', () => {
     const b = positionStateBadge({ is_orphan: true });
     expect(b.tooltip.toLowerCase()).toContain('pair');
+  });
+});
+
+describe('positionStateBadge — underlying-anchor row ("X", 2026-10-18)', () => {
+  it('returns anchor state with glyph "X" when _isUnderlyingAnchor is true', () => {
+    const b = positionStateBadge({ _isUnderlyingAnchor: true });
+    expect(b.state).toBe('anchor');
+    expect(b.glyph).toBe('X');
+    expect(b.glyph).toBe(ANCHOR_GLYPH);
+  });
+
+  it('uses a distinct muted/gray color, not any of GTT/paired/orphan colors', () => {
+    const anchor = positionStateBadge({ _isUnderlyingAnchor: true });
+    const gtt = positionStateBadge({ has_gtt: true });
+    const paired = positionStateBadge({ pair_group_key: 'P1' });
+    const orphan = positionStateBadge({ is_orphan: true });
+    expect(anchor.color).toBe('var(--algo-muted)');
+    expect(anchor.bg).toBe('var(--algo-muted-bg)');
+    expect([gtt.color, paired.color, orphan.color]).not.toContain(anchor.color);
+  });
+
+  it('_isUnderlyingAnchor outranks has_gtt/pair_group_key/is_orphan if all were somehow set', () => {
+    const b = positionStateBadge({
+      _isUnderlyingAnchor: true, has_gtt: true, pair_group_key: 'P1', is_orphan: true,
+    });
+    expect(b.state).toBe('anchor');
+  });
+
+  it('a row with none of the state flags (including _isUnderlyingAnchor) returns null state', () => {
+    const b = positionStateBadge({ _isUnderlyingAnchor: false });
+    expect(b.state).toBeNull();
+  });
+
+  it('tooltip explains this is not a held position', () => {
+    const b = positionStateBadge({ _isUnderlyingAnchor: true });
+    expect(b.tooltip.toLowerCase()).toContain('not a held position');
   });
 });

@@ -150,4 +150,28 @@ test.describe('Derivatives Legs grid — underlying-anchor row (sync with Positi
     await expect(realRow).toBeVisible({ timeout: 15_000 });
     await expect(realRow.locator('input[type="checkbox"]')).toHaveCount(1);
   });
+
+  test('the anchor row\'s St column shows "X" (2026-10-18, operator: "make st as x, with similar coding like o")', async ({ page }) => {
+    await loginAsAdmin(page);
+    await _mockEndpoints(page);
+    await page.goto(DERIV_URL, { waitUntil: 'domcontentloaded' });
+
+    const anchor = page.locator('.cand-body-rows > .cand-row-underlying-anchor');
+    await expect(anchor).toBeVisible({ timeout: 15_000 });
+    const stCell = anchor.locator('.cand-state-cell');
+    await expect(stCell).toHaveCount(1);
+    await expect(stCell).toHaveText('X');
+  });
+
+  test('the anchor row\'s symbol cell has a gray right-edge divider, like a real leg\'s own symbol-cell divider', async ({ page }) => {
+    await loginAsAdmin(page);
+    await _mockEndpoints(page);
+    await page.goto(DERIV_URL, { waitUntil: 'domcontentloaded' });
+
+    const anchor = page.locator('.cand-body-rows > .cand-row-underlying-anchor');
+    await expect(anchor).toBeVisible({ timeout: 15_000 });
+    const label = anchor.locator('.cand-anchor-label');
+    const boxShadow = await label.evaluate((el) => getComputedStyle(el).boxShadow);
+    expect(boxShadow).not.toBe('none');
+  });
 });

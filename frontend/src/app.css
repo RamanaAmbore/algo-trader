@@ -104,6 +104,18 @@
   --algo-red-border-soft:  rgba(248, 113, 113, 0.30);
   --algo-red-border:       rgba(248, 113, 113, 0.55);
 
+  /* Muted/gray alpha variants (2026-10-18) — same rgb as --algo-muted
+     (#7e97b8 = 126,151,184), same alpha ramp as the amber/cyan/green/red
+     families above. Used for the underlying-anchor row's St-column badge
+     and symbol-cell right-edge bar — a neutral marker distinct from
+     every real position-state color (it isn't GTT/paired/orphan, and
+     isn't long/short), while still following the exact same visual
+     mechanism those states use. */
+  --algo-muted-bg-soft:    rgba(126, 151, 184, 0.08);
+  --algo-muted-bg:         rgba(126, 151, 184, 0.14);
+  --algo-muted-bg-strong:  rgba(126, 151, 184, 0.22);
+  --algo-muted-border:     rgba(126, 151, 184, 0.55);
+
   /* Close/dismiss icon-button fill — SSOT for the small "×" affordance
      used by every modal, drawer, and popup close button. Operator
      complaint (2026-09): the boxed close icons rendered as a bare
@@ -1243,6 +1255,17 @@
 }
 .ag-theme-algo .ag-col-sym.chg-down::after {
   background: rgba(248, 113, 113, 0.85);
+}
+
+/* Underlying-anchor row (2026-10-18) — same 2px right-edge bar every
+   other symbol cell gets via chg-up/chg-down, neutral/gray instead of
+   green/red since the anchor isn't a directional position (see
+   mkSymColLeft/mkSymColRight's sym-anchor-bar cellClassRule). Covers
+   both the left-grid (.ag-col-sym-left) and right-grid (.ag-col-sym)
+   symbol columns the same way their chg-up/chg-down rules do. */
+.ag-theme-algo .ag-col-sym-left.sym-anchor-bar::after,
+.ag-theme-algo .ag-col-sym.sym-anchor-bar::after {
+  background: var(--algo-muted-border);
 }
 
 /* Directional cell colour classes — used across every algo grid (Pulse,

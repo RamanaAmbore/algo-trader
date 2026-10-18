@@ -106,51 +106,90 @@ test.beforeEach(async ({ page }) => {
   await mockPositions(page);
 });
 
+/**
+ * Resolve the GOLD rows inside the Positions bucket grid specifically
+ * (scoped to `.mp-bucket-positions` — the page's WATCHLIST card also
+ * pins a bare "GOLD" row, which an unscoped `:has-text("GOLD")` locator
+ * would match first and silently test the wrong grid entirely), ordered
+ * by their actual VISUAL top position rather than DOM/locator order —
+ * ag-Grid is virtualized and reuses/repositions row elements via
+ * `transform`, so DOM order does not reliably track visual row order
+ * after a sort. Waits for the instruments-cache-driven symbol-label
+ * re-render (MarketPulse.svelte's `_pulseSymFmtCache.clear()` on
+ * `instrumentsCacheVersion` change) before measuring.
+ *
+ * @param {import('@playwright/test').Page} page
+ * @returns {Promise<import('@playwright/test').Locator[]>} rows, top-to-bottom
+ */
+async function goldRowsTopToBottom(page) {
+  const goldRows = page.locator('.mp-bucket-positions .ag-row:has-text("GOLD")');
+  await expect(goldRows.first()).toBeVisible({ timeout: TIMEOUT });
+  // Poll for the anchor row specifically (not just "a GOLD row") — the
+  // underlying-quote batchQuote fetch + mergeUnderlyingAnchors re-render
+  // that produces it can land well after the first real leg row paints.
+  await expect(async () => {
+    expect(await goldRows.count()).toBeGreaterThanOrEqual(3);
+  }).toPass({ timeout: TIMEOUT });
+
+  const count = await goldRows.count();
+  const withY = await Promise.all(
+    Array.from({ length: count }, async (_, i) => {
+      const loc = goldRows.nth(i);
+      const box = await loc.boundingBox();
+      return { loc, y: box?.y ?? Number.MAX_SAFE_INTEGER };
+    })
+  );
+  withY.sort((a, b) => a.y - b.y);
+  return withY.map((r) => r.loc);
+}
+
 test.describe('MarketPulse Positions grid — underlying-anchor row sort + label', () => {
   test('the GOLD underlying-anchor row renders FIRST within its block, ahead of its own CE legs', async ({ page }) => {
     await page.goto('/pulse', { waitUntil: 'domcontentloaded' });
+    const rows = await goldRowsTopToBottom(page);
+    expect(rows.length).toBeGreaterThanOrEqual(3); // 1 anchor + 2 real CE/PE legs
 
-    const posGrid = page.locator('.pulse-bucket-positions, [data-bucket="positions"]').first();
-    // Fall back to any grid containing a GOLD row if the bucket container
-    // selector drifts — the assertion below is on row ORDER, not container.
-    const goldRows = page.locator('.ag-row:has-text("GOLD")');
-    await expect(goldRows.first()).toBeVisible({ timeout: TIMEOUT });
-    // Give the instruments cache (and the symbol-label memo it busts on
-    // load — MarketPulse.svelte's `_pulseSymFmtCache.clear()` on
-    // `instrumentsCacheVersion` change) a moment to land and re-render —
-    // a genuinely cold page load can paint the anchor's raw-contract
-    // label for one frame before instruments finish loading.
-    await page.waitForTimeout(3000);
-
-    const count = await goldRows.count();
-    expect(count).toBeGreaterThanOrEqual(3); // 1 anchor + 2 real CE legs
-
-    // The anchor row is the one whose Qty cell is 0/blank — real legs
-    // carry nonzero quantity. Assert it's the FIRST GOLD row rendered.
-    const firstRowText = await goldRows.first().textContent();
-    const laterRowsText = await Promise.all(
-      Array.from({ length: count - 1 }, (_, i) => goldRows.nth(i + 1).textContent())
-    );
+    const texts = await Promise.all(rows.map((r) => r.textContent()));
     // The anchor's own symbol label is bare "GOLD" (virtual root) — a real
     // CE/PE leg's symbol always carries a strike digit right after "GOLD"
     // (e.g. "GOLD26DEC119000CE"), so "GOLD" NOT immediately followed by a
     // digit distinguishes the anchor from every real leg without needing
     // a specific CSS hook.
-    expect(firstRowText).toMatch(/GOLD(?!\d)/);
-    for (const t of laterRowsText) {
-      expect(t).not.toBe(firstRowText);
+    expect(texts[0]).toMatch(/GOLD(?!\d)/);
+    for (const t of texts.slice(1)) {
+      expect(t).not.toBe(texts[0]);
     }
   });
 
   test('the anchor row label is the virtual root "GOLD", not a dated contract', async ({ page }) => {
     await page.goto('/pulse', { waitUntil: 'domcontentloaded' });
-
-    const goldRows = page.locator('.ag-row:has-text("GOLD")');
-    await expect(goldRows.first()).toBeVisible({ timeout: TIMEOUT });
-    await page.waitForTimeout(3000); // see sibling test's comment on instrumentsCacheVersion
-    const firstRowText = (await goldRows.first().textContent()) || '';
+    const rows = await goldRowsTopToBottom(page);
+    const firstRowText = (await rows[0].textContent()) || '';
     // Must not contain a dated-contract suffix — those belong to the
     // resolved tradingsymbol, not the virtual-root display label.
     expect(firstRowText).not.toMatch(/FUT|\d{2}[A-Z]{3}/);
+  });
+
+  test('the anchor row\'s St column shows "X" (2026-10-18, operator: "make st as x, with similar coding like o")', async ({ page }) => {
+    await page.goto('/pulse', { waitUntil: 'domcontentloaded' });
+    const rows = await goldRowsTopToBottom(page);
+
+    const stBtn = rows[0].locator('.pos-state-badge-btn');
+    await expect(stBtn).toHaveCount(1);
+    await expect(stBtn).toHaveAttribute('data-pos-state', 'anchor');
+    await expect(stBtn).toHaveText('X');
+  });
+
+  test('the anchor row\'s symbol cell has a gray right-edge bar, like other rows\' colored bar', async ({ page }) => {
+    await page.goto('/pulse', { waitUntil: 'domcontentloaded' });
+    const rows = await goldRowsTopToBottom(page);
+
+    const symCell = rows[0].locator('.ag-col-sym, .ag-col-sym-left').first();
+    await expect(symCell).toHaveClass(/sym-anchor-bar/);
+    // A real leg row (second GOLD row onward) carries chg-up/chg-down
+    // instead — never sym-anchor-bar.
+    const realSymCell = rows[1].locator('.ag-col-sym, .ag-col-sym-left').first();
+    const realCls = (await realSymCell.getAttribute('class')) || '';
+    expect(realCls).not.toMatch(/sym-anchor-bar/);
   });
 });

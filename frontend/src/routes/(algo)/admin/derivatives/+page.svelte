@@ -50,6 +50,7 @@
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
   import { decomposeSymbol, formatSymbol } from '$lib/data/decomposeSymbol';
   import { rootOfLabel, formatPositionSymbol } from '$lib/data/rootOf.js';
+  import { positionStateBadge } from '$lib/data/positionStateBadge.js';
   import { POPULAR_UNDERLYINGS } from '$lib/data/popularUnderlyings';
   import { priceFmt, pctFmt, aggCompact, fmtPctFraction, ltpDayClass } from '$lib/format';
   import { todayIST } from '$lib/dateFormat.js';
@@ -794,7 +795,7 @@
     const { ltp, close, pct, resolvedTs, exchange } = resolveUnderlyingSpotTriple(selectedUnderlying, {
       positions, holdings, undLive: _undLive, underlyingQuotes: _underlyingQuotes, findNearestFuture,
     });
-    return { underlying: selectedUnderlying, resolvedTs, exchange, ltp, close, pct };
+    return { underlying: selectedUnderlying, resolvedTs, exchange, ltp, close, pct, _isUnderlyingAnchor: true };
   });
 
   /** Same rows as displayedCandidates, but WITHOUT the search-text filter
@@ -5871,12 +5872,19 @@
           <div class="cand-body-rows">
           {#if legsUnderlyingAnchor}
             <!-- Underlying-anchor row — read-only, display-only (not a
-                 tradable leg): no checkbox, no St badge, never enters
-                 TOTAL/payoff/CSV. See `legsUnderlyingAnchor`'s own
-                 comment above for the full rationale. -->
+                 tradable leg): no checkbox, never enters TOTAL/payoff/
+                 CSV. St column shows the shared "anchor" badge (X,
+                 positionStateBadge.js — same mechanism as GTT/paired/
+                 orphan, distinct muted/gray color). See
+                 `legsUnderlyingAnchor`'s own comment above for the full
+                 rationale. -->
+            {@const _anchorBadge = positionStateBadge(legsUnderlyingAnchor)}
             <div class="cand-row-underlying-anchor" title="{legsUnderlyingAnchor.underlying} — underlying spot, not a held position">
               <span></span>
-              <span></span>
+              <span class="cand-state-cell"
+                style:background={_anchorBadge.bg}
+                style:color={_anchorBadge.color}
+                title={_anchorBadge.tooltip}>{_anchorBadge.glyph}</span>
               <span class="cand-anchor-label">{formatPositionSymbol(legsUnderlyingAnchor.resolvedTs || legsUnderlyingAnchor.underlying, legsUnderlyingAnchor.exchange)}</span>
               <span class="num tf-cell {ltpDayClass(legsUnderlyingAnchor.pct)}">{legsUnderlyingAnchor.ltp != null ? priceFmt(legsUnderlyingAnchor.ltp) : '—'}</span>
               <span class="num tf-cell {ltpDayClass(legsUnderlyingAnchor.pct)}">{legsUnderlyingAnchor.pct != null ? pctFmt(legsUnderlyingAnchor.pct) + '%' : '—'}</span>
@@ -7687,8 +7695,35 @@
     white-space: nowrap;
   }
   .cand-row-underlying-anchor > span.num { text-align: right; }
+  /* St-column badge cell — same layout rule as CandidateLegRow.svelte's
+     own `.cand-state-cell` (a different component's scoped class, so it
+     can't be reused directly here — see that file's class list). Colors
+     come inline from `positionStateBadge.js` via style:background/color
+     in the markup, matching every other badge state. */
+  .cand-row-underlying-anchor .cand-state-cell {
+    font-size: var(--fs-xs);
+    font-weight: 700;
+    text-align: center;
+    letter-spacing: 0.02em;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 2px;
+    min-height: 1.2rem;
+  }
   .cand-anchor-label {
     font-weight: 700;
+    /* Gray vertical separator on the symbol cell's right edge — matches
+       every real leg row's own always-visible baseline divider
+       (CandidateLegRow.svelte's `.cand-sym-acct` box-shadow; that rule
+       can't be reused directly here since it's a different component's
+       scoped class — see that file's own comment on the same line).
+       Real rows layer a green/red 2px ::after bar for long/short on TOP
+       of this; the anchor isn't long/short, so it shows only the
+       neutral baseline (2026-10-18, operator: "add gray kind of
+       vertical bar on the right of the symbol... refer to other rows as
+       reference"). */
+    box-shadow: inset -1px 0 0 0 var(--algo-muted-border);
   }
   /* cand-split-tag, cand-eq-tag, cand-proxy-tag, cand-row.cand-eq, and
      all cand-row variant styles moved to CandidateLegRow.svelte. */

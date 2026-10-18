@@ -148,8 +148,14 @@ export function mkSymColLeft({ symRenderer }) {
     cellRenderer: symRenderer, sortable: true,
     cellClass: 'ag-col-sym ag-col-sym-left ag-col-fill',
     cellClassRules: {
-      'chg-up':   p => (p.data?.change_pct ?? 0) > 0,
-      'chg-down': p => (p.data?.change_pct ?? 0) < 0,
+      'chg-up':   p => !p.data?._isUnderlyingAnchor && (p.data?.change_pct ?? 0) > 0,
+      'chg-down': p => !p.data?._isUnderlyingAnchor && (p.data?.change_pct ?? 0) < 0,
+      // Underlying-anchor row (2026-10-18, operator: "add gray kind of
+      // vertical bar on the right of the symbol... refer to other rows
+      // as reference") — same right-edge ::after bar every other symbol
+      // cell gets via chg-up/chg-down, neutral/gray instead of green/red
+      // since the anchor isn't a directional position.
+      'sym-anchor-bar': p => !!p.data?._isUnderlyingAnchor,
     },
   };
 }
@@ -164,8 +170,10 @@ export function mkSymColRight({ symRenderer }) {
     cellRenderer: symRenderer, sortable: true,
     cellClass: 'ag-col-sym ag-col-fill mp-sym-acct',
     cellClassRules: {
-      'chg-up':   p => (p.data?.change_pct ?? 0) > 0,
-      'chg-down': p => (p.data?.change_pct ?? 0) < 0,
+      'chg-up':   p => !p.data?._isUnderlyingAnchor && (p.data?.change_pct ?? 0) > 0,
+      'chg-down': p => !p.data?._isUnderlyingAnchor && (p.data?.change_pct ?? 0) < 0,
+      // See mkSymColLeft's matching comment — same gray-bar treatment.
+      'sym-anchor-bar': p => !!p.data?._isUnderlyingAnchor,
     },
     cellStyle: (p) => {
       if (p.data?._isTotal) return {};
