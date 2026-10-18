@@ -104,7 +104,7 @@ Every code change must be paired with a test that covers the changed lines. This
 | `backend/brokers/*.py` | `backend/tests/broker/test_*.py` |
 | `backend/api/**/*.py` | `backend/tests/test_*.py` |
 | `frontend/src/lib/data/*.js` | `frontend/src/lib/__tests__/data/*.test.js` (Vitest) |
-| `frontend/src/lib/*.js` or `*.svelte` | `frontend/tests/*.spec.js` (Playwright) |
+| `frontend/src/lib/*.js` or `*.svelte` | `frontend/e2e/*.spec.js` (Playwright) |
 
 **Coverage thresholds (enforced in `/ddev` and `/dprod`):**
 - `backend/brokers/` ≥ **80%** — blocks push/merge if below (connections.py + service/app.py need live conn service; structurally unreachable in CI)
