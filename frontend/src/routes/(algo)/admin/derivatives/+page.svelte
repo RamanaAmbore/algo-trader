@@ -107,7 +107,7 @@
   // legs "⟷ Pair" flow (OrderPairModal's position-preview panel never
   // actually paired positions — only orders — so it was dead/misleading;
   // see OrderPairModal.svelte's own docstring for what's kept).
-  /** @type {{ account: string, symbol: string, pinGroupKey: string|null } | null} */
+  /** @type {{ account: string, symbol: string, pinGroupKey: string|null, stateTooltip: string } | null} */
   let _pinPicker = $state(null);
   const _pinPickerCandidates = $derived.by(() => {
     if (!_pinPicker) return [];
@@ -119,13 +119,17 @@
         && String(p.symbol || '').toUpperCase() !== sym)
       .map(p => ({ symbol: p.symbol, account: p.account, qty: p.qty }));
   });
-  /** Opens the pin picker for a candidate row (badge click) or a
-   *  resolved {account, symbol, pinGroupKey} tuple (context menu). */
-  function _openPinPicker(/** @type {any} */ c) {
+  /** Opens the pin picker for a candidate row (badge click, optionally
+   *  carrying the badge's generic "what does this state mean" text — see
+   *  CandidateLegRow.svelte's `onPinClick(c, _stateBadge.tooltip)`) or a
+   *  resolved {account, symbol, pinGroupKey} tuple (context menu, no
+   *  tooltip available there). */
+  function _openPinPicker(/** @type {any} */ c, /** @type {string} */ stateTooltip = '') {
     _pinPicker = {
       account: c.account,
       symbol: c.symbol,
       pinGroupKey: c.pin_group_key ?? c.pinGroupKey ?? null,
+      stateTooltip,
     };
   }
 
@@ -6515,6 +6519,7 @@
     account={_pinPicker.account}
     sourceSymbol={_pinPicker.symbol}
     pinGroupKey={_pinPicker.pinGroupKey}
+    stateTooltip={_pinPicker.stateTooltip}
     candidates={_pinPickerCandidates}
     onDone={(action) => {
       toast.success(action === 'pinned' ? 'Positions pinned' : 'Positions unpinned');
@@ -7581,12 +7586,11 @@
                                                of visually centered (operator: "each
                                                checkbox data row should be centered
                                                vertically and horizontally in legs") */
-      40px                                 /* pos state (GTT / paired / orphan) — widened
-                                               28->40px (2026-10-17) to fit the new
-                                               click-to-show-meaning "i" trigger
-                                               (CandidateLegRow.svelte) alongside the
-                                               state badge button, which is already
-                                               clickable (opens the pin/unpin picker) */
+      28px                                 /* pos state (GTT / paired / orphan) — the
+                                               state badge button itself is clickable
+                                               (opens the pin/unpin picker, which also
+                                               carries the "what does this mean" text —
+                                               no separate "i" trigger) */
       minmax(max-content, max-content)     /* symbol (hyphenated, carries expiry) */
       minmax(62px, max-content)            /* ltp */
       minmax(48px, max-content)            /* chg % */

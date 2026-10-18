@@ -24,6 +24,13 @@
   // Caller owns: resolving `account`/`candidates` (this component is
   // presentational + API-calling only, no position-list derivation),
   // and refetching/toasting after `onDone` fires.
+  //
+  // `stateTooltip` (2026-10-17) — the clicked badge's generic
+  // "what does this state mean" text (positionStateBadge.js's
+  // badge.tooltip, e.g. "Auto-paired P1 — detected automatically...").
+  // Rendered as a one-line hint above the pairing controls so this one
+  // popup covers both "what does the label mean" and "do something
+  // about it" — no separate info icon/tooltip.
 
   import { pinPositions, unpinPosition } from '$lib/api.js';
   import { rawPinId } from '$lib/data/positionStateBadge.js';
@@ -35,6 +42,7 @@
    *   account: string,
    *   sourceSymbol: string,
    *   pinGroupKey?: string | null,
+   *   stateTooltip?: string,
    *   candidates?: Array<{symbol: string, account?: string, qty?: number}>,
    *   onDone?: (action: 'pinned'|'unpinned') => void,
    *   onClose?: () => void,
@@ -44,6 +52,7 @@
     account = '',
     sourceSymbol = '',
     pinGroupKey = null,
+    stateTooltip = '',
     candidates = [],
     onDone = null,
     onClose = null,
@@ -108,6 +117,16 @@
         <button type="button" class="pin-close" onclick={_close} aria-label="Close">×</button>
       </div>
       <div class="pin-source">{sourceSymbol} <span class="pin-source-acct">· {account}</span></div>
+      {#if stateTooltip}
+        <!-- 2026-10-17 (operator: "we don't need i for tool tip...
+             do you think the popup window need to show the pair
+             functionality instead of just showing pair info") — folds
+             the generic "what does this state mean" text
+             (positionStateBadge.js's badge.tooltip) into the SAME popup
+             the badge click already opens, instead of a separate static
+             tooltip/icon. One click target, one popup, both jobs. -->
+        <div class="pin-state-hint">{stateTooltip}</div>
+      {/if}
 
       {#if error}<div class="pin-error">{error}</div>{/if}
 
@@ -173,6 +192,9 @@
     font-family: monospace; font-size: var(--fs-md); color: var(--text-lo);
   }
   .pin-source-acct { color: var(--text-muted); }
+  .pin-state-hint {
+    font-size: var(--fs-md); color: var(--text-muted); line-height: 1.35;
+  }
   .pin-error { font-size: var(--fs-lg); color: #fb7185; }
   .pin-current {
     font-size: var(--fs-md); color: var(--text-med);

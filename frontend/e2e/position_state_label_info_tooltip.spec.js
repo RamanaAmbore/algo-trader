@@ -1,28 +1,37 @@
 /**
  * position_state_label_info_tooltip.spec.js
  *
- * 2026-10-17 feature — operator: "make the group name labels as tool
- * tips when clicked to show what they mean."
+ * 2026-10-17 feature, revised same day — operator: "we don't need i for
+ * tool tip for st rows in positions and legs. make p1, p2, labels as
+ * tool tips. do you think the popup window need to show the pair
+ * functionality instead of just showing pair info. clicking on this
+ * cell should not interfear with clicking symbol other elements of the
+ * row to open order modal. same with legs in derivatives."
  *
- * The St-column state badge (GTT/pinned/paired/orphan glyph) is ALREADY
- * clickable in both grids — it opens the PositionPinPicker. Per the
- * general tooltip-label rule set the same session ("if label is plain
- * text anywhere, it should work as a tooltip. otherwise, we need to add
- * circle with i as tooltip"), an already-interactive label gets a
- * SEPARATE small "(i)" icon rather than overloading its own click.
+ * Original design (same day, superseded): a separate "(i)" icon next to
+ * the St-column badge opened a plain-text InfoHint tooltip. Revised
+ * design: no separate icon — the badge click (already wired to
+ * PositionPinPicker, the REAL pairing-functionality popup) now ALSO
+ * carries the generic "what does this state mean" text
+ * (positionStateBadge.js's badge.tooltip) as a one-line hint inside that
+ * same popup (`.pin-state-hint`). One click target, one popup, both jobs.
  *
  * Covers both surfaces:
- *   - MarketPulse Positions grid (`.pos-state-info-btn`, ag-Grid
+ *   - MarketPulse Positions grid (`.pos-state-badge-btn`, ag-Grid
  *     cellRenderer HTML string, routed through MarketPulse.svelte's
- *     central `_tryHandleRowButton` click handler; popup is a real
- *     InfoHint anchored to the clicked DOM element)
- *   - Derivatives Legs grid (`.cand-state-info-btn`, CandidateLegRow.svelte,
- *     a real Svelte component — InfoHint mounted directly with
- *     hideButton+anchor+bind:open)
+ *     central `_tryHandleRowButton` click handler)
+ *   - Derivatives Legs grid (`.cand-state-badge-btn`, CandidateLegRow.svelte)
  *
- * Content is the SAME generic text already on `badge.tooltip`
- * (positionStateBadge.js) — static per state TYPE, not a per-instance
- * dynamic counterparty lookup (operator-confirmed scope).
+ * Verifies:
+ *   1. No separate "(i)" trigger exists in either grid.
+ *   2. Clicking the badge opens PositionPinPicker (`.pin-overlay`) and the
+ *      popup shows the generic state explanation (`.pin-state-hint`).
+ *   3. Clicking the badge does NOT open the order ticket modal
+ *      (`.oes-overlay`) — stopPropagation must prevent it bubbling to the
+ *      row's own click-to-open-order handler.
+ *   4. Clicking elsewhere on the same row (the symbol) still opens the
+ *      order ticket modal normally — the badge's stopPropagation must not
+ *      leak and suppress unrelated row clicks.
  *
  * Run:
  *   npx playwright test e2e/position_state_label_info_tooltip.spec.js \
@@ -61,27 +70,16 @@ async function mockPositions(page) {
   });
 }
 
-test.describe('MarketPulse Positions grid — St-column info trigger', () => {
-  test('clicking the "i" shows the generic state explanation WITHOUT opening the pin/unpin picker', async ({ page }) => {
+test.describe('MarketPulse Positions grid — St-column badge click', () => {
+  test('no separate "(i)" trigger exists', async ({ page }) => {
     await loginAsAdmin(page);
     await mockPositions(page);
     await page.goto('/pulse', { waitUntil: 'domcontentloaded' });
-
-    const infoBtn = page.locator('.pos-state-info-btn').first();
-    await expect(infoBtn).toBeVisible({ timeout: TIMEOUT });
-    await infoBtn.click();
-
-    const popup = page.locator('.info-popout, [class*="popout"]').first();
-    await expect(popup).toBeVisible({ timeout: TIMEOUT });
-    await expect(popup).toContainText(/auto-paired/i);
-
-    // The pin/unpin picker must NOT have opened — info click is a
-    // distinct target from the badge button.
-    const pinPicker = page.locator('.pin-overlay');
-    expect(await pinPicker.first().isVisible().catch(() => false)).toBe(false);
+    await expect(page.locator('.pos-state-badge-btn').first()).toBeVisible({ timeout: TIMEOUT });
+    expect(await page.locator('.pos-state-info-btn').count()).toBe(0);
   });
 
-  test('the badge button itself still opens the pin/unpin picker, unaffected by the info trigger', async ({ page }) => {
+  test('clicking the badge opens the pin picker with the state explanation, WITHOUT opening the order ticket', async ({ page }) => {
     await loginAsAdmin(page);
     await mockPositions(page);
     await page.goto('/pulse', { waitUntil: 'domcontentloaded' });
@@ -90,27 +88,42 @@ test.describe('MarketPulse Positions grid — St-column info trigger', () => {
     await expect(badgeBtn).toBeVisible({ timeout: TIMEOUT });
     await badgeBtn.click();
 
-    const pinPicker = page.locator('.pin-overlay').first();
+    const pinPicker = page.locator('.pin-overlay');
     await expect(pinPicker).toBeVisible({ timeout: TIMEOUT });
+    await expect(pinPicker.locator('.pin-state-hint')).toContainText(/auto-paired/i);
+
+    expect(await page.locator('.oes-overlay').first().isVisible().catch(() => false)).toBe(false);
+  });
+
+  test('clicking the symbol on the same row still opens the order ticket normally', async ({ page }) => {
+    await loginAsAdmin(page);
+    await mockPositions(page);
+    await page.goto('/pulse', { waitUntil: 'domcontentloaded' });
+
+    const badgeBtn = page.locator('.pos-state-badge-btn').first();
+    await expect(badgeBtn).toBeVisible({ timeout: TIMEOUT });
+
+    // Click the row away from the badge cell (e.g. the symbol cell) —
+    // the badge's own stopPropagation must not leak into the rest of the row.
+    const row = page.locator('.ag-row', { has: badgeBtn }).first();
+    const symCell = row.locator('[col-id="tradingsymbol"], .ag-cell').filter({ hasNotText: '' }).nth(1);
+    await symCell.click({ force: true }).catch(() => {});
+
+    const orderModal = page.locator('.oes-overlay');
+    await expect(orderModal).toBeVisible({ timeout: TIMEOUT });
   });
 });
 
-test.describe('Derivatives Legs grid — St-column info trigger', () => {
-  test('clicking the "i" shows the generic state explanation', async ({ page }) => {
+test.describe('Derivatives Legs grid — St-column badge click', () => {
+  test('no separate "(i)" trigger exists', async ({ page }) => {
     await loginAsAdmin(page);
     await mockPositions(page);
     await page.goto('/admin/derivatives?u=NIFTY', { waitUntil: 'domcontentloaded' });
-
-    const infoBtn = page.locator('.cand-state-info-btn').first();
-    await expect(infoBtn).toBeVisible({ timeout: TIMEOUT });
-    await infoBtn.click();
-
-    const popup = page.locator('.info-popout, [class*="popout"]').first();
-    await expect(popup).toBeVisible({ timeout: TIMEOUT });
-    await expect(popup).toContainText(/auto-paired/i);
+    await expect(page.locator('.cand-state-badge-btn').first()).toBeVisible({ timeout: TIMEOUT });
+    expect(await page.locator('.cand-state-info-btn').count()).toBe(0);
   });
 
-  test('the badge button itself still opens the pin/unpin picker, unaffected by the info trigger', async ({ page }) => {
+  test('clicking the badge opens the pin picker with the state explanation, WITHOUT opening the order ticket', async ({ page }) => {
     await loginAsAdmin(page);
     await mockPositions(page);
     await page.goto('/admin/derivatives?u=NIFTY', { waitUntil: 'domcontentloaded' });
@@ -119,7 +132,10 @@ test.describe('Derivatives Legs grid — St-column info trigger', () => {
     await expect(badgeBtn).toBeVisible({ timeout: TIMEOUT });
     await badgeBtn.click();
 
-    const pinPicker = page.locator('.pin-overlay').first();
+    const pinPicker = page.locator('.pin-overlay');
     await expect(pinPicker).toBeVisible({ timeout: TIMEOUT });
+    await expect(pinPicker.locator('.pin-state-hint')).toContainText(/auto-paired/i);
+
+    expect(await page.locator('.oes-overlay').first().isVisible().catch(() => false)).toBe(false);
   });
 });

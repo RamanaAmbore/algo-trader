@@ -35,7 +35,6 @@
   import { longPress }              from '$lib/actions/longPress.js';
   import { legPnlDisplay }          from '$lib/data/derivativesMath.js';
   import { positionStateBadge }     from '$lib/data/positionStateBadge.js';
-  import InfoHint                   from '$lib/InfoHint.svelte';
 
   const BAND_LABELS = { close: 'ITM ON EXPIRY', netted: 'NETTED', otm: 'OUT OF THE MONEY' };
 
@@ -61,7 +60,7 @@
    *   onRemoveDraft: (draftId: any) => void,
    *   onOpenChartTicket: (c: any) => void,
    *   onContextMenu: (c: any, ev: MouseEvent | PointerEvent) => void,
-   *   onPinClick?: (c: any) => void,
+   *   onPinClick?: (c: any, stateTooltip?: string) => void,
    *   pendingQty?: number,
    * }}
    */
@@ -159,17 +158,6 @@
   // positionStateBadge.js. Null state renders no badge/button at all
   // (e.g. a draft row, which never carries real position-state fields).
   const _stateBadge = $derived(positionStateBadge(c));
-
-  // Generic "what does this state mean" info trigger (2026-10-17,
-  // operator: "make the group name labels tooltips when clicked") — a
-  // SEPARATE click target from the badge button above it, since that one
-  // is already interactive (opens the pin/unpin picker via `onPinClick`)
-  // — per the label-vs-icon rule, an already-interactive label gets a
-  // separate "(i)" icon rather than an overloaded click. Same generic
-  // text as the badge's own `title=` hover tooltip, no per-row lookup.
-  /** @type {HTMLElement | null} */
-  let _stateInfoAnchor = $state(null);
-  let _stateInfoOpen = $state(false);
 
   const dir        = $derived(displayQty < 0 ? 'short' : displayQty > 0 ? 'long' : 'flat');
   const isClosable = $derived(!isClosed && c.source !== 'draft');
@@ -277,22 +265,22 @@
     style:color={_stateBadge.color || null}
     style:border={_stateBadge.border || null}>
     {#if _stateBadge.state != null && onPinClick}
+      <!-- Single click target (2026-10-17, operator: "we don't need i
+           for tool tip... clicking on this cell should not interfear
+           with clicking symbol or other elements of the row") — opens
+           the pin/unpin picker, which now also carries this badge's
+           generic "what does this state mean" text (`_stateBadge.tooltip`)
+           as a one-line hint inside that same popup instead of a
+           separate "(i)" icon/tooltip. stopPropagation on BOTH click
+           and keydown so it never falls through to the row's own
+           onclick/onkeydown row-activation handler. -->
       <button type="button" class="cand-state-badge-btn"
         data-pos-state={_stateBadge.state}
         title={_stateBadge.tooltip}
-        onclick={(e) => { e.stopPropagation(); onPinClick(c); }}
+        onclick={(e) => { e.stopPropagation(); onPinClick(c, _stateBadge.tooltip); }}
         onkeydown={(e) => e.stopPropagation()}>
         {_stateBadge.glyph}
       </button>
-      <button type="button" class="cand-state-info-btn"
-        bind:this={_stateInfoAnchor}
-        aria-label="What does this mean?"
-        aria-expanded={_stateInfoOpen}
-        onclick={(e) => { e.stopPropagation(); _stateInfoOpen = !_stateInfoOpen; }}
-        onkeydown={(e) => { e.stopPropagation(); if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); _stateInfoOpen = !_stateInfoOpen; } }}>i</button>
-      <InfoHint popup hideButton id={`cand-state-info-${c.key ?? c.symbol ?? ''}`}
-        anchor={_stateInfoAnchor} bind:open={_stateInfoOpen}
-        panel title="Position state" text={_stateBadge.tooltip} />
     {:else}
       {_stateBadge.glyph}
     {/if}
@@ -490,10 +478,9 @@
      positionStateBadge.js) show through unchanged from the pre-button
      plain-text rendering. Real <button> for mouse+touch+keyboard. */
   .cand-state-badge-btn {
-    flex: 1 1 auto;
+    width: 100%;
     height: 100%;
     min-height: 1.2rem;
-    min-width: 0;
     padding: 0;
     border: none;
     background: transparent;
@@ -506,38 +493,6 @@
   .cand-state-badge-btn:hover,
   .cand-state-badge-btn:focus-visible {
     background: rgba(255,255,255,0.10);
-  }
-
-  /* Info trigger (2026-10-17) — sibling of .cand-state-badge-btn, which
-     is ALREADY clickable (opens the pin/unpin picker); per the
-     label-vs-icon rule this separate tiny "i" is the click target for
-     the generic "what does this state mean" explanation. Mirrors
-     MarketPulse.svelte's `.pos-state-info-btn` (same sizing/look). */
-  .cand-state-info-btn {
-    flex: 0 0 auto;
-    width: 0.85rem;
-    height: 0.85rem;
-    min-height: 0;
-    padding: 0;
-    margin-left: 1px;
-    border: 1px solid rgba(255,255,255,0.22);
-    border-radius: 50%;
-    background: transparent;
-    color: var(--algo-muted);
-    font-size: 7px;
-    font-weight: 700;
-    font-style: italic;
-    line-height: 1;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    cursor: pointer;
-    touch-action: manipulation;
-  }
-  .cand-state-info-btn:hover,
-  .cand-state-info-btn:focus-visible {
-    border-color: rgba(255,255,255,0.45);
-    color: rgba(255,255,255,0.85);
   }
 
   /* 2026-09-28 audit fix — Svelte scoped CSS is per-component: a rule
