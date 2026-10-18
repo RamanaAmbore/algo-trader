@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { pairGroupSort, sortRowsByPairGroup } from '../../data/pairGroupSort.js';
+import { pairGroupSort, sortRowsByPairGroup, pairGroupOrderKey } from '../../data/pairGroupSort.js';
 import { positionStateBadge } from '../../data/positionStateBadge.js';
 
 /**
@@ -163,6 +163,112 @@ describe('pairGroupSort — account-first ordering (2026-10-17 fix)', () => {
     // before ACC_B's orphan — not "all orphans together regardless of account".
     const symbols = nodes.map(n => n.data.tradingsymbol);
     expect(symbols).toEqual(['A_PAIRED', 'A_ORPHAN', 'B_ORPHAN']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// pairGroupSort / sortRowsByPairGroup — tier-aware ordering (2026-10-17
+// same-day follow-up fix): the underlying/future sorts ABOVE its own
+// options within an account's cluster. Before this fix, a lone future
+// (which almost always has no pair_group_key, since it can only
+// waterfall-pair against another future of the same root) fell into the
+// 'ZZZZ_orphan' bucket and sorted to the END of the account's cluster —
+// e.g. "gold showing below [its options], should be first as an
+// underlying". Real parseable symbols are required here (decomposeSymbol
+// drives tier derivation) — synthetic symbols like 'SYMA'/'FIRST' used
+// elsewhere in this file all resolve to kind='eq' -> tier 0, so they
+// never exercised this path.
+// ---------------------------------------------------------------------------
+
+describe('pairGroupOrderKey — tier derivation', () => {
+  it('a future symbol gets tier 0, ahead of any option tier 1', () => {
+    const futKey = pairGroupOrderKey({ tradingsymbol: 'CRUDEOIL25JUNFUT', pair_group_key: null });
+    const optKey = pairGroupOrderKey({ tradingsymbol: 'NIFTY25JUN24000CE', pair_group_key: null });
+    expect(futKey.startsWith('0|')).toBe(true);
+    expect(optKey.startsWith('1|')).toBe(true);
+    expect(futKey < optKey).toBe(true);
+  });
+
+  it('resolves symbol from either `tradingsymbol` (MarketPulse) or `symbol` (Legs/Exp-Close) field', () => {
+    const viaTradingsymbol = pairGroupOrderKey({ tradingsymbol: 'NIFTY25JUN24000CE', pair_group_key: 'P1' });
+    const viaSymbol = pairGroupOrderKey({ symbol: 'NIFTY25JUN24000CE', pair_group_key: 'P1' });
+    expect(viaTradingsymbol).toBe(viaSymbol);
+    expect(viaTradingsymbol).toBe('1|P1');
+  });
+
+  it('a row with no resolvable symbol falls back to tier 0 (eq/unparseable), not a thrown error', () => {
+    expect(() => pairGroupOrderKey({})).not.toThrow();
+    expect(pairGroupOrderKey({}).startsWith('0|')).toBe(true);
+  });
+});
+
+describe('pairGroupSort — underlying/future sorts above its own options (2026-10-17)', () => {
+  it('a lone future row sorts BEFORE P1/P2/orphan option rows in the same account', () => {
+    const fut    = makeAcctNode('CRUDEOIL25JUNFUT', null, 'ACC_A');
+    const p1     = makeAcctNode('CRUDEOIL25JUN8000CE', 'P1', 'ACC_A');
+    const p2     = makeAcctNode('CRUDEOIL25JUN8500PE', 'P2', 'ACC_A');
+    const orphan = makeAcctNode('CRUDEOIL25JUN9000CE', null, 'ACC_A');
+
+    // Input order deliberately puts the future last to prove the sort
+    // moves it, not that it happened to already be first.
+    const nodes = [orphan, p2, p1, fut];
+    pairGroupSort(nodes);
+
+    expect(nodes[0]).toBe(fut);
+    expect(nodes[1]).toBe(p1);
+    expect(nodes[2]).toBe(p2);
+    expect(nodes[3]).toBe(orphan);
+  });
+
+  it('each account keeps its own future ahead of its own options — no cross-account leak (composes with account-first invariant)', () => {
+    const futA = makeAcctNode('GOLDM25DECFUT', null, 'ACC_A');
+    const optA = makeAcctNode('GOLDM25DEC75000CE', 'P1', 'ACC_A');
+    const futB = makeAcctNode('GOLDM25DECFUT', null, 'ACC_B');
+    const optB = makeAcctNode('GOLDM25DEC75000PE', 'P1', 'ACC_B');
+
+    const nodes = [optB, optA, futB, futA];
+    pairGroupSort(nodes);
+
+    const syms = nodes.map(n => n.data.tradingsymbol + '|' + [...n.data.accounts][0]);
+    // ACC_A's cluster (future then option) stays fully together and
+    // before ACC_B's cluster — account remains the primary segment.
+    expect(syms).toEqual([
+      'GOLDM25DECFUT|ACC_A', 'GOLDM25DEC75000CE|ACC_A',
+      'GOLDM25DECFUT|ACC_B', 'GOLDM25DEC75000PE|ACC_B',
+    ]);
+  });
+
+  it('pair-adjacency among options is unchanged by the tier fix — a pair\'s two legs stay adjacent regardless of a future being present', () => {
+    const fut  = makeAcctNode('NIFTY25JUNFUT', null, 'ACC_A');
+    const p1a  = makeAcctNode('NIFTY25JUN24000CE', 'P1', 'ACC_A');
+    const p1b  = makeAcctNode('NIFTY25JUN25000PE', 'P1', 'ACC_A');
+
+    const nodes = [p1b, fut, p1a];
+    pairGroupSort(nodes);
+
+    expect(nodes[0]).toBe(fut);
+    // P1's two legs are adjacent (positions 1 and 2), in original
+    // relative order — the future's presence doesn't split the pair.
+    expect(nodes[1]).toBe(p1b);
+    expect(nodes[2]).toBe(p1a);
+  });
+});
+
+describe('sortRowsByPairGroup — underlying/future sorts above its own options (2026-10-17)', () => {
+  function row(symbol, pair_group_key = null, account = 'ACC1') {
+    return { symbol, pair_group_key, account };
+  }
+
+  it('a lone future leg sorts BEFORE P1/orphan option legs in the same account', () => {
+    const fut    = row('CRUDEOIL25JUNFUT', null, 'ACC_A');
+    const p1     = row('CRUDEOIL25JUN8000CE', 'P1', 'ACC_A');
+    const orphan = row('CRUDEOIL25JUN9000CE', null, 'ACC_A');
+
+    const sorted = sortRowsByPairGroup([orphan, p1, fut]);
+
+    expect(sorted.map(r => r.symbol)).toEqual([
+      'CRUDEOIL25JUNFUT', 'CRUDEOIL25JUN8000CE', 'CRUDEOIL25JUN9000CE',
+    ]);
   });
 });
 
