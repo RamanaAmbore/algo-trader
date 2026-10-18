@@ -8,6 +8,8 @@
  * Consumers: MarketPulse.svelte (via import).
  */
 
+import { pairGroupSort } from './pairGroupSort.js';
+
 /**
  * Shared defaultColDef for every Pulse ag-Grid instance.
  * All four grids (bucket × 2 + summary × 2 + funds) use this
@@ -205,6 +207,61 @@ export function postSortGroups2Level({ nodes, api }) {
     } else {
       out.push(entry.node);
     }
+  }
+  nodes.length = 0;
+  for (const n of out) nodes.push(n);
+}
+
+/**
+ * MarketPulse Positions grid's own postSortRows callback — composes
+ * underlying-block preservation (same algorithm as `postSortGroups`)
+ * with account-then-pair ordering applied ONLY within each block
+ * (2026-10-17, operator: "the positions and legs sort order should be
+ * on account and then pairs, unpaired showing the last within the
+ * account"). Rows with no `underlying` (cash equity etc.) are treated
+ * as their own single-row "group" so they still get sorted among
+ * themselves without being pulled into an unrelated underlying's block.
+ *
+ * Extracted from MarketPulse.svelte (2026-10-18) so it's unit-testable —
+ * this is also where the underlying-anchor-row sort bug lived.
+ *
+ * Underlying-anchor rows (2026-10-18 fix) — a `mergeUnderlyingAnchors`
+ * synthetic row (`row._isUnderlyingAnchor === true`) carries an EMPTY
+ * `accounts` Set (nothing to add — it isn't a real position), so
+ * `pairGroupSort`'s `${account}|...}` key starts directly with the `|`
+ * separator (char code 0x7C), which sorts AFTER every real account code
+ * (uppercase letters/digits, all < 0x7C) — the anchor fell to the very
+ * end of its own underlying block instead of leading it, even though the
+ * tier segment (`_rowTier`, non-option = 0) was already correct. Fix:
+ * partition each block into anchor row(s) (always first, in arrival
+ * order — there is normally exactly one) and everything else (sorted via
+ * the existing `pairGroupSort`), instead of running the whole block
+ * through one key-based sort where the anchor's missing account always
+ * loses.
+ *
+ * @param {{ nodes: import('ag-grid-community').IRowNode[], api: import('ag-grid-community').GridApi }} param
+ */
+export function pairGroupPostSort({ nodes, api }) {
+  if (api?.getColumnState().some(col => col.sort != null)) return;
+  if (!nodes || nodes.length === 0) return;
+
+  const byUnderlying = new Map();
+  const orderedKeys = [];
+  for (const n of nodes) {
+    const u = String(n.data?.underlying || '').toUpperCase() || `__row_${orderedKeys.length}_${n.id ?? ''}`;
+    if (!byUnderlying.has(u)) { byUnderlying.set(u, []); orderedKeys.push(u); }
+    byUnderlying.get(u).push(n);
+  }
+  const firstIdxOf = new Map(orderedKeys.map(k => [k, nodes.indexOf(byUnderlying.get(k)[0])]));
+  orderedKeys.sort((a, b) => firstIdxOf.get(a) - firstIdxOf.get(b));
+
+  const out = [];
+  for (const k of orderedKeys) {
+    const group = byUnderlying.get(k);
+    const anchors = group.filter(n => n.data?._isUnderlyingAnchor === true);
+    const rest = group.filter(n => n.data?._isUnderlyingAnchor !== true);
+    pairGroupSort(rest);
+    out.push(...anchors, ...rest);
   }
   nodes.length = 0;
   for (const n of out) nodes.push(n);

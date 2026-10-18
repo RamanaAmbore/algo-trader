@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { postSortGroups, postSortGroups2Level } from '../../data/pulseGridSetup.js';
+import { postSortGroups, postSortGroups2Level, pairGroupPostSort } from '../../data/pulseGridSetup.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -291,5 +291,104 @@ describe('postSortGroups2Level — rows without underlying stay standalone', () 
 
     expect(() => postSortGroups2Level(params)).not.toThrow();
     expect(nodes).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// pairGroupPostSort — underlying-anchor row ordering (2026-10-18 fix)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a row shaped like a REAL mergePositionRows output — `accounts`
+ * is a non-empty Set (the field pairGroupSort's `_rowAccount` reads via
+ * `leadAccount`), plus a `pair_group_key` for the tier/pair key segment.
+ */
+function makeRealRow(tradingsymbol, underlying, account, pairGroupKey) {
+  return {
+    data: {
+      tradingsymbol, underlying, account: undefined,
+      accounts: new Set([account]),
+      pair_group_key: pairGroupKey,
+    },
+  };
+}
+
+/**
+ * Build a row shaped like a REAL `mergeUnderlyingAnchors` synthetic row —
+ * `accounts` is an EMPTY Set (makeRowFactory's default; mergeUnderlyingAnchors
+ * never adds to it) and `_isUnderlyingAnchor` is set, exactly as the fixed
+ * `mergeUnderlyingAnchors` now does.
+ */
+function makeAnchorRow(tradingsymbol, underlying) {
+  return {
+    data: {
+      tradingsymbol, underlying, account: undefined,
+      accounts: new Set(),
+      pair_group_key: null,
+      _isUnderlyingAnchor: true,
+    },
+  };
+}
+
+describe('pairGroupPostSort — underlying-anchor row sorts first within its block (2026-10-18 fix)', () => {
+  it('BUG reproduction (pre-fix shape): an anchor row with an empty accounts Set sorts to the END of its block, not the start', () => {
+    // This test documents WHY the bug happened — an anchor row run through
+    // the plain pairGroupSort key (no _isUnderlyingAnchor partitioning)
+    // sorts last, because its account segment is '' and '' + '|' (0x7C)
+    // lexicographically exceeds any real uppercase account code.
+    const anchor = makeAnchorRow('GOLD26OCTFUT', 'GOLD');
+    const ce = makeRealRow('GOLD26OCT149000CE', 'GOLD', 'ZG0790', 'P1');
+    const pe = makeRealRow('GOLD26OCT142000PE', 'GOLD', 'ZG0790', 'P1');
+    const nodes = [ce, pe, anchor];
+
+    // Simulate the OLD composition: no anchor partitioning, just a bare
+    // pairGroupSort key comparison (what the pre-fix code effectively did).
+    const key = (n) => {
+      const acct = n.data.accounts.size ? [...n.data.accounts][0] : '';
+      const tier = n.data.tradingsymbol.endsWith('CE') || n.data.tradingsymbol.endsWith('PE') ? 1 : 0;
+      return `${acct}|${tier}|${n.data.pair_group_key ?? 'ZZZZ_orphan'}`;
+    };
+    const sorted = [...nodes].sort((a, b) => (key(a) < key(b) ? -1 : 1));
+    expect(sorted[sorted.length - 1]).toBe(anchor);
+  });
+
+  it('FIX: pairGroupPostSort places the anchor row first in its underlying block', () => {
+    const anchor = makeAnchorRow('GOLD26OCTFUT', 'GOLD');
+    const ce1 = makeRealRow('GOLD26OCT149000CE', 'GOLD', 'ZG0790', 'P1');
+    const pe1 = makeRealRow('GOLD26OCT142000PE', 'GOLD', 'ZG0790', 'P1');
+    const ce2 = makeRealRow('GOLD26OCT155000CE', 'GOLD', 'ZJ6294', 'P2');
+    // Anchor arrives LAST in the pre-sort array — mergeUnderlyingAnchors
+    // runs after mergePositionRows, so this is the realistic arrival order.
+    const nodes = [ce1, pe1, ce2, anchor];
+    const params = makeParams(nodes, [{ sort: null }]);
+
+    pairGroupPostSort(params);
+
+    expect(nodes[0]).toBe(anchor);
+    // The three real rows still follow, in SOME pairGroupSort-determined
+    // order — just never ahead of the anchor.
+    expect(nodes.slice(1)).toEqual(expect.arrayContaining([ce1, pe1, ce2]));
+  });
+
+  it('FIX: a block with no anchor row (no mergeUnderlyingAnchors trigger) is unaffected — still sorted by account/pair', () => {
+    const ce = makeRealRow('NIFTY26JUN24000CE', 'NIFTY', 'ZG0790', 'P1');
+    const pe = makeRealRow('NIFTY26JUN24000PE', 'NIFTY', 'ZG0790', 'P1');
+    const nodes = [pe, ce];
+    const params = makeParams(nodes, [{ sort: null }]);
+
+    expect(() => pairGroupPostSort(params)).not.toThrow();
+    expect(nodes).toHaveLength(2);
+  });
+
+  it('respects an active column sort (early return, same as the other postSort functions)', () => {
+    const anchor = makeAnchorRow('GOLD26OCTFUT', 'GOLD');
+    const ce = makeRealRow('GOLD26OCT149000CE', 'GOLD', 'ZG0790', 'P1');
+    const nodes = [ce, anchor];
+    const params = makeParams(nodes, [{ sort: 'asc' }]);
+
+    pairGroupPostSort(params);
+    // Unchanged — the function bailed out immediately.
+    expect(nodes[0]).toBe(ce);
+    expect(nodes[1]).toBe(anchor);
   });
 });

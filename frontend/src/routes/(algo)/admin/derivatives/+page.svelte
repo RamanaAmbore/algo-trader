@@ -49,7 +49,7 @@
   import { expiryPnl, expiryPnlWithRealised, resolveExpiryAnchor, legExtrinsicDisplay, expiredLegFrozenPnl } from '$lib/data/expiryPnl';
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
   import { decomposeSymbol, formatSymbol } from '$lib/data/decomposeSymbol';
-  import { rootOfLabel } from '$lib/data/rootOf.js';
+  import { rootOfLabel, formatPositionSymbol } from '$lib/data/rootOf.js';
   import { POPULAR_UNDERLYINGS } from '$lib/data/popularUnderlyings';
   import { priceFmt, pctFmt, aggCompact, fmtPctFraction, ltpDayClass } from '$lib/format';
   import { todayIST } from '$lib/dateFormat.js';
@@ -791,10 +791,10 @@
   const legsUnderlyingAnchor = $derived.by(() => {
     if (legsTab !== 'legs' || !selectedUnderlying) return null;
     if (!candidatePositions.some(c => c.kind === 'opt')) return null;
-    const { ltp, close, pct, resolvedTs } = resolveUnderlyingSpotTriple(selectedUnderlying, {
+    const { ltp, close, pct, resolvedTs, exchange } = resolveUnderlyingSpotTriple(selectedUnderlying, {
       positions, holdings, undLive: _undLive, underlyingQuotes: _underlyingQuotes, findNearestFuture,
     });
-    return { underlying: selectedUnderlying, resolvedTs, ltp, close, pct };
+    return { underlying: selectedUnderlying, resolvedTs, exchange, ltp, close, pct };
   });
 
   /** Same rows as displayedCandidates, but WITHOUT the search-text filter
@@ -5877,7 +5877,7 @@
             <div class="cand-row-underlying-anchor" title="{legsUnderlyingAnchor.underlying} — underlying spot, not a held position">
               <span></span>
               <span></span>
-              <span class="cand-anchor-label">{formatSymbol(legsUnderlyingAnchor.resolvedTs || legsUnderlyingAnchor.underlying)}</span>
+              <span class="cand-anchor-label">{formatPositionSymbol(legsUnderlyingAnchor.resolvedTs || legsUnderlyingAnchor.underlying, legsUnderlyingAnchor.exchange)}</span>
               <span class="num tf-cell {ltpDayClass(legsUnderlyingAnchor.pct)}">{legsUnderlyingAnchor.ltp != null ? priceFmt(legsUnderlyingAnchor.ltp) : '—'}</span>
               <span class="num tf-cell {ltpDayClass(legsUnderlyingAnchor.pct)}">{legsUnderlyingAnchor.pct != null ? pctFmt(legsUnderlyingAnchor.pct) + '%' : '—'}</span>
               <span class="num"></span>
@@ -7655,13 +7655,19 @@
   }
   /* Underlying-anchor row (Legs grid) — read-only, display-only row
      showing the selected underlying's own spot even when it isn't a
-     held position. Slate tint (not amber — that's reserved for TOTAL)
-     so it reads as context, not a summary. No hover/clickable cursor —
-     this row carries no onclick/role, matching every other static-text
-     cell on the page. Deliberately does NOT carry the shared `.cand-row`
-     class — several existing tests/selectors use `.cand-row` to mean
-     "a real, checkbox-bearing leg row" (e.g. `.cand-row.first()`); this
-     row is neither, and must never be the match for those. */
+     held position. Background keeps a subtle slate tint (not amber —
+     that's reserved for TOTAL) so the row's PRESENCE still reads as
+     context, not a real leg, but cell text otherwise matches every
+     other row's plain styling — no italic/dimmed label (2026-10-18
+     fix, operator: "the resolved root color coding is not correct...
+     color code like other rows green red") — LTP/Chg% use the same
+     `ltpDayClass()` green/red convention every real leg's LTP/Chg%
+     cell uses. No hover/clickable cursor — this row carries no
+     onclick/role, matching every other static-text cell on the page.
+     Deliberately does NOT carry the shared `.cand-row` class — several
+     existing tests/selectors use `.cand-row` to mean "a real,
+     checkbox-bearing leg row" (e.g. `.cand-row.first()`); this row is
+     neither, and must never be the match for those. */
   .cand-row-underlying-anchor {
     display: grid;
     grid-template-columns: subgrid;
@@ -7682,9 +7688,7 @@
   }
   .cand-row-underlying-anchor > span.num { text-align: right; }
   .cand-anchor-label {
-    color: var(--algo-slate);
-    font-weight: 600;
-    font-style: italic;
+    font-weight: 700;
   }
   /* cand-split-tag, cand-eq-tag, cand-proxy-tag, cand-row.cand-eq, and
      all cand-row variant styles moved to CandidateLegRow.svelte. */

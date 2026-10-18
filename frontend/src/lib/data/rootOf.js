@@ -47,6 +47,7 @@
  */
 
 import { displaySymbol } from './displaySymbol.js';
+import { formatSymbol } from './decomposeSymbol.js';
 
 // ---------------------------------------------------------------------------
 // Internal state
@@ -212,6 +213,34 @@ export function rootOf(contract, exchange) {
 export function rootOfLabel(contract, exchange) {
   const r = rootOf(contract, exchange);
   return displaySymbol(r);
+}
+
+/**
+ * Format a contract symbol for display the way MarketPulse's Positions
+ * grid does: MCX/CDS futures show the virtual-root label ("CRUDEOIL",
+ * "CRUDEOIL.NEXT") instead of the raw dated contract; everything else
+ * (including a far-month MCX/CDS contract with no virtual-root mapping)
+ * falls through to the ordinary hyphenated `formatSymbol()` form.
+ *
+ * Extracted (2026-10-18) from MarketPulse.svelte's own `_pulseFmtSym` so
+ * every surface that shows an underlying-anchor row — Positions, the
+ * derivatives Legs grid — renders the SAME label for the SAME contract,
+ * instead of each surface re-deriving its own (operator: "the same code
+ * is not used... make sure store has the info, it is used directly in
+ * all surfaces").
+ *
+ * @param {string} contract  Kite tradingsymbol
+ * @param {string} [exchange]  Exchange (MCX / CDS / …)
+ * @returns {string}
+ */
+export function formatPositionSymbol(contract, exchange = '') {
+  if (!contract) return '';
+  const eUp = (exchange || '').toUpperCase();
+  if (eUp === 'MCX' || eUp === 'CDS') {
+    const rl = rootOfLabel(contract, eUp);
+    return rl !== contract ? rl : formatSymbol(contract);
+  }
+  return formatSymbol(contract);
 }
 
 /**

@@ -27,10 +27,9 @@
   import StrategyPicker from '$lib/StrategyPicker.svelte';
   import AlgoTabs from '$lib/AlgoTabs.svelte';
   import ModalShell from '$lib/ModalShell.svelte';
-  import { formatSymbol } from '$lib/data/decomposeSymbol';
   import { mkBaseGridOpts, syncGridRowHeightVar } from '$lib/data/algoGridUtils.js';
   import { instrumentsCacheVersion } from '$lib/data/instruments';
-  import { rootOfLabel, resolveVirtual } from '$lib/data/rootOf.js';
+  import { resolveVirtual, formatPositionSymbol } from '$lib/data/rootOf.js';
   import { displaySymbol } from '$lib/data/displaySymbol.js';
 
   // Module-scope cache for hyphenated symbol display. The cellRenderer
@@ -41,10 +40,11 @@
   // per-symbol day once the dump loads.
   const _pulseSymFmtCache = new Map();
   /**
-   * Format a symbol for the Pulse cell renderer.
-   * For MCX/CDS futures the virtual root label is shown (e.g. "CRUDEOIL",
-   * "CRUDEOIL.NEXT") instead of the raw contract name.
-   * All other symbols go through the Dhan-style hyphenated formatter.
+   * Format a symbol for the Pulse cell renderer. Thin memoising wrapper
+   * over the shared `formatPositionSymbol()` (rootOf.js) — extracted
+   * 2026-10-18 so every surface that renders an underlying-anchor row
+   * (Positions, derivatives Legs) uses the SAME label logic instead of
+   * each maintaining its own copy.
    *
    * @param {string} s         tradingsymbol
    * @param {string} [exch]    exchange (MCX / CDS / …)
@@ -55,17 +55,7 @@
     if (_pulseSymFmtCache.size > 600) _pulseSymFmtCache.clear();
     let v = _pulseSymFmtCache.get(cacheKey);
     if (v === undefined) {
-      const eUp = (exch || '').toUpperCase();
-      if (eUp === 'MCX' || eUp === 'CDS') {
-        // Returns "CRUDEOIL", "CRUDEOIL.NEXT", or raw contract for far-month
-        const rl = rootOfLabel(s, eUp);
-        // Only use virtual label when it differs from the raw contract.
-        // If rootOfLabel returns the raw contract (far-month), fall through
-        // to the hyphenated format so the expiry is still visible.
-        v = rl !== s ? rl : formatSymbol(s);
-      } else {
-        v = formatSymbol(s);
-      }
+      v = formatPositionSymbol(s, exch);
       _pulseSymFmtCache.set(cacheKey, v);
     }
     return v;
@@ -122,9 +112,8 @@
   } from '$lib/data/pulseLoad';
   import {
     PULSE_DEFAULT_COL_DEF, PULSE_SORTING_ORDER,
-    pulseRowId, summaryRowId, postSortGroups,
+    pulseRowId, summaryRowId, postSortGroups, pairGroupPostSort,
   } from '$lib/data/pulseGridSetup';
-  import { pairGroupSort } from '$lib/data/pairGroupSort';
   import { splitPairedLots } from '$lib/data/lotPairSplit';
 
   let {
@@ -3759,56 +3748,11 @@
     // without F&O coverage) keep their post-sort position individually.
     // postSortGroups imported from $lib/data/pulseGridSetup — pure fn, no closure.
 
-    // Pair-group post-sort for the Positions grid.
-    //
-    // 2026-10-17 fix (operator: "gold is showing below, it should be the
-    // first one as an underlying") — this used to call bare
-    // `pairGroupSort(params.nodes)`, which re-sorts the WHOLE row set by
-    // `${account}|${pair_group_key}` with no regard for `underlying` at
-    // all, completely discarding the underlying-block order/`groupOrder`
-    // that `sortUnifiedRows` (pulseUnified.js) already established
-    // upstream — GOLD's own cluster could land anywhere depending purely
-    // on its accounts'/pairs' alphabetical position, same bug class
-    // `postSortGroups` (the OTHER bucket grids' default) exists to
-    // prevent. Fixed by composing both: underlying blocks keep their
-    // incoming (first-appearance) relative order — exactly like
-    // `postSortGroups` — and ONLY the rows WITHIN each underlying's own
-    // block get re-ordered by account-then-pair (the operator's other
-    // 2026-10-17 ask: "the positions and legs sort order should be on
-    // account and then pairs, unpaired showing the last within the
-    // account"). Rows with no `underlying` (cash equity etc.) are
-    // treated as their own single-row "group" so they still get the
-    // account+pair ordering among themselves without being pulled into
-    // an unrelated underlying's block.
-    function _pairGroupPostSort(params) {
-      const { nodes, api } = params;
-      if (api?.getColumnState().some(col => col.sort != null)) return; // respect user column sort
-      if (!nodes || nodes.length === 0) return;
-
-      /** @type {Map<string, import('ag-grid-community').IRowNode[]>} */
-      const byUnderlying = new Map();
-      const orderedKeys = [];
-      for (const n of nodes) {
-        const u = String(n.data?.underlying || '').toUpperCase() || `__row_${orderedKeys.length}_${n.id ?? ''}`;
-        if (!byUnderlying.has(u)) { byUnderlying.set(u, []); orderedKeys.push(u); }
-        byUnderlying.get(u).push(n);
-      }
-      // Anchor each underlying block at its first member's CURRENT
-      // position (preserves sortUnifiedRows'/groupOrder's ordering,
-      // exactly like postSortGroups does), then pair-sort the members
-      // WITHIN that block only.
-      const firstIdxOf = new Map(orderedKeys.map(k => [k, nodes.indexOf(byUnderlying.get(k)[0])]));
-      orderedKeys.sort((a, b) => firstIdxOf.get(a) - firstIdxOf.get(b));
-
-      const out = [];
-      for (const k of orderedKeys) {
-        const group = byUnderlying.get(k);
-        pairGroupSort(group);
-        out.push(...group);
-      }
-      nodes.length = 0;
-      for (const n of out) nodes.push(n);
-    }
+    // Pair-group post-sort for the Positions grid — `pairGroupPostSort`,
+    // imported from pulseGridSetup.js (extracted 2026-10-18 so it's
+    // unit-testable; see that function's own docstring for the full
+    // history, including the 2026-10-17 underlying-block fix and the
+    // 2026-10-18 underlying-anchor-row ordering fix).
 
     // Factory: every per-bucket grid shares the same shape (height
     // tracks, getRowClass, sort + resize defaults, click handlers).
@@ -3915,7 +3859,7 @@
     if (gridPositionsEl) {
       gridPositions = makeBucketGrid(gridPositionsEl, positionsColDefs,
         'No positions in the active book.', [], {
-          postSortRows: _pairGroupPostSort,
+          postSortRows: pairGroupPostSort,
           // Pinned TOTAL row bypass fix — re-apply on every filter change
           // (quick filter via the symbol search box, or a column/floating
           // filter), not just on the next row-data poll.

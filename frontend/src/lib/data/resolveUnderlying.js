@@ -213,17 +213,19 @@ export function resolveUnderlyingPrevClose(rows, resolvedTs, kiteClose) {
  *   underlyingQuotes: Record<string, any>,
  *   findNearestFuture: ((u: string) => any) | null,
  * }} opts
- * @returns {{ ltp: number|null, close: number|null, pct: number|null, resolvedTs: string }}
+ * @returns {{ ltp: number|null, close: number|null, pct: number|null, resolvedTs: string, exchange: string }}
  */
 export function resolveUnderlyingSpotTriple(underlying, { positions, holdings, undLive, underlyingQuotes, findNearestFuture }) {
   const _q = underlyingQuotes?.[underlying];
   const _live = undLive?.[underlying];
   const ltp = _live ? _live.ltp : (_q ? Number(_q.ltp) : null);
   const kiteClose = _live ? _live.close : (_q ? Number(_q.prev_close) : null);
-  const resolvedTs = resolveUnderlyingTradingsymbol(underlying, findNearestFuture);
+  const resolved = resolveUnderlying(underlying, findNearestFuture);
+  const resolvedTs = resolved?.tradingsymbol ?? resolveUnderlyingTradingsymbol(underlying, findNearestFuture);
+  const exchange = resolved?.exchange ?? '';
   const close = resolveUnderlyingPrevClose([...(positions || []), ...(holdings || [])], resolvedTs, kiteClose).value;
   const pct = (ltp != null && close != null && close > 0) ? ((ltp - close) / close) * 100 : null;
-  return { ltp, close, pct, resolvedTs };
+  return { ltp, close, pct, resolvedTs, exchange };
 }
 
 /**

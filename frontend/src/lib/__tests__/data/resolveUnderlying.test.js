@@ -583,6 +583,7 @@ describe('resolveUnderlyingSpotTriple — shared LTP/Chg%/P.Close derivation for
     });
     expect(r.resolvedTs).toBe('GOLD26OCTFUT');
     expect(r.close).toBe(147000);
+    expect(r.exchange).toBe('MCX');
   });
 
   it('returns null ltp/close/pct when no data source has anything for this underlying', () => {

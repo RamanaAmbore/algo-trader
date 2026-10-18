@@ -707,6 +707,14 @@ export function mergeUnderlyingAnchors(byKey, uq, pos, hold, includePos, include
     row.exchange      = row.exchange || info.exchange;
     row.tradingsymbol = info.tradingsymbol;
     row.src.u = true;
+    // Explicit synthetic-row marker (2026-10-18 fix) — `src.u` alone
+    // isn't a safe signal for "this row isn't a real position": the
+    // `existingPosRows` branch above also sets `src.u = true` on REAL
+    // held rows that happen to share the anchor's tradingsymbol. This
+    // row, by contrast, was just CREATED by `get()` above and carries
+    // no `accounts` (the factory seeds an empty Set — see
+    // `makeRowFactory`) — it is never a real position.
+    row._isUnderlyingAnchor = true;
     row.underlying = info.displayUnderlying || info.underlying_group;
     row.kind       = info.kind;
     _applyUnderlyingQuoteFields(row, q);

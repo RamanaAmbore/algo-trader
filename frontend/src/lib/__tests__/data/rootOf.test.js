@@ -5,6 +5,7 @@ import {
   resolveVirtual,
   seedRootMap,
   seedRootMapFromInstruments,
+  formatPositionSymbol,
 } from '$lib/data/rootOf.js';
 
 // ── Test fixture helpers ─────────────────────────────────────────────────────
@@ -187,5 +188,45 @@ describe('seedRootMapFromInstruments', () => {
   it('non-array input does not throw', () => {
     expect(() => seedRootMapFromInstruments(null)).not.toThrow();
     expect(() => seedRootMapFromInstruments(undefined)).not.toThrow();
+  });
+});
+
+// ── formatPositionSymbol ─────────────────────────────────────────────────────
+//
+// Shared symbol-display helper (2026-10-18) — extracted from MarketPulse's
+// own `_pulseFmtSym` so the derivatives Legs grid's underlying-anchor row
+// shows the SAME "GOLD" virtual-root label MarketPulse's Positions grid
+// anchor row shows, instead of the raw dated contract
+// ("GOLD-04DEC26-FUT").
+
+describe('formatPositionSymbol — shared virtual-root display label', () => {
+  it('front-month MCX future shows the bare virtual root (matches MarketPulse)', () => {
+    expect(formatPositionSymbol(FRONT, 'MCX')).toBe('CRUDEOIL');
+  });
+
+  it('back-month MCX future shows the dot-suffixed virtual root', () => {
+    expect(formatPositionSymbol(BACK, 'MCX')).toBe('CRUDEOIL.NEXT');
+  });
+
+  it('far-month MCX future (no virtual slot) falls through to the hyphenated formatter', () => {
+    const v = formatPositionSymbol('CRUDEOIL26AUGFUT', 'MCX');
+    expect(v).not.toBe('CRUDEOIL');
+    expect(v.length).toBeGreaterThan(0);
+  });
+
+  it('a non-MCX/CDS symbol (e.g. NFO option) always uses the hyphenated formatter', () => {
+    const v = formatPositionSymbol('NIFTY26JUN24000CE', 'NFO');
+    expect(v).not.toBe('NIFTY');
+    expect(v.length).toBeGreaterThan(0);
+  });
+
+  it('empty/null contract returns an empty string, never throws', () => {
+    expect(formatPositionSymbol('', 'MCX')).toBe('');
+    expect(formatPositionSymbol(null, 'MCX')).toBe('');
+    expect(() => formatPositionSymbol(undefined, 'MCX')).not.toThrow();
+  });
+
+  it('exchange defaults to empty string when omitted (non-MCX path)', () => {
+    expect(() => formatPositionSymbol(FRONT)).not.toThrow();
   });
 });
