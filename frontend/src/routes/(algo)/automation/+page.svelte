@@ -66,14 +66,29 @@
 
   // Statement-kind hint selector (relocated from ConsoleTab.svelte, 2026-10
   // "remove Workspace header" pass) — now a dropdown sharing the Console/
-  // Agents tab row instead of a separate pills row inside ConsoleTab. Pure
-  // UI-hint state driven only by `_consoleCliText`: NOT a hard mode-lock —
-  // the real dispatch decision always comes from ConsoleTab's own
+  // Agents tab row instead of a separate pills row inside ConsoleTab.
+  //
+  // Revised 2026-10-18 (operator): "it should sample agent when agent is
+  // selected. when order is selected, it should show sample order,
+  // similarly alerts and brackets. but when keep cursor, it should be
+  // cleared... for agent, it works correctly." Supersedes the original
+  // "only seed when the box is empty" guard, which meant switching the
+  // dropdown from one kind's sample to another's silently did nothing
+  // once ANY sample was showing. New contract:
+  //   (a) picking a kind ALWAYS shows that kind's sample — but ONLY
+  //       while the box is still showing an untouched sample (tracked by
+  //       `_isSeedActive`, below), never overwriting real typed text or
+  //       a real agent loaded via the Agents-tab Edit action (that path
+  //       explicitly clears `_isSeedActive`, matching the operator's
+  //       "for agent it works correctly" — editing a real agent must
+  //       never auto-clear/auto-replace on focus or kind-switch).
+  //   (b) focusing the textarea while a sample is still showing clears
+  //       it to empty (`_onConsoleFocus`, passed to ConsoleTab/
+  //       AgentCliEditor's `onFocus`), so the operator never has to
+  //       hand-delete the sample before typing their own statement.
+  // The real dispatch decision still always comes from ConsoleTab's own
   // `classifyConsoleStatement(value)` on the typed text, never from this
-  // selector. It (a) reflects whatever kind the typed text already,
-  // confidently resolved to (synced below), and (b) when the box is EMPTY,
-  // picking an option seeds a short starter snippet for that kind — a
-  // convenience, never a destructive overwrite of real typed text.
+  // selector — it's a pure UI hint, not a hard mode-lock.
   const _KIND_OPTIONS = ['order', 'bracket', 'agent', 'alert'];
   const _KIND_LABELS = { order: 'Order', bracket: 'Bracket', agent: 'Agent', alert: 'Alert' };
   const _KIND_SEED = {
@@ -83,10 +98,37 @@
     alert: 'ALERT telegram',
   };
   let _kindHint = $state('order');
+  // True only while `_consoleCliText` is still exactly the untouched
+  // sample `_pickKind` last wrote — false the instant the operator types
+  // anything that diverges from it, or a real agent is loaded via Edit.
+  let _isSeedActive = $state(false);
 
   function _pickKind(/** @type {string} */ k) {
     _kindHint = k;
-    if (!_consoleCliText || !_consoleCliText.trim()) _consoleCliText = _KIND_SEED[k] || '';
+    if (!_consoleCliText || !_consoleCliText.trim() || _isSeedActive) {
+      _consoleCliText = _KIND_SEED[k] || '';
+      _isSeedActive = true;
+    }
+  }
+
+  // Keeps `_isSeedActive` accurate as the operator types — the moment
+  // the live text diverges from the active kind's own seed, it's real
+  // content, never auto-cleared or auto-replaced again.
+  $effect(() => {
+    const seed = _KIND_SEED[_kindHint] || '';
+    if (_isSeedActive && _consoleCliText !== seed) {
+      untrack(() => { _isSeedActive = false; });
+    }
+  });
+
+  /** Bound to ConsoleTab/AgentCliEditor's `onFocus` — clears the box the
+   *  first time the operator clicks in, but ONLY while it's still
+   *  showing an untouched sample (never real typed/edited text). */
+  function _onConsoleFocus() {
+    if (_isSeedActive) {
+      _consoleCliText = '';
+      _isSeedActive = false;
+    }
   }
 
   /** Leading-TOKEN detector for the kind-selector sync below — deliberately
@@ -353,6 +395,10 @@
       return;
     }
     _consoleCliText = dec.text;
+    // Real agent content, not a sample — never auto-clear-on-focus or
+    // auto-replace-on-kind-switch (operator: "for agent it works
+    // correctly" — this Edit path must keep behaving exactly that way).
+    _isSeedActive = false;
     _consoleEditTarget = { rowKind, ref, label: row.name || row.slug };
     setActiveTab('console');
   }
@@ -721,7 +767,7 @@
   </CardHeader>
   <div class="aw-view-body">
     {#if activeTab === 'console'}
-      <ConsoleTab bind:value={_consoleCliText} bind:editTarget={_consoleEditTarget} />
+      <ConsoleTab bind:value={_consoleCliText} bind:editTarget={_consoleEditTarget} onFocus={_onConsoleFocus} />
     {:else}
 
     <StaleBanner {error} hasData={agents.length > 0} label="Agents" />
