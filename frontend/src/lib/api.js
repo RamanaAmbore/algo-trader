@@ -972,30 +972,6 @@ export async function placeBasket(groups) {
   return _post('/orders/basket', { groups }, { auth: true });
 }
 
-/** POST /api/positions/pin — manually link two open positions in the same
- *  account as a pinned pair (same visual family as the backend's
- *  auto-detected `pair_group_key`, but operator-set and immune to the
- *  next poll's lot-waterfall re-pairing). Same admin-guard pattern as the
- *  existing `/api/orders/pair`.
- *  Request:  { account, symbol_a, symbol_b }
- *  Response: shape owned by the backend — forwarded to the caller as-is;
- *  expected to stamp `pin_group_key` onto both legs' PositionRow on the
- *  next `/api/positions` read. */
-export async function pinPositions({ account, symbolA, symbolB }) {
-  return _post('/positions/pin', { account, symbol_a: symbolA, symbol_b: symbolB }, { auth: true });
-}
-
-/** DELETE /api/positions/pin/{id} — remove a manual pin.
- *
- *  `id` must be the bare `position_pairs` table row id (an int) — NOT
- *  `PositionRow.pin_group_key`, which the backend's `_apply_pin_overlay()`
- *  formats as `f"PIN{id}"` for display only. The one caller today
- *  (PositionPinPicker.svelte's `_unpin()`) strips that "PIN" prefix
- *  before calling this. */
-export async function unpinPosition(id) {
-  return _del(`/positions/pin/${encodeURIComponent(String(id))}`, { auth: true });
-}
-
 /** POST /api/orders/basket/margin — per-account margin check without placing.
  *  Same shape as placeBasket request.
  *  Response: { groups: [{ account, required, available, shortfall, error }] }

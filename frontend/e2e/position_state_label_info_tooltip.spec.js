@@ -8,13 +8,13 @@
  * cell should not interfear with clicking symbol other elements of the
  * row to open order modal. same with legs in derivatives."
  *
- * Original design (same day, superseded): a separate "(i)" icon next to
- * the St-column badge opened a plain-text InfoHint tooltip. Revised
- * design: no separate icon — the badge click (already wired to
- * PositionPinPicker, the REAL pairing-functionality popup) now ALSO
- * carries the generic "what does this state mean" text
- * (positionStateBadge.js's badge.tooltip) as a one-line hint inside that
- * same popup (`.pin-state-hint`). One click target, one popup, both jobs.
+ * Revised again (2026-10-17, later same day) — the manual position-pin
+ * feature (PositionPinPicker, `pin_group_key`) was retired entirely.
+ * The St-column badge click no longer opens a pairing picker at all —
+ * it now ONLY shows the badge's own "what does this state mean" text
+ * (positionStateBadge.js's badge.tooltip) via a small InfoHint popup,
+ * same click-to-show-meaning pattern as the Exp Close tab's band-label/
+ * id-chip buttons.
  *
  * Covers both surfaces:
  *   - MarketPulse Positions grid (`.pos-state-badge-btn`, ag-Grid
@@ -24,8 +24,8 @@
  *
  * Verifies:
  *   1. No separate "(i)" trigger exists in either grid.
- *   2. Clicking the badge opens PositionPinPicker (`.pin-overlay`) and the
- *      popup shows the generic state explanation (`.pin-state-hint`).
+ *   2. Clicking the badge opens an InfoHint popup showing the generic
+ *      state explanation (e.g. "auto-paired").
  *   3. Clicking the badge does NOT open the order ticket modal
  *      (`.oes-overlay`) — stopPropagation must prevent it bubbling to the
  *      row's own click-to-open-order handler.
@@ -79,7 +79,7 @@ test.describe('MarketPulse Positions grid — St-column badge click', () => {
     expect(await page.locator('.pos-state-info-btn').count()).toBe(0);
   });
 
-  test('clicking the badge opens the pin picker with the state explanation, WITHOUT opening the order ticket', async ({ page }) => {
+  test('clicking the badge opens an InfoHint popup with the state explanation, WITHOUT opening the order ticket', async ({ page }) => {
     await loginAsAdmin(page);
     await mockPositions(page);
     await page.goto('/pulse', { waitUntil: 'domcontentloaded' });
@@ -88,9 +88,9 @@ test.describe('MarketPulse Positions grid — St-column badge click', () => {
     await expect(badgeBtn).toBeVisible({ timeout: TIMEOUT });
     await badgeBtn.click();
 
-    const pinPicker = page.locator('.pin-overlay');
-    await expect(pinPicker).toBeVisible({ timeout: TIMEOUT });
-    await expect(pinPicker.locator('.pin-state-hint')).toContainText(/auto-paired/i);
+    const popup = page.locator('#mp-pos-state-info');
+    await expect(popup).toBeVisible({ timeout: TIMEOUT });
+    await expect(popup).toContainText(/auto-paired/i);
 
     expect(await page.locator('.oes-overlay').first().isVisible().catch(() => false)).toBe(false);
   });
@@ -123,7 +123,7 @@ test.describe('Derivatives Legs grid — St-column badge click', () => {
     expect(await page.locator('.cand-state-info-btn').count()).toBe(0);
   });
 
-  test('clicking the badge opens the pin picker with the state explanation, WITHOUT opening the order ticket', async ({ page }) => {
+  test('clicking the badge opens an InfoHint popup with the state explanation, WITHOUT opening the order ticket', async ({ page }) => {
     await loginAsAdmin(page);
     await mockPositions(page);
     await page.goto('/admin/derivatives?u=NIFTY', { waitUntil: 'domcontentloaded' });
@@ -132,9 +132,9 @@ test.describe('Derivatives Legs grid — St-column badge click', () => {
     await expect(badgeBtn).toBeVisible({ timeout: TIMEOUT });
     await badgeBtn.click();
 
-    const pinPicker = page.locator('.pin-overlay');
-    await expect(pinPicker).toBeVisible({ timeout: TIMEOUT });
-    await expect(pinPicker.locator('.pin-state-hint')).toContainText(/auto-paired/i);
+    const popup = page.locator('[id^="cand-state-info-"]');
+    await expect(popup.first()).toBeVisible({ timeout: TIMEOUT });
+    await expect(popup.first()).toContainText(/auto-paired/i);
 
     expect(await page.locator('.oes-overlay').first().isVisible().catch(() => false)).toBe(false);
   });

@@ -62,7 +62,6 @@
   import { exportRowsToCsv } from '$lib/utils/csvExport.js';
   import { RISK_FREE_R as _RISK_FREE_R, normCdf as _normCdf, probAbove as _probAbove, expectedValueOnCurve as _expectedValueOnCurve, multilegPopOnCurve as _multilegPopOnCurve } from '$lib/data/riskMath.js';
   import ChartModal from '$lib/ChartModal.svelte';
-  import PositionPinPicker from '$lib/order/PositionPinPicker.svelte';
   import { sortRowsByPairGroup } from '$lib/data/pairGroupSort.js';
   import { toast } from '$lib/data/toastStore.svelte.js';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
@@ -101,52 +100,12 @@
     _chartModalExch = String(exchange || '');
   }
 
-  // Position pin/unpair picker state (2026-10) — opened from a
-  // CandidateLegRow state-badge click or from SymbolContextMenu's
-  // "Pair with…"/"Unpair" entry. Replaces the retired checkbox-select-2-
-  // legs "⟷ Pair" flow (OrderPairModal's position-preview panel never
-  // actually paired positions — only orders — so it was dead/misleading;
-  // see OrderPairModal.svelte's own docstring for what's kept).
-  /** @type {{ account: string, symbol: string, pinGroupKey: string|null, stateTooltip: string } | null} */
-  let _pinPicker = $state(null);
-  const _pinPickerCandidates = $derived.by(() => {
-    if (!_pinPicker) return [];
-    const acct = _pinPicker.account;
-    const sym  = String(_pinPicker.symbol || '').toUpperCase();
-    return positions
-      .filter(p => p.account === acct
-        && Number(p.qty || 0) !== 0
-        && String(p.symbol || '').toUpperCase() !== sym)
-      .map(p => ({ symbol: p.symbol, account: p.account, qty: p.qty }));
-  });
-  /** Opens the pin picker for a candidate row (badge click, optionally
-   *  carrying the badge's generic "what does this state mean" text — see
-   *  CandidateLegRow.svelte's `onPinClick(c, _stateBadge.tooltip)`) or a
-   *  resolved {account, symbol, pinGroupKey} tuple (context menu, no
-   *  tooltip available there). */
-  function _openPinPicker(/** @type {any} */ c, /** @type {string} */ stateTooltip = '') {
-    _pinPicker = {
-      account: c.account,
-      symbol: c.symbol,
-      pinGroupKey: c.pin_group_key ?? c.pinGroupKey ?? null,
-      stateTooltip,
-    };
-  }
-
   // Context menu state — right-click / long-press on any candidate symbol.
-  /** @type {{ symbol: string, exchange: string, x: number, y: number, account?: string, pinGroupKey?: string|null } | null} */
+  /** @type {{ symbol: string, exchange: string, x: number, y: number } | null} */
   let _ctxMenu = $state(null);
   /** @type {'place-order' | 'chart' | 'log' | null} */ let _ctxAction = $state(null);
   /** @type {string} */ let _ctxSym  = $state('');
   /** @type {string} */ let _ctxExch = $state('');
-  // Pin-picker context, captured alongside _ctxMenu at the SAME point
-  // (the right-click handler below), but in a SEPARATE state var that
-  // SymbolContextMenu's onClose does NOT null out. SymbolContextMenu's
-  // own _fire() calls onClose() (which nulls _ctxMenu) BEFORE onAction()
-  // — so reading _ctxMenu from inside onAction would already see null;
-  // this stash is what the 'pin' branch of onAction actually reads.
-  /** @type {{ account: string, symbol: string, pinGroupKey: string|null } | null} */
-  let _ctxPinInfo = $state(null);
 
   // Source card semantics (v4): no more single-vs-multi distinction.
   // Everything is multi-leg. One leg analyses fine through the strategy
@@ -801,15 +760,13 @@
     // expiryPnl.js's old field whitelist before it ever reached this
     // pipeline), so the sort was a guaranteed-stable no-op. That whitelist
     // gap is now fixed (buildPositionRowFromBroker carries is_orphan/
-    // pair_group_key/pin_group_key/has_gtt through), so rows sharing a
+    // pair_group_key/has_gtt through), so rows sharing a
     // pair_group_key now sort adjacent to each other — the operator's
     // "treat the paired set as a single group" request. Only applied to
     // the Legs tab (legsTab !== 'expiry') — the Exp Close tab already has
     // its OWN pairing/grouping via _band/_pairId (theta-DESC ordering,
     // netted-band pair tints), which this would otherwise interleave with
-    // and duplicate band headers. Not applied to `pin_group_key` — the
-    // operator's grouping ask was specifically scoped to the auto-paired
-    // case.
+    // and duplicate band headers.
     if (legsTab !== 'expiry') {
       rows = sortRowsByPairGroup(rows);
     }
@@ -5517,10 +5474,7 @@
         <span>Avg cost</span>
         <span>LTP</span>
         <span>Source</span>
-        <!-- Retired 2026-10: the checkbox-select-2-legs "⟷ Pair" flow
-             never actually paired positions (only orders, via
-             OrderPairModal) — see PositionPinPicker.svelte's docstring.
-             Blank spacer keeps this header's 6-column grid aligned with
+        <!-- Blank spacer keeps this header's 6-column grid aligned with
              each draft row's trailing .leg-del column below. -->
         <span></span>
       </div>
@@ -5925,10 +5879,8 @@
                 account:   _rowTicketAccount(candidate),
               })}
               onContextMenu={(candidate, ev) => {
-                _ctxMenu = { symbol: candidate.symbol, exchange: candidate.exchange || 'NFO', x: ev.clientX, y: ev.clientY, account: candidate.account, pinGroupKey: candidate.pin_group_key ?? null };
-                _ctxPinInfo = { account: candidate.account, symbol: candidate.symbol, pinGroupKey: candidate.pin_group_key ?? null };
+                _ctxMenu = { symbol: candidate.symbol, exchange: candidate.exchange || 'NFO', x: ev.clientX, y: ev.clientY };
               }}
-              onPinClick={_openPinPicker}
             />
           {/each}
           {#if displayedCandidates.length === 0}
@@ -6470,17 +6422,8 @@
     exchange={_ctxMenu?.exchange}
     x={_ctxMenu?.x}
     y={_ctxMenu?.y}
-    canPin={!!_ctxMenu?.account}
-    isPinned={!!_ctxMenu?.pinGroupKey}
     onClose={() => { _ctxMenu = null; }}
     onAction={(action, sym, exch) => {
-      if (action === 'pin') {
-        // _ctxPinInfo (not _ctxMenu) — see its declaration comment above
-        // for why: onClose() (which nulls _ctxMenu) already ran by now.
-        if (_ctxPinInfo) _openPinPicker(_ctxPinInfo);
-        _ctxMenu = null;
-        return;
-      }
       _ctxSym  = sym;
       _ctxExch = exch;
       _ctxAction = /** @type {any} */ (action);
@@ -6511,23 +6454,6 @@
 
 {#if _ctxAction === 'log'}
   <ActivityLogModal onClose={() => { _ctxAction = null; }} />
-{/if}
-
-{#if _pinPicker}
-  <PositionPinPicker
-    open={true}
-    account={_pinPicker.account}
-    sourceSymbol={_pinPicker.symbol}
-    pinGroupKey={_pinPicker.pinGroupKey}
-    stateTooltip={_pinPicker.stateTooltip}
-    candidates={_pinPickerCandidates}
-    onDone={(action) => {
-      toast.success(action === 'pinned' ? 'Positions pinned' : 'Positions unpinned');
-      _pinPicker = null;
-      loadPositions({ fresh: true });
-    }}
-    onClose={() => { _pinPicker = null; }}
-  />
 {/if}
 
 <style>

@@ -190,7 +190,7 @@
   // element to bubble from. Reproduced live (not flaky): the ESC-closes
   // assertion in navstrip_breakdown_close_button_gap.spec.js failed
   // 3/3 runs before this fix. Migrated to the shared `layerStack.js`
-  // Escape-stack coordinator instead (same convention PositionPinPicker
+  // Escape-stack coordinator instead (same convention BrokerHealthBadge.svelte
   // already uses) — it listens once at `document` capture phase,
   // independent of focus, and only the top-of-stack layer's callback
   // runs, so it also can't double-fire alongside another overlay's

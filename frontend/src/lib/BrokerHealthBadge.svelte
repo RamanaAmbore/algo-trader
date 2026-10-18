@@ -40,7 +40,7 @@
   // live-verified to invert: one Escape closed the fullscreen card
   // while this modal stayed open on top of the now-plain page. Teardown
   // form (push on open, pop via the $effect's own cleanup) — matches
-  // OrderPairModal.svelte/AddToPulseModal.svelte's shape, safe even if
+  // AddToPulseModal.svelte's shape, safe even if
   // the host layout were ever to unmount while this modal is open.
   $effect(() => {
     if (!open) return;

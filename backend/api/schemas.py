@@ -198,12 +198,6 @@ class PositionRow(msgspec.Struct):
     # both parent and child positions; None when no AlgoOrder matches.
     # Lets the frontend group paired legs under the same visual card.
     pair_group_key: Optional[str] = None
-    # Operator-pinned manual pair key — set from an ACTIVE `position_pairs`
-    # DB row (see positions.py:_apply_pin_overlay), completely orthogonal
-    # to pair_group_key/is_orphan (the ephemeral lot-waterfall auto-pairing
-    # above). A row can carry both at once. Format "PIN<id>" — never
-    # embeds the account/symbol so it survives account masking unchanged.
-    pin_group_key: Optional[str] = None
     # Lots matched into a pair by the lot-waterfall auto-pairing algorithm.
     # 0 for unmatched (orphan) rows and quantity==0 rows.
     paired_qty: int = 0

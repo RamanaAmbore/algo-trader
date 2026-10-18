@@ -825,7 +825,7 @@ test.describe('Functional — SymbolPanel scroll-lock restore + click-outside-to
 //      while the drawer/modal stayed open on top. Live-reproduced before
 //      fixing (Escape left `.bh-modal` open and closed `.fs-card-on`
 //      instead). Fixed: both migrated onto the layerStack coordinator
-//      (teardown-effect form, matching OrderPairModal.svelte's shape).
+//      (teardown-effect form, matching BrokerHealthBadge.svelte's shape).
 // ─────────────────────────────────────────────────────────────────────────
 
 test.describe('Static source checks — DefaultSizeButton backdrop/catcher split + chrome measurement', () => {

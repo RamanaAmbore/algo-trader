@@ -472,8 +472,8 @@ export function mergePositionRows(byKey, pos, includePos, cq, ctx) {
     // column. Multi-account rows show the combined overnight carry.
     row.overnight_qty = (row.overnight_qty ?? 0) + (Number(r.overnight_quantity) || 0);
     if (r.account) row.accounts.add(String(r.account));
-    // Position-state fields — is_orphan/pair_group_key/pin_group_key/
-    // has_gtt are per-ACCOUNT backend signals (PositionRow). Prior to
+    // Position-state fields — is_orphan/pair_group_key/has_gtt are
+    // per-ACCOUNT backend signals (PositionRow). Prior to
     // 2026-10 Part A, this row could be aggregated across every account
     // holding the same symbol, so these fields were only trustworthy
     // while exactly one account contributed and were reset to null the
@@ -486,7 +486,6 @@ export function mergePositionRows(byKey, pos, includePos, cq, ctx) {
     // positions grid, which has never aggregated across accounts.
     row.is_orphan      = r.is_orphan === true;
     row.pair_group_key = r.pair_group_key ?? null;
-    row.pin_group_key  = r.pin_group_key ?? null;
     row.has_gtt        = r.has_gtt === true;
     // A composite-keyed lot-split piece is always single-account by
     // construction (account is baked into lookupKey), so the fields above

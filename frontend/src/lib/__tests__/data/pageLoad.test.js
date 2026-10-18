@@ -734,7 +734,7 @@ describe('buildPositionRowFromBroker — exchange passthrough (2026-09 fix)', ()
 // ============================================================================
 // buildPositionRowFromBroker — position-state field whitelist fix (2026-10)
 //
-// is_orphan / pair_group_key / pin_group_key / has_gtt used to be stripped
+// is_orphan / pair_group_key / has_gtt used to be stripped
 // by this function's field whitelist before buildCandidatePositions ever
 // saw them, which is why the derivatives Legs grid's state badge always
 // fell through to a hardcoded orphan glyph regardless of real state. See
@@ -742,23 +742,21 @@ describe('buildPositionRowFromBroker — exchange passthrough (2026-09 fix)', ()
 // ============================================================================
 
 describe('buildPositionRowFromBroker — position-state field whitelist (2026-10 fix)', () => {
-  it('carries is_orphan/pair_group_key/pin_group_key/has_gtt through when present', () => {
+  it('carries is_orphan/pair_group_key/has_gtt through when present', () => {
     const row = buildPositionRowFromBroker({
       tradingsymbol: 'NIFTY25SEP24000CE', quantity: 50,
-      is_orphan: false, pair_group_key: 'P1', pin_group_key: 'PIN3', has_gtt: true,
+      is_orphan: false, pair_group_key: 'P1', has_gtt: true,
     }, 'live');
     expect(row.is_orphan).toBe(false);
     expect(row.pair_group_key).toBe('P1');
-    expect(row.pin_group_key).toBe('PIN3');
     expect(row.has_gtt).toBe(true);
   });
 
-  it('defaults is_orphan/has_gtt to false and pair_group_key/pin_group_key to null when absent', () => {
+  it('defaults is_orphan/has_gtt to false and pair_group_key to null when absent', () => {
     const row = buildPositionRowFromBroker({ tradingsymbol: 'NIFTY25SEP24000CE', quantity: 50 }, 'live');
     expect(row.is_orphan).toBe(false);
     expect(row.has_gtt).toBe(false);
     expect(row.pair_group_key).toBeNull();
-    expect(row.pin_group_key).toBeNull();
   });
 
   it('coerces a truthy non-boolean is_orphan/has_gtt to strict boolean false (only `=== true` passes)', () => {

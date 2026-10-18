@@ -101,7 +101,7 @@
   // Escape-stack coordinator (layerStack.js) — this component is always
   // mounted by MarketPulse (never `{#if}`-gated; `open` just toggles its
   // internal <ModalShell>). Uses the push-then-return-popLayer teardown
-  // form (same shape as OrderPairModal.svelte), NOT the if/open-else/pop
+  // form (same shape as BrokerHealthBadge.svelte), NOT the if/open-else/pop
   // form Select.svelte uses — that form only pops when `open` itself
   // flips false in a LATER effect run; it never pops if the HOST
   // (MarketPulse) unmounts while this modal happens to be open (e.g. a

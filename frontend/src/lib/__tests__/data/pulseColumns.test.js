@@ -93,13 +93,6 @@ describe('mkRightColDefs — pos_state cellRenderer (delegates to positionStateB
     expect(result).toContain('data-pos-state="paired"');
   });
 
-  it('pin_group_key button shows data-pos-state="pinned" and outranks pair_group_key', () => {
-    const col = getPosStateCol();
-    const result = col.cellRenderer({ data: { pin_group_key: 'PIN3', pair_group_key: 'P1' } });
-    expect(result).toContain('data-pos-state="pinned"');
-    expect(result).toContain('>PIN3<');
-  });
-
   it('has_gtt button shows "GTT" text and data-pos-state="gtt"', () => {
     const col = getPosStateCol();
     const result = col.cellRenderer({ data: { has_gtt: true, quantity: 10 } });
@@ -144,14 +137,6 @@ describe('mkRightColDefs — pos_state cellRenderer (delegates to positionStateB
     const col = getPosStateCol();
     const result = col.cellStyle({ data: { has_gtt: true, quantity: 10 } });
     expect(result).toEqual({ background: 'var(--algo-green-badge)', color: 'var(--algo-green)' });
-  });
-
-  it('cellStyle includes a border for pinned (distinct from auto-paired, no border)', () => {
-    const col = getPosStateCol();
-    const pinned = col.cellStyle({ data: { pin_group_key: 'PIN1' } });
-    const paired = col.cellStyle({ data: { pair_group_key: 'P1' } });
-    expect(pinned.border).toBeTruthy();
-    expect(paired.border).toBeUndefined();
   });
 
   it('cellStyle returns {} for _isTotal rows regardless of quantity', () => {
@@ -210,10 +195,9 @@ describe('mkRightColDefs — pos_state column (Fix 2 original)', () => {
     expect(cols[0].hide).toBe(false);
   });
 
-  it('pos_state column headerTooltip includes pinned/paired/amber/cyan/green language', () => {
+  it('pos_state column headerTooltip includes paired/amber/cyan/green language', () => {
     const cols = mkRightColDefs(makeOpts());
     const tooltip = cols[0].headerTooltip ?? '';
-    expect(tooltip).toContain('Pinned');
     expect(tooltip).toContain('paired');
     expect(tooltip).toContain('cyan');
     expect(tooltip).toContain('amber');

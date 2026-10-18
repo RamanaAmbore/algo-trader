@@ -394,7 +394,7 @@ describe('mergeHoldingRows — row.close reads prev_close, not the removed close
 // mergePositionRows — position-state field propagation (2026-10 fix,
 // REWRITTEN 2026-10 Part A)
 //
-// is_orphan/pair_group_key/pin_group_key/has_gtt were never copied from the
+// is_orphan/pair_group_key/has_gtt were never copied from the
 // raw broker row onto the aggregated pulse row, so MarketPulse's "St"
 // column (pulseColumns.js) and the row-pos-orphan/row-pos-paired CSS
 // classes (MarketPulse.svelte's _sourceRowClasses) were structurally dead
@@ -409,27 +409,25 @@ describe('mergeHoldingRows — row.close reads prev_close, not the removed close
 // ============================================================================
 
 describe('mergePositionRows — position-state field propagation (2026-10 fix)', () => {
-  it('single-account row carries is_orphan/pair_group_key/pin_group_key/has_gtt from the raw row', () => {
+  it('single-account row carries is_orphan/pair_group_key/has_gtt from the raw row', () => {
     const byKey = {};
     const row = makeOvernightPositionRow({
-      account: 'ACC1', is_orphan: false, pair_group_key: 'P1', pin_group_key: 'PIN4', has_gtt: true,
+      account: 'ACC1', is_orphan: false, pair_group_key: 'P1', has_gtt: true,
     });
     mergePositionRows(byKey, [row], true, {}, makeCtx());
     const result = byKey['NIFTY25AUG24000CE::ACC1__pos'];
     expect(result.is_orphan).toBe(false);
     expect(result.pair_group_key).toBe('P1');
-    expect(result.pin_group_key).toBe('PIN4');
     expect(result.has_gtt).toBe(true);
   });
 
-  it('single-account orphan row carries is_orphan=true with no pair/pin key', () => {
+  it('single-account orphan row carries is_orphan=true with no pair key', () => {
     const byKey = {};
     const row = makeOvernightPositionRow({ account: 'ACC1', is_orphan: true });
     mergePositionRows(byKey, [row], true, {}, makeCtx());
     const result = byKey['NIFTY25AUG24000CE::ACC1__pos'];
     expect(result.is_orphan).toBe(true);
     expect(result.pair_group_key).toBeNull();
-    expect(result.pin_group_key).toBeNull();
     expect(result.has_gtt).toBe(false);
   });
 

@@ -2,26 +2,24 @@
  * modal_stacking_regression.spec.js
  *
  * Regression test suite for overlay-nesting behavior — verifies that the
- * RamboQuant app's modal stacking (SymbolPanel → OrderTicket → OrderPairModal,
- * OrderTimelineDrawer, fullscreen cards) correctly handles Escape-key and
- * backdrop-click events without closing ancestor overlays.
+ * RamboQuant app's modal stacking (SymbolPanel → OrderTicket → Select
+ * dropdown, OrderTimelineDrawer, fullscreen cards) correctly handles
+ * Escape-key and backdrop-click events without closing ancestor overlays.
  *
- * Context: A prior real bug (referenced in OrderPairModal.svelte:13-14 comment)
- * caused Escape to exit a parent full-screen card while leaving a nested modal
- * open underneath. This test suite documents the CURRENT (fixed) behavior and
- * ensures regressions are caught.
+ * Context: A prior real bug caused Escape to exit a parent full-screen
+ * card while leaving a nested modal open underneath. This test suite
+ * documents the CURRENT (fixed) behavior and ensures regressions are caught.
  *
  * Key nested overlay structures tested:
  *   - SymbolPanel (uses layerStack) → OrderTicket (delegates Escape via hostManagesEsc)
  *   - OrderTicket internals → Select dropdown (uses layerStack)
- *   - MarketPulse card fullscreen + OrderPairModal (both use layerStack)
  *   - OrderTimelineDrawer (standalone, has own window listener + backdrop)
  *
  * The app's Escape coordination:
  *   - `layerStack.js` provides a shared capture-phase listener that enforces
  *     LIFO (Last In, First Out) dispatch: only the topmost registered layer
  *     reacts to Escape, via its own `onEscape` callback.
- *   - SymbolPanel, OrderPairModal, Select, ConfirmModal, and others register
+ *   - SymbolPanel, Select, ConfirmModal, and others register
  *     via `pushLayer(onEscape)`.
  *   - OrderTicket's own `window.addEventListener` is disabled when embedded
  *     in SymbolPanel (via `hostManagesEsc={true}` prop) to avoid double-close.
@@ -32,8 +30,8 @@
  *                  uses DOM selectors (toHaveCount, toBeVisible) not screenshots
  *   2. Perf      — no waitForTimeout; assertions use precise selectors
  *   3. Stale     — grep confirms the layerStack coordinator code is current
- *   4. Reuse     — reuses loginAsAdmin fixture, .canonical-modal-overlay and
- *                  .mp-pair-btn entry points from existing specs
+ *   4. Reuse     — reuses loginAsAdmin fixture and .canonical-modal-overlay
+ *                  entry points from existing specs
  *   5. UX        — functional checks run in real page with mocked API responses
  */
 
@@ -56,7 +54,6 @@ const readFile = (relPath) => readFileSync(path.resolve(__dirname, '..', relPath
 test.describe('Static source checks — layerStack coordinator usage', () => {
   const layerStackSrc = readFile('src/lib/utils/layerStack.js');
   const symbolPanelSrc = readFile('src/lib/SymbolPanel.svelte');
-  const orderPairModalSrc = readFile('src/lib/order/OrderPairModal.svelte');
   const selectSrc = readFile('src/lib/Select.svelte');
 
   test('layerStack module exports pushLayer and popLayer', () => {
@@ -72,13 +69,6 @@ test.describe('Static source checks — layerStack coordinator usage', () => {
   test('SymbolPanel registers via pushLayer (Escape coordination)', () => {
     expect(symbolPanelSrc).toMatch(/import \{ pushLayer, popLayer \} from '\$lib\/utils\/layerStack\.js';/);
     expect(symbolPanelSrc).toMatch(/pushLayer\(onClose\)/);
-  });
-
-  test('OrderPairModal registers via pushLayer and has comment about prior Escape bug', () => {
-    expect(orderPairModalSrc).toMatch(/import \{ pushLayer, popLayer \} from '\$lib\/utils\/layerStack\.js';/);
-    expect(orderPairModalSrc).toMatch(/pushLayer\(\(\) => \{ open = false; \}\);/);
-    // Verify the incident reference is still in the comment
-    expect(orderPairModalSrc).toMatch(/Escape exited a parent/);
   });
 
   test('Select component registers via pushLayer (dropdown Escape handling)', () => {
@@ -111,49 +101,6 @@ test.describe('Static source checks — layerStack coordinator usage', () => {
 test.describe('Escape closes only the topmost layer, not an ancestor', () => {
   test.use({ viewport: { width: 1400, height: 900 } });
   test.setTimeout(90_000);
-
-  test('Escape closes OrderPairModal, leaves fullscreen card open', async ({ page }) => {
-    await loginAsAdmin(page);
-    await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded' });
-
-    // Wait for the MarketPulse grid to render
-    await page.locator('.ag-root-wrapper').first().waitFor({ timeout: 20_000 });
-
-    // Put a card in fullscreen — click the first fullscreen button in any card
-    const fullscreenBtn = page.locator('button.card-fs-btn').first();
-    const btnVisible = await fullscreenBtn.isVisible({ timeout: 5_000 }).catch(() => false);
-    if (!btnVisible) {
-      test.skip(true, 'No fullscreen button found on /pulse — skipping fullscreen test');
-      return;
-    }
-    await fullscreenBtn.click();
-
-    // Assert the fullscreen card is visible (class .fs-card-on)
-    const fullscreenCard = page.locator('.fs-card-on').first();
-    await expect(fullscreenCard, 'Card must enter fullscreen').toBeVisible({ timeout: 5_000 });
-
-    // Now open OrderPairModal by clicking the Pair button
-    const pairBtn = page.locator('button.mp-pair-btn').first();
-    const pairBtnVisible = await pairBtn.isVisible({ timeout: 5_000 }).catch(() => false);
-    if (!pairBtnVisible) {
-      test.skip(true, 'Pair button not reachable (card may not render pair controls)');
-      return;
-    }
-    await pairBtn.click();
-
-    // Assert OrderPairModal is now visible
-    const pairModalOverlay = page.locator('.opm-overlay');
-    await expect(pairModalOverlay, 'OrderPairModal overlay must render').toBeVisible({ timeout: 5_000 });
-
-    // Press Escape once
-    await page.keyboard.press('Escape');
-
-    // Assert: OrderPairModal closed (overlay has count 0)
-    await expect(pairModalOverlay, 'OrderPairModal must close on Escape').toHaveCount(0, { timeout: 3_000 });
-
-    // Assert: fullscreen card is STILL visible
-    await expect(fullscreenCard, 'Fullscreen card must NOT close when nested modal Escapes').toBeVisible({ timeout: 3_000 });
-  });
 
   test('Escape closes Select dropdown inside OrderTicket, leaves SymbolPanel open', async ({ page }) => {
     await loginAsAdmin(page);
@@ -209,54 +156,6 @@ test.describe('Escape closes only the topmost layer, not an ancestor', () => {
 test.describe('Clicking a nested overlay\'s backdrop closes only that layer', () => {
   test.use({ viewport: { width: 1400, height: 900 } });
   test.setTimeout(90_000);
-
-  test('Clicking OrderPairModal backdrop closes modal, leaves fullscreen card open', async ({ page }) => {
-    await loginAsAdmin(page);
-    await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded' });
-
-    // Wait for grid
-    await page.locator('.ag-root-wrapper').first().waitFor({ timeout: 20_000 });
-
-    // Fullscreen a card
-    const fullscreenBtn = page.locator('button.card-fs-btn').first();
-    const btnVisible = await fullscreenBtn.isVisible({ timeout: 5_000 }).catch(() => false);
-    if (!btnVisible) {
-      test.skip(true, 'No fullscreen button found');
-      return;
-    }
-    await fullscreenBtn.click();
-
-    const fullscreenCard = page.locator('.fs-card-on').first();
-    await expect(fullscreenCard).toBeVisible({ timeout: 5_000 });
-
-    // Open OrderPairModal
-    const pairBtn = page.locator('button.mp-pair-btn').first();
-    const pairBtnVisible = await pairBtn.isVisible({ timeout: 5_000 }).catch(() => false);
-    if (!pairBtnVisible) {
-      test.skip(true, 'Pair button not reachable');
-      return;
-    }
-    await pairBtn.click();
-
-    const pairModalOverlay = page.locator('.opm-overlay');
-    await expect(pairModalOverlay).toBeVisible({ timeout: 5_000 });
-
-    // Click on the backdrop area of OrderPairModal
-    // The .opm-overlay is the backdrop itself, click near its center
-    const overlayBox = await pairModalOverlay.boundingBox();
-    if (!overlayBox) {
-      test.skip(true, 'Could not measure backdrop bounding box');
-      return;
-    }
-    // Click on the backdrop, not the card content (far edge)
-    await page.click('.opm-overlay', { position: { x: 10, y: 10 } });
-
-    // Assert: OrderPairModal closed
-    await expect(pairModalOverlay).toHaveCount(0, { timeout: 3_000 });
-
-    // Assert: fullscreen card still visible
-    await expect(fullscreenCard).toBeVisible({ timeout: 3_000 });
-  });
 
   test('Clicking OrderTimelineDrawer backdrop closes drawer (standalone test)', async ({ page }) => {
     await loginAsAdmin(page);

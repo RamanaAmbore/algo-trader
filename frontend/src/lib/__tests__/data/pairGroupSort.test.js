@@ -321,7 +321,7 @@ describe('pairGroupSort — stable within-group ordering', () => {
 // sites now delegate to the shared `positionStateBadge.js` helper
 // (2026-10 fix) — see positionStateBadge.test.js for the full priority-
 // order + glyph test suite. These tests just confirm THIS file's own
-// pairGroupSort-adjacent expectations (GTT > pinned > paired > orphan,
+// pairGroupSort-adjacent expectations (GTT > paired > orphan,
 // stale "○"/hex literals retired) still hold against the real helper.
 // ---------------------------------------------------------------------------
 
@@ -362,11 +362,6 @@ describe('positionStateBadge — priority order (via the real shared helper)', (
   it('GTT takes priority over pair_group_key (both set)', () => {
     const b = positionStateBadge({ has_gtt: true, pair_group_key: 'P1', is_orphan: true });
     expect(b.state).toBe('gtt');
-  });
-
-  it('pinned takes priority over auto-paired (both keys set)', () => {
-    const b = positionStateBadge({ pin_group_key: 'PIN1', pair_group_key: 'P1' });
-    expect(b.state).toBe('pinned');
   });
 });
 

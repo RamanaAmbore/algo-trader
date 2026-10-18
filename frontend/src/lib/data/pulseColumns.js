@@ -593,8 +593,8 @@ export function mkRightColDefs({
       // horizontally"). Mirrors the existing .ag-header-cell-spark
       // center-override pattern in app.css.
       headerClass: 'ag-header-cell-state',
-      headerTooltip: 'Position state: GTT (green) · Pinned (cyan, manual) · Auto-paired (cyan) · Orphan (◇ amber). Click to pin/unpin.',
-      // Shared priority logic (GTT > pinned > auto-paired > orphan) lives
+      headerTooltip: 'Position state: GTT (green) · Auto-paired (cyan) · Orphan (◇ amber). Click for info.',
+      // Shared priority logic (GTT > auto-paired > orphan) lives
       // in positionStateBadge.js — PerformancePage.svelte carries its own
       // separate copy (not converted here, out of scope).
       cellStyle: (p) => {
@@ -614,7 +614,7 @@ export function mkRightColDefs({
       // (`.pos-state-badge-btn` closest-check), matching the existing
       // `.sym-actions`/`.sym-move` convention in the same file. The
       // button's own `title=` IS the tooltip (hover, and the click
-      // handler reads the same attribute to show it in the pin/unpin
+      // handler reads the same attribute to show it in the InfoHint
       // popup it opens) — no separate "(i)" icon (2026-10-17, operator:
       // "we don't need i for tool tip... clicking on this cell should
       // not interfear with... other elements of the row").

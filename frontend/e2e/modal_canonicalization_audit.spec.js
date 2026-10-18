@@ -9,14 +9,11 @@
  *
  *   1. /admin/metrics drill-down modal → ModalShell (was hand-rolled,
  *      z-index:100, element-level Escape listener).
- *   2. OrderPairModal's native <select> elements → the canonical
- *      Select component.
  *   3. Drifted modal dim levels (all pure-black) brought onto the
  *      canonical rgba(8,12,20,α) scale — OrderTicket.svelte's
- *      `.ot-overlay` and OrderPairModal.svelte's `.opm-overlay` (both
- *      full dialogs → ModalShell's 0.72+blur(2px)); OrderTimelineDrawer's
- *      `.otd-backdrop` (a lighter side drawer → the 0.42
- *      canonical-modal-overlay value, no blur).
+ *      `.ot-overlay` (a full dialog → ModalShell's 0.72+blur(2px));
+ *      OrderTimelineDrawer's `.otd-backdrop` (a lighter side drawer →
+ *      the 0.42 canonical-modal-overlay value, no blur).
  *   4. z-index literals outside the shared app.css scale — ChartModal
  *      (10600, collided with .mode-combo-overlay → --z-modal-nested),
  *      ActivityLogModal (bare 10500 → var(--z-command)),
@@ -172,56 +169,6 @@ test.describe('Functional — /admin/metrics drill-down modal (real browser, moc
 });
 
 // ─────────────────────────────────────────────────────────────────────────
-// Item 2 — OrderPairModal native <select> → Select component
-// ─────────────────────────────────────────────────────────────────────────
-
-test.describe('Static source checks — OrderPairModal uses the canonical Select component', () => {
-  const opm = readFile('src/lib/order/OrderPairModal.svelte');
-
-  test('imports Select.svelte', () => {
-    expect(opm).toMatch(/import Select from '\$lib\/Select\.svelte';/);
-  });
-
-  test('renders two <Select> instances (parent + child) bound to parentId/childId', () => {
-    expect(opm).toMatch(/<Select id="opm-parent-sel"[\s\S]*?bind:value=\{parentId\}/);
-    expect(opm).toMatch(/<Select id="opm-child-sel"[\s\S]*?bind:value=\{childId\}/);
-  });
-
-  test('old native <select class="opm-select"> markup + CSS rule are gone', () => {
-    expect(opm).not.toMatch(/<select class="opm-select"/);
-    expect(opm).not.toMatch(/\.opm-select\s*\{/);
-  });
-});
-
-test.describe('Functional — OrderPairModal (real browser)', () => {
-  test.beforeEach(async ({ page }) => {
-    await loginAsAdmin(page);
-  });
-
-  test('Pair button opens the modal with Select-component triggers, not native <select>', async ({ page }) => {
-    await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded' });
-
-    const pairBtn = page.locator('button.mp-pair-btn').first();
-    await expect(pairBtn, 'Pair button must be visible on /pulse').toBeVisible({ timeout: 15_000 });
-    await pairBtn.click();
-
-    const parentSelect = page.locator('#opm-parent-sel');
-    const childSelect = page.locator('#opm-child-sel');
-    await expect(parentSelect, 'parent picker must render').toBeVisible({ timeout: 5_000 });
-    await expect(childSelect, 'child picker must render').toBeVisible();
-
-    // Both must be the canonical custom dropdown (rbq-select-trigger
-    // button), never a bare native <select> element.
-    expect(await parentSelect.evaluate((el) => el.tagName)).toBe('BUTTON');
-    expect(await childSelect.evaluate((el) => el.tagName)).toBe('BUTTON');
-    await expect(parentSelect).toHaveClass(/rbq-select-trigger/);
-    await expect(childSelect).toHaveClass(/rbq-select-trigger/);
-
-    await expect(page.locator('.opm-card select')).toHaveCount(0);
-  });
-});
-
-// ─────────────────────────────────────────────────────────────────────────
 // Item 3 — drifted modal dim levels brought onto the canonical scale
 // ─────────────────────────────────────────────────────────────────────────
 
@@ -237,17 +184,6 @@ test.describe('Static source checks — modal dim levels match their role', () =
     expect(ruleBody).not.toMatch(/background:\s*rgba\(0,0,0,0\.55\);/);
   });
 
-  test('OrderPairModal .opm-overlay uses ModalShell\'s dim (0.72 + blur), not pure black', () => {
-    const opm = readFile('src/lib/order/OrderPairModal.svelte');
-    const start = opm.indexOf('.opm-overlay {');
-    expect(start, '.opm-overlay rule must exist').toBeGreaterThan(-1);
-    const close = opm.indexOf('\n  }', start);
-    const ruleBody = opm.slice(start, close);
-    expect(ruleBody).toMatch(/background:\s*rgba\(8,12,20,0\.72\);/);
-    expect(ruleBody).toMatch(/backdrop-filter:\s*blur\(2px\);/);
-    expect(ruleBody).not.toMatch(/background:\s*rgba\(0,0,0,0\.55\);/);
-  });
-
   test('OrderTimelineDrawer .otd-backdrop uses the lighter canonical-modal-overlay dim (0.42, no blur)', () => {
     const drawer = readFile('src/lib/order/OrderTimelineDrawer.svelte');
     const start = drawer.indexOf('.otd-backdrop {');
@@ -257,30 +193,6 @@ test.describe('Static source checks — modal dim levels match their role', () =
     expect(ruleBody).toMatch(/background:\s*rgba\(8, 12, 20, 0\.42\);/);
     expect(ruleBody).not.toMatch(/backdrop-filter/);
     expect(ruleBody).not.toMatch(/rgba\(0, 0, 0, 0\.45\)/);
-  });
-});
-
-test.describe('Functional — OrderPairModal dim resolves to ModalShell\'s canonical value at runtime', () => {
-  test.beforeEach(async ({ page }) => {
-    await loginAsAdmin(page);
-  });
-
-  test('.opm-overlay computed background/backdrop-filter match the 0.72+blur(2px) canonical dim', async ({ page }) => {
-    await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded' });
-
-    const pairBtn = page.locator('button.mp-pair-btn').first();
-    await expect(pairBtn).toBeVisible({ timeout: 15_000 });
-    await pairBtn.click();
-
-    const overlay = page.locator('.opm-overlay');
-    await expect(overlay).toBeVisible({ timeout: 5_000 });
-
-    const [bg, blur] = await Promise.all([
-      overlay.evaluate((el) => getComputedStyle(el).backgroundColor),
-      overlay.evaluate((el) => getComputedStyle(el).backdropFilter),
-    ]);
-    expect(bg).toBe('rgba(8, 12, 20, 0.72)');
-    expect(blur).toContain('blur(2px)');
   });
 });
 

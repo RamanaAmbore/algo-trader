@@ -227,7 +227,7 @@
           to compete with tiers 5-9 (rare combinations).
 
        3. --z-modal-nested = 10700 — modals opened FROM INSIDE a
-          full-screen card (AddToPulse, OrderPairModal, MarketPulse
+          full-screen card (AddToPulse, ChartModal, MarketPulse
           strike-picker). Placed above BOTH tier 2 (9999) and tier 4
           (--z-command = 10500): the audit flagged this choice as
           genuinely ambiguous (does a modal nested in a full-screen card

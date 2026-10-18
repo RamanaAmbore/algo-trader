@@ -459,7 +459,6 @@ const PHASE2_FILES = [
   // 2026-10 P1 audit fix — were missing from this array, so any raw-hex
   // regression in these 3 files was invisible to the guard below.
   path.join('src/lib/order', 'OrderCard.svelte'),
-  path.join('src/lib/order', 'OrderPairModal.svelte'),
   path.join('src/lib', 'HeldOrdersCard.svelte'),
 ];
 
@@ -1556,7 +1555,6 @@ const CLOSE_BTN_SITES = [
   { file: 'src/lib/PositionStrip.svelte', cls: '.ps-bd-close', family: 'danger' },
   { file: 'src/lib/AgentFireModal.svelte', cls: '.afm-close', family: 'danger' },
   { file: 'src/lib/SymbolPanel.svelte', cls: '.oes-close', family: 'danger' },
-  { file: 'src/lib/order/OrderPairModal.svelte', cls: '.opm-close', family: 'danger' },
   { file: 'src/lib/ChartModal.svelte', cls: '.cm-close', family: 'danger' },
   { file: 'src/lib/TourModal.svelte', cls: '.tour-close', family: 'danger' },
   { file: 'src/lib/LogPanel.svelte', cls: '.lp-close-btn', family: 'danger' },

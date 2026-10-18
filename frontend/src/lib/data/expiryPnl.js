@@ -292,13 +292,11 @@ export function buildPositionRowFromBroker(p, source) {
     // MarketPulse/PerformancePage read the SAME field names directly off
     // their own (differently-sourced) row objects — see
     // positionStateBadge.js for the shared priority/glyph logic every
-    // consumer now funnels through. `pin_group_key` is the operator-set
-    // manual pin (POST /api/positions/pin); `pair_group_key` is the
-    // backend's auto-detected lot-waterfall pairing; `has_gtt`/`is_orphan`
-    // are backend-computed booleans.
+    // consumer now funnels through. `pair_group_key` is the backend's
+    // auto-detected lot-waterfall pairing; `has_gtt`/`is_orphan` are
+    // backend-computed booleans.
     is_orphan:       p?.is_orphan === true,
     pair_group_key:  p?.pair_group_key ?? null,
-    pin_group_key:   p?.pin_group_key ?? null,
     has_gtt:         p?.has_gtt === true,
   };
 }

@@ -154,7 +154,7 @@
   // Escape-stack coordinator (layerStack.js) — ModalShell's own Escape
   // handling is a plain bubble-phase `<svelte:window onkeydown>` with no
   // stacking awareness. Registering a layer here (teardown-effect form,
-  // same shape as AddToPulseModal.svelte/OrderPairModal.svelte — this
+  // same shape as AddToPulseModal.svelte/BrokerHealthBadge.svelte — this
   // modal is never `{#if}`-gated at the page level either, `selected`
   // just toggles ModalShell's internal `open`) means the capture-phase
   // layerStack listener consumes Escape first (stopPropagation) and

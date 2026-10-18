@@ -98,9 +98,7 @@
   import { openActivityModal } from '$lib/stores';
   import ChartModal from '$lib/ChartModal.svelte';
   import AddToPulseModal from '$lib/AddToPulseModal.svelte';
-  import OrderPairModal from '$lib/order/OrderPairModal.svelte';
-  import PositionPinPicker from '$lib/order/PositionPinPicker.svelte';
-  import { pinPickerCandidatesFromRows } from '$lib/data/pinPickerCandidates.js';
+  import InfoHint from '$lib/InfoHint.svelte';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
   import { baseDayPnlForPosition, dayChangePct } from '$lib/data/nav';
   import { getProvisionalPositions, applyFill, clearFill, clearAll as clearAllProvisional } from '$lib/data/provisionalPositions.svelte.js';
@@ -4043,38 +4041,24 @@
       );
       return true;
     }
-    // Position-state badge (GTT/pinned/paired/orphan) — opens
-    // PositionPinPicker, which now ALSO carries the generic "what does
-    // this state mean" explanation (badge.tooltip, read straight off the
-    // button's own `title=` attribute — see pulseColumns.js's
-    // `pos_state` cellRenderer) as a one-line hint above the pairing
-    // controls (2026-10-17, operator: "we don't need i for tool tip...
-    // do you think the popup window need to show the pair functionality
-    // instead of just showing pair info" — yes: one click target, one
-    // popup, both jobs). Always consumed (returns true) so a click never
-    // falls through to the order ticket, even when resolution below
-    // can't actually open the picker (demo session, masked account).
-    // The badge only renders (pulseColumns.js's `pos_state` column) when
-    // the row's `accounts` Set has exactly one member — pulseUnified.js
-    // resets pin_group_key/pair_group_key/has_gtt/is_orphan to null the
-    // moment a second account merges into the same symbol row, so a
-    // visible badge structurally guarantees a resolvable single account.
+    // Position-state badge (GTT/paired/orphan) — shows the badge's own
+    // "what does this state mean" explanation (badge.tooltip, read
+    // straight off the button's own `title=` attribute — see
+    // pulseColumns.js's `pos_state` cellRenderer) via InfoHint, same
+    // click-to-show-meaning pattern as the Exp Close tab's band-label/
+    // id-chip buttons in CandidateLegRow.svelte. Always consumed
+    // (returns true) so a click never falls through to the order ticket.
+    // Clicking the SAME badge again closes the popup; a different badge
+    // re-anchors it.
     const pinBtn = target?.closest?.('.pos-state-badge-btn');
     if (pinBtn) {
       ev.event?.stopPropagation?.();
-      const row = ev.data;
-      const acctSet = row?.accounts;
-      const acct = (acctSet instanceof Set && acctSet.size === 1) ? [...acctSet][0] : '';
-      const sym = String(row?.tradingsymbol || '');
-      // Pinning is an admin/auth-gated write (same guard as
-      // _openTicketFromRow's isRealAcct check) — a demo session or a
-      // masked account id ('#'-containing) can't actually call
-      // /api/positions/pin, so don't open a picker that can only fail.
-      if (!isDemo && acct && !String(acct).includes('#') && sym) {
-        _pinPicker = {
-          account: acct, symbol: sym, pinGroupKey: row?.pin_group_key ?? null,
-          stateTooltip: pinBtn.getAttribute('title') || '',
-        };
+      if (_stateInfoOpen && _stateInfoAnchor === pinBtn) {
+        _stateInfoOpen = false;
+      } else {
+        _stateInfoAnchor = /** @type {HTMLElement} */ (pinBtn);
+        _stateInfoText = pinBtn.getAttribute('title') || '';
+        _stateInfoOpen = true;
       }
       return true;
     }
@@ -4237,23 +4221,15 @@
     openActivityModal();
   }
 
-  // Pair-orders modal state — opened by the "Pair" button in the Positions header.
-  let _pairModalOpen = $state(false);
-
-  // Position pin/unpin picker state (2026-10) — opened from the Positions
-  // bucket's `.pos-state-badge-btn` click (`_tryHandleRowButton` below).
-  // Mirrors the derivatives page's own `_pinPicker`/`_openPinPicker`
-  // wiring (frontend/src/routes/(algo)/admin/derivatives/+page.svelte),
-  // but candidates are derived from `positions` — the RAW per-account
-  // rows (pulsePositionsStore.value) — not the Positions bucket's own
-  // ag-Grid rows, which are aggregated per-symbol ACROSS accounts
-  // (pulseUnified.js's mergePositionRows) and so can't answer "what
-  // else is open in this account".
-  /** @type {{ account: string, symbol: string, pinGroupKey: string|null, stateTooltip: string } | null} */
-  let _pinPicker = $state(null);
-  const _pinPickerCandidates = $derived.by(() =>
-    _pinPicker ? pinPickerCandidatesFromRows(positions, _pinPicker.account, _pinPicker.symbol) : []
-  );
+  // Position-state badge info popup (2026-10) — opened from the Positions
+  // bucket's `.pos-state-badge-btn` click (`_tryHandleRowButton` above).
+  // Shows the badge's own tooltip text via InfoHint, anchored to the
+  // clicked button element (ag-Grid renders this cell from an innerHTML
+  // string, so there's no `bind:this` — the real DOM node from the
+  // click's own `target.closest(...)` is used as the anchor instead).
+  let _stateInfoAnchor = $state(/** @type {HTMLElement | null} */ (null));
+  let _stateInfoOpen   = $state(false);
+  let _stateInfoText   = $state('');
 
   // Chart modal state — opened by the "Chart →" context-menu item.
   // Does NOT go through SymbolPanel (the chart tab was retired from
@@ -4633,9 +4609,6 @@
                     ariaLabel="Filter Positions by broker account" />
                 </div>
               {/if}
-              <span class="mp-head-sep" aria-hidden="true"></span>
-              <button class="mp-pair-btn" onclick={() => _pairModalOpen = true}
-                title="Pair parent/child orders">⟷ Pair</button>
             {/snippet}
           </CardHeader>
           <div bind:this={gridPositionsEl} class="ag-theme-quartz ag-theme-algo bucket-grid"></div>
@@ -4744,10 +4717,6 @@
      activityModal store — ctxOpenLog above opens it via the store. -->
 
 
-{#if _pairModalOpen}
-  <OrderPairModal bind:open={_pairModalOpen} />
-{/if}
-
 {#if _chartModalOpen}
   <ChartModal
     symbol={_chartModalSym}
@@ -4756,22 +4725,9 @@
   />
 {/if}
 
-{#if _pinPicker}
-  <PositionPinPicker
-    open={true}
-    account={_pinPicker.account}
-    sourceSymbol={_pinPicker.symbol}
-    pinGroupKey={_pinPicker.pinGroupKey}
-    stateTooltip={_pinPicker.stateTooltip}
-    candidates={_pinPickerCandidates}
-    onDone={(action) => {
-      toast.success(action === 'pinned' ? 'Positions pinned' : 'Positions unpinned');
-      _pinPicker = null;
-      loadPulse({ force: true, fresh: true });
-    }}
-    onClose={() => { _pinPicker = null; }}
-  />
-{/if}
+<InfoHint popup hideButton id="mp-pos-state-info"
+  anchor={_stateInfoAnchor} bind:open={_stateInfoOpen}
+  panel title="Position state" text={_stateInfoText} />
 
 <!-- Unified Add popup — opened by the `+` button in the chrome row (or
      the `/` keyboard shortcut). Extracted to AddToPulseModal.svelte;
@@ -5770,17 +5726,6 @@
     width: 7rem;
     min-width: 0;
   }
-  .mp-pair-btn {
-    font-size: var(--fs-xs, 0.7rem);
-    padding: 0.15rem 0.5rem;
-    border-radius: 4px;
-    border: 1px solid rgba(160,185,220,0.3);
-    background: rgba(160,185,220,0.08);
-    color: rgba(160,185,220,0.8);
-    cursor: pointer;
-    white-space: nowrap;
-  }
-  .mp-pair-btn:hover { border-color: rgba(160,185,220,0.6); color: rgba(210,225,255,0.9); }
   /* Universe tabs (Underlying / Large Cap / Midcap / Smallcap)
      inline in the Winners / Losers bucket-head. Sits BETWEEN the
      label and the spacer so it reads as "Winners → which universe

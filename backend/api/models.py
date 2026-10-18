@@ -2497,49 +2497,6 @@ class ExchangeSchedule(Base):
     )
 
 
-class PositionPair(Base):
-    """Operator-pinned manual position pairs.
-
-    Distinct from the ephemeral lot-waterfall auto-pairing computed on
-    every request by `positions.py:_auto_pair_positions()` (which sets
-    `pair_group_key`/`is_orphan`/`paired_qty`/`orphan_qty`). This table
-    stores an explicit, persisted pairing of two open positions for an
-    account that the operator wants visually grouped — surfaced via its
-    own, orthogonal `pin_group_key` field on PositionRow (see
-    `positions.py:_apply_pin_overlay`). A row can carry both an
-    auto-detected pair_group_key AND a manual pin_group_key at once.
-
-    Unordered-pair uniqueness: callers MUST normalize symbol_a < symbol_b
-    lexicographically before insert so (A,B) and (B,A) for the same
-    account collapse to one row — enforced by the partial unique index
-    below (active rows only, so a soft-deleted pair can be re-created).
-
-    Soft-delete via `active=False` — DELETE /api/positions/pin/{id} never
-    hard-deletes, preserving history.
-    """
-    __tablename__ = "position_pairs"
-
-    id:         Mapped[int]      = mapped_column(primary_key=True, autoincrement=True)
-    account:    Mapped[str]      = mapped_column(String(32), nullable=False)
-    symbol_a:   Mapped[str]      = mapped_column(String(64), nullable=False)
-    symbol_b:   Mapped[str]      = mapped_column(String(64), nullable=False)
-    created_by: Mapped[str]      = mapped_column(String(64), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False,
-        default=lambda: datetime.now(timezone.utc),
-    )
-    active:     Mapped[bool]     = mapped_column(Boolean, nullable=False, default=True)
-
-    __table_args__ = (
-        # Partial unique index — active rows only, so a soft-deleted pair
-        # (active=False) doesn't block re-creating the same unordered pair.
-        Index(
-            "uq_position_pairs_active", "account", "symbol_a", "symbol_b",
-            unique=True, postgresql_where=text("active"),
-        ),
-    )
-
-
 class LogEvent(Base):
     """Tagged log records at INFO and above. Written by log_store; read by alert agents."""
     __tablename__ = "log_events"

@@ -3,12 +3,9 @@
 import re
 import pandas as pd
 import polars as pl
-from datetime import datetime, timezone
-from litestar import Controller, Request, delete, get, post
+from litestar import Controller, Request, get
 from litestar.exceptions import HTTPException
 from typing import Optional
-
-import msgspec
 
 from backend.api.algo.pnl_math import (
     apply_day_change_backstop,
@@ -16,7 +13,6 @@ from backend.api.algo.pnl_math import (
     naive_day_pnl,
     recompute_row_percentages,
 )
-from backend.api.auth_guard import admin_guard
 from backend.api.cache import get_or_fetch, invalidate
 from backend.api.helpers.ltp_patch import apply_ltp_patch, positions_policy
 from backend.api.helpers.price_resolver import resolve_current_price
@@ -38,32 +34,8 @@ from backend.api.schemas import (
 from backend.brokers import broker_apis
 from backend.shared.helpers.date_time_utils import timestamp_display
 from backend.shared.helpers.ramboq_logger import get_logger
-from backend.shared.helpers.utils import mask_account
 
 logger = get_logger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Manual position-pin schemas (operator-driven, persisted — distinct from
-# the ephemeral _auto_pair_positions() lot-waterfall above).
-# ---------------------------------------------------------------------------
-
-class PinPositionsRequest(msgspec.Struct):
-    """Body for POST /api/positions/pin."""
-    account: str
-    symbol_a: str
-    symbol_b: str
-
-
-class PositionPairRow(msgspec.Struct):
-    """A persisted manual pin — one row of the `position_pairs` table."""
-    id: int
-    account: str
-    symbol_a: str
-    symbol_b: str
-    created_by: str
-    created_at: str
-    active: bool
 
 
 # ---------------------------------------------------------------------------
@@ -256,69 +228,6 @@ def _auto_pair_positions(rows: "list[PositionRow]") -> "list[PositionRow]":
             # paired_qty / orphan_qty; is_orphan is False (correct).
 
     return result
-
-
-# ---------------------------------------------------------------------------
-# Manual pin overlay — operator-persisted pairs (position_pairs table)
-# ---------------------------------------------------------------------------
-
-async def _apply_pin_overlay(rows: "list[PositionRow]") -> "list[PositionRow]":
-    """Overlay operator-pinned pairs onto position rows.
-
-    Completely independent of `_auto_pair_positions()` above — reads the
-    `position_pairs` table and, for every row whose (account, tradingsymbol)
-    matches either side of an ACTIVE pin, sets `pin_group_key` to a key
-    derived from that pin row's id. Never touches pair_group_key/is_orphan/
-    paired_qty/orphan_qty; a row can carry both an auto-detected pair and a
-    manual pin simultaneously — the two fields are orthogonal.
-
-    Tie-break: if a symbol happens to match more than one active pin (e.g.
-    pinned to both B and C), the LOWEST pin id wins — deterministic and
-    stable across requests.
-
-    Any lookup failure (DB unavailable, table not yet migrated on a stale
-    deployment, etc.) degrades to a no-op — pinning is a display overlay,
-    never a hard dependency of the positions route.
-    """
-    if not rows:
-        return rows
-
-    accounts = {r.account for r in rows}
-    try:
-        from sqlalchemy import select
-        from backend.api.database import async_session as _async_session
-        from backend.api.models import PositionPair
-
-        async with _async_session() as session:
-            result = await session.execute(
-                select(PositionPair).where(
-                    PositionPair.active.is_(True),
-                    PositionPair.account.in_(accounts),
-                )
-            )
-            pairs = result.scalars().all()
-    except Exception as exc:
-        logger.warning(f"positions: pin overlay fetch failed: {exc}")
-        return rows
-
-    if not pairs:
-        return rows
-
-    pin_map: dict[tuple[str, str], int] = {}
-    for p in pairs:
-        for sym in (p.symbol_a, p.symbol_b):
-            key = (p.account, sym)
-            existing = pin_map.get(key)
-            if existing is None or p.id < existing:
-                pin_map[key] = p.id
-
-    import msgspec as _msc
-    return [
-        _msc.structs.replace(r, pin_group_key=f"PIN{pin_map[(r.account, r.tradingsymbol)]}")
-        if (r.account, r.tradingsymbol) in pin_map
-        else r
-        for r in rows
-    ]
 
 
 # ---------------------------------------------------------------------------
@@ -734,7 +643,6 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
     # precedence) — no separate Python-side patch needed.
     rows: list[PositionRow] = [build_row_from_snapshot_raw(r) for r in raw_rows]
     rows = _auto_pair_positions(rows)
-    rows = await _apply_pin_overlay(rows)
     try:
         async with async_session() as _gtt_session:
             _gtt_set = await _fetch_gtt_set(_gtt_session)
@@ -1461,7 +1369,6 @@ async def _fetch(force_refresh: bool = False) -> PositionsResponse:
 
     # Auto-pair positions by lot-waterfall within (account, root_symbol) groups.
     rows = _auto_pair_positions(rows)
-    rows = await _apply_pin_overlay(rows)
     try:
         from backend.api.database import async_session as _async_session
         async with _async_session() as _gtt_session:
@@ -2481,120 +2388,3 @@ class PositionsController(Controller):
                 )
             raise HTTPException(status_code=500, detail=str(e))
 
-    # ── Manual pin — operator-persisted pairs (position_pairs table) ───────
-    # Distinct from the ephemeral lot-waterfall auto-pairing above; see
-    # PositionPair model docstring (models.py) and _apply_pin_overlay.
-
-    @post("/pin", guards=[admin_guard])
-    async def pin_positions(
-        self, data: PinPositionsRequest, request: Request,
-    ) -> PositionPairRow:
-        """Persist an operator-chosen manual pair between two OPEN positions.
-
-        POST /api/positions/pin
-        Body: {"account": "...", "symbol_a": "...", "symbol_b": "..."}
-
-        Validates both symbols are real open positions (quantity != 0) for
-        the given account at call time — via the SAME source-resolution
-        path (`_resolve_positions_source`) the GET route uses, so the
-        closed-hours invariant (never calling the broker when the market
-        is closed) is respected automatically. Normalizes the unordered
-        pair (symbol_a < symbol_b lexicographically) before lookup/insert
-        so (A,B) and (B,A) collapse to one row. Reactivates a matching
-        soft-deleted row instead of creating a duplicate.
-        """
-        account = (data.account or "").strip()
-        sym_a = (data.symbol_a or "").strip().upper()
-        sym_b = (data.symbol_b or "").strip().upper()
-        if not account or not sym_a or not sym_b:
-            raise HTTPException(
-                status_code=400, detail="account, symbol_a, symbol_b are required",
-            )
-        if sym_a == sym_b:
-            raise HTTPException(
-                status_code=400, detail="symbol_a and symbol_b must differ",
-            )
-        if sym_a > sym_b:
-            sym_a, sym_b = sym_b, sym_a
-
-        resp = await _resolve_positions_source(request, fresh=False, skip_ltp=False)
-        open_syms = {
-            r.tradingsymbol for r in resp.rows
-            if r.account == account and r.quantity != 0
-        }
-        missing = [s for s in (sym_a, sym_b) if s not in open_syms]
-        if missing:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"no open position for account {mask_account(account)}: "
-                    f"{', '.join(missing)}"
-                ),
-            )
-
-        from sqlalchemy import select
-        from backend.api.database import async_session as _async_session
-        from backend.api.models import PositionPair
-
-        created_by = str(
-            (getattr(request.state, "token_payload", {}) or {}).get("sub") or "admin"
-        )
-
-        async with _async_session() as session:
-            result = await session.execute(
-                select(PositionPair).where(
-                    PositionPair.account == account,
-                    PositionPair.symbol_a == sym_a,
-                    PositionPair.symbol_b == sym_b,
-                )
-            )
-            row = result.scalars().first()
-            if row is None:
-                row = PositionPair(
-                    account=account, symbol_a=sym_a, symbol_b=sym_b,
-                    created_by=created_by, active=True,
-                )
-                session.add(row)
-                await session.commit()
-            elif not row.active:
-                # Reactivate the existing soft-deleted row rather than
-                # creating a duplicate — the partial unique index only
-                # guards active rows, so a plain INSERT here would succeed
-                # and leave two logical rows for the same pin.
-                row.active = True
-                row.created_by = created_by
-                row.created_at = datetime.now(timezone.utc)
-                await session.commit()
-            # else: already active — idempotent no-op, return existing row.
-
-            pair_id = row.id
-            created_at = row.created_at
-            row_created_by = row.created_by
-
-        invalidate("positions")
-        return PositionPairRow(
-            id=pair_id, account=account, symbol_a=sym_a, symbol_b=sym_b,
-            created_by=row_created_by,
-            created_at=created_at.isoformat() if created_at else "",
-            active=True,
-        )
-
-    @delete("/pin/{pair_id:int}", guards=[admin_guard], status_code=200)
-    async def unpin_positions(self, pair_id: int) -> dict:
-        """Soft-delete a manual pin — sets active=False.
-
-        DELETE /api/positions/pin/{id}
-        404 when the row doesn't exist or is already inactive.
-        """
-        from backend.api.database import async_session as _async_session
-        from backend.api.models import PositionPair
-
-        async with _async_session() as session:
-            row = await session.get(PositionPair, pair_id)
-            if row is None or not row.active:
-                raise HTTPException(status_code=404, detail="pin not found")
-            row.active = False
-            await session.commit()
-
-        invalidate("positions")
-        return {"ok": True, "id": pair_id}

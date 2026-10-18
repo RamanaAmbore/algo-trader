@@ -61,7 +61,6 @@
    *   onRemoveDraft: (draftId: any) => void,
    *   onOpenChartTicket: (c: any) => void,
    *   onContextMenu: (c: any, ev: MouseEvent | PointerEvent) => void,
-   *   onPinClick?: (c: any, stateTooltip?: string) => void,
    *   pendingQty?: number,
    * }}
    */
@@ -87,7 +86,6 @@
     onRemoveDraft,
     onOpenChartTicket,
     onContextMenu,
-    onPinClick = null,
   } = $props();
 
   // ── Derived locals (identical logic to what was in {@const} blocks) ───
@@ -155,10 +153,18 @@
       : legPnlDisplay(c, ltp, cost, displayQty, _ltpFromFallback, c._residualQty != null)
   );
 
-  // Shared priority logic (GTT > pinned > auto-paired > orphan) — see
+  // Shared priority logic (GTT > auto-paired > orphan) — see
   // positionStateBadge.js. Null state renders no badge/button at all
   // (e.g. a draft row, which never carries real position-state fields).
   const _stateBadge = $derived(positionStateBadge(c));
+
+  // Click-to-show-meaning popup for the state badge (2026-10, replaces
+  // the retired manual position-pin picker flow) — same InfoHint pattern
+  // already used below for the Exp Close tab's band-label/id-chip buttons:
+  // a local $state anchor+open pair, bind:this on the trigger button,
+  // InfoHint with `popup hideButton`, `anchor`, `bind:open`, `text=`.
+  let _stateInfoAnchor = $state(/** @type {HTMLElement | null} */ (null));
+  let _stateInfoOpen = $state(false);
 
   const dir        = $derived(displayQty < 0 ? 'short' : displayQty > 0 ? 'long' : 'flat');
   const isClosable = $derived(!isClosed && c.source !== 'draft');
@@ -309,21 +315,21 @@
            onToggleEnabled(c, checked);
          }} />
   <!-- Position state indicator — second column (38px state track).
-       Four states: GTT (green) / Pinned (cyan, manual) / Auto-paired
-       (cyan) / Orphan (amber diamond). Null state (e.g. a draft row)
-       renders an empty cell, no button. Maps to the second
-       grid-template-columns track. Real <button> (not onclick on a
-       styled span) so mouse AND touch activate it; stopPropagation on
-       BOTH click and keydown so it never falls through to the row's own
-       onclick/onkeydown row-activation handlers (Enter on a focused
-       button bubbles a keydown to the row before the button's own
-       synthetic click fires). -->
-  <!-- The St-column auto-pair badge (P1/P2/GTT/pinned/orphan) is
-       suppressed on the Exp Close tab (2026-10-17, operator: "exp close
-       is also changed to p1, p2, this has to be reverted... needs to be
-       taken to the state it has c1, c2, the netting, in the money, out
-       of money, mcx and non-mcx functionality"). Exp Close already has
-       its OWN, more specific identity system for this row — the
+       Three states: GTT (green) / Auto-paired (cyan) / Orphan (amber
+       diamond). Null state (e.g. a draft row) renders an empty cell, no
+       button. Maps to the second grid-template-columns track. Real
+       <button> (not onclick on a styled span) so mouse AND touch
+       activate it; stopPropagation on BOTH click and keydown so it
+       never falls through to the row's own onclick/onkeydown
+       row-activation handlers (Enter on a focused button bubbles a
+       keydown to the row before the button's own synthetic click
+       fires). -->
+  <!-- The St-column auto-pair badge (P1/P2/GTT/orphan) is suppressed on
+       the Exp Close tab (2026-10-17, operator: "exp close is also
+       changed to p1, p2, this has to be reverted... needs to be taken
+       to the state it has c1, c2, the netting, in the money, out of
+       money, mcx and non-mcx functionality"). Exp Close already has its
+       OWN, more specific identity system for this row — the
        `.expiry-id-chip` below (C1/C2 for the close-action band, N1/N2
        for netted pairs) — showing the unrelated auto-pair P1/P2 label
        in the same row at the same time duplicated/conflicted with that
@@ -334,23 +340,28 @@
     style:color={legsTab === 'expiry' ? null : (_stateBadge.color || null)}
     style:border={legsTab === 'expiry' ? null : (_stateBadge.border || null)}>
     {#if legsTab !== 'expiry'}
-      {#if _stateBadge.state != null && onPinClick}
+      {#if _stateBadge.state != null}
         <!-- Single click target (2026-10-17, operator: "we don't need i
              for tool tip... clicking on this cell should not interfear
-             with clicking symbol or other elements of the row") — opens
-             the pin/unpin picker, which now also carries this badge's
-             generic "what does this state mean" text (`_stateBadge.tooltip`)
-             as a one-line hint inside that same popup instead of a
-             separate "(i)" icon/tooltip. stopPropagation on BOTH click
-             and keydown so it never falls through to the row's own
-             onclick/onkeydown row-activation handler. -->
+             with clicking symbol or other elements of the row") — shows
+             this badge's generic "what does this state mean" text
+             (`_stateBadge.tooltip`) via InfoHint instead of a separate
+             "(i)" icon/tooltip, same pattern as the Exp Close tab's
+             band-label/id-chip buttons below. stopPropagation on BOTH
+             click and keydown so it never falls through to the row's
+             own onclick/onkeydown row-activation handler. -->
         <button type="button" class="cand-state-badge-btn"
+          bind:this={_stateInfoAnchor}
           data-pos-state={_stateBadge.state}
           title={_stateBadge.tooltip}
-          onclick={(e) => { e.stopPropagation(); onPinClick(c, _stateBadge.tooltip); }}
-          onkeydown={(e) => e.stopPropagation()}>
+          aria-expanded={_stateInfoOpen}
+          onclick={(e) => { e.stopPropagation(); _stateInfoOpen = !_stateInfoOpen; }}
+          onkeydown={(e) => { e.stopPropagation(); if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); _stateInfoOpen = !_stateInfoOpen; } }}>
           {_stateBadge.glyph}
         </button>
+        <InfoHint popup hideButton id={`cand-state-info-${c.key ?? c.symbol ?? ''}-${ci}`}
+          anchor={_stateInfoAnchor} bind:open={_stateInfoOpen}
+          panel title="Position state" text={_stateBadge.tooltip} />
       {:else}
         {_stateBadge.glyph}
       {/if}
