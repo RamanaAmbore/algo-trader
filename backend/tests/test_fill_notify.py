@@ -10,7 +10,7 @@ def _row(**over):
     base = dict(
         id=101, account="ZG0790", symbol="NIFTY26OCT25000CE", exchange="NFO",
         transaction_type="BUY", quantity=75, fill_price=112.5,
-        product="NRML", mode="live", engine="live",
+        product="NRML", mode="live", engine="live", agent_id=None,
     )
     base.update(over)
     return SimpleNamespace(**base)
@@ -78,28 +78,57 @@ def test_fill_message_shows_full_account():
     assert "Account: ZG0790" in body
 
 
-def test_fill_message_shows_engine_as_source_matching_agents_log_chip(logged):
-    # 2026-10-15 — telegram fill message aligned with the Agents log's own
-    # engine chip (AlgoOrder.engine), so a manual order's alert reads the
-    # same word ("MANUAL") the Agents log already shows for it.
-    _, body = fill_notify.format_fill_message(_row(engine="manual"))
-    assert "Source: MANUAL" in body
-    _, body = fill_notify.format_fill_message(_row(engine="paper"))
-    assert "Source: PAPER" in body
+def test_fill_message_shows_agent_name_as_source_matching_agents_log_chip():
+    # 2026-10-17 fix — Source now reflects WHO/WHAT triggered the order
+    # (the originating agent's name, resolved via AlgoOrder.agent_id),
+    # the same signal LogPanel.svelte's `log-agent-chip` already shows —
+    # NOT AlgoOrder.engine (execution mode: live/sim/paper/replay/shadow/
+    # expiry), which a manually-placed LIVE order sets to "live", never
+    # the literal string "manual" (see orders_place.py).
+    _, body = fill_notify.format_fill_message(_row(agent_name="Chase close positions"))
+    assert "Source: CHASE CLOSE POSITIONS" in body
+    _, body = fill_notify.format_fill_message(_row(agent_name="Manual operator order"))
+    assert "Source: MANUAL OPERATOR ORDER" in body
 
 
-def test_fill_message_defaults_source_to_manual_when_engine_missing():
-    # AlgoOrder.engine is NOT NULL with a DB-level default of "manual" —
-    # a row that somehow arrives without the attribute set still gets a
-    # sensible, non-blank Source line rather than "Source: NONE".
+def test_fill_message_defaults_source_to_manual_when_agent_name_missing():
+    # A row that somehow arrives without agent_name resolved (e.g. the
+    # agent row was deleted, or agent_id was NULL) still gets a sensible,
+    # non-blank Source line rather than "Source: NONE".
     row = SimpleNamespace(id=101, account="ZG0790", symbol="NIFTY26OCT25000CE",
                            exchange="NFO", transaction_type="BUY", quantity=75,
                            fill_price=112.5, product="NRML")
     _, body = fill_notify.format_fill_message(row)
-    assert "Source: MANUAL" in body
+    assert "Source: MANUAL OPERATOR ORDER" in body
 
 
 @pytest.mark.asyncio
 async def test_engine_is_forwarded_into_the_log_extra(logged):
     await fill_notify.notify_fills([_row(engine="manual")])
     assert logged[0][1]["extra"]["engine"] == "manual"
+
+
+@pytest.mark.asyncio
+async def test_agent_name_is_resolved_and_forwarded_into_the_log_extra(monkeypatch, logged):
+    from unittest.mock import AsyncMock, patch, MagicMock
+
+    fake_result = MagicMock()
+    fake_result.all = MagicMock(return_value=[(42, "Chase close positions")])
+    fake_session = AsyncMock()
+    fake_session.execute = AsyncMock(return_value=fake_result)
+    ctx = AsyncMock()
+    ctx.__aenter__ = AsyncMock(return_value=fake_session)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+
+    with patch.object(fill_notify, "async_session", side_effect=lambda: ctx):
+        await fill_notify.notify_fills([_row(agent_id=42)])
+    assert logged[0][1]["extra"]["agent_name"] == "Chase close positions"
+
+
+@pytest.mark.asyncio
+async def test_no_agent_ids_skips_the_db_query_entirely(logged):
+    # Every row in the batch has agent_id=None (the common manual-order
+    # case) — _resolve_agent_names must short-circuit before touching the
+    # DB, not issue a WHERE id IN () query.
+    await fill_notify.notify_fills([_row(agent_id=None)])
+    assert logged[0][1]["extra"]["agent_name"] is None

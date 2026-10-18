@@ -5,6 +5,10 @@ Delivery lives in event_agents.
 """
 from datetime import datetime, timezone
 
+from sqlalchemy import select
+
+from backend.api.database import async_session
+from backend.api.models import Agent
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
@@ -16,15 +20,26 @@ def format_fill_message(row, when: datetime | None = None) -> tuple[str, str]:
     qty = int(row.quantity or 0)
     symbol = str(row.symbol or "")
     title = f"Order filled: {side} {qty} {symbol}"
-    # Source line (2026-10-15, operator: "telegram log should be aligned
-    # with agents log for filled [in] order") — the Agents log's own
-    # order row already shows this order's `engine` (manual/sim/paper/
-    # live/replay/shadow/expiry — AlgoOrder.engine, NOT NULL, defaults to
-    # "manual") as a chip, but the fill telegram message never carried it
-    # at all. Mirrors the UI's own label casing/vocabulary exactly so a
-    # manually-placed order's fill alert reads "Source: MANUAL", same
-    # word the Agents log chip shows.
-    source = str(getattr(row, "engine", None) or "manual").upper()
+    # Source line (2026-10-15, revised 2026-10-17 — operator: "telegram
+    # order fill alert does not show manual... any order triggered by an
+    # agent... it's basically how it was triggered. presently it is
+    # shown as a tag with the log") — the ORIGINAL 2026-10-15 fix read
+    # `row.engine`, reasoning it mirrored the Agents log's own chip. That
+    # was wrong: `engine` is the EXECUTION mode (sim/paper/live/replay/
+    # shadow/expiry) — a manually-placed LIVE order gets `engine="live"`
+    # (orders_place.py), never the literal string "manual", so "Source:
+    # MANUAL" was structurally unreachable for any real order. The
+    # Agents log's chip (LogPanel.svelte's `log-agent-chip`) actually
+    # resolves `AlgoOrder.agent_id` -> the originating `agents` row's
+    # `name` — NULL/the synthetic "Manual operator order" agent
+    # (agent_engine.py's MANUAL_AGENT) for a human-placed order, the real
+    # automation agent's name otherwise (e.g. "Chase close positions").
+    # `agent_name` is resolved once, async, in `notify_fills()` below
+    # (where a DB session is natural) and threaded through the log
+    # record's `extra` dict, since `_render_fill` (event_agents.py)
+    # rebuilds this `row` from THAT dict alone, long after the DB row
+    # itself is gone.
+    source = str(getattr(row, "agent_name", None) or "Manual operator order").upper()
     body = "\n".join([
         f"Account: {row.account or '-'}",
         f"{side} {qty} {symbol} ({row.exchange or '-'}) @ {float(row.fill_price or 0):.2f}",
@@ -36,9 +51,31 @@ def format_fill_message(row, when: datetime | None = None) -> tuple[str, str]:
     return title, body
 
 
+async def _resolve_agent_names(agent_ids: set) -> dict:
+    """Batch-resolve `agents.id -> name` for every distinct agent_id in a
+    fill batch, in ONE query — same {id: name} shape LogPanel.svelte's
+    own agent chip ultimately reflects (via the API's `agent_name` field
+    on order rows), so the Telegram Source line and the Agents log chip
+    always agree on wording for the same order."""
+    agent_ids = {a for a in agent_ids if a is not None}
+    if not agent_ids:
+        return {}
+    try:
+        async with async_session() as s:
+            rows = (await s.execute(
+                select(Agent.id, Agent.name).where(Agent.id.in_(agent_ids))
+            )).all()
+        return {aid: name for aid, name in rows}
+    except Exception as e:
+        logger.warning(f"fill agent-name resolution failed for ids={agent_ids}: {e}")
+        return {}
+
+
 async def notify_fills(rows: list) -> None:
+    names = await _resolve_agent_names({getattr(r, "agent_id", None) for r in rows})
     for row in rows:
         try:
+            agent_id = getattr(row, "agent_id", None)
             logger.info(
                 "order filled",
                 extra={
@@ -54,6 +91,7 @@ async def notify_fills(rows: list) -> None:
                     "fill_price": row.fill_price,
                     "product": row.product,
                     "engine": getattr(row, "engine", None),
+                    "agent_name": names.get(agent_id),
                 },
             )
         except Exception as e:

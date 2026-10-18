@@ -99,6 +99,11 @@ async def test_error_alert_masks_account_numbers(sent, error_agent):
 
 def test_fill_format_golden():
     from datetime import timezone
+    # No agent_name resolved (agent_id=None, the manual-order case) —
+    # Source defaults to the same "Manual operator order" name the
+    # Agents log's own chip shows for a human-placed order (2026-10-17
+    # fix: Source reflects WHO triggered the order, not AlgoOrder.engine,
+    # which is the execution mode and is "live" even for manual orders).
     row = SimpleNamespace(id=101, account="ZG0790", symbol="NIFTY26OCT25000CE", exchange="NFO",
                           transaction_type="BUY", quantity=75, fill_price=112.5, product="NRML",
                           mode="live", engine="live")
@@ -109,10 +114,20 @@ def test_fill_format_golden():
         "Account: ZG0790",
         "BUY 75 NIFTY26OCT25000CE (NFO) @ 112.50",
         "Product: NRML",
-        "Source: LIVE",
+        "Source: MANUAL OPERATOR ORDER",
         "Order id: 101",
         f"Time: {_FIXED_TS}",
     ])
+
+
+def test_fill_format_golden_agent_triggered():
+    from datetime import timezone
+    row = SimpleNamespace(id=102, account="ZG0790", symbol="NIFTY26OCT25000CE", exchange="NFO",
+                          transaction_type="BUY", quantity=75, fill_price=112.5, product="NRML",
+                          mode="live", engine="live", agent_name="Chase close positions")
+    _, body = fill_notify.format_fill_message(
+        row, when=_dt.datetime(2026, 10, 6, 4, 45, 30, tzinfo=timezone.utc))
+    assert "Source: CHASE CLOSE POSITIONS" in body
 
 
 @pytest.mark.asyncio
@@ -135,10 +150,12 @@ async def test_fill_delivery_golden_via_event_agent(monkeypatch):
            "tags": ["orders"], "extra": records[0]}
     agent = SimpleNamespace(slug=event_agents.FILL_AGENT["slug"], **{k: event_agents.FILL_AGENT[k] for k in ("conditions", "events", "actions")})
     await event_agents.dispatch([rec], [agent])
+    # No agent_id on `row` -> no agent_name resolved -> Source defaults to
+    # "MANUAL OPERATOR ORDER" (2026-10-17 fix, see test_fill_format_golden).
     assert sent["ntfy"] == [("Order filled: SELL 1 CRUDEOIL26OCTFUT",
-                             f"Account: ZG0790\nSELL 1 CRUDEOIL26OCTFUT (MCX) @ 8750.00\nProduct: NRML\nSource: LIVE\nOrder id: 7\nTime: {_FIXED_TS}")]
+                             f"Account: ZG0790\nSELL 1 CRUDEOIL26OCTFUT (MCX) @ 8750.00\nProduct: NRML\nSource: MANUAL OPERATOR ORDER\nOrder id: 7\nTime: {_FIXED_TS}")]
     assert sent["tg"] == ["<b>Order filled: SELL 1 CRUDEOIL26OCTFUT</b>\n"
-                          f"Account: ZG0790\nSELL 1 CRUDEOIL26OCTFUT (MCX) @ 8750.00\nProduct: NRML\nSource: LIVE\nOrder id: 7\nTime: {_FIXED_TS}"]
+                          f"Account: ZG0790\nSELL 1 CRUDEOIL26OCTFUT (MCX) @ 8750.00\nProduct: NRML\nSource: MANUAL OPERATOR ORDER\nOrder id: 7\nTime: {_FIXED_TS}"]
 
 
 def _chase_rec():
