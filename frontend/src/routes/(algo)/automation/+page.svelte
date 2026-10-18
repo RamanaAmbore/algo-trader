@@ -1077,6 +1077,13 @@
     border-radius: 4px;
   }
   .aw-kind-select :global(.rbq-select-trigger) {
+    /* `height` (not `min-height`) — hard-caps the trigger at the same
+       1.7rem floor as .console-guide-btn even if the caret glyph's own
+       font metrics (0.85rem via --fs-xl, see Select.svelte) render
+       taller than the label text in some browser/font combo, which
+       `min-height` alone can't prevent (operator: "dropdown button
+       height... looks little taller than trade guide"). */
+    height: 1.7rem;
     min-height: 1.7rem;
     padding: 0 0.5rem 0 0.4rem;
     box-sizing: border-box;
