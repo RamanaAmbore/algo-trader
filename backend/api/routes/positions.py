@@ -230,6 +230,112 @@ def _auto_pair_positions(rows: "list[PositionRow]") -> "list[PositionRow]":
     return result
 
 
+def _auto_pair_same_side_hedges(rows: "list[PositionRow]") -> "list[PositionRow]":
+    """Same-side CE+PE hedge detection ("S-groups").
+
+    `_auto_pair_positions` above only matches OPPOSITE-sign legs within the
+    same (account, root_symbol, option_type) — it structurally cannot
+    detect a same-side hedge (operator, 2026-10-17: "sell pe, sell ce are
+    week hedges" — a short strangle/straddle), because option_type is part
+    of its grouping key specifically to prevent CE/PE cross-pairing, and
+    same-side legs never have opposite sign within the same option_type to
+    begin with. Run this function AFTER `_auto_pair_positions` on its own
+    output to catch exactly that case.
+
+    Eligibility — PURE orphans only: a row qualifies only when
+    `pair_group_key is None and is_orphan is True`, i.e. `_auto_pair_positions`
+    never matched any portion of it. A row that was even partially
+    P-matched is left untouched — representing a row as a member of BOTH a
+    P-group and an S-group at once would need two pairing fields on one
+    row, which `pair_group_key` (a single string) can't hold. That's a
+    separate, bigger decision (the same accumulation limitation already
+    flagged for multi-pair-group rows); this function only covers the
+    clean case of a leg with no opposite-side counterpart at all.
+
+    Grouped by (account, root_symbol) — no option_type in the key this
+    time, since the whole point is to bridge CE and PE. Within a group,
+    split by transaction SIGN (same-side means same sign: a straddle is
+    bought-CE+bought-PE or sold-CE+sold-PE, never one of each — that would
+    be a directional spread, not a hedge). Within each sign bucket, CE
+    orphans are waterfall-matched against PE orphans (largest-first, same
+    shape as the P-pass's longs-vs-shorts loop). Futures/equity rows
+    (`option_type is None`) are never eligible.
+
+    Labels are "S1", "S2", ... — a counter entirely separate from the "P"
+    counter above, so "P1"/"S1" never collide; also globally sequential,
+    never reset per group.
+    """
+    import msgspec as _msc
+
+    if not rows:
+        return rows
+
+    from collections import defaultdict
+    groups: dict[tuple[str, str], list[int]] = defaultdict(list)
+    for i, r in enumerate(rows):
+        if r.pair_group_key is not None or not r.is_orphan:
+            continue
+        opt = _option_type(r.tradingsymbol)
+        if opt is None:
+            continue
+        groups[(r.account, _root_symbol(r.tradingsymbol))].append(i)
+
+    result: list[PositionRow] = list(rows)
+    hedge_n = 1
+    for (_account, _root), indices in sorted(groups.items(), key=lambda kv: kv[0]):
+        by_sign: "dict[int, dict[str, list[tuple[int, int]]]]" = {
+            1: {"CE": [], "PE": []}, -1: {"CE": [], "PE": []},
+        }
+        for i in indices:
+            q = rows[i].quantity
+            if q == 0:
+                continue
+            sign = 1 if q > 0 else -1
+            opt = _option_type(rows[i].tradingsymbol)
+            by_sign[sign][opt].append((i, abs(q)))
+
+        for sign in (1, -1):
+            ce_q = sorted(by_sign[sign]["CE"], key=lambda t: t[1], reverse=True)
+            pe_q = sorted(by_sign[sign]["PE"], key=lambda t: t[1], reverse=True)
+            ce_q = [[i, q] for i, q in ce_q]
+            pe_q = [[i, q] for i, q in pe_q]
+
+            while ce_q and pe_q:
+                ci, cq = ce_q[0]
+                pi, pq = pe_q[0]
+                match_qty = min(cq, pq)
+                key_label = f"S{hedge_n}"
+
+                result[ci] = _msc.structs.replace(
+                    rows[ci],
+                    is_orphan=False,
+                    pair_group_key=key_label,
+                    paired_qty=match_qty,
+                    orphan_qty=cq - match_qty,
+                )
+                result[pi] = _msc.structs.replace(
+                    rows[pi],
+                    is_orphan=False,
+                    pair_group_key=key_label,
+                    paired_qty=match_qty,
+                    orphan_qty=pq - match_qty,
+                )
+
+                ce_q[0][1] -= match_qty
+                pe_q[0][1] -= match_qty
+                if ce_q[0][1] == 0:
+                    ce_q.pop(0)
+                if pe_q[0][1] == 0:
+                    pe_q.pop(0)
+                hedge_n += 1
+
+            # Leftover (never matched at all) rows keep their existing
+            # is_orphan=True / pair_group_key=None from _auto_pair_positions
+            # — nothing to do; they were already correct going in.
+
+    return result
+
+
 # ---------------------------------------------------------------------------
 # GTT annotation helpers
 # ---------------------------------------------------------------------------
@@ -643,6 +749,7 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
     # precedence) — no separate Python-side patch needed.
     rows: list[PositionRow] = [build_row_from_snapshot_raw(r) for r in raw_rows]
     rows = _auto_pair_positions(rows)
+    rows = _auto_pair_same_side_hedges(rows)
     try:
         async with async_session() as _gtt_session:
             _gtt_set = await _fetch_gtt_set(_gtt_session)
@@ -1369,6 +1476,7 @@ async def _fetch(force_refresh: bool = False) -> PositionsResponse:
 
     # Auto-pair positions by lot-waterfall within (account, root_symbol) groups.
     rows = _auto_pair_positions(rows)
+    rows = _auto_pair_same_side_hedges(rows)
     try:
         from backend.api.database import async_session as _async_session
         async with _async_session() as _gtt_session:

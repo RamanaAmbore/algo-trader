@@ -13,6 +13,14 @@
  * button) for e.g. watchlist/mover/holding rows that were never part of
  * the positions book.
  *
+ * `pair_group_key` carries TWO distinct auto-detected concepts under one
+ * field, distinguished by prefix: "P{n}" = an opposite-sign spread within
+ * the same (account, root, option_type) — `_auto_pair_positions()`.
+ * "S{n}" = a same-side CE+PE hedge/straddle/strangle (e.g. sell CE + sell
+ * PE) — `_auto_pair_same_side_hedges()`, which only ever touches rows the
+ * P-pass left as pure orphans. Both share state `'paired'` and the same
+ * glyph/color; only the tooltip wording differs (see below).
+ *
  * All colors reference the shared `app.css` algo-palette tokens (never
  * hardcoded hex/rgba) so the badge matches BUY/SELL/info/action
  * conventions documented in CLAUDE.md.
@@ -66,13 +74,24 @@ export function positionStateBadge(row) {
   }
 
   if (row.pair_group_key) {
+    // "S" groups are a same-side CE+PE hedge (a straddle/strangle — e.g.
+    // sell CE + sell PE), detected by `_auto_pair_same_side_hedges()`
+    // (backend/api/routes/positions.py) — a different economic
+    // relationship from a "P" group (an opposite-sign spread within the
+    // same option_type). Distinct tooltip wording per the operator's own
+    // "how do you differentiate two types of hedges" question; same
+    // glyph/color/state otherwise — both are auto-detected and may
+    // change on the next poll.
+    const isHedge = String(row.pair_group_key).startsWith('S');
     return {
       state: 'paired',
       glyph: String(row.pair_group_key),
       color: 'var(--algo-cyan-text)',
       bg: 'var(--algo-cyan-bg)',
       border: null,
-      tooltip: `Auto-paired ${row.pair_group_key} — detected automatically, may change on next poll.`,
+      tooltip: isHedge
+        ? `Same-side hedge ${row.pair_group_key} — detected automatically, may change on next poll.`
+        : `Auto-paired ${row.pair_group_key} — detected automatically, may change on next poll.`,
     };
   }
 

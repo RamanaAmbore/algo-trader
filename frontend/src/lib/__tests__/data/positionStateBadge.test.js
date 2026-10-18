@@ -15,6 +15,15 @@ describe('positionStateBadge — priority order (GTT > paired > orphan)', () => 
     expect(b.glyph).toBe('P2');
   });
 
+  it('returns paired state for a same-side "S" hedge group too, same color as "P"', () => {
+    const p = positionStateBadge({ pair_group_key: 'P1' });
+    const s = positionStateBadge({ pair_group_key: 'S1' });
+    expect(s.state).toBe('paired');
+    expect(s.glyph).toBe('S1');
+    expect(s.color).toBe(p.color);
+    expect(s.bg).toBe(p.bg);
+  });
+
   it('returns orphan state when is_orphan is true and no gtt/pair key', () => {
     const b = positionStateBadge({ is_orphan: true });
     expect(b.state).toBe('orphan');
@@ -64,6 +73,12 @@ describe('positionStateBadge — tooltip content', () => {
   it('paired tooltip mentions "auto-paired"', () => {
     const b = positionStateBadge({ pair_group_key: 'P1' });
     expect(b.tooltip.toLowerCase()).toContain('auto-paired');
+  });
+
+  it('same-side "S" group tooltip mentions "same-side hedge", NOT "auto-paired"', () => {
+    const b = positionStateBadge({ pair_group_key: 'S1' });
+    expect(b.tooltip.toLowerCase()).toContain('same-side hedge');
+    expect(b.tooltip.toLowerCase()).not.toContain('auto-paired');
   });
 
   it('gtt tooltip mentions GTT', () => {
