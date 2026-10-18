@@ -14,8 +14,11 @@
  * — those arrays feed the TOTAL row, the checkbox/enabled-leg state, the
  * payoff curve's leg set, and the CSV export. This test's core job is
  * proving the anchor row is purely additive at the DOM level: it renders
- * first, carries no checkbox, and the TOTAL row's P&L is unaffected by
- * its presence (computed only from the two real legs below it).
+ * first, and the TOTAL row's P&L is unaffected by its presence (computed
+ * only from the two real legs below it). Its own checkbox (2026-10-18
+ * follow-up, operator: "the checkbox should always enabled, protected")
+ * is always-checked + disabled — visible for row-shape consistency with
+ * every other leg row, but not wired into the real candidate set.
  *
  * Run:
  *   npx playwright test e2e/derivatives_legs_underlying_anchor.spec.js
@@ -117,14 +120,17 @@ test.describe('Derivatives Legs grid — underlying-anchor row (sync with Positi
     await expect(anchor.locator('.cand-anchor-label')).toContainText('NIFTY');
   });
 
-  test('the anchor row carries no checkbox — never enters the enabled-leg/payoff/TOTAL pipeline', async ({ page }) => {
+  test('the anchor row\'s checkbox is always checked and disabled ("protected" — 2026-10-18 follow-up)', async ({ page }) => {
     await loginAsAdmin(page);
     await _mockEndpoints(page);
     await page.goto(DERIV_URL, { waitUntil: 'domcontentloaded' });
 
     const anchor = page.locator('.cand-body-rows > .cand-row-underlying-anchor');
     await expect(anchor).toBeVisible({ timeout: 15_000 });
-    await expect(anchor.locator('input[type="checkbox"]')).toHaveCount(0);
+    const cb = anchor.locator('input[type="checkbox"]');
+    await expect(cb).toHaveCount(1);
+    await expect(cb).toBeChecked();
+    await expect(cb).toBeDisabled();
   });
 
   test('TOTAL P&L reflects only the two real legs (500 + 300 = 800), unaffected by the anchor row', async ({ page }) => {
@@ -141,14 +147,16 @@ test.describe('Derivatives Legs grid — underlying-anchor row (sync with Positi
     await expect(pnlCell).toContainText('800');
   });
 
-  test('a real CE/PE leg row still renders its own checkbox (negative control — only the anchor is checkbox-less)', async ({ page }) => {
+  test('a real CE/PE leg row\'s checkbox is enabled and toggleable (negative control — only the anchor\'s is protected)', async ({ page }) => {
     await loginAsAdmin(page);
     await _mockEndpoints(page);
     await page.goto(DERIV_URL, { waitUntil: 'domcontentloaded' });
 
     const realRow = page.locator('.cand-body-rows > .cand-row:not(.cand-row-underlying-anchor):not(.cand-row-total)').first();
     await expect(realRow).toBeVisible({ timeout: 15_000 });
-    await expect(realRow.locator('input[type="checkbox"]')).toHaveCount(1);
+    const cb = realRow.locator('input[type="checkbox"]');
+    await expect(cb).toHaveCount(1);
+    await expect(cb).toBeEnabled();
   });
 
   test('the anchor row\'s St column shows "X" (2026-10-18, operator: "make st as x, with similar coding like o")', async ({ page }) => {
@@ -163,7 +171,7 @@ test.describe('Derivatives Legs grid — underlying-anchor row (sync with Positi
     await expect(stCell).toHaveText('X');
   });
 
-  test('the anchor row\'s symbol cell has a gray right-edge divider, like a real leg\'s own symbol-cell divider', async ({ page }) => {
+  test('the anchor row\'s symbol cell has a neutral baseline divider, like a real leg\'s own symbol-cell divider', async ({ page }) => {
     await loginAsAdmin(page);
     await _mockEndpoints(page);
     await page.goto(DERIV_URL, { waitUntil: 'domcontentloaded' });
@@ -173,5 +181,39 @@ test.describe('Derivatives Legs grid — underlying-anchor row (sync with Positi
     const label = anchor.locator('.cand-anchor-label');
     const boxShadow = await label.evaluate((el) => getComputedStyle(el).boxShadow);
     expect(boxShadow).not.toBe('none');
+  });
+
+  test('the anchor row\'s background uses the SAME --c-underlying-bg token Positions\' own row-und treatment uses (2026-10-18 follow-up)', async ({ page }) => {
+    await loginAsAdmin(page);
+    await _mockEndpoints(page);
+    await page.goto(DERIV_URL, { waitUntil: 'domcontentloaded' });
+
+    const anchor = page.locator('.cand-body-rows > .cand-row-underlying-anchor');
+    await expect(anchor).toBeVisible({ timeout: 15_000 });
+    const [rowBg, rootVar] = await Promise.all([
+      anchor.evaluate((el) => getComputedStyle(el).backgroundColor),
+      page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--c-underlying-bg').trim()),
+    ]);
+    // --c-underlying-bg is an rgba() string; the row's computed background
+    // must resolve to that same color (not the old flat gray). Compare
+    // parsed numeric channels, not raw text — the browser may normalise
+    // trailing zeros (e.g. "0.10" -> "0.1") differently than the source.
+    const parse = (s) => (s.match(/[\d.]+/g) || []).map(Number);
+    expect(parse(rowBg)).toEqual(parse(rootVar));
+  });
+
+  test('the right-edge bar mechanism is wired to price direction, not a flat color (source check — live direction depends on real market data)', async () => {
+    const { readFileSync } = await import('fs');
+    const path = await import('path');
+    const dir = path.resolve(import.meta.dirname ?? new URL('.', import.meta.url).pathname, '..');
+    const src = readFileSync(
+      path.join(dir, 'src/routes/(algo)/admin/derivatives/+page.svelte'),
+      'utf8'
+    );
+    expect(src).toMatch(/cand-anchor-up[\s\S]{0,80}rgba\(74,\s*222,\s*128/);
+    expect(src).toMatch(/cand-anchor-down[\s\S]{0,80}rgba\(248,\s*113,\s*113/);
+    // The up/down class is driven by the anchor's own pct, not qty —
+    // confirms this isn't accidentally reusing the long/short mechanism.
+    expect(src).toMatch(/_anchorDir\s*=\s*legsUnderlyingAnchor\.pct\s*>\s*0/);
   });
 });

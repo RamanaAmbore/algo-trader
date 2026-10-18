@@ -5871,20 +5871,36 @@
                the flat row list did pre-wrapper. -->
           <div class="cand-body-rows">
           {#if legsUnderlyingAnchor}
-            <!-- Underlying-anchor row — read-only, display-only (not a
-                 tradable leg): no checkbox, never enters TOTAL/payoff/
-                 CSV. St column shows the shared "anchor" badge (X,
-                 positionStateBadge.js — same mechanism as GTT/paired/
-                 orphan, distinct muted/gray color). See
-                 `legsUnderlyingAnchor`'s own comment above for the full
-                 rationale. -->
+            <!-- Underlying-anchor row — display-only (not itself a
+                 tradable leg, never enters TOTAL/payoff/CSV), but
+                 otherwise decorated like every other leg row (2026-10-18,
+                 operator follow-up): St badge matches P1/P2's own
+                 button-in-cell structure, row background matches
+                 Positions' own `--c-underlying-bg` (the same purple
+                 `row-und` treatment MarketPulse already uses — NOT the
+                 gray this row first shipped with), the right-edge bar is
+                 green/red by price direction vs prev close (not a flat
+                 gray — "like the rest of rows in legs"), and the
+                 checkbox is always checked + disabled ("protected" —
+                 visually present for row-shape consistency, can't be
+                 unchecked since there's nothing real to toggle). See
+                 `legsUnderlyingAnchor`'s own comment above for why it's
+                 still excluded from displayedCandidates/candidatePositions. -->
             {@const _anchorBadge = positionStateBadge(legsUnderlyingAnchor)}
-            <div class="cand-row-underlying-anchor" title="{legsUnderlyingAnchor.underlying} — underlying spot, not a held position">
-              <span></span>
+            {@const _anchorDir = legsUnderlyingAnchor.pct > 0 ? 'up' : legsUnderlyingAnchor.pct < 0 ? 'down' : null}
+            <div class="cand-row-underlying-anchor"
+                 class:cand-anchor-up={_anchorDir === 'up'}
+                 class:cand-anchor-down={_anchorDir === 'down'}
+                 title="{legsUnderlyingAnchor.underlying} — underlying spot, not a held position">
+              <span class="cand-anchor-checkbox-cell">
+                <input type="checkbox" checked disabled
+                  title="Always included — underlying reference, not a tradable leg" />
+              </span>
               <span class="cand-state-cell"
                 style:background={_anchorBadge.bg}
-                style:color={_anchorBadge.color}
-                title={_anchorBadge.tooltip}>{_anchorBadge.glyph}</span>
+                style:color={_anchorBadge.color}>
+                <span class="cand-state-badge-btn" data-pos-state={_anchorBadge.state} title={_anchorBadge.tooltip}>{_anchorBadge.glyph}</span>
+              </span>
               <span class="cand-anchor-label">{formatPositionSymbol(legsUnderlyingAnchor.resolvedTs || legsUnderlyingAnchor.underlying, legsUnderlyingAnchor.exchange)}</span>
               <span class="num tf-cell {ltpDayClass(legsUnderlyingAnchor.pct)}">{legsUnderlyingAnchor.ltp != null ? priceFmt(legsUnderlyingAnchor.ltp) : '—'}</span>
               <span class="num tf-cell {ltpDayClass(legsUnderlyingAnchor.pct)}">{legsUnderlyingAnchor.pct != null ? pctFmt(legsUnderlyingAnchor.pct) + '%' : '—'}</span>
@@ -7661,27 +7677,29 @@
     font-weight: 800;
     letter-spacing: 0.08em;
   }
-  /* Underlying-anchor row (Legs grid) — read-only, display-only row
-     showing the selected underlying's own spot even when it isn't a
-     held position. Background keeps a subtle slate tint (not amber —
-     that's reserved for TOTAL) so the row's PRESENCE still reads as
-     context, not a real leg, but cell text otherwise matches every
-     other row's plain styling — no italic/dimmed label (2026-10-18
-     fix, operator: "the resolved root color coding is not correct...
-     color code like other rows green red") — LTP/Chg% use the same
-     `ltpDayClass()` green/red convention every real leg's LTP/Chg%
-     cell uses. No hover/clickable cursor — this row carries no
-     onclick/role, matching every other static-text cell on the page.
-     Deliberately does NOT carry the shared `.cand-row` class — several
-     existing tests/selectors use `.cand-row` to mean "a real,
+  /* Underlying-anchor row (Legs grid) — display-only row showing the
+     selected underlying's own spot even when it isn't a held position.
+     Decorated to match MarketPulse's own Positions grid treatment for
+     the identical row (2026-10-18 follow-up, operator: "the background
+     color of gold in legs similar to positions gold... the right side
+     vertical bar color should depend on the price movement... like the
+     rest of rows in legs"): background is `--c-underlying-bg` — the
+     SAME purple `.ag-row.row-und` token Positions already uses for this
+     exact row (see app.css) — not the gray this row first shipped with.
+     LTP/Chg% use the same `ltpDayClass()` green/red convention every
+     real leg's LTP/Chg% cell uses. No hover/clickable cursor — this row
+     carries no onclick/role, matching every other static-text cell on
+     the page. Deliberately does NOT carry the shared `.cand-row` class
+     — several existing tests/selectors use `.cand-row` to mean "a real,
      checkbox-bearing leg row" (e.g. `.cand-row.first()`); this row is
-     neither, and must never be the match for those. */
+     neither (its checkbox is always-checked/disabled, never part of
+     the enabled-leg set), and must never be the match for those. */
   .cand-row-underlying-anchor {
     display: grid;
     grid-template-columns: subgrid;
     grid-column: 1 / -1;
-    background: rgba(148, 163, 184, 0.10);
-    border-bottom: 1px solid rgba(148, 163, 184, 0.28);
+    background: var(--c-underlying-bg);
+    border-bottom: 1px solid var(--sep-color);
     cursor: default;
   }
   .cand-row-underlying-anchor > span {
@@ -7695,11 +7713,45 @@
     white-space: nowrap;
   }
   .cand-row-underlying-anchor > span.num { text-align: right; }
-  /* St-column badge cell — same layout rule as CandidateLegRow.svelte's
-     own `.cand-state-cell` (a different component's scoped class, so it
-     can't be reused directly here — see that file's class list). Colors
-     come inline from `positionStateBadge.js` via style:background/color
-     in the markup, matching every other badge state. */
+  /* Checkbox cell — always-checked, disabled ("protected": visually
+     present for row-shape consistency with every other leg row, but
+     can't be unchecked since this row was never part of the real
+     candidate set to begin with). Centering mirrors
+     CandidateLegRow.svelte's own `.cand-row input[type="checkbox"]`
+     rule (a different component's scoped class, so it can't be reused
+     directly here). */
+  .cand-anchor-checkbox-cell {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .cand-row-underlying-anchor input[type="checkbox"] {
+    accent-color: var(--c-action);
+    width: 0.9rem;
+    height: 0.9rem;
+    margin: 0;
+    opacity: 0.75;
+  }
+  /* St-column badge cell + inner button-shaped glyph — same layout as
+     CandidateLegRow.svelte's own `.cand-state-cell`/`.cand-state-badge-btn`
+     (a different component's scoped class, so it can't be reused
+     directly here — see that file's class list). Colors come inline
+     from `positionStateBadge.js` via style:background/color in the
+     markup, matching every other badge state ("make st as x, with
+     similar coding like o" — the inner glyph wrapper matches P1/P2's
+     own structure; not a real `<button>` since this row has no click
+     behavior to offer). */
+  .cand-row-underlying-anchor .cand-state-badge-btn {
+    width: 100%;
+    height: 100%;
+    min-height: 1.2rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font: inherit;
+    letter-spacing: inherit;
+    color: inherit;
+  }
   .cand-row-underlying-anchor .cand-state-cell {
     font-size: var(--fs-xs);
     font-weight: 700;
@@ -7713,18 +7765,30 @@
   }
   .cand-anchor-label {
     font-weight: 700;
-    /* Gray vertical separator on the symbol cell's right edge — matches
-       every real leg row's own always-visible baseline divider
-       (CandidateLegRow.svelte's `.cand-sym-acct` box-shadow; that rule
-       can't be reused directly here since it's a different component's
-       scoped class — see that file's own comment on the same line).
-       Real rows layer a green/red 2px ::after bar for long/short on TOP
-       of this; the anchor isn't long/short, so it shows only the
-       neutral baseline (2026-10-18, operator: "add gray kind of
-       vertical bar on the right of the symbol... refer to other rows as
-       reference"). */
+    position: relative;
+    /* Always-visible neutral baseline — matches every real leg row's
+       own box-shadow divider (CandidateLegRow.svelte's `.cand-sym-acct`;
+       that rule can't be reused directly here, different component's
+       scoped class). Real rows layer a green/red 2px ::after bar for
+       long/short on TOP of this baseline; the anchor has no long/short
+       direction, so it layers a green/red bar for price UP/DOWN vs
+       prev close instead (2026-10-18 follow-up, operator: "the right
+       side vertical bar color should depend on the price movement from
+       prev closing price like the rest of rows in legs" — supersedes
+       the first version of this row, which used a flat gray bar). */
     box-shadow: inset -1px 0 0 0 var(--algo-muted-border);
   }
+  .cand-anchor-label::after {
+    content: '';
+    position: absolute;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    pointer-events: none;
+  }
+  .cand-row-underlying-anchor.cand-anchor-up   .cand-anchor-label::after { background: rgba(74, 222, 128, 0.85); }
+  .cand-row-underlying-anchor.cand-anchor-down .cand-anchor-label::after { background: rgba(248, 113, 113, 0.85); }
   /* cand-split-tag, cand-eq-tag, cand-proxy-tag, cand-row.cand-eq, and
      all cand-row variant styles moved to CandidateLegRow.svelte. */
   /* Cell-level truncation for the header row's numeric cells. The same
