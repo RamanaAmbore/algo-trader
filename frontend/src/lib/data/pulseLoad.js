@@ -112,26 +112,48 @@ export function resolveUnderlyingForOption(name, optionExpiryISO, findNearestFut
  *   activeLists: any[],
  *   findNearestFut: ((u: string) => any) | null,
  *   listFuts: ((u: string) => any[]) | null,
+ *   getInst?: ((s: string) => any) | null,
  * }} opts
  * @returns {{ underlyingInfos: Map<string, any>, contractKeys: Set<string> }}
  */
-export function collectUnderlyings({ pRows, hRows, activeLists, findNearestFut, listFuts }) {
+export function collectUnderlyings({ pRows, hRows, activeLists, findNearestFut, listFuts, getInst }) {
   /** @type {Map<string, any>} */
   const underlyingInfos = new Map();
   const contractKeys = new Set();
 
   /**
    * Parse sym and register an anchor row in underlyingInfos if applicable.
+   *
+   * Underlying-name resolution prefers the live instruments cache
+   * (`getInst(sym)?.u`) over the regex-only `parseDerivSymbol` value,
+   * matching `pulseUnified.js:parseSymbol()`'s own preference order —
+   * the SAME function `fillSymbolMeta` uses to stamp `underlying` onto
+   * the real CE/PE position rows this anchor is meant to group with.
+   * Without this, a commodity whose Kite instrument-master `name` field
+   * doesn't collapse to the exact same string as the regex parse (e.g.
+   * a space-variant alias, see `_MCX_LOT_OVERRIDES` in
+   * `instruments.py` for documented examples of this exact class of
+   * mismatch) gets a DIFFERENT `underlying` string for its anchor than
+   * for its own option rows — `_pairGroupPostSort`/`mergeUnderlyingAnchors`
+   * then treat them as two separate underlying groups, and the anchor's
+   * block (now containing only itself) anchors wherever that lone row
+   * happens to land, instead of leading its options (2026-10-18,
+   * operator-reported: "gold" anchor rendering below its own CE/PE legs
+   * despite the account+pair block-order fix already being correct).
+   * Falls back to the regex value when the cache is cold (matches
+   * `parseDerivSymbol`'s own documented fallback role).
    * @param {string} sym
    * @param {string} triggerMajor
    */
   const addUnderlying = (sym, triggerMajor) => {
     const parsed = parseDerivSymbol(sym);
     if (!parsed) return;
-    const { underlying: u, expiry, kind } = parsed;
+    const { underlying: regexU, expiry, kind } = parsed;
     const isOpt = (kind === 'CE' || kind === 'PE');
     const isFut = (kind === 'FUT');
     if (!isOpt && !isFut) return;
+    const instU = getInst ? getInst(sym)?.u : null;
+    const u = instU || regexU;
     const info = isOpt
       ? resolveUnderlyingForOption(u, expiry, findNearestFut, listFuts)
       : resolveUnderlying(u, findNearestFut);

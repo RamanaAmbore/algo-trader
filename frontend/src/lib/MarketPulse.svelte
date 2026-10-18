@@ -2905,6 +2905,7 @@
         activeLists,
         findNearestFut: findNearestFuture,
         listFuts: listFutures,
+        getInst: getInstrument,
       });
 
       // ── Assemble batchQuote universe ────────────────────────────────
