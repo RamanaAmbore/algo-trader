@@ -35,6 +35,7 @@
   import { longPress }              from '$lib/actions/longPress.js';
   import { legPnlDisplay }          from '$lib/data/derivativesMath.js';
   import { positionStateBadge }     from '$lib/data/positionStateBadge.js';
+  import InfoHint                   from '$lib/InfoHint.svelte';
 
   const BAND_LABELS = { close: 'ITM ON EXPIRY', netted: 'NETTED', otm: 'OUT OF THE MONEY' };
 
@@ -190,6 +191,55 @@
     legsTab === 'expiry' && !!c._band && (ci === 0 || prevBand !== c._band)
   );
 
+  // Click-to-show-meaning tooltips for the Exp Close tab (2026-10-17,
+  // operator: "the only thing in exp close to add is making c1, c2
+  // labels info tips like p1, p2, etc. Also the labels netted, to be
+  // closed text to act as tooltips" — "the info is different for mcx
+  // and non-mcx symbols"). Both plain-text labels (band label, id chip)
+  // are NOT otherwise interactive, so per the house tooltip convention
+  // they are the click target themselves — no separate "(i)" icon.
+  //
+  // Band label (NETTED / ITM ON EXPIRY / OUT OF THE MONEY) — generic
+  // per band, but 'close'/'otm' explanations differ for MCX (commodity)
+  // vs non-MCX (equity) since the underlying risk is different
+  // (physical delivery vs unhedged-residual settlement). 'netted' is
+  // MCX-only in practice (equity never nets — computeExpiryBands'
+  // "Equity: ITM -> close, OTM -> otm. No netting on NFO").
+  let _bandInfoAnchor = $state(/** @type {HTMLElement | null} */ (null));
+  let _bandInfoOpen = $state(false);
+  const _bandInfoText = $derived.by(() => {
+    const isMcx = c._segment === 'commodity';
+    if (c._band === 'close') {
+      return isMcx
+        ? 'Unhedged ITM commodity position — no offsetting leg to net against. Close manually before expiry; otherwise it settles at expiry pricing.'
+        : 'ITM equity option — physical settlement risk. Close manually before expiry to avoid a delivery obligation.';
+    }
+    if (c._band === 'netted') {
+      return 'MCX ITM positions that offset each other (opposite-side legs of comparable value) — the broker nets these automatically at settlement. No manual action needed.';
+    }
+    if (c._band === 'otm') {
+      return isMcx
+        ? 'Commodity option is out-of-the-money — expires worthless at settlement. No action needed.'
+        : 'Equity option is out-of-the-money — expires worthless. No action needed.';
+    }
+    return '';
+  });
+
+  // Id chip (C1/C2 close-sequence, N1/N2 netted-pair) — content leads
+  // with what the id itself means, then the row's own `_reason` (already
+  // MCX/non-MCX-aware from derivativesMath.js's computeExpiryBands).
+  let _closeIdInfoAnchor = $state(/** @type {HTMLElement | null} */ (null));
+  let _closeIdInfoOpen = $state(false);
+  const _closeIdInfoText = $derived.by(() => {
+    if (c._band === 'close' && c._closeId) {
+      return `${c._closeId} — sequential id for positions that need manual close action before expiry. ${c._reason || ''}`.trim();
+    }
+    if (c._band === 'netted' && c._pairId) {
+      return `${c._pairId} — this MCX position is netted against its paired opposite leg. ${c._reason || ''}`.trim();
+    }
+    return '';
+  });
+
   // Row click handler — shared logic for onclick + onkeydown.
   function _handleRowActivate() {
     if (isDraft)         onExecuteDraft(c);
@@ -206,7 +256,15 @@
       <span class="expiry-band-dot" aria-hidden="true">
         {#if c._band === 'close'}●{:else if c._band === 'netted'}⊗{:else}○{/if}
       </span>
-      <span class="expiry-band-label">{BAND_LABELS[c._band] ?? c._band}</span>
+      <button type="button" class="expiry-band-label"
+        bind:this={_bandInfoAnchor}
+        aria-label="What does {BAND_LABELS[c._band] ?? c._band} mean?"
+        aria-expanded={_bandInfoOpen}
+        onclick={(e) => { e.stopPropagation(); _bandInfoOpen = !_bandInfoOpen; }}
+        onkeydown={(e) => { e.stopPropagation(); if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); _bandInfoOpen = !_bandInfoOpen; } }}>{BAND_LABELS[c._band] ?? c._band}</button>
+      <InfoHint popup hideButton id={`expiry-band-info-${c.key ?? c.symbol ?? ''}-${c._band}`}
+        anchor={_bandInfoAnchor} bind:open={_bandInfoOpen}
+        panel title={BAND_LABELS[c._band] ?? c._band} text={_bandInfoText} />
       <span class="expiry-band-count">{bandCount}</span>
     </span>
     {#if c._band === 'close'}<span class="expiry-band-hint">action required before expiry</span>
@@ -392,10 +450,25 @@
     {/if}
     {#if legsTab === 'expiry' && c._band}
       {#if c._band === 'close' && c._closeId}
-        <span class="expiry-id-chip expiry-id-close" title={c._reason}>{c._closeId}</span>
+        <button type="button" class="expiry-id-chip expiry-id-close"
+          bind:this={_closeIdInfoAnchor}
+          title={c._reason}
+          aria-label="What does {c._closeId} mean?"
+          aria-expanded={_closeIdInfoOpen}
+          onclick={(e) => { e.stopPropagation(); _closeIdInfoOpen = !_closeIdInfoOpen; }}
+          onkeydown={(e) => { e.stopPropagation(); if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); _closeIdInfoOpen = !_closeIdInfoOpen; } }}>{c._closeId}</button>
       {:else if c._band === 'netted' && c._pairId}
-        <span class="expiry-id-chip expiry-id-netted" title={c._reason ?? ''}>{c._pairId}</span>
+        <button type="button" class="expiry-id-chip expiry-id-netted"
+          bind:this={_closeIdInfoAnchor}
+          title={c._reason ?? ''}
+          aria-label="What does {c._pairId} mean?"
+          aria-expanded={_closeIdInfoOpen}
+          onclick={(e) => { e.stopPropagation(); _closeIdInfoOpen = !_closeIdInfoOpen; }}
+          onkeydown={(e) => { e.stopPropagation(); if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); _closeIdInfoOpen = !_closeIdInfoOpen; } }}>{c._pairId}</button>
       {/if}
+      <InfoHint popup hideButton id={`expiry-id-info-${c.key ?? c.symbol ?? ''}`}
+        anchor={_closeIdInfoAnchor} bind:open={_closeIdInfoOpen}
+        panel title={c._closeId ?? c._pairId ?? ''} text={_closeIdInfoText} />
     {/if}
   </span>
   <span class="num tf-cell leg-ltp {ltpDayClass(_chgPct)} {flash.classOf(`${_legFlashKey}:ltp`)}">{ltp != null ? priceFmt(ltp) : '—'}</span>
@@ -991,10 +1064,25 @@
     flex-shrink: 0;
   }
   .expiry-band-label {
+    /* 2026-10-17 — now a <button> (click-to-show-meaning tooltip,
+       operator: "the labels netted, to be closed text to act as
+       tooltips") — button-reset so it still reads as plain pill text,
+       not a generic form control. */
+    background: transparent;
+    border: none;
+    padding: 0;
+    margin: 0;
+    font: inherit;
+    color: inherit;
+    cursor: pointer;
     font-size: var(--fs-sm);
     font-weight: 800;
     letter-spacing: 0.12em;
     text-transform: uppercase;
+  }
+  .expiry-band-label:hover,
+  .expiry-band-label:focus-visible {
+    text-decoration: underline;
   }
   .expiry-band-count {
     font-family: var(--font-numeric);
@@ -1053,17 +1141,26 @@
   /* ── Expiry ID chip (inside symbol cell) ─────────────────────────── */
   /* Tag chip inside the symbol cell — #N1 / #C1. */
   .expiry-id-chip {
+    /* 2026-10-17 — now a <button> (click-to-show-meaning tooltip,
+       operator: "making c1, c2 labels info tips like p1, p2, etc.") —
+       box-model unchanged; only the default button chrome is reset. */
     display: inline-flex;
     align-items: center;
     padding: 0.05rem 0.3rem;
+    margin-left: 0.25rem;
+    margin-top: 0; margin-right: 0; margin-bottom: 0;
     border-radius: 3px;
     font-family: var(--font-numeric);
     font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 0.05em;
-    margin-left: 0.25rem;
     line-height: 1;
     vertical-align: middle;
+    cursor: pointer;
+  }
+  .expiry-id-chip:hover,
+  .expiry-id-chip:focus-visible {
+    filter: brightness(1.25);
   }
   .expiry-id-close {
     background: var(--algo-amber-bg-strong);
