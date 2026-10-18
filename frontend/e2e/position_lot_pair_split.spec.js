@@ -257,6 +257,39 @@ test.describe('Lot-pairing split — Derivatives Legs grid', () => {
     expect(Math.abs(topGap - bottomGap), `topGap=${topGap} bottomGap=${bottomGap}`).toBeLessThan(1.5);
   });
 
+  test('(i) header checkbox is centered the same way as the data-row checkboxes', async ({ page }) => {
+    // Operator (2026-10-18): "the header checkbox for selecting rows is
+    // not centered. the data checkbox are centered horizontally." Root
+    // cause: .cand-row's checkbox had an explicit justify-self:center
+    // override (CandidateLegRow.svelte, fixed for test (h) above), but
+    // the header's master checkbox (.cand-check-master, +page.svelte)
+    // had no matching rule, so it sat at CSS Grid's default
+    // justify-self:start while every sibling header <span> fills its
+    // own track.
+    await page.goto('/admin/derivatives?u=NIFTY', { waitUntil: 'domcontentloaded' });
+    const headCb = page.locator('.cand-headrow').first().locator('.cand-check-master');
+    const dataCb = page.locator('.cand-row').first().locator('input[type="checkbox"]');
+    await expect(headCb).toBeVisible({ timeout: TIMEOUT });
+    await expect(dataCb).toBeVisible({ timeout: TIMEOUT });
+    const [headBox, dataBox] = await Promise.all([headCb.boundingBox(), dataCb.boundingBox()]);
+    // `.cand-headrow` and `.cand-row` are sibling subgrids of the SAME
+    // parent `.cand-grid` — column 1's track is the exact same physical
+    // page-coordinate span for both. Test (h) above already proves the
+    // data-row checkbox centers correctly within it, so the most robust
+    // check is a direct comparison: both checkboxes' CENTER x-coordinate
+    // must line up (±1.5px), not a derived-from-padding calculation
+    // (fragile — subgrid column alignment doesn't decompose cleanly into
+    // "row's own outer edge + row's own padding").
+    const headCenter = headBox.x + headBox.width / 2;
+    const dataCenter = dataBox.x + dataBox.width / 2;
+    // ±2px tolerance — same rationale as test (h) above (native checkbox
+    // rendering doesn't always resolve to byte-identical sub-pixel
+    // positions across two independently-laid-out subgrid row
+    // instances, even when both are genuinely centered within the same
+    // shared column track).
+    expect(Math.abs(headCenter - dataCenter), `headCenter=${headCenter} dataCenter=${dataCenter}`).toBeLessThan(2);
+  });
+
   test('(g) toggling the CLOSED piece\'s checkbox does not toggle the OPEN sibling (enKey _splitTag collision regression)', async ({ page }) => {
     // Sibling regression to (e) — a DIFFERENT split mechanism
     // (splitClosedReopened's closed/open pieces, expiryPnl.js) shares the

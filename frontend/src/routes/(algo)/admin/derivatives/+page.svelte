@@ -7676,6 +7676,31 @@
       linear-gradient(var(--grid-header-bg), var(--grid-header-bg)),
       #1d2a44;
   }
+  /* Header checkbox — centered horizontally to match the data rows'
+     own checkbox (.cand-row input[type="checkbox"] in
+     CandidateLegRow.svelte sets justify-self: center; align-self:
+     center for the same reason: a bare <input> is a replaced element,
+     so CSS Grid's default justify-self: start applies to it even
+     though every sibling header <span> fills its own track). Without
+     this, the master checkbox sat left-aligned in its column while
+     every data-row checkbox below it sat centered (operator: "the
+     header checkbox for selecting rows is not centered. the data
+     checkbox are centered horizontally"). */
+  .cand-check-master {
+    justify-self: center;
+    align-self: center;
+    margin: 0;
+    /* Explicit sizing — without it, the browser's native/default
+       checkbox box model isn't fully deterministic (confirmed live:
+       justify-self:center alone left a measurable ~3px asymmetric
+       residual, even with margin already zeroed). .cand-row's own
+       checkbox (CandidateLegRow.svelte) is sized explicitly for the
+       same reason — mirrored here so both checkboxes share one
+       deterministic box model and genuinely center the same way. */
+    width: 0.9rem;
+    height: 0.9rem;
+    accent-color: var(--c-action);
+  }
   /* Numeric column cells — right-aligned (industry-standard for
      trade panels) so digits in different rows line up cleanly under
      each column header. The .cand-row > .num portion moved to
