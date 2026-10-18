@@ -29,6 +29,7 @@
   import { toast } from '$lib/data/toastStore.svelte.js';
   import InfoHint from '$lib/InfoHint.svelte';
   import Select from '$lib/Select.svelte';
+  import { renderMarkdownLite } from '$lib/data/markdownLite.js';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import AlgoTabs from '$lib/AlgoTabs.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
@@ -512,7 +513,11 @@
     <div class="lab-chat-msg" class:lab-chat-info={chatInfo} class:lab-chat-error={!chatInfo} role="alert">{chatError}</div>
   {/if}
   {#if chatReply}
-    <pre class="lab-chat-reply">{chatReply}</pre>
+    <!-- claude -p replies come back as markdown prose (bold, bullets,
+         headers) — renderMarkdownLite escapes the raw text FIRST, then
+         layers markdown syntax on top, so {@html} here can never render
+         a literal tag from the reply as a real element. -->
+    <div class="lab-chat-reply">{@html renderMarkdownLite(chatReply)}</div>
   {/if}
 </section>
 {/if}
@@ -593,7 +598,10 @@
         {#if selected.thesis_text}
           <article class="thr-thesis">
             <div class="thr-section-label">THESIS</div>
-            <pre class="thr-thesis-body">{selected.thesis_text}</pre>
+            <!-- Same markdown-prose rendering as the chat reply above —
+                 thesis text is saved verbatim from a Claude Code session,
+                 escaped before any markdown transform (see markdownLite.js). -->
+            <div class="thr-thesis-body">{@html renderMarkdownLite(selected.thesis_text)}</div>
           </article>
         {/if}
 
@@ -603,7 +611,7 @@
             {#each selected.transcript as msg, i (i)}
               <div class="msg msg-{msg.role || 'other'}">
                 <div class="msg-role">{_roleLabel(msg.role)}</div>
-                <div class="msg-body">{msg.content || ''}</div>
+                <div class="msg-body">{@html renderMarkdownLite(msg.content || '')}</div>
               </div>
             {/each}
           </article>
@@ -969,10 +977,56 @@
     font-family: var(--font-numeric);
     font-size: var(--fs-md);
     line-height: 1.5;
-    white-space: pre-wrap;
     word-break: break-word;
     max-height: 40vh;
     overflow-y: auto;
+  }
+  /* Rendered markdown prose (renderMarkdownLite) — shared between the
+     chat reply above and the saved-thesis body (.thr-thesis-body). */
+  .lab-chat-reply :global(p),
+  .thr-thesis-body :global(p) {
+    margin: 0 0 0.5rem;
+  }
+  .lab-chat-reply :global(p:last-child),
+  .thr-thesis-body :global(p:last-child) {
+    margin-bottom: 0;
+  }
+  .lab-chat-reply :global(.md-heading),
+  .thr-thesis-body :global(.md-heading) {
+    margin: 0.7rem 0 0.35rem;
+    font-weight: 700;
+    color: var(--algo-cyan-text);
+  }
+  .lab-chat-reply :global(.md-heading:first-child),
+  .thr-thesis-body :global(.md-heading:first-child) {
+    margin-top: 0;
+  }
+  .lab-chat-reply :global(ul),
+  .lab-chat-reply :global(ol),
+  .thr-thesis-body :global(ul),
+  .thr-thesis-body :global(ol) {
+    margin: 0 0 0.5rem;
+    padding-left: 1.3rem;
+  }
+  .lab-chat-reply :global(code),
+  .thr-thesis-body :global(code) {
+    font-family: var(--font-numeric);
+    background: rgba(255, 255, 255, 0.08);
+    padding: 0.05rem 0.3rem;
+    border-radius: 0.2rem;
+  }
+  .lab-chat-reply :global(.md-code-block),
+  .thr-thesis-body :global(.md-code-block) {
+    margin: 0 0 0.5rem;
+    padding: 0.5rem;
+    background: rgba(0, 0, 0, 0.3);
+    border-radius: 0.3rem;
+    overflow-x: auto;
+  }
+  .lab-chat-reply :global(.md-code-block code),
+  .thr-thesis-body :global(.md-code-block code) {
+    background: transparent;
+    padding: 0;
   }
 
   /* ── Tab strip ────────────────────────────────────────────────── */
@@ -1180,7 +1234,6 @@
     color: var(--algo-slate);
     font-size: var(--fs-lg);
     line-height: 1.55;
-    white-space: pre-wrap;
     font-family: -apple-system, system-ui, sans-serif;
     border-radius: 0 0.35rem 0.35rem 0;
   }
@@ -1205,8 +1258,31 @@
     color: var(--algo-slate);
     font-size: var(--fs-lg);
     line-height: 1.5;
-    white-space: pre-wrap;
   }
+  .msg-body :global(p) { margin: 0 0 0.5rem; }
+  .msg-body :global(p:last-child) { margin-bottom: 0; }
+  .msg-body :global(ul),
+  .msg-body :global(ol) { margin: 0 0 0.5rem; padding-left: 1.3rem; }
+  .msg-body :global(code) {
+    font-family: var(--font-numeric);
+    background: rgba(255, 255, 255, 0.08);
+    padding: 0.05rem 0.3rem;
+    border-radius: 0.2rem;
+  }
+  .msg-body :global(.md-code-block) {
+    margin: 0 0 0.5rem;
+    padding: 0.5rem;
+    background: rgba(0, 0, 0, 0.3);
+    border-radius: 0.3rem;
+    overflow-x: auto;
+  }
+  .msg-body :global(.md-code-block code) { background: transparent; padding: 0; }
+  .msg-body :global(.md-heading) {
+    margin: 0.6rem 0 0.3rem;
+    font-weight: 700;
+    color: var(--algo-cyan-text);
+  }
+  .msg-body :global(.md-heading:first-child) { margin-top: 0; }
 
   /* ── Drafts tab ───────────────────────────────────────────────── */
   .lab-drafts {
