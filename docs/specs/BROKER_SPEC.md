@@ -2246,50 +2246,19 @@ When a fill is detected (via postback or confirmed by order status), positions m
 
 **Invariant**: Position refresh after fill is triggered BOTH via postback (immediate for Kite, fallback for Dhan/Groww) AND via ticket-placement success (immediate for all brokers), ensuring the fastest refresh possible for each broker's callback reliability.
 
-## 8.6 Order Pairing — Parent-Child Relationship Linking
+## 8.6 Order Pairing — Parent-Child Relationship Linking (manual route REMOVED 2026-10-17)
 
-**File**: `backend/api/routes/orders.py` — `POST /api/orders/pair`
+The manual `POST /api/orders/pair` route and its `OrderPairModal.svelte` UI (and the
+`PairOrdersInput` schema) were removed 2026-10-17 per operator decision. No route sets
+`AlgoOrder.parent_order_id` from the UI any longer.
 
-Establishes a parent-child relationship between two AlgoOrder rows, enabling operators 
-to track which orders are related (e.g., entry + exit legs, multi-leg strategies).
+`AlgoOrder.parent_order_id` itself is unchanged and still set by the system for take-profit
+armature, template/wing attachment, and chase (see §8.1, §8.3, and §8.4.1).
 
-**Endpoint**: `POST /api/orders/pair`
-
-**Request body**:
-```json
-{
-  "parent_id": "<UUID>",
-  "child_id": "<UUID>"
-}
-```
-
-**Validation**:
-- Both `parent_id` and `child_id` must reference existing AlgoOrders (404 if not found)
-- `child_id` must not have an existing parent (`parent_order_id` must be None; 400 if occupied)
-- `parent_id` ≠ `child_id` (400 if same order used twice)
-
-**Effect**:
-- Updates `AlgoOrder.parent_order_id` on child row to `parent.id`
-- Child order is now considered "linked" to the parent strategy
-
-**Response**: 200 OK with updated child AlgoOrder record, or 4xx on validation failure
-
-**PositionRow schema impact** (Aug 2026):
-- New field `pair_group_key: str | None` set to `parent.id` when this position is linked to an 
-  open AlgoOrder (status=OPEN) with `parent_order_id=parent.id`. Null when no matching order exists
-- New field `is_orphan: bool` is True when position (account, tradingsymbol) has no matching 
-  open AlgoOrder
-
-**UI access** (`OrderPairModal.svelte`):
-- Accessible from MarketPulse positions grid header and Derivatives legs header
-- Fetches `/api/orders/recent` to populate parent + unlinked-child pickers
-- On submit, calls `POST /api/orders/pair` to establish relationship
-
-**Frontend side effects**:
-- MarketPulse position rows show coral "O" badge when `is_orphan=true`
-- `postSortRows` callback keeps positions with matching `pair_group_key` adjacent in grid (parent row 
-  immediately followed by child rows)
-- ChaseCard shows "O" chip for dangling child orders (parent not in active chase list)
+The position-side `pair_group_key` / `is_orphan` fields are auto-detected lot-waterfall values
+from `_auto_pair_positions()`, not order-derived. See
+[PULSE_SPEC.md](PULSE_SPEC.md) §4.4. Their former order-level derivation (from
+`parent_order_id`) is no longer in effect.
 
 ---
 

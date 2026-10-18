@@ -163,14 +163,14 @@ See Section 5 for DB-first policy and fallback ladder.
 
 **PositionRow schema (additions Aug 2026)**:
 - `previous_close: float = 0.0` — frozen prior-session settlement price from `COALESCE(daily_book.previous_close, daily_book.ltp)` written by `_override_stale_close_from_snapshot()`. Frontend prefers this (official settlement, write-once) over `close_price` (Kite's mutable field) for day P&L computation via `(ltp − previous_close) × qty`. Matches holdings fix (75a335f7); prevents positions day P&L zeroing at NSE settlement
-- `is_orphan: bool` — True for the unmatched remainder of `_auto_pair_positions()`'s lot-waterfall (see `pair_group_key` below) — NOT related to `AlgoOrder`/`POST /api/orders/pair` (that's a separate, order-level pairing concept with no effect on this field). Shown with diamond glyph "◇" badge in Pulse Positions grid and Derivatives Legs grid
-- `pair_group_key: str | None` — **auto-detected**, computed by `_auto_pair_positions()` (`backend/api/routes/positions.py`): groups rows by `(account, root_symbol, option_type)` (CE/PE/None — CE never pairs with PE; see §14 "Per-account rows and symbol subtotals"), waterfall-matches longs vs shorts by quantity (largest first), assigns sequential keys `"P1"`, `"P2"`, etc. per match; the unmatched remainder on a row becomes `orphan_qty` and sets `is_orphan=True`. Has nothing to do with `AlgoOrder.parent_order_id`/`POST /api/orders/pair` (a separate order-level pairing concept, used only to suppress TP/template attachment on a child order — see §19). Used by `postSortRows`/`pairGroupSort.js` to keep paired positions adjacent in sort order regardless of column sort direction. Ephemeral — recomputed on every request from the broker book and can reshuffle when fills/quantity change. **Known backend gap (Oct 2026)**: when one row
+- `is_orphan: bool` — True for the unmatched remainder of `_auto_pair_positions()`'s lot-waterfall (see `pair_group_key` below) — NOT related to `AlgoOrder.parent_order_id` (a separate, order-level pairing concept with no effect on this field). Shown with diamond glyph "◇" badge in Pulse Positions grid and Derivatives Legs grid
+- `pair_group_key: str | None` — **auto-detected**, computed by `_auto_pair_positions()` (`backend/api/routes/positions.py`): groups rows by `(account, root_symbol, option_type)` (CE/PE/None — CE never pairs with PE; see §14 "Per-account rows"), waterfall-matches longs vs shorts by quantity (largest first), assigns sequential keys `"P1"`, `"P2"`, etc. per match; the unmatched remainder on a row becomes `orphan_qty` and sets `is_orphan=True`. Has nothing to do with `AlgoOrder.parent_order_id` (a separate order-level pairing concept, used only to suppress TP/template attachment on a child order — see §19). Used by `postSortRows`/`pairGroupSort.js` to keep paired positions adjacent in sort order regardless of column sort direction. Ephemeral — recomputed on every request from the broker book and can reshuffle when fills/quantity change. **Known backend gap (Oct 2026)**: when one row
   waterfall-matches against 2+ counterparties, the backend overwrites its pairing fields on each
   match, so only the last group survives. The frontend re-derives this field via
   `splitPairedLots()` (`frontend/src/lib/data/lotPairSplit.js`) before display, and splits such a
   row into per-group display pieces — see §14 "Lot-split display"
-- `pin_group_key: str | None` (Oct 2026) — **operator-persisted** manual pin linking two open positions of the same account via the `position_pairs` table. Formatted as `"PIN{id}"` where `id` is the `position_pairs.id` row. Distinct from `pair_group_key` (auto-detected); a position can carry both. Pinned pairs persist across server restarts and only change when operator explicitly unlinks via `DELETE /api/positions/pin/{id}`. Two positions sharing a `pin_group_key` are visually grouped with the same cyan badge in the Legs grid; clicking the badge opens `PositionPinPicker.svelte` to unpin
-- `has_gtt: bool` — True when a valid GTT (target or stop-loss) order is attached to this position (checked at request time). Positions with an active GTT are shown with green "GTT" badge. Highest priority in position-state badge rendering (GTT > pinned > auto-paired > orphan)
+- ~~`pin_group_key`~~ (Oct 2026, **REMOVED 2026-10-17**, commit d760f352) — the operator-persisted manual pin field, its `position_pairs` table, and the `/api/positions/pin` routes were removed per operator decision. Auto-pairing (`pair_group_key`) is unaffected.
+- `has_gtt: bool` — True when a valid GTT (target or stop-loss) order is attached to this position (checked at request time). Positions with an active GTT are shown with green "GTT" badge. Highest priority in position-state badge rendering (GTT > auto-paired > orphan)
 
 **Day P&L computation — Snapshot & Live Paths (STALE — snapshot-reading details, 2026-09 redesign)**
 
@@ -1155,7 +1155,9 @@ Helps operators quickly scan grids by visual region.
 
 **Position state (St) column and badge rendering** (Aug 2026, re-engineered 2026-10-16):
 
-Priority order (highest wins): GTT > pinned > auto-paired > orphan > (none).
+Priority order (highest wins): GTT > auto-paired > orphan > (none). The former "pinned" state
+(manual `PIN{id}` pairs) was removed 2026-10-17 along with `PositionPinPicker.svelte`; the St
+column has no click-to-pin action any more.
 Shared badge logic: `frontend/src/lib/data/positionStateBadge.js:positionStateBadge(row)`.
 Grid-specific cell renderers: ag-Grid `pulseColumns.js` (MarketPulse Positions), hand-rolled
 `CandidateLegRow.svelte` (Derivatives Legs grid).
@@ -1163,9 +1165,8 @@ Grid-specific cell renderers: ag-Grid `pulseColumns.js` (MarketPulse Positions),
 | State | Badge Glyph | CSS class | Tooltip | Action |
 |---|---|---|---|---|
 | **GTT** | "GTT" (text) | `badge-gtt` / `--algo-green-badge` | "Protected by a GTT stop-loss / target order." | (display only) |
-| **Pinned** | `PIN{id}` (format: `PIN123`) | `badge-pinned` / `--algo-cyan-bg-strong` + solid border | "Pinned pair PIN123 — manually linked, won't change on next poll. Click to unpin." | Click → `PositionPinPicker.svelte` → `DELETE /api/positions/pin/{id}` |
-| **Auto-paired** | `P1`, `P2`, etc. (group key) | `badge-paired` / `--algo-cyan-bg` | "Auto-paired P1 — detected automatically, may change on next poll. Click to pin." | Click → `PositionPinPicker.svelte` → `POST /api/positions/pin` |
-| **Orphan** | "◇︎" (WHITE DIAMOND U+25C7 + text-presentation selector) | `badge-orphan` / `--algo-amber-bg` | "Unpaired position — no GTT, no pair. Click to pair with another leg." | Click → `PositionPinPicker.svelte` (shows unpaired positions as candidates to pin) |
+| **Auto-paired** | `P1`, `P2`, etc. (group key) | `badge-paired` / `--algo-cyan-bg` | "Auto-paired P1 — detected automatically, may change on next poll." | (display only) |
+| **Orphan** | "◇︎" (WHITE DIAMOND U+25C7 + text-presentation selector) | `badge-orphan` / `--algo-amber-bg` | "Unpaired position — no GTT, no auto-detected pair." | (display only) |
 | **(none)** | "" (empty) | — | (not a position row: watchlist, mover, holding, TOTAL) | — |
 
 **Rendering details**:
@@ -1217,20 +1218,17 @@ Derivatives Legs grid; `PerformancePage` is not wired (own badge logic, delibera
   precedent.
 - Full derivation rules and the backend gap it corrects: see §4.4 `pair_group_key` above.
 
-**Per-account rows and symbol subtotals (2026-10-17, commit 8a59a17e)**:
+**Per-account rows (2026-10-17, commit 8a59a17e; symbol-subtotal rows REMOVED 2026-10-17,
+commit 2467151c)**:
 - **One row per (account, symbol)**: the MarketPulse Positions grid no longer merges a symbol held
   in several accounts into one cross-account row. `mergePositionRows()` (`pulseUnified.js`) keys
   each position row `symbol::account` (lot-split pieces append `::label`). This matches the
   Derivatives Legs grid and `PerformancePage`, which already key by account + tradingsymbol.
-- **Symbol-subtotal row**: `buildPositionsDisplayRows()` (`pulseUnified.js`, Section 10) inserts a
-  thin summary row directly above a symbol's account rows, but only when that symbol is held in
-  2+ distinct accounts. The row carries `_isSubtotal: true` and the `.mp-subtotal-row` class.
-  It shows combined qty, combined day P&L, and Exp P&L (looked up per symbol from `expPnlByKey`).
-  The row object carries only those values, so its other value columns render blank. A symbol
-  held in one account, including one split into lot pieces (which share an account), gets no
-  subtotal row.
-- **Display only**: the subtotal row never feeds TOTAL-row accumulation or account rollups.
-  Those keep summing the real per-account rows, so nothing is double-counted.
+- **Symbol-subtotal rows: removed.** Earlier, `buildPositionsDisplayRows()` (`pulseUnified.js`)
+  inserted a `_isSubtotal` / `.mp-subtotal-row` summary row above a symbol held in 2+ accounts.
+  Per operator ("the aggregate rows in positions should be removed"), that row is gone; the
+  Positions grid shows only real per-account rows. Do not reintroduce aggregate rows without a
+  new decision.
 - **CE/PE-aware auto-pairing**: the lot-waterfall grouping key is now
   `(account, root_symbol, option_type)` in both `_auto_pair_positions()` (`positions.py`) and
   `splitPairedLots()` (`lotPairSplit.js`). CE pairs only with CE and PE only with PE, so a short PE
@@ -1373,12 +1371,11 @@ clumped every account's orphans together at the end instead of each account's ow
 sorting to the end of that account's own cluster). PerformancePage's Positions grid (commit 
 2bd4b3dc) fixes the same bug by dropping a redundant earlier `pairGroupSort()` call that 
 corrupted the block-anchor computation — composition is now consistent across both pages. 
-Manual pins (`pin_group_key`) do NOT participate in sort order; they are display badges only. 
 Invariant: account is the PRIMARY sort segment (operator-specified), then pair group within 
 account, with that account's orphans last within its own cluster. Rationale: auto-pair groups 
 are ephemeral and can shift on poll cycles (lot-waterfall matching); sort adjacency helps 
-operators track which legs belong together. Manual pins persist independently and don't affect 
-row order.
+operators track which legs belong together. (Manual pins, which once also fed this sort, were
+removed 2026-10-17.)
 
 **Preserve order of** — ag-Grid's per-column sorts (Day P&L, P&L %, volume, etc.) apply BEFORE 
 regrouping; no re-sort happens inside groups. If the operator sorted by P&L descending, 
@@ -1885,7 +1882,6 @@ click coordinates. Keyboard-dismissible (Esc key) and auto-closes on click-outsi
 - **Add to Watchlist** — SymbolSearchInput popup to pick a list; deduped against positions/holdings
 - **Remove from Watchlist** — removes the row's watchlist-item link (not from positions/holdings)
 - **Detach from Group** — unlinks the symbol from its underlying group (sorts individually)
-- **Pair with…** (Oct 2026, positions grid only) — opens `PositionPinPicker.svelte` to manually pin this position with another open position. Shown only when `canPin` prop is true (position rows). If position already has a `pin_group_key`, label changes to **Unpin** and calls `DELETE /api/positions/pin/{id}`
 - **View Payoff** — derivatives-only; opens analytics overlay (Greeks + P&L curve)
 
 **Visibility gates**:

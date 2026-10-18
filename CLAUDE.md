@@ -524,45 +524,29 @@ Separately, `backend/api/algo/chase.py` now classifies order failures as recover
 
 **Alert-latch hydration query now bounded to today at SQL level (2026-09-28, amends existing entry)** — The "Alert evaluation and latching" entry's "Deploy-survival hydration" paragraph already documents hydration from today's `agent_events` rows. Amending: the database query bound is now enforced at the SQL level (`_v2_hydrate_latch()` in `backend/api/algo/agent_engine.py:2170`) instead of pulling full history and filtering in Python. On process restart, this bounds the hydration cost to one day's data instead of scanning the entire `agent_events` table, important for long-running production instances with years of historical events.
 
-**Position manual pairing and state badge system (2026-10-16, commit 09ec8c6f)** —
-New DB table `position_pairs` and two REST routes enable operator-persisted
-position linking, distinct from ephemeral lot-waterfall auto-pairing. `POST
-/api/positions/pin` links two open positions of the same account (validates: same
-account, both open, unordered-pair uniqueness via `symbol_a < symbol_b`,
-reactivates a matching soft-deleted row instead of duplicating). `DELETE
-/api/positions/pin/{pair_id:int}` soft-deletes the link (no hard-delete,
-preserves history). `PositionRow` gains `pin_group_key` (operator-set, formatted
-`f"PIN{id}"` by `_apply_pin_overlay()`, persisted) alongside the existing
-`pair_group_key` (auto-detected lot-waterfall, ephemeral, recomputed per
-request) — a position can carry both simultaneously, and they must NEVER be
-conflated: orthogonal lifetimes, never share a name or a sort key.
-`frontend/src/lib/data/positionStateBadge.js:positionStateBadge(row)` is the
-SSOT for badge rendering on both MarketPulse's Positions grid and the
-derivatives Legs grid; priority order GTT > pinned > auto-paired > orphan
-(orphan glyph deliberately not `○`/letter-O — see the function's own
-docstring). The derivatives Legs grid's own data pipeline
-(`frontend/src/lib/data/expiryPnl.js:buildPositionRowFromBroker()`) previously
-stripped `is_orphan`/`pair_group_key`/`has_gtt` via an explicit field
-whitelist before they ever reached the grid — fixed to pass all four fields
-(`has_gtt`/`pin_group_key`/`pair_group_key`/`is_orphan`) through; this was the
-actual root cause of the grid always showing a decorative orphan glyph.
-`pairGroupSort.js`'s restored pair-group adjacency sort keys on
-`pair_group_key` only (via `${account}|${pair_group_key}`) — manual pins do
-NOT participate in sort order. `SymbolContextMenu.svelte` gained a "Pair
-with…"/"Unpin" entry opening the new `PositionPinPicker.svelte`, which calls
-`unpinPosition()` via `rawPinId()` (`positionStateBadge.js`) to recover the
-bare numeric row id from the `"PIN{id}"` display string — the DELETE route
-takes the raw id, never the formatted display key; this mismatch was caught
-and fixed in self-audit before shipping. Invariant, explicit and deliberate
-(architecture council decision during planning, not an oversight): chase,
-bracket armature, and `template_attach.py` must NOT consult `pin_group_key`
-or `pair_group_key` for any execution decision yet — the two existing
-auto-pairing algorithms (`_auto_pair_positions` quantity-waterfall vs.
-`_classify_mcx_group` CE/PE-net, used for MCX expiry auto-close) disagree in
-principle and reconciling them is a separate, larger decision; the existing
-`/api/orders/pair` endpoint's order-level TP/template suppression (via
-`AlgoOrder.parent_order_id`) remains the only pairing signal any execution
-path reads today.
+**Position state badge system (2026-10-16, commit 09ec8c6f; manual pin feature REMOVED
+2026-10-17, commits d760f352 + 2467151c)** — The manual "Pair with…"/"Unpin" feature is gone
+per operator decision: `PositionPinPicker.svelte`, the `POST`/`DELETE /api/positions/pin`
+routes, `PositionRow.pin_group_key`, and `SymbolContextMenu.svelte`'s pair entry were removed.
+`_migrate_drop_position_pairs_table` (`backend/api/database.py`) drops the `position_pairs`
+table idempotently. Historical record only; do not reintroduce a manual pin without a new
+design decision. The auto-pair display system (`pair_group_key`, `is_orphan`,
+`_auto_pair_positions()`) is unaffected.
+
+`frontend/src/lib/data/positionStateBadge.js:positionStateBadge(row)` remains the SSOT for
+the St-column badge on both MarketPulse's Positions grid and the derivatives Legs grid.
+Priority order is GTT > auto-paired > orphan (three states; orphan glyph deliberately not
+`○`/letter-O — see the function's own docstring). The derivatives Legs grid's data pipeline
+(`frontend/src/lib/data/expiryPnl.js:buildPositionRowFromBroker()`) passes `has_gtt`,
+`pair_group_key`, and `is_orphan` through; it previously stripped them via an explicit field
+whitelist, which was the root cause of the grid always showing a decorative orphan glyph.
+`pairGroupSort.js` keys on `pair_group_key` only (via `${account}|${pair_group_key}`).
+Invariant, still in force: chase, bracket armature, and `template_attach.py` do not consult
+`pair_group_key` for any execution decision. The two auto-pairing algorithms
+(`_auto_pair_positions` quantity-waterfall vs. `_classify_mcx_group` CE/PE-net) disagree in
+principle, and reconciling them is a separate decision. `AlgoOrder.parent_order_id` (set by
+take-profit, template/wing attach, and chase; no longer settable from the UI) remains the only
+order-level pairing signal execution paths read.
 
 **Auto-pairing is CE/PE-aware, and the Positions grid is per-account (2026-10-17, commit
 8a59a17e, amends existing entry)** — The lot-waterfall grouping key in
@@ -575,11 +559,11 @@ a plain `endswith('CE')`, so equity tickers that happen to end in "CE" or "PE" (
 BAJFINANCE) are never misread as options. Futures and equity rows carry `option_type = None` and
 group as before. Grid side: MarketPulse's Positions grid now keys every row by `(account, symbol)`
 (`mergePositionRows()` in `frontend/src/lib/data/pulseUnified.js`), not only lot-split pieces, so
-a symbol held in two accounts shows one row per account. To keep the cross-account exposure read,
-`buildPositionsDisplayRows()` injects a symbol-subtotal row (`_isSubtotal`, `.mp-subtotal-row`)
-above any symbol held in 2+ accounts, showing combined qty, day P&L, and Exp P&L. The subtotal is
-display-only and never feeds TOTAL-row or account rollups. Spec:
-[PULSE_SPEC.md](docs/specs/PULSE_SPEC.md) §14 "Per-account rows and symbol subtotals".
+a symbol held in two accounts shows one row per account. The symbol-subtotal row that
+`buildPositionsDisplayRows()` injected above multi-account symbols (`_isSubtotal`,
+`.mp-subtotal-row`) was REMOVED 2026-10-17 (commit 2467151c, per operator: "the aggregate
+rows in positions should be removed"). Spec:
+[PULSE_SPEC.md](docs/specs/PULSE_SPEC.md) §14 "Per-account rows".
 
 **Underlying-block-order preservation in grid sort composition (2026-10-17, commits
 929a772c, 2bd4b3dc)** — MarketPulse's Positions grid and PerformancePage's Positions grid
