@@ -2138,6 +2138,17 @@
      approach destroyed all row DOM identity on every poll,
      killing text selection inside the log). -->
 {/if}
+{#if logTab !== 'news' && logTab !== 'order'}
+<!-- 2026-10-18 fix (operator: "in dashboard, I am seeing the area with
+     the text no system area yet. It is showing for news tab... should
+     not be there") — this whole block is the row-renderer for
+     terminal/agent/alerts/simulator/conn/system; 'news' and 'order' are
+     FULLY handled by the if/else-if chain above (NewsList / OrderCard),
+     but this div had no gate of its own, so it rendered UNCONDITIONALLY
+     after that chain closed — for 'news'/'order', none of ITS OWN
+     branches match either, so it fell through to the bare {:else}
+     (the "system" empty-state), appending "No system entries yet."
+     underneath the real News/Order content. -->
 <div class="log-panel log-rows {heightClass} {multiColumn && logTab !== 'order' ? 'lp-multicol' : ''}">
   {#if logTab === 'terminal'}
     {@html _terminalHtmlDerived}
@@ -2186,6 +2197,7 @@
     {/if}
   {/if}
 </div>
+{/if}
 </div><!-- /.lp-body-wrap -->
 
 {#if _chartModalSym}
