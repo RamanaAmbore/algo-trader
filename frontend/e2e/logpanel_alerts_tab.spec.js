@@ -224,7 +224,7 @@ test.describe('Tab-set consistency — every embedding site shows the full tab s
   // as optional here exactly like the rest of the e2e suite already does
   // (see activity-panel.spec.ts's "Ticks/Simulator tab not present"
   // skip pattern).
-  const EXPECTED_ALWAYS = ['Orders', 'Agents', 'Alerts', 'Terminal', 'System', 'Conn', 'News'];
+  const EXPECTED_ALWAYS = ['Orders', 'Agents', 'Alerts', 'System', 'Conn', 'Console', 'News'];
 
   /**
    * @param {import('@playwright/test').Locator} container

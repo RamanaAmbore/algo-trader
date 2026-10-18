@@ -42,8 +42,20 @@
    *   value: string,
    *   editTarget?: {rowKind: 'cycle'|'event'|'template'|'bracket', ref: string|number, label: string} | null,
    *   placeholder?: string,
+   *   onResult?: (entry: {status: '✓'|'✗', message: string}) => void,
    * }} */
-  let { value = $bindable(''), editTarget = $bindable(null), placeholder = undefined } = $props();
+  let {
+    value = $bindable(''), editTarget = $bindable(null), placeholder = undefined,
+    /** Optional callback — fired whenever a Console-tab CLI submit/save
+     *  completes (success or failure), so a host page can build a
+     *  lightweight command-history / audit trail (2026-10-18, LogPanel's
+     *  `cmdHistory` prop — see ActivityLogSurface.svelte's own doc) without
+     *  duplicating the submit logic below. Reuses `_cliSubmitStatus`
+     *  (already the single SSOT every submit path below writes to
+     *  alongside its own toast.success/toast.error call) rather than
+     *  instrumenting each call site individually. */
+    onResult = /** @type {(entry: {status: '✓'|'✗', message: string}) => void} */ (() => {}),
+  } = $props();
 
   // Sprint C (2026-10, Phase 2 "Automation redesign") — `editTarget` is
   // set by the Agents-tab row list's Edit action (`/automation/+page.svelte`)
@@ -147,7 +159,7 @@
     const resolved = await resolveConsoleOrder(result);
     if (!resolved.ok) {
       const _err = /** @type {any} */ (resolved).error;
-      _cliSubmitStatus = { ok: false, text: `Order failed: ${_err}` };
+      _setSubmitStatus(false, `Order failed: ${_err}`);
       toast.error(_short(_err));
       return;
     }
@@ -165,11 +177,11 @@
     const mode = getStore(executionMode) || 'paper';
     const r = await submitResolvedConsoleOrder(resolved, { mode });
     if (r.ok) {
-      _cliSubmitStatus = { ok: true, text: r.kind === 'basket' ? 'Basket order placed' : 'Order placed' };
+      _setSubmitStatus(true, r.kind === 'basket' ? 'Basket order placed' : 'Order placed');
       toast.success(r.kind === 'basket' ? 'Basket order placed' : 'Order placed');
       value = '';
     } else {
-      _cliSubmitStatus = { ok: false, text: `Order failed: ${/** @type {any} */ (r).error}` };
+      _setSubmitStatus(false, `Order failed: ${/** @type {any} */ (r).error}`);
       toast.error(`Order failed: ${_short(/** @type {any} */ (r).error)}`);
     }
   }
@@ -180,6 +192,22 @@
   // too fast to serve as a record of "did this actually save") — see
   // AgentCliEditor's own `submitStatus` prop doc.
   let _cliSubmitStatus = $state(/** @type {{ok: boolean, text: string} | null} */ (null));
+
+  /** Sets `_cliSubmitStatus` (the existing post-SUBMIT result line, shown
+   *  via AgentCliEditor's `submitStatus` prop) AND mirrors the same
+   *  outcome into `onResult` (2026-10-18 cmdHistory wiring) — called at
+   *  every real submit path below (order, cancel-all, agent/bracket/
+   *  token create+update, unsupported-submit), right alongside that
+   *  path's own toast.success/toast.error call. Deliberately a plain
+   *  synchronous helper called from event-handler code, NOT a `$effect`
+   *  watching `_cliSubmitStatus` — an effect-based approach re-triggers
+   *  itself (confirmed via a live repro: `onResult` mutating the parent's
+   *  `_cmdHistory` state fed back into a render pass that re-ran this
+   *  component's effects, looping). */
+  function _setSubmitStatus(/** @type {boolean} */ ok, /** @type {string} */ text) {
+    _cliSubmitStatus = { ok, text };
+    onResult({ status: ok ? '✓' : '✗', message: text });
+  }
 
   // Sprint C — the "Editing X — Save will update, not create" banner,
   // rendered via AgentCliEditor's `info` prop. Clears automatically once
@@ -208,21 +236,21 @@
       }
       const r = await updateConsoleAgent(/** @type {string} */ (editTarget.ref), result.agent, value);
       if (r.ok) {
-        _cliSubmitStatus = { ok: true, text: `Agent '${r.slug}' updated` };
+        _setSubmitStatus(true, `Agent '${r.slug}' updated`);
         toast.success(`Agent updated: ${r.slug}`);
         editTarget = null; value = '';
       } else {
-        _cliSubmitStatus = { ok: false, text: `Update failed: ${r.error}` };
+        _setSubmitStatus(false, `Update failed: ${r.error}`);
         toast.error(`Agent update failed: ${_short(r.error)}`);
       }
       return;
     }
     const r = await submitConsoleAgent(result.agent, value);
     if (r.ok) {
-      _cliSubmitStatus = { ok: true, text: `Agent '${r.slug}' created` };
+      _setSubmitStatus(true, `Agent '${r.slug}' created`);
       toast.success(`Agent created: ${r.slug}`); value = '';
     } else {
-      _cliSubmitStatus = { ok: false, text: `Create failed: ${r.error}` };
+      _setSubmitStatus(false, `Create failed: ${r.error}`);
       toast.error(`Agent failed: ${_short(r.error)}`);
     }
   }
@@ -235,21 +263,21 @@
       }
       const r = await updateConsoleBracket(/** @type {number} */ (editTarget.ref), result.template);
       if (r.ok) {
-        _cliSubmitStatus = { ok: true, text: `Bracket '${result.template?.name || ''}' updated` };
+        _setSubmitStatus(true, `Bracket '${result.template?.name || ''}' updated`);
         toast.success(`Bracket updated: ${result.template?.name || ''}`);
         editTarget = null; value = '';
       } else {
-        _cliSubmitStatus = { ok: false, text: `Update failed: ${r.error}` };
+        _setSubmitStatus(false, `Update failed: ${r.error}`);
         toast.error(`Bracket update failed: ${_short(r.error)}`);
       }
       return;
     }
     const r = await submitConsoleBracket(result.template);
     if (r.ok) {
-      _cliSubmitStatus = { ok: true, text: `Bracket '${result.template?.name || ''}' created` };
+      _setSubmitStatus(true, `Bracket '${result.template?.name || ''}' created`);
       toast.success(`Bracket saved: ${result.template?.name || ''}`); value = '';
     } else {
-      _cliSubmitStatus = { ok: false, text: `Create failed: ${r.error}` };
+      _setSubmitStatus(false, `Create failed: ${r.error}`);
       toast.error(`Bracket failed: ${_short(r.error)}`);
     }
   }
@@ -262,21 +290,21 @@
       }
       const r = await updateConsoleToken(/** @type {string} */ (editTarget.ref), result.fragment, value);
       if (r.ok) {
-        _cliSubmitStatus = { ok: true, text: `Token '${result.fragment?.name || ''}' updated` };
+        _setSubmitStatus(true, `Token '${result.fragment?.name || ''}' updated`);
         toast.success(`Token updated: ${result.fragment?.name || ''}`);
         editTarget = null; value = '';
       } else {
-        _cliSubmitStatus = { ok: false, text: `Update failed: ${r.error}` };
+        _setSubmitStatus(false, `Update failed: ${r.error}`);
         toast.error(`Token update failed: ${_short(r.error)}`);
       }
       return;
     }
     const r = await submitConsoleToken(result.fragment, value);
     if (r.ok) {
-      _cliSubmitStatus = { ok: true, text: `Token '${result.fragment?.name || ''}' created` };
+      _setSubmitStatus(true, `Token '${result.fragment?.name || ''}' created`);
       toast.success(`Token created: ${result.fragment?.name || ''}`); value = '';
     } else {
-      _cliSubmitStatus = { ok: false, text: `Create failed: ${r.error}` };
+      _setSubmitStatus(false, `Create failed: ${r.error}`);
       toast.error(`Token failed: ${_short(r.error)}`);
     }
   }
@@ -307,12 +335,12 @@
       const errCount = r.response?.errors ?? 0;
       const text = `Cancel requested — ${cancelled} order${cancelled === 1 ? '' : 's'}`
         + (errCount ? `, ${errCount} error${errCount === 1 ? '' : 's'}` : '');
-      _cliSubmitStatus = { ok: errCount === 0, text };
+      _setSubmitStatus(errCount === 0, text);
       if (errCount === 0) toast.success('Cancel requested'); else toast.error(_short(text));
       value = '';
     } else {
       const _err = /** @type {any} */ (r).error;
-      _cliSubmitStatus = { ok: false, text: `Cancel failed: ${_err}` };
+      _setSubmitStatus(false, `Cancel failed: ${_err}`);
       toast.error(`Cancel failed: ${_short(_err)}`);
     }
   }
@@ -355,7 +383,7 @@
   function _notifyUnsupported() {
     if (!value || !value.trim()) return;
     if (!_trulyUnsupported) return; // the real compiler disagrees — never show a false error
-    _cliSubmitStatus = { ok: false, text: 'Unsupported syntax' };
+    _setSubmitStatus(false, 'Unsupported syntax');
     toast.error('Unsupported syntax');
   }
 

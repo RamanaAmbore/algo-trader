@@ -64,6 +64,18 @@
   /** @type {{rowKind: 'cycle'|'event'|'template'|'bracket', ref: string|number, label: string} | null} */
   let _consoleEditTarget = $state(null);
 
+  /** Command-history audit trail for LogPanel's Console tab (2026-10-18
+   *  rename + wiring — see CLAUDE.md "Rename Terminal tab to Console").
+   *  Populated from ConsoleTab's own `onResult` callback, which fires on
+   *  every real CLI compile/save/submit outcome (order, cancel-all,
+   *  agent/bracket/token create+update) — the SAME outcomes that already
+   *  drive ConsoleTab's internal toast.success/toast.error calls. Capped
+   *  to the last 200 entries so a long session doesn't grow unbounded. */
+  let _cmdHistory = $state(/** @type {{status: '✓'|'✗', message: string, time: string}[]} */ ([]));
+  function _onConsoleResult(/** @type {{status: '✓'|'✗', message: string}} */ entry) {
+    _cmdHistory = [..._cmdHistory, { ...entry, time: new Date().toISOString() }].slice(-200);
+  }
+
   // Statement-kind hint selector (relocated from ConsoleTab.svelte, 2026-10
   // "remove Workspace header" pass) — now a dropdown sharing the Console/
   // Agents tab row instead of a separate pills row inside ConsoleTab.
@@ -736,7 +748,7 @@
   </CardHeader>
   <div class="aw-view-body">
     {#if activeTab === 'console'}
-      <ConsoleTab bind:value={_consoleCliText} bind:editTarget={_consoleEditTarget} placeholder={_consolePlaceholder} />
+      <ConsoleTab bind:value={_consoleCliText} bind:editTarget={_consoleEditTarget} placeholder={_consolePlaceholder} onResult={_onConsoleResult} />
     {:else}
 
     <StaleBanner {error} hasData={agents.length > 0} label="Agents" />
@@ -1584,6 +1596,7 @@
   simScope={simActive}
   multiColumn={true}
   hideInlineAccountFilter={false}
-  tabs={['order','agent','alerts','terminal','simulator','system','conn','news']}
+  tabs={['order','agent','alerts','system','conn','console','simulator','news']}
   onTabChange={(id) => { logTab = id; }}
+  cmdHistory={_cmdHistory}
 />

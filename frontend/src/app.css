@@ -357,15 +357,17 @@
   --grid-header-letter-spacing: 0.06em;
   /* Grid height SSOT (2026-10, operator: "I like derivatives legs grids
      as the standard" — unified every grid family, real ag-Grid AND
-     hand-rolled, onto ONE pair of height tokens instead of each family
-     carrying its own number (ag-Grid was 28/30, Legs/Exp-close was
-     ~26/16, .algo-table was 24/28). Legs' own header (15.6px measured)
-     was too cramped on its own merits — grown to 20px here, still far
-     more compact than the old 30px ag-Grid header. Mobile gets its own
-     larger pair below (720px breakpoint, matching algoGridUtils.js's
-     own `_isMobile` JS threshold so CSS and JS never disagree about
-     which bucket a given viewport falls into). */
-  --grid-header-height:         20px;
+     hand-rolled, onto ONE height token instead of each family carrying
+     its own number (ag-Grid was 28/30, Legs/Exp-close was ~26/16,
+     .algo-table was 24/28). 2026-10-18 correction: row and header were
+     briefly two separate tokens (`--grid-row-height` / a dropped
+     `--grid-header-height`) that drifted out of sync by accident, not
+     design — collapsed onto this ONE token so row and header height can
+     never again diverge. Every former `--grid-header-height` consumer
+     now reads this var directly. Mobile gets its own larger value below
+     (720px breakpoint, matching algoGridUtils.js's own `_isMobile` JS
+     threshold so CSS and JS never disagree about which bucket a given
+     viewport falls into). */
   --grid-row-height:            26px;
 }
 
@@ -379,12 +381,11 @@
 /* Grid height SSOT — mobile bump. 720px matches algoGridUtils.js's
    `_isMobile` (window.innerWidth <= 720) so the CSS-var-driven hand-
    rolled grids and the JS-driven ag-Grid rowHeight option switch at
-   the same viewport width. Row grows more than header (touch target
-   for tapping/scrolling rows matters more than tapping a header). */
+   the same viewport width. Single token — header and row always move
+   together (2026-10-18 correction; see the :root comment above). */
 @media (max-width: 720px) {
   :root {
-    --grid-header-height: 24px;
-    --grid-row-height:    34px;
+    --grid-row-height: 34px;
   }
 }
 
@@ -746,8 +747,13 @@
      font-size override below must move in lockstep — it takes precedence
      over this var at the cell level. */
   --ag-font-size: 0.6875rem;
+  /* Row/header kept numerically equal (2026-10-18 correction — these two
+     literals used to be 22/28, a static mismatch) as the pre-JS default;
+     PerformancePage.svelte's makeGrid() overrides BOTH vars inline at
+     runtime (22/32 desktop/mobile) to the same value, so they never
+     diverge regardless of breakpoint. */
   --ag-row-height: 22px;
-  --ag-header-height: 28px;
+  --ag-header-height: 22px;
   /* Hide the column-resize handle (.ag-header-cell-resize:after).
      Renders as a visible champagne tick at each column boundary on
      the navy header — operator flagged it as noise. */
@@ -1520,7 +1526,7 @@
   --ag-font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   --ag-font-size: 0.72rem;
   --ag-row-height: var(--grid-row-height);
-  --ag-header-height: var(--grid-header-height);
+  --ag-header-height: var(--grid-row-height);
   --ag-wrapper-border-radius: 4px;
   --ag-input-background-color: #152033;
   --ag-input-foreground-color: #e2e8f0;
@@ -1680,15 +1686,18 @@
 /* Canonical "dense grid" row/padding values. 2026-09 consistency-pass
    audit originally kept `.algo-table`'s 24px body row and ag-theme-
    algo's 28px as "genuinely two different numbers, not worth a shared
-   token." 2026-10: unified onto the single `--grid-row-height`/
-   `--grid-header-height` SSOT (app.css `:root`, driven by the
-   Derivatives Legs/Exp-close table standard) — every grid family now
-   sizes off the same two tokens, including their mobile bump at the
-   720px breakpoint. ag-Grid's `--ag-row-height` is still ALSO set
-   per-instance at runtime via `syncGridRowHeightVar()`
+   token." 2026-10: unified onto the single `--grid-row-height` SSOT
+   (app.css `:root`, driven by the Derivatives Legs/Exp-close table
+   standard) — every grid family now sizes off the same token, including
+   its mobile bump at the 720px breakpoint. 2026-10-18 correction: header
+   height used to be a second, separately-set token
+   (`--grid-header-height`) that could drift out of sync with the row
+   token by accident — collapsed to ONE token so header and row can never
+   diverge again. ag-Grid's `--ag-row-height`/`--ag-header-height` are
+   still ALSO set per-instance at runtime via `syncGridRowHeightVar()`
    (`$lib/data/algoGridUtils.js`) — that JS value must stay numerically
-   in sync with these CSS vars (it supplies ag-Grid's internal
-   rowHeight option, which CSS alone can't drive). */
+   in sync with this CSS var (it supplies ag-Grid's internal rowHeight
+   option, which CSS alone can't drive). */
 .algo-table {
   width: 100%;
   border-collapse: collapse;
@@ -1701,7 +1710,7 @@
   font-weight: 700;
   color: var(--text-muted);
   padding: 0 4px;
-  height: var(--grid-header-height);
+  height: var(--grid-row-height);
   background: rgba(15,23,42,0.30);
   text-align: left;
   white-space: nowrap;

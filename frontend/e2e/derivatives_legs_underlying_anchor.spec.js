@@ -215,6 +215,22 @@ test.describe('Derivatives Legs grid — underlying-anchor row (sync with Positi
     expect(parse(rowBg)).toEqual(parse(rootVar));
   });
 
+  test('the anchor row\'s rendered height equals a real leg row\'s height (2026-10-18, item 3 fix — anchor was taller before min-height parity)', async ({ page }) => {
+    await loginAsAdmin(page);
+    await _mockEndpoints(page);
+    await page.goto(DERIV_URL, { waitUntil: 'domcontentloaded' });
+
+    const anchor = page.locator('.cand-body-rows > .cand-row-underlying-anchor');
+    const realRow = page.locator('.cand-body-rows > .cand-row:not(.cand-row-underlying-anchor):not(.cand-row-total)').first();
+    await expect(anchor).toBeVisible({ timeout: 15_000 });
+    await expect(realRow).toBeVisible({ timeout: 15_000 });
+
+    const [anchorBox, realBox] = await Promise.all([anchor.boundingBox(), realRow.boundingBox()]);
+    expect(anchorBox).not.toBeNull();
+    expect(realBox).not.toBeNull();
+    expect(Math.abs(anchorBox.height - realBox.height)).toBeLessThanOrEqual(1);
+  });
+
   test('the right-edge bar mechanism is wired to price direction, not a flat color (source check — live direction depends on real market data)', async () => {
     const { readFileSync } = await import('fs');
     const path = await import('path');

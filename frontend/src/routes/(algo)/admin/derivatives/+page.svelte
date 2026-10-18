@@ -7248,10 +7248,11 @@
        standard single-line vertical-centering trick (kept instead of
        flex so the existing `.num { text-align: right }` rule below
        keeps working — flex items don't honor text-align the same way
-       block/inline content does). Pins to the same --grid-header-height
-       every other grid family now shares. */
-    height: var(--grid-header-height);
-    line-height: var(--grid-header-height);
+       block/inline content does). Pins to the same --grid-row-height
+       every other grid family now shares (2026-10-18: collapsed from a
+       separate --grid-header-height token onto this single one). */
+    height: var(--grid-row-height);
+    line-height: var(--grid-row-height);
     box-sizing: border-box;
     background: var(--grid-header-bg);
     border-bottom: 1px solid var(--algo-amber-border-soft);
@@ -7701,9 +7702,18 @@
     background: var(--c-underlying-bg);
     border-bottom: 1px solid var(--sep-color);
     cursor: default;
+    /* Height parity with real leg rows (2026-10-18) — matches
+       CandidateLegRow.svelte's `.cand-row` height SSOT so the anchor
+       row isn't taller than every real leg row beneath it. */
+    min-height: var(--grid-row-height);
+    box-sizing: border-box;
+    align-items: stretch;
   }
   .cand-row-underlying-anchor > span {
-    padding: 0.32rem 0.45rem;
+    padding-top: 0.2rem;
+    padding-bottom: 0.2rem;
+    padding-left: 4px;
+    padding-right: 4px;
     font-size: var(--fs-sm);
     font-family: var(--font-numeric);
     font-variant-numeric: tabular-nums;
@@ -7844,9 +7854,11 @@
        reference's STARTING point, but was too cramped on its own
        merits. min-height (not height — padding can still push taller
        if a wrapped title ever needs it) pins it to the same
-       --grid-header-height every other grid family now shares,
-       instead of being whatever its padding happens to compute to. */
-    min-height: var(--grid-header-height);
+       --grid-row-height every other grid family now shares (2026-10-18:
+       collapsed from a separate --grid-header-height token onto this
+       single one), instead of being whatever its padding happens to
+       compute to. */
+    min-height: var(--grid-row-height);
     box-sizing: border-box;
     /* Sticky header — operator scrolls data rows under it instead of
        the whole grid sliding up. Pinned to top of .cand-scroll (the

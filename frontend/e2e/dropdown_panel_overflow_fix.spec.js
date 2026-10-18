@@ -171,7 +171,7 @@ test.describe('Dropdown panel overflow fix — fixed positioning escapes CardHea
     await loginAsAdmin(page);
     await page.goto(`${BASE}/console`, { waitUntil: 'domcontentloaded' });
 
-    // Default tab is 'terminal' (no account filter there) — switch to
+    // Default tab is 'console' (no account filter there) — switch to
     // Orders, which is one of the four tabs `_showAccountFilter` allows.
     const ordersTab = page.locator('[role="tab"]:has-text("Orders")').first();
     await expect(ordersTab, 'Orders tab visible').toBeVisible({ timeout: 15_000 });

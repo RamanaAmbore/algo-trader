@@ -641,14 +641,24 @@ test.describe('Static source check: app.css has grid-related CSS variables', () 
     expect(extractCssVar(css, 'grid-header-letter-spacing')).not.toBeNull();
   });
 
-  test('--grid-header-height is defined', () => {
+  test('--grid-header-height is retired (2026-10-18, collapsed onto --grid-row-height)', () => {
+    // Superseded — operator: header height drifted out of sync with row
+    // height because they were two independently-set tokens. Collapsed
+    // onto ONE token (--grid-row-height) so they can never diverge again.
+    // Same pattern as the --grid-header-gap retirement test above.
     const value = extractCssVar(css, 'grid-header-height');
-    expect(value).not.toBeNull();
+    expect(value).toBeNull();
   });
 
   test('ag-Grid theme references the new grid-header custom properties', () => {
     // Verify that .ag-theme-algo .ag-header or --ag-header-height uses the new variables
-    expect(css).toMatch(/var\(--grid-header-(bg|font-size|font-weight|letter-spacing|height)\)/);
+    expect(css).toMatch(/var\(--grid-header-(bg|font-size|font-weight|letter-spacing)\)/);
+  });
+
+  test('ag-theme-algo header height resolves to the shared --grid-row-height token', () => {
+    // 2026-10-18: --ag-header-height must map to --grid-row-height, the
+    // same single SSOT token --ag-row-height already maps to.
+    expect(css).toMatch(/--ag-header-height:\s*var\(--grid-row-height\)/);
   });
 
   test('public-site hairline offset variable --b8-margin-offset exists (Part D, reduction pending)', () => {

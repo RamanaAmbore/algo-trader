@@ -1,147 +1,152 @@
-# Plan: Per-account Positions rows + CE/PE-aware pairing
+# Plan: LogPanel consistency batch — Console rename+wiring, row/header height audit, Agents-tab scope, oversized detail payloads
 
-## Context
+## Task
+Six linked fixes, all investigated and root-caused directly (read-only) this session:
 
-Two related operator asks:
+1. **Agents tab must not show manually-placed orders.** `record_manual_event()`
+   (`backend/api/algo/agent_engine.py:3701`, called from `orders_place.py` lines
+   1885/2014/2270) writes a real `agent_events` row attributed to the built-in
+   `MANUAL_AGENT` (slug=`"manual"`) sentinel for every manually-placed order. This
+   sentinel exists purely so order-origin labeling elsewhere (alerts, fill
+   notifications — "any order placed manually should show manual") has an
+   `agent_id` to key off. But it also means every manual order shows up as if an
+   automation agent fired, polluting the Agents tab. Fix: exclude rows whose
+   resolved agent slug is `"manual"` from the Agents-tab listing — at the backend
+   query level (`backend/api/routes/agents.py`, wherever `AgentEventInfo` rows are
+   listed) via a join/filter on `Agent.slug != 'manual'`, not a frontend filter
+   (frontend has no slug on `AgentEventInfo`, only `agent_id: int`). Do NOT touch
+   `record_manual_event()` itself or remove the sentinel — other consumers
+   (alert-origin labeling) still need it.
 
-**A.** MarketPulse's Positions grid currently clubs the same symbol held across
-MULTIPLE accounts into ONE aggregated row (`mergePositionRows`,
-`pulseUnified.js`). Operator wants it to "mimic legs" — repeat per account,
-like the Derivatives Legs grid and `PerformancePage.svelte` already do
-(confirmed: both already key by `account|tradingsymbol`, no aggregation).
+2. **Oversized/unreadable `detail` payload on some Agents/Alerts rows.** A
+   margin/funds-threshold agent's `EvalResult.detail` (`agent_engine.py:741`,
+   `_v2_build_evalresult`) stores the FULL `matches`/`latched_matches` lists —
+   each match dict can carry a nested `row`/`_raw` broker payload per account
+   (fno_margin_details, commodity_margin_details, etc.). `chipsFromJson()`
+   (`frontend/src/lib/logChips.js`) already drops nested objects and
+   `.join(',')`s arrays, but (a) an array of objects currently renders as
+   useless `[object Object],[object Object]...` junk instead of a count, and
+   (b) if `JSON.parse` fails for any reason the fallback dumps the ENTIRE raw
+   string verbatim with no length cap — this is what produced the screenshot's
+   multi-line wall of raw nested JSON. `matches`/`latched_matches` must stay in
+   the backend `detail` field unchanged (hydration in `_hydrate_latch_from_rows`
+   reads them) — fix is display-only, frontend-side:
+   - `chipsHtml()`: when a value is an array whose elements are objects, render
+     `"N items"` instead of `.join(',')`.
+   - `chipsFromJson()`: cap the raw-string fallback (parse-failure path) to a
+     fixed length (e.g. 200 chars) with a trailing `…`, so a malformed/oversized
+     payload can never flood a row regardless of root cause.
 
-**B.** Pairing identification (`_auto_pair_positions`, `positions.py`, mirrored
-in `lotPairSplit.js`) groups positions by `(account, root_symbol)` — stripping
-CE/PE entirely — then waterfall-matches purely by opposite sign. Confirmed bug:
-this can match an unrelated short PE against a long CE of the same
-root/account/quantity and call it a "pair". Operator-confirmed rule (verbatim):
-*"short pe and long pe, short ce and long ce are pairs"* — i.e. pairing must
-also require the SAME option type; a CE leg must never pair with a PE leg.
-Explicitly **not** in scope: same-side CE+PE (a short straddle/strangle, e.g.
-short CE + short PE) is a different, legitimate strategy shape that today's
-sign-only waterfall never caught and this fix does not add — out of scope,
-raise separately if wanted.
+3. **Legs underlying-anchor row is taller than real leg rows.**
+   `.cand-row` (`CandidateLegRow.svelte:616`) pins to `min-height:
+   var(--grid-row-height)` (the row-height SSOT token) with `align-items:
+   stretch` and 0.2rem/4px span padding. `.cand-row-underlying-anchor`
+   (`+page.svelte:7697`) has no `min-height` at all and uses larger 0.32rem/
+   0.45rem span padding — taller than every real row. Fix: add
+   `min-height: var(--grid-row-height); box-sizing: border-box; align-items:
+   stretch;` to `.cand-row-underlying-anchor` and change its `> span` padding
+   to match `.cand-row > span` (`0.2rem` top/bottom, `4px` left/right).
 
-**Why A and B are linked**: `mergePositionRows` nulls `is_orphan`/
-`pair_group_key`/`pin_group_key`/`has_gtt` the instant 2+ accounts merge into
-one row (ambiguity guard) — so today, Part B's badges (including the fix
-below) are invisible in MarketPulse for any multi-account symbol holder. Part
-A makes them visible there for the first time.
+4. **ag-Grid header height must equal row height, everywhere.** Confirmed via
+   grep: `headerHeight` is never set on ANY ag-Grid instance in the codebase.
+   `rowHeight` IS explicitly set in two places: `mkBaseGridOpts()`
+   (`frontend/src/lib/data/algoGridUtils.js:132`, dark-theme SSOT used by all 4
+   MarketPulse grid instances: `26` desktop / `34` mobile) and
+   `PerformancePage.svelte:910` (its own deliberately-independent calc: `26`/`34`
+   dark, `22`/`32` light — comment explains this divergence is intentional, do
+   not collapse it into `mkBaseGridOpts`). Fix: add `headerHeight` equal to the
+   same computed `rowHeight` value at both sites — one line in `mkBaseGridOpts`
+   (`headerHeight: _isMobile ? 34 : 26`), one line in PerformancePage's existing
+   IIFE (return the same `rowH` for headerHeight too, next to where it already
+   sets `--ag-row-height`).
 
-6-agent council ran (2 APPROVE, 4 CONCERN, 0 BLOCK → proceed with changes
-below folded in):
-- **Risk (CONCERN, critical)**: Part A breaks the Positions TOTAL row's Exp
-  P&L — `MarketPulse.svelte`'s `_accumTotalsRow` sums `_filteredExpPnlByKey[sym]`
-  (keyed by bare symbol, already cross-account) ONCE PER ROW. Today safe
-  because there's one row per symbol; after Part A, N account-rows for one
-  symbol would each add the full cross-account value, inflating the TOTAL by
-  N×. Zero existing test coverage on this path. **Must fix as part of Part A.**
-  Part B confirmed fully display-only/P&L-safe (only mutates `is_orphan`/
-  `pair_group_key`/`paired_qty`/`orphan_qty`; `build_summary_from_rows`/
-  `build_symbol_summary_from_rows` run on pre-merge rows, unaffected).
-- **UX (CONCERN)**: losing the "total exposure to SYM across all my accounts
-  at a glance" read is a real regression, softened by `sortUnifiedRows`
-  already grouping same-symbol rows adjacent. Recommends surfacing the
-  backend's existing-but-unused `PositionsResponse.symbol_summary` as a
-  subtotal. Also: badges appearing/reclassifying post-deploy isn't new risk,
-  just newly visible — worth noting, not alarming (no code requirement).
-- **Devil (CONCERN)**: confirm `option_type` is derived via tradingsymbol
-  suffix regex (same mechanism as `_root_symbol`), not an instruments-cache
-  field that can be `None` for an expired/unparseable contract (two `None`s
-  would silently re-collide). Frontend's `decomposeSymbol(sym).optType` is
-  already regex-derived off the raw string, not a cache lookup — safe as-is.
-  Flag explicitly: existing `mergePositionRows` tests assert "two accounts,
-  same symbol → one merged row" — these need REWRITING, not just extending.
-- **Architect (APPROVE)**: both changes stay in their respective layers, no
-  new coupling. Suggests a parity test between `_auto_pair_positions` (Python)
-  and `splitPairedLots` (JS) since this is the second time they've drifted.
-- **Perf (APPROVE)**: row-count multiplication is small at realistic
-  account-count scale, poll-driven not tick-driven, negligible.
-- **Research (CONCERN, informational)**: Zerodha Kite/Console explicitly does
-  NOT aggregate positions cross-account either — direct precedent for Part A.
-  CE-with-CE/PE-with-PE-only is the standard options-taxonomy rule for
-  vertical/covered pairing (confirms Part B's direction). Confirms straddles/
-  strangles are a different, unaddressed strategy shape (matches our scope note).
+5. **Legs anchor row's "X" badge is hard to read — must match Positions'
+   anchor "X" exactly.** Code inspection shows `positionStateBadge()` already
+   returns the identical `color: var(--algo-muted)` / `bg: var(--algo-muted-bg)`
+   pair for both surfaces, applied identically via `style:color`/`style:background`
+   inline — the markup is not wrong. The visibility gap is almost certainly
+   `--algo-muted-bg`'s low alpha (`rgba(126,151,184,0.14)`) compositing with the
+   anchor row's own `--c-underlying-bg` purple tint (`rgba(192,132,252,0.10)`)
+   underneath, washing out contrast in a way that doesn't happen on Positions'
+   plain dark row background. Fix: bump the badge background specifically for
+   the anchor state to a stronger token (`--algo-muted-bg-strong`,
+   `rgba(126,151,184,0.22)`, already defined in `app.css`) — scoped to BOTH
+   Positions and Legs anchor rows via `positionStateBadge.js`'s `anchor` branch
+   (single source, so both stay in sync by construction). Verify in a real
+   browser after the change (not just computed-style assertion) since this is a
+   perceptual contrast fix.
 
-## Changes
+6. **Rename "Terminal" tab → "Console"; make it a real audit trail of CLI
+   input/output; re-sequence tabs.** `frontend/src/routes/(algo)/automation/+page.svelte`
+   already has its OWN page-level "Console" tab (CLI grammar text editor for
+   WHEN/GIVEN/ALERT/DO statements) — this is the real CLI surface. LogPanel's
+   `cmdHistory` prop (`{status, message, fields, time}[]`) already exists and
+   is specifically designed to feed the Terminal tab's `_terminalCmdLines()`,
+   but confirmed via grep: NOTHING in the whole frontend ever populates it —
+   every caller passes `[]`. The backend CLI-interpret endpoint
+   (`api.js:interpretAgent` → `POST /agents/interpret`) is also confirmed
+   dead — zero frontend callers. So today's "Terminal" tab is just Orders+Agents
+   data reformatted, with no unique content. Fix:
+   - Rename the tab everywhere: `LogPanel.svelte` tabs array/labels
+     (`'terminal'` → `'console'`, `'Terminal'` → `'Console'`), `_terminalCmdLines`/
+     `_terminalOrderLines`/`_terminalAgentLines` helper names stay (internal,
+     not user-facing) or rename for clarity at the implementer's discretion,
+     any CSS class/test selector referencing `terminal`.
+   - Wire real input: add a `_cmdHistory` `$state` array at the
+     `automation/+page.svelte` page level, push one entry (✓/✗, message,
+     timestamp) whenever the operator's Console-tab CLI text is compiled/
+     saved/tested (the existing `_editRow`/compile-decompile success/failure
+     paths around line 320-370 — reuse those exact outcomes, don't invent a
+     new signal), and pass `cmdHistory={_cmdHistory}` down through
+     `ActivityLogSurface` into `LogPanel`.
+   - Re-sequence LogPanel's tabs from `['order','agent','alerts','terminal',
+     'simulator','system','conn','news']` to
+     `['order','agent','alerts','system','conn','console','simulator','news']`
+     — groups "what the trading system did" (order/agent/alerts), then "infra
+     health" (system/conn), then "what the operator did" (console), then
+     simulator (a distinct non-live mode), with news last (passive reference).
 
-### Part B — CE/PE-aware pairing (do first; backend is low-risk, pure function)
+## Agents
+- frontend: Implement items 2 (chipsHtml/chipsFromJson caps), 3 (anchor row
+  height), 4 (headerHeight), 5 (anchor badge contrast token), and 6 (tab
+  rename + re-sequence + cmdHistory wiring). Self-contained brief: read this
+  plan's items 2–6 above for exact file/line targets; each is independently
+  testable.
+- backend: Implement item 1 (Agents-tab query excludes `agent.slug == 'manual'`
+  rows) — read this plan's item 1 above for exact file/function targets.
+- doc: skip (no spec/guide changes needed — these are display/UX fixes, not
+  behavioral contract changes)
+- backend-test: Add/extend a pytest covering the Agents-tab listing query
+  excludes manual-origin events (new test or extend existing agents-route
+  test file).
+- playwright: Add/extend specs: (a) anchor row height equals real row height
+  in Legs grid, (b) ag-Grid headerHeight equals rowHeight on a MarketPulse
+  grid and on PerformancePage, (c) Console tab renders where Terminal used to
+  (renamed), tab order matches the new sequence, (d) a compiled CLI statement
+  in automation's Console tab produces a new Console-tab (LogPanel) entry,
+  (e) chipsFromJson truncates an oversized/malformed detail string and never
+  dumps raw multi-KB JSON into a row.
 
-- `backend/api/routes/positions.py`: add `_option_type(tradingsymbol: str) -> str | None`
-  next to `_root_symbol()` — same suffix-regex mechanism (`CE$`/`PE$`), not an
-  instruments-cache lookup. Change `_auto_pair_positions()`'s group key from
-  `(r.account, _root_symbol(r.tradingsymbol))` to
-  `(r.account, _root_symbol(r.tradingsymbol), _option_type(r.tradingsymbol))`.
-  Futures/equity (`_option_type` → `None`) keep one bucket per root, unaffected.
-- `frontend/src/lib/data/lotPairSplit.js`: mirror identically — group key becomes
-  `${account}|${root}|${optType}` using `decomposeSymbol(sym).optType` (already
-  imported/available, no new parsing).
-- `backend/tests/test_positions_auto_pair.py` (or equivalent): extend with a
-  short-PE + long-CE-same-qty-same-root case that must NOT pair (was a false
-  pair before the fix), alongside existing short-PE+long-PE / short-CE+long-CE
-  cases that must still pair.
-- New parity test (architect's suggestion): one fixture run through both
-  `_auto_pair_positions()` and `splitPairedLots()`, asserting identical
-  pair-group labels — catches future drift between the two implementations.
+## Tests
+- pytest: yes
+- svelte-check: yes
+- playwright: yes
 
-### Part A — Positions grid per-account rows (do second; depends on nothing above)
-
-- `frontend/src/lib/data/pulseUnified.js`, `mergePositionRows()`: drop the
-  `_isLotSplit`-only conditional; `lookupKey` is now always
-  `` `${sym}::${String(r.account ?? '')}` `` (lot-split pieces append their
-  existing `::${lot_piece_label}` suffix on top). Remove the now-unreachable
-  `row.accounts.size > 1` branch (lines ~473-483) — every row is single-account
-  by construction, so only the `if (row.accounts.size === 1)` body survives;
-  simplify to an unconditional assignment of `is_orphan`/`pair_group_key`/
-  `pin_group_key`/`has_gtt` straight from `r`.
-- **Required fix, same commit** — `MarketPulse.svelte`'s `_accumTotalsRow`
-  (Exp P&L TOTAL accumulation): currently adds `_filteredExpPnlByKey[sym]`
-  once per row in `positionsRows`. Re-key `_filteredExpPnlByKey` by
-  `${account}|${symbol}` (or track a `Set` of already-counted bare symbols)
-  so splitting one symbol into N account-rows does not multiply its
-  contribution to the TOTAL row. New Vitest/Playwright test: a symbol held in
-  two accounts, assert TOTAL Exp P&L equals the un-split sum (same pattern as
-  the existing `position_lot_pair_split.spec.js` test (b)).
-- **Subtotal mitigation (UX + research convergent ask)** — wire the backend's
-  already-computed, currently-unconsumed `PositionsResponse.symbol_summary`
-  (`_build_polars_symbol_summary`, `positions.py`) into MarketPulse as a thin
-  group-header/subtotal row rendered above each symbol's split account-rows
-  (only shown when a symbol has 2+ contributing rows) — preserves the "total
-  exposure to this symbol across all my accounts" at-a-glance read that the
-  old aggregated row used to provide for free. Reuses an existing backend
-  field; no backend change needed.
-- `pulseGridSetup.js:pulseRowId()` — confirmed needs NO change (already
-  prefers `data.key`, which `mergePositionRows` sets from `lookupKey`).
-- **Rewrite, not extend**: existing Vitest tests for `mergePositionRows` that
-  assert "two accounts, same symbol → one merged/summed row" must be rewritten
-  to assert "two accounts, same symbol → two rows, each correct per-account,
-  plus a symbol-subtotal row" — their core assertion inverts, per devil's
-  explicit flag.
-- `docs/specs/PULSE_SPEC.md`: amend to describe per-account rows + the new
-  subtotal row + the CE/PE pairing rule.
-- `CLAUDE.md`: amend the "Position manual pairing" entry with the option_type
-  grouping fix and the per-account-row change (follows existing entry style).
-
-## Verification
-
-- `cd frontend && npx vitest run` — full suite green (includes rewritten +
-  new tests above).
-- `venv/bin/pytest backend/tests/ -q --tb=line` — green, including the new/
-  extended `_auto_pair_positions` cases and the parity test.
-- `cd frontend && npx svelte-check --output machine` — no new errors.
-- Playwright: extend `frontend/e2e/position_lot_pair_split.spec.js` (or a new
-  spec) with a 2-account-same-symbol fixture — assert 2 rows render, each
-  shows its own St-column badge (not nulled), TOTAL Exp P&L matches the
-  un-split sum, and the new subtotal row shows the combined qty/value.
-- Manual: a short PE + long CE (same root/account/qty) no longer badges as
-  paired (shows orphan on both); a short PE + long PE still pairs; a
-  multi-account symbol shows N rows + 1 subtotal row in MarketPulse.
+## Commit message
+fix(logpanel): rename Terminal->Console + wire CLI audit trail, fix anchor row height, ag-Grid header=row height, manual-order noise in Agents tab, oversized detail payload truncation
 
 ## Done when
-
-- `_auto_pair_positions`/`splitPairedLots` never cross-pair CE against PE.
-- MarketPulse shows one row per (account, symbol), matching Legs/PerformancePage.
-- TOTAL row's Exp P&L is unaffected by the per-account split (verified by test).
-- A multi-account symbol still shows its combined exposure via the new subtotal row.
-- All rewritten/new tests pass; `docs/specs/PULSE_SPEC.md` and CLAUDE.md reflect
-  the change.
+- Agents tab no longer shows any manually-placed-order event.
+- No Agents/Alerts row can render more than ~200 chars of raw JSON even on a
+  malformed/oversized detail payload; arrays of objects render as a count.
+- Legs underlying-anchor row's height visually matches every real leg row
+  (same `--grid-row-height` token).
+- Every ag-Grid instance's header height equals its own row height (26/34
+  dark, 22/32 PerformancePage light — each theme's own value, just now
+  mirrored onto headerHeight).
+- Legs anchor "X" badge is visibly legible against the purple underlying-row
+  tint, matching Positions' own anchor "X" exactly (same token, both surfaces).
+- Tab labeled "Console" (not "Terminal"), positioned after System/Conn and
+  before Simulator; compiling a CLI statement on the automation page's own
+  Console tab produces a visible entry in LogPanel's Console tab.
+- pytest + svelte-check + playwright all green.

@@ -9,7 +9,7 @@
  *        - Agents tab:    BOTH filters VISIBLE
  *        - System tab:    BOTH filters VISIBLE
  *        - Conn tab:      BOTH filters VISIBLE
- *        - Terminal tab:  NEITHER filter visible
+ *        - Console tab:   NEITHER filter visible
  *        - Ticks tab:     NEITHER filter visible
  *        - News tab:      NEITHER filter visible
  *
@@ -35,7 +35,7 @@
  *   Performance — switching tabs and checking filter visibility
  *                completes within 5 s per assertion.
  *
- *   Stale code — both filters are hidden for Terminal/Ticks/News (they
+ *   Stale code — both filters are hidden for Console/Ticks/News (they
  *                have no account or level semantics in the data layer).
  *
  *   Reusable   — .log-tab-row lives inside ActivityLogSurface so every
@@ -202,13 +202,13 @@ test.describe('per-tab filter visibility — /orders activity card', () => {
     await assertLevelFilter(card, true, 'Conn tab');
   });
 
-  // ── Terminal tab ──────────────────────────────────────────────────────────
-  test('Terminal tab: NEITHER filter visible', async () => {
+  // ── Console tab (renamed from Terminal, 2026-10-18) ───────────────────────
+  test('Console tab: NEITHER filter visible', async () => {
     const card = await getActivityCard();
-    await clickTab(card, /terminal/i);
+    await clickTab(card, /console/i);
 
-    await assertAccountFilter(card, false, 'Terminal tab');
-    await assertLevelFilter(card, false, 'Terminal tab');
+    await assertAccountFilter(card, false, 'Console tab');
+    await assertLevelFilter(card, false, 'Console tab');
   });
 
   // ── Ticks tab (simulator) ─────────────────────────────────────────────────
@@ -315,12 +315,12 @@ test.describe('per-tab filter visibility — /activity page', () => {
     await assertLevelFilter(header, true, '/activity System tab');
   });
 
-  test('Terminal tab: NEITHER filter visible', async () => {
+  test('Console tab: NEITHER filter visible', async () => {
     const { header, panel } = await getActivityPage();
-    await clickTab(panel, /terminal/i);
+    await clickTab(panel, /console/i);
 
-    await assertAccountFilter(header, false, '/activity Terminal tab');
-    await assertLevelFilter(header, false, '/activity Terminal tab');
+    await assertAccountFilter(header, false, '/activity Console tab');
+    await assertLevelFilter(header, false, '/activity Console tab');
   });
 
   test('News tab: NEITHER filter visible', async () => {
@@ -410,14 +410,14 @@ test.describe('per-tab filter visibility — ActivityLogModal', () => {
     await assertLevelFilter(modal, false, 'Modal Orders tab');
   });
 
-  test('Modal Terminal tab: NEITHER filter visible', async () => {
+  test('Modal Console tab: NEITHER filter visible', async () => {
     const modal = await openModal();
     const panel = modal.locator('.log-tab-row').first();
     await expect(panel, '.log-tab-row in modal').toBeVisible({ timeout: 8_000 });
-    await clickTab(modal, /terminal/i);
+    await clickTab(modal, /console/i);
 
-    await assertAccountFilter(modal, false, 'Modal Terminal tab');
-    await assertLevelFilter(modal, false, 'Modal Terminal tab');
+    await assertAccountFilter(modal, false, 'Modal Console tab');
+    await assertLevelFilter(modal, false, 'Modal Console tab');
   });
 
   test('Modal has all five buttons with Close instead of Fullscreen', async () => {

@@ -856,6 +856,19 @@
 
   function makeGrid(el, colDefs, rowData = [], onRowClick = null, extraOpts = {}) {
     if (!_createGrid) throw new Error('ag-Grid not yet loaded');
+    // Computed once, shared by rowHeight AND headerHeight below (2026-10-18
+    // header/row height parity fix) — see the rowHeight comment further
+    // down for why this value is theme/breakpoint-dependent and
+    // deliberately independent from mkBaseGridOpts' own dark-theme value.
+    const _rowH = isDark ? (_isMobile ? 34 : 26) : (_isMobile ? 32 : 22);
+    el.style.setProperty('--ag-row-height', `${_rowH}px`);
+    // 2026-10-18 correction: the static CSS literal for --ag-header-height
+    // (app.css .ag-theme-ramboq) only matches --ag-row-height at the
+    // DEFAULT (desktop) breakpoint. Without also setting it here, switching
+    // to mobile (_rowH=32/34) would bump the row but leave the header
+    // stuck at its static 22px literal. Set both inline, from the same
+    // _rowH value, so they can never diverge on any breakpoint.
+    el.style.setProperty('--ag-header-height', `${_rowH}px`);
     return _createGrid(el, {
       // ag-Grid v33 changed the default theme to the Theming-API
       // (themeQuartz). Pinning to 'legacy' keeps the existing CSS-file
@@ -907,11 +920,10 @@
       // ag-theme-algo's (admin, dark) mobile row follows the shared
       // --grid-row-height mobile value (34px) — this page's public
       // ag-theme-ramboq surface keeps its own independently-tuned 32px.
-      rowHeight: (() => {
-        const rowH = isDark ? (_isMobile ? 34 : 26) : (_isMobile ? 32 : 22);
-        el.style.setProperty('--ag-row-height', `${rowH}px`);
-        return rowH;
-      })(),
+      rowHeight: _rowH,
+      // headerHeight mirrors rowHeight (2026-10-18) — see algoGridUtils.js'
+      // mkBaseGridOpts for the same fix applied to every MarketPulse grid.
+      headerHeight: _rowH,
       getRowClass,
       pinnedBottomRowData: [],
       ...(onRowClick ? { onRowClicked: (e) => onRowClick(e.data) } : {}),

@@ -3378,7 +3378,7 @@
     {/if}
 
     <!-- Activity panel — canonical 6-tab LogPanel (Orders · Agents ·
-         Terminal · Ticks · System · News). Placed BELOW the common
+         Console · Ticks · System · News). Placed BELOW the common
          action footer per operator request ("move the order placement
          above the activity"). Suppressed when the host renders the
          activity in a separate surface via `hideBottomPanel`. -->
@@ -5338,7 +5338,7 @@
      surface the market-depth ladder. 22rem/18rem was eating ~46 % of
      a 760px modal; 13rem/11rem leaves the ticket form + depth visible
      while the LogPanel inside still scrolls comfortably. The active
-     tab inside (Orders / Agents / Terminal / Ticks / System / News)
+     tab inside (Orders / Agents / Console / Ticks / System / News)
      manages its own scroll, so reducing the slot height never breaks
      content — it just keeps the strip more compact. */
   .oes-bottom-panel {

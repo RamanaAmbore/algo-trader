@@ -110,7 +110,7 @@ describe('positionStateBadge — underlying-anchor row ("X", 2026-10-18)', () =>
     const paired = positionStateBadge({ pair_group_key: 'P1' });
     const orphan = positionStateBadge({ is_orphan: true });
     expect(anchor.color).toBe('var(--algo-muted)');
-    expect(anchor.bg).toBe('var(--algo-muted-bg)');
+    expect(anchor.bg).toBe('var(--algo-muted-bg-strong)');
     expect([gtt.color, paired.color, orphan.color]).not.toContain(anchor.color);
   });
 
@@ -129,6 +129,11 @@ describe('positionStateBadge — underlying-anchor row ("X", 2026-10-18)', () =>
   it('tooltip explains this is not a held position', () => {
     const b = positionStateBadge({ _isUnderlyingAnchor: true });
     expect(b.tooltip.toLowerCase()).toContain('not a held position');
+  });
+
+  it('uses the stronger --algo-muted-bg-strong token, not the washed-out --algo-muted-bg (2026-10-18 contrast fix)', () => {
+    const b = positionStateBadge({ _isUnderlyingAnchor: true });
+    expect(b.bg).toBe('var(--algo-muted-bg-strong)');
   });
 });
 

@@ -92,6 +92,13 @@ describe('mkBaseGridOpts / syncGridRowHeightVar — desktop (no window / innerWi
     syncGridRowHeightVar(fakeEl);
     expect(stored).toBe(`${mkBaseGridOpts().rowHeight}px`);
   });
+
+  it('mkBaseGridOpts sets headerHeight: 26 on desktop, equal to rowHeight (2026-10-18 header=row parity fix)', async () => {
+    const { mkBaseGridOpts } = await import('$lib/data/algoGridUtils.js');
+    const opts = mkBaseGridOpts();
+    expect(opts.headerHeight).toBe(26);
+    expect(opts.headerHeight).toBe(opts.rowHeight);
+  });
 });
 
 describe('mkBaseGridOpts / syncGridRowHeightVar — mobile (window.innerWidth <= 720)', () => {
@@ -111,5 +118,12 @@ describe('mkBaseGridOpts / syncGridRowHeightVar — mobile (window.innerWidth <=
     const fakeEl = /** @type {any} */ ({ style: { setProperty: (k, v) => { if (k === '--ag-row-height') stored = v; } } });
     syncGridRowHeightVar(fakeEl);
     expect(stored).toBe('34px');
+  });
+
+  it('mkBaseGridOpts sets headerHeight: 34 on mobile, equal to rowHeight (2026-10-18 header=row parity fix)', async () => {
+    const { mkBaseGridOpts } = await import('$lib/data/algoGridUtils.js');
+    const opts = mkBaseGridOpts();
+    expect(opts.headerHeight).toBe(34);
+    expect(opts.headerHeight).toBe(opts.rowHeight);
   });
 });

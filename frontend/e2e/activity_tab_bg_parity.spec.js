@@ -2,7 +2,7 @@
  * activity_tab_bg_parity.spec.js
  *
  * Asserts that the News tab in the ActivityLogModal has the same background
- * colour as the other log tabs (Agents, Terminal, System, Conn, Orders,
+ * colour as the other log tabs (Agents, Console, System, Conn, Orders,
  * Ticks). The operator reported: "News has a different background color
  * compared to other activity tabs."
  *
@@ -74,7 +74,7 @@ const TABS = [
   { id: 'news',      labelRx: /news/i      },
   { id: 'order',     labelRx: /orders?/i   },
   { id: 'agent',     labelRx: /agents?/i   },
-  { id: 'terminal',  labelRx: /terminal/i  },
+  { id: 'console',   labelRx: /console/i   },
   { id: 'conn',      labelRx: /conn/i      },
   { id: 'system',    labelRx: /system/i    },
 ];

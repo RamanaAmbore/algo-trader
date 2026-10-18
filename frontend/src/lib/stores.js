@@ -992,7 +992,7 @@ if (browser) {
 //   persists across modal open/close and is shared with the /activity page.
 //   initialTab is now written to activityStore.activeTab by openActivityModal;
 //   the modal reads activityStore.activeTab directly instead of this field.
-/** @typedef {'order'|'agent'|'alerts'|'terminal'|'simulator'|'system'|'conn'|'news'} ActivityTab */
+/** @typedef {'order'|'agent'|'alerts'|'system'|'conn'|'console'|'simulator'|'news'} ActivityTab */
 
 export const activityModal = writable(
   /** @type {{ open: boolean }} */

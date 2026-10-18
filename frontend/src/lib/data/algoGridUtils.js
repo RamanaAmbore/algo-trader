@@ -130,6 +130,11 @@ export function mkBaseGridOpts(overrides = {}) {
     },
     sortingOrder: /** @type {('asc'|'desc'|null)[]} */ (['asc', 'desc', null]),
     rowHeight: _isMobile ? 34 : 26,
+    // headerHeight mirrors rowHeight (2026-10-18) — header row was never
+    // explicitly sized anywhere in the codebase, defaulting to ag-Grid's
+    // own taller built-in header height and visually mismatching the
+    // data rows beneath it.
+    headerHeight: _isMobile ? 34 : 26,
     getRowId: ({ data }) => {
       if (!data) return '';
       if (data.symbol)  return String(data.symbol);

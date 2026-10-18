@@ -27,6 +27,38 @@ function _escape(/** @type {unknown} */ v) {
 }
 
 /**
+ * Raw-string fallback length cap — applied to the ORIGINAL (unescaped)
+ * string before HTML-escaping, so entity-expansion (e.g. `&` -> `&amp;`)
+ * never pushes the escaped output over the cap. A malformed/oversized
+ * JSON `detail` payload (e.g. a nested per-account broker margin dump)
+ * must never flood a LogPanel row.
+ */
+const _RAW_FALLBACK_CAP = 200;
+
+/**
+ * Cap a raw string to `_RAW_FALLBACK_CAP` chars with a trailing ellipsis
+ * when it exceeds the cap, THEN escape it for safe {@html} rendering.
+ */
+function _escapeCapped(/** @type {unknown} */ v) {
+  const s = String(v ?? '');
+  const capped = s.length > _RAW_FALLBACK_CAP ? `${s.slice(0, _RAW_FALLBACK_CAP)}…` : s;
+  return _escape(capped);
+}
+
+/**
+ * Render an array value for a chip: "N items" when every element is a
+ * plain object (avoids useless `[object Object],[object Object]...`
+ * junk from a `matches`/`latched_matches`-shaped array), otherwise the
+ * existing `.join(',')` behavior for primitive arrays (strings/numbers).
+ */
+function _arrayDisplay(/** @type {unknown[]} */ arr) {
+  const isAllObjects = arr.length > 0 && arr.every(
+    (el) => typeof el === 'object' && el !== null && !Array.isArray(el),
+  );
+  return isAllObjects ? `${arr.length} items` : arr.join(',');
+}
+
+/**
  * Render one chip: <span class="log-chip"><span class="log-chip-key">key:</span>value</span>
  */
 export function chipHtml(/** @type {string} */ key, /** @type {unknown} */ value) {
@@ -60,7 +92,7 @@ export function chipsHtml(
     if (exclude && exclude.has(k)) continue;
     const v = obj[k];
     if (skipEmpty && (v == null || v === '' || (typeof v === 'object' && !Array.isArray(v)))) continue;
-    const display = Array.isArray(v) ? v.join(',') : v;
+    const display = Array.isArray(v) ? _arrayDisplay(v) : v;
     out.push(chipHtml(k, display));
   }
   return out.join(' ');
@@ -148,16 +180,16 @@ export function parseJsonObject(/** @type {unknown} */ raw) {
 export function chipsFromJson(/** @type {unknown} */ raw, /** @type {{ skipEmpty?: boolean, order?: string[], exclude?: string[] }} */ opts = {}) {
   if (raw == null || raw === '') return '';
   if (typeof raw === 'object') return chipsHtml(/** @type any */ (raw), opts);
-  if (typeof raw !== 'string') return _escape(raw);
+  if (typeof raw !== 'string') return _escapeCapped(raw);
   const trimmed = raw.trim();
-  if (!trimmed.startsWith('{')) return _escape(raw);
+  if (!trimmed.startsWith('{')) return _escapeCapped(raw);
   try {
     const obj = JSON.parse(trimmed);
     if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
       return chipsHtml(obj, opts);
     }
-    return _escape(raw);
+    return _escapeCapped(raw);
   } catch (_) {
-    return _escape(raw);
+    return _escapeCapped(raw);
   }
 }

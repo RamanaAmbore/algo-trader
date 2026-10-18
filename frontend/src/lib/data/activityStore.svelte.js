@@ -35,11 +35,13 @@
  * module-level object with `$state`-backed reactive getters, no class.
  */
 
-/** @typedef {'order'|'agent'|'alerts'|'terminal'|'simulator'|'system'|'conn'|'news'} ActivityTab */
+/** @typedef {'order'|'agent'|'alerts'|'system'|'conn'|'console'|'simulator'|'news'} ActivityTab */
 
-/** Canonical allowed tab ids — kept in sync with LogPanel's default tab list. */
+/** Canonical allowed tab ids — kept in sync with LogPanel's default tab list.
+ *  2026-10-18: 'terminal' renamed to 'console' + tabs re-sequenced to match
+ *  LogPanel.svelte's own default `tabs` array exactly. */
 export const ACTIVITY_TABS = /** @type {ActivityTab[]} */ (
-  ['order', 'agent', 'alerts', 'terminal', 'simulator', 'system', 'conn', 'news']
+  ['order', 'agent', 'alerts', 'system', 'conn', 'console', 'simulator', 'news']
 );
 
 // ── Reactive backing state ───────────────────────────────────────────────

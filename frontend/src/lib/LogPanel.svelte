@@ -58,18 +58,21 @@
    * }} */
   let {
     heightClass = 'flex-1 min-h-0',
-    // Canonical order: Orders → Agents → Alerts → Terminal → Ticks →
-    // System → Conn → News — mirrors `_ALL_TABS` below exactly. Every
-    // LogPanel mount inherits this default — drop the explicit `tabs=`
-    // prop at callsites unless a page genuinely needs a subset (e.g.
-    // /console hiding Order in a future iteration). `alerts` was added
+    // Canonical order (2026-10-18 re-sequence): Orders → Agents → Alerts →
+    // System → Conn → Console → Simulator → News — mirrors `_ALL_TABS`
+    // below exactly. Groups "what the trading system did" (order/agent/
+    // alerts), then "infra health" (system/conn), then "what the operator
+    // did" (console — renamed from Terminal), then simulator (a distinct
+    // non-live mode), with news last (passive reference). Every LogPanel
+    // mount inherits this default — drop the explicit `tabs=` prop at
+    // callsites unless a page genuinely needs a subset. `alerts` was added
     // 2026-10-13 (CardHeader/Activity-panel consistency sweep) — it was
     // previously missing from this default array, which was the actual
     // root cause of every non-Automation embedding site lacking the
     // Alerts tab despite it being a real, fully-functional tab (gated
     // independently by the view_audit cap check in VISIBLE_TABS below,
     // regardless of whether it's listed here).
-    tabs        = ['order','agent','alerts','terminal','simulator','system','conn','news'],
+    tabs        = ['order','agent','alerts','system','conn','console','simulator','news'],
     defaultTab  = 'order',
     simScope    = false,
     // Default matches the `polling.fast_ms` registry setting's own default
@@ -123,7 +126,7 @@
      */
     availableAccounts = $bindable(/** @type {string[] | undefined} */ (undefined)),
     /**
-     * Enable CSS multi-column flow for the Agents / Terminal / System /
+     * Enable CSS multi-column flow for the Agents / Console / System /
      * Conn tabs on wide containers. Operator: "make agents, terminal,
      * system, conn lines on desktop, I want two lines in a single row
      * as there is more width available, similar to market news in
@@ -231,7 +234,7 @@
   // don't re-trigger this effect — without untrack the comparison sees
   // the new tab, decides it differs from defaultTab, and slams the
   // tab back to 'order' (or whatever defaultTab was). Result was that
-  // clicking Agents / Terminal / Ticks etc. inside any LogPanel mount
+  // clicking Agents / Console / Ticks etc. inside any LogPanel mount
   // immediately reverted to the Orders tab.
   $effect(() => {
     if (defaultTab && defaultTab !== untrack(() => logTab)) logTab = defaultTab;
@@ -282,7 +285,7 @@
   // same cadence (`pollMs`), so a page mounting a LogPanel doesn't have to
   // wire up four independent loaders. Order tab still uses UnifiedLog
   // (already centralised).
-  let orderRows   = $state(/** @type {any[]} */ ([]));   // for Terminal tab embedding
+  let orderRows   = $state(/** @type {any[]} */ ([]));   // for Console tab embedding
   let orderEvents = $state(/** @type {any[]} */ ([]));   // order lifecycle event log
   let gttRows     = $state(/** @type {any[]} */ ([]));   // broker GTT list for the order log
   let agentLog    = $state(/** @type {any[]} */ ([]));
@@ -854,7 +857,7 @@
     // sim / shadow rows that never reach the broker. Broker rows win
     // on duplicate order_id (most complete fields); algo-only rows
     // (paper / sim / shadow) keep their AlgoOrderInfo shape — `o.mode`
-    // is read by `_terminalOrderLines()`'s Terminal-tab mode filter
+    // is read by `_terminalOrderLines()`'s Console-tab mode filter
     // below. (`_modePill`/the `*_PILL` constants further down have no
     // live caller as of 2026-10-18 — their only caller, the Order tab's
     // old `_orderRowHtml`, was removed as dead code; flagged, not
@@ -961,9 +964,9 @@
 
   onMount(() => {
     if (tabs.includes('agent')) _every(_loadAgents);
-    // Orders + Terminal tabs both consume orderRows; load whenever
+    // Orders + Console tabs both consume orderRows; load whenever
     // either one is in the visible set.
-    if (tabs.includes('order') || tabs.includes('terminal'))
+    if (tabs.includes('order') || tabs.includes('console'))
       _every(_loadOrders);
     // Alerts polls eagerly (not deferred to first-tab-click) — same
     // continuously-visible rationale as the Agents tab: an operator
@@ -1121,10 +1124,10 @@
     ['order',     'Orders'],
     ['agent',     'Agents'],
     ['alerts',    'Alerts'],
-    ['terminal',  'Terminal'],
-    ['simulator', 'Ticks'],
     ['system',    'System'],
     ['conn',      'Conn'],
+    ['console',   'Console'],
+    ['simulator', 'Ticks'],
     ['news',      'News'],
   ];
   // Filter to the per-page subset (defaults to all six). Lets /console
@@ -1143,22 +1146,22 @@
 
   // ── Mode gating via executionMode store ──────────────────────────────
   // When gateByMode is true, the global executionMode store is the
-  // implicit filter for Orders, Agent, and Terminal tabs. The mode chip
+  // implicit filter for Orders, Agent, and Console tabs. The mode chip
   // strip (om-bar) is hidden — mode is already shown in the header chip.
   // Ticks tab is hidden entirely when not in sim mode.
 
   // The effective mode for gating: null means "show everything" (gateByMode
   // is false). When gateByMode is true, read the live store value.
   const _gatingMode = $derived(gateByMode ? $executionMode : null);
-  // _terminalHtmlDerived memoises the terminal tab's HTML so it only
+  // _terminalHtmlDerived memoises the Console tab's HTML so it only
   // recomputes when its actual inputs change (cmdHistory, orderRows,
   // agentLog, _gatingMode) — not on every reactivity cycle that touches
   // the template. Without this, formatDualTz was called per-row on every
   // 3 s poll across all mounted instances even when the data was unchanged.
   const _terminalHtmlDerived = $derived.by(() => _terminalHtml());
 
-  // Terminal mode prefix — maps execution mode to the [TAG] prefix used
-  // in terminal detail strings. Events without any known prefix are global
+  // Console mode prefix — maps execution mode to the [TAG] prefix used
+  // in Console detail strings. Events without any known prefix are global
   // and always shown.
   const _TERMINAL_PREFIXES = ['[SIM]', '[PAPER]', '[LIVE]', '[SHADOW]', '[REPLAY]'];
   /** @param {string} mode */
@@ -1688,7 +1691,7 @@
   /**
    * Wrap a log row in the unified News-style grid: time on the left,
    * optional level chip, message content in the middle (flex-grow),
-   * optional tag chip on the right. All four tabs (Agent / Terminal /
+   * optional tag chip on the right. All four tabs (Agent / Console /
    * Ticks / System) route through this helper so every row reads with
    * the same shape.
    */
@@ -1725,7 +1728,7 @@
     return s.includes('ERROR') ? 'log-error' : s.includes('WARNING') ? 'log-warning' : 'log-info';
   }
 
-  // Terminal tab mode filter — when gateByMode is active, only show events
+  // Console tab mode filter — when gateByMode is active, only show events
   // whose detail text starts with the mode's [TAG] prefix OR has no known
   // mode prefix (global/system events are always shown).
   function _terminalMatchesMode(/** @type {string} */ detail) {
@@ -1736,7 +1739,7 @@
     return prefix ? detail.startsWith(prefix) : true;
   }
 
-  /** Terminal-specific order status class (subset used in merged stream). */
+  /** Console-specific order status class (subset used in merged stream). */
   function _terminalOrderCls(status, transactionType) {
     if (status === 'FILLED')          return 'log-agent-success';
     if (status === 'UNFILLED')        return 'log-agent-failed';
@@ -1801,7 +1804,7 @@
       ..._terminalOrderLines(),
       ..._terminalAgentLines(),
     ].sort((a, b) => _tsKey(b.ts) - _tsKey(a.ts));
-    // Apply search filter on terminal rows
+    // Apply search filter on Console rows
     if (_searchQuery) {
       all = all.filter(x => _rowMatchesSearch(x.html));
     }
@@ -1891,7 +1894,7 @@
           e.detail || '',
         ];
       });
-    } else if (logTab === 'terminal') {
+    } else if (logTab === 'console') {
       header = ['time', 'source', 'message'];
       const all = [
         ..._terminalCmdLines().map(x => ({ ...x, src: 'CMD' })),
@@ -1984,7 +1987,7 @@
       <button type="button" class="lp-fs-btn"
               title="Open fullscreen"
               aria-label="Open fullscreen"
-              onclick={() => openActivityModal(/** @type {'order'|'agent'|'alerts'|'terminal'|'simulator'|'system'|'conn'|'news'} */ (logTab))}>
+              onclick={() => openActivityModal(/** @type {'order'|'agent'|'alerts'|'console'|'simulator'|'system'|'conn'|'news'} */ (logTab))}>
 
         <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
           <path d="M2 6V2h4M14 6V2h-4M2 10v4h4M14 10v4h-4"
@@ -2054,7 +2057,7 @@
   </div>
 {:else}
 <!-- Unified News-style row layout — every row is `[time · msg · tag]`
-     so the four tabs (Agents · Terminal · Ticks · System) read with
+     so the four tabs (Agents · Console · Ticks · System) read with
      the same shape as the News tab above. Time chip inherits the
      page-header `.algo-ts` font (mono cyan tabular-nums) so the
      wall clock and every log row are in the same visual rhythm. -->
@@ -2068,7 +2071,7 @@
 <!-- 2026-10-18 fix (operator: "in dashboard, I am seeing the area with
      the text no system area yet. It is showing for news tab... should
      not be there") — this whole block is the row-renderer for
-     terminal/agent/alerts/simulator/conn/system; 'news' and 'order' are
+     console/agent/alerts/simulator/conn/system; 'news' and 'order' are
      FULLY handled by the if/else-if chain above (NewsList / the Order
      tab's own `.log-row` renderer), but this div had no gate of its own,
      so it rendered UNCONDITIONALLY
@@ -2077,7 +2080,7 @@
      (the "system" empty-state), appending "No system entries yet."
      underneath the real News/Order content. -->
 <div class="log-panel log-rows {heightClass} {multiColumn && logTab !== 'order' ? 'lp-multicol' : ''}">
-  {#if logTab === 'terminal'}
+  {#if logTab === 'console'}
     {@html _terminalHtmlDerived}
   {:else if logTab === 'agent'}
     {#if _agentRows.length}
@@ -2282,7 +2285,7 @@
     max-width: 16rem;
   }
 
-  /* Unified row layout for Agents · Terminal · Ticks · System tabs.
+  /* Unified row layout for Agents · Console · Ticks · System tabs.
      Mirrors the News tab's `.newslist-row` grid so every log row reads
      with the same shape — time chip on the left, message in the
      middle, optional tag pill on the right. Time chip inherits the
@@ -2319,7 +2322,7 @@
     padding: 0.25rem 0.55rem;
     background: transparent;
   }
-  /* Two-column magazine layout for agent / terminal / system / conn tabs
+  /* Two-column magazine layout for agent / console / system / conn tabs
      on wide viewports. Uses CSS Grid (not column-count) because the panel
      has overflow-y:auto — column-count fails inside scrollable containers
      (browser can't determine column heights so columns collapse or scroll

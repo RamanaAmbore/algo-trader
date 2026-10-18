@@ -3785,6 +3785,10 @@
         // object) so this factory's own defaultColDef/getRowId/etc.
         // stay exactly as they were.
         rowHeight: mkBaseGridOpts().rowHeight,
+        // headerHeight mirrors rowHeight (2026-10-18 header=row parity fix) —
+        // same mkBaseGridOpts() SSOT, pulled individually like rowHeight
+        // above rather than spreading the whole object, for the same reason.
+        headerHeight: mkBaseGridOpts().headerHeight,
         // animateRows: false (2026-09 fix) — ag-Grid defaults this to true,
         // which applies a 0.4s CSS transform transition (app.css's imported
         // ag-grid.css: `.ag-row-animation .ag-row { transition: transform
@@ -3888,6 +3892,10 @@
         sortingOrder: PULSE_SORTING_ORDER,
         domLayout: 'autoHeight',
         rowHeight: mkBaseGridOpts().rowHeight,
+        // headerHeight mirrors rowHeight (2026-10-18 header=row parity fix) —
+        // same mkBaseGridOpts() SSOT, pulled individually like rowHeight
+        // above rather than spreading the whole object, for the same reason.
+        headerHeight: mkBaseGridOpts().headerHeight,
       });
       syncGridRowHeightVar(positionsSummaryEl);
       positionsSummaryReady = true;
@@ -3905,6 +3913,10 @@
         sortingOrder: PULSE_SORTING_ORDER,
         domLayout: 'autoHeight',
         rowHeight: mkBaseGridOpts().rowHeight,
+        // headerHeight mirrors rowHeight (2026-10-18 header=row parity fix) —
+        // same mkBaseGridOpts() SSOT, pulled individually like rowHeight
+        // above rather than spreading the whole object, for the same reason.
+        headerHeight: mkBaseGridOpts().headerHeight,
       });
       syncGridRowHeightVar(holdingsSummaryEl);
       holdingsSummaryReady = true;
@@ -3922,6 +3934,10 @@
         sortingOrder: PULSE_SORTING_ORDER,
         domLayout: 'autoHeight',
         rowHeight: mkBaseGridOpts().rowHeight,
+        // headerHeight mirrors rowHeight (2026-10-18 header=row parity fix) —
+        // same mkBaseGridOpts() SSOT, pulled individually like rowHeight
+        // above rather than spreading the whole object, for the same reason.
+        headerHeight: mkBaseGridOpts().headerHeight,
       });
       syncGridRowHeightVar(fundsEl);
       fundsReady = true;

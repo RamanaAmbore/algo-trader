@@ -1223,9 +1223,27 @@ class AgentController(Controller):
           - "sim"   → only sim_mode=True fires (same data /api/simulator/events
             returns, exposed here for convenience).
           - "all"   → both.
+
+        Excludes events attributed to the built-in `MANUAL_AGENT` sentinel
+        (slug='manual') — those rows exist only so order-origin labeling
+        elsewhere (alert/fill notifications) has an agent_id to key off;
+        they are not real automation-agent fires and must not pollute the
+        Agents tab. Filtered via a NOT IN subquery (rather than an INNER
+        JOIN on Agent) so an orphaned AgentEvent row (agent_id pointing at
+        an already-deleted Agent) is never silently dropped by this change
+        — it is excluded only when it actually resolves to the 'manual'
+        slug. Applied in SQL, before LIMIT, so a manual-origin row can
+        never displace a real agent event out of the `n`-row window.
         """
         async with async_session() as session:
-            query = select(AgentEvent).order_by(AgentEvent.id.desc()).limit(n)
+            query = (
+                select(AgentEvent)
+                .where(AgentEvent.agent_id.not_in(
+                    select(Agent.id).where(Agent.slug == "manual")
+                ))
+                .order_by(AgentEvent.id.desc())
+                .limit(n)
+            )
             if mode == "live":
                 query = query.where(AgentEvent.sim_mode.is_(False))
             elif mode == "sim":

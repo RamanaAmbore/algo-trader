@@ -30,7 +30,7 @@
     <ActivityLogSurface
       context="card"
       hideInlineAccountFilter={false}
-      defaultTab="terminal"
+      defaultTab="console"
       onTabChange={(id) => { logTab = id; }} />
 -->
 <script>
@@ -120,11 +120,12 @@
      */
     gateByMode          = true,
     /**
-     * Command history entries fed into the Terminal tab. No current
-     * caller passes a non-empty array (the legacy CommandLineTab source
-     * that used to feed this was deleted 2026-10-17 — see the 2026-10-17
-     * entry in docs/specs/AUTOMATION_SPEC.md's change log) —
-     * left in place since LogPanel still renders it when present.
+     * Command history entries fed into the Console tab (renamed from
+     * Terminal, 2026-10-18). `/automation`'s own ActivityLogSurface mount
+     * is the one real caller — it passes `_cmdHistory`, populated from
+     * ConsoleTab's `onResult` callback on every real CLI compile/save/
+     * submit outcome (order, cancel-all, agent/bracket/token create+
+     * update). Other mounts leave this at its default empty array.
      * @type {Array<{status: string, message: string, fields?: Record<string,string>, time: string}>}
      */
     cmdHistory          = /** @type {Array<{status: string, message: string, fields?: Record<string,string>, time: string}>} */ ([]),
