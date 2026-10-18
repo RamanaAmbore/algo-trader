@@ -168,7 +168,7 @@ export function mkSymColRight({ symRenderer }) {
       'chg-down': p => (p.data?.change_pct ?? 0) < 0,
     },
     cellStyle: (p) => {
-      if (p.data?._isTotal || p.data?._isSubtotal) return {};
+      if (p.data?._isTotal) return {};
       const color = p.data?._acctColor ?? null;
       if (!color) return {};
       return { '--mp-sym-acct-color': color };
@@ -186,7 +186,7 @@ export function mkSparkCol({ sparkRenderer }) {
   return {
     field: 'tradingsymbol', headerName: '5d', width: 44, minWidth: 44,
     maxWidth: 48, colId: 'sparkline',
-    cellRenderer: (p) => (p.data?._isTotal || p.data?._isSubtotal) ? '' : sparkRenderer(p),
+    cellRenderer: (p) => (p.data?._isTotal) ? '' : sparkRenderer(p),
     sortable: false, resizable: false,
     cellClass: 'spark-cell',
     headerClass: 'ag-header-cell-spark',
@@ -258,7 +258,7 @@ function _ltpHeatClasses(ltp, avg, prev) {
 // `resolveCellLtp` is the pre-bound resolver from mkResolveCellLtp so it sees
 // the current live-snap map at render time (not a frozen snapshot).
 function _ltpCellClass(p, RA, resolveCellLtp, getLtpFlashUp, getLtpFlashDown) {
-  if (!p.data || p.data._isTotal || p.data._isSubtotal) return RA;
+  if (!p.data || p.data._isTotal) return RA;
   // Prefer quote_symbol over tradingsymbol so MCX mover rows (where
   // tradingsymbol is the bare commodity root e.g. "CRUDEOIL") look up
   // the flash Set using the full contract key "CRUDEOIL25AUGFUT" that
@@ -320,7 +320,7 @@ export function mkLtpCol({ getLiveLtpSnap, getLtpFlashUp, getLtpFlashDown, numFm
     type: 'numericColumn', headerClass: numericHdr,
     cellClass: (p) => _ltpCellClass(p, RA, resolveCellLtp, getLtpFlashUp, getLtpFlashDown),
     valueGetter: resolveCellLtp,
-    valueFormatter: (p) => (p.data?._isTotal || p.data?._isSubtotal) ? '' : numFmt({ value: p.value }),
+    valueFormatter: (p) => (p.data?._isTotal) ? '' : numFmt({ value: p.value }),
     tooltipValueGetter: (p) => p.value == null ? 'No live price' : null,
   };
 }
@@ -336,7 +336,7 @@ export function mkPrevCol({ RA, numericHdr, numFmt }) {
     field: 'close', headerName: 'P.Close', width: 68, minWidth: 68, maxWidth: 84,
     type: 'numericColumn', headerClass: numericHdr,
     cellClass: `${RA} cell-muted`,
-    valueFormatter: (p) => (p.data?._isTotal || p.data?._isSubtotal) ? '' : numFmt({ value: p.value }),
+    valueFormatter: (p) => (p.data?._isTotal) ? '' : numFmt({ value: p.value }),
   };
 }
 
@@ -349,7 +349,7 @@ export function mkOpenCol({ RA, numericHdr, numFmt }) {
     field: 'open', headerName: 'Open', width: 68, minWidth: 68, maxWidth: 90,
     type: 'numericColumn', headerClass: numericHdr,
     cellClass: `${RA} cell-muted`,
-    valueFormatter: (p) => (p.data?._isTotal || p.data?._isSubtotal) ? '' : numFmt({ value: p.value }),
+    valueFormatter: (p) => (p.data?._isTotal) ? '' : numFmt({ value: p.value }),
   };
 }
 
@@ -412,7 +412,7 @@ export function mkAcctColTrailing({ RA }) {
     width: 86, minWidth: 70, maxWidth: 110,
     cellClass: 'mp-acct-cell',
     valueGetter: (p) => {
-      if (p.data?._isTotal || p.data?._isSubtotal) return '';
+      if (p.data?._isTotal) return '';
       const accts = p.data?.accounts;
       if (!accts) return '';
       const list = accts instanceof Set ? Array.from(accts) : Array.isArray(accts) ? accts : [];
@@ -631,7 +631,7 @@ export function mkRightColDefs({
     { field: 'day_pnl_pct', headerName: 'Chg %', colId: 'day_pnl_pct',
       width: 64, type: 'numericColumn', headerClass: numericHdr,
       cellClass: (p) => {
-        if (!p.data || p.data._isTotal || p.data._isSubtotal) return RA;
+        if (!p.data || p.data._isTotal) return RA;
         const sym = String(p.data.quote_symbol || p.data.tradingsymbol || '').toUpperCase();
         const base = `${RA} ${dirCls(p.value)} chg-right-sep`;
         if (getLtpFlashUp && getLtpFlashUp().has(sym)) return `${RA} ${dirCls(p.value)} chg-right-sep tf-up`;
@@ -665,7 +665,7 @@ export function mkRightColDefs({
       // Directional tint mirrors LTP/P&L cells: long (net qty > 0) = green,
       // short (net qty < 0) = red, flat/total = plain RA.
       cellClass: (p) => {
-        if (!p.data || p.data._isTotal || p.data._isSubtotal) return RA;
+        if (!p.data || p.data._isTotal) return RA;
         const qty = (Number(p.data.qty_pos) || 0) + (Number(p.data.qty_hold) || 0);
         return `${RA} ${dirCls(qty)}`;
       },
@@ -673,7 +673,7 @@ export function mkRightColDefs({
       // across accounts isn't meaningful the way summing qty/day_pnl is) —
       // blank it the same as TOTAL rather than showing an undefined-derived
       // value.
-      valueFormatter: (p) => (p.data?._isTotal || p.data?._isSubtotal) ? '' : numFmt({ value: p.value }),
+      valueFormatter: (p) => (p.data?._isTotal) ? '' : numFmt({ value: p.value }),
       headerTooltip: 'Weighted average entry across positions + holdings.' },
     prevCol,
     { field: 'day_pnl', headerName: 'Day P&L', width: 58, minWidth: 45, maxWidth: 72,
@@ -827,11 +827,10 @@ export function mkExpPnlCol(getExpPnlForRow, { RA = /** @type {string} */ ('ag-r
     type: 'numericColumn',
     headerClass: numericHdr,
     valueGetter: p => {
-      // TOTAL / symbol-subtotal rows carry their own pre-summed exp_pnl
-      // (totalsRowFor / buildPositionsDisplayRows, pulseUnified.js) —
-      // read it directly rather than resolving a per-account key that
-      // doesn't apply to either row type.
-      if (p.data?._isTotal || p.data?._isSubtotal) return p.data.exp_pnl ?? null;
+      // TOTAL rows carry their own pre-summed exp_pnl (totalsRowFor,
+      // pulseUnified.js) — read it directly rather than resolving a
+      // per-account key that doesn't apply to this row type.
+      if (p.data?._isTotal) return p.data.exp_pnl ?? null;
       // Non-derivative rows (holdings, equity positions) have no expiry
       // exposure — hide rather than show "—".
       if (!p.data?.qty_pos) return null;
@@ -860,7 +859,7 @@ export function mkExtrinsicCol(getExpPnlForRow, { RA = /** @type {string} */ ('a
     valueGetter: p => {
       // TOTAL / symbol-subtotal rows: extrinsic is not summed (doesn't
       // apply to either aggregate).
-      if (p.data?._isTotal || p.data?._isSubtotal) return null;
+      if (p.data?._isTotal) return null;
       // Only meaningful for derivative positions.
       if (!p.data?.qty_pos) return null;
       return getExpPnlForRow(p.data)?.extrinsic ?? null;

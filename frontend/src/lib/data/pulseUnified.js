@@ -19,8 +19,6 @@
 //   9. blankTotalsAcc / accumTotalsRow / totalsRowFor — pure TOTAL-row
 //      accumulator, extracted from MarketPulse.svelte so it's unit-testable
 //      without mounting the component (2026-10 Part A)
-//   10. buildPositionsDisplayRows — symbol-subtotal row injection for the
-//       Positions grid's rowData only (2026-10 Part A)
 //
 // Shared utilities (also exported for unit tests):
 //   parseSymbolFallback, parseSymbol, fillSymbolMeta, makeRowFactory
@@ -413,11 +411,7 @@ export function mergeWatchlistRows(byKey, actLists, ctx) {
  * Positions for the same symbol held in different accounts no longer
  * merge into a single cross-account row; this matches the Derivatives
  * Legs grid and PerformancePage.svelte, which already key by
- * account+tradingsymbol and never aggregate across accounts. A
- * symbol's combined cross-account exposure is instead surfaced via a
- * separate symbol-subtotal row built by `buildPositionsDisplayRows`
- * (Section 2b below) for display only — it is NOT inserted here and
- * never feeds TOTAL-row accumulation.
+ * account+tradingsymbol and never aggregate across accounts.
  * Includes the Day P&L recompute (poll-only — §1, no live-tick delta),
  * realised-today carry, Contract A branch, and price_source / is_animating
  * propagation.
@@ -1015,78 +1009,3 @@ export function totalsRowFor(rows, major, label, expPnlByKey) {
   };
 }
 
-/**
- * Section 10 — symbol-subtotal rows for the Positions grid's rowData.
- *
- * 2026-10 Part A: after mergePositionRows stopped aggregating a symbol
- * held in multiple accounts into one row, the "total exposure to this
- * symbol across all my accounts" at-a-glance read that the old aggregated
- * row used to provide for free is gone. This inserts a thin subtotal row
- * immediately above a symbol's split account-rows, but ONLY when that
- * symbol has 2+ DISTINCT CONTRIBUTING ACCOUNTS in the currently-displayed
- * set — a symbol held in a single account (including one split into
- * multiple lot-pairing pieces, which share ONE account) looks exactly as
- * it did before, no new row.
- *
- * Requires `positionsRows` to already be grouped by tradingsymbol (true of
- * MarketPulse's own pipeline — sortUnifiedRows's tie-break always clusters
- * identical tradingsymbols together, and this function's own single pass
- * relies on that adjacency rather than re-sorting).
- *
- * The returned array is for DISPLAY ONLY (ag-Grid rowData) — it must never
- * be passed to totalsRowFor/accumTotalsRow (that would double-count both
- * the subtotal row's own values AND the real per-account rows beneath it).
- *
- * @param {any[]} positionsRows  already-sorted per-account position rows
- * @param {Record<string, {exp_pnl: number|null, extrinsic: number|null}>} [expPnlByKey]
- * @returns {any[]}
- */
-export function buildPositionsDisplayRows(positionsRows, expPnlByKey) {
-  const out = [];
-  let i = 0;
-  while (i < positionsRows.length) {
-    const sym = String(positionsRows[i].tradingsymbol || '').toUpperCase();
-    const acctSet = new Set();
-    let qtySum = 0, dayPnlSum = 0, anyDay = false;
-    let j = i;
-    while (j < positionsRows.length
-           && String(positionsRows[j].tradingsymbol || '').toUpperCase() === sym) {
-      const r = positionsRows[j];
-      if (r.accounts instanceof Set) {
-        for (const a of r.accounts) acctSet.add(a);
-      }
-      qtySum += Number(r.qty_pos) || 0;
-      if (r.day_pnl != null) { dayPnlSum += Number(r.day_pnl) || 0; anyDay = true; }
-      j++;
-    }
-    if (acctSet.size >= 2) {
-      const first = positionsRows[i];
-      out.push({
-        key: `__subtotal_pos_${sym}`,
-        _isSubtotal: true,
-        _majorGroup: 'positions',
-        tradingsymbol: first.tradingsymbol,
-        exchange: first.exchange,
-        underlying: first.underlying,
-        kind: first.kind,
-        opt_type: first.opt_type,
-        strike: first.strike,
-        expiry: first.expiry,
-        // No src flags set — this is a synthetic summary row, not a real
-        // position/holding/watchlist/underlying/mover row, so it opts out
-        // of every directional tint branch in MarketPulse's getRowClass /
-        // _sourceRowClasses (its own `.mp-subtotal-row` class carries the
-        // visual treatment instead).
-        src: { w: false, h: false, p: false, u: false, m: false },
-        accounts: new Set(),
-        qty_pos: qtySum,
-        qty_hold: 0,
-        day_pnl: anyDay ? dayPnlSum : null,
-        exp_pnl: expPnlByKey?.[sym]?.exp_pnl ?? null,
-      });
-    }
-    for (let k = i; k < j; k++) out.push(positionsRows[k]);
-    i = j;
-  }
-  return out;
-}

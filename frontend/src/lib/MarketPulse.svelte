@@ -115,7 +115,7 @@
     mergeWatchlistRows, mergePositionRows, mergeHoldingRows,
     mergeUnderlyingAnchors, mergeMoverRows, tagWatchedIndices,
     finalizeRows, sortUnifiedRows,
-    totalsRowFor, buildPositionsDisplayRows,
+    totalsRowFor,
   } from '$lib/data/pulseUnified';
   import {
     collectUnderlyings, assembleQuoteKeys, buildQuoteMaps, planAccountSeeding,
@@ -693,9 +693,8 @@
   // map for ordinary per-account rows — that map is ALREADY a
   // cross-account total, so every split row would show the full combined
   // value instead of just its own account's share. `_filteredExpPnlByKey`
-  // itself is still correct and still used — for the TOTAL row and the
-  // symbol-subtotal row (buildPositionsDisplayRows), both of which
-  // genuinely want the cross-account total.
+  // itself is still correct and still used — for the TOTAL row, which
+  // genuinely wants the cross-account total.
   const _filteredExpPnlByAcctKey = $derived.by(() => {
     const allow = positionsAccounts.length === 0
       ? null
@@ -1986,16 +1985,6 @@
   const watchCounts = $derived(_rowBuckets.counts);
   const positionsRows  = $derived(_rowBuckets.positions);
   const holdingsRows   = $derived(_rowBuckets.holdings);
-  // Display-only array for the Positions grid's rowData — `positionsRows`
-  // plus a thin symbol-subtotal row above any symbol split across 2+
-  // accounts (2026-10 Part A; see buildPositionsDisplayRows's docstring,
-  // pulseUnified.js). `positionsRows` itself stays untouched and MUST
-  // keep feeding `_totalsRowFor`/`_bRowsPositions`'s sibling accumulation
-  // loops below unchanged — inserting subtotal rows there would
-  // double-count both the TOTAL row and the per-row tick-flash loop.
-  const _positionsDisplayRows = $derived(
-    buildPositionsDisplayRows(positionsRows, _filteredExpPnlByKey)
-  );
   // Set of watchlist list-ids that are flagged `is_global`. Hoisted out
   // of `symRenderer` so the per-row `lists.find(l => l.id === ... &&
   // l.is_global)` linear scan becomes an O(1) `Set.has()`. With ~50
@@ -2129,9 +2118,7 @@
   // (extracted 2026-10 Part A so the TOTAL-row math — including the
   // per-symbol Exp P&L dedup guard, see totalsRowFor's own docstring —
   // is Vitest-reachable without mounting this component). MUST always be
-  // called with `positionsRows`/`holdingsRows` (the real per-account rows,
-  // never `_positionsDisplayRows`, which also carries synthetic
-  // symbol-subtotal rows that would double-count here).
+  // called with `positionsRows`/`holdingsRows` (the real per-account rows).
   function _totalsRowFor(rows, major, label) {
     return totalsRowFor(rows, major, label, _filteredExpPnlByKey);
   }
@@ -2177,10 +2164,8 @@
     topTab === 'pinned' ? pinnedRows.length : watchRows.length));
   const _bRowsWinners   = $derived(Math.max(1, winRows.length));
   const _bRowsLosers    = $derived(Math.max(1, loseRows.length));
-  // +1 for the pinned TOTAL row at the bottom of each book grid. Uses the
-  // display row count (includes any symbol-subtotal rows) so proportional
-  // sizing reflects what's actually rendered.
-  const _bRowsPositions = $derived(Math.max(1, _positionsDisplayRows.length + 1));
+  // +1 for the pinned TOTAL row at the bottom of each book grid.
+  const _bRowsPositions = $derived(Math.max(1, positionsRows.length + 1));
   const _bRowsHoldings  = $derived(Math.max(1, holdingsRows.length  + 1));
 
   // Compact "DD Mon HH:MM IST" label for the movers closed-hours snapshot.
@@ -2232,17 +2217,14 @@
   } });
   $effect(() => { if (gridPositionsReady && gridPositions) {
     // Read reactive deps BEFORE untrack so the effect re-fires on changes.
-    // `_positionsDisplayRows` (not `positionsRows`) feeds the grid's actual
-    // rowData — it carries the same per-account rows plus any
-    // symbol-subtotal rows (2026-10 Part A).
-    const pRows      = _positionsDisplayRows;
+    const pRows      = positionsRows;
     const pTotalRows = positionsTotalRows;
     untrack(() => {
       // Tick-flash: call _mpFlash.update() for each row's P&L fields before
       // writing rowData. Wrapped in untrack() to prevent the $state write
       // inside flash.update() from registering as a dep and looping.
       for (const r of pRows) {
-        if (r._isTotal || r._isSubtotal) continue;
+        if (r._isTotal) continue;
         const sym = r.tradingsymbol;
         if (!sym) continue;
         if (r.day_pnl     != null) _mpFlash.update(`${sym}:day_pnl`,     Number(r.day_pnl));
@@ -3652,12 +3634,6 @@
       classes.push('mp-total-row');
       classes.push(`mp-total-${r._majorGroup || 'misc'}`);
     }
-    // Symbol-subtotal row (2026-10 Part A) — thin group-header stratum
-    // above a symbol's per-account rows when it's split across 2+
-    // accounts. Opts out of the directional/source classes below
-    // (`_sourceRowClasses` already no-ops on it since its `src` flags
-    // are all false) in favour of its own muted treatment.
-    if (r._isSubtotal) classes.push('mp-subtotal-row');
     if (r._pinFirst && r._pinCategory) classes.push(`pin-divider pin-cat-${r._pinCategory}`);
     if (r._majorFirst && r._majorGroup && r._majorGroup !== 'pinned')
       classes.push(`major-divider major-${r._majorGroup}`);
@@ -5517,29 +5493,6 @@
      get a per-day sign indicator (the operator reads the TOTAL P&L
      value directly). */
   :global(.ag-theme-algo .mp-total-row .ag-col-sym::after) {
-    display: none !important;
-  }
-  /* Symbol-subtotal row (2026-10 Part A) — thin group-header stratum
-     above a symbol's per-account rows when the symbol is split across
-     2+ accounts. Deliberately a DIFFERENT, quieter hue from the TOTAL
-     row's amber footer (`--c-action`) so the two never read as the same
-     kind of row — info/sky (`--c-info`) at low opacity, no uppercase
-     transform (this is a sub-header, not the grand total). */
-  :global(.ag-theme-algo .mp-subtotal-row) {
-    font-weight: 600;
-    background:
-      linear-gradient(rgba(125, 211, 252, 0.14), rgba(125, 211, 252, 0.14)),
-      #1d2a44 !important;
-    border-top: 1px solid rgba(125, 211, 252, 0.45) !important;
-  }
-  :global(.mp-bucket-wrap .ag-theme-algo .mp-subtotal-row .ag-cell) {
-    border-right: 0 !important;
-  }
-  :global(.ag-theme-algo .mp-subtotal-row .ag-col-sym) {
-    background-color: rgba(125, 211, 252, 0.12) !important;
-  }
-  /* Hide the day-P&L mini-bar on subtotal rows — same reasoning as TOTAL. */
-  :global(.ag-theme-algo .mp-subtotal-row .ag-col-sym::after) {
     display: none !important;
   }
   /* Flat-mode wrapper — used by /pulse to drop the .algo-status-card

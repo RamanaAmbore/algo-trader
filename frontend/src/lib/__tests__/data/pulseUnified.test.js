@@ -31,7 +31,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   mergePositionRows, mergeHoldingRows, makeRowFactory, mergeUnderlyingAnchors,
-  totalsRowFor, buildPositionsDisplayRows,
+  totalsRowFor,
 } from '../../data/pulseUnified.js';
 import { baseDayPnlForPosition } from '$lib/data/nav.js';
 
@@ -632,43 +632,5 @@ describe('totalsRowFor — Exp P&L dedup across split account-rows (2026-10 Part
     expect(splitTotal.exp_pnl).toBe(unsplitTotal.exp_pnl);
     // A naive once-per-row sum would have doubled it to 1000.
     expect(splitTotal.exp_pnl).not.toBe(1000);
-  });
-});
-
-// ============================================================================
-// buildPositionsDisplayRows — symbol-subtotal rows
-// (2026-10 Part A, Change 3)
-// ============================================================================
-
-describe('buildPositionsDisplayRows — symbol-subtotal rows (2026-10 Part A, Change 3)', () => {
-  it('inserts one subtotal row above a symbol split across 2+ accounts, with combined qty/day_pnl/exp_pnl', () => {
-    const rowA = { key: 'SYM::ACC1__pos', tradingsymbol: 'NIFTY25AUG24000CE', accounts: new Set(['ACC1']), qty_pos: 50, day_pnl: 100 };
-    const rowB = { key: 'SYM::ACC2__pos', tradingsymbol: 'NIFTY25AUG24000CE', accounts: new Set(['ACC2']), qty_pos: 30, day_pnl: 60 };
-    const expPnlByKey = { NIFTY25AUG24000CE: { exp_pnl: 500, extrinsic: 20 } };
-
-    const display = buildPositionsDisplayRows([rowA, rowB], expPnlByKey);
-    expect(display.length).toBe(3);
-    expect(display[0]._isSubtotal).toBe(true);
-    expect(display[0]._majorGroup).toBe('positions');
-    expect(display[0].qty_pos).toBe(80);
-    expect(display[0].day_pnl).toBe(160);
-    expect(display[0].exp_pnl).toBe(500);
-    expect(display[1]).toBe(rowA);
-    expect(display[2]).toBe(rowB);
-  });
-
-  it('a symbol held in a single account produces no subtotal row', () => {
-    const rowA = { key: 'SYM::ACC1__pos', tradingsymbol: 'NIFTY25AUG24000CE', accounts: new Set(['ACC1']), qty_pos: 50, day_pnl: 100 };
-    const display = buildPositionsDisplayRows([rowA], {});
-    expect(display.length).toBe(1);
-    expect(display[0]).toBe(rowA);
-  });
-
-  it('lot-split pieces of the SAME account (one distinct account) produce no subtotal row', () => {
-    const p1 = { key: 'SYM::ACC1::P1__pos', tradingsymbol: 'NIFTY25AUG24000CE', accounts: new Set(['ACC1']), qty_pos: 20, day_pnl: 40, _isLotSplit: true, lot_piece_label: 'P1' };
-    const p2 = { key: 'SYM::ACC1::P2__pos', tradingsymbol: 'NIFTY25AUG24000CE', accounts: new Set(['ACC1']), qty_pos: 30, day_pnl: 60, _isLotSplit: true, lot_piece_label: 'P2' };
-    const display = buildPositionsDisplayRows([p1, p2], {});
-    expect(display.length).toBe(2);
-    expect(display.every((r) => !r._isSubtotal)).toBe(true);
   });
 });

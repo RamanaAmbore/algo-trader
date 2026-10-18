@@ -313,14 +313,11 @@ test.describe('St column header centering — MarketPulse Positions grid', () =>
 // Part A (2026-10) — one row PER ACCOUNT, not one merged cross-account row.
 //
 // A symbol held in two different accounts used to merge into a single
-// aggregated MarketPulse row with is_orphan/pair_group_key/pin_group_key/
-// has_gtt reset to null (ambiguous — which account's state applies?).
-// mergePositionRows (pulseUnified.js) now keys every position row by
-// `${symbol}::${account}`, so this symbol instead renders as TWO separate
-// rows, each carrying its OWN correct St-column state — and a thin
-// symbol-subtotal row (buildPositionsDisplayRows) above them preserves the
-// "combined exposure across accounts" read the old merged row used to give
-// for free.
+// aggregated MarketPulse row with is_orphan/pair_group_key/has_gtt reset to
+// null (ambiguous — which account's state applies?). mergePositionRows
+// (pulseUnified.js) now keys every position row by `${symbol}::${account}`,
+// so this symbol instead renders as TWO separate rows, each carrying its
+// OWN correct St-column state.
 // ============================================================================
 
 const ACCT2 = 'ZJ6294';
@@ -343,9 +340,8 @@ const TWO_ACCT_ROWS = [
 
 const TWO_ACCT_ROW_ID_1 = `${TWO_ACCT_SYM}::${ACCT}__pos`;
 const TWO_ACCT_ROW_ID_2 = `${TWO_ACCT_SYM}::${ACCT2}__pos`;
-const TWO_ACCT_SUBTOTAL_ROW_ID = `__subtotal_pos_${TWO_ACCT_SYM}`;
 
-test.describe('Per-account Positions rows + symbol-subtotal (2026-10 Part A)', () => {
+test.describe('Per-account Positions rows (2026-10 Part A)', () => {
   test.beforeEach(async ({ page }) => {
     // Own route override — these rows are isolated to this describe block
     // only, so they can't shift the LOT_ROWS-based tests' totals/counts
@@ -383,30 +379,5 @@ test.describe('Per-account Positions rows + symbol-subtotal (2026-10 Part A)', (
     // render a 2-account merged row.
     await expect(badge1).toHaveAttribute('data-pos-state', 'orphan');
     await expect(badge2).toHaveAttribute('data-pos-state', 'orphan');
-  });
-
-  test('the symbol-subtotal row shows the correct combined qty + day P&L for both accounts', async ({ page }) => {
-    await page.goto('/pulse', { waitUntil: 'domcontentloaded' });
-
-    // See the ag-Grid pinned-left/center row-duplication note above — these
-    // column-scoped locators each resolve to exactly 1 real element
-    // (qty_net/day_pnl live in the center viewport only; the 'St' badge
-    // lives in the pinned-left viewport only) without asserting a bare
-    // row-id count.
-    const qtyCell = page.locator(`[row-id="${TWO_ACCT_SUBTOTAL_ROW_ID}"] [col-id="qty_net"]`);
-    const dayPnlCell = page.locator(`[row-id="${TWO_ACCT_SUBTOTAL_ROW_ID}"] [col-id="day_pnl"]`);
-    const subtotalBadge = page.locator(`[row-id="${TWO_ACCT_SUBTOTAL_ROW_ID}"] .pos-state-badge-btn`);
-
-    // Combined qty: 40 + (-20) = 20.
-    await expect(qtyCell).toHaveText(/^20$/, { timeout: TIMEOUT });
-
-    // Combined day P&L: mergePositionRows recomputes day_pnl via the
-    // baseline-diff SSOT formula (realised + unrealised − prev_settlement_pnl),
-    // not the raw `day_pnl` field in the mock — row A: 0+200−0=200,
-    // row B: 0+40−0=40, combined 240.
-    await expect(dayPnlCell).toHaveText(/^\+?240$/, { timeout: TIMEOUT });
-
-    // The subtotal row carries no single-account St-column state.
-    await expect(subtotalBadge).toHaveCount(0);
   });
 });
