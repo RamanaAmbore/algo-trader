@@ -73,9 +73,14 @@ def test_format_uses_the_given_time_in_ist():
     assert ("EDT" in body) or ("EST" in body)
 
 
-def test_fill_message_shows_full_account():
+def test_fill_message_shows_masked_account():
+    # P1 fix (2026-10 audit): the account was previously shown RAW/
+    # unmasked — this is the HIGHEST-VOLUME live notification (every
+    # fill, Telegram+ntfy). Now masked via the same mask_account()
+    # helper every other correctly-masked alert path already uses.
     title, body = fill_notify.format_fill_message(_row(account="ZG0790"))
-    assert "Account: ZG0790" in body
+    assert "Account: ZG0790" not in body
+    assert "Account: ZG####" in body
 
 
 def test_fill_message_shows_agent_name_as_source_matching_agents_log_chip():

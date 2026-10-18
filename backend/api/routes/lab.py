@@ -1080,14 +1080,18 @@ def _res_place_telegram_ping(
 
     Extracted from place_order to reduce CC there. Swallows all exceptions."""
     try:
+        from backend.shared.helpers.utils import mask_account
         price_chunk = (
             f" @₹{data.price:g}" if data.price else
             (f" trig=₹{data.trigger_price:g}" if data.trigger_price else "")
         )
         mode_pill = f"[{res.mode.upper()}]" if res.mode else "[?]"
+        # Account masked (2026-10 audit fix) — matches the masking
+        # convention every other correctly-masked alert path already uses.
+        masked_acct = mask_account(acct) if acct else acct
         tg_msg = (
             f"<b>MCP {mode_pill}</b> {side} {qty} {sym}{price_chunk}\n"
-            f"acct={acct} · order_id=<code>{res.order_id}</code> · "
+            f"acct={masked_acct} · order_id=<code>{res.order_id}</code> · "
             f"status={res.status}\n"
             f"<i>request_id={_audit_link_html(request_id)} · user_id={user_id or '-'}</i>"
         )

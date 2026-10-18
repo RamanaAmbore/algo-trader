@@ -146,6 +146,35 @@ def _chase_level_from_price_policy(price_policy: str | None) -> str:
     return tag if tag in ("low", "med", "high") else "med"
 
 
+async def _resolve_resumed_chase_agent_id(row_agent_id: "int | None") -> "int | None":
+    """Collapse the "manual" sentinel agent id to `None` before threading
+    `agent_id` into a resumed `chase_order()` call.
+
+    P1 fix (2026-10): a manually-placed order's `AlgoOrder.agent_id` is
+    NOT None — it's the real id of the synthetic "manual" Agent row
+    (`MANUAL_AGENT`, resolved via `get_agent_id_by_slug("manual")`).
+    `alert_utils._classify_order_origin_label()` treats
+    `agent_id is not None` as "this is an agent-fired order", so passing
+    the row's own `agent_id` straight through (what both release
+    functions below used to do) mislabeled a held-then-released-then-
+    failed MANUAL order as `[Agent]` in its failure alert. The
+    ticket-chase spawn point (`orders_helpers.py`) never has this bug
+    because it simply never passes `agent_id=` at all for a manual
+    order. This helper restores that same "manual -> None" semantic for
+    the two RESUME paths, which — unlike fresh placement — only have the
+    row's already-persisted `agent_id` to go on.
+    """
+    if row_agent_id is None:
+        return None
+    try:
+        from backend.api.algo.agent_engine import get_agent_id_by_slug
+        manual_aid = await get_agent_id_by_slug("manual")
+    except Exception as e:
+        logger.warning(f"[RELEASE] manual-agent-id lookup failed: {e}")
+        return row_agent_id
+    return None if (manual_aid is not None and row_agent_id == manual_aid) else row_agent_id
+
+
 async def _verify_close_still_valid(
     account: str, symbol: str, exchange: str, side: str, remaining_qty: int,
 ) -> tuple[bool, str]:
@@ -271,11 +300,17 @@ async def release_held_order(order_id: int, actor: str) -> dict:
         await s.commit()
         account, symbol, exchange = row.account, row.symbol, row.exchange
         side, qty, product, row_id = row.transaction_type, int(row.quantity), row.product, row.id
-        agent_id = getattr(row, "agent_id", None)
+        row_agent_id = getattr(row, "agent_id", None)
         # P1 fix (2026-10): resume at the chase tier the row was originally
         # held/placed with (see `_chase_level_from_price_policy`'s docstring)
         # instead of a hardcoded MED tuple.
         chase_level = _chase_level_from_price_policy(rec.get("price_policy"))
+
+    # P1 fix (2026-10): collapse the "manual" sentinel agent id to None
+    # before resuming the chase, so a released MANUAL order's eventual
+    # failure alert says [Manual], not [Agent] — see
+    # `_resolve_resumed_chase_agent_id`'s docstring.
+    agent_id = await _resolve_resumed_chase_agent_id(row_agent_id)
 
     from backend.api.algo.order_events import write_event
     await write_event(row_id, "released", f"Released by {actor}: {side} {qty} {symbol}", {"actor": actor})
@@ -392,11 +427,16 @@ async def release_repeated_rejection_hold(order_id: int, actor: str) -> dict:
         side, qty, product, row_id = row.transaction_type, int(row.quantity), row.product, row.id
         intent = row.intent or None
         already_filled = int(row.filled_quantity or 0)
-        agent_id = getattr(row, "agent_id", None)
+        row_agent_id = getattr(row, "agent_id", None)
         # P1 fix (2026-10): resume at the original chase tier (see
         # `_chase_level_from_price_policy`'s docstring), not a hardcoded
         # MED tuple.
         chase_level = _chase_level_from_price_policy(rec.get("price_policy"))
+
+    # P1 fix (2026-10): collapse the "manual" sentinel agent id to None
+    # before resuming the chase — see `_resolve_resumed_chase_agent_id`'s
+    # docstring.
+    agent_id = await _resolve_resumed_chase_agent_id(row_agent_id)
 
     from backend.api.algo.order_events import write_event
     await write_event(

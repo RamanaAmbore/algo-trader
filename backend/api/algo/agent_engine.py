@@ -1207,8 +1207,23 @@ async def _v2_send_rich_alert(agent, matches, now, sim_mode: bool = False,
     # email Subject header or ntfy Title HTTP header; take only its
     # first line here. The dispatch_payload layer (alert_utils.py) is
     # where the full header (both lines) lands in the message BODY.
+    #
+    # 2026-10 audit fix: `format_notification_header`'s first line is
+    # "Agent: {name} (#{id})" — but `dispatch_payload`'s own base email
+    # prefix (alert_utils.py `_MSG_TYPES['alert']`) is already
+    # "RamboQuant Agent: ", and `_email_message` concatenates
+    # `email_prefix_full + subject_detail` with no separator, so using
+    # the full header line here produced a duplicated
+    # "RamboQuant Agent: Agent: {name} (#{id})" subject. Strip the
+    # leading "Agent: " from THIS call site's own result only —
+    # `format_notification_header` itself is unchanged (other callers,
+    # e.g. the Telegram/email BODY line, want the full "Agent: " label
+    # and are unaffected).
     from backend.shared.helpers.alert_utils import format_notification_header
-    subject    = format_notification_header(agent.name, agent.id).splitlines()[0]
+    _subject_header_line = format_notification_header(agent.name, agent.id).splitlines()[0]
+    subject = (_subject_header_line[len("Agent: "):]
+               if _subject_header_line.startswith("Agent: ")
+               else _subject_header_line)
     mode_tag   = '' if sim_mode else _agent_execution_mode_tag(agent)
     try:
         logger.info(

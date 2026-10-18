@@ -120,6 +120,61 @@ async def test_release_resumes_a_close_intent_chase_with_close_preserved():
 
 
 @pytest.mark.asyncio
+async def test_release_resumes_manual_order_with_agent_id_collapsed_to_none():
+    """P1 fix (2026-10): a MANUALLY-placed order's `AlgoOrder.agent_id`
+    is the real id of the synthetic "manual" Agent row, not None.
+    Resuming a chase for such a row must collapse that sentinel id back
+    to None, or `alert_utils._classify_order_origin_label()` would
+    mislabel a subsequent failure alert as `[Agent]` instead of
+    `[Manual]`."""
+    from backend.api.algo import order_release as m
+
+    row = _held_row(hold_json=_agent_order_hold_json(), agent_id=99)
+    mock_session = _mock_session(row)
+    mock_chase_order = AsyncMock()
+
+    with patch("backend.api.database.async_session", return_value=mock_session), \
+         patch("backend.api.algo.order_events.write_event", new_callable=AsyncMock), \
+         patch("backend.api.algo.chase.chase_order", mock_chase_order), \
+         patch("backend.api.algo.chase._ch_mark_chase_active"), \
+         patch("backend.api.algo.chase._ch_mark_chase_inactive"), \
+         patch("backend.api.algo.agent_engine.get_agent_id_by_slug",
+               new=AsyncMock(return_value=99)):
+        result = await m.release_repeated_rejection_hold(77, actor="operator")
+        assert result["ok"] is True
+        await asyncio.sleep(0)
+
+        mock_chase_order.assert_called_once()
+        assert mock_chase_order.call_args.kwargs["agent_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_release_resumes_real_agent_order_with_agent_id_preserved():
+    """A row ACTUALLY fired by a real automation agent (agent_id != the
+    manual sentinel) must keep its real agent_id through the resume, so
+    a subsequent failure alert still correctly says `[Agent]`."""
+    from backend.api.algo import order_release as m
+
+    row = _held_row(hold_json=_agent_order_hold_json(), agent_id=7)
+    mock_session = _mock_session(row)
+    mock_chase_order = AsyncMock()
+
+    with patch("backend.api.database.async_session", return_value=mock_session), \
+         patch("backend.api.algo.order_events.write_event", new_callable=AsyncMock), \
+         patch("backend.api.algo.chase.chase_order", mock_chase_order), \
+         patch("backend.api.algo.chase._ch_mark_chase_active"), \
+         patch("backend.api.algo.chase._ch_mark_chase_inactive"), \
+         patch("backend.api.algo.agent_engine.get_agent_id_by_slug",
+               new=AsyncMock(return_value=99)):
+        result = await m.release_repeated_rejection_hold(77, actor="operator")
+        assert result["ok"] is True
+        await asyncio.sleep(0)
+
+        mock_chase_order.assert_called_once()
+        assert mock_chase_order.call_args.kwargs["agent_id"] == 7
+
+
+@pytest.mark.asyncio
 async def test_release_marks_chase_active_before_committing_open():
     """Regression test for the release-path race: _ch_mark_chase_active
     must be called BEFORE row.status is committed as OPEN, so the

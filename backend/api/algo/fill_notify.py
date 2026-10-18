@@ -40,9 +40,17 @@ def format_fill_message(row, when: datetime | None = None) -> tuple[str, str]:
     # rebuilds this `row` from THAT dict alone, long after the DB row
     # itself is gone.
     source = str(getattr(row, "agent_name", None) or "Manual operator order").upper()
+    from backend.shared.helpers.utils import mask_account
+    # Account masked (2026-10 audit fix) — this is the HIGHEST-VOLUME live
+    # notification (every fill, Telegram+ntfy); matches the masking
+    # convention every other correctly-masked alert path already uses.
+    masked_account = mask_account(row.account) if row.account else "-"
+    # Missing-vs-zero convention (CLAUDE.md): a genuinely absent fill
+    # price must never render as a fabricated "0.00".
+    fill_px = (f"{float(row.fill_price):.2f}" if row.fill_price is not None else "—")
     body = "\n".join([
-        f"Account: {row.account or '-'}",
-        f"{side} {qty} {symbol} ({row.exchange or '-'}) @ {float(row.fill_price or 0):.2f}",
+        f"Account: {masked_account}",
+        f"{side} {qty} {symbol} ({row.exchange or '-'}) @ {fill_px}",
         f"Product: {row.product or '-'}",
         f"Source: {source}",
         f"Order id: {row.id}",

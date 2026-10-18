@@ -251,3 +251,85 @@ async def test_release_clears_hold_json_so_row_no_longer_matches_list_held():
     assert row.status == "OPEN"
     assert row.hold_json is None
     assert _list_held_predicate_matches(row) is False
+
+
+# ── P1 fix (2026-10 audit) — manual-vs-agent origin on resumed chase ────
+#
+# `alert_utils._classify_order_origin_label()` treats `agent_id is not
+# None` as "this order was agent-fired". A manually-placed order's
+# `AlgoOrder.agent_id` is NOT None — it's the real id of the synthetic
+# "manual" Agent row (MANUAL_AGENT). `release_held_order` must collapse
+# that sentinel id back to None before threading it into the resumed
+# `chase_order()` call, or a failure alert for an originally-manual
+# order would be mislabeled `[Agent]` instead of `[Manual]`.
+
+@pytest.mark.asyncio
+async def test_release_held_order_resumes_manual_order_with_agent_id_collapsed_to_none():
+    from backend.api.algo import order_release as m
+
+    row = _held_expiry_row(agent_id=99)
+    mock_session = _mock_session(row)
+    frame = _mcx_positions_frame(quantity_lots=1, multiplier=100)
+    mock_broker = MagicMock()
+    mock_broker.quote.return_value = {
+        "MCX:CRUDEOIL26OCT8600CE": {
+            "depth": {"buy": [{"price": 100.0}], "sell": [{"price": 100.2}]},
+            "last_price": 100.1,
+            "lower_circuit_limit": 50.0,
+            "upper_circuit_limit": 200.0,
+        }
+    }
+    mock_chase_order = AsyncMock()
+
+    with patch("backend.api.database.async_session", return_value=mock_session), \
+         patch("backend.brokers.get_broker", return_value=mock_broker), \
+         patch("backend.brokers.broker_apis.fetch_positions", return_value=[frame]), \
+         patch("backend.api.routes.orders_helpers._ensure_tick_index", new_callable=AsyncMock), \
+         patch.dict("backend.api.routes.orders_helpers._TICK_INDEX",
+                    {("MCX", "CRUDEOIL26OCT8600CE"): 0.1}, clear=True), \
+         patch("backend.api.algo.order_events.write_event", new_callable=AsyncMock), \
+         patch("backend.api.algo.chase.chase_order", mock_chase_order), \
+         patch("backend.api.algo.agent_engine.get_agent_id_by_slug",
+               new=AsyncMock(return_value=99)):
+        result = await m.release_held_order(501, actor="operator")
+        await asyncio.sleep(0)
+
+    assert result["ok"] is True
+    mock_chase_order.assert_called_once()
+    assert mock_chase_order.call_args.kwargs["agent_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_release_held_order_resumes_real_agent_order_with_agent_id_preserved():
+    from backend.api.algo import order_release as m
+
+    row = _held_expiry_row(agent_id=7)
+    mock_session = _mock_session(row)
+    frame = _mcx_positions_frame(quantity_lots=1, multiplier=100)
+    mock_broker = MagicMock()
+    mock_broker.quote.return_value = {
+        "MCX:CRUDEOIL26OCT8600CE": {
+            "depth": {"buy": [{"price": 100.0}], "sell": [{"price": 100.2}]},
+            "last_price": 100.1,
+            "lower_circuit_limit": 50.0,
+            "upper_circuit_limit": 200.0,
+        }
+    }
+    mock_chase_order = AsyncMock()
+
+    with patch("backend.api.database.async_session", return_value=mock_session), \
+         patch("backend.brokers.get_broker", return_value=mock_broker), \
+         patch("backend.brokers.broker_apis.fetch_positions", return_value=[frame]), \
+         patch("backend.api.routes.orders_helpers._ensure_tick_index", new_callable=AsyncMock), \
+         patch.dict("backend.api.routes.orders_helpers._TICK_INDEX",
+                    {("MCX", "CRUDEOIL26OCT8600CE"): 0.1}, clear=True), \
+         patch("backend.api.algo.order_events.write_event", new_callable=AsyncMock), \
+         patch("backend.api.algo.chase.chase_order", mock_chase_order), \
+         patch("backend.api.algo.agent_engine.get_agent_id_by_slug",
+               new=AsyncMock(return_value=99)):
+        result = await m.release_held_order(501, actor="operator")
+        await asyncio.sleep(0)
+
+    assert result["ok"] is True
+    mock_chase_order.assert_called_once()
+    assert mock_chase_order.call_args.kwargs["agent_id"] == 7

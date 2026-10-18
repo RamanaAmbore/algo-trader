@@ -404,3 +404,42 @@ class TestPerAccountBreachAccountCodeMasked:
         )
         assert "ZG0790" not in extra["email_table_html"]
         assert mask_account("ZG0790") in extra["tg_table"]
+
+
+class TestSubjectDetailNoLongerDuplicatesAgentPrefix:
+    """P1 fix (2026-10 audit, Group C item 9) — `_v2_send_rich_alert`'s
+    own `subject_detail` (built at agent_engine.py ~line 1211) used to
+    be `format_notification_header(...)`'s FULL first line, "Agent:
+    {name} (#{id})". Concatenated with `dispatch_payload`'s base email
+    prefix ("RamboQuant Agent: ") downstream in event_agents.py's
+    `_render_rich_alert`, this produced a duplicated subject reading
+    "RamboQuant Agent: Agent: {name} (#{id})". The real triggering
+    agent's name/id must still be present, just without the duplicate
+    "Agent:" label."""
+
+    @pytest.mark.asyncio
+    async def test_subject_detail_has_no_duplicate_agent_label(self):
+        agent = _Agent(name="loss-margin-low", id=42,
+                       events=[{"channel": "telegram", "enabled": True}])
+        extra = await _capture_rich_alert(agent, [_match()], _eval_result())
+        assert "Agent: Agent:" not in extra["subject_detail"]
+        assert "loss-margin-low (#42)" in extra["subject_detail"]
+
+    @pytest.mark.asyncio
+    async def test_end_to_end_email_subject_has_no_duplicate_agent_label(self):
+        """Full round trip through dispatch_payload, matching exactly
+        what event_agents.py:_render_rich_alert builds for the real
+        email Subject header."""
+        from backend.shared.helpers.alert_utils import dispatch_payload
+
+        agent = _Agent(name="loss-margin-low", id=42,
+                       events=[{"channel": "telegram", "enabled": True}])
+        extra = await _capture_rich_alert(agent, [_match()], _eval_result())
+        with patch('backend.shared.helpers.alert_utils.config', {'deploy_branch': 'main'}):
+            payload = dispatch_payload(
+                "alert", extra["ist_display"], extra["tg_table"], extra["email_table_html"],
+                extra["subject_detail"], sim_mode=False, mode_tag="",
+                agent_name=extra.get("agent_name"), agent_id=extra.get("agent_id"),
+            )
+        assert "Agent: Agent:" not in payload["email_subject"]
+        assert payload["email_subject"] == "RamboQuant Agent: loss-margin-low (#42)"

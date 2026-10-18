@@ -466,6 +466,59 @@ async def test_write_live_order_close_position_never_sets_product_or_template():
             )
             # agent_id attribution still flows correctly for every action type.
             assert captured_kwargs.get("agent_id") == 11
+            # P1 fix (2026-10 audit): `source` must now be persisted as
+            # "agent:{slug}" — before this fix it was never set at all
+            # (stayed NULL forever), indistinguishable from a manual
+            # order wherever OrderCard.svelte's "origin:" chip reads
+            # AlgoOrder.source. Same non-colliding f-string shape
+            # already used transiently for alert labels.
+            assert captured_kwargs.get("source") == "agent:close-agent"
+
+
+@pytest.mark.asyncio
+async def test_write_live_order_source_truncated_to_column_width():
+    """`AlgoOrder.source` is String(32) — a long real seeded slug (e.g.
+    "expiry-day-commodity-itm-auto-close", 35 chars) prefixed with
+    "agent:" (41 chars total) must be truncated to fit, or the INSERT
+    would fail outright for exactly the auto-close agents that fire
+    this path most."""
+    from backend.api.algo.actions import _write_live_order
+
+    captured_kwargs: dict = {}
+
+    class _FakeRow:
+        def __init__(self, **kwargs):
+            captured_kwargs.update(kwargs)
+            self.id = 778
+
+    class _FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        def add(self, row):
+            pass
+
+        async def commit(self):
+            pass
+
+    agent = MagicMock()
+    agent.slug = "expiry-day-commodity-itm-auto-close"  # 36 chars
+    agent.id = 12
+
+    with patch("backend.api.database.async_session", side_effect=lambda: _FakeSession()), \
+         patch("backend.api.models.AlgoOrder", side_effect=_FakeRow), \
+         patch("backend.api.algo.order_events.write_event", new=AsyncMock()):
+        await _write_live_order(
+            agent, "close_position",
+            {"account": "ZG0790", "symbol": "NIFTY25OCTFUT", "side": "SELL",
+             "qty": 50, "price": 100.0, "exchange": "NFO"},
+        )
+
+    assert len(captured_kwargs["source"]) <= 32
+    assert captured_kwargs["source"] == f"agent:{agent.slug}"[:32]
 
 
 def test_action_live_close_position_source_never_calls_product_template_helper():

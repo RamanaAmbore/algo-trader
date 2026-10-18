@@ -110,14 +110,31 @@ def test_fill_format_golden():
     title, body = fill_notify.format_fill_message(
         row, when=_dt.datetime(2026, 10, 6, 4, 45, 30, tzinfo=timezone.utc))
     assert title == "Order filled: BUY 75 NIFTY26OCT25000CE"
+    # 2026-10 audit fix: account is now masked — this is the
+    # HIGHEST-VOLUME live notification (every fill, Telegram+ntfy), and
+    # was previously the one unmasked account surface in the app.
     assert body == "\n".join([
-        "Account: ZG0790",
+        "Account: ZG####",
         "BUY 75 NIFTY26OCT25000CE (NFO) @ 112.50",
         "Product: NRML",
         "Source: MANUAL OPERATOR ORDER",
         "Order id: 101",
         f"Time: {_FIXED_TS}",
     ])
+
+
+def test_fill_format_golden_missing_fill_price_renders_dash_not_zero():
+    """2026-10 audit fix: a genuinely-absent fill price (None) must
+    render as "—", never a fabricated "0.00" — this codebase's own
+    missing-vs-zero convention (CLAUDE.md)."""
+    from datetime import timezone
+    row = SimpleNamespace(id=103, account="ZG0790", symbol="NIFTY26OCT25000CE", exchange="NFO",
+                          transaction_type="BUY", quantity=75, fill_price=None, product="NRML",
+                          mode="live", engine="live")
+    _, body = fill_notify.format_fill_message(
+        row, when=_dt.datetime(2026, 10, 6, 4, 45, 30, tzinfo=timezone.utc))
+    assert "@ —" in body
+    assert "0.00" not in body
 
 
 def test_fill_format_golden_agent_triggered():
@@ -152,10 +169,11 @@ async def test_fill_delivery_golden_via_event_agent(monkeypatch):
     await event_agents.dispatch([rec], [agent])
     # No agent_id on `row` -> no agent_name resolved -> Source defaults to
     # "MANUAL OPERATOR ORDER" (2026-10-17 fix, see test_fill_format_golden).
+    # Account masked (2026-10 audit fix) — ZG0790 -> ZG####.
     assert sent["ntfy"] == [("Order filled: SELL 1 CRUDEOIL26OCTFUT",
-                             f"Account: ZG0790\nSELL 1 CRUDEOIL26OCTFUT (MCX) @ 8750.00\nProduct: NRML\nSource: MANUAL OPERATOR ORDER\nOrder id: 7\nTime: {_FIXED_TS}")]
+                             f"Account: ZG####\nSELL 1 CRUDEOIL26OCTFUT (MCX) @ 8750.00\nProduct: NRML\nSource: MANUAL OPERATOR ORDER\nOrder id: 7\nTime: {_FIXED_TS}")]
     assert sent["tg"] == ["<b>Order filled: SELL 1 CRUDEOIL26OCTFUT</b>\n"
-                          f"Account: ZG0790\nSELL 1 CRUDEOIL26OCTFUT (MCX) @ 8750.00\nProduct: NRML\nSource: MANUAL OPERATOR ORDER\nOrder id: 7\nTime: {_FIXED_TS}"]
+                          f"Account: ZG####\nSELL 1 CRUDEOIL26OCTFUT (MCX) @ 8750.00\nProduct: NRML\nSource: MANUAL OPERATOR ORDER\nOrder id: 7\nTime: {_FIXED_TS}"]
 
 
 def _chase_rec():
@@ -178,9 +196,14 @@ async def test_chase_cancel_golden_text_and_urgent_priority(monkeypatch):
     agent = SimpleNamespace(slug="chase-cancel-alert",
                             **{k: event_agents.CHASE_CANCEL_AGENT[k] for k in ("conditions", "events", "actions")})
     await event_agents.dispatch([_chase_rec()], [agent])
+    # 2026-10 audit fix: the old "after attempt 2/40 filled." wording
+    # read like a fraction (attempt N of M attempts) when the
+    # denominator was actually "contracts already filled" — unrelated
+    # numbers. Now spelled out unambiguously.
     assert sent == [(
         "Chase cancel unconfirmed — possible resting duplicate order",
-        "BUY NIFTY26OCTFUT — cancel of order O1 on ZG#### could not be confirmed after attempt 2/40 filled. "
+        "BUY NIFTY26OCTFUT — cancel of order O1 on ZG#### could not be confirmed after attempt "
+        "2 (40 contracts filled so far). "
         "The chase has been ABORTED without placing a replacement order. "
         "Manually verify the broker's order book — the old order may still be live.\n"
         f"{_FIXED_TS}",
@@ -295,8 +318,12 @@ async def test_order_failure_golden_text_channels_and_html(monkeypatch):
 async def test_template_guard_golden_text_and_channels(monkeypatch):
     from backend.api.algo import event_agents
     import backend.shared.helpers.utils as u
-    sent = {"tg": [], "ntfy": []}
+    import backend.shared.helpers.alert_utils as au
+    import backend.shared.helpers.mail_utils as mu
+    sent = {"tg": [], "ntfy": [], "mail": []}
     monkeypatch.setattr(u, "is_enabled", lambda cap: True)
+    monkeypatch.setattr(au, "get_alert_recipients", lambda: ["a@x.com"])
+    monkeypatch.setattr(mu, "send_email", lambda *a, **k: sent["mail"].append(a))
     monkeypatch.setitem(event_agents.CHANNELS, "telegram",
                         ("telegram", lambda t, b, tg=None, **k: sent["tg"].append(tg)))
     monkeypatch.setitem(event_agents.CHANNELS, "ntfy",
@@ -311,21 +338,34 @@ async def test_template_guard_golden_text_and_channels(monkeypatch):
     agent = SimpleNamespace(slug="template-guard-alert",
                             **{k: event_agents.TEMPLATE_GUARD_AGENT[k] for k in ("conditions", "events", "actions")})
     await event_agents.dispatch([rec], [agent])
+    # Account masked (2026-10 audit fix) — ZG0790 -> ZG####.
     expected_tg = ("<b>⚠ Template guard fired — Tue, Oct 06 2026, 14:30 IST</b>\n\n<code>order #1088\nSELL 75 NIFTY26OCTFUT\n"
-                   "@ ₹112.50  (ZG0790)\n\ntemplate:    default-bull\napplies_to:  sell_option\nreason:      qty &lt; lot_size\n\n"
+                   "@ ₹112.50  (ZG####)\n\ntemplate:    default-bull\napplies_to:  sell_option\nreason:      qty &lt; lot_size\n\n"
                    "Parent order FILLED. Exits NOT attached.\nArm exits manually if needed.\n\n"
                    "Fix: at /admin/templates, change this template's 'applies_to' to 'both' or 'buy_option'.</code>")
     assert sent["tg"] == [expected_tg]
     assert len(sent["ntfy"]) == 1 and sent["ntfy"][0][0] == "Template guard fired" and sent["ntfy"][0][2] == "high"
     assert "qty < lot_size" in sent["ntfy"][0][1] and "<code>" not in sent["ntfy"][0][1]
+    # 2026-10 audit fix (item 10): TEMPLATE_GUARD_AGENT now also delivers
+    # to email — "durable record for end-of-day review" per
+    # template_attach.py:_fire_guard_alert's own docstring.
+    assert len(sent["mail"]) == 1
+    _, addr, subj, body = sent["mail"][0]
+    assert addr == "a@x.com"
+    assert "Template guard fired" in subj
+    assert "ZG####" in body and "ZG0790" not in body
 
 
 @pytest.mark.asyncio
 async def test_template_attach_fail_golden_text_and_channels(monkeypatch):
     from backend.api.algo import event_agents
     import backend.shared.helpers.utils as u
-    sent = {"tg": [], "ntfy": []}
+    import backend.shared.helpers.alert_utils as au
+    import backend.shared.helpers.mail_utils as mu
+    sent = {"tg": [], "ntfy": [], "mail": []}
     monkeypatch.setattr(u, "is_enabled", lambda cap: True)
+    monkeypatch.setattr(au, "get_alert_recipients", lambda: ["a@x.com"])
+    monkeypatch.setattr(mu, "send_email", lambda *a, **k: sent["mail"].append(a))
     monkeypatch.setitem(event_agents.CHANNELS, "telegram",
                         ("telegram", lambda t, b, tg=None, **k: sent["tg"].append(tg)))
     monkeypatch.setitem(event_agents.CHANNELS, "ntfy",
@@ -338,8 +378,16 @@ async def test_template_attach_fail_golden_text_and_channels(monkeypatch):
     agent = SimpleNamespace(slug="template-attach-fail-alert",
                             **{k: event_agents.TEMPLATE_ATTACH_FAIL_AGENT[k] for k in ("conditions", "events", "actions")})
     await event_agents.dispatch([rec], [agent])
-    assert sent["tg"] == ["<b>⚠ Template attach failed — Tue, Oct 06 2026, 14:30 IST</b>\n\n<code>order #1088\nsymbol:   NIFTY26OCTFUT\naccount:  ZG0790\n\nerrors:   qty &lt; lot_size; rate limit\n\nParent order FILLED. Exits NOT attached.\nArm exits manually if needed.</code>"]
+    # Account masked (2026-10 audit fix) — ZG0790 -> ZG####.
+    assert sent["tg"] == ["<b>⚠ Template attach failed — Tue, Oct 06 2026, 14:30 IST</b>\n\n<code>order #1088\nsymbol:   NIFTY26OCTFUT\naccount:  ZG####\n\nerrors:   qty &lt; lot_size; rate limit\n\nParent order FILLED. Exits NOT attached.\nArm exits manually if needed.</code>"]
     assert sent["ntfy"][0][0] == "Template attach failed" and sent["ntfy"][0][2] == "urgent"
+    # 2026-10 audit fix (item 10): TEMPLATE_ATTACH_FAIL_AGENT now also
+    # delivers to email — same missing backstop as TEMPLATE_GUARD_AGENT.
+    assert len(sent["mail"]) == 1
+    _, addr, subj, body = sent["mail"][0]
+    assert addr == "a@x.com"
+    assert "Template attach failed" in subj
+    assert "ZG####" in body and "ZG0790" not in body
 
 
 @pytest.mark.asyncio

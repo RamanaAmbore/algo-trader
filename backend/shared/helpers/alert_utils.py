@@ -540,6 +540,18 @@ def dispatch_payload(msg_type: str, ist_display: str, tg_table: str, email_table
     tg_prefix_full    = f"SIMULATOR {tg_prefix}"    if sim_mode else tg_prefix
     email_prefix_full = f"SIMULATOR {email_prefix}" if sim_mode else email_prefix
 
+    # 2026-10 audit fix: the ntfy/lock-screen TITLE used to be the bare
+    # generic `tg_prefix` ("Agent") for every alert, showing e.g.
+    # "Agent — 09:14:22 IST" with zero agent name/metric/account visible
+    # before opening the notification. When the REAL triggering agent's
+    # name is known (both `agent_name` and `agent_id` given — the exact
+    # same condition `agent_line` above already gates on), use it as the
+    # title's base instead of the generic prefix. Falls back to the
+    # prior generic text for callers with no single originating agent
+    # (open/close summaries) — unchanged behaviour there.
+    title_base = agent_name if (agent_name and agent_id is not None) else tg_prefix
+    title_base_full = f"SIMULATOR {title_base}" if sim_mode else title_base
+
     branch = config.get('deploy_branch', 'main')
     branch_tag = f" [{branch}]" if branch != 'main' else ''
     mode_pfx = f"{mode_tag} " if mode_tag else ''
@@ -568,7 +580,7 @@ def dispatch_payload(msg_type: str, ist_display: str, tg_table: str, email_table
     )
     return {
         "event_key": event_key,
-        "title": f"{tg_prefix_full} — {ist_display}",
+        "title": f"{title_base_full} — {ist_display}",
         "telegram_msg": telegram_msg,
         "email_subject": subject,
         "email_html": html_body,

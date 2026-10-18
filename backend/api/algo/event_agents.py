@@ -64,10 +64,16 @@ def _render_chase_cancel(rec: dict) -> tuple[str, str]:
     from backend.shared.helpers.utils import mask_account_in_text
     from backend.shared.helpers.date_time_utils import timestamp_display
     x = rec.get("extra") or {}
+    # 2026-10 audit fix: the prior wording
+    # "after attempt {attempt}/{quantity-remaining_qty} filled." reads
+    # like a fraction (attempt N of M attempts), but the denominator is
+    # actually "contracts already filled so far" — an unrelated number.
+    # Spelled out unambiguously below.
+    filled_so_far = x.get('quantity', 0) - x.get('remaining_qty', 0)
     body = (
         f"{x.get('transaction_type')} {x.get('symbol')} — cancel of order {x.get('order_id')} "
         f"on {x.get('account')} could not be confirmed after attempt "
-        f"{x.get('attempt')}/{x.get('quantity', 0) - x.get('remaining_qty', 0)} filled. "
+        f"{x.get('attempt')} ({filled_so_far} contracts filled so far). "
         f"The chase has been ABORTED without placing a replacement order. "
         f"Manually verify the broker's order book — the old order may still be live.\n"
         f"{timestamp_display()}"
@@ -124,26 +130,43 @@ def _render_order_failure(rec: dict) -> tuple:
     return f"Order Rejected: {x['symbol']} {x['side']}", _html_to_plain(tg_body), tg_body, (subject, email_body)
 
 
-def _render_template_guard(rec: dict) -> tuple[str, str, str]:
-    """A template exit guard fired (held/released/blocked an exit)."""
+def _render_template_guard(rec: dict) -> tuple:
+    """A template exit guard fired (held/released/blocked an exit).
+
+    4th element (email subject, body) added 2026-10 audit fix —
+    TEMPLATE_GUARD_AGENT now carries an `email` channel per
+    `template_attach.py:_fire_guard_alert`'s own docstring promise
+    ("Email lands in the alert inbox — durable record for end-of-day
+    review"), which previously had no renderer support for it at all.
+    """
     from backend.api.algo.template_attach import template_guard_message
     from backend.shared.helpers.alert_utils import _html_to_plain
     x = rec.get("extra") or {}
     keys = ("template_slug", "applies_to", "reason", "parent_order_id", "parent_side", "parent_qty",
             "parent_symbol", "parent_fill_price", "parent_account", "ist_label")
     tg = template_guard_message(**{k: x.get(k) for k in keys})
-    return "Template guard fired", _html_to_plain(tg), tg
+    title = "Template guard fired"
+    email_subject = f"RamboQuant {title}: {x.get('parent_symbol') or ''}"
+    email_body = f"<html><body style='font-family:sans-serif'>{tg}</body></html>"
+    return title, _html_to_plain(tg), tg, (email_subject, email_body)
 
 
-def _render_attach_fail(rec: dict) -> tuple[str, str, str]:
-    """A template's exit GTTs/wing failed to attach to the filled parent."""
+def _render_attach_fail(rec: dict) -> tuple:
+    """A template's exit GTTs/wing failed to attach to the filled parent.
+
+    4th element (email subject, body) added 2026-10 audit fix — see
+    `_render_template_guard`'s docstring for the rationale (same
+    "durable record" promise, same prior gap)."""
     from backend.api.algo.template_attach import template_attach_fail_message
     from backend.shared.helpers.alert_utils import _html_to_plain
     x = rec.get("extra") or {}
     tg = template_attach_fail_message(order_id=x.get("order_id"), symbol=x.get("symbol"),
                                       account=x.get("account"), err_summary=x.get("err_summary") or "",
                                       ist_label=x.get("ist_label"))
-    return "Template attach failed", _html_to_plain(tg), tg
+    title = "Template attach failed"
+    email_subject = f"RamboQuant {title}: {x.get('symbol') or ''}"
+    email_body = f"<html><body style='font-family:sans-serif'>{tg}</body></html>"
+    return title, _html_to_plain(tg), tg, (email_subject, email_body)
 
 
 def _render_mcp_ping(rec: dict) -> tuple[str, str, str]:
@@ -539,7 +562,13 @@ CHASE_CANCEL_AGENT = {
     "name": "Chase cancel unconfirmed",
     "conditions": {"log": {"tag": "chase", "min_level": "CRITICAL",
                            "where": {"alert_event": "cancel_unconfirmed"}}},
-    "events": [{"channel": "ntfy", "enabled": True, "priority": "urgent"}],
+    "events": [
+        # 2026-10 audit fix: this is one of the most severe alert types
+        # (a possible duplicate live order resting unconfirmed) — ntfy
+        # alone had no Telegram/email backstop. Telegram added.
+        {"channel": "telegram", "enabled": True},
+        {"channel": "ntfy", "enabled": True, "priority": "urgent"},
+    ],
     "actions": [{"type": "render", "render": "chase_cancel"}],
 }
 
@@ -559,7 +588,13 @@ TEMPLATE_ATTACH_URGENT_AGENT = {
         {"log": {"tag": "gtt", "min_level": "WARNING", "where": {"alert_event": "wing_unprotected"}}},
         {"log": {"tag": "gtt", "min_level": "CRITICAL", "where": {"alert_event": "wing_hard_reject"}}},
     ]},
-    "events": [{"channel": "ntfy", "enabled": True, "priority": "urgent"}],
+    "events": [
+        # 2026-10 audit fix: wing_unprotected (an unprotected live SELL
+        # position) is one of the most severe alert types — ntfy alone
+        # had no Telegram/email backstop. Telegram added.
+        {"channel": "telegram", "enabled": True},
+        {"channel": "ntfy", "enabled": True, "priority": "urgent"},
+    ],
     "actions": [{"type": "render", "render": "template_attach"}],
 }
 
@@ -595,6 +630,10 @@ TEMPLATE_GUARD_AGENT = {
     "events": [
         {"channel": "telegram", "enabled": True, "gate": False},
         {"channel": "ntfy", "enabled": True, "priority": "high", "gate": False},
+        # 2026-10 audit fix: `template_attach.py:_fire_guard_alert`'s own
+        # docstring already promised an email channel ("durable record
+        # for end-of-day review") that was never actually wired up.
+        {"channel": "email", "enabled": True, "gate": False},
     ],
     "actions": [{"type": "render", "render": "template_guard"}],
 }
@@ -607,6 +646,9 @@ TEMPLATE_ATTACH_FAIL_AGENT = {
     "events": [
         {"channel": "telegram", "enabled": True, "gate": False},
         {"channel": "ntfy", "enabled": True, "priority": "urgent", "gate": False},
+        # 2026-10 audit fix: same missing email backstop as
+        # TEMPLATE_GUARD_AGENT above.
+        {"channel": "email", "enabled": True, "gate": False},
     ],
     "actions": [{"type": "render", "render": "template_attach_fail"}],
 }

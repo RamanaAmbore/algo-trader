@@ -1153,6 +1153,22 @@ async def _write_live_order(agent, action_type: str, resolved: dict,
                 initial_price=(float(price) if price is not None else None),
                 status=status, engine="live", mode="live",
                 agent_id=getattr(agent, "id", None),
+                # P1 fix (2026-10): persist the same "agent:{slug}" origin
+                # string already used transiently for alert labels
+                # (actions_live.py's send_order_failure_alert(source=...)
+                # calls) so OrderCard.svelte's "origin:" chip (which reads
+                # AlgoOrder.source) can actually distinguish an agent-fired
+                # live order from a manual one — before this fix `source`
+                # was never set here, so it stayed NULL forever. Matches
+                # the existing non-colliding `f"agent:{slug}"` shape (see
+                # models.py's `source` column docstring for the full
+                # ticket/basket/chase/... taxonomy this is additive to).
+                # Truncated to the column's own String(32) width — some
+                # seeded slugs (e.g. "expiry-day-commodity-itm-auto-close",
+                # 35 chars) exceed 32 chars once prefixed with "agent:",
+                # which would otherwise fail the INSERT outright for
+                # exactly the auto-close agents that fire this path most.
+                source=f"agent:{getattr(agent, 'slug', action_type)}"[:32],
                 broker_order_id=broker_order_id or "",
                 detail=detail,
             )

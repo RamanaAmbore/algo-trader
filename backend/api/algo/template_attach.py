@@ -214,16 +214,20 @@ def template_guard_message(*, template_slug, applies_to, reason, parent_order_id
                            parent_qty, parent_symbol, parent_fill_price, parent_account, ist_label) -> str:
     """Telegram-HTML body of the template guard alert. Pure; shared by the sender and the renderer."""
     import html as _html
+    from backend.shared.helpers.utils import mask_account
     reason_html        = _html.escape(str(reason))
     applies_to_html    = _html.escape(str(applies_to))
     template_slug_html = _html.escape(str(template_slug))
+    # Account masked (2026-10 audit fix) — matches the masking convention
+    # every other correctly-masked alert path already uses.
+    masked_account = mask_account(parent_account) if parent_account else parent_account
 
     tg_msg = (
         f"<b>⚠ Template guard fired — {ist_label}</b>\n\n"
         f"<code>"
         f"order #{parent_order_id}\n"
         f"{parent_side} {parent_qty} {parent_symbol}\n"
-        f"@ ₹{parent_fill_price:.2f}  ({parent_account})\n\n"
+        f"@ ₹{parent_fill_price:.2f}  ({masked_account})\n\n"
         f"template:    {template_slug_html}\n"
         f"applies_to:  {applies_to_html}\n"
         f"reason:      {reason_html}\n\n"
@@ -377,14 +381,18 @@ def _fire_wing_unprotected_alert(
 def template_attach_fail_message(*, order_id, symbol, account, err_summary, ist_label) -> str:
     """Telegram-HTML body of the template attach failure alert. Pure; shared by sender and renderer."""
     import html as _html
+    from backend.shared.helpers.utils import mask_account
     # Escape before embedding: err_summary is raw broker/guard text and may hold a literal '<'.
     err_summary_html = _html.escape(err_summary)
+    # Account masked (2026-10 audit fix) — matches the masking convention
+    # every other correctly-masked alert path already uses.
+    masked_account = mask_account(account) if account else account
     return (
         f"<b>⚠ Template attach failed — {ist_label}</b>\n\n"
         f"<code>"
         f"order #{order_id}\n"
         f"symbol:   {symbol}\n"
-        f"account:  {account}\n\n"
+        f"account:  {masked_account}\n\n"
         f"errors:   {err_summary_html}\n\n"
         f"Parent order FILLED. Exits NOT attached.\n"
         f"Arm exits manually if needed.</code>"
