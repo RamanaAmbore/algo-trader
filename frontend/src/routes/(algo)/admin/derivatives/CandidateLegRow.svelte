@@ -260,29 +260,42 @@
        onclick/onkeydown row-activation handlers (Enter on a focused
        button bubbles a keydown to the row before the button's own
        synthetic click fires). -->
+  <!-- The St-column auto-pair badge (P1/P2/GTT/pinned/orphan) is
+       suppressed on the Exp Close tab (2026-10-17, operator: "exp close
+       is also changed to p1, p2, this has to be reverted... needs to be
+       taken to the state it has c1, c2, the netting, in the money, out
+       of money, mcx and non-mcx functionality"). Exp Close already has
+       its OWN, more specific identity system for this row — the
+       `.expiry-id-chip` below (C1/C2 for the close-action band, N1/N2
+       for netted pairs) — showing the unrelated auto-pair P1/P2 label
+       in the same row at the same time duplicated/conflicted with that
+       system. Legs tab is unaffected — the badge still renders there
+       exactly as before. -->
   <span class="cand-state-cell"
-    style:background={_stateBadge.bg || null}
-    style:color={_stateBadge.color || null}
-    style:border={_stateBadge.border || null}>
-    {#if _stateBadge.state != null && onPinClick}
-      <!-- Single click target (2026-10-17, operator: "we don't need i
-           for tool tip... clicking on this cell should not interfear
-           with clicking symbol or other elements of the row") — opens
-           the pin/unpin picker, which now also carries this badge's
-           generic "what does this state mean" text (`_stateBadge.tooltip`)
-           as a one-line hint inside that same popup instead of a
-           separate "(i)" icon/tooltip. stopPropagation on BOTH click
-           and keydown so it never falls through to the row's own
-           onclick/onkeydown row-activation handler. -->
-      <button type="button" class="cand-state-badge-btn"
-        data-pos-state={_stateBadge.state}
-        title={_stateBadge.tooltip}
-        onclick={(e) => { e.stopPropagation(); onPinClick(c, _stateBadge.tooltip); }}
-        onkeydown={(e) => e.stopPropagation()}>
+    style:background={legsTab === 'expiry' ? null : (_stateBadge.bg || null)}
+    style:color={legsTab === 'expiry' ? null : (_stateBadge.color || null)}
+    style:border={legsTab === 'expiry' ? null : (_stateBadge.border || null)}>
+    {#if legsTab !== 'expiry'}
+      {#if _stateBadge.state != null && onPinClick}
+        <!-- Single click target (2026-10-17, operator: "we don't need i
+             for tool tip... clicking on this cell should not interfear
+             with clicking symbol or other elements of the row") — opens
+             the pin/unpin picker, which now also carries this badge's
+             generic "what does this state mean" text (`_stateBadge.tooltip`)
+             as a one-line hint inside that same popup instead of a
+             separate "(i)" icon/tooltip. stopPropagation on BOTH click
+             and keydown so it never falls through to the row's own
+             onclick/onkeydown row-activation handler. -->
+        <button type="button" class="cand-state-badge-btn"
+          data-pos-state={_stateBadge.state}
+          title={_stateBadge.tooltip}
+          onclick={(e) => { e.stopPropagation(); onPinClick(c, _stateBadge.tooltip); }}
+          onkeydown={(e) => e.stopPropagation()}>
+          {_stateBadge.glyph}
+        </button>
+      {:else}
         {_stateBadge.glyph}
-      </button>
-    {:else}
-      {_stateBadge.glyph}
+      {/if}
     {/if}
   </span>
   <!-- svelte-ignore a11y_interactive_supports_focus -->
