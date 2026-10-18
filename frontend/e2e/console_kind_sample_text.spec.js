@@ -1,23 +1,25 @@
 /**
  * console_kind_sample_text.spec.js
  *
- * 2026-10-18 fix — operator: "it should sample agent when agent is
- * selected. when order is selected, it should show sample order,
- * similarly alerts and brackets. but when keep cursor, it should be
- * cleared. Presently, the sample is not changing. when you click
- * inside, it still keeps the sample text. for agent, it works
- * correctly."
+ * 2026-10-18 fix (second pass) — operator: "switching between
+ * agents/order/bracket/alert does not change cli text sample text. two
+ * issues. it stays static. if it changes, it shows as real text
+ * entered, instead of erasing it waiting for user inputs."
  *
- * Original design only seeded the CLI textarea when it was EMPTY —
- * switching the kind dropdown from one sample to another silently did
- * nothing once any sample was already showing, and focusing the
- * textarea never cleared a sample. Revised design, tracked by the new
- * `_isSeedActive` flag (automation/+page.svelte):
- *   - picking a kind ALWAYS re-samples while the box still shows an
- *     untouched sample (not real typed/edited text)
- *   - focusing the textarea clears an untouched sample to empty
- *   - real typed text, or a real agent loaded via the Agents-tab Edit
- *     action, is NEVER auto-cleared or auto-replaced by either path
+ * The first pass (now superseded) wrote each kind's sample straight into
+ * the real bound `value`, tracked via a hand-rolled `_isSeedActive` flag
+ * that compared the live text against the active kind's seed string to
+ * decide "is this still an untouched sample." That's exactly the kind of
+ * state machine prone to going stale (a switch silently no-ops) or firing
+ * when it shouldn't (a sample reads back as committed real content).
+ *
+ * Fix: samples are now rendered via the textarea's native `placeholder`
+ * prop (automation/+page.svelte's `_consolePlaceholder`, threaded through
+ * ConsoleTab → AgentCliEditor) instead of being written into `value` at
+ * all. A placeholder is never part of the field's value — switching kinds
+ * is a plain prop reassignment (always "changes"), and typing anything
+ * makes the browser hide it for free (always "erases waiting for input"),
+ * with no JS bookkeeping that can drift.
  *
  * Run:
  *   npx playwright test e2e/console_kind_sample_text.spec.js
@@ -35,28 +37,36 @@ async function pickKind(page, label) {
   await page.waitForTimeout(150);
 }
 
-test.describe('Console kind dropdown — sample text re-seeds, clears on focus, never clobbers real text', () => {
+test.describe('Console kind dropdown — placeholder sample always reflects the selected kind, never becomes real value', () => {
   test.beforeEach(async ({ page }) => {
     await loginAsAdmin(page);
     await page.goto('/automation?tab=console', { waitUntil: 'domcontentloaded' });
     await page.waitForTimeout(1500);
   });
 
-  test('switching kind always re-samples, even when a different sample is already showing', async ({ page }) => {
+  test('switching kind always updates the placeholder, even repeatedly', async ({ page }) => {
     const textarea = page.locator('.aw-view-body textarea, textarea').first();
+    await expect(textarea).toHaveValue('', { timeout: TIMEOUT });
+
     await pickKind(page, 'Bracket');
-    await expect(textarea).toHaveValue(/^bracket\(/, { timeout: TIMEOUT });
+    await expect(textarea).toHaveAttribute('placeholder', /^bracket\(/, { timeout: TIMEOUT });
     await pickKind(page, 'Agent');
-    await expect(textarea).toHaveValue(/^WHEN /, { timeout: TIMEOUT });
+    await expect(textarea).toHaveAttribute('placeholder', /^WHEN /, { timeout: TIMEOUT });
     await pickKind(page, 'Order');
-    await expect(textarea).toHaveValue(/^order\(/, { timeout: TIMEOUT });
+    await expect(textarea).toHaveAttribute('placeholder', /^order\(/, { timeout: TIMEOUT });
+    await pickKind(page, 'Alert');
+    await expect(textarea).toHaveAttribute('placeholder', /^ALERT /, { timeout: TIMEOUT });
+
+    // The real value is untouched by any of this — only the placeholder changed.
+    await expect(textarea).toHaveValue('', { timeout: TIMEOUT });
   });
 
-  test('focusing the textarea clears an untouched sample to empty', async ({ page }) => {
+  test('a placeholder is never real content — focusing/clicking never leaves committed text behind', async ({ page }) => {
     const textarea = page.locator('.aw-view-body textarea, textarea').first();
     await pickKind(page, 'Alert');
-    await expect(textarea).toHaveValue(/^ALERT /, { timeout: TIMEOUT });
+    await expect(textarea).toHaveAttribute('placeholder', /^ALERT /, { timeout: TIMEOUT });
     await textarea.click();
+    // Native placeholder — clicking/focusing never copies it into the value.
     await expect(textarea).toHaveValue('', { timeout: TIMEOUT });
   });
 

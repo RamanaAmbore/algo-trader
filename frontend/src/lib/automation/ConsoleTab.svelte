@@ -41,9 +41,9 @@
   /** @type {{
    *   value: string,
    *   editTarget?: {rowKind: 'cycle'|'event'|'template'|'bracket', ref: string|number, label: string} | null,
-   *   onFocus?: () => void,
+   *   placeholder?: string,
    * }} */
-  let { value = $bindable(''), editTarget = $bindable(null), onFocus = undefined } = $props();
+  let { value = $bindable(''), editTarget = $bindable(null), placeholder = undefined } = $props();
 
   // Sprint C (2026-10, Phase 2 "Automation redesign") — `editTarget` is
   // set by the Agents-tab row list's Edit action (`/automation/+page.svelte`)
@@ -456,7 +456,7 @@
           info={_cliInfo}
           submitStatus={_cliSubmitStatus}
           showCompileErrors={_classify === 'agents'}
-          {onFocus}
+          {placeholder}
         />
         <!-- Save/Create + Cancel edit share one right-aligned button row
              at the bottom of the editor (2026-10-13, operator request). -->

@@ -103,7 +103,6 @@
    *   info?: string[],
    *   submitStatus?: {ok: boolean, text: string} | null,
    *   showCompileErrors?: boolean,
-   *   onFocus?: () => void,
    * }} */
   let {
     value = $bindable(''), catalog = null, lotSizeOf = undefined,
@@ -112,7 +111,6 @@
     placeholder = 'GIVEN p = pnl@positions.total\nmsg_txt = "Loss: " + p\nWHEN p <= -50000\nALERT msg = msg_txt, telegram\nDO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)',
     info = [], submitStatus = null,
     showCompileErrors = true,
-    onFocus = undefined,
   } = $props();
 
   /** @type {HTMLTextAreaElement|null} */
@@ -875,7 +873,7 @@
       oninput={handleInput}
       onclick={() => { _updateCursor(); _onTokenClick(); }}
       onkeyup={_updateCursor}
-      onfocus={() => { _focused = true; _updateCursor(); onFocus?.(); }}
+      onfocus={() => { _focused = true; _updateCursor(); }}
       onblur={() => { _focused = false; _clickDescResult = null; _clickDescSource = null; }}
       onkeydown={handleKeydown}
       class="agent-cli-textarea field-input font-mono text-[length:var(--fs-sm)]"
