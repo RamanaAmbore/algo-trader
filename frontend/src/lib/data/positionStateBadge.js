@@ -83,8 +83,8 @@ export function positionStateBadge(row) {
     return {
       state: 'anchor',
       glyph: ANCHOR_GLYPH,
-      color: 'var(--algo-muted)',
-      bg: 'var(--algo-muted-bg-strong)',
+      color: 'var(--algo-sky)',
+      bg: 'var(--algo-sky-bg)',
       border: null,
       tooltip: 'Underlying reference — not a held position.',
     };

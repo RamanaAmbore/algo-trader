@@ -2025,8 +2025,19 @@
        previously this branch routed through UnifiedLog (which merged
        agent fires in) and the mode-specific branches rendered text spans
        inside a <pre>. -->
-  <div class="om-bar">
-    {#if !_gatingMode}
+  {#if !_gatingMode}
+    <!-- 2026-10-18 fix — the `{#if}` used to wrap only the `{#each}`
+         chips INSIDE `.om-bar`, so the `.om-bar` div itself (with its
+         own padding/margin/border) still rendered — empty — whenever
+         gateByMode was active (the DEFAULT: both LogPanel's own
+         `gateByMode` prop and ActivityLogSurface's, the wrapper every
+         real mount goes through, default to `true`). An empty div with
+         `.om-bar`'s padding+margin+border is pure wasted vertical space
+         above the first row (operator report: "space wasted before the
+         first row"). Moved the `{#if}` to gate the WHOLE element so
+         nothing — not even the empty box — renders when there are no
+         mode chips to show. -->
+    <div class="om-bar">
       <!-- Mode chip strip is hidden when gateByMode is active — the header
            chip already shows the active mode and the filter is implicit. -->
       {#each _ORDER_MODE_TABS as [val, label]}
@@ -2035,9 +2046,9 @@
           {label}
         </button>
       {/each}
-    {/if}
-    <!-- Account filter moved to the tab row above per operator. -->
-  </div>
+      <!-- Account filter moved to the tab row above per operator. -->
+    </div>
+  {/if}
   <div class="lp-order-scroll {heightClass}">
     {#if _derivedOrderEvents.length}
       <div class="log-panel log-rows {multiColumn ? 'lp-multicol' : ''}">
@@ -2481,7 +2492,21 @@
     min-height: 0;
     overflow-y: auto;
     overscroll-behavior: contain;
-    padding: 0.4rem 0.2rem;
+    /* 2026-10-18 fix — was `0.4rem 0.2rem` (vertical + horizontal). The
+       nested `.log-panel.log-rows` div immediately inside already
+       carries the global `.log-panel` class's own `0.75rem` padding
+       (app.css) — the same single source of top/bottom breathing room
+       every OTHER tab's row container relies on (Agent/Alerts/System/
+       etc. render rows directly inside one `.log-panel.log-rows` div,
+       no extra wrapper). Order tab's extra outer `.lp-order-scroll`
+       wrapper (needed only for the real-touch-scroll fix above) was
+       stacking a SECOND vertical padding on top of that, so the Order
+       tab had visibly more space before its first row than every
+       other tab (operator report). Horizontal padding kept (clears the
+       scrollbar gutter); vertical set to 0 so the inner panel's own
+       padding is the only vertical spacing, matching the other tabs
+       exactly. */
+    padding: 0 0.2rem;
   }
   /* Root cause of "order log not scrollable" (operator report, confirmed
      via real touch-gesture Playwright test — programmatic scrollTop
@@ -2506,23 +2531,23 @@
     overflow-y: visible;
     overscroll-behavior: auto;
   }
-  /* Order-event log rows inside .lp-order-scroll — same density/padding
-     as the .log-panel.log-rows rows. Color-coded by event kind. */
-  .lp-order-scroll .log-row {
-    display: flex;
-    align-items: baseline;
-    gap: 0.35rem;
-    padding: 0.2rem 0.4rem;
-    font-size: var(--fs-sm);
-    border-bottom: 1px solid rgba(255,255,255,0.04);
-    flex-wrap: wrap;
-  }
-  .lp-order-scroll .log-row:last-child { border-bottom: 0; }
-  .lp-order-scroll .log-row-msg {
-    flex: 1 1 0;
-    min-width: 0;
-    word-break: break-word;
-  }
+  /* 2026-10-18 fix — the bespoke `.lp-order-scroll .log-row` /
+     `.log-row-msg` layout override that used to live here (flex:1 1 0
+     with no `order`, no flex-basis:100%) is DELETED. It fought the
+     shared `:global(.log-panel.log-rows .log-row)` template's
+     mobile-wrap convention (`.log-row-msg{flex:1 1 100%;order:2}`,
+     ~line 2420 above) — because the override kept `.log-row-msg` at
+     `flex:1 1 0` with no `order`, wrapped message text landed on the
+     SAME visual line as time+tag instead of dropping to its own full-
+     width line, so a wrapped second line started indented at the
+     message's own left edge (wherever that fell after time+tag)
+     instead of flush with the row's left edge — wasting space on
+     mobile (operator report). The Order tab's `.log-row` markup
+     (~line 2046) already uses the exact same class names as every
+     other tab's `_logRow()` output, so deleting this override lets it
+     fall through to the one shared rule block every other tab already
+     uses — no markup change needed, no drift to maintain. Color
+     classes below are independent of layout and are unaffected. */
   /* Order log text colors match the OrderBook status card palette:
      placed=amber (running), fill=green (active), cancel=orange, reject=red */
   .lp-order-scroll .log-row-ok    { color: var(--c-long); }

@@ -104,13 +104,13 @@ describe('positionStateBadge — underlying-anchor row ("X", 2026-10-18)', () =>
     expect(b.glyph).toBe(ANCHOR_GLYPH);
   });
 
-  it('uses a distinct muted/gray color, not any of GTT/paired/orphan colors', () => {
+  it('uses a distinct bright color, not any of GTT/paired/orphan colors', () => {
     const anchor = positionStateBadge({ _isUnderlyingAnchor: true });
     const gtt = positionStateBadge({ has_gtt: true });
     const paired = positionStateBadge({ pair_group_key: 'P1' });
     const orphan = positionStateBadge({ is_orphan: true });
-    expect(anchor.color).toBe('var(--algo-muted)');
-    expect(anchor.bg).toBe('var(--algo-muted-bg-strong)');
+    expect(anchor.color).toBe('var(--algo-sky)');
+    expect(anchor.bg).toBe('var(--algo-sky-bg)');
     expect([gtt.color, paired.color, orphan.color]).not.toContain(anchor.color);
   });
 
@@ -131,9 +131,10 @@ describe('positionStateBadge — underlying-anchor row ("X", 2026-10-18)', () =>
     expect(b.tooltip.toLowerCase()).toContain('not a held position');
   });
 
-  it('uses the stronger --algo-muted-bg-strong token, not the washed-out --algo-muted-bg (2026-10-18 contrast fix)', () => {
+  it('uses the bright --algo-sky/--algo-sky-bg pair, not the dim muted-gray tokens (2026-10-18 follow-up — muted-gray and even its "strong" variant still read as not clearly visible)', () => {
     const b = positionStateBadge({ _isUnderlyingAnchor: true });
-    expect(b.bg).toBe('var(--algo-muted-bg-strong)');
+    expect(b.color).toBe('var(--algo-sky)');
+    expect(b.bg).toBe('var(--algo-sky-bg)');
   });
 });
 

@@ -7703,8 +7703,10 @@
     border-bottom: 1px solid var(--sep-color);
     cursor: default;
     /* Height parity with real leg rows (2026-10-18) — matches
-       CandidateLegRow.svelte's `.cand-row` height SSOT so the anchor
-       row isn't taller than every real leg row beneath it. */
+       CandidateLegRow.svelte's `.cand-row` height SSOT exactly so the
+       anchor row is the same height as every real leg row beneath it,
+       not shorter or taller (2026-10-18 follow-up — a brief attempt at
+       "shorter" was reverted per operator: just match, don't shrink). */
     min-height: var(--grid-row-height);
     box-sizing: border-box;
     align-items: stretch;
