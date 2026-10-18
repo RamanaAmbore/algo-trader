@@ -193,6 +193,40 @@ export function resolveUnderlyingPrevClose(rows, resolvedTs, kiteClose) {
 }
 
 /**
+ * Resolve the canonical {ltp, close, pct, resolvedTs} triple for one
+ * underlying — the SAME LTP/Chg%/P.Close derivation the derivatives
+ * Snapshot grid's `{#each}` already computes inline for every row
+ * (`undLive` first, `underlyingQuotes` fallback, then the
+ * held-instruments-only P.Close override via `resolveUnderlyingPrevClose`).
+ * Extracted as a pure, reusable function (2026-10-18, operator: "legs
+ * should be in sync with [positions]... use the same reusable code based
+ * for data for both positions and legs") so a second consumer — the
+ * Legs grid's underlying-anchor row — can derive an identical spot/close/
+ * change% triple for the selected underlying without re-deriving or
+ * duplicating the tier logic. Does not mutate or read Svelte reactive
+ * state itself; the caller passes already-read plain values.
+ *
+ * @param {string} underlying
+ * @param {{
+ *   positions: any[], holdings: any[],
+ *   undLive: Record<string, {ltp: number, close: number|null}>,
+ *   underlyingQuotes: Record<string, any>,
+ *   findNearestFuture: ((u: string) => any) | null,
+ * }} opts
+ * @returns {{ ltp: number|null, close: number|null, pct: number|null, resolvedTs: string }}
+ */
+export function resolveUnderlyingSpotTriple(underlying, { positions, holdings, undLive, underlyingQuotes, findNearestFuture }) {
+  const _q = underlyingQuotes?.[underlying];
+  const _live = undLive?.[underlying];
+  const ltp = _live ? _live.ltp : (_q ? Number(_q.ltp) : null);
+  const kiteClose = _live ? _live.close : (_q ? Number(_q.prev_close) : null);
+  const resolvedTs = resolveUnderlyingTradingsymbol(underlying, findNearestFuture);
+  const close = resolveUnderlyingPrevClose([...(positions || []), ...(holdings || [])], resolvedTs, kiteClose).value;
+  const pct = (ltp != null && close != null && close > 0) ? ((ltp - close) / close) * 100 : null;
+  return { ltp, close, pct, resolvedTs };
+}
+
+/**
  * Pure tier-order spot-picker — the CLAUDE.md-documented SSOT fallback
  * chain for underlying spot resolution (resolved front-month tradingsymbol
  * tick → bare-root tick → batchQuote cache). Extracted (2026-09, Commit 4)

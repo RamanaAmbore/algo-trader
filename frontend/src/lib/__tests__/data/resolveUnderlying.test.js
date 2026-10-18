@@ -26,6 +26,7 @@ import {
   pickUnderlyingSpot,
   resolveUnderlyingPrevClose,
   buildUndLiveFallbackEntry,
+  resolveUnderlyingSpotTriple,
 } from '$lib/data/resolveUnderlying.js';
 import { seedRootMap } from '$lib/data/rootOf.js';
 
@@ -545,5 +546,52 @@ describe('buildUndLiveFallbackEntry', () => {
 
   it('ltp passes through unchanged (caller only invokes this when ltp > 0)', () => {
     expect(buildUndLiveFallbackEntry(150736, 148500).ltp).toBe(150736);
+  });
+});
+
+describe('resolveUnderlyingSpotTriple — shared LTP/Chg%/P.Close derivation for an underlying', () => {
+  it('prefers undLive (live tick) over underlyingQuotes (batchQuote cache)', () => {
+    const r = resolveUnderlyingSpotTriple('GOLD', {
+      positions: [], holdings: [],
+      undLive: { GOLD: { ltp: 149500, close: 148000 } },
+      underlyingQuotes: { GOLD: { ltp: 999999, prev_close: 999999 } },
+      findNearestFuture: () => null,
+    });
+    expect(r.ltp).toBe(149500);
+    expect(r.close).toBe(148000);
+    expect(r.pct).toBeCloseTo(((149500 - 148000) / 148000) * 100, 5);
+  });
+
+  it('falls back to underlyingQuotes when undLive has no entry for this underlying', () => {
+    const r = resolveUnderlyingSpotTriple('GOLD', {
+      positions: [], holdings: [],
+      undLive: {},
+      underlyingQuotes: { GOLD: { ltp: 149500, prev_close: 148000 } },
+      findNearestFuture: () => null,
+    });
+    expect(r.ltp).toBe(149500);
+    expect(r.close).toBe(148000);
+  });
+
+  it('a held position/holding row\'s own prev_close overrides the Kite-sourced close (held-instruments-only basis)', () => {
+    const r = resolveUnderlyingSpotTriple('GOLD', {
+      positions: [{ symbol: 'GOLD26OCTFUT', prev_close: 147000 }],
+      holdings: [],
+      undLive: { GOLD: { ltp: 149500, close: 148000 } },
+      underlyingQuotes: {},
+      findNearestFuture: () => ({ s: 'GOLD26OCTFUT', e: 'MCX', x: '2026-10-19' }),
+    });
+    expect(r.resolvedTs).toBe('GOLD26OCTFUT');
+    expect(r.close).toBe(147000);
+  });
+
+  it('returns null ltp/close/pct when no data source has anything for this underlying', () => {
+    const r = resolveUnderlyingSpotTriple('UNKNOWNROOT', {
+      positions: [], holdings: [], undLive: {}, underlyingQuotes: {},
+      findNearestFuture: () => null,
+    });
+    expect(r.ltp).toBeNull();
+    expect(r.close).toBeNull();
+    expect(r.pct).toBeNull();
   });
 });

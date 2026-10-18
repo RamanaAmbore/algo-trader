@@ -45,7 +45,7 @@
     findNearestFuture, hasFNO,
     instrumentsCacheVersion,
   } from '$lib/data/instruments';
-  import { resolveUnderlying, resolveUnderlyingTradingsymbol, resolveUnderlyingPrevClose, buildUndLiveFallbackEntry } from '$lib/data/resolveUnderlying';
+  import { resolveUnderlying, resolveUnderlyingTradingsymbol, resolveUnderlyingPrevClose, resolveUnderlyingSpotTriple, buildUndLiveFallbackEntry } from '$lib/data/resolveUnderlying';
   import { expiryPnl, expiryPnlWithRealised, resolveExpiryAnchor, legExtrinsicDisplay, expiredLegFrozenPnl } from '$lib/data/expiryPnl';
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
   import { decomposeSymbol, formatSymbol } from '$lib/data/decomposeSymbol';
@@ -771,6 +771,30 @@
       rows = sortRowsByPairGroup(rows);
     }
     return rows;
+  });
+
+  /** Underlying-anchor row for the Legs grid — shows the selected
+   *  underlying's own spot/LTP even though it isn't itself a held
+   *  position, mirroring MarketPulse's `mergeUnderlyingAnchors` (2026-10-18,
+   *  operator: "legs should be in sync with it" — positions already shows
+   *  the underlying, legs data should reflect positions data). Rendered as
+   *  its OWN read-only row above the leg list — deliberately NOT merged
+   *  into `displayedCandidates`/`candidatePositions`, since those arrays
+   *  feed the unfiltered TOTAL row, the checkbox/enabled-leg state, Exp
+   *  P&L, the payoff curve's leg set, and the CSV export; a qty=0
+   *  non-tradable row has no business entering any of those. Gated on at
+   *  least one real CE/PE being present (same gate `mergeUnderlyingAnchors`
+   *  uses) and on the Legs tab only — the Exp Close tab has its own
+   *  expiry-band grouping. Spot/close/chg% reuse `resolveUnderlyingSpotTriple`
+   *  — the SAME extracted formula the Snapshot grid's row for this exact
+   *  underlying already computes, so the two surfaces can never disagree. */
+  const legsUnderlyingAnchor = $derived.by(() => {
+    if (legsTab !== 'legs' || !selectedUnderlying) return null;
+    if (!candidatePositions.some(c => c.kind === 'opt')) return null;
+    const { ltp, close, pct, resolvedTs } = resolveUnderlyingSpotTriple(selectedUnderlying, {
+      positions, holdings, undLive: _undLive, underlyingQuotes: _underlyingQuotes, findNearestFuture,
+    });
+    return { underlying: selectedUnderlying, resolvedTs, ltp, close, pct };
   });
 
   /** Same rows as displayedCandidates, but WITHOUT the search-text filter
@@ -5845,6 +5869,35 @@
                still collapses to a single auto-sized row exactly like
                the flat row list did pre-wrapper. -->
           <div class="cand-body-rows">
+          {#if legsUnderlyingAnchor}
+            <!-- Underlying-anchor row — read-only, display-only (not a
+                 tradable leg): no checkbox, no St badge, never enters
+                 TOTAL/payoff/CSV. See `legsUnderlyingAnchor`'s own
+                 comment above for the full rationale. -->
+            <div class="cand-row-underlying-anchor" title="{legsUnderlyingAnchor.underlying} — underlying spot, not a held position">
+              <span></span>
+              <span></span>
+              <span class="cand-anchor-label">{formatSymbol(legsUnderlyingAnchor.resolvedTs || legsUnderlyingAnchor.underlying)}</span>
+              <span class="num tf-cell {ltpDayClass(legsUnderlyingAnchor.pct)}">{legsUnderlyingAnchor.ltp != null ? priceFmt(legsUnderlyingAnchor.ltp) : '—'}</span>
+              <span class="num tf-cell {ltpDayClass(legsUnderlyingAnchor.pct)}">{legsUnderlyingAnchor.pct != null ? pctFmt(legsUnderlyingAnchor.pct) + '%' : '—'}</span>
+              <span class="num"></span>
+              <span class="num"></span>
+              <span class="num"></span>
+              <span class="num"></span>
+              <span class="num">{legsUnderlyingAnchor.close != null ? priceFmt(legsUnderlyingAnchor.close) : '—'}</span>
+              <span class="num"></span>
+              <span class="num"></span>
+              <span class="num"></span>
+              <span class="num"></span>
+              <span></span>
+              <span class="num"></span>
+              <span class="num"></span>
+              <span class="num"></span>
+              <span class="num"></span>
+              <span class="num"></span>
+              <span class="num"></span>
+            </div>
+          {/if}
           {#each displayedCandidates as c, _ci (c.source + '|' + c.account + '|' + c.symbol + '|' + (c._splitTag ?? _ci) + '|' + (c.lot_piece_label ?? '') + '|' + (c._pairId ?? '') + '|' + (c._band ?? '') + '|' + (c.draftId != null ? c.draftId : _ci))}
             <CandidateLegRow
               {c}
@@ -7599,6 +7652,39 @@
     color: var(--c-action);
     font-weight: 800;
     letter-spacing: 0.08em;
+  }
+  /* Underlying-anchor row (Legs grid) — read-only, display-only row
+     showing the selected underlying's own spot even when it isn't a
+     held position. Slate tint (not amber — that's reserved for TOTAL)
+     so it reads as context, not a summary. No hover/clickable cursor —
+     this row carries no onclick/role, matching every other static-text
+     cell on the page. Deliberately does NOT carry the shared `.cand-row`
+     class — several existing tests/selectors use `.cand-row` to mean
+     "a real, checkbox-bearing leg row" (e.g. `.cand-row.first()`); this
+     row is neither, and must never be the match for those. */
+  .cand-row-underlying-anchor {
+    display: grid;
+    grid-template-columns: subgrid;
+    grid-column: 1 / -1;
+    background: rgba(148, 163, 184, 0.10);
+    border-bottom: 1px solid rgba(148, 163, 184, 0.28);
+    cursor: default;
+  }
+  .cand-row-underlying-anchor > span {
+    padding: 0.32rem 0.45rem;
+    font-size: var(--fs-sm);
+    font-family: var(--font-numeric);
+    font-variant-numeric: tabular-nums;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .cand-row-underlying-anchor > span.num { text-align: right; }
+  .cand-anchor-label {
+    color: var(--algo-slate);
+    font-weight: 600;
+    font-style: italic;
   }
   /* cand-split-tag, cand-eq-tag, cand-proxy-tag, cand-row.cand-eq, and
      all cand-row variant styles moved to CandidateLegRow.svelte. */
