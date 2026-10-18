@@ -74,7 +74,8 @@
   import NavCard from '$lib/NavCard.svelte';
   import AlgoTabs from '$lib/AlgoTabs.svelte';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
-  import { mkWeightPctCol, mkDeltaCol, mkThetaCol, mkNavBreakdownCols, _tcFlashClass } from '$lib/data/pulseColumns.js';
+  import { mkWeightPctCol, mkDeltaCol, mkThetaCol, mkNavBreakdownCols, _tcFlashClass, ltpHeatClasses, ltpHeatVs } from '$lib/data/pulseColumns.js';
+  import { positionStateBadge } from '$lib/data/positionStateBadge.js';
   import { postSortGroups2Level } from '$lib/data/pulseGridSetup.js';
   import { holdingsDayPnlStore } from '$lib/data/holdingsDayPnlStore.svelte.js';
 
@@ -481,16 +482,16 @@
     // text colour on the LTP value (distinct from pnl-* which also adds
     // a background tint — LTP column uses text-only to avoid fighting
     // the ltp-vs-avg background).
-    if (typeof avg === 'number' && avg > 0) {
-      if (ltp > avg) cls.push('ltp-vs-avg-up', 'cell-pos');
-      else if (ltp < avg) cls.push('ltp-vs-avg-down', 'cell-neg');
-      else cls.push('ltp-vs-avg-flat', 'cell-flat');
-    }
-    if (typeof prev === 'number' && prev > 0 && prev !== ltp) {
-      cls.push(ltp > prev ? 'ltp-vs-prev-up' : 'ltp-vs-prev-down');
-    } else if (typeof prev === 'number' && prev > 0) {
-      cls.push('ltp-vs-prev-flat');
-    }
+    // Shared vs-avg / vs-prev comparison (pulseColumns.js:ltpHeatClasses) —
+    // was independently re-derived here; converted to call the shared
+    // helper so the two pages can't drift (2026-10-18 SSOT fix).
+    cls.push(...ltpHeatClasses(ltp, avg, prev));
+    // cell-pos/neg/flat derives from the SAME ltpHeatVs comparison used
+    // above (not a second independent `ltp > avg` re-check) so the two
+    // can never disagree — e.g. a non-number `ltp` is guarded identically
+    // in both places.
+    const avgDir = ltpHeatVs(ltp, avg, 'pos', 'neg', 'flat');
+    if (avgDir) cls.push(`cell-${avgDir}`);
     return cls;
   };
 
@@ -716,23 +717,21 @@
       hide: true,
       width: 38, minWidth: 38, maxWidth: 38,
       pinned: 'left', resizable: false, sortable: false, suppressMovable: true,
-      headerTooltip: 'Position state: Paired (P1/P2 cyan) · Orphan (○ amber) · GTT (green)',
+      headerTooltip: 'Position state: Paired (P1/P2 cyan) · Orphan (◇ amber) · GTT (green)',
+      // Shared priority logic (GTT > auto-paired > orphan) lives in
+      // positionStateBadge.js — converted from an independent copy
+      // (2026-10-18 SSOT fix), matching pulseColumns.js's own usage.
       cellStyle: (p) => {
-        const d = p.data;
-        if (!d || d._isTotal) return {};
-        if (d.has_gtt)        return { background: 'var(--algo-green-badge)', color: 'var(--algo-green)' };
-        if (d.pair_group_key) return { background: 'rgba(34,211,238,0.18)', color: '#67e8f9' };
-        if (d.is_orphan)      return { background: 'rgba(251,191,36,0.15)', color: 'var(--c-action)' };
-        return {};
+        const badge = positionStateBadge(p.data);
+        if (badge.state == null) return {};
+        /** @type {Record<string, string>} */
+        const style = { background: badge.bg, color: badge.color };
+        if (badge.border) style.border = badge.border;
+        return style;
       },
       cellRenderer: (p) => {
-        const d = p.data;
-        if (!d || d._isTotal) return '';
-        if (d.has_gtt)        return 'GTT';
-        if (d.pair_group_key) return d.pair_group_key;
-        if (d.is_orphan)      return '○';
-        if (d.qty_pos !== undefined) return '○';
-        return '';
+        const badge = positionStateBadge(p.data);
+        return badge.state == null ? '' : badge.glyph;
       },
       cellClass: 'ag-cell-pair-state',
     },

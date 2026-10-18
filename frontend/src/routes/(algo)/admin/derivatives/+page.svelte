@@ -7776,7 +7776,7 @@
        side vertical bar color should depend on the price movement from
        prev closing price like the rest of rows in legs" — supersedes
        the first version of this row, which used a flat gray bar). */
-    box-shadow: inset -1px 0 0 0 var(--algo-muted-border);
+    box-shadow: inset -1px 0 0 0 rgba(126,151,184,0.40);
   }
   .cand-anchor-label::after {
     content: '';
@@ -7796,7 +7796,7 @@
      block. 2026-10-18 follow-up, operator: "in legs, after chg% there
      is a vertical bar for other rows. do the same for gold." */
   .cand-anchor-chg-sep {
-    box-shadow: inset -1px 0 0 0 var(--algo-muted-border);
+    box-shadow: inset -1px 0 0 0 rgba(126,151,184,0.40);
   }
   /* cand-split-tag, cand-eq-tag, cand-proxy-tag, cand-row.cand-eq, and
      all cand-row variant styles moved to CandidateLegRow.svelte. */
@@ -8553,7 +8553,7 @@
     color: #a78bfa;
     border: 1px solid rgba(167,139,250,0.55);
   }
-  .order-toast-mode-paper { background: rgba(56,189,248,0.18);  color: var(--algo-sky); border-color: rgba(56,189,248,0.4); }
+  .order-toast-mode-paper { background: var(--algo-sky-bg);  color: var(--algo-sky); border-color: var(--algo-sky-border); }
   .order-toast-mode-live  { background: rgba(248,113,113,0.18); color: #fca5a5; border-color: rgba(248,113,113,0.5); }
   /* FILL toast — emerald, fired when a position_filled ws event lands.
      Either replaces an in-flight placement toast (updates its status to

@@ -157,7 +157,10 @@
   function _tagClass(tag) {
     if (!tag) return '';
     if (tag === 'ramboq-ticket') return 'tag-manual';
-    if (tag.startsWith('ramboq-agent')) return 'tag-agent';
+    // 'ramboq-agent' branch removed (2026-10-18) — no backend path ever
+    // produces that broker tag (confirmed via repo-wide grep); the real
+    // agent-origin signal is `order.source` (rendered separately as the
+    // "origin:" chip), not this broker tag.
     return '';
   }
 
@@ -182,7 +185,11 @@
   class="algo-status-card text-left p-2.5 transition order-card"
   data-status={_statusDataAttr(order.status)}>
   <div class="flex items-center justify-start gap-2 mb-0.5">
-    <span class="font-semibold text-xs min-w-0 truncate">
+    <!-- font-size via inline style (not Tailwind's text-xs) — matches the
+         app's own --fs-* scale rather than Tailwind's stock 0.75rem,
+         consistent with --fs-lg (0.72rem) used elsewhere for "main row
+         text" (2026-10-18 size-consistency fix). -->
+    <span class="font-semibold min-w-0 truncate" style="font-size: var(--fs-lg);">
       <span style={_txnStyle(order.transaction_type)}>{order.transaction_type}</span>
       <span class="oc-acct" style={order.account ? `--acct-color: ${acctColor(order.account) || 'transparent'};` : ''}>{order.account}</span>
       <!-- svelte-ignore a11y_interactive_supports_focus -->
@@ -442,9 +449,10 @@
      green/red was misleading for one side. Arrow alone reads correctly. */
   :global(.log-chip-slip) { color: var(--algo-dim); }
 
-  /* Tag colour-coding — manual ticket = sky-blue, agent-fired = amber. */
+  /* Tag colour-coding — manual ticket = sky-blue. 'tag-agent' rule
+     removed (2026-10-18) — _tagClass() no longer emits it; see that
+     function's own comment. */
   :global(.tag-manual)       { color: var(--algo-cyan-text); background: var(--c-info-14); }
-  :global(.tag-agent)        { color: var(--c-action); background: rgba(251, 191, 36, 0.10); }
   /* TP / parent / basket linkage chips */
   :global(.log-chip-tp)      { color: var(--c-long); background: var(--algo-green-bg); }
   :global(.log-chip-template) { color: var(--algo-violet); background: rgba(192, 132, 252, 0.12); }

@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
+// @ts-ignore -- node:fs types are not installed for svelte-check; vitest resolves it at runtime.
+import { readFileSync } from 'node:fs';
 import { positionStateBadge, ORPHAN_GLYPH, ANCHOR_GLYPH } from '../../data/positionStateBadge.js';
+
+const _perfSrc = readFileSync(new URL('../../PerformancePage.svelte', import.meta.url), 'utf-8');
 
 describe('positionStateBadge — priority order (GTT > paired > orphan)', () => {
   it('returns gtt state when has_gtt is true, regardless of other flags', () => {
@@ -125,5 +129,42 @@ describe('positionStateBadge — underlying-anchor row ("X", 2026-10-18)', () =>
   it('tooltip explains this is not a held position', () => {
     const b = positionStateBadge({ _isUnderlyingAnchor: true });
     expect(b.tooltip.toLowerCase()).toContain('not a held position');
+  });
+});
+
+describe('positionStateBadge — PerformancePage.svelte St column (2026-10-18 SSOT fix)', () => {
+  // The St column is `hide: true` today, so a computed-style/DOM check
+  // can't exercise it directly — a source-grep is simpler and locks in
+  // the actual regression (an independent copy of this priority chain
+  // using the wrong glyph/hardcoded colors/a dead qty_pos branch).
+  it('imports the shared positionStateBadge function', () => {
+    expect(_perfSrc).toMatch(/import\s*\{\s*positionStateBadge\s*\}\s*from\s*'\$lib\/data\/positionStateBadge\.js'/);
+  });
+
+  it('the positionsCols St column cellStyle/cellRenderer call positionStateBadge, not a local copy', () => {
+    const colStart = _perfSrc.indexOf("colId: 'pos_state'");
+    expect(colStart).toBeGreaterThan(-1);
+    const colSection = _perfSrc.slice(colStart, colStart + 1200);
+    expect(colSection).toMatch(/cellStyle:\s*\(p\)\s*=>\s*\{\s*const badge = positionStateBadge\(p\.data\)/);
+    expect(colSection).toMatch(/cellRenderer:\s*\(p\)\s*=>\s*\{\s*const badge = positionStateBadge\(p\.data\)/);
+  });
+
+  it('no longer uses the wrong "○" orphan glyph literal anywhere in the St column definition', () => {
+    const colStart = _perfSrc.indexOf("colId: 'pos_state'");
+    const colSection = _perfSrc.slice(colStart, colStart + 1200);
+    expect(colSection).not.toContain("'○'");
+  });
+
+  it('the dead qty_pos branch is gone', () => {
+    const colStart = _perfSrc.indexOf("colId: 'pos_state'");
+    const colSection = _perfSrc.slice(colStart, colStart + 1200);
+    expect(colSection).not.toContain('qty_pos');
+  });
+
+  it('no longer hardcodes the mismatched cyan/amber literals the old copy used', () => {
+    const colStart = _perfSrc.indexOf("colId: 'pos_state'");
+    const colSection = _perfSrc.slice(colStart, colStart + 1200);
+    expect(colSection).not.toContain('rgba(34,211,238,0.18)');
+    expect(colSection).not.toContain('rgba(251,191,36,0.15)');
   });
 });

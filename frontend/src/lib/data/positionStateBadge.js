@@ -13,6 +13,10 @@
  * button) for e.g. watchlist/mover/holding rows that were never part of
  * the positions book.
  *
+ * PerformancePage.svelte's St column (`positionsCols`) also calls this
+ * directly (converted 2026-10-18 — it previously carried its own
+ * independent copy of this priority chain, now removed).
+ *
  * `pair_group_key` carries TWO distinct auto-detected concepts under one
  * field, distinguished by prefix: "P{n}" = an opposite-sign spread within
  * the same (account, root, option_type) — `_auto_pair_positions()`.

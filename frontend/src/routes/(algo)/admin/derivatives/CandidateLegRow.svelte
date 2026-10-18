@@ -964,7 +964,7 @@
   }
   .cand-row.expiry-band-netted {
     /* No background-color: let row-tint-odd alternating stripe show through. */
-    box-shadow: inset 2px 0 0 rgba(125, 145, 184, 0.55);
+    box-shadow: inset 2px 0 0 var(--algo-muted-border);
   }
   /* Per-pair tint — each pair of opposite positions inside the
      NETTED band gets one of 5 alternating LEFT inset bars so the
@@ -1007,7 +1007,7 @@
   .cand-row.expiry-band-netted.cand-row-long,
   .cand-row.expiry-band-netted.cand-row-short {
     /* No background-color: let row-tint-odd show through on alternating rows. */
-    box-shadow: inset 2px 0 0 rgba(125, 145, 184, 0.55);
+    box-shadow: inset 2px 0 0 var(--algo-muted-border);
   }
   .cand-row.expiry-band-otm.cand-row-long,
   .cand-row.expiry-band-otm.cand-row-short {
@@ -1127,14 +1127,14 @@
      cancel each other at settlement, operator should see the pair
      structure but no action needed. */
   .expiry-band-header-netted .expiry-band-pill {
-    background: rgba(125, 145, 184, 0.18);
-    border-color: rgba(125, 145, 184, 0.42);
+    background: rgba(126, 151, 184, 0.18);
+    border-color: rgba(126, 151, 184, 0.42);
     color: var(--algo-slate);
   }
   .expiry-band-header-netted .expiry-band-count {
-    background: rgba(125, 145, 184, 0.30);
+    background: rgba(126, 151, 184, 0.30);
     color: var(--algo-slate);
-    border: 1px solid rgba(125, 145, 184, 0.45);
+    border: 1px solid rgba(126, 151, 184, 0.45);
   }
   /* OUT OF THE MONEY — muted pill, lowest visual weight.
      Traceability only; these expire worthless. */
@@ -1179,9 +1179,9 @@
     border: 1px solid var(--algo-amber-border-soft);
   }
   .expiry-id-netted {
-    background: rgba(125, 145, 184, 0.15);
+    background: rgba(126, 151, 184, 0.15);
     color: var(--algo-dim);
-    border: 1px solid rgba(125, 145, 184, 0.3);
+    border: 1px solid rgba(126, 151, 184, 0.3);
   }
   .cand-chg-sep {
     box-shadow: inset -1px 0 0 0 rgba(126,151,184,0.40);

@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs';
 // and _dayPnlPctValueGetter computes from row fields) — the vi.mock()
 // calls that used to stand in for those imports were removed as dead code.
 
-import { mkRightColDefs, mkPrevCol, dirCls, mkPnlCellClass, mkPosSummaryCols, mkHoldSummaryCols, mkDeltaCol, mkThetaCol, mkLtpCol, mkAcctColTrailing } from '../../data/pulseColumns.js';
+import { mkRightColDefs, mkPrevCol, dirCls, mkPnlCellClass, mkPosSummaryCols, mkHoldSummaryCols, mkDeltaCol, mkThetaCol, mkLtpCol, mkAcctColTrailing, ltpHeatVs, ltpHeatClasses } from '../../data/pulseColumns.js';
 
 // ---------------------------------------------------------------------------
 // Minimal stubs — mkRightColDefs requires many column objects and formatters
@@ -973,5 +973,80 @@ describe('mkAcctColTrailing', () => {
     );
     expect(src).not.toContain('color:rgba(148,163,184,0.75)');
     expect(src).toContain('color:var(--text-hi)');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ltpHeatVs / ltpHeatClasses — exported 2026-10-18 so PerformancePage.svelte's
+// avgVsLtpCls can share this comparison instead of independently re-deriving
+// it (SSOT fix). Input/output table matches the old inline logic exactly —
+// this is a pure refactor, not a behavior change.
+// ---------------------------------------------------------------------------
+
+describe('ltpHeatVs', () => {
+  it('returns the up class when ltp > ref', () => {
+    expect(ltpHeatVs(110, 100, 'up', 'down', 'flat')).toBe('up');
+  });
+  it('returns the down class when ltp < ref', () => {
+    expect(ltpHeatVs(90, 100, 'up', 'down', 'flat')).toBe('down');
+  });
+  it('returns the flat class when ltp === ref', () => {
+    expect(ltpHeatVs(100, 100, 'up', 'down', 'flat')).toBe('flat');
+  });
+  it('returns null when ref is not a positive number', () => {
+    expect(ltpHeatVs(100, 0, 'up', 'down', 'flat')).toBeNull();
+    expect(ltpHeatVs(100, -5, 'up', 'down', 'flat')).toBeNull();
+    expect(ltpHeatVs(100, null, 'up', 'down', 'flat')).toBeNull();
+    expect(ltpHeatVs(100, undefined, 'up', 'down', 'flat')).toBeNull();
+  });
+  it('returns null when ltp is not a number', () => {
+    expect(ltpHeatVs(null, 100, 'up', 'down', 'flat')).toBeNull();
+    expect(ltpHeatVs(undefined, 100, 'up', 'down', 'flat')).toBeNull();
+  });
+});
+
+describe('ltpHeatClasses', () => {
+  it('emits both vs-avg and vs-prev classes when both refs are valid', () => {
+    expect(ltpHeatClasses(110, 100, 90)).toEqual(['ltp-vs-avg-up', 'ltp-vs-prev-up']);
+  });
+  it('emits only vs-prev when avg is absent', () => {
+    expect(ltpHeatClasses(110, null, 90)).toEqual(['ltp-vs-prev-up']);
+  });
+  it('emits only vs-avg when prev is absent', () => {
+    expect(ltpHeatClasses(110, 100, null)).toEqual(['ltp-vs-avg-up']);
+  });
+  it('emits flat classes when ltp equals both refs', () => {
+    expect(ltpHeatClasses(100, 100, 100)).toEqual(['ltp-vs-avg-flat', 'ltp-vs-prev-flat']);
+  });
+  it('emits down classes when ltp is below both refs', () => {
+    expect(ltpHeatClasses(80, 100, 90)).toEqual(['ltp-vs-avg-down', 'ltp-vs-prev-down']);
+  });
+  it('emits an empty array when neither ref is valid', () => {
+    expect(ltpHeatClasses(100, null, undefined)).toEqual([]);
+  });
+});
+
+// PerformancePage.svelte regression guard — confirms the SSOT conversion
+// actually happened (imports the shared function) and the old
+// independently-duplicated class-string literals are gone from
+// avgVsLtpCls's own body, not just added alongside it.
+describe('PerformancePage.svelte avgVsLtpCls — SSOT conversion (2026-10-18)', () => {
+  const _perfSrc = readFileSync(new URL('../../PerformancePage.svelte', import.meta.url), 'utf8');
+
+  it('imports ltpHeatClasses from pulseColumns.js', () => {
+    expect(_perfSrc).toMatch(/import\s*\{[^}]*ltpHeatClasses[^}]*\}\s*from\s*'\$lib\/data\/pulseColumns\.js'/);
+  });
+
+  it('avgVsLtpCls calls the shared ltpHeatClasses instead of re-deriving the comparison inline', () => {
+    const fnStart = _perfSrc.indexOf('const avgVsLtpCls = (params) => {');
+    expect(fnStart).toBeGreaterThan(-1);
+    const fnEnd = _perfSrc.indexOf('\n  };', fnStart);
+    const fnBody = _perfSrc.slice(fnStart, fnEnd);
+    expect(fnBody).toContain('ltpHeatClasses(ltp, avg, prev)');
+    // The old independent re-derivation pushed these class-string literals
+    // directly; they must now come ONLY from the shared helper's return
+    // value (verified above), not be hand-written a second time here.
+    expect(fnBody).not.toMatch(/cls\.push\('ltp-vs-avg-up', 'cell-pos'\)/);
+    expect(fnBody).not.toMatch(/cls\.push\(ltp > prev \? 'ltp-vs-prev-up' : 'ltp-vs-prev-down'\)/);
   });
 });

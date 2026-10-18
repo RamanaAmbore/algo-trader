@@ -103,13 +103,16 @@ describe('_modePill — fixed behaviour', () => {
   });
 });
 
-// ── Call-site normalization (LogPanel.svelte _orderRowHtml) ──────────────
+// ── Call-site normalization ───────────────────────────────────────────
 //
 // Broker-only rows (direct Kite book, no AlgoOrder counterpart) carry no
-// `mode` field at all. The call site normalizes with `o.mode || 'live'`
-// — the same convention already used elsewhere in LogPanel.svelte
+// `mode` field at all. A normalizing call site uses `o.mode || 'live'`
+// — the same convention used elsewhere in LogPanel.svelte
 // (_applyModeFilter, _gatingMode filters) — so a real live broker order
-// still renders LIVE, not UNKNOWN.
+// still renders LIVE, not UNKNOWN. (2026-10-18: `_orderRowHtml`, the
+// function this originally documented, was removed as dead code —
+// `_modePill` itself has no live caller as of this date, but its own
+// branch-correctness is still worth locking in against regression.)
 describe('_modePill call-site normalization — broker rows with no mode field', () => {
   it('a broker row with no mode field still renders LIVE via the `|| \'live\'` normalization', () => {
     const brokerRow = { order_id: 'ORD1', status: 'COMPLETE' }; // no `mode` key

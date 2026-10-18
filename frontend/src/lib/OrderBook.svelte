@@ -887,7 +887,12 @@
   .ob-root.fs-card-on {
     display: flex;
     flex-direction: column;
-    background: var(--algo-navy, #0f1c36);
+    /* #0f1c36 is a one-off fullscreen-card tone, not reused anywhere else
+       in the app (confirmed via grep) and distinct enough from the
+       --algo-bg-elev1/elev2 surface tokens to not be a drop-in match —
+       kept as a plain literal rather than inventing a new single-use
+       token (`--algo-navy` was referenced but never defined). */
+    background: #0f1c36;
     padding: 0.5rem;
   }
   .ob-root.fs-card-on .ob-scroll { flex: 1 1 0; min-height: 0; }

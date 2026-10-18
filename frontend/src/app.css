@@ -1969,7 +1969,7 @@
      tabular-nums + cyan-200 but at log-row density so the timestamp
      column reads as a sub-header glyph, not the row's loudest chunk. */
   color: #7dd3fc;
-  font-size: 0.55rem;
+  font-size: var(--fs-sm);
   font-family: ui-monospace, monospace;
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.01em;
@@ -2098,32 +2098,12 @@
    doesn't bump up against the EDT line. Color comes from the global
    rule (IST primary + EDT muted) — same as every other surface. */
 .log-panel .log-ts { margin-right: 4px; vertical-align: top; }
-/* Single-zone fallback inside the panel — used for system-log lines
-   (which come from a Python timestamp parser that already produces a
-   dual-zone string) and cmd entries (h.time pre-formatted at the
-   callsite). Keeps the yellow accent so they stand out from row text. */
+/* Single-zone fallback inside the panel — used for system-log lines and
+   non-ISO strings _dualTsHtml() can't parse (which come from a Python
+   timestamp parser / upstream source that already produces a dual-zone
+   string, or a raw fallback render). Keeps the yellow accent so they
+   stand out from row text. */
 .log-panel .log-ts-fallback { color: #fbbf24; font-weight: 700; font-size: 0.6rem; }
-
-/* `.log-sim-pill` — amber chip surfacing on EVERY log row whose source
-   is a simulator artefact, regardless of which tab is rendering it.
-   Operator can never mistake a sim entry for live activity on the
-   Agent / Order / System / Terminal tabs. Pill style matches the
-   navbar SIMULATOR badge palette. */
-.log-panel .log-sim-pill {
-  display: inline-block;
-  background: rgba(251,191,36,0.18);
-  border: 1px solid rgba(251,191,36,0.55);
-  color: #fbbf24;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.5rem;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  padding: 0 0.25rem;
-  border-radius: 2px;
-  margin-right: 0.25rem;
-  cursor: help;
-  vertical-align: 1px;
-}
 /* Agent-id link chip on AlgoOrder rows — amber accent, matching the
    algo palette. Renders inline after the engine chip; absent when
    agent_id is null (tickets, replays without an originating agent). */
@@ -2182,7 +2162,7 @@
   font-weight: 700;
   text-transform: uppercase;
   margin-right: 0.2rem;
-  font-size: 0.52rem;
+  font-size: var(--fs-xs);
   letter-spacing: 0.05em;
   opacity: 0.85;
 }

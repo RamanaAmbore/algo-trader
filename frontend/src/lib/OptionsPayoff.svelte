@@ -1919,8 +1919,8 @@
     font-size: var(--fs-xs);
     font-family: var(--font-numeric);
     color: var(--algo-muted);
-    background: rgba(125, 145, 184, 0.08);
-    border: 1px solid rgba(125, 145, 184, 0.22);
+    background: var(--algo-muted-bg-soft);
+    border: 1px solid var(--algo-muted-bg-strong);
     border-radius: 3px;
     cursor: default;
   }

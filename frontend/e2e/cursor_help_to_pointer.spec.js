@@ -93,10 +93,11 @@ test.describe('Static source checks — InfoHint trigger sites use cursor:pointe
     expect(automation).toMatch(/title=\{_lc\.tooltip\}/);
   });
 
-  test('app.css .log-sim-pill (native title badge, unrelated to InfoHint) keeps cursor:help', () => {
-    const css = readFile('src/app.css');
-    expect(css).toMatch(/\.log-panel \.log-sim-pill\s*\{[^}]*cursor:\s*help;/);
-  });
+  // `.log-sim-pill` test removed (2026-10-18) — the rule itself was
+  // dead CSS (zero emitters anywhere in src/, confirmed via repo-wide
+  // grep) and was removed from app.css in the same commit as part of a
+  // LogPanel.svelte dead-code cleanup. This test was guarding a feature
+  // that no longer exists.
 });
 
 test.describe('Live — computed cursor on an InfoHint trigger resolves to pointer', () => {

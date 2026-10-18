@@ -11,11 +11,9 @@
   import { priceFmt, aggCompact } from '$lib/format';
   import { matchGtts } from '$lib/data/gttMatch.js';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
-  import { getInstrument } from '$lib/data/instruments';
   import UnifiedLog from '$lib/UnifiedLog.svelte';
-  import OrderCard from '$lib/order/OrderCard.svelte';
   import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
-  import { chipsHtml, chipsFromJson } from '$lib/logChips';
+  import { chipsFromJson, parseJsonObject } from '$lib/logChips';
   import ChartModal from '$lib/ChartModal.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
@@ -351,13 +349,30 @@
   // actions.py:921-925, zero backend change needed). `execute()`'s
   // success path (`_log_action_success`) writes EVERY action's resolved
   // `params` dict verbatim into `AgentEvent.detail` regardless of action
-  // type — so for an emit_log/debug(x) fire specifically, `e.detail.level`
-  // carries the real level ("debug", or whatever the operator set, incl.
-  // a future "critical"). That explicit value is checked FIRST, before
-  // falling back to the coarser event_type heuristic every other action
-  // type still relies on (those never set `detail.level`).
+  // type — so for an emit_log/debug(x) fire specifically, the parsed
+  // detail's `.level` carries the real level ("debug", or whatever the
+  // operator set, incl. a future "critical"). That explicit value is
+  // checked FIRST, before falling back to the coarser event_type
+  // heuristic every other action type still relies on (those never set
+  // `detail.level`). `detail` is a JSON-ENCODED STRING (AgentEventInfo.detail,
+  // backend/api/routes/agents.py), not a parsed object — `parseJsonObject`
+  // (shared with the account filter below and the Alerts tab, $lib/logChips)
+  // handles the null/empty/non-JSON/truncated cases (2026-10-18 fix — this
+  // used to read `e.detail.level` directly, always undefined since `detail`
+  // is a string).
+  //
+  // KNOWN TRADE-OFF: a `debug(x)` fire will now be hidden by the default
+  // Level filter (which hides 'debug' by default) in cases where it was
+  // previously visible ONLY because this exact parse bug made `explicit`
+  // always empty, silently bypassing the debug-hide default via the
+  // event_type heuristic's 'info' fallback. The Level chip-row UI that
+  // would let an operator re-enable 'debug' was already removed in a past
+  // cleanup (see the Kind-filter-removal comment below) — there is
+  // currently no live control to unhide debug rows. Flagged for the
+  // operator; not fixed here (out of this item's scope).
   function _agentLevel(/** @type {any} */ e) {
-    const explicit = String(e?.detail?.level || '').toLowerCase();
+    const detail = parseJsonObject(e?.detail);
+    const explicit = String(detail.level || '').toLowerCase();
     if (_LOG_LEVELS.includes(explicit)) return explicit;
     const t = (e?.event_type || '').toLowerCase();
     if (t.includes('fail') || t.includes('error') || t.includes('reject')) return 'error';
@@ -374,27 +389,27 @@
     if (level === 'error' || level === 'critical') return 'e';
     return 'i';
   }
-  // ── Agents tab — Kind filter bucket mapping ─────────────────────────
-  // ASSUMPTION, not yet confirmed against the real backend (per brief):
-  // a parallel backend change threads the firing agent's own `kind`
-  // column (cycle|threshold|event|bracket|template) into the AgentEvent
-  // row as `agent_kind` — most likely via execute() injecting agent.kind
-  // into context before dispatching emit_log (backend/api/algo/
-  // actions.py). If the real landed field name differs, this is the
-  // ONE lookup to update — every other piece of the kind filter is keyed
-  // off the bucket this returns, not the raw field name.
-  // Bucket mapping mirrors Sprint C's own four-kind card set
-  // (Agents/Alerts/Brackets/Templates): event→alert, bracket→bracket,
-  // template→template, cycle/threshold (ordinary rule agents)→agent.
-  function _agentKindBucket(/** @type {any} */ e) {
-    const raw = String(e?.agent_kind || '').toLowerCase();
-    if (!raw) return null;
-    if (raw === 'event')    return 'alert';
-    if (raw === 'bracket')  return 'bracket';
-    if (raw === 'template') return 'template';
-    if (raw === 'cycle' || raw === 'threshold') return 'agent';
-    return raw;
-  }
+  // Kind filter (agent/alert/bracket/template bucket) and its
+  // `_agentKindBucket()` resolver were removed entirely (2026-10-18) —
+  // the Kind chip-row UI was already removed in a past cleanup with no
+  // plan to restore it, leaving a filter control with literally no way
+  // to change it back from a bad persisted localStorage value, and the
+  // underlying field-shape bug (reading `e.agent_kind` instead of the
+  // parsed `detail.agent_kind`) meant it always evaluated to "no match"
+  // for any non-'all' persisted value — a filter with no UI serves no
+  // purpose even once "fixed". See CLAUDE.md's dead-code-removal guidance.
+  // Human-readable detail-field rendering (Agents tab, previously not
+  // rendered at all; Alerts tab, previously raw unparsed JSON) now goes
+  // through the shared `chipsFromJson()` ($lib/logChips, same chip
+  // formatter the Order-tab/trigger_condition rendering already uses)
+  // instead of a parallel local formatter — avoids introducing a NEW SSOT
+  // violation while fixing this one. `agent_kind` is excluded — it's
+  // plumbing for the (now-removed) Kind filter, not operator-useful
+  // context. `chipsFromJson` already falls back to the escaped raw string
+  // on parse failure (e.g. Alerts' own `detail` truncated to 240 chars
+  // server-side can cut a JSON string off mid-object), so the detail
+  // never silently disappears the way a stricter parse-or-empty would.
+  const _DETAIL_CHIP_OPTS = { exclude: ['agent_kind'] };
   // ── Search helper ────────────────────────────────────────────────────
   // Text-match predicate for the card button group search. Strips HTML tags
   // from the row's `.html` string so the search works on visible text, not
@@ -419,11 +434,21 @@
         // filters below to warning-only on every page. The new filters
         // are the Agents tab's real, operator-facing level control now.
         if (!_agentLevelFilter.has(_agentLevel(e))) return false;
-        // New Agents-tab kind filter (agent/alert/bracket/template,
-        // 'all' = no narrowing) — ANDs with everything else.
-        if (_agentKindFilter !== 'all' && _agentKindBucket(e) !== _agentKindFilter) return false;
-        if (orderAccountFilter.length > 0 && e.account
-            && !orderAccountFilter.includes(String(e.account))) return false;
+        // Kind filter removed (2026-10-18) — see the Kind-filter-removal
+        // comment above / the Kind-filter-state removal further below
+        // (_AGENT_KIND_TABS etc. no longer exist).
+        // Account filter — AgentEventInfo carries no top-level `account`
+        // field (confirmed against backend/api/routes/agents.py's own
+        // struct def); when present, it's nested inside the JSON-encoded
+        // `detail` string under the action's own params (e.g. order
+        // actions set `account`). Rows with no account in `detail` are a
+        // broadcast/schedule-only fire — kept visible, matching the same
+        // "no detectable account = keep visible" convention
+        // `_lineMatchesAccount` already uses for the System tab.
+        if (orderAccountFilter.length > 0) {
+          const acct = parseJsonObject(e.detail).account;
+          if (acct && !orderAccountFilter.includes(String(acct))) return false;
+        }
         return true;
       })
       .sort((a, b) => _tsKey(b.timestamp) - _tsKey(a.timestamp))
@@ -433,7 +458,15 @@
                   : e.event_type === 'cooldown'        ? 'log-agent-cooldown'
                   : 'log-agent-default';
         const cond = chipsFromJson(e.trigger_condition) || '';
-        const tag  = (e.event_type || '').replace(/_/g, ' ');
+        // Render the detail's own useful fields too — for schedule-only /
+        // DO-action-only fires, `trigger_condition` is empty, which used
+        // to produce a bare event name with zero context (operator-
+        // flagged). Shared with the Alerts tab's own detail rendering via
+        // the same `chipsFromJson` call (2026-10-18) — see
+        // `_DETAIL_CHIP_OPTS`'s own comment above.
+        const detailHtml = chipsFromJson(e.detail, _DETAIL_CHIP_OPTS) || '';
+        const content = detailHtml ? `${cond}${cond ? ' ' : ''}${detailHtml}` : cond;
+        const tag  = _humanizeEventType(e.event_type);
         const stripe = i % 2 === 0 ? 'row-tint-even' : 'row-tint-odd';
         // Chip letter now derives from the real resolved level (picks up
         // debug(x)'s detail.level) instead of the event_type-only `cls`
@@ -441,7 +474,7 @@
         const lv = _agentLevelChipCode(_agentLevel(e));
         return {
           key: e.id != null ? `a${e.id}` : `a${e.timestamp || ''}-${i}`,
-          html: _logRow(e.timestamp, cond, tag, `${cls} ${stripe}`, lv),
+          html: _logRow(e.timestamp, content, tag, `${cls} ${stripe}`, lv),
           _raw: e,
         };
       })
@@ -532,7 +565,13 @@
       ? `<a class="log-agent-chip" href="/automation?focus=${e.agent_id}">${who}</a>`
       : `<span>${who}</span>`;
     const cond = e.conditions_summary ? _escAttr(e.conditions_summary) : '';
-    const detail = e.detail ? _escAttr(e.detail) : '';
+    // Human-readable detail summary via the shared `chipsFromJson`
+    // (same call the Agents tab uses, `_DETAIL_CHIP_OPTS` above) — was
+    // previously glued on as a raw, unparsed JSON blob
+    // (`{"account":...,"qty":...}`). Falls back to the escaped raw text
+    // on parse failure (e.g. this field is truncated to 240 chars
+    // server-side) rather than silently disappearing.
+    const detail = chipsFromJson(e.detail, _DETAIL_CHIP_OPTS) || '';
     const channels = Array.isArray(e.channels_sent) && e.channels_sent.length
       ? e.channels_sent.map(c => `<span class="log-chip"><span class="log-chip-key">ch:</span>${_escAttr(c)}</span>`).join(' ')
       : '';
@@ -635,6 +674,14 @@
     if (cls === 'conn-ev-amber') return 'w';
     if (cls === 'conn-ev-green') return 'i';
     return 'd';
+  }
+
+  // Humanize a raw snake_case event_type ('login_ok', 'circuit_open', ...)
+  // for display — was rendered raw, unlike the Agents tab's own
+  // `(e.event_type || '').replace(/_/g, ' ')` and the Alerts tab's
+  // explicit `_alertEventTag()` label map (2026-10-18 consistency fix).
+  function _humanizeEventType(/** @type {string} */ evType) {
+    return (evType || '').replace(/_/g, ' ');
   }
 
   function _orderEvtCls(/** @type {string} */ kind) {
@@ -806,8 +853,13 @@
     // same data the /orders page renders PLUS the platform's paper /
     // sim / shadow rows that never reach the broker. Broker rows win
     // on duplicate order_id (most complete fields); algo-only rows
-    // (paper / sim / shadow) keep their AlgoOrderInfo shape and are
-    // distinguished by .mode chip on the OrderCard.
+    // (paper / sim / shadow) keep their AlgoOrderInfo shape — `o.mode`
+    // is read by `_terminalOrderLines()`'s Terminal-tab mode filter
+    // below. (`_modePill`/the `*_PILL` constants further down have no
+    // live caller as of 2026-10-18 — their only caller, the Order tab's
+    // old `_orderRowHtml`, was removed as dead code; flagged, not
+    // removed here, since deleting them would also orphan their
+    // `.mode-pill-*` CSS — an operator decision, not this fix's scope.)
     try {
       const [brokerResp, algoResp] = await Promise.allSettled([
         fetchOrders(),
@@ -1178,23 +1230,12 @@
   /** @type {Set<string>} */
   let _agentLevelFilter = $state(new Set(['info', 'warning', 'error', 'critical']));
 
-  // Kind: single-select narrowing (default 'all' — never hides anything
-  // by default, unlike Level above). See `_agentKindBucket()` for the
-  // raw-field assumption this depends on.
-  const _AGENT_KIND_TABS = [
-    ['all',      'All'],
-    ['agent',    'Agent'],
-    ['alert',    'Alert'],
-    ['bracket',  'Bracket'],
-    ['template', 'Template'],
-  ];
-  const _AGENT_KIND_LS_KEY = 'ramboq.logpanel.agentKindFilter';
-  let _agentKindFilter = $state('all');
-
-  // Persist both filters as a per-card UI preference: plain localStorage,
-  // try/catch-silent (quota / Safari private mode), restore-once-on-mount
-  // gated by a `_restored` flag so the initial default doesn't immediately
-  // overwrite a real stored value before it's been read.
+  // Persist the Level filter as a per-card UI preference: plain
+  // localStorage, try/catch-silent (quota / Safari private mode),
+  // restore-once-on-mount gated by a `_restored` flag so the initial
+  // default doesn't immediately overwrite a real stored value before
+  // it's been read. (Kind filter's own restore/persist removed
+  // 2026-10-18 along with its dead state — see _agentRows' comment.)
   let _agentFiltersRestored = false;
   onMount(() => {
     try {
@@ -1207,21 +1248,12 @@
         }
       }
     } catch (_) { /* quota / Safari private / malformed JSON — keep default */ }
-    try {
-      const rawKind = localStorage.getItem(_AGENT_KIND_LS_KEY);
-      if (rawKind && _AGENT_KIND_TABS.some(([id]) => id === rawKind)) _agentKindFilter = rawKind;
-    } catch (_) {}
     _agentFiltersRestored = true;
   });
   $effect(() => {
     const snap = [..._agentLevelFilter];
     if (!_agentFiltersRestored || typeof localStorage === 'undefined') return;
     try { localStorage.setItem(_AGENT_LEVEL_LS_KEY, JSON.stringify(snap)); } catch (_) {}
-  });
-  $effect(() => {
-    const snap = _agentKindFilter;
-    if (!_agentFiltersRestored || typeof localStorage === 'undefined') return;
-    try { localStorage.setItem(_AGENT_KIND_LS_KEY, snap); } catch (_) {}
   });
 
   // Account multi-select filter — matches the /orders Order Activity
@@ -1693,112 +1725,6 @@
     return s.includes('ERROR') ? 'log-error' : s.includes('WARNING') ? 'log-warning' : 'log-info';
   }
 
-  function _cmdEntryHtml(h) {
-    const cls = h.status === '✓' ? 'log-agent-success' : h.status === '✗' ? 'log-agent-failed' : 'log-info';
-    const chips = h.fields ? Object.entries(h.fields)
-      .map(([k, v]) => `<span class="log-chip"><span class="log-chip-key">${k}:</span>${v}</span>`)
-      .join(' ') : '';
-    // Command entries: h.time is already-formatted (from `logTime(new
-    // Date())` at the callsite in orders/+page.svelte). Render it as a
-    // single-zone fallback inside .log-ts-fallback so it picks up the
-    // muted slate color without forcing IST+EDT extraction.
-    return `<span class="${cls}"><span class="log-ts log-ts-fallback">${h.time || ''}</span> ${h.status} ${h.message} ${chips}</span>`;
-  }
-
-  // Table-driven status → CSS class map. Colour by terminal state first,
-  // then by side. FILLED = green, UNFILLED = red, OPEN = amber.
-  const _ORDER_STATUS_CLASS = {
-    FILLED:          'log-agent-success',
-    UNFILLED:        'log-agent-failed',
-    OPEN:            'log-agent-alert',
-    CANCELLED:       'log-order-cancelled',
-    REJECTED:        'log-order-rejected',
-    SHADOW_OK:       'log-order-shadow-ok',
-    SHADOW_REJECTED: 'log-order-rejected',
-  };
-
-  /** Resolve CSS row class for an order row (status-first, side fallback). */
-  function _orderStatusClass(status, transactionType) {
-    return _ORDER_STATUS_CLASS[status]
-      ?? (transactionType === 'BUY' ? 'log-agent-success' : 'log-info');
-  }
-
-  /**
-   * Preflight verdict chip — ✓/✗ with title= carrying the detail.
-   * Returns '' for ambiguous states so it doesn't cry wolf on OPEN rows.
-   */
-  function _preflightChipHtml(status, detail) {
-    if (status === 'REJECTED' || status === 'SHADOW_REJECTED') {
-      const t = (detail || 'preflight blocked').replace(/"/g, '&quot;');
-      return ` <span class="log-pf log-pf-bad" title="${t}">✗</span>`;
-    }
-    if (status === 'FILLED' || status === 'SHADOW_OK') {
-      return ` <span class="log-pf log-pf-ok" title="Preflight OK">✓</span>`;
-    }
-    return '';
-  }
-
-  /**
-   * Symbol as a clickable span. data-sym / data-exch drive event
-   * delegation in the <pre> click + contextmenu handlers.
-   * Returns '' when no symbol is set.
-   */
-  function _orderSymSpan(sym, exch) {
-    if (!sym) return '';
-    return `<span class="log-sym-cell" role="button" tabindex="0" data-sym="${_escAttr(sym)}" data-exch="${_escAttr(exch || '')}" title="${_escAttr(sym)}">${_escAttr(sym)}</span>`;
-  }
-
-  // Render one AlgoOrder row (mode=live or sim) for the Order tab. Keeps
-  // order details — side, qty, symbol, price, account — on one line so
-  // operators can scan placements the same way they'd read a broker blotter.
-  function _orderRowHtml(o) {
-    // Live orders carry `order_timestamp`; algo/paper/sim carry `created_at`.
-    const t      = _dualTsHtml(o.created_at || o.order_timestamp);
-    // Broker-only rows (direct Kite book, no AlgoOrder counterpart) carry
-    // no `mode` field at all — same `|| 'live'` convention used elsewhere
-    // in this file (_applyModeFilter, _gatingMode filters). Without this,
-    // `_modePill`'s now-explicit-only branches would render a real live
-    // broker order as UNKNOWN instead of LIVE.
-    const tag    = _modePill(o.mode || 'live');
-    const status = (o.status || '').toUpperCase();
-    const rowCls = _orderStatusClass(status, o.transaction_type);
-    // Prefer fill_price once the chase landed; otherwise the initial limit price.
-    const price  = ((o.fill_price != null) ? '@' + priceFmt(o.fill_price) : null)
-                || ((o.initial_price != null) ? '@' + priceFmt(o.initial_price) : '');
-    const preflightChip = _preflightChipHtml(status, o.detail);
-    // Detail chips via shared chipsHtml helper. Agent-id chip stays bespoke
-    // (it's an <a>, not a plain span — chipsHtml deliberately doesn't emit anchors).
-    const chips     = chipsHtml({
-      status: o.status || null,
-      chase:  (o.attempts != null && o.attempts > 0) ? `#${o.attempts}` : null,
-      engine: o.engine || null,
-    }, { order: ['status', 'chase', 'engine'] });
-    const agentChip  = o.agent_id
-      ? `<a class="log-agent-chip" href="/automation?focus=${o.agent_id}">agent #${o.agent_id}</a>`
-      : '';
-    const chipsBlock = chips ? ' ' + chips : '';
-    const symBlock   = _orderSymSpan(o.symbol, o.exchange);
-    // Lot chip — show lots for F&O instruments (lot_size > 1).
-    // Quantity from the order is in contracts; derive lots from the
-    // instruments IndexedDB cache. Falls back gracefully to no chip
-    // when the cache miss occurs (e.g. instruments not yet loaded).
-    const ls = getInstrument(o.symbol)?.ls ?? 1;
-    const lotChip = (ls > 1 && o.quantity != null)
-      ? `<span class="log-lot-chip">${Math.round(o.quantity / ls)}L</span>`
-      : '';
-    return `<span class="${rowCls}">${t} ${tag}◆ ${o.transaction_type} ${o.quantity} ${symBlock}${lotChip} ${price} · ${o.account}${preflightChip}${chipsBlock}${agentChip}</span>`;
-  }
-
-  function _orderLogHtml() {
-    // Prefer structured AlgoOrder rows when provided; fall back to the
-    // terminal-command history so the /console page still works.
-    if (orderRows && orderRows.length) {
-      return orderRows.map(_orderRowHtml).join('\n');
-    }
-    const lines = cmdHistory.map(h => _cmdEntryHtml(h));
-    return lines.length ? lines.join('\n') : '<span class="log-debug">No order events.</span>';
-  }
-
   // Terminal tab mode filter — when gateByMode is active, only show events
   // whose detail text starts with the mode's [TAG] prefix OR has no known
   // mode prefix (global/system events are always shown).
@@ -2088,14 +2014,14 @@
     />
   </div>
 {:else if logTab === 'order'}
-  <!-- Order tab — orders render as bordered cards via <OrderCard>, the
-       same component the /orders Order Activity book uses, so the
-       Activity-modal Orders tab and the dedicated /orders page format
-       are visually identical. The mode filter strip below selects which
-       AlgoOrder rows are shown (All shows everything — matching the
-       "All status" card on /orders); previously this branch routed
-       through UnifiedLog (which merged agent fires in) and the
-       mode-specific branches rendered text spans inside a <pre>. -->
+  <!-- Order tab — real render path: `_derivedOrderEvents` mapped to plain
+       `.log-row` divs below (NOT <OrderCard> — that component is used by
+       the separate /orders Order Activity book, not this tab). The mode
+       filter strip below selects which AlgoOrder rows are shown (All
+       shows everything — matching the "All status" card on /orders);
+       previously this branch routed through UnifiedLog (which merged
+       agent fires in) and the mode-specific branches rendered text spans
+       inside a <pre>. -->
   <div class="om-bar">
     {#if !_gatingMode}
       <!-- Mode chip strip is hidden when gateByMode is active — the header
@@ -2143,8 +2069,9 @@
      the text no system area yet. It is showing for news tab... should
      not be there") — this whole block is the row-renderer for
      terminal/agent/alerts/simulator/conn/system; 'news' and 'order' are
-     FULLY handled by the if/else-if chain above (NewsList / OrderCard),
-     but this div had no gate of its own, so it rendered UNCONDITIONALLY
+     FULLY handled by the if/else-if chain above (NewsList / the Order
+     tab's own `.log-row` renderer), but this div had no gate of its own,
+     so it rendered UNCONDITIONALLY
      after that chain closed — for 'news'/'order', none of ITS OWN
      branches match either, so it fell through to the bare {:else}
      (the "system" empty-state), appending "No system entries yet."
@@ -2180,7 +2107,7 @@
           {@html _levelChipHtml(_connEvtLv(ev.event_type))}
           <span class="lp-conn-acct font-mono">{ev.account || '—'}</span>
           <span class="lp-conn-broker">{ev.broker_id === 'zerodha_kite' ? 'zerodha' : (ev.broker_id || '—')}</span>
-          <span class="lp-conn-type">{ev.event_type}</span>
+          <span class="lp-conn-type">{_humanizeEventType(ev.event_type)}</span>
           {#if _det}
             <span class="lp-conn-det" title={ev.detail ? JSON.stringify(ev.detail, null, 2) : ''}>{_det}</span>
           {/if}
@@ -2338,7 +2265,7 @@
     border: 1px solid rgba(248, 113, 113, 0.35);
     border-radius: 3px;
     color: var(--c-short);
-    font-size: 1rem;
+    font-size: var(--fs-xl);
     cursor: pointer;
     flex-shrink: 0;
     transition: background 0.1s;
@@ -2456,7 +2383,7 @@
     flex: 0 0 auto;
     order: 0;
     font-family: var(--font-numeric);
-    /* Matches .newslist-time (0.62rem) — same scan-fodder
+    /* Matches .newslist-time (--fs-sm) — same scan-fodder
        proportion as the news tab. */
     font-size: var(--fs-sm);
     color: var(--algo-sky);
@@ -2546,9 +2473,6 @@
   :global(.log-panel.log-rows .log-row.log-warning) { color: var(--c-action); }
   :global(.log-panel.log-rows .log-row.log-debug)   { color: var(--algo-dim); font-style: italic; }
 
-  /* Orders-tab card grid — mirrors /orders' .oc-book-grid so the
-     Activity-modal Orders tab and the dedicated /orders page lay out
-     identically. One column on phone; two on tablet; three on desktop. */
   .lp-order-scroll {
     flex: 1 1 0;
     min-height: 0;
@@ -2579,18 +2503,6 @@
     overflow-y: visible;
     overscroll-behavior: auto;
   }
-  .lp-order-scroll .oc-book-grid {
-    display: grid;
-    grid-template-columns: 1fr;
-    gap: 0.5rem;
-  }
-  @media (min-width: 640px) {
-    .lp-order-scroll .oc-book-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  }
-  @media (min-width: 1024px) {
-    .lp-order-scroll .oc-book-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  }
-
   /* Order-event log rows inside .lp-order-scroll — same density/padding
      as the .log-panel.log-rows rows. Color-coded by event kind. */
   .lp-order-scroll .log-row {
@@ -3011,7 +2923,7 @@
   .lp-conn-acct   { flex-shrink: 0; min-width: 3.5rem; color: var(--algo-slate); }
   .lp-conn-broker { flex-shrink: 0; min-width: 3rem; color: var(--text-muted); }
   .lp-conn-type   { flex-shrink: 0; min-width: 8rem; font-weight: 500; }
-  .lp-conn-det    { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--algo-muted); white-space: normal; overflow-wrap: break-word; }
+  .lp-conn-det    { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--algo-muted); white-space: normal; overflow-wrap: break-word; font-size: var(--fs-lg); }
   .lp-conn-row.conn-ev-green { color: var(--c-long); }
   .lp-conn-row.conn-ev-red   { color: var(--c-short); }
   .lp-conn-row.conn-ev-amber { color: var(--c-action); }

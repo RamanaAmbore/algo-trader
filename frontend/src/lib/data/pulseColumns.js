@@ -247,16 +247,20 @@ function _ltpFlashClass(sym, getLtpFlashUp, getLtpFlashDown) {
 
 // Return the heat class comparing `ltp` to a reference price (`ref`).
 // Returns null when either value is not a positive number.
-function _ltpHeatVs(ltp, ref, upCls, downCls, flatCls) {
+// Exported — PerformancePage.svelte's avgVsLtpCls shares this instead of
+// re-deriving the same up/down/flat comparison independently (2026-10-18
+// SSOT fix).
+export function ltpHeatVs(ltp, ref, upCls, downCls, flatCls) {
   if (typeof ltp !== 'number' || typeof ref !== 'number' || !(ref > 0)) return null;
   return ltp > ref ? upCls : ltp < ref ? downCls : flatCls;
 }
 
 // Build the vs-avg and vs-prev heat classes for a given ltp / row.
-function _ltpHeatClasses(ltp, avg, prev) {
+// Exported — see ltpHeatVs comment above.
+export function ltpHeatClasses(ltp, avg, prev) {
   const out = [];
-  const avgCls  = _ltpHeatVs(ltp, avg,  'ltp-vs-avg-up',  'ltp-vs-avg-down',  'ltp-vs-avg-flat');
-  const prevCls = _ltpHeatVs(ltp, prev, 'ltp-vs-prev-up', 'ltp-vs-prev-down', 'ltp-vs-prev-flat');
+  const avgCls  = ltpHeatVs(ltp, avg,  'ltp-vs-avg-up',  'ltp-vs-avg-down',  'ltp-vs-avg-flat');
+  const prevCls = ltpHeatVs(ltp, prev, 'ltp-vs-prev-up', 'ltp-vs-prev-down', 'ltp-vs-prev-flat');
   if (avgCls)  out.push(avgCls);
   if (prevCls) out.push(prevCls);
   return out;
@@ -297,7 +301,7 @@ function _ltpCellClass(p, RA, resolveCellLtp, getLtpFlashUp, getLtpFlashDown) {
     if (_normalisePriceSource(p.data) === 'snapshot_unsettled') cls.push('ltp-snap-unsettled');
     cls.push(dirBg);
   }
-  const heatCls = _ltpHeatClasses(ltp, _ltpAvgFor(p.data), p.data.close ?? null);
+  const heatCls = ltpHeatClasses(ltp, _ltpAvgFor(p.data), p.data.close ?? null);
   for (const c of heatCls) cls.push(c);
   // Persistent text color for the LTP value — tiered by day % magnitude.
   // Prefer precomputed change_pct / day_pnl_pct (same SSOT as Day % column).
@@ -603,8 +607,8 @@ export function mkRightColDefs({
       headerClass: 'ag-header-cell-state',
       headerTooltip: 'Position state: GTT (green) · Auto-paired (cyan) · Orphan (◇ amber). Click for info.',
       // Shared priority logic (GTT > auto-paired > orphan) lives
-      // in positionStateBadge.js — PerformancePage.svelte carries its own
-      // separate copy (not converted here, out of scope).
+      // in positionStateBadge.js — PerformancePage.svelte's own St column
+      // now calls the same shared function too (converted 2026-10-18).
       cellStyle: (p) => {
         const badge = positionStateBadge(p.data);
         if (badge.state == null) return {};

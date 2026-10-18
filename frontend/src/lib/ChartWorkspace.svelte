@@ -2971,8 +2971,8 @@
     font-weight: 600;
     letter-spacing: 0.02em;
     color: var(--algo-muted);
-    background: rgba(125, 145, 184, 0.08);
-    border: 1px solid rgba(125, 145, 184, 0.22);
+    background: var(--algo-muted-bg-soft);
+    border: 1px solid var(--algo-muted-bg-strong);
     border-radius: 3px;
     padding: 0.12rem 0.45rem;
     white-space: nowrap;

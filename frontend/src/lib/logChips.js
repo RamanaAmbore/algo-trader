@@ -41,18 +41,23 @@ export function chipHtml(/** @type {string} */ key, /** @type {unknown} */ value
  * `opts.skipEmpty=false` keeps empty-string values; defaults to dropping.
  * `opts.order` lets the caller pin the chip order (otherwise insertion
  * order of the object literal wins, which is fine for hand-built dicts).
+ * `opts.exclude` drops specific keys outright regardless of value — e.g.
+ * `agent_kind`, which rides on `AgentEvent.detail` purely as filter
+ * plumbing (backend/api/algo/actions.py), not operator-useful context.
  */
 export function chipsHtml(
   /** @type {Record<string, unknown> | null | undefined} */ obj,
-  /** @type {{ skipEmpty?: boolean, order?: string[] }} */ opts = {},
+  /** @type {{ skipEmpty?: boolean, order?: string[], exclude?: string[] }} */ opts = {},
 ) {
   if (!obj || typeof obj !== 'object') return '';
   const skipEmpty = opts.skipEmpty !== false;
+  const exclude = Array.isArray(opts.exclude) ? new Set(opts.exclude) : null;
   const keys = Array.isArray(opts.order) && opts.order.length
     ? opts.order.filter((k) => k in obj)
     : Object.keys(obj);
   const out = [];
   for (const k of keys) {
+    if (exclude && exclude.has(k)) continue;
     const v = obj[k];
     if (skipEmpty && (v == null || v === '' || (typeof v === 'object' && !Array.isArray(v)))) continue;
     const display = Array.isArray(v) ? v.join(',') : v;
@@ -109,6 +114,30 @@ export function chipsAsTextFromJson(/** @type {unknown} */ raw, /** @type {{ ski
 }
 
 /**
+ * Safely parse a detail/trigger_condition JSON-encoded string into a
+ * plain object, for callers that need structured field access (not just
+ * chip-HTML rendering) — e.g. LogPanel's Agents-tab Level/account
+ * filters, which read `.level` / `.account` out of `AgentEventInfo.detail`
+ * (a JSON string, `json.dumps()`'d at backend/api/algo/events.py).
+ * Returns `{}` for null/empty/non-object/non-JSON/truncated input
+ * (AlertEvent.detail is truncated to 240 chars server-side, so a cut-off
+ * JSON string is a real, expected case here) — never throws.
+ */
+export function parseJsonObject(/** @type {unknown} */ raw) {
+  if (raw == null || raw === '') return {};
+  if (typeof raw === 'object' && !Array.isArray(raw)) return /** @type {Record<string, unknown>} */ (raw);
+  if (typeof raw !== 'string') return {};
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith('{')) return {};
+  try {
+    const obj = JSON.parse(trimmed);
+    return (obj && typeof obj === 'object' && !Array.isArray(obj)) ? obj : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+/**
  * Render a JSON string as chips. Returns the raw string verbatim when
  * the input doesn't parse as a JSON object — so an agent's
  * `trigger_condition` that's a plain sentence falls through unchanged.
@@ -116,7 +145,7 @@ export function chipsAsTextFromJson(/** @type {unknown} */ raw, /** @type {{ ski
  * For condition-tree JSON of the shape {metric, scope, op, value}, this
  * surfaces all four as separate chips: `metric:pnl scope:total op:<= value:-50000`.
  */
-export function chipsFromJson(/** @type {unknown} */ raw, /** @type {{ skipEmpty?: boolean }} */ opts = {}) {
+export function chipsFromJson(/** @type {unknown} */ raw, /** @type {{ skipEmpty?: boolean, order?: string[], exclude?: string[] }} */ opts = {}) {
   if (raw == null || raw === '') return '';
   if (typeof raw === 'object') return chipsHtml(/** @type any */ (raw), opts);
   if (typeof raw !== 'string') return _escape(raw);
