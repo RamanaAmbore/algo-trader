@@ -180,10 +180,18 @@ async def get_positions(account: str | None = None) -> dict:
         dict with `positions` list — each row carries tradingsymbol,
         exchange, quantity, average_price, last_price, pnl, account.
     """
-    rows = await _get("/api/positions/")
+    # /api/positions/ returns an ENVELOPE (PositionsResponse: rows/summary/
+    # refreshed_at/as_of/stale_accounts/symbol_summary), not a bare list —
+    # unwrap `rows` explicitly. Before this fix, `rows` was bound to the
+    # whole envelope dict: `count` silently counted envelope KEYS (always
+    # 6) instead of position rows, and `positions` returned the envelope
+    # itself rather than a flat row list (2026-10-17, live-verified: a
+    # real get_positions call returned "count: 6" against an 8-row book).
+    envelope = await _get("/api/positions/")
+    rows = (envelope or {}).get("rows") or []
     if account:
-        rows = [r for r in (rows or []) if (r.get("account") or "").upper() == account.upper()]
-    return {"positions": rows, "count": len(rows or [])}
+        rows = [r for r in rows if (r.get("account") or "").upper() == account.upper()]
+    return {"positions": rows, "count": len(rows)}
 
 
 @app.tool()
@@ -197,10 +205,14 @@ async def get_holdings(account: str | None = None) -> dict:
         dict with `holdings` list — each row carries tradingsymbol,
         exchange, quantity, average_price, last_price, pnl, account.
     """
-    rows = await _get("/api/holdings/")
+    # Same envelope-unwrap fix as get_positions() above — /api/holdings/
+    # returns HoldingsResponse (rows/summary/refreshed_at/as_of/
+    # stale_accounts), not a bare list.
+    envelope = await _get("/api/holdings/")
+    rows = (envelope or {}).get("rows") or []
     if account:
-        rows = [r for r in (rows or []) if (r.get("account") or "").upper() == account.upper()]
-    return {"holdings": rows, "count": len(rows or [])}
+        rows = [r for r in rows if (r.get("account") or "").upper() == account.upper()]
+    return {"holdings": rows, "count": len(rows)}
 
 
 @app.tool()
