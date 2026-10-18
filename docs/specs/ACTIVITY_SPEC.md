@@ -2,10 +2,10 @@
 
 Single source of truth for the activity log surface behavior across mount points,
 tab switching, and filter state sharing. The activity system is a unified viewer
-for system events, connection health, agent triggers, order fills, and terminal
-output.
+for system events, connection health, agent triggers, order fills, alerts, and the
+operator's own console audit trail.
 
-**Version**: 2.0 — 2026-07-11  
+**Version**: 2.1 — 2026-10-18  
 **Owner**: Platform  
 **Key files**: `frontend/src/lib/data/activityStore.svelte.js` · 
 `frontend/src/lib/LogPanel.svelte` · `frontend/src/lib/ActivityLogSurface.svelte`
@@ -89,8 +89,12 @@ activityStore.levelFilter = 'error';
 **Export: `ACTIVITY_TABS` constant** — canonical list of all tab identifiers.
 
 ```javascript
-['order', 'agent', 'terminal', 'simulator', 'system', 'conn', 'news']
+['order', 'agent', 'alerts', 'system', 'conn', 'console', 'simulator', 'news']
 ```
+
+The `'terminal'` id was renamed to `'console'` on 2026-10-18 (display label "Console",
+formerly "Terminal"). The order above matches `LogPanel.svelte`'s default `tabs` array
+exactly — keep the two in sync.
 
 **Setter validation**: `activeTab` setter guards against unknown ids (returns silently
 if id is not in `ACTIVITY_TABS`). Level and account setters accept any value.
@@ -103,18 +107,25 @@ modal open/close within a session; hard page reload resets to `activeTab='order'
 
 ## 3. Tab Catalog
 
-Seven tabs form the canonical activity surface. Tabs are selectable in `ActivityLogModal` /
-`/activity` page; individual mounts can hide tabs via the `tabs=` prop.
+Eight tabs form the canonical activity surface. Tabs are selectable in `ActivityLogModal` /
+`/activity` page; individual mounts can hide tabs via the `tabs=` prop. The Alerts tab is
+additionally gated by the `view_audit` capability — it is hidden for operators without that
+capability regardless of the mount's `tabs=` prop.
 
 | Tab | Data Source | Parsing | Content | Endpoint |
 |---|---|---|---|---|
 | **order** | Merged broker + algo orders | None (structured rows) | Order fills, modifications, cancellations across modes (SIM/PAPER/LIVE/SHADOW/REPLAY). Broker rows carry order_timestamp; algo rows carry created_at | `fetchOrders()` + `fetchAlgoOrdersRecent(100, 'all')` |
-| **agent** | Agent event rows (DB) | Event type → level mapping | Agent fires, action success/fail, cooldown events. Level: action_failed/error → ERROR; cooldown/warn → WARNING; action_success/fired → INFO | `fetchRecentAgentEvents(100)` or `fetchSimEvents(100)` if sim mode |
-| **terminal** | Command history + broker events | Mode prefix parsing `[SIM]`, `[PAPER]`, `[LIVE]`, `[SHADOW]`, `[REPLAY]` | Operator commands and their outputs; execution-mode prefixed when gated (when `gateByMode=true`) | Internal (`cmdHistory` prop) + `fetchOrders()` deduplication |
-| **simulator** | Sim tick stream (DB) | Tick kind (price/fill/event) marker | Per-tick events from market simulator: price updates, simulated fills, bracket fills. Display shows timestamp, price, quantity | `fetchSimTicks(100)` (deferred load on first tab click) |
+| **agent** | Agent event rows (DB) | Event type → level mapping; `detail` JSON → chips | Agent fires, action success/fail, cooldown events. Level: action_failed/error → ERROR; cooldown/warn → WARNING; action_success/fired → INFO. Events attributed to the built-in `manual` sentinel agent (manually-placed orders) are excluded server-side, before the row limit, so they never appear on this tab | `fetchRecentAgentEvents(100)` or `fetchSimEvents(100)` if sim mode |
+| **alerts** | Alert history rows (last 24h) | Event type → level mapping; `detail` JSON → chips | Alert-engine notifications: action_success / action_failed / cooldown. Requires `view_audit` capability. Polls eagerly (not deferred to first click) | `fetchAlertsHistory({ limit: 200, since_minutes: 1440, sim_mode: false })` |
 | **system** | Tail of API log file | Extract `[LEVEL]` token from line start | Infrastructure events: startup/shutdown, config reload, persistence mode changes, market hours updates. Lines parsed with regex `/(ERROR\|WARN(?:ING)?\|INFO\|DEBUG)/i` | `GET /api/admin/logs?n=200` (deferred on first click) |
 | **conn** | Tail of conn_service log file | Extract `[LEVEL]` token from line start | Broker connection health: auth failures, ticker stale events, circuit breaker state, IPv6 binding, rebuild_from_db activity. Same line parsing as System tab | `GET /api/admin/logs/conn?n=200` (deferred on first click) |
+| **console** | Merged in-session command history + order rows + agent events | Command rows: `✓` / `✗` status. Order and agent rows: mode-prefix filter when gated (`[SIM]`, `[PAPER]`, `[LIVE]`, `[SHADOW]`, `[REPLAY]`) | Audit trail of the operator's own actions, newest-first. Command rows are the outcomes of every real CLI submit on `/automation`'s Console tab (order, cancel-all, agent / bracket / token create + update). Command rows are **not** mode-filtered; order rows filter by `o.mode`, agent rows by prefix | Internal (`cmdHistory` prop, in-memory, capped at last 200) + order and agent loaders above (`fetchOrders()` / `fetchRecentAgentEvents`) |
+| **simulator** | Sim tick stream (DB) | Tick kind (price/fill/event) marker | Per-tick events from market simulator: price updates, simulated fills, bracket fills. Display shows timestamp, price, quantity | `fetchSimTicks(100)` (deferred load on first tab click) |
 | **news** | Static / curated feed | None | Market news, announcements, trading halts (deprecated; embedded on `/dashboard` instead). Legacy tab kept for backward compat | None (curated inline) |
+
+The Console tab has no poller of its own. Its order rows come from the Orders loader and its
+agent rows from the Agents loader, so it only sees agent events while `agent` is also in the
+mount's `tabs=` set (every real mount that shows Console includes it).
 
 **Level mapping** — used by filter dropdown to suppress rows:
 
@@ -122,10 +133,11 @@ Seven tabs form the canonical activity surface. Tabs are selectable in `Activity
 |---|---|
 | Order | No per-row level (all INFO equivalent); filter by status instead (OPEN / COMPLETE / REJECTED / CANCELLED) |
 | Agent | action_failed/error → ERROR; cooldown/warn/skip → WARNING; action_success/fired → INFO |
-| Terminal | Inferred from result status (success → INFO, error → ERROR, warning → WARNING) or explicit prefix |
-| Simulator | All INFO (no level distinction; can be enhanced) |
+| Alerts | action_failed → ERROR; cooldown → WARNING; action_success → INFO; any other event type → DEBUG |
 | System | Extracted from line: `[ERROR]` → ERROR, `[WARN]` → WARNING, `[INFO]` → INFO, `[DEBUG]` → DEBUG (else INFO) |
 | Conn | Extracted from line (same as System) |
+| Console | Command rows: `✓` → INFO, `✗` → ERROR. Order rows: FILLED → INFO, UNFILLED → ERROR, OPEN → WARNING, otherwise BUY → INFO and anything else DEBUG. Agent rows: DEBUG |
+| Simulator | All INFO (no level distinction; can be enhanced) |
 | News | No filtering (all shown) |
 
 ---
@@ -140,19 +152,19 @@ instance (modal, page, card).
 
 | Prop | Type | Default | Notes |
 |---|---|---|---|
-| `tabs` | `string[]` | `['order','agent','terminal','simulator','system','conn','news']` | Tab ids to display; omit tabs irrelevant to the mount (e.g., orders card passes `['order']`) |
+| `tabs` | `string[]` | `['order','agent','alerts','system','conn','console','simulator','news']` | Tab ids to display; omit tabs irrelevant to the mount (e.g., orders card passes `['order']`). `alerts` is additionally gated by `view_audit` regardless of this prop |
 | `defaultTab` | `string` | `'order'` | Initial active tab; overridden by parent when `onTabChange` is called |
 | `pollMs` | `number` | `3000` | Poll cadence (ms) for each tab's data source; 0 disables polling (one-shot load) |
-| `gateByMode` | `boolean` | `true` | When true, filter Order/Agent/Terminal/Simulator tabs by `$executionMode` store (hide non-matching rows); Ticks tab is hidden entirely when mode ≠ 'sim' |
+| `gateByMode` | `boolean` | `true` | When true, filter Order/Agent/Console/Simulator tabs by `$executionMode` store (hide non-matching rows); Ticks tab is hidden entirely when mode ≠ 'sim'. Console command rows are not mode-filtered (see §3) |
 | `accountFilter` | `string[] | undefined` (bindable) | `undefined` | Multi-select account filter; when provided (bound), parent owns state; LogPanel writes back when user changes filter. When undefined, LogPanel uses internal `_internalAccountFilter` |
 | `levelFilter` | `'all'\|'error'\|'warning'\|'info'` (bindable) | `'all'` | Log level threshold; applied per-tab per section §3; when 'all' all rows pass; 'error' shows only ERROR rows, etc. |
-| `multiColumn` | `boolean \| undefined` | `undefined` | Enable 2-column grid layout on Agent/Terminal/System/Conn tabs when viewport ≥900px. Explicit value overrides context-derived default. **Note:** always disabled for Orders tab (preserves single-column table layout) |
+| `multiColumn` | `boolean \| undefined` | `undefined` | Enable 2-column grid layout on Agent/Console/System/Conn tabs when viewport ≥900px. Explicit value overrides context-derived default. **Note:** always disabled for Orders tab (preserves single-column table layout) |
 | `availableAccounts` | `string[] | undefined` (bindable) | `undefined` | Derived from current order rows and mirrored to parent (ActivityLogModal uses this to populate its header dropdown) |
 | `statusFilter` | `'all'\|'open'\|'complete'\|'rejected'\|'cancelled'` | `'all'` | Order tab status filter (from /orders page counter cards); applied before display |
 | `symbolFilter` | `Set<string> \| null` | `null` | Order tab symbol scope (from /orders strategy filter); when null all symbols pass; empty Set means "show no rows"; non-empty Set filters to symbols in the set (upper case) |
 | `simScope` | `boolean` | `false` | Scope Agent tab to sim-mode events only (when true, overrides `gateByMode` and forces `fetchSimEvents` instead of `fetchRecentAgentEvents`) |
 | `mode` | `string \| null` | `null` | Execution mode override; when set, auto-flips tab (sim → 'simulator' tab; others → 'order' tab) and filters Order rows to matching mode. Fires only on mode CHANGE via `_lastMode` gate |
-| `cmdHistory` | `Array<{status, message, fields?, time}>` | `[]` | Terminal tab command history. No current caller passes a non-empty array — the legacy CommandLineTab source that used to feed this was deleted 2026-10-17 (see the 2026-10-17 entry in this doc's own sibling, docs/specs/AUTOMATION_SPEC.md's change log); LogPanel still renders it when present |
+| `cmdHistory` | `Array<{status, message, fields?, time}>` | `[]` | Console tab command history. Fed by `/automation`'s own Console tab: `automation/+page.svelte` keeps `_cmdHistory` (capped at last 200 entries, in-memory only, cleared on reload) and appends each entry via `_onConsoleResult()`, which `ConsoleTab.svelte` calls through its `onResult` callback prop on every real CLI compile/save/submit outcome. `status` is `'✓'` or `'✗'`. Other mounts leave this at `[]` |
 | `hideInlineAccountFilter` | `boolean` | `false` | Hide the account dropdown in the tab row (set by ActivityLogModal which renders its own dropdown in the header instead) |
 | `heightClass` | `string` | `'flex-1 min-h-0'` | Tailwind class for LogPanel height (flex-fill by default) |
 | `onTabChange` | `(tab: string) => void` | `() => {}` | Callback when user clicks a tab; parent should update `defaultTab` and/or `activityStore.activeTab` |
@@ -160,7 +172,9 @@ instance (modal, page, card).
 **Key behaviors**
 
 1. **Lazy polling** — System / Conn / Simulator tabs don't start polling until first activation
-(prevents wasted requests on unvisited tabs). Agent / Order / Terminal tabs poll from mount.
+(prevents wasted requests on unvisited tabs). Agent / Order / Alerts tabs poll from mount.
+Console has no poller of its own — it reads the Order and Agent loaders plus the `cmdHistory`
+prop (see §3).
 
 2. **Mode auto-flip** — when `mode` prop changes (sim/paper/live/shadow/replay), tab
 auto-switches and order rows are filtered to that mode. Uses `_lastMode` state to detect
@@ -189,6 +203,12 @@ ActivityLogSurface instance).
    - **Why Grid not `column-count`?** — `column-count: 2` breaks inside scrollable containers (`overflow-y: auto`);
      browser can't compute column heights when the container scrolls. Grid allows dynamic row height + independent
      scroll axis without layout thrashing.
+8. **Oversized `detail` payloads** — Agent and Alerts rows render `detail` / `trigger_condition`
+   through the shared `chipsFromJson()` helper in [logChips.js](../../frontend/src/lib/logChips.js).
+   A valid JSON object renders as `key:value` chips (an array of objects collapses to "N items").
+   Anything that is not a JSON object — a plain sentence, malformed JSON, or a truncated payload —
+   is capped to 200 characters (`_RAW_FALLBACK_CAP`, ellipsis appended) before HTML escaping, so a
+   nested per-account dump can never flood a single row.
 
 ---
 
@@ -443,7 +463,7 @@ integration (not global):
 multi-column vs single-column layout.
 
 **LogPanel multi-column** (≥900px):
-- Agent / Terminal / System / Conn tabs use CSS Grid 2-column layout: `display: grid; grid-template-columns: 1fr 1fr; column-gap: 1.5rem; align-content: start`
+- Agent / Console / System / Conn tabs use CSS Grid 2-column layout: `display: grid; grid-template-columns: 1fr 1fr; column-gap: 1.5rem; align-content: start`
 - Previously used `column-count: 2` (magazine layout) — **broken inside `overflow-y: auto` containers** because the browser can't determine column heights when scrollable
 - Each row is a separate DOM node (not joined HTML strings), so text selection isn't wiped on poll (audit defect fix)
 - Timestamp, level tag, account code, and message all visible in each row
@@ -484,10 +504,10 @@ Operator selects Agent tab; no agents have fired yet this session.
 Operator presses `h` while the page is still hydrating (auth token pending, data endpoints
 not yet called).
 - Modal renders with empty LogPanel
-- Order/Agent/Terminal tabs show empty state
+- Order/Agent/Console tabs show empty state
 - System/Conn tabs haven't started polling yet (deferred until first click)
 - Once auth and data fetches complete, rows render on next poll tick
-- First poll for Agent/Order/Terminal fires immediately on mount
+- First poll for Agent/Order fires immediately on mount (Console rides on the Order and Agent loaders)
 
 ### Account dropdown with many accounts
 
@@ -571,7 +591,7 @@ Mode changes to 'sim'; operator is viewing System tab.
 - **Filter sharing**: Set account filter in modal → navigate to `/activity` page → filter still applied
 - **Account dropdown**: Order tab shows order account codes; Agent tab shows distinct agent account codes
 - **Level filter**: Select 'error' → all non-error rows hidden; switch tabs → filter still applied
-- **Multi-column layout**: ≥900px shows multi-column magazine (Agent/Terminal/System/Conn);
+- **Multi-column layout**: ≥900px shows multi-column magazine (Agent/Console/System/Conn);
 <900px condenses to single-column
 - **Empty state**: No logs in current tab → shows "No events"; different tab shows data if available
 - **LogPanel scroll**: Scroll down in Conn tab; switch to System tab; new tab scroll position independent
@@ -604,6 +624,7 @@ line prefix; filter gate works correctly for each
 
 | Date | Version | Change |
 |---|---|---|
+| 2026-10-18 | 2.1 | Terminal tab renamed to Console (`'terminal'` → `'console'`); tabs re-sequenced (Orders → Agents → Alerts → System → Conn → Console → Ticks → News). Console is an audit trail fed by `/automation` via `cmdHistory` (`_cmdHistory`, `_onConsoleResult()`, ConsoleTab `onResult`), merged with order and agent rows. Agents tab excludes the `manual` sentinel agent's events. Oversized / non-object `detail` payloads capped to 200 chars. Alerts tab added to the catalog. |
 | 2026-07-11 | 2.0 | Comprehensive rewrite: added LogPanel + ActivityHeaderFilters component specs, backend
 API endpoint shapes, 11 edge cases, keyboard shortcut wiring, test coverage map. Expanded from
 §1-9 to §1-12. |
