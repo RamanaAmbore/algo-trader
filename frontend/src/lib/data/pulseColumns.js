@@ -642,11 +642,29 @@ export function mkRightColDefs({
     ltpCol,
     { field: 'day_pnl_pct', headerName: 'Chg %', colId: 'day_pnl_pct',
       width: 64, type: 'numericColumn', headerClass: numericHdr,
-      // PULSE_SPEC.md §16 — only LTP flashes on Pulse; Chg%/Day P&L/P&L
-      // must not (item 3, 2026-10). No tf-up/tf-down class here.
+      // PULSE_SPEC.md §16 (reversed 2026-10-19 — operator: "ltp and chg%
+      // should flash everywhere") — Chg% now flashes tf-up/tf-down when its
+      // OWN displayed value genuinely changes between polls. Chg% has no
+      // live-tick source (day_pnl_pct is poll-only, computed by this
+      // column's own valueGetter — the raw row never carries a
+      // `day_pnl_pct` field), so it reuses the same poll-diff `_mpFlash`
+      // instance (threshold 0) that already drives day_pnl/pnl flash
+      // elsewhere in this codebase (MarketPulse.svelte), rather than the
+      // tick-bus getLtpFlashUp/Down sets the LTP column uses. Keyed by the
+      // row's own unique identity (`p.data.key`, e.g. "SYM::ACCT__pos" —
+      // same value `pulseRowId()` uses for ag-Grid row identity) and NOT
+      // by bare symbol: the Positions grid is one row per account
+      // (2026-10-17), so a shared per-symbol flash key would let two
+      // accounts holding the same symbol collide their writes onto one
+      // baseline. Gated on `_isAnimating` to match the LTP column's own
+      // live/frozen-snapshot convention — a closed-hours frozen snapshot
+      // row should not flash even if a stray poll re-delivers it.
       cellClass: (p) => {
         if (!p.data || p.data._isTotal) return RA;
-        return `${RA} ${dirCls(p.value)} chg-right-sep`;
+        const base = `${RA} ${dirCls(p.value)} chg-right-sep`;
+        if (!_isAnimating(p.data)) return base;
+        const fc = getMpFlash?.()?.classOf(`${p.data.key}:day_pnl_pct`);
+        return fc ? `${base} ${fc}` : base;
       },
       valueGetter: _dayPnlPctValueGetter,
       valueFormatter: pctFmtGrid,

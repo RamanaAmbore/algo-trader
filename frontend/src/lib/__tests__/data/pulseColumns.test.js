@@ -449,51 +449,83 @@ describe('Fix 1 — day_pnl_pct column cellClass (no mp-pnl-cell)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Item 3 (2026-10) — PULSE_SPEC.md §16: Chg%/day_pnl_pct must never flash,
-// even when the row's symbol IS actively LTP-flashing. Tests the REAL
-// column from mkRightColDefs (not an inline mirror) so a regression that
-// re-adds the removed getLtpFlashUp/getLtpFlashDown check is caught.
+// Item 3 (2026-10-19, REVERSED — see PULSE_SPEC.md §16) — day_pnl_pct
+// (Chg%) now flashes tf-up/tf-down, but ONLY off its own poll-diff
+// getMpFlash() signal, never off the tick-bus getLtpFlashUp/Down sets the
+// LTP column uses (LTP ticking alone must not flash a value that itself
+// hasn't moved on this poll).
 // ---------------------------------------------------------------------------
 
-describe('Item 3 — day_pnl_pct (Chg%) column never gets tf-up/tf-down (real column)', () => {
-  function getDayPnlPctCol(getLtpFlashUp, getLtpFlashDown) {
-    const cols = mkRightColDefs({ ...makeOpts(), getLtpFlashUp, getLtpFlashDown });
+describe('Item 3 (reversed 2026-10-19) — day_pnl_pct (Chg%) flashes off getMpFlash only, never off LTP tick-bus', () => {
+  function getDayPnlPctCol(opts = {}) {
+    const cols = mkRightColDefs({ ...makeOpts(), ...opts });
     const col = cols.find(c => c.colId === 'day_pnl_pct');
     if (!col) throw new Error('day_pnl_pct column not found in mkRightColDefs result');
     return col;
   }
 
-  it('does not flash tf-up even when the symbol is in the LTP-up flash set', () => {
-    const col = getDayPnlPctCol(
-      () => new Set(['RELIANCE']),
-      () => new Set(),
-    );
-    const cls = col.cellClass({ value: 1.2, data: { tradingsymbol: 'RELIANCE' } });
+  it('does NOT flash tf-up merely because the symbol is in the LTP-up tick-bus flash set', () => {
+    const col = getDayPnlPctCol({
+      getLtpFlashUp: () => new Set(['RELIANCE']),
+      getLtpFlashDown: () => new Set(),
+    });
+    const cls = col.cellClass({ value: 1.2, data: { key: 'RELIANCE::ZG0790__pos', tradingsymbol: 'RELIANCE' } });
     expect(cls).not.toContain('tf-up');
     expect(cls).not.toContain('tf-down');
   });
 
-  it('does not flash tf-down even when the symbol is in the LTP-down flash set', () => {
-    const col = getDayPnlPctCol(
-      () => new Set(),
-      () => new Set(['RELIANCE']),
-    );
-    const cls = col.cellClass({ value: -1.2, data: { tradingsymbol: 'RELIANCE' } });
+  it('does NOT flash tf-down merely because the symbol is in the LTP-down tick-bus flash set', () => {
+    const col = getDayPnlPctCol({
+      getLtpFlashUp: () => new Set(),
+      getLtpFlashDown: () => new Set(['RELIANCE']),
+    });
+    const cls = col.cellClass({ value: -1.2, data: { key: 'RELIANCE::ZG0790__pos', tradingsymbol: 'RELIANCE' } });
     expect(cls).not.toContain('tf-up');
     expect(cls).not.toContain('tf-down');
   });
 
-  it('TOTAL row short-circuits to RA regardless of flash sets', () => {
-    const col = getDayPnlPctCol(
-      () => new Set(['RELIANCE']),
-      () => new Set(),
-    );
-    const cls = col.cellClass({ value: 1.2, data: { _isTotal: true, tradingsymbol: 'RELIANCE' } });
+  it('DOES flash tf-up when getMpFlash().classOf(`${row.key}:day_pnl_pct`) says so (poll-diff, reinstated)', () => {
+    const col = getDayPnlPctCol({
+      getMpFlash: () => ({ classOf: (k) => (k === 'RELIANCE::ZG0790__pos:day_pnl_pct' ? 'tf-up' : '') }),
+    });
+    const cls = col.cellClass({ value: 1.2, data: { key: 'RELIANCE::ZG0790__pos', tradingsymbol: 'RELIANCE' } });
+    expect(cls).toContain('tf-up');
+  });
+
+  it('DOES flash tf-down when getMpFlash().classOf(...) says so', () => {
+    const col = getDayPnlPctCol({
+      getMpFlash: () => ({ classOf: (k) => (k === 'RELIANCE::ZG0790__pos:day_pnl_pct' ? 'tf-down' : '') }),
+    });
+    const cls = col.cellClass({ value: -1.2, data: { key: 'RELIANCE::ZG0790__pos', tradingsymbol: 'RELIANCE' } });
+    expect(cls).toContain('tf-down');
+  });
+
+  it('keys off the ROW (p.data.key), not bare symbol — a different account holding the same symbol does not collide', () => {
+    const col = getDayPnlPctCol({
+      // Only the ZG0790 row's key maps to a flash; a second row for the
+      // SAME symbol under a different account must NOT inherit it.
+      getMpFlash: () => ({ classOf: (k) => (k === 'RELIANCE::ZG0790__pos:day_pnl_pct' ? 'tf-up' : '') }),
+    });
+    const otherAcctCls = col.cellClass({ value: 1.2, data: { key: 'RELIANCE::ZJ6294__pos', tradingsymbol: 'RELIANCE' } });
+    expect(otherAcctCls).not.toContain('tf-up');
+    expect(otherAcctCls).not.toContain('tf-down');
+  });
+
+  it('TOTAL row never flashes regardless of getMpFlash', () => {
+    const col = getDayPnlPctCol({
+      getMpFlash: () => ({ classOf: () => 'tf-up' }),
+    });
+    const cls = col.cellClass({ value: 1.2, data: { _isTotal: true, key: 'TOTAL', tradingsymbol: 'TOTAL' } });
     expect(cls).not.toContain('tf-up');
   });
 
-  it('still applies directional dirCls (cell-pos/cell-neg) — only the flash class was removed', () => {
-    const col = getDayPnlPctCol(() => new Set(), () => new Set());
+  it('does not throw when getMpFlash is not provided (optional dependency)', () => {
+    const col = getDayPnlPctCol({});
+    expect(() => col.cellClass({ value: 1.2, data: { tradingsymbol: 'X' } })).not.toThrow();
+  });
+
+  it('still applies directional dirCls (cell-pos/cell-neg) alongside the flash class', () => {
+    const col = getDayPnlPctCol({});
     expect(col.cellClass({ value: 2, data: { tradingsymbol: 'X' } })).toContain('cell-pos');
     expect(col.cellClass({ value: -2, data: { tradingsymbol: 'X' } })).toContain('cell-neg');
   });

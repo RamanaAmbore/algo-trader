@@ -9,13 +9,23 @@
  * incorrectly flashed GREEN (`ltp-tc-flash-up*`) instead of red — and vice
  * versa on a down day.
  *
- * Fix (2026-10-19): `_chgDir`, a new `$derived` in OptionsPayoff.svelte,
- * reads `_spotFlash.classOf('chg')` — the SAME tick-to-tick diff the
- * `_spotFlash.update('chg', spotPct)` effect already uses to decide
- * whether to flash at all — and maps it back to a plain 'up'/'down' for
- * `_tcFlashClass()`. The chip's flash direction now always matches the
- * direction that actually triggered it, independent of whether the day's
- * overall move is positive or negative.
+ * Fix (2026-10-19, direction bug): `_spotFlash.classOf('chg')` — the SAME
+ * tick-to-tick diff the `_spotFlash.update('chg', spotPct)` effect already
+ * uses to decide whether to flash at all — carries the real direction.
+ * The chip's flash direction now always matches the direction that
+ * actually triggered it, independent of whether the day's overall move is
+ * positive or negative.
+ *
+ * Fix (2026-10-19, second fix, rendering bug): the chip used to feed that
+ * direction into `_tcFlashClass()` / `.ltp-tc-flash-up/down` — a TEXT-ONLY
+ * `color` animation confirmed to have ZERO visible effect, because a
+ * `color` animation is always beaten by this app's `!important`
+ * directional-color rules (`.ltp-day-pos/neg/flat`) regardless of
+ * specificity. The chip now applies `_spotFlash.classOf('chg')` directly —
+ * the SAME background `tf-up`/`tf-down` class its own Spot value already
+ * uses, which animates `-webkit-text-fill-color` (not `color`) and so
+ * actually renders. The now-dead `_chgDir` derived and `_tcFlashClass`
+ * import were removed from OptionsPayoff.svelte.
  *
  * Five quality dimensions:
  *  1. SSOT     — flash direction is read from the same `_spotFlash`
@@ -49,9 +59,20 @@ test.describe('Source guard — CHG% chip flash direction comes from the real ti
     expect(src, 'must not derive CHG% flash direction from spotPct\'s sign').not.toMatch(
       /_tcFlashClass\(spotPct\s*>=\s*0\s*\?\s*'up'\s*:\s*'down'/
     );
-    // The new real-direction derived must exist and feed the chip.
-    expect(src).toMatch(/_chgDir\s*=\s*\$derived\.by/);
-    expect(src).toMatch(/_tcFlashClass\(_chgDir,/);
+  });
+
+  test('CHG% chip uses the SAME tf-up/tf-down background mechanism as its own Spot value (2026-10-19 rendering fix)', () => {
+    const src = fs.readFileSync(PAYOFF_SRC, 'utf8');
+    // The old text-only path (_chgDir / _tcFlashClass) — confirmed to have
+    // zero visible effect (color animation always loses to this app's
+    // !important directional-color rules) — must be gone.
+    expect(src, '_chgDir derived must be removed (dead, text-only path)').not.toMatch(/_chgDir\s*=\s*\$derived/);
+    expect(src, '_tcFlashClass import must be removed (no remaining consumer in this file)').not.toContain(
+      "import { _tcFlashClass } from '$lib/data/pulseColumns.js'"
+    );
+    // The CHG% span must read _spotFlash.classOf('chg') directly — the
+    // same background-flash primitive its own Spot value (LTP row) uses.
+    expect(src).toMatch(/CHG%[\s\S]{0,400}_spotFlash\.classOf\('chg'\)/);
   });
 });
 
@@ -181,12 +202,14 @@ test.describe('Derivatives — Payoff CHG% chip flashes the real tick direction,
     // tick direction is DOWN.
     state.tickLtp = 24950;
 
+    // 2026-10-19: the chip's flash class is now tf-up/tf-down (background
+    // mechanism), not ltp-tc-flash-up/down (the old text-only path).
     let sawClass = null;
     const deadline = Date.now() + 15_000;
     while (Date.now() < deadline && !sawClass) {
       const cls = await chgChip.getAttribute('class');
-      if (cls && /ltp-tc-flash-(up|down)/.test(cls)) {
-        sawClass = /ltp-tc-flash-up/.test(cls) ? 'up' : 'down';
+      if (cls && /tf-(up|down)/.test(cls)) {
+        sawClass = /tf-up/.test(cls) ? 'up' : 'down';
         break;
       }
       await page.waitForTimeout(40);

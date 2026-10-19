@@ -1388,19 +1388,42 @@ child rows remain adjacent to their parent.
 
 ---
 
-## 16. LTP Tick Flash — LTP Column Only
+## 16. LTP + Chg% Tick/Poll Flash (reversed 2026-10-19 — Chg% now flashes too)
 
-Only the LTP column flashes on tick across all Pulse grids. Chg% and other columns
-remain static (no animation). LTP flashes are driven by SSE ticks with a tight
-feedback loop.
+**REVERSAL (2026-10-19)**: this section previously restricted flashing to the LTP
+column only, with Chg%/Day P&L/P&L explicitly static. The operator explicitly requested
+consistent background+text flash for LTP **and** Chg%, everywhere in the app ("ltp and
+chg% should flash"). This section now documents the REVERSED rule — Chg% flashes; Day
+P&L and P&L are UNCHANGED (still static on Pulse; see below).
 
-**Flash scope — LTP-only (Sep 2026)**:
+Root cause of a separate, co-discovered rendering bug fixed the same day: every
+flashing cell also carries a directional `!important` color class
+(`.ltp-day-pos/neg/flat`, `.cell-pos/neg/flat`). An author `!important` declaration
+always beats a `@keyframes` `color` property regardless of specificity, so any earlier
+attempt to animate `color` inside a flash keyframe was silently discarded — only the
+background pulse ever rendered. Fixed by animating `-webkit-text-fill-color` instead of
+`color` in the shared `tf-up`/`tf-down` keyframes (`tf-pnl-up`/`tf-pnl-down` in
+app.css) — a distinct property the `!important` rule never touches, supported in
+Chrome, Firefox, and Safari for plain text. End value `currentColor` resolves back to
+whatever `color` the `!important` rule set, so the flash fades INTO the real directional
+color rather than away from it.
+
+**Flash scope (2026-10-19)**:
 - LTP column: flashes on every SSE tick (4Hz) and broker poll update
-- Chg% column: **no flash** (static text color only)
-- Day P&L and P&L columns: **no flash applied** (static styling only)
-- Compliance note (2026-10-19): an earlier build flashed Pulse's Chg% cell, contrary to
-  this section. The code was brought into line with this section on that date; Chg% on
-  Pulse is poll-only day-P&L-based data and never flashes.
+- **Chg% column (reinstated 2026-10-19)**: flashes `tf-up`/`tf-down` when its OWN
+  displayed value genuinely changes between polls. Chg% (`day_pnl_pct`) has no live-tick
+  source — it is poll-only, computed by the column's own `valueGetter`
+  (`_dayPnlPctValueGetter` in `pulseColumns.js`) from `day_pnl`/`_prev_market_value`,
+  never itself a field on the raw row — so it reuses the SAME poll-diff `_mpFlash`
+  instance (threshold 0) that already drives Day P&L/P&L elsewhere in
+  `MarketPulse.svelte`, keyed by the row's own unique identity (`row.key`, e.g.
+  `"SYM::ACCT__pos"`) rather than bare symbol (the Positions grid is one row per
+  account — a shared per-symbol key would let two accounts collide their writes onto one
+  baseline). An LTP tick ALONE — with no change in the polled day_pnl — does NOT flash
+  Chg% (nor Day P&L/P&L); those remain genuinely poll-only signals.
+- Day P&L and P&L columns: **still no flash applied on Pulse** (static styling only) —
+  this part of the original rule is UNCHANGED; the operator's request was specifically
+  "ltp and chg%", not Day P&L/P&L.
 - Derivatives page (outside Pulse, different by design):
   - Snapshot and Legs LTP cells flash on live ticks only; poll updates refresh the
     displayed value but do not feed the flash tracker
@@ -1408,16 +1431,32 @@ feedback loop.
     moves in lockstep with LTP against a fixed prev_close, so it tracks LTP. Closed
     (qty=0) legs do not flash, since their price is frozen
   - OptionsPayoff card: the Spot value flashes on quote updates, and the Chg% chip flashes
-    in the direction of the real tick-to-tick move (not the sign of the day's % change)
+    in the direction of the real tick-to-tick move (not the sign of the day's % change).
+    Fixed 2026-10-19: the chip now uses the SAME `tf-up`/`tf-down` background mechanism
+    as its own Spot value (`_spotFlash.classOf('chg')` directly), replacing the old
+    text-only `_tcFlashClass`/`.ltp-tc-flash-up/down` path — confirmed to have ZERO
+    visible effect (same `!important`-vs-`color` bug described above)
+- Alpha consolidation (2026-10-19): the global `.tf-up`/`.tf-down` alpha was bumped from
+  0.13 to 0.22 — the value Derivatives' Snapshot/Legs-anchor row already used — so the
+  Legs grid's real leg rows and its own underlying-anchor row sitting right next to each
+  other no longer flash at visibly different intensities. Derivatives' page-scoped
+  duplicate keyframes (`tf-pulse-up`/`tf-pulse-down` + `-fs` variant) were deleted;
+  `.tf-up`/`.tf-down` is now sourced from ONE place (app.css) everywhere, including the
+  fullscreen boost (`.fs-card-on .tf-up`/`.tf-down`, 0.42 alpha, global rule).
 - **Magnitude-tiered flash variants removed**; uniform `tf-up`/`tf-down` CSS animation 
   applied to all flashing columns
 
 **Flash animation** (uniform across all tickers):
 - Single directional flash class: `tf-up` (price rise) or `tf-down` (price fall)
-- Duration: 300ms; background animates from directional color to transparent (pulse 
-  effect)
-- Text-color flash (`.ltp-tc-flash-up` / `.ltp-tc-flash-down`) is a separate helper
-  (`_tcFlashClass`) used by OptionsPayoff and PerformancePage; no Pulse cell applies it
+- Duration: 300ms (Pulse) / 350ms (global `.tf-up`/`.tf-down` default, see app.css);
+  background animates from directional color (0.22 alpha) to transparent, and — 2026-10-19
+  — `-webkit-text-fill-color` animates from white to `currentColor` in lockstep
+- Text-color flash (`.ltp-tc-flash-up` / `.ltp-tc-flash-down`) is a separate, TEXT-ONLY
+  helper (`_tcFlashClass`) still used by PerformancePage's own LTP cell; no Pulse cell
+  applies it, and OptionsPayoff's CHG% chip stopped using it 2026-10-19 (see above) —
+  this helper has the same `!important`-vs-`color` rendering gap described above and is
+  a known remaining dead/no-visible-effect text flash on PerformancePage, out of scope
+  for this fix
 - Zero-guard: non-positive live values treated as "no live tick" (prevents phantom delta)
 - Threshold: 0.001 (epsilon) prevents false flashes on identical floats due to effect 
   re-runs
@@ -1588,11 +1627,14 @@ visual misalignment on multi-leg strategies spanning different expirations.
 ### 17.2 OptionsPayoff Overlay — SPOT and CHG% Flash on Tick
 
 The payoff overlay's live price display now includes directional flash feedback on each 
-tick update. SPOT value shows a 300ms background flash (`tf-up` / `tf-down` CSS class) 
-and CHG% displays a text-color flash (`ltp-tc-flash-up` / `ltp-tc-flash-down`) to signal 
-price movement. The CHG% flash direction follows the real tick-to-tick move of the CHG%
-value, not the sign of the day's % change. This gives consistent visual feedback across
-all derivatives surfaces.
+tick update. SPOT value shows a 300ms background flash (`tf-up` / `tf-down` CSS class).
+CHG% used to display a separate text-color flash (`ltp-tc-flash-up` / `ltp-tc-flash-down`)
+— **superseded 2026-10-19**: that text-only path had zero visible effect (an author
+`!important` color rule always beats a `@keyframes` `color` property), so CHG% now uses
+the SAME `tf-up`/`tf-down` background mechanism as SPOT (`_spotFlash.classOf('chg')`
+directly — see §16). The CHG% flash direction still follows the real tick-to-tick move
+of the CHG% value, not the sign of the day's % change. This gives consistent visual
+feedback across all derivatives surfaces.
 
 ### 17.3 Options Payoff Chart Legend
 
@@ -2290,8 +2332,14 @@ backgrounds, and text labels.
 
 ## 29. LTP Flash Simplification
 
-Only LTP column flashes on tick across all Pulse grids. Chg%, Day P&L, and P&L
-columns remain static (no animation).
+**AMENDED 2026-10-19 — see §16**: Chg% now ALSO flashes (poll-diff, reinstated per
+explicit operator request). Day P&L and P&L remain static on Pulse, unchanged. The
+rest of this section (dated 2026-09-15, commit 562c1a4b) otherwise still applies —
+read the "Chg%" references below as superseded by §16, not as the current rule.
+
+Only LTP column flashes on tick across all Pulse grids (HISTORICAL — see amendment
+above). Chg%, Day P&L, and P&L columns remain static (no animation) (HISTORICAL —
+Chg% reinstated 2026-10-19, see §16).
 
 ### Flash trigger and timing
 
@@ -2303,16 +2351,22 @@ columns remain static (no animation).
 - Applied to: LTP cells in all grids (Watchlist, Positions, Holdings, Derivatives)
 - Contrast: high (color accent on white/light text) + quick fade (not distracting)
 
-**Chg%, Day P&L %, and P&L columns** (static styling only):
-- `change_pct`, `day_pnl_pct`, and `pnl` columns remain static (no animation)
-- Text colors and backgrounds reflect directional values but do not flash on update
+**Chg%, Day P&L %, and P&L columns** (HISTORICAL — amended 2026-10-19, see §16):
+- `change_pct` (left grid) and `pnl`/`day_pnl` columns remain static (no animation)
+- `day_pnl_pct` (right grid Chg%) now flashes `tf-up`/`tf-down` on a genuine poll-diff
+  value change (reinstated 2026-10-19) — no longer static; see §16 for the current rule
+- Text colors and backgrounds reflect directional values; `day_pnl_pct` additionally
+  flashes, the other columns above do not
 
 **Reference price comparison**:
 - **LTP flash**: text color reflects `ltp vs prev_close` direction
   - Green if `ltp > prev_close`; Red if `ltp < prev_close`; Gray if equal
-- **Chg % (Pulse)**: text color reflects `change_pct vs 0` direction (static, no flash)
-  - Green if `change_pct > 0`; Red if `change_pct < 0`; Gray if zero
-  - Derivatives Legs Chg% is the exception: it flashes with its LTP key (§17.4a)
+- **Chg % (Pulse)**: text color reflects `change_pct`/`day_pnl_pct` vs 0 direction
+  - Green if positive; Red if negative; Gray if zero
+  - Right grid (Positions/Holdings) Chg% (`day_pnl_pct`) ALSO flashes `tf-up`/`tf-down`
+    on a genuine poll-diff change (reinstated 2026-10-19, see §16) — no longer "static,
+    no flash" as this line originally read
+  - Derivatives Legs Chg% flashes with its LTP key (§17.4a)
 - **Spot flash** (derivatives page): Spot LTP color same as regular LTP flash
   (reflects `liveSpot vs prev_close`)
 
@@ -2329,10 +2383,14 @@ Flash animation fires when text-value changes. Three directional classes (commit
 - No animation — when value unchanged (zero-guard prevents false flashes)
 
 **Background flash** (`.tf-up` / `.tf-down`):
-- Background animates from `--algo-green-cascade` / `--algo-red-cascade` (rgba 13% alpha)
-  to transparent; `.tf-up` fires on a rise, `.tf-down` on a fall
-- Used by the Pulse LTP column. P&L columns on Pulse do not flash (§16). Derivatives
-  Snapshot Day P&L cells still use it (§17.8)
+- Background animates from `--algo-green-bg-strong` / `--algo-red-bg-strong` (rgba 22%
+  alpha — bumped from 13% 2026-10-19, consolidation, see §16) to transparent; `.tf-up`
+  fires on a rise, `.tf-down` on a fall. Also animates `-webkit-text-fill-color` (white
+  → `currentColor`) in lockstep since 2026-10-19 (see §16) — NOT `color`, which an
+  author `!important` rule would silently discard
+- Used by the Pulse LTP column AND Chg% column (`day_pnl_pct`, reinstated 2026-10-19).
+  Day P&L/P&L columns on Pulse do not flash (§16). Derivatives Snapshot Day P&L cells
+  still use it (§17.8)
 
 **Helper function locations** (in `frontend/src/lib/data/pulseColumns.js`):
 - `_tcFlashClass(direction)` — returns `ltp-tc-flash-{up|down}`
@@ -2356,11 +2414,12 @@ field is absent.
 ### Affected columns and surfaces
 
 **MarketPulse grids**:
-- Left grid: `ltp` (LTP) column flashes on updates (LTP-only)
-  - Text-color class: `.ltp-tc-flash-up` / `.ltp-tc-flash-down`
-  - Chg% column: static text color only (no flash)
-- Right grid (Positions & Holdings): `ltp` column flashes only
-  - `day_pnl` and `pnl` columns remain static (no animation)
+- Left grid (Watchlist/Movers): `ltp` (LTP) column flashes on updates
+  - Chg% column (`change_pct`): static text color only (no flash) — no poll-diff flash
+    wiring exists for this left-grid column, unlike the right grid's `day_pnl_pct` below
+- Right grid (Positions & Holdings): `ltp` column flashes (tick-driven); `day_pnl_pct`
+  (Chg%) ALSO flashes (poll-diff, reinstated 2026-10-19, see §16)
+  - `day_pnl` and `pnl` columns remain static (no animation) — unchanged
 
 **Derivatives page**:
 - Snapshot grid LTP cells flash on live SSE ticks only (poll updates do not flash)

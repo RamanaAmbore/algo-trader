@@ -68,7 +68,14 @@ const ROW = {
   pair_group_key: null, is_orphan: false, has_gtt: false,
 };
 
-async function mockPositions(page) {
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {{ dayPnl: number }} [state] - mutate `state.dayPnl` between a
+ *   mount and a later refresh to simulate a real poll-cycle value change
+ *   (used by the Chg%-flash-reinstated test below). Read live on every
+ *   matched request, not captured once at route-registration time.
+ */
+async function mockPositions(page, state = { dayPnl: ROW.day_pnl }) {
   await page.route(POSITIONS_RE, async (route) => {
     if (route.request().method() !== 'GET') { await route.continue(); return; }
     let body = { rows: [] };
@@ -76,7 +83,8 @@ async function mockPositions(page) {
       const real = await route.fetch();
       body = { ...(await real.json()) };
     } catch (_) { /* backend unreachable — minimal envelope below */ }
-    body.rows = [ROW];
+    const dayPnl = Number(state.dayPnl);
+    body.rows = [{ ...ROW, day_pnl: dayPnl }];
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
   });
 }
@@ -204,9 +212,13 @@ test.describe('Part A — MarketPulse live DOM (window.__stores.tickBus)', () =>
     await expect(ltpCell).toHaveClass(/tf-up/, { timeout: 2_000 });
   });
 
-  test('item 3: Chg% cell never flashes even while the LTP cell on the same row is flashing', async ({ page }) => {
+  test('item 3 (REVERSED 2026-10-19): Chg% flashes on a real poll-driven value change, but NOT on an LTP-only tick', async ({ page }) => {
+    // PULSE_SPEC.md §16 was reversed on 2026-10-19 (operator: "ltp and
+    // chg% should flash everywhere") — Chg% now flashes, but strictly off
+    // its OWN poll-diff value, never off the LTP tick-bus alone.
     await loginAsAdmin(page);
-    await mockPositions(page);
+    const state = { dayPnl: ROW.day_pnl };
+    await mockPositions(page, state);
     await page.goto('/pulse', { waitUntil: 'domcontentloaded' });
 
     const row = page.locator(`[row-id="${SYM}::${ACCT}__pos"]`)
@@ -216,24 +228,26 @@ test.describe('Part A — MarketPulse live DOM (window.__stores.tickBus)', () =>
     await expect(ltpCell).toBeVisible({ timeout: 60_000 });
     await expect(chgCell).toBeVisible({ timeout: 10_000 });
 
-    // Retry (see Part A describe-block comment) until the LTP cell
-    // actually flashes, confirming the write genuinely registered.
-    const flashed = await writeUntilClassMatches(page, ltpCell, SYM, ROW.last_price, /tf-up/, 60_000);
-    expect(flashed, 'MarketPulse tickBus subscription never came up — real backend round-trip too slow in this environment').toBe(true);
-    // Chg% cell on the SAME row must never carry tf-up/tf-down —
-    // PULSE_SPEC.md §16: only LTP flashes on Pulse.
-    await expect(chgCell).not.toHaveClass(/tf-up/);
-    await expect(chgCell).not.toHaveClass(/tf-down/);
+    // Negative check FIRST: an LTP-only tick (no change in the polled
+    // day_pnl) must still flash the LTP cell but must NOT flash Chg%
+    // (or Day P&L / P&L) on the same row — those are poll-only values
+    // that genuinely haven't moved yet.
+    const dayPnlCell = row.locator('[col-id="day_pnl"]');
+    const pnlCell    = row.locator('[col-id="pnl"]');
+    const ltpFlashed = await writeUntilClassMatches(page, ltpCell, SYM, ROW.last_price, /tf-up/, 60_000);
+    expect(ltpFlashed, 'MarketPulse tickBus subscription never came up — real backend round-trip too slow in this environment').toBe(true);
+    await expect(chgCell).not.toHaveClass(/tf-up|tf-down/);
+    await expect(dayPnlCell).not.toHaveClass(/tf-up|tf-down/);
+    await expect(pnlCell).not.toHaveClass(/tf-up|tf-down/);
+    await expect(ltpCell).not.toHaveClass(/tf-up/, { timeout: 2_000 }); // let the LTP flash clear
 
-    // Let the up-flash clear, then confirm the down-direction case too.
-    await expect(ltpCell).not.toHaveClass(/tf-up/, { timeout: 2_000 });
-    await page.waitForTimeout(300);
-    const baseline = await readLtp(page, SYM);
-    expect(baseline).toBeGreaterThan(0);
-    await writeLtp(page, SYM, baseline * 0.94); // -6% — well past threshold, down direction
-    await expect(ltpCell).toHaveClass(/tf-down/, { timeout: 2_000 });
-    await expect(chgCell).not.toHaveClass(/tf-up/);
-    await expect(chgCell).not.toHaveClass(/tf-down/);
+    // Positive check: change the POLLED day_pnl (which day_pnl_pct is
+    // derived from — day_pnl_pct is never itself a row field) and force
+    // a real refetch via the page's RefreshButton (loadPulse({force:true})),
+    // the same mechanism a real 5s poll cycle uses.
+    state.dayPnl = ROW.day_pnl * 3; // 50 -> 150: a real, large value change
+    await page.locator('.page-header .rf-btn').first().click();
+    await expect(chgCell).toHaveClass(/tf-up/, { timeout: 20_000 });
   });
 });
 

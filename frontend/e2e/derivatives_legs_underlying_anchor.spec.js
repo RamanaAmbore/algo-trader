@@ -285,6 +285,44 @@ test.describe('Derivatives Legs grid — underlying-anchor row (sync with Positi
     expect(totalCs.family).toBe(realCs.family);
   });
 
+  test('the anchor row\'s tf-cell and a real leg row\'s tf-cell flash at the SAME alpha (2026-10-19 consolidation fix — anchor/Snapshot used to flash at 0.22, real leg rows at 0.13; both now read the single global app.css rule)', async ({ page }) => {
+    await loginAsAdmin(page);
+    await _mockEndpoints(page);
+    await page.goto(DERIV_URL, { waitUntil: 'domcontentloaded' });
+
+    const anchorCell = page.locator('.cand-body-rows > .cand-row-underlying-anchor span.tf-cell').first();
+    const realCell   = page.locator('.cand-body-rows > .cand-row:not(.cand-row-underlying-anchor):not(.cand-row-total) span.tf-cell').first();
+    await expect(anchorCell).toBeVisible({ timeout: 15_000 });
+    await expect(realCell).toBeVisible({ timeout: 15_000 });
+
+    // Inject tf-up, pause the real CSS animation at its start frame (peak
+    // alpha), read backgroundColor, then clean up. Doing this on BOTH
+    // cells proves there is no page-scoped shadow rule (e.g. the deleted
+    // `.byund-row > .tf-up` / `.tf-cell.tf-up` at 0.22) still overriding
+    // the global `.tf-up` (now also 0.22) for one of the two but not the
+    // other.
+    async function peakBg(locator) {
+      return locator.evaluate((el) => {
+        el.classList.add('tf-up');
+        const anim = el.getAnimations().find((a) => a.animationName?.startsWith('tf-pnl-up'));
+        let bg;
+        if (anim) {
+          anim.pause();
+          anim.currentTime = 0;
+          bg = getComputedStyle(el).backgroundColor;
+        } else {
+          bg = getComputedStyle(el).backgroundColor;
+        }
+        el.classList.remove('tf-up');
+        return bg;
+      });
+    }
+
+    const [anchorBg, realBg] = await Promise.all([peakBg(anchorCell), peakBg(realCell)]);
+    expect(anchorBg, 'anchor row tf-cell background').not.toMatch(/rgba\(0, 0, 0, 0\)|transparent/);
+    expect(anchorBg).toBe(realBg);
+  });
+
   test('the right-edge bar mechanism is wired to price direction, not a flat color (source check — live direction depends on real market data)', async () => {
     const { readFileSync } = await import('fs');
     const path = await import('path');

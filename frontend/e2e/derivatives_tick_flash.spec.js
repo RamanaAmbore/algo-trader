@@ -83,23 +83,33 @@ test('SSOT: shell guard prevents kv/payoff flash on synth equity-only strategy',
   expect(effectBlock).toContain('!strategy.iv_proxy && !strategy.days_to_expiry');
 });
 
-test('SSOT: tf-cell CSS rule covers payoff chips, kv-v, cand-pnl, byund-row TOTAL', () => {
+test('SSOT (consolidated 2026-10-19): tf-cell marker still present in markup; scoped tf-up/tf-down CSS rules removed (now global, app.css)', () => {
   const src = fs.readFileSync(PAGE_SRC, 'utf8');
-  // CSS block must define .tf-cell.tf-up and .tf-cell.tf-down
-  expect(src).toContain('.tf-cell.tf-up');
-  expect(src).toContain('.tf-cell.tf-down');
-  // The reduced-motion block that suppresses tf-cell animations must exist.
-  // There are multiple @media (prefers-reduced-motion) blocks in the file;
-  // search for the specific combined selector rather than relying on positional indexOf.
-  expect(src).toMatch(/prefers-reduced-motion[\s\S]{0,600}\.tf-cell\.tf-up/);
+  // Markup still carries the tf-cell marker class on every flash target
+  // (payoff chips, kv-v, cand-pnl, byund-row TOTAL) — this consolidation
+  // only removed the now-redundant page-scoped CSS rules, never the markup.
+  expect(src).toContain('tf-cell');
+  // The page-scoped `.tf-cell.tf-up`/`.tf-cell.tf-down` rules (and their own
+  // reduced-motion block) must be GONE — these cells now fall through to
+  // the global `.tf-up`/`.tf-down` rule in app.css, which doesn't require
+  // the `tf-cell` marker at all (it was only ever a page-scoped selector
+  // anchor). A page-scoped re-add here would silently re-introduce the
+  // alpha mismatch this consolidation fixed (0.22 here vs 0.13 global,
+  // pre-2026-10-19).
+  expect(src).not.toContain('.tf-cell.tf-up');
+  expect(src).not.toContain('.tf-cell.tf-down');
 });
 
-test('Stale: no second flash primitive or duplicate animation keyframes', () => {
+test('Stale: no scoped tf-pulse-up/down keyframes remain on this page (consolidated to app.css tf-pnl-up/down, 2026-10-19)', () => {
   const src = fs.readFileSync(PAGE_SRC, 'utf8');
   // Only one createTickFlash() call (SSOT test above verifies count = 1).
-  // The base keyframe @keyframes tf-pulse-up (not the -fs variant) should be defined once.
-  const upKf = (src.match(/@keyframes tf-pulse-up\s*\{/g) || []).length;
-  expect(upKf, '@keyframes tf-pulse-up should be defined once').toBe(1);
+  // The page-scoped @keyframes tf-pulse-up/-down/-fs families were deleted
+  // entirely — the global app.css tf-pnl-up/tf-pnl-down (+ -fs variant,
+  // reached via `.fs-card-on .tf-up/.tf-down`) is now the SOLE source.
+  const upKf = (src.match(/@keyframes tf-pulse-up\b/g) || []).length;
+  expect(upKf, '@keyframes tf-pulse-up must no longer be declared on this page').toBe(0);
+  const downKf = (src.match(/@keyframes tf-pulse-down\b/g) || []).length;
+  expect(downKf, '@keyframes tf-pulse-down must no longer be declared on this page').toBe(0);
 });
 
 // ── Live UI checks ───────────────────────────────────────────────────────────
@@ -168,8 +178,33 @@ for (const vp of VIEWPORTS) {
         return name;
       });
 
-      // Must be 'tf-pulse-up' — confirms the CSS .tf-cell.tf-up rule is active.
-      expect(animName).toBe('tf-pulse-up');
+      // Must be 'tf-pnl-up' (consolidated 2026-10-19 — was the page-scoped
+      // 'tf-pulse-up'; the global app.css `.tf-up` rule is now the SOLE
+      // source, confirming no scoped shadow rule remains on this page).
+      expect(animName).toBe('tf-pnl-up');
+    });
+
+    test(`only the global .tf-up/.fs-card-on .tf-up rules exist across every loaded stylesheet — no scoped shadow rule left on this page [${vp.name}]`, async ({ page }) => {
+      // Live scan (not a source grep) of every CSSOM rule on the page —
+      // catches a shadow rule in ANY stylesheet, not just +page.svelte's
+      // own <style> block (the actual bug class this consolidation fixes:
+      // a scoped rule silently winning over the global one via source
+      // order / specificity).
+      const selectors = await page.evaluate(() => {
+        const out = [];
+        for (const sheet of Array.from(document.styleSheets)) {
+          let rules;
+          try { rules = sheet.cssRules; } catch (_) { continue; } // cross-origin sheet
+          for (const rule of Array.from(rules || [])) {
+            if (rule.selectorText && /\.tf-up\b/.test(rule.selectorText)) {
+              out.push(rule.selectorText);
+            }
+          }
+        }
+        return out;
+      });
+      const normalized = selectors.map((s) => s.replace(/\s+/g, ' ').trim()).sort();
+      expect(normalized).toEqual(['.fs-card-on .tf-up', '.tf-up'].sort());
     });
 
     test(`Payoff header EV chip has tf-cell class [${vp.name}]`, async ({ page }) => {
@@ -235,8 +270,9 @@ for (const vp of VIEWPORTS) {
         return name;
       });
 
-      // Must resolve to the scoped keyframe defined in +page.svelte <style>.
-      expect(animName).toBe('tf-pulse-up');
+      // Must resolve to the global keyframe in app.css (consolidated
+      // 2026-10-19 — no scoped keyframe remains in +page.svelte <style>).
+      expect(animName).toBe('tf-pnl-up');
     });
 
     test(`kv-block Greek values carry tf-cell marker [${vp.name}]`, async ({ page }) => {

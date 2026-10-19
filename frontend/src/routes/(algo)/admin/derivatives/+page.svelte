@@ -7365,56 +7365,21 @@
      independently significant). */
   .byund-row > .cell-muted { color: var(--algo-slate-muted); }
 
-  /* Tick-flash animation — transient background pulse when a tracked
-     numeric cell changes. Subtle alpha so the flash reads as ambient
-     liveness, not an alert; 350ms decay keeps it out of the way of
-     the next poll cycle. Text pulses to white during the flash itself
-     (2026-10-19, operator request — "show the value changed" needed
-     more contrast than background alone) then fades back to the
-     signed cell-pos/cell-neg color as the background clears.
-     In fullscreen mode the alpha doubles so the operator sees the
-     pulse from across the room. */
-  @keyframes tf-pulse-up {
-    0%   { background-color: var(--algo-green-bg-strong); color: #fff; }
-    100% { background-color: transparent; color: inherit; }
-  }
-  @keyframes tf-pulse-down {
-    0%   { background-color: var(--algo-red-bg-strong); color: #fff; }
-    100% { background-color: transparent; color: inherit; }
-  }
-  .byund-row > .tf-up   { animation: tf-pulse-up   350ms ease-out; }
-  .byund-row > .tf-down { animation: tf-pulse-down 350ms ease-out; }
-  :global(.fs-card-on) .byund-row > .tf-up {
-    animation: tf-pulse-up-fs 500ms ease-out;
-  }
-  :global(.fs-card-on) .byund-row > .tf-down {
-    animation: tf-pulse-down-fs 500ms ease-out;
-  }
-  @keyframes tf-pulse-up-fs {
-    0%   { background-color: rgba(74, 222, 128, 0.42); color: #fff; }
-    100% { background-color: transparent; color: inherit; }
-  }
-  @keyframes tf-pulse-down-fs {
-    0%   { background-color: rgba(248, 113, 113, 0.42); color: #fff; }
-    100% { background-color: transparent; color: inherit; }
-  }
-
-  /* tf-cell — shared marker for ALL directional flash targets outside
-     the Snapshot grid (payoff chips, kv-block values, legs cells,
-     TOTAL rows). Same 350ms decay + 0.12 alpha as byund-row. The
-     `.byund-row >` selector above keeps the Snapshot grid on its
-     tighter parent-scoped rule; this rule covers the rest. */
-  .tf-cell.tf-up   { animation: tf-pulse-up   350ms ease-out; }
-  .tf-cell.tf-down { animation: tf-pulse-down 350ms ease-out; }
-
-  @media (prefers-reduced-motion: reduce) {
-    .byund-row > .tf-up,
-    .byund-row > .tf-down,
-    :global(.fs-card-on) .byund-row > .tf-up,
-    :global(.fs-card-on) .byund-row > .tf-down,
-    .tf-cell.tf-up,
-    .tf-cell.tf-down { animation: none; }
-  }
+  /* Tick-flash animation (2026-10-19 consolidation) — this page used to
+     declare its OWN scoped `tf-pulse-up`/`tf-pulse-down` keyframes, a
+     `.byund-row > .tf-up` / `.tf-down` rule pair, and a `.tf-cell` +
+     `.tf-up` / `.tf-down` combined-selector rule pair here, all at a
+     stronger 0.22 alpha than the global `.tf-up`/`.tf-down` (0.13) —
+     so the Snapshot grid and Legs' underlying-anchor row flashed visibly
+     harder than the real leg rows sitting right next to them (which fell
+     through to the global rule). Deleted: the global `.tf-up`/`.tf-down`
+     in app.css is now ALSO 0.22 (one alpha everywhere), and the fullscreen
+     boost (`-fs` variant, 0.42) is now a global `.fs-card-on .tf-up/.tf-down`
+     rule there too. The markup here is UNCHANGED — every cell still carries
+     `tf-cell`/`tf-up`/`tf-down` (from `flash.classOf(...)`) and now falls
+     through to app.css's global rule, which doesn't require the `tf-cell`
+     marker class at all. See app.css's own comment above `.tf-up`/`.tf-down`
+     for the `-webkit-text-fill-color` text-pulse mechanism. */
   /* byund TOTAL > span: amber background/border/color/font-weight from shared
      .cand-row.cand-row-total, .byund-row-total > span rule above.
      Padding inherited from .byund-row > span. Direction tints below. */
@@ -7789,13 +7754,7 @@
     color: inherit;
   }
   .cand-row-underlying-anchor .cand-state-cell {
-    /* One notch up from real rows' --fs-xs (2026-10-19, operator request)
-       — a bare "X" glyph visually reads smaller than real rows' two-
-       character "P1"/"P2" labels at the identical font-size, since it
-       has less glyph mass filling the same badge width. Not a CSS
-       mismatch (both rules were already byte-identical); this is a
-       deliberate visual-weight compensation for that one character. */
-    font-size: var(--fs-sm);
+    font-size: var(--fs-xs);
     font-weight: 700;
     text-align: center;
     letter-spacing: 0.02em;
@@ -7804,6 +7763,16 @@
     justify-content: center;
     border-radius: 2px;
     min-height: 1.2rem;
+  }
+  /* The bare "X" glyph visually reads lighter than real rows' two-
+     character "P1"/"P2" labels at the identical font-size/weight as
+     .cand-state-cell above, since it has less glyph mass filling the
+     same badge width. Bump only this glyph's own weight (not the
+     shared cell's font-size, which stayed byte-identical to real rows
+     — a size bump there previously had an unintended knock-on visual
+     effect on the row). 2026-10-19 operator request/correction. */
+  .cand-row-underlying-anchor .cand-state-badge-btn {
+    font-weight: 900;
   }
   .cand-anchor-label {
     font-weight: 700;

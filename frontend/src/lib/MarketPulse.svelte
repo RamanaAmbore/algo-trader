@@ -860,15 +860,21 @@
   let _liveLtpLastGen = -1;
   // Tick-flash for P&L columns on the right grid (Positions / Holdings).
   // LTP already has its own directional flash (_ltpFlashUp/_ltpFlashDown);
-  // this instance covers Day P&L and P&L whose values change on each
-  // poll cycle (broker fetch every 5 s) rather than on every SSE tick.
-  // Key format: tradingsymbol + ':' + field. Threshold 0 (operator
-  // decision 2026-10-19: flash on ANY real value change, no magnitude
-  // gate) — exact-dupe re-runs are already caught by update()'s own
-  // `v === last` check, so a positive epsilon isn't needed for that case
-  // and would otherwise swallow small-but-real percentage moves (the
-  // same defect class as the GOLD LTP flash-threshold fix).
-  // Alpha is 0.13 (app.css .tf-up/.tf-down) — subtle, not alarming.
+  // this instance covers Day P&L, P&L, and (reinstated 2026-10-19) Chg%
+  // (day_pnl_pct), whose values change on each poll cycle (broker fetch
+  // every 5 s) rather than on every SSE tick.
+  // Key format: tradingsymbol + ':' + field for day_pnl/pnl/change_pct
+  // (pre-existing — can collide across accounts holding the same symbol,
+  // out of scope for this fix); day_pnl_pct uses the row's own unique
+  // `r.key` instead (see the two $effect blocks below) so it doesn't
+  // introduce that same collision for the newly-wired column.
+  // Threshold 0 (operator decision 2026-10-19: flash on ANY real value
+  // change, no magnitude gate) — exact-dupe re-runs are already caught by
+  // update()'s own `v === last` check, so a positive epsilon isn't needed
+  // for that case and would otherwise swallow small-but-real percentage
+  // moves (the same defect class as the GOLD LTP flash-threshold fix).
+  // Alpha is 0.22 (app.css .tf-up/.tf-down — bumped from 0.13 2026-10-19,
+  // consolidation with derivatives' Snapshot/Legs-anchor alpha).
   const _mpFlash = createTickFlash({ threshold: 0, durationMs: 300 });
   /** Build a `{sym: ltp}` map snapshot from symbolStore for fast cell reads.
    * Full scan — used ONLY for the initial mount seed and for a reset-
@@ -2215,7 +2221,17 @@
         if (r.day_pnl     != null) _mpFlash.update(`${sym}:day_pnl`,     Number(r.day_pnl));
         if (r.pnl         != null) _mpFlash.update(`${sym}:pnl`,         Number(r.pnl));
         if (r.change_pct  != null) _mpFlash.update(`${sym}:change_pct`,  Number(r.change_pct));
-        if (r.day_pnl_pct != null) _mpFlash.update(`${sym}:day_pnl_pct`, Number(r.day_pnl_pct));
+        // Chg% flash reinstated (2026-10-19, operator: "ltp and chg% should
+        // flash") — `day_pnl_pct` is never itself a row field (purely
+        // grid-computed by pulseColumns.js's `_dayPnlPctValueGetter` from
+        // day_pnl/_prev_market_value), so the old `r.day_pnl_pct != null`
+        // check here was always false and this update() never actually
+        // fired. Compute the SAME value the column displays, and key by the
+        // row's own unique identity (`r.key`, e.g. "SYM::ACCT__pos") rather
+        // than bare symbol — the Positions grid is one row per account
+        // (2026-10-17), so two accounts holding the same symbol would
+        // otherwise collide their writes onto one shared baseline.
+        if (r.key) _mpFlash.update(`${r.key}:day_pnl_pct`, dayChangePct(r.day_pnl, Math.abs(Number(r._prev_market_value) || 0)));
       }
       gridPositions.setGridOption('rowData', pRows);
       _lastPositionsTotalRows = pTotalRows;
@@ -2241,8 +2257,11 @@
         if (r.day_pnl     != null) _mpFlash.update(`${sym}:day_pnl`,     Number(r.day_pnl));
         if (r.pnl         != null) _mpFlash.update(`${sym}:pnl`,         Number(r.pnl));
         if (r.change_pct  != null) _mpFlash.update(`${sym}:change_pct`,  Number(r.change_pct));
-        const dpPct = r.day_pnl_pct ?? r.change_pct ?? null;
-        if (dpPct != null) _mpFlash.update(`${sym}:day_pnl_pct`, Number(dpPct));
+        // Chg% flash reinstated — same fix as the positions loop above
+        // (key by r.key, compute the same value the column displays).
+        // Holdings rows have no account suffix in their key, so this is
+        // equivalent to the old sym-based key for this bucket — just precise.
+        if (r.key) _mpFlash.update(`${r.key}:day_pnl_pct`, dayChangePct(r.day_pnl, Math.abs(Number(r._prev_market_value) || 0)));
       }
       gridHoldings.setGridOption('rowData', hRows);
       _lastHoldingsTotalRows = hTotalRows;

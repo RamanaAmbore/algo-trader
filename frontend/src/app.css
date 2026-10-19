@@ -3283,12 +3283,22 @@ button:not(:disabled):active,
 }
 
 /* ── LTP text-color flash (text-color directional pulse) ─────────────────────
-   Animates the text color of the LTP / Day % cell between the directional
-   hue (green/red) and the neutral slate. Duration 500ms — slightly shorter
-   than the background LTP flash (600ms) so the text pulse reads as a
-   leading indicator. Used by the LTP column (replaces ltp-flash-up/down on
-   those cells), and by the Day % columns in MarketPulse + PerformancePage.
-   ─────────────────────────────────────────────────────────────────────────── */
+   Animates the text color of a cell between the directional hue (green/red)
+   and the neutral slate. Duration 500ms — slightly shorter than the
+   background LTP flash (600ms) so the text pulse reads as a leading
+   indicator.
+   CORRECTION (2026-10-19): this does NOT replace ltp-flash-up/down "on
+   those cells" for the Pulse LTP column as an earlier comment here claimed
+   — confirmed false by source-scan. Pulse's LTP column (and every other
+   Pulse cell) uses the BACKGROUND tf-up/tf-down path (see commit cfbaa3c9),
+   which now also animates -webkit-text-fill-color (see .tf-up/.tf-down
+   below) instead of plain `color` — a plain `color` animation is always
+   beaten by this app's `.ltp-day-pos/neg/flat` `!important` rules just
+   below, so it would be silently discarded on every real cell. This
+   text-only family is genuinely used by PerformancePage's own LTP cell
+   (avgVsLtpCls) only; OptionsPayoff's CHG% chip used it too until
+   2026-10-19, when it moved to the same tf-up/tf-down background path as
+   its own Spot value for the same !important-vs-color reason. */
 @keyframes ltp-tc-flash-up {
   0%   { color: var(--algo-green-text); }
   100% { color: inherit; }
@@ -3545,25 +3555,67 @@ button:not(:disabled):active,
 /* ── Sitewide tick-flash — P&L cells ───────────────────────────────────────
    Global .tf-up / .tf-down rules so any page (ag-Grid or plain DOM) can
    emit a subtle 350ms directional background pulse just by adding the class.
-   Alpha 0.13 — intentionally lower than the LTP flash (0.35) and derivatives
-   Snapshot (0.22) so P&L columns feel calm, not alarming. The primitive
-   (createTickFlash) clears the class after durationMs=350; the animation
-   decay matches so there is no visible "stuck" state.
+   Alpha 0.22 (2026-10-19, consolidation — was 0.13 here, 0.22 on derivatives'
+   Snapshot/Legs-anchor rows, 0.13 on Legs real leg rows and Payoff's Spot
+   value; converged on 0.22, the alpha the operator already associates with
+   Snapshot, as the one value everywhere so the Legs grid's own anchor row
+   and real leg rows sitting right next to each other no longer mismatch).
+   `--algo-green-bg-strong`/`--algo-red-bg-strong` are the SAME tokens
+   derivatives' `tf-pulse-up`/`tf-pulse-down` (now deleted, consolidated
+   here) used — this app.css declaration is the sole source now.
+   The primitive (createTickFlash) clears the class after durationMs=350;
+   the animation decay matches so there is no visible "stuck" state.
+   Text pulse (2026-10-19): animates `-webkit-text-fill-color`, NOT `color`
+   — an author `!important` declaration (e.g. `.ltp-day-pos/neg/flat` or
+   `.cell-pos/neg/flat` below) always beats a `@keyframes` `color` property
+   regardless of specificity, so a `color` animation here would be silently
+   discarded on every real flashing cell. `-webkit-text-fill-color` is a
+   distinct property `!important` on `color` never touches, and is
+   supported for plain text in Chrome, Firefox, AND Safari (despite the
+   `-webkit-` prefix — verified via MDN browser-compat-data; it is not a
+   WebKit-only property for this simple case). End value `currentColor`
+   (not `inherit`) resolves to whatever `color` the `!important` rule set —
+   i.e. the real directional green/red/slate text color already in place —
+   so the flash fades INTO the correct persistent color, not away from it.
    prefers-reduced-motion: animation suppressed entirely (no flicker risk).
    These rules are global so ag-Grid cellClass callbacks (which run outside
-   Svelte's scoped DOM) pick them up without :global() wrappers. */
+   Svelte's scoped DOM) pick them up without :global() wrappers (:global()
+   is Svelte-scoped-style syntax only — invalid, silently dropped, in this
+   plain CSS file; the fullscreen boost below uses a plain descendant
+   selector for the same reason). */
 @keyframes tf-pnl-up {
-  0%   { background-color: var(--algo-green-cascade); color: #fff; }
-  100% { background-color: transparent; color: inherit; }
+  0%   { background-color: var(--algo-green-bg-strong); -webkit-text-fill-color: #fff; }
+  100% { background-color: transparent; -webkit-text-fill-color: currentColor; }
 }
 @keyframes tf-pnl-down {
-  0%   { background-color: var(--algo-red-cascade); color: #fff; }
-  100% { background-color: transparent; color: inherit; }
+  0%   { background-color: var(--algo-red-bg-strong); -webkit-text-fill-color: #fff; }
+  100% { background-color: transparent; -webkit-text-fill-color: currentColor; }
 }
 .tf-up   { animation: tf-pnl-up   350ms ease-out; }
 .tf-down { animation: tf-pnl-down 350ms ease-out; }
 @media (prefers-reduced-motion: reduce) {
   .tf-up, .tf-down { animation: none; }
+}
+
+/* ── Fullscreen tick-flash boost (2026-10-19) ──────────────────────────────
+   Consolidated here from derivatives' page-scoped `tf-pulse-up-fs`/
+   `tf-pulse-down-fs` (deleted from +page.svelte) — same stronger 0.42 alpha
+   "visible from across the room" boost, now reachable by ANY `.tf-up`/
+   `.tf-down` cell inside a fullscreen card (`.fs-card-on`), not just
+   derivatives'. Plain descendant selector, not `:global(...)` — this is a
+   plain CSS file, not a Svelte scoped <style> block. */
+.fs-card-on .tf-up   { animation: tf-pnl-up-fs   500ms ease-out; }
+.fs-card-on .tf-down { animation: tf-pnl-down-fs 500ms ease-out; }
+@keyframes tf-pnl-up-fs {
+  0%   { background-color: rgba(74, 222, 128, 0.42); -webkit-text-fill-color: #fff; }
+  100% { background-color: transparent; -webkit-text-fill-color: currentColor; }
+}
+@keyframes tf-pnl-down-fs {
+  0%   { background-color: rgba(248, 113, 113, 0.42); -webkit-text-fill-color: #fff; }
+  100% { background-color: transparent; -webkit-text-fill-color: currentColor; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .fs-card-on .tf-up, .fs-card-on .tf-down { animation: none; }
 }
 
 /* ── NavStrip rainbow-fade — 1 px gradient underline on new SSE tick ──────

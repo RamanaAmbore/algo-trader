@@ -539,7 +539,6 @@
   import InfoHint from '$lib/InfoHint.svelte';
   import { createChartRefreshPulse } from '$lib/data/chartRefreshPulse.svelte.js';
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
-  import { _tcFlashClass } from '$lib/data/pulseColumns.js';
   import ChartCrosshair from '$lib/ChartCrosshair.svelte';
 
   const _pulse = createChartRefreshPulse();
@@ -579,19 +578,23 @@
   // CHG% moves with the previous close as well as with spot, so it gets
   // its own key. Keying it off 'spot' missed flashes when only the % moved.
   $effect(() => { _spotFlash.update('chg', spotPct); });
-  // Real tick-to-tick direction for the CHG% chip (2026-10-19 fix) — the
-  // chip used to colour its flash from the SIGN of spotPct (today's
-  // aggregate % move), not from whether the most recent tick moved it up
-  // or down. A down-tick on an up day (or vice versa) flashed the wrong
-  // colour. `_spotFlash` already diffs consecutive 'chg' values in
-  // update() above (the same mechanism that decides whether to flash at
-  // all) — classOf() maps that real direction to 'tf-up'/'tf-down', which
-  // this derives back to the plain 'up'/'down' the text-flash helper
-  // (_tcFlashClass) expects.
-  const _chgDir = $derived.by(() => {
-    const c = _spotFlash.classOf('chg');
-    return c === 'tf-up' ? 'up' : c === 'tf-down' ? 'down' : '';
-  });
+  // Real tick-to-tick direction for the CHG% chip (fixed 2026-10-19,
+  // direction bug) — the chip used to colour its flash from the SIGN of
+  // spotPct (today's aggregate % move), not from whether the most recent
+  // tick moved it up or down. `_spotFlash` already diffs consecutive 'chg'
+  // values in update() above (the same mechanism that decides whether to
+  // flash at all), so classOf('chg') always carries the real direction.
+  // (2026-10-19, second fix, same date — rendering bug): the chip used to
+  // feed that direction into `_tcFlashClass`/`.ltp-tc-flash-up/down`, a
+  // TEXT-ONLY `color` animation that an audit confirmed has ZERO visible
+  // effect — `color` animations are always beaten by this app's
+  // `!important` directional-color rules (`.ltp-day-pos/neg/flat`),
+  // regardless of specificity. The chip now uses `_spotFlash.classOf('chg')`
+  // directly — the SAME background `tf-up`/`tf-down` mechanism its own
+  // Spot value (above) already uses, which animates
+  // `-webkit-text-fill-color` instead of `color` and so actually renders.
+  // The removed `_chgDir` derived is no longer needed — classOf('chg')
+  // IS the class to apply, with no up/down remapping required.
 
   // Compact axis label for the Y axis — e.g. "+50K", "0", "−1.20L".
   // Same Indian-scale units as the rest of the app (aggCompact), so the
@@ -962,7 +965,7 @@
               <InfoHint popup hideButton id="ps-hint-chg" anchor={_psHintAnchor.chg} bind:open={_psHintOpen.chg}
                 panel title="CHG%" text="Spot % change from previous session close" />
             </span>
-            <span class={'ps-v ' + ltpDayClass(spotPct) + (_chgDir ? ' ' + _tcFlashClass(_chgDir, Math.abs(spotPct ?? 0)) : '')}>
+            <span class={'ps-v ' + ltpDayClass(spotPct) + ' ' + _spotFlash.classOf('chg')}>
               {spotPct >= 0 ? '+' : ''}{spotPct.toFixed(2)}%
             </span>
           </div>
@@ -1729,12 +1732,6 @@
     font-family: monospace;
     animation: pulse-opacity 1.5s ease-in-out infinite;
   }
-  /* Directional tick-flash classes for the spot LTP overlay.
-     The global ltp-flash-up/down keyframes live in app.css.
-     These scoped rules ensure the animation fires correctly when
-     _spotFlash emits these class names from inside the component. */
-  .ltp-flash-up   { animation: ltp-flash-up   0.3s ease-out; }
-  .ltp-flash-down { animation: ltp-flash-down 0.3s ease-out; }
   .payoff-legend {
     display: flex;
     gap: 0.9rem;
