@@ -10,10 +10,17 @@
  * pulseUnified.test.js, and tickFlash.test.js.
  *
  * Part A (live DOM, runs against the local/dev server): MarketPulse's
- * tickBus subscriber is fed purely from the emitted {sym, dir, pct} event
- * (no symbolStore read needed), so it's fully testable end-to-end via the
- * window.__stores.tickBus.emit() dev hook already wired in
- * (algo)/+layout.svelte (same mechanism tick_bus_synchrony.spec.js uses).
+ * tickBus subscriber used to be fed purely from the emitted {sym, dir, pct}
+ * event. UPDATED 2026-10-19 (accumulate-until-threshold fix): the
+ * subscriber now ALSO reads the symbol's current live LTP from symbolStore
+ * (`getSnapshot(sym)?.ltp`) and compares it against a per-symbol
+ * last-flashed-value baseline, so these tests drive real LTP writes via
+ * `window.__stores.mergeSymbolUpdate` (the same production write path real
+ * SSE ticks use) instead of a bare `tickBus.emit()` — a bare emit with no
+ * accompanying LTP write no longer moves the baseline and so no longer
+ * flashes on a second above-threshold attempt (see
+ * tick_flash_accumulate_until_threshold.spec.js for the fix's own
+ * dedicated coverage).
  *   - Item 9: the ltpFlashPct threshold (default 0.1%) now actually gates
  *     the flash — a sub-threshold tick no longer flashes.
  *   - Item 3: the Chg% (day_pnl_pct) cell never gets tf-up/tf-down, even
@@ -73,37 +80,59 @@ async function mockPositions(page) {
   });
 }
 
-/** Emit a synthetic tick via the exposed window.__stores.tickBus. */
-async function emitTick(page, sym, dir, pct = 0) {
+/**
+ * Write a real LTP value through the production write path
+ * (symbolStore._mergeSymbolWrite → tickBus.emit), via the
+ * window.__stores.mergeSymbolUpdate dev hook. Required since 2026-10-19:
+ * MarketPulse's tickBus subscriber now reads the symbol's live LTP from
+ * symbolStore to decide whether a tick's CUMULATIVE move since the last
+ * flash crosses threshold — a bare tickBus.emit() with no accompanying
+ * LTP write no longer changes anything the subscriber looks at.
+ */
+async function writeLtp(page, sym, ltp) {
   await page.evaluate(
-    ([s, d, p]) => {
+    ([s, v]) => {
       /** @type {any} */
       const stores = window.__stores;
-      if (!stores?.tickBus) throw new Error('window.__stores.tickBus not found');
-      stores.tickBus.emit(s, d, p);
+      if (!stores?.mergeSymbolUpdate) throw new Error('window.__stores.mergeSymbolUpdate not found');
+      stores.mergeSymbolUpdate(s, { ltp: v }, { ltp_ts: Date.now() });
     },
-    [sym, dir, pct],
+    [sym, ltp],
+  );
+}
+
+/** Read back the symbol's current live LTP from symbolStore. */
+async function readLtp(page, sym) {
+  return page.evaluate(
+    (s) => {
+      /** @type {any} */
+      const stores = window.__stores;
+      return stores?.getSnapshot?.(s)?.ltp ?? null;
+    },
+    sym,
   );
 }
 
 /**
- * Retry-emit until the target locator's class matches `classRe`, or
- * `maxMs` elapses. Needed because `window.__stores.tickBus` (exposed by
- * the layout's own onMount, independent of MarketPulse's) becomes
- * available well before MarketPulse's OWN onMount async chain reaches its
- * `tickBus.subscribe(...)` call — that chain awaits a real backend
- * round-trip (`loadPulse({force:true})` → positions/holdings/accounts/
- * movers/funds/batchQuote) whose latency varies with this shared dev
- * server's cold-cache state (observed 0.4s–10s+ for a single endpoint in
- * manual probing). A single emit timed too early is silently missed
- * (no subscriber registered yet) rather than failing the check it's
- * gating — so this retries at a cadence respecting the bus's own 250ms
- * per-symbol throttle until the real subscription is live.
+ * Retry-write large jumps until the target locator's class matches
+ * `classRe`, or `maxMs` elapses. Needed because MarketPulse's OWN onMount
+ * async chain (which reaches its `tickBus.subscribe(...)` call only after
+ * a real backend round-trip — `loadPulse({force:true})` →
+ * positions/holdings/accounts/movers/funds/batchQuote) comes up with
+ * latency that varies with this shared dev server's cold-cache state
+ * (observed 0.4s–10s+ for a single endpoint in manual probing). A single
+ * write timed too early is silently missed (no subscriber registered yet)
+ * rather than failing the check it's gating — so this retries at a cadence
+ * respecting the bus's own 250ms per-symbol throttle until the real
+ * subscription is live. Each retry multiplies by 1.05 (+5%) so a genuinely
+ * fresh write always clears the threshold once the subscription comes up,
+ * regardless of how many earlier attempts were silently dropped.
  */
-async function emitUntilClassMatches(page, locator, sym, dir, pct, classRe, maxMs = 45_000) {
+async function writeUntilClassMatches(page, locator, sym, startLtp, classRe, maxMs = 45_000) {
   const start = Date.now();
+  let val = startLtp;
   while (Date.now() - start < maxMs) {
-    await emitTick(page, sym, dir, pct);
+    await writeLtp(page, sym, val);
     // Check while the flash is still active (classes clear ~300ms after
     // a registered tick — see MarketPulse.svelte's _ltpFlashTimers), but
     // wait a little first so the debounced refreshCells (~50ms window)
@@ -116,6 +145,7 @@ async function emitUntilClassMatches(page, locator, sym, dir, pct, classRe, maxM
     if (matched) return true;
     // Space out the next attempt past the bus's 250ms per-sym throttle.
     await page.waitForTimeout(150);
+    val = val * 1.05;
   }
   return false;
 }
@@ -147,28 +177,34 @@ test.describe('Part A — MarketPulse live DOM (window.__stores.tickBus)', () =>
     const ltpCell = row.locator('[col-id="ltp"]');
     await expect(ltpCell).toBeVisible({ timeout: 60_000 });
 
-    // Warm-up / positive control: retry an above-threshold tick until
+    // Warm-up / positive control: retry an above-threshold write until
     // MarketPulse's real tickBus subscription proves itself live via an
     // observed flash. Confirms the NEGATIVE check below means something.
-    const warmedUp = await emitUntilClassMatches(page, ltpCell, SYM, 'up', 5, /tf-up/, 60_000);
+    const warmedUp = await writeUntilClassMatches(page, ltpCell, SYM, ROW.last_price, /tf-up/, 60_000);
     expect(warmedUp, 'MarketPulse tickBus subscription never came up — real backend round-trip too slow in this environment').toBe(true);
     // Let the flash fully clear (300ms clear timer) before the real check.
     await expect(ltpCell).not.toHaveClass(/tf-up/, { timeout: 2_000 });
     await page.waitForTimeout(300);
 
+    // Read back the real baseline MarketPulse just locked in (the warm-up
+    // flash's own value) so the percentage math below is exact regardless
+    // of how many warm-up retries were needed.
+    const baseline = await readLtp(page, SYM);
+    expect(baseline).toBeGreaterThan(0);
+
     // Default ltpFlashPct threshold is 0.1% — a 0.05% move must NOT flash
     // (item 9: the threshold was previously dead; the handler flashed on
     // every tick regardless of pct).
-    await emitTick(page, SYM, 'up', 0.05);
+    await writeLtp(page, SYM, baseline * 1.0005);
     await page.waitForTimeout(200);
     await expect(ltpCell).not.toHaveClass(/tf-up/);
     await expect(ltpCell).not.toHaveClass(/tf-down/);
 
     // A move well above the threshold DOES flash (subscription already
     // confirmed live by the warm-up above, so one more throttle-spaced
-    // emit is enough here).
+    // write is enough here).
     await page.waitForTimeout(300); // past the bus's 250ms per-sym throttle
-    await emitTick(page, SYM, 'up', 5);
+    await writeLtp(page, SYM, baseline * 1.05);
     await expect(ltpCell).toHaveClass(/tf-up/, { timeout: 2_000 });
   });
 
@@ -185,8 +221,8 @@ test.describe('Part A — MarketPulse live DOM (window.__stores.tickBus)', () =>
     await expect(chgCell).toBeVisible({ timeout: 10_000 });
 
     // Retry (see Part A describe-block comment) until the LTP cell
-    // actually flashes, confirming the tick genuinely registered.
-    const flashed = await emitUntilClassMatches(page, ltpCell, SYM, 'up', 5, /tf-up/, 60_000);
+    // actually flashes, confirming the write genuinely registered.
+    const flashed = await writeUntilClassMatches(page, ltpCell, SYM, ROW.last_price, /tf-up/, 60_000);
     expect(flashed, 'MarketPulse tickBus subscription never came up — real backend round-trip too slow in this environment').toBe(true);
     // Chg% cell on the SAME row must never carry tf-up/tf-down —
     // PULSE_SPEC.md §16: only LTP flashes on Pulse.
@@ -196,7 +232,9 @@ test.describe('Part A — MarketPulse live DOM (window.__stores.tickBus)', () =>
     // Let the up-flash clear, then confirm the down-direction case too.
     await expect(ltpCell).not.toHaveClass(/tf-up/, { timeout: 2_000 });
     await page.waitForTimeout(300);
-    await emitTick(page, SYM, 'down', 5);
+    const baseline = await readLtp(page, SYM);
+    expect(baseline).toBeGreaterThan(0);
+    await writeLtp(page, SYM, baseline * 0.94); // -6% — well past threshold, down direction
     await expect(ltpCell).toHaveClass(/tf-down/, { timeout: 2_000 });
     await expect(chgCell).not.toHaveClass(/tf-up/);
     await expect(chgCell).not.toHaveClass(/tf-down/);

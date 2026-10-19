@@ -61,7 +61,7 @@
     return v;
   }
   import { fetchSettings } from '$lib/api';
-  import { streamOpen, startQuoteStream, stopQuoteStream } from '$lib/data/quoteStream';
+  import { streamOpen } from '$lib/data/quoteStream';
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
   import { getSnapshot, symbolStore, symbolTickCount, tickBus, drainDirtySyms, getResetGen } from '$lib/data/symbolStore.svelte.js';
   import { bookChanged } from '$lib/data/bookChanged';
@@ -1673,10 +1673,14 @@
     document.addEventListener('keydown', handleKeydown);
     document.addEventListener('click', onDocClick);
 
-    // SSE quote stream — live LTP pushed from the server's KiteTicker
-    // WebSocket. startQuoteStream() is idempotent so multiple Pulse
-    // instances on the same page share one connection.
-    startQuoteStream();
+    // SSE quote stream lifecycle (start/stop) belongs solely to the algo
+    // layout's startMarketGatedQuoteStream()/stopMarketGatedQuoteStream()
+    // (see +layout.svelte) — MarketPulse only READS the shared singleton
+    // via `streamOpen` below. Fixed 2026-10-19: this component used to
+    // call startQuoteStream()/stopQuoteStream() itself, which meant
+    // navigating away from /pulse to ANY other page tore down the stream
+    // for the whole app (nothing else ever restarted it while the market
+    // stayed open), silently freezing live ticks on every other page.
 
     // Subscribe to the ltpFlashPct store so the threshold stays in sync
     // if the admin changes the setting (e.g. /admin/settings) in this session.
@@ -1697,14 +1701,66 @@
       // threshold (_pctThreshold, kept live via the subscription above)
       // instead of flashing every symbol on every tick. Mirrors the
       // threshold-check pattern Derivatives' +page.svelte applies via
-      // createTickFlash's own pctThreshold gate — here the tickBus event
-      // already carries the computed `pct` (abs % move from
-      // symbolStore._mergeSymbolWrite), so the gate is a direct compare.
-      if (_pctThreshold > 0 && Math.abs(Number(pct) || 0) < _pctThreshold) return;
-      if (dir === 'up') {
+      // createTickFlash's own pctThreshold gate.
+      //
+      // Accumulate-until-threshold fix (2026-10-19): the tickBus event's
+      // own `pct` is a single-tick-to-its-immediate-predecessor delta
+      // (computed in symbolStore._mergeSymbolWrite) — comparing against
+      // ONLY that lets several small same-direction ticks each individually
+      // stay under threshold forever, even though the cumulative move since
+      // the last visible flash is well past it (GOLD's root cause). Instead,
+      // compare the symbol's CURRENT live LTP against `_lastFlashedLtp` —
+      // the value recorded at the time of the last actual flash — so small
+      // moves accumulate against a fixed baseline until they genuinely
+      // cross _pctThreshold. _mergeSymbolWrite() writes the new LTP to
+      // symbolStore BEFORE calling tickBus.emit(), so getSnapshot(sym)
+      // already reflects the just-arrived value here. untrack() keeps this
+      // read from becoming a reactive dependency of whatever effect/caller
+      // chain triggered the write.
+      let _dir = dir;
+      if (_pctThreshold > 0) {
+        const _curLtp = untrack(() => getSnapshot(sym)?.ltp);
+        if (_curLtp != null && isFinite(_curLtp) && _curLtp > 0) {
+          const _baseline = _lastFlashedLtp.get(sym);
+          if (_baseline == null) {
+            // No baseline yet for this symbol (first tick since mount/nav).
+            // Fall back to the bus event's own pct for this ONE decision —
+            // a genuinely large first move still flashes immediately
+            // instead of being silently swallowed as baseline
+            // establishment on every /pulse remount — then seed the
+            // baseline from the current LTP either way.
+            if (Math.abs(Number(pct) || 0) < _pctThreshold) {
+              _lastFlashedLtp.set(sym, _curLtp);
+              return;
+            }
+          } else {
+            const _changePct = Math.abs(_baseline) > 0
+              ? Math.abs((_curLtp - _baseline) / _baseline * 100)
+              : 0;
+            // Sub-threshold — leave the baseline untouched so the NEXT
+            // tick's comparison still accumulates against this same
+            // fixed point, instead of resetting on every tick.
+            if (_changePct < _pctThreshold) return;
+            // Direction must reflect the move since the baseline, not the
+            // immediately-preceding tick's own direction — the bus's
+            // 250ms-per-sym throttle can drop in-between ticks, so the
+            // last-received `dir` may not match the net direction since
+            // the baseline.
+            _dir = _curLtp > _baseline ? 'up' : _curLtp < _baseline ? 'down' : dir;
+          }
+          _lastFlashedLtp.set(sym, _curLtp);
+        } else {
+          // No live LTP snapshot yet (e.g. a synthetic tickBus.emit() from
+          // a test/dev tool whose symbol never wrote through symbolStore) —
+          // fall back to the legacy single-tick pct gate so direct bus
+          // producers keep their existing behaviour.
+          if (Math.abs(Number(pct) || 0) < _pctThreshold) return;
+        }
+      }
+      if (_dir === 'up') {
         _ltpFlashUp = new Set([..._ltpFlashUp, sym]);
         _ltpFlashDown = new Set([..._ltpFlashDown].filter(s => s !== sym));
-      } else if (dir === 'down') {
+      } else if (_dir === 'down') {
         _ltpFlashDown = new Set([..._ltpFlashDown, sym]);
         _ltpFlashUp = new Set([..._ltpFlashUp].filter(s => s !== sym));
       }
@@ -2328,6 +2384,14 @@
   // whole set when one symbol clears — prevents flicker when multiple
   // symbols have staggered 300ms windows).
   const _ltpFlashTimers = /** @type {Map<string, ReturnType<typeof setTimeout>>} */ (new Map());
+  // Accumulate-until-threshold fix (2026-10-19): the LTP value recorded at
+  // the time of the LAST ACTUAL FLASH per symbol — NOT the immediately-
+  // preceding tick. Several small same-direction ticks (e.g. GOLD's
+  // ~0.0007%/tick moves on a ₹1 tick size, ~140x below the default 0.1%
+  // gate) accumulate against this fixed baseline across calls until the
+  // cumulative move crosses _pctThreshold. Mirrors tickFlash.svelte.js's
+  // own fix; see tickBus.subscribe() callback in onMount below.
+  const _lastFlashedLtp = /** @type {Map<string, number>} */ (new Map());
   let _flashRefreshTimer = /** @type {ReturnType<typeof setTimeout>|null} */ (null);
   /** @type {(() => void) | null} */
   let _tickBusUnsub = null;
@@ -2652,7 +2716,9 @@
     _unsubBook();
     stopPulseTick?.(); _stopClosedSparkPoll?.(); stopWS?.();
     if (_deferredSparkTimer) { clearTimeout(_deferredSparkTimer); _deferredSparkTimer = null; }
-    stopQuoteStream();
+    // SSE quote stream is NOT stopped here — see the onMount comment
+    // above; the shared singleton's lifecycle is owned by the algo
+    // layout, not by individual pages.
     // Clear any in-flight throttle timers so their setTimeout
     // callbacks don't fire into a destroyed component (audit-flagged
     // — the flush timer is cleaned up by the $effect's own teardown,
@@ -2663,6 +2729,7 @@
     if (_flashRefreshTimer) { clearTimeout(_flashRefreshTimer); _flashRefreshTimer = null; }
     for (const t of _ltpFlashTimers.values()) clearTimeout(t);
     _ltpFlashTimers.clear();
+    _lastFlashedLtp.clear();
     _mpFlash.dispose();
     for (const t of _prefetchTimers) { try { clearTimeout(t); } catch { /* no-op */ } }
     _prefetchTimers.length = 0;

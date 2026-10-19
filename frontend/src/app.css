@@ -3269,12 +3269,12 @@ button:not(:disabled):active,
    alpha 0.35 — higher than tf-up/down (0.13) so the LTP-source pulse reads
    as the causal event. */
 @keyframes ltp-flash-up {
-  0%   { background-color: var(--algo-green-flash); }
-  100% { background-color: transparent; }
+  0%   { background-color: var(--algo-green-flash); color: #fff; }
+  100% { background-color: transparent; color: inherit; }
 }
 @keyframes ltp-flash-down {
-  0%   { background-color: var(--algo-red-flash); }
-  100% { background-color: transparent; }
+  0%   { background-color: var(--algo-red-flash); color: #fff; }
+  100% { background-color: transparent; color: inherit; }
 }
 .ltp-flash-up   { animation: ltp-flash-up   600ms ease-out; }
 .ltp-flash-down { animation: ltp-flash-down 600ms ease-out; }
@@ -3342,20 +3342,20 @@ button:not(:disabled):active,
    Background-pulse tiers for P&L cascade. .tf-up/.tf-down are the
    default tier (medium). sm = very subtle, lg = prominent. */
 @keyframes tf-up-sm {
-  0%   { background-color: var(--algo-green-cascade-sm); }
-  100% { background-color: transparent; }
+  0%   { background-color: var(--algo-green-cascade-sm); color: #fff; }
+  100% { background-color: transparent; color: inherit; }
 }
 @keyframes tf-down-sm {
-  0%   { background-color: var(--algo-red-cascade-sm); }
-  100% { background-color: transparent; }
+  0%   { background-color: var(--algo-red-cascade-sm); color: #fff; }
+  100% { background-color: transparent; color: inherit; }
 }
 @keyframes tf-up-lg {
-  0%   { background-color: var(--algo-green-cascade-lg); }
-  100% { background-color: transparent; }
+  0%   { background-color: var(--algo-green-cascade-lg); color: #fff; }
+  100% { background-color: transparent; color: inherit; }
 }
 @keyframes tf-down-lg {
-  0%   { background-color: var(--algo-red-cascade-lg); }
-  100% { background-color: transparent; }
+  0%   { background-color: var(--algo-red-cascade-lg); color: #fff; }
+  100% { background-color: transparent; color: inherit; }
 }
 .tf-up-sm   { animation: tf-up-sm   350ms ease-out; }
 .tf-down-sm { animation: tf-down-sm 350ms ease-out; }
@@ -3553,12 +3553,12 @@ button:not(:disabled):active,
    These rules are global so ag-Grid cellClass callbacks (which run outside
    Svelte's scoped DOM) pick them up without :global() wrappers. */
 @keyframes tf-pnl-up {
-  0%   { background-color: var(--algo-green-cascade); }
-  100% { background-color: transparent; }
+  0%   { background-color: var(--algo-green-cascade); color: #fff; }
+  100% { background-color: transparent; color: inherit; }
 }
 @keyframes tf-pnl-down {
-  0%   { background-color: var(--algo-red-cascade); }
-  100% { background-color: transparent; }
+  0%   { background-color: var(--algo-red-cascade); color: #fff; }
+  100% { background-color: transparent; color: inherit; }
 }
 .tf-up   { animation: tf-pnl-up   350ms ease-out; }
 .tf-down { animation: tf-pnl-down 350ms ease-out; }

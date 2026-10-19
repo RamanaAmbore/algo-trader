@@ -12,16 +12,22 @@
  * remaining consumer (MarketPulse's throttled cell-renderer mirror)
  * was migrated to read from symbolStore + symbolTickCount.
  *
- * Usage (inside a Svelte component):
- *   import { streamOpen, startQuoteStream, stopQuoteStream } from '$lib/data/quoteStream';
- *   onMount(() => startQuoteStream());
- *   onDestroy(() => stopQuoteStream());
+ * Lifecycle ownership: start/stop belongs SOLELY to the algo layout
+ * (`(algo)/+layout.svelte`'s `startMarketGatedQuoteStream()` /
+ * `stopMarketGatedQuoteStream()`), called once per app session, gated on
+ * whether any market segment is open. Individual pages/components must
+ * NEVER call `startQuoteStream()`/`stopQuoteStream()` themselves — a
+ * page-scoped `onDestroy` calling `stopQuoteStream()` kills the stream for
+ * the ENTIRE app (every other page), and nothing else restarts it while
+ * the market stays open (fixed 2026-10-19, see `MarketPulse.svelte`).
+ * Pages should only READ `streamOpen` / `lastLiveTickAt` and consume ticks via:
  *   import { getSnapshot } from '$lib/data/symbolStore.svelte.js';
  *   // in a cell renderer: getSnapshot('RELIANCE')?.ltp ?? fallback
  *
- * Singleton pattern — multiple components calling startQuoteStream() share one
- * connection. stopQuoteStream() closes it and resets so the next startQuoteStream()
- * call opens a fresh connection.
+ * Singleton pattern — one shared connection for the whole app.
+ * `startMarketGatedQuoteStream()`'s 30s gate also acts as a self-healing
+ * backstop: it reopens the stream whenever the market is open and the
+ * stream isn't actually running, regardless of why it stopped.
  */
 
 import { writable, get } from 'svelte/store';
@@ -294,10 +300,17 @@ export function startMarketGatedQuoteStream() {
     try {
       try { await fetchMarketStatus(); } catch { /* silent */ }
       const anyOpen = isNseOpen() || isMcxOpen();
-      if (anyOpen && !_prevAny) {
-        // Closed → open transition: reopen the stream.
+      if (anyOpen) {
+        // State-reconciliation, not edge-detection: reopen whenever the
+        // market is open and the stream isn't actually running — covers
+        // both the closed→open transition AND any external caller that
+        // stopped the shared singleton while the market stayed open
+        // (the 2026-10-19 MarketPulse-onDestroy incident this backstop
+        // guards against, in case a future page makes the same mistake).
+        // startQuoteStream() is itself idempotent (no-op while already
+        // _opened), so calling it on every open tick is safe/cheap.
         startQuoteStream();
-      } else if (!anyOpen && _prevAny) {
+      } else if (_prevAny) {
         // Open → closed transition: stop ticks. Broker fetches for
         // positions / cash / holdings continue via their own poll
         // paths; only the live LTP SSE is gated here.

@@ -75,8 +75,10 @@ function makeTickFlash({ threshold = 0, pctThreshold = 0, durationMs = 300 } = {
     // Guard fires BEFORE prev[key] read/write — mirrors the fixed code.
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
     const last = prev[key];
-    prev[key] = v;
-    if (last == null) return;
+    // First sample establishes the baseline — the ONE unconditional write
+    // to prev[key]. Every other write happens only right before a flash
+    // actually fires (accumulate-until-threshold fix, 2026-10-19).
+    if (last == null) { prev[key] = v; return; }
     if (v === last) return;
     if (Math.abs(v - last) < threshold) return;
     // Item 10 fix (2026-10): compare Math.abs(last), not bare `last` — a
@@ -85,9 +87,15 @@ function makeTickFlash({ threshold = 0, pctThreshold = 0, durationMs = 300 } = {
     // change regardless of threshold.
     if (_pctThreshold > 0 && Math.abs(last) > 0) {
       const changePct = Math.abs((v - last) / last * 100);
+      // Accumulate-until-threshold fix: on a sub-threshold move, leave
+      // prev[key] UNCHANGED so the next call still compares against this
+      // same fixed baseline — small same-direction moves accumulate until
+      // the CUMULATIVE change crosses pctThreshold.
       if (changePct < _pctThreshold) return;
     }
     const dir = v > last ? 'up' : 'down';
+    // Baseline resets to the value that triggered this flash.
+    prev[key] = v;
     classes[key] = dir;
     if (timers[key]) clearTimeout(timers[key]);
     timers[key] = setTimeout(() => {
@@ -286,5 +294,129 @@ describe('tickFlash.svelte.js — Math.abs(last) source scan (item 10)', () => {
   it('update() guards the pctThreshold branch with Math.abs(last), not bare last', () => {
     expect(tickFlashSrc).toMatch(/if\s*\(_pctThreshold > 0 && Math\.abs\(last\) > 0\)/);
     expect(tickFlashSrc).not.toMatch(/if\s*\(_pctThreshold > 0 && last > 0\)/);
+  });
+});
+
+// ── Accumulate-until-threshold fix (2026-10-19) ──────────────────────────────
+//
+// Root cause: comparing every incoming tick against the immediately
+// preceding raw value only (never a fixed baseline) means several small
+// same-direction ticks that together represent a real move never trigger a
+// flash, because each individual tick-to-tick delta stays under threshold
+// even though the cumulative move since the last visible flash crosses it.
+// Most visible on GOLD (MCX, ~₹150,000/unit, ₹1 tick size — a single tick is
+// ~0.0007%, ~140x below the default 0.1% gate).
+//
+// Fix: compare against the LAST VALUE THAT ACTUALLY TRIGGERED A FLASH, not
+// the last raw tick — prev[key] is only written (a) on the very first
+// sample (baseline establishment) and (b) right before a flash fires.
+
+describe('createTickFlash — accumulate-until-threshold (GOLD small-tick fix)', () => {
+  it('several consecutive sub-threshold updates accumulate and the LAST one fires the flash', () => {
+    const flash = makeTickFlash({ threshold: 0, pctThreshold: 0.1, durationMs: 300 });
+    // Seed baseline at 150000 (GOLD-like price).
+    flash.update('GOLD', 150000);
+    expect(flash.classOf('GOLD')).toBe('');
+
+    // Five consecutive ~0.0007%/tick moves (₹1 ticks on a ₹150,000 base).
+    // Each individual step is ~140x below the 0.1% threshold.
+    flash.update('GOLD', 150001); // cumulative from baseline: 0.00067% — below threshold
+    expect(flash.classOf('GOLD')).toBe('');
+    flash.update('GOLD', 150002); // cumulative: 0.0013% — still below threshold
+    expect(flash.classOf('GOLD')).toBe('');
+    flash.update('GOLD', 150003); // cumulative: 0.002% — still below threshold
+    expect(flash.classOf('GOLD')).toBe('');
+    // Accumulate several more small ticks, staying just under the 0.1%
+    // cumulative line (150140 / 150000 = 0.0933%).
+    flash.update('GOLD', 150140);
+    expect(flash.classOf('GOLD')).toBe('');
+    // One more tick pushes cumulative move clearly past threshold — THIS is
+    // the one that fires, not any of the earlier sub-threshold ticks.
+    flash.update('GOLD', 150200); // cumulative from 150000: 0.133% ≥ 0.1% → flash
+    expect(flash.classOf('GOLD')).toBe('tf-up');
+
+    flash.dispose();
+  });
+
+  it('a single update crossing the threshold in one step still fires correctly (regression)', () => {
+    const flash = makeTickFlash({ threshold: 0, pctThreshold: 0.1, durationMs: 300 });
+    flash.update('x', 100);
+    flash.update('x', 101); // 1% move ≥ 0.1% → flash immediately, no accumulation needed
+    expect(flash.classOf('x')).toBe('tf-up');
+    flash.dispose();
+  });
+
+  it('after a flash fires, the baseline resets — a subsequent small move needs fresh accumulation', () => {
+    const flash = makeTickFlash({ threshold: 0, pctThreshold: 0.1, durationMs: 300 });
+    flash.update('GOLD', 150000); // seed
+    flash.update('GOLD', 150200); // 0.133% ≥ 0.1% → flashes, baseline resets to 150200
+    expect(flash.classOf('GOLD')).toBe('tf-up');
+
+    // Clear the flash class so the next assertion isn't polluted by the
+    // still-active timer-driven class from the prior flash.
+    vi.advanceTimersByTime(300);
+    expect(flash.classOf('GOLD')).toBe('');
+
+    // A small move relative to the NEW baseline (150200) must accumulate
+    // fresh — NOT be measured against the original pre-flash baseline
+    // (150000), which would make this a 0.2% cumulative move and fire
+    // immediately instead of accumulating.
+    flash.update('GOLD', 150250); // (150250-150200)/150200 = 0.033% — below threshold
+    expect(flash.classOf('GOLD')).toBe('');
+
+    // Confirm it still needs to cross threshold relative to the NEW
+    // baseline (150200), not the original one.
+    flash.update('GOLD', 150350); // (150350-150200)/150200 = 0.0999...% — still just below
+    expect(flash.classOf('GOLD')).toBe('');
+    flash.update('GOLD', 150400); // (150400-150200)/150200 = 0.133% ≥ 0.1% → flash
+    expect(flash.classOf('GOLD')).toBe('tf-up');
+
+    flash.dispose();
+  });
+
+  it('first sample still establishes baseline with no flash (unaffected by the accumulation fix)', () => {
+    const flash = makeTickFlash({ threshold: 0, pctThreshold: 0.1, durationMs: 300 });
+    flash.update('x', 100); // first sample — baseline only, no flash
+    expect(flash.classOf('x')).toBe('');
+    flash.dispose();
+  });
+
+  it('accumulation also works for a down-moving sequence', () => {
+    const flash = makeTickFlash({ threshold: 0, pctThreshold: 0.1, durationMs: 300 });
+    flash.update('GOLD', 150000);
+    flash.update('GOLD', 149999); // tiny down-tick — below threshold
+    expect(flash.classOf('GOLD')).toBe('');
+    flash.update('GOLD', 149998); // still below threshold cumulative
+    expect(flash.classOf('GOLD')).toBe('');
+    flash.update('GOLD', 149800); // cumulative from 150000: -0.133% → flash down
+    expect(flash.classOf('GOLD')).toBe('tf-down');
+    flash.dispose();
+  });
+});
+
+describe('tickFlash.svelte.js — accumulate-until-threshold source scan (2026-10-19)', () => {
+  it('first-sample baseline write is the only unconditional prev[key] write', () => {
+    expect(tickFlashSrc).toMatch(/if\s*\(last == null\)\s*\{\s*prev\[key\] = v;\s*return;\s*\}/);
+  });
+
+  it('prev[key] is not written immediately after reading last (no unconditional overwrite)', () => {
+    expect(tickFlashSrc).not.toMatch(/const last = prev\[key\];\s*\n\s*prev\[key\] = v;/);
+  });
+
+  it('prev[key] is written again only after dir is computed (right before a flash fires)', () => {
+    const dirIdx = tickFlashSrc.indexOf("const dir = v > last ? 'up' : 'down';");
+    expect(dirIdx).toBeGreaterThan(-1);
+    const afterDir = tickFlashSrc.slice(dirIdx);
+    const nextPrevWriteIdx = afterDir.indexOf('prev[key] = v;');
+    const classesWriteIdx = afterDir.indexOf('classes[key] = dir;');
+    expect(nextPrevWriteIdx).toBeGreaterThan(-1);
+    // The reset write must land between computing `dir` and setting the
+    // classes[key] class — i.e. "right before the flash fires".
+    expect(nextPrevWriteIdx).toBeLessThan(classesWriteIdx);
+  });
+
+  it('exactly two prev[key] write sites exist in update() — baseline seed and flash-reset', () => {
+    const matches = tickFlashSrc.match(/prev\[key\] = v;/g) || [];
+    expect(matches.length).toBe(2);
   });
 });

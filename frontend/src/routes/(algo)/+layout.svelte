@@ -30,8 +30,8 @@
   import { startBookChangedBus } from '$lib/data/bookChanged';
   import { startBookPollers, setBookPollerLiveMs, setBookPollerClosedMs, getFillWatchIntervalMs, setFillWatchIntervalMs } from '$lib/data/marketDataStores.svelte.js';
   import { loadAccountOrder } from '$lib/data/accountSort.js';
-  import { startMarketGatedQuoteStream, stopMarketGatedQuoteStream, lastLiveTickAt } from '$lib/data/quoteStream';
-  import { tickBus } from '$lib/data/symbolStore.svelte.js';
+  import { startMarketGatedQuoteStream, stopMarketGatedQuoteStream, lastLiveTickAt, stopQuoteStream } from '$lib/data/quoteStream';
+  import { tickBus, mergeSymbolUpdate, getSnapshot } from '$lib/data/symbolStore.svelte.js';
   import NavigationIndicator from '$lib/NavigationIndicator.svelte';
   import BrokerHealthBadge from '$lib/BrokerHealthBadge.svelte';
   import { pollOpenOrders } from '$lib/data/openOrdersStore.svelte.js';
@@ -999,12 +999,34 @@
       /** @type {any} */ (window).__stores.tickBus = tickBus;
       /** @type {any} */ (window).__stores.toast = toast;
       /** @type {any} */ (window).__stores.lastLiveTickAt = lastLiveTickAt;
+      // Also exposes `stopQuoteStream` (2026-10-19, SSE-survives-navigation
+      // regression spec) so a Playwright spec can simulate "something
+      // external stopped the shared stream while the market stayed open"
+      // and assert the 30s gate backstop in startMarketGatedQuoteStream()
+      // self-heals it — without this hook there would be zero test
+      // coverage for the backstop once no page calls stopQuoteStream()
+      // itself anymore.
+      /** @type {any} */ (window).__stores.stopQuoteStream = stopQuoteStream;
+      // Also exposes `mergeSymbolUpdate` (2026-10-19, tick-flash
+      // accumulate-until-threshold spec) so a Playwright spec can write a
+      // sequence of real LTP values into symbolStore — not just emit a bare
+      // tickBus direction — letting MarketPulse's own threshold-gated
+      // tickBus subscriber read a genuine getSnapshot(sym)?.ltp baseline.
+      /** @type {any} */ (window).__stores.mergeSymbolUpdate = mergeSymbolUpdate;
+      // Also exposes `getSnapshot` so a spec can read back the real LTP it
+      // just wrote via mergeSymbolUpdate, for deterministic percentage math
+      // regardless of how many warm-up retries were needed.
+      /** @type {any} */ (window).__stores.getSnapshot = getSnapshot;
     }
     // Market-gated quote stream gate. Starts the SSE if any segment is
     // open right now; runs a 30 s visibility-aware watcher that pauses /
-    // resumes the stream on open ↔ close transitions. Idempotent —
-    // MarketPulse also calls startQuoteStream() directly; the singleton
-    // pattern in quoteStream.js deduplicates. Torn down in onDestroy.
+    // resumes the stream on open ↔ close transitions, and self-heals
+    // (reopens) whenever the market is open but the stream isn't
+    // actually running for any other reason. This is the SOLE owner of
+    // the shared stream's lifecycle — individual pages/components only
+    // read `streamOpen`/`lastLiveTickAt`, never call start/stop
+    // themselves (see quoteStream.js's module docstring). Torn down in
+    // onDestroy.
     startMarketGatedQuoteStream();
     // Fire once, then schedule adaptive polls.
     pollSim();

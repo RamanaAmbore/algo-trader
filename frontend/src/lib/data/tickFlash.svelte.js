@@ -42,17 +42,28 @@ export function createTickFlash({ threshold = 0, pctThreshold = 0, durationMs = 
     // flashes correctly.
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
     const last = prev[key];
-    prev[key] = v;
     // First sample — establish baseline, no flash. Without this every
-    // mount would flash every cell from null → value.
-    if (last == null) return;
+    // mount would flash every cell from null → value. This is the ONE
+    // unconditional write to prev[key]; every other write happens only
+    // right before a flash actually fires (see below).
+    if (last == null) { prev[key] = v; return; }
     if (v === last) return;       // no-change: same value → no flash, no text animation
     if (Math.abs(v - last) < threshold) return;
     if (_pctThreshold > 0 && Math.abs(last) > 0) {
       const changePct = Math.abs((v - last) / last * 100);
+      // Accumulate-until-threshold fix (2026-10-19): on a sub-threshold
+      // move, leave prev[key] UNCHANGED (don't advance the baseline).
+      // Several small same-direction ticks (e.g. GOLD's ~0.0007%/tick
+      // moves on a ₹1 tick size) then accumulate against the same fixed
+      // baseline across calls until the CUMULATIVE move crosses
+      // pctThreshold, instead of each tick only ever comparing against
+      // its own immediate predecessor and never tripping the gate.
       if (changePct < _pctThreshold) return;
     }
     const dir = v > last ? 'up' : 'down';
+    // Baseline resets to the value that actually triggered this flash —
+    // the next accumulation window starts fresh from here.
+    prev[key] = v;
     // Mutate the $state proxy in place. The earlier `classes = { ...
     // classes, [key]: dir }` form READ `classes` inside the same call-
     // stack the consumer's $effect triggered — Svelte 5 then picked
