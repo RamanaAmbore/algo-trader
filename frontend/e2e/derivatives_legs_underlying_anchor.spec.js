@@ -262,6 +262,29 @@ test.describe('Derivatives Legs grid — underlying-anchor row (sync with Positi
     expect(Math.abs(anchorBox.height - realBox.height)).toBeLessThanOrEqual(1);
   });
 
+  test('the anchor row\'s and TOTAL row\'s text is the same font-size/family as a real leg row (2026-10-19 fix — both were stuck at --fs-sm/--font-numeric, visibly smaller than real leg rows at --fs-lg/monospace)', async ({ page }) => {
+    await loginAsAdmin(page);
+    await _mockEndpoints(page);
+    await page.goto(DERIV_URL, { waitUntil: 'domcontentloaded' });
+
+    const anchorLabel = page.locator('.cand-body-rows > .cand-row-underlying-anchor .cand-anchor-label');
+    const realLabel = page.locator('.cand-body-rows > .cand-row:not(.cand-row-underlying-anchor):not(.cand-row-total) .cand-sym').first();
+    const totalCell = page.locator('.cand-row.cand-row-total > span').first();
+    await expect(anchorLabel).toBeVisible({ timeout: 15_000 });
+    await expect(realLabel).toBeVisible({ timeout: 15_000 });
+    await expect(totalCell).toBeVisible({ timeout: 15_000 });
+
+    const [anchorCs, realCs, totalCs] = await Promise.all([
+      anchorLabel.evaluate((el) => ({ size: getComputedStyle(el).fontSize, family: getComputedStyle(el).fontFamily })),
+      realLabel.evaluate((el) => ({ size: getComputedStyle(el).fontSize, family: getComputedStyle(el).fontFamily })),
+      totalCell.evaluate((el) => ({ size: getComputedStyle(el).fontSize, family: getComputedStyle(el).fontFamily })),
+    ]);
+    expect(anchorCs.size).toBe(realCs.size);
+    expect(anchorCs.family).toBe(realCs.family);
+    expect(totalCs.size).toBe(realCs.size);
+    expect(totalCs.family).toBe(realCs.family);
+  });
+
   test('the right-edge bar mechanism is wired to price direction, not a flat color (source check — live direction depends on real market data)', async () => {
     const { readFileSync } = await import('fs');
     const path = await import('path');

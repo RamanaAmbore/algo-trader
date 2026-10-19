@@ -7675,8 +7675,11 @@
      Background/border live on the container (shared rule above). */
   .cand-row.cand-row-total > span {
     padding: 0.32rem 0.45rem;
-    font-size: var(--fs-sm);
-    font-family: var(--font-numeric);
+    /* Matches real leg rows' font (CandidateLegRow.svelte .cand-row:
+       --fs-lg / monospace) — was --fs-sm / --font-numeric, visibly
+       smaller than the leg rows above it (2026-10-19 fix). */
+    font-size: var(--fs-lg);
+    font-family: monospace;
     font-variant-numeric: tabular-nums;
     min-width: 0;
     overflow: hidden;
@@ -7731,8 +7734,11 @@
     padding-bottom: 0.2rem;
     padding-left: 4px;
     padding-right: 4px;
-    font-size: var(--fs-sm);
-    font-family: var(--font-numeric);
+    /* Matches real leg rows' font (CandidateLegRow.svelte .cand-row:
+       --fs-lg / monospace) — was --fs-sm / --font-numeric, visibly
+       smaller than the leg rows beneath it (2026-10-19 fix). */
+    font-size: var(--fs-lg);
+    font-family: monospace;
     font-variant-numeric: tabular-nums;
     min-width: 0;
     overflow: hidden;
