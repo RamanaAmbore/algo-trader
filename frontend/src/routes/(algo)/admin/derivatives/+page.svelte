@@ -6,10 +6,9 @@
   // EV. Strategy analytics auto-refreshes whenever the leg set changes.
 
   import { onMount, onDestroy, untrack } from 'svelte';
-  import { get } from 'svelte/store';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
-  import { authStore, marketAwareInterval, visibleInterval, selectedStrategyId, strategyOpenSymbols, includeHoldings, brokerHealthStore, lastRefreshAt, ltpFlashPct, loadLtpFlashPct } from '$lib/stores';
+  import { authStore, marketAwareInterval, visibleInterval, selectedStrategyId, strategyOpenSymbols, includeHoldings, brokerHealthStore, lastRefreshAt } from '$lib/stores';
   import AlgoTimestamp from '$lib/AlgoTimestamp.svelte';
   import StrategyPicker from '$lib/StrategyPicker.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
@@ -1162,19 +1161,16 @@
   });
 
   // Tick-flash instance — one helper covers every directional cell in
-  // the Snapshot grid. Threshold 0 (any change triggers) because the
+  // the Snapshot grid. Threshold 0 (any real change triggers) because the
   // 30 s polling cadence already filters out sub-second jitter, and
   // 350 ms decay so the operator sees the pulse without it competing
   // with the next poll cycle. Keyed as `<root>:<field>` so each cell
   // has its own timer (Spot moves but Day % may not on the same tick).
-  // pctThreshold seeded from the admin setting at page-mount time.
-  // loadLtpFlashPct() is called in onMount (fire-and-forget) so the
-  // store is primed for the next mount; get() reads the current value
-  // which is either the default (0.1) or a previously-loaded value.
-  const flash = createTickFlash({ threshold: 0, pctThreshold: get(ltpFlashPct), durationMs: 300 });
-  // Keep pctThreshold live — operator may change ui.ltp_flash_pct in-session.
-  // get() seeds the initial value; subscribe() ensures subsequent updates land.
-  const _unsubFlashPct = ltpFlashPct.subscribe(v => flash.setPctThreshold(v));
+  // pctThreshold intentionally left at 0 (and no longer wired to the
+  // admin `ui.ltp_flash_pct` setting) — operator decision 2026-10-19:
+  // flash on ANY real value change, no percentage-threshold gating.
+  // The setting itself is left in place for a future UI-cleanup call.
+  const flash = createTickFlash({ threshold: 0, pctThreshold: 0, durationMs: 300 });
 
   // Drive the flash off the polled data. Two effects — one for the
   // F&O rollup (Day / P&L / Day Net / P&L Net) and one for the live
@@ -1991,11 +1987,6 @@
   /** @type {(() => void) | null} */
   let _derivTickUnsub = null;
   onMount(() => {
-    // Prime the ltpFlashPct store from admin settings — fire-and-forget.
-    // Any value loaded here applies on the next page mount (flash instance
-    // is created at script-init time using get(ltpFlashPct) above).
-    loadLtpFlashPct();
-
     _tickThrottleUnsub = symbolTickCount.subscribe(() => {
       if (_tickThrottleTimer) return;
       _tickThrottleTimer = setTimeout(() => {
@@ -5209,7 +5200,7 @@
   });
   onDestroy(() => {
     teardown?.(); wsTeardown?.(); quotesTeardown?.(); simTeardown?.();
-    flash.dispose(); _unsubFlashPct(); _unsubBook?.(); _unsubDerivsOrder?.(); _unsubBrokerHealth?.();
+    flash.dispose(); _unsubBook?.(); _unsubDerivsOrder?.(); _unsubBrokerHealth?.();
     if (_orderUpdateTimer) { clearTimeout(_orderUpdateTimer); _orderUpdateTimer = null; }
     if (_urlSyncTimer) { clearTimeout(_urlSyncTimer); _urlSyncTimer = null; }
     // Fix 1 — cancel any still-pending fill-safety timers so a late
@@ -7377,17 +7368,19 @@
   /* Tick-flash animation — transient background pulse when a tracked
      numeric cell changes. Subtle alpha so the flash reads as ambient
      liveness, not an alert; 350ms decay keeps it out of the way of
-     the next poll cycle. cell-pos / cell-neg COLOR rules above still
-     apply — flash paints background only, text color stays signed.
+     the next poll cycle. Text pulses to white during the flash itself
+     (2026-10-19, operator request — "show the value changed" needed
+     more contrast than background alone) then fades back to the
+     signed cell-pos/cell-neg color as the background clears.
      In fullscreen mode the alpha doubles so the operator sees the
      pulse from across the room. */
   @keyframes tf-pulse-up {
-    0%   { background-color: var(--algo-green-bg-strong); }
-    100% { background-color: transparent; }
+    0%   { background-color: var(--algo-green-bg-strong); color: #fff; }
+    100% { background-color: transparent; color: inherit; }
   }
   @keyframes tf-pulse-down {
-    0%   { background-color: var(--algo-red-bg-strong); }
-    100% { background-color: transparent; }
+    0%   { background-color: var(--algo-red-bg-strong); color: #fff; }
+    100% { background-color: transparent; color: inherit; }
   }
   .byund-row > .tf-up   { animation: tf-pulse-up   350ms ease-out; }
   .byund-row > .tf-down { animation: tf-pulse-down 350ms ease-out; }
@@ -7398,12 +7391,12 @@
     animation: tf-pulse-down-fs 500ms ease-out;
   }
   @keyframes tf-pulse-up-fs {
-    0%   { background-color: rgba(74, 222, 128, 0.42); }
-    100% { background-color: transparent; }
+    0%   { background-color: rgba(74, 222, 128, 0.42); color: #fff; }
+    100% { background-color: transparent; color: inherit; }
   }
   @keyframes tf-pulse-down-fs {
-    0%   { background-color: rgba(248, 113, 113, 0.42); }
-    100% { background-color: transparent; }
+    0%   { background-color: rgba(248, 113, 113, 0.42); color: #fff; }
+    100% { background-color: transparent; color: inherit; }
   }
 
   /* tf-cell — shared marker for ALL directional flash targets outside
@@ -7796,7 +7789,13 @@
     color: inherit;
   }
   .cand-row-underlying-anchor .cand-state-cell {
-    font-size: var(--fs-xs);
+    /* One notch up from real rows' --fs-xs (2026-10-19, operator request)
+       — a bare "X" glyph visually reads smaller than real rows' two-
+       character "P1"/"P2" labels at the identical font-size, since it
+       has less glyph mass filling the same badge width. Not a CSS
+       mismatch (both rules were already byte-identical); this is a
+       deliberate visual-weight compensation for that one character. */
+    font-size: var(--fs-sm);
     font-weight: 700;
     text-align: center;
     letter-spacing: 0.02em;

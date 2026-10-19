@@ -6,7 +6,7 @@
   // Whole strip is a single link to /dashboard.
 
   import { onMount, onDestroy, untrack } from 'svelte';
-  import { visibleInterval, executionMode, ltpFlashPct } from '$lib/stores';
+  import { visibleInterval, executionMode } from '$lib/stores';
   import { get } from 'svelte/store';
   import { aggCompact } from '$lib/format';
   import { getInstrument, loadInstruments, findNearestFuture } from '$lib/data/instruments';
@@ -326,7 +326,6 @@
   // fires; the first-sample-no-flash gate in the helper prevents
   // a mount paint from flashing every cell.
   const flash = createTickFlash({ threshold: 0, durationMs: 300 });
-  const _unsubFlashPct = ltpFlashPct.subscribe(v => flash.setPctThreshold(v));
 
   onMount(() => {
     // Instruments cache feeds both the long-options premium derivation
@@ -370,7 +369,6 @@
   });
   onDestroy(() => {
     flash.dispose();
-    _unsubFlashPct();
     _mktTimer?.();   // visibleInterval teardown
     // _heartbeatTimer is the 300ms pulse decay timer scheduled inside
     // the heartbeat $effect. Latent leak today (strip is layout-

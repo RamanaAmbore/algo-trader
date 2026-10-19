@@ -1367,17 +1367,28 @@ let _bhPollerStarted = false;
 /** @type {(() => void) | null} */
 let _bhPollerTeardown = null;
 
-// ── LTP flash percentage threshold ─────────────────────────────────────
+// ── LTP flash percentage threshold (ORPHANED 2026-10-19) ───────────────
 //
-// Admin setting `ui.ltp_flash_pct` controls the minimum percentage move
-// required for a tick-flash animation to fire in the W/L grids and
-// MarketPulse. Default 0.1 (0.1%) so sub-tick noise doesn't strobe.
-// Non-admin users and offline scenarios keep the default silently.
+// Admin setting `ui.ltp_flash_pct` used to control the minimum percentage
+// move required for a tick-flash animation to fire in the W/L grids,
+// MarketPulse, PerformancePage, NavCard, PositionStrip, and the
+// Derivatives page. Operator decision 2026-10-19: drop percentage-
+// threshold gating entirely — every flash instance now fires on ANY real
+// value change (see each call site's own `createTickFlash({ threshold: 0,
+// pctThreshold: 0, ... })`), so nothing in the frontend reads this store
+// or calls loadLtpFlashPct() anymore. Left in place (store, loader, and
+// the backend `ui.ltp_flash_pct` setting/admin control) pending a
+// separate decision on whether to remove the now-dead admin setting UI
+// — that is explicitly out of scope for the flash-threshold change.
 
-/** LTP flash percentage threshold — reads from admin settings, defaults to 0.1 */
+/** LTP flash percentage threshold — reads from admin settings, defaults to 0.1.
+ *  No longer consumed by any flash instance (see note above) — kept only
+ *  for the admin setting UI, which is a separate cleanup decision. */
 export const ltpFlashPct = writable(0.1);
 
-/** Fetch and apply the ltp flash threshold from admin settings. Call once on load. */
+/** Fetch and apply the ltp flash threshold from admin settings. No longer
+ *  called by any flash instance (see note above) — kept only for the
+ *  admin setting UI, which is a separate cleanup decision. */
 export async function loadLtpFlashPct() {
   try {
     const { fetchSetting } = await import('$lib/api.js');

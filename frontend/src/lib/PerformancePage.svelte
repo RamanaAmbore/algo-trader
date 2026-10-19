@@ -17,7 +17,7 @@
   import { fetchHoldings, fetchPositions, fetchFunds, fetchNavByAccount } from '$lib/api';
   import { createPerformanceSocket } from '$lib/ws';
   import { bookChanged } from '$lib/data/bookChanged';
-  import { authStore, ltpFlashPct, visibleInterval } from '$lib/stores';
+  import { authStore, visibleInterval } from '$lib/stores';
   import {
     positionsStore, holdingsStore, fundsStore, getFillWatchIntervalMs,
   } from '$lib/data/marketDataStores.svelte.js';
@@ -389,11 +389,12 @@
 
   // Tick-flash — subtle 350ms directional background pulse on numeric cells.
   // Reuses createTickFlash verbatim. TOTAL rows (rowPinned==='bottom' or
-  // tradingsymbol/account==='TOTAL') are excluded. Threshold 0.001 (epsilon)
-  // prevents false flashes when the same value arrives twice. Alpha 0.13 via
-  // global .tf-up/.tf-down in app.css — lower than LTP flash (0.35).
-  const _perfFlash = createTickFlash({ threshold: 0.001, durationMs: 300 });
-  const _unsubPerfFlashPct = ltpFlashPct.subscribe(v => _perfFlash.setPctThreshold(v));
+  // tradingsymbol/account==='TOTAL') are excluded. Threshold 0 (operator
+  // decision 2026-10-19: flash on ANY real value change, no magnitude
+  // gate) — exact-dupe re-runs are already caught by update()'s own
+  // `v === last` check. Alpha 0.13 via global .tf-up/.tf-down in app.css —
+  // lower than LTP flash (0.35).
+  const _perfFlash = createTickFlash({ threshold: 0, durationMs: 300 });
 
   // Tick-bus directional flash sets — real-time LTP direction (up/down)
   // from SSE ticks, bypassing the 30 s poll-diff lag. Fed by tickBus.subscribe
@@ -1524,7 +1525,6 @@
     _perfLtpTimers.forEach(t => clearTimeout(t));
     _perfLtpTimers.clear();
     _perfFlash.dispose();
-    _unsubPerfFlashPct();
     [fundsGrid, navGrid, holdingsSummaryGrid, holdingsAllGrid,
      positionsSummaryGrid, positionsAllGrid]
       .forEach(g => g?.destroy());

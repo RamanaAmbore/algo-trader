@@ -1,28 +1,32 @@
 /**
  * tick_flash_accumulate_until_threshold.spec.js
  *
- * Covers the 2026-10-19 "GOLD never flashes" fix: several consecutive
- * small-percentage ticks that individually stay under the configured
- * `ltpFlashPct` threshold (default 0.1%) must still flash once their
- * CUMULATIVE move since the last visible flash crosses the threshold —
- * comparing only against the immediately-preceding raw tick (the old bug)
- * lets a GOLD-sized instrument (MCX, ~₹150,000/unit, ₹1 tick size — a
- * single tick is ~0.0007%, ~140x below the gate) never flash at all.
+ * Covers the 2026-10-19 "flash on any real change" redesign. The prior
+ * version of this spec asserted an "accumulate until the cumulative move
+ * crosses a percentage threshold" fix for GOLD-sized instruments (MCX,
+ * ~₹150,000/unit, ₹1 tick size — a single tick is ~0.0007% there).
+ * Operator decision superseded that model entirely: "instead of looking
+ * for a threshold for change, show flash [when] the number changes" — no
+ * percentage-threshold gating anywhere, no accumulation bookkeeping
+ * needed. This spec now asserts the NEW behaviour: a single GOLD-sized
+ * tick (far below the OLD 0.1% gate) flashes immediately, with no need
+ * to accumulate several ticks first.
  *
  * Drives real LTP writes through `window.__stores.mergeSymbolUpdate` (dev
  * hook, (algo)/+layout.svelte) — the SAME write path real SSE ticks use
  * (symbolStore._mergeSymbolWrite → tickBus.emit) — rather than the bare
- * `window.__stores.tickBus.emit()` hook other specs use, because this fix
- * lives specifically in MarketPulse's tickBus subscriber reading the
- * symbol's live LTP from symbolStore (see MarketPulse.svelte onMount).
+ * `window.__stores.tickBus.emit()` hook other specs use, because the
+ * fix lives in MarketPulse's tickBus subscriber reading real LTP writes.
  *
  * Five quality dimensions (feedback_test_dimensions.md):
  *  1. SSOT     — drives the real production write path (mergeSymbolUpdate),
  *                not a bypass, so the assertion exercises the actual fix.
  *  2. Perf     — single synthetic symbol, no grid-wide scan beyond the one
  *                row under test.
- *  3. Stale    — confirms intermediate sub-threshold writes do NOT flash
- *                (would catch a regression back to "flash on every tick").
+ *  3. Stale    — confirms a single sub-0.1%-magnitude tick (the exact
+ *                GOLD-sized move that used to need accumulation) flashes
+ *                on its own — would catch a regression back to any
+ *                percentage-threshold gate, cumulative or not.
  *  4. Reusable — follows the same mock-positions + retry-until-flash
  *                pattern as flash_fixes_2026_10_batch.spec.js (Item 9).
  *  5. UX       — the LTP cell gets tf-up, matching the app's existing
@@ -100,18 +104,18 @@ async function warmupUntilFlash(page, ltpCell, sym, startLtp, maxMs = 45_000) {
     ).catch(() => false);
     if (matched) return true;
     // Large (+5%) jump each retry so a genuinely fresh write always
-    // clears the threshold once the subscription is live, regardless of
-    // how many attempts were silently dropped before it came up.
+    // flashes once the subscription is live, regardless of how many
+    // attempts were silently dropped before it came up.
     val = val * 1.05;
     await page.waitForTimeout(150);
   }
   return false;
 }
 
-test.describe('Accumulate-until-threshold — GOLD-sized small ticks', () => {
+test.describe('Flash on any real change — GOLD-sized small ticks', () => {
   test.setTimeout(120_000);
 
-  test('several sub-threshold ticks accumulate; only the cumulative-crossing tick flashes', async ({ page }) => {
+  test('a single GOLD-sized tick (~0.0007%, far below the old threshold) flashes immediately, no accumulation needed', async ({ page }) => {
     await loginAsAdmin(page);
     await mockPositions(page);
     await page.goto('/pulse', { waitUntil: 'domcontentloaded' });
@@ -122,8 +126,7 @@ test.describe('Accumulate-until-threshold — GOLD-sized small ticks', () => {
     await expect(ltpCell).toBeVisible({ timeout: 60_000 });
 
     // Warm up until MarketPulse's real tickBus subscription proves itself
-    // live via an observed flash. Confirms the negative checks below mean
-    // something.
+    // live via an observed flash. Confirms the checks below mean something.
     const warmedUp = await warmupUntilFlash(page, ltpCell, SYM, 150000);
     expect(warmedUp, 'MarketPulse tickBus subscription never came up — real backend round-trip too slow in this environment').toBe(true);
 
@@ -132,36 +135,25 @@ test.describe('Accumulate-until-threshold — GOLD-sized small ticks', () => {
     await page.waitForTimeout(300);
 
     // Read back the real baseline MarketPulse just locked in (the warm-up
-    // flash's own value) so the percentage math below is exact regardless
+    // flash's own value) so the single-tick math below is exact regardless
     // of how many warm-up retries were needed.
     const baseline = await readLtp(page, SYM);
     expect(baseline).toBeGreaterThan(0);
 
-    // Step 1: +0.05% from baseline — individually AND cumulatively below
-    // the default 0.1% threshold. Must NOT flash.
-    await writeLtp(page, SYM, baseline * 1.0005);
-    await page.waitForTimeout(300);
-    await expect(ltpCell).not.toHaveClass(/tf-up/);
-    await expect(ltpCell).not.toHaveClass(/tf-down/);
-
-    // Step 2: a further small move — cumulative from the UNCHANGED baseline
-    // is now +0.09%, still below 0.1%. This is the critical regression
-    // check: tick-to-tick-only comparison (the old bug) would compare this
-    // write against step 1's value (a ~0.04% delta) and never catch up;
-    // the fix compares against the still-fixed `baseline`, correctly
-    // staying just under threshold. Must NOT flash yet.
-    await writeLtp(page, SYM, baseline * 1.0009);
-    await page.waitForTimeout(300);
-    await expect(ltpCell).not.toHaveClass(/tf-up/);
-    await expect(ltpCell).not.toHaveClass(/tf-down/);
-
-    // Step 3: cumulative from baseline is now +0.15% — crosses the 0.1%
-    // threshold. Under the OLD tick-to-tick-only bug, this write's delta
-    // from step 2 alone is only ~0.06% (also sub-threshold) and would
-    // NEVER flash — exactly the GOLD defect. The fix compares against the
-    // fixed `baseline` (unmoved since steps 1–2 never flashed), correctly
-    // firing here.
-    await writeLtp(page, SYM, baseline * 1.0015);
+    // A single GOLD-sized tick: +₹1 on a ~₹150,000 instrument is ~0.0007%,
+    // ~140x below the OLD default 0.1% gate — and well below even a single
+    // accumulation step the old fix needed. With threshold gating removed
+    // entirely, this ONE tiny real change must flash on its own.
+    await writeLtp(page, SYM, baseline + 1);
     await expect(ltpCell).toHaveClass(/tf-up/, { timeout: 2_000 });
+
+    // Let it clear, then confirm a second, equally tiny move in the other
+    // direction flashes tf-down just as immediately — no residual
+    // baseline/accumulation state left over from the first tick.
+    await expect(ltpCell).not.toHaveClass(/tf-up/, { timeout: 2_000 });
+    await page.waitForTimeout(300);
+    const afterFirst = await readLtp(page, SYM);
+    await writeLtp(page, SYM, afterFirst - 1);
+    await expect(ltpCell).toHaveClass(/tf-down/, { timeout: 2_000 });
   });
 });

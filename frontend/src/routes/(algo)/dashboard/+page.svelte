@@ -15,7 +15,7 @@
   import ActivityLogSurface from '$lib/ActivityLogSurface.svelte';
   import ChartCrosshair from '$lib/ChartCrosshair.svelte';
   import ChartPopup from '$lib/ChartPopup.svelte';
-  import { clientTimestamp, visibleInterval, lastRefreshAt, connStatus, selectedStrategyId, strategyOpenSymbols, ltpFlashPct, loadLtpFlashPct, formatDualTz } from '$lib/stores';
+  import { clientTimestamp, visibleInterval, lastRefreshAt, connStatus, selectedStrategyId, strategyOpenSymbols, formatDualTz } from '$lib/stores';
   import AlgoTimestamp from '$lib/AlgoTimestamp.svelte';
   import { bookChanged } from '$lib/data/bookChanged';
   import StrategyPicker from '$lib/StrategyPicker.svelte';
@@ -64,19 +64,14 @@
   // Tick-flash — subtle 350ms directional background pulse on the Equity
   // card's Day P&L and P&L cells. Keyed as `account:field`. TOTAL rows
   // (account === 'TOTAL') excluded. Alpha 0.13 via global .tf-up/.tf-down.
-  const _dashFlash = createTickFlash({ threshold: 0.001, durationMs: 300 });
-  // Wire operator-configurable pct threshold to _dashFlash so in-session
-  // changes to ui.ltp_flash_pct propagate without recreating the instance.
-  const _unsubDashFlashPct = ltpFlashPct.subscribe(v => _dashFlash.setPctThreshold(v));
+  // Threshold 0 — flash on ANY real value change, no percentage gate
+  // (operator decision 2026-10-19; no longer wired to ui.ltp_flash_pct).
+  const _dashFlash = createTickFlash({ threshold: 0, durationMs: 300 });
 
   // Separate flash instance for W/L grid LTP cells. Created once so prev
-  // baselines are preserved across ltpFlashPct changes; threshold updated
-  // reactively via setPctThreshold when the operator changes the setting.
+  // baselines are preserved across re-renders. Threshold 0 for the same
+  // reason as _dashFlash above.
   const _wlLtpFlash = createTickFlash({ pctThreshold: 0, durationMs: 300 });
-  // Subscribe at script scope so the threshold is live from the first tick.
-  // The immediate callback seeds the initial value (default 0.1); subsequent
-  // calls update _wlLtpFlash without disposing/recreating it.
-  const _wlFlashUnsub = ltpFlashPct.subscribe(v => _wlLtpFlash.setPctThreshold(v));
 
   // Flash-augmented cellClass for the equity summary grids.
   // `field` is the column field name used as part of the per-cell key.
@@ -1337,11 +1332,6 @@
     // moved to /pulse (where MarketPulse owns its own movers fetch).
     // Removing the dashboard poll stops the 60s batchQuote round-trip
     // that was driving the now-deleted cards.
-
-    // Fire-and-forget: load the admin setting from the server; the
-    // script-scope _wlFlashUnsub subscribe will receive the updated
-    // value and call _wlLtpFlash.setPctThreshold() automatically.
-    loadLtpFlashPct();
   });
 
   // Persist per-card filter changes — sessionStorage so the intent
@@ -1509,8 +1499,6 @@
     _heroTeardown?.();
     _navTeardown?.();
     _dashFlash.dispose();
-    _unsubDashFlashPct();
-    _wlFlashUnsub();
     _wlLtpFlash.dispose();
     _winGrid?.destroy();
     _losGrid?.destroy();

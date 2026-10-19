@@ -10,19 +10,20 @@
  * pulseUnified.test.js, and tickFlash.test.js.
  *
  * Part A (live DOM, runs against the local/dev server): MarketPulse's
- * tickBus subscriber used to be fed purely from the emitted {sym, dir, pct}
- * event. UPDATED 2026-10-19 (accumulate-until-threshold fix): the
- * subscriber now ALSO reads the symbol's current live LTP from symbolStore
- * (`getSnapshot(sym)?.ltp`) and compares it against a per-symbol
- * last-flashed-value baseline, so these tests drive real LTP writes via
+ * tickBus subscriber is fed directly from the emitted {sym, dir} event —
+ * UPDATED 2026-10-19 (operator decision: drop percentage-threshold gating
+ * entirely): the earlier "accumulate until the cumulative move crosses a
+ * pct threshold" logic (and the ltpFlashPct-driven gate it replaced) are
+ * both gone. symbolStore's own tickBus.emit() already only fires when the
+ * LTP genuinely changed, so the subscriber flashes on every real change,
+ * no magnitude check at all. These tests still drive real LTP writes via
  * `window.__stores.mergeSymbolUpdate` (the same production write path real
- * SSE ticks use) instead of a bare `tickBus.emit()` — a bare emit with no
- * accompanying LTP write no longer moves the baseline and so no longer
- * flashes on a second above-threshold attempt (see
- * tick_flash_accumulate_until_threshold.spec.js for the fix's own
- * dedicated coverage).
- *   - Item 9: the ltpFlashPct threshold (default 0.1%) now actually gates
- *     the flash — a sub-threshold tick no longer flashes.
+ * SSE ticks use) so the assertions exercise the real write→emit→flash
+ * path end to end (see tick_flash_accumulate_until_threshold.spec.js for
+ * the GOLD-sized-tick-specific coverage of this same redesign).
+ *   - Item 9 (superseded 2026-10-19): a sub-threshold tick now ALSO
+ *     flashes — there is no threshold left to gate on. This spec asserts
+ *     the new behaviour (every real change flashes, regardless of size).
  *   - Item 3: the Chg% (day_pnl_pct) cell never gets tf-up/tf-down, even
  *     while the LTP cell on the SAME row is actively flashing.
  *
@@ -83,11 +84,8 @@ async function mockPositions(page) {
 /**
  * Write a real LTP value through the production write path
  * (symbolStore._mergeSymbolWrite → tickBus.emit), via the
- * window.__stores.mergeSymbolUpdate dev hook. Required since 2026-10-19:
- * MarketPulse's tickBus subscriber now reads the symbol's live LTP from
- * symbolStore to decide whether a tick's CUMULATIVE move since the last
- * flash crosses threshold — a bare tickBus.emit() with no accompanying
- * LTP write no longer changes anything the subscriber looks at.
+ * window.__stores.mergeSymbolUpdate dev hook — exercises the real
+ * write→emit→flash path end to end rather than a bare tickBus.emit().
  */
 async function writeLtp(page, sym, ltp) {
   await page.evaluate(
@@ -163,7 +161,7 @@ test.describe('Part A — MarketPulse live DOM (window.__stores.tickBus)', () =>
   // itself live via an actual observed flash.
   test.setTimeout(120_000);
 
-  test('item 9: sub-threshold tick does not flash the LTP cell; above-threshold tick does', async ({ page }) => {
+  test('item 9 (superseded): a small tick that used to be sub-threshold now flashes too, just like a large tick', async ({ page }) => {
     await loginAsAdmin(page);
     await mockPositions(page);
     await page.goto('/pulse', { waitUntil: 'domcontentloaded' });
@@ -177,9 +175,8 @@ test.describe('Part A — MarketPulse live DOM (window.__stores.tickBus)', () =>
     const ltpCell = row.locator('[col-id="ltp"]');
     await expect(ltpCell).toBeVisible({ timeout: 60_000 });
 
-    // Warm-up / positive control: retry an above-threshold write until
-    // MarketPulse's real tickBus subscription proves itself live via an
-    // observed flash. Confirms the NEGATIVE check below means something.
+    // Warm-up: retry a large write until MarketPulse's real tickBus
+    // subscription proves itself live via an observed flash.
     const warmedUp = await writeUntilClassMatches(page, ltpCell, SYM, ROW.last_price, /tf-up/, 60_000);
     expect(warmedUp, 'MarketPulse tickBus subscription never came up — real backend round-trip too slow in this environment').toBe(true);
     // Let the flash fully clear (300ms clear timer) before the real check.
@@ -192,19 +189,18 @@ test.describe('Part A — MarketPulse live DOM (window.__stores.tickBus)', () =>
     const baseline = await readLtp(page, SYM);
     expect(baseline).toBeGreaterThan(0);
 
-    // Default ltpFlashPct threshold is 0.1% — a 0.05% move must NOT flash
-    // (item 9: the threshold was previously dead; the handler flashed on
-    // every tick regardless of pct).
+    // A 0.05% move — under the OLD default 0.1% ltpFlashPct gate this would
+    // NOT have flashed. With threshold gating removed entirely (operator
+    // decision 2026-10-19), this real change DOES flash.
     await writeLtp(page, SYM, baseline * 1.0005);
-    await page.waitForTimeout(200);
-    await expect(ltpCell).not.toHaveClass(/tf-up/);
-    await expect(ltpCell).not.toHaveClass(/tf-down/);
+    await expect(ltpCell).toHaveClass(/tf-up/, { timeout: 2_000 });
 
-    // A move well above the threshold DOES flash (subscription already
-    // confirmed live by the warm-up above, so one more throttle-spaced
-    // write is enough here).
+    // A much larger move also flashes, same as before — confirms removing
+    // the gate didn't break the large-move case.
+    await expect(ltpCell).not.toHaveClass(/tf-up/, { timeout: 2_000 });
     await page.waitForTimeout(300); // past the bus's 250ms per-sym throttle
-    await writeLtp(page, SYM, baseline * 1.05);
+    const baseline2 = await readLtp(page, SYM);
+    await writeLtp(page, SYM, baseline2 * 1.05);
     await expect(ltpCell).toHaveClass(/tf-up/, { timeout: 2_000 });
   });
 
