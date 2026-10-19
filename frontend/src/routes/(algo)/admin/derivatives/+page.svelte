@@ -7775,7 +7775,11 @@
     font-weight: 900;
   }
   .cand-anchor-label {
-    font-weight: 700;
+    /* No explicit font-weight (2026-10-19 fix) — real leg rows' symbol
+       text (.sym-main, CandidateLegRow.svelte) has no weight rule of
+       its own and renders at plain/normal weight; this label
+       previously set 700 (bold), making GOLD's symbol visibly bolder
+       than every real row's symbol for no documented reason. */
     position: relative;
     /* Always-visible neutral baseline — matches every real leg row's
        own box-shadow divider (CandidateLegRow.svelte's `.cand-sym-acct`;

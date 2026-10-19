@@ -285,6 +285,23 @@ test.describe('Derivatives Legs grid — underlying-anchor row (sync with Positi
     expect(totalCs.family).toBe(realCs.family);
   });
 
+  test('the anchor row\'s symbol text is the SAME font-weight as a real leg row\'s symbol (2026-10-19 fix — .cand-anchor-label previously hardcoded font-weight:700, making GOLD bolder than every real row\'s plain-weight symbol for no documented reason)', async ({ page }) => {
+    await loginAsAdmin(page);
+    await _mockEndpoints(page);
+    await page.goto(DERIV_URL, { waitUntil: 'domcontentloaded' });
+
+    const anchorLabel = page.locator('.cand-body-rows > .cand-row-underlying-anchor .cand-anchor-label');
+    const realLabel = page.locator('.cand-body-rows > .cand-row:not(.cand-row-underlying-anchor):not(.cand-row-total) .cand-sym').first();
+    await expect(anchorLabel).toBeVisible({ timeout: 15_000 });
+    await expect(realLabel).toBeVisible({ timeout: 15_000 });
+
+    const [anchorWeight, realWeight] = await Promise.all([
+      anchorLabel.evaluate((el) => getComputedStyle(el).fontWeight),
+      realLabel.evaluate((el) => getComputedStyle(el).fontWeight),
+    ]);
+    expect(anchorWeight).toBe(realWeight);
+  });
+
   test('the anchor row\'s tf-cell and a real leg row\'s tf-cell flash at the SAME alpha (2026-10-19 consolidation fix — anchor/Snapshot used to flash at 0.22, real leg rows at 0.13; both now read the single global app.css rule)', async ({ page }) => {
     await loginAsAdmin(page);
     await _mockEndpoints(page);
