@@ -29,12 +29,20 @@ def _future_month(months_out: int, day: int = 18):
     a date `months_out` calendar months past today. Used to construct
     instrument symbols + expiry dates that stay in the future regardless
     of when the suite runs."""
-    today = date.today()
-    total = today.month + months_out - 1
-    yr  = today.year + total // 12
-    mo  = total % 12 + 1
-    d   = date(yr, mo, day)
-    return f"{yr % 100:02d}", d.strftime("%b").upper(), d.isoformat()
+    from zoneinfo import ZoneInfo
+    import datetime as _dt_mod
+    today = _dt_mod.datetime.now(ZoneInfo("Asia/Kolkata")).date()
+    if months_out == 0:
+        # Current month: use today's own IST date so the expiry is
+        # guaranteed >= today on any day of the month. A hardcoded
+        # day-of-month (e.g. 18) lands in the past from the 19th onward.
+        d = today
+    else:
+        total = today.month + months_out - 1
+        yr  = today.year + total // 12
+        mo  = total % 12 + 1
+        d   = date(yr, mo, day)
+    return f"{d.year % 100:02d}", d.strftime("%b").upper(), d.isoformat()
 
 
 # ---------------------------------------------------------------------------
