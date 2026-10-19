@@ -30,7 +30,7 @@
   import { startBookChangedBus } from '$lib/data/bookChanged';
   import { startBookPollers, setBookPollerLiveMs, setBookPollerClosedMs, getFillWatchIntervalMs, setFillWatchIntervalMs } from '$lib/data/marketDataStores.svelte.js';
   import { loadAccountOrder } from '$lib/data/accountSort.js';
-  import { startMarketGatedQuoteStream, stopMarketGatedQuoteStream } from '$lib/data/quoteStream';
+  import { startMarketGatedQuoteStream, stopMarketGatedQuoteStream, lastLiveTickAt } from '$lib/data/quoteStream';
   import { tickBus } from '$lib/data/symbolStore.svelte.js';
   import NavigationIndicator from '$lib/NavigationIndicator.svelte';
   import BrokerHealthBadge from '$lib/BrokerHealthBadge.svelte';
@@ -986,6 +986,11 @@
     // Playwright spec can push a burst of toasts directly via
     // `window.__stores.toast.warning(...)` without needing to drive a
     // real backend failure path for every toast kind.
+    // Also exposes `lastLiveTickAt` (2026-10, tick-staleness indicator
+    // spec) — the quoteStream.js writable store that the staleness
+    // watchdog (tickStaleness.svelte.js) watches. Lets a spec call
+    // `window.__stores.lastLiveTickAt.set(Date.now())` to simulate a real
+    // SSE tick landing without needing a live backend tick stream.
     if (typeof window !== 'undefined' &&
         (window.location.hostname === 'dev.ramboq.com' ||
          window.location.hostname === 'localhost' ||
@@ -993,6 +998,7 @@
       /** @type {any} */ (window).__stores = /** @type {any} */ (window).__stores || {};
       /** @type {any} */ (window).__stores.tickBus = tickBus;
       /** @type {any} */ (window).__stores.toast = toast;
+      /** @type {any} */ (window).__stores.lastLiveTickAt = lastLiveTickAt;
     }
     // Market-gated quote stream gate. Starts the SSE if any segment is
     // open right now; runs a 30 s visibility-aware watcher that pauses /

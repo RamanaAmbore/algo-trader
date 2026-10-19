@@ -83,6 +83,13 @@ class MmapTickReader:
         self._last_version = 0
         self._last_ltp: dict[int, float] = {}
 
+        # Watchdog-heal state (check_and_heal) — rolling heal timestamps
+        # for the 10-minute escalation window, and a flag so the
+        # "found dead" critical log fires once per dead→alive transition
+        # rather than once per 30s watchdog tick.
+        self._heal_times: list[float] = []
+        self._dead_logged: bool = False
+
         # Failover diagnostics — when the underlying WS is owned by
         # another process we don't know connect/disconnect times
         # locally, so we surface "always connected" stubs unless the
@@ -123,7 +130,7 @@ class MmapTickReader:
     def start(self, api_key: str = "", access_token: str = "", account: str = "") -> None:
         """No WebSocket lifecycle here — conn_service owns it. We just
         start the poller that feeds the local BroadcastBus."""
-        if self._poll_task is not None:
+        if self._poll_task is not None and not self._poll_task.done():
             return
         if self._loop is None:
             # Prefer the running-loop reference (Python 3.10+ correct call
@@ -146,9 +153,51 @@ class MmapTickReader:
             self._poll_task = None
 
     def ensure_started(self, api_key: str = "", access_token: str = "", account: str = "") -> bool:
-        if self._poll_task is None:
+        if self._poll_task is None or self._poll_task.done():
             self.start(api_key, access_token, account)
-        return self._poll_task is not None
+        return self._poll_task is not None and not self._poll_task.done()
+
+    def check_and_heal(self) -> bool:
+        """Watchdog entry point — verify the poll task is alive, restart
+        it if not, and escalate if it's dying repeatedly.
+
+        Called every 30s by `_task_ticker_watchdog` (conn-service mode)
+        and defensively by `_snapshot_restart_ticker` at 08:00 IST.
+        Returns the poll task's liveness after the heal attempt.
+        """
+        if self._poll_task is not None and not self._poll_task.done():
+            # Alive — reset the "already logged" gate so the next real
+            # death logs again instead of staying silent forever.
+            self._dead_logged = False
+            return True
+
+        exc_suffix = ""
+        task = self._poll_task
+        if task is not None and not task.cancelled():
+            exc = task.exception()
+            if exc is not None:
+                exc_suffix = f" · exc={type(exc).__name__}: {exc}"
+
+        # Log the "found dead" critical line once per dead→alive
+        # transition — not once per 30s tick — so a prolonged outage
+        # doesn't spam the log at the watchdog's own cadence.
+        if not self._dead_logged:
+            logger.critical("[MMAP-WATCHDOG] poll task found dead — restarting%s", exc_suffix)
+            self._dead_logged = True
+
+        now = time.time()
+        self._heal_times = [t for t in self._heal_times if now - t < 600.0]
+        self._heal_times.append(now)
+        if len(self._heal_times) >= 3:
+            logger.critical(
+                "[MMAP-WATCHDOG] poll task has self-healed %d times in the last %ds — "
+                "this is NOT the known nightly-stop bug; investigate the mmap buffer / "
+                "conn-service producer side",
+                len(self._heal_times), 600,
+            )
+
+        self.ensure_started()
+        return self._poll_task is not None and not self._poll_task.done()
 
     # ── read API (hot path) ────────────────────────────────────────────
 

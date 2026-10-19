@@ -67,20 +67,132 @@ async def mock_broker():
     return broker
 
 
-# ── Test: Cutover mode early return ────────────────────────────────────────────
+# ── Test: Cutover mode delegates to the local mmap-heal loop ──────────────────
+#
+# NOTE: prior to the 2026-10-19 fix, this test asserted the cutover-mode
+# branch was a pure no-op. That assertion is now FALSE BY DESIGN — the
+# branch still skips upstream WS supervision (conn_service's own job),
+# but it DOES actively heal the local MmapTickReader poll task every
+# cycle via check_and_heal(). Rewritten (not added alongside) per the
+# fix's explicit instruction.
 
 @pytest.mark.asyncio
-async def test_ticker_watchdog_cutover_mode_returns():
-    """When is_cutover_on() returns True, watchdog returns early."""
-    # Simulate cutover mode check
-    cutover_on = True
+async def test_ticker_watchdog_cutover_mode_calls_check_and_heal():
+    """When is_cutover_on() is True and the engine is active (not idle),
+    the watchdog delegates to the local MmapTickReader heal loop —
+    check_and_heal() IS called every cycle, not skipped."""
+    from backend.api import background as _bg
 
-    if cutover_on:
-        # Early return: watchdog skipped
-        return
+    mock_ticker = MagicMock()
+    mock_ticker.check_and_heal = MagicMock(return_value=True)
 
-    # Should not reach here
-    assert True
+    sleep_calls = {"n": 0}
+
+    async def _cancelling_sleep(delay):
+        sleep_calls["n"] += 1
+        if sleep_calls["n"] >= 2:
+            raise asyncio.CancelledError("test escape")
+
+    with patch("backend.api.background.is_cutover_on", return_value=True), \
+         patch("backend.shared.helpers.utils.is_engine_idle", return_value=False), \
+         patch("backend.brokers.kite_ticker.get_ticker", return_value=mock_ticker), \
+         patch("asyncio.sleep", side_effect=_cancelling_sleep):
+        # The cutover heal loop catches CancelledError internally and
+        # returns normally — no exception should propagate here.
+        await _bg._task_ticker_watchdog({})
+
+    assert mock_ticker.check_and_heal.call_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_ticker_watchdog_cutover_mode_idle_skips_heal():
+    """When the engine is idle (dev, no active mode picked), the cutover
+    heal loop must NOT call check_and_heal() — _start_kite_ticker
+    deliberately never starts the poll task in that state, so a `None`
+    task there is the intended state, not a failure to heal. Healing it
+    anyway would fire a false CRITICAL on every idle dev boot."""
+    from backend.api import background as _bg
+
+    mock_ticker = MagicMock()
+    mock_ticker.check_and_heal = MagicMock(return_value=True)
+
+    sleep_calls = {"n": 0}
+
+    async def _cancelling_sleep(delay):
+        sleep_calls["n"] += 1
+        if sleep_calls["n"] >= 2:
+            raise asyncio.CancelledError("test escape")
+
+    with patch("backend.api.background.is_cutover_on", return_value=True), \
+         patch("backend.shared.helpers.utils.is_engine_idle", return_value=True), \
+         patch("backend.brokers.kite_ticker.get_ticker", return_value=mock_ticker), \
+         patch("asyncio.sleep", side_effect=_cancelling_sleep):
+        await _bg._task_ticker_watchdog({})
+
+    mock_ticker.check_and_heal.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_ticker_watchdog_cutover_mode_heals_dead_poll_task():
+    """A genuinely dead MmapTickReader poll task gets healed (a new task
+    created) by passing through the watchdog's cutover-mode cycle."""
+    from backend.api import background as _bg
+    from backend.brokers.mmap_ticker import MmapTickReader
+
+    reader = MmapTickReader(path="/tmp/._nonexistent_mmap_wd_test_buffer")
+    loop = asyncio.get_running_loop()
+    reader.set_loop(loop)
+    reader._poll_task = None  # dead
+
+    async def _never_ending_poll_loop(self):
+        await asyncio.Event().wait()
+
+    sleep_calls = {"n": 0}
+
+    async def _cancelling_sleep(delay):
+        sleep_calls["n"] += 1
+        if sleep_calls["n"] >= 2:
+            raise asyncio.CancelledError("test escape")
+
+    with patch("backend.api.background.is_cutover_on", return_value=True), \
+         patch("backend.shared.helpers.utils.is_engine_idle", return_value=False), \
+         patch("backend.brokers.kite_ticker.get_ticker", return_value=reader), \
+         patch.object(MmapTickReader, "_poll_loop", new=_never_ending_poll_loop), \
+         patch("asyncio.sleep", side_effect=_cancelling_sleep):
+        await _bg._task_ticker_watchdog({})
+
+    try:
+        assert reader._poll_task is not None
+        assert not reader._poll_task.done()
+    finally:
+        reader.stop()
+
+
+@pytest.mark.asyncio
+async def test_ticker_watchdog_cutover_mode_heal_exception_keeps_looping():
+    """If check_and_heal() itself raises, the exception is caught and
+    logged — the heal loop keeps running rather than crashing the
+    supervised task."""
+    from backend.api import background as _bg
+
+    mock_ticker = MagicMock()
+    mock_ticker.check_and_heal = MagicMock(side_effect=RuntimeError("heal boom"))
+
+    sleep_calls = {"n": 0}
+
+    async def _cancelling_sleep(delay):
+        sleep_calls["n"] += 1
+        if sleep_calls["n"] >= 3:
+            raise asyncio.CancelledError("test escape")
+
+    with patch("backend.api.background.is_cutover_on", return_value=True), \
+         patch("backend.shared.helpers.utils.is_engine_idle", return_value=False), \
+         patch("backend.brokers.kite_ticker.get_ticker", return_value=mock_ticker), \
+         patch("asyncio.sleep", side_effect=_cancelling_sleep):
+        await _bg._task_ticker_watchdog({})  # must not raise
+
+    # Called on both pre-cancellation cycles despite raising each time.
+    assert mock_ticker.check_and_heal.call_count >= 2
 
 
 @pytest.mark.asyncio

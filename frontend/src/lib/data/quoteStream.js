@@ -38,6 +38,21 @@ import { debugLog } from '../debug/debugLog.js';
  */
 export const streamOpen = writable(false);
 
+/**
+ * Wall-clock ms (writable store) of the last SSE 'snapshot' or 'tick' event
+ * that carried at least one genuinely valid LTP. Deliberately distinct from
+ * the module-private `_lastHbAt` below: `_lastHbAt` also advances on a bare
+ * 'heartbeat' event (keepalive only, no price data), so it only detects a
+ * dead CONNECTION (see the 45s silence watchdog in
+ * startMarketGatedQuoteStream). The 2026-10 incident this store exists to
+ * catch was a dead DATA bridge with a perfectly healthy connection —
+ * heartbeats kept flowing while real ticks silently stopped for hours.
+ * Consumed by `tickStaleness.svelte.js`'s staleness watchdog (RefreshButton's
+ * amber "TICKS STALE" indicator). Starts at 0 so a page that never received
+ * a tick doesn't look falsely "live".
+ */
+export const lastLiveTickAt = writable(0);
+
 /** @type {EventSource | null} */
 let _es = null;
 let _opened = false;
@@ -124,7 +139,10 @@ function _onSnapshot(e) {
     }
     // ltp_ts arbitration means a tick already newer-by-ms can't be
     // clobbered by a re-snapshot landing later.
-    if (symbolUpdates.length) mergeSymbolBatch(symbolUpdates);
+    if (symbolUpdates.length) {
+      mergeSymbolBatch(symbolUpdates);
+      lastLiveTickAt.set(Date.now());
+    }
     _lastHbAt = Date.now();
     debugLog('sse', 'snapshot', { count: symbolUpdates.length, sample: symbolUpdates.slice(0, 3).map(u => `${u.sym}=${u.fields.ltp}`) });
     if (!get(streamOpen)) streamOpen.set(true);
@@ -151,6 +169,7 @@ function _onTick(e) {
     // receive time arbitrates correctly against any poll that
     // lands afterward carrying older broker-side LTP.
     mergeSymbolUpdate(t.sym, { ltp: t_ltp }, { ltp_ts: Date.now() });
+    lastLiveTickAt.set(Date.now());
     _lastHbAt = Date.now();
     if (!get(streamOpen)) streamOpen.set(true);
     _backoffMs = _BACKOFF_MIN;

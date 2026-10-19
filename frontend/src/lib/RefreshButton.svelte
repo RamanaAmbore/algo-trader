@@ -36,6 +36,7 @@
   import { symbolTickCount } from '$lib/data/symbolStore.svelte.js';
   import { bookPollerTick } from '$lib/data/marketDataStores.svelte.js';
   import { toast } from '$lib/data/toastStore.svelte.js';
+  import { tickStaleness, startTickStalenessWatch } from '$lib/data/tickStaleness.svelte.js';
 
   /**
    * @typedef {object} RefreshOpts
@@ -106,6 +107,11 @@
     // 1. Ensure the global connection-status poller is running. Idempotent —
     //    safe to call from every mounted RefreshButton.
     startConnStatusPoller();
+
+    // 1b. Ensure the tick-staleness watchdog is running. Idempotent — one
+    //     checker + one toast for the whole app regardless of how many
+    //     RefreshButtons are mounted. See tickStaleness.svelte.js.
+    startTickStalenessWatch();
 
     // 2. Market-state tick: recomputes isNseOpen / isMcxOpen every 30 s.
     const tick = () => {
@@ -476,6 +482,19 @@
        to show the connection count on refresh button". -->
 </button>
 
+{#if tickStaleness.stale}
+  <!-- Tick-staleness indicator (2026-10) — amber pill, visually matches
+       the STALE@HH:MM account badge convention (pulseColumns.js) and the
+       amber "stale" state in BrokerHealthBadge.svelte. Shown only while
+       the market is open AND no real SSE tick/snapshot has landed for
+       75s+ — see tickStaleness.svelte.js for the full design. -->
+  <span class="rf-tick-stale-badge"
+        data-testid="tick-stale-indicator"
+        title={`Live ticks stale — last update ${tickStaleness.sinceLabel}`}>
+    TICKS STALE@{tickStaleness.sinceLabel.replace(' IST', '')}
+  </span>
+{/if}
+
 {#if _showClosedNotice}
   <!-- Click-outside catcher: a transparent fixed overlay closes the
        popup when the operator taps anywhere else. Lives at z-index just
@@ -764,4 +783,28 @@
      the connection-state digit moved to the navbar broker-chip in
      slice AX. This button kept the full N/M tooltip; only the
      visible badge moved.) */
+
+  /* ── Tick-staleness indicator ─────────────────────────────────────
+     Amber pill, same palette + shape as BrokerHealthBadge's
+     .bh-circuit-chip and the amber "stale" state convention used
+     throughout the app (rgba(251,191,36,*) family). Sits inline next
+     to the button inside .rf-wrap (flex row) — no absolute positioning
+     needed since .rf-wrap is already a flex container. Compact enough
+     to fit a <600px mobile viewport alongside the icon button. */
+  .rf-tick-stale-badge {
+    display: inline-flex;
+    align-items: center;
+    margin-left: 0.3rem;
+    padding: 0.08rem 0.35rem;
+    border-radius: 9999px;
+    font-size: var(--fs-xs);
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    font-family: var(--font-numeric);
+    white-space: nowrap;
+    color: var(--c-action);
+    background: rgba(251, 191, 36, 0.12);
+    border: 1px solid rgba(251, 191, 36, 0.4);
+    cursor: default;
+  }
 </style>

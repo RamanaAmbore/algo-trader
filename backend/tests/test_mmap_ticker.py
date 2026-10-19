@@ -4,11 +4,15 @@ Coverage:
   • MmapTickReader.get_ltp() returns None when buffer missing
   • Local sym→token cache behavior
   • BroadcastBus passthrough and lifecycle
+  • start()/ensure_started() done-but-not-None restart guard
+  • check_and_heal() watchdog-heal entry point
 """
 
 import tempfile
 import os
 import asyncio
+import logging
+import time
 import warnings
 from unittest.mock import patch, MagicMock, AsyncMock
 
@@ -17,6 +21,12 @@ import pytest
 from backend.brokers.tick_buffer import TickBufferWriter
 from backend.brokers.mmap_ticker import MmapTickReader
 from backend.brokers.kite_ticker import BroadcastBus
+
+
+async def _never_ending_poll_loop(self):
+    """Stand-in for MmapTickReader._poll_loop — stays pending until the
+    task is cancelled, without touching the real mmap buffer path."""
+    await asyncio.Event().wait()
 
 
 @pytest.fixture
@@ -183,6 +193,197 @@ class TestMmapTickReaderLifecycle:
             reader.stop()
         finally:
             loop.close()
+
+    @pytest.mark.asyncio
+    async def test_start_restarts_when_poll_task_done_but_not_none(self, tmp_buffer_path):
+        """start()'s guard checks task.done(), not just `is not None` — a
+        task that died any way OTHER than stop() (done but never reset to
+        None) must be replaced on the next start(), not silently kept."""
+        reader = MmapTickReader(path=tmp_buffer_path)
+        loop = asyncio.get_running_loop()
+        reader.set_loop(loop)
+
+        async def _finished():
+            return None
+
+        dead_task = loop.create_task(_finished())
+        await asyncio.sleep(0)  # let it run to completion
+        assert dead_task.done()
+        reader._poll_task = dead_task
+
+        with patch.object(MmapTickReader, "_poll_loop", new=_never_ending_poll_loop):
+            reader.start()
+
+        try:
+            assert reader._poll_task is not None
+            assert reader._poll_task is not dead_task
+            assert not reader._poll_task.done()
+        finally:
+            reader.stop()
+
+    @pytest.mark.asyncio
+    async def test_ensure_started_restarts_when_poll_task_done(self, tmp_buffer_path):
+        """ensure_started() must also treat a done-but-non-None task as
+        needing a restart (not just `is None`), since check_and_heal()
+        relies on it to actually recreate the task."""
+        reader = MmapTickReader(path=tmp_buffer_path)
+        loop = asyncio.get_running_loop()
+        reader.set_loop(loop)
+
+        async def _finished():
+            return None
+
+        dead_task = loop.create_task(_finished())
+        await asyncio.sleep(0)
+        assert dead_task.done()
+        reader._poll_task = dead_task
+
+        with patch.object(MmapTickReader, "_poll_loop", new=_never_ending_poll_loop):
+            result = reader.ensure_started()
+
+        try:
+            assert result is True
+            assert reader._poll_task is not dead_task
+            assert not reader._poll_task.done()
+        finally:
+            reader.stop()
+
+
+class TestMmapTickReaderCheckAndHeal:
+    """Tests for MmapTickReader.check_and_heal() — the watchdog entry point."""
+
+    @pytest.mark.asyncio
+    async def test_healthy_task_returns_true_no_log(self, tmp_buffer_path, caplog):
+        """Alive poll task → returns True, no [MMAP-WATCHDOG] log emitted."""
+        reader = MmapTickReader(path=tmp_buffer_path)
+        loop = asyncio.get_running_loop()
+        reader.set_loop(loop)
+
+        with patch.object(MmapTickReader, "_poll_loop", new=_never_ending_poll_loop):
+            reader.start()
+        try:
+            with caplog.at_level(logging.CRITICAL, logger="backend.brokers.mmap_ticker"):
+                result = reader.check_and_heal()
+            assert result is True
+            assert not any("MMAP-WATCHDOG" in r.message for r in caplog.records)
+        finally:
+            reader.stop()
+
+    @pytest.mark.asyncio
+    async def test_dead_task_logs_once_while_still_dead(self, tmp_buffer_path, caplog):
+        """Calling check_and_heal() twice in a row while the task stays
+        dead (heal attempt itself fails to produce a live task) logs the
+        'found dead' critical line exactly once, not once per call."""
+        reader = MmapTickReader(path=tmp_buffer_path)
+        loop = asyncio.get_running_loop()
+        reader.set_loop(loop)
+        reader._poll_task = None
+
+        with patch.object(reader, "start") as mock_start:
+            with caplog.at_level(logging.CRITICAL, logger="backend.brokers.mmap_ticker"):
+                r1 = reader.check_and_heal()
+                r2 = reader.check_and_heal()
+
+        assert r1 is False
+        assert r2 is False
+        assert mock_start.call_count == 2  # ensure_started tried to heal both times
+        found_dead = [r for r in caplog.records if "found dead" in r.message]
+        assert len(found_dead) == 1
+
+    @pytest.mark.asyncio
+    async def test_dead_task_logs_again_after_recovery_and_redeath(self, tmp_buffer_path, caplog):
+        """The 'found dead' gate resets on recovery — a second genuine
+        death after a successful heal logs again."""
+        reader = MmapTickReader(path=tmp_buffer_path)
+        loop = asyncio.get_running_loop()
+        reader.set_loop(loop)
+        reader._poll_task = None
+
+        # First death: heal fails (start patched to no-op) — one log.
+        with patch.object(reader, "start"):
+            with caplog.at_level(logging.CRITICAL, logger="backend.brokers.mmap_ticker"):
+                reader.check_and_heal()
+        assert len([r for r in caplog.records if "found dead" in r.message]) == 1
+
+        # Now let it actually heal (real start(), stubbed poll loop).
+        caplog.clear()
+        with patch.object(MmapTickReader, "_poll_loop", new=_never_ending_poll_loop):
+            with caplog.at_level(logging.CRITICAL, logger="backend.brokers.mmap_ticker"):
+                alive_result = reader.check_and_heal()
+        assert alive_result is True
+        assert reader._poll_task is not None and not reader._poll_task.done()
+
+        # Calling again while genuinely alive resets the gate and logs nothing.
+        caplog.clear()
+        with caplog.at_level(logging.CRITICAL, logger="backend.brokers.mmap_ticker"):
+            still_alive = reader.check_and_heal()
+        assert still_alive is True
+        assert not any("found dead" in r.message for r in caplog.records)
+
+        # Kill it again — a fresh transition must log again.
+        reader._poll_task.cancel()
+        await asyncio.sleep(0)
+        caplog.clear()
+        with patch.object(MmapTickReader, "_poll_loop", new=_never_ending_poll_loop):
+            with caplog.at_level(logging.CRITICAL, logger="backend.brokers.mmap_ticker"):
+                reader.check_and_heal()
+        try:
+            found_dead_again = [r for r in caplog.records if "found dead" in r.message]
+            assert len(found_dead_again) == 1
+        finally:
+            reader.stop()
+
+    @pytest.mark.asyncio
+    async def test_escalation_after_three_heals_in_window(self, tmp_buffer_path, caplog):
+        """>=3 heals within the rolling 10-minute window fires the second,
+        distinctly-worded escalation critical log — and old entries
+        outside the window are pruned, not counted."""
+        reader = MmapTickReader(path=tmp_buffer_path)
+        loop = asyncio.get_running_loop()
+        reader.set_loop(loop)
+        now = time.time()
+        # One entry outside the 600s window (must be pruned) + two inside.
+        reader._heal_times = [now - 700, now - 500, now - 100]
+        reader._poll_task = None
+
+        with patch.object(MmapTickReader, "_poll_loop", new=_never_ending_poll_loop):
+            with caplog.at_level(logging.CRITICAL, logger="backend.brokers.mmap_ticker"):
+                result = reader.check_and_heal()
+
+        try:
+            assert result is True
+            escalation_logs = [r for r in caplog.records if "self-healed" in r.message]
+            assert len(escalation_logs) == 1
+            # Pruned (700s-old entry dropped) + 2 retained + 1 new = 3.
+            assert len(reader._heal_times) == 3
+        finally:
+            reader.stop()
+
+    @pytest.mark.asyncio
+    async def test_dead_task_with_real_exception_logs_exception_text(self, tmp_buffer_path, caplog):
+        """A poll task that completed with a real (non-cancelled)
+        exception has that exception's text folded into the critical log."""
+        reader = MmapTickReader(path=tmp_buffer_path)
+        loop = asyncio.get_running_loop()
+        reader.set_loop(loop)
+
+        async def _boom():
+            raise RuntimeError("buffer write corrupted")
+
+        task = loop.create_task(_boom())
+        try:
+            await task
+        except RuntimeError:
+            pass
+        assert task.done()
+        assert not task.cancelled()
+        reader._poll_task = task
+
+        with patch.object(reader, "start"):
+            with caplog.at_level(logging.CRITICAL, logger="backend.brokers.mmap_ticker"):
+                reader.check_and_heal()
+
+        assert any("buffer write corrupted" in r.message for r in caplog.records)
 
 
 class TestMmapTickReaderStatus:

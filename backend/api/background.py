@@ -34,6 +34,7 @@ from backend.api.database import async_session
 from backend.api.helpers import exchange_clock
 from backend.api.helpers.exchange_clock import is_trading_day_today, sessions_with_snapshot_time_now
 from backend.api.algo.daily_snapshot import fix_daily_book_prev_close
+from backend.brokers.client import is_cutover_on
 from backend.shared.helpers.date_time_utils import timestamp_indian, is_market_open, timestamp_display
 from backend.shared.helpers.ramboq_logger import get_logger
 from backend.shared.helpers.settings import get_int
@@ -2943,44 +2944,57 @@ async def _snapshot_fire(label: str, *, market_open: bool = True) -> None:
 
 
 async def _snapshot_unsub_nonmcx() -> None:
-    """Unsubscribe all non-MCX ticker tokens (called at 16:15 IST).
+    """Unsubscribe all non-MCX ticker tokens (called at NON-MCX close + 1 min).
 
     NSE/BSE close at 15:30; OFS/special sessions end by ~16:15.  Dropping
     the non-MCX subscriptions reduces WebSocket payload volume for the
-    evening MCX session.  Under ``RAMBOQ_USE_CONN_SERVICE=1`` the ticker
-    object has no ``unsubscribe_non_mcx`` method — skip silently.
+    evening MCX session.  This is a direct-KiteTicker-mode-only concern
+    (the socket/subscription list it trims lives on the real
+    ``TickerManager``).  Under ``RAMBOQ_USE_CONN_SERVICE=1`` the ticker
+    object is a ``MmapTickReader`` that owns no socket of its own — the
+    real subscription list lives in conn_service, so this is an
+    intentional no-op here, not a missing-method skip.
     """
     try:
         from backend.brokers.kite_ticker import get_ticker
         _ticker_obj = get_ticker()
-        if hasattr(_ticker_obj, "unsubscribe_non_mcx"):
-            await _ticker_obj.unsubscribe_non_mcx()
-        else:
+        if is_cutover_on():
             logger.debug(
-                "Background: unsubscribe_non_mcx — ticker has no such method "
-                "(conn-service mode); skipping"
+                "Background: unsubscribe_non_mcx — intentional no-op in "
+                "conn-service mode (MmapTickReader owns no socket to trim)"
             )
+            return
+        await _ticker_obj.unsubscribe_non_mcx()
     except Exception as _unsub_exc:
         logger.warning(f"Background: unsubscribe_non_mcx failed: {_unsub_exc}")
 
 
 def _snapshot_stop_ticker() -> None:
-    """Stop the KiteTicker after MCX settlement (called at 00:30 IST).
+    """Stop the KiteTicker after MCX settlement.
+
+    Fires at MCX close + 1 min (default 23:31 IST) via
+    ``_ds_tick_mcx_stop``; SessionGuard's ``_sg_recover_mcx_close`` can
+    also fire it post-midnight in [00:00, 02:00) after a restart that
+    missed the original window.
 
     Frees the Twisted reactor and socket so the 08:00 restart begins from
-    a clean state.  Under ``RAMBOQ_USE_CONN_SERVICE=1`` the ticker object
-    has no ``stop`` method — skip silently.
+    a clean state.  This is a direct-KiteTicker-mode-only concern.  Under
+    ``RAMBOQ_USE_CONN_SERVICE=1`` the ticker object is a
+    ``MmapTickReader`` which owns no socket/reactor of its own (that
+    lives in conn_service) — stopping its local poll task here would
+    just kill the local tick-forwarder until the 08:00 restart, with no
+    corresponding benefit, so this is an intentional no-op in that mode.
     """
     try:
         from backend.brokers.kite_ticker import get_ticker
         _ticker_obj = get_ticker()
-        if hasattr(_ticker_obj, "stop"):
-            _ticker_obj.stop()
-        else:
+        if is_cutover_on():
             logger.debug(
-                "Background: ticker stop — no stop() method "
-                "(conn-service mode); skipping"
+                "Background: ticker stop — intentional no-op in "
+                "conn-service mode (MmapTickReader owns no socket/reactor)"
             )
+            return
+        _ticker_obj.stop()
     except Exception as _stop_exc:
         logger.warning(f"Background: ticker stop failed: {_stop_exc}")
 
@@ -2989,35 +3003,44 @@ def _snapshot_restart_ticker() -> None:
     """Restart the KiteTicker at 08:00 IST with the freshly-rotated daily token.
 
     ``_task_holiday_refresh`` refreshes tokens at 05:30; this restart fires
-    well after that so the new ``access_token`` is already in place.  Under
-    ``RAMBOQ_USE_CONN_SERVICE=1`` the ticker returns a ``MmapTickReader``
-    which has no ``restart`` method — skip silently.
+    well after that so the new ``access_token`` is already in place.
+    Under ``RAMBOQ_USE_CONN_SERVICE=1`` the ticker is a ``MmapTickReader``
+    with no ``restart`` method — instead of skipping, this actively
+    self-heals the local poll task via ``check_and_heal()``. This is a
+    second, belt-and-suspenders layer on top of the continuous
+    ``_task_ticker_watchdog`` supervision (which already calls
+    ``check_and_heal()`` every 30s in conn-service mode) — cheap and
+    idempotent, so running it here too costs nothing.
     """
     try:
         from backend.brokers.kite_ticker import get_ticker
         from backend.brokers.connections import Connections
 
         _ticker_obj = get_ticker()
-        if hasattr(_ticker_obj, "restart"):
-            _conn_map = Connections().conn
-            _api_key = _access_token = _restart_account = ""
-            for _acct, _conn in _conn_map.items():
-                if hasattr(_conn, "kite") and getattr(_conn.kite, "access_token", None):
-                    _api_key         = _conn.kite.api_key
-                    _access_token    = _conn.kite.access_token
-                    _restart_account = _acct
-                    break
-            if _api_key and _access_token:
-                _ticker_obj.restart(_api_key, _access_token, _restart_account)
-            else:
-                logger.warning(
-                    "Background: 08:00 restart — no live Kite credentials found; "
-                    "ticker restart skipped"
+        if is_cutover_on():
+            from backend.shared.helpers.utils import is_engine_idle
+            if is_engine_idle():
+                logger.debug(
+                    "Background: 08:00 restart — skipped check_and_heal "
+                    "(engine idle, conn-service mode)"
                 )
+                return
+            _ticker_obj.check_and_heal()
+            return
+        _conn_map = Connections().conn
+        _api_key = _access_token = _restart_account = ""
+        for _acct, _conn in _conn_map.items():
+            if hasattr(_conn, "kite") and getattr(_conn.kite, "access_token", None):
+                _api_key         = _conn.kite.api_key
+                _access_token    = _conn.kite.access_token
+                _restart_account = _acct
+                break
+        if _api_key and _access_token:
+            _ticker_obj.restart(_api_key, _access_token, _restart_account)
         else:
-            logger.debug(
-                "Background: ticker restart — no restart() method "
-                "(conn-service mode or MmapTickReader); skipping"
+            logger.warning(
+                "Background: 08:00 restart — no live Kite credentials found; "
+                "ticker restart skipped"
             )
     except Exception as _restart_exc:
         logger.warning(f"Background: ticker restart failed: {_restart_exc}")
@@ -5606,6 +5629,39 @@ async def _bg_watchdog_one_cycle(
     )
 
 
+async def _watchdog_cutover_heal_loop(get_ticker, interval_s: float) -> None:
+    """Conn-service-mode body of ``_task_ticker_watchdog``.
+
+    Every ``interval_s`` seconds, heal the local ``MmapTickReader`` poll
+    task via ``check_and_heal()``. Sleeps first (matching the direct-mode
+    loop) so startup gets a full interval before the first check. Runs
+    until cancelled — never returns on its own, since `_supervised`
+    restarts a coroutine that returns with no delay, which would starve
+    the event loop and prevent on_startup from completing (port 8000
+    never binds).
+
+    Skips the heal while the engine is idle (dev, no active mode picked)
+    — ``_start_kite_ticker`` deliberately never calls ``start()`` in that
+    state (see its own ``is_engine_idle()`` gate), so a poll task that's
+    `None` there is the INTENDED state, not a failure to heal. Without
+    this gate, this loop would resurrect a reader the app chose not to
+    start, firing a false CRITICAL on every idle dev boot.
+    """
+    from backend.shared.helpers.utils import is_engine_idle
+    while True:
+        try:
+            await asyncio.sleep(interval_s)
+            if not is_cutover_on():
+                return
+            if is_engine_idle():
+                continue
+            get_ticker().check_and_heal()
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            logger.exception("ticker watchdog: mmap heal check failed")
+
+
 async def _task_ticker_watchdog(state: dict) -> None:
     CHECK_INTERVAL_S    = 30.0   # how often to poll ticker.status()
     # Raised from 60s in BG to absorb one full Twisted reconnect cycle.
@@ -5620,30 +5676,27 @@ async def _task_ticker_watchdog(state: dict) -> None:
     from backend.brokers.kite_ticker import get_ticker
     from backend.brokers.registry import get_historical_brokers
     from backend.brokers.broker_apis import fetch_holidays
-    from backend.brokers.client import is_cutover_on
 
     # Per-watchdog holiday cache keyed by year so off-hours gating doesn't
     # hammer nseindia.com every 30 s. Refreshes naturally at year rollover.
     _wd_holiday_cache: dict = {}
     _wd_holiday_year_ref: list = [None]  # mutable container for year tracking
 
-    # Cutover branch — when KiteTicker lives in conn_service, the WS
-    # lifecycle is its job (conn_service has its own ticker_watchdog).
-    # Main API just reads the mmap buffer; failover-stop / restart-
-    # with-account calls on MmapTickReader are no-ops AND get_historical
-    # _brokers returns the conn_service account list, which would emit
-    # false "degraded" Telegram alerts every 30min during market hours.
-    # Skip this whole task in cutover mode.
+    # Cutover branch — when KiteTicker lives in conn_service:
+    #   • upstream WS health (the real KiteTicker connection to the
+    #     broker) is conn_service's job — it has its own watchdog, and
+    #     failover-stop / restart-with-account calls on a MmapTickReader
+    #     would be no-ops anyway; get_historical_brokers() would also
+    #     return the conn_service account list, which would emit false
+    #     "degraded" Telegram alerts every 30min during market hours.
+    #     None of that is checked here — deliberately not dead code,
+    #     just not this process's concern.
+    #   • local forwarder health (the MmapTickReader poll task that
+    #     tails /dev/shm/ramboq_ticks and republishes to the local SSE
+    #     bus) IS this process's concern — nothing else supervises it —
+    #     so it IS checked here, every cycle, via check_and_heal().
     if is_cutover_on():
-        logger.info(
-            "ticker_watchdog: skipped — conn_service owns the WebSocket "
-            "(its own watchdog supervises restart). Main API is mmap-reader only."
-        )
-        # Sleep rather than return immediately. _supervised restarts this coroutine
-        # on any return with no delay, creating a tight loop that starves the event
-        # loop and prevents on_startup from completing (port 8000 never binds).
-        while is_cutover_on():
-            await asyncio.sleep(300)
+        await _watchdog_cutover_heal_loop(get_ticker, CHECK_INTERVAL_S)
         return
 
     while True:
