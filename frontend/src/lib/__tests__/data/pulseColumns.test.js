@@ -449,6 +449,57 @@ describe('Fix 1 — day_pnl_pct column cellClass (no mp-pnl-cell)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Item 3 (2026-10) — PULSE_SPEC.md §16: Chg%/day_pnl_pct must never flash,
+// even when the row's symbol IS actively LTP-flashing. Tests the REAL
+// column from mkRightColDefs (not an inline mirror) so a regression that
+// re-adds the removed getLtpFlashUp/getLtpFlashDown check is caught.
+// ---------------------------------------------------------------------------
+
+describe('Item 3 — day_pnl_pct (Chg%) column never gets tf-up/tf-down (real column)', () => {
+  function getDayPnlPctCol(getLtpFlashUp, getLtpFlashDown) {
+    const cols = mkRightColDefs({ ...makeOpts(), getLtpFlashUp, getLtpFlashDown });
+    const col = cols.find(c => c.colId === 'day_pnl_pct');
+    if (!col) throw new Error('day_pnl_pct column not found in mkRightColDefs result');
+    return col;
+  }
+
+  it('does not flash tf-up even when the symbol is in the LTP-up flash set', () => {
+    const col = getDayPnlPctCol(
+      () => new Set(['RELIANCE']),
+      () => new Set(),
+    );
+    const cls = col.cellClass({ value: 1.2, data: { tradingsymbol: 'RELIANCE' } });
+    expect(cls).not.toContain('tf-up');
+    expect(cls).not.toContain('tf-down');
+  });
+
+  it('does not flash tf-down even when the symbol is in the LTP-down flash set', () => {
+    const col = getDayPnlPctCol(
+      () => new Set(),
+      () => new Set(['RELIANCE']),
+    );
+    const cls = col.cellClass({ value: -1.2, data: { tradingsymbol: 'RELIANCE' } });
+    expect(cls).not.toContain('tf-up');
+    expect(cls).not.toContain('tf-down');
+  });
+
+  it('TOTAL row short-circuits to RA regardless of flash sets', () => {
+    const col = getDayPnlPctCol(
+      () => new Set(['RELIANCE']),
+      () => new Set(),
+    );
+    const cls = col.cellClass({ value: 1.2, data: { _isTotal: true, tradingsymbol: 'RELIANCE' } });
+    expect(cls).not.toContain('tf-up');
+  });
+
+  it('still applies directional dirCls (cell-pos/cell-neg) — only the flash class was removed', () => {
+    const col = getDayPnlPctCol(() => new Set(), () => new Set());
+    expect(col.cellClass({ value: 2, data: { tradingsymbol: 'X' } })).toContain('cell-pos');
+    expect(col.cellClass({ value: -2, data: { tradingsymbol: 'X' } })).toContain('cell-neg');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Fix 2 — pnl_pct cellClass: no mp-pnl-cell, directional text only
 // ---------------------------------------------------------------------------
 

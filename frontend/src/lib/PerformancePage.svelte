@@ -459,23 +459,22 @@
     const prev = params.data?.close_price;
     if (ltp == null) return 'ag-right-aligned-cell';
     const cls = ['ag-right-aligned-cell'];
-    // LTP flash on the LTP cell itself.
-    // Tick-bus priority: real-time SSE direction takes precedence over poll-diff.
-    // Falls through to heat classes (ltp-vs-avg / ltp-vs-prev) so both animate
-    // simultaneously.
-    const sym = (params.data?.tradingsymbol ?? '').toUpperCase();
-    if (sym && _perfLtpFlashUp.has(sym)) {
-      const absPct = Math.abs(params.data?.day_change_percentage ?? _perfLtpFlashPctMap.get(sym) ?? 1);
-      cls.push(_tcFlashClass('up', absPct));
-    } else if (sym && _perfLtpFlashDown.has(sym)) {
-      const absPct = Math.abs(params.data?.day_change_percentage ?? _perfLtpFlashPctMap.get(sym) ?? 1);
-      cls.push(_tcFlashClass('down', absPct));
-    } else {
-      const k = _perfFlashKey(params.data);
-      if (k) {
-        const ltpCls = _perfFlash.classOf(`${k}:last_price`);
-        if (ltpCls) cls.push(ltpCls === 'tf-up' ? 'ltp-tc-flash-up' : 'ltp-tc-flash-down');
-      }
+    // LTP flash on the LTP cell itself — poll-diff only (2026-10-19 fix).
+    // `last_price` on this page is never patched per live tick — it's
+    // only ever written by loadAll()/applyAccountFilter() (a poll cycle)
+    // or by _applyFillDelta() on a real fill, both of which feed
+    // _seedFlash() → _perfFlash.update(`${k}:last_price`, ...). The
+    // removed branch here used to flash straight off the tickBus's raw
+    // SSE direction for any held symbol, regardless of whether the
+    // displayed last_price value had actually changed between polls —
+    // the cell visibly flashed on every tick while its own number never
+    // moved. _perfFlash.classOf() only ever returns a class when the
+    // underlying value genuinely changed (see tickFlash.svelte.js's
+    // `v === last` guard), so it's now the sole source here.
+    const k = _perfFlashKey(params.data);
+    if (k) {
+      const ltpCls = _perfFlash.classOf(`${k}:last_price`);
+      if (ltpCls) cls.push(ltpCls === 'tf-up' ? 'ltp-tc-flash-up' : 'ltp-tc-flash-down');
     }
     // Two-axis heat: bg vs avg_cost ("am I up overall?"), left-border
     // vs prev_close ("is it moving my way today?"). cell-pos/neg/flat
@@ -498,10 +497,25 @@
   // avgClsWithDir — Avg column styling: ltp-vs-avg bg tint only.
   // pnl-* text-colour classes are stripped (green text on green bg = invisible).
   // Row-level pos-long/pos-short already encodes long/short direction.
+  //
+  // ltp-tc-flash-* is also stripped (2026-10-19 fix) — avgVsLtpCls's base
+  // array carries the LTP cell's OWN flash class, which used to leak onto
+  // this Avg cell: the Avg cell flashed every time last_price polled a
+  // new value even though average_price (what this cell actually shows)
+  // never moved. Avg now gets its own poll-diff flash keyed to
+  // average_price specifically (seeded alongside last_price/day_change_val/
+  // pnl in _seedFlash) — it only pulses when the operator's actual cost
+  // basis changes (e.g. averaging in on a new fill), not on every LTP tick.
   const avgClsWithDir = (params) => {
     const base = avgVsLtpCls(params);
-    if (Array.isArray(base)) return base.filter(c => !c.startsWith('pnl-'));
-    return base;
+    if (!Array.isArray(base)) return base;
+    const filtered = base.filter(c => !c.startsWith('pnl-') && !c.startsWith('ltp-tc-flash-'));
+    const k = _perfFlashKey(params.data);
+    if (k) {
+      const avgCls = _perfFlash.classOf(`${k}:average_price`);
+      if (avgCls) filtered.push(avgCls === 'tf-up' ? 'ltp-tc-flash-up' : 'ltp-tc-flash-down');
+    }
+    return filtered;
   };
 
   const defaultCol = { resizable: true, sortable: true, filter: true, suppressHeaderMenuButton: true, flex: 1, minWidth: 55 };
@@ -1070,7 +1084,7 @@
    */
   function _refreshFlashCells(grid) {
     if (!grid) return;
-    const cols = ['last_price', 'day_change_val', 'pnl'];
+    const cols = ['last_price', 'average_price', 'day_change_val', 'pnl'];
     try { grid.refreshCells({ columns: cols, force: true }); } catch (_) {}
     setTimeout(() => {
       try { grid.refreshCells({ columns: cols, force: true }); } catch (_) {}
@@ -1089,6 +1103,7 @@
         const k = r.tradingsymbol ? `${r.account}|${r.tradingsymbol}` : r.account;
         if (!k) continue;
         if (r.last_price     != null) _perfFlash.update(`${k}:last_price`,    Number(r.last_price));
+        if (r.average_price  != null) _perfFlash.update(`${k}:average_price`, Number(r.average_price));
         if (r.day_change_val != null) _perfFlash.update(`${k}:day_change_val`, Number(r.day_change_val));
         if (r.pnl            != null) _perfFlash.update(`${k}:pnl`,            Number(r.pnl));
       }
@@ -1097,6 +1112,7 @@
         const k = r.tradingsymbol ? `${r.account}|${r.tradingsymbol}` : r.account;
         if (!k) continue;
         if (r.last_price     != null) _perfFlash.update(`${k}:last_price`,    Number(r.last_price));
+        if (r.average_price  != null) _perfFlash.update(`${k}:average_price`, Number(r.average_price));
         if (r.day_change_val != null) _perfFlash.update(`${k}:day_change_val`, Number(r.day_change_val));
         if (r.pnl            != null) _perfFlash.update(`${k}:pnl`,            Number(r.pnl));
       }

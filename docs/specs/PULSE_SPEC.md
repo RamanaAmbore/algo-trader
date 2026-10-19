@@ -1057,11 +1057,10 @@ the accessors so cells see current $state values on every redraw (not stale bind
 
 **Cell classes** (CSS for color + tick-flash):
 - `dirCls(value)` → `"cell-pos"` (v > 0 green), `"cell-neg"` (v < 0 red), `"cell-flat"` (v = 0 gray)
-- `mkPnlCellClass()` → base + directional + LTP-cascade + poll-diff tick-flash
-  - LTP-cascade takes precedence (tighter feedback loop)
-  - Poll-diff flash waits for broker cycle (slower, less distracting)
+- `mkPnlCellClass()` → base + directional color class only (`dirCls`). P&L columns do not
+  flash; the cascade and poll-diff flash logic that once lived here has been removed
 - `mp-pnl-cell` — background tint (light green/red 10%)
-- `ltp-flash-up`, `ltp-flash-down` — directional pulse (350ms)
+- `tf-up`, `tf-down` — directional background pulse on the LTP column only (see §16)
 - `ltp-vs-avg-up/down/flat` — heat encoding LTP vs entry average
 - `ltp-vs-prev-up/down/flat` — heat encoding LTP vs previous close
 - `ltp-snap` — static styling (no animation) when is_animating=false
@@ -1073,9 +1072,10 @@ the accessors so cells see current $state values on every redraw (not stale bind
   - Green (positive): LTP > prev_close
   - Red (negative): LTP < prev_close
   - Muted gray (no change or zero close)
-- **Background flash** (`.ltp-flash-up` / `.ltp-flash-down`) — fires on tick direction
-  (up/down) when SSE or poll-cycle LTP changes. Suppressed when LTP doesn't change
-  between ticks (zero-guard on delta detection).
+- **Background flash** (`.tf-up` / `.tf-down`) — LTP column only. Fires on the real tick
+  direction (up/down) when an SSE tick or a poll-cycle LTP change moves the value, via the
+  shared tick-flash helper (`createTickFlash()` / `tickBus`). Suppressed when LTP doesn't
+  change between ticks (zero-guard on delta detection).
 - Dual signals provide immediate visual feedback: background flash for moment-to-moment
   price movement (tight 4Hz cadence), persistent text color for intraday directional
   trend (updated on 5–30s broker poll cycle).
@@ -1398,8 +1398,17 @@ feedback loop.
 - LTP column: flashes on every SSE tick (4Hz) and broker poll update
 - Chg% column: **no flash** (static text color only)
 - Day P&L and P&L columns: **no flash applied** (static styling only)
-- Derivatives page: LTP cells flash in snapshot and candidate-leg grids; Spot price in 
-  OptionsPayoff card flashes when quote updates
+- Compliance note (2026-10-19): an earlier build flashed Pulse's Chg% cell, contrary to
+  this section. The code was brought into line with this section on that date; Chg% on
+  Pulse is poll-only day-P&L-based data and never flashes.
+- Derivatives page (outside Pulse, different by design):
+  - Snapshot and Legs LTP cells flash on live ticks only; poll updates refresh the
+    displayed value but do not feed the flash tracker
+  - Legs Chg% cell flashes with the SAME key as its LTP cell (`leg:<k>:ltp`). Chg% there
+    moves in lockstep with LTP against a fixed prev_close, so it tracks LTP. Closed
+    (qty=0) legs do not flash, since their price is frozen
+  - OptionsPayoff card: the Spot value flashes on quote updates, and the Chg% chip flashes
+    in the direction of the real tick-to-tick move (not the sign of the day's % change)
 - **Magnitude-tiered flash variants removed**; uniform `tf-up`/`tf-down` CSS animation 
   applied to all flashing columns
 
@@ -1407,8 +1416,8 @@ feedback loop.
 - Single directional flash class: `tf-up` (price rise) or `tf-down` (price fall)
 - Duration: 300ms; background animates from directional color to transparent (pulse 
   effect)
-- Text-color flash (`.ltp-tc-flash-up` / `.ltp-tc-flash-down`) fires on LTP and Chg% 
-  cells simultaneously
+- Text-color flash (`.ltp-tc-flash-up` / `.ltp-tc-flash-down`) is a separate helper
+  (`_tcFlashClass`) used by OptionsPayoff and PerformancePage; no Pulse cell applies it
 - Zero-guard: non-positive live values treated as "no live tick" (prevents phantom delta)
 - Threshold: 0.001 (epsilon) prevents false flashes on identical floats due to effect 
   re-runs
@@ -1581,8 +1590,9 @@ visual misalignment on multi-leg strategies spanning different expirations.
 The payoff overlay's live price display now includes directional flash feedback on each 
 tick update. SPOT value shows a 300ms background flash (`tf-up` / `tf-down` CSS class) 
 and CHG% displays a text-color flash (`ltp-tc-flash-up` / `ltp-tc-flash-down`) to signal 
-price movement, matching the Snapshot grid's LTP and CHG% cell behaviour and providing 
-consistent visual feedback across all derivatives surfaces.
+price movement. The CHG% flash direction follows the real tick-to-tick move of the CHG%
+value, not the sign of the day's % change. This gives consistent visual feedback across
+all derivatives surfaces.
 
 ### 17.3 Options Payoff Chart Legend
 
@@ -1636,9 +1646,10 @@ LTP column, displaying intraday price change percentage for each leg.
 **CSS and flash animation**:
 - CSS class `cand-chg-sep` applied to column header and all cells (inset right-border 
   separator, matching left/right grids)
-- **Flash class**: `leg:${k}:chg` SSE key subscribed in `tickBus`; fires text-color 
-  flash (`.ltp-tc-flash-up` / `.ltp-tc-flash-down`) on every 4Hz SSE tick via `tickBus` 
-  subscription, providing real-time directional feedback on price movement
+- **Flash class**: the Chg% cell reuses the LTP cell's flash key `leg:${k}:ltp` (no
+  separate `:chg` key). It flashes (`.tf-up` / `.tf-down`) on the same 4Hz SSE tick loop
+  that drives LTP, since Chg% moves in lockstep with LTP against a fixed prev_close.
+  Closed (qty=0) legs do not flash
 - Flash timing: sub-second, same cadence as LTP flash
 
 **chg% SSOT pattern (Sep 2026, commit d8633d4e)**:
@@ -1759,11 +1770,9 @@ surfaces beyond positions/holdings grids, providing real-time visual feedback
 across all Pulse + derivatives pages.
 
 **Derivatives Legs LTP cell flash** (commit 307a8c5a):
-- LTP value now carries TWO simultaneous flash classes on tick:
-  - **`:ltp` flash** — background pulse (existing behavior, 300ms `tf-up`/`tf-down`)
-  - **`:chg` flash** — text-color pulse (new, 500ms `ltp-tc-flash-up/down`)
-- Both animations fire together on SSE tick; provides distinct visual signals
-  (background flash for momentum, text-color flash for trend persistence)
+- LTP value flashes on tick via the `:ltp` key: background pulse (`tf-up`/`tf-down`)
+- The Chg% cell on the same row reuses the `:ltp` key, so it flashes in step with LTP.
+  The former separate `:chg` key was removed (2026-10-19)
 
 **Derivatives Snapshot (by-underlying) Day P&L cell flash** (commit 307a8c5a):
 - Per-root Day P&L cell now receives tick flash keyed on `${underlying}:day_w` SSE updates
@@ -2301,8 +2310,9 @@ columns remain static (no animation).
 **Reference price comparison**:
 - **LTP flash**: text color reflects `ltp vs prev_close` direction
   - Green if `ltp > prev_close`; Red if `ltp < prev_close`; Gray if equal
-- **Chg % flash**: text color reflects `change_pct vs 0` direction
+- **Chg % (Pulse)**: text color reflects `change_pct vs 0` direction (static, no flash)
   - Green if `change_pct > 0`; Red if `change_pct < 0`; Gray if zero
+  - Derivatives Legs Chg% is the exception: it flashes with its LTP key (§17.4a)
 - **Spot flash** (derivatives page): Spot LTP color same as regular LTP flash
   (reflects `liveSpot vs prev_close`)
 
@@ -2311,18 +2321,18 @@ columns remain static (no animation).
 Flash animation fires when text-value changes. Three directional classes (commit 562c1a4b,
 2026-09-15).
 
-**Text-color flash classes** (LTP and Chg % columns):
+**Text-color flash classes** (LTP cells; OptionsPayoff Chg% chip):
 - `.ltp-tc-flash-up` — text color animates from `--algo-green-text` to `inherit`; fires
   when value increases
 - `.ltp-tc-flash-down` — text color animates from `--algo-red-text` to `inherit`; fires
   when value decreases
 - No animation — when value unchanged (zero-guard prevents false flashes)
 
-**Background cascade flash** (P&L columns):
-- `.tf-up` — background cascades from `--algo-green-cascade` (rgba 13% alpha) to transparent;
-  fires on positive change
-- `.tf-down` — background cascades from `--algo-red-cascade` (rgba 13% alpha) to transparent;
-  fires on negative change
+**Background flash** (`.tf-up` / `.tf-down`):
+- Background animates from `--algo-green-cascade` / `--algo-red-cascade` (rgba 13% alpha)
+  to transparent; `.tf-up` fires on a rise, `.tf-down` on a fall
+- Used by the Pulse LTP column. P&L columns on Pulse do not flash (§16). Derivatives
+  Snapshot Day P&L cells still use it (§17.8)
 
 **Helper function locations** (in `frontend/src/lib/data/pulseColumns.js`):
 - `_tcFlashClass(direction)` — returns `ltp-tc-flash-{up|down}`
@@ -2353,9 +2363,11 @@ field is absent.
   - `day_pnl` and `pnl` columns remain static (no animation)
 
 **Derivatives page**:
-- Snapshot grid LTP cells flash on SSE + poll-cycle updates (up/down only)
-- CandidateLegRow LTP cells flash (SSE-driven at 4Hz via `getSnapshot`)
-- Spot price display in OptionsPayoff card flashes on quote updates (same animation)
+- Snapshot grid LTP cells flash on live SSE ticks only (poll updates do not flash)
+- CandidateLegRow LTP cells flash (SSE-driven at 4Hz via `getSnapshot`); the Chg% cell
+  flashes with the same key (§17.4a)
+- Spot price display in OptionsPayoff card flashes on quote updates (same animation);
+  its Chg% chip flashes by real tick-to-tick direction (§17.2)
 
 **PerformancePage**:
 - LTP cell uses `.ltp-tc-flash-up` / `.ltp-tc-flash-down` (text-color)

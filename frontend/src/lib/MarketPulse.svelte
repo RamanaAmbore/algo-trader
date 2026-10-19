@@ -1692,7 +1692,15 @@
     // comes from tickBus (computed in symbolStore._mergeSymbolWrite where
     // prev and next LTP are both available). Per-sym clearance timers
     // prevent one sym's 300ms window from wiping another sym's flash.
-    _tickBusUnsub = tickBus.subscribe(({ sym, dir }) => {
+    _tickBusUnsub = tickBus.subscribe(({ sym, dir, pct }) => {
+      // Item 9 fix: respect the operator-configurable ltpFlashPct
+      // threshold (_pctThreshold, kept live via the subscription above)
+      // instead of flashing every symbol on every tick. Mirrors the
+      // threshold-check pattern Derivatives' +page.svelte applies via
+      // createTickFlash's own pctThreshold gate — here the tickBus event
+      // already carries the computed `pct` (abs % move from
+      // symbolStore._mergeSymbolWrite), so the gate is a direct compare.
+      if (_pctThreshold > 0 && Math.abs(Number(pct) || 0) < _pctThreshold) return;
       if (dir === 'up') {
         _ltpFlashUp = new Set([..._ltpFlashUp, sym]);
         _ltpFlashDown = new Set([..._ltpFlashDown].filter(s => s !== sym));
@@ -2181,11 +2189,6 @@
   $effect(() => { if (gridPinnedReady && gridPinned) {
     const rows = pinnedRows;
     untrack(() => {
-      for (const r of rows) {
-        const sym = r.tradingsymbol;
-        if (!sym || r._isTotal) continue;
-        if (r.change_pct != null) _mpFlash.update(`${sym}:change_pct`, Number(r.change_pct));
-      }
       gridPinned.setGridOption('rowData', rows);
       try { gridPinned.refreshCells({ columns: ['left_change_pct'], force: true }); } catch (_) {}
       setTimeout(() => { try { gridPinned.refreshCells({ columns: ['left_change_pct'], force: true }); } catch (_) {} }, 400);
@@ -2194,11 +2197,6 @@
   $effect(() => { if (gridWatchReady && gridWatch) {
     const rows = watchRows;
     untrack(() => {
-      for (const r of rows) {
-        const sym = r.tradingsymbol;
-        if (!sym || r._isTotal) continue;
-        if (r.change_pct != null) _mpFlash.update(`${sym}:change_pct`, Number(r.change_pct));
-      }
       gridWatch.setGridOption('rowData', rows);
       try { gridWatch.refreshCells({ columns: ['left_change_pct'], force: true }); } catch (_) {}
       setTimeout(() => { try { gridWatch.refreshCells({ columns: ['left_change_pct'], force: true }); } catch (_) {} }, 400);
@@ -2930,7 +2928,18 @@
         // view into symbolStore. This is the last non-symbolStore data
         // sink — after this, every market-data poll on this page feeds
         // the same per-symbol cache.
-        publishPulseQuotes(items);
+        //
+        // GOLD prev_close race fix: held positions with a valid
+        // broker prev_close must keep `close` sourced from
+        // _publishPositionsRows (daily_book.ltp basis), never from this
+        // quote batch (Kite's banned ohlc.close). Build the held-symbol
+        // skip-set from this tick's own p_rows before publishing.
+        const _skipCloseSymbols = new Set();
+        for (const r of p_rows) {
+          const _s = String(r?.tradingsymbol || r?.symbol || '').toUpperCase();
+          if (_s && Number(r?.prev_close) > 0) _skipCloseSymbols.add(_s);
+        }
+        publishPulseQuotes(items, { skipCloseSymbols: _skipCloseSymbols });
         pulseQuotes = buildQuoteMaps(items, underlyingInfos);
       } else {
         pulseQuotes = { underlyings: {}, contracts: {} };

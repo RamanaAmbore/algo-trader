@@ -26,6 +26,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import tickFlashSrc from '$lib/data/tickFlash.svelte.js?raw';
 
 // ── Visibility state mock ─────────────────────────────────────────────────────
 //
@@ -61,10 +62,11 @@ afterEach(() => {
 // read or written. The real module uses $state for `classes`; here we use
 // a plain object since we only need classOf(), not reactive UI.
 
-function makeTickFlash({ threshold = 0, durationMs = 300 } = {}) {
+function makeTickFlash({ threshold = 0, pctThreshold = 0, durationMs = 300 } = {}) {
   const prev = {};
   const timers = {};
   const classes = {};
+  let _pctThreshold = pctThreshold;
 
   function update(key, value) {
     if (value == null) return;
@@ -77,6 +79,14 @@ function makeTickFlash({ threshold = 0, durationMs = 300 } = {}) {
     if (last == null) return;
     if (v === last) return;
     if (Math.abs(v - last) < threshold) return;
+    // Item 10 fix (2026-10): compare Math.abs(last), not bare `last` — a
+    // negative previous value used to skip the percentage-threshold check
+    // entirely (bug: `_pctThreshold > 0 && last > 0`), flashing on every
+    // change regardless of threshold.
+    if (_pctThreshold > 0 && Math.abs(last) > 0) {
+      const changePct = Math.abs((v - last) / last * 100);
+      if (changePct < _pctThreshold) return;
+    }
     const dir = v > last ? 'up' : 'down';
     classes[key] = dir;
     if (timers[key]) clearTimeout(timers[key]);
@@ -85,6 +95,8 @@ function makeTickFlash({ threshold = 0, durationMs = 300 } = {}) {
       delete timers[key];
     }, durationMs);
   }
+
+  function setPctThreshold(v) { _pctThreshold = v; }
 
   function classOf(key) {
     const c = classes[key];
@@ -95,7 +107,7 @@ function makeTickFlash({ threshold = 0, durationMs = 300 } = {}) {
     for (const t of Object.values(timers)) clearTimeout(t);
   }
 
-  return { update, classOf, dispose };
+  return { update, classOf, dispose, setPctThreshold };
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -201,5 +213,78 @@ describe('createTickFlash — hidden tab guard fires before prev[key] write', ()
     expect(flash.classOf('x')).toBe('');
 
     flash.dispose();
+  });
+});
+
+// ── Item 10 (2026-10) — pctThreshold guard must apply to negative `last` too ──
+//
+// Bug: `if (_pctThreshold > 0 && last > 0)` — a NEGATIVE previous value
+// skipped the percentage-threshold check entirely (the `last > 0` guard
+// failed), flashing on every change regardless of the configured
+// threshold. Fix: compare `Math.abs(last) > 0`. Affects Legs' Chg% (post
+// item-4 fix, which now reuses the LTP key but the same createTickFlash
+// instance governs any negative-valued key) and PositionStrip's P&L cells
+// when negative.
+
+describe('createTickFlash pctThreshold — Math.abs(last) fix (item 10)', () => {
+  it('positive last: sub-threshold change is suppressed (baseline, unaffected by the fix)', () => {
+    const flash = makeTickFlash({ threshold: 0, pctThreshold: 5, durationMs: 300 });
+    flash.update('x', 100); // seed, last = 100 (positive)
+    flash.update('x', 102); // 2% change < 5% threshold → suppressed
+    expect(flash.classOf('x')).toBe('');
+    flash.dispose();
+  });
+
+  it('positive last: above-threshold change still flashes (baseline, unaffected)', () => {
+    const flash = makeTickFlash({ threshold: 0, pctThreshold: 5, durationMs: 300 });
+    flash.update('x', 100);
+    flash.update('x', 110); // 10% change ≥ 5% → flashes
+    expect(flash.classOf('x')).toBe('tf-up');
+    flash.dispose();
+  });
+
+  it('negative last: sub-threshold change is now suppressed (pre-fix: flashed on every change)', () => {
+    const flash = makeTickFlash({ threshold: 0, pctThreshold: 5, durationMs: 300 });
+    flash.update('x', -100); // seed, last = -100 (negative)
+    // 2% move relative to |last| — must be suppressed just like the
+    // positive-last case above. Pre-fix, `last > 0` was false for -100,
+    // so the whole pctThreshold block was skipped and this flashed.
+    flash.update('x', -102);
+    expect(flash.classOf('x')).toBe('');
+    flash.dispose();
+  });
+
+  it('negative last: above-threshold change still flashes correctly (direction = down)', () => {
+    const flash = makeTickFlash({ threshold: 0, pctThreshold: 5, durationMs: 300 });
+    flash.update('x', -100);
+    flash.update('x', -120); // 20% move ≥ 5% → flashes; -120 < -100 → 'down'
+    expect(flash.classOf('x')).toBe('tf-down');
+    flash.dispose();
+  });
+
+  it('negative last moving toward zero (improving): above-threshold flashes up', () => {
+    const flash = makeTickFlash({ threshold: 0, pctThreshold: 5, durationMs: 300 });
+    flash.update('x', -100);
+    flash.update('x', -50); // 50% move ≥ 5% → flashes; -50 > -100 → 'up'
+    expect(flash.classOf('x')).toBe('tf-up');
+    flash.dispose();
+  });
+
+  it('setPctThreshold updates the threshold live, including for negative last values', () => {
+    const flash = makeTickFlash({ threshold: 0, pctThreshold: 0, durationMs: 300 });
+    flash.update('x', -100);
+    flash.setPctThreshold(10);
+    flash.update('x', -103); // 3% move < 10% → suppressed under the new threshold
+    expect(flash.classOf('x')).toBe('');
+    flash.dispose();
+  });
+});
+
+// ── Source-scan — confirms the real tickFlash.svelte.js ships the fix ────────
+
+describe('tickFlash.svelte.js — Math.abs(last) source scan (item 10)', () => {
+  it('update() guards the pctThreshold branch with Math.abs(last), not bare last', () => {
+    expect(tickFlashSrc).toMatch(/if\s*\(_pctThreshold > 0 && Math\.abs\(last\) > 0\)/);
+    expect(tickFlashSrc).not.toMatch(/if\s*\(_pctThreshold > 0 && last > 0\)/);
   });
 });

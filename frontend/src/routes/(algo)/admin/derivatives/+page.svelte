@@ -1200,14 +1200,15 @@
       }
     });
   });
-  $effect(() => {
-    const quotes = _underlyingQuotes;
-    untrack(() => {
-      for (const [root, q] of Object.entries(quotes)) {
-        flash.update(`${root}:ltp`, q?.ltp);
-      }
-    });
-  });
+  // Item 6 fix (2026-10): the poll path used to also call
+  // flash.update(`${root}:ltp`, ...) here, racing the live-tick handler
+  // (tickBus.subscribe below) for the same key — a poll landing with a
+  // slightly-stale value right after a live tick could register a
+  // spurious reverse flash. flash-tracking for `:ltp` now comes ONLY
+  // from the live-tick handler; this effect had no other job, so it's
+  // removed entirely rather than left as a dead no-op loop. `_underlyingQuotes`
+  // itself (the display data) is still produced/read by its own producer
+  // effect elsewhere — unaffected.
 
   // Payoff header chips — EV + Greeks (Δ Γ Θ 𝒱 ρ).
   // Shell guard: synth equity-only strategy has iv_proxy=0 and
@@ -1256,8 +1257,16 @@
         flash.update(`leg:${k}:day`, positionsDerivedStore.get(c.symbol).day_pnl);
         flash.update(`leg:${k}:pnl`, c.pnl != null ? Number(c.pnl) : null);
         flash.update(`leg:${k}:exp`, _legExpPnlLive(c));
-        flash.update(`leg:${k}:ltp`, c.ltp != null ? Number(c.ltp) : null);
-        flash.update(`leg:${k}:chg`, positionsDerivedStore.get(c.symbol).chg_pct);
+        // Item 6 fix: `leg:${k}:ltp` flash-tracking now comes ONLY from
+        // the live-tick handler (tickBus.subscribe below) — the poll
+        // write here raced it and could register a spurious reverse
+        // flash. Item 4 fix: the separate `leg:${k}:chg` key (fed from
+        // positionsDerivedStore's poll-only day-P&L-based chg_pct, a
+        // DIFFERENT metric than the cell's own tick-live `_chgPct`
+        // display value) is removed entirely — CandidateLegRow's Chg%
+        // cell now reuses the `:ltp` key directly (mirrors Snapshot's
+        // own Chg%-reuses-`:ltp` pattern), so no separate `:chg` write
+        // is needed at all, from poll or live tick.
       }
     });
   });
@@ -2060,13 +2069,19 @@
       }
 
       // 2. CandidateLegRow LTP cells — re-arm for each leg whose symbol matches.
+      // Item 5 fix: skip closed (qty=0) legs — CandidateLegRow.svelte's own
+      // `isClosed` freeze (Number(c.qty || 0) === 0) already stops the
+      // displayed price from moving for these rows, so flashing them here
+      // was visually inconsistent with the frozen price.
+      // Item 4 fix: no separate `leg:${k}:chg` write — Chg% reuses the
+      // `:ltp` key (see poll-effect comment above for rationale).
       for (const c of candidatePositions) {
+        if (Number(c.qty || 0) === 0) continue;
         if ((c.symbol ?? '').toUpperCase() === root) {
           const k = `${c.account ?? ''}|${c.symbol ?? ''}`;
           const snap = getSnapshot(root);
           if (snap?.ltp != null) {
             flash.update(`leg:${k}:ltp`, Number(snap.ltp));
-            flash.update(`leg:${k}:chg`, positionsDerivedStore.get(c.symbol).chg_pct);
           }
         }
       }
@@ -5902,8 +5917,8 @@
                 <span class="cand-state-badge-btn" data-pos-state={_anchorBadge.state} title={_anchorBadge.tooltip}>{_anchorBadge.glyph}</span>
               </span>
               <span class="cand-anchor-label">{formatPositionSymbol(legsUnderlyingAnchor.resolvedTs || legsUnderlyingAnchor.underlying, legsUnderlyingAnchor.exchange)}</span>
-              <span class="num tf-cell {ltpDayClass(legsUnderlyingAnchor.pct)}">{legsUnderlyingAnchor.ltp != null ? priceFmt(legsUnderlyingAnchor.ltp) : '—'}</span>
-              <span class="num tf-cell cand-anchor-chg-sep {ltpDayClass(legsUnderlyingAnchor.pct)}">{legsUnderlyingAnchor.pct != null ? pctFmt(legsUnderlyingAnchor.pct) + '%' : '—'}</span>
+              <span class="num tf-cell {ltpDayClass(legsUnderlyingAnchor.pct)} {flash.classOf(`${legsUnderlyingAnchor.underlying}:ltp`)}">{legsUnderlyingAnchor.ltp != null ? priceFmt(legsUnderlyingAnchor.ltp) : '—'}</span>
+              <span class="num tf-cell cand-anchor-chg-sep {ltpDayClass(legsUnderlyingAnchor.pct)} {flash.classOf(`${legsUnderlyingAnchor.underlying}:ltp`)}">{legsUnderlyingAnchor.pct != null ? pctFmt(legsUnderlyingAnchor.pct) + '%' : '—'}</span>
               <span class="num"></span>
               <span class="num"></span>
               <span class="num"></span>

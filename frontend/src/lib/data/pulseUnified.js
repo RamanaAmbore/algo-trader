@@ -498,6 +498,12 @@ export function mergePositionRows(byKey, pos, includePos, cq, ctx) {
       // r.last_price is the broker-seed value (ltp_ts=0); valid fallback before first SSE tick
       row.ltp = r.last_price ?? null;
     }
+    // Fallback to broker prev_close (mirrors mergeHoldingRows' fallback at
+    // lines ~583-586/594-595, collapsed to one unconditional check since
+    // nothing between here and there can set row.close) when close is
+    // still unresolved from symbolStore/contracts-quote bag — item 2,
+    // positions previously lacked this fallback entirely.
+    if (row.close == null && Number(r.prev_close) > 0) row.close = Number(r.prev_close);
     // Day P&L — poll-only (§1): baseDayPnlForPosition(r) is the baseline-diff
     // formula (current_total_profit − prev_settlement_pnl), no live-tick
     // delta layered on top. Positions/holdings Day P&L is purely poll-driven;

@@ -48,7 +48,7 @@ export function createTickFlash({ threshold = 0, pctThreshold = 0, durationMs = 
     if (last == null) return;
     if (v === last) return;       // no-change: same value → no flash, no text animation
     if (Math.abs(v - last) < threshold) return;
-    if (_pctThreshold > 0 && last > 0) {
+    if (_pctThreshold > 0 && Math.abs(last) > 0) {
       const changePct = Math.abs((v - last) / last * 100);
       if (changePct < _pctThreshold) return;
     }

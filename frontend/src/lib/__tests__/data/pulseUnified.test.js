@@ -390,6 +390,66 @@ describe('mergeHoldingRows — row.close reads prev_close, not the removed close
   });
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// mergePositionRows — row.close fallback to prev_close (item 2, 2026-10).
+// Mirrors mergeHoldingRows' close fallback above — mergePositionRows had NO
+// equivalent fallback at all before this fix: a position with no symbolStore
+// snap.close AND no contracts-quote-bag liveQ.close stayed row.close == null
+// forever, even though the broker row's own prev_close (daily_book.ltp
+// basis, per CLAUDE.md) was right there on `r.prev_close`.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('mergePositionRows — row.close falls back to prev_close (item 2)', () => {
+  it('snap has ltp but no close: row.close falls back to r.prev_close', () => {
+    const byKey = {};
+    const row = makeOvernightPositionRow({ prev_close: 125, close_price: 9999 });
+    // snap.ltp present, snap.close absent → _applyQuoteFields leaves
+    // row.close null, so the new fallback fires.
+    const ctx = makeCtx({ NIFTY25AUG24000CE: { ltp: 130 } });
+
+    mergePositionRows(byKey, [row], true, {}, ctx);
+
+    const result = byKey['NIFTY25AUG24000CE::__pos'];
+    expect(result.close).toBe(125);
+    expect(result.close).not.toBe(9999); // the removed close_price field must be ignored
+  });
+
+  it('no snap, no liveQ: row.close falls back to r.prev_close via the !_hadLtp path', () => {
+    const byKey = {};
+    const row = makeOvernightPositionRow({ prev_close: 125, last_price: 130 });
+    const ctx = makeCtx({}); // no snap for this symbol at all
+
+    mergePositionRows(byKey, [row], true, {}, ctx);
+
+    const result = byKey['NIFTY25AUG24000CE::__pos'];
+    expect(result.close).toBe(125);
+    expect(result.ltp).toBe(130); // last_price fallback still applies too
+  });
+
+  it('prev_close unavailable (0.0 default): row.close stays null, never NaN/0', () => {
+    const byKey = {};
+    const row = makeOvernightPositionRow({ prev_close: 0, last_price: 130 });
+    const ctx = makeCtx({});
+
+    mergePositionRows(byKey, [row], true, {}, ctx);
+
+    const result = byKey['NIFTY25AUG24000CE::__pos'];
+    expect(result.close).not.toBeNaN();
+    expect(result.close == null).toBe(true);
+  });
+
+  it('close already resolved via symbolStore snap: fallback does not override it', () => {
+    const byKey = {};
+    const row = makeOvernightPositionRow({ prev_close: 999 }); // would be wrong if used
+    const ctx = makeCtx({ NIFTY25AUG24000CE: { ltp: 130, close: 125 } });
+
+    mergePositionRows(byKey, [row], true, {}, ctx);
+
+    const result = byKey['NIFTY25AUG24000CE::__pos'];
+    expect(result.close).toBe(125);
+  });
+});
+
 // ============================================================================
 // mergePositionRows — position-state field propagation (2026-10 fix,
 // REWRITTEN 2026-10 Part A)

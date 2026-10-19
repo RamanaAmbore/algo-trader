@@ -579,6 +579,19 @@
   // CHG% moves with the previous close as well as with spot, so it gets
   // its own key. Keying it off 'spot' missed flashes when only the % moved.
   $effect(() => { _spotFlash.update('chg', spotPct); });
+  // Real tick-to-tick direction for the CHG% chip (2026-10-19 fix) — the
+  // chip used to colour its flash from the SIGN of spotPct (today's
+  // aggregate % move), not from whether the most recent tick moved it up
+  // or down. A down-tick on an up day (or vice versa) flashed the wrong
+  // colour. `_spotFlash` already diffs consecutive 'chg' values in
+  // update() above (the same mechanism that decides whether to flash at
+  // all) — classOf() maps that real direction to 'tf-up'/'tf-down', which
+  // this derives back to the plain 'up'/'down' the text-flash helper
+  // (_tcFlashClass) expects.
+  const _chgDir = $derived.by(() => {
+    const c = _spotFlash.classOf('chg');
+    return c === 'tf-up' ? 'up' : c === 'tf-down' ? 'down' : '';
+  });
 
   // Compact axis label for the Y axis — e.g. "+50K", "0", "−1.20L".
   // Same Indian-scale units as the rest of the app (aggCompact), so the
@@ -949,7 +962,7 @@
               <InfoHint popup hideButton id="ps-hint-chg" anchor={_psHintAnchor.chg} bind:open={_psHintOpen.chg}
                 panel title="CHG%" text="Spot % change from previous session close" />
             </span>
-            <span class={'ps-v ' + ltpDayClass(spotPct) + (_spotFlash.classOf('chg') ? ' ' + _tcFlashClass(spotPct >= 0 ? 'up' : 'down', Math.abs(spotPct ?? 0)) : '')}>
+            <span class={'ps-v ' + ltpDayClass(spotPct) + (_chgDir ? ' ' + _tcFlashClass(_chgDir, Math.abs(spotPct ?? 0)) : '')}>
               {spotPct >= 0 ? '+' : ''}{spotPct.toFixed(2)}%
             </span>
           </div>

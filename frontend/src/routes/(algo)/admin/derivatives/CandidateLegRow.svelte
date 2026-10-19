@@ -483,7 +483,7 @@
     {/if}
   </span>
   <span class="num tf-cell leg-ltp {ltpDayClass(_chgPct)} {flash.classOf(`${_legFlashKey}:ltp`)}">{ltp != null ? priceFmt(ltp) : '—'}</span>
-  <span class="num tf-cell cand-chg-sep {ltpDayClass(_chgPct)} {flash.classOf(`${_legFlashKey}:chg`)}">
+  <span class="num tf-cell cand-chg-sep {ltpDayClass(_chgPct)} {flash.classOf(`${_legFlashKey}:ltp`)}">
     {_chgPct != null ? pctFmt(_chgPct) + '%' : '—'}
   </span>
   <!-- Lots column. For proxy eq rows the lot count is in

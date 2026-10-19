@@ -642,13 +642,11 @@ export function mkRightColDefs({
     ltpCol,
     { field: 'day_pnl_pct', headerName: 'Chg %', colId: 'day_pnl_pct',
       width: 64, type: 'numericColumn', headerClass: numericHdr,
+      // PULSE_SPEC.md §16 — only LTP flashes on Pulse; Chg%/Day P&L/P&L
+      // must not (item 3, 2026-10). No tf-up/tf-down class here.
       cellClass: (p) => {
         if (!p.data || p.data._isTotal) return RA;
-        const sym = String(p.data.quote_symbol || p.data.tradingsymbol || '').toUpperCase();
-        const base = `${RA} ${dirCls(p.value)} chg-right-sep`;
-        if (getLtpFlashUp && getLtpFlashUp().has(sym)) return `${RA} ${dirCls(p.value)} chg-right-sep tf-up`;
-        if (getLtpFlashDown && getLtpFlashDown().has(sym)) return `${RA} ${dirCls(p.value)} chg-right-sep tf-down`;
-        return base;
+        return `${RA} ${dirCls(p.value)} chg-right-sep`;
       },
       valueGetter: _dayPnlPctValueGetter,
       valueFormatter: pctFmtGrid,

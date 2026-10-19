@@ -211,10 +211,26 @@ function _publishWatchQuotes(byItemId) {
  * day_change/volume/oi just like watchQuotes and positions/holdings
  * already were.
  *
+ * `close` is special-cased: `_publishPositionsRows` is the sole
+ * authority for `close` on symbols that are currently-held positions
+ * (it writes the correct `daily_book.ltp`-basis `prev_close`; this
+ * quote path carries Kite's banned `ohlc.close`). Both publishers
+ * stamp `snapshot_ts: Date.now()` with no inherent ordering, so
+ * whichever call lands last used to win — a held position's `close`
+ * could silently flip to the wrong basis. Callers pass
+ * `opts.skipCloseSymbols` (a Set of uppercased tradingsymbols — the
+ * caller's currently-held positions with a valid `prev_close`) so this
+ * publisher omits `close` entirely for those symbols, leaving the
+ * positions publisher as sole authority. Non-held symbols (underlying/
+ * root symbols with no position) are unaffected — `close` keeps
+ * writing from this quote path, the documented legitimate fallback use.
+ *
  * @param {Array<any>} items
+ * @param {{ skipCloseSymbols?: Set<string> }} [opts]
  */
-export function publishPulseQuotes(items) {
+export function publishPulseQuotes(items, opts) {
   if (!Array.isArray(items) || items.length === 0) return;
+  const skipClose = opts?.skipCloseSymbols instanceof Set ? opts.skipCloseSymbols : null;
   const ts = Date.now();
   /** @type {Array<{sym: string, fields: any, ts: {ltp_ts: number, snapshot_ts: number}}>} */
   const batch = [];
@@ -225,7 +241,10 @@ export function publishPulseQuotes(items) {
       sym,
       fields: {
         ltp:            q.ltp,
-        close:          q.close,
+        // Omitted (not set to undefined-key) for held positions — see
+        // skipCloseSymbols doc above. _mergeSymbolWrite already skips
+        // `raw == null` fields, so `undefined` here is a safe no-op.
+        close:          (skipClose && skipClose.has(sym)) ? undefined : q.close,
         open:           q.open,
         high:           q.high,
         low:            q.low,
