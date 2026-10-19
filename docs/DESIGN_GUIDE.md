@@ -149,6 +149,7 @@ The full developer onboarding document. Read top-to-bottom to understand the cod
 - §22.27. [Modal consolidation — ActivityLogModal sheet pattern + fullscreen inset flush](#2227-modal-consolidation--activitylogmodal-sheet-pattern--fullscreen-inset-flush)
 - §22.28. [Agent engine — baseline window initialization + mixed-condition gating](#2228-agent-engine--baseline-window-initialization--mixed-condition-gating)
 - §22.29. [MmapTickReader — virtual-root alias resolution for MCX SSE subscription](#2229-mmaptickreader--virtual-root-alias-resolution-for-mcx-sse-subscription)
+- §22.30. [MmapTickReader self-healing supervision + tick-staleness indicator](#2230-mmaptickreader-self-healing-supervision--tick-staleness-indicator)
 
 **Part VII — Operations**
 
@@ -5890,6 +5891,77 @@ underlying symbol.
 - `backend/brokers/mmap_ticker.py::MmapTickReader.get_token_for_sym` — new method
 - `backend/brokers/mmap_ticker.py::MmapTickReader.set_virtual_root_alias` — new method
 - `backend/api/background.py::_perf_subscribe_book_symbols` — caller
+
+---
+
+## 22.30. MmapTickReader self-healing supervision + tick-staleness indicator
+
+In conn-service mode (`RAMBOQ_USE_CONN_SERVICE=1`) the API process runs a local tick-forwarding
+poll task inside `MmapTickReader` ([`mmap_ticker.py`](backend/brokers/mmap_ticker.py)). It reads
+`/dev/shm/ramboq_ticks` and publishes to `BroadcastBus` for SSE. That local task could die
+silently: a nightly lifecycle bug (`hasattr()`-based duck-typing in the ticker stop/restart jobs)
+could tear it down, and nothing re-armed it. Live prices froze with no operator-visible cue. This
+section covers the fix: local liveness supervision, correct mode detection in the nightly jobs,
+and a frontend staleness indicator.
+
+**Two supervision layers, two concerns.** Conn-service supervises the upstream KiteTicker
+WebSocket to Kite. The API-side watchdog supervises only the LOCAL poll task that forwards ticks
+from the mmap buffer into the API process. A healthy conn-service does not imply a healthy local
+forwarder, and the reverse holds too.
+
+**`MmapTickReader.check_and_heal()`** — watchdog entry point:
+
+- If the poll task is alive, returns `True` and clears the "already logged" gate so the next real
+  death logs again.
+- If the task is dead, logs one `CRITICAL` line per dead→alive transition
+  (`[MMAP-WATCHDOG] poll task found dead — restarting`), including the causing exception type and
+  message when the task ended with one. A prolonged outage does not spam the log.
+- Restarts via `ensure_started()`.
+- Keeps a rolling record of heal timestamps. Three or more heals inside 10 minutes escalate to a
+  second `CRITICAL` line. This separates a known, self-resolving blip from a deeper problem
+  (mmap producer side or conn-service) that needs investigation.
+
+**Caller: `_task_ticker_watchdog`** ([`background.py`](backend/api/background.py)). In
+conn-service mode the task runs `_watchdog_cutover_heal_loop()`, which calls `check_and_heal()`
+every 30 seconds. It skips the heal when the engine is idle (dev, no mode selected) because
+`_start_kite_ticker` deliberately never starts the reader in that state. The loop never returns
+on its own, since `_supervised` would otherwise restart it in a tight loop.
+
+**Nightly and morning lifecycle jobs mode-check with `is_cutover_on()`.** Previously these jobs
+detected the architecture by `hasattr()` duck-typing on the ticker object, which let the stop job
+reach the local `MmapTickReader` and kill its poll task. All three jobs
+now branch on `is_cutover_on()` and are true no-ops on the local task in conn-service mode:
+
+| Job | Schedule | Direct mode (KiteTicker owns socket) | Conn-service mode |
+|---|---|---|---|
+| `_snapshot_stop_ticker()` | MCX close + 1 min (23:31 IST) | `ticker.stop()` | no-op (reactor and socket live in conn-service) |
+| `_snapshot_restart_ticker()` | 08:00 IST | Restart with rotated daily token | `check_and_heal()` unless engine idle |
+| `unsubscribe_non_mcx()` | 16:15 IST | Trim non-MCX subscriptions | no-op (no socket to trim) |
+
+**Frontend staleness indicator** — [`tickStaleness.svelte.js`](frontend/src/lib/data/tickStaleness.svelte.js).
+Backend self-heal cannot be the only signal. A healthy-looking SSE connection with a dead tick
+bridge is exactly the failure this section addresses, so the frontend watches the stream itself:
+
+- Tracks `lastLiveTickAt` from [`quoteStream.js`](frontend/src/lib/data/quoteStream.js). It advances
+  only on a real `snapshot` or `tick` SSE event carrying a valid LTP. It does not advance on
+  heartbeats or on background book-poller batches, which take a separate write path.
+- A 5-second checker sets the stale flag when no real tick has landed for 75 seconds. The flag is
+  AND-gated on `isNseOpen() || isMcxOpen()`, so a quiet, correct closed market never fires.
+- Operator-visible output: an amber `TICKS STALE` badge rendered by
+  [`RefreshButton.svelte`](frontend/src/lib/RefreshButton.svelte), plus one warning toast per
+  episode ("Live ticks stale — no updates 75s+").
+- Toast re-arm rule: only a genuine new tick clears the toast-fired flag. Closing the market hides
+  the badge, but a still-dead stream reappearing after reopen is the same episode and does not
+  re-toast.
+- Test threshold override: `window.__rbq_tickStaleMs` (set via `addInitScript`) lets Playwright
+  avoid the 75-second wait.
+
+**Files:**
+- `backend/brokers/mmap_ticker.py::MmapTickReader.check_and_heal` — liveness check, restart, escalation
+- `backend/api/background.py::_watchdog_cutover_heal_loop`, `_task_ticker_watchdog` — 30s caller
+- `backend/api/background.py::_snapshot_stop_ticker`, `_snapshot_restart_ticker` — `is_cutover_on()` gates
+- `frontend/src/lib/data/tickStaleness.svelte.js` — client-side staleness watchdog
+- `frontend/src/lib/RefreshButton.svelte` — amber badge surface
 
 ---
 

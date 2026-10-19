@@ -3,9 +3,9 @@
 Single source of truth for `backend/brokers/` — the vendor-agnostic broker abstraction layer.
 Code, tests, and documentation must stay in sync with this file.
 
-**Version**: 1.32 — 2026-10-01  
+**Version**: 1.33 — 2026-10-19  
 **Owner**: Platform  
-**Linked files**: `backend/brokers/base.py` · `backend/brokers/registry.py` · `backend/brokers/connections.py` · `backend/brokers/kite_ticker.py` · `backend/brokers/adapters/` · `backend/brokers/service/` · `backend/brokers/client/`
+**Linked files**: `backend/brokers/base.py` · `backend/brokers/registry.py` · `backend/brokers/connections.py` · `backend/brokers/kite_ticker.py` · `backend/brokers/mmap_ticker.py` · `backend/brokers/adapters/` · `backend/brokers/service/` · `backend/brokers/client/`
 
 ---
 
@@ -195,7 +195,7 @@ token is available before market open.
 |---|---|---|
 | 05:30 | `_task_holiday_refresh()` pre-warms tokens for ALL loaded accounts | `background.py:2467–2492` |
 | 05:30 + 30 min (retry) | Retry pre-warm if any account failed; repeats until 08:00 | `background.py:2425–2443` |
-| 08:00 | `_snapshot_restart_ticker()` passes validated token to KiteTicker restart | `background.py:2101–2112` |
+| 08:00 | `_snapshot_restart_ticker()` passes validated token to KiteTicker restart (direct mode). Under conn-service it runs `check_and_heal()` on the local poll task instead; the broker ticker restart is conn_service's job (§9.1) | `background.py` (`_snapshot_restart_ticker`) |
 
 **Per-broker pre-warm calls (05:30):**
 
@@ -309,6 +309,11 @@ ping-ponging. `_swap_history` 128-entry rolling log.
 `asyncio.to_thread` (non-blocking I/O, doesn't starve event loop). Watchdog detects stuck
 KiteTicker connections and triggers account swap without blocking the main API's asyncio loop.
 
+**Conn-service mode scope**: when `RAMBOQ_USE_CONN_SERVICE=1`, the failover and degraded-alert
+branch is skipped (the real socket and its subscriptions live in conn_service). The conn-service
+branch supervises only the API-side local poll task (`MmapTickReader`) via `check_and_heal()`
+every 30 s — see §9.1. Upstream WebSocket health remains conn_service's own watchdog's job.
+
 **Unsubscribe cleanup** (Aug 2026): Unsubscribe path now correctly prunes three data structures:
 - `_pending` — set of tokens awaiting subscription ACK
 - `_token_to_sym` — token → symbol reverse map
@@ -332,6 +337,19 @@ this set first to suppress redundant broker subscription attempts.
 token is already registered in `_token_to_sym` before calling the broker to subscribe. Prevents 
 duplicate broker subscription requests when the same token is re-registered (e.g., on 
 reconnect or stale data retries).
+
+**API-side local tick poller self-heal (Oct 2026, commit 7bf11fac)**: in conn-service mode the
+API process's `MmapTickReader` (`backend/brokers/mmap_ticker.py`) runs a local poll task that tails
+`/dev/shm/ramboq_ticks` and republishes to the browser SSE stream. This task previously died silently
+after the nightly MCX-close stop and was not revived at 08:00. `check_and_heal()` now supervises it:
+- A dead or finished poll task is restarted via `ensure_started()`.
+- One `[MMAP-WATCHDOG]` critical line is logged per dead→alive transition, including the captured
+  exception when there is one.
+- Three or more heals inside a rolling 600 s window escalate to a second critical line.
+
+Operator-visible consequence: a dead local poller shows up in the browser as the `TICKS STALE`
+badge (see [PULSE_SPEC §31.1](PULSE_SPEC.md#311-tick-staleness-indicator)), not a silent freeze.
+Supervision details are in §9.1.
 
 ---
 
@@ -2352,7 +2370,9 @@ conn-service disabled, the combined 05:30 task refreshes Kite/Dhan/Groww tokens 
 on the main process.
 
 **Canonical examples in the codebase**:
-- `_task_ticker_watchdog`: cutover mode exit → `while is_cutover_on(): await asyncio.sleep(300); return`
+- `_watchdog_cutover_heal_loop` (body of `_task_ticker_watchdog` in conn-service mode): sleeps
+  30 s, then `check_and_heal()`, in a `while True` loop; exits only if conn-service mode is turned
+  off, and always sleeps before any return
 - `_task_warm_backfill`: already-fired guard → `await asyncio.sleep(86400); return`
 - `_task_warm_backfill`: empty symbol universe → `await asyncio.sleep(3600); return`
 - `_task_expiry_check`: non-prod branch → `while not is_prod_branch(): await asyncio.sleep(300); return`
@@ -2392,6 +2412,48 @@ LTPs to ensure real-time spot pricing for derivatives positions:
 the chart recomputes spot from broker quote REST polls (30s cadence), causing stale payoff 
 curves when spot moves rapidly. Auto-subscription ensures spot is always current, improving 
 payoff accuracy during volatile intraday windows.
+
+### API-Side Local Tick Poller Supervision (Oct 2026, commit 7bf11fac)
+
+**Files**: `backend/brokers/mmap_ticker.py` (`MmapTickReader.check_and_heal`, `ensure_started`) ·
+`backend/api/background.py` (`_watchdog_cutover_heal_loop`, `_task_ticker_watchdog`,
+`_snapshot_unsub_nonmcx`, `_snapshot_stop_ticker`, `_snapshot_restart_ticker`)
+
+Two processes own two different tick-path tasks. conn_service supervises the upstream KiteTicker
+WebSocket with its own watchdog. The API process supervises only its own local poll task, which
+tails `/dev/shm/ramboq_ticks`. This subsection covers the second.
+
+**Watchdog loop**: in conn-service mode `_task_ticker_watchdog` calls
+`_watchdog_cutover_heal_loop()`, which calls `MmapTickReader.check_and_heal()` every 30 s. It skips
+the heal while the engine is idle (dev boot with no mode selected), because `_start_kite_ticker`
+deliberately never starts the reader in that state.
+
+**`check_and_heal()` contract**:
+- Poll task alive → resets the "already logged" gate and returns `True`.
+- Poll task dead or done → logs `[MMAP-WATCHDOG] poll task found dead — restarting` (critical, once
+  per dead→alive transition; appends `exc=<type>: <msg>` when the task raised), records the heal
+  time, then calls `ensure_started()`.
+- Three or more heals within a rolling 600 s window → a second critical line saying this is not the
+  known nightly-stop bug and the mmap producer side should be investigated.
+
+**Snapshot lifecycle functions under conn-service** (all detect the mode via `is_cutover_on()`,
+not duck-typing):
+
+| Function | Fires at (IST) | Conn-service behaviour |
+|---|---|---|
+| `_snapshot_unsub_nonmcx` | NON-MCX close + 1 min | No-op — `MmapTickReader` owns no socket to trim |
+| `_snapshot_stop_ticker` | MCX close + 1 min (23:31) | No-op — stopping would kill the local poller |
+| `_snapshot_restart_ticker` | 08:00 | Runs `check_and_heal()` (skipped if engine idle); does not restart the broker ticker |
+
+Before this fix, `_snapshot_stop_ticker` called `stop()` on the local poller at 23:31, and the
+08:00 restart did not revive it, so ticks stopped reaching the browser until a process restart.
+
+**Tests**: `backend/tests/test_mmap_ticker.py` · `backend/tests/test_bg_ticker_watchdog.py` ·
+`backend/tests/test_bg_snapshot_ticker_lifecycle.py` · frontend symptom:
+`frontend/e2e/tick_staleness_indicator.spec.js`.
+
+**Cross-reference**: [PULSE_SPEC §31.1](PULSE_SPEC.md#311-tick-staleness-indicator) covers the
+browser-side `TICKS STALE` indicator that surfaces this failure to the operator.
 
 ---
 
@@ -2620,6 +2682,8 @@ Virtual symbols (`CRUDEOIL`, `CRUDEOIL_NEXT`, `USDINR`, etc.) are never sent raw
 **I30 — Snapshot quantity read path does not apply multiplier** (Aug 2026): `daily_book.qty` is written in CONTRACTS by the snapshot write path (`_positions_qty_fields`); the read seam (`build_row_from_snapshot_raw()`) must NOT apply any multiplier. Prior bug: MCX read applied lot_size multiplier twice, resulting in `qty = contracts × lot_size²` (e.g. 300 contracts × 100 = 30,000). Fix: `effective_qty = qty or 0` (no scaling). This affects closed-hours position grids, NavStrip P slot 1 (quantity), and NavStrip P slot 3 (NAV).
 
 **I31 — Basket order netting invariants** — When an operator clicks +/− on an already-basketed strike in the Chain tab, the system **decrements the opposite-side leg** rather than adding a new same-side leg. This netting behavior ensures legs remain balanced and avoids unintended leg proliferation. **Qty floor:** the quantity cannot go below 1; reaching 0 automatically removes the leg from the basket. **Spread warning:** displayed in the OrderTicket when the bid/ask spread exceeds 10% of the mid-price, alerting the operator to potential slippage on entry/exit. Files: `frontend/src/lib/order/OptionChainTab.svelte` — leg add/remove logic; `frontend/src/lib/order/OrderTicket.svelte` — spread warning threshold check.
+
+**I32 — API-side local tick poller is supervised, and lifecycle hooks never stop it (Oct 2026)**: In conn-service mode, the API process's `MmapTickReader` poll task is the only thing forwarding ticks to the browser SSE stream. `check_and_heal()` (every 30 s via `_task_ticker_watchdog`, and at 08:00 via `_snapshot_restart_ticker`) must restart it when dead. The snapshot lifecycle hooks (`_snapshot_unsub_nonmcx`, `_snapshot_stop_ticker`) must be no-ops in this mode, because they would otherwise stop the local poller with nothing scheduled to revive it. Details: §9.1 "API-Side Local Tick Poller Supervision".
 
 ---
 
@@ -3172,4 +3236,5 @@ broker to prefetch during the quiet window without polluting snapshots.
 | 2026-10-07 | v1.32 Chase rejection classification message-hint check (commit bdbe7fec): Updated §8.5 subsection "Chase error recovery — error classification and backoff" to document message-hint override in `_ch_is_recoverable_error()`. Now checks `_CH_NON_RECOVERABLE_REJECTION_HINTS` ("margin", "rms", "risk", "permission", "blocked") against exception text BEFORE type check (line 550–552 in `backend/api/algo/chase.py`), mirroring behavior in `_ch_rejection_is_recoverable()` (line 565–567). Prevents margin-shortfall exceptions from defaulting to recoverable and wasting retries. Amends the "Rejection-status recovery" bullet: non-recoverable overrides checked FIRST, then price-hint list ("price", "circuit", "tick", "range", "stale", "band"). Example: `_ch_is_recoverable_error(Exception("margin shortfall"))` now correctly returns False (abort), matching REJECTED status with same message. |
 | 2026-10-07 | v1.32 Chase repeated-rejection hold gate (commit c5322d53): Updated §8.5 subsection "Chase error recovery" to document repeated-rejection hold. Amends the "Recovery logic" bullet: two consecutive price-shaped rejections now place order in HELD state (`HoldCategory.AGENT_ORDER`, `backend/api/algo/order_hold.py` line 13 + `chase.py` line 1654) instead of retry attempt 3. Operator releases via `POST /api/orders/held/{id}/release` → `release_repeated_rejection_hold()` in `backend/api/algo/order_release.py`, resuming chase with row's persisted side/qty/intent. Gate fires when `_rejection_count >= 2` (line 1714 in `chase.py`). Cancel path (`POST /api/orders/held/{id}/cancel`, commit `475b07e2`) also available. Release race-safety: mark row chase-active BEFORE committing `status=OPEN`, preventing reconcile sweep from flipping freshly-released row back to REJECTED in gap before resumed chase starts. |
 | 2026-10-07 | v1.32 RemoteBroker error type map completeness (commit e8d9a4d7): Updated §9 Remote Broker & Conn Service with new "Error type map completeness" paragraph. `_ERROR_TYPE_MAP` in `remote_broker.py` (lines 125–133) now includes all `BrokerError` subclasses: `BrokerAuthError`, `BrokerRateLimitError`, `BrokerNetworkError`, `BrokerOrderError`, `BrokerInputError`, `BrokerCapabilityError`, plus base `BrokerError`. Previously missing `BrokerInputError`, `BrokerOrderError`, `BrokerCapabilityError` degraded to generic `BrokerError` in conn-service mode, causing `_ch_is_recoverable_error()` misclassification as recoverable. Added drift-guard test in `backend/tests/broker/test_broker_robustness_batch2.py` enumerating every `BrokerError` subclass via introspection, failing automatically if new subclass added without map entry. No silent regressions if future code adds exception type to hierarchy. |
+| 2026-10-19 | v1.33 API-side local tick poller self-heal (commit 7bf11fac): §7 documents `MmapTickReader.check_and_heal()` (dead poll task restarted via `ensure_started()`, `[MMAP-WATCHDOG]` critical log per dead→alive transition, escalation at ≥3 heals per 600 s) and the conn-service scope of `_task_ticker_watchdog`. §9.1 new subsection "API-Side Local Tick Poller Supervision" with the snapshot-lifecycle table (`_snapshot_unsub_nonmcx` / `_snapshot_stop_ticker` no-op, `_snapshot_restart_ticker` heals instead of restarting the broker ticker); replaces stale `_task_ticker_watchdog` early-return example. §5.4 08:00 row qualified for conn-service mode. New I32 invariant. Browser-side symptom documented in PULSE_SPEC §31.1. Tests: `test_mmap_ticker.py`, `test_bg_ticker_watchdog.py`, `test_bg_snapshot_ticker_lifecycle.py`. |
 | 2026-10-07 | v1.32 Active-chase registry prevents false "untracked order" aborts (commits cc353596, c5322d53): Added §8.5 subsection "Active-chase registry prevents false untracked order aborts" documenting in-process registry pattern. Module-level `_ACTIVE_CHASE_REFCOUNT` dict (`backend/api/algo/chase.py` line 648) tracks in-flight chases; `chase_order()` calls `mark_chase_active(algo_order_id)` at entry (line 660, increments refcount) and `unmark_chase_active()` at exit in try/finally (lines 672–676). Kite postback, Dhan/Groww postback, and `_chase_process_live_row()` reconcile finalizer (`orders.py` line 225) check `is_chase_active()` before writing non-FILLED terminal status — if active, withhold write (log + continue), allowing active chase to finish naturally. FILLED always applies. **Causal chain**: (1) Chase places order (T0). (2) Seconds later, postback arrives REJECTED. (3) Old code: `_sync_algo_order_id()` (line 1064) correctly refused update on FINAL row but loop still aborted with false "untracked" alert (saw final row, had no way to know postback caused it vs another race). (4) Registry: postback checks `is_chase_active(row.id)` — if active, skips status write. (5) Chase loop's `_emit_chase_terminal()` completes naturally, reads genuinely-REJECTED order, terminates correctly (not false "untracked" abort). Root cause fix for cc353596's original guard. Files: `backend/api/algo/chase.py` (functions `mark_chase_active`, `unmark_chase_active`, `is_chase_active`, `_sync_algo_order_id`); `backend/api/routes/orders_postback.py` (Kite/Dhan/Groww postback handlers); `backend/api/routes/orders.py` (`_chase_process_live_row`). |

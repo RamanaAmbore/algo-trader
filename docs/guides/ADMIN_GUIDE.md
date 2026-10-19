@@ -1091,6 +1091,35 @@ tail -f /opt/ramboq/.log/conn_log_file
 | Ticker stale (no LTP updates) | Conn service health: `curl --unix-socket /tmp/ramboq_conn.sock http://localhost/health` (should be 200 with `{"status": "healthy"}`). Check `/dev/shm/ramboq_ticks` exists (mmap buffer). |
 | "Failed to connect to socket" errors in main API logs | Conn service crashed or didn't start. Check `systemctl start ramboq_conn` manually. |
 | Postback 401 errors | Conn service must restart after broker credentials change (so it reloads API secrets). Automatic via deploy, or manual `systemctl restart ramboq_conn`. |
+| Amber `TICKS STALE@HH:MM` badge next to Refresh (market open) | Live tick stream silent for 75s+. See [TICKS STALE badge](#ticks-stale-badge) below. |
+
+### TICKS STALE badge
+
+Amber pill rendered inline next to the Refresh button (`RefreshButton.svelte`) on any page
+that mounts one. It is driven by the frontend watchdog in
+[tickStaleness.svelte.js](frontend/src/lib/data/tickStaleness.svelte.js), which watches the
+live SSE tick stream only.
+
+| Property | Value |
+|---|---|
+| Label | `TICKS STALE@HH:MM` — `HH:MM` is the IST time of the last real tick |
+| Hover tooltip | `Live ticks stale — last update HH:MM IST` |
+| Trigger | NSE **or** MCX open, AND no real tick/snapshot with a valid LTP for **75 s** |
+| Toast | One warning toast, `Live ticks stale — no updates 75s+` (8 s), per episode |
+| Clears | Automatically on the next real tick. Hidden while both exchanges are closed |
+| Test hook | `data-testid="tick-stale-indicator"` |
+
+**What does NOT clear it**: clicking Refresh, or background book-poller batches
+(positions / holdings / funds). Only a genuine live tick resets the watchdog, so a
+healthy-looking page with a dead tick stream still shows the badge.
+
+**Not the same as the per-account `STALE@HH:MM` tag** on positions, holdings, or funds
+rows. That tag means a broker fetch for one account degraded or failed; this badge means
+the live LTP stream itself went quiet.
+
+**When it persists**: follow the conn-service checks in the table above, then look for
+`ticker_close` / `ticker_error` events on the Conn tab of `/admin/activity` (see the
+event table in this guide). The badge needs no manual dismissal and no page reload.
 
 ### Health endpoint
 

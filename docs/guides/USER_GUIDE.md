@@ -61,6 +61,16 @@ Live LTP overlay on PositionStrip, MarketPulse, and payoff diagrams updates ever
 second via KiteTicker WebSocket. Freezes when `isMarketOpen() = false` (no ticks
 after session close).
 
+**If the tick stream goes quiet during market hours**: an amber **TICKS STALE@HH:MM**
+badge appears next to the Refresh button once no live price update has arrived for
+75 seconds while NSE or MCX is open. The `HH:MM` is the time of the last real tick.
+You also get one warning toast for that episode. The badge is the platform telling you
+the prices on screen are not moving, even though the page itself looks normal. It clears
+on its own as soon as live ticks resume, and it stays hidden when both exchanges are
+closed. Do not confuse it with the `STALE@HH:MM` tag on an individual account's rows,
+which means a broker data fetch for that account failed. Exact thresholds and what to
+check are in [ADMIN_GUIDE.md](ADMIN_GUIDE.md#ticks-stale-badge).
+
 ### Book cadence (5 second frontend / 30 second backend cache)
 `marketDataStores.svelte.js` polls every 5 seconds. Backend `positions`, `holdings`,
 and `funds` routes maintain a 30-second raw-DataFrame cache (`_RAW_CACHE`). Net effect:

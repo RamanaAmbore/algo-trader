@@ -3,9 +3,9 @@
 Single source of truth for the `/pulse` page behavior across all market states, user states,
 and data sources. Code, tests, and documentation must stay in sync with this file.
 
-**Version**: 1.23 — 2026-10-16  
+**Version**: 1.25 — 2026-10-19  
 **Owner**: Platform  
-**Linked files**: `frontend/src/lib/MarketPulse.svelte` · `frontend/src/lib/data/marketDataStores.svelte.js` · `frontend/src/lib/data/positionsDayPnlStore.svelte.js` · `frontend/src/lib/data/holdingsDayPnlStore.svelte.js` · `frontend/src/app.css` · `frontend/src/lib/data/quoteStream.js` · `backend/api/background.py` · `backend/api/routes/quote.py` · `backend/api/routes/watchlist.py` · `backend/api/helpers/snapshot_gate.py` · `backend/api/algo/daily_snapshot.py` · `backend/api/routes/holdings.py`
+**Linked files**: `frontend/src/lib/MarketPulse.svelte` · `frontend/src/lib/data/marketDataStores.svelte.js` · `frontend/src/lib/data/positionsDayPnlStore.svelte.js` · `frontend/src/lib/data/holdingsDayPnlStore.svelte.js` · `frontend/src/app.css` · `frontend/src/lib/data/quoteStream.js` · `frontend/src/lib/data/tickStaleness.svelte.js` · `frontend/src/lib/RefreshButton.svelte` · `backend/api/background.py` · `backend/api/routes/quote.py` · `backend/api/routes/watchlist.py` · `backend/api/helpers/snapshot_gate.py` · `backend/api/algo/daily_snapshot.py` · `backend/api/routes/holdings.py`
 
 ---
 
@@ -42,6 +42,7 @@ and data sources. Code, tests, and documentation must stay in sync with this fil
 29. [LTP & Spot & Day % Text-Color Flash](#29-ltp--spot--day--text-color-flash)
 30. [Holdings & Positions Exp P&L Column Scoping](#30-holdings--positions-exp-pl-column-scoping)
 31. [Tab-Return SSE Reconnect](#31-tab-return-sse-reconnect)
+31.1 [Tick Staleness Indicator](#311-tick-staleness-indicator)
 32. [Known Defects](#32-known-defects)
 
 ---
@@ -442,6 +443,7 @@ intraday ITM close automation when positions tick ITM after initial close snapsh
 | Backfill script outside main API | Write queue workers must be started + drained explicitly |
 | KiteTicker stale (30s watchdog) | Auto-failover to next Kite account with 5-min cooloff |
 | conn_service restart | Main API reads mmap directly; ticker auto-reconnects |
+| API-side local tick poller dead (conn-service mode) | `check_and_heal()` restarts it within 30 s ([BROKER_SPEC §9.1](BROKER_SPEC.md#91-background-task-supervisor)); `TICKS STALE` badge + toast show the gap until ticks resume (§31.1) |
 
 ### Refresh cadence (MarketPulse timer rationalization):
 
@@ -2529,6 +2531,74 @@ document.addEventListener('visibilitychange', () => {
 
 ---
 
+## 31.1 Tick Staleness Indicator
+
+Operator-visible signal that live LTP ticks have stopped while NSE or MCX is open. Renders as an
+amber `TICKS STALE@HH:MM` badge in [RefreshButton.svelte](../../frontend/src/lib/RefreshButton.svelte)
+(the `HH:MM` is the IST time of the last live tick) plus one toast per staleness episode.
+
+This is a different failure from the two neighbouring signals:
+- **§31 tab-return reconnect** covers a *dropped* SSE connection. Here the SSE connection stays up
+  and heartbeats keep flowing, so no reconnect happens.
+- **§13 `STALE@HH:MM` account badge** is the per-account broker circuit-breaker state, rendered on
+  the Positions account column. It says nothing about the tick path.
+
+The 2026-10 incident that motivated this was a backend local tick forwarder that went silent for
+hours while the SSE heartbeats kept flowing. The backend half of the fix is in
+[BROKER_SPEC §7](BROKER_SPEC.md#7-kiteticker--mmap-pipeline) and §9.1, where the watchdog heals the
+poller within 30 s. This section covers only the browser-side signal.
+
+### Signal source
+
+- `lastLiveTickAt` in [quoteStream.js](../../frontend/src/lib/data/quoteStream.js) advances only on
+  a real SSE `tick` or `snapshot` event carrying a valid LTP.
+- Heartbeats do not advance it, and neither do background book-poller batches (positions, holdings,
+  funds). Those write through a separate path.
+- Deliberately not `symbolTickCount` (symbolStore). That counter bumps on poller batches too, so it
+  would never go quiet during this failure.
+
+### Thresholds and gating
+
+| Parameter | Value | Source |
+|---|---|---|
+| Stale threshold | 75 s with no live tick | `TICK_STALE_MS` in `tickStaleness.svelte.js` |
+| Check cadence | every 5 s (`visibleInterval`) | `tickStaleness.svelte.js` |
+| Market gate | `isNseOpen() \|\| isMcxOpen()` | same helpers `RefreshButton` uses |
+| Test override | `window.__rbq_tickStaleMs` (set via `addInitScript`) | Playwright only |
+
+The badge and toast only apply while a segment is open. A quiet but correct closed market never
+shows them.
+
+### Display and toast
+
+- Badge text: `TICKS STALE@HH:MM`. Tooltip: `Live ticks stale — last update HH:MM IST`.
+- The `HH:MM` is captured once, when the stale state flips on. It does not re-render every check.
+- Toast: `Live ticks stale — no updates 75s+` (8 s). It fires once per staleness episode.
+- The badge clears as soon as a live tick resumes.
+
+### Episode rules
+
+- The toast re-arms only when a genuine new live tick lands.
+- Market close hides the badge but does not re-arm the toast. A dead stream that reappears after
+  the next open is the same episode and does not produce a second toast.
+
+### Lifecycle and scope
+
+- `startTickStalenessWatch()` is a singleton and idempotent. Every mounted `RefreshButton` calls it,
+  so exactly one checker runs.
+- `RefreshButton` is mounted on many `(algo)` pages, including `/pulse`. The badge is app-wide, not
+  MarketPulse-only.
+
+### Invariants
+
+- The staleness signal comes only from the SSE tick path. Never feed it from poll-driven writes,
+  or a dead bridge will look healthy.
+- The badge never shows while both segments are closed.
+
+**Test**: `frontend/e2e/tick_staleness_indicator.spec.js`.
+
+---
+
 ## 32. Known Defects
 
 See `PULSE_SPEC.md §9 Known Defects` section (BD1–BD4 fixed in `b1d7654c`, D1–D4 fixed in `b6e52b2a`).
@@ -2588,3 +2658,4 @@ See `PULSE_SPEC.md §9 Known Defects` section (BD1–BD4 fixed in `b1d7654c`, D1
 | 2026-09-22 | v1.21 Column border refinements + directional cell backgrounds (commit 516937c5): §14.6 new subsection documents four CSS-layer visual fixes. (1) **Symbol column right border (neutral state)** — `.ag-col-sym` and `.ag-col-sym-left` now have `border-right: 0 !important`; in neutral state no right edge displays, in directional state (chg-up/chg-down) only the 2px `::after` bar shows; sparkline column's amber left-boundary serves as separator. (2) **Account column left border removed** — `.ag-col-acct` now has `border-left: 0 !important`; all Pulse grids (MarketPulse, PerformancePage, NavBreakdown) have no left stripe; `--acct-stripe` variable preserved for future reuse. (3) **Underlying root symbol bar** — `row-und` rows (NIFTY, BANKNIFTY header rows in Snapshot/Positions grid) now display purple `::after` right-edge bar (`rgba(192,132,252,0.80)`) on `.ag-col-sym` cell, matching visual pattern of `row-pos-orphan` (amber) and `row-pos-paired` (cyan) leg rows. (4) **Legs and expiry-close directional backgrounds** — CandidateLegRow `.cand-sym-acct` now shows directional tints: `cand-row-long` → `rgba(74,222,128,0.10)` green for long, `cand-row-short` → `rgba(248,113,113,0.10)` red for short, `expiry-band-close` → `rgba(251,191,36,0.12)` amber for expiry-close (previously only 14% per-account color-mix). Impact: refined visual hierarchy across MarketPulse + derivatives admin pages; cleaner column borders, directional bars + backgrounds carry clearer semantic meaning; no functional changes, pure CSS refinement. |
 | 2026-10-16 | v1.23 Position manual pinning + position-state badge SSOT (commit 09ec8c6f): (1) **§4.4 PositionRow schema** — added three new fields: `pin_group_key: str\|None` (operator-persisted manual pair linking via `position_pairs` table, formatted `"PIN{id}"`), `pair_group_key` clarified as **auto-detected** lot-waterfall link (ephemeral, recomputed per request), and `has_gtt: bool` (active GTT order attached). Position can carry both auto-paired and manually pinned states simultaneously. (2) **§14 Position state (St) column and badge rendering** — replaced hardcoded glyph with real priority-based badge system: GTT (green, text "GTT") > pinned (cyan+border, `PIN123`) > auto-paired (cyan, `P1`/`P2`) > orphan (amber, diamond glyph `◇︎`). New shared SSOT `positionStateBadge(row)` helper in `frontend/src/lib/data/positionStateBadge.js` consumed by MarketPulse Positions grid (`pulseColumns.js`) and Derivatives Legs grid (`CandidateLegRow.svelte`). Clicking badge opens `PositionPinPicker.svelte` to pin/unpin. (3) **§15 Pair-group sort restoration** — Derivatives Legs grid sort (`pairGroupSort.js:sortRowsByPairGroup()`) keyed on `${account}|${pair_group_key}` (auto-pair grouping only); manual pins (`pin_group_key`) do NOT participate in sort order. (4) **§19 Symbol Context Menu** — "Pair with…" (or "Unpin" if already pinned) entry added for positions rows; opens `PositionPinPicker.svelte` and routes to `POST /api/positions/pin` or `DELETE /api/positions/pin/{id}`. (5) **§4.4 expiryPnl.js whitelist** — fixed Legs grid data pipeline to allow `has_gtt`, `pin_group_key`, `pair_group_key`, `is_orphan` fields through to consumers (was stripping them, causing grid to render no badges). Tests: `backend/tests/test_positions_pin.py`, `frontend/e2e/position_pin_pairing.spec.js`, `frontend/src/lib/__tests__/data/positionStateBadge.test.js`. Impact: operators can now manually link related positions for persistent visual grouping; position state display unified across Pulse and derivatives pages with clear badge priority hierarchy. Invariant: chase/bracket/template_attach code deliberately does NOT consult `pin_group_key` or `pair_group_key` fields yet (deferred per architecture council); only AlgoOrder parent-linkage suppresses TP/template on child orders. |
 | 2026-10-17 | v1.24 Lot-split display for multi-group position pairing (uncommitted, frontend-only): (1) **§4.4 `pair_group_key`** — documents the known backend gap where `_auto_pair_positions()` overwrites a row's pairing fields when it matches 2+ counterparties (only the last group survives); the frontend now re-derives the match via `splitPairedLots()` (`frontend/src/lib/data/lotPairSplit.js`) before display. (2) **§14 Lot-split display** — new subsection: a multi-group or partially matched position renders as one row per matched group (`P1`, `P2`, …, ranked by matched qty) plus an `Unmatched` row for any leftover, each piece distinguished by the existing St-column badge (cyan paired / amber orphan). Amount fields are pro-rated with the last piece taking the remainder, so totals and account rollups are unchanged. Pieces use composite row key `symbol::account::label` in `mergePositionRows()` (`pulseUnified.js`). Wired into MarketPulse Positions (`MarketPulse.svelte`) and Derivatives Legs (`derivatives/pageLoad.js:buildPagePositionRows()`, after `splitClosedReopened()`). `PerformancePage` intentionally not wired. Display-only fields `_isLotSplit` / `lot_piece_label`; `/api/positions` schema unchanged. Tests: `frontend/src/lib/__tests__/data/lotPairSplit.test.js`, `pulseUnified.test.js`, `pageLoad.test.js`, `frontend/e2e/position_lot_pair_split.spec.js`. |
+| 2026-10-19 | v1.25 Tick staleness indicator (commit 7bf11fac): new §31.1 documents the `TICKS STALE@HH:MM` amber badge in `RefreshButton.svelte` and its one-per-episode 75 s toast. Signal is `lastLiveTickAt` (real SSE tick/snapshot only, not heartbeats or book-poller writes); gated to NSE-or-MCX open; checked every 5 s via `tickStaleness.svelte.js`. Badge is app-wide (every page mounting `RefreshButton`), not Pulse-only. §7 failure-modes table gains the API-side poller row (backend heal in BROKER_SPEC §9.1). Test: `frontend/e2e/tick_staleness_indicator.spec.js`. |
