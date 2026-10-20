@@ -3680,19 +3680,37 @@ async def _upsert_mcx_evening_closed_sessions_coro(dates: set) -> int:
                 await s.execute(_upsert_sql, rows)
             existing = await s.execute(_select_existing_sql, {"today": today})
             existing_dates = {r[0] for r in existing.fetchall()}
-            stale = existing_dates - non_weekend
-            if stale:
-                _delete_sql = _text("""
-                    DELETE FROM market_special_sessions
-                    WHERE exchange = 'MCX' AND source = 'nse_auto'
-                      AND start_time = end_time AND date IN :stale_dates
-                """).bindparams(bindparam("stale_dates", expanding=True))
-                await s.execute(_delete_sql, {"stale_dates": list(stale)})
-                logger.info(
-                    "[MCX-EVENING-CLOSED] reconciled %d stale auto-row(s) "
-                    "no longer in the NSE feed's closed set: %s",
-                    len(stale), sorted(stale),
+            if not dates and existing_dates:
+                # Defense-in-depth (2026-10-20 fix): an ALL-EMPTY fresh
+                # closed-set with existing auto-rows present is suspicious,
+                # not a legitimate "NSE revised everything back to open" —
+                # a real year carries ~8-9 evening-closed dates. This is a
+                # second layer behind item 3's None-on-malformed-COM fix:
+                # a renamed field or an all-entries-failed-to-parse
+                # response could still produce an innocent-looking empty
+                # `set()` through some other path. Skip the reconciliation
+                # delete entirely rather than wipe every real row.
+                logger.warning(
+                    "[MCX-EVENING-CLOSED] refusing to reconcile — fresh "
+                    "closed-set is empty but %d existing auto-row(s) "
+                    "found; treating as suspicious, not a legitimate full "
+                    "revert: %s",
+                    len(existing_dates), sorted(existing_dates),
                 )
+            else:
+                stale = existing_dates - non_weekend
+                if stale:
+                    _delete_sql = _text("""
+                        DELETE FROM market_special_sessions
+                        WHERE exchange = 'MCX' AND source = 'nse_auto'
+                          AND start_time = end_time AND date IN :stale_dates
+                    """).bindparams(bindparam("stale_dates", expanding=True))
+                    await s.execute(_delete_sql, {"stale_dates": list(stale)})
+                    logger.info(
+                        "[MCX-EVENING-CLOSED] reconciled %d stale auto-row(s) "
+                        "no longer in the NSE feed's closed set: %s",
+                        len(stale), sorted(stale),
+                    )
             await s.commit()
         return len(rows)
     except Exception as e:

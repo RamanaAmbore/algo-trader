@@ -368,20 +368,32 @@ async def test_upsert_does_not_delete_a_date_still_in_the_closed_set():
 
 
 @pytest.mark.asyncio
-async def test_upsert_empty_closed_set_reconciles_away_all_existing_rows():
-    """A genuinely empty closed set (the feed says nothing is
-    evening-closed this year) must still reconcile away every existing
-    auto-row — this is the real "NSE revised everything back to open"
-    case, not a failed-fetch case (that's gated by the caller checking
-    `is not None` before ever calling this function)."""
+async def test_upsert_empty_closed_set_with_existing_rows_skips_delete_and_warns():
+    """2026-10-20 defense-in-depth fix: an all-empty fresh closed-set with
+    existing auto-rows present must NOT reconcile them away. A real year
+    carries ~8-9 evening-closed dates, so an empty result alongside
+    existing rows is suspicious (a renamed/malformed feed field or an
+    all-entries-failed-to-parse response), not a legitimate "NSE revised
+    everything back to open" — the delete is skipped and a warning is
+    logged instead. Supersedes the old
+    test_upsert_empty_closed_set_reconciles_away_all_existing_rows, which
+    asserted the dangerous pre-fix behaviour (reconciling away every row
+    on an empty set)."""
     from backend.brokers import broker_apis
 
     fake_session = _FakeUpsertSession(existing_dates={date(2026, 1, 26), date(2026, 12, 25)})
-    with patch("backend.api.database.async_session", fake_session):
+    with patch("backend.api.database.async_session", fake_session), \
+         patch.object(broker_apis, "logger") as mock_logger:
         written = await broker_apis._upsert_mcx_evening_closed_sessions_coro(set())
 
     assert written == 0
-    assert sorted(fake_session.deleted_dates) == [date(2026, 1, 26), date(2026, 12, 25)]
+    assert fake_session.deleted_dates is None, (
+        "an empty fresh closed-set with existing rows present must skip "
+        "the reconciliation delete entirely"
+    )
+    assert mock_logger.warning.called, (
+        "skipping the delete must be logged at warning level"
+    )
 
 
 @pytest.mark.asyncio
