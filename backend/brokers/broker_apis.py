@@ -3465,8 +3465,10 @@ def fetch_holidays(exchange="NSE"):
 # cron cycle, so it's intentionally short — long enough to cover "two
 # calls a few ms apart", nowhere near long enough to matter 24h later at
 # the next refresh. Tests that mock `requests.get` directly (not
-# `_fetch_holidays_from_nse`) must clear this between cases — see
-# `test_mcx_evening_holiday_granularity.py`'s autouse fixture.
+# `_fetch_holidays_from_nse`) must clear this between cases — handled by
+# the global autouse `_reset_nse_holiday_json_memo` fixture in
+# `backend/tests/conftest.py` (moved there from a file-local fixture in
+# `test_mcx_evening_holiday_granularity.py`).
 _NSE_HOLIDAY_JSON_MEMO: dict = {}
 _NSE_HOLIDAY_JSON_MEMO_TTL_SEC = 5.0
 
@@ -3655,10 +3657,15 @@ async def _upsert_mcx_evening_closed_sessions_coro(dates: set) -> int:
     tell the two apart itself; callers must gate on the fetch's own
     ``None``/not-``None`` distinction before calling this at all.
 
-    Returns the count of dates actually written (post weekend-exclusion).
-    Any DB failure — upsert, reconcile, or connection — is logged (not
-    silently swallowed, previously `except Exception: return 0` logged
-    nothing at all) and returns 0.
+    Returns ``len(rows)`` — the count of (post weekend-exclusion) dates
+    ATTEMPTED via the INSERT, not necessarily the count actually applied:
+    the ON CONFLICT clause's ``WHERE ... source = 'nse_auto'`` guard
+    silently skips any row whose existing (exchange, date, start_time)
+    key already belongs to an operator/manual row, so this count can
+    overstate what was really written for a date an operator has already
+    claimed. Any DB failure — upsert, reconcile, or connection — is
+    logged (not silently swallowed, previously `except Exception: return 0`
+    logged nothing at all) and returns 0.
     """
     from datetime import datetime, time as dtime, timezone
     from sqlalchemy import text as _text, bindparam

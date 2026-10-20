@@ -643,7 +643,6 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
         if _is_trading_day(_floor_date, _nse_holidays):
             break
         _floor_date -= timedelta(days=1)
-    _today_ist = _floor_date
     _today_ist_midnight = _now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
     _today_ist_8am = _today_ist_midnight + timedelta(hours=8)
     # prev_batch_cutoff: used by prev_batch CTE to exclude same-session rows.
@@ -767,7 +766,7 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
                   AND (db.ltp IS NULL OR db.ltp > 0)
                 ORDER BY db.account, db.symbol
             """).bindparams(
-                today_ist=_today_ist, prev_batch_cutoff=_prev_batch_cutoff,
+                today_ist=_floor_date, prev_batch_cutoff=_prev_batch_cutoff,
                 snapshot_cutoff=_snapshot_cutoff,
             ))
             raw_rows = result.all()
@@ -785,12 +784,17 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
     snap_captured_at_dt = raw_rows[0][9]  # index 9 = captured_at (previous_close=10, prev_ltp=11, prev_settlement_pnl=12)
     snap_captured_at: str = snap_captured_at_dt.isoformat() if snap_captured_at_dt else ""
 
-    # Log when the snapshot is from a prior session (no today rows yet —
-    # normal during the window between market close and scheduled snapshot run).
-    if snap_captured_at_dt and snap_captured_at_dt.date() != _today_ist:
+    # Log when the snapshot predates the most recent real trading-day floor
+    # (_floor_date — not necessarily bare "today", since it's walked back
+    # over weekends/holidays). This fires every Sat/Sun/holiday morning by
+    # design (the floor has advanced to the next real trading day while the
+    # served snapshot is still dated the prior one) — not an anomaly, just
+    # informational.
+    if snap_captured_at_dt and snap_captured_at_dt.date() != _floor_date:
         logger.info(
-            f"positions snapshot: no rows for today, serving prior snapshot "
-            f"from {snap_captured_at_dt.date()}"
+            f"positions snapshot: no rows for the current trading-day floor "
+            f"({_floor_date}), serving prior snapshot from "
+            f"{snap_captured_at_dt.date()}"
         )
 
     # base_pnl (prev_settlement_pnl) is already the batch-anchored value
