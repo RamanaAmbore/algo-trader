@@ -282,8 +282,13 @@ def is_market_open(now, holiday_set: set, market_start: dtime = dtime(9, 15),
     # ③ Calendar — a holiday date can still be "open" when
     #    evening_open_on_holidays=True AND clock >= 17:00. Handle that first
     #    so we don't spuriously call the probe on MCX evening-open holidays.
+    #    Weekday guard (2026-10-20 fix, confirmed absent): a holiday landing
+    #    on a weekend (Sat/Sun) must stay closed even when
+    #    evening_open_on_holidays=True — without this, a Saturday/Sunday
+    #    holiday read "open" at 17:05 purely because it also happened to be
+    #    in `holiday_set` AND past 17:00, independent of the weekend itself.
     if today in holiday_set:
-        if evening_open_on_holidays and t >= dtime(17, 0):
+        if evening_open_on_holidays and t >= dtime(17, 0) and today.weekday() < 5:
             # Also require the clock to be in a published session window.
             return in_window
         return False

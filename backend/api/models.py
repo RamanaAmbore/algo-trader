@@ -2403,6 +2403,13 @@ class MarketSpecialSession(Base):
     start_time: Mapped[datetime] = mapped_column(Time,        nullable=False, primary_key=True)
     end_time:   Mapped[datetime] = mapped_column(Time,        nullable=False)
     reason:     Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    # source: NULL/"manual" = operator-entered (e.g. Diwali Muhurat row via
+    # /admin), "nse_auto" = auto-inserted by _task_holiday_refresh from the
+    # NSE holiday feed's per-segment evening_session field (2026-10-20,
+    # MCX evening-closed holiday granularity fix). Prevents the auto-
+    # ingestion job from silently colliding with/overwriting an operator-
+    # entered row for the same (exchange, date, start_time).
+    source:     Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

@@ -839,6 +839,24 @@ async def _migrate_exchange_schedule_table(conn) -> None:
     """))
 
 
+async def _migrate_market_special_sessions_source(conn) -> None:
+    """Add `source` column to market_special_sessions (idempotent).
+
+    Distinguishes operator-entered rows (NULL/"manual", e.g. a Diwali
+    Muhurat session via /admin) from auto-inserted rows ("nse_auto",
+    written by `_task_holiday_refresh` from the NSE feed's per-segment
+    `evening_session` field) so the auto-ingestion job's upsert can never
+    silently collide with/overwrite an operator-entered row for the same
+    (exchange, date, start_time). 2026-10-20 — MCX evening-closed holiday
+    granularity fix.
+    """
+    from sqlalchemy import text
+    await conn.execute(text(
+        "ALTER TABLE market_special_sessions ADD COLUMN IF NOT EXISTS "
+        "source VARCHAR(20)"
+    ))
+
+
 async def _migrate_drop_position_pairs_table(conn) -> None:
     """One-time drop of the retired `position_pairs` table.
 
@@ -1206,6 +1224,7 @@ async def init_db() -> None:
         await _migrate_agents_bracket_columns(conn)
         await _migrate_agents_given(conn)
         await _migrate_drop_position_pairs_table(conn)
+        await _migrate_market_special_sessions_source(conn)
     logger.info("Database: tables verified")
 
     # Sprint 1a — CONCURRENTLY index creation. MUST run after the

@@ -277,6 +277,21 @@ def test_merged_token_refresh_in_holiday_cron_source():
     )
 
 
+def test_holiday_refresh_wires_mcx_evening_closed_ingestion():
+    """D3 (2026-10-20): the MCX refresh pass must call the evening-closed
+    special-session ingestion helpers, gated to exch == 'MCX' only."""
+    src = _BG_PATH.read_text()
+    m = re.search(
+        r"async def _task_holiday_refresh\b.*?(?=\nasync def |\Z)",
+        src, re.DOTALL,
+    )
+    assert m is not None
+    body = m.group(0)
+    assert "_fetch_mcx_evening_closed_dates" in body
+    assert "_upsert_mcx_evening_closed_sessions_coro" in body
+    assert 'if exch == "MCX"' in body
+
+
 def test_task_token_refresh_removed_from_startup():
     """Guard: _task_token_refresh must NOT be scheduled at startup."""
     src = _BG_PATH.read_text()

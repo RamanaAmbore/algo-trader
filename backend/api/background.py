@@ -3950,6 +3950,39 @@ async def _task_holiday_refresh() -> None:
             logger.error(f"[HOLIDAY-REFRESH] exchange={exch} DB upsert failed: {e}")
             return False, 0
 
+        # MCX evening-closed-holiday granularity (2026-10-20 fix) — the
+        # blanket `evening_open_on_holidays: true` in backend_config.yaml
+        # assumes MCX always reopens 17:00+ on a calendar-closed day, which
+        # is wrong for ~8-9 of MCX's ~21 holidays/year. Auto-insert a
+        # zero-width `market_special_sessions` row (exchange="MCX") for
+        # each evening-closed date from the NSE feed's own per-segment
+        # `evening_session` field, letting `is_market_open`'s existing
+        # special-session precedence rule correctly read "closed all day"
+        # for those specific dates instead. MCX-only by design — the NSE
+        # feed's other segments don't carry an evening-session concept.
+        if exch == "MCX":
+            try:
+                from backend.brokers.broker_apis import (
+                    _fetch_mcx_evening_closed_dates,
+                    _upsert_mcx_evening_closed_sessions_coro,
+                )
+                loop2 = asyncio.get_running_loop()
+                evening_closed = await loop2.run_in_executor(
+                    None, _fetch_mcx_evening_closed_dates,
+                )
+                if evening_closed:
+                    written = await _upsert_mcx_evening_closed_sessions_coro(evening_closed)
+                    logger.info(
+                        "[HOLIDAY-REFRESH] MCX evening-closed special sessions: "
+                        "%d dates from feed, %d written (weekend dates excluded)",
+                        len(evening_closed), written,
+                    )
+            except Exception as e:
+                logger.warning(
+                    f"[HOLIDAY-REFRESH] MCX evening-closed special-session "
+                    f"ingestion failed (non-fatal): {e}"
+                )
+
         _mirror_to_holidays_store(exch, got)
         added = sorted(d.isoformat() for d in (got - prev))
         removed = sorted(d.isoformat() for d in (prev - got))

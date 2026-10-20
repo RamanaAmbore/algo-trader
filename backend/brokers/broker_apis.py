@@ -3316,6 +3316,112 @@ def _fetch_holidays_from_nse(exchange: str) -> set:
     return holidays
 
 
+def _fetch_mcx_evening_closed_dates() -> set:
+    """Fetch the NSE holiday-master feed's ``COM`` (MCX commodity) segment
+    directly and return the subset of holiday dates where
+    ``evening_session == "Closed"`` — i.e. MCX does NOT reopen for its
+    17:00+ evening session on that date, unlike the blanket
+    ``evening_open_on_holidays: true`` assumption in backend_config.yaml,
+    which is wrong for ~8-9 of MCX's ~21 holidays/year (confirmed live
+    2026-10-20: 9 of 21 COM entries carry ``evening_session: "Closed"``).
+
+    A SEPARATE fetch from `_fetch_holidays_from_nse` (not a shared-cache
+    optimisation) so that function's return contract (a bare
+    ``set[date]``, consumed by many existing callers) stays unchanged.
+    Only called once/day from `_task_holiday_refresh`'s MCX refresh pass,
+    so the extra HTTP round-trip is negligible.
+
+    Field names/shape confirmed directly against the live feed (not
+    guessed): each ``COM`` entry carries ``tradingDate``, ``weekDay``,
+    ``description``, ``morning_session`` ("Open"/"Closed"/null),
+    ``evening_session`` ("Open"/"Closed"/null), ``Sr_no``.
+
+    Returns an empty set on any failure — fail-open means no auto-
+    inserted closed-evening rows get created this cycle, i.e. every MCX
+    holiday keeps the existing (blanket, sometimes-wrong)
+    evening_open_on_holidays=True behaviour, same as before this fix —
+    never fails CLOSED and accidentally blocks a genuinely-open evening.
+    """
+    import requests
+    from datetime import datetime as dt_datetime
+
+    closed: set = set()
+    try:
+        resp = requests.get(
+            "https://www.nseindia.com/api/holiday-master?type=trading",
+            headers={"User-Agent": "Mozilla/5.0"}, timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        for h in data.get("COM", []):
+            if str(h.get("evening_session") or "").strip().lower() != "closed":
+                continue
+            d = h.get("tradingDate", "")
+            if not d:
+                continue
+            try:
+                closed.add(dt_datetime.strptime(d, "%d-%b-%Y").date())
+            except ValueError:
+                pass
+    except Exception:
+        pass
+    return closed
+
+
+async def _upsert_mcx_evening_closed_sessions_coro(dates: set) -> int:
+    """Auto-insert a zero-width (``start_time == end_time == 00:00:00``)
+    ``market_special_sessions`` row for ``exchange="MCX"`` for each date
+    in *dates* — EXCLUDING weekend dates (verified:
+    ``next_market_open_ist()``'s weekend branch treats mere ROW EXISTENCE
+    for a date as "open" regardless of that row's own start/end window,
+    so auto-inserting a closed row on e.g. a Sunday would incorrectly
+    flip that Sunday to a valid trading day in that unrelated function).
+
+    ``source="nse_auto"`` so this NEVER collides with/overwrites an
+    operator-entered row (e.g. a Diwali Muhurat session) for the same
+    (exchange, date, start_time) — the ON CONFLICT clause only updates
+    rows this same auto-job previously wrote.  Idempotent — re-running
+    with the same *dates* re-upserts the identical row.
+
+    Returns the count of dates actually written (post weekend-exclusion).
+    """
+    from datetime import datetime, time as dtime, timezone
+    from sqlalchemy import text as _text
+    try:
+        from backend.api.database import async_session
+    except Exception:
+        return 0
+    non_weekend = {d for d in dates if d.weekday() < 5}
+    if not non_weekend:
+        return 0
+    now_utc = datetime.now(timezone.utc)
+    zero = dtime(0, 0, 0)
+    rows = [
+        {"exchange": "MCX", "date": d, "start_time": zero, "end_time": zero,
+         "reason": "MCX evening session closed (NSE holiday feed)",
+         "source": "nse_auto", "created_at": now_utc}
+        for d in non_weekend
+    ]
+    _upsert_sql = _text("""
+        INSERT INTO market_special_sessions
+            (exchange, date, start_time, end_time, reason, source, created_at)
+        VALUES
+            (:exchange, :date, :start_time, :end_time, :reason, :source, :created_at)
+        ON CONFLICT (exchange, date, start_time) DO UPDATE SET
+            end_time   = EXCLUDED.end_time,
+            reason     = EXCLUDED.reason,
+            source     = EXCLUDED.source
+        WHERE market_special_sessions.source = 'nse_auto'
+    """)
+    try:
+        async with async_session() as s:
+            await s.execute(_upsert_sql, rows)
+            await s.commit()
+        return len(rows)
+    except Exception:
+        return 0
+
+
 def _read_market_holidays_sync(exchange: str) -> set:
     """Synchronous read of `market_holidays` for `exchange` in the current
     IST year. Uses the sync-friendly connection path via `asyncio.run` on a
