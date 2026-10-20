@@ -214,6 +214,19 @@ class MarketLifecycle:
             elif (not is_open_now) and prev_open:
                 self._open_state[exch_lower] = False
                 self._last_close_at[exch_lower] = now_ist
+                # Start a fresh settle cycle for THIS close (2026-10-20
+                # fix). Without this, a restart-hydration-seeded
+                # `_settled_fired=True` from the PRIOR close cycle (see
+                # `_hydrate_from_audit`) can survive through a cold start
+                # that never fires an open transition (the exchange was
+                # already open when the process came up), silently
+                # suppressing close_settled for every close for the rest
+                # of that process's lifetime. Safe — unlike the deleted
+                # date-rollover reset (D1a), this only resets on a REAL
+                # open→closed state transition, which happens at most
+                # once per close episode by construction (the same
+                # moment `_last_close_at` is set fresh above).
+                self._settled_fired[exch_lower] = False
                 event_key = f"{exch_lower}:close"
                 ran, failed = await self._dispatch(event_key, exch_lower, "close")
                 fired.append({

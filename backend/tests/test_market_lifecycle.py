@@ -737,6 +737,61 @@ async def test_hydrate_from_audit_db_failure_is_non_fatal(
 
 
 @pytest.mark.asyncio
+async def test_close_transition_resets_settled_fired_after_hydration(
+    lifecycle, stub_segments, stub_holidays, freeze_audit, freeze_now,
+):
+    """Regression (2026-10-20, found during D1b review): a cold start
+    that hydrates `_settled_fired=True` from the PREVIOUS close cycle
+    (process restarted while the exchange was already open — no `:open`
+    transition ever fires to clear it) must NOT suppress close_settled
+    for the NEXT, genuinely new close cycle. The close transition must
+    start a fresh settle cycle for itself.
+
+    Fails against the pre-fix code (close transition didn't reset
+    `_settled_fired`, so the hydrated True from yesterday's cycle
+    survived and silently blocked today's close_settled forever).
+    """
+    from backend.api.algo import market_lifecycle as ml_mod
+
+    # Hydration source: yesterday's close + close_settled, both well
+    # outside today's settled window.
+    close_ts_prev = freeze_now["now"].replace(day=27, hour=15, minute=30)
+    settled_ts_prev = freeze_now["now"].replace(day=27, hour=15, minute=45)
+    rows = [("nse", "close", close_ts_prev), ("nse", "close_settled", settled_ts_prev)]
+
+    with patch.object(ml_mod, "_settled_offset_minutes", lambda: 15):
+        with patch("backend.api.database.async_session", _FakeHydrateSession(rows)):
+            # Cold start at 10:00 IST TODAY, exchange already open —
+            # never fires an :open transition.
+            ml_mod._test_state_fn = lambda exch, now: True
+            await lifecycle.poll()
+
+        state = lifecycle.get_state()
+        assert state["settled_fired"]["nse"] is True, (
+            "sanity check: hydration must have seeded settled=True from "
+            "yesterday's already-settled cycle"
+        )
+
+        settled_called = []
+        async def cb(e, t): settled_called.append((e, t))
+        lifecycle.register("nse:close_settled", cb)
+
+        # Today's genuine close.
+        freeze_now["now"] = freeze_now["now"].replace(hour=15, minute=30)
+        ml_mod._test_state_fn = lambda exch, now: False
+        await lifecycle.poll()
+
+        # 16 minutes later — past the 15-min settled offset.
+        freeze_now["now"] = freeze_now["now"] + timedelta(minutes=16)
+        await lifecycle.poll()
+
+    assert settled_called.count(("nse", "close_settled")) == 1, (
+        "close_settled must fire for TODAY's close cycle even though "
+        "settled_fired was hydrated True from yesterday's cycle"
+    )
+
+
+@pytest.mark.asyncio
 async def test_funds_offhours_task_registered():
     """_task_funds_offhours is in on_startup."""
     src = (
