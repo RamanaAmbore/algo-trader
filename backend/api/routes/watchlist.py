@@ -1380,32 +1380,29 @@ def _is_designated_role(request) -> bool:
 # ---------------------------------------------------------------------------
 
 def _movers_probe_market_state(ist_now) -> tuple[bool, bool]:
-    """Fetch NSE + MCX holiday sets and probe both markets. Returns
-    `(nse_is_open, mcx_is_open)`. Falls back to `set()` on holiday
-    fetch failure so a broker-side outage never wedges the movers grid."""
-    from datetime import time as _dtime
-    from backend.brokers.broker_apis import fetch_holidays
-    from backend.shared.helpers.date_time_utils import is_market_open
+    """Probe both markets via the real `market_segments` YAML config.
+    Returns `(nse_is_open, mcx_is_open)`.
 
-    try:
-        nse_holidays = fetch_holidays("NSE")
-    except Exception:
-        nse_holidays = set()
-    try:
-        mcx_holidays = fetch_holidays("MCX")
-    except Exception:
-        mcx_holidays = set()
+    2026-10-20 fix (Defect 2 unification) — this previously called
+    `is_market_open()` with hardcoded hours (09:15-15:30 / 09:00-23:30)
+    and no `sessions=`/`evening_open_on_holidays=`, so an MCX evening
+    session on an equity holiday always read closed (movers would
+    silently fall back to the "both closed" NSE-snapshot branch per
+    CLAUDE.md's movers gate). Routed through `_segment_is_open()` (same
+    canonical helper `is_any_segment_open()` uses) against the real
+    `market_segments.equity` / `.commodity` YAML blocks instead of
+    hand-rolled windows — `_segment_is_open` does its own (separately
+    cached) `fetch_holidays()` call internally.
+    """
+    from backend.shared.helpers.date_time_utils import _segment_is_open
+    from backend.shared.helpers.utils import config as _cfg
 
-    nse_is_open = is_market_open(
-        ist_now, nse_holidays,
-        market_start=_dtime(9, 15), market_end=_dtime(15, 30),
-        exchange="NSE",
-    )
-    mcx_is_open = is_market_open(
-        ist_now, mcx_holidays,
-        market_start=_dtime(9, 0), market_end=_dtime(23, 30),
-        exchange="MCX",
-    )
+    segments = _cfg.get("market_segments", {}) or {}
+    eq = segments.get("equity", {}) or {}
+    co = segments.get("commodity", {}) or {}
+
+    nse_is_open = _segment_is_open(eq, ist_now)
+    mcx_is_open = _segment_is_open(co, ist_now)
     return nse_is_open, mcx_is_open
 
 

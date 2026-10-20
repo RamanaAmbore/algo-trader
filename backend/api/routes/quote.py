@@ -289,21 +289,23 @@ def _qt_is_seg_open(seg_cfg: dict, exch_upper: str, now, fetch_holidays) -> "boo
 
     Returns True (open), False (segment matches but closed), or None (segment
     does not cover this exchange — caller should skip).
+
+    2026-10-20 fix (Defect 2 unification) — the open-check itself now
+    delegates to `_segment_is_open()` (same canonical helper
+    `is_any_segment_open()` uses) instead of a direct `is_market_open()`
+    call that never passed `sessions=`/`evening_open_on_holidays=`. The
+    exchange-membership matching above (exclusive to this call site —
+    `_segment_is_open` has no equivalent) is unchanged. The `fetch_holidays`
+    parameter is kept for signature stability; `_segment_is_open` does its
+    own (separately cached) fetch internally.
     """
-    from backend.shared.helpers.date_time_utils import is_market_open
-    from datetime import time as dtime
+    from backend.shared.helpers.date_time_utils import _segment_is_open
 
     seg_exch = (seg_cfg.get("holiday_exchange") or "NSE").upper()
     seg_exchanges = [e.upper() for e in (seg_cfg.get("exchanges") or [seg_exch])]
     if exch_upper not in seg_exchanges and exch_upper != seg_exch:
         return None  # not a match for this exchange
-    h_s, m_s = map(int, seg_cfg.get("hours_start", "09:15").split(":"))
-    h_e, m_e = map(int, seg_cfg.get("hours_end",   "15:30").split(":"))
-    try:
-        holidays = fetch_holidays(seg_exch)
-    except Exception:
-        holidays = set()
-    return is_market_open(now, holidays, dtime(h_s, m_s), dtime(h_e, m_e), exchange=seg_exch)
+    return _segment_is_open(seg_cfg, now)
 
 
 def _is_exchange_segment_closed(exchange: str) -> bool:

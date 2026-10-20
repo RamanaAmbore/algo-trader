@@ -187,23 +187,31 @@ class SimDefaultsResponse(msgspec.Struct):
 def _market_hours_block_check() -> None:
     """Hard-block when any segment (NSE / MCX) is currently open AND the
     `simulator.block_during_market_hours` setting is on. Raises 409 so
-    the UI can render a clear "Markets open — sim blocked" banner."""
+    the UI can render a clear "Markets open — sim blocked" banner.
+
+    2026-10-20 fix: this call site imported `_build_segments` from
+    `backend.api.background`, a name removed (renamed to `_get_segments`)
+    in commit 7cd6c12c — every other internal background.py call site was
+    updated in that same commit, but this external import was missed,
+    leaving this guard raising `ImportError` on every single call ever
+    since (a confirmed-live, silently-bypassed safety guard — see
+    `_markets_currently_open`'s broad `except` below, which masked it as
+    "markets closed"). Fixed by importing the current name AND routing
+    the open-check through `_segment_is_open()` via `_yaml_segment_for_gate`
+    (Defect 2 unification) — `_get_segments()`'s gate-shaped dicts never
+    carried `sessions=`/`evening_open_on_holidays=`, so even with the
+    import fixed this would have under-detected an MCX evening session.
+    """
     from backend.shared.helpers.settings import get_bool
     if not get_bool("simulator.block_during_market_hours", True):
         return
-    from backend.api.background import _build_segments
-    from backend.brokers.broker_apis import fetch_holidays
-    from backend.shared.helpers.date_time_utils import (
-        is_market_open, timestamp_indian,
-    )
+    from backend.api.background import _get_segments, _yaml_segment_for_gate
+    from backend.shared.helpers.date_time_utils import _segment_is_open, timestamp_indian
     now = timestamp_indian()
-    segments = _build_segments()
+    segments = _get_segments()
     for seg in segments:
-        try:
-            holidays = fetch_holidays(seg.get("holiday_exchange") or "NSE")
-        except Exception:
-            holidays = set()
-        if is_market_open(now, holidays, seg["hours_start"], seg["hours_end"]):
+        yaml_seg = _yaml_segment_for_gate(seg.get("holiday_exchange") or "NSE")
+        if _segment_is_open(yaml_seg, now):
             raise HTTPException(
                 status_code=409,
                 detail=(
@@ -216,20 +224,15 @@ def _market_hours_block_check() -> None:
 
 def _markets_currently_open() -> bool:
     """Same probe as the guard but returns a bool (no raise) so the
-    /defaults endpoint can surface the state in the UI."""
+    /defaults endpoint can surface the state in the UI. See
+    `_market_hours_block_check`'s docstring for the 2026-10-20 fix."""
     try:
-        from backend.api.background import _build_segments
-        from backend.brokers.broker_apis import fetch_holidays
-        from backend.shared.helpers.date_time_utils import (
-            is_market_open, timestamp_indian,
-        )
+        from backend.api.background import _get_segments, _yaml_segment_for_gate
+        from backend.shared.helpers.date_time_utils import _segment_is_open, timestamp_indian
         now = timestamp_indian()
-        for seg in _build_segments():
-            try:
-                holidays = fetch_holidays(seg.get("holiday_exchange") or "NSE")
-            except Exception:
-                holidays = set()
-            if is_market_open(now, holidays, seg["hours_start"], seg["hours_end"]):
+        for seg in _get_segments():
+            yaml_seg = _yaml_segment_for_gate(seg.get("holiday_exchange") or "NSE")
+            if _segment_is_open(yaml_seg, now):
                 return True
     except Exception:
         return False

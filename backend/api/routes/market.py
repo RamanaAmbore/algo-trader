@@ -7,7 +7,6 @@ on Indian-market holidays where weekday+time alone would say "open".
 """
 
 import asyncio
-from datetime import time as _dt_time
 
 import msgspec
 from litestar import Controller, get, post
@@ -18,7 +17,7 @@ from backend.api.cache import get_or_fetch
 from backend.api.schemas import MarketResponse
 from backend.shared.helpers import genai_api
 from backend.shared.helpers.date_time_utils import (
-    is_market_open,
+    _segment_is_open,
     timestamp_display,
     timestamp_indian,
 )
@@ -142,14 +141,6 @@ async def _dev_market_content() -> MarketResponse:
         return await _dev_final_fallback()
 
 
-def _parse_hhmm(s: str, fallback: tuple[int, int]) -> _dt_time:
-    try:
-        h, m = s.split(":")
-        return _dt_time(int(h), int(m))
-    except Exception:
-        return _dt_time(*fallback)
-
-
 async def _compute_market_status() -> MarketStatusResponse:
     """Probe the configured market_segments for current open state. Holiday-
     aware via the shared fetch_holidays cache (per (exchange, today's date),
@@ -162,12 +153,8 @@ async def _compute_market_status() -> MarketStatusResponse:
 
     # equity (NSE/BSE/derivatives) — 09:15-15:30 default
     eq = segments.get("equity", {}) or {}
-    nse_open_t  = _parse_hhmm(eq.get("hours_start", "09:15"), (9, 15))
-    nse_close_t = _parse_hhmm(eq.get("hours_end",   "15:30"), (15, 30))
     # commodity (MCX) — 09:00-23:30 default
     co = segments.get("commodity", {}) or {}
-    mcx_open_t  = _parse_hhmm(co.get("hours_start", "09:00"), (9, 0))
-    mcx_close_t = _parse_hhmm(co.get("hours_end",   "23:30"), (23, 30))
 
     try:
         nse_holidays = await asyncio.to_thread(fetch_holidays, eq.get("holiday_exchange", "NSE"))
@@ -178,10 +165,17 @@ async def _compute_market_status() -> MarketStatusResponse:
     except Exception:
         mcx_holidays = set()
 
-    nse_open = is_market_open(now, nse_holidays, nse_open_t, nse_close_t,
-                              exchange=eq.get("holiday_exchange", "NSE"))
-    mcx_open = is_market_open(now, mcx_holidays, mcx_open_t, mcx_close_t,
-                              exchange=co.get("holiday_exchange", "MCX"))
+    # 2026-10-20 fix (Defect 2 unification) — route through _segment_is_open
+    # (the same canonical helper is_any_segment_open() already uses) so
+    # sessions=/evening_open_on_holidays= are threaded correctly. The
+    # legacy direct is_market_open() call here never passed either kwarg,
+    # so /market/status's mcx_open disagreed with MarketLifecycle's own
+    # verdict during an MCX evening session on an equity holiday.
+    # _segment_is_open does its own (separately cached) fetch_holidays —
+    # the nse_holidays/mcx_holidays fetched above are kept only for the
+    # is_holiday field below.
+    nse_open = await asyncio.to_thread(_segment_is_open, eq, now)
+    mcx_open = await asyncio.to_thread(_segment_is_open, co, now)
     is_holiday = (now.date() in nse_holidays) or (now.date() in mcx_holidays)
 
     return MarketStatusResponse(

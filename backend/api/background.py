@@ -133,6 +133,32 @@ def _get_segments() -> list[dict]:
     ]
 
 
+def _yaml_segment_for_gate(gate: str) -> dict:
+    """Map an exchange_clock GATE name (``"NON-MCX"`` / ``"MCX"`` — the
+    shape `_get_segments()` returns, gate-level dicts with bare `dtime`
+    hours_start/hours_end and NO sessions/evening_open_on_holidays keys)
+    to the corresponding raw ``market_segments`` YAML config block (the
+    shape `_segment_is_open()` / `is_any_segment_open()` expect, with
+    string "HH:MM" hours + the real sessions/evening_open_on_holidays
+    fields).
+
+    2026-10-20 fix (Defect 2 — fragmented market open/close determination):
+    `_perf_probe_open_segments` and `_watchdog_check_market_open` iterate
+    `_get_segments()`'s gate-shaped dicts, which never carried
+    `evening_open_on_holidays` at all — so an MCX evening session on an
+    equity holiday always read closed via those two call sites,
+    independent of (and more fundamentally broken than) the missing
+    `sessions=`/`evening_open_on_holidays=` kwargs bug on the OTHER
+    unified call sites. ``"MCX"`` maps to the ``commodity`` YAML block;
+    every other gate (``"NON-MCX"`` today) maps to ``equity``.
+    """
+    from backend.shared.helpers.utils import config as _cfg
+    segments = _cfg.get("market_segments", {}) or {}
+    if gate == "MCX":
+        return segments.get("commodity", {}) or {}
+    return segments.get("equity", {}) or {}
+
+
 def _default_seg_state() -> dict:
     """Return a per-gate state dict with NON-MCX and MCX gate keys."""
     return {
@@ -988,16 +1014,23 @@ async def _perf_probe_open_segments(
     holiday_cache: dict,
     now,
 ) -> list[dict]:
-    """Fan out `is_market_open` probes for every segment in parallel.
+    """Fan out open-segment probes for every segment in parallel.
     Returns the subset whose exchange is currently open (calendar +
     live-quote probe). Each probe runs in `asyncio.to_thread` so the
-    blocking Kite check doesn't stall the event loop."""
+    blocking Kite check doesn't stall the event loop.
+
+    Routed through `_segment_is_open()` (2026-10-20, Defect 2 unification)
+    via `_yaml_segment_for_gate()` — the legacy direct `is_market_open()`
+    call here never passed `sessions=`/`evening_open_on_holidays=`, so an
+    MCX evening session on an equity holiday always read closed. The
+    `holiday_cache` parameter is kept for call-site signature stability
+    (and still populated/refreshed by the caller) but no longer consulted
+    directly — `_segment_is_open` does its own (separately cached)
+    `fetch_holidays()` call.
+    """
+    from backend.shared.helpers.date_time_utils import _segment_is_open
     def _probe_open(seg):
-        return is_market_open(
-            now, holiday_cache.get(seg['holiday_exchange'], set()),
-            seg['hours_start'], seg['hours_end'],
-            exchange=seg['holiday_exchange'],
-        )
+        return _segment_is_open(_yaml_segment_for_gate(seg['holiday_exchange']), now)
     open_results = await asyncio.gather(*(
         asyncio.to_thread(_probe_open, seg) for seg in segments
     ))
@@ -5662,12 +5695,22 @@ async def _watchdog_check_market_open(
                 )
             except Exception:
                 special_sessions[exch] = []
+    # 2026-10-20 fix (Defect 2 unification) — thread sessions=/
+    # evening_open_on_holidays= from the real market_segments YAML block
+    # (via _yaml_segment_for_gate) through to is_market_open. Previously
+    # missing entirely, so an MCX evening session on an equity holiday
+    # always read closed regardless of the pre-fetched special_sessions.
     return any(
         is_market_open(
             now,
             holiday_cache.get(seg['holiday_exchange'], set()),
             seg['hours_start'],
             seg['hours_end'],
+            exchange=seg['holiday_exchange'],
+            sessions=_yaml_segment_for_gate(seg['holiday_exchange']).get("sessions") or None,
+            evening_open_on_holidays=bool(
+                _yaml_segment_for_gate(seg['holiday_exchange']).get("evening_open_on_holidays", False)
+            ),
             special_sessions=special_sessions.get(seg['holiday_exchange'], []),
         )
         for seg in segments
