@@ -174,6 +174,36 @@ class MarketLifecycle:
         fired: list[dict] = []
         exchanges = _enumerate_exchanges()
 
+        # Pre-warm the special-sessions cache for every exchange THIS poll
+        # cycle will check, BEFORE the per-exchange _exchange_is_open() loop
+        # below (2026-10-20 fix). `poll()` runs on the main event loop
+        # (`_task_market_lifecycle` -> `asyncio.create_task` -> `await
+        # market_lifecycle.poll()` — confirmed via background.py), so a
+        # cold `_SPECIAL_SESSION_CACHE` hit from `_exchange_is_open()`'s
+        # sync `fetch_special_sessions()` call trips the exact same
+        # main-loop self-deadlock guard documented in
+        # `broker_apis.py:fetch_special_sessions`'s own docstring, and
+        # silently fails open to `[]`. A DB-confirmed "MCX evening fully
+        # closed" special-session row would then be invisible HERE,
+        # letting the blanket `evening_open_on_holidays` default read MCX
+        # as open and fire a spurious `mcx:open` -> `close_settled` ->
+        # `daily_book` snapshot-write cycle — this is the exact mechanism
+        # the 2026-10-20 prev_close-corruption incident was about, so
+        # closing this gap is the highest-priority of the related fixes.
+        # `_prewarm_special_sessions_for_exchange` awaits
+        # `fetch_special_sessions_async` directly (no `run_on_main_loop`
+        # hop), so there is no deadlock risk from this async context.
+        try:
+            from backend.api.algo.agent_engine import (
+                _prewarm_special_sessions_for_exchange,
+            )
+            for segment in exchanges.values():
+                await _prewarm_special_sessions_for_exchange(segment["exchange"])
+        except Exception as e:
+            logger.warning(
+                f"market_lifecycle: special-sessions prewarm failed: {e}"
+            )
+
         for exch_lower, segment in exchanges.items():
             # Resolve current open-state for this exchange via the
             # canonical is_market_open() helper. Holidays come from

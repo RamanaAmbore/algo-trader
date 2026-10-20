@@ -710,7 +710,13 @@ async def test_hydrate_from_audit_runs_once_per_process(
             calls["n"] += 1
             return await super().execute(*a, **k)
 
-    with patch("backend.api.database.async_session", _CountingSession([])):
+    # D4 (2026-10-20): poll() now also pre-warms the special-sessions cache
+    # per exchange on EVERY call (a separate, unrelated DB dependency from
+    # hydration). Stub it out here so this test's call counter stays scoped
+    # to hydration specifically, matching its own docstring/intent.
+    with patch("backend.api.database.async_session", _CountingSession([])), \
+         patch("backend.api.algo.agent_engine._prewarm_special_sessions_for_exchange",
+               new=AsyncMock(return_value=None)):
         ml_mod._test_state_fn = lambda exch, now: False
         await lifecycle.poll()
         await lifecycle.poll()
@@ -788,6 +794,106 @@ async def test_close_transition_resets_settled_fired_after_hydration(
     assert settled_called.count(("nse", "close_settled")) == 1, (
         "close_settled must fire for TODAY's close cycle even though "
         "settled_fired was hydrated True from yesterday's cycle"
+    )
+
+
+
+# ---------------------------------------------------------------------------
+# D4 (2026-10-20) — poll() must pre-warm the special-sessions cache before
+# the per-exchange _exchange_is_open() loop, closing the same cold-cache/
+# main-loop-self-deadlock gap documented in
+# broker_apis.py:fetch_special_sessions for the OTHER genuinely-async call
+# sites (ticket/basket/chase). poll() itself runs on the main event loop
+# (`_task_market_lifecycle` -> `asyncio.create_task` -> `await
+# market_lifecycle.poll()`), and is the mechanism that drives
+# close_settled/daily_book snapshot writes -- the exact surface the
+# 2026-10-20 prev_close-corruption incident was about.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_poll_prewarms_special_sessions_before_exchange_probe(
+    lifecycle, freeze_audit,
+):
+    """Reproduces the gap directly: a DB-confirmed MCX-evening-closed
+    special-session row (zero-width, start==end) exists for today, MCX's
+    segment has `evening_open_on_holidays=True`, today is a declared MCX
+    holiday, and the wall clock is 18:00 IST (inside the 17:00-23:30
+    evening window). `poll()` is simulated as genuinely running on the
+    main event loop (same `write_queue._main_loop` monkeypatch pattern as
+    `test_market_hours_unification.py`'s
+    `test_cold_cache_on_main_loop_fails_open_without_poisoning` /
+    `test_prewarm_closes_the_gap_for_the_3_genuinely_async_call_sites`).
+
+    Without the prewarm, `_exchange_is_open()`'s sync
+    `fetch_special_sessions()` call trips the main-loop self-deadlock
+    guard and fails open to `[]` for a cold cache -- the DB-confirmed
+    override becomes invisible, so `is_market_open()` falls through to
+    the blanket `evening_open_on_holidays` rule and reads MCX as OPEN,
+    flipping a previously-closed `_open_state["mcx"]` to open and firing
+    a spurious `mcx:open` event. With the prewarm, the cache is warmed
+    (via a real `await` of `_read_special_sessions_async`, no
+    `run_on_main_loop` hop, no deadlock risk) before `_exchange_is_open()`
+    runs, so the sync call hits a warm cache and sees the real
+    zero-width "closed all day" override -- MCX correctly stays closed
+    and no transition fires.
+    """
+    import asyncio
+    from datetime import time as dtime_
+    from unittest.mock import AsyncMock, patch
+    from zoneinfo import ZoneInfo
+    import backend.api.algo.market_lifecycle as ml_mod
+    import backend.brokers.broker_apis as _ba
+    import backend.api.persistence.write_queue as _wq
+
+    IST = ZoneInfo("Asia/Kolkata")
+    now_ist = datetime(2026, 11, 5, 18, 0, tzinfo=IST)
+    today = now_ist.date()
+
+    def _fake_enumerate():
+        return {
+            "mcx": {
+                "name": "commodity", "exchange": "MCX",
+                "sessions": [
+                    {"start": dtime_(9, 0), "end": dtime_(17, 0)},
+                    {"start": dtime_(17, 0), "end": dtime_(23, 30)},
+                ],
+                "hours_start": dtime_(9, 0), "hours_end": dtime_(23, 30),
+                "evening_open_on_holidays": True,
+            },
+        }
+
+    closed_row = [{"date": today, "start": dtime_(0, 0), "end": dtime_(0, 0)}]
+
+    # Simulate MCX was closed earlier today (day session over, pre-evening)
+    # — a real prior-closed state, not poll()'s own (buggy-seedable) cold
+    # start, so the spurious transition this test guards against is
+    # unambiguous.
+    lifecycle._open_state["mcx"] = False
+    lifecycle._settled_fired["mcx"] = False
+    lifecycle._last_close_at["mcx"] = None
+
+    loop = asyncio.get_running_loop()
+    orig_main_loop = _wq._main_loop
+    _ba._SPECIAL_SESSION_CACHE.clear()
+    try:
+        _wq._main_loop = loop  # poll() genuinely runs on the main loop
+        with patch.object(ml_mod, "_enumerate_exchanges", _fake_enumerate), \
+             patch.object(ml_mod, "timestamp_indian", lambda: now_ist), \
+             patch("backend.brokers.broker_apis.fetch_holidays", lambda exch: {today}), \
+             patch.object(_ba, "_read_special_sessions_async", new=AsyncMock(return_value=closed_row)):
+            res = await ml_mod.market_lifecycle.poll()
+    finally:
+        _wq._main_loop = orig_main_loop
+        _ba._SPECIAL_SESSION_CACHE.clear()
+
+    assert res["events"] == [], (
+        f"expected no transition — the DB-confirmed evening-closed "
+        f"override must keep MCX closed despite evening_open_on_holidays, "
+        f"got {res['events']}"
+    )
+    assert lifecycle.get_state()["open"]["mcx"] is False, (
+        "MCX must stay closed; a cold special-sessions cache must not "
+        "silently fall back to the blanket evening-open default"
     )
 
 
