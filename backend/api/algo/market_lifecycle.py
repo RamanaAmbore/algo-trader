@@ -190,19 +190,30 @@ class MarketLifecycle:
         # `daily_book` snapshot-write cycle — this is the exact mechanism
         # the 2026-10-20 prev_close-corruption incident was about, so
         # closing this gap is the highest-priority of the related fixes.
-        # `_prewarm_special_sessions_for_exchange` awaits
-        # `fetch_special_sessions_async` directly (no `run_on_main_loop`
-        # hop), so there is no deadlock risk from this async context.
-        try:
-            from backend.api.algo.agent_engine import (
-                _prewarm_special_sessions_for_exchange,
-            )
-            for segment in exchanges.values():
-                await _prewarm_special_sessions_for_exchange(segment["exchange"])
-        except Exception as e:
-            logger.warning(
-                f"market_lifecycle: special-sessions prewarm failed: {e}"
-            )
+        # Calls `fetch_special_sessions_async(segment["exchange"])` DIRECTLY
+        # (option (b), not `agent_engine._prewarm_special_sessions_for_
+        # exchange` — deliberately, found during review) — that helper
+        # resolves its input through `_segment_for_exchange()` +
+        # `holiday_exchange`, which is correct for ticket/basket/chase
+        # (where the input is a trading-symbol exchange like NFO/BFO/CDS
+        # that must map DOWN to a holiday calendar). It is wrong here:
+        # `_exchange_is_open()` below calls
+        # `fetch_special_sessions(segment["exchange"])` with the RAW
+        # per-exchange key `_enumerate_exchanges()` assigned (`"CDS"` for
+        # the synthesized cds entry, which does NOT equal equity's own
+        # `holiday_exchange` of `"NSE"`) — going through the helper would
+        # warm the `"NSE"` cache key while `_exchange_is_open` later reads
+        # the `"CDS"` key, leaving CDS cold despite the prewarm. Calling
+        # `fetch_special_sessions_async` directly with the same raw
+        # `segment["exchange"]` value guarantees the warmed key always
+        # matches the key `_exchange_is_open` will look up. No
+        # `run_on_main_loop` hop in this function either way, so there is
+        # no deadlock risk from this async context. It already swallows
+        # and logs its own failures internally (never raises), so no
+        # wrapper is needed here.
+        from backend.brokers.broker_apis import fetch_special_sessions_async
+        for segment in exchanges.values():
+            await fetch_special_sessions_async(segment["exchange"])
 
         for exch_lower, segment in exchanges.items():
             # Resolve current open-state for this exchange via the

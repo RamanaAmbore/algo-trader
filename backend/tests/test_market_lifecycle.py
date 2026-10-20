@@ -715,8 +715,8 @@ async def test_hydrate_from_audit_runs_once_per_process(
     # hydration). Stub it out here so this test's call counter stays scoped
     # to hydration specifically, matching its own docstring/intent.
     with patch("backend.api.database.async_session", _CountingSession([])), \
-         patch("backend.api.algo.agent_engine._prewarm_special_sessions_for_exchange",
-               new=AsyncMock(return_value=None)):
+         patch("backend.brokers.broker_apis.fetch_special_sessions_async",
+               new=AsyncMock(return_value=[])):
         ml_mod._test_state_fn = lambda exch, now: False
         await lifecycle.poll()
         await lifecycle.poll()
@@ -895,6 +895,70 @@ async def test_poll_prewarms_special_sessions_before_exchange_probe(
         "MCX must stay closed; a cold special-sessions cache must not "
         "silently fall back to the blanket evening-open default"
     )
+
+
+@pytest.mark.asyncio
+async def test_poll_prewarm_key_matches_exchange_is_open_lookup_for_every_segment(
+    lifecycle, freeze_audit,
+):
+    """Regression found during review: poll()'s prewarm must warm the
+    special-sessions cache under the EXACT key `_exchange_is_open()`
+    will later look up -- `segment["exchange"]` directly -- not a
+    `holiday_exchange` resolution. The synthesized `cds` segment (from
+    `_enumerate_exchanges()`) carries `exchange="CDS"`, which does NOT
+    equal equity's own `holiday_exchange` of `"NSE"`. Prewarming via
+    `agent_engine._prewarm_special_sessions_for_exchange` (which
+    resolves `"CDS"` -> the `equity` segment -> `holiday_exchange`
+    `"NSE"`) would warm the `"NSE"` cache entry while `_exchange_is_open`
+    later calls `fetch_special_sessions("CDS")` — leaving CDS cold
+    despite the prewarm having run. Calling
+    `fetch_special_sessions_async(segment["exchange"])` directly avoids
+    this mismatch for every exchange, not just CDS."""
+    import asyncio
+    from datetime import time as dtime_
+    from unittest.mock import AsyncMock, patch
+    from zoneinfo import ZoneInfo
+    import backend.api.algo.market_lifecycle as ml_mod
+    import backend.brokers.broker_apis as _ba
+    import backend.api.persistence.write_queue as _wq
+
+    IST = ZoneInfo("Asia/Kolkata")
+    now_ist = datetime(2026, 11, 5, 10, 0, tzinfo=IST)
+
+    def _fake_enumerate():
+        return {
+            "nse": {"name": "equity", "exchange": "NSE",
+                    "sessions": [{"start": dtime_(9, 15), "end": dtime_(15, 30)}],
+                    "hours_start": dtime_(9, 15), "hours_end": dtime_(15, 30),
+                    "evening_open_on_holidays": False},
+            "cds": {"name": "currency", "exchange": "CDS",
+                    "sessions": [{"start": dtime_(9, 15), "end": dtime_(15, 30)}],
+                    "hours_start": dtime_(9, 15), "hours_end": dtime_(15, 30),
+                    "evening_open_on_holidays": False},
+        }
+
+    loop = asyncio.get_running_loop()
+    orig_main_loop = _wq._main_loop
+    _ba._SPECIAL_SESSION_CACHE.clear()
+    cached_keys: set = set()
+    try:
+        _wq._main_loop = loop
+        with patch.object(ml_mod, "_enumerate_exchanges", _fake_enumerate), \
+             patch.object(ml_mod, "timestamp_indian", lambda: now_ist), \
+             patch("backend.brokers.broker_apis.fetch_holidays", lambda exch: set()), \
+             patch.object(_ba, "_read_special_sessions_async", new=AsyncMock(return_value=[])):
+            await ml_mod.market_lifecycle.poll()
+        cached_keys = set(_ba._SPECIAL_SESSION_CACHE.keys())
+    finally:
+        _wq._main_loop = orig_main_loop
+        _ba._SPECIAL_SESSION_CACHE.clear()
+
+    assert "CDS" in cached_keys, (
+        f"poll() must warm the cache under segment['exchange'] directly "
+        f"for every segment, including the synthesized cds entry — got "
+        f"cached keys {cached_keys}"
+    )
+    assert "NSE" in cached_keys
 
 
 @pytest.mark.asyncio
