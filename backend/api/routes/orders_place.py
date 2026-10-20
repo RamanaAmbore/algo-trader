@@ -218,23 +218,6 @@ async def _enforce_capacity_guard(
 # ── Template-attach helpers ───────────────────────────────────────────────────
 
 
-def _exchange_open_for_attach(exchange: str) -> bool:
-    """Return True when the exchange is currently open for trading.
-
-    (#22) Used at postback entry to decide whether to proceed with wing-scan
-    attach. GTT-only plans are always allowed (Kite accepts GTTs 24×7);
-    wing MARKET legs require an open exchange. This check is advisory only —
-    the actual enforcement for wing legs lives in apply_plan_live's C2 guard.
-    Returns True on any exception (fail-open: don't block the attach pipeline).
-    """
-    try:
-        from backend.api.algo.agent_engine import _symbol_exchange_open, _build_now_ctx
-        return bool(_symbol_exchange_open(exchange, _build_now_ctx()))
-    except Exception as _e:
-        logger.debug("_exchange_open_for_attach: check failed for %s: %s", exchange, _e)
-        return True  # fail-open — don't block attach on market-hours lookup failure
-
-
 def _gtt_direction_errors(label: str, trig_f: float, fill_price: float, parent_side: str, is_tp: bool, is_sl: bool) -> list[str]:
     """Return direction-check errors for one trigger value."""
     errs: list[str] = []

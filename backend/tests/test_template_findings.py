@@ -614,48 +614,6 @@ class TestStaleLockEvictionWarning:
             _TEMPLATE_ATTACH_LOCKS.pop(88888, None)
 
 
-# ─── #22: exchange open check helper ─────────────────────────────────────────
-
-class TestExchangeOpenForAttach:
-    """Finding #22 — _exchange_open_for_attach returns correct state."""
-
-    def test_returns_true_when_exchange_open(self):
-        from backend.api.routes.orders_place import _exchange_open_for_attach
-        # The function imports _symbol_exchange_open + _build_now_ctx lazily from
-        # backend.api.algo.agent_engine — patch them at the source.
-        with patch(
-            "backend.api.algo.agent_engine._symbol_exchange_open",
-            return_value=True,
-        ), patch(
-            "backend.api.algo.agent_engine._build_now_ctx",
-            return_value={},
-        ):
-            result = _exchange_open_for_attach("NFO")
-        assert result is True
-
-    def test_returns_false_when_exchange_closed(self):
-        from backend.api.routes.orders_place import _exchange_open_for_attach
-        with patch(
-            "backend.api.algo.agent_engine._symbol_exchange_open",
-            return_value=False,
-        ), patch(
-            "backend.api.algo.agent_engine._build_now_ctx",
-            return_value={},
-        ):
-            result = _exchange_open_for_attach("NFO")
-        assert result is False
-
-    def test_returns_true_on_import_exception(self):
-        from backend.api.routes.orders_place import _exchange_open_for_attach
-        # Simulate agent_engine import failure → fail-open (returns True)
-        with patch(
-            "backend.api.algo.agent_engine._symbol_exchange_open",
-            side_effect=ImportError("unavailable"),
-        ):
-            result = _exchange_open_for_attach("NFO")
-        assert result is True
-
-
 # ─── #29: GTT trigger validation ─────────────────────────────────────────────
 
 class TestValidateGttTriggers:
