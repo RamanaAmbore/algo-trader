@@ -569,25 +569,37 @@ below and nothing else. Order placement, template attach, chase, the agent close
   now unrecognised here exactly as it already was for `/market/status` and the other canonical-path
   callers.
   (2) `special_sessions=fetch_special_sessions(holiday_exchange)` is wired into the same call,
-  completing parity with `_segment_is_open()` — but reading the DB-backed override from the 5
-  sync/async call sites above turned out to be structurally harder than "just call it": those sites
-  run a coroutine already executing on the main event loop, and the main-loop DB bridge
-  (`run_on_main_loop()`, `backend/shared/helpers/write_queue.py`) cannot block-wait on another
-  coroutine scheduled on that same loop without deadlocking — there is no way to force a real,
-  synchronous DB read from inside those 5 callers. Shipped mitigation instead of a literal fix: (a)
-  `fetch_special_sessions()` (`broker_apis.py`) no longer caches a cold-cache-guard miss as `[]` —
-  only a genuinely successful query (even an empty one) is cached, closing a real pre-existing
-  cache-poisoning bug where the first on-main-loop caller of the day permanently poisoned that
-  day's cache for every later caller, including `quote.py`'s and `watchlist.py`'s own
-  `_segment_is_open()` calls, which had the identical exposure; (b) a new
-  `warm_special_sessions_cache()` awaits the DB read directly (no `run_on_main_loop` hop, no
-  deadlock risk) and is called at startup (`database.py`, after `seed_special_sessions()`) and after
-  every daily holiday refresh (`background.py`'s `_hr_run_once`), so the 5 call sites hit a warm
-  cache in the common case. **Residual, documented gap**: a genuinely cold cache hit mid-day from
-  one of the 5 main-loop callers still fails open to `[]` (no special-session override applied) —
-  mitigated, not eliminated. Invariant: every order, template, chase, and agent market-open check
-  must resolve through the same kwarg set as the display routes above, with the one documented
-  exception of this residual cold-cache window.
+  completing parity with `_segment_is_open()` — but reading the DB-backed override from these
+  call sites turned out to be structurally harder than "just call it": the main-loop DB bridge
+  (`run_on_main_loop()`, `backend/shared/helpers/write_queue.py`) cannot block-wait on a coroutine
+  scheduled on the same loop it's executing on, without deadlocking — there is no way to force a
+  real, synchronous DB read from inside a caller already on that loop. **Verified per call site**
+  (not assumed) which of the 6 are `async def` all the way up: `orders_place.py` (ticket, both
+  sites), `orders_basket.py`, `chase.py` are `async def` — these 3 now `await`
+  `fetch_special_sessions_async()` (via `agent_engine.py`'s new
+  `_prewarm_special_sessions_for_exchange()`) from that async context BEFORE calling the sync
+  `_build_now_ctx()`, so the cache is guaranteed warm by the time the sync path runs — **the gap is
+  fully CLOSED, not just mitigated, for these 3**. `template_attach.py`'s two sites
+  (`_check_offhours_wing_gate`, `apply_plan_live`) are plain `def`, not `async def` — `apply_plan_live`
+  alone has 4 callers (admin reconcile, postback handler, paper engine, chase terminal), so
+  converting it would ripple widely; judged out of scope. These two remain on the MITIGATION only:
+  (a) `fetch_special_sessions()` (`broker_apis.py`) no longer caches a cold-cache-guard miss as `[]`
+  — only a genuinely successful query (even an empty one) is cached, closing a real pre-existing
+  cache-poisoning bug that also affected `quote.py`'s and `watchlist.py`'s own `_segment_is_open()`
+  calls; (b) `warm_special_sessions_cache()` awaits the DB read directly (no deadlock risk), called
+  at startup and after every daily holiday refresh. **Residual, documented gap, narrowed and now
+  named precisely**: a genuinely cold cache hit mid-day from `_check_offhours_wing_gate` or
+  `apply_plan_live` specifically (and only these two) still fails open to `[]` — mitigated, not
+  eliminated. Both cache functions key on `timestamp_indian().date()`, not `date.today()` — the
+  prod/dev server runs on UTC (`timedatectl` confirmed), and a system-local date key would mis-key
+  the cache for the ~5.5h IST 00:00–05:30 window every night.
+- **`_EXCHANGE_TO_SEGMENT` (`agent_engine.py:542`) was missing `NCO`** — found while verifying the
+  fix above. Every other MCX/NCO call site in the app (~25) already treats `NCO` identically to
+  `MCX`; this one dict didn't, so `_symbol_exchange_open("NCO", ctx)` always returned `False`
+  regardless of actual market state — every NCO order/basket leg/GTT-wing attach/chase was
+  unconditionally rejected as "market closed". Fixed by adding `"NCO": "commodity"` — an
+  operator-visible, real-money-path behaviour change (NCO orders now actually gate on time, instead
+  of always failing).
 - **Remaining unreconciled mechanism**: `exchange_clock`'s DB-schedule open/closed signal, which
   drives EOD scheduling. It is the one fifth mechanism still outstanding, flagged for a future pass.
 
@@ -608,28 +620,37 @@ an exchange is passed ([`date_time_utils.py:140-186`](backend/shared/helpers/dat
 Roughly once a minute per exchange, cached. If this becomes measurable, add a `probe=False`
 passthrough to `_segment_is_open()`. **Not implemented.**
 
-**MCX evening-closed holidays (2026-10-20, commits `85f2ade1`, `53c8da80`)** — The NSE holiday-master
-`COM` entries carry `evening_session` ("Open"/"Closed").
-`_fetch_mcx_evening_closed_dates()` ([`broker_apis.py:3339`](backend/brokers/broker_apis.py#L3339))
-returns the dates marked "Closed". `_upsert_mcx_evening_closed_sessions_coro()`
-([`broker_apis.py:3387`](backend/brokers/broker_apis.py#L3387)) writes a zero-width
+**MCX evening-closed holidays (2026-10-20, commits `85f2ade1`, `53c8da80`; gaps closed same day,
+see below)** — The NSE holiday-master `COM` entries carry `evening_session` ("Open"/"Closed").
+`_fetch_mcx_evening_closed_dates()` ([`broker_apis.py:3522`](backend/brokers/broker_apis.py#L3522))
+returns the dates marked "Closed" — `None` on a failed fetch, distinct from a genuine empty "nothing
+closed this year" result. `_upsert_mcx_evening_closed_sessions_coro()`
+([`broker_apis.py:3583`](backend/brokers/broker_apis.py#L3583)) writes a zero-width
 `market_special_sessions` row for each one: `exchange='MCX'`, `start_time = end_time = 00:00`, which
-`is_market_open()` reads as closed all day. Weekend dates are excluded (`broker_apis.py:3410`), because
+`is_market_open()` reads as closed all day. Weekend dates are excluded (`broker_apis.py:3637`), because
 `next_market_open_ist()`'s weekend branch treats row existence as open. Rows carry `source='nse_auto'`.
 - **`MarketSpecialSession.source`** ([`models.py:2412`](backend/api/models.py#L2412)): NULL or
   `"manual"` is operator-entered; `"nse_auto"` is auto-inserted. The ON CONFLICT clause updates only
-  `source='nse_auto'` rows ([`broker_apis.py:3430`](backend/brokers/broker_apis.py#L3430)), so an
+  `source='nse_auto'` rows ([`broker_apis.py:3656`](backend/brokers/broker_apis.py#L3656)), so an
   operator Muhurat row is never overwritten. Migration:
   `_migrate_market_special_sessions_source()` ([`database.py:842`](backend/api/database.py#L842),
   called at [`:1227`](backend/api/database.py#L1227)), idempotent.
-- **Known gaps (code-read):** (a) rows are only inserted or updated; nothing removes a row when NSE
-  later flips a date to Open. (b) The upsert swallows exceptions and returns 0 without logging.
-  (c) `morning_session` is not modelled: a COM-listed date is an MCX holiday, so morning trading on
-  those dates is closed both before and after this fix. Whether the feed ever lists morning "Open" on
-  such a date is unverified. (d) Each MCX refresh makes two NSE HTTP requests, because
-  `_fetch_holidays_from_nse` and `_fetch_mcx_evening_closed_dates` each call
-  `_fetch_nse_holiday_master_json()` ([`broker_apis.py:3289`](backend/brokers/broker_apis.py#L3289)).
-  The URL has one call site, not the request. The commit's "halves the round-trips" claim is wrong.
+- **Gaps closed (2026-10-20, same day as the original fix):** (a) the upsert now DELETEs any
+  `nse_auto` row whose date is no longer in the fetch's closed-set — i.e. NSE later revised that
+  date's evening back to Open — scoped to `exchange='MCX' AND source='nse_auto' AND
+  start_time=end_time AND date >= today`, computed as a set-difference against freshly-queried
+  existing rows, never touching history or operator rows. Gated on the fetch having actually
+  succeeded (`is not None`) — reconciling against a FAILED fetch's empty result would wipe every
+  real closed-evening row during a transient NSE outage. (b) the upsert's `except Exception` now
+  logs a warning instead of returning 0 silently. (c) `morning_session` checked directly against
+  the live feed (not assumed): all 21 `COM` entries for 2026 carry `morning_session: "Closed"` —
+  there is currently no date where morning is open and only evening is closed, so the "doesn't
+  recur in 2026" framing is confirmed by live data, not just asserted; still unmodeled, since
+  there's nothing to model against. (d) `_fetch_nse_holiday_master_json()`
+  ([`broker_apis.py:3454`](backend/brokers/broker_apis.py#L3454)) now memoizes a successful fetch
+  for a short (5s) TTL, collapsing the two independent calls `_fetch_holidays_from_nse` and
+  `_fetch_mcx_evening_closed_dates` each make into one real HTTP round-trip — a failure is never
+  memoized, so a retry a millisecond later still gets a real attempt.
 
 **Conn-service tick forwarder killed nightly, never revived — LTP froze while Chg% moved (2026-10-19, commit 7bf11fac)** — In conn-service mode (`RAMBOQ_USE_CONN_SERVICE=1`, the prod/dev config), the 23:31 IST `_snapshot_stop_ticker()` ([`background.py:2972`](backend/api/background.py#L2972)) called a real `.stop()` on the API process's local `MmapTickReader`, cancelling `_poll_task` — the task that tails the shared-memory tick buffer and republishes ticks to the `/api/quotes/stream` SSE stream. The method's own docstring claimed no such effect existed in this mode. The 08:00 `_snapshot_restart_ticker()` ([`background.py:3002`](backend/api/background.py#L3002)) checked for a nonexistent `.restart()` method and never revived it. Broker-side ticks kept landing in the buffer, so the outage was invisible server-side: LTP froze on every symbol with no flash (flash is tick-driven), while Chg% kept moving (computed from the independent periodic positions poll). Deploys had been masking it by restarting the process; logs show it recurring most nights since 2026-09-19. Fix: the three `hasattr()` sites now branch on the canonical `is_cutover_on()` ([`client/__init__.py:32`](backend/brokers/client/__init__.py#L32)). In conn-service mode stop and unsub are true no-ops; restart calls `check_and_heal()`. `MmapTickReader.check_and_heal()` ([`mmap_ticker.py:160`](backend/brokers/mmap_ticker.py#L160)) restarts a dead or done poll task, logs `[MMAP-WATCHDOG]` once per dead→alive transition, and escalates with a second critical line on 3+ heals within 10 minutes. `start()` and `ensure_started()` ([`mmap_ticker.py:133`](backend/brokers/mmap_ticker.py#L133), [`:156`](backend/brokers/mmap_ticker.py#L156)) now restart a done-but-non-None task; previously only `None` was restartable. `_task_ticker_watchdog` ([`background.py:5698`](backend/api/background.py#L5698)) calls `check_and_heal()` every 30s in this mode, replacing a 300s no-op sleep. Frontend: `lastLiveTickAt` ([`quoteStream.js:54`](frontend/src/lib/data/quoteStream.js#L54)) is set only by real SSE tick and snapshot events — deliberately not `symbolTickCount`, which background polls also advance and which would have masked this failure. `tickStaleness.svelte.js` (75s threshold, [line 52](frontend/src/lib/data/tickStaleness.svelte.js#L52)) drives an amber `TICKS STALE@HH:MM` badge ([`RefreshButton.svelte:485`](frontend/src/lib/RefreshButton.svelte#L485)) plus one toast per staleness episode. Invariant: a local forwarder stopped by a scheduled job must have a restart path that calls a method which actually exists, and any freshness indicator must key off delivered ticks, never poll activity.
 

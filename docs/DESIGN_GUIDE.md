@@ -3939,13 +3939,19 @@ this design section does not claim it explains that window.
   holidays instead. This was not a deliberate safety net; it was a missed consumer, and it falsely
   rejected a genuinely open MCX evening session on a holiday (live-reported 2026-10-20). Fixed the
   same day: `_ae_segment_flags` now threads `sessions=`/`evening_open_on_holidays=` into
-  `is_market_open()`, and (as a mitigation, since the literal DB-backed `special_sessions` read would
-  deadlock from 5 of its 6 call sites — they run on an already-active event loop) a warmed cache
-  (`warm_special_sessions_cache()`, refreshed at startup and after each daily holiday refresh) lets
-  those sites read the real override in the common case; a cold cache mid-day still fails open. See
-  CLAUDE.md's "Market open/close determination" entry for the full call-site list. `exchange_clock`'s
-  DB-schedule signal (EOD scheduling) remains the one mechanism still unreconciled with the calendar
-  verdict.
+  `is_market_open()`. For the DB-backed `special_sessions` read, 3 of the 6 call sites
+  (`orders_place.py` ticket, `orders_basket.py`, `chase.py`) are `async def` all the way up and now
+  `await` a pre-fetch before the sync context build — the gap is fully closed for them. The other 2
+  (`template_attach.py`'s `_check_offhours_wing_gate`/`apply_plan_live`) are plain `def` and would
+  need a wider async conversion to close properly (`apply_plan_live` alone has 4 callers) — out of
+  scope for this pass, left on the warm-cache mitigation only (`warm_special_sessions_cache()`,
+  refreshed at startup and after each daily holiday refresh); a cold cache mid-day still fails open
+  for just these two. Both cache functions key on the IST date (`timestamp_indian().date()`), not
+  the system-local date — the server runs on UTC, confirmed via `timedatectl`. Also found and fixed
+  the same day: `_EXCHANGE_TO_SEGMENT` had no `NCO` entry, so every NCO order was unconditionally
+  rejected as market-closed regardless of actual time — added. See CLAUDE.md's "Market open/close
+  determination" entry for the full call-site list. `exchange_clock`'s DB-schedule signal (EOD
+  scheduling) remains the one mechanism still unreconciled with the calendar verdict.
 - Probe cost: `is_trading_day()` probes only when the calendar says closed, the clock is inside
   09:00–23:30, and an exchange is passed. About once a minute per exchange, cached. The newly
   exchange-passing sites are monitored. `probe=False` on `_segment_is_open` is the planned escape
@@ -3958,8 +3964,13 @@ this design section does not claim it explains that window.
   Weekend dates are excluded, because `next_market_open_ist()` treats row existence as open on
   weekends.
 - The ON CONFLICT clause only updates `nse_auto` rows, so operator rows are never overwritten.
-- Known gaps: no row removal when NSE reopens a date; `morning_session` is not modelled; the upsert
-  failure path returns silently.
+- Gaps closed same day: the upsert now reconciles — deletes an `nse_auto` row once NSE revises that
+  date's evening back to Open, scoped to future-or-today dates, gated on the fetch having actually
+  succeeded (never reconciles against a failed fetch). The upsert's failure path now logs instead of
+  returning silently. `morning_session` checked against the live feed: all 21 `COM` entries for 2026
+  carry `morning_session: "Closed"`, so there's currently nothing to model. The shared NSE
+  holiday-master fetch is now short-TTL memoized, collapsing 2 real HTTP round-trips per refresh
+  into 1.
 
 ---
 
