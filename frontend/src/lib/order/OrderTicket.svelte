@@ -1473,12 +1473,17 @@
   function _recomputeMktOpen() {
     // Use the resolved exchange. Mapping mirrors the backend's
     // _EXCHANGE_TO_SEGMENT table (agent_engine.py) EXACTLY — the point
-    // of this badge is matching the real order-placement gate, not
-    // being independently "more correct" than it. Fixed 2026-10-20:
-    // CDS was wrongly routed through isMcxOpen() (CDS trades the
-    // equity 09:15-15:30 window, not MCX's), and NCO fell through to
-    // the generic isMarketOpen() instead of isMcxOpen() (NCO is
-    // commodity-segment, same as MCX, everywhere else in the app).
+    // of this badge is matching that segment TABLE, not the live
+    // backend gate (_ae_segment_flags / _segment_is_open) itself.
+    // isNseOpen()/isMcxOpen() (marketHours.js) prefer the holiday-aware
+    // /api/market/status flags, polled every 5 min — so this usually
+    // agrees with the real gate but is a cached, up-to-~5-min-stale
+    // reading of it, not a live call to the same code path. Fixed
+    // 2026-10-20: CDS was wrongly routed through isMcxOpen() (NSE
+    // currency derivatives mirror the equity segment mapping, not
+    // MCX's), and NCO fell through to the generic isMarketOpen()
+    // instead of isMcxOpen() (NCO is commodity-segment, same as MCX,
+    // everywhere else in the app).
     const exch = String(_exchange || _resolvedExchange || exchange || '').toUpperCase();
     if (exch === 'MCX' || exch === 'NCO') {
       _isOpen = isMcxOpen();
@@ -3865,7 +3870,9 @@
   /* D1: market open/closed badge — mirrors RefreshButton.svelte's
      .rf-mkt-* palette (open = green, closed = muted slate) so the
      same exchange-state convention reads consistently across the app.
-     Sits next to the Symbol chip, bottom-aligned with the row. */
+     Center-aligned within its row (align-self: center below). On the
+     real embedding (SymbolPanel.svelte, symbolHidden={true}) there is
+     no adjacent Symbol chip — the badge renders alone in its row. */
   .ot-mkt-badge {
     display: inline-flex;
     align-items: center;
