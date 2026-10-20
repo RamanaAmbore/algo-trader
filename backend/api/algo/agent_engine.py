@@ -534,11 +534,22 @@ def is_grammar_tree(cond) -> bool:
 # open right now?" used by both the agent action layer and the
 # operator-initiated ticket route.
 #
-# NSE / BSE / NFO / BFO / CDS → equity segment (09:15-15:30 IST, NSE
-#                               holidays).
-# MCX                          → commodity segment (09:00-23:30 IST,
-#                                MCX holidays).
+# NSE / BSE / NFO / BFO / CDS / BCD → equity segment (09:15-15:30 IST,
+#                                     NSE holidays).
+# MCX / NCO                         → commodity segment (09:00-23:30
+#                                     IST, MCX holidays).
 # Unknown exchanges default to False (safer than wrongly allowing).
+#
+# `NCO` was missing until 2026-10-20 — every other MCX/NCO call site in
+# the app (~25, e.g. `exchange in ("MCX", "NCO")` in orders_place.py,
+# chase.py, actions_preflight.py, template_attach.py, both broker
+# adapters) already treats NCO identically to MCX. Its absence here
+# meant `_segment_for_exchange("NCO")` returned None, so
+# `_symbol_exchange_open("NCO", ctx)` always returned False — every
+# NCO order/basket leg/GTT-wing attach/chase was unconditionally
+# rejected as "market closed", regardless of actual time. Fixed by
+# adding the entry; this flips NCO from always-blocked to
+# correctly-gated, a real-money-path behaviour change.
 _EXCHANGE_TO_SEGMENT = {
     "NSE":  "equity",
     "BSE":  "equity",
@@ -547,6 +558,7 @@ _EXCHANGE_TO_SEGMENT = {
     "CDS":  "equity",
     "BCD":  "equity",
     "MCX":  "commodity",
+    "NCO":  "commodity",
 }
 
 

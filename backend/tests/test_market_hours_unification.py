@@ -411,6 +411,21 @@ def test_ae_segment_flags_equity_holiday_unaffected():
     assert flags["minutes_since_nse_open"] == 0
 
 
+def test_symbol_exchange_open_nco_mapped_to_commodity_segment():
+    """`NCO` was missing from `_EXCHANGE_TO_SEGMENT` — `_segment_for_exchange`
+    returned None for it, so `_symbol_exchange_open("NCO", ctx)` always
+    returned False regardless of `ctx["mcx_open"]`, unconditionally
+    rejecting every NCO order/basket/GTT-wing/chase as "market closed".
+    Every other call site in the app (~25) already treats NCO identically
+    to MCX — fixed by adding the mapping entry."""
+    from backend.api.algo.agent_engine import _symbol_exchange_open
+
+    assert _symbol_exchange_open("NCO", {"mcx_open": True, "nse_open": False}) is True
+    assert _symbol_exchange_open("NCO", {"mcx_open": False, "nse_open": True}) is False
+    # MCX itself must be unaffected by the fix.
+    assert _symbol_exchange_open("MCX", {"mcx_open": True, "nse_open": False}) is True
+
+
 # ---------------------------------------------------------------------------
 # D3 Step 2 — `fetch_special_sessions()`'s self-deadlock-guard gap.
 #
