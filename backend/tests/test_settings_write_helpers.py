@@ -203,3 +203,38 @@ async def test_upsert_setting_with_external_session_inserts_without_commit():
     assert old is None
     session.add.assert_called_once()
     session.commit.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# D1c (2026-10-20) — task_markers.* restart-safety markers must survive
+# _prune_retired_keys even though they're never in SEEDS (same pattern
+# as news.last_reset_date).
+# ---------------------------------------------------------------------------
+
+def test_task_markers_prefix_is_owned_outside_seeds():
+    """task_markers.* keys must be in the survival list, mirroring
+    news.* — otherwise a restart-safety marker written by
+    background._pcf_mark_done / _hr_mark_done gets silently deleted on
+    every restart by _prune_retired_keys, re-triggering a double-run."""
+    assert "task_markers." in settings_mod._OWNED_OUTSIDE_SEEDS_PREFIXES
+
+
+@pytest.mark.asyncio
+async def test_prune_retired_keys_preserves_task_markers_key():
+    """_prune_retired_keys must NOT delete a task_markers.* key even
+    though it's absent from SEEDS."""
+    from backend.shared.helpers.settings import _prune_retired_keys
+
+    existing_by_key = {
+        "task_markers.prev_close_fix_date": MagicMock(),
+        "task_markers.holiday_refresh_date": MagicMock(),
+        "some.retired.key": MagicMock(),
+    }
+    session = MagicMock()
+    session.execute = AsyncMock()
+
+    seed_keys = {"alerts.cooldown_minutes"}  # task_markers.* never seeded
+    deleted = await _prune_retired_keys(session, existing_by_key, seed_keys)
+
+    assert deleted == 1  # only "some.retired.key"
+    session.execute.assert_awaited_once()
