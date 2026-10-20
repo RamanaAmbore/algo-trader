@@ -1401,7 +1401,19 @@ async def snapshot_daily_book(target_date: Optional[date] = None,
 
     now_ist = timestamp_indian()
     if target_date is None:
-        target_date = now_ist.date()  # type: ignore[attr-defined]
+        # Session-boundary-aware default (2026-10-20 fix) — NOT bare
+        # now_ist.date(). A close/close_settled-triggered snapshot can
+        # land just after midnight IST (MCX close 23:30 + settled offset
+        # can cross into the next calendar day); session_date_of() shifts
+        # back 8h so that write is still attributed to the trading
+        # SESSION that was closing, matching the same EOD row the earlier
+        # same-session 23:4x-ish write already created — never a
+        # brand-new row dated "tomorrow" before tomorrow's session has
+        # even opened. Mirrors _SESSION_ANCHOR_CUTOFF_TS_SQL's 08:00 IST
+        # boundary convention (positions.py) applied here in Python.
+        # Callers that pass an explicit target_date are untouched.
+        from backend.api.algo.expiry_freeze import session_date_of
+        target_date = session_date_of(now_ist)
 
     connections = _get_connections()
     accounts = list(connections.conn.keys())

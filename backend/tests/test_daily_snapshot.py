@@ -1311,3 +1311,179 @@ class TestFixC2SnapHoldingEodValsQtyPriority:
         assert day_pnl_v == pytest.approx(1000.0), (
             f"Unsold holding: day_pnl must be 100×10=1000; got {day_pnl_v}"
         )
+
+
+# ---------------------------------------------------------------------------
+# D1a (2026-10-20) — snapshot_daily_book(target_date=None) is session-
+# boundary-aware (session_date_of), not bare now_ist.date(). A close/
+# close_settled-triggered write landing just after midnight IST must be
+# attributed to the SAME trading session as an earlier same-session write
+# (e.g. MCX's own ~23:45 EOD write), never a brand-new "tomorrow" row.
+# ---------------------------------------------------------------------------
+
+class TestSnapshotDailyBookSessionBoundaryTargetDate:
+    """Exercise only the target_date resolution — broker fetch + row
+    builders are stubbed out so no DB / broker mocking is required; we
+    assert on what target_date actually reached the row builders."""
+
+    @staticmethod
+    def _ist(y, m, d, hh, mm, ss=0):
+        from zoneinfo import ZoneInfo
+        from datetime import datetime
+        return datetime(y, m, d, hh, mm, ss, tzinfo=ZoneInfo("Asia/Kolkata"))
+
+    async def _run_and_capture_target_date(self, now_ist):
+        """Drive snapshot_daily_book(target_date=None) at `now_ist` and
+        return the target_date that reached _holdings_rows/_positions_rows."""
+        from unittest.mock import patch, MagicMock
+        from contextlib import ExitStack
+        from backend.api.algo import daily_snapshot as ds
+
+        captured: dict = {}
+
+        def _fake_holdings_rows(account, target_date, raw, now, **kw):
+            captured["holdings"] = target_date
+            return []
+
+        def _fake_positions_rows(account, target_date, raw, now, **kw):
+            captured["positions"] = target_date
+            return []
+
+        def _fake_trades_rows(account, target_date, raw):
+            return []
+
+        def _fake_funds_rows(account, target_date, raw):
+            return []
+
+        fake_broker = MagicMock()
+        fake_broker.account = "ZG0790"
+
+        conn_singleton = MagicMock()
+        conn_singleton.conn = {"ZG0790": MagicMock()}
+
+        stack = ExitStack()
+        stack.enter_context(patch.object(ds, "_get_connections", return_value=conn_singleton))
+        stack.enter_context(patch.object(ds, "timestamp_indian", return_value=now_ist))
+        stack.enter_context(patch.object(ds, "_holdings_rows", _fake_holdings_rows))
+        stack.enter_context(patch.object(ds, "_positions_rows", _fake_positions_rows))
+        stack.enter_context(patch.object(ds, "_trades_rows", _fake_trades_rows))
+        stack.enter_context(patch.object(ds, "_funds_rows", _fake_funds_rows))
+        stack.enter_context(patch.object(
+            ds, "_fetch_account_data",
+            return_value={"holdings": [], "positions": [], "trades": [], "funds": []},
+        ))
+        stack.enter_context(patch("backend.brokers.registry.all_brokers", return_value=[fake_broker]))
+        with stack:
+            await ds.snapshot_daily_book(target_date=None)
+        return captured
+
+    @pytest.mark.asyncio
+    async def test_before_midnight_resolves_to_same_calendar_day(self):
+        """23:50 IST on 2026-10-19 → session date 2026-10-19 (no shift needed)."""
+        now_ist = self._ist(2026, 10, 19, 23, 50)
+        captured = await self._run_and_capture_target_date(now_ist)
+        assert captured["holdings"] == date(2026, 10, 19)
+        assert captured["positions"] == date(2026, 10, 19)
+
+    @pytest.mark.asyncio
+    async def test_after_midnight_still_resolves_to_prior_session_date(self):
+        """00:05 IST on 2026-10-20 is still the 2026-10-19 trading SESSION —
+        this is the exact scenario the market_lifecycle double-fire bug
+        exploited: a post-midnight write must land on the SAME date as the
+        same session's earlier (pre-midnight) write, not a new "tomorrow" row."""
+        now_ist = self._ist(2026, 10, 20, 0, 5)
+        captured = await self._run_and_capture_target_date(now_ist)
+        assert captured["holdings"] == date(2026, 10, 19)
+        assert captured["positions"] == date(2026, 10, 19)
+
+    @pytest.mark.asyncio
+    async def test_before_and_after_midnight_same_session_match(self):
+        """Direct before/after comparison — both resolve to the identical
+        target_date, proving a midnight-crossing write never splits across
+        two different daily_book rows for the same trading session."""
+        before = await self._run_and_capture_target_date(self._ist(2026, 10, 19, 23, 50))
+        after = await self._run_and_capture_target_date(self._ist(2026, 10, 20, 0, 5))
+        assert before["holdings"] == after["holdings"]
+        assert before["positions"] == after["positions"]
+
+    @pytest.mark.asyncio
+    async def test_explicit_target_date_untouched(self):
+        """A caller passing an explicit target_date is never overridden by
+        the session_date_of default — only the target_date=None branch
+        changed."""
+        from unittest.mock import patch, MagicMock
+        from contextlib import ExitStack
+        from backend.api.algo import daily_snapshot as ds
+
+        captured: dict = {}
+
+        def _fake_holdings_rows(account, target_date, raw, now, **kw):
+            captured["holdings"] = target_date
+            return []
+
+        def _fake_positions_rows(account, target_date, raw, now, **kw):
+            return []
+
+        fake_broker = MagicMock()
+        fake_broker.account = "ZG0790"
+        conn_singleton = MagicMock()
+        conn_singleton.conn = {"ZG0790": MagicMock()}
+
+        explicit_date = date(2026, 1, 15)  # deliberately NOT the session date
+        now_ist = self._ist(2026, 10, 20, 0, 5)
+
+        stack = ExitStack()
+        stack.enter_context(patch.object(ds, "_get_connections", return_value=conn_singleton))
+        stack.enter_context(patch.object(ds, "timestamp_indian", return_value=now_ist))
+        stack.enter_context(patch.object(ds, "_holdings_rows", _fake_holdings_rows))
+        stack.enter_context(patch.object(ds, "_positions_rows", _fake_positions_rows))
+        stack.enter_context(patch.object(ds, "_trades_rows", lambda *a, **k: []))
+        stack.enter_context(patch.object(ds, "_funds_rows", lambda *a, **k: []))
+        stack.enter_context(patch.object(
+            ds, "_fetch_account_data",
+            return_value={"holdings": [], "positions": [], "trades": [], "funds": []},
+        ))
+        stack.enter_context(patch("backend.brokers.registry.all_brokers", return_value=[fake_broker]))
+        with stack:
+            await ds.snapshot_daily_book(target_date=explicit_date)
+        assert captured["holdings"] == explicit_date
+
+
+# ---------------------------------------------------------------------------
+# D1a deviation-from-plan verification: a fresh EOD INSERT (no pre-existing
+# today-dated row) still gets the CORRECT previous_close (prior session's
+# close) without needing fix_daily_book_prev_close's 08:00 settlement-map
+# UPDATE to have anything to match against. This is the evidence backing
+# the decision NOT to convert the settlement-map UPDATE into an upsert
+# (see handback) — the real EOD write path is self-sufficient.
+# ---------------------------------------------------------------------------
+
+class TestEodWriteSelfSufficientPrevClose:
+    def test_positions_build_row_sets_previous_close_from_broker_field_alone(self):
+        """_position_previous_close (called from _positions_build_row, the
+        exact code path the EOD write uses) derives previous_close purely
+        from the broker's own close_price/prev_close field + the overnight/
+        new-position branch — it needs NO pre-existing daily_book row for
+        today to compute the correct value. This holds whether or not a
+        today-dated row already exists, which is exactly why killing the
+        market_lifecycle double-fire does not strand fix_daily_book_prev_close's
+        settlement-map UPDATE: the EOD write it used to "repair" was only
+        ever repairing damage the double-fire itself caused."""
+        from backend.api.algo.daily_snapshot import _position_previous_close
+
+        # Overnight/closed position: broker's own (not-yet-BHAV-refreshed)
+        # close_price field IS the correct prior-session close at EOD-write
+        # time (Kite only refreshes close_price from BHAV ~08:00 next day —
+        # see CLAUDE.md "Kite close_price stale overnight").
+        r = {"close_price": 2450.0}
+        result = _position_previous_close(
+            oq_raw=5, avg_px=2400.0, qty_contracts=5, pos_close_ref=2450.0, r=r,
+        )
+        assert result == 2450.0
+
+        # New position opened today (oq=0): no prior settlement exists at
+        # all — falls back to entry price so day P&L starts at 0.
+        result_new = _position_previous_close(
+            oq_raw=0, avg_px=2500.0, qty_contracts=10, pos_close_ref=None, r={},
+        )
+        assert result_new == 2500.0

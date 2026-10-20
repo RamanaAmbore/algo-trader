@@ -114,6 +114,16 @@ def test_handlers_wired_for_three_exchanges():
     assert 'register("nse:close", _snapshot_nav)' in src
 
 
+def test_no_dead_last_seen_date_field():
+    """_last_seen_date (the date-rollover reset trigger, removed 2026-10-20
+    as part of the double-fire fix) must be fully gone — not left as a
+    half-referenced dead field."""
+    src = _src()
+    assert "_last_seen_date" not in src, (
+        "_last_seen_date should be fully removed, not left dangling"
+    )
+
+
 def test_no_legacy_market_close_state_inline_path():
     """No leftover TODO markers in lifecycle module."""
     src = _src()
@@ -364,6 +374,61 @@ async def test_close_settled_fires_only_once(
     await lifecycle.poll()  # extra
     await lifecycle.poll()
     assert settled_called.count(("nse", "close_settled")) == 1
+
+
+@pytest.mark.asyncio
+async def test_close_settled_does_not_refire_on_midnight_rollover(
+    lifecycle, stub_segments, stub_holidays, freeze_audit, freeze_now,
+):
+    """Regression test for the 2026-10-20 double-fire bug.
+
+    Root cause: `poll()` used to unconditionally reset `_settled_fired` on
+    every bare calendar-date rollover, even for an exchange that had
+    already closed AND already settled hours earlier and never reopened.
+    Since `_last_close_at` is intentionally left untouched across
+    rollover (needed for MCX's close-23:30-plus-offset window spanning
+    midnight), the settled-offset check (`now_ist >= last_close +
+    offset`) was already trivially satisfied the instant the flag got
+    cleared — causing `close_settled` to fire a SECOND time immediately
+    after midnight and write a second, spuriously-dated `daily_book`
+    snapshot row every single night (confirmed: 115/115 positions +
+    holdings rows corrupted on 2026-10-20). The only valid re-arm point
+    for `_settled_fired` is the exchange's own open transition (line 195),
+    not the wall clock rolling over a date boundary.
+    """
+    from backend.api.algo import market_lifecycle as ml_mod
+    with patch.object(ml_mod, "_settled_offset_minutes", lambda: 15):
+        # Seed open, then close just before midnight (23:50 IST).
+        freeze_now["now"] = freeze_now["now"].replace(hour=23, minute=0)
+        ml_mod._test_state_fn = lambda exch, now: True
+        await lifecycle.poll()  # seed open
+
+        ml_mod._test_state_fn = lambda exch, now: False
+        settled_called = []
+        async def cb(e, t): settled_called.append((e, t))
+        lifecycle.register("nse:close_settled", cb)
+
+        freeze_now["now"] = freeze_now["now"].replace(minute=50)
+        await lifecycle.poll()  # fires close at 23:50
+        assert settled_called == []
+
+        # Advance 16 minutes → 00:06 the NEXT calendar day (crosses
+        # midnight) and satisfies the 15-min settled offset — fires once.
+        freeze_now["now"] = freeze_now["now"] + timedelta(minutes=16)
+        await lifecycle.poll()
+        assert settled_called.count(("nse", "close_settled")) == 1
+
+        # Advance further — still closed, still past midnight. Pre-fix,
+        # the date-rollover reset block cleared _settled_fired here, and
+        # because the offset window was already satisfied, the very next
+        # poll fired a SECOND close_settled immediately.
+        freeze_now["now"] = freeze_now["now"] + timedelta(minutes=5)
+        await lifecycle.poll()
+        await lifecycle.poll()
+        assert settled_called.count(("nse", "close_settled")) == 1, (
+            "close_settled re-fired after a bare midnight date rollover — "
+            "the exact double-fire bug this regression test guards against"
+        )
 
 
 @pytest.mark.asyncio

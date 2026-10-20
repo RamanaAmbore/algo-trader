@@ -34,7 +34,7 @@ existing close-summary task.
 from __future__ import annotations
 
 import asyncio
-from datetime import date, datetime, time as dtime, timedelta
+from datetime import datetime, time as dtime, timedelta
 from typing import Awaitable, Callable, Optional
 
 from backend.shared.helpers.date_time_utils import (
@@ -93,9 +93,6 @@ class MarketLifecycle:
         # `<exchange>:close`, `<exchange>:close_settled`.
         self._callbacks: dict[str, list[HandlerCB]] = {}
 
-        # Last-seen calendar date for resetting daily state on rollover.
-        self._last_seen_date: Optional[date] = None
-
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -150,19 +147,23 @@ class MarketLifecycle:
         and the per-event audit row records ``handlers_failed > 0``.
         """
         now_ist = timestamp_indian()
-        today = now_ist.date()
 
-        # Date rollover — reset daily state so a fresh open transition
-        # can fire tomorrow.
-        if self._last_seen_date is None:
-            self._last_seen_date = today
-        elif self._last_seen_date != today:
-            self._last_seen_date = today
-            # Reset settled-fired markers; last_close_at stays so the
-            # 45-min window can still fire across midnight (rare — MCX
-            # close 23:30 + 45 min = 00:15 next day).
-            self._settled_fired = {k: False for k in self._settled_fired}
-
+        # No calendar-date-rollover reset here by design (2026-10-20 fix) —
+        # resetting `_settled_fired` on a bare midnight date flip caused
+        # `close_settled` to fire a SECOND time immediately after midnight
+        # for every exchange that was already closed (and had already
+        # settled) well before midnight, since `_last_close_at` is left
+        # untouched across rollover and the settled-offset window
+        # (`now_ist >= last_close + offset`) is trivially satisfied the
+        # instant the flag is cleared. That double-fire wrote a second,
+        # spuriously-dated `daily_book` snapshot row every single night
+        # (confirmed: 115/115 positions+holdings rows corrupted on
+        # 2026-10-20), silently masked on ordinary days only because the
+        # 08:00 IST repair job ran before anyone looked. The ONLY correct
+        # re-arm point for `_settled_fired` is the open-transition reset
+        # below (`<exch>:open`) — an exchange that reopens tomorrow clears
+        # its own flag then, exactly once, tied to a REAL state transition
+        # rather than the wall clock rolling over a date boundary.
         fired: list[dict] = []
         exchanges = _enumerate_exchanges()
 
@@ -301,7 +302,6 @@ class MarketLifecycle:
         self._last_close_at.clear()
         self._settled_fired.clear()
         self._callbacks.clear()
-        self._last_seen_date = None
 
 
 # ---------------------------------------------------------------------------
