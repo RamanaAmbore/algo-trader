@@ -142,6 +142,27 @@ def _reset_auth_nav_module_caches():
     _reset_auth_nav_caches_if_loaded()
 
 
+@pytest.fixture(autouse=True)
+def _reset_nse_holiday_json_memo():
+    """`broker_apis._fetch_nse_holiday_master_json()`'s short-TTL memo
+    (2026-10-20 fix) is process-global and keyless by design — it exists
+    to collapse two real calls MILLISECONDS apart in production, not to
+    survive a whole test run. Without a global autouse reset, any test
+    anywhere in the suite that mocks `requests.get` for this endpoint
+    (several do, across multiple files) can warm the memo, and a
+    DIFFERENT test running within the 5s TTL window silently gets the
+    FIRST test's stale mocked response instead of exercising its own
+    mock — confirmed live: this broke 3 pre-existing tests in
+    `test_broker_apis_coverage.py` the first time this memo shipped,
+    purely from test execution order. Reset before AND after every test,
+    unconditionally — `broker_apis` is already a normal, widely-imported
+    module with no special import-order sensitivity to defer for."""
+    from backend.brokers import broker_apis
+    broker_apis._NSE_HOLIDAY_JSON_MEMO.clear()
+    yield
+    broker_apis._NSE_HOLIDAY_JSON_MEMO.clear()
+
+
 @pytest.fixture
 def stub_kite_connection():
     """

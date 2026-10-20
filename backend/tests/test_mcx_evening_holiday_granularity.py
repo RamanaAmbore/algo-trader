@@ -58,19 +58,9 @@ def _mock_response():
     return resp
 
 
-@pytest.fixture(autouse=True)
-def _clear_nse_holiday_json_memo():
-    """`_fetch_nse_holiday_master_json`'s short-TTL memo (2026-10-20 fix)
-    is process-global and keyless — without clearing it between tests,
-    a test earlier in this file that warms it with its own mocked
-    `requests.get` response would leak that stale JSON into a LATER
-    test's call, within the memo's TTL window (tests run far faster than
-    the TTL). Clear before AND after so this file's own tests never
-    pollute each other OR a later unrelated test module in the same run."""
-    from backend.brokers import broker_apis
-    broker_apis._NSE_HOLIDAY_JSON_MEMO.clear()
-    yield
-    broker_apis._NSE_HOLIDAY_JSON_MEMO.clear()
+# `_fetch_nse_holiday_master_json`'s short-TTL memo is cleared by a
+# global autouse fixture in conftest.py (`_reset_nse_holiday_json_memo`)
+# — no file-local fixture needed here.
 
 
 # ---------------------------------------------------------------------------

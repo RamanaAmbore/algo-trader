@@ -2073,7 +2073,13 @@ class TestFetchSpecialSessions:
     def test_cache_hit_returns_cached_sessions(self):
         """fetch_special_sessions returns cached sessions without DB hit."""
         import datetime
-        today = datetime.date.today()
+        from backend.shared.helpers.date_time_utils import timestamp_indian
+        # 2026-10-20 fix: fetch_special_sessions keys its cache on the IST
+        # date (timestamp_indian().date()), not the system-local date —
+        # must seed the cache under the SAME key the function will look
+        # up, or this test is flaky depending on how far system-local
+        # time has drifted from IST at the moment it happens to run.
+        today = timestamp_indian().date()
         session = {"date": today, "start": datetime.time(9, 0), "end": datetime.time(15, 30)}
         broker_apis._SPECIAL_SESSION_CACHE["NSE"] = (today, [session])
 
