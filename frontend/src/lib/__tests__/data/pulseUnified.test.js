@@ -29,6 +29,8 @@
  */
 
 import { describe, it, expect } from 'vitest';
+// @ts-ignore -- node:fs types are not installed for svelte-check; vitest resolves it at runtime.
+import { readFileSync } from 'node:fs';
 import {
   mergePositionRows, mergeHoldingRows, makeRowFactory, mergeUnderlyingAnchors,
   totalsRowFor, finalizeRows,
@@ -653,7 +655,7 @@ describe('mergeUnderlyingAnchors — does not duplicate an existing per-account 
       },
     };
 
-    mergeUnderlyingAnchors(byKey, uq, [futureRow, optionRow], [], true, true, { getInst: null });
+    mergeUnderlyingAnchors(byKey, uq, [futureRow, optionRow], [], true, true, { getInst: null, snapOf: () => null });
 
     // Exactly one row carries the future's own tradingsymbol — no second,
     // spot-only anchor row was created alongside the real position row.
@@ -805,5 +807,68 @@ describe('D5 — never renders blank for a held position (zero-denominator fallb
     const pct = dayChangePct(out.day_pnl, Math.abs(out._prev_market_value));
     expect(pct).not.toBeNull();
     expect(Number.isFinite(pct)).toBe(true);
+  });
+});
+
+// ============================================================================
+// D6 (2026-10-20) — underlying-anchor rows consolidate onto the shared
+// _applyQuoteFields pipeline; the old bespoke _applyUnderlyingQuoteFields
+// helper is deleted entirely.
+// ============================================================================
+
+describe('D6 — _applyUnderlyingQuoteFields is deleted; both call sites use _applyQuoteFields', () => {
+  it('the function no longer exists anywhere in pulseUnified.js', () => {
+    const src = readFileSync(new URL('../../data/pulseUnified.js', import.meta.url), 'utf8');
+    expect(src).not.toMatch(/_applyUnderlyingQuoteFields/);
+  });
+});
+
+describe('D6 — anchor row quote updates use overwrite-on-fresh-snap semantics (no stale fill-only-if-null guard)', () => {
+  it('an anchor transitions from "no quote yet" (closed) to a fresh nonzero quote across two merge cycles', () => {
+    const byKey = {};
+    const uqClosed = {
+      CRUDEOIL: {
+        _resolved: {
+          tradingsymbol: 'CRUDEOIL26OCTFUT', exchange: 'MCX',
+          displayUnderlying: 'CRUDEOIL', kind: 'fut', _major: 'positions',
+        },
+      },
+    };
+    const optionRow = { tradingsymbol: 'CRUDEOIL26OCT5800CE', account: 'ACC1', exchange: 'MCX',
+      quantity: 10, average_price: 50, prev_close: 48, last_price: 55, pnl: 0 };
+
+    // Cycle 1 — market closed, no quote data at all for the anchor symbol.
+    mergeUnderlyingAnchors(byKey, uqClosed, [optionRow], [], true, true, {
+      getInst: null, snapOf: () => null,
+    });
+    const anchorKey = Object.keys(byKey).find(k => byKey[k]._isUnderlyingAnchor);
+    expect(anchorKey).toBeDefined();
+    expect(byKey[anchorKey].ltp == null).toBe(true);
+    expect(byKey[anchorKey].change_pct == null).toBe(true);
+
+    // Cycle 2 — a fresh quote lands. Both symbolStore (snap) AND the
+    // contracts bag (q) now carry it, matching publishPulseQuotes' real
+    // behaviour of pushing batchQuote results into symbolStore too.
+    const freshSnap = { ltp: 5820, close: 5790, day_change: 30, day_change_pct: 0.52 };
+    const uqOpen = {
+      CRUDEOIL: {
+        ltp: 5820, close: 5790, change: 30, change_pct: 0.52,
+        _resolved: {
+          tradingsymbol: 'CRUDEOIL26OCTFUT', exchange: 'MCX',
+          displayUnderlying: 'CRUDEOIL', kind: 'fut', _major: 'positions',
+        },
+      },
+    };
+    mergeUnderlyingAnchors(byKey, uqOpen, [optionRow], [], true, true, {
+      getInst: null, snapOf: () => freshSnap,
+    });
+    const out = byKey[anchorKey];
+    // Overwrite-on-fresh-snap: the previously-unset change_pct/ltp are now
+    // populated from the fresh quote — the old bespoke helper's fill-only-
+    // if-null policy for close/change/change_pct risked exactly this kind
+    // of stuck-null field once a row existed without fully resolving it.
+    expect(out.ltp).toBe(5820);
+    expect(out.change_pct).toBe(0.52);
+    expect(out.close).toBe(5790);
   });
 });

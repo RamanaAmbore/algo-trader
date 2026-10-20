@@ -259,29 +259,6 @@ function _applyWatchlistQuoteFields(row, snap) {
 }
 
 /**
- * Apply quote fields from an underlying-quote bag `q` onto an anchor row.
- * Split write policy: ltp/bid/ask always overwrite; close/change/open/
- * high/low/volume/oi only-if-null. Includes high+low (not in _applyQuoteFields).
- * Field names: q.change_pct / q.change (not q.day_change_pct) — anchor shape.
- *
- * @param {Record<string, any>} row   target row (mutated)
- * @param {any}  q                    underlying quote bag entry
- */
-function _applyUnderlyingQuoteFields(row, q) {
-  row.ltp        = q.ltp        ?? row.ltp        ?? null;
-  row.bid        = q.bid        ?? row.bid        ?? null;
-  row.ask        = q.ask        ?? row.ask        ?? null;
-  if (row.close      == null) row.close      = q.close      ?? null;
-  if (row.change     == null) row.change     = q.change     ?? null;
-  if (row.change_pct == null) row.change_pct = q.change_pct ?? null;
-  if (row.open       == null) row.open       = q.open       ?? null;
-  if (row.high       == null) row.high       = q.high       ?? null;
-  if (row.low        == null) row.low        = q.low        ?? null;
-  if (row.volume     == null) row.volume     = q.volume     ?? null;
-  if (row.oi         == null) row.oi         = q.oi         ?? null;
-}
-
-/**
  * Build the set of tradingsymbols already present in visible majors.
  * Used by mergeMoverRows to decide whether a mover symbol already has
  * a row (badge-only) vs needs a brand-new Movers-major row.
@@ -680,11 +657,11 @@ export function mergeHoldingRows(byKey, hold, includeHold, cq, ctx) {
  * @param {any[]} hold
  * @param {boolean} includePos
  * @param {boolean} includeHold
- * @param {{ getInst: ((s: string) => any) | null }} ctx
+ * @param {{ getInst: ((s: string) => any) | null, snapOf: (sym: string) => any }} ctx
  */
 export function mergeUnderlyingAnchors(byKey, uq, pos, hold, includePos, includeHold, ctx) {
   const get = makeRowFactory(byKey);
-  const { getInst } = ctx;
+  const { getInst, snapOf } = ctx;
   // Scoped option-underlying sets — anchors are gated on presence of at least
   // one CE/PE within the enabled major's scoped rows.
   const posOptUnderlyings  = _optUnderlyingSet(includePos  === false ? [] : pos,  getInst);
@@ -692,6 +669,16 @@ export function mergeUnderlyingAnchors(byKey, uq, pos, hold, includePos, include
   for (const [, q] of Object.entries(uq)) {
     const info = q._resolved;
     if (!info) continue;
+    // D6 fix (2026-10-20): snap/liveQ for the shared _applyQuoteFields
+    // entry point every real position/holding/watchlist row already uses.
+    // `q` itself IS the raw batchQuote item (same shape as the `liveQ`
+    // contracts-bag entry real rows read — see buildQuoteMaps/pulseLoad.js)
+    // plus a `_resolved` wrapper key _applyQuoteFields simply ignores.
+    // `snap` is symbolStore's own copy of the same batchQuote item
+    // (publishPulseQuotes pushes it there too), keyed by the anchor's
+    // resolved tradingsymbol — same overwrite-on-fresh-snap semantics real
+    // rows get, replacing the old bespoke fill-only-when-null helper.
+    const snap = snapOf(info.tradingsymbol);
     const anchorMajor = info._major || 'positions';
     if (anchorMajor === 'positions' && includePos  === false) continue;
     if (anchorMajor === 'holdings'  && includeHold === false) continue;
@@ -722,7 +709,7 @@ export function mergeUnderlyingAnchors(byKey, uq, pos, hold, includePos, include
         row.src.u      = true;
         row.underlying = info.displayUnderlying || info.underlying_group;
         row.kind       = info.kind;
-        _applyUnderlyingQuoteFields(row, q);
+        _applyQuoteFields(row, snap, q);
       }
       continue;
     }
@@ -740,7 +727,7 @@ export function mergeUnderlyingAnchors(byKey, uq, pos, hold, includePos, include
     row._isUnderlyingAnchor = true;
     row.underlying = info.displayUnderlying || info.underlying_group;
     row.kind       = info.kind;
-    _applyUnderlyingQuoteFields(row, q);
+    _applyQuoteFields(row, snap, q);
   }
 }
 

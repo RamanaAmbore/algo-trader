@@ -86,7 +86,7 @@ export function positionStateBadge(row) {
       color: 'var(--algo-sky)',
       bg: 'var(--algo-sky-bg)',
       border: null,
-      tooltip: 'Underlying reference — not a held position.',
+      tooltip: 'Underlying reference — front-month future contract; not a held position or option contract.',
     };
   }
 

@@ -3115,7 +3115,7 @@
     const wlCtx  = { snapOf, getInst };
     const posCtx = { snapOf, getInst, baseDayPnlForPosition };
     const holdCtx = { snapOf, getInst, isMarketOpen };
-    const anchCtx = { getInst };
+    const anchCtx = { getInst, snapOf };
     const movCtx  = { snapOf };
     const finCtx  = { directional, leadAccount, acctColor };
 
