@@ -2297,7 +2297,16 @@
       mode: _mode,
       action,
       symbol,
-      exchange,
+      // 2026-10-20 fix: was the bare `exchange` prop — every other
+      // call site in this file (margin preview, preflight, basket
+      // submission) resolves via `_exchange || _resolvedExchange ||
+      // exchange || 'NFO'` so an operator's manual Exchange Select
+      // override (see the IFCI dual-listed comment near _exchange's
+      // declaration) is honoured. This was the one real order-
+      // submission path still reading the stale prop, so a manual
+      // override showed correctly in the preview/preflight but could
+      // still place against the WRONG exchange.
+      exchange: _exchange || _resolvedExchange || exchange || 'NFO',
       side: _side,
       qty: _qty,
       product: _product,
