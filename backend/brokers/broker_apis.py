@@ -3286,22 +3286,42 @@ def fetch_holidays(exchange="NSE"):
     return holidays
 
 
-def _fetch_holidays_from_nse(exchange: str) -> set:
-    """Direct NSE public-API fetch (Tier 4 in `fetch_holidays`; ALSO the
-    primary path invoked by `_task_holiday_refresh`). Returns a set of
-    `date` objects; empty set on any failure so the caller can decide
-    what to do (cache empty, retry, etc.)."""
+def _fetch_nse_holiday_master_json() -> "dict | None":
+    """Raw HTTP fetch of the NSE holiday-master feed — the ONE place the
+    literal URL appears as a real call (SSOT, enforced by
+    `test_ssot_nse_url_is_in_one_place`: "a URL migration is a one-line
+    change"). Both `_fetch_holidays_from_nse` (per-exchange bare-date
+    set, every existing caller's contract) and
+    `_fetch_mcx_evening_closed_dates` (per-segment morning/evening-session
+    granularity, 2026-10-20 fix) parse this SAME raw response rather than
+    each doing their own HTTP call. Returns the parsed JSON dict, or None
+    on any failure (network, non-2xx, bad JSON) — callers fail open to
+    their own empty-result default.
+    """
     import requests
-    from datetime import datetime as dt_datetime
-
-    holidays: set = set()
     try:
         resp = requests.get(
             "https://www.nseindia.com/api/holiday-master?type=trading",
             headers={"User-Agent": "Mozilla/5.0"}, timeout=10,
         )
         resp.raise_for_status()
-        data = resp.json()
+        return resp.json()
+    except Exception:
+        return None
+
+
+def _fetch_holidays_from_nse(exchange: str) -> set:
+    """Direct NSE public-API fetch (Tier 4 in `fetch_holidays`; ALSO the
+    primary path invoked by `_task_holiday_refresh`). Returns a set of
+    `date` objects; empty set on any failure so the caller can decide
+    what to do (cache empty, retry, etc.)."""
+    from datetime import datetime as dt_datetime
+
+    holidays: set = set()
+    data = _fetch_nse_holiday_master_json()
+    if data is None:
+        return holidays
+    try:
         segment = _NSE_SEGMENT_MAP.get(exchange, "CM")
         entries = data.get(segment, [])
         for h in entries:
@@ -3318,18 +3338,18 @@ def _fetch_holidays_from_nse(exchange: str) -> set:
 
 def _fetch_mcx_evening_closed_dates() -> set:
     """Fetch the NSE holiday-master feed's ``COM`` (MCX commodity) segment
-    directly and return the subset of holiday dates where
+    and return the subset of holiday dates where
     ``evening_session == "Closed"`` — i.e. MCX does NOT reopen for its
     17:00+ evening session on that date, unlike the blanket
     ``evening_open_on_holidays: true`` assumption in backend_config.yaml,
     which is wrong for ~8-9 of MCX's ~21 holidays/year (confirmed live
     2026-10-20: 9 of 21 COM entries carry ``evening_session: "Closed"``).
 
-    A SEPARATE fetch from `_fetch_holidays_from_nse` (not a shared-cache
-    optimisation) so that function's return contract (a bare
-    ``set[date]``, consumed by many existing callers) stays unchanged.
-    Only called once/day from `_task_holiday_refresh`'s MCX refresh pass,
-    so the extra HTTP round-trip is negligible.
+    Shares the one raw HTTP fetch (`_fetch_nse_holiday_master_json`) with
+    `_fetch_holidays_from_nse` instead of duplicating the call — only
+    called once/day from `_task_holiday_refresh`'s MCX refresh pass,
+    alongside that function's own call, so this also halves the number
+    of NSE round-trips that cron does per day.
 
     Field names/shape confirmed directly against the live feed (not
     guessed): each ``COM`` entry carries ``tradingDate``, ``weekDay``,
@@ -3342,17 +3362,13 @@ def _fetch_mcx_evening_closed_dates() -> set:
     evening_open_on_holidays=True behaviour, same as before this fix —
     never fails CLOSED and accidentally blocks a genuinely-open evening.
     """
-    import requests
     from datetime import datetime as dt_datetime
 
     closed: set = set()
+    data = _fetch_nse_holiday_master_json()
+    if data is None:
+        return closed
     try:
-        resp = requests.get(
-            "https://www.nseindia.com/api/holiday-master?type=trading",
-            headers={"User-Agent": "Mozilla/5.0"}, timeout=10,
-        )
-        resp.raise_for_status()
-        data = resp.json()
         for h in data.get("COM", []):
             if str(h.get("evening_session") or "").strip().lower() != "closed":
                 continue
