@@ -1530,6 +1530,64 @@ async def test_case2_saturday_1000_with_friday_batch_kept():
 
 
 @pytest.mark.asyncio
+async def test_prior_session_log_message_names_floor_date_not_bare_today():
+    """2026-10-20 cleanup: `_positions_snapshot`'s internal `_today_ist`
+    alias (misleadingly named — it's the walked-back trading-day floor,
+    not literally "today") was renamed to `_floor_date`, and the
+    accompanying log message updated to match. Serve a stale Monday
+    batch on a Wednesday (floor walks to Wednesday itself, no holiday/
+    weekend in between) so `snap_captured_at_dt.date() != _floor_date`
+    and the log fires; assert the new wording names the actual floor
+    date instead of the old "no rows for today" phrasing (misleading
+    every Sat/Sun/holiday morning, when "today" and the served snapshot
+    date both legitimately differ from the floor by design).
+
+    positions.py's logger (ramboq_logger) sets propagate=False and
+    routes records through an async QueueHandler — caplog's default
+    root-logger capture never sees it (same pattern documented in
+    test_positions_partial_outage_guard.py). Attach a plain in-memory
+    handler directly to the named logger instead."""
+    import logging
+
+    records: list = []
+
+    class _CollectHandler(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    target_logger = logging.getLogger("backend.api.routes.positions")
+    handler = _CollectHandler()
+    target_logger.addHandler(handler)
+
+    restart_now = datetime(2026, 10, 21, 9, 0, tzinfo=_ist)   # Wednesday
+    eod_batch_date = date(2026, 10, 19)                        # stale Monday
+    eod_captured_at = datetime(2026, 10, 19, 15, 46, tzinfo=_ist)
+
+    try:
+        result, fake_session = await _run_qty_date_filter_case(
+            restart_now, eod_batch_date, eod_captured_at,
+            qty=10, include_open_row=False,  # qty!=0 — always kept regardless of date filter
+        )
+    finally:
+        target_logger.removeHandler(handler)
+
+    assert fake_session.captured_today_ist == date(2026, 10, 21), (
+        "sanity check: floor date for a plain Wednesday (no holiday/"
+        f"weekend walk-back needed) should be itself, got "
+        f"{fake_session.captured_today_ist}"
+    )
+    assert result is not None
+    messages = [r.getMessage() for r in records]
+    assert any("2026-10-21" in m and "floor" in m for m in messages), (
+        f"expected a log message naming the floor date (2026-10-21), "
+        f"got: {messages}"
+    )
+    assert not any("no rows for today" in m for m in messages), (
+        "old misleading wording must be fully replaced"
+    )
+
+
+@pytest.mark.asyncio
 async def test_case3_holiday_weekday_1000_with_prior_day_batch_kept():
     """Case 3 — Holiday weekday 10:00 IST (Dussehra, 2026-10-20) with a
     2026-10-19 batch: flat leg kept. Fails against a bare

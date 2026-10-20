@@ -776,10 +776,15 @@ async def test_offhours_wing_gate_prewarm_closes_the_gap():
 
             # ── Pre-fix shape: calling the gate WITHOUT the prewarm first —
             # cold cache + on-main-loop fails open to [], override invisible,
-            # gate (wrongly) concludes MCX is open (evening_open_on_holidays
-            # path is irrelevant here; the fixture date isn't a holiday —
-            # MCX's regular evening session window covers 18:00 anyway) and
-            # lets the wing-bearing template proceed.
+            # gate (wrongly) concludes MCX is open. _FIXTURE_NOW's date IS a
+            # declared MCX holiday per this file's autouse
+            # `_fake_fetch_holidays` fixture (`_MCX_HOLIDAY_DATE ==
+            # _FIXTURE_NOW.date()`) — with the special-session override
+            # invisible, `is_market_open()` falls through to its
+            # `evening_open_on_holidays=True` holiday-evening carve-out
+            # (18:00 >= 17:00, weekday), which reads MCX as open. The
+            # override, once visible, supersedes that carve-out entirely —
+            # this is exactly the scenario the fix closes.
             with patch.object(_ba, "_read_special_sessions_async",
                                AsyncMock(return_value=closed_all_day_row)):
                 early_no_prewarm, _ = _check_offhours_wing_gate(

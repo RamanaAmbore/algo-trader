@@ -3717,6 +3717,19 @@ async def _upsert_mcx_evening_closed_sessions_coro(dates: set) -> int:
                 # response could still produce an innocent-looking empty
                 # `set()` through some other path. Skip the reconciliation
                 # delete entirely rather than wipe every real row.
+                #
+                # Known residual edge, not closed by this guard: this check
+                # is on the RAW `dates` param, per spec, not the
+                # weekday-filtered `non_weekend`. A fetch that legitimately
+                # returns ONLY weekend-falling holiday dates (e.g. a year
+                # where Diwali happens to be the sole closed date returned
+                # in some partial/incremental computation) leaves `dates`
+                # non-empty but `non_weekend` empty, bypassing this guard
+                # entirely and reconciling away every existing row via the
+                # normal `stale = existing_dates - non_weekend` path below.
+                # Not fixed here — would require re-scoping the guard to
+                # `non_weekend` instead of `dates`, a behavior change beyond
+                # this round's spec.
                 logger.warning(
                     "[MCX-EVENING-CLOSED] refusing to reconcile — fresh "
                     "closed-set is empty but %d existing auto-row(s) "
