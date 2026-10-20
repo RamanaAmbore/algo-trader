@@ -3310,11 +3310,12 @@ async def _apply_template_to_order_impl(
     # `apply_plan_live`'s plain-sync call sites, which stay on the
     # warm-at-startup/after-daily-refresh mitigation only); closes the
     # cold-cache gap for it the same way ticket/basket/chase already are.
-    try:
-        from backend.api.algo.agent_engine import _prewarm_special_sessions_for_exchange
-        await _prewarm_special_sessions_for_exchange(parent_exchange)
-    except Exception as e:
-        logger.debug(f"_apply_template_to_order_impl: special-sessions prewarm failed: {e}")
+    # No local try/except — _prewarm_special_sessions_for_exchange already
+    # swallows and logs its own failures (same no-wrap convention as the
+    # other 3 call sites in orders_place.py/orders_basket.py/chase.py);
+    # wrapping it again here only added CC without changing behaviour.
+    from backend.api.algo.agent_engine import _prewarm_special_sessions_for_exchange
+    await _prewarm_special_sessions_for_exchange(parent_exchange)
     _early, _offhours_note = _check_offhours_wing_gate(
         apply_path, parent_exchange, template, parent_lot_size,
         parent_account, parent_symbol, parent_side, parent_qty,
