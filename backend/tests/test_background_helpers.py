@@ -439,6 +439,7 @@ async def test_sg_recover_close_reset_runs_and_marks_when_not_done():
     now = datetime(2026, 10, 20, 8, 5, tzinfo=ist)
 
     with p1, p2, \
+         patch("backend.api.database.async_session", _FakeExistsSession(has_row=False)), \
          patch("backend.api.background._build_settlement_map", new_callable=AsyncMock, return_value={}) as m_build, \
          patch("backend.api.background.fix_daily_book_prev_close", new_callable=AsyncMock) as m_fix:
         await bg._sg_recover_close_reset(now, now.time())
@@ -505,6 +506,7 @@ async def test_ds_tick_prev_close_fix_runs_and_marks_shared_marker():
 
     with p1, p2, \
          patch.object(bg.exchange_clock, "get_nse_open_time", return_value=dtime(8, 0)), \
+         patch("backend.api.database.async_session", _FakeExistsSession(has_row=False)), \
          patch("backend.api.background._build_settlement_map", new_callable=AsyncMock, return_value={}) as m_build, \
          patch("backend.api.background.fix_daily_book_prev_close", new_callable=AsyncMock) as m_fix:
         await bg._ds_tick_prev_close_fix(now, now.date(), done_ref)
@@ -513,3 +515,226 @@ async def test_ds_tick_prev_close_fix_runs_and_marks_shared_marker():
     m_fix.assert_awaited_once()
     assert done_ref[0] == now.date()
     assert store.values["task_markers.prev_close_fix_date"] == now.date().isoformat()
+
+
+# ---------------------------------------------------------------------------
+# D1c follow-up (2026-10-20, doc-review finding) — the task_markers.*
+# marker protects against a DUPLICATE re-run, but not against a MISSED
+# 08:00 run followed by a LATE catch-up landing AFTER today's own EOD
+# snapshot has already fired. Sequence: 08:00 missed (server down) → EOD
+# snapshot fires at 15:45 IST with a distinct, correct ltp → process
+# restarts at 16:00, triggering the catch-up path, which (pre-fix) would
+# still run fix_daily_book_prev_close's unconditional
+# `ltp = prev_close = close_price` UPDATE, stomping the fresher EOD ltp
+# back to the morning settlement price.
+# ---------------------------------------------------------------------------
+
+class _FakeExistsResult:
+    def __init__(self, row):
+        self._row = row
+
+    def first(self):
+        return self._row
+
+
+class _FakeExistsSession:
+    """Fake async-session for _pcf_eod_already_fired_today's DB fallback
+    existence check. `has_row=True` simulates a today-dated holdings/
+    positions row existing even though no sentinel was seeded."""
+
+    def __init__(self, has_row: bool):
+        self._has_row = has_row
+
+    def __call__(self):
+        return self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def execute(self, *a, **k):
+        return _FakeExistsResult(("1",) if self._has_row else None)
+
+
+@pytest.mark.asyncio
+async def test_pcf_eod_already_fired_today_checks_both_gates():
+    from backend.api import background as bg
+    from datetime import date
+
+    today = date(2026, 10, 20)
+    bg._snapshot_fired_today["NON-MCX"] = None
+    bg._snapshot_fired_today["MCX"] = None
+    try:
+        with patch("backend.api.database.async_session", _FakeExistsSession(has_row=False)):
+            assert await bg._pcf_eod_already_fired_today(today) is False
+
+        bg._snapshot_fired_today["NON-MCX"] = today
+        assert await bg._pcf_eod_already_fired_today(today) is True
+
+        bg._snapshot_fired_today["NON-MCX"] = None
+        bg._snapshot_fired_today["MCX"] = today
+        assert await bg._pcf_eod_already_fired_today(today) is True
+
+        # A DIFFERENT day's fired sentinel must not count as "today" —
+        # falls through to the DB existence check, which also says no.
+        bg._snapshot_fired_today["MCX"] = date(2026, 10, 19)
+        with patch("backend.api.database.async_session", _FakeExistsSession(has_row=False)):
+            assert await bg._pcf_eod_already_fired_today(today) is False
+    finally:
+        bg._snapshot_fired_today["NON-MCX"] = None
+        bg._snapshot_fired_today["MCX"] = None
+
+
+@pytest.mark.asyncio
+async def test_pcf_eod_already_fired_today_falls_back_to_db_when_sentinel_unseeded():
+    """Sentinel-coverage gap: _preload_snapshot_sentinels() seeds
+    _snapshot_fired_today only from kind='positions' rows, but
+    fix_daily_book_prev_close's UPDATE rewrites kind IN ('holdings',
+    'positions'). A holdings-only day (or every account confirmed-empty
+    for positions) must still be detected as "EOD already fired" via
+    the direct existence check, even with both sentinels unseeded."""
+    from backend.api import background as bg
+    from datetime import date
+
+    today = date(2026, 10, 20)
+    bg._snapshot_fired_today["NON-MCX"] = None
+    bg._snapshot_fired_today["MCX"] = None
+    try:
+        with patch("backend.api.database.async_session", _FakeExistsSession(has_row=True)):
+            assert await bg._pcf_eod_already_fired_today(today) is True
+    finally:
+        bg._snapshot_fired_today["NON-MCX"] = None
+        bg._snapshot_fired_today["MCX"] = None
+
+
+@pytest.mark.asyncio
+async def test_pcf_eod_already_fired_today_db_failure_degrades_to_false():
+    """A DB error during the fallback existence check degrades to False
+    (the pre-this-fix default — let the caller proceed), rather than
+    raising and breaking the restart-recovery path."""
+    from backend.api import background as bg
+    from datetime import date
+
+    def _boom():
+        raise RuntimeError("synthetic DB outage")
+
+    today = date(2026, 10, 20)
+    bg._snapshot_fired_today["NON-MCX"] = None
+    bg._snapshot_fired_today["MCX"] = None
+    try:
+        with patch("backend.api.database.async_session", _boom):
+            assert await bg._pcf_eod_already_fired_today(today) is False
+    finally:
+        bg._snapshot_fired_today["NON-MCX"] = None
+        bg._snapshot_fired_today["MCX"] = None
+
+
+@pytest.mark.asyncio
+async def test_sg_recover_close_reset_skips_when_eod_already_fired_late_catchup():
+    """THE confirmed gap: 08:00 missed (no marker set), restart at 16:00
+    lands AFTER NSE's own 15:45 EOD snapshot already posted a fresh,
+    correct ltp (_snapshot_fired_today["NON-MCX"] set for today). The
+    catch-up path must skip fix_daily_book_prev_close entirely — running
+    it now would stomp that fresher EOD ltp back to the morning
+    settlement reference price. Fails against the pre-fix code (no such
+    check existed; it would have run unconditionally)."""
+    from backend.api import background as bg
+    from datetime import datetime, timezone, timedelta
+
+    store = _FakeMarkerStore()
+    p1, p2 = _patch_marker_store(store)
+    ist = timezone(timedelta(hours=5, minutes=30))
+    now = datetime(2026, 10, 20, 16, 0, tzinfo=ist)  # restart at 16:00
+    today = now.date()
+
+    # 08:00 was missed: marker never set. EOD already fired for NON-MCX
+    # at 15:45 (simulates NSE's own fresh, correct ltp already landed).
+    bg._snapshot_fired_today["NON-MCX"] = today
+    bg._snapshot_fired_today["MCX"] = None
+    try:
+        with p1, p2, \
+             patch("backend.api.background._build_settlement_map", new_callable=AsyncMock) as m_build, \
+             patch("backend.api.background.fix_daily_book_prev_close", new_callable=AsyncMock) as m_fix:
+            await bg._sg_recover_close_reset(now, now.time())
+
+        m_build.assert_not_awaited()
+        m_fix.assert_not_awaited(), (
+            "fix_daily_book_prev_close must not run — it would stomp "
+            "today's fresher EOD ltp back to the morning settlement price"
+        )
+        # Marked done so this doesn't keep re-checking for the rest of the day.
+        assert store.values["task_markers.prev_close_fix_date"] == today.isoformat()
+    finally:
+        bg._snapshot_fired_today["NON-MCX"] = None
+        bg._snapshot_fired_today["MCX"] = None
+
+
+@pytest.mark.asyncio
+async def test_ds_tick_prev_close_fix_skips_when_eod_already_fired_late_catchup():
+    """Same gap, the main daily-snapshot loop's own tick call site."""
+    from backend.api import background as bg
+    from datetime import datetime, time as dtime, timezone, timedelta
+
+    store = _FakeMarkerStore()
+    p1, p2 = _patch_marker_store(store)
+    ist = timezone(timedelta(hours=5, minutes=30))
+    now = datetime(2026, 10, 20, 16, 0, tzinfo=ist)
+    today = now.date()
+    done_ref = [None]
+
+    bg._snapshot_fired_today["MCX"] = today  # MCX EOD already fired
+    bg._snapshot_fired_today["NON-MCX"] = None
+    try:
+        with p1, p2, \
+             patch.object(bg.exchange_clock, "get_nse_open_time", return_value=dtime(8, 0)), \
+             patch("backend.api.background._build_settlement_map", new_callable=AsyncMock) as m_build, \
+             patch("backend.api.background.fix_daily_book_prev_close", new_callable=AsyncMock) as m_fix:
+            await bg._ds_tick_prev_close_fix(now, today, done_ref)
+
+        m_build.assert_not_awaited()
+        m_fix.assert_not_awaited()
+        assert done_ref[0] == today
+        assert store.values["task_markers.prev_close_fix_date"] == today.isoformat()
+    finally:
+        bg._snapshot_fired_today["NON-MCX"] = None
+        bg._snapshot_fired_today["MCX"] = None
+
+
+@pytest.mark.asyncio
+async def test_sg_recover_close_reset_eod_snapshot_ltp_survives_late_catchup():
+    """End-to-end narrative version of the same gap, phrased exactly as
+    the reported sequence: 08:00 missed -> EOD snapshot fires at 15:45
+    with a distinct, correct ltp -> process restarts at 16:00, triggering
+    catch-up -> assert the EOD snapshot's ltp is never touched by the
+    catch-up path (fix_daily_book_prev_close, the only function capable
+    of overwriting ltp here, is never invoked)."""
+    from backend.api import background as bg
+    from datetime import datetime, timezone, timedelta
+
+    store = _FakeMarkerStore()
+    p1, p2 = _patch_marker_store(store)
+    ist = timezone(timedelta(hours=5, minutes=30))
+    today_date = datetime(2026, 10, 20, tzinfo=ist).date()
+
+    # EOD snapshot fired at 15:45 with a distinct, correct ltp (narrative
+    # only — this test proves the BEHAVIOUR, not the data: the real
+    # daily_book row isn't modelled here at all; the assertion below is
+    # that fix_daily_book_prev_close, the ONLY writer in this whole
+    # codebase capable of overwriting `ltp` on this path, is never
+    # invoked, which is sufficient on its own to guarantee no row's ltp
+    # changes as a result of this call).
+    bg._snapshot_fired_today["NON-MCX"] = today_date
+    bg._snapshot_fired_today["MCX"] = None
+    try:
+        restart_now = datetime(2026, 10, 20, 16, 0, tzinfo=ist)  # 08:00 missed, restart at 16:00
+        with p1, p2, \
+             patch("backend.api.background._build_settlement_map", new_callable=AsyncMock), \
+             patch("backend.api.background.fix_daily_book_prev_close", new_callable=AsyncMock) as m_fix:
+            await bg._sg_recover_close_reset(restart_now, restart_now.time())
+
+        m_fix.assert_not_awaited()
+    finally:
+        bg._snapshot_fired_today["NON-MCX"] = None
+        bg._snapshot_fired_today["MCX"] = None

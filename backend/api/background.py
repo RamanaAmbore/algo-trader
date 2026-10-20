@@ -3174,6 +3174,74 @@ async def _pcf_mark_done(today: date) -> None:
     )
 
 
+async def _pcf_eod_already_fired_today(today: date) -> bool:
+    """True when EITHER exchange's EOD close snapshot (NON-MCX ~15:45 IST,
+    MCX ~23:45 IST) has already fired for *today*'s trading session.
+
+    Restart-safety fix (2026-10-20, follow-up to the task_markers.*
+    double-fire fix above): the marker above only ever protected against
+    the morning transition RE-running once it had already succeeded —
+    it did nothing for the opposite failure mode. If the 08:00 run is
+    genuinely MISSED that day (server down through 08:00, or the job
+    fails before the marker gets set) and the process restarts LATE —
+    specifically AFTER that same day's own EOD snapshot has already
+    fired — the catch-up path would still see "marker not set" and run
+    `fix_daily_book_prev_close`'s settlement-map UPDATE, which sets
+    `ltp = prev_close = close_price` UNCONDITIONALLY for every
+    today-dated row. That stomps the EOD snapshot's already-correct,
+    later `ltp` back down to the morning's settlement reference price —
+    the same class of corruption this whole marker mechanism exists to
+    prevent, just reached via a missed-then-late-catchup path instead of
+    a duplicate-rerun path.
+
+    Reuses `_snapshot_fired_today` — the SAME DB-backed-at-startup
+    sentinel `_preload_snapshot_sentinels()` seeds and `a3a88aac` made
+    session-boundary-aware — rather than adding a new signal. Checks
+    BOTH gates: once EITHER has posted its EOD snapshot for today, the
+    morning transition's entire reason to exist (seed a placeholder
+    `ltp`/`prev_close` baseline before intraday polling begins) is moot
+    for the whole row set it would touch — the UPDATE has no exchange
+    scoping of its own, so a partial skip isn't meaningfully safer than
+    skipping entirely.
+
+    Sentinel-coverage gap (closed here): `_preload_snapshot_sentinels()`
+    seeds `_snapshot_fired_today` only from `kind = 'positions'` rows,
+    but `fix_daily_book_prev_close`'s UPDATE rewrites
+    `kind IN ('holdings', 'positions')`. On a day where no account ever
+    writes a `positions` row (holdings-only accounts, or every account's
+    positions came back confirmed-empty via the `positions_empty`
+    marker), the in-memory sentinel would never get seeded even though a
+    genuine today-dated HOLDINGS EOD row exists — a late restart would
+    then still stomp that holdings `ltp`. Falls back to a direct
+    existence check against the UPDATE's own actual target set
+    (`date = today AND kind IN ('holdings', 'positions')`) whenever the
+    sentinel check alone comes back False, so this can never be fooled
+    by the sentinel's narrower seeding source.
+    """
+    if (
+        _snapshot_fired_today.get("NON-MCX") == today
+        or _snapshot_fired_today.get("MCX") == today
+    ):
+        return True
+    try:
+        from backend.api.database import async_session
+        from sqlalchemy import text as _sql
+        async with async_session() as session:
+            result = await session.execute(_sql(
+                "SELECT 1 FROM daily_book "
+                "WHERE date = :today AND kind IN ('holdings', 'positions') "
+                "LIMIT 1"
+            ), {"today": today})
+            return result.first() is not None
+    except Exception as e:
+        logger.warning(
+            "_pcf_eod_already_fired_today: fallback existence check "
+            "failed — degrading to the pre-this-fix default (treat as "
+            "not-yet-fired, let the caller proceed): %s", e,
+        )
+        return False
+
+
 async def _sg_recover_close_reset(now: datetime, now_t: dtime) -> None:
     """a. CloseReset: prev_close new-session transition at ≥ 08:00 IST."""
     if now_t < dtime(8, 0):
@@ -3181,6 +3249,15 @@ async def _sg_recover_close_reset(now: datetime, now_t: dtime) -> None:
     today = now.date()
     if await _pcf_marker_date() == today:
         logger.info("SessionGuard: CloseReset already ran today — skip (restart-safe)")
+        return
+    if await _pcf_eod_already_fired_today(today):
+        logger.warning(
+            "SessionGuard: CloseReset SKIPPED — today's EOD snapshot "
+            "already fired; the 08:00 morning transition was missed and "
+            "running it now would stomp the fresher EOD ltp back to the "
+            "morning settlement price. Marking done without running."
+        )
+        await _pcf_mark_done(today)
         return
     logger.info("SessionGuard: running CloseReset (prev_close transition)")
     _settlement_map = await _build_settlement_map()
@@ -3480,6 +3557,18 @@ async def _ds_tick_prev_close_fix(now: datetime, today: date, done_ref: list) ->
         # Already run today via the other call site (SessionGuard at
         # startup, or an earlier tick before a mid-day restart) — just
         # seed the local sentinel so this tick stops re-checking the DB.
+        done_ref[0] = today
+        return
+    if await _pcf_eod_already_fired_today(today):
+        # 08:00 was missed entirely and this tick landed AFTER today's own
+        # EOD snapshot already fired — running the morning transition now
+        # would stomp the fresher EOD ltp back to the morning settlement
+        # price. See _pcf_eod_already_fired_today's docstring.
+        logger.warning(
+            "Background: prev_close new-session transition SKIPPED — "
+            "today's EOD snapshot already fired (08:00 run was missed)."
+        )
+        await _pcf_mark_done(today)
         done_ref[0] = today
         return
     logger.info("Background: %s IST — daily prev_close new-session transition",
