@@ -245,10 +245,20 @@ async def test_all_six_sites_agree_mcx_open():
         {s["name"] for s in await _perf_probe_open_segments([mcx_gate, nse_gate], {}, _FIXTURE_NOW)}
         & {"MCX"}
     )
-    verdicts["watchdog"] = await bg._watchdog_check_market_open(
-        holiday_cache={}, holiday_year_ref=[_FIXTURE_NOW.year],
-        fetch_holidays=_fake_fetch_holidays,
-    )
+    # _watchdog_check_market_open calls timestamp_indian() directly
+    # (background.py:5809) and has no `now=` parameter — without
+    # patching THIS module's own reference, it evaluates against the
+    # REAL wall clock at whatever moment the test happens to run,
+    # disagreeing with every other (correctly fixture-patched) verdict
+    # purely by coincidence of real time. Confirmed live: this test
+    # failed for real around IST midnight, when MCX's actual real-time
+    # state differs from the fixture's intended "evening holiday open"
+    # scenario (2026-10-20 fix).
+    with patch("backend.api.background.timestamp_indian", return_value=_FIXTURE_NOW):
+        verdicts["watchdog"] = await bg._watchdog_check_market_open(
+            holiday_cache={}, holiday_year_ref=[_FIXTURE_NOW.year],
+            fetch_holidays=_fake_fetch_holidays,
+        )
     with patch("backend.api.routes.market.timestamp_indian", return_value=_FIXTURE_NOW):
         verdicts["market_status"] = (await _compute_market_status()).mcx_open
     verdicts["quote_seg"] = _qt_is_seg_open(

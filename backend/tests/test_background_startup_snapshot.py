@@ -31,10 +31,15 @@ async def test_preload_sets_both_sentinels_when_both_exist():
     """When daily_book has both NON-MCX and MCX rows for today, set both sentinels."""
     from backend.api.background import _preload_snapshot_sentinels, _snapshot_fired_today
     from backend.shared.helpers.date_time_utils import timestamp_indian
+    from backend.api.algo.expiry_freeze import session_date_of
 
-    # Use timestamp_indian (same as function) to get the date
+    # The function sets sentinels to session_date_of(now) (the 08:00 IST
+    # trading-session boundary), NOT the bare calendar date — matching
+    # bare timestamp_indian().date() here is flaky for any test run
+    # landing between IST midnight and 08:00, where the two diverge
+    # (2026-10-20 fix; this test previously assumed the bare date).
     now = timestamp_indian()
-    today = now.date()
+    today = session_date_of(now)
 
     # Reset sentinels before test
     original_state = _snapshot_fired_today.copy()
@@ -82,10 +87,12 @@ async def test_preload_sets_only_mcx_sentinel():
     """When daily_book has only MCX rows, set only MCX sentinel."""
     from backend.api.background import _preload_snapshot_sentinels, _snapshot_fired_today
     from backend.shared.helpers.date_time_utils import timestamp_indian
+    from backend.api.algo.expiry_freeze import session_date_of
 
-    # Use timestamp_indian (same as function) to get the date
+    # session_date_of(), not the bare calendar date — see the sibling
+    # test above for why (2026-10-20 fix).
     now = timestamp_indian()
-    today = now.date()
+    today = session_date_of(now)
 
     # Reset sentinels before test
     original_state = _snapshot_fired_today.copy()
@@ -133,10 +140,13 @@ async def test_preload_sets_only_nonmcx_sentinel():
     """When daily_book has only NON-MCX rows, set only NON-MCX sentinel."""
     from backend.api.background import _preload_snapshot_sentinels, _snapshot_fired_today
     from backend.shared.helpers.date_time_utils import timestamp_indian
+    from backend.api.algo.expiry_freeze import session_date_of
 
-    # Use timestamp_indian (same as function) to get the date
+    # session_date_of(), not the bare calendar date — see
+    # test_preload_sets_both_sentinels_when_both_exist for why
+    # (2026-10-20 fix).
     now = timestamp_indian()
-    today = now.date()
+    today = session_date_of(now)
 
     # Reset sentinels before test
     original_state = _snapshot_fired_today.copy()
