@@ -3293,10 +3293,14 @@ def _fetch_nse_holiday_master_json() -> "dict | None":
     change"). Both `_fetch_holidays_from_nse` (per-exchange bare-date
     set, every existing caller's contract) and
     `_fetch_mcx_evening_closed_dates` (per-segment morning/evening-session
-    granularity, 2026-10-20 fix) parse this SAME raw response rather than
-    each doing their own HTTP call. Returns the parsed JSON dict, or None
-    on any failure (network, non-2xx, bad JSON) — callers fail open to
-    their own empty-result default.
+    granularity, 2026-10-20 fix) call THIS shared primitive instead of
+    each hand-rolling their own `requests.get`. Note this is a shared
+    CODE path, not a shared RESPONSE — each caller still triggers its
+    own real HTTP round-trip (two per MCX refresh pass today); see
+    `_fetch_mcx_evening_closed_dates`'s own docstring for why a true
+    single-fetch-shared-response optimisation was deferred. Returns the
+    parsed JSON dict, or None on any failure (network, non-2xx, bad
+    JSON) — callers fail open to their own empty-result default.
     """
     import requests
     try:
@@ -3345,11 +3349,23 @@ def _fetch_mcx_evening_closed_dates() -> set:
     which is wrong for ~8-9 of MCX's ~21 holidays/year (confirmed live
     2026-10-20: 9 of 21 COM entries carry ``evening_session: "Closed"``).
 
-    Shares the one raw HTTP fetch (`_fetch_nse_holiday_master_json`) with
-    `_fetch_holidays_from_nse` instead of duplicating the call — only
-    called once/day from `_task_holiday_refresh`'s MCX refresh pass,
-    alongside that function's own call, so this also halves the number
-    of NSE round-trips that cron does per day.
+    Shares `_fetch_nse_holiday_master_json` as the SOURCE of the literal
+    URL with `_fetch_holidays_from_nse` (the SSOT fix `_fetch_nse_holiday_master_json`
+    itself exists for) — but each of the two functions still calls that
+    shared primitive independently, so a single MCX refresh pass still
+    makes TWO real HTTP round-trips to NSE (one per call), not one.
+    Correction to this function's own earlier docstring/commit message,
+    which incorrectly claimed this already halved the NSE round-trip
+    count — it only deduped the literal URL STRING to one source
+    location (the actual goal: "a URL migration is a one-line change"),
+    not the network call itself. KNOWN FOLLOW-UP, not done here: thread
+    an optional pre-fetched `raw_data` dict through both functions so
+    `_task_holiday_refresh`'s MCX branch can fetch once and pass the
+    same blob to both — deferred because `_refresh_once`'s existing
+    tests mock `_fetch_holidays_from_nse` directly (not the raw-fetch
+    primitive), and wiring a shared pre-fetch into that call site risked
+    making those tests hit the real network; only called once/day, so
+    the extra round-trip is low-cost enough to defer.
 
     Field names/shape confirmed directly against the live feed (not
     guessed): each ``COM`` entry carries ``tradingDate``, ``weekDay``,
@@ -3514,7 +3530,18 @@ async def _upsert_market_holidays_coro(
     exchange: str, holidays: set, source: str,
 ) -> int:
     """Async body of `_upsert_market_holidays_async`. Returns rows inserted
-    or updated (best-effort; PG doesn't distinguish on ON CONFLICT DO UPDATE)."""
+    or updated (best-effort; PG doesn't distinguish on ON CONFLICT DO UPDATE).
+
+    KNOWN FOLLOW-UP (flagged 2026-10-20, pre-existing limitation, not
+    introduced by the D3 MCX-evening-granularity work and not fixed
+    here): this UPSERT only ever ADDS/refreshes rows for dates NSE
+    currently reports as holidays — it never REMOVES a stale
+    `market_holidays` row for a date NSE later revises to a trading day
+    (e.g. a holiday rescheduled or cancelled). `fetch_holidays`'s Tier 3
+    would keep serving that stale date as a holiday indefinitely. Also,
+    on any DB failure this silently returns 0 with no caller-visible
+    distinction from "nothing needed upserting" — both are pre-existing,
+    not touched by this pass."""
     from datetime import datetime, timezone
     from sqlalchemy import text as _text
     try:
