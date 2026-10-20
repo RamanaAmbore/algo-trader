@@ -627,3 +627,109 @@ def test_ticket_closed_market_detail_stays_reasonably_short():
 
     msg = _ticket_closed_market_detail("MCX", "CRUDEOILM26NOVFUT")
     assert len(msg) < 200, f"detail message should stay short, got {len(msg)} chars: {msg}"
+
+
+# ---------------------------------------------------------------------------
+# D5 (2026-10-20) — template_attach.py's `_check_offhours_wing_gate` call
+# site, in its only (async) caller `_apply_template_to_order_impl`, now also
+# pre-warms the special-sessions cache before the gate's sync
+# `_build_now_ctx()` call — mirrors
+# `test_prewarm_closes_the_gap_for_the_3_genuinely_async_call_sites` for
+# this one remaining real order-adjacent call site. After this fix, every
+# genuine order/template/chase path is closed; only the never-exposed
+# `apply_plan_live` (runs via `asyncio.to_thread`, confirmed by
+# `write_queue.py`'s guard) and display/dry-run paths remain on the
+# warm-at-startup mitigation only.
+# ---------------------------------------------------------------------------
+
+def test_apply_template_to_order_impl_prewarms_before_offhours_gate():
+    """Source-order assertion: the prewarm call must appear textually
+    BEFORE the `_check_offhours_wing_gate(` call inside
+    `_apply_template_to_order_impl`'s body — calling it after would be a
+    no-op (the gate's own sync `_build_now_ctx()` call would already have
+    run and failed open)."""
+    import inspect
+    from backend.api.algo import template_attach as _ta
+
+    src = inspect.getsource(_ta._apply_template_to_order_impl)
+    prewarm_idx = src.find("_prewarm_special_sessions_for_exchange(parent_exchange)")
+    gate_idx = src.find("_check_offhours_wing_gate(")
+    assert prewarm_idx != -1, "prewarm call not found in _apply_template_to_order_impl"
+    assert gate_idx != -1, "_check_offhours_wing_gate call not found"
+    assert prewarm_idx < gate_idx, (
+        "prewarm must run BEFORE the offhours wing gate's own sync "
+        "_build_now_ctx() call, or it closes the gap too late"
+    )
+
+
+@pytest.mark.asyncio
+async def test_offhours_wing_gate_prewarm_closes_the_gap():
+    """2026-10-20 fix, same shape as
+    test_prewarm_closes_the_gap_for_the_3_genuinely_async_call_sites but
+    for `_check_offhours_wing_gate` specifically: a DB-confirmed
+    zero-width (always-closed) MCX special-session override is invisible
+    to a cold cache hit from a coroutine already on the main loop —
+    `_check_offhours_wing_gate` wrongly concludes the exchange is open and
+    lets a wing-bearing template proceed. Awaiting
+    `_prewarm_special_sessions_for_exchange` first (exactly what
+    `_apply_template_to_order_impl` now does immediately before calling
+    the gate) closes the gap: the gate correctly defers the wing attach.
+    """
+    import asyncio
+    from unittest.mock import AsyncMock, patch
+    import backend.brokers.broker_apis as _ba
+    import backend.api.persistence.write_queue as _wq
+    from backend.api.algo.agent_engine import _prewarm_special_sessions_for_exchange
+    from backend.api.algo.template_attach import _check_offhours_wing_gate
+
+    template_with_wing = {"wing_strike_offset": 0}
+    closed_all_day_row = [{
+        "date": _FIXTURE_NOW.date(),
+        "start": dtime(0, 0),
+        "end": dtime(0, 0),   # zero-width — half-open [start, end) never matches
+    }]
+
+    loop = asyncio.get_running_loop()
+    orig_main_loop = _wq._main_loop
+    _ba._SPECIAL_SESSION_CACHE.clear()
+    try:
+        with patch.object(_ba, "fetch_special_sessions", side_effect=_REAL_FETCH_SPECIAL_SESSIONS), \
+             patch("backend.shared.helpers.date_time_utils.timestamp_indian", return_value=_FIXTURE_NOW):
+            _wq._main_loop = loop  # simulate "already on the main loop"
+
+            # ── Pre-fix shape: calling the gate WITHOUT the prewarm first —
+            # cold cache + on-main-loop fails open to [], override invisible,
+            # gate (wrongly) concludes MCX is open (evening_open_on_holidays
+            # path is irrelevant here; the fixture date isn't a holiday —
+            # MCX's regular evening session window covers 18:00 anyway) and
+            # lets the wing-bearing template proceed.
+            with patch.object(_ba, "_read_special_sessions_async",
+                               AsyncMock(return_value=closed_all_day_row)):
+                early_no_prewarm, _ = _check_offhours_wing_gate(
+                    "live", "MCX", template_with_wing, 1, "ZG0001",
+                    "CRUDEOILM26NOVFUT", "BUY", 1, 100.0, None,
+                )
+            assert early_no_prewarm is None, (
+                "sanity check: without the prewarm, the cold cache must "
+                "fail open and the gate must NOT see the override"
+            )
+
+            # ── The fix: await the prewarm from this same async context,
+            # exactly as _apply_template_to_order_impl now does, immediately
+            # before calling the gate.
+            _ba._SPECIAL_SESSION_CACHE.clear()
+            with patch.object(_ba, "_read_special_sessions_async",
+                               AsyncMock(return_value=closed_all_day_row)):
+                await _prewarm_special_sessions_for_exchange("MCX")
+
+            early_with_prewarm, offhours_note = _check_offhours_wing_gate(
+                "live", "MCX", template_with_wing, 1, "ZG0001",
+                "CRUDEOILM26NOVFUT", "BUY", 1, 100.0, None,
+            )
+            assert early_with_prewarm is not None, (
+                "the prewarm must let the gate see the real DB override "
+                "and defer the wing-bearing attach — gap not closed"
+            )
+    finally:
+        _wq._main_loop = orig_main_loop
+        _ba._SPECIAL_SESSION_CACHE.clear()
