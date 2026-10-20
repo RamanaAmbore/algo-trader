@@ -27,9 +27,10 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -1359,4 +1360,252 @@ async def test_positions_snapshot_recomputes_day_pnl_from_prev_ltp():
     assert abs(row.day_change_val - expected_dcv) < 0.1, (
         f"day_change_val should be recomputed as (ltp-prev_ltp)*qty={expected_dcv}, "
         f"not the stale stored value 200.0, got {row.day_change_val}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# D1a follow-up (2026-10-20) — _positions_snapshot's closed-hours qty=0
+# keep-filter (`db.qty != 0 OR db.date >= :today_ist`, where :today_ist is
+# a FLOOR date: session_date_of(now) walked back over weekends/holidays
+# to the most recent real NSE trading day). daily_snapshot.py's EOD
+# writer now stamps a post-midnight close/close_settled row's `date`
+# column via session_date_of() too (D1a), so a flat (qty=0) position
+# closed in yesterday's own EOD batch is now correctly dated yesterday —
+# comparing against bare "today" (or even a single session_date_of(now)
+# substitution, which itself breaks across a weekend/holiday) would
+# silently drop it from the closed-hours grid, violating CLAUDE.md's
+# "Staleness indicator freeze rule" (a closed/flat position vanishing is
+# a defect; it must keep showing until next market open).
+# ---------------------------------------------------------------------------
+
+class _FakeQtyDateFilterResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def all(self):
+        return self._rows
+
+
+class _FakeQtyDateFilterSession:
+    """Spy session that captures the real bound `today_ist` SQL parameter
+    (the floor date) and applies the SAME `qty != 0 OR date >= today_ist`
+    keep-rule the real WHERE clause uses, so canned candidate rows are
+    filtered exactly like a real Postgres instance would for this
+    specific condition — without needing a real Postgres dialect (the
+    surrounding query uses `DISTINCT ON` and other Postgres-only syntax
+    SQLite can't run).
+
+    Each candidate is `(row_tuple, qty, date_column_value)` — `qty` and
+    `date_column_value` are the WHERE clause's own filter inputs (the
+    `date` column is not part of the SELECT's returned columns at all,
+    so it isn't present in `row_tuple` itself).
+    """
+
+    def __init__(self, candidates):
+        self._candidates = candidates
+        self.captured_today_ist = None
+        self.captured_sql = None
+
+    def __call__(self):
+        return self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def execute(self, stmt, params=None):
+        # The real call site does text(sql).bindparams(today_ist=..., ...)
+        # — bind values are embedded in the statement object itself (via
+        # `.bindparams()`) rather than passed as a separate params dict.
+        bound = {k: v.value for k, v in getattr(stmt, "_bindparams", {}).items()}
+        bound.update(params or {})
+        if "today_ist" not in bound:
+            # A DIFFERENT query reached this spy — _fetch_gtt_set's own
+            # `algo_orders` lookup (called separately, after the main
+            # query, to annotate has_gtt on the returned rows), which
+            # carries no bind params at all. Not what this spy is
+            # testing; answer "no rows" (no open GTTs) and leave
+            # captured_today_ist/captured_sql from the real query
+            # untouched. The _union_and_filter_expiry_frozen_rows patch
+            # below DOES correctly prevent its own frozen-candidates
+            # query from reaching this spy — this branch exists for
+            # _fetch_gtt_set, a separate, legitimate second query.
+            return _FakeQtyDateFilterResult([])
+        self.captured_today_ist = bound.get("today_ist")
+        self.captured_sql = str(stmt)
+        kept = [
+            row_tuple for (row_tuple, qty, date_col) in self._candidates
+            if qty != 0 or date_col >= self.captured_today_ist
+        ]
+        return _FakeQtyDateFilterResult(kept)
+
+
+def _qty_date_filter_row(symbol: str, qty: float, captured_at) -> tuple:
+    """Build one 13-column row tuple matching _positions_snapshot's
+    SELECT shape, for the qty/date-filter test cases below."""
+    return (
+        "ZG0790", symbol, "NSE",
+        qty, 2400.0, 2456.75,
+        150.0, 150.0,
+        None,
+        captured_at,
+        2430.10, 2430.10, 150.0,
+    )
+
+
+# NSE holiday set used by every case below — confirmed live against the
+# real NSE holiday-master feed (2026-10-20 investigation): Dussehra
+# (2026-10-20) is an NSE equity (CM segment) holiday.
+_NSE_HOLIDAYS_2026 = {date(2026, 10, 20)}
+
+
+async def _run_qty_date_filter_case(restart_now, eod_batch_date, eod_captured_at,
+                                     *, qty=0, include_open_row=False):
+    from unittest.mock import AsyncMock, patch
+
+    flat_row = _qty_date_filter_row("RELIANCE", qty, eod_captured_at)
+    candidates = [(flat_row, qty, eod_batch_date)]
+    if include_open_row:
+        # An open (qty!=0) row from the SAME stale batch — always kept
+        # regardless of the date filter (qty != 0 short-circuits it) —
+        # so result is never None purely because the flat leg got
+        # dropped, letting the flat-leg-specific assertion stand alone.
+        open_row = _qty_date_filter_row("TCS", 10, eod_captured_at)
+        candidates.append((open_row, 10, eod_batch_date))
+    fake_session = _FakeQtyDateFilterSession(candidates)
+
+    with patch("backend.api.database.async_session", fake_session), \
+         patch("backend.shared.helpers.date_time_utils.timestamp_indian",
+               return_value=restart_now), \
+         patch("backend.brokers.broker_apis.fetch_holidays",
+               return_value=_NSE_HOLIDAYS_2026), \
+         patch("backend.api.routes.positions._union_and_filter_expiry_frozen_rows",
+               new=AsyncMock(side_effect=lambda rows, now: rows)):
+        from backend.api.routes.positions import _positions_snapshot
+        result = await _positions_snapshot()
+    return result, fake_session
+
+
+_ist = ZoneInfo("Asia/Kolkata")
+
+
+@pytest.mark.asyncio
+async def test_case1_tue_0030_after_monday_eod_kept():
+    """Case 1 — Tue 00:30 IST after Monday's EOD: flat leg kept.
+    THE originally-reported regression window. Fails against the
+    pre-this-fix code (bare now_ist.date() binds tomorrow, not Monday)."""
+    restart_now = datetime(2026, 10, 20, 0, 30, tzinfo=_ist)  # Tue 00:30
+    eod_batch_date = date(2026, 10, 19)                        # Monday
+    eod_captured_at = datetime(2026, 10, 19, 15, 46, tzinfo=_ist)
+
+    result, fake_session = await _run_qty_date_filter_case(
+        restart_now, eod_batch_date, eod_captured_at,
+    )
+    assert fake_session.captured_today_ist == date(2026, 10, 19)
+    assert result is not None
+    assert "RELIANCE" in {r.tradingsymbol for r in result.rows}
+
+
+@pytest.mark.asyncio
+async def test_case2_saturday_1000_with_friday_batch_kept():
+    """Case 2 — Saturday 10:00 IST with a Friday batch: flat leg kept.
+    Fails against a bare session_date_of(now) substitution (which would
+    float the floor to Saturday itself, a non-trading day, excluding
+    Friday's batch)."""
+    restart_now = datetime(2026, 10, 24, 10, 0, tzinfo=_ist)  # Saturday
+    eod_batch_date = date(2026, 10, 23)                        # Friday
+    eod_captured_at = datetime(2026, 10, 23, 15, 46, tzinfo=_ist)
+
+    result, fake_session = await _run_qty_date_filter_case(
+        restart_now, eod_batch_date, eod_captured_at,
+    )
+    assert fake_session.captured_today_ist == date(2026, 10, 23), (
+        f"floor date must walk back from Saturday to Friday (last real "
+        f"trading day), got {fake_session.captured_today_ist}"
+    )
+    assert result is not None
+    assert "RELIANCE" in {r.tradingsymbol for r in result.rows}
+
+
+@pytest.mark.asyncio
+async def test_case3_holiday_weekday_1000_with_prior_day_batch_kept():
+    """Case 3 — Holiday weekday 10:00 IST (Dussehra, 2026-10-20) with a
+    2026-10-19 batch: flat leg kept. Fails against a bare
+    session_date_of(now) substitution (which would float the floor to
+    the holiday itself, a non-trading day, excluding Monday's batch)."""
+    restart_now = datetime(2026, 10, 20, 10, 0, tzinfo=_ist)  # Dussehra
+    eod_batch_date = date(2026, 10, 19)                        # Monday
+    eod_captured_at = datetime(2026, 10, 19, 15, 46, tzinfo=_ist)
+
+    result, fake_session = await _run_qty_date_filter_case(
+        restart_now, eod_batch_date, eod_captured_at,
+    )
+    assert fake_session.captured_today_ist == date(2026, 10, 19)
+    assert result is not None
+    assert "RELIANCE" in {r.tradingsymbol for r in result.rows}
+
+
+@pytest.mark.asyncio
+async def test_case4_monday_0830_normal_day_with_friday_batch_dropped():
+    """Case 4 — Monday 08:30 IST on a NORMAL (non-holiday) trading day,
+    with a stale Friday batch: flat leg DROPPED. Preserves the original
+    design intent (lines ~676-686): once a genuinely new trading day has
+    begun, yesterday's-and-older closed legs stop showing. Must keep
+    passing — an "always keep" overcorrection would break this."""
+    restart_now = datetime(2026, 10, 26, 8, 30, tzinfo=_ist)  # Monday
+    eod_batch_date = date(2026, 10, 23)                        # prior Friday
+    eod_captured_at = datetime(2026, 10, 23, 15, 46, tzinfo=_ist)
+
+    result, fake_session = await _run_qty_date_filter_case(
+        restart_now, eod_batch_date, eod_captured_at, include_open_row=True,
+    )
+    assert fake_session.captured_today_ist == date(2026, 10, 26), (
+        f"floor date on a normal trading day must be that day itself "
+        f"(no stepping back needed), got {fake_session.captured_today_ist}"
+    )
+    assert result is not None
+    symbols = {r.tradingsymbol for r in result.rows}
+    assert "TCS" in symbols, "the open (qty!=0) leg must always survive regardless of date"
+    assert "RELIANCE" not in symbols, (
+        "a stale Friday-dated flat leg must NOT still show as 'closed "
+        "today' once a new normal trading day (Monday) has begun"
+    )
+
+
+@pytest.mark.asyncio
+async def test_case5_holiday_2350_mcx_evening_batch_same_day_kept():
+    """Case 5 — Holiday 23:50 IST (Dussehra) with an MCX-evening-session
+    batch dated THAT SAME holiday: flat leg kept. This is exactly why
+    the filter must be `>=`, not `=`-after-stepping-back — the floor
+    walks PAST the holiday (to Monday), but a batch legitimately dated
+    ON the holiday itself (MCX's own evening EOD write) must still match
+    via `date >= floor`, since the holiday date is >= Monday's floor."""
+    restart_now = datetime(2026, 10, 20, 23, 50, tzinfo=_ist)  # Dussehra evening
+    eod_batch_date = date(2026, 10, 20)                         # the holiday itself
+    eod_captured_at = datetime(2026, 10, 20, 23, 46, tzinfo=_ist)
+
+    result, fake_session = await _run_qty_date_filter_case(
+        restart_now, eod_batch_date, eod_captured_at,
+    )
+    assert fake_session.captured_today_ist == date(2026, 10, 19), (
+        f"floor date must walk back from the holiday to Monday, "
+        f"got {fake_session.captured_today_ist}"
+    )
+    # This case is the one place `=` and `>=` diverge (floor=10-19,
+    # batch=10-20) — assert the real SQL text uses `>=`, not bare `=`.
+    # Reverting positions.py's SQL to `db.date = :today_ist` leaves every
+    # OTHER case in this file passing (the spy's own Python-side filter
+    # always uses `>=`, independent of what the real SQL says) — only
+    # this direct SQL-text check would catch that regression.
+    assert "db.date >= :today_ist" in (fake_session.captured_sql or ""), (
+        "the real WHERE clause must compare db.date >= :today_ist, not "
+        "bare `=` — this is the one case where that distinction matters"
+    )
+    assert result is not None
+    assert "RELIANCE" in {r.tradingsymbol for r in result.rows}, (
+        "a batch dated ON the holiday itself (MCX evening EOD write) "
+        "must still be kept via date >= floor, even though the floor "
+        "walk stepped past that same holiday date"
     )

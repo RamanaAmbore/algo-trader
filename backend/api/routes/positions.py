@@ -601,9 +601,50 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
     from backend.shared.helpers.date_time_utils import timestamp_indian as _ts_indian
 
     _now_ist = _ts_indian()
-    _today_ist = _now_ist.date()
-    _today_ist_midnight = _now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
+    # Floor-date, not bare now_ist.date() (2026-10-20 fix, D1a follow-up).
+    # daily_snapshot.py's EOD writer now stamps a post-midnight close/
+    # close_settled row's `date` column via session_date_of() (the 08:00
+    # IST trading-session boundary), so a write landing at e.g. 23:46 IST
+    # is dated THAT calendar day — never "tomorrow". Comparing the qty=0
+    # keep-filter below against bare now_ist.date() during the 00:00-08:00
+    # IST closed window meant a flat (qty=0) position closed in
+    # yesterday's own EOD batch (now correctly dated yesterday, post-D1a)
+    # silently failed `db.date = :today_ist` and vanished from the
+    # closed-hours grid — a genuine regression D1a exposed (CLAUDE.md's
+    # Staleness-indicator-freeze rule treats a disappearing flat/closed
+    # position the same as any other blanked-out surface).
+    #
+    # A single session_date_of(now) substitution only covers the first
+    # 8 hours after midnight — it does NOT survive a full weekend or
+    # holiday, because session_date_of() advances to a NEW "session day"
+    # at every 08:00 IST boundary even when no genuinely new trading
+    # session exists that day (Saturday, Sunday, an NSE holiday). Fixed
+    # properly: walk the floor date BACK from session_date_of(now) while
+    # it's not a real NSE trading day (bounded to 10 iterations, mirroring
+    # expiry_freeze.next_market_open_ist's own bound), then compare
+    # `db.date >= :today_ist` (not `=`) — `>=` is required, not just the
+    # floor walk alone, because a batch CAN legitimately be dated on a
+    # holiday itself (e.g. MCX's own evening-session EOD write on an NSE
+    # holiday) — stepping the floor back past that holiday while still
+    # requiring exact equality would incorrectly exclude that same-day
+    # batch. is_trading_day() is called WITHOUT exchange=/now= so this
+    # never triggers a live Kite probe.
+    import asyncio as _asyncio
     from datetime import timedelta
+    from backend.brokers.broker_apis import fetch_holidays as _fetch_holidays
+    from backend.shared.helpers.date_time_utils import is_trading_day as _is_trading_day
+    from backend.api.algo.expiry_freeze import session_date_of
+    try:
+        _nse_holidays = await _asyncio.to_thread(_fetch_holidays, "NSE")
+    except Exception:
+        _nse_holidays = set()
+    _floor_date = session_date_of(_now_ist)
+    for _ in range(10):
+        if _is_trading_day(_floor_date, _nse_holidays):
+            break
+        _floor_date -= timedelta(days=1)
+    _today_ist = _floor_date
+    _today_ist_midnight = _now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
     _today_ist_8am = _today_ist_midnight + timedelta(hours=8)
     # prev_batch_cutoff: used by prev_batch CTE to exclude same-session rows.
     # 08:00 IST boundary is correct here — it prevents today's intraday rows
@@ -633,10 +674,18 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
             # prev_batch lookback window is 7 days to cover MCX's 23:30 IST
             # close and multi-day holiday gaps.
             # qty=0 rows (positions closed intraday) are included only when
-            # db.date matches today IST so they show with 'closed' decoration
-            # in the derivatives legs grid.  On the next trading day (before
-            # market opens), yesterday's closed legs are excluded (date !=
-            # today) leaving only the carried-overnight open positions.
+            # db.date is on/after the floor date (:today_ist — the most
+            # recent REAL trading day on/before now's session, walked back
+            # over weekends/holidays; see the computation above) so they
+            # show with 'closed' decoration in the derivatives legs grid
+            # through the whole closed window, including weekends and
+            # holidays. `>=`, not `=` — a batch dated a holiday itself
+            # (e.g. MCX's own evening-session EOD write) must still match
+            # even though that holiday date was stepped PAST when computing
+            # the floor. On the next REAL trading day (before market
+            # opens), yesterday's closed legs are correctly excluded
+            # (floor has advanced past their date) leaving only the
+            # carried-overnight open positions.
             result = await session.execute(_sql_text(f"""
                 WITH latest_batch AS (
                     -- cutoff_ts: the 08:00 IST boundary of the trading
@@ -714,7 +763,7 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
                 LEFT JOIN pnl_final pf
                   ON pf.account = db.account AND pf.symbol = db.symbol
                 WHERE db.kind = 'positions'
-                  AND (db.qty != 0 OR db.date = :today_ist)
+                  AND (db.qty != 0 OR db.date >= :today_ist)
                   AND (db.ltp IS NULL OR db.ltp > 0)
                 ORDER BY db.account, db.symbol
             """).bindparams(
