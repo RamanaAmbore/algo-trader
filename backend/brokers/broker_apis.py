@@ -3435,6 +3435,22 @@ def fetch_holidays(exchange="NSE"):
     return holidays
 
 
+# Short-TTL memo for `_fetch_nse_holiday_master_json()` (2026-10-20 fix).
+# Not a daily-TTL cache like `_HOLIDAY_CACHE`/`_SPECIAL_SESSION_CACHE` —
+# this is purely to collapse the 2 real HTTP round-trips that
+# `_fetch_holidays_from_nse("MCX")` and `_fetch_mcx_evening_closed_dates()`
+# each independently trigger within the SAME `_task_holiday_refresh` MCX
+# branch (milliseconds apart), into 1. A multi-second TTL would be
+# dangerously stale for anything requesting fresh data outside that one
+# cron cycle, so it's intentionally short — long enough to cover "two
+# calls a few ms apart", nowhere near long enough to matter 24h later at
+# the next refresh. Tests that mock `requests.get` directly (not
+# `_fetch_holidays_from_nse`) must clear this between cases — see
+# `test_mcx_evening_holiday_granularity.py`'s autouse fixture.
+_NSE_HOLIDAY_JSON_MEMO: dict = {}
+_NSE_HOLIDAY_JSON_MEMO_TTL_SEC = 5.0
+
+
 def _fetch_nse_holiday_master_json() -> "dict | None":
     """Raw HTTP fetch of the NSE holiday-master feed — the ONE place the
     literal URL appears as a real call (SSOT, enforced by
@@ -3443,24 +3459,38 @@ def _fetch_nse_holiday_master_json() -> "dict | None":
     set, every existing caller's contract) and
     `_fetch_mcx_evening_closed_dates` (per-segment morning/evening-session
     granularity, 2026-10-20 fix) call THIS shared primitive instead of
-    each hand-rolling their own `requests.get`. Note this is a shared
-    CODE path, not a shared RESPONSE — each caller still triggers its
-    own real HTTP round-trip (two per MCX refresh pass today); see
-    `_fetch_mcx_evening_closed_dates`'s own docstring for why a true
-    single-fetch-shared-response optimisation was deferred. Returns the
-    parsed JSON dict, or None on any failure (network, non-2xx, bad
-    JSON) — callers fail open to their own empty-result default.
+    each hand-rolling their own `requests.get`.
+
+    Memoized for `_NSE_HOLIDAY_JSON_MEMO_TTL_SEC` (2026-10-20 fix,
+    replaces the previously-deferred "thread a shared `raw_data` param
+    through both callers" approach — this needs zero call-site or test
+    changes for the two existing callers, since both still just call
+    this one function). A genuinely successful fetch is memoized; a
+    failure (`None`) is never memoized, so the next call — even a
+    millisecond later — gets a real retry rather than a cached failure.
+    Returns the parsed JSON dict, or None on any failure (network,
+    non-2xx, bad JSON) — callers fail open to their own empty-result
+    default.
     """
+    import time as _time
     import requests
+
+    cached = _NSE_HOLIDAY_JSON_MEMO.get("v")
+    if cached and (_time.monotonic() - cached[0]) < _NSE_HOLIDAY_JSON_MEMO_TTL_SEC:
+        return cached[1]
+
     try:
         resp = requests.get(
             "https://www.nseindia.com/api/holiday-master?type=trading",
             headers={"User-Agent": "Mozilla/5.0"}, timeout=10,
         )
         resp.raise_for_status()
-        return resp.json()
+        data = resp.json()
     except Exception:
         return None
+
+    _NSE_HOLIDAY_JSON_MEMO["v"] = (_time.monotonic(), data)
+    return data
 
 
 def _fetch_holidays_from_nse(exchange: str) -> set:
@@ -3500,21 +3530,16 @@ def _fetch_mcx_evening_closed_dates() -> "set | None":
 
     Shares `_fetch_nse_holiday_master_json` as the SOURCE of the literal
     URL with `_fetch_holidays_from_nse` (the SSOT fix `_fetch_nse_holiday_master_json`
-    itself exists for) — but each of the two functions still calls that
-    shared primitive independently, so a single MCX refresh pass still
-    makes TWO real HTTP round-trips to NSE (one per call), not one.
-    Correction to this function's own earlier docstring/commit message,
-    which incorrectly claimed this already halved the NSE round-trip
-    count — it only deduped the literal URL STRING to one source
-    location (the actual goal: "a URL migration is a one-line change"),
-    not the network call itself. KNOWN FOLLOW-UP, not done here: thread
-    an optional pre-fetched `raw_data` dict through both functions so
-    `_task_holiday_refresh`'s MCX branch can fetch once and pass the
-    same blob to both — deferred because `_refresh_once`'s existing
-    tests mock `_fetch_holidays_from_nse` directly (not the raw-fetch
-    primitive), and wiring a shared pre-fetch into that call site risked
-    making those tests hit the real network; only called once/day, so
-    the extra round-trip is low-cost enough to defer.
+    itself exists for). The two functions still call that shared
+    primitive independently — no `raw_data` threaded through either
+    call signature — but `_fetch_nse_holiday_master_json`'s own
+    short-TTL memo (`_NSE_HOLIDAY_JSON_MEMO`, 2026-10-20 fix) now
+    collapses the second of these two calls into a cache hit when they
+    land within the same `_task_holiday_refresh` MCX-branch cycle
+    (milliseconds apart), without touching this function's signature or
+    either existing caller's test mocks — the originally-proposed
+    `raw_data`-threading approach was deferred for exactly that test-risk
+    reason; this one doesn't carry it.
 
     Field names/shape confirmed directly against the live feed (not
     guessed): each ``COM`` entry carries ``tradingDate``, ``weekDay``,

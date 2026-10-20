@@ -58,6 +58,21 @@ def _mock_response():
     return resp
 
 
+@pytest.fixture(autouse=True)
+def _clear_nse_holiday_json_memo():
+    """`_fetch_nse_holiday_master_json`'s short-TTL memo (2026-10-20 fix)
+    is process-global and keyless — without clearing it between tests,
+    a test earlier in this file that warms it with its own mocked
+    `requests.get` response would leak that stale JSON into a LATER
+    test's call, within the memo's TTL window (tests run far faster than
+    the TTL). Clear before AND after so this file's own tests never
+    pollute each other OR a later unrelated test module in the same run."""
+    from backend.brokers import broker_apis
+    broker_apis._NSE_HOLIDAY_JSON_MEMO.clear()
+    yield
+    broker_apis._NSE_HOLIDAY_JSON_MEMO.clear()
+
+
 # ---------------------------------------------------------------------------
 # _fetch_mcx_evening_closed_dates — field parsing
 # ---------------------------------------------------------------------------
@@ -114,6 +129,62 @@ class TestFetchMcxEveningClosedDates:
         with patch("requests.get", return_value=resp):
             result = broker_apis._fetch_mcx_evening_closed_dates()
         assert result == set()
+
+
+# ---------------------------------------------------------------------------
+# _fetch_nse_holiday_master_json — short-TTL memo (2026-10-20 fix)
+# ---------------------------------------------------------------------------
+
+class TestNseHolidayJsonMemo:
+    def test_second_call_within_ttl_does_not_refetch(self):
+        """The real scenario this fix targets: _fetch_holidays_from_nse
+        and _fetch_mcx_evening_closed_dates each call
+        _fetch_nse_holiday_master_json independently, milliseconds apart,
+        within one _task_holiday_refresh MCX-branch cycle. The second
+        call must hit the memo, not requests.get again."""
+        from backend.brokers import broker_apis
+
+        with patch("requests.get", return_value=_mock_response()) as mock_get:
+            first = broker_apis._fetch_nse_holiday_master_json()
+            second = broker_apis._fetch_nse_holiday_master_json()
+
+        assert mock_get.call_count == 1, (
+            "second call within the TTL window must reuse the memoized "
+            "response, not trigger a second real HTTP request"
+        )
+        assert first == second == {"COM": _COM_FIXTURE}
+
+    def test_a_failed_fetch_is_never_memoized(self):
+        """A failure must not poison the memo — the very next call (even
+        a millisecond later) gets a genuine retry, not a cached None."""
+        from backend.brokers import broker_apis
+
+        with patch("requests.get", side_effect=Exception("network error")):
+            first = broker_apis._fetch_nse_holiday_master_json()
+        assert first is None
+
+        with patch("requests.get", return_value=_mock_response()) as mock_get:
+            second = broker_apis._fetch_nse_holiday_master_json()
+        assert second == {"COM": _COM_FIXTURE}
+        assert mock_get.call_count == 1, "the retry after a failure must be a real call"
+
+    def test_end_to_end_mcx_branch_makes_one_real_http_call_not_two(self):
+        """The actual production call pattern: _fetch_holidays_from_nse("MCX")
+        followed immediately by _fetch_mcx_evening_closed_dates() — both
+        reach _fetch_nse_holiday_master_json independently, but together
+        must trigger only ONE real requests.get call."""
+        from backend.brokers import broker_apis
+
+        with patch("requests.get", return_value=_mock_response()) as mock_get:
+            holidays = broker_apis._fetch_holidays_from_nse("MCX")
+            evening_closed = broker_apis._fetch_mcx_evening_closed_dates()
+
+        assert mock_get.call_count == 1, (
+            "the two independent callers in the same refresh cycle must "
+            "collapse to a single real HTTP round-trip via the memo"
+        )
+        assert date(2026, 1, 26) in holidays
+        assert date(2026, 1, 26) in evening_closed
 
 
 # ---------------------------------------------------------------------------
