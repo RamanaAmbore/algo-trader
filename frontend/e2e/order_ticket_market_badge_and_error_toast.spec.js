@@ -165,6 +165,57 @@ test.describe('OrderTicket market-state badge', () => {
     const cls = await badge.evaluate((el) => el.className);
     expect(cls).toMatch(/ot-mkt-(open|closed)/);
   });
+
+  test('live: badge reflects a fixed /api/market/status mock per-exchange, not just "renders some text" (2026-10-20 extension)', async ({ page }) => {
+    // Shape matches backend/api/routes/market.py:MarketStatusResponse
+    // exactly (nse_open, mcx_open, any_open, is_holiday, checked_at).
+    await page.route('**/api/market/status', (route) => route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        nse_open: false,
+        mcx_open: true,
+        any_open: true,
+        is_holiday: false,
+        checked_at: new Date().toISOString(),
+      }),
+    }));
+
+    await loginAsAdmin(page);
+    await page.goto(`${BASE}/orders`, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+
+    const symInput = page.locator('.ssi-input').first();
+    await expect(symInput).toBeVisible({ timeout: 15_000 });
+
+    // MCX symbol — mcx_open:true in the mock → badge must read "MCX open".
+    await symInput.fill('CRUDEOIL26NOVFUT');
+    const mcxSugg = page.locator('.ssi-drop .ssi-row').first();
+    await expect(mcxSugg).toBeVisible({ timeout: 10_000 });
+    await mcxSugg.click({ force: true });
+    // Settle delay — the pick triggers a margin/depth-quote fetch whose
+    // transient overlay can occlude the search box for a moment; a
+    // `force:true` click issued into that window lands on the wrong
+    // element (empirically confirmed: the input's text still updates
+    // via fill(), but the instrument pick silently doesn't register).
+    await page.waitForTimeout(600);
+
+    const badge = page.locator('[data-testid="ot-market-badge"]').first();
+    await expect(badge).toBeVisible({ timeout: 10_000 });
+    await expect(badge).toHaveText(/^MCX open$/, { timeout: 10_000 });
+    await expect(badge).toHaveClass(/ot-mkt-open/);
+    await expect(badge).not.toHaveClass(/ot-mkt-closed/);
+
+    // NFO symbol — nse_open:false in the mock → badge must read "NFO closed".
+    await symInput.fill('NIFTY26OCTFUT');
+    const nfoSugg = page.locator('.ssi-drop .ssi-row').first();
+    await expect(nfoSugg).toBeVisible({ timeout: 10_000 });
+    await nfoSugg.click({ force: true });
+    await page.waitForTimeout(600);
+
+    await expect(badge).toHaveText(/^NFO closed$/, { timeout: 10_000 });
+    await expect(badge).toHaveClass(/ot-mkt-closed/);
+    await expect(badge).not.toHaveClass(/ot-mkt-open/);
+  });
 });
 
 test.describe('OrderTicket submit-error toast truncation', () => {
@@ -174,24 +225,82 @@ test.describe('OrderTicket submit-error toast truncation', () => {
     expect(orderTicket).toMatch(/toast\.error\(`Order failed[^`]*\$\{submitErrFull \|\| submitErr\}`\.slice\(0,\s*200\)/);
   });
 
-  test('logic: a realistic ~135-char market-hours rejection message survives the toast slice uncut', () => {
-    // Mirrors the exact construction in OrderTicket.svelte's catch block:
-    //   toast.error(`Order failed — ${submitErrFull || submitErr}`.slice(0, 200), ...)
-    const marketHoursDetail =
-      'MCX is closed for the evening session today due to a scheduled ' +
-      'exchange holiday. Orders can be placed once the next trading ' +
-      'session opens at 09:00 IST tomorrow.';
-    expect(marketHoursDetail.length).toBeGreaterThan(130);
+  test('live: a real 409 market-hours rejection renders its FULL detail in the toast, not truncated (2026-10-20 rewrite)', async ({ page }) => {
+    // Replaces the old made-up-string "logic" test, which only exercised
+    // String.slice() in Node and never touched the app. This intercepts
+    // the real /api/orders/ticket submit call and reads the actual
+    // rendered .rbq-toast-msg element — the strongest guard for this
+    // class of bug (same pattern as
+    // order_ticket_template_toggle_regression.spec.js's request-
+    // interception test).
+    //
+    // Detail text mirrors the EXACT wording
+    // backend/api/routes/orders_place.py:_ticket_closed_market_detail()
+    // produces for an MCX evening-session rejection (134 chars, > the
+    // task's 130-char floor and well past the OLD 80-char toast cap).
+    const detail =
+      "Exchange MCX is closed. Orders for CRUDEOIL26NOVFUT can only be " +
+      "placed during MCX's market hours, or its evening session on a holiday.";
+    expect(detail.length).toBeGreaterThan(130);
 
-    const msg = `Order failed — ${marketHoursDetail}`.slice(0, 200);
-    expect(msg).toBe(`Order failed — ${marketHoursDetail}`);
-    expect(msg.endsWith('tomorrow.')).toBe(true);
+    await page.route('**/api/admin/execution/mode', async (route) => {
+      if (route.request().method() === 'GET') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ mode: 'paper', branch: 'dev', allowed_modes: ['idle', 'sim', 'replay', 'paper', 'shadow'] }),
+        });
+      } else {
+        await route.continue();
+      }
+    });
+    await page.route('**/api/orders/ticket', async (route) => {
+      await route.fulfill({
+        status: 409,
+        contentType: 'application/json',
+        body: JSON.stringify({ detail }),
+      });
+    });
 
-    // Regression guard: the OLD 80-char cap would have cut this message
-    // mid-word, well before the sentence (let alone the explanation) ends.
-    const oldTruncated = `Order failed — ${marketHoursDetail}`.slice(0, 80);
-    expect(oldTruncated.endsWith('tomorrow.')).toBe(false);
-    expect(oldTruncated.length).toBeLessThan(msg.length);
+    await loginAsAdmin(page);
+    await page.goto(`${BASE}/orders`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    const symInput = page.locator('.ssi-input').first();
+    await expect(symInput).toBeVisible({ timeout: 15_000 });
+    await symInput.fill('CRUDEOIL26NOVFUT');
+    const sugg = page.locator('.ssi-drop .ssi-row').first();
+    await expect(sugg).toBeVisible({ timeout: 10_000 });
+    await sugg.click({ force: true });
+    await page.waitForTimeout(500);
+
+    // MARKET avoids the "limit price required" validation gate.
+    const typeTrigger = page.locator('[aria-label="Order type"]').first();
+    await typeTrigger.click();
+    const marketOpt = page.locator('.rbq-select-option-label').filter({ hasText: /^MARKET$/ }).first();
+    await marketOpt.click();
+    await page.waitForTimeout(300);
+
+    const buyPill = page.locator('button.ot-side-buy').first();
+    if (await buyPill.count() > 0 && await buyPill.isEnabled().catch(() => false)) {
+      await buyPill.click();
+      await page.waitForTimeout(200);
+    }
+
+    const submitBtn = page.locator('.oes-common-submit, .ot-submit').first();
+    await expect(submitBtn).toBeVisible({ timeout: 8_000 });
+    if (!(await submitBtn.isEnabled())) {
+      test.skip(true, 'submit button not enabled — ticket form incomplete in this environment');
+      return;
+    }
+    await submitBtn.click();
+
+    const toastMsg = page.locator('.rbq-toast-msg').first();
+    await expect(toastMsg).toBeVisible({ timeout: 5_000 });
+    const text = (await toastMsg.textContent()) || '';
+    expect(text).toContain(detail);
+    // Regression guard: the OLD 80-char slice on the bare (already-
+    // trimmed) submitErr would have cut this well short of the full
+    // sentence — confirm the rendered text is NOT the truncated form.
+    expect(text.length).toBeGreaterThan(80);
   });
 
   test('source: api.js exposes an untruncated err.fullMessage so the toast layer has something non-trimmed to read', () => {
