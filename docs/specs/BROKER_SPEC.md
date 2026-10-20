@@ -2465,6 +2465,23 @@ All morning broker token management is now consolidated into a single 05:30 IST 
 that handles holiday calendar loading, open-time resolution, and best-effort token
 refresh for all brokers in sequence.
 
+### NSE holiday feed — per-segment MCX capture (2026-10-20)
+
+The holiday refresh reads the NSE holiday-master feed (`_fetch_nse_holiday_master_json()`,
+[`broker_apis.py:3289`](backend/brokers/broker_apis.py#L3289)) for two purposes:
+
+- **Bare-date holiday set** per exchange (`_fetch_holidays_from_nse`, `broker_apis.py:3313`).
+  Unchanged. Every `COM` entry is a holiday for MCX regardless of its session flags.
+- **MCX evening-closed dates** (`_fetch_mcx_evening_closed_dates`, `broker_apis.py:3339`).
+  Reads `COM` `evening_session == "Closed"`. Each date becomes a zero-width
+  `market_special_sessions` row with `source='nse_auto'`, written by
+  `_upsert_mcx_evening_closed_sessions_coro` (`broker_apis.py:3387`). Weekend dates are excluded.
+
+The feed's `morning_session` field is not modelled. Both functions request the same URL separately,
+so one MCX refresh makes two HTTP requests. Feed failures fail open: no evening-closed rows are
+written for that cycle. Known gap: rows are never removed when NSE later reopens a date. Full
+behaviour: CLAUDE.md "MCX evening-closed holidays".
+
 ### Token refresh during 05:30 task
 
 | Broker | Refresh Method | Behavior | Pre-warm Timing |

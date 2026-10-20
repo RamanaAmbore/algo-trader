@@ -1494,15 +1494,34 @@ Verify via `GET /api/market-status` at 18:00 on the date — should return
 
 ### MCX Evening Session on an NSE Holiday
 
-**No action required.** MCX is configured with `evening_open_on_holidays:
-true` in `backend_config.yaml`. On any NSE-holiday date, MCX
-automatically opens at 09:00 and runs its full session (09:00–23:30).
+MCX is configured with `evening_open_on_holidays: true` in `backend_config.yaml`, so MCX's evening
+session (17:00 onward) is the default on holiday dates. **Not every holiday keeps it.** Since
+2026-10-20 the platform reads the NSE holiday feed's per-segment `evening_session` field for MCX
+(`COM` segment). On dates marked "Closed" it auto-inserts a zero-width `market_special_sessions`
+row (`exchange='MCX'`, `source='nse_auto'`). That row closes MCX **all day** on that date.
+Weekend dates are excluded, and nothing removes the row automatically when NSE later reopens the
+date. Remove it by hand if that happens.
 
-Verify at 09:00 on the holiday date:
+**No action is normally required.** Verify on an evening-open holiday at 18:00:
 ```
 GET /api/market-status?exchange=MCX
 → {"is_open": true, "segment": "commodity", "reason": "evening_on_holiday"}
 ```
+
+To check an evening-closed holiday, query the auto-inserted rows:
+```sql
+SELECT date, start_time, end_time, source FROM market_special_sessions
+WHERE exchange = 'MCX' AND date >= CURRENT_DATE ORDER BY date;
+```
+Rows with `source = 'nse_auto'` came from the feed. Rows with `source` NULL or `manual` were
+entered by an operator, and the holiday refresh never overwrites them.
+
+### Simulator market-hours guard
+
+Sim starts are refused with HTTP 409 while a segment is open, when
+`simulator.block_during_market_hours` is true (the default). This guard was broken until 2026-10-20 and
+never blocked anything. Operators who relied on sims starting during market hours should set the flag to
+`false` on `/admin/settings`. See [SIMULATOR_GUIDE](SIMULATOR_GUIDE.md#market-hours-guard).
 
 ### Token Refresh Troubleshooting
 

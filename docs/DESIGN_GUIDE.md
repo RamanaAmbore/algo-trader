@@ -863,7 +863,7 @@ All tables live in the branch-local DB except `broker_accounts`, which is shared
 | `broker_accounts` | Shared table (ramboq DB only) storing encrypted broker credentials for all branches. | id (PK), account (unique, e.g. ZG0790), broker_id (kite\|dhan\|groww), user_id (FK), api_key_enc, access_token_enc, source_ip, priority, poll_priority, circuit_breaker_enabled, display_order |
 | `broker_connection_events` | Shared table — audit log of connection lifecycle (auth_fail, fetch_fail, token_ok, circuit_open/close, ticker_error, etc.). Enables operator forensics on credential/network issues. | id (PK), account, event_type (VARCHAR 32), event_ts (TIMESTAMP TZ, indexed), detail (JSONB) |
 | `market_holidays` | Exchange holiday calendar (NSE/MCX/CDS). Seeded from broker API, cached. | id (PK), exchange, holiday_date (unique per exchange) |
-| `market_special_sessions` | Special trading sessions (e.g. Muhurat trading). Operator-editable overrides. | id (PK), exchange, date, start_time, end_time, reason |
+| `market_special_sessions` | Special trading sessions (e.g. Muhurat trading). Operator-editable overrides. Zero-width rows (start = end) mean closed all day. | id (PK), exchange, date, start_time, end_time, reason, source (NULL/`manual` = operator, `nse_auto` = MCX evening-closed holiday from the NSE feed; added 2026-10-20) |
 | `exchange_schedule` | Configurable segment opening hours and snapshot timing (equity + commodity exchanges). DB-backed single source of truth for `closed_hours_or_broker` gate logic via `exchange_clock.is_exchange_open(exchange)`. Default rows seeded at startup; operator can override via `/api/admin/exchange-schedule`. | id (PK), gate (NON-MCX\|MCX), date (NULL=default, non-NULL=override), session_name, is_open (boolean), exchanges (TEXT[] array), open_time, close_time, snapshot_time, snapshot_reset_time, weekdays (int[] for Mon=0…Sun=6), reason; UNIQUE (gate, date, session_name) |
 
 **Watchlists** — User-defined symbol groups:
@@ -3794,7 +3794,7 @@ calendar day via dedup sentinels keyed on trade-date.
 | 00:15 | MCX settlement snapshot (`daily_book`) | MCX | `trigger_settlement_capture("MCX")` → `_snapshot_fire(label="mcx-settlement")` | background.py:1836–1847 |
 | 00:30 | KiteTicker full stop — reactor halt, WebSocket close, subscriptions cleared | ALL | `_snapshot_stop_ticker()` | background.py:1917–1935, 2089–2099 |
 | 05:30 | Holiday calendar refresh + token pre-warm (all brokers) | NSE+MCX | `_task_holiday_refresh()` | background.py:2314–2493 |
-| 08:00 | KiteTicker restart with fresh token; `fix_daily_book_prev_close()` resets prev_close from yesterday's settlement LTP | ALL | `_snapshot_restart_ticker()`, `fix_daily_book_prev_close()` | background.py:2059–2112 |
+| 08:00 | KiteTicker restart with fresh token; `fix_daily_book_prev_close()` is marker-guarded (`task_markers.prev_close_fix_date`) and, in normal operation, updates zero rows (2026-10-20, see "Settlement re-arm rules" below) | ALL | `_snapshot_restart_ticker()`, `fix_daily_book_prev_close()` | background.py:2059–2112 |
 | 09:00 | MCX regular session opens | MCX | config | backend_config.yaml |
 | 09:15 | NSE/BSE/NFO/CDS regular session opens | NSE/BSE | config | backend_config.yaml |
 | 15:30 | NSE regular session closes | NSE/BSE | config | backend_config.yaml |
@@ -3812,7 +3812,7 @@ are operator-configurable via `/admin/exchange-schedule`.
 |-----------|-----------------|-----|
 | Session hours | 09:15–15:30 | 09:00–23:30 |
 | Holiday calendar | `market_holidays` WHERE `exchange='NSE'` | `market_holidays` WHERE `exchange='MCX'` |
-| Open on NSE holidays? | No | Yes (`evening_open_on_holidays: true`) |
+| Open on NSE holidays? | No | Yes (`evening_open_on_holidays: true`), except dates the NSE feed marks evening-Closed (zero-width `market_special_sessions` rows, `source='nse_auto'`, 2026-10-20) |
 | KiteTicker subscription | Dropped at 16:15 | Held until 00:30 |
 | Close snapshot | 15:45 IST | 23:45 IST |
 | Settlement snapshot | 16:15 IST | 00:15 IST (next calendar day) |
@@ -3891,6 +3891,64 @@ force-closes any date. Takes effect immediately; survives restarts.
 - MCX is also governed by any MCX-specific `market_special_sessions` row; if none, MCX follows 
   its holiday rule (`evening_open_on_holidays: true` → opens at 17:00 for the evening session as 
   normal).
+
+---
+
+#### Settlement re-arm rules and restart hydration (2026-10-20)
+
+`MarketLifecycle` ([`market_lifecycle.py`](backend/api/algo/market_lifecycle.py)) fires
+`<exch>:open`, `<exch>:close`, and `<exch>:close_settled` (~15 min after close). Each close produces one
+`close_settled`, which triggers `snapshot_daily_book(settled=True)`.
+
+- **No date-rollover reset.** `_settled_fired` used to clear on every calendar-date rollover. For an
+  exchange already closed and settled, `_last_close_at` survives midnight, so the settle window was
+  already satisfied and `close_settled` fired a second time. That write was dated the next calendar
+  day, and its `prev_close` equalled `ltp`. The rollover reset is deleted (`market_lifecycle.py`
+  comment block around line 158). `_last_seen_date` is removed.
+- **Re-arm points.** `_settled_fired` clears on the open transition (line ~203) and on the close
+  transition (line ~229, added 2026-10-20 so a flag hydrated from the prior cycle cannot suppress the
+  current cycle's settle).
+- **Restart hydration.** `_hydrate_from_audit()` (line ~315) runs once per process and rebuilds
+  `_last_close_at` and `_settled_fired` from `MarketLifecycleEvent` rows (26h lookback). An already
+  elapsed settle window is marked handled, never fired late. Without hydration, a restart inside
+  `[last_close, last_close + settled_offset)` would silently never fire that cycle's settle.
+- **Session-boundary date.** `snapshot_daily_book(target_date=None)` defaults to
+  `session_date_of(now_ist)` (`expiry_freeze.py:180`), which shifts back 8h, so a write just after
+  midnight IST belongs to the prior trading session. Explicit `target_date` callers are unchanged.
+
+**Empirical status — open item.** A weekday-to-weekday check (`ltp` vs next weekday `prev_close`,
+prod, 2026-09-01 → 2026-10-19) agrees on 88.7% of pairs (2731 of 3079). All disagreement sits in
+2026-09-07 → 2026-09-18, and there are zero disagreements from 2026-09-19 onward. The September
+cluster is **not root-caused**. The rollover fix removes the mechanism confirmed in code, but
+this design section does not claim it explains that window.
+
+#### Market open/closed — one call path (2026-10-20)
+
+- `_segment_is_open(seg_cfg, now)` (`date_time_utils.py:304`) over `is_market_open()` (line 217) is the
+  canonical verdict. Callers that hold YAML-shaped config route through it: `/market/status`, the
+  quote gate, and the watchlist movers gate.
+- Gate-shaped callers (`_get_segments()` dicts) call `is_market_open()` directly with the same
+  `exchange=`, `evening_open_on_holidays=`, and `special_sessions=` kwargs. They keep each gate's own
+  `exchange_schedule` hours and do not substitute the YAML `sessions` list. This applies to the
+  perf probe, the ticker watchdog, and the simulator guard.
+- Holiday branch: the evening-open rule requires a weekday (`today.weekday() < 5`).
+- Two mechanisms stay separate on purpose. `agent_engine._ae_segment_flags` (line ~2129) is a live
+  Kite-probe safety net. `exchange_clock`'s DB-schedule signal drives EOD scheduling and is not
+  reconciled with the calendar verdict.
+- Probe cost: `is_trading_day()` probes only when the calendar says closed, the clock is inside
+  09:00–23:30, and an exchange is passed. About once a minute per exchange, cached. The newly
+  exchange-passing sites are monitored. `probe=False` on `_segment_is_open` is the planned escape
+  hatch and is not implemented.
+
+#### MCX evening-closed holidays (2026-10-20)
+
+- NSE holiday-master `COM` entries carry `evening_session`. Dates marked "Closed" get a zero-width
+  `market_special_sessions` row (`exchange='MCX'`, `source='nse_auto'`) that closes MCX all day.
+  Weekend dates are excluded, because `next_market_open_ist()` treats row existence as open on
+  weekends.
+- The ON CONFLICT clause only updates `nse_auto` rows, so operator rows are never overwritten.
+- Known gaps: no row removal when NSE reopens a date; `morning_session` is not modelled; the upsert
+  failure path returns silently.
 
 ---
 
@@ -4145,6 +4203,14 @@ on the session boundary, providing a stable overnight baseline.
   setting `previous_close` from yesterday's `daily_book.previous_close`
 - **New-session mode**: unconditionally updates today's rows to yesterday's `daily_book.ltp`
 - Ensures data consistency regardless of how queries executed during the transition window
+- **2026-10-20 update:** the settlement-map UPDATE targets `WHERE d.date = today` (the new session's
+  date). Rows dated that day do not exist before 08:00, because `session_date_of()` attributes
+  00:00–07:59 writes to the prior session. In normal operation the UPDATE therefore matches zero
+  rows. The "New-session mode" description above describes the code path, not normal runtime
+  effect. The job is guarded by the DB marker `task_markers.prev_close_fix_date` (shared with the
+  SessionGuard startup catch-up), so it runs once per IST day. Open risk: if the 08:00 run was
+  missed and the server restarts after the same day's 15:45 or 23:45 EOD write, the catch-up UPDATE
+  overwrites that row's `ltp`. Not verified against prod.
 
 **Solution:**
 - `DailyBook.previous_close: Optional[float]` column (DOUBLE PRECISION)
@@ -4460,6 +4526,26 @@ Frontend data stores (`positionsStore`, `holdingsStore`, `fundsStore`, `sparklin
 - `frontend/src/lib/PositionStrip.svelte` — `_staleFailCount` tracking + `ps-stale` CSS class application
 - `frontend/src/routes/(algo)/orders/+page.svelte` — `_orderLoadFails` counter + 3-failure banner gate
 - `frontend/src/lib/data/marketDataStores.svelte.js` — `keepStaleOnEmpty` store config
+
+---
+
+### 21.x Single arbitrated source per field — Pulse Chg% denominator (2026-10-20)
+
+Pulse rows display `ltp`, `close`, `change_pct`, and `day_pnl`, which must move together. Each field
+has one arbitrated primary source. Secondary channels are fallback-only.
+
+| Field | Primary | Fallback-only |
+|---|---|---|
+| Position/holding `ltp` | SSE tick (`symbolStore` `snap.ltp`) | REST batch quote (`liveQ.ltp`) |
+| Day P&L % denominator | Backend `prev_close`, accumulated per leg into `_prevCloseSsot` / `_prevCloseHoldSsot` (`pulseUnified.js`) | Cost basis `\|avg × qty\|` when no leg has a prior settlement |
+| Underlying-anchor row fields | `_applyQuoteFields(row, snap, q)`, the same entry point real rows use | None. The bespoke `_applyUnderlyingQuoteFields` is deleted |
+
+- `row.close` stays live-quote-sourced for bid/ask/depth display. It is not the denominator.
+- Two columns are headed "Chg %". The left `change_pct` column is the raw symbol change with no
+  quantity weighting, live-quote-sourced by design. The right `day_pnl_pct` column is Day P&L ÷ prev
+  market value and is the one this change affects.
+- Movers keep their own poller. The consolidation does not cover them.
+- Spec: [PULSE_SPEC §11.3](docs/specs/PULSE_SPEC.md).
 
 ---
 

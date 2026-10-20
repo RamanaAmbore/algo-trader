@@ -658,6 +658,37 @@ throughout closed-hours window.
 
 ---
 
+### 11.3 Single Arbitrated Source per Field — Chg% Denominator and Anchor Rows (2026-10-20)
+
+Rows that display fields expected to move together (`ltp`, `close`, `change_pct`, `day_pnl`)
+take each field from exactly one arbitrated primary source. Secondary channels are fallback-only.
+Commits `9a983ca5` (Chg% denominator) and `8d6be90e` (anchor consolidation).
+
+- **Day P&L % denominator** (`_prev_market_value`): the backend `prev_close` only. Each position and
+  holding leg accumulates `prev_close × |qty|` into `_prevCloseSsot` / `_prevCloseHoldSsot`
+  (`frontend/src/lib/data/pulseUnified.js`, the position and holding merge loops). `finalizeRows()`
+  sums the two. The denominator never reads `row.close`, which is live-quote-sourced and serves
+  bid/ask/depth display.
+- **Blank-vs-zero**: when no leg carries a prior settlement (a position opened today), the
+  denominator falls back to cost basis (`|avg × qty|`), mirroring the backend `day_change_percentage`
+  fallback. The fallback sits at accumulator level, not inside `dayChangePct()`. The value is then
+  day P&L ÷ cost, a different meaning from day P&L ÷ prior market value.
+- **Underlying-anchor rows**: `mergeUnderlyingAnchors()` calls the shared `_applyQuoteFields(row, snap,
+  q)` at both sites. The `snap` argument is the symbolStore copy keyed by the anchor's resolved
+  tradingsymbol. The bespoke fill-only-if-null `_applyUnderlyingQuoteFields` is deleted.
+- **Two columns are both headed "Chg %"**: the left grid `change_pct` column is the raw symbol
+  day-change with no quantity weighting, live-quote-sourced by design (see §14 Column Definitions).
+  The right-grid `day_pnl_pct` column is Day P&L ÷ prev market value and is the column this change
+  affects. Operators comparing the two should expect them to differ.
+- Movers keep their own backend poller and are not consolidated. Anchor rows (`_isUnderlyingAnchor`)
+  suppress the `chg-up`/`chg-down` direction classes and show the `sym-anchor-bar` marker
+  (`frontend/src/lib/data/pulseColumns.js`, lines 151-158 and 173-176).
+
+Tests: `frontend/src/lib/__tests__/data/pulseUnified.test.js` (accumulator and zero-denominator
+cases), `frontend/src/lib/__tests__/data/nav.test.js` (`dayChangePct`).
+
+---
+
 ## 12. Grid Buckets — Left Column
 
 Three distinct left-panel grids (Pinned, Watchlist, Movers Winners/Losers) share the same 
@@ -2730,3 +2761,4 @@ See `PULSE_SPEC.md §9 Known Defects` section (BD1–BD4 fixed in `b1d7654c`, D1
 | 2026-10-16 | v1.23 Position manual pinning + position-state badge SSOT (commit 09ec8c6f): (1) **§4.4 PositionRow schema** — added three new fields: `pin_group_key: str\|None` (operator-persisted manual pair linking via `position_pairs` table, formatted `"PIN{id}"`), `pair_group_key` clarified as **auto-detected** lot-waterfall link (ephemeral, recomputed per request), and `has_gtt: bool` (active GTT order attached). Position can carry both auto-paired and manually pinned states simultaneously. (2) **§14 Position state (St) column and badge rendering** — replaced hardcoded glyph with real priority-based badge system: GTT (green, text "GTT") > pinned (cyan+border, `PIN123`) > auto-paired (cyan, `P1`/`P2`) > orphan (amber, diamond glyph `◇︎`). New shared SSOT `positionStateBadge(row)` helper in `frontend/src/lib/data/positionStateBadge.js` consumed by MarketPulse Positions grid (`pulseColumns.js`) and Derivatives Legs grid (`CandidateLegRow.svelte`). Clicking badge opens `PositionPinPicker.svelte` to pin/unpin. (3) **§15 Pair-group sort restoration** — Derivatives Legs grid sort (`pairGroupSort.js:sortRowsByPairGroup()`) keyed on `${account}|${pair_group_key}` (auto-pair grouping only); manual pins (`pin_group_key`) do NOT participate in sort order. (4) **§19 Symbol Context Menu** — "Pair with…" (or "Unpin" if already pinned) entry added for positions rows; opens `PositionPinPicker.svelte` and routes to `POST /api/positions/pin` or `DELETE /api/positions/pin/{id}`. (5) **§4.4 expiryPnl.js whitelist** — fixed Legs grid data pipeline to allow `has_gtt`, `pin_group_key`, `pair_group_key`, `is_orphan` fields through to consumers (was stripping them, causing grid to render no badges). Tests: `backend/tests/test_positions_pin.py`, `frontend/e2e/position_pin_pairing.spec.js`, `frontend/src/lib/__tests__/data/positionStateBadge.test.js`. Impact: operators can now manually link related positions for persistent visual grouping; position state display unified across Pulse and derivatives pages with clear badge priority hierarchy. Invariant: chase/bracket/template_attach code deliberately does NOT consult `pin_group_key` or `pair_group_key` fields yet (deferred per architecture council); only AlgoOrder parent-linkage suppresses TP/template on child orders. |
 | 2026-10-17 | v1.24 Lot-split display for multi-group position pairing (uncommitted, frontend-only): (1) **§4.4 `pair_group_key`** — documents the known backend gap where `_auto_pair_positions()` overwrites a row's pairing fields when it matches 2+ counterparties (only the last group survives); the frontend now re-derives the match via `splitPairedLots()` (`frontend/src/lib/data/lotPairSplit.js`) before display. (2) **§14 Lot-split display** — new subsection: a multi-group or partially matched position renders as one row per matched group (`P1`, `P2`, …, ranked by matched qty) plus an `Unmatched` row for any leftover, each piece distinguished by the existing St-column badge (cyan paired / amber orphan). Amount fields are pro-rated with the last piece taking the remainder, so totals and account rollups are unchanged. Pieces use composite row key `symbol::account::label` in `mergePositionRows()` (`pulseUnified.js`). Wired into MarketPulse Positions (`MarketPulse.svelte`) and Derivatives Legs (`derivatives/pageLoad.js:buildPagePositionRows()`, after `splitClosedReopened()`). `PerformancePage` intentionally not wired. Display-only fields `_isLotSplit` / `lot_piece_label`; `/api/positions` schema unchanged. Tests: `frontend/src/lib/__tests__/data/lotPairSplit.test.js`, `pulseUnified.test.js`, `pageLoad.test.js`, `frontend/e2e/position_lot_pair_split.spec.js`. |
 | 2026-10-19 | v1.25 Tick staleness indicator (commit 7bf11fac): new §31.1 documents the `TICKS STALE@HH:MM` amber badge in `RefreshButton.svelte` and its one-per-episode 75 s toast. Signal is `lastLiveTickAt` (real SSE tick/snapshot only, not heartbeats or book-poller writes); gated to NSE-or-MCX open; checked every 5 s via `tickStaleness.svelte.js`. Badge is app-wide (every page mounting `RefreshButton`), not Pulse-only. §7 failure-modes table gains the API-side poller row (backend heal in BROKER_SPEC §9.1). Test: `frontend/e2e/tick_staleness_indicator.spec.js`. |
+| 2026-10-20 | v1.26 Single arbitrated source per field (commits 9a983ca5, 8d6be90e, 5ea76387): new §11.3. Day P&L % denominator now reads backend `prev_close` only (`_prevCloseSsot`), never live-quote `row.close`; zero-prior-settlement rows fall back to cost basis instead of blanking. Underlying-anchor rows consolidate onto `_applyQuoteFields`; `_applyUnderlyingQuoteFields` deleted. Left-grid `change_pct` (raw symbol change) is unchanged and remains live-quote-sourced. |

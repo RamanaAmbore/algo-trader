@@ -292,10 +292,24 @@ For each of these, the test path is:
 
 ---
 
+## Market-hours guard
+
+Starting a sim is refused with **HTTP 409 "Markets are currently open (<segment>)"** while NSE or
+MCX is open, when `simulator.block_during_market_hours` is true (the default). The guard was broken
+until 2026-10-20 (a stale import raised an error on every call, so it never blocked anything). It
+now enforces. If you ran sims during market hours before that date and expected them to start, set
+`simulator.block_during_market_hours=false` on `/admin/settings` to keep the old behaviour.
+
+The check uses the same open/closed verdict as the rest of the platform, including MCX's evening
+session on NSE holidays. See [ADMIN_GUIDE](ADMIN_GUIDE.md#mcx-evening-session-on-an-nse-holiday) "MCX Evening Session on an NSE Holiday".
+
+---
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Where to look |
 |---|---|---|
+| Sim start returns 409 "Markets are currently open" | `simulator.block_during_market_hours` is on and a segment is open (since 2026-10-20 the guard enforces) | Wait for the session to close, or set the flag to `false` on `/admin/settings` |
 | `/api/simulator/status` returns `enabled: false` | `cap_in_<branch>.simulator` flag is off in `backend_config.yaml` | Server config; flag toggles per branch (dev / main) |
 | Sim won't start with `seed_mode: scripted` | The scenario has no `initial:` block | Pick `live` or `live+scenario`, or load a scenario that ships an `initial:` block |
 | Agent doesn't fire even on **Run in Simulator** | Holdings-metric agent (day_pct, day_rate_abs, etc.) — not synthesisable | Backend returns 400 explaining this. Test against live data instead |

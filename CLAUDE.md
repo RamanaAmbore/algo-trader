@@ -255,7 +255,8 @@ memoise returns. One broker round-trip per TTL window shared by routes, nav, inv
 Empty sets cached; buster = date rollover Tiers 1+2, UPSERT Tier 3.
 
 **Market segments** — blocks carry `sessions: list[{start, end}]` + `evening_open_on_holidays`. 
-`is_market_open()` signature unchanged; keyword-only overrides when passed.
+`is_market_open()` signature unchanged; keyword-only overrides when passed. Open/closed checks go
+through `_segment_is_open()` (see the "Market open/close determination" entry under Market daily window).
 
 **Multi-account calls**: `@for_all_accounts` returns list[DataFrame]. Callers use `pd.concat(..., ignore_index=True)`.
 
@@ -410,7 +411,142 @@ Agent condition evaluation enforces three critical invariants via the alert engi
 
   **Kind classification for cash/avail_margin metrics must consider the leaf's operator (2026-09-28, commit 36aba654)** — Schedule-only sentinel conditions (`market-open-nse` and `market-preclose-mcx` agents use `avail_margin >= -999999999` purely to gate their `fire_at_time` schedule) were being mislabeled as real threshold breaches by the alert display layer. Root cause: `_v2_derive_kind()` in [`backend/api/algo/agent_engine.py`](backend/api/algo/agent_engine.py) classified based on metric name alone (`avail_margin`, `cash`), ignoring the operator. Fixed: (1) `_v2_derive_kind(metric, op)` now takes the operator; only `<`/`<=` operators classify as `negative_cash`/`negative_margin` floor breaches. (2) `_v2_format_threshold()` belt-and-suspenders guard: thresholds with `abs() >= 1e8` render as `"n/a"` instead, defending against future similar sentinels. (3) `_v2_send_rich_alert()` renders scheduled info-tier agents (`fire_at_time` set, `tier` in `['info', 'low']`) as `"{agent.name} — Scheduled — {fire_at_time} IST"` in Telegram/email, replacing the kind/threshold table to clarify the alert's purpose. `loss-funds-negative` (tier=critical, uses `op: "<"`) and genuinely alert-firing agents unaffected — verified via golden byte-for-byte render tests. Invariant: alert kind classification must never treat a schedule-only sentinel as a real threshold breach.
 
-**Market daily window** — 08:00–23:31 IST. At 08:00: `fix_daily_book_prev_close()` sets BOTH `daily_book.ltp = prev_close = settlement close_price` — the only moment prev_close changes. NON-MCX snapshot at 15:45 (close+15 min) writes `ltp` only, no prev_close change. MCX snapshot at 23:45 (close+15 min) same. Ticker stops at 23:31. Closed window: 23:31→08:00 IST — routes serve `daily_book` snapshot only. Full schedule: memory `project_market_daily_window`.
+**Market daily window** — 08:00–23:31 IST. Ticker stops at 23:31; closed window 23:31→08:00 IST —
+routes serve the `daily_book` snapshot only. Settlement snapshots: NON-MCX at 15:45 and MCX at 23:45
+(close+15 min) write `ltp` and never touch `prev_close`. The 08:00 job
+`fix_daily_book_prev_close()` ([`daily_snapshot.py:1166`](backend/api/algo/daily_snapshot.py#L1166),
+scheduled from `_ds_tick_prev_close_fix` at [`background.py:3463`](backend/api/background.py#L3463))
+is **no longer the mechanism that sets `prev_close` in normal operation**. Its settlement-map UPDATE
+([`daily_snapshot.py:1239-1250`](backend/api/algo/daily_snapshot.py#L1239)) targets
+`WHERE d.date = today` (the new session's date), and no rows dated that day exist before 08:00:
+snapshots written 00:00–07:59 are attributed to the prior session by `session_date_of()`
+([`expiry_freeze.py:180`](backend/api/algo/expiry_freeze.py#L180)). In normal operation the UPDATE
+matches zero rows. The job still runs and records `task_markers.prev_close_fix_date` via
+`_pcf_mark_done()`. Its live effect is the catch-up path: `_sg_recover_close_reset()`
+([`background.py:3177`](backend/api/background.py#L3177)) and the loop tick both consult that same
+marker through `_pcf_marker_date()` ([`background.py:3133`](backend/api/background.py#L3133)), so a
+second run on the same IST day is blocked. **Open risk (code-read, not verified against prod):** the
+marker only records that the 08:00 run happened. If the server was down at 08:00 and restarts after
+the 15:45 or 23:45 EOD write, the catch-up UPDATE matches that same-dated EOD row and overwrites its
+`ltp` with the settlement `close_price`. Full schedule: memory `project_market_daily_window`.
+
+**`close_settled` double-fire on midnight rollover (2026-10-20, commits `5295f432`, `4b2b4f17`,
+`2220074d`)** — Root cause: `MarketLifecycle.poll()`
+([`market_lifecycle.py`](backend/api/algo/market_lifecycle.py)) reset `_settled_fired` for every
+exchange on a bare calendar-date rollover. `_last_close_at` is not cleared across midnight, so for an
+exchange already closed and settled, `now >= last_close + settled_offset` was true the instant the
+flag cleared. `close_settled` fired a second time after midnight, and `snapshot_daily_book(settled=True)`
+wrote a second row dated the next calendar day. That row's `prev_close` came from a broker
+`close_price` that had not yet settled, so it equalled `ltp`.
+Fix, four parts: (1) The rollover reset is deleted (comment block at
+[`market_lifecycle.py:158-173`](backend/api/algo/market_lifecycle.py#L158)); `_last_seen_date` is gone,
+guarded by `test_no_dead_last_seen_date_field`. The only re-arm points are the open transition
+([`:203`](backend/api/algo/market_lifecycle.py#L203)) and, added in `2220074d`, the close transition
+([`:229`](backend/api/algo/market_lifecycle.py#L229)), which clears a flag hydrated from the prior
+close cycle. (2) `_hydrate_from_audit()` ([`:315`](backend/api/algo/market_lifecycle.py#L315))
+restores `_last_close_at` and `_settled_fired` from `MarketLifecycleEvent` rows (26h lookback) once
+per process. An already-elapsed settle window is marked handled and never fired late. (3)
+`snapshot_daily_book(target_date=None)` defaults to `session_date_of(now_ist)`
+([`daily_snapshot.py:1403-1416`](backend/api/algo/daily_snapshot.py#L1403)), not `now_ist.date()`.
+Explicit `target_date` callers are untouched. (4) `_session_guard()` uses the same session date for
+the EOD sentinel checks only ([`background.py:3300-3301`](backend/api/background.py#L3300)).
+
+**Empirical note — corruption is narrower than first reported.** The first analysis concluded the
+corruption happened "every single night". That came from a flawed check: filtering by `captured_at`
+time only catches weekend-frozen artifacts, because a weekday double-fire row is overwritten by that
+day's legitimate evening write a few hours later. The corrected method compares each `ltp` with the
+next weekday's `prev_close` (prod, 2026-09-01 → 2026-10-19): **88.7% agreement (2731 of 3079
+pairs)**. All disagreement sits in one window, 2026-09-07 → 2026-09-18. **Zero disagreements from
+2026-09-19 → 2026-10-19.** The practical blast radius is weekend and holiday boundaries, where no
+same-day write corrects the row.
+
+**Open item, not root-caused:** the 2026-09-07 → 2026-09-18 disagreement cluster is not explained by
+this fix or by any code path identified so far. Treat it as unresolved, not as covered by the fix.
+Monitor with the `ltp`→`prev_close` comparison in the archived plan
+([`.claude/PLAN.done37.md`](.claude/PLAN.done37.md)).
+
+**Single arbitrated source per field (Pulse, 2026-10-20, commits `9a983ca5`, `8d6be90e`)** — When one
+row shows fields that must move together (`ltp`, `close`, `change_pct`, `day_pnl`), exactly one
+arbitrated primary source feeds each field. Any secondary channel (REST batch quote, raw broker OHLC,
+a bespoke copy of the apply logic) is fallback-only.
+
+| Field | Primary source | Fallback-only |
+|---|---|---|
+| Positions/Holdings `ltp` | SSE tick via `symbolStore` (`snap.ltp`) | REST batch quote (`liveQ.ltp`) |
+| Day P&L % denominator (`_prev_market_value`) | Backend `prev_close`, accumulated per leg in `_prevCloseSsot` / `_prevCloseHoldSsot` ([`pulseUnified.js:455`](frontend/src/lib/data/pulseUnified.js#L455), [`:567`](frontend/src/lib/data/pulseUnified.js#L567)) | `\|avg × qty\|` cost basis when no leg has a prior settlement ([`finalizeRows`, `pulseUnified.js:836-840`](frontend/src/lib/data/pulseUnified.js#L836)) |
+| Underlying-anchor row fields | `_applyQuoteFields(row, snap, q)` at [`pulseUnified.js:712`](frontend/src/lib/data/pulseUnified.js#L712) and [`:730`](frontend/src/lib/data/pulseUnified.js#L730), the same entry point real rows use | None. The bespoke `_applyUnderlyingQuoteFields` is deleted |
+
+`row.close` stays live-quote-sourced for bid/ask/depth display and is deliberately not the Day P&L %
+denominator. **Two columns are headed "Chg %"**: the left grid `change_pct` column
+([`pulseColumns.js:496`](frontend/src/lib/data/pulseColumns.js#L496)) is the raw symbol day-change
+(no qty, live-quote-sourced by design); the right-grid `day_pnl_pct` column
+([`pulseColumns.js:643`](frontend/src/lib/data/pulseColumns.js#L643)) is Day P&L ÷ prev market value,
+and it is the one this fix changes. Movers keep their own poller and are not consolidated. Spec:
+PULSE_SPEC §11.3.
+
+**Market open/close determination — one call path (2026-10-20, commits `0b203d07`, `fdfa37a5`)** —
+"One path" means one function with one kwarg set, not one literal helper. Canonical helper:
+`_segment_is_open(seg_cfg, now)` ([`date_time_utils.py:304`](backend/shared/helpers/date_time_utils.py#L304))
+over `is_market_open()` ([`:217`](backend/shared/helpers/date_time_utils.py#L217)).
+- **Routed through `_segment_is_open()`** with YAML-shaped config: `/market/status`
+  ([`routes/market.py:177-178`](backend/api/routes/market.py#L177)), quote gate
+  ([`routes/quote.py:308`](backend/api/routes/quote.py#L308)), watchlist movers gate
+  ([`routes/watchlist.py:1404-1405`](backend/api/routes/watchlist.py#L1404)).
+- **Direct `is_market_open()` with gate-shaped dicts** from `_get_segments()`. These pass the same
+  `exchange=`, `evening_open_on_holidays=`, `special_sessions=` kwargs but keep each gate's own
+  `hours_start`/`hours_end` (the per-date `exchange_schedule` window) instead of the YAML `sessions`
+  list: `background.py` `_perf_probe_open_segments` ([`:1043`](backend/api/background.py#L1043)) and
+  `_watchdog_check_market_open` ([`:5728`](backend/api/background.py#L5728)), and
+  `routes/simulator.py` ([`:227`](backend/api/routes/simulator.py#L227),
+  [`:260`](backend/api/routes/simulator.py#L260)). Commit `fdfa37a5` exists because the first pass
+  would have replaced these hours with the YAML sessions and broken per-date accuracy.
+- **Holiday-branch weekday guard**: the evening-open rule in `is_market_open()` now requires
+  `today.weekday() < 5` ([`date_time_utils.py:291`](backend/shared/helpers/date_time_utils.py#L291)).
+  Before, a weekend holiday on an evening-open segment read "open" from 17:00.
+- **Deliberately separate**: `agent_engine.py` `_ae_segment_flags` ([`:2129`](backend/api/algo/agent_engine.py#L2129)),
+  a live Kite bellwether probe kept as a safety net for when the calendar verdict is wrong.
+- **Deliberately unreconciled**: `exchange_clock`'s DB-schedule open/closed signal, which drives EOD
+  scheduling. It is a fifth mechanism, flagged for a future pass.
+
+**Simulator market-hours guard restored (2026-10-20, operator-visible behaviour change)** —
+`_market_hours_block_check()` ([`routes/simulator.py:187`](backend/api/routes/simulator.py#L187))
+imported `_build_segments` from `background.py`, a name removed in commit `7cd6c12c`. The guard raised
+`ImportError` on every call. `_markets_currently_open()` ([`:240`](backend/api/routes/simulator.py#L240))
+swallowed the error and returned `False`, so the guard never fired. **It now fires.** With
+`simulator.block_during_market_hours` true (default true, [`simulator.py:209`](backend/api/routes/simulator.py#L209)),
+starting a sim while any segment is open is refused with HTTP 409. Operators who relied on the
+bypass must set `simulator.block_during_market_hours=false` on `/admin/settings`. Note that
+`_markets_currently_open()` still masks any other exception as `False`.
+
+**Probe cost — monitor after deploy.** Sites that previously omitted `exchange=` (the simulator
+guard and status, the ticker watchdog) can now trigger live Kite-quote probes. `is_trading_day()`
+probes only when the calendar says closed (weekend or holiday), the clock is inside 09:00–23:30, and
+an exchange is passed ([`date_time_utils.py:140-186`](backend/shared/helpers/date_time_utils.py#L140)).
+Roughly once a minute per exchange, cached. If this becomes measurable, add a `probe=False`
+passthrough to `_segment_is_open()`. **Not implemented.**
+
+**MCX evening-closed holidays (2026-10-20, commits `85f2ade1`, `53c8da80`)** — The NSE holiday-master
+`COM` entries carry `evening_session` ("Open"/"Closed").
+`_fetch_mcx_evening_closed_dates()` ([`broker_apis.py:3339`](backend/brokers/broker_apis.py#L3339))
+returns the dates marked "Closed". `_upsert_mcx_evening_closed_sessions_coro()`
+([`broker_apis.py:3387`](backend/brokers/broker_apis.py#L3387)) writes a zero-width
+`market_special_sessions` row for each one: `exchange='MCX'`, `start_time = end_time = 00:00`, which
+`is_market_open()` reads as closed all day. Weekend dates are excluded (`broker_apis.py:3410`), because
+`next_market_open_ist()`'s weekend branch treats row existence as open. Rows carry `source='nse_auto'`.
+- **`MarketSpecialSession.source`** ([`models.py:2412`](backend/api/models.py#L2412)): NULL or
+  `"manual"` is operator-entered; `"nse_auto"` is auto-inserted. The ON CONFLICT clause updates only
+  `source='nse_auto'` rows ([`broker_apis.py:3430`](backend/brokers/broker_apis.py#L3430)), so an
+  operator Muhurat row is never overwritten. Migration:
+  `_migrate_market_special_sessions_source()` ([`database.py:842`](backend/api/database.py#L842),
+  called at [`:1227`](backend/api/database.py#L1227)), idempotent.
+- **Known gaps (code-read):** (a) rows are only inserted or updated; nothing removes a row when NSE
+  later flips a date to Open. (b) The upsert swallows exceptions and returns 0 without logging.
+  (c) `morning_session` is not modelled: a COM-listed date is an MCX holiday, so morning trading on
+  those dates is closed both before and after this fix. Whether the feed ever lists morning "Open" on
+  such a date is unverified. (d) Each MCX refresh makes two NSE HTTP requests, because
+  `_fetch_holidays_from_nse` and `_fetch_mcx_evening_closed_dates` each call
+  `_fetch_nse_holiday_master_json()` ([`broker_apis.py:3289`](backend/brokers/broker_apis.py#L3289)).
+  The URL has one call site, not the request. The commit's "halves the round-trips" claim is wrong.
 
 **Conn-service tick forwarder killed nightly, never revived — LTP froze while Chg% moved (2026-10-19, commit 7bf11fac)** — In conn-service mode (`RAMBOQ_USE_CONN_SERVICE=1`, the prod/dev config), the 23:31 IST `_snapshot_stop_ticker()` ([`background.py:2972`](backend/api/background.py#L2972)) called a real `.stop()` on the API process's local `MmapTickReader`, cancelling `_poll_task` — the task that tails the shared-memory tick buffer and republishes ticks to the `/api/quotes/stream` SSE stream. The method's own docstring claimed no such effect existed in this mode. The 08:00 `_snapshot_restart_ticker()` ([`background.py:3002`](backend/api/background.py#L3002)) checked for a nonexistent `.restart()` method and never revived it. Broker-side ticks kept landing in the buffer, so the outage was invisible server-side: LTP froze on every symbol with no flash (flash is tick-driven), while Chg% kept moving (computed from the independent periodic positions poll). Deploys had been masking it by restarting the process; logs show it recurring most nights since 2026-09-19. Fix: the three `hasattr()` sites now branch on the canonical `is_cutover_on()` ([`client/__init__.py:32`](backend/brokers/client/__init__.py#L32)). In conn-service mode stop and unsub are true no-ops; restart calls `check_and_heal()`. `MmapTickReader.check_and_heal()` ([`mmap_ticker.py:160`](backend/brokers/mmap_ticker.py#L160)) restarts a dead or done poll task, logs `[MMAP-WATCHDOG]` once per dead→alive transition, and escalates with a second critical line on 3+ heals within 10 minutes. `start()` and `ensure_started()` ([`mmap_ticker.py:133`](backend/brokers/mmap_ticker.py#L133), [`:156`](backend/brokers/mmap_ticker.py#L156)) now restart a done-but-non-None task; previously only `None` was restartable. `_task_ticker_watchdog` ([`background.py:5698`](backend/api/background.py#L5698)) calls `check_and_heal()` every 30s in this mode, replacing a 300s no-op sleep. Frontend: `lastLiveTickAt` ([`quoteStream.js:54`](frontend/src/lib/data/quoteStream.js#L54)) is set only by real SSE tick and snapshot events — deliberately not `symbolTickCount`, which background polls also advance and which would have masked this failure. `tickStaleness.svelte.js` (75s threshold, [line 52](frontend/src/lib/data/tickStaleness.svelte.js#L52)) drives an amber `TICKS STALE@HH:MM` badge ([`RefreshButton.svelte:485`](frontend/src/lib/RefreshButton.svelte#L485)) plus one toast per staleness episode. Invariant: a local forwarder stopped by a scheduled job must have a restart path that calls a method which actually exists, and any freshness indicator must key off delivered ticks, never poll activity.
 
@@ -1122,6 +1258,9 @@ now caches + returns a `stale` flag; `/api/nav/by-account` masks `errors` for no
 | Day P&L rollup stores (positions) | `frontend/src/lib/data/portfolioStore.svelte.js` (account/symbol/total rollups); per-row `prev_settlement_pnl` backfilled in route-level responses |
 | Baseline query (Day P&L snapshot path) | `backend/api/routes/positions.py:_SESSION_ANCHOR_CUTOFF_TS_SQL` + `_fetch_baseline_pnl_map` (derives 08:00 IST session boundary from `captured_at`, not `date` column; handles holdings-sold CNC split via `kind IN ('positions','holdings')`) |
 | Market daily window / WebSocket lifecycle | `backend/api/background.py` + `backend/brokers/kite_ticker.py` |
+| Market open/closed check | `backend/shared/helpers/date_time_utils.py:_segment_is_open` (YAML config) or `is_market_open` (gate-shaped dicts) |
+| MCX evening-closed holiday handling | `backend/brokers/broker_apis.py:_fetch_mcx_evening_closed_dates` + `_upsert_mcx_evening_closed_sessions_coro` |
+| Pulse Chg% / Day P&L % denominator | `frontend/src/lib/data/pulseUnified.js` (`_prevCloseSsot`, `finalizeRows`) |
 | Postback subscribe new instrument | `backend/api/routes/orders.py:_subscribe_filled_pairs()` — canonical helper resolves (symbol, exchange) to token and calls `subscribe_with_sym()` (NOT bare `subscribe()`, which silently drops ticks). Wired into: Kite/Dhan/Groww postbacks, admin reconcile sweep, open-order watchdog, chase terminal-fill detection |
 | `cancel_all_orders` CLI statement | `frontend/src/lib/command/grammars/agents.js` (bare-statement compile kind) + `backend/api/routes/orders.py` (`POST /api/orders/cancel-all`) + `backend/api/algo/actions_live.py` (`cancel_all_orders_scoped` shared helper) |
 | F&O order qty convention | `backend/api/routes/orders_place.py:_ticket_validate_input` + `frontend/src/lib/order/orderTicketSubmit.js` |

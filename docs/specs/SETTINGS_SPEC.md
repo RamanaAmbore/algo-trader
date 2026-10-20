@@ -80,6 +80,7 @@ Simulated-mode parameters (applies to SIM execution mode only).
 |---|---|---|---|
 | simulator.ticks_per_second | INT | 10 | Tick generation rate in simulator |
 | simulator.auto_stop_on_circuit | BOOL | true | Stop sim on circuit breaker (broker error) |
+| simulator.block_during_market_hours | BOOL | true | Refuse a sim start (HTTP 409) while any segment is open. Guard restored 2026-10-20 — previously raised ImportError and never fired. See SIMULATOR_GUIDE "Market-hours guard" |
 | simulator.speed_multiplier | FLOAT | 1.0 | Simulation time speedup (1.0 = real-time) |
 
 ### notifications.*

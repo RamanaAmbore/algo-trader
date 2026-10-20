@@ -162,6 +162,11 @@ The platform follows a fixed daily cycle. What you see at each phase:
 **MCX holiday (rare):**
 - MCX shows yesterday's close; NSE trades normally.
 
+**NSE holiday where MCX's evening session is also closed:**
+- Some NSE holidays have no MCX evening session. Since 2026-10-20 the platform recognises these
+  dates from the exchange's holiday feed, so MCX shows as closed for the whole day, not live from 17:00.
+  Morning MCX trading on those dates is not modelled, so MCX shows as closed in the morning too.
+
 **Both exchanges holiday:**
 - Everything frozen until the next trading day.
 
