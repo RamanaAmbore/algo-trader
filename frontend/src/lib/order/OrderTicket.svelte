@@ -61,7 +61,7 @@
     findOption, findNearestFuture, listFutures,
     listExchangesForSymbol, instrumentsCacheVersion,
   } from '$lib/data/instruments';
-  import { isNseOpen, isMcxOpen, isMarketOpen } from '$lib/marketHours';
+  import { isNseOpen, isMcxOpen } from '$lib/marketHours';
   import { getSnapshot, liveSnap } from '$lib/data/symbolStore.svelte.js';
   import { rootOf } from '$lib/data/rootOf.js';
   import { payoffDrafts } from '$lib/data/payoffDrafts.svelte.js';
@@ -1466,32 +1466,47 @@
 
   // ── D1: market open/closed state ─────────────────────────────
   // Reactive state updated from the depth quote callback + a 30s wall-
-  // clock tick. isNseOpen / isMcxOpen / isMarketOpen are synchronous.
-  let _isOpen = $state(true);
+  // clock tick. isNseOpen / isMcxOpen are synchronous.
+  //
+  // Resolve open/closed for a given (already-uppercased) exchange code.
+  // Mapping mirrors the backend's _EXCHANGE_TO_SEGMENT table
+  // (agent_engine.py) EXACTLY — the point of this badge is matching
+  // that segment TABLE, not the live backend gate (_ae_segment_flags /
+  // _segment_is_open) itself. isNseOpen()/isMcxOpen() (marketHours.js)
+  // prefer the holiday-aware /api/market/status flags, polled every
+  // 5 min — so this usually agrees with the real gate but is a cached,
+  // up-to-~5-min-stale reading of it, not a live call to the same code
+  // path. Fixed 2026-10-20: CDS was wrongly routed through isMcxOpen()
+  // (NSE currency derivatives mirror the equity segment mapping, not
+  // MCX's), and NCO fell through to the generic isMarketOpen() instead
+  // of isMcxOpen() (NCO is commodity-segment, same as MCX, everywhere
+  // else in the app). Fixed 2026-10-20 (2nd pass): an unrecognized
+  // exchange code used to fall through to isMarketOpen() (any-segment-
+  // open — permissive). The backend's own _segment_for_exchange
+  // convention returns None for an unknown code and treats that as
+  // closed ("never wrongly allow") — mirror that here instead of being
+  // more permissive than the backend for a code the table doesn't know.
+  function _mktOpenForExchange(/** @type {string} */ exch) {
+    if (exch === 'MCX' || exch === 'NCO') return isMcxOpen();
+    if (exch === 'NFO' || exch === 'NSE' || exch === 'BSE' || exch === 'BFO' || exch === 'CDS' || exch === 'BCD') return isNseOpen();
+    return false;
+  }
+  function _resolveMktExchange() {
+    return String(_exchange || _resolvedExchange || exchange || '').toUpperCase();
+  }
+  // Fixed 2026-10-20 (2nd pass): was `$state(true)`, which could flash
+  // "open" for one render before the first $effect run below ever
+  // called _recomputeMktOpen(). Compute the real initial value
+  // synchronously here instead of hardcoding a guess.
+  // svelte-ignore state_referenced_locally -- intentional one-shot
+  // initial read; the $effect below re-evaluates on every depth-quote
+  // tick and the 30s visibleInterval timer, so this seed value is
+  // never stale beyond the very first paint.
+  let _isOpen = $state(_mktOpenForExchange(_resolveMktExchange()));
   /** @type {(() => void) | null} */
   let _mktTimer = null;
   function _recomputeMktOpen() {
-    // Use the resolved exchange. Mapping mirrors the backend's
-    // _EXCHANGE_TO_SEGMENT table (agent_engine.py) EXACTLY — the point
-    // of this badge is matching that segment TABLE, not the live
-    // backend gate (_ae_segment_flags / _segment_is_open) itself.
-    // isNseOpen()/isMcxOpen() (marketHours.js) prefer the holiday-aware
-    // /api/market/status flags, polled every 5 min — so this usually
-    // agrees with the real gate but is a cached, up-to-~5-min-stale
-    // reading of it, not a live call to the same code path. Fixed
-    // 2026-10-20: CDS was wrongly routed through isMcxOpen() (NSE
-    // currency derivatives mirror the equity segment mapping, not
-    // MCX's), and NCO fell through to the generic isMarketOpen()
-    // instead of isMcxOpen() (NCO is commodity-segment, same as MCX,
-    // everywhere else in the app).
-    const exch = String(_exchange || _resolvedExchange || exchange || '').toUpperCase();
-    if (exch === 'MCX' || exch === 'NCO') {
-      _isOpen = isMcxOpen();
-    } else if (exch === 'NFO' || exch === 'NSE' || exch === 'BSE' || exch === 'BFO' || exch === 'CDS' || exch === 'BCD') {
-      _isOpen = isNseOpen();
-    } else {
-      _isOpen = isMarketOpen();
-    }
+    _isOpen = _mktOpenForExchange(_resolveMktExchange());
   }
   $effect(() => {
     // Re-evaluate whenever the depth quote fires (onDepthQuote bumps

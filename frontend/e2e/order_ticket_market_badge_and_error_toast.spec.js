@@ -55,14 +55,16 @@ async function _seedNiftyOnTicket(page) {
 }
 
 test.describe('OrderTicket market-state badge', () => {
-  test('source: badge reads the existing _isOpen (no new market-hours math), reuses isNseOpen/isMcxOpen/isMarketOpen', () => {
+  test('source: badge reads the existing _isOpen (no new market-hours math), reuses isNseOpen/isMcxOpen', () => {
     const orderTicket = readFileSync(`${ROOT}/order/OrderTicket.svelte`, 'utf-8');
-    // Still imports the same three functions RefreshButton.svelte uses —
-    // no bespoke re-implementation of market-hours logic.
-    expect(orderTicket).toContain("import { isNseOpen, isMcxOpen, isMarketOpen } from '$lib/marketHours'");
-    expect(orderTicket).toMatch(/_isOpen\s*=\s*isMcxOpen\(\)/);
-    expect(orderTicket).toMatch(/_isOpen\s*=\s*isNseOpen\(\)/);
-    expect(orderTicket).toMatch(/_isOpen\s*=\s*isMarketOpen\(\)/);
+    // Still imports the same two functions RefreshButton.svelte uses —
+    // no bespoke re-implementation of market-hours logic. isMarketOpen
+    // was dropped from the import (2026-10-20, 2nd pass) along with the
+    // permissive any-segment-open fallback for an unrecognized exchange.
+    expect(orderTicket).toContain("import { isNseOpen, isMcxOpen } from '$lib/marketHours'");
+    expect(orderTicket).not.toMatch(/import\s*\{[^}]*isMarketOpen[^}]*\}\s*from\s*'\$lib\/marketHours'/);
+    expect(orderTicket).toMatch(/return isMcxOpen\(\);/);
+    expect(orderTicket).toMatch(/return isNseOpen\(\);/);
     // Badge markup exists and is driven by _isOpen.
     expect(orderTicket).toContain('data-testid="ot-market-badge"');
     expect(orderTicket).toMatch(/class:ot-mkt-open=\{_isOpen\}/);
@@ -74,23 +76,23 @@ test.describe('OrderTicket market-state badge', () => {
     // (isNseOpen), MCX/NCO -> commodity (isMcxOpen). Before this fix,
     // CDS was wrongly routed through isMcxOpen() and NCO fell through
     // to the generic isMarketOpen() instead of isMcxOpen() -- the point
-    // of the badge is matching the real order-placement gate, so a
-    // mismatch here is the exact "two different numbers for the same
-    // fact" class of defect the badge exists to prevent.
+    // of the badge is matching that segment table, so a mismatch here
+    // is the exact "two different numbers for the same fact" class of
+    // defect the badge exists to prevent.
     const orderTicket = readFileSync(`${ROOT}/order/OrderTicket.svelte`, 'utf-8');
-    const fnMatch = orderTicket.match(/function _recomputeMktOpen\(\)[\s\S]*?\n  \}/);
-    expect(fnMatch, '_recomputeMktOpen function not found').not.toBeNull();
+    const fnMatch = orderTicket.match(/function _mktOpenForExchange\([^)]*\)\s*\{[\s\S]*?\n  \}/);
+    expect(fnMatch, '_mktOpenForExchange function not found').not.toBeNull();
     const fn = fnMatch[0];
 
     // MCX/NCO branch must route through isMcxOpen().
-    const mcxBranch = fn.match(/if\s*\(([^)]*)\)\s*\{\s*\n\s*_isOpen = isMcxOpen\(\);/);
+    const mcxBranch = fn.match(/if\s*\(([^)]*)\)\s*return isMcxOpen\(\);/);
     expect(mcxBranch, 'MCX/NCO branch (isMcxOpen) not found').not.toBeNull();
     expect(mcxBranch[1]).toMatch(/exch === 'MCX'/);
     expect(mcxBranch[1]).toMatch(/exch === 'NCO'/);
     expect(mcxBranch[1]).not.toMatch(/exch === 'CDS'/);
 
     // Equity branch must route through isNseOpen() and include CDS/BCD.
-    const equityBranch = fn.match(/else if\s*\(([^)]*)\)\s*\{\s*\n\s*_isOpen = isNseOpen\(\);/);
+    const equityBranch = fn.match(/if\s*\(([^)]*)\)\s*return isNseOpen\(\);/);
     expect(equityBranch, 'equity branch (isNseOpen) not found').not.toBeNull();
     for (const exch of ['NFO', 'NSE', 'BSE', 'BFO', 'CDS', 'BCD']) {
       expect(equityBranch[1], `equity branch should include ${exch}`).toMatch(
@@ -98,6 +100,13 @@ test.describe('OrderTicket market-state badge', () => {
       );
     }
     expect(equityBranch[1]).not.toMatch(/exch === 'NCO'/);
+
+    // Unrecognized-exchange fallback must be fail-closed (false), not
+    // the old permissive isMarketOpen() any-segment-open check — matches
+    // the backend's _segment_for_exchange -> None -> "never wrongly
+    // allow" convention (2026-10-20, 2nd pass).
+    expect(fn).toMatch(/return false;\s*\}$/);
+    expect(fn).not.toMatch(/isMarketOpen/);
   });
 
   test('source: badge markup sits OUTSIDE the symbolHidden gate (SymbolPanel is the only real caller and always sets symbolHidden=true)', () => {
