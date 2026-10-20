@@ -69,6 +69,37 @@ test.describe('OrderTicket market-state badge', () => {
     expect(orderTicket).toMatch(/class:ot-mkt-closed=\{!_isOpen\}/);
   });
 
+  test('source: badge per-exchange mapping mirrors the backend _EXCHANGE_TO_SEGMENT table exactly (2026-10-20 fix)', () => {
+    // Backend table (agent_engine.py): NSE/BSE/NFO/BFO/CDS/BCD -> equity
+    // (isNseOpen), MCX/NCO -> commodity (isMcxOpen). Before this fix,
+    // CDS was wrongly routed through isMcxOpen() and NCO fell through
+    // to the generic isMarketOpen() instead of isMcxOpen() -- the point
+    // of the badge is matching the real order-placement gate, so a
+    // mismatch here is the exact "two different numbers for the same
+    // fact" class of defect the badge exists to prevent.
+    const orderTicket = readFileSync(`${ROOT}/order/OrderTicket.svelte`, 'utf-8');
+    const fnMatch = orderTicket.match(/function _recomputeMktOpen\(\)[\s\S]*?\n  \}/);
+    expect(fnMatch, '_recomputeMktOpen function not found').not.toBeNull();
+    const fn = fnMatch[0];
+
+    // MCX/NCO branch must route through isMcxOpen().
+    const mcxBranch = fn.match(/if\s*\(([^)]*)\)\s*\{\s*\n\s*_isOpen = isMcxOpen\(\);/);
+    expect(mcxBranch, 'MCX/NCO branch (isMcxOpen) not found').not.toBeNull();
+    expect(mcxBranch[1]).toMatch(/exch === 'MCX'/);
+    expect(mcxBranch[1]).toMatch(/exch === 'NCO'/);
+    expect(mcxBranch[1]).not.toMatch(/exch === 'CDS'/);
+
+    // Equity branch must route through isNseOpen() and include CDS/BCD.
+    const equityBranch = fn.match(/else if\s*\(([^)]*)\)\s*\{\s*\n\s*_isOpen = isNseOpen\(\);/);
+    expect(equityBranch, 'equity branch (isNseOpen) not found').not.toBeNull();
+    for (const exch of ['NFO', 'NSE', 'BSE', 'BFO', 'CDS', 'BCD']) {
+      expect(equityBranch[1], `equity branch should include ${exch}`).toMatch(
+        new RegExp(`exch === '${exch}'`)
+      );
+    }
+    expect(equityBranch[1]).not.toMatch(/exch === 'NCO'/);
+  });
+
   test('source: badge markup sits OUTSIDE the symbolHidden gate (SymbolPanel is the only real caller and always sets symbolHidden=true)', () => {
     const orderTicket = readFileSync(`${ROOT}/order/OrderTicket.svelte`, 'utf-8');
     const gateIdx = orderTicket.indexOf('{#if !symbolHidden}');

@@ -1471,11 +1471,18 @@
   /** @type {(() => void) | null} */
   let _mktTimer = null;
   function _recomputeMktOpen() {
-    // Use the resolved exchange.
+    // Use the resolved exchange. Mapping mirrors the backend's
+    // _EXCHANGE_TO_SEGMENT table (agent_engine.py) EXACTLY — the point
+    // of this badge is matching the real order-placement gate, not
+    // being independently "more correct" than it. Fixed 2026-10-20:
+    // CDS was wrongly routed through isMcxOpen() (CDS trades the
+    // equity 09:15-15:30 window, not MCX's), and NCO fell through to
+    // the generic isMarketOpen() instead of isMcxOpen() (NCO is
+    // commodity-segment, same as MCX, everywhere else in the app).
     const exch = String(_exchange || _resolvedExchange || exchange || '').toUpperCase();
-    if (exch === 'MCX' || exch === 'CDS') {
+    if (exch === 'MCX' || exch === 'NCO') {
       _isOpen = isMcxOpen();
-    } else if (exch === 'NFO' || exch === 'NSE' || exch === 'BSE' || exch === 'BFO') {
+    } else if (exch === 'NFO' || exch === 'NSE' || exch === 'BSE' || exch === 'BFO' || exch === 'CDS' || exch === 'BCD') {
       _isOpen = isNseOpen();
     } else {
       _isOpen = isMarketOpen();
