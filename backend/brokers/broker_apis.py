@@ -3161,8 +3161,8 @@ def fetch_special_sessions(exchange: str = "NSE") -> list[dict]:
     contexts described below, returns ``[]`` for THIS call WITHOUT
     caching it (2026-10-20 fix, see below).
 
-    Known gap — cold cache on the main event loop (2026-10-20): unlike
-    ``fetch_holidays``, this function has no Tier-1 in-process cache
+    Cold cache on the main event loop (2026-10-20, narrowed 2026-10-20):
+    unlike ``fetch_holidays``, this function has no Tier-1 in-process cache
     pre-warmed by an independent async pathway that's reliably warm by
     the time a sync caller runs. ``_read_special_sessions_sync`` goes
     through ``run_on_main_loop``, whose self-deadlock guard returns
@@ -3170,21 +3170,35 @@ def fetch_special_sessions(exchange: str = "NSE") -> list[dict]:
     ALREADY running on the main loop (true deadlock risk: a sync
     function can't block-wait on a coroutine scheduled on the very loop
     it's currently executing on — that loop can never get a turn to run
-    it). Several call sites are exactly that shape (ticket placement,
-    basket, template attach, chase — see ``_ae_segment_flags`` in
-    ``agent_engine.py``). Previously, that guard-triggered ``None`` was
-    coerced to ``[]`` and CACHED for the rest of the day, permanently
-    poisoning every later caller (including genuinely-sync ones that
-    could have queried successfully) with a false "no special session
-    today" for the remainder of the day. Fixed: a guard/error result is
-    never cached — only a real, successful (possibly empty) query result
-    is. ``warm_special_sessions_cache()`` (called at startup after
+    it). Previously, that guard-triggered ``None`` was coerced to ``[]``
+    and CACHED for the rest of the day, permanently poisoning every later
+    caller (including genuinely-sync ones that could have queried
+    successfully) with a false "no special session today" for the
+    remainder of the day. Fixed: a guard/error result is never cached —
+    only a real, successful (possibly empty) query result is.
+
+    This gap is now CLOSED (not just mitigated) for 3 of the 5 call sites
+    that reach it via ``_ae_segment_flags`` — ticket placement
+    (``orders_place.py``), basket (``orders_basket.py``), and chase
+    (``chase.py``) are all ``async def`` all the way up, so each now
+    awaits ``fetch_special_sessions_async`` (via
+    ``agent_engine.py``'s ``_prewarm_special_sessions_for_exchange``)
+    BEFORE calling the sync ``_build_now_ctx()`` — the cache is
+    guaranteed warm by the time this function runs for them, so the
+    guard never fires for these three.
+
+    ``template_attach.py``'s two call sites (``_check_offhours_wing_gate``,
+    ``apply_plan_live``) are plain ``def``, not ``async def`` — they
+    cannot ``await`` anything, so they remain on the MITIGATION only:
+    ``warm_special_sessions_cache()`` (called at startup after
     ``seed_special_sessions()`` and after the daily 05:30 holiday
-    refresh) pre-populates the cache from async code that awaits the
-    read directly, with no ``run_on_main_loop`` hop at all, so these sync
-    callers hit a warm cache in the common case. A genuinely cold cache
-    hit from the main loop mid-day still fails open to ``[]`` — this
-    mitigates the gap, it does not eliminate it.
+    refresh) pre-populates the cache from async code elsewhere in the
+    process, so these two still usually hit a warm cache — but a
+    genuinely cold cache hit from the main loop mid-day still fails open
+    to ``[]`` for these two specifically. Converting them to ``async def``
+    would ripple into their callers (``apply_plan_live`` alone has 4:
+    admin reconcile, postback handler, paper engine, chase terminal) and
+    was judged out of scope for this pass.
     """
     from backend.shared.helpers.date_time_utils import timestamp_indian
 
@@ -3300,6 +3314,47 @@ async def warm_special_sessions_cache() -> None:
             logger.debug(f"warm_special_sessions_cache: {exch} failed: {e}")
             continue
         _SPECIAL_SESSION_CACHE[exch] = (today, rows)
+
+
+async def fetch_special_sessions_async(exchange: str = "NSE") -> list[dict]:
+    """Async counterpart to ``fetch_special_sessions`` for callers that are
+    themselves coroutines already running on the main event loop (2026-10-20
+    fix, closes the cold-cache gap for them specifically).
+
+    Same cache (``_SPECIAL_SESSION_CACHE``), same IST-date key, same
+    "never cache a failure" discipline — but on a cache miss this awaits
+    ``_read_special_sessions_async`` DIRECTLY, with no ``run_on_main_loop``
+    hop at all, so there is no self-deadlock guard to trip: the caller
+    already IS the async context the DB read needs.
+
+    Callers: the genuinely-async call sites that reach ``_ae_segment_flags``
+    (ticket placement, basket, chase — see ``agent_engine.py``'s
+    ``_prewarm_special_sessions_for_exchange``) await this BEFORE calling
+    the existing sync ``_build_now_ctx()``, which then finds a warm cache
+    and never needs the guard-prone sync path at all for that call.
+    `template_attach.py`'s two call sites (``_check_offhours_wing_gate``,
+    ``apply_plan_live``) are plain ``def``, not ``async def`` — they cannot
+    ``await`` this, and stay on the warm-at-startup/after-daily-refresh
+    mitigation only; see ``fetch_special_sessions``'s docstring for the
+    residual gap that leaves open for those two specifically.
+    """
+    from backend.shared.helpers.date_time_utils import timestamp_indian
+
+    exch = (exchange or "NSE").upper().strip()
+    today = timestamp_indian().date()
+
+    cached = _SPECIAL_SESSION_CACHE.get(exch)
+    if cached and cached[0] == today:
+        return cached[1]
+
+    try:
+        rows = await _read_special_sessions_async(exch, today)
+    except Exception as e:
+        logger.debug(f"fetch_special_sessions_async: {exch} failed: {e}")
+        return []
+
+    _SPECIAL_SESSION_CACHE[exch] = (today, rows)
+    return rows
 
 
 def fetch_holidays(exchange="NSE"):

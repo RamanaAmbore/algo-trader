@@ -1512,10 +1512,16 @@ def _ticket_closed_market_detail(exchange: str, sym: str) -> str:
 async def _ticket_gate_market_hours_and_align_price(data, sym: str) -> None:
     """Reject orders on closed exchanges and align price + trigger_price
     to the tick grid. Mutates `data.price` + `data.trigger_price`."""
-    from backend.api.algo.agent_engine import _symbol_exchange_open, _build_now_ctx
+    from backend.api.algo.agent_engine import (
+        _symbol_exchange_open, _build_now_ctx, _prewarm_special_sessions_for_exchange,
+    )
     from backend.api.routes.orders_helpers import _align_price_to_tick
 
     target_exchange = data.exchange or "NFO"
+    # Pre-warm the special-sessions cache from THIS async context before
+    # the sync _build_now_ctx() call below (2026-10-20 fix) — closes the
+    # cold-cache gap for this call site specifically.
+    await _prewarm_special_sessions_for_exchange(target_exchange)
     if not _symbol_exchange_open(target_exchange, _build_now_ctx()):
         raise HTTPException(status_code=409,
             detail=_ticket_closed_market_detail(target_exchange, sym))

@@ -418,7 +418,12 @@ async def basket_order_handler(
                     from backend.api.algo.agent_engine import (
                         _symbol_exchange_open as _bk_seg_open,
                         _build_now_ctx as _bk_now_ctx,
+                        _prewarm_special_sessions_for_exchange as _bk_prewarm,
                     )
+                    # Pre-warm from this async context before the sync
+                    # _bk_now_ctx() call below (2026-10-20 fix) — closes
+                    # the cold-cache gap for this call site specifically.
+                    await _bk_prewarm(exch)
                     if not _bk_seg_open(exch, _bk_now_ctx()):
                         logger.warning(
                             "[BASKET-LIVE] leg %d rejected: exchange %s closed "

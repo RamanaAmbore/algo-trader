@@ -2554,8 +2554,12 @@ async def _chase_order_impl(
     # the known circular dep with agent_engine.
     try:
         from backend.api.algo.agent_engine import (  # circular: lazy OK
-            _symbol_exchange_open, _build_now_ctx,
+            _symbol_exchange_open, _build_now_ctx, _prewarm_special_sessions_for_exchange,
         )
+        # Pre-warm from this async context before the sync _build_now_ctx()
+        # call below (2026-10-20 fix) — closes the cold-cache gap for this
+        # call site specifically.
+        await _prewarm_special_sessions_for_exchange(cfg.exchange)
         if not _symbol_exchange_open(cfg.exchange, _build_now_ctx()):
             logger.warning(
                 "[CHASE] %s closed — chase not started for %s on %s",

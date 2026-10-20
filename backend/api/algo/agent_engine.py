@@ -578,7 +578,7 @@ def _symbol_exchange_open(exchange: str, ctx: dict) -> bool:
 
     Mapping:
       equity-segment exchanges (NSE/BSE/NFO/BFO/CDS/BCD) → ctx['nse_open']
-      commodity-segment exchanges (MCX)                  → ctx['mcx_open']
+      commodity-segment exchanges (MCX/NCO)              → ctx['mcx_open']
       unknown → False (never wrongly allow)
 
     Pure function — no DB / broker calls. Designed to be called from
@@ -617,6 +617,39 @@ def _build_now_ctx() -> dict:
 
 # Back-compat alias used by callers that imported the old name.
 _segments_now = _build_now_ctx
+
+
+async def _prewarm_special_sessions_for_exchange(exchange: str) -> None:
+    """Await the DB-backed special-sessions read for `exchange`'s holiday
+    calendar BEFORE calling the sync `_build_now_ctx()` (2026-10-20 fix,
+    closes the cold-cache gap for the 3 call sites that can actually use
+    it — see `fetch_special_sessions_async`'s docstring in broker_apis.py).
+
+    Callers: `orders_place.py`'s ticket market-hours gate, `orders_basket.py`'s
+    per-leg gate, `chase.py`'s chase-start gate — all `async def`, all able
+    to `await` this. `template_attach.py`'s two call sites are plain `def`
+    and cannot; they are NOT callers of this helper and stay on the
+    warm-at-startup/after-daily-refresh mitigation only.
+
+    Best-effort: resolves the exchange's `holiday_exchange` (e.g. "NFO"→"NSE",
+    "MCX"/"NCO"→"MCX") the same way `_ae_segment_flags` does, then awaits
+    `fetch_special_sessions_async` for it. Any failure (unknown exchange, bad
+    config, DB error) is swallowed — this is purely a cache pre-warm; the
+    caller's subsequent `_build_now_ctx()` call still runs its existing,
+    already-correct fallback behaviour either way.
+    """
+    try:
+        from backend.brokers.broker_apis import fetch_special_sessions_async
+        from backend.shared.helpers.utils import config as _cfg
+
+        seg_name = _segment_for_exchange(exchange)
+        if not seg_name:
+            return
+        seg_cfg = (_cfg.get("market_segments", {}) or {}).get(seg_name, {}) or {}
+        holiday_exchange = seg_cfg.get("holiday_exchange", "NSE")
+        await fetch_special_sessions_async(holiday_exchange)
+    except Exception as e:
+        logger.debug(f"_prewarm_special_sessions_for_exchange({exchange}) failed: {e}")
 
 
 def _ae_cur_min_in_window(cur_min: int, start: int, end: int) -> bool:

@@ -545,6 +545,51 @@ async def test_cold_cache_on_main_loop_fails_open_without_poisoning():
         _ba._SPECIAL_SESSION_CACHE.clear()
 
 
+@pytest.mark.asyncio
+async def test_prewarm_closes_the_gap_for_the_3_genuinely_async_call_sites():
+    """2026-10-20 fix: for the 3 real call sites that are `async def` all
+    the way up (ticket placement, basket, chase), the sync
+    `fetch_special_sessions()` guard-triggered `[]` from the test above is
+    NOT the end of the story — their actual production code path awaits
+    `_prewarm_special_sessions_for_exchange()` FIRST, from the exact same
+    async context, before ever calling the sync function. This proves
+    that sequence genuinely closes the gap (reaches the real DB-shaped
+    data), not just the mitigation."""
+    import asyncio
+    import backend.brokers.broker_apis as _ba
+    import backend.api.persistence.write_queue as _wq
+    from backend.api.algo.agent_engine import _prewarm_special_sessions_for_exchange
+
+    loop = asyncio.get_running_loop()
+    orig_main_loop = _wq._main_loop
+    _ba._SPECIAL_SESSION_CACHE.clear()
+    fake_rows = [{"date": date(2026, 11, 1), "start": dtime(18, 0), "end": dtime(19, 0)}]
+    try:
+        _wq._main_loop = loop  # simulate "already on the main loop"
+
+        # Baseline: the guard-triggered call still returns [] (confirms
+        # we really are in the deadlock-risk shape this test targets).
+        assert _REAL_FETCH_SPECIAL_SESSIONS("MCX") == []
+
+        # The fix: await the prewarm from this same async context —
+        # exactly what the 3 real call sites now do before calling the
+        # sync _build_now_ctx(). This goes through _read_special_sessions_async
+        # directly (no run_on_main_loop hop), so the guard never applies.
+        with patch.object(_ba, "_read_special_sessions_async", new=AsyncMock(return_value=fake_rows)):
+            await _prewarm_special_sessions_for_exchange("MCX")
+
+        # Now the sync call (as _ae_segment_flags/_build_now_ctx would
+        # make it) must see the REAL pre-warmed rows, not the guard default.
+        assert _REAL_FETCH_SPECIAL_SESSIONS("MCX") == fake_rows, (
+            "the prewarm must leave the cache warm enough that the "
+            "subsequent sync call sees the real data, closing the gap "
+            "for this call-site shape"
+        )
+    finally:
+        _wq._main_loop = orig_main_loop
+        _ba._SPECIAL_SESSION_CACHE.clear()
+
+
 # ---------------------------------------------------------------------------
 # D3 Step 3 — ticket-placement 409 message mentions the evening-session
 # override for segments configured with evening_open_on_holidays=True.
