@@ -3311,7 +3311,12 @@ async def warm_special_sessions_cache() -> None:
         try:
             rows = await _read_special_sessions_async(exch, today)
         except Exception as e:
-            logger.debug(f"warm_special_sessions_cache: {exch} failed: {e}")
+            # warning (not debug, 2026-10-20 fix) — a persistent failure
+            # here silently turns off the evening-closed-holiday gate for
+            # every sync caller that relies on this warm, since a cold
+            # cache hit from the main loop fails open to []. Must be
+            # visible at default log level, not opt-in debug.
+            logger.warning(f"warm_special_sessions_cache: {exch} failed: {e}")
             continue
         _SPECIAL_SESSION_CACHE[exch] = (today, rows)
 
@@ -3350,7 +3355,12 @@ async def fetch_special_sessions_async(exchange: str = "NSE") -> list[dict]:
     try:
         rows = await _read_special_sessions_async(exch, today)
     except Exception as e:
-        logger.debug(f"fetch_special_sessions_async: {exch} failed: {e}")
+        # warning (not debug, 2026-10-20 fix) — same rationale as
+        # warm_special_sessions_cache's failure log above: a persistent
+        # DB failure here silently turns off the evening-closed-holiday
+        # gate for ticket/basket/chase/template-attach, and must be
+        # visible at default log level.
+        logger.warning(f"fetch_special_sessions_async: {exch} failed: {e}")
         return []
 
     _SPECIAL_SESSION_CACHE[exch] = (today, rows)

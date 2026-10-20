@@ -649,7 +649,11 @@ async def _prewarm_special_sessions_for_exchange(exchange: str) -> None:
         holiday_exchange = seg_cfg.get("holiday_exchange", "NSE")
         await fetch_special_sessions_async(holiday_exchange)
     except Exception as e:
-        logger.debug(f"_prewarm_special_sessions_for_exchange({exchange}) failed: {e}")
+        # warning (not debug, 2026-10-20 fix) — a persistent failure here
+        # silently turns off the evening-closed-holiday gate for the
+        # caller's subsequent sync _build_now_ctx() call; must be visible
+        # at default log level, not opt-in debug.
+        logger.warning(f"_prewarm_special_sessions_for_exchange({exchange}) failed: {e}")
 
 
 def _ae_cur_min_in_window(cur_min: int, start: int, end: int) -> bool:
