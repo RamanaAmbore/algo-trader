@@ -872,3 +872,100 @@ describe('D6 — anchor row quote updates use overwrite-on-fresh-snap semantics 
     expect(out.close).toBe(5790);
   });
 });
+
+// ============================================================================
+// D4/D5 (2026-10-20, operator-requested follow-up) — reproduce tonight's two
+// distinct backend data states directly, kept as SEPARATE tests so they
+// can't collapse into "the same test with different numbers": (1) the real
+// daily_book corruption (prev_close == ltp, but still a positive,
+// backend-confirmed value) goes through the normal accumulator path and
+// renders a real "0" when that row's own day_pnl happens to be 0 — a
+// correct reflection of that data state, not a defect. (2) prev_close
+// genuinely absent/never-snapshotted (0) goes through the DIFFERENT
+// avg-cost fallback path (Defect 5's null-handling gap). Neither renders
+// blank, but they reach that non-blank result via different arithmetic.
+// ============================================================================
+
+describe("D4/D5 — tonight's two distinct backend data states both render non-blank, via different code paths", () => {
+  it('prev_close corrupted to equal ltp (real daily_book corruption) — accumulator path, renders a real "0", not null', () => {
+    const byKey = {};
+    const row = makeOvernightPositionRow({
+      tradingsymbol: 'GOLD26OCT149000CE', account: 'ACC1',
+      quantity: 50, average_price: 120, last_price: 150, prev_close: 150, // corrupted: prev_close === ltp
+      pnl: 300, realised: 0, unrealised: 0, prev_settlement_pnl: 300, // this row's own day_pnl is genuinely 0
+    });
+    mergePositionRows(byKey, [row], true, {}, makeCtx());
+    finalizeRows(byKey, _finCtx());
+    const out = byKey['GOLD26OCT149000CE::ACC1__pos'];
+    // Accumulator path (prev_close > 0, even though it's numerically equal
+    // to ltp) — NOT the avg-cost fallback.
+    expect(out._prev_market_value).toBe(150 * 50);
+    expect(out.day_pnl).toBe(0);
+    const pct = dayChangePct(out.day_pnl, Math.abs(out._prev_market_value));
+    expect(pct).toBe(0);          // a REAL zero —
+    expect(pct).not.toBeNull();   // — not a blank cell.
+  });
+
+  it('prev_close genuinely absent/never-snapshotted (0) — avg-cost fallback path, also never blank', () => {
+    const byKey = {};
+    const row = makeOvernightPositionRow({
+      tradingsymbol: 'GOLD26OCT149000CE', account: 'ACC2',
+      quantity: 50, average_price: 120, last_price: 150, prev_close: 0, // never snapshotted
+      pnl: 300, realised: 0, unrealised: 0, prev_settlement_pnl: 0, // day_pnl == 300
+    });
+    mergePositionRows(byKey, [row], true, {}, makeCtx());
+    finalizeRows(byKey, _finCtx());
+    const out = byKey['GOLD26OCT149000CE::ACC2__pos'];
+    // Fallback path — _prev_market_value derives from |avg_cost × qty|
+    // (120 × 50), a DIFFERENT number than the accumulator path above
+    // (150 × 50) would have produced — confirms these two tests exercise
+    // genuinely different code paths, not the same one with different inputs.
+    expect(out._prev_market_value).toBe(120 * 50);
+    expect(out._prev_market_value).not.toBe(150 * 50);
+    const pct = dayChangePct(out.day_pnl, Math.abs(out._prev_market_value));
+    expect(pct).not.toBeNull();
+    expect(Number.isFinite(pct)).toBe(true);
+  });
+});
+
+// ============================================================================
+// D4 (2026-10-20, operator-requested follow-up) — the literal real-world
+// shape from tonight's investigation: the SAME option symbol held in two
+// different accounts. Per CLAUDE.md's "Positions grid is per-account"
+// invariant (2026-10 Part A), this must produce two SEPARATE rows, each
+// independently accumulating its own prev_close/qty — never merged or
+// cross-contaminated.
+// ============================================================================
+
+describe('D4 — same symbol held in two different accounts (GOLD26OCT149000CE in ZG0790 + ZJ6294) stays two separate rows', () => {
+  it('each account gets its own row with its own independently-accumulated Chg% denominator', () => {
+    const byKey = {};
+    const rowZG = makeOvernightPositionRow({
+      tradingsymbol: 'GOLD26OCT149000CE', account: 'ZG0790',
+      quantity: 10, average_price: 100, prev_close: 105,
+    });
+    const rowZJ = makeOvernightPositionRow({
+      tradingsymbol: 'GOLD26OCT149000CE', account: 'ZJ6294',
+      quantity: 25, average_price: 110, prev_close: 108,
+    });
+    mergePositionRows(byKey, [rowZG, rowZJ], true, {}, makeCtx());
+    finalizeRows(byKey, _finCtx());
+
+    const outZG = byKey['GOLD26OCT149000CE::ZG0790__pos'];
+    const outZJ = byKey['GOLD26OCT149000CE::ZJ6294__pos'];
+    expect(outZG).toBeDefined();
+    expect(outZJ).toBeDefined();
+    expect(outZG).not.toBe(outZJ);
+
+    // Exactly two rows for this symbol — never one merged/combined row.
+    const matches = Object.values(byKey).filter(r => r.tradingsymbol === 'GOLD26OCT149000CE');
+    expect(matches.length).toBe(2);
+
+    // Each row's denominator is accumulated from ONLY its own account's
+    // leg — no cross-contamination between the two accounts' prev_close/qty.
+    expect(outZG._prev_market_value).toBe(105 * 10);
+    expect(outZJ._prev_market_value).toBe(108 * 25);
+    expect(outZG.qty_pos).toBe(10);
+    expect(outZJ.qty_pos).toBe(25);
+  });
+});

@@ -10,6 +10,9 @@ import { readFileSync } from 'node:fs';
 // calls that used to stand in for those imports were removed as dead code.
 
 import { mkRightColDefs, mkPrevCol, dirCls, mkPnlCellClass, mkPosSummaryCols, mkHoldSummaryCols, mkDeltaCol, mkThetaCol, mkLtpCol, mkAcctColTrailing, ltpHeatVs, ltpHeatClasses } from '../../data/pulseColumns.js';
+import { mergePositionRows, finalizeRows } from '../../data/pulseUnified.js';
+import { baseDayPnlForPosition } from '../../data/nav.js';
+import { directional, pctFmtGrid as realPctFmtGrid } from '../../format.js';
 
 // ---------------------------------------------------------------------------
 // Minimal stubs — mkRightColDefs requires many column objects and formatters
@@ -1131,5 +1134,88 @@ describe('PerformancePage.svelte avgVsLtpCls — SSOT conversion (2026-10-18)', 
     // value (verified above), not be hand-written a second time here.
     expect(fnBody).not.toMatch(/cls\.push\('ltp-vs-avg-up', 'cell-pos'\)/);
     expect(fnBody).not.toMatch(/cls\.push\(ltp > prev \? 'ltp-vs-prev-up' : 'ltp-vs-prev-down'\)/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// D4/D5 end-to-end pipeline (2026-10-20, operator-requested follow-up) —
+// a unit test on finalizeRows alone can't catch a wiring break between the
+// accumulator and the real grid cell. This test walks the FULL real chain:
+// mergePositionRows -> finalizeRows -> the day_pnl_pct column's own
+// valueGetter (_dayPnlPctValueGetter, not exported — reached via
+// mkRightColDefs) -> its valueFormatter (the REAL pctFmtGrid from
+// format.js, not the String(value) test stub) -> asserts the final
+// rendered string.
+// ---------------------------------------------------------------------------
+
+describe('day_pnl_pct column — full pipeline from mergePositionRows to the rendered string (D4/D5, 2026-10-20)', () => {
+  it('renders the correct final "X.XX%" string, not just a correct intermediate number', () => {
+    const byKey = {};
+    const row = {
+      tradingsymbol: 'NIFTY25AUG24000CE', exchange: 'NFO', account: 'ACC1',
+      quantity: 50, average_price: 120, last_price: 130, prev_close: 125,
+      pnl: 500, realised: 0, unrealised: 0, prev_settlement_pnl: 200,
+      overnight_quantity: 50,
+    };
+    mergePositionRows(byKey, [row], true, {}, {
+      snapOf: () => null, getInst: null, baseDayPnlForPosition,
+    });
+    finalizeRows(byKey, { directional, leadAccount: () => null, acctColor: () => null });
+    const out = byKey['NIFTY25AUG24000CE::ACC1__pos'];
+
+    // Sanity-check the inputs this test depends on, so a future change to
+    // baseDayPnlForPosition's formula fails loudly here instead of
+    // silently changing what "correct" means for the assertions below.
+    expect(out.day_pnl).toBe(300); // pnl(500) - prev_settlement_pnl(200)
+    expect(out._prev_market_value).toBe(125 * 50); // prev_close × qty, the D4 fix
+
+    const cols = mkRightColDefs({ ...makeOpts(), pctFmtGrid: realPctFmtGrid });
+    const col = cols.find(c => c.colId === 'day_pnl_pct');
+    if (!col) throw new Error('day_pnl_pct column not found in mkRightColDefs result');
+
+    const pct = col.valueGetter({ data: out });
+    expect(pct).toBeCloseTo(4.8, 10); // 300 / 6250 × 100
+    const rendered = col.valueFormatter({ value: pct });
+    expect(rendered).toBe('4.80%');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// D6 anchor-row tooltip (2026-10-20, operator-requested follow-up) — the
+// pos_state column's cellRenderer carries positionStateBadge's tooltip
+// text verbatim in the rendered button's title attribute. Confirms the
+// UX clarification text is really present, and scoped ONLY to anchor
+// rows — a real position row with other state flags set must never pick
+// it up.
+// ---------------------------------------------------------------------------
+
+describe('mkRightColDefs — pos_state anchor-row tooltip (D6, 2026-10-20)', () => {
+  function getPosStateCol() {
+    const cols = mkRightColDefs(makeOpts());
+    const col = cols.find(c => c.colId === 'pos_state');
+    if (!col) throw new Error('pos_state column not found');
+    return col;
+  }
+
+  it('an underlying-anchor row carries the front-month-future clarification tooltip', () => {
+    const col = getPosStateCol();
+    const result = col.cellRenderer({ data: { _isUnderlyingAnchor: true } });
+    expect(result).toContain('data-pos-state="anchor"');
+    expect(result).toContain('front-month future contract');
+    expect(result).toContain('not a held position or option contract');
+  });
+
+  it('a real position row (has_gtt, no anchor flag) never carries the anchor tooltip', () => {
+    const col = getPosStateCol();
+    const result = col.cellRenderer({ data: { has_gtt: true, quantity: 10 } });
+    expect(result).toContain('data-pos-state="gtt"');
+    expect(result).not.toContain('front-month future contract');
+  });
+
+  it('an orphan row (no anchor flag) never carries the anchor tooltip', () => {
+    const col = getPosStateCol();
+    const result = col.cellRenderer({ data: { is_orphan: true, quantity: 10 } });
+    expect(result).toContain('data-pos-state="orphan"');
+    expect(result).not.toContain('front-month future contract');
   });
 });
