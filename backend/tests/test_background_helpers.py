@@ -8,6 +8,9 @@ UX: _task_perf_snapshot captures CC + runtime metrics for the admin perf dashboa
 """
 from pathlib import Path
 import inspect
+from unittest.mock import patch, AsyncMock
+
+import pytest
 
 _SRC = Path("backend/api/background.py").read_text()
 
@@ -294,3 +297,219 @@ def test_trigger_helpers_are_public():
     assert "async def trigger_settlement_capture" in _SRC, (
         "trigger_settlement_capture must be a public async function"
     )
+
+
+# ---------------------------------------------------------------------------
+# D1c (2026-10-20) — restart-safety DB-backed "already ran today" markers
+# for the 05:30 holiday-refresh cron and the 08:00 prev-close-fix (shared
+# between SessionGuard's startup path and the main daily-snapshot loop's
+# own tick).
+# ---------------------------------------------------------------------------
+
+class _FakeMarkerStore:
+    """In-memory stand-in for the `settings` table's get_string/set_string,
+    scoped to a single test so no real DB is needed."""
+
+    def __init__(self):
+        self.values: dict[str, str] = {}
+
+    def get_string(self, key, default=""):
+        return self.values.get(key, default)
+
+    async def set_string(self, key, value, **kw):
+        old = self.values.get(key)
+        self.values[key] = value
+        return old
+
+
+def _patch_marker_store(store: "_FakeMarkerStore"):
+    from unittest.mock import patch
+    return (
+        patch("backend.shared.helpers.settings.get_string", store.get_string),
+        patch("backend.shared.helpers.settings.set_string", store.set_string),
+    )
+
+
+# ---- _hr_needs_catchup (pure decision) -------------------------------------
+
+def test_hr_needs_catchup_true_after_target_with_no_marker():
+    """Restart-after-05:30 with no marker yet for today → catch up now."""
+    from backend.api.background import _hr_needs_catchup
+    from datetime import datetime, time as dtime, timezone, timedelta
+
+    ist = timezone(timedelta(hours=5, minutes=30))
+    now = datetime(2026, 10, 20, 6, 0, tzinfo=ist)  # past 05:30
+    assert _hr_needs_catchup(now, None, dtime(5, 30)) is True
+
+
+def test_hr_needs_catchup_false_when_already_run_today():
+    """Marker already set for today's date → no catch-up (runs once)."""
+    from backend.api.background import _hr_needs_catchup
+    from datetime import datetime, time as dtime, timezone, timedelta
+
+    ist = timezone(timedelta(hours=5, minutes=30))
+    now = datetime(2026, 10, 20, 6, 0, tzinfo=ist)
+    assert _hr_needs_catchup(now, now.date(), dtime(5, 30)) is False
+
+
+def test_hr_needs_catchup_false_before_target_time():
+    """Restart BEFORE today's scheduled slot — not due yet, no catch-up."""
+    from backend.api.background import _hr_needs_catchup
+    from datetime import datetime, time as dtime, timezone, timedelta
+
+    ist = timezone(timedelta(hours=5, minutes=30))
+    now = datetime(2026, 10, 20, 3, 0, tzinfo=ist)  # before 05:30
+    assert _hr_needs_catchup(now, None, dtime(5, 30)) is False
+
+
+@pytest.mark.asyncio
+async def test_hr_marker_round_trip_catches_up_once():
+    """Full round trip: no marker → catch-up needed; after marking done,
+    a second restart later the same day does NOT need to catch up again."""
+    from backend.api.background import (
+        _hr_needs_catchup, _hr_marker_date, _hr_mark_done,
+    )
+    from datetime import datetime, time as dtime, timezone, timedelta
+
+    store = _FakeMarkerStore()
+    p1, p2 = _patch_marker_store(store)
+    ist = timezone(timedelta(hours=5, minutes=30))
+    now = datetime(2026, 10, 20, 6, 0, tzinfo=ist)
+
+    with p1, p2:
+        assert await _hr_marker_date() is None
+        assert _hr_needs_catchup(now, await _hr_marker_date(), dtime(5, 30)) is True
+
+        await _hr_mark_done(now.date())
+
+        # A second restart later the same IST day must not catch up again.
+        now2 = now + timedelta(hours=2)
+        assert _hr_needs_catchup(now2, await _hr_marker_date(), dtime(5, 30)) is False
+
+
+# ---- _pcf_marker_date / _pcf_mark_done (prev-close-fix shared marker) ------
+
+@pytest.mark.asyncio
+async def test_pcf_marker_round_trip():
+    from backend.api.background import _pcf_marker_date, _pcf_mark_done
+    from datetime import date
+
+    store = _FakeMarkerStore()
+    p1, p2 = _patch_marker_store(store)
+    with p1, p2:
+        assert await _pcf_marker_date() is None
+        await _pcf_mark_done(date(2026, 10, 20))
+        assert await _pcf_marker_date() == date(2026, 10, 20)
+
+
+@pytest.mark.asyncio
+async def test_sg_recover_close_reset_skips_when_already_run_today():
+    """restart-after-08:00-already-done does not re-run: a restart whose
+    SessionGuard sees the shared marker already set for today must NOT
+    call fix_daily_book_prev_close again (the confirmed live stomp bug —
+    it unconditionally reset daily_book.ltp back to the morning
+    settlement price on every restart after 08:00, pre-fix)."""
+    from backend.api import background as bg
+    from datetime import datetime, time as dtime, timezone, timedelta
+
+    store = _FakeMarkerStore()
+    p1, p2 = _patch_marker_store(store)
+    ist = timezone(timedelta(hours=5, minutes=30))
+    now = datetime(2026, 10, 20, 10, 0, tzinfo=ist)  # well past 08:00
+    await store.set_string("task_markers.prev_close_fix_date", now.date().isoformat())
+
+    with p1, p2, \
+         patch("backend.api.background._build_settlement_map", new_callable=AsyncMock) as m_build, \
+         patch("backend.api.background.fix_daily_book_prev_close", new_callable=AsyncMock) as m_fix:
+        await bg._sg_recover_close_reset(now, now.time())
+
+    m_build.assert_not_awaited()
+    m_fix.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sg_recover_close_reset_runs_and_marks_when_not_done():
+    """Complement: marker absent for today → runs once and marks done."""
+    from backend.api import background as bg
+    from datetime import datetime, timezone, timedelta
+
+    store = _FakeMarkerStore()
+    p1, p2 = _patch_marker_store(store)
+    ist = timezone(timedelta(hours=5, minutes=30))
+    now = datetime(2026, 10, 20, 8, 5, tzinfo=ist)
+
+    with p1, p2, \
+         patch("backend.api.background._build_settlement_map", new_callable=AsyncMock, return_value={}) as m_build, \
+         patch("backend.api.background.fix_daily_book_prev_close", new_callable=AsyncMock) as m_fix:
+        await bg._sg_recover_close_reset(now, now.time())
+
+    m_build.assert_awaited_once()
+    m_fix.assert_awaited_once()
+    assert store.values["task_markers.prev_close_fix_date"] == now.date().isoformat()
+
+
+@pytest.mark.asyncio
+async def test_ds_tick_prev_close_fix_does_not_restomp_ltp_after_restart():
+    """THE confirmed live stomp bug, reproduced and fixed: once the fix
+    has run today via ONE call site (here: SessionGuard, simulated by
+    pre-seeding the shared marker), a restart that resets the main daily-
+    snapshot loop's own LOCAL `_prev_close_fix_done` sentinel back to
+    `[None]` (exactly what happens on every process restart) must NOT
+    cause `_ds_tick_prev_close_fix` to re-run and stomp daily_book.ltp
+    back to the morning settlement price a second time.
+
+    This test fails against the pre-fix code (no marker check existed —
+    the local `done_ref[0] == today` check was the ONLY guard, and a
+    restart always resets that local box to [None])."""
+    from backend.api import background as bg
+    from datetime import datetime, time as dtime, timezone, timedelta
+
+    store = _FakeMarkerStore()
+    p1, p2 = _patch_marker_store(store)
+    ist = timezone(timedelta(hours=5, minutes=30))
+    now = datetime(2026, 10, 20, 9, 0, tzinfo=ist)  # well past NSE open
+
+    # Simulate: the fix already ran TODAY via the other call site.
+    await store.set_string("task_markers.prev_close_fix_date", now.date().isoformat())
+    # Simulate a process restart: the loop's local sentinel is reset to [None].
+    done_ref = [None]
+
+    with p1, p2, \
+         patch.object(bg.exchange_clock, "get_nse_open_time", return_value=dtime(8, 0)), \
+         patch("backend.api.background._build_settlement_map", new_callable=AsyncMock) as m_build, \
+         patch("backend.api.background.fix_daily_book_prev_close", new_callable=AsyncMock) as m_fix:
+        await bg._ds_tick_prev_close_fix(now, now.date(), done_ref)
+
+    m_build.assert_not_awaited()
+    m_fix.assert_not_awaited(), (
+        "fix_daily_book_prev_close must not re-run — daily_book.ltp would "
+        "be stomped back to the morning settlement price a second time"
+    )
+    # The local sentinel is still re-seeded so this tick stops re-checking the DB.
+    assert done_ref[0] == now.date()
+
+
+@pytest.mark.asyncio
+async def test_ds_tick_prev_close_fix_runs_and_marks_shared_marker():
+    """Complement: no marker anywhere yet → the loop's tick runs the fix
+    and writes the SHARED marker (not just its own local sentinel), so a
+    LATER SessionGuard restart on the same day also sees it as done."""
+    from backend.api import background as bg
+    from datetime import datetime, time as dtime, timezone, timedelta
+
+    store = _FakeMarkerStore()
+    p1, p2 = _patch_marker_store(store)
+    ist = timezone(timedelta(hours=5, minutes=30))
+    now = datetime(2026, 10, 20, 9, 0, tzinfo=ist)
+    done_ref = [None]
+
+    with p1, p2, \
+         patch.object(bg.exchange_clock, "get_nse_open_time", return_value=dtime(8, 0)), \
+         patch("backend.api.background._build_settlement_map", new_callable=AsyncMock, return_value={}) as m_build, \
+         patch("backend.api.background.fix_daily_book_prev_close", new_callable=AsyncMock) as m_fix:
+        await bg._ds_tick_prev_close_fix(now, now.date(), done_ref)
+
+    m_build.assert_awaited_once()
+    m_fix.assert_awaited_once()
+    assert done_ref[0] == now.date()
+    assert store.values["task_markers.prev_close_fix_date"] == now.date().isoformat()

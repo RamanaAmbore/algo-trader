@@ -771,6 +771,14 @@ _OWNED_OUTSIDE_SEEDS_PREFIXES = (
     # the marker gets wiped on every restart, re-triggering a truncate on
     # the next boot even when today's reset already ran.
     "news.",
+    # task_markers.* — DB-backed "did today's scheduled job already run"
+    # restart-safety markers (2026-10-20 fix), e.g.
+    # task_markers.holiday_refresh_date / task_markers.prev_close_fix_date.
+    # Written directly by background.py, not operator-facing settings.
+    # Must survive _prune_retired_keys for the same reason as news.* above
+    # — pruning on every restart would defeat the entire point of a
+    # restart-safety marker.
+    "task_markers.",
 )
 
 

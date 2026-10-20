@@ -3079,13 +3079,62 @@ async def _build_settlement_map() -> "dict[tuple[str, str], float]":
     return settlement_map
 
 
+async def _pcf_marker_date() -> "date | None":
+    """DB-backed 'did today's prev-close-fix already run' marker.
+
+    Shared by `_sg_recover_close_reset` (startup SessionGuard) and
+    `_ds_tick_prev_close_fix` (the main `_task_daily_snapshot` loop's own
+    30s tick) so whichever runs first on a given IST calendar day blocks
+    the other from re-running later that same day — fixing a confirmed
+    live bug: `_sg_recover_close_reset` previously ran unconditionally on
+    every restart with `now_t >= 08:00` (no "already ran" check, no upper
+    bound), and `fix_daily_book_prev_close`'s settlement-map UPDATE
+    unconditionally sets `prev_close = ltp = close_price` for every
+    today-dated holdings/positions row — so ANY restart after 08:00
+    silently stomped `daily_book.ltp` back to the morning's settlement
+    reference price, erasing that day's price movement. The loop's own
+    local sentinel (`_prev_close_fix_done`, reset to `None` on every
+    restart) could ALSO independently double-fire this same fix via the
+    other call site — a single shared DB marker, consulted by both, is
+    required; fixing only one leaves the double-fire possible via the
+    other."""
+    from backend.shared.helpers.settings import get_string
+    raw = get_string("task_markers.prev_close_fix_date", "")
+    if not raw:
+        return None
+    try:
+        return date.fromisoformat(raw)
+    except Exception:
+        return None
+
+
+async def _pcf_mark_done(today: date) -> None:
+    from backend.shared.helpers.settings import set_string
+    await set_string(
+        "task_markers.prev_close_fix_date", today.isoformat(),
+        category="task_markers",
+        description=(
+            "Last IST date fix_daily_book_prev_close's 08:00 new-session "
+            "transition ran. Restart-safety marker consulted by both "
+            "_sg_recover_close_reset and _ds_tick_prev_close_fix so a "
+            "restart after 08:00 never re-runs (and re-stomps "
+            "daily_book.ltp) for a day that already completed."
+        ),
+    )
+
+
 async def _sg_recover_close_reset(now: datetime, now_t: dtime) -> None:
     """a. CloseReset: prev_close new-session transition at ≥ 08:00 IST."""
     if now_t < dtime(8, 0):
         return
+    today = now.date()
+    if await _pcf_marker_date() == today:
+        logger.info("SessionGuard: CloseReset already ran today — skip (restart-safe)")
+        return
     logger.info("SessionGuard: running CloseReset (prev_close transition)")
     _settlement_map = await _build_settlement_map()
     await fix_daily_book_prev_close(now, settlement_map=_settlement_map or None)
+    await _pcf_mark_done(today)
 
 
 async def _sg_recover_nonmcx_close(now_t: dtime, today: date) -> None:
@@ -3330,16 +3379,28 @@ async def _ds_tick_prev_close_fix(now: datetime, today: date, done_ref: list) ->
 
     done_ref is a mutable [Optional[date]] box so the helper can update the
     sentinel without needing to return a value.
+
+    Also consults the shared DB-backed `_pcf_marker_date()` marker (see its
+    docstring) — `_sg_recover_close_reset` (SessionGuard, startup-only) and
+    this tick (every 30s, all day) both gate on the SAME marker so whichever
+    runs first on a given IST day blocks the other for the rest of that day.
     """
     # Window is dynamic: [nse_open_time, ∞). Falls back to the hardcoded
     # 08:00 window when exchange_clock has no open time cached.
     open_t = exchange_clock.get_nse_open_time()
     if open_t is None or now.time() < open_t or done_ref[0] == today:
         return
+    if await _pcf_marker_date() == today:
+        # Already run today via the other call site (SessionGuard at
+        # startup, or an earlier tick before a mid-day restart) — just
+        # seed the local sentinel so this tick stops re-checking the DB.
+        done_ref[0] = today
+        return
     logger.info("Background: %s IST — daily prev_close new-session transition",
                 open_t.strftime("%H:%M"))
     _settlement_map = await _build_settlement_map()
     await fix_daily_book_prev_close(now, settlement_map=_settlement_map or None)
+    await _pcf_mark_done(today)
     done_ref[0] = today
 
 
@@ -3710,6 +3771,54 @@ async def _task_mcp_audit_cleanup() -> None:
         await _purge_once()
 
 
+async def _hr_marker_date() -> "date | None":
+    """DB-backed 'did today's holiday-refresh cron already run' marker.
+
+    Restart-safety fix (2026-10-20): `_task_holiday_refresh`'s loop was
+    previously a pure wall-clock sleep-until-next-05:30 cycle with no DB
+    check at all. A restart landing AFTER 05:30 silently skipped that
+    whole day's calendar refresh with no catch-up — masked most days by
+    the Tier-3 DB holiday cache serving yesterday's data, but a same-day
+    calendar change (e.g. an ad-hoc SEBI special-session announcement)
+    would be missed entirely until the NEXT day's 05:30 wake-up. Module-
+    level (not nested in `_task_holiday_refresh`) so it — and the
+    catch-up decision below — are independently unit-testable without
+    driving the task's own infinite loop.
+    """
+    from backend.shared.helpers.settings import get_string
+    raw = get_string("task_markers.holiday_refresh_date", "")
+    if not raw:
+        return None
+    try:
+        return date.fromisoformat(raw)
+    except Exception:
+        return None
+
+
+async def _hr_mark_done(d: date) -> None:
+    from backend.shared.helpers.settings import set_string
+    await set_string(
+        "task_markers.holiday_refresh_date", d.isoformat(),
+        category="task_markers",
+        description=(
+            "Last IST date the 05:30 holiday-refresh cron completed "
+            "(restart-safety marker — gates both the restart catch-up "
+            "check and the normal scheduled wake-up)."
+        ),
+    )
+
+
+def _hr_needs_catchup(now_ist: datetime, marker_date: "date | None",
+                       target_time: dtime) -> bool:
+    """Pure decision: should a just-started process run the holiday
+    refresh immediately instead of waiting for the next scheduled slot?
+
+    True only when today's scheduled time has already passed AND today's
+    run hasn't happened yet per the marker. Split out as a pure function
+    (no I/O) so the restart-catch-up behaviour is directly testable."""
+    return now_ist.time() >= target_time and marker_date != now_ist.date()
+
+
 async def _task_holiday_refresh() -> None:
     """Daily early-morning cron — 05:30 IST (configurable via ``holiday_refresh_time``).
 
@@ -3842,19 +3951,13 @@ async def _task_holiday_refresh() -> None:
             await asyncio.sleep(30 * 60)
         return outcomes
 
-    while True:
-        now = timestamp_indian()
-        nxt = _next_run_at(now)
-        sleep_s = (nxt - now).total_seconds()
-        logger.info(
-            f"Background: holiday refresh sleeping {sleep_s/3600:.1f}h until "
-            f"{nxt.strftime('%H:%M')} IST"
-        )
-        try:
-            await asyncio.sleep(sleep_s)
-        except asyncio.CancelledError:
-            raise
-
+    async def _hr_run_once(now_ist: datetime) -> None:
+        """Run the full 05:30 wake-up body — market/news content-refresh
+        spawn, holiday calendar refresh, best-effort token refresh — then
+        mark today's run done. Shared by both the restart catch-up path
+        (below, before the main loop starts) and the loop's own normal
+        05:30 wake-up, so the same marker check protects both.
+        """
         # Shared-clock spawn (2026-09 scheduling redesign) — fire the
         # market/news daily content refresh from this SAME wake-up, as its
         # own independent fire-and-forget task. Deliberately BEFORE
@@ -3899,6 +4002,40 @@ async def _task_holiday_refresh() -> None:
                         "decorator will recover: %s",
                         type(_conn).__name__, _acct, _e,
                     )
+        await _hr_mark_done(now_ist.date())
+
+    # ── Restart catch-up ──────────────────────────────────────────────
+    # If this process starts cold AFTER today's scheduled time has
+    # already passed and today's run hasn't happened yet (per the DB
+    # marker — survives the restart that caused this), run it immediately
+    # instead of silently waiting until tomorrow's 05:30 slot.
+    _now0 = timestamp_indian()
+    _target_str0 = str(_cfg.get("holiday_refresh_time", "05:30") or "05:30")
+    try:
+        _hh0, _mm0 = (int(x) for x in _target_str0.split(":", 1))
+    except Exception:
+        _hh0, _mm0 = 5, 30
+    if _hr_needs_catchup(_now0, await _hr_marker_date(), dtime(_hh0, _mm0)):
+        logger.info(
+            "Background: holiday-refresh restart catch-up — running "
+            "immediately (today's scheduled run hasn't happened yet)"
+        )
+        await _hr_run_once(_now0)
+
+    while True:
+        now = timestamp_indian()
+        nxt = _next_run_at(now)
+        sleep_s = (nxt - now).total_seconds()
+        logger.info(
+            f"Background: holiday refresh sleeping {sleep_s/3600:.1f}h until "
+            f"{nxt.strftime('%H:%M')} IST"
+        )
+        try:
+            await asyncio.sleep(sleep_s)
+        except asyncio.CancelledError:
+            raise
+
+        await _hr_run_once(timestamp_indian())
 
 
 async def _task_hedge_proxy_regression() -> None:
