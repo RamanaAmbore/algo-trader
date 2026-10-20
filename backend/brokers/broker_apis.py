@@ -3565,7 +3565,21 @@ def _fetch_mcx_evening_closed_dates() -> "set | None":
     if data is None:
         return None
     try:
-        for h in data.get("COM", []):
+        com_entries = data.get("COM")
+    except Exception:
+        return None
+    # A missing/renamed `COM` key, a wrong-shaped value, or an empty list
+    # all look like "the feed didn't give us real COM data" -- the same
+    # could-not-determine case as a fetch/parse failure, NOT a genuine
+    # "nothing is evening-closed this year" result (2026-10-20 fix). A
+    # real year has ~8-9 evening-closed dates; treating a malformed
+    # response as an innocent empty set here would let
+    # `_upsert_mcx_evening_closed_sessions_coro`'s reconciliation delete
+    # wipe every already-recorded evening-closed row.
+    if not isinstance(com_entries, list) or not com_entries:
+        return None
+    try:
+        for h in com_entries:
             if str(h.get("evening_session") or "").strip().lower() != "closed":
                 continue
             d = h.get("tradingDate", "")

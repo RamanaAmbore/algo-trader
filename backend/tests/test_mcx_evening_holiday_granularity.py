@@ -120,6 +120,47 @@ class TestFetchMcxEveningClosedDates:
             result = broker_apis._fetch_mcx_evening_closed_dates()
         assert result == set()
 
+    def test_returns_none_when_com_key_missing(self):
+        """2026-10-20 fix: a response with no `COM` key at all (e.g. the
+        feed renamed the segment key) is indistinguishable from a real
+        fetch failure at this layer — must return None, not set(), so the
+        reconciliation delete in _upsert_mcx_evening_closed_sessions_coro
+        never treats it as a genuine "nothing closed this year" result."""
+        from backend.brokers import broker_apis
+
+        resp = MagicMock()
+        resp.json.return_value = {"CM": _COM_FIXTURE}  # no "COM" key
+        resp.raise_for_status.return_value = None
+        with patch("requests.get", return_value=resp):
+            result = broker_apis._fetch_mcx_evening_closed_dates()
+        assert result is None
+
+    def test_returns_none_when_com_is_not_a_list(self):
+        """Same malformed-feed class: `COM` present but wrong-shaped
+        (e.g. a dict or string instead of a list) must also return None."""
+        from backend.brokers import broker_apis
+
+        resp = MagicMock()
+        resp.json.return_value = {"COM": "not-a-list"}
+        resp.raise_for_status.return_value = None
+        with patch("requests.get", return_value=resp):
+            result = broker_apis._fetch_mcx_evening_closed_dates()
+        assert result is None
+
+    def test_returns_none_when_com_is_empty_list(self):
+        """Same malformed-feed class: an empty `COM` list looks exactly
+        like a real "nothing closed this year" result but, per the real
+        feed, a genuine year always has ~8-9 evening-closed dates — treat
+        empty the same as a failure rather than risk wiping real rows."""
+        from backend.brokers import broker_apis
+
+        resp = MagicMock()
+        resp.json.return_value = {"COM": []}
+        resp.raise_for_status.return_value = None
+        with patch("requests.get", return_value=resp):
+            result = broker_apis._fetch_mcx_evening_closed_dates()
+        assert result is None
+
 
 # ---------------------------------------------------------------------------
 # _fetch_nse_holiday_master_json — short-TTL memo (2026-10-20 fix)
