@@ -2175,6 +2175,24 @@ async def migrate_order_action_type_rename() -> None:
         )
 
 
+def _ae_pick_window(windows: list, t):
+    """Given a list of ``(start, end)`` dtime tuples, return the one
+    containing ``t``; else the most recently-ended one (needed for
+    post-close minutes-since-close bookkeeping); else the first.
+
+    Pure, no I/O. Shared by ``_ae_resolve_matched_window`` (regular
+    sessions, parsed from config via ``_parse_session_windows``) and
+    ``_ae_segment_flags``'s special-session branch (2026-10-20 fix,
+    raw dtime tuples straight from the already-fetched
+    ``fetch_special_sessions()`` row — no round-trip through
+    ``"HH:MM"`` strings needed)."""
+    for w_start, w_end in windows:
+        if w_start <= t <= w_end:
+            return w_start, w_end
+    past = [w for w in windows if w[1] <= t]
+    return past[-1] if past else windows[0]
+
+
 def _ae_resolve_matched_window(sessions, legacy_start, legacy_end, t):
     """Resolve the session ``(start, end)`` window that governs clock
     time ``t``. Prefers the window actually containing ``t``; falls back
@@ -2188,11 +2206,26 @@ def _ae_resolve_matched_window(sessions, legacy_start, legacy_end, t):
     here and there."""
     from backend.shared.helpers.date_time_utils import _parse_session_windows
     windows = _parse_session_windows(sessions, legacy_start, legacy_end)
-    for w_start, w_end in windows:
-        if w_start <= t <= w_end:
-            return w_start, w_end
-    past = [w for w in windows if w[1] <= t]
-    return past[-1] if past else windows[0]
+    return _ae_pick_window(windows, t)
+
+
+def _ae_special_sessions_today(special: "list | None", today) -> "list | None":
+    """Return the list of ``(start, end)`` dtime tuples from ``special``
+    (the already-fetched ``fetch_special_sessions()`` result) whose
+    ``date`` field equals ``today``, or ``None`` when no row applies
+    today.
+
+    A non-``None`` result (even one containing only zero-width rows)
+    signals ``_ae_segment_flags`` that a special-session override is in
+    effect today and must supersede the evening-holiday approximation
+    entirely — mirroring ``is_market_open()``'s own precedence
+    (special sessions > holiday > regular sessions). Pure, no I/O."""
+    if not special:
+        return None
+    rows_today = [s for s in special if s.get("date") == today]
+    if not rows_today:
+        return None
+    return [(s["start"], s["end"]) for s in rows_today]
 
 
 def _ae_had_session_today(now, is_holiday: bool, evening_open: bool) -> bool:
@@ -2274,20 +2307,48 @@ def _ae_segment_flags(seg_name: str, seg_cfg: dict, now) -> dict:
         special_sessions=special,
     )
 
-    win_start, win_end = _ae_resolve_matched_window(sessions, legacy_start, legacy_end, t)
-    open_time  = now.replace(hour=win_start.hour, minute=win_start.minute, second=0, microsecond=0)
-    close_time = now.replace(hour=win_end.hour,   minute=win_end.minute,   second=0, microsecond=0)
+    # Special-session override precedence (2026-10-20 fix). When a DB
+    # row applies today, it supersedes the evening-holiday approximation
+    # below entirely — resolve win_start/win_end FROM THE OVERRIDE'S OWN
+    # dtime values directly (`is_open` itself is already correct via the
+    # untouched `is_market_open()` call above; only the matched-window /
+    # had-session-today bookkeeping needs to follow suit). Three
+    # confirmed-wrong cases this fixes:
+    #   1. A zero-width (start==end) override means no session ran today
+    #      at all — `had_session_today` must be False, not derived from
+    #      `evening_open_on_holidays`, else `{prefix}_closed` reports
+    #      True alongside `{prefix}_open=False` (neither should be true).
+    #   2. A real override window (e.g. an 18:15-19:15 Muhurat session)
+    #      must anchor `minutes_since_{prefix}_open` to ITS OWN start,
+    #      not the regular session's 09:15 start.
+    #   3. A real override window ending AFTER the regular session's own
+    #      close (e.g. 16:00-19:00 on an otherwise normal weekday) must
+    #      anchor `{prefix}_closed` to ITS OWN end, not the regular
+    #      15:30 close — else both `{prefix}_open` and `{prefix}_closed`
+    #      report True simultaneously while still inside the override
+    #      window.
+    special_today = _ae_special_sessions_today(special, now.date())
+    if special_today is not None:
+        non_zero = [w for w in special_today if w[0] != w[1]]
+        had_session_today = bool(non_zero)
+        win_start, win_end = _ae_pick_window(non_zero or special_today, t)
+        open_time  = now.replace(hour=win_start.hour, minute=win_start.minute, second=0, microsecond=0)
+        close_time = now.replace(hour=win_end.hour,   minute=win_end.minute,   second=0, microsecond=0)
+    else:
+        win_start, win_end = _ae_resolve_matched_window(sessions, legacy_start, legacy_end, t)
+        open_time  = now.replace(hour=win_start.hour, minute=win_start.minute, second=0, microsecond=0)
+        close_time = now.replace(hour=win_end.hour,   minute=win_end.minute,   second=0, microsecond=0)
 
-    # Evening-holiday open anchor — the matched window may start at
-    # 09:00, but trading only actually began at 17:00 on a holiday
-    # evening session; anchoring "minutes since open" to the window
-    # start would report ~540 min at 18:00 instead of ~60.
-    if is_holiday and evening_open and is_open:
-        evening_anchor = now.replace(hour=17, minute=0, second=0, microsecond=0)
-        if evening_anchor > open_time:
-            open_time = evening_anchor
+        # Evening-holiday open anchor — the matched window may start at
+        # 09:00, but trading only actually began at 17:00 on a holiday
+        # evening session; anchoring "minutes since open" to the window
+        # start would report ~540 min at 18:00 instead of ~60.
+        if is_holiday and evening_open and is_open:
+            evening_anchor = now.replace(hour=17, minute=0, second=0, microsecond=0)
+            if evening_anchor > open_time:
+                open_time = evening_anchor
 
-    had_session_today = _ae_had_session_today(now, is_holiday, evening_open)
+        had_session_today = _ae_had_session_today(now, is_holiday, evening_open)
 
     mins_open  = (max(0, int((now - open_time).total_seconds() / 60))
                   if is_open else 0)

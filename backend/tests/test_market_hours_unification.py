@@ -421,6 +421,83 @@ def test_ae_segment_flags_equity_holiday_unaffected():
     assert flags["minutes_since_nse_open"] == 0
 
 
+# ---------------------------------------------------------------------------
+# D6 (2026-10-20) — `_ae_segment_flags` special-session-aware `_closed` /
+# `minutes_since_*` fix. `is_open` (via `is_market_open()`) is already
+# correct for all 3 cases below; only the matched-window / had-session-today
+# bookkeeping was wrong.
+# ---------------------------------------------------------------------------
+
+# A plain weekday, not in the MCX-holiday fixture above (2026-10-22) and not
+# an NSE holiday either — isolates these cases from the evening-holiday
+# branch entirely.
+_PLAIN_WEEKDAY = date(2026, 11, 5)
+
+
+def test_ae_segment_flags_zero_width_override_reports_neither_open_nor_closed():
+    """Case 1: an MCX evening-closed holiday (zero-width override row) at
+    23:45 must report mcx_open=False AND mcx_closed=False — no session
+    ran today at all, so neither flag should be True. Pre-fix:
+    had_session_today derived from evening_open_on_holidays (True),
+    wrongly reporting mcx_closed=True alongside mcx_open=False."""
+    import backend.brokers.broker_apis as _ba
+    from backend.api.algo.agent_engine import _ae_segment_flags
+
+    now = datetime(2026, 11, 5, 23, 45, tzinfo=IST)
+    zero_width_row = [{"date": _PLAIN_WEEKDAY, "start": dtime(0, 0), "end": dtime(0, 0)}]
+
+    with patch.object(_ba, "fetch_special_sessions", return_value=zero_width_row):
+        flags = _ae_segment_flags("commodity", _commodity_seg(), now)
+
+    assert flags["mcx_open"] is False
+    assert flags["mcx_closed"] is False, (
+        f"no session ran today (zero-width override) — neither flag "
+        f"should be True, got {flags}"
+    )
+
+
+def test_ae_segment_flags_special_session_anchors_minutes_since_open_to_its_own_start():
+    """Case 2: a Muhurat-style special session (18:15-19:15) on an
+    otherwise normal weekday, checked at 18:30, must anchor
+    minutes_since_nse_open to 18:15 (15 min), not the regular 09:15
+    session start (~555 min)."""
+    import backend.brokers.broker_apis as _ba
+    from backend.api.algo.agent_engine import _ae_segment_flags
+
+    now = datetime(2026, 11, 5, 18, 30, tzinfo=IST)
+    muhurat_row = [{"date": _PLAIN_WEEKDAY, "start": dtime(18, 15), "end": dtime(19, 15)}]
+
+    with patch.object(_ba, "fetch_special_sessions", return_value=muhurat_row):
+        flags = _ae_segment_flags("equity", _equity_seg(), now)
+
+    assert flags["nse_open"] is True
+    assert flags["minutes_since_nse_open"] == 15, (
+        f"expected 15 (anchored to the override's own 18:15 start), "
+        f"got {flags['minutes_since_nse_open']}"
+    )
+
+
+def test_ae_segment_flags_special_session_past_regular_close_not_double_flagged():
+    """Case 3: a special session (16:00-19:00) on an otherwise normal
+    weekday, checked at 18:30 (after the regular 15:30 close but still
+    inside the override window), must report nse_open=True AND
+    nse_closed=False — not both True simultaneously."""
+    import backend.brokers.broker_apis as _ba
+    from backend.api.algo.agent_engine import _ae_segment_flags
+
+    now = datetime(2026, 11, 5, 18, 30, tzinfo=IST)
+    extended_row = [{"date": _PLAIN_WEEKDAY, "start": dtime(16, 0), "end": dtime(19, 0)}]
+
+    with patch.object(_ba, "fetch_special_sessions", return_value=extended_row):
+        flags = _ae_segment_flags("equity", _equity_seg(), now)
+
+    assert flags["nse_open"] is True
+    assert flags["nse_closed"] is False, (
+        f"still inside the override window (ends 19:00) — nse_closed "
+        f"must not also be True, got {flags}"
+    )
+
+
 def test_symbol_exchange_open_nco_mapped_to_commodity_segment():
     """`NCO` was missing from `_EXCHANGE_TO_SEGMENT` — `_segment_for_exchange`
     returned None for it, so `_symbol_exchange_open("NCO", ctx)` always
