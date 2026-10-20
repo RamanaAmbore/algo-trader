@@ -4110,12 +4110,28 @@ async def _task_holiday_refresh() -> None:
                 evening_closed = await loop2.run_in_executor(
                     None, _fetch_mcx_evening_closed_dates,
                 )
-                if evening_closed:
+                # `is not None`, NOT a bare truthiness check (2026-10-20
+                # fix) — `_fetch_mcx_evening_closed_dates()` now returns
+                # `None` on a FAILED fetch, distinct from a genuinely
+                # empty set ("nothing is evening-closed this year" per
+                # the feed). A bare `if evening_closed:` would skip the
+                # reconciliation delete on a real empty result too,
+                # leaving stale rows from a prior year's closed dates
+                # never cleared. `None` (fetch failed) still correctly
+                # skips the whole block — we never want to reconcile
+                # against data we don't actually have.
+                if evening_closed is not None:
                     written = await _upsert_mcx_evening_closed_sessions_coro(evening_closed)
                     logger.info(
                         "[HOLIDAY-REFRESH] MCX evening-closed special sessions: "
                         "%d dates from feed, %d written (weekend dates excluded)",
                         len(evening_closed), written,
+                    )
+                else:
+                    logger.warning(
+                        "[HOLIDAY-REFRESH] MCX evening-closed special-session "
+                        "fetch failed — skipping this cycle, leaving existing "
+                        "rows untouched (not reconciling against no data)"
                     )
             except Exception as e:
                 logger.warning(

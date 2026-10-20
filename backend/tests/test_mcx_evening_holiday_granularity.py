@@ -76,12 +76,17 @@ class TestFetchMcxEveningClosedDates:
         # Dussehra: evening_session is Open — must NOT appear.
         assert date(2026, 10, 20) not in result
 
-    def test_returns_empty_set_on_network_failure(self):
+    def test_returns_none_on_network_failure(self):
+        """2026-10-20 fix: a FAILED fetch returns None, not an empty set —
+        distinct from "the feed genuinely says nothing is closed". The
+        reconciliation delete in _upsert_mcx_evening_closed_sessions_coro
+        relies on this distinction to never wipe real closed-evening rows
+        during a transient NSE outage."""
         from backend.brokers import broker_apis
 
         with patch("requests.get", side_effect=Exception("network error")):
             result = broker_apis._fetch_mcx_evening_closed_dates()
-        assert result == set()
+        assert result is None
 
     def test_ignores_null_evening_session(self):
         """A segment entry with evening_session=null (e.g. non-COM
@@ -116,9 +121,22 @@ class TestFetchMcxEveningClosedDates:
 # ---------------------------------------------------------------------------
 
 class _FakeUpsertSession:
-    def __init__(self):
-        self.executed_rows: list = []
+    """Distinguishes the three distinct `execute()` calls
+    `_upsert_mcx_evening_closed_sessions_coro` now makes purely by the
+    SHAPE of their params, not by inspecting SQL text:
+      - INSERT (the original upsert): params is a `list` of row dicts.
+      - SELECT existing nse_auto rows: params is a `dict` with `today`
+        only — returns a result whose `.fetchall()` yields tuples built
+        from `existing_dates` (default empty, so pre-existing tests that
+        don't care about reconciliation see no stale rows and no DELETE,
+        matching their original assertions unchanged).
+      - DELETE stale rows: params is a `dict` with `stale_dates`.
+    """
+    def __init__(self, existing_dates: set | None = None):
+        self.executed_rows: list = []          # the INSERT's row list
+        self.deleted_dates: "list | None" = None
         self.committed = False
+        self._existing_dates = existing_dates or set()
 
     def __call__(self):
         return self
@@ -129,8 +147,17 @@ class _FakeUpsertSession:
     async def __aexit__(self, *a):
         return False
 
-    async def execute(self, stmt, rows=None):
-        self.executed_rows = rows or []
+    async def execute(self, stmt, params=None):
+        if isinstance(params, list):
+            self.executed_rows = params
+            return MagicMock()
+        if isinstance(params, dict) and "stale_dates" in params:
+            self.deleted_dates = list(params["stale_dates"])
+            return MagicMock()
+        if isinstance(params, dict) and "today" in params:
+            result = MagicMock()
+            result.fetchall.return_value = [(d,) for d in self._existing_dates]
+            return result
         return MagicMock()
 
     async def commit(self):
@@ -200,6 +227,121 @@ async def test_upsert_conflict_clause_only_updates_nse_auto_rows():
     # Must NOT also match NULL-source rows — those are pre-migration /
     # operator rows and must be left untouched.
     assert "source IS NULL" not in src
+
+
+# ---------------------------------------------------------------------------
+# Reconciliation delete (2026-10-20 fix) — stale auto-rows removed when
+# NSE later revises a date's evening session back to Open.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_upsert_reconciles_stale_row_no_longer_in_closed_set():
+    """A previously auto-inserted row for 2026-01-26 must be DELETED when
+    this cycle's feed no longer reports that date as evening-closed."""
+    from backend.brokers import broker_apis
+
+    fake_session = _FakeUpsertSession(existing_dates={date(2026, 1, 26)})
+    with patch("backend.api.database.async_session", fake_session):
+        await broker_apis._upsert_mcx_evening_closed_sessions_coro(
+            {date(2026, 12, 25)}  # 2026-01-26 is no longer in the closed set
+        )
+
+    assert fake_session.deleted_dates == [date(2026, 1, 26)]
+    assert fake_session.committed is True
+
+
+@pytest.mark.asyncio
+async def test_upsert_does_not_delete_a_date_still_in_the_closed_set():
+    """A date present in BOTH the existing rows and this cycle's closed
+    set must never be deleted — only genuinely-stale rows are touched."""
+    from backend.brokers import broker_apis
+
+    fake_session = _FakeUpsertSession(existing_dates={date(2026, 12, 25)})
+    with patch("backend.api.database.async_session", fake_session):
+        await broker_apis._upsert_mcx_evening_closed_sessions_coro(
+            {date(2026, 12, 25)}
+        )
+
+    assert fake_session.deleted_dates is None
+
+
+@pytest.mark.asyncio
+async def test_upsert_empty_closed_set_reconciles_away_all_existing_rows():
+    """A genuinely empty closed set (the feed says nothing is
+    evening-closed this year) must still reconcile away every existing
+    auto-row — this is the real "NSE revised everything back to open"
+    case, not a failed-fetch case (that's gated by the caller checking
+    `is not None` before ever calling this function)."""
+    from backend.brokers import broker_apis
+
+    fake_session = _FakeUpsertSession(existing_dates={date(2026, 1, 26), date(2026, 12, 25)})
+    with patch("backend.api.database.async_session", fake_session):
+        written = await broker_apis._upsert_mcx_evening_closed_sessions_coro(set())
+
+    assert written == 0
+    assert sorted(fake_session.deleted_dates) == [date(2026, 1, 26), date(2026, 12, 25)]
+
+
+@pytest.mark.asyncio
+async def test_upsert_reconcile_never_touches_historical_dates():
+    """The reconciliation SELECT is scoped to `date >= today` — a
+    historical auto-row (from a past, already-elapsed holiday) must
+    never be queried or deleted, regardless of whether it's in the
+    current closed set."""
+    from backend.brokers import broker_apis
+    import inspect
+
+    src = inspect.getsource(broker_apis._upsert_mcx_evening_closed_sessions_coro)
+    assert "date >= :today" in src
+
+
+@pytest.mark.asyncio
+async def test_upsert_logs_on_db_failure_instead_of_silently_swallowing():
+    """2026-10-20 fix: a DB failure during upsert/reconcile must be
+    logged, not silently swallowed by a bare `except Exception: return 0`
+    (the pre-fix behaviour — confirmed by this test failing against it,
+    since there was nothing to assert on)."""
+    from backend.brokers import broker_apis
+
+    class _BoomSession:
+        def __call__(self):
+            return self
+
+        async def __aenter__(self):
+            raise RuntimeError("DB connection refused")
+
+        async def __aexit__(self, *a):
+            return False
+
+    with patch("backend.api.database.async_session", _BoomSession()), \
+         patch.object(broker_apis, "logger") as mock_logger:
+        written = await broker_apis._upsert_mcx_evening_closed_sessions_coro(
+            {date(2026, 12, 25)}
+        )
+
+    assert written == 0
+    assert mock_logger.warning.called, "a DB failure must be logged, not silently swallowed"
+
+
+# ---------------------------------------------------------------------------
+# Caller contract (background.py) — `is not None`, not bare truthiness.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_holiday_refresh_skips_reconcile_entirely_on_failed_fetch():
+    """2026-10-20 fix: when `_fetch_mcx_evening_closed_dates()` returns
+    None (fetch failed), the background.py caller must skip calling the
+    upsert/reconcile function ENTIRELY — never pass an empty set in its
+    place, which would otherwise wipe every real evening-closed row
+    during a transient NSE outage."""
+    from backend.api import background as bg
+    import inspect
+
+    src = inspect.getsource(bg)
+    # The caller's guard must be an explicit `is not None` check, not a
+    # bare truthiness check that would also (wrongly) skip a genuine
+    # empty-set success.
+    assert "if evening_closed is not None:" in src
 
 
 # ---------------------------------------------------------------------------

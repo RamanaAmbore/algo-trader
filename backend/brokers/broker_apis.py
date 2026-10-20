@@ -3489,7 +3489,7 @@ def _fetch_holidays_from_nse(exchange: str) -> set:
     return holidays
 
 
-def _fetch_mcx_evening_closed_dates() -> set:
+def _fetch_mcx_evening_closed_dates() -> "set | None":
     """Fetch the NSE holiday-master feed's ``COM`` (MCX commodity) segment
     and return the subset of holiday dates where
     ``evening_session == "Closed"`` — i.e. MCX does NOT reopen for its
@@ -3521,18 +3521,24 @@ def _fetch_mcx_evening_closed_dates() -> set:
     ``description``, ``morning_session`` ("Open"/"Closed"/null),
     ``evening_session`` ("Open"/"Closed"/null), ``Sr_no``.
 
-    Returns an empty set on any failure — fail-open means no auto-
-    inserted closed-evening rows get created this cycle, i.e. every MCX
-    holiday keeps the existing (blanket, sometimes-wrong)
-    evening_open_on_holidays=True behaviour, same as before this fix —
-    never fails CLOSED and accidentally blocks a genuinely-open evening.
+    Returns ``None`` (NOT an empty set) when the fetch or parse fails —
+    distinct from a genuinely-empty "nothing is evening-closed this year"
+    result (2026-10-20 fix). This distinction is load-bearing for the
+    reconciliation delete in ``_upsert_mcx_evening_closed_sessions_coro``:
+    treating a failed fetch's `None` the same as a real empty set would
+    make a transient NSE outage wipe every already-recorded evening-closed
+    row, incorrectly reading MCX as open on an evening it's genuinely
+    closed. Callers must check ``is not None`` before reconciling, and
+    may still treat ``None`` as "skip this cycle, change nothing" for the
+    insert side too — never fails CLOSED and accidentally blocks a
+    genuinely-open evening.
     """
     from datetime import datetime as dt_datetime
 
     closed: set = set()
     data = _fetch_nse_holiday_master_json()
     if data is None:
-        return closed
+        return None
     try:
         for h in data.get("COM", []):
             if str(h.get("evening_session") or "").strip().lower() != "closed":
@@ -3545,7 +3551,7 @@ def _fetch_mcx_evening_closed_dates() -> set:
             except ValueError:
                 pass
     except Exception:
-        pass
+        return None
     return closed
 
 
@@ -3564,18 +3570,48 @@ async def _upsert_mcx_evening_closed_sessions_coro(dates: set) -> int:
     rows this same auto-job previously wrote.  Idempotent — re-running
     with the same *dates* re-upserts the identical row.
 
+    Reconciliation (2026-10-20 fix): also DELETEs any previously
+    auto-inserted row whose date is no longer in *dates* — i.e. NSE has
+    since revised that date's evening session back to "Open". Without
+    this, a date that briefly appeared "evening closed" in the feed
+    stayed wrongly blocked forever. The delete is deliberately narrow:
+    - ``exchange='MCX' AND source='nse_auto' AND start_time=end_time``
+      (the exact auto-insert marker) — NEVER an operator/manual row, and
+      NEVER a non-zero-width special session (a real Muhurat window).
+    - ``date >= today`` (IST) — NEVER a historical row; the past can't
+      be re-opened and doesn't need reconciling.
+    - computed as a set-difference against the freshly-queried existing
+      rows, not a blind "delete where date not in (...)" over the whole
+      table, so an empty *dates* genuinely means "clear everything
+      forward-looking" rather than relying on SQL array-vs-empty-list
+      edge cases.
+
+    **Caller contract, load-bearing**: *dates* must come from a
+    SUCCESSFUL fetch (``_fetch_mcx_evening_closed_dates()`` returning
+    not-``None``). Passing an empty set because the fetch FAILED (as
+    opposed to a genuine "nothing is closed this year" result) would
+    make this function delete every real evening-closed row during a
+    transient NSE outage — letting real orders through on an evening
+    MCX is genuinely, deliberately closed. This function has no way to
+    tell the two apart itself; callers must gate on the fetch's own
+    ``None``/not-``None`` distinction before calling this at all.
+
     Returns the count of dates actually written (post weekend-exclusion).
+    Any DB failure — upsert, reconcile, or connection — is logged (not
+    silently swallowed, previously `except Exception: return 0` logged
+    nothing at all) and returns 0.
     """
     from datetime import datetime, time as dtime, timezone
-    from sqlalchemy import text as _text
+    from sqlalchemy import text as _text, bindparam
+    from backend.shared.helpers.date_time_utils import timestamp_indian
     try:
         from backend.api.database import async_session
-    except Exception:
+    except Exception as e:
+        logger.warning(f"_upsert_mcx_evening_closed_sessions_coro: DB session import failed: {e}")
         return 0
     non_weekend = {d for d in dates if d.weekday() < 5}
-    if not non_weekend:
-        return 0
     now_utc = datetime.now(timezone.utc)
+    today = timestamp_indian().date()
     zero = dtime(0, 0, 0)
     rows = [
         {"exchange": "MCX", "date": d, "start_time": zero, "end_time": zero,
@@ -3594,12 +3630,37 @@ async def _upsert_mcx_evening_closed_sessions_coro(dates: set) -> int:
             source     = EXCLUDED.source
         WHERE market_special_sessions.source = 'nse_auto'
     """)
+    _select_existing_sql = _text("""
+        SELECT date FROM market_special_sessions
+        WHERE exchange = 'MCX' AND source = 'nse_auto'
+          AND start_time = end_time AND date >= :today
+    """)
     try:
         async with async_session() as s:
-            await s.execute(_upsert_sql, rows)
+            if rows:
+                await s.execute(_upsert_sql, rows)
+            existing = await s.execute(_select_existing_sql, {"today": today})
+            existing_dates = {r[0] for r in existing.fetchall()}
+            stale = existing_dates - non_weekend
+            if stale:
+                _delete_sql = _text("""
+                    DELETE FROM market_special_sessions
+                    WHERE exchange = 'MCX' AND source = 'nse_auto'
+                      AND start_time = end_time AND date IN :stale_dates
+                """).bindparams(bindparam("stale_dates", expanding=True))
+                await s.execute(_delete_sql, {"stale_dates": list(stale)})
+                logger.info(
+                    "[MCX-EVENING-CLOSED] reconciled %d stale auto-row(s) "
+                    "no longer in the NSE feed's closed set: %s",
+                    len(stale), sorted(stale),
+                )
             await s.commit()
         return len(rows)
-    except Exception:
+    except Exception as e:
+        logger.warning(
+            f"_upsert_mcx_evening_closed_sessions_coro: DB upsert/reconcile "
+            f"failed (non-fatal, existing rows untouched this cycle): {e}"
+        )
         return 0
 
 
