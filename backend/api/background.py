@@ -3237,6 +3237,17 @@ async def _session_guard() -> None:
     now = timestamp_indian()
     now_t = now.time()
     today = now.date()
+    # Session-boundary-aware date (2026-10-20 fix) — ONLY for the
+    # _snapshot_fired_today sentinel checks (NonMcxSnapshot / McxSnapshot
+    # below). A restart between 00:00 and 08:00 IST is still inside the
+    # PRIOR trading session; comparing against bare calendar `today` here
+    # would fail to recognise an already-settled EOD row from that prior
+    # session and re-fire onto it. Every OTHER recovery step above/below
+    # intentionally keeps using bare `today` — they key off different,
+    # unrelated sentinels (_unsub_nonmcx_done_global / _ticker_stop_done_global)
+    # that already implement their own post-midnight stop_date adjustment.
+    from backend.api.algo.expiry_freeze import session_date_of
+    sess_today = session_date_of(now)
 
     logger.info("SessionGuard: startup recovery — %s IST", now_t.strftime("%H:%M"))
 
@@ -3257,7 +3268,7 @@ async def _session_guard() -> None:
 
     # ── c. NonMcxSnapshot ──────────────────────────────────────────────────────
     try:
-        await _sg_recover_nonmcx_snapshot(non_mcx_rows, now_t, today)
+        await _sg_recover_nonmcx_snapshot(non_mcx_rows, now_t, sess_today)
     except Exception as _exc:
         logger.warning("SessionGuard: NonMcxSnapshot failed — %s", _exc)
 
@@ -3269,7 +3280,7 @@ async def _session_guard() -> None:
 
     # ── e. McxSnapshot ─────────────────────────────────────────────────────────
     try:
-        await _sg_recover_mcx_snapshot(mcx_rows, now_t, today)
+        await _sg_recover_mcx_snapshot(mcx_rows, now_t, sess_today)
     except Exception as _exc:
         logger.warning("SessionGuard: McxSnapshot failed — %s", _exc)
 
@@ -3287,16 +3298,31 @@ async def _preload_snapshot_sentinels() -> None:
     If today's EOD snapshots already exist (written by a prior process run),
     seed the sentinels so SessionGuard skips re-firing them and overwriting
     correct EOD data with stale BHAV values (close_price=0 before 08:00 IST).
+
+    Session-boundary-aware window (2026-10-20 fix, amends the original
+    bare-calendar-midnight version) — uses the SAME `session_date_of()`
+    08:00 IST boundary convention `snapshot_daily_book`'s own target_date
+    default now uses (D1a). A restart between 00:00 and 08:00 IST is
+    still inside the PRIOR trading session's window (e.g. MCX's own EOD
+    write landed ~23:45 the prior calendar day) — the bare-midnight window
+    this replaces would miss that row entirely, leaving the sentinel
+    unseeded and letting `_ds_startup_snapshot` / `_sg_recover_mcx_snapshot`
+    / `_sg_recover_nonmcx_snapshot` re-fire onto the ALREADY-correct,
+    already-settled row, clobbering its `settled` payload flag and `ltp`.
     """
+    from backend.api.algo.expiry_freeze import session_date_of
     from backend.api.database import async_session
     from sqlalchemy import text as _sql
     from backend.shared.helpers.date_time_utils import timestamp_indian
     from datetime import timedelta
 
     now = timestamp_indian()
-    today = now.date()
-    today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    tomorrow_midnight = today_midnight + timedelta(days=1)
+    sess_date = session_date_of(now)
+    session_start = now.replace(
+        year=sess_date.year, month=sess_date.month, day=sess_date.day,
+        hour=8, minute=0, second=0, microsecond=0,
+    )
+    session_end = session_start + timedelta(days=1)
     try:
         async with async_session() as session:
             result = await session.execute(_sql("""
@@ -3305,15 +3331,15 @@ async def _preload_snapshot_sentinels() -> None:
                   bool_or(exchange  = 'MCX') AS has_mcx
                 FROM daily_book
                 WHERE kind = 'positions'
-                  AND captured_at >= :today_start
-                  AND captured_at <  :tomorrow
-            """).bindparams(today_start=today_midnight, tomorrow=tomorrow_midnight))
+                  AND captured_at >= :session_start
+                  AND captured_at <  :session_end
+            """).bindparams(session_start=session_start, session_end=session_end))
             row = result.one_or_none()
         if row:
             if row.has_non_mcx:
-                _snapshot_fired_today["NON-MCX"] = today
+                _snapshot_fired_today["NON-MCX"] = sess_date
             if row.has_mcx:
-                _snapshot_fired_today["MCX"] = today
+                _snapshot_fired_today["MCX"] = sess_date
             logger.info("[STARTUP] snapshot sentinels restored from daily_book: %s", _snapshot_fired_today)
     except Exception as exc:
         logger.warning("[STARTUP] sentinel restore failed (non-fatal): %s", exc)
@@ -3362,7 +3388,16 @@ async def _ds_startup_snapshot(now_ist: datetime) -> None:
     # DB-backed even after a process restart. Overwriting correct EOD data
     # with a midnight broker fetch would displace it in MAX(captured_at) —
     # Kite's BHAV close_price=0 before 08:00 makes day_pnl = ltp - 0 = ltp (wrong).
-    if _snapshot_fired_today.get("NON-MCX") == today_d and _snapshot_fired_today.get("MCX") == today_d:
+    #
+    # Session-boundary-aware comparison (2026-10-20 fix) — this sentinel is
+    # seeded by `_preload_snapshot_sentinels()` using the SAME `session_date_of()`
+    # convention (D1a); comparing against bare `today_d` here would never
+    # match for a restart between 00:00-08:00 IST recovering the PRIOR
+    # session's already-settled EOD row, causing this startup snapshot to
+    # re-fire onto it (with `settled=False`, clobbering the settled flag).
+    from backend.api.algo.expiry_freeze import session_date_of
+    sess_date = session_date_of(now_ist)
+    if _snapshot_fired_today.get("NON-MCX") == sess_date and _snapshot_fired_today.get("MCX") == sess_date:
         logger.info(
             "Background: skipping startup snapshot — EOD snapshots already written today "
             "(existing EOD data serves closed-hours positions correctly)"

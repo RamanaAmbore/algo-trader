@@ -202,3 +202,168 @@ def test_timestamp_comparison_for_recovery_steps():
     assert '"08:00"' not in _SRC and "'08:00'" not in _SRC, (
         "Should not use string literals for time comparisons; use time objects"
     )
+
+
+# ---------------------------------------------------------------------------
+# D1a-regression fix (2026-10-20): session-boundary-aware snapshot
+# sentinels. Removing market_lifecycle's midnight double-fire (D1a) means
+# snapshot_daily_book(target_date=None) now resolves a post-midnight write
+# to the PRIOR trading session's date (via session_date_of) instead of a
+# throwaway "tomorrow" date. Without this fix, a restart between 00:00
+# and 08:00 IST recovering that already-settled prior-session row would
+# find _snapshot_fired_today unseeded (bare-calendar-midnight window
+# never matches a captured_at from before midnight) and re-fire the
+# startup/SessionGuard snapshot onto it — clobbering its settled payload
+# flag and ltp. These tests assert neither path fires in that scenario.
+# ---------------------------------------------------------------------------
+
+class _FakeSentinelRow:
+    def __init__(self, has_non_mcx: bool, has_mcx: bool):
+        self.has_non_mcx = has_non_mcx
+        self.has_mcx = has_mcx
+
+
+class _FakeSentinelResult:
+    def __init__(self, row):
+        self._row = row
+
+    def one_or_none(self):
+        return self._row
+
+
+class _FakeSentinelSession:
+    def __init__(self, row):
+        self._row = row
+
+    def __call__(self):
+        return self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def execute(self, *a, **k):
+        return _FakeSentinelResult(self._row)
+
+
+@pytest.mark.asyncio
+async def test_preload_sentinels_finds_prior_session_row_after_midnight_restart():
+    """A restart at 01:00 IST on D+1, recovering MCX's own ~23:45 D EOD
+    write, must seed _snapshot_fired_today["MCX"] with D (the trading
+    SESSION date), not fail to find the row at all (the bare-calendar-
+    midnight window this replaces would miss it entirely)."""
+    import backend.api.background as bg
+    from datetime import datetime, date
+    from zoneinfo import ZoneInfo
+
+    bg._snapshot_fired_today["NON-MCX"] = None
+    bg._snapshot_fired_today["MCX"] = None
+    try:
+        now = datetime(2026, 10, 20, 1, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
+        fake_session = _FakeSentinelSession(_FakeSentinelRow(has_non_mcx=True, has_mcx=True))
+        with patch("backend.shared.helpers.date_time_utils.timestamp_indian", return_value=now), \
+             patch("backend.api.database.async_session", fake_session):
+            await bg._preload_snapshot_sentinels()
+        assert bg._snapshot_fired_today["MCX"] == date(2026, 10, 19)
+        assert bg._snapshot_fired_today["NON-MCX"] == date(2026, 10, 19)
+    finally:
+        bg._snapshot_fired_today["NON-MCX"] = None
+        bg._snapshot_fired_today["MCX"] = None
+
+
+@pytest.mark.asyncio
+async def test_ds_startup_snapshot_skips_refire_after_midnight_restart():
+    """With the sentinel correctly seeded to the prior session's date,
+    _ds_startup_snapshot at 01:00 D+1 must NOT re-fire a startup snapshot
+    — it would clobber the already-settled D-dated row (settled=False,
+    overwritten ltp/payload_json)."""
+    import backend.api.background as bg
+    from datetime import datetime, date
+    from zoneinfo import ZoneInfo
+
+    now = datetime(2026, 10, 20, 1, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
+    bg._snapshot_fired_today["NON-MCX"] = date(2026, 10, 19)
+    bg._snapshot_fired_today["MCX"] = date(2026, 10, 19)
+    try:
+        with patch("backend.api.background.timestamp_indian", return_value=now), \
+             patch.object(bg.exchange_clock, "is_exchange_open", return_value=False), \
+             patch("backend.api.background.is_trading_day_today", return_value=True), \
+             patch("backend.api.background._snapshot_fire", new_callable=AsyncMock) as m_fire:
+            await bg._ds_startup_snapshot(now)
+        m_fire.assert_not_awaited()
+    finally:
+        bg._snapshot_fired_today["NON-MCX"] = None
+        bg._snapshot_fired_today["MCX"] = None
+
+
+@pytest.mark.asyncio
+async def test_ds_startup_snapshot_fires_when_sentinel_is_bare_calendar_date():
+    """Regression guard: comparing against bare now_ist.date() (D+1, the
+    pre-fix behaviour) must NOT be what gates this check any more — if it
+    were, a sentinel correctly seeded with the SESSION date (D) would
+    look unseeded and this would incorrectly re-fire. This test fails
+    against a reversion to the bare-today_d comparison."""
+    import backend.api.background as bg
+    from datetime import datetime, date
+    from zoneinfo import ZoneInfo
+
+    now = datetime(2026, 10, 20, 1, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
+    # Sentinel seeded with the correct SESSION date (D), not bare today (D+1).
+    bg._snapshot_fired_today["NON-MCX"] = date(2026, 10, 19)
+    bg._snapshot_fired_today["MCX"] = date(2026, 10, 19)
+    try:
+        with patch("backend.api.background.timestamp_indian", return_value=now), \
+             patch.object(bg.exchange_clock, "is_exchange_open", return_value=False), \
+             patch("backend.api.background.is_trading_day_today", return_value=True), \
+             patch("backend.api.background._snapshot_fire", new_callable=AsyncMock) as m_fire:
+            await bg._ds_startup_snapshot(now)
+        assert bg._snapshot_fired_today["MCX"] == date(2026, 10, 19)
+        m_fire.assert_not_awaited(), (
+            "bare now_ist.date() comparison would wrongly see this sentinel "
+            "as unseeded and re-fire — session_date_of() must be used instead"
+        )
+    finally:
+        bg._snapshot_fired_today["NON-MCX"] = None
+        bg._snapshot_fired_today["MCX"] = None
+
+
+@pytest.mark.asyncio
+async def test_session_guard_mcx_snapshot_uses_session_date_not_bare_today():
+    """_session_guard must pass session_date_of(now) — not bare today —
+    into _sg_recover_nonmcx_snapshot / _sg_recover_mcx_snapshot, so their
+    _snapshot_fired_today comparisons agree with what
+    _preload_snapshot_sentinels seeded."""
+    import backend.api.background as bg
+    from datetime import datetime, date
+    from zoneinfo import ZoneInfo
+
+    from types import SimpleNamespace
+    from datetime import time as dtime
+
+    now = datetime(2026, 10, 20, 1, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
+    bg._snapshot_fired_today["NON-MCX"] = date(2026, 10, 19)
+    bg._snapshot_fired_today["MCX"] = date(2026, 10, 19)
+    fake_mcx_row = SimpleNamespace(snapshot_time=dtime(23, 45), close_time=dtime(23, 30))
+
+    def _fake_gate_rows(gate):
+        return [fake_mcx_row] if gate == "MCX" else []
+
+    try:
+        with patch("backend.shared.helpers.date_time_utils.timestamp_indian", return_value=now), \
+             patch("backend.api.background._sg_recover_close_reset", new_callable=AsyncMock), \
+             patch("backend.api.background._sg_recover_nonmcx_close", new_callable=AsyncMock), \
+             patch("backend.api.background._sg_recover_mcx_close"), \
+             patch("backend.api.background._snapshot_fire", new_callable=AsyncMock) as m_fire, \
+             patch("backend.api.helpers.exchange_clock._is_market_day_today", return_value=True), \
+             patch("backend.api.helpers.exchange_clock._effective_gate_rows", side_effect=_fake_gate_rows):
+            await bg._session_guard()
+        m_fire.assert_not_awaited(), (
+            "SessionGuard must not re-fire an EOD snapshot already settled "
+            "for the current trading session (comparing bare calendar date "
+            "would wrongly treat it as unseeded)"
+        )
+    finally:
+        bg._snapshot_fired_today["NON-MCX"] = None
+        bg._snapshot_fired_today["MCX"] = None

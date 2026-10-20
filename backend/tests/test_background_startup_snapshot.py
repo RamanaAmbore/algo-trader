@@ -440,15 +440,27 @@ async def test_ds_startup_snapshot_skips_when_eod_sentinels_set():
     After _preload_snapshot_sentinels runs, sentinels are DB-backed and reliable
     even after a restart. This verifies the guard in _ds_startup_snapshot
     prevents overwriting correct EOD data with stale BHAV values at 02:00 IST.
+
+    2026-10-20 fix (amends this test): the sentinel comparison is now
+    session-boundary-aware (`session_date_of`, D1a's own convention) —
+    a genuine 02:00 IST restart is still inside the PRIOR trading
+    session, so the sentinel `_preload_snapshot_sentinels` would
+    actually seed in this scenario is `today - 1 day` (the session
+    date), not bare `today`. Uses a real IST-aware datetime so the
+    session-boundary math is exercised correctly (a naive
+    `datetime.now()` previously stood in for "02:00 IST" without
+    actually being IST, which happened to work under the old bare-date
+    comparison but not the new session-aware one).
     """
+    from zoneinfo import ZoneInfo
     from backend.api.background import _ds_startup_snapshot, _snapshot_fired_today
 
-    today = datetime.now().date()
-    _snapshot_fired_today["NON-MCX"] = today
-    _snapshot_fired_today["MCX"] = today
+    ist = ZoneInfo("Asia/Kolkata")
+    now_ist = datetime.now(ist).replace(hour=2, minute=0, second=0, microsecond=0)
+    session_date = (now_ist - timedelta(hours=8)).date()
+    _snapshot_fired_today["NON-MCX"] = session_date
+    _snapshot_fired_today["MCX"] = session_date
     try:
-        now_ist = datetime.now().replace(hour=2, minute=0)
-
         with patch("backend.api.background.exchange_clock") as mock_clock, \
              patch("backend.api.background.is_trading_day_today", return_value=True), \
              patch("backend.api.background._snapshot_fire", new_callable=AsyncMock) as mock_fire:
