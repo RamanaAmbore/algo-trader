@@ -425,10 +425,19 @@ matches zero rows. The job still runs and records `task_markers.prev_close_fix_d
 `_pcf_mark_done()`. Its live effect is the catch-up path: `_sg_recover_close_reset()`
 ([`background.py:3177`](backend/api/background.py#L3177)) and the loop tick both consult that same
 marker through `_pcf_marker_date()` ([`background.py:3133`](backend/api/background.py#L3133)), so a
-second run on the same IST day is blocked. **Open risk (code-read, not verified against prod):** the
-marker only records that the 08:00 run happened. If the server was down at 08:00 and restarts after
-the 15:45 or 23:45 EOD write, the catch-up UPDATE matches that same-dated EOD row and overwrites its
-`ltp` with the settlement `close_price`. Full schedule: memory `project_market_daily_window`.
+second run on the same IST day is blocked. **Late-catch-up stomp guard (fixed, commit `8b4f516e`):**
+the marker alone only prevented a *duplicate* run — it did not stop a *missed* 08:00 run from catching
+up *after* that same day's own EOD write (15:45/23:45), which would have overwritten the EOD row's
+already-correct `ltp` with the stale morning settlement `close_price`. Fixed via
+`_pcf_eod_already_fired_today(today)`, consulted by both call sites before running
+`fix_daily_book_prev_close`: checks `_snapshot_fired_today` first, then falls back to a direct DB
+existence check against the UPDATE's own target set (`date=today AND kind IN ('holdings','positions')`)
+— the fallback closes a second gap found while fixing the first: `_preload_snapshot_sentinels()` only
+seeds from `kind='positions'` rows, so a holdings-only day would have left the sentinel unseeded and
+the stomp would still have gone through. Degrades to "proceed" (not a hard failure) on any DB error.
+In steady-state operation this job is now a no-op every single trading day — `_build_settlement_map()`
+still makes a real broker round-trip for a job that then matches zero rows; removing the job entirely
+is an operator decision, not made here. Full schedule: memory `project_market_daily_window`.
 
 **`close_settled` double-fire on midnight rollover (2026-10-20, commits `5295f432`, `4b2b4f17`,
 `2220074d`)** — Root cause: `MarketLifecycle.poll()`
@@ -451,6 +460,28 @@ per process. An already-elapsed settle window is marked handled and never fired 
 Explicit `target_date` callers are untouched. (4) `_session_guard()` uses the same session date for
 the EOD sentinel checks only ([`background.py:3300-3301`](backend/api/background.py#L3300)).
 
+**Downstream regression this fix exposed, also fixed (commit `047aaf9e`):**
+`positions.py:_positions_snapshot`'s closed-hours qty=0 keep-filter
+(`db.qty != 0 OR db.date = :today_ist`) used bare `now.date()` for `:today_ist`. Before the
+`close_settled` fix above, the double-fire bug's spurious midnight-dated batch happened to match
+that bare date, which is what kept a flat (`qty=0`) closed-out position visible in the closed-hours
+grid overnight — removing the double-fire removed that accidental support, and flat positions
+started silently disappearing from the grid during 00:00–08:00 IST (and across weekends/holidays),
+violating the "never blank during closed hours" invariant above. Fixed by walking `:today_ist` back
+(bounded, 10 iterations, via `fetch_holidays("NSE")` + `is_trading_day()`, no live probe) to the most
+recent real NSE trading day, and changing the comparison to `db.date >= :today_ist` — `>=` is
+load-bearing on its own: an MCX evening-session EOD batch can legitimately be dated ON an NSE
+holiday, which `=` would wrongly exclude after the floor-walk steps past it. `holdings.py`'s
+equivalent reader has no analogous qty/date filter at all — confirmed unaffected, no parallel fix
+needed. One Sunday-specific case changed behavior as a side effect (a flat position previously
+hidden by an unrelated `snapshot_cutoff` boundary quirk is now correctly shown) — a second instance
+of the same invariant being restored, not a new regression.
+
+**Deploy coupling — these commits are not independently shippable.** Cherry-picking a subset
+reproduces a version of the regression this section describes: `5295f432` requires `a3a88aac` AND
+`047aaf9e`; `4b2b4f17` requires `2220074d`; `2a549a3d` requires `8b4f516e`; `0b203d07` requires
+`fdfa37a5`. Ship the full range together.
+
 **Empirical note — corruption is narrower than first reported.** The first analysis concluded the
 corruption happened "every single night". That came from a flawed check: filtering by `captured_at`
 time only catches weekend-frozen artifacts, because a weekday double-fire row is overwritten by that
@@ -460,9 +491,14 @@ pairs)**. All disagreement sits in one window, 2026-09-07 → 2026-09-18. **Zero
 2026-09-19 → 2026-10-19.** The practical blast radius is weekend and holiday boundaries, where no
 same-day write corrects the row.
 
-**Open item, not root-caused:** the 2026-09-07 → 2026-09-18 disagreement cluster is not explained by
-this fix or by any code path identified so far. Treat it as unresolved, not as covered by the fix.
-Monitor with the `ltp`→`prev_close` comparison in the archived plan
+**Open item, not root-caused — but likely explained.** The 2026-09-07 → 2026-09-18 disagreement
+cluster is not confirmed-fixed by this change or by any code path identified so far; treat it as
+unresolved, not as covered by this fix. It most likely reflects the system being mid-refactor on this
+exact mechanism during that window — `daily_snapshot.py`, `background.py`, and `positions.py` all had
+multiple structural commits landing 2026-09-05 → 2026-09-18 (e.g. `9f58d943` "remove settlement
+snapshots; broker.close_price as prev_close reference," `ec95b7db` "calendar-driven prev_close —
+two-CTE on closed days," `b7b4d84c` "remove two-CTE snapshot query"). This is corroborating,
+contemporaneous commit history, not proof of causation. Monitor with the `ltp`→`prev_close` comparison in the archived plan
 ([`.claude/PLAN.done37.md`](.claude/PLAN.done37.md)).
 
 **Single arbitrated source per field (Pulse, 2026-10-20, commits `9a983ca5`, `8d6be90e`)** — When one
