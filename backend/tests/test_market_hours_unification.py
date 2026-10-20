@@ -252,3 +252,98 @@ async def test_all_six_sites_agree_mcx_open():
     verdicts["movers"] = _movers_probe_market_state(_FIXTURE_NOW)[1]
 
     assert all(verdicts.values()), f"all 6 sites must agree MCX is open: {verdicts}"
+
+
+# ---------------------------------------------------------------------------
+# Regression: gate-shaped sites (_perf_probe_open_segments,
+# _watchdog_check_market_open, simulator's two functions) must use the
+# GATE's OWN hours_start/hours_end (exchange_schedule-sourced, per-date-
+# accurate — a future DST-adjusted MCX close or Muhurat override row is
+# read from the SAME source) — NEVER the YAML's static `sessions` list,
+# which would silently discard that per-date accuracy.
+# ---------------------------------------------------------------------------
+
+# A deliberately NON-standard gate window (not matching YAML's 09:00-23:30
+# commodity default) — if any site silently substitutes the YAML sessions
+# list, this window stops mattering and the assertions below fail.
+_NONSTANDARD_MCX_GATE = {
+    "name": "MCX", "hours_start": dtime(6, 0), "hours_end": dtime(22, 0),
+    "holiday_exchange": "MCX",
+}
+# 05:45 IST — inside the gate's own 06:00-22:00 window? No — BEFORE it.
+# Used to prove the gate's own hours (not YAML's 09:00 start) gate the result.
+_BEFORE_GATE_OPEN = datetime(2026, 10, 21, 5, 45, tzinfo=IST)  # ordinary weekday, no holiday
+_AFTER_GATE_OPEN = datetime(2026, 10, 21, 6, 30, tzinfo=IST)
+
+
+@pytest.mark.asyncio
+async def test_perf_probe_open_segments_uses_gate_own_hours_not_yaml():
+    from backend.api.background import _perf_probe_open_segments
+
+    # Before the gate's own 06:00 open (but after YAML's 09:00 default
+    # would have mattered) — must read CLOSED only because of the gate's
+    # own window, proving YAML sessions aren't silently substituted in.
+    closed = await _perf_probe_open_segments([_NONSTANDARD_MCX_GATE], {}, _BEFORE_GATE_OPEN)
+    assert closed == []
+
+    opened = await _perf_probe_open_segments([_NONSTANDARD_MCX_GATE], {}, _AFTER_GATE_OPEN)
+    assert len(opened) == 1
+
+
+@pytest.mark.asyncio
+async def test_watchdog_check_market_open_uses_gate_own_hours_not_yaml():
+    from backend.api import background as bg
+
+    with patch.object(bg, "timestamp_indian", return_value=_BEFORE_GATE_OPEN), \
+         patch.object(bg, "_get_segments", return_value=[_NONSTANDARD_MCX_GATE]):
+        closed = await bg._watchdog_check_market_open(
+            holiday_cache={}, holiday_year_ref=[_BEFORE_GATE_OPEN.year],
+            fetch_holidays=_fake_fetch_holidays,
+        )
+    assert closed is False
+
+    with patch.object(bg, "timestamp_indian", return_value=_AFTER_GATE_OPEN), \
+         patch.object(bg, "_get_segments", return_value=[_NONSTANDARD_MCX_GATE]):
+        opened = await bg._watchdog_check_market_open(
+            holiday_cache={}, holiday_year_ref=[_AFTER_GATE_OPEN.year],
+            fetch_holidays=_fake_fetch_holidays,
+        )
+    assert opened is True
+
+
+def test_simulator_markets_currently_open_uses_gate_own_hours_not_yaml():
+    from backend.api.routes import simulator as sim
+    from backend.api import background as bg
+
+    with patch.object(bg, "_get_segments", return_value=[_NONSTANDARD_MCX_GATE]), \
+         patch("backend.shared.helpers.date_time_utils.timestamp_indian", return_value=_BEFORE_GATE_OPEN):
+        assert sim._markets_currently_open() is False
+
+    with patch.object(bg, "_get_segments", return_value=[_NONSTANDARD_MCX_GATE]), \
+         patch("backend.shared.helpers.date_time_utils.timestamp_indian", return_value=_AFTER_GATE_OPEN):
+        assert sim._markets_currently_open() is True
+
+
+def test_perf_probe_open_segments_source_never_passes_sessions_kwarg():
+    """Source-level guard — the gate-shaped sites must never pass the
+    bare `sessions=` kwarg to is_market_open (that would substitute the
+    YAML's static window for the gate's own per-date-accurate one).
+    Scoped with a word-boundary regex so `special_sessions=` (a
+    different, legitimate kwarg) doesn't false-positive."""
+    import inspect
+    import re
+    from backend.api import background as bg
+
+    pattern = re.compile(r"(?<![A-Za-z_])sessions=")
+
+    for fn in (bg._perf_probe_open_segments, bg._watchdog_check_market_open):
+        src = inspect.getsource(fn)
+        assert not pattern.search(src), (
+            f"{fn.__name__} must not pass sessions= — it would override "
+            f"the gate's own exchange_schedule-sourced hours_start/hours_end"
+        )
+
+    from backend.api.routes import simulator as sim
+    for fn in (sim._market_hours_block_check, sim._markets_currently_open):
+        src = inspect.getsource(fn)
+        assert not pattern.search(src)

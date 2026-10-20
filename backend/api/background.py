@@ -1019,18 +1019,36 @@ async def _perf_probe_open_segments(
     live-quote probe). Each probe runs in `asyncio.to_thread` so the
     blocking Kite check doesn't stall the event loop.
 
-    Routed through `_segment_is_open()` (2026-10-20, Defect 2 unification)
-    via `_yaml_segment_for_gate()` — the legacy direct `is_market_open()`
-    call here never passed `sessions=`/`evening_open_on_holidays=`, so an
-    MCX evening session on an equity holiday always read closed. The
-    `holiday_cache` parameter is kept for call-site signature stability
-    (and still populated/refreshed by the caller) but no longer consulted
-    directly — `_segment_is_open` does its own (separately cached)
-    `fetch_holidays()` call.
+    2026-10-20 fix (Defect 2 unification) — the legacy direct
+    `is_market_open()` call here never passed `evening_open_on_holidays=`
+    (sourced from the real YAML block via `_yaml_segment_for_gate()`), so
+    an MCX evening session on an equity holiday always read closed.
+    Deliberately does NOT pass the sessions kwarg — unlike the YAML-config-shaped
+    call sites (market.py/quote.py/watchlist.py), `seg` here is a
+    *gate*-shaped dict from `_get_segments()` (`seg['hours_start']` /
+    `seg['hours_end']`), which already carries the gate's own, per-date
+    `exchange_schedule`-sourced window (today just the recurring
+    08:00-23:30 default, but a future DST-adjusted or Muhurat override
+    row is read from the SAME source) — overriding with the YAML's
+    static `sessions` list would silently discard that per-date accuracy.
     """
-    from backend.shared.helpers.date_time_utils import _segment_is_open
+    from backend.shared.helpers.date_time_utils import is_market_open
     def _probe_open(seg):
-        return _segment_is_open(_yaml_segment_for_gate(seg['holiday_exchange']), now)
+        exch = seg['holiday_exchange']
+        try:
+            from backend.brokers.broker_apis import fetch_special_sessions
+            special = fetch_special_sessions(exch)
+        except Exception:
+            special = []
+        return is_market_open(
+            now, holiday_cache.get(exch, set()),
+            seg['hours_start'], seg['hours_end'],
+            exchange=exch,
+            evening_open_on_holidays=bool(
+                _yaml_segment_for_gate(exch).get("evening_open_on_holidays", False)
+            ),
+            special_sessions=special,
+        )
     open_results = await asyncio.gather(*(
         asyncio.to_thread(_probe_open, seg) for seg in segments
     ))
@@ -5695,11 +5713,17 @@ async def _watchdog_check_market_open(
                 )
             except Exception:
                 special_sessions[exch] = []
-    # 2026-10-20 fix (Defect 2 unification) — thread sessions=/
-    # evening_open_on_holidays= from the real market_segments YAML block
-    # (via _yaml_segment_for_gate) through to is_market_open. Previously
-    # missing entirely, so an MCX evening session on an equity holiday
-    # always read closed regardless of the pre-fetched special_sessions.
+    # 2026-10-20 fix (Defect 2 unification) — thread evening_open_on_holidays=
+    # from the real market_segments YAML block (via _yaml_segment_for_gate)
+    # through to is_market_open. Previously missing entirely, so an MCX
+    # evening session on an equity holiday always read closed regardless
+    # of the pre-fetched special_sessions. Deliberately does NOT pass
+    # the sessions kwarg — `seg['hours_start']`/`seg['hours_end']` are this gate's
+    # own `exchange_schedule`-sourced window (today the recurring default,
+    # but a future per-date override row — e.g. a DST-adjusted MCX close,
+    # or a Muhurat session — is read from the SAME source); overriding
+    # with the YAML's static sessions list would silently discard that
+    # per-date accuracy.
     return any(
         is_market_open(
             now,
@@ -5707,7 +5731,6 @@ async def _watchdog_check_market_open(
             seg['hours_start'],
             seg['hours_end'],
             exchange=seg['holiday_exchange'],
-            sessions=_yaml_segment_for_gate(seg['holiday_exchange']).get("sessions") or None,
             evening_open_on_holidays=bool(
                 _yaml_segment_for_gate(seg['holiday_exchange']).get("evening_open_on_holidays", False)
             ),
