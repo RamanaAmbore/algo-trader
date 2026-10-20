@@ -378,10 +378,12 @@ class TestUXMuhurat2026:
             result = _ba.fetch_special_sessions("NSE")
         assert result == []
         cached_date = _ba._SPECIAL_SESSION_CACHE.get("NSE", (None,))[0]
-        from datetime import date as _d
-        assert cached_date == _d.today(), (
+        from backend.shared.helpers.date_time_utils import timestamp_indian
+        assert cached_date == timestamp_indian().date(), (
             "A genuinely successful (even empty) re-query must refresh "
-            "the cache to today"
+            "the cache to today's IST date, not the system-local date "
+            "(2026-10-20 fix: the server runs on UTC; IST != UTC date "
+            "for part of every night)"
         )
 
     def test_guard_triggered_failure_does_not_poison_stale_cache(self):
@@ -411,3 +413,55 @@ class TestUXMuhurat2026:
             "stale entry must be left completely untouched, not "
             "relabeled with today's date"
         )
+
+    def test_cache_keys_on_ist_date_not_system_local_date(self):
+        """2026-10-20 fix: the server runs on UTC (`timedatectl` confirmed
+        live), and IST is UTC+5:30. Between IST 00:00 and 05:30, the UTC
+        calendar date hasn't rolled over yet — a cache keyed on
+        `date.today()` (system-local) would mis-key during that ~5.5h
+        window every night. Simulate exactly that window: UTC says
+        2026-10-20 23:45 (still "the 20th" by system-local reckoning), but
+        IST is already 2026-10-21 05:15 ("the 21st"). The cache must key
+        on the IST date."""
+        from datetime import date as _date, datetime as _datetime
+        from zoneinfo import ZoneInfo
+        import backend.brokers.broker_apis as _ba
+        from unittest.mock import patch
+
+        _ba._SPECIAL_SESSION_CACHE.clear()
+        fake_ist_now = _datetime(2026, 10, 21, 5, 15, tzinfo=ZoneInfo("Asia/Kolkata"))
+
+        with patch("backend.shared.helpers.date_time_utils.timestamp_indian",
+                    return_value=fake_ist_now), \
+             patch.object(_ba, "_read_special_sessions_sync", return_value=[]):
+            _ba.fetch_special_sessions("NSE")
+
+        cached_date = _ba._SPECIAL_SESSION_CACHE.get("NSE", (None,))[0]
+        assert cached_date == _date(2026, 10, 21), (
+            f"expected the IST date 2026-10-21, got {cached_date} "
+            "(looks like the system-local/UTC date leaked back in)"
+        )
+
+    @pytest.mark.asyncio
+    async def test_warm_special_sessions_cache_keys_on_ist_date(self):
+        """Same IST-vs-UTC date-key fix, for `warm_special_sessions_cache`
+        — warming under the wrong key would make a sync caller's lookup
+        in the 00:00-05:30 IST window miss the just-warmed entry."""
+        from datetime import date as _date, datetime as _datetime
+        from zoneinfo import ZoneInfo
+        import backend.brokers.broker_apis as _ba
+        from unittest.mock import patch, AsyncMock
+
+        _ba._SPECIAL_SESSION_CACHE.clear()
+        fake_ist_now = _datetime(2026, 10, 21, 5, 15, tzinfo=ZoneInfo("Asia/Kolkata"))
+
+        with patch("backend.shared.helpers.date_time_utils.timestamp_indian",
+                    return_value=fake_ist_now), \
+             patch.object(_ba, "_read_special_sessions_async", new=AsyncMock(return_value=[])):
+            await _ba.warm_special_sessions_cache()
+
+        for exch, (cached_date, _rows) in _ba._SPECIAL_SESSION_CACHE.items():
+            assert cached_date == _date(2026, 10, 21), (
+                f"{exch} warmed under {cached_date}, expected the IST "
+                "date 2026-10-21"
+            )

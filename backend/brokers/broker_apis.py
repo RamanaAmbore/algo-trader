@@ -3150,6 +3150,13 @@ def fetch_special_sessions(exchange: str = "NSE") -> list[dict]:
 
     The list only contains rows whose ``date`` field equals today (IST).
     Callers pass this list as ``special_sessions=`` to ``is_market_open``.
+
+    Cache key is the IST calendar date (``timestamp_indian().date()``), NOT
+    ``date.today()`` (2026-10-20 fix). The prod/dev servers run on UTC system
+    time (confirmed via ``timedatectl``), and IST is UTC+5:30 — between IST
+    00:00 and 05:30, ``date.today()`` still reports the PRIOR UTC day while
+    the real IST day has already rolled over, mis-keying the cache and
+    sending the DB query the wrong date for that ~5.5h window every night.
     Fail-open: on any DB error, or when called from one of the async
     contexts described below, returns ``[]`` for THIS call WITHOUT
     caching it (2026-10-20 fix, see below).
@@ -3179,10 +3186,10 @@ def fetch_special_sessions(exchange: str = "NSE") -> list[dict]:
     hit from the main loop mid-day still fails open to ``[]`` — this
     mitigates the gap, it does not eliminate it.
     """
-    from datetime import date as _dt_date
+    from backend.shared.helpers.date_time_utils import timestamp_indian
 
     exch = (exchange or "NSE").upper().strip()
-    today = _dt_date.today()
+    today = timestamp_indian().date()
 
     cached = _SPECIAL_SESSION_CACHE.get(exch)
     if cached and cached[0] == today:
@@ -3267,11 +3274,17 @@ async def warm_special_sessions_cache() -> None:
     Best-effort: any DB error for one exchange is swallowed (logged at
     debug) so a single failure never blocks the others or the caller's
     own startup/refresh flow.
+
+    Keys the warmed entry on the IST calendar date, matching
+    ``fetch_special_sessions``'s cache-key fix (2026-10-20) — using the
+    system-local/UTC date here would warm the cache under the WRONG key
+    during the 00:00-05:30 IST window, so a sync caller's lookup in that
+    window would still miss (cached[0] != today) despite having just run.
     """
-    from datetime import date as _dt_date
+    from backend.shared.helpers.date_time_utils import timestamp_indian
     from backend.shared.helpers.utils import config as _cfg
 
-    today = _dt_date.today()
+    today = timestamp_indian().date()
     segs = _cfg.get("market_segments", {}) or {}
     exchanges = {
         str((seg or {}).get("holiday_exchange", "NSE")).upper().strip()
