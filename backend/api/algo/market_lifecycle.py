@@ -93,6 +93,11 @@ class MarketLifecycle:
         # `<exchange>:close`, `<exchange>:close_settled`.
         self._callbacks: dict[str, list[HandlerCB]] = {}
 
+        # One-shot guard for _hydrate_from_audit() — restart hydration
+        # runs at most once per process lifetime, called from inside the
+        # first poll().
+        self._hydrated: bool = False
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -146,6 +151,8 @@ class MarketLifecycle:
         logged + counted; other handlers in the same event still run,
         and the per-event audit row records ``handlers_failed > 0``.
         """
+        await self._hydrate_from_audit()
+
         now_ist = timestamp_indian()
 
         # No calendar-date-rollover reset here by design (2026-10-20 fix) —
@@ -292,6 +299,91 @@ class MarketLifecycle:
         )
         return ran, failed
 
+    async def _hydrate_from_audit(self) -> None:
+        """Restore ``_last_close_at`` / ``_settled_fired`` from
+        ``MarketLifecycleEvent`` rows on process restart (one-shot,
+        guarded by ``self._hydrated``, called from inside ``poll()``).
+
+        Mirrors ``agent_engine.py``'s ``_v2_hydrate_latch()`` pattern: a
+        pure, unit-testable replay helper (``_hydrate_lifecycle_from_rows``)
+        plus a thin DB-querying async wrapper that applies the one
+        time-dependent decision (see below) and installs the result.
+
+        Without this, a restart landing inside ``[last_close, last_close +
+        settled_offset)`` loses the in-memory ``_last_close_at`` entirely
+        — a cold ``None`` — and the ``close_settled`` event for that close
+        episode can silently never fire at all (a missed fire; the
+        mirror-image risk of the double-fire D1a fixes).
+
+        Lookback window is 26h (wide enough to cover MCX's 23:30 close
+        plus a generously-raised settled_offset — the module's own
+        constant doc notes 45 min is still a valid operator value — plus
+        margin), NOT a bare "today's IST calendar date" bound, which
+        would wrongly exclude a close fired late on the PRIOR calendar
+        day for a cycle that is still open right now (e.g. a restart at
+        00:10 IST recovering a 23:30 MCX close).
+
+        Must-not-retroactively-fire rule: if the settled window has
+        ALREADY elapsed by the time hydration runs (restart happened a
+        long time after the close, and no ``close_settled`` row was ever
+        recorded — e.g. the process crashed before it could fire), this
+        marks that exchange as settled anyway rather than letting the
+        very next ``poll()`` fire a stale snapshot write hours/days late.
+        This matches the EXISTING cold-boot philosophy for the
+        un-hydrated case (see ``_last_close_at``'s own docstring: "the
+        settled event will not fire spuriously on a fresh boot after the
+        close time has already elapsed") — hydration must not introduce
+        a NEW way to fire late that didn't exist before this method did.
+        """
+        if self._hydrated:
+            return
+        self._hydrated = True
+        try:
+            from backend.api.database import async_session
+            from backend.api.models import MarketLifecycleEvent
+            from sqlalchemy import select as _select
+
+            now_ist = timestamp_indian()
+            lookback = now_ist - timedelta(hours=26)
+            async with async_session() as session:
+                result = await session.execute(
+                    _select(
+                        MarketLifecycleEvent.exchange,
+                        MarketLifecycleEvent.event_type,
+                        MarketLifecycleEvent.fired_at,
+                    )
+                    .where(MarketLifecycleEvent.fired_at >= lookback)
+                    .where(MarketLifecycleEvent.event_type.in_(
+                        ("open", "close", "close_settled")))
+                    .order_by(MarketLifecycleEvent.fired_at.asc())
+                )
+                rows = result.all()
+            last_close, settled = _hydrate_lifecycle_from_rows(rows)
+
+            offset = timedelta(minutes=_settled_offset_minutes())
+            for exch, ts in last_close.items():
+                if settled.get(exch):
+                    continue
+                if now_ist >= ts + offset:
+                    # Window already elapsed with no recorded fire —
+                    # treat as handled, never fire retroactively.
+                    settled[exch] = True
+
+            for exch, ts in last_close.items():
+                self._last_close_at[exch] = ts
+            for exch, flag in settled.items():
+                self._settled_fired[exch] = flag
+            if last_close or settled:
+                logger.info(
+                    "market_lifecycle: hydrated from audit — "
+                    "last_close_at=%s settled_fired=%s",
+                    {k: v.isoformat() for k, v in last_close.items()}, settled,
+                )
+        except Exception as e:
+            logger.warning(
+                f"market_lifecycle: audit hydration failed (starting cold): {e}"
+            )
+
     # ------------------------------------------------------------------
     # Testing helpers
     # ------------------------------------------------------------------
@@ -302,6 +394,7 @@ class MarketLifecycle:
         self._last_close_at.clear()
         self._settled_fired.clear()
         self._callbacks.clear()
+        self._hydrated = False
 
 
 # ---------------------------------------------------------------------------
@@ -404,6 +497,43 @@ def _enumerate_exchanges() -> dict[str, dict]:
             "evening_open_on_holidays": False,
         }
     return out
+
+
+def _hydrate_lifecycle_from_rows(
+    rows: "list[tuple[str, str, datetime]]",
+) -> "tuple[dict[str, datetime], dict[str, bool]]":
+    """Pure helper — replay ``(exchange, event_type, fired_at)`` rows in
+    ASCENDING ``fired_at`` order and reconstruct ``(last_close_at,
+    settled_fired)`` dicts. Split out from ``_hydrate_from_audit`` (the
+    DB-querying wrapper) so this can be unit-tested with plain tuples —
+    no DB session needed, mirroring ``agent_engine.py``'s
+    ``_hydrate_latch_from_rows`` convention.
+
+    Replay semantics per exchange:
+      - ``"open"``          — clears both (a fresh cycle begins; the
+                               close episode before it is over).
+      - ``"close"``         — sets ``last_close_at``, clears
+                               ``settled_fired`` (a new close episode).
+      - ``"close_settled"`` — sets ``settled_fired = True`` for the
+                               CURRENT close episode.
+
+    Rows must already be filtered to a bounded lookback window by the
+    caller (no date/time logic here — purely the state-machine replay).
+    """
+    last_close: dict[str, datetime] = {}
+    settled: dict[str, bool] = {}
+    for exch, event_type, fired_at in rows:
+        if not exch or fired_at is None:
+            continue
+        if event_type == "open":
+            last_close.pop(exch, None)
+            settled[exch] = False
+        elif event_type == "close":
+            last_close[exch] = fired_at
+            settled[exch] = False
+        elif event_type == "close_settled":
+            settled[exch] = True
+    return last_close, settled
 
 
 def _exchange_is_open(segment: dict, now_ist: datetime) -> bool:

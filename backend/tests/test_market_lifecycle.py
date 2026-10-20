@@ -559,6 +559,183 @@ async def test_background_task_calls_poll_loop():
     assert "register_default_handlers" in body
 
 
+# ---------------------------------------------------------------------------
+# D1b — restart hydration (_hydrate_from_audit)
+# ---------------------------------------------------------------------------
+
+class _FakeHydrateResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def all(self):
+        return self._rows
+
+
+class _FakeHydrateSession:
+    """Fake async-session context manager returning pre-seeded rows for
+    the one `execute()` call `_hydrate_from_audit` makes."""
+
+    def __init__(self, rows):
+        self._rows = rows
+
+    def __call__(self):
+        return self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def execute(self, *a, **k):
+        return _FakeHydrateResult(self._rows)
+
+
+def test_hydrate_lifecycle_from_rows_replay():
+    """Pure replay helper — open clears a prior close cycle; close_settled
+    marks the CURRENT cycle settled; a later close starts a fresh cycle."""
+    from backend.api.algo.market_lifecycle import _hydrate_lifecycle_from_rows
+
+    t0 = datetime(2026, 6, 28, 15, 30, tzinfo=timezone.utc)
+    t1 = t0 + timedelta(minutes=15)
+    t2 = t1 + timedelta(hours=10)  # next day's open — supersedes the cycle
+
+    rows = [
+        ("nse", "close", t0),
+        ("nse", "close_settled", t1),
+        ("mcx", "close", t0),
+        ("nse", "open", t2),
+    ]
+    last_close, settled = _hydrate_lifecycle_from_rows(rows)
+    assert "nse" not in last_close, "a later open must clear the superseded close cycle"
+    assert settled.get("nse") is False
+    assert last_close["mcx"] == t0
+    assert settled.get("mcx") is False
+
+
+def test_hydrate_lifecycle_from_rows_skips_malformed():
+    """Rows with no exchange or no fired_at are skipped, not raised on."""
+    from backend.api.algo.market_lifecycle import _hydrate_lifecycle_from_rows
+
+    t0 = datetime(2026, 6, 28, 15, 30, tzinfo=timezone.utc)
+    rows = [("", "close", t0), ("nse", "close", None), ("mcx", "close", t0)]
+    last_close, settled = _hydrate_lifecycle_from_rows(rows)
+    assert last_close == {"mcx": t0}
+
+
+@pytest.mark.asyncio
+async def test_hydrate_from_audit_restores_mid_window_state_and_fires_on_schedule(
+    lifecycle, stub_segments, stub_holidays, freeze_audit, freeze_now,
+):
+    """A restart landing inside the settled window restores last_close_at
+    (so close_settled still fires later, on the normal schedule) WITHOUT
+    firing it immediately on the hydrating poll."""
+    from backend.api.algo import market_lifecycle as ml_mod
+
+    freeze_now["now"] = freeze_now["now"].replace(hour=23, minute=50)
+    close_ts = freeze_now["now"] - timedelta(minutes=5)  # closed 5 min ago
+    rows = [("nse", "close", close_ts)]
+
+    settled_called = []
+    async def cb(e, t): settled_called.append((e, t))
+    lifecycle.register("nse:close_settled", cb)
+
+    with patch.object(ml_mod, "_settled_offset_minutes", lambda: 15):
+        with patch("backend.api.database.async_session", _FakeHydrateSession(rows)):
+            ml_mod._test_state_fn = lambda exch, now: False  # closed
+            await lifecycle.poll()  # cold-start poll — triggers hydration
+
+        state = lifecycle.get_state()
+        assert state["last_close_at"]["nse"] is not None, (
+            "last_close_at must be restored from the audit row"
+        )
+        assert state["settled_fired"]["nse"] is False, (
+            "still within the settled window — must not be marked fired yet"
+        )
+        assert settled_called == [], "must not fire retroactively on the hydrating poll"
+
+        # Advance 11 more minutes (16 total since close) — fires naturally.
+        freeze_now["now"] = freeze_now["now"] + timedelta(minutes=11)
+        await lifecycle.poll()
+    assert ("nse", "close_settled") in settled_called
+
+
+@pytest.mark.asyncio
+async def test_hydrate_from_audit_does_not_retroactively_fire_past_window(
+    lifecycle, stub_segments, stub_holidays, freeze_audit, freeze_now,
+):
+    """A close episode whose settled window has ALREADY elapsed by
+    hydration time (e.g. the process crashed before close_settled could
+    fire, and the restart happened hours later) must be marked as handled
+    instead of firing a stale snapshot write retroactively."""
+    from backend.api.algo import market_lifecycle as ml_mod
+
+    freeze_now["now"] = freeze_now["now"].replace(hour=10, minute=0)
+    close_ts = freeze_now["now"] - timedelta(hours=2)  # 2h ago — way past 15 min
+    rows = [("nse", "close", close_ts)]
+
+    settled_called = []
+    async def cb(e, t): settled_called.append((e, t))
+    lifecycle.register("nse:close_settled", cb)
+
+    with patch.object(ml_mod, "_settled_offset_minutes", lambda: 15):
+        with patch("backend.api.database.async_session", _FakeHydrateSession(rows)):
+            ml_mod._test_state_fn = lambda exch, now: False
+            await lifecycle.poll()  # cold-start poll — triggers hydration
+
+        assert settled_called == [], "must not retroactively fire on the hydrating poll"
+        state = lifecycle.get_state()
+        assert state["settled_fired"]["nse"] is True, (
+            "a past-window close with no recorded settle must be marked "
+            "handled so it never fires late"
+        )
+
+        # A further poll still must not fire it.
+        freeze_now["now"] = freeze_now["now"] + timedelta(minutes=1)
+        await lifecycle.poll()
+    assert settled_called == []
+
+
+@pytest.mark.asyncio
+async def test_hydrate_from_audit_runs_once_per_process(
+    lifecycle, stub_segments, stub_holidays, freeze_audit, freeze_now,
+):
+    """_hydrated guards the DB query to once per process lifetime."""
+    from backend.api.algo import market_lifecycle as ml_mod
+
+    calls = {"n": 0}
+
+    class _CountingSession(_FakeHydrateSession):
+        async def execute(self, *a, **k):
+            calls["n"] += 1
+            return await super().execute(*a, **k)
+
+    with patch("backend.api.database.async_session", _CountingSession([])):
+        ml_mod._test_state_fn = lambda exch, now: False
+        await lifecycle.poll()
+        await lifecycle.poll()
+        await lifecycle.poll()
+    assert calls["n"] == 1, "_hydrate_from_audit must query the DB at most once per process"
+
+
+@pytest.mark.asyncio
+async def test_hydrate_from_audit_db_failure_is_non_fatal(
+    lifecycle, stub_segments, stub_holidays, freeze_audit, freeze_now,
+):
+    """A DB error during hydration logs and degrades to a cold start —
+    poll() must still complete and seed state normally."""
+    from backend.api.algo import market_lifecycle as ml_mod
+
+    def _boom():
+        raise RuntimeError("synthetic DB outage")
+
+    with patch("backend.api.database.async_session", _boom):
+        ml_mod._test_state_fn = lambda exch, now: False
+        res = await lifecycle.poll()
+    assert res["events"] == []
+    assert lifecycle.get_state()["open"]["nse"] is False
+
+
 @pytest.mark.asyncio
 async def test_funds_offhours_task_registered():
     """_task_funds_offhours is in on_startup."""
