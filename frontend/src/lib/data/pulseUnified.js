@@ -137,6 +137,12 @@ export function makeRowFactory(byKey) {
       pnl: null, day_pnl: null,
       _avg_num: 0,
       _avg_hold_num: 0,
+      // D4/D5 (2026-10-20) — dedicated prev_close accumulators, populated
+      // ONLY from the backend's own r.prev_close (never a live-quote field).
+      // Mirror _avg_num/_avg_hold_num's accumulate-then-consume pattern —
+      // see mergePositionRows / mergeHoldingRows / finalizeRows.
+      _prevCloseSsot: 0,
+      _prevCloseHoldSsot: 0,
       accounts: new Set(),
     };
   };
@@ -462,6 +468,14 @@ export function mergePositionRows(byKey, pos, includePos, cq, ctx) {
     const avg = Number(r.average_price) || 0;
     row.qty_pos  += q;
     row._avg_num += avg * q;
+    // D4/D5 fix (2026-10-20): dedicated prev_close accumulator, populated
+    // ONLY from the backend's own r.prev_close — never from any live-quote
+    // field (snap/liveQ, read below via _applyQuoteFields). Mirrors
+    // _avg_num's accumulate-then-consume pattern so a composite row sums
+    // every contributing leg's prior-settlement value correctly, instead
+    // of a single overwritten scalar. row.close itself stays live-quote
+    // sourced for bid/ask/depth display — untouched by this fix.
+    row._prevCloseSsot += (Number(r.prev_close) || 0) * Math.abs(q);
     // Overnight qty summed across accounts for the unified row — "O/N Qty"
     // column. Multi-account rows show the combined overnight carry.
     row.overnight_qty = (row.overnight_qty ?? 0) + (Number(r.overnight_quantity) || 0);
@@ -571,6 +585,9 @@ export function mergeHoldingRows(byKey, hold, includeHold, cq, ctx) {
     const heldQty = Number(r.quantity) || 0; // opening_quantity is a reference field — CLAUDE.md prohibits use in P&L
     row.qty_hold += heldQty;
     row._avg_hold_num += (Number(r.average_price) || 0) * heldQty;
+    // D4/D5 fix (2026-10-20) — holdings-leg counterpart of the positions
+    // accumulator above; see mergePositionRows' matching comment.
+    row._prevCloseHoldSsot += (Number(r.prev_close) || 0) * Math.abs(heldQty);
     if (r.account) row.accounts.add(String(r.account));
     // Market fields — symbolStore first, then contracts quote bag fallback.
     const snap  = snapOf(sym);
@@ -819,10 +836,21 @@ export function finalizeRows(byKey, ctx) {
     delete row._avg_hold_num;
     const netQty = (Number(row.qty_pos) || 0) + (Number(row.qty_hold) || 0);
     row.day_pct = directional(row.change_pct, netQty);
-    const closeVal = Number(row.close) || 0;
-    row._prev_market_value = closeVal > 0
-      ? closeVal * (Math.abs(row.qty_pos) + Math.abs(row.qty_hold))
-      : 0;
+    // D4/D5 fix (2026-10-20): previous market value is derived EXCLUSIVELY
+    // from the backend's own prev_close (accumulated per-leg in
+    // mergePositionRows/mergeHoldingRows above), never from row.close
+    // (which stays live-quote-sourced for bid/ask/depth display — see
+    // _applyQuoteFields — intentionally untouched by this fix). When no
+    // leg carries a prior settlement (position opened today, no prior
+    // session close yet), fall back to cost basis (|avg_cost × qty|,
+    // already computed above as _cost_basis) so Chg% renders a real
+    // percentage instead of blanking — mirrors the backend's own
+    // day_change_percentage fallback.
+    const _prevCloseSum = Math.abs(Number(row._prevCloseSsot) || 0)
+      + Math.abs(Number(row._prevCloseHoldSsot) || 0);
+    delete row._prevCloseSsot;
+    delete row._prevCloseHoldSsot;
+    row._prev_market_value = _prevCloseSum > 0 ? _prevCloseSum : row._cost_basis;
     const _lead = leadAccount(row);
     row._acctColor = _lead ? acctColor(_lead) : null;
   }

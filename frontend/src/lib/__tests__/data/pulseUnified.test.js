@@ -31,9 +31,10 @@
 import { describe, it, expect } from 'vitest';
 import {
   mergePositionRows, mergeHoldingRows, makeRowFactory, mergeUnderlyingAnchors,
-  totalsRowFor,
+  totalsRowFor, finalizeRows,
 } from '../../data/pulseUnified.js';
-import { baseDayPnlForPosition } from '$lib/data/nav.js';
+import { baseDayPnlForPosition, dayChangePct } from '$lib/data/nav.js';
+import { directional } from '$lib/format.js';
 
 // ── Shared test fixtures ──────────────────────────────────────────────────────
 
@@ -692,5 +693,117 @@ describe('totalsRowFor — Exp P&L dedup across split account-rows (2026-10 Part
     expect(splitTotal.exp_pnl).toBe(unsplitTotal.exp_pnl);
     // A naive once-per-row sum would have doubled it to 1000.
     expect(splitTotal.exp_pnl).not.toBe(1000);
+  });
+});
+
+// ============================================================================
+// D4/D5 (2026-10-20) — Chg% denominator reads the backend's own prev_close
+// exclusively (a dedicated per-leg accumulator, never row.close — which
+// stays live-quote-sourced for bid/ask/depth display), and never renders
+// blank for a held position with qty != 0.
+// ============================================================================
+
+function _finCtx() {
+  return { directional, leadAccount: () => null, acctColor: () => null };
+}
+
+describe('D4 — _prev_market_value uses the backend prev_close SSOT, never row.close', () => {
+  it('ignores a stale live-quote close and uses r.prev_close instead', () => {
+    const byKey = {};
+    const row = makeOvernightPositionRow({
+      tradingsymbol: 'NIFTY25AUG24000CE', account: 'ACC1',
+      quantity: 50, average_price: 120, prev_close: 125,
+    });
+    // Stale live-quote close (Kite's raw ohlc.close) diverges from the
+    // backend's correct prev_close — both snap and liveQ carry it.
+    const snap = { ltp: 140, close: 999 };
+    mergePositionRows(byKey, [row], true, {}, {
+      snapOf: () => snap, getInst: null, baseDayPnlForPosition,
+    });
+    finalizeRows(byKey, _finCtx());
+    const out = byKey['NIFTY25AUG24000CE::ACC1__pos'];
+    // row.close itself is UNCHANGED — still live-quote-sourced (additive
+    // fix, not a reorder of the existing bid/ask/depth-serving chain).
+    expect(out.close).toBe(999);
+    // _prev_market_value must come from r.prev_close (125 × 50), never
+    // from the stale live-quote close (999 × 50).
+    expect(out._prev_market_value).toBe(125 * 50);
+    expect(out._prev_market_value).not.toBe(999 * 50);
+  });
+});
+
+describe('D4 — multi-leg accumulation sums per-leg prev_close, not a single overwritten scalar', () => {
+  it('two position legs for the same account+symbol sum independently', () => {
+    const byKey = {};
+    const legA = makeOvernightPositionRow({
+      tradingsymbol: 'CRUDEOIL26OCTFUT', account: 'ACC1',
+      quantity: 10, average_price: 5700, prev_close: 5750,
+    });
+    const legB = makeOvernightPositionRow({
+      tradingsymbol: 'CRUDEOIL26OCTFUT', account: 'ACC1',
+      quantity: 20, average_price: 5720, prev_close: 5760,
+    });
+    mergePositionRows(byKey, [legA, legB], true, {}, makeCtx());
+    finalizeRows(byKey, _finCtx());
+    const out = byKey['CRUDEOIL26OCTFUT::ACC1__pos'];
+    // Each leg contributes prev_close × |qty| independently — never a
+    // single scalar close multiplied by the combined qty.
+    expect(out._prev_market_value).toBe(5750 * 10 + 5760 * 20);
+  });
+
+  it('holdings legs from two different accounts (cross-account holdings row) sum independently', () => {
+    const byKey = {};
+    const legA = { tradingsymbol: 'RELIANCE', exchange: 'NSE', account: 'ACC1',
+      quantity: 10, average_price: 2400, prev_close: 2450, last_price: 2480,
+      pnl: 0, day_change_val: 0 };
+    const legB = { tradingsymbol: 'RELIANCE', exchange: 'NSE', account: 'ACC2',
+      quantity: 5, average_price: 2410, prev_close: 2460, last_price: 2480,
+      pnl: 0, day_change_val: 0 };
+    mergeHoldingRows(byKey, [legA, legB], true, {}, {
+      snapOf: () => null, getInst: null, isMarketOpen: () => true,
+    });
+    finalizeRows(byKey, _finCtx());
+    const out = byKey['RELIANCE__hold'];
+    expect(out._prev_market_value).toBe(2450 * 10 + 2460 * 5);
+  });
+
+  it('a composite row carrying BOTH a positions leg and a holdings leg sums both accumulators, not a single overwritten scalar', () => {
+    // Constructed directly — mirrors how finalizeRows already generically
+    // combines _avg_num + _avg_hold_num into avg_combined/_cost_basis
+    // regardless of row shape; the new prev_close accumulators must be
+    // consumed the same way.
+    const byKey = {
+      TESTROW: {
+        key: 'TESTROW', qty_pos: 10, qty_hold: 5,
+        _avg_num: 1000, _avg_hold_num: 500,
+        _prevCloseSsot: 1050 * 10,
+        _prevCloseHoldSsot: 1060 * 5,
+        close: 9999, // deliberately stale/irrelevant — must NOT be used
+        accounts: new Set(),
+      },
+    };
+    finalizeRows(byKey, _finCtx());
+    const out = byKey.TESTROW;
+    expect(out._prev_market_value).toBe(1050 * 10 + 1060 * 5);
+  });
+});
+
+describe('D5 — never renders blank for a held position (zero-denominator fallback)', () => {
+  it('falls back to |avg_cost × qty| when no leg has a prior settlement (position opened today)', () => {
+    const byKey = {};
+    const row = makeOvernightPositionRow({
+      tradingsymbol: 'BANKNIFTY25AUG50000CE', account: 'ACC1',
+      quantity: 25, average_price: 300, prev_close: 0, // opened today — no prior session close
+    });
+    mergePositionRows(byKey, [row], true, {}, makeCtx());
+    finalizeRows(byKey, _finCtx());
+    const out = byKey['BANKNIFTY25AUG50000CE::ACC1__pos'];
+    // Accumulator is 0 (no prior settlement) — fallback to cost basis.
+    expect(out._prev_market_value).toBe(300 * 25);
+    // The Chg% cell (dayChangePct(day_pnl, _prev_market_value)) must render
+    // a real percentage, never null/blank, as long as day_pnl is finite.
+    const pct = dayChangePct(out.day_pnl, Math.abs(out._prev_market_value));
+    expect(pct).not.toBeNull();
+    expect(Number.isFinite(pct)).toBe(true);
   });
 });
