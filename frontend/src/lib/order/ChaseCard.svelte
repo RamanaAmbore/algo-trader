@@ -366,7 +366,7 @@
             {#if _nowSec < row.next_attempt_at}
               <span class="cc-countdown" title="Seconds until next re-quote">{_nextIn(row.next_attempt_at, row.status, _nowSec)}s</span>
             {:else}
-              <span class="cc-countdown cc-requoting" title="Re-quoting now">re-quoting…</span>
+              <span class="cc-countdown cc-requoting" title="Re-quoting now">now</span>
             {/if}
           {:else}
             —
@@ -702,7 +702,15 @@
   .cc-kill:hover:not(:disabled) { background: var(--btn-sell-bg-hi); }
   .cc-kill:disabled { opacity: var(--btn-disabled-opacity); cursor: progress; }
   .cc-countdown {
-    font-size: var(--fs-2xs);
+    /* 2026-10-20 fix — was --fs-2xs (8px, the smallest token in the
+       whole app, smaller even than this column's own "Next" header).
+       The 2026-10-16 width fix only stopped truncation; it never
+       touched legibility. Operator: "I want to see the value
+       clearly." Bumped two steps to --fs-sm and given weight so the
+       live-ticking number actually reads at a glance, including on
+       mobile. */
+    font-size: var(--fs-sm);
+    font-weight: 700;
     color: var(--text-med);
     font-variant-numeric: tabular-nums;
   }

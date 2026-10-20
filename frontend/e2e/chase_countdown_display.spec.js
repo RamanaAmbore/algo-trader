@@ -136,4 +136,27 @@ test.describe('Chase countdown display', () => {
       expect(track, `age column track must not use a 0 minimum: ${track}`).not.toMatch(/minmax\(0,/);
     }
   });
+
+  test('5-UX: the countdown value itself is legible — not pinned to the smallest font-size token in the app', () => {
+    // 2026-10-20 fix — the 2026-10-16 fix (test 4 above) only stopped
+    // the column from truncating; the countdown text itself stayed at
+    // --fs-2xs (8px), the smallest token in the whole --fs-* scale,
+    // smaller even than its own "Next" column header. Operator: "I
+    // want to see the value clearly." Bumped to --fs-sm + bold.
+    const chaseCardPath = '/Users/ramanambore/projects/ramboq/frontend/src/lib/order/ChaseCard.svelte';
+    let source = '';
+    try {
+      source = readFileSync(chaseCardPath, 'utf-8');
+    } catch (e) {
+      test.skip(true, `Could not read ChaseCard.svelte: ${e.message}`);
+      return;
+    }
+    const countdownRule = (source.match(/\.cc-countdown\s*\{[^}]*\}/) || [])[0] || '';
+    expect(countdownRule, '.cc-countdown rule not found').not.toBe('');
+    // Strip comments before checking for an ACTIVE declaration — the
+    // fix's own explanatory comment mentions the old token by name.
+    const ruleNoComments = countdownRule.replace(/\/\*[\s\S]*?\*\//g, '');
+    expect(ruleNoComments, 'countdown must not declare the smallest font-size token (--fs-2xs)').not.toMatch(/font-size:\s*var\(--fs-2xs\)/);
+    expect(ruleNoComments).toMatch(/font-weight:\s*700/);
+  });
 });
