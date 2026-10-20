@@ -4184,6 +4184,17 @@ async def _task_holiday_refresh() -> None:
         except Exception as e:
             logger.error(f"Background: holiday refresh crashed: {e}")
 
+        # Re-warm the special-sessions cache for the new calendar day
+        # (2026-10-20 fix) — direct await, no run_on_main_loop hop, so
+        # the first sync caller of fetch_special_sessions() today (from
+        # an async context already on the main loop) hits a warm cache
+        # instead of the self-deadlock guard's uncached [] fallback.
+        try:
+            from backend.brokers.broker_apis import warm_special_sessions_cache
+            await warm_special_sessions_cache()
+        except Exception as e:
+            logger.warning(f"Background: warm_special_sessions_cache failed: {e}")
+
         # Best-effort proactive token refresh — all broker types.
         # @retry_kite_conn auto-recovers on every subsequent API call if this
         # fails; do NOT raise so a login hiccup doesn't abort the loop.

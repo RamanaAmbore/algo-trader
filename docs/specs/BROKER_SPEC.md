@@ -2660,7 +2660,7 @@ Virtual symbols (`CRUDEOIL`, `CRUDEOIL_NEXT`, `USDINR`, etc.) are never sent raw
 
 **I11 — Preflight honours intent**: `POST /api/orders/preflight` parses `intent` parameter and applies guard bypass consistently with order placement. Previously ignored intent.
 
-**I12 — Basket per-leg guards**: Basket LIVE dispatch validates each leg independently: market-hours gate (skip if closed unless `variety=amo`), MCX 20-lot cap (bypass for close), preflight (margin/segment checks). No leg placement without passing its guards.
+**I12 — Basket per-leg guards**: Basket LIVE dispatch validates each leg independently: market-hours gate (skip if closed unless `variety=amo`), MCX 20-lot cap (bypass for close), preflight (margin/segment checks). No leg placement without passing its guards. The market-hours gate is NOT the display-route `_segment_is_open()` path. It calls `_symbol_exchange_open()` via `backend/api/routes/orders_basket.py` → `backend/api/algo/agent_engine.py` (`_symbol_exchange_open` over `_build_context` → `_ae_segment_flags`). That chain lacked `evening_open_on_holidays`/`special_sessions` support until the 2026-10-20 fix (see CLAUDE.md "Market open/close determination"). Basket orders did not inherit market-hours fixes made elsewhere in the app; they are covered only by that fix.
 
 **I13 — RemoteBroker translate_qty delegation**: Any RemoteBroker proxy must override `translate_qty` to delegate via `_call`; the base-class no-op is unsafe for MCX/NCO contracts and sends raw contract qty to the adapter.
 

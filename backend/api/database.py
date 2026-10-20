@@ -1319,6 +1319,17 @@ async def init_db() -> None:
     # publishes its actual Muhurat schedule.
     await seed_special_sessions()
 
+    # Pre-warm the in-process special-sessions cache (2026-10-20 fix) —
+    # we're on the main loop right here, so this is a direct `await`
+    # with no `run_on_main_loop` hop. Without this, the first sync
+    # caller of `fetch_special_sessions()` from an async context already
+    # running on the main loop (ticket placement, basket, template
+    # attach, chase) would hit the self-deadlock guard and the cache
+    # would start the day poisoned to "no special session." See
+    # `backend/brokers/broker_apis.py:fetch_special_sessions` docstring.
+    from backend.brokers.broker_apis import warm_special_sessions_cache
+    await warm_special_sessions_cache()
+
     # Warm the alert-recipient cache from the users table so the very
     # first alert after a restart already routes to the right addresses.
     from backend.shared.helpers.alert_utils import refresh_alert_recipients

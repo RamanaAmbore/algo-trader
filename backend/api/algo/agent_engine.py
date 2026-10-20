@@ -2126,43 +2126,127 @@ async def migrate_order_action_type_rename() -> None:
         )
 
 
+def _ae_resolve_matched_window(sessions, legacy_start, legacy_end, t):
+    """Resolve the session ``(start, end)`` window that governs clock
+    time ``t``. Prefers the window actually containing ``t``; falls back
+    to the most recently-ended window (needed for post-close
+    minutes-since-close bookkeeping), else the first configured window.
+
+    Pure, no I/O — delegates window parsing to the same
+    ``_parse_session_windows`` the canonical ``is_market_open`` uses, so
+    a segment's ``sessions`` list (or its legacy ``hours_start``/
+    ``hours_end`` pair when ``sessions`` is absent) resolves identically
+    here and there."""
+    from backend.shared.helpers.date_time_utils import _parse_session_windows
+    windows = _parse_session_windows(sessions, legacy_start, legacy_end)
+    for w_start, w_end in windows:
+        if w_start <= t <= w_end:
+            return w_start, w_end
+    past = [w for w in windows if w[1] <= t]
+    return past[-1] if past else windows[0]
+
+
+def _ae_had_session_today(now, is_holiday: bool, evening_open: bool) -> bool:
+    """True when a real session ran (or is running) TODAY — calendar-only,
+    no live probe. Deliberately does not consult the Kite bellwether
+    probe (`is_trading_day`'s job): the probe only ever upgrades "is this
+    instant open right now", it has no bearing on "did a session already
+    end earlier today." An operator-declared extra trading day (e.g. a
+    Muhurat Saturday) always counts, mirroring `is_trading_day`'s own
+    precedence (extra_trading_days checked first)."""
+    from backend.shared.helpers.date_time_utils import _parse_extra_trading_days
+    if now.date() in _parse_extra_trading_days():
+        return True
+    if is_holiday:
+        return bool(evening_open and now.weekday() < 5)
+    return now.weekday() < 5
+
+
 def _ae_segment_flags(seg_name: str, seg_cfg: dict, now) -> dict:
     """Compute open/closed/holiday/minutes_since flags for one market segment.
 
+    Routed through the canonical ``is_market_open()`` — the same
+    mechanism `/api/market/status`, the quote gate, and the watchlist
+    movers gate use via `_segment_is_open()` — instead of a blind
+    `hours_start`/`hours_end` window comparison. Fixes a live incident
+    (2026-10-20): on a calendar-holiday date, the old comparison's ONLY
+    path to ever read "open" was `is_trading_day()`'s live Kite
+    bellwether-probe fallback; a segment with `evening_open_on_holidays:
+    true` (e.g. MCX) that was genuinely open in its 17:00+ evening
+    session was rejected as closed whenever the probe didn't fire a
+    confirming tick in time. Known residual gap from this fix, noted for
+    the record: on a plain weekday holiday with no `evening_open_on_
+    holidays` override, this function no longer falls through to the
+    live probe at all (the old code's second, independent
+    `is_trading_day()` call — now removed, see `_ae_had_session_today`
+    below — was the only thing that ever gave the probe a say here); an
+    ad-hoc SEBI-announced session on such a date would not be picked up
+    by this function. `is_any_segment_open()` / `_segment_is_open()`
+    callers are unaffected (they never consulted the probe from this
+    path either).
+
+    ``special_sessions`` IS wired in (2026-10-20, Step 2) via
+    `fetch_special_sessions()` — see that function's own docstring in
+    `broker_apis.py` for the residual cold-cache-on-main-loop gap this
+    still carries for the async call sites that reach this function from
+    a coroutine already running on the main event loop.
+
     Returns a flat dict with the ``{prefix}_*`` keys ready to merge into
     the top-level context. Extracted from _build_context to reduce CC there."""
-    from backend.brokers.broker_apis import fetch_holidays
-    from backend.shared.helpers.date_time_utils import is_trading_day
-
-    h, m = map(int, seg_cfg.get("hours_start", "09:15").split(":"))
-    open_time = now.replace(hour=h, minute=m, second=0, microsecond=0)
-    h, m = map(int, seg_cfg.get("hours_end", "15:30").split(":"))
-    close_time = now.replace(hour=h, minute=m, second=0, microsecond=0)
+    from datetime import time as _dtime
+    from backend.brokers.broker_apis import fetch_holidays, fetch_special_sessions
+    from backend.shared.helpers.date_time_utils import is_market_open
 
     prefix = "nse" if seg_name == "equity" else "mcx"
     holiday_exchange = seg_cfg.get("holiday_exchange", "NSE")
+    sessions = seg_cfg.get("sessions") or None
+    evening_open = bool(seg_cfg.get("evening_open_on_holidays", False))
+
+    h, m = map(int, seg_cfg.get("hours_start", "09:15").split(":"))
+    legacy_start = _dtime(h, m)
+    h, m = map(int, seg_cfg.get("hours_end", "15:30").split(":"))
+    legacy_end = _dtime(h, m)
 
     try:
         holidays = fetch_holidays(holiday_exchange)
     except Exception:
         holidays = set()
+    try:
+        special = fetch_special_sessions(holiday_exchange)
+    except Exception:
+        special = []
 
     is_holiday = now.date() in holidays
-    # Passing `now=` lets is_trading_day suppress the live-quote probe
-    # when outside the widest Indian market window (09:00-23:30 IST).
-    is_trading = is_trading_day(now.date(), holidays,
-                                exchange=holiday_exchange,
-                                now=now)
-    in_time_range = open_time <= now <= close_time
-    is_open = in_time_range and is_trading
+    t = now.time().replace(second=0, microsecond=0)
+
+    is_open = is_market_open(
+        now, holidays, legacy_start, legacy_end, exchange=holiday_exchange,
+        sessions=sessions, evening_open_on_holidays=evening_open,
+        special_sessions=special,
+    )
+
+    win_start, win_end = _ae_resolve_matched_window(sessions, legacy_start, legacy_end, t)
+    open_time  = now.replace(hour=win_start.hour, minute=win_start.minute, second=0, microsecond=0)
+    close_time = now.replace(hour=win_end.hour,   minute=win_end.minute,   second=0, microsecond=0)
+
+    # Evening-holiday open anchor — the matched window may start at
+    # 09:00, but trading only actually began at 17:00 on a holiday
+    # evening session; anchoring "minutes since open" to the window
+    # start would report ~540 min at 18:00 instead of ~60.
+    if is_holiday and evening_open and is_open:
+        evening_anchor = now.replace(hour=17, minute=0, second=0, microsecond=0)
+        if evening_anchor > open_time:
+            open_time = evening_anchor
+
+    had_session_today = _ae_had_session_today(now, is_holiday, evening_open)
 
     mins_open  = (max(0, int((now - open_time).total_seconds() / 60))
-                  if now >= open_time and is_open else 0)
+                  if is_open else 0)
     mins_close = (max(0, int((now - close_time).total_seconds() / 60))
-                  if now > close_time and is_trading else 0)
+                  if now > close_time and had_session_today else 0)
     return {
         f"{prefix}_open":    is_open,
-        f"{prefix}_closed":  (now > close_time) and is_trading,
+        f"{prefix}_closed":  (now > close_time) and had_session_today,
         f"{prefix}_holiday": is_holiday,
         f"minutes_since_{prefix}_open":  mins_open,
         f"minutes_since_{prefix}_close": mins_close,

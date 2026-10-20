@@ -1236,11 +1236,28 @@ use the checkbox in the UI or PATCH the endpoint.
 
 ### Market-status resolution
 
-`probe_market_active(exchange)` (the gate every `market_hours`-scheduled agent + the daily snapshot pipeline uses) resolves in this order:
+**Calendar first.** The authoritative "is this a trading day?" check is `is_trading_day()` in
+`backend/shared/helpers/date_time_utils.py` (line 140). It resolves in this order, cheapest first:
+
+1. **Operator override** — the date is in the extra-trading-days set → open.
+2. **Calendar says open** (weekday and not in the holiday list) → open. No probe runs.
+3. **Calendar says closed** (holiday or weekend) AND an exchange is passed AND the clock is inside
+   09:00–23:30 IST → call `probe_market_active(exchange)`. A `True` verdict → open. This catches MCX
+   evening sessions on equity holidays, Muhurat sessions, and ad-hoc sessions.
+4. Otherwise → closed.
+
+**Who uses what.** `market_hours`-scheduled agents do NOT call `probe_market_active()` directly. The
+path is `run_cycle` → `_build_context()` → `_ae_segment_flags()` in
+`backend/api/algo/agent_engine.py` (line 2129) → `is_trading_day()`. Order placement, chase, and
+template attach reach the same path via `_symbol_exchange_open()`. The probe runs only in step 3
+above, never on the hot path for a normal weekday.
+
+**`probe_market_active(exchange)` internal order** (only consulted in step 3, or by any direct caller
+that invokes it). The first definitive answer wins:
 
 1. **Broker market-status API** — iterate `all_brokers()`, call `broker.market_status(exchange)`. First definitive `True`/`False` wins + caches 60s. Adapters that don't implement the method return `None`; the loop continues to the next broker.
 2. **Bellwether-quote probe** — fallback for brokers (Kite) without a market-status endpoint. Calls `kite.quote()` on configured bellwether symbols and checks `last_trade_time` freshness. Defaults: `NSE:NIFTY 50` + `NSE:NIFTY BANK` for NSE/NFO, `BSE:SENSEX` for BSE/BFO, `NSE:NIFTY 50` for CDS. MCX uses **dynamic instrument discovery** — `_discover_mcx_bellwethers` pulls the live instruments dump and picks the nearest unexpired futures contract for the most-liquid commodities (CRUDEOIL → NATURALGAS → GOLD priority); contract months roll automatically as expiries pass.
-3. **Calendar verdict** — if neither path yields, the platform falls back to its weekday + holiday-set logic.
+3. **No verdict** — returns `None`. The calendar verdict in `is_trading_day()` (the calendar steps above) then decides.
 
 Adapter coverage today:
 
@@ -1472,7 +1489,7 @@ PUT /admin/exchange-schedule
 or `"ALL"`.
 
 Operator source beats `nse_auto` in precedence. Verify with
-`GET /api/market-status` after applying.
+`GET /api/market/status` after applying.
 
 ### Add a Muhurat / Special Session
 
@@ -1489,8 +1506,8 @@ SET snapshot_time = '19:15', reason = 'Muhurat snapshot'
 WHERE gate = 'NON-MCX' AND date = '2026-11-01';
 ```
 
-Verify via `GET /api/market-status` at 18:00 on the date — should return
-`{"is_open": true, "session": "muhurat"}`.
+Verify via `GET /api/market/status` at 18:00 IST on the date — `nse_open` should be `true`
+(`MarketStatusResponse` has no session-name field).
 
 ### MCX Evening Session on an NSE Holiday
 
@@ -1502,11 +1519,15 @@ row (`exchange='MCX'`, `source='nse_auto'`). That row closes MCX **all day** on 
 Weekend dates are excluded, and nothing removes the row automatically when NSE later reopens the
 date. Remove it by hand if that happens.
 
-**No action is normally required.** Verify on an evening-open holiday at 18:00:
+**No action is normally required.** Verify on an evening-open holiday at 18:00 IST:
 ```
-GET /api/market-status?exchange=MCX
-→ {"is_open": true, "segment": "commodity", "reason": "evening_on_holiday"}
+GET /api/market/status
+→ {"nse_open": false, "mcx_open": true, "any_open": true, "is_holiday": true,
+   "checked_at": "<IST timestamp>"}
 ```
+The response is the `MarketStatusResponse` struct in
+[`backend/api/routes/market.py`](backend/api/routes/market.py#L28). It has no per-exchange query
+parameter; read `mcx_open` for the MCX segment. `is_holiday` is true on any NSE/MCX holiday date.
 
 To check an evening-closed holiday, query the auto-inserted rows:
 ```sql

@@ -458,7 +458,7 @@ per process. An already-elapsed settle window is marked handled and never fired 
 `snapshot_daily_book(target_date=None)` defaults to `session_date_of(now_ist)`
 ([`daily_snapshot.py:1403-1416`](backend/api/algo/daily_snapshot.py#L1403)), not `now_ist.date()`.
 Explicit `target_date` callers are untouched. (4) `_session_guard()` uses the same session date for
-the EOD sentinel checks only ([`background.py:3300-3301`](backend/api/background.py#L3300)).
+the EOD sentinel checks only ([`background.py:3377-3378`](backend/api/background.py#L3377)).
 
 **Downstream regression this fix exposed, also fixed (commit `047aaf9e`):**
 `positions.py:_positions_snapshot`'s closed-hours qty=0 keep-filter
@@ -520,10 +520,14 @@ denominator. **Two columns are headed "Chg %"**: the left grid `change_pct` colu
 and it is the one this fix changes. Movers keep their own poller and are not consolidated. Spec:
 PULSE_SPEC §11.3.
 
-**Market open/close determination — one call path (2026-10-20, commits `0b203d07`, `fdfa37a5`)** —
+**Market open/close determination — one call path for display routes (2026-10-20, commits `0b203d07`, `fdfa37a5`)** —
 "One path" means one function with one kwarg set, not one literal helper. Canonical helper:
 `_segment_is_open(seg_cfg, now)` ([`date_time_utils.py:304`](backend/shared/helpers/date_time_utils.py#L304))
 over `is_market_open()` ([`:217`](backend/shared/helpers/date_time_utils.py#L217)).
+**Scope of the one-path claim**: it covers the display, status, quote and movers routes listed
+below and nothing else. Order placement, template attach, chase, the agent close-all action and
+`market_hours`-scheduled agents did NOT use `_segment_is_open()`. They gated on
+`agent_engine.py` `_ae_segment_flags` until the fix described in the last bullet of this entry.
 - **Routed through `_segment_is_open()`** with YAML-shaped config: `/market/status`
   ([`routes/market.py:177-178`](backend/api/routes/market.py#L177)), quote gate
   ([`routes/quote.py:308`](backend/api/routes/quote.py#L308)), watchlist movers gate
@@ -532,17 +536,60 @@ over `is_market_open()` ([`:217`](backend/shared/helpers/date_time_utils.py#L217
   `exchange=`, `evening_open_on_holidays=`, `special_sessions=` kwargs but keep each gate's own
   `hours_start`/`hours_end` (the per-date `exchange_schedule` window) instead of the YAML `sessions`
   list: `background.py` `_perf_probe_open_segments` ([`:1043`](backend/api/background.py#L1043)) and
-  `_watchdog_check_market_open` ([`:5728`](backend/api/background.py#L5728)), and
+  `_watchdog_check_market_open` ([`:5776`](backend/api/background.py#L5776)), and
   `routes/simulator.py` ([`:227`](backend/api/routes/simulator.py#L227),
   [`:260`](backend/api/routes/simulator.py#L260)). Commit `fdfa37a5` exists because the first pass
   would have replaced these hours with the YAML sessions and broken per-date accuracy.
 - **Holiday-branch weekday guard**: the evening-open rule in `is_market_open()` now requires
   `today.weekday() < 5` ([`date_time_utils.py:291`](backend/shared/helpers/date_time_utils.py#L291)).
   Before, a weekend holiday on an evening-open segment read "open" from 17:00.
-- **Deliberately separate**: `agent_engine.py` `_ae_segment_flags` ([`:2129`](backend/api/algo/agent_engine.py#L2129)),
-  a live Kite bellwether probe kept as a safety net for when the calendar verdict is wrong.
-- **Deliberately unreconciled**: `exchange_clock`'s DB-schedule open/closed signal, which drives EOD
-  scheduling. It is a fifth mechanism, flagged for a future pass.
+- **Former gap, fixed 2026-10-20 — `agent_engine.py` `_ae_segment_flags`**
+  ([`:2165`](backend/api/algo/agent_engine.py#L2165)). This was NOT a safety net layered on a correct
+  check. It was the REAL market-open gate for: ticket orders
+  ([`orders_place.py:231`](backend/api/routes/orders_place.py#L231),
+  [`:1519`](backend/api/routes/orders_place.py#L1519)), basket orders
+  ([`orders_basket.py:419`](backend/api/routes/orders_basket.py#L419)), GTT/wing template-attach
+  ([`template_attach.py:325`](backend/api/algo/template_attach.py#L325),
+  [`:2400`](backend/api/algo/template_attach.py#L2400)), chase re-pricing
+  ([`chase.py:2559`](backend/api/algo/chase.py#L2559)), the agent close-all action
+  ([`actions.py:165`](backend/api/algo/actions.py#L165)), and the `market_hours`-scheduled-agent gate
+  in `run_cycle` ([`agent_engine.py:3215`](backend/api/algo/agent_engine.py#L3215), `any_market_open`).
+  Those sites reach it via `_symbol_exchange_open()` ([`agent_engine.py:561`](backend/api/algo/agent_engine.py#L561))
+  over `_build_context()` → `_ae_segment_flags()` → `is_trading_day()`. It never honoured
+  `evening_open_on_holidays` or `special_sessions`, so it falsely rejected a genuinely open MCX
+  evening session on an NSE holiday (live-reported 2026-10-20). Fix, two parts:
+  (1) `_ae_segment_flags` now threads `sessions=` / `evening_open_on_holidays=` into
+  `is_market_open()` via two new helpers, `_ae_resolve_matched_window()` (finds which session window
+  governs the clock, so `minutes_since_{prefix}_open` anchors to the real open — e.g. 17:00 on a
+  holiday evening, not 09:00) and `_ae_had_session_today()` (calendar-only `_closed` check, no
+  probe) — this alone closes the reported bug. Removes the live-probe fallback this path used to
+  fall through to on a holiday; that fallback never covered `evening_open_on_holidays` either, so
+  this brings order placement to parity with the display routes above, not below them — a bare
+  calendar holiday with an undocumented ad-hoc session (e.g. an unlisted SEBI special session) is
+  now unrecognised here exactly as it already was for `/market/status` and the other canonical-path
+  callers.
+  (2) `special_sessions=fetch_special_sessions(holiday_exchange)` is wired into the same call,
+  completing parity with `_segment_is_open()` — but reading the DB-backed override from the 5
+  sync/async call sites above turned out to be structurally harder than "just call it": those sites
+  run a coroutine already executing on the main event loop, and the main-loop DB bridge
+  (`run_on_main_loop()`, `backend/shared/helpers/write_queue.py`) cannot block-wait on another
+  coroutine scheduled on that same loop without deadlocking — there is no way to force a real,
+  synchronous DB read from inside those 5 callers. Shipped mitigation instead of a literal fix: (a)
+  `fetch_special_sessions()` (`broker_apis.py`) no longer caches a cold-cache-guard miss as `[]` —
+  only a genuinely successful query (even an empty one) is cached, closing a real pre-existing
+  cache-poisoning bug where the first on-main-loop caller of the day permanently poisoned that
+  day's cache for every later caller, including `quote.py`'s and `watchlist.py`'s own
+  `_segment_is_open()` calls, which had the identical exposure; (b) a new
+  `warm_special_sessions_cache()` awaits the DB read directly (no `run_on_main_loop` hop, no
+  deadlock risk) and is called at startup (`database.py`, after `seed_special_sessions()`) and after
+  every daily holiday refresh (`background.py`'s `_hr_run_once`), so the 5 call sites hit a warm
+  cache in the common case. **Residual, documented gap**: a genuinely cold cache hit mid-day from
+  one of the 5 main-loop callers still fails open to `[]` (no special-session override applied) —
+  mitigated, not eliminated. Invariant: every order, template, chase, and agent market-open check
+  must resolve through the same kwarg set as the display routes above, with the one documented
+  exception of this residual cold-cache window.
+- **Remaining unreconciled mechanism**: `exchange_clock`'s DB-schedule open/closed signal, which
+  drives EOD scheduling. It is the one fifth mechanism still outstanding, flagged for a future pass.
 
 **Simulator market-hours guard restored (2026-10-20, operator-visible behaviour change)** —
 `_market_hours_block_check()` ([`routes/simulator.py:187`](backend/api/routes/simulator.py#L187))

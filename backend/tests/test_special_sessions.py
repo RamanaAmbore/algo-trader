@@ -363,19 +363,51 @@ class TestUXMuhurat2026:
         result = fetch_special_sessions("NSE")
         assert isinstance(result, list), "fetch_special_sessions must return a list"
 
-    def test_cache_busts_on_date_rollover(self):
-        """_SPECIAL_SESSION_CACHE key is (exchange, today) — stale on date change."""
+    def test_cache_busts_on_date_rollover_when_requery_succeeds(self):
+        """A stale (yesterday-dated) cache entry is re-queried on the next
+        call. When that re-query genuinely succeeds (even with an empty
+        result), the cache key advances to today."""
         from datetime import date as _date
         import backend.brokers.broker_apis as _ba
+        from unittest.mock import patch
 
-        # Seed cache with yesterday's date
         yesterday = _date(2026, 10, 31)
         _ba._SPECIAL_SESSION_CACHE["NSE"] = (yesterday, [{"date": yesterday}])
 
-        # fetch should re-query (old date != today) and return [] (no DB in test)
-        result = _ba.fetch_special_sessions("NSE")
-        assert isinstance(result, list)
-        # The cached key should now reflect today
+        with patch.object(_ba, "_read_special_sessions_sync", return_value=[]):
+            result = _ba.fetch_special_sessions("NSE")
+        assert result == []
         cached_date = _ba._SPECIAL_SESSION_CACHE.get("NSE", (None,))[0]
         from datetime import date as _d
-        assert cached_date == _d.today(), "Cache must refresh to today after stale hit"
+        assert cached_date == _d.today(), (
+            "A genuinely successful (even empty) re-query must refresh "
+            "the cache to today"
+        )
+
+    def test_guard_triggered_failure_does_not_poison_stale_cache(self):
+        """2026-10-20 fix: when the self-deadlock guard fires (or any DB
+        error occurs), `fetch_special_sessions` must return `[]` for THIS
+        call WITHOUT overwriting the cache — a previous poisoning bug
+        cached that guard-default `[]` as if it were a confirmed empty
+        result for the rest of the day, masking a real override for
+        every later caller. Here, `_read_special_sessions_sync` returns
+        `None` (the guard/error sentinel, no DB in the unit-test env) —
+        the stale yesterday-dated entry must be left exactly as-is."""
+        from datetime import date as _date
+        import backend.brokers.broker_apis as _ba
+
+        yesterday = _date(2026, 10, 31)
+        stale_rows = [{"date": yesterday}]
+        _ba._SPECIAL_SESSION_CACHE["NSE"] = (yesterday, stale_rows)
+
+        # No DB / no main loop in this unit-test env → guard fires →
+        # _read_special_sessions_sync returns None.
+        result = _ba.fetch_special_sessions("NSE")
+        assert result == [], "Must fail open to [] for this call"
+
+        cached = _ba._SPECIAL_SESSION_CACHE.get("NSE")
+        assert cached == (yesterday, stale_rows), (
+            "A guard/error failure must never overwrite the cache — the "
+            "stale entry must be left completely untouched, not "
+            "relabeled with today's date"
+        )

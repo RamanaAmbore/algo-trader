@@ -3140,15 +3140,44 @@ def fetch_special_sessions(exchange: str = "NSE") -> list[dict]:
     Queries the ``market_special_sessions`` DB table (populated by
     ``seed_special_sessions`` at startup + by the operator directly).
     Results are cached with a daily TTL — the same bust-on-date-rollover
-    pattern as ``_HOLIDAY_CACHE``.  Empty lists are cached so a missing
-    table (fresh deploy) never causes a retry-storm.
+    pattern as ``_HOLIDAY_CACHE``.  A genuinely empty query result is
+    cached (same "cache even on the confirmed-empty case" rationale as
+    ``fetch_holidays``) — a missing table (fresh deploy) never causes a
+    retry-storm.
 
     Returns a list of dicts, each with:
       ``{"date": datetime.date, "start": datetime.time, "end": datetime.time}``
 
     The list only contains rows whose ``date`` field equals today (IST).
     Callers pass this list as ``special_sessions=`` to ``is_market_open``.
-    Fail-open: on any DB error returns ``[]``.
+    Fail-open: on any DB error, or when called from one of the async
+    contexts described below, returns ``[]`` for THIS call WITHOUT
+    caching it (2026-10-20 fix, see below).
+
+    Known gap — cold cache on the main event loop (2026-10-20): unlike
+    ``fetch_holidays``, this function has no Tier-1 in-process cache
+    pre-warmed by an independent async pathway that's reliably warm by
+    the time a sync caller runs. ``_read_special_sessions_sync`` goes
+    through ``run_on_main_loop``, whose self-deadlock guard returns
+    ``None`` instead of running the query when the caller is a coroutine
+    ALREADY running on the main loop (true deadlock risk: a sync
+    function can't block-wait on a coroutine scheduled on the very loop
+    it's currently executing on — that loop can never get a turn to run
+    it). Several call sites are exactly that shape (ticket placement,
+    basket, template attach, chase — see ``_ae_segment_flags`` in
+    ``agent_engine.py``). Previously, that guard-triggered ``None`` was
+    coerced to ``[]`` and CACHED for the rest of the day, permanently
+    poisoning every later caller (including genuinely-sync ones that
+    could have queried successfully) with a false "no special session
+    today" for the remainder of the day. Fixed: a guard/error result is
+    never cached — only a real, successful (possibly empty) query result
+    is. ``warm_special_sessions_cache()`` (called at startup after
+    ``seed_special_sessions()`` and after the daily 05:30 holiday
+    refresh) pre-populates the cache from async code that awaits the
+    read directly, with no ``run_on_main_loop`` hop at all, so these sync
+    callers hit a warm cache in the common case. A genuinely cold cache
+    hit from the main loop mid-day still fails open to ``[]`` — this
+    mitigates the gap, it does not eliminate it.
     """
     from datetime import date as _dt_date
 
@@ -3159,53 +3188,105 @@ def fetch_special_sessions(exchange: str = "NSE") -> list[dict]:
     if cached and cached[0] == today:
         return cached[1]
 
-    rows: list[dict] = []
     try:
         rows = _read_special_sessions_sync(exch, today)
     except Exception:
-        pass  # DB unavailable — fail open (return empty list)
+        # Defense-in-depth — `_read_special_sessions_sync` is designed to
+        # never raise (its own guard/error paths return `None`), but an
+        # unexpected exception here must still fail open rather than
+        # propagate, matching this function's documented "fail-open on
+        # any DB error" contract.
+        rows = None
+    if rows is None:
+        # Guard fired (no main loop / already on it) or a DB error —
+        # fail open for this call only; deliberately do NOT cache, so a
+        # later call (post-warm, or from a genuinely sync context) gets
+        # a real chance to populate the cache instead of being poisoned
+        # by this call's inability to query.
+        return []
 
     _SPECIAL_SESSION_CACHE[exch] = (today, rows)
     return rows
 
 
-def _read_special_sessions_sync(exchange: str, today) -> list[dict]:
+async def _read_special_sessions_async(exchange: str, today) -> list[dict]:
+    """Async DB read for ``market_special_sessions`` rows matching
+    ``(exchange, today)``. Hoisted to module level (was an inline
+    closure inside ``_read_special_sessions_sync``) so
+    ``warm_special_sessions_cache()`` can ``await`` it directly — no
+    ``run_on_main_loop`` hop, so no self-deadlock guard involved."""
+    from sqlalchemy import select
+    from backend.api.database import async_session
+    from backend.api.models import MarketSpecialSession
+    async with async_session() as sess:
+        result = await sess.execute(
+            select(MarketSpecialSession).where(
+                MarketSpecialSession.exchange == exchange,
+                MarketSpecialSession.date == today,
+            )
+        )
+        rows = result.scalars().all()
+        return [
+            {"date": r.date, "start": r.start_time, "end": r.end_time}
+            for r in rows
+        ]
+
+
+def _read_special_sessions_sync(exchange: str, today) -> "list[dict] | None":
     """Blocking DB read for market_special_sessions rows matching today.
 
     Intentionally sync so ``fetch_special_sessions`` can be called from
     non-async code (same rationale as ``_read_market_holidays_sync``).
-    Fires at most once per (exchange, day) per process — subsequent calls
-    hit the in-process ``_SPECIAL_SESSION_CACHE``.
+
+    Returns ``None`` (NOT ``[]``) when ``run_on_main_loop``'s
+    self-deadlock guard fires, or on any DB error — a distinct
+    "could-not-determine" sentinel so ``fetch_special_sessions`` never
+    mistakes a guard/error non-query for a genuine empty result and
+    caches it for the rest of the day (2026-10-20 fix).
     """
-    from sqlalchemy import select
-    from datetime import date as _dt_date, time as _dt_time
-
-    async def _async_read() -> list[dict]:
-        from backend.api.database import async_session
-        from backend.api.models import MarketSpecialSession
-        async with async_session() as sess:
-            result = await sess.execute(
-                select(MarketSpecialSession).where(
-                    MarketSpecialSession.exchange == exchange,
-                    MarketSpecialSession.date == today,
-                )
-            )
-            rows = result.scalars().all()
-            return [
-                {
-                    "date":  r.date if isinstance(r.date, _dt_date) else r.date,
-                    "start": r.start_time if isinstance(r.start_time, _dt_time) else r.start_time,
-                    "end":   r.end_time if isinstance(r.end_time, _dt_time) else r.end_time,
-                }
-                for r in rows
-            ]
-
-    # Use get_running_loop() to detect an async context (Python 3.10+
-    # correct pattern; get_event_loop() emits DeprecationWarning inside
-    # coroutines and would create a NEW loop in sync thread contexts —
-    # meaningless here).
     from backend.api.persistence.write_queue import run_on_main_loop
-    return run_on_main_loop(_async_read(), default=[])
+    return run_on_main_loop(_read_special_sessions_async(exchange, today), default=None)
+
+
+async def warm_special_sessions_cache() -> None:
+    """Pre-warm ``_SPECIAL_SESSION_CACHE`` for every configured segment's
+    ``holiday_exchange`` (plus ``NSE``) via a direct ``await`` of
+    ``_read_special_sessions_async`` — no ``run_on_main_loop`` involved,
+    so no self-deadlock risk, since we ARE the async context.
+
+    Call sites: once at startup, right after ``seed_special_sessions()``
+    (``database.py``), and again after each successful daily 05:30
+    holiday refresh (``_task_holiday_refresh`` in ``background.py``) so
+    the cache re-warms on the new calendar day before the first sync
+    caller needs it. Mitigates (does not eliminate — see
+    ``fetch_special_sessions``'s docstring) the cold-cache-on-main-loop
+    gap for the five async call sites that build a market-state context
+    from a coroutine already running on the main event loop (ticket
+    placement, basket, template attach ×2, chase).
+
+    Best-effort: any DB error for one exchange is swallowed (logged at
+    debug) so a single failure never blocks the others or the caller's
+    own startup/refresh flow.
+    """
+    from datetime import date as _dt_date
+    from backend.shared.helpers.utils import config as _cfg
+
+    today = _dt_date.today()
+    segs = _cfg.get("market_segments", {}) or {}
+    exchanges = {
+        str((seg or {}).get("holiday_exchange", "NSE")).upper().strip()
+        for seg in segs.values()
+    }
+    exchanges.add("NSE")
+    for exch in exchanges:
+        if not exch:
+            continue
+        try:
+            rows = await _read_special_sessions_async(exch, today)
+        except Exception as e:
+            logger.debug(f"warm_special_sessions_cache: {exch} failed: {e}")
+            continue
+        _SPECIAL_SESSION_CACHE[exch] = (today, rows)
 
 
 def fetch_holidays(exchange="NSE"):

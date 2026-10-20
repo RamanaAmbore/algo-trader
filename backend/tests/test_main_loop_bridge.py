@@ -89,6 +89,10 @@ def test_holiday_and_special_session_readers_use_the_bridge(monkeypatch):
 
     from backend.brokers import broker_apis as ba
     monkeypatch.setattr(wq, "run_on_main_loop", fake)
-    assert ba._read_special_sessions_sync("NSE", None) == []
+    # 2026-10-20 fix: _read_special_sessions_sync's guard default is now
+    # `None` (not `[]`) — a distinct "could-not-determine" sentinel so
+    # fetch_special_sessions never caches a guard/error non-query as if
+    # it were a confirmed-empty result (see broker_apis.py docstrings).
+    assert ba._read_special_sessions_sync("NSE", None) is None
     assert ba._read_market_holidays_sync("NSE") == set()
-    assert calls == [[], set()]
+    assert calls == [None, set()]

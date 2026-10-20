@@ -55,7 +55,7 @@
   import { getDefaultAccount } from '$lib/data/accounts';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
   import { aggFmt, priceFmt } from '$lib/format';
-  import { executionMode, orderModalFocusPing } from '$lib/stores';
+  import { executionMode, orderModalFocusPing, visibleInterval } from '$lib/stores';
   import {
     getInstrument, listExpiries, listStrikes,
     findOption, findNearestFuture, listFutures,
@@ -1465,12 +1465,13 @@
   });
 
   // ── D1: market open/closed state ─────────────────────────────
-  // Reactive state updated from the depth quote callback + a live
+  // Reactive state updated from the depth quote callback + a 30s wall-
   // clock tick. isNseOpen / isMcxOpen / isMarketOpen are synchronous.
   let _isOpen = $state(true);
-  $effect(() => {
-    // Re-evaluate whenever the depth quote fires (onDepthQuote bumps
-    // _lastQuote) or on a fresh render. Use the resolved exchange.
+  /** @type {(() => void) | null} */
+  let _mktTimer = null;
+  function _recomputeMktOpen() {
+    // Use the resolved exchange.
     const exch = String(_exchange || _resolvedExchange || exchange || '').toUpperCase();
     if (exch === 'MCX' || exch === 'CDS') {
       _isOpen = isMcxOpen();
@@ -1479,8 +1480,27 @@
     } else {
       _isOpen = isMarketOpen();
     }
+  }
+  $effect(() => {
+    // Re-evaluate whenever the depth quote fires (onDepthQuote bumps
+    // _lastQuote) or on a fresh render. This alone doesn't catch a
+    // session boundary crossing while depth polling is idle/paused —
+    // the visibleInterval timer below (mirrors RefreshButton.svelte's
+    // own `_mktTimer` pattern) covers that.
+    _recomputeMktOpen();
     void _lastQuote; // reactive dependency so it re-runs on each tick
   });
+  // Exchange label for the badge below — same resolution order as the
+  // effect above, kept separate so the badge text always matches the
+  // exchange _isOpen was actually evaluated against.
+  const _mktBadgeExch = $derived(
+    String(_exchange || _resolvedExchange || exchange || '').toUpperCase() || 'Market'
+  );
+  const _mktBadgeTitle = $derived(
+    _isOpen
+      ? `${_mktBadgeExch} session open`
+      : `${_mktBadgeExch} session closed — order submission may be rejected`
+  );
 
   // Self-fetched real account list — backstop for when the caller
   // didn't (or couldn't) supply one. /api/accounts/ is jwt-guarded
@@ -2405,7 +2425,17 @@
         // rather than the store's sticky `error` default (timeoutMs: 0)
         // — the operator asked for "short-lived", and the inline banner
         // is already the durable record.
-        toast.error(`Order failed — ${submitErr}`.slice(0, 80), { timeoutMs: 5000 });
+        // D2 fix (2026-10-20): prefer `submitErrFull` (api.js's
+        // untruncated `err.fullMessage` -- see _fullDetail's own R6
+        // comment: "callers that have room... can show the operator
+        // what actually happened") over the 32-char inline-banner
+        // string. A real 409 market-hours rejection (holiday / evening-
+        // session explanation) runs 130+ chars; the old 80-char slice
+        // here cut it mid-sentence on top of that. The toast has room
+        // the persistent inline banner doesn't, so a larger cap (200)
+        // is appropriate here specifically -- this does not change the
+        // CLAUDE.md ~25-35 char banner convention anywhere else.
+        toast.error(`Order failed — ${submitErrFull || submitErr}`.slice(0, 200), { timeoutMs: 5000 });
       }
     } finally {
       submitting = false;
@@ -2515,6 +2545,13 @@
       })
       .catch(() => { /* silent — picker stays empty */ });
 
+    // D1: market open/closed badge — 30s wall-clock re-check so a
+    // session boundary (e.g. 17:00 MCX evening open) flips the badge
+    // even when depth-quote polling is idle. Mirrors RefreshButton.svelte's
+    // `_mktTimer` convention exactly (visibleInterval: pauses while the
+    // tab is hidden, fires immediately on return).
+    _mktTimer = visibleInterval(_recomputeMktOpen, 30_000);
+
     return () => _escCleanup?.();
   });
 
@@ -2526,6 +2563,7 @@
     _unsubOtOrder();
     if (_marginTimer)  { clearTimeout(_marginTimer);  _marginTimer  = null; }
     if (_previewTimer) { clearTimeout(_previewTimer); _previewTimer = null; }
+    _mktTimer?.();
   });
 
   // Re-sync when the catalog mutates elsewhere (e.g. operator edits a
@@ -2712,6 +2750,20 @@
           </span>
         </div>
       {/if}
+      <!-- D1: market open/closed badge — surfaces OrderTicket's own
+           belief about the traded exchange's session state (same
+           isNseOpen/isMcxOpen convention RefreshButton.svelte uses)
+           so a divergence from the submit-time backend gate is
+           visible here instead of only discoverable via a rejected
+           order. Deliberately OUTSIDE the `symbolHidden` gate above —
+           SymbolPanel.svelte (the only real caller) always passes
+           symbolHidden=true since it renders its own symbol picker,
+           so gating this badge on the same flag would make it never
+           render on the actual embedded surface operators use. -->
+      <span class="ot-mkt-badge" class:ot-mkt-open={_isOpen} class:ot-mkt-closed={!_isOpen}
+            data-testid="ot-market-badge" title={_mktBadgeTitle}>
+        {_mktBadgeExch} {_isOpen ? 'open' : 'closed'}
+      </span>
       <!-- Bare-underlying inline pickers (Possibility B). When the
            picker row's Type filter says FUT or OPT and the symbol is
            just the underlying name, we surface Expiry (FUT + OPT) +
@@ -3793,6 +3845,33 @@
     background: rgba(248, 113, 113, 0.08);
     border-color: rgba(248, 113, 113, 0.35);
     color: var(--c-short);
+  }
+  /* D1: market open/closed badge — mirrors RefreshButton.svelte's
+     .rf-mkt-* palette (open = green, closed = muted slate) so the
+     same exchange-state convention reads consistently across the app.
+     Sits next to the Symbol chip, bottom-aligned with the row. */
+  .ot-mkt-badge {
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+    align-self: center;
+    padding: 0.2rem 0.45rem;
+    border-radius: 3px;
+    font-size: var(--fs-xs);
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+  .ot-mkt-open {
+    background: var(--algo-green-bg-mid);
+    border: 1px solid var(--algo-green-border);
+    color: var(--algo-green-text);
+  }
+  .ot-mkt-closed {
+    background: var(--algo-muted-bg);
+    border: 1px solid var(--algo-muted-border);
+    color: var(--algo-dim);
   }
   .ot-label {
     /* Section-header treatment so labels read as form structure

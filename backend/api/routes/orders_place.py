@@ -1488,6 +1488,27 @@ async def _ticket_enforce_lot_and_fat_finger(
         )
 
 
+def _ticket_closed_market_detail(exchange: str, sym: str) -> str:
+    """Build the 409 detail message for a closed-exchange order rejection.
+
+    Mentions the evening-session override (2026-10-20 fix) when the
+    exchange's segment config declares `evening_open_on_holidays: true`
+    (e.g. MCX) — the generic "market hours" wording alone doesn't explain
+    why the same exchange can be open past 17:00 on a holiday."""
+    from backend.api.algo.agent_engine import _segment_for_exchange
+    from backend.shared.helpers.utils import config as _cfg
+
+    seg = (exchange or "").upper()
+    seg_name = _segment_for_exchange(exchange)
+    seg_cfg = ((_cfg.get("market_segments", {}) or {}).get(seg_name, {}) or {}) if seg_name else {}
+    if seg_cfg.get("evening_open_on_holidays"):
+        return (f"Exchange {seg} is closed. Orders for {sym} can only be "
+                f"placed during {seg}'s market hours, or its evening "
+                f"session on a holiday.")
+    return (f"Exchange {seg} is closed. Orders for {sym} can only be "
+            f"placed during {seg}'s market hours (IST holidays apply).")
+
+
 async def _ticket_gate_market_hours_and_align_price(data, sym: str) -> None:
     """Reject orders on closed exchanges and align price + trigger_price
     to the tick grid. Mutates `data.price` + `data.trigger_price`."""
@@ -1496,11 +1517,8 @@ async def _ticket_gate_market_hours_and_align_price(data, sym: str) -> None:
 
     target_exchange = data.exchange or "NFO"
     if not _symbol_exchange_open(target_exchange, _build_now_ctx()):
-        seg = (target_exchange or "").upper()
         raise HTTPException(status_code=409,
-            detail=(f"Exchange {seg} is closed. Orders for {sym} "
-                    f"can only be placed during {seg}'s market "
-                    f"hours (IST holidays apply)."))
+            detail=_ticket_closed_market_detail(target_exchange, sym))
 
     _exch_for_snap = (data.exchange or "NFO")
     data.price         = await _align_price_to_tick(_exch_for_snap, sym, data.price)

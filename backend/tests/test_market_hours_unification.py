@@ -25,6 +25,14 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+# Captured at module-import time, BEFORE the autouse fixture below patches
+# `fetch_special_sessions` — the D3-Step-2 deadlock-guard tests near the
+# bottom of this file need the REAL implementation (cache + guard
+# behaviour), not the always-`[]` stub every other test in this file relies
+# on, so they nest a `patch.object(..., side_effect=_REAL_FETCH_SPECIAL_SESSIONS)`
+# back over the autouse patch for their own duration.
+from backend.brokers.broker_apis import fetch_special_sessions as _REAL_FETCH_SPECIAL_SESSIONS
+
 IST = ZoneInfo("Asia/Kolkata")
 
 # MCX-holiday-evening fixture — 18:00 IST, a date we DECLARE as an MCX
@@ -347,3 +355,205 @@ def test_perf_probe_open_segments_source_never_passes_sessions_kwarg():
     for fn in (sim._market_hours_block_check, sim._markets_currently_open):
         src = inspect.getsource(fn)
         assert not pattern.search(src)
+
+
+# ---------------------------------------------------------------------------
+# D3 (2026-10-20) — `_ae_segment_flags` (the Phase-23 order/chase/basket/
+# template-attach/agent market-open gate) now routes through
+# `is_market_open()` with sessions=/evening_open_on_holidays= instead of a
+# blind hours_start/hours_end comparison. Live incident: an MCX evening
+# holiday session's ONLY path to ever read "open" was the live Kite
+# bellwether probe fallback.
+# ---------------------------------------------------------------------------
+
+
+def test_ae_segment_flags_mcx_evening_holiday_open_without_probe():
+    """MCX genuinely open in its evening (holiday) session must read open
+    WITHOUT depending on the live Kite bellwether probe at all. The probe
+    is mocked to raise AND call-counted — proving it's never consulted
+    for this deterministic branch (the exact live-reported bug: the
+    pre-fix code's ONLY path to "open" here was the probe)."""
+    from backend.api.algo.agent_engine import _ae_segment_flags
+    from backend.shared.helpers import market_probe
+
+    def _boom(exchange):
+        raise RuntimeError("probe must not be called for this deterministic path")
+
+    with patch.object(market_probe, "probe_market_active", side_effect=_boom) as mock_probe:
+        flags = _ae_segment_flags("commodity", _commodity_seg(), _FIXTURE_NOW)
+
+    assert flags["mcx_open"] is True, flags
+    assert mock_probe.call_count == 0, (
+        "the evening-holiday-open verdict must never consult the probe"
+    )
+
+
+def test_ae_segment_flags_minutes_since_open_anchored_to_evening_not_window_start():
+    """minutes_since_mcx_open must anchor to the 17:00 evening-open time,
+    not the session window's 09:00 start — else it reports ~540 at 18:00
+    instead of ~60 (the literal pre-fix defect named in the incident)."""
+    from backend.api.algo.agent_engine import _ae_segment_flags
+
+    flags = _ae_segment_flags("commodity", _commodity_seg(), _FIXTURE_NOW)
+    assert flags["mcx_open"] is True
+    mins = flags["minutes_since_mcx_open"]
+    assert mins < 120, f"minutes_since_mcx_open should be ~60 (anchored to 17:00), got {mins}"
+    assert mins == 60, f"expected exactly 60 minutes since 17:00 at 18:00 IST, got {mins}"
+
+
+def test_ae_segment_flags_equity_holiday_unaffected():
+    """Equity segment (evening_open_on_holidays=False) must stay closed
+    on the same MCX-only holiday fixture — scope check, no cross-talk."""
+    from backend.api.algo.agent_engine import _ae_segment_flags
+
+    flags = _ae_segment_flags("equity", _equity_seg(), _FIXTURE_NOW)
+    assert flags["nse_open"] is False
+    assert flags["minutes_since_nse_open"] == 0
+
+
+# ---------------------------------------------------------------------------
+# D3 Step 2 — `fetch_special_sessions()`'s self-deadlock-guard gap.
+#
+# `run_on_main_loop` returns a sentinel instead of running the DB query
+# when the caller is a coroutine ALREADY running on the main event loop —
+# exactly the shape of the 5 real call sites that reach `_ae_segment_flags`
+# (ticket placement, basket, template attach ×2, chase). The fix doesn't
+# bypass the guard (that would be a real deadlock) — it (a) stops caching
+# the guard's default so a failed call never poisons the day, and (b)
+# pre-warms the cache from async code (`warm_special_sessions_cache`,
+# called at startup + after the daily 05:30 holiday refresh) so the sync
+# callers hit a warm cache instead of the guard in the common case.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_special_session_override_reaches_on_loop_sync_caller_via_warm_cache():
+    """Seed a market_special_sessions-shaped row marking MCX's evening
+    explicitly CLOSED on the fixture date, warm the cache from async code,
+    then call `_build_now_ctx()` from a context that mimics the
+    previously-broken sync call sites: a coroutine already running on the
+    SAME loop `write_queue._main_loop` points at. Assert `mcx_open=False`
+    — the override reached the sync caller via the warm cache, not via
+    bypassing (or silently tripping) the deadlock guard.
+
+    Control (no override row): the exact same on-main-loop setup instead
+    yields `mcx_open=True` (ordinary evening-open-on-holiday logic) —
+    proving this test doesn't pass vacuously (e.g. via the weekday guard
+    or some unrelated short-circuit).
+    """
+    import asyncio
+    import backend.brokers.broker_apis as _ba
+    import backend.api.persistence.write_queue as _wq
+    from backend.api.algo import agent_engine as _ae
+
+    closed_all_day_row = {
+        "date": _FIXTURE_NOW.date(),
+        "start": dtime(0, 0),
+        "end": dtime(0, 0),   # zero-width — half-open [start, end) never matches
+    }
+
+    loop = asyncio.get_running_loop()
+    orig_main_loop = _wq._main_loop
+    _ba._SPECIAL_SESSION_CACHE.clear()
+
+    def _boom(*a, **kw):
+        raise AssertionError("must not reach run_on_main_loop — cache should be warm")
+
+    try:
+        # Nest the REAL fetch_special_sessions back over this file's
+        # autouse always-`[]` stub — this test exercises the real
+        # cache/guard mechanics, not the stub.
+        with patch.object(_ba, "fetch_special_sessions", side_effect=_REAL_FETCH_SPECIAL_SESSIONS), \
+             patch("backend.shared.helpers.date_time_utils.timestamp_indian", return_value=_FIXTURE_NOW):
+
+            # ── Override present ────────────────────────────────────
+            with patch.object(_ba, "_read_special_sessions_async",
+                               AsyncMock(return_value=[closed_all_day_row])):
+                await _ba.warm_special_sessions_cache()
+
+            _wq._main_loop = loop  # simulate "already on the main loop"
+
+            # Prove the warm cache is what's being hit, not the guard:
+            # if fetch_special_sessions fell through to
+            # run_on_main_loop here, this would raise (deadlock-guard
+            # path must never be reached when the cache is warm).
+            with patch.object(_wq, "run_on_main_loop", side_effect=_boom), \
+                 patch("backend.shared.helpers.date_time_utils.timestamp_indian", return_value=_FIXTURE_NOW):
+                ctx = _ae._build_now_ctx()
+            assert ctx["mcx_open"] is False, (
+                f"special-session override must close MCX all day — ctx={ctx}"
+            )
+
+            # ── Control: no override row → ordinary evening-open applies ──
+            _ba._SPECIAL_SESSION_CACHE.clear()
+            with patch.object(_ba, "_read_special_sessions_async",
+                               AsyncMock(return_value=[])):
+                await _ba.warm_special_sessions_cache()
+            with patch("backend.shared.helpers.date_time_utils.timestamp_indian", return_value=_FIXTURE_NOW):
+                ctx_control = _ae._build_now_ctx()
+            assert ctx_control["mcx_open"] is True, (
+                f"control (no override) must fall back to evening-open-on-holiday — ctx={ctx_control}"
+            )
+    finally:
+        _wq._main_loop = orig_main_loop
+        _ba._SPECIAL_SESSION_CACHE.clear()
+
+
+@pytest.mark.asyncio
+async def test_cold_cache_on_main_loop_fails_open_without_poisoning():
+    """A genuinely cold cache (never warmed) hit from a coroutine already
+    on the main loop must fail open to `[]` for that call, and must NOT
+    write anything into the cache — leaving the door open for a later
+    call (e.g. after a successful warm) to get the real answer instead
+    of being stuck with a falsely-cached empty result for the rest of
+    the day."""
+    import asyncio
+    import backend.brokers.broker_apis as _ba
+    import backend.api.persistence.write_queue as _wq
+
+    loop = asyncio.get_running_loop()
+    orig_main_loop = _wq._main_loop
+    _ba._SPECIAL_SESSION_CACHE.clear()
+    try:
+        _wq._main_loop = loop  # simulate "already on the main loop"
+        # Call the REAL implementation directly — this file's autouse
+        # fixture stubs the module-level name, so bypass it via the
+        # module-import-time-captured reference.
+        result = _REAL_FETCH_SPECIAL_SESSIONS("MCX")
+        assert result == []
+        assert "MCX" not in _ba._SPECIAL_SESSION_CACHE, (
+            "a guard-triggered failure must leave the cache untouched, "
+            "not pre-populate it with a false empty result"
+        )
+    finally:
+        _wq._main_loop = orig_main_loop
+        _ba._SPECIAL_SESSION_CACHE.clear()
+
+
+# ---------------------------------------------------------------------------
+# D3 Step 3 — ticket-placement 409 message mentions the evening-session
+# override for segments configured with evening_open_on_holidays=True.
+# ---------------------------------------------------------------------------
+
+
+def test_ticket_closed_market_detail_mentions_evening_session_for_mcx():
+    from backend.api.routes.orders_place import _ticket_closed_market_detail
+
+    msg = _ticket_closed_market_detail("MCX", "CRUDEOILM26NOVFUT")
+    assert "MCX" in msg
+    assert "evening" in msg.lower(), f"MCX detail should mention its evening session: {msg}"
+
+
+def test_ticket_closed_market_detail_equity_has_no_evening_mention():
+    from backend.api.routes.orders_place import _ticket_closed_market_detail
+
+    msg = _ticket_closed_market_detail("NSE", "RELIANCE")
+    assert "NSE" in msg
+    assert "evening" not in msg.lower(), f"NSE (no evening override) should not mention it: {msg}"
+
+
+def test_ticket_closed_market_detail_stays_reasonably_short():
+    from backend.api.routes.orders_place import _ticket_closed_market_detail
+
+    msg = _ticket_closed_market_detail("MCX", "CRUDEOILM26NOVFUT")
+    assert len(msg) < 200, f"detail message should stay short, got {len(msg)} chars: {msg}"

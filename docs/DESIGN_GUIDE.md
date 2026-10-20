@@ -3932,9 +3932,20 @@ this design section does not claim it explains that window.
   `exchange_schedule` hours and do not substitute the YAML `sessions` list. This applies to the
   perf probe, the ticker watchdog, and the simulator guard.
 - Holiday branch: the evening-open rule requires a weekday (`today.weekday() < 5`).
-- Two mechanisms stay separate on purpose. `agent_engine._ae_segment_flags` (line ~2129) is a live
-  Kite-probe safety net. `exchange_clock`'s DB-schedule signal drives EOD scheduling and is not
-  reconciled with the calendar verdict.
+- **Scope**: the above is the one call path for *display* routes only. Order placement, GTT/wing
+  template-attach, chase re-pricing, the agent close-all action, and the `market_hours`-scheduled
+  agent gate did not use it — they gated on `agent_engine._ae_segment_flags` (line ~2165), which
+  never honoured `evening_open_on_holidays`/`special_sessions` and fell back to a live Kite probe on
+  holidays instead. This was not a deliberate safety net; it was a missed consumer, and it falsely
+  rejected a genuinely open MCX evening session on a holiday (live-reported 2026-10-20). Fixed the
+  same day: `_ae_segment_flags` now threads `sessions=`/`evening_open_on_holidays=` into
+  `is_market_open()`, and (as a mitigation, since the literal DB-backed `special_sessions` read would
+  deadlock from 5 of its 6 call sites — they run on an already-active event loop) a warmed cache
+  (`warm_special_sessions_cache()`, refreshed at startup and after each daily holiday refresh) lets
+  those sites read the real override in the common case; a cold cache mid-day still fails open. See
+  CLAUDE.md's "Market open/close determination" entry for the full call-site list. `exchange_clock`'s
+  DB-schedule signal (EOD scheduling) remains the one mechanism still unreconciled with the calendar
+  verdict.
 - Probe cost: `is_trading_day()` probes only when the calendar says closed, the clock is inside
   09:00–23:30, and an exchange is passed. About once a minute per exchange, cached. The newly
   exchange-passing sites are monitored. `probe=False` on `_segment_is_open` is the planned escape
