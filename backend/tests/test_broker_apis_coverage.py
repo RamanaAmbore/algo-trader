@@ -1704,9 +1704,18 @@ class TestFetchHolidaysTier2:
         broker_apis._HOLIDAY_CACHE.clear()
 
     def test_tier2_cache_hit_returns_cached_set(self):
-        """fetch_holidays returns module-level _HOLIDAY_CACHE without hitting NSE."""
+        """fetch_holidays returns module-level _HOLIDAY_CACHE without hitting NSE.
+
+        Seeds the cache keyed on the IST calendar date (timestamp_indian()
+        .date()), matching fetch_holidays's own Tier-2 cache key
+        (2026-10-20 fix) -- seeding with the system-local date.today()
+        would mis-key during the ~5.5h IST 00:00-05:30 window every night,
+        since IST can already be the next calendar day while system-local
+        (UTC) time hasn't rolled over yet.
+        """
         import datetime
-        today = datetime.date.today()
+        from backend.shared.helpers.date_time_utils import timestamp_indian
+        today = timestamp_indian().date()
         expected = {datetime.date(2025, 1, 26)}
         broker_apis._HOLIDAY_CACHE["NSE"] = (today, expected)
 

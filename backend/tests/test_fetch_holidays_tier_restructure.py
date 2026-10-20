@@ -132,6 +132,84 @@ def test_tier3_falls_through_on_db_exception():
     m_nse.assert_called_once()
 
 
+def test_tier2_cache_keys_on_ist_date_not_system_local_date():
+    """2026-10-20 fix, same bug class as the special-sessions cache fix
+    (commit 0e304f40): the prod/dev servers run on UTC system time, and
+    IST is UTC+5:30. Between IST 00:00 and 05:30, the UTC calendar date
+    hasn't rolled over yet — a Tier-2 cache keyed on `date.today()`
+    (system-local) would mis-key during that ~5.5h window every night,
+    serving yesterday's holiday set (or re-querying under the wrong
+    key). Simulate exactly that window: system-local/UTC says
+    2026-10-20 23:45 ("the 20th"), but IST is already 2026-10-21 05:15
+    ("the 21st"). fetch_holidays must key Tier 2 on the IST date."""
+    _clear_module_caches()
+    from backend.brokers.broker_apis import fetch_holidays
+    from datetime import datetime as _datetime
+    from zoneinfo import ZoneInfo
+    from unittest.mock import patch as _patch
+
+    fake_ist_now = _datetime(2026, 10, 21, 5, 15, tzinfo=ZoneInfo("Asia/Kolkata"))
+
+    with _patch("backend.shared.helpers.date_time_utils.timestamp_indian",
+                return_value=fake_ist_now), \
+         _patch("backend.brokers.broker_apis._read_market_holidays_sync",
+                return_value={date(2026, 1, 26)}), \
+         _patch("backend.brokers.broker_apis._fetch_holidays_from_nse") as m_nse:
+        fetch_holidays("NSE")
+
+    from backend.brokers import broker_apis as ba
+    cached_date = ba._HOLIDAY_CACHE.get("NSE", (None,))[0]
+    assert cached_date == date(2026, 10, 21), (
+        f"expected the IST date 2026-10-21, got {cached_date} (looks "
+        "like the system-local/UTC date leaked back in)"
+    )
+    m_nse.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_read_market_holidays_async_year_uses_ist_date():
+    """Same IST-vs-UTC fix, for `_read_market_holidays_async`'s year
+    filter — a bare `date.today().year` would read the PRIOR year
+    during the IST 00:00-05:30 window on Jan 1 specifically (system-local
+    UTC time still Dec 31), filtering out the very holidays this call
+    needs."""
+    from datetime import datetime as _datetime
+    from zoneinfo import ZoneInfo
+    from unittest.mock import AsyncMock, MagicMock, patch as _patch
+    from backend.brokers.broker_apis import _read_market_holidays_async
+
+    fake_ist_now = _datetime(2027, 1, 1, 2, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
+
+    captured = {}
+
+    class _FakeResult:
+        def all(self):
+            return []
+
+    class _FakeSession:
+        def __call__(self):
+            return self
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def execute(self, stmt, *a, **kw):
+            captured["sql"] = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+            return _FakeResult()
+
+    with _patch("backend.shared.helpers.date_time_utils.timestamp_indian",
+                return_value=fake_ist_now), \
+         _patch("backend.api.database.async_session", _FakeSession()):
+        await _read_market_holidays_async("NSE")
+
+    assert "2027" in captured["sql"], (
+        f"expected the query to filter on IST year 2027, got: {captured['sql']}"
+    )
+
+
 def test_ssot_nse_url_is_in_one_place():
     """SSOT — NSE URL appears as a real HTTP call in exactly one place
     (the fetch primitive), so a URL migration is a one-line change.

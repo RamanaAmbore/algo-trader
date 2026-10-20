@@ -3377,8 +3377,18 @@ def fetch_holidays(exchange="NSE"):
     This function is sync so it can be called from non-async code. Do NOT
     make it async — Tier 3 does a blocking DB query, which is acceptable
     because it fires at most once per (exchange, day) per process.
+
+    Cache key (Tiers 1+2) is the IST calendar date
+    (``timestamp_indian().date()``), NOT ``date.today()`` (2026-10-20
+    fix — same bug class as the special-sessions cache fix). The
+    prod/dev servers run on UTC system time; IST is UTC+5:30 — between
+    IST 00:00 and 05:30, ``date.today()`` still reports the PRIOR UTC
+    day while the real IST day has already rolled over, mis-keying the
+    cache and serving yesterday's holiday set (or re-querying under the
+    wrong key) for that ~5.5h window every night.
     """
-    from datetime import datetime as dt_datetime, date as dt_date
+    from datetime import datetime as dt_datetime
+    from backend.shared.helpers.date_time_utils import timestamp_indian
 
     exch = exchange.upper().strip()
 
@@ -3393,14 +3403,14 @@ def fetch_holidays(exchange="NSE"):
         if hol_key in _hol_mem:
             # Mirror into _HOLIDAY_CACHE so future sync callers get fast path.
             cached_set = _hol_mem[hol_key]
-            today = dt_date.today()
+            today = timestamp_indian().date()
             _HOLIDAY_CACHE[exchange] = (today, cached_set)
             return cached_set
     except Exception:
         pass  # persistent store not available — fall through
 
     # ── Tier 2: module-level _HOLIDAY_CACHE (daily TTL) ───────────────────────
-    today = dt_date.today()
+    today = timestamp_indian().date()
     cached = _HOLIDAY_CACHE.get(exchange)
     if cached and cached[0] == today:
         return cached[1]
@@ -3735,15 +3745,23 @@ def _read_market_holidays_sync(exchange: str) -> set:
 async def _read_market_holidays_async(exchange: str) -> set:
     """Async DB query — returns set of `date` for `exchange` in the current
     IST calendar year. Filtered to current year to match the semantic
-    contract of the legacy tiers (year-scoped cache)."""
-    from datetime import date as dt_date
+    contract of the legacy tiers (year-scoped cache).
+
+    Year is derived from ``timestamp_indian().date()``, NOT
+    ``date.today()`` (2026-10-20 fix, same bug class as
+    ``fetch_holidays``'s Tier 1/2 fix) — relevant specifically around
+    IST New Year's: between IST 00:00 and 05:30 on Jan 1, system-local
+    UTC time is still Dec 31, so ``date.today().year`` would read the
+    PRIOR year and filter out the very holidays this call needs.
+    """
     from sqlalchemy import select, and_, extract
+    from backend.shared.helpers.date_time_utils import timestamp_indian
     try:
         from backend.api.database import async_session
         from backend.api.models import MarketHoliday
     except Exception:
         return set()
-    year = dt_date.today().year
+    year = timestamp_indian().date().year
     async with async_session() as s:
         rows = await s.execute(
             select(MarketHoliday.date).where(
