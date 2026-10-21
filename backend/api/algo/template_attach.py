@@ -3305,11 +3305,12 @@ async def _apply_template_to_order_impl(
     # GTT-only templates proceed off-hours (Kite accepts GTTs 24×7).
     # Pre-warm the special-sessions cache from THIS async context before
     # _check_offhours_wing_gate's sync _build_now_ctx() call below
-    # (2026-10-20 fix) — this is the one remaining real order-adjacent
-    # call site that is `async def` all the way up (unlike
-    # `apply_plan_live`'s plain-sync call sites, which stay on the
-    # warm-at-startup/after-daily-refresh mitigation only); closes the
-    # cold-cache gap for it the same way ticket/basket/chase already are.
+    # (2026-10-20 fix) — this was the one remaining real order-adjacent
+    # call site needing the prewarm (unlike `apply_plan_live`, which was
+    # never actually exposed to the cold-cache gap at all — it runs via
+    # asyncio.to_thread(), so run_on_main_loop()'s guard never fires for
+    # it); closes the cold-cache gap for this gate the same way
+    # ticket/basket/chase already are.
     # No local try/except — _prewarm_special_sessions_for_exchange already
     # swallows and logs its own failures (same no-wrap convention as the
     # other 3 call sites in orders_place.py/orders_basket.py/chase.py);

@@ -3291,9 +3291,10 @@ async def warm_special_sessions_cache() -> None:
     per-site list). This function still matters for the genuinely-sync
     read paths that never prewarm per-call at all.
 
-    Best-effort: any DB error for one exchange is swallowed (logged at
-    debug) so a single failure never blocks the others or the caller's
-    own startup/refresh flow.
+    Best-effort: any DB error for one exchange is caught and logged
+    (warning, not debug — 2026-10-20 fix, see the call site below) so a
+    single failure never blocks the others or the caller's own
+    startup/refresh flow, while still being visible at default log level.
 
     Keys the warmed entry on the IST calendar date, matching
     ``fetch_special_sessions``'s cache-key fix (2026-10-20) — using the
