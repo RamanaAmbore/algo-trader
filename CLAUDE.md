@@ -599,13 +599,41 @@ below. Order placement, template attach, chase, the agent close-all action and
     `run_cycle` builds its context via `asyncio.to_thread(_build_context, ...)`, so the cold-cache
     path runs in a worker thread. `actions.py` reads the already-built context dict and does not
     fetch.
-  - **Accepted residual, not fixed.** Sync main-loop callers still rely on the warm-cache mitigation
-    only. Known examples: the `routes/agents.py` dry-run (`_dry_run_context`), the
-    `routes/watchlist.py` movers gate, the `routes/quote.py` segment check, and the
-    `routes/simulator.py` guards. The list is not exhaustive. All of these are read-only, display,
-    dry-run, or sim-start paths, not real-money order placement. The mitigation is
-    `warm_special_sessions_cache()` at startup and after each daily refresh; `fetch_special_sessions()`
-    no longer caches a guard-miss as `[]`.
+  - **4-site residual sweep, closed (2026-10-20, commits `7870d269`, `01bc5057`, `d5a4e70b`,
+    `cef9312e`).** The 4 sites previously listed here as "accepted residual, not fixed" — the
+    `routes/agents.py` dry-run (`_dry_run_context`), the `routes/watchlist.py` movers gate, the
+    `routes/quote.py` segment check, and the `routes/simulator.py` guards — were all confirmed
+    genuinely exposed (each reached from a coroutine already on the main loop, no
+    `asyncio.to_thread` in between) and fixed with the same prewarm pattern used at the 5 order
+    paths above. None turned out to be already-safe.
+    - `_dry_run_context` (`routes/agents.py`): awaits the full-dataset `warm_special_sessions_cache()`
+      once, before its inline `_build_context(now)` call — a dry-run builds context for every
+      segment at once, so it doesn't know a single target exchange in advance the way the
+      per-exchange helper needs.
+    - `_get_movers_rows` → `_movers_probe_market_state` (`routes/watchlist.py`): new
+      `_movers_prewarm_special_sessions()` awaits the `equity` and `commodity` segments' own
+      `holiday_exchange` values directly, mirroring `market_lifecycle.poll()`'s direct-await
+      pattern rather than `_prewarm_special_sessions_for_exchange()`'s `_EXCHANGE_TO_SEGMENT`
+      round trip.
+    - `batch_quote` / `batch_sparkline` (`routes/quote.py`): new `_qt_prewarm_special_sessions()`
+      re-implements `_qt_is_seg_open()`'s own exchange-membership match rule (segment `exchanges`
+      list, falling back to `holiday_exchange`) instead of routing through
+      `_EXCHANGE_TO_SEGMENT`, which can drift from this file's own match rule (e.g. it maps
+      `NCO`/`BFO`/`BCD` to a segment this file's `exchanges` lists don't cover at all).
+    - `_market_hours_block_check` / `_markets_currently_open` (`routes/simulator.py`, 5 call
+      sites — `start_for_agent`, `start`, `start_run`, `replay_iteration`, `defaults`): new
+      `_sim_prewarm_special_sessions()` awaits `fetch_special_sessions_async` directly on each
+      `_get_segments()` entry's own `holiday_exchange` value. Deliberately NOT routed through
+      `_prewarm_special_sessions_for_exchange()` — `_get_segments()` can return a GATE name
+      (e.g. `"NON-MCX"`) as `holiday_exchange` when the `exchange_clock` cache is warm, a value
+      `_EXCHANGE_TO_SEGMENT` does not recognise (would silently no-op). Both gates kept their
+      existing sync signatures — converting them to `async def` would have rippled into all 5
+      call sites plus the existing sync test suite for this file; each caller instead awaits the
+      prewarm immediately before the sync call ("closed via the caller", same pattern as
+      `template_attach.py`'s offhours wing gate).
+    - The mitigation (`warm_special_sessions_cache()` at startup and after each daily refresh;
+      `fetch_special_sessions()` no longer caches a guard-miss as `[]`) remains in place as a
+      backstop for any other sync main-loop caller not yet identified.
 - **Hardening rounds (items 5–9 of the 2026-10-20 audit), with their real behaviour:**
   - *Malformed NSE feed returns `None`* — `_fetch_mcx_evening_closed_dates()` (`broker_apis.py`)
     returns `None` on a network or parse failure AND on a malformed feed (missing, non-list, or
