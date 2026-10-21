@@ -747,6 +747,7 @@
 
 <div class={'ps-strip' + (_heartbeatOn ? ' ps-heartbeat' : '') + (_pollPulseOn ? ' ps-poll-pulse' : '') + (_isStale ? ' ps-stale' : '')}
      title={_isStale ? `Showing last-known-good — STALE@${_staleSinceStr}` : undefined}>
+  <div class="ps-strip-scroll">
   <span class="ps-agg">
     <span class="ps-agg-k ps-k-p"><InfoHint popup panel label="P" accentColor="#fbbf24"
       title="P — Positions P&L"
@@ -841,6 +842,7 @@
       >{fmtMoney(_liveHoldingsTotal)}</span
     >
   </span>
+  </div>
   {#if _breakdown.open}
     <!-- Escape handled by the layerStack coordinator (the $effect above)
          instead of a local onkeydown — see that effect's comment. -->
@@ -901,13 +903,8 @@
        gradient stop, so no seam can show through regardless of which
        side mis-rounds. */
     box-shadow: 0 -2px 0 0 var(--algo-bg-elev1);
-    display: flex;
-    align-items: center;
-    justify-content: flex-start;
-    gap: 0.6rem;
     height: 1.5rem;
     box-sizing: border-box;
-    padding: 0 0.75rem 0 0.5rem;
     /* Slice AT audit fix — was `#0a1020 → #131c33`, an off-token
        second stop. Anchor both stops on the chrome elevation tokens
        so the band reads as a sibling of navbar + footer. */
@@ -925,28 +922,49 @@
     text-decoration: none;
     user-select: none;
     transition: background 0.08s, border-bottom-color 0.18s;
+    /* The fixed shell itself never scrolls and never overflows — see
+       .ps-strip-scroll below. Mobile fix (2026-10-21) — operator: "when
+       navstrip content [is] beyond the viewport width on mobile, it is
+       expanding the width of the container and making the container
+       shift to the left." Root cause: overflow-x:auto used to sit
+       directly ON this position:fixed shell (left:0/right:0), the same
+       element iOS/Android treat as the scroll container. A
+       position:fixed element that is also its own horizontal scroll
+       container is a known mobile-WebKit trap — elastic bounce /
+       momentum handoff at the scroll boundary visually drags the fixed
+       box itself (the 2026-09-30 fix below addressed the "shifts right"
+       half of this with overscroll-behavior-x: contain, but the
+       underlying coupling — scrollable surface == the fixed box —
+       remained, and could still manifest as the box appearing to grow/
+       shift on the other edge). Fixed by decoupling: this shell stays a
+       plain, non-scrolling rectangle (overflow: hidden, so it can never
+       itself widen or clip badly); a new inner `.ps-strip-scroll` div
+       (ordinary static content, NOT position:fixed) owns the actual
+       horizontal scrolling — the same "scrollable content area inside a
+       fixed-size chrome shell" pattern used by every card's button-group
+       header (CLAUDE.md "UI Card Button Group" / feedback_card_button_
+       group). */
+    overflow: hidden;
+  }
+  .ps-strip-scroll {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 0.6rem;
+    height: 100%;
+    box-sizing: border-box;
+    padding: 0 0.75rem 0 0.5rem;
     overflow-x: auto;
-    overflow-y: visible;
+    overflow-y: hidden;
     -webkit-overflow-scrolling: touch;
     scrollbar-width: none;
-    /* Mobile fix (2026-09-30) — operator: "page shifts right / content
-       gets partially hidden instead of scrolling within itself". The
-       strip's own box model was already correctly constrained (fixed +
-       left:0/right:0, no min-width anywhere in the cascade including the
-       @media overrides below), so it cannot itself widen past the
-       viewport. The reported shift is a touch-scroll-chaining artifact:
-       once this element's own overflow-x:auto scroll hits its edge, a
-       continuing swipe hands momentum off to the document, which has no
-       overflow-x guard anywhere in app.css — the resulting page-level
-       horizontal pan then visually drags this fixed strip along with it.
-       `overscroll-behavior-x: contain` stops the handoff at the strip's
-       own boundary so the swipe simply stops instead of chaining to the
-       page, without restricting the strip's intended internal scroll or
-       blocking vertical page scroll started on the strip (unlike
-       touch-action: pan-x, deliberately not used here). */
+    /* Keeps a continuing swipe from handing momentum off to the page
+       once this inner scroller hits its edge — same reasoning as the
+       2026-09-30 fix, just moved to the element that now actually owns
+       the scroll. */
     overscroll-behavior-x: contain;
   }
-  .ps-strip::-webkit-scrollbar { display: none; }
+  .ps-strip-scroll::-webkit-scrollbar { display: none; }
   /* Heartbeat — fires on every successful 30s poll completion via a
      class toggle that resolves after 300ms (unified tick-bus duration).
      Amber glow pulse that reads as "data refreshed" without competing
@@ -1069,20 +1087,17 @@
     line-height: inherit;
   }
   @media (max-width: 640px) {
-    /* Pills flow left-to-right; the strip scrolls horizontally when
-       content overflows. Right side clips cleanly — no overlapping.
+    /* Pills flow left-to-right; .ps-strip-scroll scrolls horizontally
+       when content overflows. Right side clips cleanly — no overlapping.
        No justify-content: space-between (that was the overlap cause). */
-    .ps-strip   { gap: 0.15rem; padding: 0 0.25rem;
-                  overflow-x: auto; -webkit-overflow-scrolling: touch;
-                  scrollbar-width: none; }
-    .ps-strip::-webkit-scrollbar { display: none; }
+    .ps-strip-scroll { gap: 0.15rem; padding: 0 0.25rem; }
     .ps-agg     { gap: 0; flex-shrink: 0; }
     .ps-agg-k   { font-size: var(--fs-sm); }
     .ps-agg-v   { font-size: var(--fs-sm); }
   }
   @media (max-width: 380px) {
     /* Narrowest phones — drop one more notch. */
-    .ps-strip   { padding: 0 0.2rem; }
+    .ps-strip-scroll { padding: 0 0.2rem; }
     .ps-agg-k   { font-size: var(--fs-xs); }
     .ps-agg-v   { font-size: var(--fs-xs); }
   }

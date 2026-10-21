@@ -29,6 +29,23 @@
  *     which has no overflow-x guard anywhere in app.css. Fixed via
  *     `overscroll-behavior-x: contain` scoped to `.ps-strip`.
  *
+ *  #2b (2026-10-21, amends #2) Operator reported the same class of bug
+ *     recurring: overflowing content on mobile "expanding the width of
+ *     the container and making the container shift to the left." Root
+ *     cause: `.ps-strip` (the position:fixed shell) was ALSO the element
+ *     `overflow-x: auto` sat on — a fixed box that is its own horizontal
+ *     scroll container is a known mobile-WebKit coupling trap, and the
+ *     2026-09-30 `overscroll-behavior-x` fix addressed only the
+ *     scroll-chaining symptom, not that underlying coupling. Fixed by
+ *     decoupling: `.ps-strip` is now a plain non-scrolling rectangle
+ *     (`overflow: hidden`), and a new inner `.ps-strip-scroll` div (an
+ *     ordinary statically-positioned child, not `position: fixed`) owns
+ *     the actual horizontal scrolling — the same "fixed chrome shell +
+ *     scrollable content" pattern used by every card's button-group
+ *     header. The tests below now also assert `.ps-strip` itself never
+ *     moves or grows during the swipe, which is what #2b's fix guards
+ *     that #2's test didn't check.
+ *
  * Five quality dimensions:
  *  1. SSOT    — heartbeat cadence now derives from the same isNseOpen/
  *               isMcxOpen gate every other market-hours check in the app
@@ -262,14 +279,16 @@ test.describe('PositionStrip heartbeat — fires during market-open hours', () =
 test.describe('PositionStrip mobile — internal scroll only, no page-level shift', () => {
   test.use({ viewport: { width: 412, height: 915 }, isMobile: true, hasTouch: true });
 
-  test('overflowing content scrolls within .ps-strip; document never overflows horizontally', async ({ page }) => {
+  test('overflowing content scrolls within .ps-strip-scroll; neither .ps-strip nor the document ever moves or grows', async ({ page }) => {
     await loginAsAdmin(page);
     await mockMarketOpen(page);
     await mockBook(page);
 
     await page.goto('/dashboard', { waitUntil: 'domcontentloaded' });
     const strip = page.locator('.ps-strip');
+    const scroller = page.locator('.ps-strip-scroll');
     await expect(strip).toBeVisible({ timeout: TIMEOUT });
+    await expect(scroller).toBeVisible({ timeout: TIMEOUT });
     // Wait for the pills to actually paint big-notional values (not the
     // ₹0 placeholder) so the overflow scenario is real, not vacuous.
     await expect(strip.locator('.ps-agg-v').first()).not.toHaveText('₹0', { timeout: TIMEOUT });
@@ -287,33 +306,44 @@ test.describe('PositionStrip mobile — internal scroll only, no page-level shif
     // or simply more/longer account labels than this fixture models),
     // widen the value cells slightly via injected CSS. This does not
     // touch `.ps-strip`'s own box model (still fixed + left:0/right:0,
-    // no min-width) — only forces its CHILDREN wide enough to need the
-    // strip's existing overflow-x:auto to actually engage.
+    // no min-width) — only forces its CHILDREN wide enough to need
+    // `.ps-strip-scroll`'s existing overflow-x:auto to actually engage.
     await page.addStyleTag({ content: '.ps-strip .ps-agg-v { min-width: 46px; }' });
 
-    // Precondition: the strip genuinely needs to scroll internally at
-    // this viewport — otherwise the rest of this test is vacuous.
+    // Precondition: the inner scroller genuinely needs to scroll
+    // internally at this viewport — otherwise the rest of this test is
+    // vacuous. Also captures `.ps-strip`'s own box up front so the
+    // post-gesture check below has a real baseline, not just an
+    // absolute-pixel assertion.
     const pre = await page.evaluate(() => {
-      const el = document.querySelector('.ps-strip');
+      const scrollEl = document.querySelector('.ps-strip-scroll');
+      const shellEl = document.querySelector('.ps-strip');
+      const shellRect = shellEl.getBoundingClientRect();
       return {
-        stripScrollWidth: el.scrollWidth,
-        stripClientWidth: el.clientWidth,
+        scrollWidth: scrollEl.scrollWidth,
+        scrollClientWidth: scrollEl.clientWidth,
+        shellClientWidth: shellEl.clientWidth,
+        shellLeft: shellRect.left,
         docScrollWidth: document.documentElement.scrollWidth,
         innerWidth: window.innerWidth,
         scrollX: window.scrollX,
       };
     });
-    expect(pre.stripScrollWidth, 'strip content does not overflow — test fixture too small').toBeGreaterThan(pre.stripClientWidth);
+    expect(pre.scrollWidth, 'inner scroller content does not overflow — test fixture too small').toBeGreaterThan(pre.scrollClientWidth);
+    // `.ps-strip` (the fixed shell) spans the full viewport and sits
+    // flush at the left edge before any gesture.
+    expect(pre.shellClientWidth).toBeLessThanOrEqual(412 + 1);
+    expect(pre.shellLeft).toBe(0);
     // No page-level horizontal overflow BEFORE any gesture. Assert
     // against the fixed 412 viewport width, not window.innerWidth,
     // which can itself have already grown if the bug is present.
     expect(pre.docScrollWidth).toBeLessThanOrEqual(412 + 1);
     expect(pre.scrollX).toBe(0);
 
-    // Simulate a horizontal swipe gesture ON the strip via CDP (real
+    // Simulate a horizontal swipe gesture ON the scroller via CDP (real
     // touch-scroll-chaining path — a plain `el.scrollLeft = x` write
     // would not reproduce the browser's momentum/rubber-band behavior).
-    const box = await strip.boundingBox();
+    const box = await scroller.boundingBox();
     const cdp = await page.context().newCDPSession(page);
     await cdp.send('Input.synthesizeScrollGesture', {
       x: box.x + box.width / 2,
@@ -327,17 +357,26 @@ test.describe('PositionStrip mobile — internal scroll only, no page-level shif
     await page.waitForTimeout(500);
 
     const post = await page.evaluate(() => {
-      const el = document.querySelector('.ps-strip');
+      const scrollEl = document.querySelector('.ps-strip-scroll');
+      const shellEl = document.querySelector('.ps-strip');
+      const shellRect = shellEl.getBoundingClientRect();
       return {
-        stripScrollLeft: el.scrollLeft,
+        scrollLeft: scrollEl.scrollLeft,
+        shellClientWidth: shellEl.clientWidth,
+        shellLeft: shellRect.left,
         docScrollWidth: document.documentElement.scrollWidth,
         scrollX: window.scrollX,
       };
     });
 
-    // The strip's OWN internal scroll moved...
-    expect(post.stripScrollLeft, 'strip did not scroll internally on swipe').toBeGreaterThan(0);
-    // ...but the document/page itself never moved or grew wider.
+    // The inner scroller's OWN scroll moved...
+    expect(post.scrollLeft, 'inner scroller did not scroll internally on swipe').toBeGreaterThan(0);
+    // ...but the fixed shell never moved or grew — the exact symptom the
+    // operator reported ("expanding the width of the container and
+    // making the container shift to the left").
+    expect(post.shellLeft, 'the fixed .ps-strip shell shifted on swipe').toBe(0);
+    expect(post.shellClientWidth, 'the fixed .ps-strip shell grew wider than the viewport on swipe').toBeLessThanOrEqual(412 + 1);
+    // ...and the document/page itself never moved or grew wider.
     expect(post.scrollX, 'the whole page shifted right on strip swipe').toBe(0);
     expect(post.docScrollWidth).toBeLessThanOrEqual(412 + 1);
   });
