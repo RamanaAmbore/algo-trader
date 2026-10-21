@@ -1158,11 +1158,54 @@ contract. `/preflight` still accepts `paired_legs` for read-only API callers; th
 informational verdict, never a placement gate. Invariant: a display must never disagree with
 enforcement, and the enforcement path is never loosened to match a display.
 
-**Groww GTT refusal in prod.** `RemoteBroker.validate_gtt_exchange`
+**Groww GTT refusal in prod, then a live deploy-coupling regression on dev, fixed same day
+(commits `7183244b`, `0b935935`).** `RemoteBroker.validate_gtt_exchange`
 ([`remote_broker.py:256`](backend/brokers/client/remote_broker.py#L256), commit `7183244b`) now
 forwards to conn_service. Before, it was the base no-op, so Groww's MCX/NCO GTT refusal was
-silently skipped in conn-service mode. Errors are re-raised as `ValueError` so `apply_plan_live`'s
-`except ValueError` still catches them.
+silently skipped in conn-service mode. Errors were re-raised as `ValueError` so `apply_plan_live`'s
+`except ValueError` still catches them — but `conn_service` is the SAME shared process for dev and
+prod (`/opt/ramboq` on `main`), and only picks up new `backend/brokers/` code on a prod deploy. The
+commit shipped to `dev` before `main` had the new `validate_gtt_exchange` RPC in its whitelist, so
+every call 403'd at conn_service's own `_ALLOWED_BROKER_METHODS` check — mapping to
+`BrokerNetworkError` (a `BrokerError` subclass) — and the fail-closed design silently skipped the
+GTT attach for EVERY exchange, on every broker, confirmed live on dev the same day. Fixed (`0b935935`):
+`validate_gtt_exchange` now fails OPEN specifically on `BrokerNetworkError` (covers both "method not
+deployed yet" and a genuine transport blip), restoring the pre-existing no-op behavior until
+conn_service actually has the method. A real exchange-refusal verdict from an upgraded conn_service
+comes back as a different `error_type` and still fails closed. Invariant: any new `RemoteBroker`
+override that forwards to conn_service must not fail closed on a transport/whitelist failure if
+conn_service's own upgrade is deploy-coupled to a later (prod) push than the one introducing the
+override — the pre-existing behavior (here: no-op) is the only safe default until both sides ship.
+
+**Groww's margin call used the wrong SDK signature entirely — the gate has never computed a real
+number (2026-10-20, commit `0b935935`).** The parser/adapter fix above assumed Groww's
+`get_order_margin_details` took per-order kwargs
+(`trading_symbol=, exchange=, segment=, transaction_type=, quantity=, order_type=, product=,
+price=`). The real installed SDK's signature, confirmed via server-side introspection, is
+`(segment: str, orders: list[dict], timeout=None)` — a batch call. Every real call raised
+`TypeError`, confirmed live via the `[MARGIN-RAW-API]` log
+(`bm_res=[{'total': 0.0, 'error': "...unexpected keyword argument 'trading_symbol'", 'raw': None}]`)
+— Groww's margin gate predates tonight and has never computed a real number; the parser fix just
+made the failure visible instead of masking it behind an always-0 result either way. Fixed:
+`basket_order_margins` ([`groww.py:1131`](backend/brokers/adapters/groww.py#L1131)) calls
+`get_order_margin_details(segment=seg, orders=[{...one order...}])` — one order per call, to keep
+the existing per-leg breakdown (the real response is a single aggregate, not a per-order list, so a
+multi-order call would collapse the breakdown this adapter's contract requires). Response shape is
+Groww's real `OrderMarginResponse` schema (`total_requirement`, `span_margin_required`,
+`exposure_margin_required` — confirmed from two independent sources against the published OpenAPI
+spec; `GrowwAPI._parse_response` already unwraps `payload`, so the earlier `data.total_margin` guess
+was wrong on every level: wrong wrapper key, wrong field name). This endpoint has no
+available-balance field — `available` is `None` here, which is fine, since
+`_preflight_resolve_available_margin` reads availability from `broker.margins()`, a separate call,
+never from this per-leg dict. Test: `test_dhan_groww_margin_shape.py::
+test_basket_order_margins_calls_real_batch_signature` uses `create_autospec(GrowwAPI)` (not a bare
+`MagicMock`) specifically because a bare mock accepts any kwargs — exactly how the original
+signature bug went undetected — confirmed to fail against the pre-fix call with the live `TypeError`
+message. Invariant: Dhan's parser fix is live-confirmed against real data (API-layer code, runs on
+dev's own checkout); Groww's margin numbers are NOT yet live-confirmed — the fix above is correct by
+SDK-signature inspection and schema cross-reference, but has not been exercised against a real
+response, because this file lives in `backend/brokers/` and only runs inside conn_service, which (per
+the deploy-coupling note above) needs a prod deploy before dev's calls reach this code.
 
 Invariant: an absent margin field is `None`, never `0`. A margin gate that reads `0` for missing data
 is not a gate. Dhan/Groww stay log-only until the operator flips the setting after confirming real
