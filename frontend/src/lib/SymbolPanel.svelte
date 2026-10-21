@@ -1764,8 +1764,13 @@
       const pct = available > 0 ? (after / available) * 100 : 0;
       afterCls = after < 0 || pct < 10 ? 'err' : pct < 40 ? 'warn' : '';
     }
-    const pairedCount = Number(_chipMeta?.pairedCount) || 0;
-    return { required, available, after, afterCls, shortfall, isCashMode, pairedCount };
+    // `pairedCount`/"+wing" netted-margin annotation removed —
+    // OrderTicket's margin preview is deliberately NAKED now (no
+    // `paired_legs` sent), matching what the real submit-time preflight
+    // enforces. Showing a netted figure here was a display bug: the
+    // wing is only placed on parent fill via template attach, so at
+    // submit time the broker only ever sees the naked parent order.
+    return { required, available, after, afterCls, shortfall, isCashMode };
   });
   // Modal notice — single source of truth for error / warning / info
   // banners surfaced in the action footer's LEFT slot. Priority:
@@ -3287,7 +3292,7 @@
                     ? `Preview: ${_marginInfo.error}`
                     : _marginInfo.loading
                       ? `Computing ${_kind.toLowerCase()}…`
-                      : `${_kind}: ₹${aggFmtMargin(_marginInfo.required)}${_marginInfo.pairedCount > 0 ? ' (parent + auto-wing, basket-net margin)' : ''} vs ${_avlKey} ₹${aggFmtMargin(_marginInfo.available ?? 0)}`}>
+                      : `${_kind}: ₹${aggFmtMargin(_marginInfo.required)} vs ${_avlKey} ₹${aggFmtMargin(_marginInfo.available ?? 0)}`}>
               {#if _marginInfo.error}
                 ⚠ {_marginInfo.error}
               {:else if _marginInfo.loading}
@@ -3296,9 +3301,6 @@
                 <span class="oes-margin-pill-row">
                   <span class="oes-margin-pill-key">{_reqKey}</span>
                   <span class="oes-margin-pill-val">{aggFmtMargin(_marginInfo.required)}</span>
-                  {#if _marginInfo.pairedCount > 0}
-                    <span class="oes-margin-pill-paired" title="Margin reflects parent + auto-attached wing (basket-net)">+wing</span>
-                  {/if}
                 </span>
                 {#if _marginInfo.available != null}
                   <span class="oes-margin-pill-row">
@@ -5172,20 +5174,6 @@
   .oes-margin-pill-val {
     font-variant-numeric: tabular-nums;
     font-weight: 700;
-  }
-  /* +wing tag — sits inline after the margin number when the
-     Required figure reflects parent + auto-attached wing. Purple
-     palette matches the wing chip in OrderTicket's template preview. */
-  .oes-margin-pill-paired {
-    margin-left: 0.3rem;
-    padding: 0 0.3rem;
-    border-radius: 2px;
-    background: rgba(192, 132, 252, 0.18);
-    color: var(--algo-violet);
-    font-size: var(--fs-xs);
-    font-weight: 600;
-    font-family: monospace;
-    letter-spacing: 0.04em;
   }
   .oes-margin-pill-sep {
     opacity: 0.5;

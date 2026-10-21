@@ -2018,11 +2018,11 @@
     const isCashMode =
       isEquity ||
       ((kind === 'CE' || kind === 'PE') && _side === 'BUY');
-    // pairedCount > 0 when the preflight margin number reflects parent
-    // + wing (or any other auto-attached leg). Surfaced to the shell
-    // chip so the Req value reads "Req ₹X · +wing" instead of being
-    // mistaken for the naked-short margin.
-    const pairedCount = _previewPlan?.wing ? 1 : 0;
+    // `pairedCount` (parent-+-wing netted margin) was removed — the
+    // margin preview below is deliberately NAKED now (no `paired_legs`
+    // sent), matching what the real submit-time preflight actually
+    // enforces. A "+wing" annotation claiming the Req figure was netted
+    // would be false after that fix, so there is nothing to surface here.
     return {
       isCashMode,
       cash:         _accountFunds ? Number(_accountFunds.cash || 0)         : null,
@@ -2031,7 +2031,6 @@
       fundsAccount: _accountFunds ? String(_accountFunds.account || '')     : '',
       kind,
       side: _side,
-      pairedCount,
       // Surfacing _type lets the shell hide chase pills for MARKET
       // and SL-M (operator: "chase needs to be active for limit or
       // stop limit. stop limit market does not need chase").
@@ -2103,10 +2102,9 @@
       _marginPreview = null;
       _marginLoading = false;
       // `_chipMeta` is read via untrack so it doesn't add itself to the
-      // effect's dep set — otherwise template-preview cycles (which
-      // update _previewPlan.wing → _chipMeta.pairedCount) re-fire the
-      // preflight unnecessarily. The chip emitter `$effect` above
-      // handles every chipMeta change on its own.
+      // effect's dep set — otherwise template-preview cycles would
+      // re-fire the preflight unnecessarily. The chip emitter `$effect`
+      // above handles every chipMeta change on its own.
       onMarginUpdate?.(null, false, untrack(() => _chipMeta));
       return;
     }
@@ -2114,22 +2112,18 @@
     onMarginUpdate?.(_marginPreview, true, untrack(() => _chipMeta));
     _marginTimer = setTimeout(async () => {
       try {
-        // Paired legs — when the template preview has resolved a wing,
-        // factor it into the basket_margin call so the operator sees
-        // the BRACKETED-strategy margin (parent SELL net of protective
-        // BUY) instead of the scarier naked-short margin.
-        const _wing = _previewPlan?.wing;
-        const paired_legs = (_wing && _wing.tradingsymbol)
-          ? [{
-              tradingsymbol:    _wing.tradingsymbol,
-              exchange:         _wing.exchange || _exchange,
-              transaction_type: _wing.transaction_type || 'BUY',
-              quantity:         Number(_wing.quantity) || Number(_qty),
-              product:          _wing.product || _product,
-              order_type:       _wing.order_type || 'MARKET',
-              price:            Number(_wing.estimated_price) || 0,
-            }]
-          : [];
+        // Deliberately NAKED — no `paired_legs`. The wing (if any) is
+        // only ever placed on PARENT FILL via template attach, so at
+        // the moment of submission the broker sees only the naked
+        // parent order and genuinely requires naked margin for it. The
+        // real submit-time preflight (`_ticket_run_preflight` in
+        // backend/api/routes/orders_place.py) calls `run_preflight` with
+        // no paired orders for the same reason. This preview used to
+        // send the resolved template wing as `paired_legs`, showing a
+        // NET/hedged margin number that was never actually what would be
+        // charged at submit — a display bug, not a looser real gate.
+        // Fix is here, not in the submit-time check: the preview must
+        // match enforcement, not the other way around.
         const payload = {
           account: _account,
           tradingsymbol: _resolvedSymbol || symbol,
@@ -2143,7 +2137,6 @@
           price: showLimit ? Number(_price) || 0 : 0,
           trigger_price: showTrigger ? Number(_trigger) || 0 : 0,
           intent: classifyIntent(currentQty, _side),
-          paired_legs,
         };
         _marginPreview = await previewOrderMargin(payload);
       } catch (e) {
