@@ -1039,6 +1039,157 @@ async def test_chase_build_tasks_real_preflight_quotes_margin_with_real_product(
 
 
 # ---------------------------------------------------------------------------
+# _action_live_close_position residual product fix (2026-10) — Phase 1
+# (commit 12b8e166) fixed _chase_build_tasks's hardcoded product="NRML"
+# but NOT _action_live_close_position's identical bug: that function
+# still sourced product from params.get("product") or "NRML" via
+# _al_close_resolve_params, never consulting the real live position's
+# own product column. Same bug class: an agent-driven single-position
+# close on an MIS position, with no explicit product override, silently
+# used NRML — which does not net against the real MIS position on the
+# broker side.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_action_live_close_position_resolves_real_product_mis():
+    """No explicit 'product' param — must resolve the REAL position's
+    product (MIS) via _fetch_net_position_product, never the old
+    hardcoded 'NRML' default."""
+    from backend.api.algo.actions import _action_live_close_position
+    import backend.api.algo.actions_live as _mod
+
+    broker = _make_broker_stub(ltp_value=100.0)
+    broker.ltp.return_value = {"NFO:NIFTY25JULFUT": {"last_price": 100.0}}
+    agent = MagicMock()
+    agent.slug = "test-close"
+    context: dict = {}
+    params = {
+        "account": "ZG0790", "symbol": "NIFTY25JULFUT", "exchange": "NFO",
+        # no 'product' key — must resolve from the real position row.
+    }
+
+    captured_orders: list[dict] = []
+
+    async def _fake_run_preflight(account, order, paired_orders=None):
+        captured_orders.append(order)
+        return {"ok": True, "blocked": [], "diagnostics": {}}
+
+    mock_chase = AsyncMock()
+
+    with patch("backend.api.routes.orders_place._fetch_net_position_qty",
+               new=AsyncMock(return_value=100.0)), \
+         patch("backend.api.routes.orders_place._fetch_net_position_product",
+               new=AsyncMock(return_value="MIS")), \
+         patch("backend.api.routes.orders_place._verify_close_intent",
+               new=AsyncMock(return_value=True)), \
+         patch("backend.brokers.get_broker", return_value=broker), \
+         patch.object(_mod, "run_preflight", new=_fake_run_preflight), \
+         patch("backend.api.algo.actions._write_live_order",
+               new=AsyncMock(return_value=42)), \
+         patch("backend.api.algo.chase.chase_order", new=mock_chase):
+        await _action_live_close_position(agent, context, params)
+
+    assert len(captured_orders) == 1
+    assert captured_orders[0]["product"] == "MIS", (
+        f"expected the real position product 'MIS' in the preflight "
+        f"dict, got {captured_orders[0].get('product')!r}"
+    )
+    assert mock_chase.call_count == 1
+    cfg = mock_chase.call_args.kwargs["cfg"]
+    assert cfg.product == "MIS", (
+        f"expected ChaseConfig.product 'MIS' (real position product), "
+        f"got {cfg.product!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_action_live_close_position_explicit_product_param_wins():
+    """An explicit operator-supplied 'product' override must win over
+    the real position's own product — e.g. an operator deliberately
+    closing under a different product than currently held."""
+    from backend.api.algo.actions import _action_live_close_position
+    import backend.api.algo.actions_live as _mod
+
+    broker = _make_broker_stub(ltp_value=100.0)
+    broker.ltp.return_value = {"NFO:NIFTY25JULFUT": {"last_price": 100.0}}
+    agent = MagicMock()
+    agent.slug = "test-close"
+    context: dict = {}
+    params = {
+        "account": "ZG0790", "symbol": "NIFTY25JULFUT", "exchange": "NFO",
+        "product": "CNC",  # explicit override
+    }
+
+    captured_orders: list[dict] = []
+
+    async def _fake_run_preflight(account, order, paired_orders=None):
+        captured_orders.append(order)
+        return {"ok": True, "blocked": [], "diagnostics": {}}
+
+    mock_chase = AsyncMock()
+
+    with patch("backend.api.routes.orders_place._fetch_net_position_qty",
+               new=AsyncMock(return_value=100.0)), \
+         patch("backend.api.routes.orders_place._fetch_net_position_product",
+               new=AsyncMock(return_value="MIS")), \
+         patch("backend.api.routes.orders_place._verify_close_intent",
+               new=AsyncMock(return_value=True)), \
+         patch("backend.brokers.get_broker", return_value=broker), \
+         patch.object(_mod, "run_preflight", new=_fake_run_preflight), \
+         patch("backend.api.algo.actions._write_live_order",
+               new=AsyncMock(return_value=42)), \
+         patch("backend.api.algo.chase.chase_order", new=mock_chase):
+        await _action_live_close_position(agent, context, params)
+
+    assert captured_orders[0]["product"] == "CNC", (
+        f"expected the explicit operator override 'CNC' to win over the "
+        f"real position's 'MIS', got {captured_orders[0].get('product')!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_action_live_close_position_product_falls_back_to_nrml():
+    """When neither an explicit override NOR the real position row's
+    product field is available, 'NRML' remains the final fallback
+    (preserves today's behaviour for the should-be-rare case where the
+    broker's own positions row is missing the column)."""
+    from backend.api.algo.actions import _action_live_close_position
+    import backend.api.algo.actions_live as _mod
+
+    broker = _make_broker_stub(ltp_value=100.0)
+    broker.ltp.return_value = {"NFO:NIFTY25JULFUT": {"last_price": 100.0}}
+    agent = MagicMock()
+    agent.slug = "test-close"
+    context: dict = {}
+    params = {
+        "account": "ZG0790", "symbol": "NIFTY25JULFUT", "exchange": "NFO",
+    }
+
+    captured_orders: list[dict] = []
+
+    async def _fake_run_preflight(account, order, paired_orders=None):
+        captured_orders.append(order)
+        return {"ok": True, "blocked": [], "diagnostics": {}}
+
+    mock_chase = AsyncMock()
+
+    with patch("backend.api.routes.orders_place._fetch_net_position_qty",
+               new=AsyncMock(return_value=100.0)), \
+         patch("backend.api.routes.orders_place._fetch_net_position_product",
+               new=AsyncMock(return_value=None)), \
+         patch("backend.api.routes.orders_place._verify_close_intent",
+               new=AsyncMock(return_value=True)), \
+         patch("backend.brokers.get_broker", return_value=broker), \
+         patch.object(_mod, "run_preflight", new=_fake_run_preflight), \
+         patch("backend.api.algo.actions._write_live_order",
+               new=AsyncMock(return_value=42)), \
+         patch("backend.api.algo.chase.chase_order", new=mock_chase):
+        await _action_live_close_position(agent, context, params)
+
+    assert captured_orders[0]["product"] == "NRML"
+
+
+# ---------------------------------------------------------------------------
 # execute() — action-param expression resolution failure isolation
 # ---------------------------------------------------------------------------
 

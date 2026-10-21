@@ -368,14 +368,22 @@ def _opl_reconcile_attach_eligible(row) -> bool:
     return bool(row.fill_price)
 
 
-async def _fetch_net_position_qty(sym: str, exchange: str, account: str) -> float | None:
-    """Return the signed net held quantity for (account, sym), or None when
-    no matching position row exists or the broker fetch fails.
+async def _fetch_net_position_row(sym: str, exchange: str, account: str) -> dict | None:
+    """Return the matched position row (as a dict) for (account, sym), or
+    None when no matching row exists / the account column can't be
+    identified / the broker fetch fails.
 
-    Uses cached broker positions (30s TTL) — lightweight, no extra broker
-    call typically. Shared by `_is_offsetting_position` (sign-only check)
-    and `_verify_close_intent` (sign + magnitude check) so both read the
-    same position snapshot rather than each doing their own broker call.
+    Shared single-row lookup behind `_fetch_net_position_qty` (qty only)
+    and the close-path product resolver (`_fetch_net_position_product`,
+    actions_live.py's residual 2026-10 close_position product fix) — a
+    symbol can carry more than one open row for the same account (e.g.
+    both an MIS and an NRML position simultaneously), so qty and product
+    MUST come from the exact same `rows.iloc[0]` rather than two
+    independent broker-row lookups that could pick different rows if a
+    position changes between calls. Both callers sit behind the same
+    cached broker DataFrame fetch (`broker_apis.fetch_positions`'s own
+    30s TTL), so calling this more than once per close costs no extra
+    broker round-trip in the common case.
     """
     try:
         from backend.brokers.broker_apis import fetch_positions as _fp
@@ -395,15 +403,49 @@ async def _fetch_net_position_qty(sym: str, exchange: str, account: str) -> floa
                 # 1a fix: refuse rather than guess.
                 return None
             mask = df["tradingsymbol"].str.upper() == sym.upper()
-            if acct_col:
-                mask &= df[acct_col].astype(str).str.upper() == account.upper()
+            mask &= df[acct_col].astype(str).str.upper() == account.upper()
             rows = df[mask]
             if rows.empty:
                 continue
-            return float(rows["quantity"].iloc[0])
+            return rows.iloc[0].to_dict()
     except Exception:
         pass
     return None
+
+
+async def _fetch_net_position_qty(sym: str, exchange: str, account: str) -> float | None:
+    """Return the signed net held quantity for (account, sym), or None when
+    no matching position row exists or the broker fetch fails.
+
+    Uses cached broker positions (30s TTL) — lightweight, no extra broker
+    call typically. Shared by `_is_offsetting_position` (sign-only check)
+    and `_verify_close_intent` (sign + magnitude check) so both read the
+    same position snapshot rather than each doing their own broker call.
+    """
+    row = await _fetch_net_position_row(sym, exchange, account)
+    if row is None:
+        return None
+    try:
+        return float(row.get("quantity"))
+    except (TypeError, ValueError):
+        return None
+
+
+async def _fetch_net_position_product(sym: str, exchange: str, account: str) -> str | None:
+    """Return the real position row's own `product` field (MIS/NRML/CNC)
+    for (account, sym), or None when no matching row exists / the field
+    is absent / the broker fetch fails.
+
+    2026-10 residual fix (close_position product): shares the exact same
+    row-match helper `_fetch_net_position_qty` reads
+    (`_fetch_net_position_row`) so qty and product can never be read
+    from two different rows when a symbol momentarily carries more than
+    one product open at once."""
+    row = await _fetch_net_position_row(sym, exchange, account)
+    if row is None:
+        return None
+    val = row.get("product")
+    return str(val).upper() if val else None
 
 
 async def _is_offsetting_position(sym: str, exchange: str, side: str, account: str) -> bool:

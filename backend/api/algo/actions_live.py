@@ -615,18 +615,25 @@ async def _close_position_on_failure(
 
 def _al_close_resolve_params(
     params: dict,
-) -> "tuple[str, str, str, int, str | None, str]":
+) -> "tuple[str, str, str, int, str | None, str | None]":
     """Extract close_position params from the action dict (raw extraction
     only — no position-aware resolution; see `_al_close_resolve_position`
     for that).
 
-    Returns (account, symbol, exchange, qty_param, side_param, product).
-    `qty_param` is 0 when omitted — the caller treats 0 as "flatten the
-    full position", deriving the real quantity from the live broker
-    position. `side_param` is None when omitted so the caller can derive
-    it from the position's own sign, per the `close_position`
-    params_schema (`agent_grammar.yaml`): "Override auto-derived side.
-    Default: long -> SELL, short -> BUY."
+    Returns (account, symbol, exchange, qty_param, side_param,
+    product_param). `qty_param` is 0 when omitted — the caller treats 0
+    as "flatten the full position", deriving the real quantity from the
+    live broker position. `side_param` is None when omitted so the
+    caller can derive it from the position's own sign, per the
+    `close_position` params_schema (`agent_grammar.yaml`): "Override
+    auto-derived side. Default: long -> SELL, short -> BUY."
+    `product_param` is likewise None when omitted (2026-10 residual
+    fix) — an explicit operator override still wins, but the OLD
+    unconditional `"NRML"` default here used to silently discard the
+    real position's own product before `_al_close_resolve_position` (or
+    its caller) ever got a chance to resolve it from the live broker
+    row, which is the exact same bug class Phase 1 (commit `12b8e166`)
+    already fixed for `_chase_build_tasks`'s identical hardcode.
 
     2026-10 audit fix: this function used to hard-default `side="SELL"`
     unconditionally and require `quantity > 0` — silently DOUBLING a
@@ -635,7 +642,8 @@ def _al_close_resolve_params(
     omitted `side`/`quantity`, even though the schema documents both as
     optional with position-derived defaults. Raises ValueError only for
     missing account/symbol identity fields or a negative quantity —
-    never for an omitted side/quantity, which are now valid inputs.
+    never for an omitted side/quantity/product, which are now all valid
+    inputs.
     """
     account  = str(params.get("account") or "")
     symbol   = str(params.get("symbol") or params.get("tradingsymbol") or "")
@@ -646,7 +654,8 @@ def _al_close_resolve_params(
     qty_param = int(qty_raw) if qty_raw else 0
     side_raw   = params.get("side") or params.get("transaction_type")
     side_param = str(side_raw).upper() if side_raw else None
-    product  = str(params.get("product") or "NRML")
+    product_raw   = params.get("product")
+    product_param = str(product_raw).upper() if product_raw else None
     if not account or not symbol:
         raise ValueError(
             f"close_position: missing required params (account={account!r}, "
@@ -656,15 +665,15 @@ def _al_close_resolve_params(
         raise ValueError(
             f"close_position: quantity must not be negative (got {qty_param})"
         )
-    return account, symbol, exchange, qty_param, side_param, product
+    return account, symbol, exchange, qty_param, side_param, product_param
 
 
 async def _al_close_resolve_position(
     account: str, symbol: str, exchange: str,
-    side_param: "str | None", qty_param: int,
-) -> "tuple[str, int] | None":
-    """Resolve + verify the real side/qty to close against the live
-    broker position.
+    side_param: "str | None", qty_param: int, product_param: "str | None",
+) -> "tuple[str, int, str] | None":
+    """Resolve + verify the real side/qty/product to close against the
+    live broker position.
 
     2026-10 audit fix: `_action_live_close_position` used to hard-default
     `side="SELL"` unconditionally and pass `intent="close"` to
@@ -677,19 +686,32 @@ async def _al_close_resolve_position(
     `_verify_close_intent` (sign + magnitude) — the EXACT same
     lookup+verification pattern the manual-ticket close path
     (`_ticket_enforce_lot_and_fat_finger`) already relies on — instead of
-    reinventing it here. Both helpers read through the shared 30s
+    reinventing it here. All three helpers read through the shared 30s
     raw-broker-DataFrame cache (`_RAW_CACHE`), so this adds no extra
     broker round-trip versus the single lookup either one does alone.
 
-    Returns (side, qty) only when the close is verified: a live position
-    exists, is non-flat, the (possibly operator-overridden) side
-    genuinely offsets it, and the qty (defaulted to the full held
-    quantity when omitted) does not exceed the held quantity. Returns
-    None in every other case — callers MUST refuse to place/chase on
-    None, never fall back to placing an unverified close.
+    2026-10 residual fix (same bug class Phase 1 fixed for
+    `_chase_build_tasks`): `product` now resolves from the REAL
+    position row's own `product` column (MIS/NRML/CNC) via
+    `_fetch_net_position_product` — sharing the exact row
+    `_fetch_net_position_qty` reads, so qty/side and product can never
+    come from two different rows when a symbol momentarily carries more
+    than one product open at once. `product_param` (an explicit
+    operator override) wins when present; the real position's product
+    is next; `"NRML"` is only the final fallback for the (should-be-
+    rare) case where the broker's own positions row is missing the
+    column.
+
+    Returns (side, qty, product) only when the close is verified: a
+    live position exists, is non-flat, the (possibly operator-
+    overridden) side genuinely offsets it, and the qty (defaulted to
+    the full held quantity when omitted) does not exceed the held
+    quantity. Returns None in every other case — callers MUST refuse to
+    place/chase on None, never fall back to placing an unverified close.
     """
     from backend.api.routes.orders_place import (
-        _fetch_net_position_qty, _verify_close_intent,
+        _fetch_net_position_qty, _fetch_net_position_product,
+        _verify_close_intent,
     )
 
     net_qty = await _fetch_net_position_qty(symbol, exchange, account)
@@ -705,7 +727,10 @@ async def _al_close_resolve_position(
     verified = await _verify_close_intent(symbol, exchange, side, account, qty)
     if not verified:
         return None
-    return side, qty
+
+    real_product = await _fetch_net_position_product(symbol, exchange, account)
+    product = product_param or real_product or "NRML"
+    return side, qty, product
 
 
 async def _al_close_fetch_broker_ltp(
@@ -738,16 +763,21 @@ async def _action_live_close_position(agent, context: dict, params: dict):
     Close a single position via the adaptive chase engine.
 
     Resolves account / symbol from params, then resolves the real
-    side/qty to close by looking up the live broker position
+    side/qty/product to close by looking up the live broker position
     (`_al_close_resolve_position`) — side defaults to the direction that
     actually offsets the held position (long -> SELL, short -> BUY);
-    quantity defaults to the full held quantity when omitted. The
-    operator-supplied `side`/`quantity` (if any) must still verify
-    against the real position before `intent="close"` is allowed to
-    bypass the G2 fat-finger cap; an unverified close is refused
-    (REJECTED row + alert), never silently placed. Fetches LTP from the
-    broker as the initial limit price, then delegates to chase_order()
-    which handles cancel-and-re-place until filled or attempt-cap.
+    quantity defaults to the full held quantity when omitted; product
+    resolves from the real position row's own product (MIS/NRML/CNC),
+    not a hardcoded default (2026-10 residual fix — same bug class
+    Phase 1 fixed for `_chase_build_tasks`: an MIS close placed under
+    the wrong product does not net against the real MIS position on
+    the broker side). The operator-supplied `side`/`quantity`/`product`
+    (if any) must still verify against the real position before
+    `intent="close"` is allowed to bypass the G2 fat-finger cap; an
+    unverified close is refused (REJECTED row + alert), never silently
+    placed. Fetches LTP from the broker as the initial limit price,
+    then delegates to chase_order() which handles cancel-and-re-place
+    until filled or attempt-cap.
 
     An AlgoOrder(mode='live') row is written before the first placement.
     The chase engine drives the actual Kite calls; any placement or fill
@@ -756,12 +786,12 @@ async def _action_live_close_position(agent, context: dict, params: dict):
     from backend.api.algo.chase import chase_order, ChaseConfig
     from backend.api.algo.actions import _write_live_order
 
-    account, symbol, exchange, qty_param, side_param, product = (
+    account, symbol, exchange, qty_param, side_param, product_param = (
         _al_close_resolve_params(params)
     )
 
     resolved = await _al_close_resolve_position(
-        account, symbol, exchange, side_param, qty_param,
+        account, symbol, exchange, side_param, qty_param, product_param,
     )
     if resolved is None:
         pf_unverified = {
@@ -781,7 +811,7 @@ async def _action_live_close_position(agent, context: dict, params: dict):
         )
         return  # abort — never place/chase an unverified close
 
-    side, qty = resolved
+    side, qty, product = resolved
     broker, price = await _al_close_fetch_broker_ltp(account, exchange, symbol)
 
     # ── Preflight (G1 lot-multiple; G2 5-lot cap bypassed for closes,
