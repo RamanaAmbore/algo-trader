@@ -209,12 +209,15 @@ class TestRemoteBrokerValidateGttExchange:
             with pytest.raises(ValueError, match="not supported on MCX"):
                 broker.validate_gtt_exchange("MCX")
 
-    def test_conn_service_unreachable_fails_closed_as_value_error(self):
-        """A transport failure (conn_service down) must also surface as
-        ValueError, not BrokerNetworkError — so apply_plan_live's
-        `except ValueError` catches it and skips the attach (fail
-        closed) instead of an unhandled BrokerError crashing the
-        orchestrator for an unrelated network blip."""
+    def test_conn_service_unreachable_fails_open_not_value_error(self):
+        """Deploy-coupling guard (2026-10-20): a transport failure (conn_service
+        down, or the method not yet in conn_service's whitelist because dev
+        shares a conn_service process with prod and only a prod deploy updates
+        it) must fail OPEN — no exception — not raise ValueError. The prior
+        fail-closed behavior silently skipped every templated GTT attach for
+        every exchange on dev the moment this RPC shipped to dev ahead of
+        conn_service, confirmed live. This test fails against that prior
+        behavior."""
         broker = RemoteBroker("ZG0790", broker_id="groww")
 
         with patch("backend.brokers.client.remote_broker._get_client") as mock_get_client:
@@ -222,8 +225,33 @@ class TestRemoteBrokerValidateGttExchange:
             mock_get_client.return_value = mock_client
             mock_client.post.side_effect = httpx.ConnectError("UDS unreachable")
 
-            with pytest.raises(ValueError):
-                broker.validate_gtt_exchange("MCX")
+            assert broker.validate_gtt_exchange("MCX") is None
+
+    def test_whitelist_403_on_stale_conn_service_fails_open(self):
+        """Deploy-coupling guard (2026-10-20): conn_service's own
+        _ALLOWED_BROKER_METHODS whitelist rejects an unrecognised method with
+        HTTP 403 before ever reaching the real adapter. On a conn_service
+        build that predates this RPC being added (exactly dev's live state
+        today — conn_service runs from /opt/ramboq on main, which dev shares
+        and which only updates on a prod deploy), every call here 403s. This
+        must fail open (no exception), not raise ValueError — the prior
+        behavior collapsed this into the same fail-closed path as a genuine
+        exchange refusal, breaking every templated GTT attach."""
+        broker = RemoteBroker("ZG0790", broker_id="groww")
+
+        with patch("backend.brokers.client.remote_broker._get_client") as mock_get_client:
+            mock_client = MagicMock()
+            mock_get_client.return_value = mock_client
+            mock_resp = MagicMock(
+                status_code=403,
+                is_success=False,
+                json=lambda: {"detail": "method not allowed"},
+                text='{"detail": "method not allowed"}',
+            )
+            mock_resp.request = MagicMock()
+            mock_client.post.return_value = mock_resp
+
+            assert broker.validate_gtt_exchange("MCX") is None
 
     def test_remote_ok_passes_silently(self):
         """A supported-exchange response (ok=True) returns None with no

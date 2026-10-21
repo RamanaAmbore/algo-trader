@@ -1130,32 +1130,59 @@ class GrowwBroker(Broker):
     @_retry_groww_auth
     def basket_order_margins(self, orders: list[dict]) -> list[dict]:
         """Groww exposes per-order margin via `get_order_margin_details`;
-        no batch endpoint. Loop and return a list of FLAT per-order dicts
-        (`{"total", "var", "exposure", "available", "raw"}`) — NOT Kite's
-        nested shape (Kite nests the rupee total under
-        `entry["final"]["total"]` / `entry["initial"]["total"]`; this
-        carries `total` at the top level instead).
-        `_preflight_leg_required` (actions_preflight.py) reads both
-        shapes."""
+        no batch endpoint that breaks a multi-order response down per leg
+        (confirmed from the real `OrderMarginResponse` schema: one flat
+        `total_requirement`/`span_margin_required`/`exposure_margin_required`
+        payload for however many orders you submit in one call — not a
+        list). To keep a genuine per-leg breakdown, call it once per order
+        with a single-element `orders` list each time. Loop and return a
+        list of FLAT per-order dicts (`{"total", "var", "exposure",
+        "available", "raw"}`) — NOT Kite's nested shape (Kite nests the
+        rupee total under `entry["final"]["total"]` / `entry["initial"]
+        ["total"]`; this carries `total` at the top level instead).
+        `_preflight_leg_required` (actions_preflight.py) reads both shapes.
+
+        2026-10-20: the real installed SDK's `get_order_margin_details`
+        signature is `(segment: str, orders: list[dict], timeout=None)` —
+        a batch call taking `segment` as a top-level kwarg and the per-
+        order fields (`trading_symbol`, `transaction_type`, `quantity`,
+        `price`, `order_type`, `product`, `exchange`) inside each dict in
+        `orders`. The prior per-order-kwargs call (`trading_symbol=...,
+        exchange=..., segment=...` etc. passed directly) does not match
+        this signature at all and raised `TypeError` on every real call —
+        confirmed live via the `[MARGIN-RAW-GROWW]`/`[MARGIN-RAW-API]`
+        diagnostic logs, meaning Groww's margin gate has never actually
+        computed a real number. `GrowwAPI._parse_response` already
+        unwraps the response's `payload` key (or returns the raw map if
+        there is no `payload` key), so `resp` here IS the payload dict
+        directly — do not look for a nested "data"/"payload" key again.
+        This endpoint's response carries no available-balance field (that
+        lives on the separate `margins/detail/user` endpoint, which
+        `margins()` above already reads) — `available` is left `None`
+        here; it is not consumed by the real shortfall decision anyway
+        (`_preflight_resolve_available_margin` in actions_preflight.py
+        reads availability from `broker.margins()`, a wholly separate
+        call, never from this per-leg dict's `available` key)."""
         out: list[dict] = []
         for o in orders:
             try:
                 exch = o.get("exchange", "")
                 ex, seg = _groww_exchange_and_segment(exch)
                 resp = self.groww.get_order_margin_details(
-                    trading_symbol=o.get("tradingsymbol", ""),
-                    exchange=ex,
                     segment=seg,
-                    transaction_type=o.get("transaction_type", "BUY"),
-                    quantity=int(o.get("quantity", 0)),
-                    order_type=_ORDER_TYPE_TO_GROWW.get(o.get("order_type", "MARKET"),
-                                                        "MARKET"),
-                    product=_PRODUCT_TO_GROWW.get(o.get("product", "MIS"), "MIS"),
-                    price=float(o.get("price") or 0),
+                    orders=[{
+                        "trading_symbol": o.get("tradingsymbol", ""),
+                        "transaction_type": o.get("transaction_type", "BUY"),
+                        "quantity": int(o.get("quantity", 0)),
+                        "price": float(o.get("price") or 0),
+                        "order_type": _ORDER_TYPE_TO_GROWW.get(
+                            o.get("order_type", "MARKET"), "MARKET"),
+                        "product": _PRODUCT_TO_GROWW.get(
+                            o.get("product", "MIS"), "MIS"),
+                        "exchange": ex,
+                    }],
                 )
-                data = resp.get("data") if isinstance(resp, dict) else {}
-                if not isinstance(data, dict):
-                    data = {}
+                data = resp if isinstance(resp, dict) else {}
                 # 2026-10 margin-gate activation fix (item 4/5) — TEMPORARY
                 # raw-shape diagnostic, requested by the live-verification
                 # step before the Dhan/Groww margin gate can be enforced
@@ -1166,7 +1193,7 @@ class GrowwBroker(Broker):
                 # process, so this line lands in the conn_service log, not
                 # ramboq_api's.
                 logger.info(f"[MARGIN-RAW-GROWW] {self.account} raw "
-                            f"get_order_margin_details response.data: {data!r}")
+                            f"get_order_margin_details response: {data!r}")
                 # Missing-vs-zero fix (item 5): `_gf_or_none` returns None
                 # (not a coerced 0.0) when the field is genuinely absent —
                 # a field-name drift or Groww-side schema change must
@@ -1176,11 +1203,19 @@ class GrowwBroker(Broker):
                 # `total` key directly (item 4 — it previously only
                 # checked Kite's nested final/initial shape, so this value
                 # was NEVER read at all, regardless of what it held).
+                # `total_requirement` is confirmed directly from Groww's
+                # published OpenAPI schema (two independent sources
+                # agree); `span`/`exposure` field names are corroborated
+                # but less certain — `_gf_or_none`'s multi-key fallback
+                # covers both candidate spellings seen in the docs, and
+                # neither feeds the real gating decision (display/
+                # diagnostics only), so a miss there is cosmetic, not a
+                # safety gap.
                 out.append({
-                    "total":    _gf_or_none(data, "total_margin"),
-                    "var":      _gf_or_none(data, "span_margin"),
-                    "exposure": _gf_or_none(data, "exposure_margin"),
-                    "available": {"cash": _gf_or_none(data, "available_balance")},
+                    "total":    _gf_or_none(data, "total_requirement"),
+                    "var":      _gf_or_none(data, "span_margin_required", "span_required"),
+                    "exposure": _gf_or_none(data, "exposure_margin_required", "exposure_required"),
+                    "available": {"cash": None},
                     "raw":      resp,
                 })
             except Exception as e:

@@ -1244,9 +1244,12 @@ class TestGrowwBrokerErrorPaths:
             broker.profile()
 
     def test_basket_order_margins_partial_failure(self, broker):
-        """Test that basket_order_margins handles per-order failures gracefully."""
+        """Test that basket_order_margins handles per-order failures gracefully.
+        Real response shape per Groww's OrderMarginResponse schema
+        (total_requirement, no data/payload wrapper — _parse_response
+        already unwraps payload)."""
         broker.groww.get_order_margin_details = MagicMock(side_effect=[
-            {"data": {"total_margin": 10000.0}},
+            {"total_requirement": 10000.0},
             Exception("Order not found"),
         ])
         orders = [

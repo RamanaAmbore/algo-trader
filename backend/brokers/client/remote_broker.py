@@ -274,14 +274,32 @@ class RemoteBroker(Broker):
         # still catches it instead of an unhandled BrokerError
         # propagating out of apply_plan_live.
         #
-        # A conn_service transport failure maps to BrokerNetworkError
-        # (a BrokerError subclass) and is deliberately handled the
-        # same way: fail closed by skipping the attach rather than
-        # crashing the orchestrator for an unrelated network blip —
-        # place_gtt would fail against an unreachable conn_service
-        # right afterward anyway.
+        # DEPLOY-COUPLING GUARD (2026-10-20): "validate_gtt_exchange"
+        # is only usable once conn_service's own _ALLOWED_BROKER_METHODS
+        # whitelist includes it — and conn_service only picks up new
+        # code on a PROD deploy (dev shares the same conn_service
+        # process/socket, per CLAUDE.md's "Conn service | both |
+        # /opt/ramboq (shared)"). Until that deploy happens, every call
+        # here 403s at the whitelist check and collapses to
+        # BrokerNetworkError below, which previously was re-raised as
+        # ValueError and treated by apply_plan_live as a genuine
+        # exchange refusal — silently skipping the GTT attach for
+        # EVERY exchange, not just MCX/NCO (confirmed live on dev,
+        # 2026-10-20). Fail OPEN specifically on BrokerNetworkError —
+        # this covers both "method not deployed yet" and a genuine
+        # transport blip — restoring the base-class no-op behavior
+        # (today's actual production behavior) until conn_service is
+        # upgraded. A genuine exchange-unsupported verdict from an
+        # upgraded conn_service comes back as a different error_type
+        # (e.g. BrokerInputError) and still fails closed below.
         try:
             self._call("validate_gtt_exchange", exchange)
+        except BrokerNetworkError as e:
+            logger.warning(
+                f"validate_gtt_exchange({exchange}) unreachable/unsupported "
+                f"on conn_service, failing open (no-op) — see deploy-coupling "
+                f"guard comment: {e}"
+            )
         except BrokerError as e:
             raise ValueError(str(e)) from e
 

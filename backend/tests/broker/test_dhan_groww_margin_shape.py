@@ -20,7 +20,7 @@ nested shape).
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, create_autospec
 
 import pytest
 
@@ -30,6 +30,11 @@ from backend.api.algo.actions_preflight import (
     _preflight_leg_required,
     _preflight_parse_basket_margin,
 )
+
+try:
+    from growwapi import GrowwAPI
+except ImportError:
+    GrowwAPI = None
 
 
 # ---------------------------------------------------------------------------
@@ -129,17 +134,68 @@ def groww_broker():
 
 
 class TestGrowwMarginRealShape:
+    """2026-10-20: the per-order-kwargs call to `get_order_margin_details`
+    (`trading_symbol=..., exchange=..., segment=...` etc.) never matched the
+    real installed SDK's signature — `(segment: str, orders: list[dict],
+    timeout=None)` — and raised TypeError on every real call, confirmed live
+    against dev.ramboq.com. These tests use `create_autospec(GrowwAPI)` (not
+    a bare `MagicMock`) so a future call-shape regression fails loudly — a
+    bare MagicMock accepts any kwargs and is exactly how the original
+    signature bug went undetected. The response shape below
+    (`total_requirement`/`span_margin_required`/`exposure_margin_required`,
+    no `data`/`payload` wrapper) is the real `OrderMarginResponse` schema;
+    `GrowwAPI._parse_response` already unwraps `payload` before returning."""
+
+    @pytest.fixture
+    def autospec_groww(self):
+        if GrowwAPI is None:
+            pytest.skip("growwapi SDK not installed in this environment")
+        return create_autospec(GrowwAPI, instance=True)
+
+    def test_basket_order_margins_calls_real_batch_signature(self, groww_broker, autospec_groww):
+        """Fails against the pre-fix per-order-kwargs call: autospec
+        enforces the real `(segment, orders, timeout=None)` signature, so
+        a call shaped like `get_order_margin_details(trading_symbol=...,
+        exchange=..., segment=..., ...)` raises TypeError here exactly as
+        it did live, instead of silently succeeding against a bare mock."""
+        autospec_groww.get_order_margin_details.return_value = {
+            "total_requirement": 62500.0,
+            "span_margin_required": 40000.0,
+            "exposure_margin_required": 22500.0,
+        }
+        # `groww` is a read-only property backed by `_conn.get_groww_conn()`.
+        groww_broker._conn.get_groww_conn.return_value = autospec_groww
+
+        out = groww_broker.basket_order_margins([{
+            "exchange": "NFO", "tradingsymbol": "NIFTY25NOVFUT",
+            "transaction_type": "SELL", "quantity": 75,
+            "product": "MIS", "order_type": "LIMIT", "price": 24000.0,
+        }])
+
+        assert len(out) == 1
+        assert "error" not in out[0]
+        assert out[0]["total"] == pytest.approx(62500.0)
+        assert _preflight_leg_required(out[0]) == pytest.approx(62500.0)
+
+        call = autospec_groww.get_order_margin_details.call_args
+        assert call.kwargs["segment"] == "FNO"
+        order0 = call.kwargs["orders"][0]
+        assert order0["trading_symbol"] == "NIFTY25NOVFUT"
+        assert order0["transaction_type"] == "SELL"
+        assert order0["quantity"] == 75
+        # NFO maps to Groww exchange "NSE" (Groww distinguishes F&O at the
+        # segment level, not the exchange level) — see _EXCHANGE_TO_GROWW.
+        assert order0["exchange"] == "NSE"
+
     def test_basket_order_margins_returns_flat_shape_with_real_fields(self, groww_broker):
-        """Groww's get_order_margin_details response (data.total_margin/...)
-        normalises to the flat {"total", "var", "exposure", "available"}
-        shape this adapter has always claimed to return."""
+        """Groww's real `get_order_margin_details` response
+        (`total_requirement`/...) normalises to the flat {"total", "var",
+        "exposure", "available"} shape this adapter has always claimed to
+        return."""
         groww_broker.groww.get_order_margin_details = MagicMock(return_value={
-            "data": {
-                "total_margin": 62500.0,
-                "span_margin": 40000.0,
-                "exposure_margin": 22500.0,
-                "available_balance": 300000.0,
-            },
+            "total_requirement": 62500.0,
+            "span_margin_required": 40000.0,
+            "exposure_margin_required": 22500.0,
         })
 
         out = groww_broker.basket_order_margins([{
@@ -155,12 +211,10 @@ class TestGrowwMarginRealShape:
 
     def test_basket_order_margins_missing_field_is_none_not_zero(self, groww_broker):
         """Missing-vs-zero convention (item 5): a genuinely absent
-        total_margin key must parse to None, never a coerced 0.0."""
+        total_requirement key must parse to None, never a coerced 0.0."""
         groww_broker.groww.get_order_margin_details = MagicMock(return_value={
-            "data": {
-                # total_margin genuinely absent.
-                "span_margin": 100.0,
-            },
+            # total_requirement genuinely absent.
+            "span_margin_required": 100.0,
         })
 
         out = groww_broker.basket_order_margins([{
