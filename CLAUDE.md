@@ -931,6 +931,14 @@ Rule: these buttons must always live inside the shared card button-group slot. N
   ntfy.sh to IPv6 first (happy-eyeballs) and FCM push delivery silently fails despite
   HTTP 200. Use `urllib.request` which picks IPv4 (first in `getaddrinfo`). See
   `send_ntfy_alert()` in `backend/shared/helpers/alert_utils.py`.
+- Adapter-side diagnostics in `backend/brokers/` (`[MARGIN-RAW-DHAN]` in `dhan.py`,
+  `[MARGIN-RAW-GROWW]` in `groww.py`) run inside `ramboq_conn`, not `ramboq_api`. Dev pushes never
+  restart `ramboq_conn` ([`webhook/deploy.sh`](webhook/deploy.sh#L226-L233): `CONN_TOUCHED` is
+  prod-only and dev shares the prod UDS), so those lines do NOT appear on dev until a prod deploy
+  that touches `backend/brokers/`. This applies to any `backend/brokers/` change, logging included.
+  For a dev-visible raw margin response, use `[MARGIN-RAW-API]`: it is logged from `run_preflight`
+  ([`actions_preflight.py:1151`](backend/api/algo/actions_preflight.py#L1151)) in the API process
+  and fires on dev immediately.
 
 ---
 
@@ -1069,6 +1077,97 @@ ChainTab.svelte`) submit through `placeTicketOrder()` → `/ticket`, so this fix
 covers them too; no separate chain endpoint exists. Template attach path
 (`template_attach.py`) reads no client-supplied intent field at all — nothing to fix
 there.
+
+**Cross-reference — margin-gate close exemption (2026-10-20, commit `fa0e3a42`)**: the same
+invariant applies to the Dhan/Groww margin exemption. `_preflight_emit_margin_blocker`
+([`actions_preflight.py:518`](backend/api/algo/actions_preflight.py#L518)) re-runs
+`_verify_close_intent` INSIDE the shared gate rather than trusting the caller's own verification.
+Only the margin exemption re-verifies there. Step 0 of `run_preflight` (the G2 5-lot bypass) still
+reads the raw `order["intent"]`. That is safe for every live caller, because each passes a verified
+or position-derived value. `/preflight` (preview-only, read-only) passes the client's raw intent.
+See the "Dhan/Groww margin-shortfall gate was structurally inert" entry in Critical math guards.
+
+**Dhan/Groww margin-shortfall gate was structurally inert; close exemption + log-only default
+(2026-10-20, commits `fa0e3a42`, `3ea29a24`; close-path fixes `12b8e166`, `3a28bcbd`)** — 
+Root cause: `_preflight_leg_required` ([`actions_preflight.py:272`](backend/api/algo/actions_preflight.py#L272))
+read only Kite's nested `final.total` / `initial.total`, plus a top-level `required`. Dhan's
+`_margin_for_order` ([`dhan.py:1297`](backend/brokers/adapters/dhan.py#L1297)) and Groww's
+`basket_order_margins` ([`groww.py:1131`](backend/brokers/adapters/groww.py#L1131)) return a FLAT
+`{"total", "var", "exposure", "available", "raw"}`. None of the checked keys matched, so `required`
+was always `0` for every Dhan/Groww order on every exchange. `INSUFFICIENT_FUNDS` needs
+`required > 0`, and the shortfall was always `0`, so the gate was dead and the broker's own RMS was
+the only backstop. The unit tests stubbed only Kite's nested shape, which is how it went unnoticed.
+Both adapters also turned an absent margin field into `0.0`, breaking missing-vs-zero.
+
+Fix, in three parts:
+- **Parser.** `_preflight_leg_required` also reads a flat top-level `total`, checked after
+  `final`/`initial`/`required` so Kite parses exactly as before. An unparseable value returns
+  `None`, never `0.0`. A multi-leg basket with any `None` leg is `None` for the WHOLE basket (no
+  partial sum). Per-leg `error` strings still feed the keyword-classification fallback.
+- **Adapters.** `_dhan_num_or_none` and `_gf_or_none` return `None` for a genuinely absent field.
+  A failed per-order call returns `{"total": None, "error": ...}`.
+- **Close exemption (below).**
+
+**Close-margin exemption, server-verified and re-checked inside the shared gate.**
+`_preflight_emit_margin_blocker` ([`actions_preflight.py:518`](backend/api/algo/actions_preflight.py#L518))
+is the only place a MARGIN_SHORTFALL or INSUFFICIENT_FUNDS blocker may be appended. For Dhan/Groww
+ONLY (`margin_ctx["is_dhan_groww"]`), it calls `_verify_close_intent(symbol, exchange, side, account,
+qty)` ([`orders_place.py:484`](backend/api/routes/orders_place.py#L484)), which checks sign AND
+magnitude against the real position. A verified close sets `diag["close_exemption"] = True` and
+returns without blocking. A verification exception logs at debug and falls through to the normal
+blocker, so a verification failure fails closed. The caller's raw `intent` is never trusted here.
+Kite is excluded by the explicit `{"dhan", "groww"}` allowlist, because `basket_order_margins`
+already nets a close via `consider_positions=True`.
+
+**Enforce vs log-only, and the two settings.** `_preflight_margin_policy`
+([`actions_preflight.py:476`](backend/api/algo/actions_preflight.py#L476)) reads
+`preflight.enforce_margin_dhan` and `preflight.enforce_margin_groww`
+([`settings.py:696`](backend/shared/helpers/settings.py#L696), [`:703`](backend/shared/helpers/settings.py#L703)).
+Both are bools, **default `False`** (log-only). Log-only records the would-be blocker in
+`diag["margin_would_block"]` and logs a WARNING tagged `[PREFLIGHT] margin gate LOG-ONLY`. Flip
+either on `/admin/settings` with no deploy. **Kite is unaffected by both**: its gate is always
+enforced. Any broker not on the allowlist is also enforced by default.
+
+**Close-path side and product defaults.** `_parse_broker_call_fields`
+([`actions_preflight.py:999`](backend/api/algo/actions_preflight.py#L999)) defaults a missing side to
+`"BUY"` and a missing product to `"NRML"`. Two close paths omitted `side` from their preflight dict:
+`_action_live_close_position` and `_chase_build_tasks` ([`actions_live.py`](backend/api/algo/actions_live.py)).
+Consequences: (a) a SELL-to-close was priced as a fresh BUY, so Kite demanded full SPAN instead of
+netting. Loss-limit closes were falsely blocked on MARGIN_SHORTFALL when margin was tight. (b)
+`_chase_build_tasks` hardcoded `product="NRML"` in the real `ChaseConfig`, so an MIS close was placed
+as NRML. That does not net against the MIS position on the broker, so the position stayed open and a
+stray NRML position was created. `12b8e166` threads the real side through. `3a28bcbd` reads the real
+product via `_fetch_net_position_product` ([`orders_place.py:434`](backend/api/routes/orders_place.py#L434)),
+which shares a row-match helper with the qty lookup, so qty and product come from one position row.
+Resolution order in `_al_close_resolve_position`: operator `product_param`, then the real position's
+product, then `"NRML"`.
+
+**Fixed same round (`2c53e43f`).** `_chase_build_tasks`
+([`actions_live.py:1477`](backend/api/algo/actions_live.py#L1477)) had the identical NaN bug —
+`str(p.get("product") or "NRML")` silently yielded the literal string `"nan"` for a missing cell,
+since `bool(float('nan'))` is `True` in Python. The `pd.isna` guard in `3ea29a24` covered only
+`_fetch_net_position_product`; this path used a separate, no-pandas-import `x != x` NaN check
+instead (the file has no other pandas dependency) — same effect, no new import.
+
+**Preview matches enforcement.** The margin preview is NAKED: it sends no `paired_legs`, matching
+the submit-time check ([`OrderTicket.svelte:2115`](frontend/src/lib/order/OrderTicket.svelte#L2115)).
+A template wing is placed only on parent fill, so the broker needs naked margin at placement. Same
+round (`e048baa7`, `62313b95`, `9f1dc3cf`, `1557a0e0`): the preview tracks the resolved exchange,
+sends LOTS to `/orders/ticket/preview`, and plans bare-underlying templates against the resolved
+contract. `/preflight` still accepts `paired_legs` for read-only API callers; that yields a netted
+informational verdict, never a placement gate. Invariant: a display must never disagree with
+enforcement, and the enforcement path is never loosened to match a display.
+
+**Groww GTT refusal in prod.** `RemoteBroker.validate_gtt_exchange`
+([`remote_broker.py:256`](backend/brokers/client/remote_broker.py#L256), commit `7183244b`) now
+forwards to conn_service. Before, it was the base no-op, so Groww's MCX/NCO GTT refusal was
+silently skipped in conn-service mode. Errors are re-raised as `ValueError` so `apply_plan_live`'s
+`except ValueError` still catches them.
+
+Invariant: an absent margin field is `None`, never `0`. A margin gate that reads `0` for missing data
+is not a gate. Dhan/Groww stay log-only until the operator flips the setting after confirming real
+numbers via the `[MARGIN-RAW-DHAN]` / `[MARGIN-RAW-GROWW]` lines (see Things to Avoid for why those
+land late on dev).
 
 **Lot/contract oversize guards (2026-09-24, commit f5db7765)** — Seven confirmed
 lot-vs-contract normalization bugs (C1–C7) across chase, template scale-out, trailing
@@ -1430,6 +1529,7 @@ now caches + returns a `stale` flag; `/api/nav/by-account` masks `errors` for no
 | Summary timing | `backend/config/backend_config.yaml` |
 | Order-entry grammar | `backend/config/grammars/orders.yaml` |
 | Toggle agent default status | `backend/api/algo/agent_engine.py` |
+| Dhan/Groww margin enforce | `/admin/settings` → `preflight.enforce_margin_{dhan,groww}` |
 | Add MCP tool | `backend/mcp/kite_server.py` @app.tool() |
 | Tune MCP audit | `/admin/settings` |
 | Update macro data | `backend/config/backend_config.yaml` |

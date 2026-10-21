@@ -242,8 +242,12 @@ async def _preflight_build_basket_orders(
     # Paired legs (typically the template's wing) factored into the
     # basket. Kite's basket_order_margins returns the NET margin across
     # every leg, so a short option + protective long wing reads as the
-    # capped spread margin instead of the naked SPAN. Operator sees the
-    # actual margin they'll be charged, not a scarier naked-short number.
+    # capped spread margin instead of the naked SPAN. Only a caller that
+    # explicitly passes `paired_orders` gets this netting — today that is
+    # only the read-only `/preflight` route when an API client sends
+    # `paired_legs`. No submit-time caller passes it: the wing is placed
+    # on parent FILL, so the broker prices the naked parent at placement,
+    # and the frontend margin preview is naked too (2026-10 item 8).
     for pl in paired_orders or []:
         try:
             _pl_exchange = str(pl.get("exchange") or exchange)
@@ -433,13 +437,12 @@ def _preflight_margin_shortfall_fix_qty(
     possible (required=0, available=0, qty=0, or less than one full
     lot fits — see item 10 below).
 
-    ``required`` is the rupee margin Kite quoted via
-    `basket_order_margins`, which was computed using the WIRE quantity
-    built by `_preflight_build_basket_orders` — `broker.normalise_qty`
-    (== `translate_qty`) converts CONTRACTS → LOTS for MCX/NCO only
-    (a no-op for NFO/BFO/CDS). So for MCX/NCO, `required` prices the
-    order in LOT units while `qty` here is always CONTRACTS — dividing
-    directly would be off by a factor of `lot_size`.
+    ``required`` is the total rupee margin the broker returned for the
+    full order (the wire-unit conversion inside `broker.normalise_qty` /
+    `translate_qty` is internal to the adapter and does not change the
+    rupee figure). `qty` here is always CONTRACTS. The per-lot pricing
+    below is NOT because `required` is denominated in lots — it exists so
+    the suggested reduced quantity is a whole-lot multiple.
 
     2026-10 fix (item 10): this used to round the suggested qty down to
     a lot multiple ONLY for MCX/NCO; the NFO/BFO/CDS branch returned a
@@ -1128,8 +1131,8 @@ async def run_preflight(
     # ── Margin-shortfall gate (basket_order_margins + account margins) ───
     # Re-fetch lot_size here (O(1) cached lookup, no network — same
     # function `_preflight_build_basket_orders` already called above)
-    # so the MCX/NCO fix_qty math can price the shortfall per LOT,
-    # matching the unit `required` was actually quoted in.
+    # so the fix_qty suggestion can round to a whole-lot multiple. `required`
+    # is a rupee total, not a per-lot figure.
     from backend.brokers.adapters.kite import get_lot_size as _pf_margin_lot_fn
     _margin_lot_size = await _pf_margin_lot_fn(exchange, symbol)
     _margin_ctx = _preflight_margin_policy(broker, account, side)

@@ -1349,8 +1349,10 @@ class DhanBroker(Broker):
     def basket_order_margins(self, orders: list[dict]) -> list[dict]:
         """Dhan exposes per-order margin calculation but no batch endpoint.
         Loop over orders calling `margin_calculator()` per order; return
-        a Kite-shape list with `total` populated. Slower than Kite's
-        single round-trip but functionally equivalent."""
+        a FLAT list (one `{total, var, exposure, available, raw}` dict per
+        order — see `_margin_for_order`; NOT Kite's nested final/initial
+        shape). Slower than Kite's single round-trip but functionally
+        equivalent."""
         out: list[dict] = []
         for o in orders:
             try:

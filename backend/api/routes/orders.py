@@ -2159,8 +2159,11 @@ class OrdersController(Controller):
         MARGIN_SHORTFALL. Returns ok=true when all pass, or ok=false with a
         structured `blocked[]` list each carrying code / reason / fix / data.
 
-        Gated by jwt_guard (admin) — demo callers see 401; this endpoint
-        intentionally never proxies to broker on demo sessions.
+        Gated by jwt_guard (admin) — demo callers get 403 (raised below);
+        this endpoint intentionally never proxies to broker on demo
+        sessions. Dhan/Groww MARGIN_SHORTFALL is log-only unless their
+        `preflight.enforce_margin_*` setting is on; a server-verified
+        close is exempt from the margin gate. Kite always enforces.
         """
         from backend.api.algo.actions import run_preflight
 
