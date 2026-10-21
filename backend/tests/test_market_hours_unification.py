@@ -1067,3 +1067,89 @@ async def test_quote_prewarm_closes_the_gap_for_mcx():
         _wq._main_loop = orig_main_loop
         _ba._SPECIAL_SESSION_CACHE.clear()
 
+
+# ---------------------------------------------------------------------------
+# Item 4 — routes/simulator.py's `_market_hours_block_check` /
+# `_markets_currently_open`, called from 5 route handlers (all `async def`
+# inline calls, no `asyncio.to_thread`).
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("method_name", [
+    "start_for_agent", "start", "start_run", "replay_iteration", "defaults",
+])
+def test_simulator_route_prewarms_before_sim_gate(method_name):
+    """Source-order assertion for all 5 simulator route handlers that
+    call `_market_hours_block_check` or `_markets_currently_open`."""
+    import inspect
+    from backend.api.routes.simulator import SimulatorController
+
+    handler = getattr(SimulatorController, method_name)
+    src = inspect.getsource(handler.fn)
+    prewarm_idx = src.find("_sim_prewarm_special_sessions()")
+    gate_idx = src.find("_market_hours_block_check()")
+    if gate_idx == -1:
+        gate_idx = src.find("_markets_currently_open()")
+    assert prewarm_idx != -1, f"prewarm call not found in {method_name}"
+    assert gate_idx != -1, f"sim gate call not found in {method_name}"
+    assert prewarm_idx < gate_idx, (
+        f"prewarm must run BEFORE the sim gate call in {method_name}, or "
+        f"it closes the gap too late"
+    )
+
+
+@pytest.mark.asyncio
+async def test_simulator_prewarm_closes_the_gap_for_mcx():
+    """Same shape as the other 3 gap-closing tests, for
+    `_sim_prewarm_special_sessions` + `_markets_currently_open`
+    specifically (the non-raising probe — easier to assert on than the
+    409-raising guard, which exercises the identical code path)."""
+    import asyncio
+    import backend.brokers.broker_apis as _ba
+    import backend.api.persistence.write_queue as _wq
+    from backend.api import background as bg
+    from backend.api.routes.simulator import _sim_prewarm_special_sessions, _markets_currently_open
+
+    closed_all_day_row = [{
+        "date": _FIXTURE_NOW.date(),
+        "start": dtime(0, 0),
+        "end": dtime(0, 0),
+    }]
+
+    loop = asyncio.get_running_loop()
+    orig_main_loop = _wq._main_loop
+    _ba._SPECIAL_SESSION_CACHE.clear()
+    try:
+        with patch.object(_ba, "fetch_special_sessions", side_effect=_REAL_FETCH_SPECIAL_SESSIONS), \
+             patch("backend.shared.helpers.date_time_utils.timestamp_indian", return_value=_FIXTURE_NOW), \
+             patch.object(bg, "_get_segments", return_value=[
+                 {"name": "MCX", "hours_start": dtime(8, 0), "hours_end": dtime(23, 30),
+                  "holiday_exchange": "MCX"},
+             ]):
+            _wq._main_loop = loop  # simulate "already on the main loop"
+
+            # Pre-fix shape: calling the probe WITHOUT the prewarm —
+            # cold cache fails open, override invisible, evening carve-out
+            # applies → MCX reads open.
+            with patch.object(_ba, "_read_special_sessions_async",
+                               AsyncMock(return_value=closed_all_day_row)):
+                open_no_prewarm = _markets_currently_open()
+            assert open_no_prewarm is True, (
+                "sanity check: without the prewarm, the cold cache must "
+                "fail open and the probe must NOT see the override"
+            )
+
+            # The fix: await the prewarm first, exactly as the 5 route
+            # handlers now do immediately before the sync gate call.
+            _ba._SPECIAL_SESSION_CACHE.clear()
+            with patch.object(_ba, "_read_special_sessions_async",
+                               AsyncMock(return_value=closed_all_day_row)):
+                await _sim_prewarm_special_sessions()
+
+            open_with_prewarm = _markets_currently_open()
+            assert open_with_prewarm is False, (
+                "the prewarm must let _markets_currently_open see the "
+                "real DB override — gap not closed"
+            )
+    finally:
+        _wq._main_loop = orig_main_loop
+        _ba._SPECIAL_SESSION_CACHE.clear()

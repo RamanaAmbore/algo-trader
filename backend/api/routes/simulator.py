@@ -237,6 +237,43 @@ def _market_hours_block_check() -> None:
             )
 
 
+async def _sim_prewarm_special_sessions() -> None:
+    """Await the special-sessions prewarm for every segment
+    `_get_segments()` returns, directly on each segment's own
+    `holiday_exchange` value (2026-10-20, item 4 of the 4-site residual
+    sweep) — before either sync gate below (`_market_hours_block_check`,
+    `_markets_currently_open`) runs its own sync `fetch_special_sessions()`
+    call for that same value.
+
+    Deliberately NOT routed through `_prewarm_special_sessions_for_
+    exchange()` — that helper resolves via `agent_engine.py`'s
+    `_EXCHANGE_TO_SEGMENT` dict keyed on real exchange codes (NSE/MCX/...),
+    but `_get_segments()` can return GATE names (e.g. `"NON-MCX"`) as
+    `holiday_exchange` when the `exchange_clock` cache is warm (see
+    `_get_segments()`'s own docstring) — a value `_EXCHANGE_TO_SEGMENT`
+    does not recognise, which would make the helper silently no-op.
+    Awaiting `fetch_special_sessions_async` directly on the exact same
+    value the sync gates will look up guarantees the warmed key always
+    matches, whatever shape that value takes. Deliberately NOT converted
+    to `async def` itself with the two gates kept sync — that would ripple
+    into 5 call sites and the existing sync test suite for this file; the
+    "closed via the caller" pattern (mirrors `template_attach.py`'s
+    offhours wing gate fix) keeps the gates' own signatures untouched.
+
+    Best-effort: any failure for one segment is caught and logged so it
+    never blocks the others or the caller's subsequent sync gate call.
+    """
+    from backend.api.background import _get_segments
+    from backend.brokers.broker_apis import fetch_special_sessions_async
+
+    for seg in _get_segments():
+        exch = seg.get("holiday_exchange") or "NSE"
+        try:
+            await fetch_special_sessions_async(exch)
+        except Exception as e:
+            logger.warning(f"simulator: special-sessions prewarm failed for {exch}: {e}")
+
+
 def _markets_currently_open() -> bool:
     """Same probe as the guard but returns a bool (no raise) so the
     /defaults endpoint can surface the state in the UI. See
@@ -363,6 +400,7 @@ class SimulatorController(Controller):
         changes. Bypasses suppression + schedule gates so the operator
         gets immediate feedback.
         """
+        await _sim_prewarm_special_sessions()
         _market_hours_block_check()
         from sqlalchemy import select
         async with async_session() as s:
@@ -386,6 +424,7 @@ class SimulatorController(Controller):
     @post("/start")
     async def start(self, data: SimStartRequest) -> dict:
         try:
+            await _sim_prewarm_special_sessions()
             _market_hours_block_check()
             market_state_override = (
                 {"preset": data.market_state_preset}
@@ -745,6 +784,7 @@ class SimulatorController(Controller):
                     )
         except Exception:
             available_accounts = []
+        await _sim_prewarm_special_sessions()
         return SimDefaultsResponse(
             iterations  =get_int("simulator.default_iterations", 1),
             max_minutes =get_int("simulator.default_max_minutes", 10),
@@ -770,6 +810,7 @@ class SimulatorController(Controller):
         background task. Returns the run snapshot immediately so the UI
         can poll /status for per-iteration progress.
         """
+        await _sim_prewarm_special_sessions()
         _market_hours_block_check()
         spread_fraction = (
             max(0.0, float(data.spread_pct)) / 100.0
@@ -849,6 +890,7 @@ class SimulatorController(Controller):
         Each replay is a fresh single-iteration run (parent_run_id is the
         new iteration's own id) — the original iteration row is left as-is
         for the audit trail."""
+        await _sim_prewarm_special_sessions()
         _market_hours_block_check()
         import json as _json
         from backend.api.models import SimIteration
