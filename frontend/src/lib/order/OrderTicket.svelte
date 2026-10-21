@@ -2078,6 +2078,7 @@
     const _watchers = [
       _side, _qty, _account, _product, _type, _variety,
       _price, _trigger, symbol, exchange, _resolvedSymbol,
+      _exchange, _resolvedExchange,
       refreshKey, _internalRefreshKey,
     ];
     void _watchers;
