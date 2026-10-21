@@ -678,6 +678,37 @@ SEEDS: list[tuple] = [
      "SEBI-issued algo ID tag, carried on AlgoOrder.algo_id once wired up. "
      "Empty placeholder — no order-placement code reads this setting yet.",
      None, None),
+
+    # ── Preflight (margin-shortfall gate) ─────────────────────────────────
+    # 2026-10 margin-gate activation fix (item 6). Kite's basket-order-
+    # margins gate is always enforced (numerically trustworthy, already
+    # enforcing today — unaffected by these flags). Dhan's margin_calculator
+    # and Groww's get_order_margin_details were confirmed to return a FLAT
+    # shape our own parser never read (required always computed as 0,
+    # MARGIN_SHORTFALL/INSUFFICIENT_FUNDS structurally inert for both).
+    # Once the parser fix lands, these two flags gate whether a real
+    # Dhan/Groww MARGIN_SHORTFALL verdict actually BLOCKS the order or
+    # only logs it at WARNING ("computed, not enforced") — default False
+    # (log-only) for both until a live dev-deploy verification pass
+    # confirms the real field names/units/available-margin semantics per
+    # broker (see CLAUDE.md's margin-gate activation notes). Flip
+    # independently per broker once confirmed — no code change needed.
+    ("preflight", "preflight.enforce_margin_dhan", "bool", False,
+     "Dhan margin-shortfall gate: block real orders on MARGIN_SHORTFALL/ "
+     "INSUFFICIENT_FUNDS (True) vs. only log the would-be verdict at "
+     "WARNING (False, default). Flip only after confirming real Dhan "
+     "margin_calculator numbers via a dev-deploy verification pass — see "
+     "the [MARGIN-RAW-DHAN] diagnostic log line.",
+     None, {}),
+    ("preflight", "preflight.enforce_margin_groww", "bool", False,
+     "Groww margin-shortfall gate: block real orders on MARGIN_SHORTFALL/ "
+     "INSUFFICIENT_FUNDS (True) vs. only log the would-be verdict at "
+     "WARNING (False, default). Flip only after confirming real Groww "
+     "get_order_margin_details numbers via a dev-deploy verification "
+     "pass — see the [MARGIN-RAW-GROWW] diagnostic log line. Groww's "
+     "available-margin figure (clear_cash) may exclude pledged "
+     "collateral — confirm this doesn't over-block before enforcing.",
+     None, {}),
 ]
 
 

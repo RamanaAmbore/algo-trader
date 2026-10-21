@@ -1296,7 +1296,13 @@ class DhanBroker(Broker):
 
     def _margin_for_order(self, o: dict) -> dict:
         """Call Dhan margin_calculator for a single order dict.
-        Returns a Kite-shape margin dict or raises on failure."""
+
+        Returns a FLAT dict (`{"total", "var", "exposure", "available",
+        "raw"}`) — NOT Kite's nested shape (Kite nests the rupee total
+        under `entry["final"]["total"]` / `entry["initial"]["total"]`;
+        this dict carries `total` at the top level instead). Raises on
+        failure. `_preflight_leg_required` (actions_preflight.py) reads
+        both shapes."""
         sdk = self.dhan  # raw handle for capability discovery only
         if not hasattr(sdk, "margin_calculator"):
             raise RuntimeError("dhanhq SDK missing margin_calculator method")
@@ -1314,11 +1320,29 @@ class DhanBroker(Broker):
             price=_dhan_num(o.get("price")),
         )
         data = resp.get("data") if isinstance(resp, dict) else {}
+        # 2026-10 margin-gate activation fix (item 4/5) — TEMPORARY raw-shape
+        # diagnostic, requested by the live-verification step before the
+        # Dhan/Groww margin gate can be enforced for real. Keep in place
+        # until the orchestrator confirms the field names + units from a
+        # real dev-deploy call and explicitly asks for removal/downgrade.
+        # In conn-service (cutover) mode this call runs INSIDE the
+        # conn_service process, so this line lands in the conn_service log,
+        # not ramboq_api's.
+        logger.info(f"[MARGIN-RAW-DHAN] {self.account} raw margin_calculator "
+                    f"response.data: {data!r}")
+        # Missing-vs-zero fix (item 5): `_dhan_num_or_none` returns None
+        # (not a coerced 0.0) when the field is genuinely absent — a
+        # field-name drift or Dhan-side schema change must surface as
+        # "unknown", never as a silently-wrong "zero margin needed".
+        # `_preflight_leg_required` (actions_preflight.py) now reads this
+        # flat top-level `total` key directly (item 4 — it previously only
+        # checked Kite's nested final/initial shape, so this value was
+        # NEVER read at all, regardless of what it held).
         return {
-            "total":     _dhan_num((data or {}).get("totalMargin")),
-            "var":       _dhan_num((data or {}).get("spanMargin")),
-            "exposure":  _dhan_num((data or {}).get("exposureMargin")),
-            "available": {"cash": _dhan_num((data or {}).get("availableBalance"))},
+            "total":     _dhan_num_or_none((data or {}).get("totalMargin")),
+            "var":       _dhan_num_or_none((data or {}).get("spanMargin")),
+            "exposure":  _dhan_num_or_none((data or {}).get("exposureMargin")),
+            "available": {"cash": _dhan_num_or_none((data or {}).get("availableBalance"))},
             "raw":       resp,
         }
 
@@ -1334,7 +1358,12 @@ class DhanBroker(Broker):
             except Exception as e:
                 logger.warning(f"DhanBroker.basket_order_margins failed for "
                                f"{o.get('tradingsymbol')}: {e}")
-                out.append({"total": 0.0, "error": str(e), "raw": None})
+                # `total: None` (not 0.0) — a genuine failure must never
+                # read as "zero margin required" (item 5). The `error`
+                # string is preserved so `_preflight_check_margin`'s
+                # keyword-matching fallback can still classify this as a
+                # MARGIN_SHORTFALL when the text says so.
+                out.append({"total": None, "error": str(e), "raw": None})
         return out
 
     def place_order(self, *, intent: str | None = None, **kwargs: Any) -> str:

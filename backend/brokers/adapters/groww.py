@@ -1130,7 +1130,13 @@ class GrowwBroker(Broker):
     @_retry_groww_auth
     def basket_order_margins(self, orders: list[dict]) -> list[dict]:
         """Groww exposes per-order margin via `get_order_margin_details`;
-        no batch endpoint. Loop and return Kite-shape list."""
+        no batch endpoint. Loop and return a list of FLAT per-order dicts
+        (`{"total", "var", "exposure", "available", "raw"}`) — NOT Kite's
+        nested shape (Kite nests the rupee total under
+        `entry["final"]["total"]` / `entry["initial"]["total"]`; this
+        carries `total` at the top level instead).
+        `_preflight_leg_required` (actions_preflight.py) reads both
+        shapes."""
         out: list[dict] = []
         for o in orders:
             try:
@@ -1150,18 +1156,42 @@ class GrowwBroker(Broker):
                 data = resp.get("data") if isinstance(resp, dict) else {}
                 if not isinstance(data, dict):
                     data = {}
+                # 2026-10 margin-gate activation fix (item 4/5) — TEMPORARY
+                # raw-shape diagnostic, requested by the live-verification
+                # step before the Dhan/Groww margin gate can be enforced
+                # for real. Keep in place until the orchestrator confirms
+                # the field names + units from a real dev-deploy call and
+                # explicitly asks for removal/downgrade. In conn-service
+                # (cutover) mode this call runs INSIDE the conn_service
+                # process, so this line lands in the conn_service log, not
+                # ramboq_api's.
+                logger.info(f"[MARGIN-RAW-GROWW] {self.account} raw "
+                            f"get_order_margin_details response.data: {data!r}")
+                # Missing-vs-zero fix (item 5): `_gf_or_none` returns None
+                # (not a coerced 0.0) when the field is genuinely absent —
+                # a field-name drift or Groww-side schema change must
+                # surface as "unknown", never as a silently-wrong "zero
+                # margin needed". `_preflight_leg_required`
+                # (actions_preflight.py) now reads this flat top-level
+                # `total` key directly (item 4 — it previously only
+                # checked Kite's nested final/initial shape, so this value
+                # was NEVER read at all, regardless of what it held).
                 out.append({
-                    "total":    float(data.get("total_margin",     0) or 0),
-                    "var":      float(data.get("span_margin",      0) or 0),
-                    "exposure": float(data.get("exposure_margin",  0) or 0),
-                    "available": {"cash": float(data.get("available_balance",
-                                                          0) or 0)},
+                    "total":    _gf_or_none(data, "total_margin"),
+                    "var":      _gf_or_none(data, "span_margin"),
+                    "exposure": _gf_or_none(data, "exposure_margin"),
+                    "available": {"cash": _gf_or_none(data, "available_balance")},
                     "raw":      resp,
                 })
             except Exception as e:
                 logger.warning(f"GrowwBroker.basket_order_margins failed for "
                                f"{o.get('tradingsymbol')}: {e}")
-                out.append({"total": 0.0, "error": str(e), "raw": None})
+                # `total: None` (not 0.0) — a genuine failure must never
+                # read as "zero margin required" (item 5). The `error`
+                # string is preserved so `_preflight_check_margin`'s
+                # keyword-matching fallback can still classify this as a
+                # MARGIN_SHORTFALL when the text says so.
+                out.append({"total": None, "error": str(e), "raw": None})
         return out
 
     def place_order(self, *, intent: str | None = None, **kwargs: Any) -> str:

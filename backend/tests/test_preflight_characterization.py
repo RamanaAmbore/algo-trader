@@ -1055,6 +1055,95 @@ async def test_preflight_margin_shortfall_fix_qty_mcx_lot_math():
 
 
 @pytest.mark.asyncio
+async def test_preflight_margin_shortfall_fix_qty_nfo_lot_rounding():
+    """item 10: NFO (not just MCX/NCO) must also round the suggested
+    fix-qty down to a valid lot multiple. Pre-fix, the NFO/BFO/CDS
+    branch returned a raw `int(available / per_contract)` contract
+    count with NO lot rounding, which could itself be a fractional-lot
+    number that trips the G1 lot-multiple guard if the operator typed
+    it in literally.
+
+    Hand computation: lot_size=50, qty=100 (2 lots), required=210000,
+    available=100000.
+      lots            = 100 // 50 = 2
+      per_lot         = 210000 / 2 = 105000
+      max_lots_fit    = int(100000 / 105000) = 0
+      -> less than one lot fits: NO suggestion (empty string), never a
+         sub-lot contract count.
+    """
+    from backend.api.algo.actions import run_preflight
+
+    broker = _make_broker_stub(basket_required_total=210000.0, margin_net=100000.0)
+    conns = _conns_with("ZG0790")
+
+    with patch("backend.brokers.connections.Connections", return_value=conns), \
+         patch("backend.brokers.registry.get_broker", return_value=broker), \
+         patch("backend.brokers.adapters.kite.get_lot_size",
+               new=AsyncMock(return_value=50)):
+        result = await run_preflight("ZG0790", {
+            "exchange":      "NFO",
+            "tradingsymbol": "NIFTY25APRFUT",
+            "quantity":      100,
+            "order_type":    "LIMIT",
+            "product":       "NRML",
+            "variety":       "regular",
+            "side":          "BUY",
+            "price":         22000.0,
+        })
+
+    assert result["ok"] is False
+    ms = next(b for b in result["blocked"] if b["code"] == "MARGIN_SHORTFALL")
+    assert "reduce qty" not in ms["fix"], (
+        f"expected NO reduce-qty suggestion when less than one lot fits, "
+        f"got: {ms['fix']!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_preflight_margin_shortfall_fix_qty_nfo_lot_rounding_fits():
+    """item 10, positive case: when at least one lot DOES fit, the
+    suggested qty must be a clean multiple of lot_size for NFO too.
+
+    Hand computation: lot_size=50, qty=200 (4 lots), required=200000,
+    available=60000.
+      lots            = 200 // 50 = 4
+      per_lot         = 200000 / 4 = 50000
+      max_lots_fit    = int(60000 / 50000) = 1
+      max_qty_fit     = 1 * 50 = 50 contracts (1 lot)
+    """
+    from backend.api.algo.actions import run_preflight
+
+    broker = _make_broker_stub(basket_required_total=200000.0, margin_net=60000.0)
+    conns = _conns_with("ZG0790")
+
+    with patch("backend.brokers.connections.Connections", return_value=conns), \
+         patch("backend.brokers.registry.get_broker", return_value=broker), \
+         patch("backend.brokers.adapters.kite.get_lot_size",
+               new=AsyncMock(return_value=50)):
+        result = await run_preflight("ZG0790", {
+            "exchange":      "NFO",
+            "tradingsymbol": "NIFTY25APRFUT",
+            "quantity":      200,
+            "order_type":    "LIMIT",
+            "product":       "NRML",
+            "variety":       "regular",
+            "side":          "BUY",
+            "price":         22000.0,
+        })
+
+    assert result["ok"] is False
+    ms = next(b for b in result["blocked"] if b["code"] == "MARGIN_SHORTFALL")
+    import re
+    m = re.search(r"reduce qty to ([\d,]+)", ms["fix"])
+    assert m is not None, f"expected a reduce-qty suggestion in: {ms['fix']!r}"
+    suggested_qty = int(m.group(1).replace(",", ""))
+    assert suggested_qty % 50 == 0, (
+        f"suggested qty {suggested_qty} is not a valid lot multiple of 50"
+    )
+    assert suggested_qty == 50
+
+
+@pytest.mark.asyncio
 async def test_preflight_negative_margin_legitimate():
     """required < 0 (credit margin): logged as legitimate, not blocked."""
     from backend.api.algo.actions import run_preflight
@@ -1824,3 +1913,271 @@ async def test_ticket_run_preflight_intent_open_default():
     # or it might be None. Either way, it should not be "close".
     assert intent_value != "close", \
         f"Expected no close intent for open order, got: {order_dict}"
+
+
+# ---------------------------------------------------------------------------
+# Margin-gate activation (items 4/5/6) — Dhan/Groww enforce-vs-log-only
+# policy and the server-verified close exemption.
+#
+# `preflight.enforce_margin_dhan` / `preflight.enforce_margin_groww` both
+# default False (log-only) — these tests patch
+# `backend.shared.helpers.settings.get_bool` directly (the local
+# `from ... import get_bool` inside `_preflight_margin_policy` re-resolves
+# the name from the module at call time, so patching the module attribute
+# works correctly here, unlike a module-level cached import).
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_preflight_dhan_margin_shortfall_log_only_by_default():
+    """Dhan: MARGIN_SHORTFALL is computed but does NOT block by default
+    (preflight.enforce_margin_dhan defaults False) — recorded in
+    diagnostics['margin_would_block'] and logged at WARNING; the order
+    is NOT refused."""
+    from backend.api.algo.actions import run_preflight
+
+    broker = _make_broker_stub(
+        broker_id="dhan", basket_required_total=200000.0, margin_net=50000.0,
+    )
+    conns = _conns_with("ZG0790")
+
+    with patch("backend.brokers.connections.Connections", return_value=conns), \
+         patch("backend.brokers.registry.get_broker", return_value=broker), \
+         patch("backend.brokers.adapters.kite.get_lot_size",
+               new=AsyncMock(return_value=50)), \
+         patch("backend.shared.helpers.settings.get_bool", return_value=False):
+        result = await run_preflight("ZG0790", {
+            "exchange":      "NFO",
+            "tradingsymbol": "NIFTY25APRFUT",
+            "quantity":      100,
+            "order_type":    "LIMIT",
+            "product":       "NRML",
+            "variety":       "regular",
+            "side":          "BUY",
+            "price":         22000.0,
+        })
+
+    codes = [b["code"] for b in result["blocked"]]
+    assert "MARGIN_SHORTFALL" not in codes
+    assert result["ok"] is True
+    wb = result["diagnostics"].get("margin_would_block")
+    assert wb and wb[0]["code"] == "MARGIN_SHORTFALL"
+
+
+@pytest.mark.asyncio
+async def test_preflight_dhan_margin_shortfall_blocks_when_enforced():
+    """Dhan: flipping preflight.enforce_margin_dhan=True makes
+    MARGIN_SHORTFALL block for real, same as Kite's always-enforced
+    gate — confirms the flag is a real behavioural switch, not a
+    no-op."""
+    from backend.api.algo.actions import run_preflight
+
+    broker = _make_broker_stub(
+        broker_id="dhan", basket_required_total=200000.0, margin_net=50000.0,
+    )
+    conns = _conns_with("ZG0790")
+
+    with patch("backend.brokers.connections.Connections", return_value=conns), \
+         patch("backend.brokers.registry.get_broker", return_value=broker), \
+         patch("backend.brokers.adapters.kite.get_lot_size",
+               new=AsyncMock(return_value=50)), \
+         patch("backend.shared.helpers.settings.get_bool", return_value=True):
+        result = await run_preflight("ZG0790", {
+            "exchange":      "NFO",
+            "tradingsymbol": "NIFTY25APRFUT",
+            "quantity":      100,
+            "order_type":    "LIMIT",
+            "product":       "NRML",
+            "variety":       "regular",
+            "side":          "BUY",
+            "price":         22000.0,
+        })
+
+    codes = [b["code"] for b in result["blocked"]]
+    assert "MARGIN_SHORTFALL" in codes
+    assert result["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_preflight_groww_margin_shortfall_log_only_by_default():
+    """Groww gets the identical log-only default via its own
+    preflight.enforce_margin_groww flag."""
+    from backend.api.algo.actions import run_preflight
+
+    broker = _make_broker_stub(
+        broker_id="groww", basket_required_total=200000.0, margin_net=50000.0,
+    )
+    conns = _conns_with("ZG0790")
+
+    with patch("backend.brokers.connections.Connections", return_value=conns), \
+         patch("backend.brokers.registry.get_broker", return_value=broker), \
+         patch("backend.brokers.adapters.kite.get_lot_size",
+               new=AsyncMock(return_value=50)), \
+         patch("backend.shared.helpers.settings.get_bool", return_value=False):
+        result = await run_preflight("ZG0790", {
+            "exchange":      "NFO",
+            "tradingsymbol": "NIFTY25APRFUT",
+            "quantity":      100,
+            "order_type":    "LIMIT",
+            "product":       "NRML",
+            "variety":       "regular",
+            "side":          "BUY",
+            "price":         22000.0,
+        })
+
+    codes = [b["code"] for b in result["blocked"]]
+    assert "MARGIN_SHORTFALL" not in codes
+    assert result["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_preflight_dhan_close_exemption_server_verified():
+    """Dhan: a SERVER-VERIFIED close (via _verify_close_intent) must
+    suppress MARGIN_SHORTFALL even when the gate is enforced — Dhan's
+    margin_calculator prices each order independently with no
+    position-netting, so an unexempted close would be wrongly blocked
+    by the very gate meant to let margin-tight closes through."""
+    from backend.api.algo.actions import run_preflight
+
+    broker = _make_broker_stub(
+        broker_id="dhan", basket_required_total=200000.0, margin_net=50000.0,
+    )
+    conns = _conns_with("ZG0790")
+
+    with patch("backend.brokers.connections.Connections", return_value=conns), \
+         patch("backend.brokers.registry.get_broker", return_value=broker), \
+         patch("backend.brokers.adapters.kite.get_lot_size",
+               new=AsyncMock(return_value=50)), \
+         patch("backend.shared.helpers.settings.get_bool", return_value=True), \
+         patch("backend.api.routes.orders_place._verify_close_intent",
+               new=AsyncMock(return_value=True)):
+        result = await run_preflight("ZG0790", {
+            "exchange":      "NFO",
+            "tradingsymbol": "NIFTY25APRFUT",
+            "quantity":      100,
+            "order_type":    "LIMIT",
+            "product":       "NRML",
+            "variety":       "regular",
+            "side":          "SELL",
+            "intent":        "close",
+            "price":         22000.0,
+        })
+
+    codes = [b["code"] for b in result["blocked"]]
+    assert "MARGIN_SHORTFALL" not in codes
+    assert result["ok"] is True
+    assert result["diagnostics"].get("close_exemption") is True
+
+
+@pytest.mark.asyncio
+async def test_preflight_dhan_fake_close_claim_does_not_get_exemption():
+    """An UNVERIFIED close claim (intent='close' but _verify_close_intent
+    returns False — the claim does not actually match sign+magnitude
+    against the real broker position) must NOT receive the close
+    exemption; MARGIN_SHORTFALL still blocks when enforced."""
+    from backend.api.algo.actions import run_preflight
+
+    broker = _make_broker_stub(
+        broker_id="dhan", basket_required_total=200000.0, margin_net=50000.0,
+    )
+    conns = _conns_with("ZG0790")
+
+    with patch("backend.brokers.connections.Connections", return_value=conns), \
+         patch("backend.brokers.registry.get_broker", return_value=broker), \
+         patch("backend.brokers.adapters.kite.get_lot_size",
+               new=AsyncMock(return_value=50)), \
+         patch("backend.shared.helpers.settings.get_bool", return_value=True), \
+         patch("backend.api.routes.orders_place._verify_close_intent",
+               new=AsyncMock(return_value=False)):
+        result = await run_preflight("ZG0790", {
+            "exchange":      "NFO",
+            "tradingsymbol": "NIFTY25APRFUT",
+            "quantity":      100,
+            "order_type":    "LIMIT",
+            "product":       "NRML",
+            "variety":       "regular",
+            "side":          "SELL",
+            "intent":        "close",
+            "price":         22000.0,
+        })
+
+    codes = [b["code"] for b in result["blocked"]]
+    assert "MARGIN_SHORTFALL" in codes
+    assert result["ok"] is False
+    assert "close_exemption" not in result["diagnostics"]
+
+
+@pytest.mark.asyncio
+async def test_preflight_kite_close_never_reaches_dhan_groww_exemption_path():
+    """Kite's margin gate is always enforced and the Dhan/Groww close-
+    exemption path is never even consulted for Kite — Kite's own
+    basket_order_margins already nets a close via
+    consider_positions=True, so _verify_close_intent must not be
+    called at all for a Kite account."""
+    from backend.api.algo.actions import run_preflight
+
+    broker = _make_broker_stub(
+        broker_id="zerodha_kite", basket_required_total=200000.0, margin_net=50000.0,
+    )
+    conns = _conns_with("ZG0790")
+
+    verify_mock = AsyncMock(return_value=True)
+    with patch("backend.brokers.connections.Connections", return_value=conns), \
+         patch("backend.brokers.registry.get_broker", return_value=broker), \
+         patch("backend.brokers.adapters.kite.get_lot_size",
+               new=AsyncMock(return_value=50)), \
+         patch("backend.api.routes.orders_place._verify_close_intent",
+               new=verify_mock):
+        result = await run_preflight("ZG0790", {
+            "exchange":      "NFO",
+            "tradingsymbol": "NIFTY25APRFUT",
+            "quantity":      100,
+            "order_type":    "LIMIT",
+            "product":       "NRML",
+            "variety":       "regular",
+            "side":          "SELL",
+            "intent":        "close",
+            "price":         22000.0,
+        })
+
+    codes = [b["code"] for b in result["blocked"]]
+    assert "MARGIN_SHORTFALL" in codes
+    assert result["ok"] is False
+    verify_mock.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Item 11 — _basket_margin_validate must use the real account's broker's
+# own translate_qty, not a hardcoded Kite-specific to_kite_qty.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_basket_margin_validate_uses_broker_translate_qty():
+    """A Groww-shaped broker stub's `translate_qty` (not Kite's
+    `to_kite_qty`) must be the function that resolves the wire
+    quantity sent to basket_order_margins — for a Groww MCX leg,
+    Kite's to_kite_qty would have wrongly converted contracts to lots
+    (Groww sends raw contracts on the wire for every exchange)."""
+    from backend.api.algo.actions_preflight import _basket_margin_validate
+
+    broker = MagicMock()
+    # Groww's real translate_qty is a no-op passthrough (contracts on
+    # the wire for every exchange) — assert this exact function is
+    # consulted, not Kite's lots-conversion.
+    broker.translate_qty = MagicMock(side_effect=lambda exch, qty, lot: qty)
+    broker.basket_order_margins = MagicMock(return_value=[{"total": 1000.0}])
+
+    with patch("backend.brokers.adapters.kite.get_lot_size",
+               new=AsyncMock(return_value=100)):
+        ok, detail = await _basket_margin_validate(broker, {
+            "exchange": "MCX", "symbol": "CRUDEOIL25NOVFUT",
+            "side": "BUY", "qty": 300,  # 3 lots @ lot_size=100
+            "product": "NRML", "price": 6500.0,
+        })
+
+    assert ok is True
+    broker.translate_qty.assert_called_once_with("MCX", 300, 100)
+    sent_order = broker.basket_order_margins.call_args.args[0][0]
+    # Groww's convention: raw contracts, not lots — confirms the real
+    # broker.translate_qty return value reached the basket order, not a
+    # hardcoded Kite-style lots conversion (which would have sent 3).
+    assert sent_order["quantity"] == 300

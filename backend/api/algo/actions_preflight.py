@@ -42,22 +42,31 @@ def _live_positions_in_scope(context: dict, params: dict) -> list[dict]:
 
 async def _basket_margin_validate(broker, order: dict) -> tuple[bool, str]:
     """
-    Ask Kite to dry-run the order via `basket_margin`. Returns
-    (ok, detail). On `ok=False` the detail is Kite's error message —
-    mirror of what `place_order` would have rejected with.
+    Ask the real account's broker to dry-run the order via its own
+    basket-margin endpoint. Returns (ok, detail). On `ok=False` the
+    detail is the broker's error message — mirror of what `place_order`
+    would have rejected with.
+
+    2026-10 fix (item 11): this hardcoded Kite's `to_kite_qty` regardless
+    of which broker the account actually is — for a Groww MCX leg this
+    sent the margin endpoint a LOTS-shaped qty while Groww's real order
+    sends CONTRACTS, undercounting margin by a factor of `lot_size` in
+    this paper-mode dry-run check only (no real placement path affected).
+    Fixed: use `broker.translate_qty` (resolved for the real account's
+    broker, already in scope via the `broker` param) instead.
     """
     try:
-        from backend.brokers.adapters.kite import to_kite_qty, get_lot_size
+        from backend.brokers.adapters.kite import get_lot_size
         exchange  = order.get("exchange", "NFO")
         symbol    = order.get("symbol") or ""
         raw_qty   = int(order.get("qty") or 0)
         lot_size  = await get_lot_size(exchange, symbol)
-        kite_qty  = to_kite_qty(exchange, raw_qty, lot_size)
+        wire_qty  = broker.translate_qty(exchange, raw_qty, lot_size)
         basket_order = {
             "exchange":         exchange,
             "tradingsymbol":    symbol,
             "transaction_type": order.get("side"),
-            "quantity":         kite_qty,
+            "quantity":         wire_qty,
             "order_type":       "LIMIT",
             "product":          order.get("product", "NRML"),
             "price":            order.get("price"),
@@ -260,16 +269,29 @@ async def _preflight_build_basket_orders(
     return basket
 
 
-def _preflight_leg_required(entry: dict) -> float:
+def _preflight_leg_required(entry: dict) -> float | None:
     """
     Extract the required margin for a single basket-margin leg entry.
 
     Prefers `final.total` (net spread margin) over `initial.total`
-    (naked margin), and falls back to the top-level `required` field.
-    Returns 0.0 on any parsing failure.
+    (naked margin) — Kite's nested shape. Falls back to the top-level
+    `required` field, then to a FLAT top-level `total` key — Dhan's
+    `_margin_for_order` / Groww's `basket_order_margins` both return
+    `{"total": ..., "var": ..., "exposure": ..., "available": {...}}`
+    with no `final`/`initial` nesting at all, so without this fallback
+    `required` silently read as 0.0 for 100% of Dhan/Groww orders
+    (confirmed directly: `_preflight_leg_required({"total": 150000.0})`
+    returned 0.0 pre-fix) — the margin-shortfall gate was completely
+    inert for those two brokers. Checked LAST (after final/initial/
+    required) so a genuine Kite response is parsed exactly as before;
+    this only ever engages when Kite's nested keys are absent.
+
+    Returns None (not 0.0) when nothing parses — a missing/unparseable
+    value is "unknown", never "confirmed zero margin needed" (missing-
+    vs-zero convention, item 5).
     """
     if not isinstance(entry, dict):
-        return 0.0
+        return None
     for branch in ("final", "initial"):
         slot = (entry.get(branch) or {}).get("total")
         if slot is not None:
@@ -277,25 +299,36 @@ def _preflight_leg_required(entry: dict) -> float:
                 return float(slot)
             except (TypeError, ValueError):
                 pass
-    try:
-        return float(entry.get("required") or 0)
-    except (TypeError, ValueError):
-        return 0.0
+    for flat_key in ("required", "total"):
+        val = entry.get(flat_key)
+        if val is not None:
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                pass
+    return None
 
 
-def _preflight_parse_basket_margin(bm_result: object) -> float:
+def _preflight_parse_basket_margin(bm_result: object) -> float | None:
     """
     Parse the raw return value of broker.basket_order_margins into a
-    single ``required`` float.
+    single ``required`` float, or None when it genuinely can't be
+    determined.
 
     Kite returns a list (one dict per leg) or occasionally a bare dict.
     Multi-leg: sum per-leg final/initial totals so the spread offset is
-    captured. Single-leg list: unwrap and read the single entry.
-    Dict fallback: read as a single entry.
+    captured — but if ANY leg's own required margin is unknown (None),
+    the WHOLE basket is unknown (fail open on the whole basket, never a
+    silent partial sum that understates the real requirement). Single-
+    leg list: unwrap and read the single entry. Dict fallback: read as
+    a single entry.
     """
     if isinstance(bm_result, list) and bm_result:
         if len(bm_result) > 1:
-            return float(sum(_preflight_leg_required(r) for r in bm_result))
+            legs = [_preflight_leg_required(r) for r in bm_result]
+            if any(leg is None for leg in legs):
+                return None
+            return float(sum(legs))
         return _preflight_leg_required(bm_result[0])
     return _preflight_leg_required(bm_result if isinstance(bm_result, dict) else {})
 
@@ -397,7 +430,8 @@ def _preflight_margin_shortfall_fix_qty(
 
     Returns a string like " or reduce qty to 25" when per-unit margin
     can be inferred, or an empty string when the calculation is not
-    possible (required=0, available=0, qty=0).
+    possible (required=0, available=0, qty=0, or less than one full
+    lot fits — see item 10 below).
 
     ``required`` is the rupee margin Kite quoted via
     `basket_order_margins`, which was computed using the WIRE quantity
@@ -405,31 +439,180 @@ def _preflight_margin_shortfall_fix_qty(
     (== `translate_qty`) converts CONTRACTS → LOTS for MCX/NCO only
     (a no-op for NFO/BFO/CDS). So for MCX/NCO, `required` prices the
     order in LOT units while `qty` here is always CONTRACTS — dividing
-    directly would be off by a factor of `lot_size` and could suggest a
-    non-lot-aligned quantity. When `exchange` is MCX/NCO and `lot_size`
-    is known, price per LOT (`priced_units = qty // lot_size`) and
-    convert the resulting fit back to contracts for display. Every
-    other exchange keeps the original contracts-based math unchanged.
+    directly would be off by a factor of `lot_size`.
+
+    2026-10 fix (item 10): this used to round the suggested qty down to
+    a lot multiple ONLY for MCX/NCO; the NFO/BFO/CDS branch returned a
+    raw `int(available / per_unit)` contract count with NO lot
+    rounding, so the suggestion could itself be a fractional-lot qty
+    that would trip the G1 lot-multiple guard if the operator typed it
+    in literally. Fixed by pricing per LOT uniformly whenever
+    `lot_size > 1` (true for every F&O exchange, not just MCX/NCO —
+    `qty` reaching this preflight is always already a clean lot
+    multiple per G1, so `qty // lot_size` is exact): price per lot
+    (`required / (qty // lot_size)`), fit lots against `available`,
+    then convert back to contracts for display. When less than one
+    full lot fits, returns "" (no suggestion) rather than a sub-lot
+    number.
     """
     if not (required > 0 and available is not None and available > 0):
         return ""
-    _is_mcx = exchange in ("MCX", "NCO") and lot_size > 0
-    if _is_mcx:
-        priced_units = qty // lot_size
-        per_unit = required / priced_units if priced_units > 0 else 0
+    _has_lots = lot_size > 1
+    if _has_lots:
+        lots = qty // lot_size
+        per_unit = required / lots if lots > 0 else 0
     else:
         per_unit = required / qty if qty > 0 else 0
     if per_unit <= 0:
         return ""
     try:
         max_units_fit = max(0, int(available / per_unit))
-        max_qty_fit = max_units_fit * lot_size if _is_mcx else max_units_fit
+        max_qty_fit = max_units_fit * lot_size if _has_lots else max_units_fit
         return f" or reduce qty to {max_qty_fit:,}" if max_qty_fit > 0 else ""
     except Exception:
         return ""
 
 
-def _preflight_handle_positive_margin(
+def _preflight_margin_policy(broker, account: str, side: str) -> dict:
+    """
+    Build the `margin_ctx` dict threaded through every margin-blocker
+    emission site (item 6).
+
+    Kite's gate is always enforced — numerically trustworthy, already
+    enforcing today, and `basket_order_margins` already nets a close via
+    `consider_positions=True` so it never needs a close exemption.
+
+    Dhan/Groww each default to LOG-ONLY (computed + logged at WARNING,
+    never blocking) via their own `preflight.enforce_margin_dhan` /
+    `preflight.enforce_margin_groww` settings (both default False) —
+    operator-tunable from /admin/settings with no deploy — until the
+    orchestrator flips them after confirming real live numbers from a
+    dev-deploy verification pass. The broker id is read off the already-
+    resolved `broker` object (`broker.broker_id`), not a second account
+    lookup — reliable in conn-service/RemoteBroker mode too, since
+    `registry.get_broker()` constructs `RemoteBroker(account,
+    broker_id=_broker_id_for(account))` with the real DB-backed id.
+
+    Uses an explicit ALLOWLIST (`{"dhan", "groww"}`), not a `!=
+    "zerodha_kite"` exclusion — a future 4th broker must not silently
+    inherit either the close exemption or the log-only default without
+    an explicit decision.
+    """
+    from backend.shared.helpers.settings import get_bool
+
+    bid = str(getattr(broker, "broker_id", "") or "")
+    if bid == "dhan":
+        enforce = get_bool("preflight.enforce_margin_dhan", False)
+    elif bid == "groww":
+        enforce = get_bool("preflight.enforce_margin_groww", False)
+    else:
+        enforce = True
+    return {
+        "is_dhan_groww": bid in ("dhan", "groww"),
+        "enforce": enforce,
+        "side": side,
+        "broker_id": bid,
+    }
+
+
+async def _preflight_emit_margin_blocker(
+    blockers: list[dict],
+    diag: dict,
+    blocker: dict,
+    *,
+    margin_ctx: dict,
+    account: str,
+    symbol: str,
+    exchange: str,
+    qty: int,
+) -> None:
+    """
+    SOLE gate every margin-shortfall/insufficient-funds blocker must pass
+    through — every call site that would otherwise `blockers.append(...)`
+    a MARGIN_SHORTFALL or INSUFFICIENT_FUNDS blocker calls this instead
+    (item 6). A second, un-gated append site anywhere in this module
+    would make the Dhan/Groww "log-only" default not actually log-only.
+
+    Applies, in order:
+
+    1. Close exemption — SCOPED TO DHAN/GROWW ONLY (`margin_ctx
+       ["is_dhan_groww"]`). Kite's own `basket_order_margins` already
+       nets a close via `consider_positions=True`, so it is never
+       reached with an unnecessary close-path blocker in the first
+       place — no change to Kite's existing behaviour here. Dhan's
+       `margin_calculator` and Groww's `get_order_margin_details` price
+       each order INDEPENDENTLY with no concept of existing positions,
+       so once `required` reads real numbers (item 4), an unexempted
+       close would be priced as a brand-new position in that direction
+       and could get wrongly blocked by the very gate that exists to
+       let margin-tight closes through.
+
+       SERVER-VERIFIED ONLY — via `_verify_close_intent` (sign AND
+       magnitude checked against the REAL broker position). The raw
+       caller-claimed `order["intent"] == "close"` is read only to
+       decide whether `run_preflight` even bypasses G2 (unrelated, pre-
+       existing behaviour); it is NEVER trusted here. This re-verifies
+       inside the shared gate itself rather than trusting any caller's
+       own prior verification, so every current and future
+       `run_preflight` caller gets the same real protection uniformly —
+       confirmed against every current caller (ticket, basket, the
+       agent `place_order` action, `_action_live_close_position`,
+       `_chase_build_tasks`, the `/preflight` preview route): none of
+       them could reach this exemption with an unverified claim, because
+       verification happens HERE regardless of what they passed in.
+
+    2. Enforce-vs-log-only — when not enforced, the blocker is recorded
+       in `diag["margin_would_block"]` and logged at WARNING instead of
+       being appended to `blockers`, so the order is never actually
+       blocked.
+    """
+    side = margin_ctx.get("side") or ""
+    if margin_ctx.get("is_dhan_groww") and side and qty:
+        try:
+            from backend.api.routes.orders_place import _verify_close_intent
+            if await _verify_close_intent(symbol, exchange, side, account, qty):
+                diag["close_exemption"] = True
+                logger.info(
+                    f"[PREFLIGHT] close exemption granted for {account}/{symbol} "
+                    f"({exchange}) — server-verified close, {blocker.get('code')} "
+                    f"suppressed"
+                )
+                return
+        except Exception as e:
+            logger.debug(
+                f"[PREFLIGHT] close-intent verification failed for {account}: {e}"
+            )
+
+    if margin_ctx.get("enforce", True):
+        blockers.append(blocker)
+        return
+
+    diag.setdefault("margin_would_block", []).append(blocker)
+    logger.warning(
+        f"[PREFLIGHT] margin gate LOG-ONLY (preflight.enforce_margin_"
+        f"{margin_ctx.get('broker_id', '?')}=False) for {account}/{symbol}: "
+        f"would have blocked with code={blocker.get('code')} "
+        f"reason={blocker.get('reason')}"
+    )
+
+
+def _preflight_collect_leg_errors(bm_result: object) -> list[str]:
+    """Collect per-leg `error` strings from a basket-margin result whose
+    `required` could not be parsed (None) — used to route a genuine
+    Dhan/Groww-side margin failure into the same keyword-matching
+    classification the raised-exception branch already applies, instead
+    of silently treating every unparseable result as "margin check not
+    needed"."""
+    errors: list[str] = []
+    if isinstance(bm_result, list):
+        errors = [str(r.get("error")) for r in bm_result
+                  if isinstance(r, dict) and r.get("error")]
+    elif isinstance(bm_result, dict) and bm_result.get("error"):
+        errors = [str(bm_result.get("error"))]
+    return errors
+
+
+async def _preflight_handle_positive_margin(
     required: float,
     margins_res: tuple,
     segment: str,
@@ -437,12 +620,16 @@ def _preflight_handle_positive_margin(
     qty: int,
     exchange: str = "",
     lot_size: int = 0,
+    margin_ctx: dict | None = None,
+    symbol: str = "",
 ) -> tuple[list[dict], dict]:
     """
     Handle the ``required >= 0`` branch of the margin gate.
 
     Parses available margin, emits INSUFFICIENT_FUNDS when available=0,
-    computes shortfall, and builds MARGIN_SHORTFALL blockers.
+    computes shortfall, and builds MARGIN_SHORTFALL blockers — both
+    routed through `_preflight_emit_margin_blocker` (close exemption +
+    enforce-vs-log-only policy, item 6).
 
     Returns ``(new_blockers, diag_partial)``.
     """
@@ -450,6 +637,7 @@ def _preflight_handle_positive_margin(
     new_blockers: list[dict] = []
     diag: dict = {}
     shortfall: float = 0.0
+    margin_ctx = margin_ctx or {"is_dhan_groww": False, "enforce": True, "side": ""}
 
     m_enabled, available = _preflight_resolve_available_margin(margins_res, segment, account)
 
@@ -466,19 +654,24 @@ def _preflight_handle_positive_margin(
             f"[PREFLIGHT] available_margin=0 with required={required:.2f} "
             f"for {account} — blocking as INSUFFICIENT_FUNDS."
         )
-        new_blockers.append({
-            "code":   "INSUFFICIENT_FUNDS",
-            "reason": (
-                f"Available margin is ₹0 but order requires "
-                f"₹{required:,.0f}. Account has no usable balance "
-                f"in the {segment} segment."
-            ),
-            "fix": (
-                f"Add at least ₹{required:,.0f} to the {segment} wallet "
-                f"before placing this order."
-            ),
-            "data": {"required": required, "available": 0.0},
-        })
+        await _preflight_emit_margin_blocker(
+            new_blockers, diag,
+            {
+                "code":   "INSUFFICIENT_FUNDS",
+                "reason": (
+                    f"Available margin is ₹0 but order requires "
+                    f"₹{required:,.0f}. Account has no usable balance "
+                    f"in the {segment} segment."
+                ),
+                "fix": (
+                    f"Add at least ₹{required:,.0f} to the {segment} wallet "
+                    f"before placing this order."
+                ),
+                "data": {"required": required, "available": 0.0},
+            },
+            margin_ctx=margin_ctx, account=account, symbol=symbol,
+            exchange=exchange, qty=qty,
+        )
         diag["margin_shortfall"] = required
 
     # Four states for the margin gate:
@@ -500,17 +693,22 @@ def _preflight_handle_positive_margin(
         fix_qty = _preflight_margin_shortfall_fix_qty(
             required, available, qty, exchange=exchange, lot_size=lot_size
         )
-        new_blockers.append({
-            "code":   "MARGIN_SHORTFALL",
-            "reason": (f"Required margin ₹{required:,.0f} exceeds available "
-                       f"₹{available:,.0f} (shortfall ₹{shortfall:,.0f})"),
-            "fix":    (f"Add ₹{shortfall:,.0f} more margin to the account" + fix_qty),
-            "data":   {
-                "required":   required,
-                "available":  available,
-                "shortfall":  shortfall,
+        await _preflight_emit_margin_blocker(
+            new_blockers, diag,
+            {
+                "code":   "MARGIN_SHORTFALL",
+                "reason": (f"Required margin ₹{required:,.0f} exceeds available "
+                           f"₹{available:,.0f} (shortfall ₹{shortfall:,.0f})"),
+                "fix":    (f"Add ₹{shortfall:,.0f} more margin to the account" + fix_qty),
+                "data":   {
+                    "required":   required,
+                    "available":  available,
+                    "shortfall":  shortfall,
+                },
             },
-        })
+            margin_ctx=margin_ctx, account=account, symbol=symbol,
+            exchange=exchange, qty=qty,
+        )
 
     return new_blockers, diag
 
@@ -525,6 +723,7 @@ async def _preflight_check_margin(
     loop: object,
     exchange: str = "",
     lot_size: int = 0,
+    margin_ctx: dict | None = None,
 ) -> tuple[list[dict], dict]:
     """
     Evaluate basket-order margin and account margin to emit blockers.
@@ -535,6 +734,7 @@ async def _preflight_check_margin(
     """
     new_blockers: list[dict] = []
     diag: dict = {}
+    margin_ctx = margin_ctx or {"is_dhan_groww": False, "enforce": True, "side": ""}
 
     if isinstance(bm_res, Exception):
         bm_exception: Exception | None = bm_res
@@ -548,6 +748,33 @@ async def _preflight_check_margin(
             raise bm_exception
 
         required = _preflight_parse_basket_margin(bm_result)
+
+        # ── Unknown-margin gate (item 4/5) ────────────────────────────
+        # `required` is None when no leg's margin could be parsed at
+        # all (missing/unparseable fields on every leg — a genuinely
+        # different situation from Kite's "negative required" credit
+        # case below, which is a real parsed number). Fail OPEN on the
+        # WHOLE basket rather than silently treating an unknown amount
+        # as zero: if any leg carried its own `error` string, route that
+        # text through the SAME keyword-matching classification the
+        # raised-exception branch below already applies (re-raising
+        # reuses that logic rather than duplicating it) so a genuine
+        # Dhan/Groww-side margin failure still surfaces as
+        # MARGIN_SHORTFALL; otherwise log and skip — broker's own
+        # place_order remains the real backstop.
+        if required is None:
+            diag["basket_margin_used"] = None
+            diag["available_margin"]   = None
+            diag["margin_shortfall"]   = None
+            _leg_errors = _preflight_collect_leg_errors(bm_result)
+            if _leg_errors:
+                raise RuntimeError(" | ".join(_leg_errors)[:240])
+            logger.info(
+                f"[PREFLIGHT] margin required could not be determined for "
+                f"{account}/{symbol} (no parseable total on any leg, no "
+                f"leg error) — skipping margin-shortfall gate; broker's "
+                f"own place_order remains the real backstop."
+            )
 
         # ── Negative-margin sanity check ────────────────────────────────
         # Kite's basket_order_margins can return a negative `required` value
@@ -566,7 +793,7 @@ async def _preflight_check_margin(
         # We keep the WARNING log + diagnostic surfacing so the operator
         # sees any unusual value; Kite's own place_order remains the
         # ultimate gate for insufficient funds.
-        if required < 0:
+        elif required < 0:
             logger.warning(
                 f"[PREFLIGHT] negative basket margin for {account}/{symbol}: "
                 f"required={required:.2f} — treating as legitimate netting "
@@ -584,9 +811,10 @@ async def _preflight_check_margin(
             )
 
         else:
-            _pm_blockers, _pm_diag = _preflight_handle_positive_margin(
+            _pm_blockers, _pm_diag = await _preflight_handle_positive_margin(
                 required, margins_res, segment, account, qty,
                 exchange=exchange, lot_size=lot_size,
+                margin_ctx=margin_ctx, symbol=symbol,
             )
             new_blockers.extend(_pm_blockers)
             diag.update(_pm_diag)
@@ -594,12 +822,17 @@ async def _preflight_check_margin(
         bm_msg = str(e).lower()
         # basket_margin raised — interpret the error signal.
         if any(k in bm_msg for k in ("margin", "fund", "shortfall", "balance")):
-            new_blockers.append({
-                "code":   "MARGIN_SHORTFALL",
-                "reason": f"Margin check failed: {str(e)[:160]}",
-                "fix":    "Add margin to the account or reduce quantity",
-                "data":   {"broker_error": str(e)[:240]},
-            })
+            await _preflight_emit_margin_blocker(
+                new_blockers, diag,
+                {
+                    "code":   "MARGIN_SHORTFALL",
+                    "reason": f"Margin check failed: {str(e)[:160]}",
+                    "fix":    "Add margin to the account or reduce quantity",
+                    "data":   {"broker_error": str(e)[:240]},
+                },
+                margin_ctx=margin_ctx, account=account, symbol=symbol,
+                exchange=exchange, qty=qty,
+            )
         else:
             logger.debug(f"[PREFLIGHT] basket_margin raised for {account}: {e}")
 
@@ -899,9 +1132,10 @@ async def run_preflight(
     # matching the unit `required` was actually quoted in.
     from backend.brokers.adapters.kite import get_lot_size as _pf_margin_lot_fn
     _margin_lot_size = await _pf_margin_lot_fn(exchange, symbol)
+    _margin_ctx = _preflight_margin_policy(broker, account, side)
     _margin_blockers, _margin_diag = await _preflight_check_margin(
         bm_res, margins_res, segment, account, symbol, qty, loop,
-        exchange=exchange, lot_size=_margin_lot_size,
+        exchange=exchange, lot_size=_margin_lot_size, margin_ctx=_margin_ctx,
     )
     blocked.extend(_margin_blockers)
     diagnostics.update(_margin_diag)
