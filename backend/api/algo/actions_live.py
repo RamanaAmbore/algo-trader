@@ -1474,7 +1474,20 @@ async def _chase_build_tasks(
         # does not net against the real MIS position on the broker's
         # side — the position stayed open while a stray NRML position
         # was created.
-        product  = str(p.get("product") or "NRML")
+        #
+        # `p` comes from `df.to_dict(orient="records")`
+        # (_al_positions_to_rows), which does NOT convert a missing
+        # cell to None — it stays a real float('nan'), and
+        # bool(float('nan')) is True in Python, so a bare `or "NRML"`
+        # would silently produce the literal string "nan" instead of
+        # falling back (same bug class fixed in orders_place.py's
+        # _fetch_net_position_product by commit 3ea29a24 — that fix
+        # covered only that function, not this one).
+        _product_raw = p.get("product")
+        # NaN != NaN is the one float where this is true — avoids adding
+        # a pandas import to a file that doesn't otherwise need one.
+        _product_missing = _product_raw is None or _product_raw != _product_raw
+        product = "NRML" if _product_missing else str(_product_raw)
 
         # Best effort initial limit price from LTP in context row.
         ltp   = p.get("last_price") or p.get("close_price")

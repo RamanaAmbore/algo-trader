@@ -905,6 +905,69 @@ async def test_chase_build_tasks_carries_real_side_and_product_mis():
 
 
 @pytest.mark.asyncio
+async def test_chase_build_tasks_nan_product_cell_falls_back_to_nrml_not_literal_nan():
+    """`df.to_dict(orient='records')` does NOT convert a missing cell to
+    None -- it stays a real float('nan'), and bool(float('nan')) is True
+    in Python, so a bare `p.get('product') or 'NRML'` would silently
+    produce the LITERAL STRING 'nan' as a real broker order's product
+    instead of falling back to 'NRML'. Build a DataFrame with two rows
+    where only one has a 'product' key, so pandas fills the other with a
+    genuine NaN float (not just an absent dict key)."""
+    from backend.api.algo.actions_live import _chase_build_tasks
+    import backend.api.algo.actions_live as _mod
+
+    agent = MagicMock()
+    agent.slug = "test-agent"
+    agent.id = 1
+    df = _make_positions_df([
+        {
+            "account": "ZG0790", "tradingsymbol": "NIFTY25JULFUT",
+            "exchange": "NFO", "quantity": 300,
+            "last_price": 24500.0, "close_price": 24400.0,
+            "product": "MIS",
+        },
+        {
+            "account": "ZG0790", "tradingsymbol": "BANKNIFTY25JULFUT",
+            "exchange": "NFO", "quantity": 150,
+            "last_price": 51000.0, "close_price": 50900.0,
+            # no "product" key -> pandas fills this cell with NaN
+        },
+    ])
+    rows = df.to_dict("records")
+    assert rows[1]["product"] != rows[1]["product"], (
+        "test setup check: row 1's product cell must be a real NaN"
+    )
+
+    captured_orders: list[dict] = []
+
+    async def _fake_run_preflight(account, order, paired_orders=None):
+        captured_orders.append(order)
+        return {"ok": True, "blocked": [], "diagnostics": {}}
+
+    mock_chase = AsyncMock()
+
+    with patch.object(_mod, "run_preflight", new=_fake_run_preflight), \
+         patch("backend.api.algo.actions._write_live_order",
+               new=AsyncMock(return_value=42)), \
+         patch("backend.api.algo.chase.chase_order", new=mock_chase):
+        chase_tasks, task_rows, refused_rows = await _chase_build_tasks(agent, rows)
+        for t in chase_tasks:
+            await t
+
+    assert len(captured_orders) == 2
+    nan_row_order = captured_orders[1]
+    assert nan_row_order["product"] == "NRML", (
+        f"a NaN product cell must fall back to 'NRML', never the "
+        f"literal string 'nan' -- got {nan_row_order.get('product')!r}"
+    )
+    cfg = mock_chase.call_args_list[1].kwargs["cfg"]
+    assert cfg.product == "NRML", (
+        f"ChaseConfig for the NaN-product row must also fall back to "
+        f"'NRML', got {cfg.product!r}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_chase_build_tasks_carries_real_side_and_product_nrml_short():
     """NRML short position: preflight dict AND ChaseConfig must carry
     'NRML' (real product) and side 'BUY' (covers the short)."""
