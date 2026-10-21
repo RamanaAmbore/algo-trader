@@ -870,11 +870,18 @@
             : (_sharedWingStrikeOffsetOverride !== '' ? Number(_sharedWingStrikeOffsetOverride) : null));
       const dispatchedTplId = leg.template_id ?? _sharedTemplateId;
       try {
+        // Backend's ticket-preview endpoint reads `quantity` as LOTS for
+        // F&O (it multiplies by lot_size itself — see
+        // `_rco_preview_resolve_qty` in backend/api/routes/orders.py).
+        // Chain-tab legs are always F&O, so sending `lots * lotSize`
+        // (contracts) here let the backend multiply by lot_size AGAIN,
+        // inflating parent_qty/wing qty by a factor of lot_size. Matches
+        // `OptionChainTab.svelte`'s own `leg.lots`-only convention.
         const res = await previewTicketTemplate({
           mode:             _sharedMode === 'draft' ? 'paper' : _sharedMode,
           side:             leg.side,
           tradingsymbol:    leg.sym,
-          quantity:         (leg.lots || 1) * (leg.lotSize || 1),
+          quantity:         leg.lots || 1,
           exchange:         leg.exchange || 'NFO',
           product:          leg.product || 'NRML',
           account:          legAcct,
