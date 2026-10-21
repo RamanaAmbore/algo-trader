@@ -342,6 +342,43 @@ def _all_exchanges_closed(exchanges: set[str]) -> bool:
     return all(_is_exchange_segment_closed(e) for e in exchanges)
 
 
+async def _qt_prewarm_special_sessions(exchanges: set[str]) -> None:
+    """Await the special-sessions prewarm for every segment covering any
+    exchange in *exchanges*, before a sync `_all_exchanges_closed()` call
+    (2026-10-20, item 3 of the 4-site residual sweep). Both call sites
+    (`batch_quote`, `batch_sparkline`) are `async def` Litestar route
+    handlers that call `_all_exchanges_closed()` inline, not via
+    `asyncio.to_thread` — each IS the main loop at that point.
+    `_all_exchanges_closed()` → `_is_exchange_segment_closed()` →
+    `_qt_is_seg_open()` → `_segment_is_open()` → sync `fetch_special_sessions()`
+    for that segment's `holiday_exchange`, which fails open to `[]` on a cold
+    cache hit from the main loop (see `fetch_special_sessions`'s own
+    docstring).
+
+    Deliberately re-implements `_qt_is_seg_open`'s own exchange-membership
+    match (against each segment's `exchanges` list, falling back to its
+    `holiday_exchange`) instead of routing through
+    `_prewarm_special_sessions_for_exchange()` — that helper resolves via
+    `agent_engine.py`'s separate `_EXCHANGE_TO_SEGMENT` dict, which can
+    drift from this file's own match rule (e.g. it maps `NCO`/`BFO`/`BCD`
+    to a segment this file's `exchanges` lists don't cover at all). Using
+    the exact same match rule as the sync lookup guarantees the warmed key
+    always matches the key `fetch_special_sessions()` will actually read.
+    """
+    from backend.shared.helpers.utils import config as _cfg
+    from backend.brokers.broker_apis import fetch_special_sessions_async
+
+    segments = _cfg.get("market_segments", {}) or {}
+    for seg_cfg in segments.values():
+        seg_exch = (seg_cfg.get("holiday_exchange") or "NSE").upper()
+        seg_exchanges = {e.upper() for e in (seg_cfg.get("exchanges") or [seg_exch])}
+        if exchanges & seg_exchanges or seg_exch in exchanges:
+            try:
+                await fetch_special_sessions_async(seg_exch)
+            except Exception as e:
+                logger.warning(f"quote: special-sessions prewarm failed for {seg_exch}: {e}")
+
+
 async def _get_cached_batch_quote(broker_keys: list[str]) -> dict:
     """Short-TTL cache + in-flight coalesce for `/quote/batch`'s broker
     call (2026-10 audit fix). Kite's quote() budget is ~1 req/s; without
@@ -794,6 +831,7 @@ class QuoteController(Controller):
 
         # ── Closed-hours fast-path ─────────────────────────────────────────
         req_exchanges = _exchanges_from_keys(keys)
+        await _qt_prewarm_special_sessions(req_exchanges)
         if _all_exchanges_closed(req_exchanges):
             return await _serve_closed_hours_batch(keys, key_map)
 
@@ -1819,6 +1857,7 @@ class SparklineController(Controller):
 
         # ── Steps 2+3: token map + LTP (tick_map → broker.ltp fallback) ───
         req_exchs_spark = {s.exchange.upper() for s in norm_syms}
+        await _qt_prewarm_special_sessions(req_exchs_spark)
         spark_market_closed = _all_exchanges_closed(req_exchs_spark)
         ltp_map = await _resolve_spark_ltps(norm_syms, spark_market_closed)
 

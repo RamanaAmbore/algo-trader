@@ -979,3 +979,91 @@ async def test_movers_prewarm_closes_the_gap_for_mcx():
         _wq._main_loop = orig_main_loop
         _ba._SPECIAL_SESSION_CACHE.clear()
 
+
+# ---------------------------------------------------------------------------
+# Item 3 — routes/quote.py's `_all_exchanges_closed` (reached from
+# `batch_quote` and `batch_sparkline`, both `async def` inline calls).
+# ---------------------------------------------------------------------------
+
+def test_batch_quote_prewarms_before_all_exchanges_closed():
+    """Source-order assertion for the `batch_quote` route handler."""
+    import inspect
+    from backend.api.routes.quote import QuoteController
+
+    src = inspect.getsource(QuoteController.batch_quote.fn)
+    prewarm_idx = src.find("_qt_prewarm_special_sessions(")
+    closed_idx = src.find("_all_exchanges_closed(")
+    assert prewarm_idx != -1, "prewarm call not found in batch_quote"
+    assert closed_idx != -1, "_all_exchanges_closed call not found"
+    assert prewarm_idx < closed_idx, (
+        "prewarm must run BEFORE _all_exchanges_closed, or it closes the "
+        "gap too late"
+    )
+
+
+def test_batch_sparkline_prewarms_before_all_exchanges_closed():
+    """Source-order assertion for the `batch_sparkline` route handler."""
+    import inspect
+    from backend.api.routes.quote import SparklineController
+
+    src = inspect.getsource(SparklineController.batch_sparkline.fn)
+    prewarm_idx = src.find("_qt_prewarm_special_sessions(")
+    closed_idx = src.find("_all_exchanges_closed(")
+    assert prewarm_idx != -1, "prewarm call not found in batch_sparkline"
+    assert closed_idx != -1, "_all_exchanges_closed call not found"
+    assert prewarm_idx < closed_idx, (
+        "prewarm must run BEFORE _all_exchanges_closed, or it closes the "
+        "gap too late"
+    )
+
+
+@pytest.mark.asyncio
+async def test_quote_prewarm_closes_the_gap_for_mcx():
+    """Same shape as the other 3 gap-closing tests, for
+    `_qt_prewarm_special_sessions` + `_all_exchanges_closed` specifically."""
+    import asyncio
+    import backend.brokers.broker_apis as _ba
+    import backend.api.persistence.write_queue as _wq
+    from backend.api.routes.quote import _qt_prewarm_special_sessions, _all_exchanges_closed
+
+    closed_all_day_row = [{
+        "date": _FIXTURE_NOW.date(),
+        "start": dtime(0, 0),
+        "end": dtime(0, 0),
+    }]
+
+    loop = asyncio.get_running_loop()
+    orig_main_loop = _wq._main_loop
+    _ba._SPECIAL_SESSION_CACHE.clear()
+    try:
+        with patch.object(_ba, "fetch_special_sessions", side_effect=_REAL_FETCH_SPECIAL_SESSIONS), \
+             patch("backend.shared.helpers.date_time_utils.timestamp_indian", return_value=_FIXTURE_NOW):
+            _wq._main_loop = loop  # simulate "already on the main loop"
+
+            # Pre-fix shape: _all_exchanges_closed WITHOUT the prewarm —
+            # cold cache fails open, override invisible, evening carve-out
+            # applies → MCX reads open → not "all closed".
+            with patch.object(_ba, "_read_special_sessions_async",
+                               AsyncMock(return_value=closed_all_day_row)):
+                closed_no_prewarm = _all_exchanges_closed({"MCX"})
+            assert closed_no_prewarm is False, (
+                "sanity check: without the prewarm, the cold cache must "
+                "fail open and the check must NOT see the override"
+            )
+
+            # The fix: await the prewarm first, exactly as batch_quote /
+            # batch_sparkline now do immediately before the sync check.
+            _ba._SPECIAL_SESSION_CACHE.clear()
+            with patch.object(_ba, "_read_special_sessions_async",
+                               AsyncMock(return_value=closed_all_day_row)):
+                await _qt_prewarm_special_sessions({"MCX"})
+
+            closed_with_prewarm = _all_exchanges_closed({"MCX"})
+            assert closed_with_prewarm is True, (
+                "the prewarm must let _all_exchanges_closed see the real "
+                "DB override — gap not closed"
+            )
+    finally:
+        _wq._main_loop = orig_main_loop
+        _ba._SPECIAL_SESSION_CACHE.clear()
+
