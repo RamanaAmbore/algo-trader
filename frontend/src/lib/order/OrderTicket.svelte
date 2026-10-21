@@ -2627,12 +2627,22 @@
   /** @type {ReturnType<typeof setTimeout> | null} */
   let _previewTimer = null;
   $effect(() => {
-    // Track the inputs that affect the preview.
+    // Track the inputs that affect the preview. `_lots`/`_lotSize` feed
+    // `previewQty` below (lots-not-contracts fix).
     const inputs = [
       templateId, tpOverride, slOverride,
       wingPremPctOverride, wingStrikeOffsetOverride,
-      _side, symbol, _qty, _price,
+      _side, symbol, _qty, _price, _lots, _lotSize,
     ];
+    // `_resolvedSymbol` is the actual picked contract in bare-underlying
+    // mode (e.g. NIFTY → pick expiry/strike/CE → NIFTY26JUNC22000CE) —
+    // without it tracked here, picking a strike never re-triggers this
+    // plan (the request below kept sending the bare root symbol until
+    // some OTHER watched field also changed). `_exchange`/
+    // `_resolvedExchange`/`_product` are likewise read by the request
+    // body below and must be tracked so an exchange/product change
+    // re-plans too.
+    inputs.push(_resolvedSymbol, _exchange, _resolvedExchange, _product);
     // Skip preview when basics are incomplete. Critically — guard on
     // empty `_account` too: an operator who opens the modal before
     // an account is picked would otherwise generate one 400 every
@@ -2666,11 +2676,27 @@
       const dispatchedTemplateId = templateId;
       try {
         const refPx = Number(_price) > 0 ? Number(_price) : 0;
+        // Backend's ticket-preview endpoint reads `quantity` as LOTS for
+        // F&O exchanges (multiplying by lot_size itself — see
+        // `_rco_preview_resolve_qty` in backend/api/routes/orders.py) and
+        // raw contract/share qty for equity. `_qty` here is already
+        // CONTRACTS (`_qty = _lots * _lotSize`, see the sync effect
+        // above) — sending it unconverted doubled the lot multiplier
+        // server-side (parent_qty became lot_size² contracts instead of
+        // lot_size), inflating the wing qty and every TP/SL/margin
+        // preview chip derived from this plan. Matches
+        // `OptionChainTab.svelte`'s existing `leg.lots` convention.
+        const previewQty = _lotSize > 0 ? Number(_lots) : Number(_qty);
+        // Use the resolved contract symbol (bare-underlying mode picks
+        // expiry+strike+CE/PE into `_resolvedSymbol`), not the bare root
+        // `symbol` prop — the margin preview and real submit path both
+        // already use this fallback; the template-preview plan call was
+        // the one site still sending the root.
         const res = await previewTicketTemplate({
           mode:             _mode === 'draft' ? 'paper' : _mode,
           side:             _side,
-          tradingsymbol:    symbol,
-          quantity:         Number(_qty),
+          tradingsymbol:    _resolvedSymbol || symbol,
+          quantity:         previewQty,
           exchange:         _exchange || _resolvedExchange || exchange || 'NFO',
           product:          _product || 'NRML',
           account:          _account || '',
