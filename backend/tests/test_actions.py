@@ -757,6 +757,288 @@ async def test_chase_close_positions_all_db_write_failures_raises_no_chase():
 
 
 # ---------------------------------------------------------------------------
+# Live close-path preflight must carry the real resolved `side`, and
+# `_chase_build_tasks` must carry the real `product` off the position row
+# instead of a hardcoded "BUY"/"NRML" default (2026-10 live bug — a real
+# SELL-to-close priced as a defaulted "BUY" looks like a brand-new long to
+# Kite's position-aware margin netting, wrongly blocking a loss-limit close
+# with MARGIN_SHORTFALL exactly when closing matters most; an MIS close
+# hardcoded to NRML doesn't net against the real MIS position at all).
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_action_live_close_position_preflight_carries_real_side_long_close():
+    """Long position (net_qty > 0) closes with SELL — preflight dict's
+    'side' must be 'SELL', never the _parse_broker_call_fields default
+    of 'BUY'."""
+    from backend.api.algo.actions import _action_live_close_position
+    import backend.api.algo.actions_live as _mod
+
+    broker = _make_broker_stub(ltp_value=100.0)
+    broker.ltp.return_value = {"NFO:NIFTY25JULFUT": {"last_price": 100.0}}
+    agent = MagicMock()
+    agent.slug = "test-close"
+    context: dict = {}
+    params = {
+        "account": "ZG0790", "symbol": "NIFTY25JULFUT", "exchange": "NFO",
+    }
+
+    captured_orders: list[dict] = []
+
+    async def _fake_run_preflight(account, order, paired_orders=None):
+        captured_orders.append(order)
+        return {"ok": True, "blocked": [], "diagnostics": {}}
+
+    with patch("backend.api.routes.orders_place._fetch_net_position_qty",
+               new=AsyncMock(return_value=100.0)), \
+         patch("backend.brokers.get_broker", return_value=broker), \
+         patch.object(_mod, "run_preflight", new=_fake_run_preflight), \
+         patch("backend.api.algo.actions._write_live_order",
+               new=AsyncMock(return_value=42)), \
+         patch("backend.api.algo.chase.chase_order", new=AsyncMock()):
+        await _action_live_close_position(agent, context, params)
+
+    assert len(captured_orders) == 1
+    assert captured_orders[0]["side"] == "SELL", (
+        f"expected real resolved side 'SELL' for a long close, "
+        f"got {captured_orders[0].get('side')!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_action_live_close_position_preflight_carries_real_side_short_close():
+    """Short position (net_qty < 0) closes with BUY — preflight dict's
+    'side' must be 'BUY' and must be present as an explicit key (not
+    relying on _parse_broker_call_fields's 'BUY' default, which would
+    coincidentally match here but for the wrong reason)."""
+    from backend.api.algo.actions import _action_live_close_position
+    import backend.api.algo.actions_live as _mod
+
+    broker = _make_broker_stub(ltp_value=100.0)
+    broker.ltp.return_value = {"NFO:NIFTY25JULFUT": {"last_price": 100.0}}
+    agent = MagicMock()
+    agent.slug = "test-close"
+    context: dict = {}
+    params = {
+        "account": "ZG0790", "symbol": "NIFTY25JULFUT", "exchange": "NFO",
+    }
+
+    captured_orders: list[dict] = []
+
+    async def _fake_run_preflight(account, order, paired_orders=None):
+        captured_orders.append(order)
+        return {"ok": True, "blocked": [], "diagnostics": {}}
+
+    with patch("backend.api.routes.orders_place._fetch_net_position_qty",
+               new=AsyncMock(return_value=-100.0)), \
+         patch("backend.brokers.get_broker", return_value=broker), \
+         patch.object(_mod, "run_preflight", new=_fake_run_preflight), \
+         patch("backend.api.algo.actions._write_live_order",
+               new=AsyncMock(return_value=42)), \
+         patch("backend.api.algo.chase.chase_order", new=AsyncMock()):
+        await _action_live_close_position(agent, context, params)
+
+    assert len(captured_orders) == 1
+    assert "side" in captured_orders[0], (
+        "preflight order dict must carry an explicit 'side' key, not rely "
+        "on _parse_broker_call_fields's 'BUY' default"
+    )
+    assert captured_orders[0]["side"] == "BUY", (
+        f"expected real resolved side 'BUY' for a short close, "
+        f"got {captured_orders[0].get('side')!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_chase_build_tasks_carries_real_side_and_product_mis():
+    """MIS position: preflight dict AND ChaseConfig must carry 'MIS',
+    never a hardcoded 'NRML' — an MIS close placed as NRML silently
+    fails to net against the real position."""
+    from backend.api.algo.actions_live import _chase_build_tasks
+    import backend.api.algo.actions_live as _mod
+
+    agent = MagicMock()
+    agent.slug = "test-agent"
+    agent.id = 1
+    df = _make_positions_df([{
+        "account":       "ZG0790",
+        "tradingsymbol": "NIFTY25JULFUT",
+        "exchange":      "NFO",
+        "quantity":      300,
+        "last_price":    24500.0,
+        "close_price":   24400.0,
+        "product":       "MIS",
+    }])
+    rows = df.to_dict("records")
+
+    captured_orders: list[dict] = []
+
+    async def _fake_run_preflight(account, order, paired_orders=None):
+        captured_orders.append(order)
+        return {"ok": True, "blocked": [], "diagnostics": {}}
+
+    mock_chase = AsyncMock()
+
+    with patch.object(_mod, "run_preflight", new=_fake_run_preflight), \
+         patch("backend.api.algo.actions._write_live_order",
+               new=AsyncMock(return_value=42)), \
+         patch("backend.api.algo.chase.chase_order", new=mock_chase):
+        chase_tasks, task_rows, refused_rows = await _chase_build_tasks(agent, rows)
+        for t in chase_tasks:
+            await t
+
+    assert len(captured_orders) == 1
+    assert captured_orders[0]["product"] == "MIS", (
+        f"expected real position product 'MIS' in preflight dict, "
+        f"got {captured_orders[0].get('product')!r}"
+    )
+    assert captured_orders[0]["side"] == "SELL", (
+        f"expected real resolved side 'SELL' (long close), "
+        f"got {captured_orders[0].get('side')!r}"
+    )
+    assert mock_chase.call_count == 1
+    cfg = mock_chase.call_args.kwargs["cfg"]
+    assert cfg.product == "MIS", (
+        f"expected ChaseConfig.product 'MIS' (real position product), "
+        f"got {cfg.product!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_chase_build_tasks_carries_real_side_and_product_nrml_short():
+    """NRML short position: preflight dict AND ChaseConfig must carry
+    'NRML' (real product) and side 'BUY' (covers the short)."""
+    from backend.api.algo.actions_live import _chase_build_tasks
+    import backend.api.algo.actions_live as _mod
+
+    agent = MagicMock()
+    agent.slug = "test-agent"
+    agent.id = 1
+    df = _make_positions_df([{
+        "account":       "ZG0790",
+        "tradingsymbol": "GOLDAUG25FUT",
+        "exchange":      "MCX",
+        "quantity":      -100,
+        "last_price":    72000.0,
+        "close_price":   71900.0,
+        "product":       "NRML",
+    }])
+    rows = df.to_dict("records")
+
+    captured_orders: list[dict] = []
+
+    async def _fake_run_preflight(account, order, paired_orders=None):
+        captured_orders.append(order)
+        return {"ok": True, "blocked": [], "diagnostics": {}}
+
+    mock_chase = AsyncMock()
+
+    with patch.object(_mod, "run_preflight", new=_fake_run_preflight), \
+         patch("backend.api.algo.actions._write_live_order",
+               new=AsyncMock(return_value=42)), \
+         patch("backend.api.algo.chase.chase_order", new=mock_chase):
+        chase_tasks, task_rows, refused_rows = await _chase_build_tasks(agent, rows)
+        for t in chase_tasks:
+            await t
+
+    assert len(captured_orders) == 1
+    assert captured_orders[0]["product"] == "NRML"
+    assert captured_orders[0]["side"] == "BUY", (
+        f"expected real resolved side 'BUY' (short close), "
+        f"got {captured_orders[0].get('side')!r}"
+    )
+    assert mock_chase.call_count == 1
+    cfg = mock_chase.call_args.kwargs["cfg"]
+    assert cfg.product == "NRML"
+
+
+@pytest.mark.asyncio
+async def test_action_live_close_position_real_preflight_quotes_margin_as_sell():
+    """End-to-end through the REAL run_preflight (not stubbed) — the
+    live bug's actual mechanism. Kite's basket_order_margins is
+    position-aware: a genuine SELL-to-close a long position prices as
+    a near-zero/negative netting margin, but priced as a defaulted
+    'BUY' it looks like a brand-new long requiring fresh SPAN margin.
+    Asserts the basket leg actually sent to broker.basket_order_margins
+    carries transaction_type='SELL', not the 'BUY' default."""
+    from backend.api.algo.actions import _action_live_close_position
+
+    broker = _make_broker_stub(ltp_value=100.0)
+    broker.ltp.return_value = {"NFO:NIFTY25JULFUT": {"last_price": 100.0}}
+    conns  = _make_conns_stub("ZG0790")
+    agent  = MagicMock()
+    agent.slug = "test-close"
+    context: dict = {}
+    params = {
+        "account": "ZG0790", "symbol": "NIFTY25JULFUT", "exchange": "NFO",
+    }
+
+    with patch("backend.brokers.connections.Connections", return_value=conns), \
+         patch("backend.brokers.registry.get_broker", return_value=broker), \
+         patch("backend.brokers.adapters.kite.get_lot_size",
+               new=AsyncMock(return_value=50)), \
+         patch("backend.api.routes.orders_place._fetch_net_position_qty",
+               new=AsyncMock(return_value=100.0)), \
+         patch("backend.brokers.get_broker", return_value=broker), \
+         patch("backend.api.algo.chase.chase_order", new=AsyncMock()), \
+         patch("backend.api.algo.actions._write_live_order",
+               new=AsyncMock(return_value=42)), \
+         patch("backend.brokers.client.is_cutover_on", return_value=False):
+        await _action_live_close_position(agent, context, params)
+
+    broker.basket_order_margins.assert_called_once()
+    basket_orders = broker.basket_order_margins.call_args.args[0]
+    assert basket_orders[0]["transaction_type"] == "SELL", (
+        f"expected the real resolved SELL to reach basket_order_margins "
+        f"(position-aware netting), got {basket_orders[0].get('transaction_type')!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_chase_build_tasks_real_preflight_quotes_margin_with_real_product():
+    """End-to-end through the REAL run_preflight for an MIS position —
+    asserts the basket leg sent to broker.basket_order_margins carries
+    product='MIS' (the real position product), not a hardcoded 'NRML'."""
+    from backend.api.algo.actions_live import _chase_build_tasks
+
+    broker = _make_broker_stub()
+    conns  = _make_conns_stub("ZG0790")
+    agent  = MagicMock()
+    agent.slug = "test-agent"
+    agent.id = 1
+    df = _make_positions_df([{
+        "account":       "ZG0790",
+        "tradingsymbol": "NIFTY25JULFUT",
+        "exchange":      "NFO",
+        "quantity":      300,
+        "last_price":    24500.0,
+        "close_price":   24400.0,
+        "product":       "MIS",
+    }])
+    rows = df.to_dict("records")
+
+    with patch("backend.brokers.connections.Connections", return_value=conns), \
+         patch("backend.brokers.registry.get_broker", return_value=broker), \
+         patch("backend.brokers.adapters.kite.get_lot_size",
+               new=AsyncMock(return_value=50)), \
+         patch("backend.api.algo.chase.chase_order", new=AsyncMock()), \
+         patch("backend.api.algo.actions._write_live_order",
+               new=AsyncMock(return_value=42)), \
+         patch("backend.brokers.client.is_cutover_on", return_value=False):
+        chase_tasks, task_rows, refused_rows = await _chase_build_tasks(agent, rows)
+        for t in chase_tasks:
+            await t
+
+    broker.basket_order_margins.assert_called_once()
+    basket_orders = broker.basket_order_margins.call_args.args[0]
+    assert basket_orders[0]["product"] == "MIS", (
+        f"expected the real MIS position product to reach "
+        f"basket_order_margins, got {basket_orders[0].get('product')!r}"
+    )
+    assert basket_orders[0]["transaction_type"] == "SELL"
+
+
+# ---------------------------------------------------------------------------
 # execute() — action-param expression resolution failure isolation
 # ---------------------------------------------------------------------------
 

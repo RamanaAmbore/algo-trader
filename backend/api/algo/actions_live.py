@@ -787,7 +787,7 @@ async def _action_live_close_position(agent, context: dict, params: dict):
     # ── Preflight (G1 lot-multiple; G2 5-lot cap bypassed for closes,
     # now reached only after the verified-intent gate above) ───────────
     pf = await run_preflight(account, {
-        "exchange": exchange, "tradingsymbol": symbol,
+        "exchange": exchange, "tradingsymbol": symbol, "side": side,
         "quantity": qty, "order_type": "LIMIT",
         "product": product,
         "price": price or 0, "variety": "regular",
@@ -1436,6 +1436,15 @@ async def _chase_build_tasks(
         qty_held = int(p.get("quantity") or 0)
         side     = "SELL" if qty_held > 0 else "BUY"
         qty      = abs(qty_held)
+        # Real product off the position row (MIS/NRML/CNC) — "NRML" is
+        # only a fallback for the (should-be-rare) case where the
+        # broker's own positions row is missing the column, never the
+        # default used when real data is available. A hardcoded NRML
+        # here previously sent an MIS close as an NRML order, which
+        # does not net against the real MIS position on the broker's
+        # side — the position stayed open while a stray NRML position
+        # was created.
+        product  = str(p.get("product") or "NRML")
 
         # Best effort initial limit price from LTP in context row.
         ltp   = p.get("last_price") or p.get("close_price")
@@ -1443,9 +1452,9 @@ async def _chase_build_tasks(
 
         # ── Preflight (G1 lot-multiple; G2 5-lot cap bypassed for closes) ─
         pf = await run_preflight(acct, {
-            "exchange": exchange, "tradingsymbol": symbol,
+            "exchange": exchange, "tradingsymbol": symbol, "side": side,
             "quantity": qty, "order_type": "LIMIT",
-            "product": "NRML",
+            "product": product,
             "price": price or 0, "variety": "regular",
             "intent": "close",   # signals G2 bypass inside run_preflight
         })
@@ -1469,7 +1478,7 @@ async def _chase_build_tasks(
             refused_rows.append(p)
             continue  # skip this position; other positions in the loop proceed
 
-        cfg = ChaseConfig(exchange=exchange, product="NRML", intent="close")
+        cfg = ChaseConfig(exchange=exchange, product=product, intent="close")
         chase_tasks.append(
             asyncio.create_task(
                 chase_order(account=acct, symbol=symbol,
