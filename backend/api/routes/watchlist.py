@@ -1406,6 +1406,26 @@ def _movers_probe_market_state(ist_now) -> tuple[bool, bool]:
     return nse_is_open, mcx_is_open
 
 
+async def _movers_prewarm_special_sessions() -> None:
+    """Await the special-sessions prewarm for the `equity` and `commodity`
+    segments' own `holiday_exchange` values, directly — the exact pair
+    `_movers_probe_market_state()`'s sync `_segment_is_open()` calls will
+    read right after this returns. Any failure for one exchange is caught
+    and logged so it never blocks the other or the caller's probe."""
+    from backend.shared.helpers.utils import config as _cfg
+    from backend.brokers.broker_apis import fetch_special_sessions_async
+
+    segments = _cfg.get("market_segments", {}) or {}
+    eq = segments.get("equity", {}) or {}
+    co = segments.get("commodity", {}) or {}
+    for seg_cfg in (eq, co):
+        exch = (seg_cfg.get("holiday_exchange") or "NSE").upper()
+        try:
+            await fetch_special_sessions_async(exch)
+        except Exception as e:
+            logger.warning(f"movers: special-sessions prewarm failed for {exch}: {e}")
+
+
 async def _movers_offhours_response(ist_today: str) -> "MoversResponse":
     """Both exchanges closed → return NSE snapshot fallback or empty
     response with logging."""
@@ -1924,6 +1944,19 @@ async def _get_movers_rows(is_demo: bool) -> "MoversResponse":
         return await _movers_offhours_response(ist_today)
 
     # ── Market-state probe ────────────────────────────────────────
+    # Special-sessions prewarm (2026-10-20, item 2 of the 4-site residual
+    # sweep): `_get_movers_rows` is `async def` and calls the sync
+    # `_movers_probe_market_state()` inline (no `asyncio.to_thread`) —
+    # this coroutine IS the main loop at this point. That function calls
+    # `_segment_is_open()` for both `equity` and `commodity`, each of
+    # which calls the sync `fetch_special_sessions()` for its own
+    # `holiday_exchange`. Await the prewarm directly for each segment's
+    # OWN `holiday_exchange` value (mirrors `market_lifecycle.poll()`'s
+    # direct-await pattern, not `_prewarm_special_sessions_for_exchange`'s
+    # `_EXCHANGE_TO_SEGMENT` round trip) — guarantees the warmed key always
+    # matches the key `_segment_is_open()` will actually read, with no risk
+    # of the two mappings drifting apart.
+    await _movers_prewarm_special_sessions()
     nse_is_open, mcx_is_open = _movers_probe_market_state(ist_now)
 
     # Branch 2: BOTH closed → NSE snapshot fallback (unchanged).

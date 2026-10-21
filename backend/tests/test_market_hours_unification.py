@@ -900,3 +900,82 @@ async def test_dry_run_context_prewarm_closes_special_session_gap_for_mcx():
         _wq._main_loop = orig_main_loop
         _ba._SPECIAL_SESSION_CACHE.clear()
 
+
+# ---------------------------------------------------------------------------
+# Item 2 — routes/watchlist.py's `_get_movers_rows` → `_movers_probe_
+# market_state`. `async def`, calls the sync probe INLINE.
+# ---------------------------------------------------------------------------
+
+def test_get_movers_rows_prewarms_before_probe():
+    """Source-order assertion: the prewarm call must appear textually
+    BEFORE the `_movers_probe_market_state(` call inside
+    `_get_movers_rows`'s body."""
+    import inspect
+    from backend.api.routes import watchlist as _wl
+
+    src = inspect.getsource(_wl._get_movers_rows)
+    prewarm_idx = src.find("await _movers_prewarm_special_sessions()")
+    probe_idx = src.find("= _movers_probe_market_state(ist_now)")
+    assert prewarm_idx != -1, "prewarm call not found in _get_movers_rows"
+    assert probe_idx != -1, "_movers_probe_market_state call not found"
+    assert prewarm_idx < probe_idx, (
+        "prewarm must run BEFORE _movers_probe_market_state, or it closes "
+        "the gap too late"
+    )
+
+
+@pytest.mark.asyncio
+async def test_movers_prewarm_closes_the_gap_for_mcx():
+    """Same shape as the D5 offhours-wing-gate test: a DB-confirmed
+    zero-width MCX override is invisible to a cold cache hit from the
+    main loop until `_movers_prewarm_special_sessions()` (what
+    `_get_movers_rows` now awaits immediately before the probe) is
+    awaited first."""
+    import asyncio
+    import backend.brokers.broker_apis as _ba
+    import backend.api.persistence.write_queue as _wq
+    from backend.api.routes.watchlist import (
+        _movers_prewarm_special_sessions, _movers_probe_market_state,
+    )
+
+    closed_all_day_row = [{
+        "date": _FIXTURE_NOW.date(),
+        "start": dtime(0, 0),
+        "end": dtime(0, 0),
+    }]
+
+    loop = asyncio.get_running_loop()
+    orig_main_loop = _wq._main_loop
+    _ba._SPECIAL_SESSION_CACHE.clear()
+    try:
+        with patch.object(_ba, "fetch_special_sessions", side_effect=_REAL_FETCH_SPECIAL_SESSIONS), \
+             patch("backend.shared.helpers.date_time_utils.timestamp_indian", return_value=_FIXTURE_NOW):
+            _wq._main_loop = loop  # simulate "already on the main loop"
+
+            # Pre-fix shape: calling the probe WITHOUT the prewarm —
+            # cold cache fails open, override invisible, evening carve-out
+            # applies → MCX reads open.
+            with patch.object(_ba, "_read_special_sessions_async",
+                               AsyncMock(return_value=closed_all_day_row)):
+                _, mcx_open_no_prewarm = _movers_probe_market_state(_FIXTURE_NOW)
+            assert mcx_open_no_prewarm is True, (
+                "sanity check: without the prewarm, the cold cache must "
+                "fail open and the probe must NOT see the override"
+            )
+
+            # The fix: await the prewarm first, exactly as _get_movers_rows
+            # now does immediately before the probe.
+            _ba._SPECIAL_SESSION_CACHE.clear()
+            with patch.object(_ba, "_read_special_sessions_async",
+                               AsyncMock(return_value=closed_all_day_row)):
+                await _movers_prewarm_special_sessions()
+
+            _, mcx_open_with_prewarm = _movers_probe_market_state(_FIXTURE_NOW)
+            assert mcx_open_with_prewarm is False, (
+                "the prewarm must let the probe see the real DB override "
+                "— gap not closed"
+            )
+    finally:
+        _wq._main_loop = orig_main_loop
+        _ba._SPECIAL_SESSION_CACHE.clear()
+
