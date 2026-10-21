@@ -612,10 +612,10 @@ below. Order placement, template attach, chase, the agent close-all action and
     empty `COM`). `background.py` only calls the upsert when the result `is not None`.
   - *Reconciliation guard* — `_upsert_mcx_evening_closed_sessions_coro()` skips its reconciliation
     DELETE and logs a warning when the fresh closed-set is empty and existing auto-rows exist. It is a
-    second layer behind the `None` check. **Known residual edge, not fixed**: the guard tests the RAW
-    `dates` argument, not the weekday-filtered set. A fetch whose closed dates all fall on weekends
-    passes the guard and reconciles away every existing row. Fixing it changes behaviour beyond this
-    round's spec. A code comment at the guard site records the same edge.
+    second layer behind the `None` check. Fixed same day (`f279f956`): the guard now tests
+    `non_weekend` (the weekday-filtered set that actually feeds the DELETE's stale-date computation),
+    not the raw `dates` argument — a fetch whose closed dates all fall on a weekend used to pass the
+    guard and reconcile away every existing row anyway, despite `dates` itself being non-empty.
   - *IST keying in holiday caches* — `fetch_holidays()` Tiers 1/2 and `_read_market_holidays_async()`
     key on the IST date or year (`timestamp_indian()`), not system-local `date.today()`. Same bug
     class as the special-sessions cache.
@@ -637,14 +637,14 @@ below. Order placement, template attach, chase, the agent close-all action and
   successful query, even an empty one. A DB failure returns `[]` without caching.
 - **Remaining unreconciled mechanism**: `exchange_clock`'s DB-schedule open/closed signal, which
   drives EOD scheduling. It is the one fifth mechanism still outstanding, flagged for a future pass.
-- **Known gap, found and NOT fixed — dry-run `any_market_open` is always `False`** (out of scope this
-  round; operator's call). `_dry_run_context()` (`routes/agents.py`) computes
-  `any_market_open = any(s.get("open") for s in base.get("segments", []))`. `_build_context()` never
-  emits a `segments` key; it emits flat `nse_open` / `mcx_open`. So every `schedule="market_hours"`
-  agent is reported as blocked by `_check_dry_run_gates()` regardless of real market state, and the
-  dry-run response's `segments` field is always empty. The production path is unaffected:
-  `background.py` builds its own agent context WITH `segments`, and `run_cycle` derives
-  `any_market_open` from `nse_open or mcx_open`. A fix would derive the dry-run value the same way.
+- **Fixed, same day — dry-run `any_market_open` was always `False`** (`4e04e499`). `_dry_run_context()`
+  (`routes/agents.py`) computed `any_market_open = any(s.get("open") for s in
+  base.get("segments", []))`. `_build_context()` never emits a `segments` key; it emits flat
+  `nse_open` / `mcx_open`. Every `schedule="market_hours"` agent was reported as blocked by
+  `_check_dry_run_gates()` regardless of real market state, and the dry-run response's `segments`
+  field was always empty. The production path was unaffected — `background.py` builds its own agent
+  context WITH `segments`, and `run_cycle` derives `any_market_open` from `nse_open or mcx_open`. Now
+  fixed the same way: `any_market_open=bool(base.get("nse_open")) or bool(base.get("mcx_open"))`.
 
 **Simulator market-hours guard restored (2026-10-20, operator-visible behaviour change)** —
 `_market_hours_block_check()` ([`routes/simulator.py:187`](backend/api/routes/simulator.py#L187))
