@@ -397,6 +397,36 @@ async def test_upsert_empty_closed_set_with_existing_rows_skips_delete_and_warns
 
 
 @pytest.mark.asyncio
+async def test_upsert_weekend_only_closed_set_with_existing_rows_skips_delete_and_warns():
+    """2026-10-20 fix, re-scoped same day: the defense-in-depth guard above
+    originally checked the RAW `dates` param, not the weekday-filtered
+    `non_weekend` set. A fetch returning dates that ALL fall on a weekend
+    (2026-11-08 is a confirmed Sunday) left `dates` non-empty but
+    `non_weekend` empty, bypassing the guard entirely and reconciling away
+    every existing row via the normal stale-date path. Must now be caught
+    the same way a fully-empty `dates` is."""
+    from backend.brokers import broker_apis
+
+    assert date(2026, 11, 8).weekday() == 6  # confirm Sunday
+
+    fake_session = _FakeUpsertSession(existing_dates={date(2026, 1, 26), date(2026, 12, 25)})
+    with patch("backend.api.database.async_session", fake_session), \
+         patch.object(broker_apis, "logger") as mock_logger:
+        written = await broker_apis._upsert_mcx_evening_closed_sessions_coro(
+            {date(2026, 11, 8)}  # non-empty `dates`, but weekend-only
+        )
+
+    assert written == 0
+    assert fake_session.deleted_dates is None, (
+        "a weekend-only closed-set with existing rows present must skip "
+        "the reconciliation delete entirely, same as a fully-empty set"
+    )
+    assert mock_logger.warning.called, (
+        "skipping the delete must be logged at warning level"
+    )
+
+
+@pytest.mark.asyncio
 async def test_upsert_reconcile_never_touches_historical_dates():
     """The reconciliation SELECT is scoped to `date >= today` — a
     historical auto-row (from a past, already-elapsed holiday) must

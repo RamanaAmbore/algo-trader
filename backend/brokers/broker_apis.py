@@ -3722,32 +3722,27 @@ async def _upsert_mcx_evening_closed_sessions_coro(dates: set) -> int:
                 await s.execute(_upsert_sql, rows)
             existing = await s.execute(_select_existing_sql, {"today": today})
             existing_dates = {r[0] for r in existing.fetchall()}
-            if not dates and existing_dates:
-                # Defense-in-depth (2026-10-20 fix): an ALL-EMPTY fresh
-                # closed-set with existing auto-rows present is suspicious,
-                # not a legitimate "NSE revised everything back to open" —
-                # a real year carries ~8-9 evening-closed dates. This is a
-                # second layer behind item 3's None-on-malformed-COM fix:
-                # a renamed field or an all-entries-failed-to-parse
-                # response could still produce an innocent-looking empty
-                # `set()` through some other path. Skip the reconciliation
-                # delete entirely rather than wipe every real row.
+            if not non_weekend and existing_dates:
+                # Defense-in-depth (2026-10-20 fix, re-scoped same day): an
+                # ALL-EMPTY fresh closed-set with existing auto-rows present
+                # is suspicious, not a legitimate "NSE revised everything
+                # back to open" — a real year carries ~8-9 evening-closed
+                # dates. This is a second layer behind item 3's
+                # None-on-malformed-COM fix: a renamed field or an
+                # all-entries-failed-to-parse response could still produce
+                # an innocent-looking empty `set()` through some other path.
+                # Skip the reconciliation delete entirely rather than wipe
+                # every real row.
                 #
-                # Known residual edge, not closed by this guard: this check
-                # is on the RAW `dates` param, per spec, not the
-                # weekday-filtered `non_weekend`. A fetch that legitimately
-                # returns ONLY weekend-falling holiday dates (e.g. a year
-                # where Diwali happens to be the sole closed date returned
-                # in some partial/incremental computation) leaves `dates`
+                # Checked against `non_weekend` (the weekday-filtered set
+                # that actually feeds the DELETE's `stale` computation
+                # below), not the raw `dates` param — a fetch returning only
+                # weekend-falling closed dates used to leave `dates`
                 # non-empty but `non_weekend` empty, bypassing this guard
-                # entirely and reconciling away every existing row via the
-                # normal `stale = existing_dates - non_weekend` path below.
-                # Not fixed here — would require re-scoping the guard to
-                # `non_weekend` instead of `dates`, a behavior change beyond
-                # this round's spec.
+                # and reconciling away every existing row anyway. Closed.
                 logger.warning(
                     "[MCX-EVENING-CLOSED] refusing to reconcile — fresh "
-                    "closed-set is empty but %d existing auto-row(s) "
+                    "weekday closed-set is empty but %d existing auto-row(s) "
                     "found; treating as suspicious, not a legitimate full "
                     "revert: %s",
                     len(existing_dates), sorted(existing_dates),
