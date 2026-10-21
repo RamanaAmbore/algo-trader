@@ -97,7 +97,7 @@ _ALLOWED_BROKER_METHODS = frozenset({
     "place_order", "modify_order", "cancel_order",
     "place_gtt", "modify_gtt", "cancel_gtt",
     # meta
-    "translate_qty", "normalise_qty",
+    "translate_qty", "normalise_qty", "validate_gtt_exchange",
 })
 
 

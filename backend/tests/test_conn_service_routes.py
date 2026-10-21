@@ -236,6 +236,28 @@ def test_broker_call_dispatch_allowed_method(conn_app):
             assert data.get("result") is not None, "should return broker result"
 
 
+def test_broker_call_dispatch_allowed_method_validate_gtt_exchange(conn_app):
+    """validate_gtt_exchange must be in _ALLOWED_BROKER_METHODS — it's
+    the GTT-exchange refusal gate RemoteBroker forwards from
+    template_attach.apply_plan_live. Without this entry, the route's
+    whitelist check 403s before the dispatch ever reaches the real
+    adapter, defeating RemoteBroker's own forwarding override."""
+    with TestClient(app=conn_app) as client:
+        with patch('backend.brokers.registry.get_broker') as mock_get_broker:
+            mock_broker = MagicMock()
+            mock_broker.validate_gtt_exchange.return_value = None
+            mock_get_broker.return_value = mock_broker
+
+            resp = client.post(
+                "/internal/broker/GR1234/call/validate_gtt_exchange",
+                json={"args": ["MCX"], "kwargs": {}},
+            )
+            assert resp.status_code in (200, 201), f"Expected 200/201, got {resp.status_code}: {resp.text}"
+            data = resp.json()
+            assert data.get("ok") is True
+            mock_broker.validate_gtt_exchange.assert_called_once_with("MCX")
+
+
 def test_broker_call_dispatch_disallowed_method_returns_403(conn_app):
     """POST /internal/broker/{account}/call/{method} returns 403 for disallowed methods."""
     with TestClient(app=conn_app) as client:

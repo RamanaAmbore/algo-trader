@@ -253,6 +253,38 @@ class RemoteBroker(Broker):
 
     # ── GTT ───────────────────────────────────────────────────────────
 
+    def validate_gtt_exchange(self, exchange: str) -> None:
+        # Forward to conn_service so the real adapter's GTT-exchange
+        # refusal applies in conn-service mode too — e.g. Groww's
+        # place_gtt has no internal MCX/NCO refusal of its own, so
+        # this gate (called from template_attach.apply_plan_live
+        # before any broker call) is the ONLY thing stopping an
+        # unsupported GTT placement for that broker. Without this
+        # override the base-class no-op silently allows every
+        # exchange through.
+        #
+        # apply_plan_live catches `except ValueError` specifically
+        # and collects it into `result.errors` without raising —
+        # it never reaches this far for an in-process Broker, since
+        # adapters raise ValueError directly. But a remote refusal
+        # comes back through `_call`'s _ERROR_TYPE_MAP, and
+        # "ValueError" isn't a key there, so it arrives here as a
+        # generic BrokerError, not ValueError. Re-raise as ValueError
+        # (preserving the message) so the caller's except clause
+        # still catches it instead of an unhandled BrokerError
+        # propagating out of apply_plan_live.
+        #
+        # A conn_service transport failure maps to BrokerNetworkError
+        # (a BrokerError subclass) and is deliberately handled the
+        # same way: fail closed by skipping the attach rather than
+        # crashing the orchestrator for an unrelated network blip —
+        # place_gtt would fail against an unreachable conn_service
+        # right afterward anyway.
+        try:
+            self._call("validate_gtt_exchange", exchange)
+        except BrokerError as e:
+            raise ValueError(str(e)) from e
+
     def place_gtt(self, **kwargs: Any) -> str:
         return self._call("place_gtt", **kwargs)
 

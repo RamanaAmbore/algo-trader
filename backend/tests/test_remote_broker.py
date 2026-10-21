@@ -146,6 +146,102 @@ class TestRemoteBrokerCall:
             assert result == {"account_id": "ZG0790", "name": "Test"}
 
 
+class TestRemoteBrokerValidateGttExchange:
+    """RemoteBroker.validate_gtt_exchange() — must forward to conn_service,
+    not silently inherit the Broker ABC's permissive no-op default.
+
+    Groww's adapter has no internal MCX/NCO refusal in place_gtt itself —
+    this gate (called from template_attach.apply_plan_live before any
+    broker call) is the only thing standing between a templated MCX fill
+    on a Groww account and a real unsupported GTT placement when running
+    in conn-service mode. Without the override, a RemoteBroker instance
+    would inherit Broker.validate_gtt_exchange's `pass`, which never
+    calls conn_service at all.
+    """
+
+    def test_forwards_to_conn_service_with_correct_method_and_args(self):
+        """Confirms the call actually crosses the UDS boundary — the
+        pre-fix base no-op never touches _get_client()/post() at all,
+        so this assertion fails against the pre-fix code."""
+        broker = RemoteBroker("ZG0790", broker_id="groww")
+
+        with patch("backend.brokers.client.remote_broker._get_client") as mock_get_client:
+            mock_client = MagicMock()
+            mock_get_client.return_value = mock_client
+            mock_client.post.return_value = MagicMock(
+                status_code=200,
+                json=lambda: {"ok": True, "result": None},
+            )
+
+            broker.validate_gtt_exchange("MCX")
+
+            mock_client.post.assert_called_once()
+            call_args = mock_client.post.call_args
+            assert "validate_gtt_exchange" in call_args[0][0]
+            assert "ZG0790" in call_args[0][0]
+            body = call_args[1]["json"]
+            assert body["args"] == ["MCX"]
+            assert body["kwargs"] == {}
+
+    def test_remote_refusal_raises_value_error(self):
+        """conn_service's Groww adapter raises ValueError("... not
+        supported on MCX") internally; the dispatch route serialises it
+        as {ok: false, error_type: "ValueError", ...}. "ValueError" is
+        not a key in _call's _ERROR_TYPE_MAP, so a naive forward would
+        surface a generic BrokerError here instead of ValueError —
+        apply_plan_live's `except ValueError` would miss it and the
+        exception would propagate unhandled out of apply_plan_live,
+        rather than being collected into result.errors as designed."""
+        broker = RemoteBroker("GR1234", broker_id="groww")
+
+        with patch("backend.brokers.client.remote_broker._get_client") as mock_get_client:
+            mock_client = MagicMock()
+            mock_get_client.return_value = mock_client
+            mock_client.post.return_value = MagicMock(
+                status_code=200,
+                json=lambda: {
+                    "ok": False,
+                    "error": "Groww Smart Order GTT is not supported on MCX",
+                    "error_type": "ValueError",
+                },
+            )
+
+            with pytest.raises(ValueError, match="not supported on MCX"):
+                broker.validate_gtt_exchange("MCX")
+
+    def test_conn_service_unreachable_fails_closed_as_value_error(self):
+        """A transport failure (conn_service down) must also surface as
+        ValueError, not BrokerNetworkError — so apply_plan_live's
+        `except ValueError` catches it and skips the attach (fail
+        closed) instead of an unhandled BrokerError crashing the
+        orchestrator for an unrelated network blip."""
+        broker = RemoteBroker("ZG0790", broker_id="groww")
+
+        with patch("backend.brokers.client.remote_broker._get_client") as mock_get_client:
+            mock_client = MagicMock()
+            mock_get_client.return_value = mock_client
+            mock_client.post.side_effect = httpx.ConnectError("UDS unreachable")
+
+            with pytest.raises(ValueError):
+                broker.validate_gtt_exchange("MCX")
+
+    def test_remote_ok_passes_silently(self):
+        """A supported-exchange response (ok=True) returns None with no
+        exception — mirrors the base ABC's permissive-pass contract for
+        the allowed case."""
+        broker = RemoteBroker("ZG0790", broker_id="groww")
+
+        with patch("backend.brokers.client.remote_broker._get_client") as mock_get_client:
+            mock_client = MagicMock()
+            mock_get_client.return_value = mock_client
+            mock_client.post.return_value = MagicMock(
+                status_code=200,
+                json=lambda: {"ok": True, "result": None},
+            )
+
+            assert broker.validate_gtt_exchange("NSE") is None
+
+
 class TestRemoteBrokerHistoricalData:
     """RemoteBroker.historical_data() — datetime formatting and parsing."""
 
