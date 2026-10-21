@@ -416,12 +416,19 @@ async def _dry_run_context(now) -> dict:
         sum_positions = pd.DataFrame()
 
     base = _build_context(now)
+    # `_build_context` emits flat `nse_open`/`mcx_open` keys, never a
+    # `segments` list — the old `any(s.get("open") for s in
+    # base.get("segments", []))` always iterated an empty default and
+    # was always False, so every `schedule="market_hours"` agent showed
+    # as blocked in the dry-run preview regardless of real market state
+    # (2026-10-20 fix, found during an audit; production run_cycle was
+    # never affected — it derives this the way below already).
     base.update(
         sum_holdings=sum_holdings,
         sum_positions=sum_positions,
         df_margins=df_margins,
         watchlist_rows=[],
-        any_market_open=any(s.get("open") for s in base.get("segments", [])),
+        any_market_open=bool(base.get("nse_open")) or bool(base.get("mcx_open")),
     )
     return base
 

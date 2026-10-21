@@ -8,6 +8,10 @@ UX: 422 returned for malformed condition/grammar fields.
 """
 from pathlib import Path
 from datetime import datetime
+from unittest.mock import patch, AsyncMock
+
+import pandas as pd
+import pytest
 
 _SRC = Path("backend/api/routes/agents.py").read_text()
 
@@ -64,3 +68,57 @@ def test_validation_for_malformed_input():
     ), (
         "agents.py must validate agent condition/grammar fields and return 422 on malformed input"
     )
+
+
+# ---------------------------------------------------------------------------
+# _dry_run_context's any_market_open (2026-10-20 fix) — _build_context()
+# emits flat nse_open/mcx_open keys, never a "segments" list. The old
+# `any(s.get("open") for s in base.get("segments", []))` always iterated
+# an empty default, so any_market_open was always False and every
+# schedule="market_hours" agent showed as blocked in the dry-run preview
+# regardless of real market state.
+# ---------------------------------------------------------------------------
+
+async def _run_dry_run_context_with_mocked_fetches(build_context_return):
+    from backend.api.routes import agents as agents_mod
+
+    empty_df_pair = (pd.DataFrame(), pd.DataFrame())
+    with patch("backend.api.background._fetch_holdings_direct", return_value=empty_df_pair), \
+         patch("backend.api.background._fetch_positions_direct", return_value=empty_df_pair), \
+         patch("backend.brokers.broker_apis.fetch_margins", return_value=[]), \
+         patch("backend.api.algo.agent_engine._build_context", return_value=dict(build_context_return)):
+        return await agents_mod._dry_run_context(datetime.now())
+
+
+@pytest.mark.asyncio
+async def test_dry_run_any_market_open_true_when_nse_open():
+    ctx = await _run_dry_run_context_with_mocked_fetches(
+        {"nse_open": True, "mcx_open": False}
+    )
+    assert ctx["any_market_open"] is True
+
+
+@pytest.mark.asyncio
+async def test_dry_run_any_market_open_true_when_mcx_open():
+    ctx = await _run_dry_run_context_with_mocked_fetches(
+        {"nse_open": False, "mcx_open": True}
+    )
+    assert ctx["any_market_open"] is True
+
+
+@pytest.mark.asyncio
+async def test_dry_run_any_market_open_false_when_both_closed():
+    ctx = await _run_dry_run_context_with_mocked_fetches(
+        {"nse_open": False, "mcx_open": False}
+    )
+    assert ctx["any_market_open"] is False
+
+
+@pytest.mark.asyncio
+async def test_dry_run_any_market_open_ignores_absent_segments_key():
+    """_build_context() never emits a 'segments' key — confirm the dry-run
+    context doesn't silently depend on one existing."""
+    ctx = await _run_dry_run_context_with_mocked_fetches(
+        {"nse_open": True, "mcx_open": True}
+    )
+    assert "segments" not in ctx or ctx["any_market_open"] is True
