@@ -372,6 +372,19 @@ async def _dry_run_context(now) -> dict:
 
     No new caching layer — a dry-run is a manual operator action,
     not a hot path. If it fires 2 broker calls per click, that's fine.
+
+    Special-sessions prewarm (2026-10-20, item 1 of the 4-site residual
+    sweep): `_build_context(now)` below is called inline, not via
+    `asyncio.to_thread` — this coroutine IS the main loop at that point.
+    It fans out over every configured `market_segments` entry via
+    `_ae_segment_flags()`, which calls the sync `fetch_special_sessions()`
+    per segment's `holiday_exchange`. A dry-run doesn't know in advance
+    which single exchange it needs (it builds context for every segment
+    at once), so the full-dataset `warm_special_sessions_cache()` fits
+    better here than the per-exchange `_prewarm_special_sessions_for_
+    exchange()` helper the order paths use — one await covers every
+    segment's `holiday_exchange` plus NSE, matching exactly what
+    `_build_context`'s per-segment loop below will need.
     """
     import asyncio
     from backend.api.background import _fetch_holdings_direct, _fetch_positions_direct
@@ -383,6 +396,11 @@ async def _dry_run_context(now) -> dict:
     from backend.api.algo.agent_engine import _build_context
     import pandas as pd
     loop = asyncio.get_running_loop()
+
+    try:
+        await broker_apis.warm_special_sessions_cache()
+    except Exception as e:
+        logger.warning(f"dry-run: warm_special_sessions_cache failed: {e}")
 
     async def _safe_fetch(fn, label, default):
         try:

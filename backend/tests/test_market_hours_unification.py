@@ -815,3 +815,88 @@ async def test_offhours_wing_gate_prewarm_closes_the_gap():
     finally:
         _wq._main_loop = orig_main_loop
         _ba._SPECIAL_SESSION_CACHE.clear()
+
+
+# ---------------------------------------------------------------------------
+# 4-site residual sweep (2026-10-20) — the 4 sites CLAUDE.md's "Accepted
+# residual, not fixed" bullet previously listed: routes/agents.py's
+# dry-run, routes/watchlist.py's movers gate, routes/quote.py's segment
+# check, routes/simulator.py's guards. All 4 confirmed genuinely exposed
+# (each reached from a coroutine already on the main loop, no
+# asyncio.to_thread in between) and fixed with the same prewarm pattern
+# established above.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Item 1 — routes/agents.py's `_dry_run_context`. `async def`, calls the
+# sync `_build_context(now)` INLINE — this coroutine IS the main loop.
+# `_build_context` fans out over every configured `market_segments` entry
+# via `_ae_segment_flags()`, which calls the sync `fetch_special_sessions()`
+# per segment. A dry-run doesn't know in advance which single exchange it
+# needs (it builds context for every segment at once), so the fix awaits
+# the full-dataset `warm_special_sessions_cache()` once at the top, before
+# `_build_context` runs.
+# ---------------------------------------------------------------------------
+
+def test_dry_run_context_prewarms_before_build_context():
+    """Source-order assertion: the prewarm call must appear textually
+    BEFORE the `_build_context(` call inside `_dry_run_context`'s body —
+    calling it after would be a no-op."""
+    import inspect
+    from backend.api.routes import agents as agents_mod
+
+    src = inspect.getsource(agents_mod._dry_run_context)
+    prewarm_idx = src.find("await broker_apis.warm_special_sessions_cache()")
+    build_ctx_idx = src.find("base = _build_context(now)")
+    assert prewarm_idx != -1, "prewarm call not found in _dry_run_context"
+    assert build_ctx_idx != -1, "_build_context(now) call not found"
+    assert prewarm_idx < build_ctx_idx, (
+        "prewarm must run BEFORE _build_context(now), or it closes the "
+        "gap too late"
+    )
+
+
+@pytest.mark.asyncio
+async def test_dry_run_context_prewarm_closes_special_session_gap_for_mcx():
+    """DB-confirmed zero-width (always-closed) MCX special-session
+    override, on a coroutine already on the main loop with a cold cache:
+    without the fix, `_build_context(now)`'s sync
+    `fetch_special_sessions()` call fails open to `[]`, the override is
+    invisible, and `_ae_segment_flags` falls through to the
+    evening-open-on-holiday carve-out (`mcx_open=True`, wrong). The fix —
+    awaiting `warm_special_sessions_cache()` first — makes the override
+    visible, so `mcx_open` correctly reads `False`."""
+    import asyncio
+    import pandas as pd
+    import backend.brokers.broker_apis as _ba
+    import backend.api.persistence.write_queue as _wq
+    from backend.api.routes import agents as agents_mod
+
+    closed_all_day_row = [{
+        "date": _FIXTURE_NOW.date(),
+        "start": dtime(0, 0),
+        "end": dtime(0, 0),   # zero-width — half-open [start, end) never matches
+    }]
+    empty_df_pair = (pd.DataFrame(), pd.DataFrame())
+
+    loop = asyncio.get_running_loop()
+    orig_main_loop = _wq._main_loop
+    _ba._SPECIAL_SESSION_CACHE.clear()
+    try:
+        with patch.object(_ba, "fetch_special_sessions", side_effect=_REAL_FETCH_SPECIAL_SESSIONS), \
+             patch("backend.shared.helpers.date_time_utils.timestamp_indian", return_value=_FIXTURE_NOW), \
+             patch("backend.api.background._fetch_holdings_direct", return_value=empty_df_pair), \
+             patch("backend.api.background._fetch_positions_direct", return_value=empty_df_pair), \
+             patch("backend.brokers.broker_apis.fetch_margins", return_value=[]), \
+             patch.object(_ba, "_read_special_sessions_async",
+                           AsyncMock(return_value=closed_all_day_row)):
+            _wq._main_loop = loop  # simulate "already on the main loop"
+            ctx = await agents_mod._dry_run_context(_FIXTURE_NOW)
+        assert ctx["mcx_open"] is False, (
+            f"the prewarm must let _build_context see the real DB "
+            f"override — ctx={ctx}"
+        )
+    finally:
+        _wq._main_loop = orig_main_loop
+        _ba._SPECIAL_SESSION_CACHE.clear()
+
