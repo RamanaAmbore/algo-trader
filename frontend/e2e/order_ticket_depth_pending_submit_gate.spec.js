@@ -52,7 +52,7 @@ test.describe('OrderTicket — depth-pending submit gate', () => {
 
   test('internal footer Submit button disables on depth-pending (non-draft)', () => {
     expect(ticketSrc).toMatch(
-      /disabled=\{_isDemo \? false : \(!!validationErr \|\| submitting \|\| _noSymbol \|\| \(!_draftMode && _depthPending\)\)\}/
+      /disabled=\{_isDemo \? false : \(!!validationErr \|\| submitting \|\| _noSymbol \|\| \(!draftMode && _depthPending\)\)\}/
     );
   });
 
@@ -62,12 +62,12 @@ test.describe('OrderTicket — depth-pending submit gate', () => {
 
   test('internal footer Submit button switches to gray while depth-pending, LIMIT/SL only', () => {
     expect(ticketSrc).toMatch(
-      /class:ot-submit-depth-pending=\{!_isDemo && !_draftMode && _depthPending\}/
+      /class:ot-submit-depth-pending=\{!_isDemo && !draftMode && _depthPending\}/
     );
     // buy/sell colour classes are suppressed while depth-pending so the
     // gray override isn't fighting a higher-specificity colour rule.
     expect(ticketSrc).toMatch(
-      /class:ot-submit-buy=\{_side === 'BUY' && !_draftMode && !\(!_isDemo && _depthPending\)\}/
+      /class:ot-submit-buy=\{_side === 'BUY' && !draftMode && !\(!_isDemo && _depthPending\)\}/
     );
     expect(ticketSrc).toMatch(/\.ot-submit\.ot-submit-depth-pending \{/);
   });

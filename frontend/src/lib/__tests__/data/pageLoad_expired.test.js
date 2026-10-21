@@ -625,7 +625,7 @@ describe('store-vs-page Exp P&L parity for an expired-but-held leg (GOLD/GOLDM r
       getInstrument: fakeGetInstrument,
       hasFNO: fakeHasFNO,
     });
-    const legs = buildPageLegs(candidates, () => true, true);
+    const legs = buildPageLegs(candidates, () => true);
     const pageValue = sumExpiredFrozenLegsPnl(legs);
 
     expect(pageValue).toBe(storeValue);
@@ -659,7 +659,7 @@ describe('store-vs-page Exp P&L parity for an expired-but-held leg (GOLD/GOLDM r
       getInstrument: fakeGetInstrument,
       hasFNO: fakeHasFNO,
     });
-    const legs = buildPageLegs(candidates, () => true, true);
+    const legs = buildPageLegs(candidates, () => true);
     const pageValue = legs.reduce((s, l) => {
       // Sum every piece's contribution the same way sumExpiredFrozenLegsPnl
       // does, but inline here so both the open (_expiredFrozen) and

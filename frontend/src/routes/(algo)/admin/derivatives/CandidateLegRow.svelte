@@ -62,6 +62,8 @@
    *   onOpenChartTicket: (c: any) => void,
    *   onContextMenu: (c: any, ev: MouseEvent | PointerEvent) => void,
    *   pendingQty?: number,
+   *   draftSelected?: boolean,
+   *   onToggleDraftSelected?: (draftId: any) => void,
    * }}
    */
   let {
@@ -86,6 +88,10 @@
     onRemoveDraft,
     onOpenChartTicket,
     onContextMenu,
+    // Bulk-removal checkbox selection (2026-10) — separate from the
+    // existing single-item cand-draft-x button, which is unchanged.
+    draftSelected = false,
+    onToggleDraftSelected,
   } = $props();
 
   // ── Derived locals (identical logic to what was in {@const} blocks) ───
@@ -445,6 +451,21 @@
             title="Draft position from store — hypothetical, not yet confirmed">D</span>
     {/if}
     {#if isDraft}
+      <!-- Bulk-removal checkbox (2026-10) — separate from the × button
+           below, which still removes just this one draft immediately.
+           Checking this box only marks the row for the header's "Clear
+           Selected Drafts (N)" button; it never removes anything by
+           itself. Stops propagation on both click and change so the
+           row's executeDraft handler never fires. -->
+      <input type="checkbox" class="cand-draft-select"
+             checked={draftSelected}
+             title="Select this draft for bulk removal"
+             aria-label="Select draft {c.symbol} for removal"
+             onclick={(e) => e.stopPropagation()}
+             onchange={(e) => {
+               e.stopPropagation();
+               if (c.draftId != null) onToggleDraftSelected?.(c.draftId);
+             }} />
       <!-- Draft remove button — page-local removal only,
            NO order placed. Clicking the row body still
            opens the OrderTicket pre-filled to PLACE the
@@ -835,6 +856,20 @@
   }
   .cand-row.cand-row-long  .cand-sym-acct::after { background: rgba(74, 222, 128, 0.85); }
   .cand-row.cand-row-short .cand-sym-acct::after { background: rgba(248, 113, 113, 0.85); }
+
+  /* ── Draft bulk-select checkbox ──────────────────────────────────────── */
+  /* Separate from the per-row × below — checking this only marks the row
+     for the header's "Clear Selected Drafts (N)" bulk button, never
+     removes anything on its own. Same magenta identity as the × button. */
+  .cand-draft-select {
+    accent-color: #f0abfc;
+    width: 0.85rem;
+    height: 0.85rem;
+    margin-right: 0.3rem;
+    cursor: pointer;
+    vertical-align: middle;
+    flex: 0 0 auto;
+  }
 
   /* ── Draft × button ───────────────────────────────────────────────── */
   /* Draft × — sits inline with the symbol, lets operator discard

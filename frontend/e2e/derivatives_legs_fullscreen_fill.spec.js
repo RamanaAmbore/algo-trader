@@ -21,8 +21,8 @@
  *
  * Both fixes use a flex/grid layout computation (not a hardcoded
  * `--fs-chrome-h` guess), so they are correct regardless of viewport width
- * and regardless of whether the conditional `.cand-hidden-hint` /
- * `.cand-draft-payoff-bar` chrome rows are present.
+ * and regardless of whether the conditional `.cand-hidden-hint` chrome row
+ * is present.
  *
  * Five quality dimensions (feedback_test_dimensions.md):
  *   1. SSOT     — assertions read live computed geometry, not hard-coded

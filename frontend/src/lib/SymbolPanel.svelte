@@ -42,7 +42,7 @@
   import { placeBasket, fetchBasketMargin, fetchLiveStatus, previewTicketTemplate } from '$lib/api';
   import ChartModal from '$lib/ChartModal.svelte';
   import ChartWorkspace from '$lib/ChartWorkspace.svelte';
-  import { executionMode } from '$lib/stores';
+  import { executionMode, visibleInterval } from '$lib/stores';
   import { priceFmt, aggFmt as aggFmtMargin, qtyFmt } from '$lib/format';
   import OrderTicket      from '$lib/order/OrderTicket.svelte';
   import OptionChainTab   from '$lib/order/OptionChainTab.svelte';
@@ -63,14 +63,16 @@
   // resolveUnderlying / findNearestFuture / resolveAnchorToTradeable
   // dynamically imported inside effects only — no static imports needed.
   import { loadAccounts, getDefaultAccount, recentSymbolStore, setRecentSymbol, setRecentAccount } from '$lib/data/accounts';
-  import { isMarketOpen, isNseOpen, isMcxOpen } from '$lib/marketHours';
+  import { isMarketOpen, isNseOpen, isMcxOpen, segmentOpenForExchange } from '$lib/marketHours';
   import AlgoTabs from '$lib/AlgoTabs.svelte';
   import CardHeader from '$lib/CardHeader.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
   import { liveSnap } from '$lib/data/symbolStore.svelte.js';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import { resolveUnderlyingTradingsymbol } from '$lib/data/resolveUnderlying.js';
-  import { findNearestFuture, instrumentsCacheVersion } from '$lib/data/instruments.js';
+  import { findNearestFuture, instrumentsCacheVersion, getInstrument } from '$lib/data/instruments.js';
+  import { rootOf } from '$lib/data/rootOf.js';
+  import { payoffDrafts } from '$lib/data/payoffDrafts.svelte.js';
 
   // Templ toggle — remembers the operator's last on/off/specific-
   // template choice PER SIDE-SCOPE (buy_option / sell_option / buy_any
@@ -144,6 +146,7 @@
    *   onSymbolChange?: ((sym: string) => void) | null,
    *   tabsExternal?:   boolean,
    *   activeTab?:      'ticket' | 'chain' | 'chart' | 'cli',
+   *   allowedTabs?:    Array<'ticket'|'chain'|'chart'|'cli'> | null,
    *   hideBottomPanel?: boolean,
    *   actionsHidden?:  boolean,
    *   triggerSubmit?:  number,
@@ -222,6 +225,14 @@
     // tabsExternal is true the host MUST bind this prop or the body
     // won't update on tab clicks.
     activeTab      = $bindable(/** @type {'ticket'|'chain'|'chart'|'cli'|undefined} */ (undefined)),
+    // Restricts which tabs the strip shows (and which tabs the
+    // default/activeTab resolution can land on). null/omitted (every
+    // caller as of this prop's addition) means "unchanged" — all 4
+    // tabs show, exactly as before. Purely additive — when set, TABS
+    // is filtered to the ids present here before the tab-strip render,
+    // and `_resolveInitialTab()` falls back to `allowedTabs[0]` if the
+    // otherwise-resolved default isn't in the list.
+    allowedTabs    = /** @type {Array<'ticket'|'chain'|'chart'|'cli'>|null} */ (null),
     // When true the shell omits its own bottom panel (Order Log /
     // Order History). The host renders these in a separate card.
     // Used by /orders to split the entry shell from the activity
@@ -275,7 +286,7 @@
     pickerSuffix = undefined,
     // When set, OrderTicket opens pre-filled from this payoffDrafts id
     // (the real backend AlgoOrder id of a mode='draft' row) with
-    // _draftMode=true. Submit → "Update Draft" (PATCHes the row in
+    // _sharedDraftMode=true. Submit → "Update Draft" (PATCHes the row in
     // place). Closing without submitting leaves the draft untouched
     // (2026-10 fix). Passed through from _openDraftTicket on the
     // /orders page. The derivatives page's own draft-row click handler
@@ -429,8 +440,15 @@
   // Resolve initial tab — fall through chain → ticket when equity.
   function _resolveInitialTab() {
     const req = defaultTab || 'chain';
-    if (req === 'chain' && chainDisabled) return 'ticket';   // fall through for cash equity
-    return req;
+    const resolved = (req === 'chain' && chainDisabled) ? 'ticket' : req;   // fall through for cash equity
+    // allowedTabs restriction (additive — null/omitted means unchanged).
+    // If the otherwise-resolved default isn't in the allowed set, fall
+    // back to the first allowed tab instead of landing on a tab the
+    // host never asked to show.
+    if (Array.isArray(allowedTabs) && allowedTabs.length && !allowedTabs.includes(resolved)) {
+      return allowedTabs[0];
+    }
+    return resolved;
   }
   // chart tab guard on external activeTab binding — chart is never the
   // default starting tab so if the host somehow passes 'chart' via the
@@ -766,9 +784,20 @@
     // Track reactive inputs.
     const legs = basketLegs;
     const accts = _basketAccounts;
-    void legs; void accts;
+    void legs; void accts; void _sharedDraftMode;
 
     if (_basketMarginTimer) { clearTimeout(_basketMarginTimer); _basketMarginTimer = null; }
+
+    // 2026-10-21 fix (operator: "draft positions don't need margin
+    // check") — this multi-account basket margin preview had NO draft
+    // gate at all; a Draft-mode basket (which never reaches the broker)
+    // was still firing a real /api/orders/basket-margin round-trip
+    // every 500ms-debounced change. Same early-return shape as the
+    // empty-basket/single-account case just below.
+    if (_sharedDraftMode) {
+      _basketMarginRows = [];
+      return;
+    }
 
     if (!legs.length || accts.length < 2) {
       _basketMarginRows = [];
@@ -998,27 +1027,15 @@
   // the pill toggle and the Default-template resolution stay in
   // lockstep.
   const _shellUsingNone = $derived(_sharedTemplateId === null);
-  // Templ toggle visibility (2026-09-30 → unconditional 2026-09-30
-  // follow-up, operator: "Templ toggle should show unconditionally in
-  // Chain"). The toggle itself renders inside OptionChainTab's expiry
-  // row (via `{#if showDemoTplNote}...{:else if showTemplateBar}`,
-  // which only ever mounts for the Chain tab), so "unconditional" here
-  // just means dropping the old templates-loaded / action / symbol-or-
-  // legs gating that used to hide the toggle for e.g. a close/modify
-  // action or an empty basket. `_showDemoTplNote` is untouched and
-  // still wins whenever both would apply (demo-first precedence).
-  const _showTemplateBar = $derived(true);
-  const _showDemoTplNote = $derived(
-    _isDemo && action === 'open'
-    && !!((_localSymbol || '').trim() || basketLegs.length > 0)
-  );
-  // Shell-level on-fill preview + cap-warning strip visibility — a
-  // SEPARATE consumer from the toggle above (see the `_showTemplateBar`
-  // history note): this block sits at shell level, visible from BOTH
-  // tabs, and genuinely needs templates loaded / action='open' / a
-  // real symbol-or-legs before it has anything to preview. Kept at the
-  // OLD `_showTemplateBar` expression so making the toggle unconditional
-  // doesn't also make this strip render with nothing to show.
+  // `_showTemplateBar`/`_showDemoTplNote` REMOVED 2026-10-21 (shared-
+  // row re-wire) — they existed only to gate OptionChainTab's own
+  // (now-deleted) <TemplateBar> render. The single surviving
+  // TemplateBar instance's visibility is `_bracketDraftClusterVisible`
+  // (declared further down, near the rest of the shared-row state).
+  // Shell-level on-fill preview + cap-warning strip visibility — this
+  // block sits at shell level, visible from BOTH tabs, and genuinely
+  // needs templates loaded / action='open' / a real symbol-or-legs
+  // before it has anything to preview.
   const _showTemplatePreview = $derived(
     _templates.length > 0 && action === 'open'
     && !!((_localSymbol || '').trim() || basketLegs.length > 0)
@@ -1518,6 +1535,11 @@
   // steppers and side flips made INSIDE the ticket, not just the
   // initial props this modal was opened with.
   const _submitLabel = $derived.by(() => {
+    // 2026-10-21 shared-row re-wire — Draft mode on either tab always
+    // reads "Add to Payoff" (no broker call will fire; matches
+    // OrderTicket's own pre-existing footer-button label for the
+    // single-ticket Draft path).
+    if (_sharedDraftMode) return 'Add to Payoff';
     // Chain tab always shows plain "Submit" — operator (2026-09-30):
     // "chain button to start with shows submit suffixed by additional
     // text. which should be removed." Before this fix, an EMPTY basket
@@ -1550,8 +1572,13 @@
   // bid/ask at least once. Gates the shared common-action Submit button
   // too, not just OrderTicket's own internal footer button (2026-10 fix
   // for the "limit price required" click-before-depth-loads incident).
+  // 2026-10-21 — excludes Draft mode: OrderTicket's own footer button
+  // already excludes Draft from this same disable (it never calls the
+  // broker, so there's no depth-quote requirement to wait on); the
+  // shell's mirrored button previously didn't, which is the gap this
+  // fix closes.
   const _ticketDepthPending = $derived.by(() =>
-    _activeTab === 'ticket' && basketLegs.length === 0 && !!_ticketState.depthPending
+    !_sharedDraftMode && _activeTab === 'ticket' && basketLegs.length === 0 && !!_ticketState.depthPending
   );
   // Style class for the submit button — green when the submit will
   // place a BUY OR add to long OR close short; red when it will place
@@ -1582,9 +1609,17 @@
   // own submit is in flight (the latter previously left the button
   // clickable for the ENTIRE duration of a slow submit, since it was
   // only gated on the unrelated `basketSubmitting` flag).
+  // 2026-10-21 shared-row re-wire — widened with mktOpen/mktExch (the
+  // market badge's belief, mirrored up so the shell doesn't recompute
+  // or relocate OrderTicket's own `_isOpen`/`_mktOpenForExchange`) and
+  // the Bracket-display fields (showDraftToggle/selectedTemplate/
+  // defaultTemplate/showsWing/isUsingNone) needed to render the
+  // single shared TemplateBar instance for the Ticket tab.
   let _ticketState = $state(
-    /** @type {{side: 'BUY'|'SELL'|null, qty: number, submitting: boolean, pending: boolean, depthPending: boolean}} */
-    ({ side: null, qty: 0, submitting: false, pending: false, depthPending: false })
+    /** @type {{side: 'BUY'|'SELL'|null, qty: number, submitting: boolean, pending: boolean, depthPending: boolean, mktOpen: boolean, mktExch: string, showDraftToggle: boolean, selectedTemplate: any, defaultTemplate: any, showsWing: boolean, isUsingNone: boolean}} */
+    ({ side: null, qty: 0, submitting: false, pending: false, depthPending: false,
+       mktOpen: false, mktExch: '', showDraftToggle: false, selectedTemplate: null,
+       defaultTemplate: null, showsWing: false, isUsingNone: true })
   );
   function _modalFireSubmit() {
     if (_activeTab !== 'ticket') {
@@ -1962,9 +1997,15 @@
 
   // Gates the shared common-action Submit button for the basket path —
   // mirrors `_ticketDepthPending` (which only covers the single-ticket
-  // path, `basketLegs.length === 0`).
+  // path, `basketLegs.length === 0`). 2026-10-21 — while Draft mode is
+  // on, NO leg in the basket ever reaches `placeBasket()` (see
+  // submitBasket()'s own Draft-mode branch, which either drafts a leg
+  // via live-tick pricing or refuses-and-reports it — never a real
+  // broker call), so no leg needs to wait on a live quote/depth at all
+  // in that mode. When Draft is off, unchanged: every leg must have a
+  // resolved `leg.limit` + (for options) an arrived chain quote.
   const _basketDepthPending = $derived.by(() =>
-    basketLegs.length > 0 && basketLegs.some(_legNeedsDepth)
+    !_sharedDraftMode && basketLegs.length > 0 && basketLegs.some(_legNeedsDepth)
   );
 
   /** Submit every leg in the shell basket via POST /api/orders/basket. */
@@ -2001,6 +2042,88 @@
   async function submitBasket() {
     if (basketSubmitting || !basketLegs.length) return;
     basketSubmitting = true; basketResultMsg = '';
+
+    // 2026-10-21 — Draft mode: route each draftable leg to the
+    // server-backed payoffDrafts store instead of the broker, priced
+    // from the latest live tick (same `liveSnap()` read OrderTicket's
+    // own single-leg draft path uses), rather than `leg.limit` which
+    // may be stale. `onSubmit` is deliberately never called for a
+    // drafted leg — same as OrderTicket's own draft path.
+    //
+    // CRITICAL FIX (2026-10-21, correctness bug found via advisor
+    // review) — a leg is "draftable" only when `lotSize > 1` (F&O,
+    // pre-existing rule that predates this fix and is NOT being
+    // expanded here — equity legs, only reachable via the Ticket tab's
+    // own +Basket, still never draft). The bug: a leg whose lotSize is
+    // missing/undefined/≤1 for ANY reason — equity, OR an F&O leg
+    // whose lot-size resolution hasn't completed yet (cold instruments
+    // cache; confirmed on dev the cache can take minutes to warm) —
+    // used to fall through to the REAL `placeBasket` call below even
+    // though `_sharedDraftMode` was on and the Submit button read "Add
+    // to Payoff." Fix: while `_sharedDraftMode` is on, this function
+    // NEVER reaches `placeBasket` at all — every non-draftable leg is
+    // refused-and-reported (same per-leg `fails`-array/toast/sticky-
+    // banner shape the real-submission path below already uses for a
+    // broker rejection) and left IN the basket (not stripped) so the
+    // operator can retry once e.g. the lot-size cache warms, or
+    // explicitly turn Draft off to place an equity leg for real.
+    if (_sharedDraftMode) {
+      const draftLegs   = basketLegs.filter(_isDraftableLeg);
+      const skippedLegs = basketLegs.filter(l => !_isDraftableLeg(l));
+
+      let draftOk = 0;
+      /** @type {string[]} */
+      const draftFails = [];
+      for (const leg of draftLegs) {
+        try {
+          const liveLtp = liveSnap(String(leg.sym || '').toUpperCase())?.ltp;
+          const px = (liveLtp != null && liveLtp > 0)
+            ? Number(liveLtp)
+            : (Number(leg.limit) > 0 ? Number(leg.limit) : null);
+          const signedQty = ((Number(leg.lots) || 1) * (Number(leg.lotSize) || 1))
+            * (leg.side === 'SELL' ? -1 : 1);
+          const id = await payoffDrafts.add({
+            symbol:     leg.sym,
+            exchange:   leg.exchange || 'NFO',
+            qty:        signedQty,
+            avg_cost:   px,
+            underlying: rootOf(leg.sym, leg.exchange || 'NFO'),
+            account:    legAccountOf(leg) || null,
+          });
+          if (id != null) draftOk++;
+          else draftFails.push(`${leg.side} ${leg.sym}: draft save failed`);
+        } catch (e) {
+          draftFails.push(`${leg.side} ${leg.sym}: ${/** @type {any} */ (e)?.message || 'draft save failed'}`);
+        }
+      }
+      /** @type {string[]} */
+      const skipFails = skippedLegs.map(leg =>
+        `${leg.side} ${leg.sym}: not drafted — equity or lot size not resolved yet`
+      );
+      const allFails = [...draftFails, ...skipFails];
+
+      // Strip only the legs that were actually ATTEMPTED as drafts
+      // (success or failure of the draft save itself — a failed draft
+      // save is surfaced via toast and the operator re-adds the leg
+      // manually, same pre-existing behaviour). Skipped (non-
+      // draftable) legs stay in the basket untouched.
+      basketLegs = skippedLegs;
+      basketSubmitting = false;
+
+      if (!allFails.length) {
+        toast.success(`${draftOk} leg${draftOk > 1 ? 's' : ''} added to payoff`, { timeoutMs: 3000 });
+        basketResultMsg = `${draftOk} added to payoff`;
+      } else if (draftOk > 0) {
+        basketResultMsg = `${draftOk} added to payoff — ${allFails.length} not placed: ${allFails[0]}`;
+        toast.warning(`Draft: ${draftOk} added, ${allFails.length} not placed — see basket`, { timeoutMs: 5000 });
+      } else {
+        basketResultMsg = `Nothing drafted — ${allFails[0]}`;
+        toast.warning(`Draft: 0 added — ${allFails.length} leg${allFails.length > 1 ? 's' : ''} not placed`, { timeoutMs: 5000 });
+      }
+      // NEVER fall through to the real broker-submission path below
+      // while Draft mode is on — that is the entire point of this fix.
+      return;
+    }
 
     // Validate that every leg has a limit price AND (for option legs) a
     // live chain quote has actually arrived for its own strike — see
@@ -2301,12 +2424,23 @@
   // is the single-leg fast path; Command is the power-user terminal.
   // TABS is ORDER_TABS augmented with visual metadata (dot / active palette).
   // ORDER_TABS is the shared id/label source of truth from $lib/order/tabs.js.
-  const TABS = ORDER_TABS.map(t => ({
-    ...t,
-    ...(t.id === 'chain'   ? { dot: 'var(--c-long)', activeTxt: 'var(--c-long)', activeBorder: 'var(--c-long)', activeBg: 'rgba(74,222,128,0.14)'  } :
-        t.id === 'ticket'  ? { dot: 'var(--c-action)', activeTxt: 'var(--c-action)', activeBorder: 'var(--c-action)', activeBg: 'var(--c-action-14)'  } :
-                             { dot: 'var(--algo-sky)', activeTxt: 'var(--algo-sky)', activeBorder: 'var(--algo-sky)', activeBg: 'rgba(125,211,252,0.14)' }),
-  }));
+  // `allowedTabs` (optional prop, additive) filters this down to a subset
+  // of tabs — null/omitted (every caller as of this prop's addition)
+  // leaves the full 4-tab set unchanged. $derived rather than a plain
+  // const so a host that mutates `allowedTabs` after mount (not done by
+  // any caller today) would still reflect correctly.
+  const TABS = $derived.by(() => {
+    const base = ORDER_TABS.map(t => ({
+      ...t,
+      ...(t.id === 'chain'   ? { dot: 'var(--c-long)', activeTxt: 'var(--c-long)', activeBorder: 'var(--c-long)', activeBg: 'rgba(74,222,128,0.14)'  } :
+          t.id === 'ticket'  ? { dot: 'var(--c-action)', activeTxt: 'var(--c-action)', activeBorder: 'var(--c-action)', activeBg: 'var(--c-action-14)'  } :
+                               { dot: 'var(--algo-sky)', activeTxt: 'var(--algo-sky)', activeBorder: 'var(--algo-sky)', activeBg: 'rgba(125,211,252,0.14)' }),
+    }));
+    if (Array.isArray(allowedTabs) && allowedTabs.length) {
+      return base.filter(t => allowedTabs.includes(t.id));
+    }
+    return base;
+  });
 
   // Effective OrderTicket props — shell-level props forwarded to the ticket.
   // When the picker row's quick-qty / quick-price fields have a value, they
@@ -2315,6 +2449,199 @@
     price, trigger, lotSize, accounts, account, orderId,
     currentQty, avgCost, unrealizedPnl, onAddToBasket, initialDraftId,
   });
+
+  // ── Shared CHASE/BRACKET/DRAFT row (2026-10-21 consolidation) ───────
+  // Promotes DRAFT from OrderTicket-local state to shell-level so one
+  // row (below .oes-picker) can render CHASE + the market badge +
+  // BRACKET + DRAFT identically on BOTH the Ticket and Chain tabs.
+  // `draftMode` itself binds straight into <OrderTicket> (see its mount
+  // below); Chain's own submitBasket() reads this flag directly.
+  let _sharedDraftMode = $state(false);
+
+  // CRITICAL FIX (2026-10-21, correctness bug found via advisor review)
+  // — fail-open #1: unlike the OLD OrderTicket-local `_draftMode` (which
+  // naturally reset per mount/symbol), `_sharedDraftMode` is PERSISTENT
+  // shell state that survives a symbol switch WITHIN the same Ticket
+  // tab session. Scenario: operator turns Draft on viewing an option,
+  // then switches the symbol to an equity on the SAME tab — the Draft
+  // toggle disappears (`_draftToggleVisible`/`_ticketState.showDraftToggle`
+  // flips false, since OrderTicket's own `showDraftToggle = !isEquity
+  // && ...`) but `_sharedDraftMode` itself stayed true. The Submit
+  // button still read "Add to Payoff" (`_submitLabel` checks
+  // `_sharedDraftMode` unconditionally) while OrderTicket's own
+  // `submit()` check (`if (draftMode && !isEquity)`) was now FALSE —
+  // `isEquity` flipped true — so it fell through to the REAL
+  // paper/live placement branch instead. Mirrors the existing "close-
+  // order-clears-template" effect pattern already in OrderTicket.svelte
+  // (auto-clear the moment the condition that made a control
+  // applicable stops holding) — scoped to the Ticket tab only; Chain's
+  // Draft toggle never disappears (`_draftToggleVisible` is
+  // unconditionally true there) and Chain's own per-leg draftability
+  // is enforced directly inside submitBasket(), not via this kind of
+  // clear.
+  $effect(() => {
+    if (_activeTab === 'ticket' && _sharedDraftMode && !_ticketState.showDraftToggle) {
+      _sharedDraftMode = false;
+    }
+  });
+
+  // CRITICAL FIX (2026-10-21, correctness bug, verification question #2)
+  // — fail-open #2: SymbolPanel can stay MOUNTED across successive
+  // ticket opens — both MarketPulse.svelte's `openTicket()` and the
+  // derivatives page's equivalent reassign `ticketProps = {...}` (a
+  // plain prop-value swap) rather than closing (`ticketProps = null`)
+  // then reopening, so the host's `{#if allowOrders && ticketProps}`
+  // guard never goes false in between and this component instance
+  // (and its local `_sharedDraftMode` $state) is never destroyed and
+  // recreated. If the operator had Draft on for a PRIOR order and then
+  // clicks a draft row to promote a DIFFERENT draft to real
+  // (`_openTicketFromDraftRow()` / the derivatives page's
+  // `executeDraft()`, both of which set a fresh `initialDraftId`),
+  // `_sharedDraftMode` would otherwise carry over from the prior
+  // order's session. Reset it the moment a NEW, DIFFERENT draft begins
+  // being promoted — never on an unchanged `initialDraftId` (an
+  // ordinary re-render) or a null one (an unrelated, non-promotion
+  // ticket open — the equity auto-clear effect above handles "is this
+  // new symbol even draftable" separately). Implemented inside
+  // SymbolPanel itself (not in either host) so both call sites get the
+  // fix for free with no changes to either host file.
+  // intentional: seeds from initialDraftId prop once; $effect below re-syncs on subsequent prop changes
+  // svelte-ignore state_referenced_locally
+  let _lastDraftPromoteId = $state($state.snapshot(initialDraftId));
+  $effect(() => {
+    if (initialDraftId !== _lastDraftPromoteId) {
+      _lastDraftPromoteId = initialDraftId;
+      if (initialDraftId != null) _sharedDraftMode = false;
+    }
+  });
+
+  // Three Ticket-only TemplateBar overrides, promoted to shared shell
+  // state alongside the five that already existed (tpOverride/
+  // slOverride/wingStrikeOffsetOverride/wingPremPctOverride/
+  // spreadMaxPctOverride — spreadMaxPctOverride is Chain-only-consumed,
+  // the three below are display-only on OrderTicket today — neither
+  // tab's submit payload reads them, matching their pre-existing
+  // inert-but-displayed behaviour; this re-wire only changes WHERE
+  // they live, not what consumes them). Bound into <OrderTicket> below.
+  let _sharedSlTrailPctOverride  = $state(/** @type {number|''} */ (''));
+  let _sharedTpOrderTypeOverride = $state(/** @type {'LIMIT'|'MARKET'|''} */ (''));
+  let _sharedTpScalesJsonOverride = $state(/** @type {string} */ (''));
+
+  // Mutual exclusion wrappers — Bracket (Default or a named template)
+  // turns Draft off; Draft turning ON forces the template to None.
+  // Mirrors the exact logic that used to live in OrderTicket.svelte's
+  // `_onBracketSelectDefault`/`_onBracketSelectTemplate`/
+  // `_onDraftToggleChange` before the shared-row re-wire moved
+  // Bracket+Draft out of OrderTicket entirely. Picking "None" has no
+  // mutual-exclusion effect on Draft (matches the old `_onBracketSelectNone`,
+  // which never touched draft mode either) — passed straight through
+  // as `_onTemplSelectNone`, no wrapper needed.
+  function _wrapTemplSelectDefault() {
+    if (_sharedDraftMode) _sharedDraftMode = false;
+    _onTemplSelectDefault();
+  }
+  function _wrapTemplSelectTemplate(/** @type {number} */ id) {
+    if (_sharedDraftMode) _sharedDraftMode = false;
+    _onTemplSelectTemplate(id);
+  }
+  function _onSharedDraftToggleChange(/** @type {boolean} */ checked) {
+    _sharedDraftMode = checked;
+    if (checked && !_shellUsingNone) {
+      _onTemplSelectNone();
+    }
+  }
+
+  // Market badge — Chain tab. Ticket's own badge value is mirrored up
+  // from OrderTicket via the onTicketStateChange payload (_ticketState.
+  // mktOpen/_ticketState.mktExch below) rather than recomputed here —
+  // OrderTicket's own `_isOpen`/`_mktOpenForExchange` stay untouched
+  // (an existing spec asserts against their exact source text). Chain
+  // always resolves a real per-leg exchange (no bare-underlying
+  // ambiguity the way Ticket can have), so it gets its own independent
+  // resolution: focused/last basket leg's own exchange first, then the
+  // resolved LTP symbol's instrument-cache exchange, then NFO.
+  const _chainMktExch = $derived(
+    String(_focusedLeg?.exchange || getInstrument(_ltpSym)?.e || 'NFO').toUpperCase()
+  );
+  let _chainMktOpen = $state(false);
+  function _recomputeChainMktOpen() {
+    _chainMktOpen = segmentOpenForExchange(_chainMktExch);
+  }
+  // Re-check on every exchange resolution change (new leg, symbol
+  // swap) and on a 30s visibleInterval tick (mirrors OrderTicket's own
+  // `_mktTimer` convention exactly — session-boundary flips even when
+  // nothing else triggers a re-render).
+  $effect(() => {
+    void _chainMktExch;
+    _recomputeChainMktOpen();
+  });
+  /** @type {(() => void) | null} */
+  let _chainMktTimer = null;
+  onMount(() => {
+    _chainMktTimer = visibleInterval(_recomputeChainMktOpen, 30_000);
+  });
+  onDestroy(() => { _chainMktTimer?.(); });
+
+  // Resolved badge fields for the active tab — Ticket mirrors
+  // OrderTicket's own belief (via `_ticketState`); Chain uses the
+  // independent resolution above; Chart mirrors Ticket (OrderTicket
+  // keeps computing in the background on the Chart tab too, since it
+  // stays mounted with display:none the entire time).
+  const _mktBadgeOpen = $derived(_activeTab === 'chain' ? _chainMktOpen : !!_ticketState.mktOpen);
+  const _mktBadgeExchShell = $derived(_activeTab === 'chain' ? _chainMktExch : (_ticketState.mktExch || 'Market'));
+  const _mktBadgeTitleShell = $derived(
+    _mktBadgeOpen
+      ? `${_mktBadgeExchShell} session open`
+      : `${_mktBadgeExchShell} session closed — order submission may be rejected`
+  );
+
+  // Shared Bracket/Draft cluster visibility — Ticket excludes close
+  // orders (template attach doesn't apply there); Chain has no
+  // close-order concept. Split into a demo-agnostic "would apply" base
+  // so the demo note (below) can render in exactly the slot the real
+  // cluster would otherwise occupy, same precedence the old per-tab
+  // gates (OrderTicket's `!suspended && _isDemo` / OptionChainTab's
+  // `showDemoTplNote`) used — demo wins whenever both would apply.
+  const _bracketDraftClusterWouldApply = $derived(
+    _activeTab === 'chain' ? true : (_activeTab === 'ticket' && action !== 'close')
+  );
+  const _bracketDraftClusterVisible = $derived(!_isDemo && _bracketDraftClusterWouldApply);
+  const _bracketDraftDemoNoteVisible = $derived(_isDemo && _bracketDraftClusterWouldApply);
+  // Display props for the single TemplateBar instance — tab-conditional.
+  // Ticket's own bare-underlying inline Expiry/Strike/CE-PE flow
+  // resolves differently from the shell's own `_currentScope()`
+  // fallback (which reads `_localSymbol`, not OrderTicket's internal
+  // picks) — mirroring Ticket's own values (via `_ticketState`) avoids
+  // regressing that flow. Chain keeps the shell's own resolution.
+  const _tplBarSelectedTemplate = $derived(
+    _activeTab === 'ticket' ? (_ticketState.selectedTemplate ?? null) : _selectedTemplate
+  );
+  const _tplBarSideAwareDefault = $derived(
+    _activeTab === 'ticket' ? (_ticketState.defaultTemplate ?? null) : _sideAwareDefault
+  );
+  const _tplBarShowsWing = $derived(
+    _activeTab === 'ticket' ? !!_ticketState.showsWing : _sharedTplShowsWing
+  );
+  const _tplBarIsUsingNone = $derived(
+    _activeTab === 'ticket' ? (_ticketState.isUsingNone ?? _shellUsingNone) : _shellUsingNone
+  );
+  // Draft toggle visibility — Chain always eligible (never equity,
+  // never 'modify'); Ticket mirrors OrderTicket's own `showDraftToggle`
+  // (depends on `isEquity`/`action`, both internal to OrderTicket).
+  const _draftToggleVisible = $derived(
+    _activeTab === 'chain' ? true : !!_ticketState.showDraftToggle
+  );
+
+  // A leg that will route to payoffDrafts instead of the broker (see
+  // submitBasket() below) never needs a live chain quote/depth — used
+  // both to gate `_basketDepthPending` above and, inside submitBasket()
+  // itself, to strip draftable legs out of `basketLegs` before the
+  // existing real-submission logic (missingQuote check, byAcct
+  // building, etc.) runs. Equity legs (only ever staged via the Ticket
+  // tab's own +Basket) are never draftable, mirroring OrderTicket's own
+  // `draftMode && !isEquity` gate.
+  const _isDraftableLeg = (/** @type {any} */ leg) =>
+    _sharedDraftMode && Number(leg.lotSize || 1) > 1;
 </script>
 
 <!-- Modal overlay (omitted in inline mode — renders as flat page content). -->
@@ -2488,19 +2815,6 @@
         {#if _ltp != null && _ltp > 0}
           <span class="oes-tab-ltp"><span class="oes-tab-ltp-label">LTP</span>{priceFmt(_ltp)}</span>
         {/if}
-        {#if _chaseEnabled}
-          <span class="oes-common-chase-label on" bind:this={_chaseInfoAnchor}
-                role="button" tabindex="0" aria-expanded={_chaseInfoOpen}
-                title="Chase is active — click for details"
-                onclick={() => { _chaseInfoOpen = !_chaseInfoOpen; }}
-                onkeydown={_chaseInfoKeydown}>CHASE</span>
-          <InfoHint popup hideButton id="chase-info-hint" anchor={_chaseInfoAnchor} bind:open={_chaseInfoOpen}
-            panel title="Chase"
-            text="Chase is automatic for every limit order (on for LIMIT/SL order types, Chain legs are always limit) — re-quotes the price each interval until filled or max attempts is reached. Wait time between re-quotes depends on the aggressiveness picker beside it: <b>Low</b> — 30s, patient, eases into the spread (30 attempts max). <b>Med</b> — 20s, balanced (20 attempts max). <b>High</b> — 10s, crosses the spread fast (10 attempts max)." />
-          <span class="oes-chase-agg-gap">
-            <ChaseAggPicker value={_sharedChaseAgg} onChange={_setSharedChaseAgg} variant="panel" />
-          </span>
-        {/if}
       {/if}
     </div>
     {/if}
@@ -2581,23 +2895,113 @@
       </div>
     {/if}
 
-    <!-- Shell-level template picker — visible from EVERY tab + the modal,
-         regardless of whether the basket has legs staged. Operator:
-         "why template is present only for order ticket, but not for
-         chain" — moved ABOVE the tab body so it sits at the same
-         altitude as the tabs themselves on both Ticket + Chain views.
-         Pre-fix, the picker lived BELOW the body so a tall Chain tab
-         (strike grid + futures row + basket) pushed it past the
-         modal's scrolled-into-view area and the operator only saw it
-         on the shorter Ticket tab. Bound to _sharedTemplateId so the
-         value persists across Ticket ↔ Chain tab flips. -->
-    <!-- On-fill container is now rendered BELOW the tab body
-         (immediately above the basket bar). Operator: "on fill
-         container should be after chain picker or order ticket
-         depth." Sequence reads top-to-bottom as: header → tabs →
-         body (depth / strike grid) → On-fill → basket bar →
-         actions. The picker stays visible from BOTH tabs because
-         it lives at the shell level. -->
+    <!-- Shared CHASE / market badge / BRACKET / DRAFT row (2026-10-21
+         consolidation). One row, directly below the account/exchange/
+         symbol picker, identical on Ticket and Chain, to reclaim
+         vertical space and give Chain parity with controls that used
+         to only reach it via OrderTicket's own (display:none-while-
+         Chain-active) body. Order left-to-right: CHASE, market badge,
+         BRACKET (TemplateBar) / demo note, DRAFT. -->
+    {#if _activeTab !== 'cli'}
+      <div class="oes-chase-row">
+        <!-- CHASE — moved verbatim from .oes-tabs (unchanged markup);
+             greyed + non-interactive whenever Draft is on (new
+             enforcement — a stale comment in OrderTicket.svelte long
+             claimed Draft/Chase were mutually exclusive but nothing
+             enforced it). BRACKET gets the identical disabled/greyed
+             treatment below (coordinator: "no brackets in draft
+             mode") — both share the `.oes-ctl-cluster-disabled` class. -->
+        {#if _chaseEnabled}
+          <span class="oes-chase-cluster" class:oes-ctl-cluster-disabled={_sharedDraftMode}>
+            <span class="oes-common-chase-label on" bind:this={_chaseInfoAnchor}
+                  role="button" tabindex={_sharedDraftMode ? -1 : 0} aria-expanded={_chaseInfoOpen}
+                  aria-disabled={_sharedDraftMode}
+                  title={_sharedDraftMode ? 'Chase is unavailable while Draft is on' : 'Chase is active — click for details'}
+                  onclick={() => { if (!_sharedDraftMode) _chaseInfoOpen = !_chaseInfoOpen; }}
+                  onkeydown={(e) => { if (!_sharedDraftMode) _chaseInfoKeydown(e); }}>CHASE</span>
+            <InfoHint popup hideButton id="chase-info-hint" anchor={_chaseInfoAnchor} bind:open={_chaseInfoOpen}
+              panel title="Chase"
+              text="Chase is automatic for every limit order (on for LIMIT/SL order types, Chain legs are always limit) — re-quotes the price each interval until filled or max attempts is reached. Wait time between re-quotes depends on the aggressiveness picker beside it: <b>Low</b> — 30s, patient, eases into the spread (30 attempts max). <b>Med</b> — 20s, balanced (20 attempts max). <b>High</b> — 10s, crosses the spread fast (10 attempts max)." />
+            <span class="oes-chase-agg-gap">
+              <ChaseAggPicker value={_sharedChaseAgg} onChange={(v) => { if (!_sharedDraftMode) _setSharedChaseAgg(v); }} variant="panel" />
+            </span>
+          </span>
+        {/if}
+
+        <!-- Market badge — markup moved from OrderTicket.svelte, same
+             data-testid so existing DOM-level Playwright selectors
+             keep matching. Ticket mirrors OrderTicket's own belief via
+             `_ticketState`; Chain computes independently (see
+             `_chainMktExch`/`_chainMktOpen` above). -->
+        <span class="oes-mkt-badge" class:oes-mkt-open={_mktBadgeOpen} class:oes-mkt-closed={!_mktBadgeOpen}
+              data-testid="ot-market-badge" title={_mktBadgeTitleShell}>
+          {_mktBadgeExchShell} {_mktBadgeOpen ? 'open' : 'closed'}
+        </span>
+
+        <!-- BRACKET — single surviving <TemplateBar> instance (removes
+             the two previous render sites inside OrderTicket.svelte and
+             OptionChainTab.svelte). Display props are tab-conditional
+             (see `_tplBar*` derived values above); the catalog list
+             (`_nonNoneTemplates`) is shared — same already-fetched
+             copy both tabs read. onSelectDefault/onSelectTemplate are
+             wrapped to enforce Bracket→Draft-off mutual exclusion.
+             2026-10-21 (coordinator correction) — also greyed +
+             non-interactive whenever Draft is ON, same treatment as
+             CHASE above (`.oes-ctl-cluster-disabled`; operator: "no
+             brackets in draft mode"). Draft→off-Bracket mutual
+             exclusion still runs underneath via
+             `_onSharedDraftToggleChange` (forces the template to None
+             the moment Draft turns on) — the wrapper here is purely
+             the visual/interaction layer on top of that; Bracket was
+             never left in a "default template still armed" state even
+             before this fix, this only stops it from being clickable
+             while Draft is on. The Draft toggle itself is NOT wrapped
+             — it must stay interactive, it's the control being
+             toggled. -->
+        {#if _bracketDraftClusterVisible}
+          <span class="oes-bracket-cluster" class:oes-ctl-cluster-disabled={_sharedDraftMode}
+                title={_sharedDraftMode ? 'Bracket is unavailable while Draft is on' : undefined}>
+            <TemplateBar
+              selectedTemplate={_tplBarSelectedTemplate}
+              sideAwareDefault={_tplBarSideAwareDefault}
+              nonNoneTemplates={_nonNoneTemplates}
+              showsWing={_tplBarShowsWing}
+              shellUsingNone={_tplBarIsUsingNone}
+              bind:tpOverride={_sharedTpOverride}
+              bind:slOverride={_sharedSlOverride}
+              bind:wingStrikeOffsetOverride={_sharedWingStrikeOffsetOverride}
+              bind:wingPremPctOverride={_sharedWingPremPctOverride}
+              bind:spreadMaxPctOverride={_sharedSpreadMaxPctOverride}
+              bind:slTrailPctOverride={_sharedSlTrailPctOverride}
+              bind:tpOrderTypeOverride={_sharedTpOrderTypeOverride}
+              bind:tpScalesJsonOverride={_sharedTpScalesJsonOverride}
+              onSelectDefault={_wrapTemplSelectDefault}
+              onSelectNone={_onTemplSelectNone}
+              onSelectTemplate={_wrapTemplSelectTemplate} />
+          </span>
+        {:else if _bracketDraftDemoNoteVisible}
+          <span class="oct-tpl-demo-note">Exit rules (TP / SL / Wing) not available in demo.</span>
+        {/if}
+
+        <!-- DRAFT — markup + class names moved verbatim from
+             OrderTicket.svelte so existing Playwright selectors keyed
+             on `.ot-draft-toggle`/`.ot-draft-label` keep matching. Now
+             bound to the shared `_sharedDraftMode` instead of a local
+             OrderTicket-only $state. -->
+        {#if _draftToggleVisible}
+          <label class="ot-draft-toggle"
+                 title={_sharedDraftMode
+                   ? 'Draft ON — submit adds this leg to the payoff chart without placing an order'
+                   : 'Draft OFF — submit routes to broker normally'}>
+            <input type="checkbox" checked={_sharedDraftMode}
+                   onchange={(e) => _onSharedDraftToggleChange(/** @type {HTMLInputElement} */ (e.currentTarget).checked)} />
+            <span class="ot-draft-label" class:on={_sharedDraftMode}>DRAFT</span>
+          </label>
+          <InfoHint popup panel title="Draft"
+            text="When ON, Submit adds this leg to the session payoff chart instead of placing a real broker order — nothing is sent to the exchange. Useful for sketching a strategy before committing. Mutually exclusive with Bracket — turning Draft on clears any active bracket (no exit-rule attach is meaningful for a leg that was never actually placed)." />
+        {/if}
+      </div>
+    {/if}
 
     <!-- Tab content. Command Line tab retired — was the third option
          alongside Chain and Ticket; the in-tab account+symbol inputs
@@ -2668,9 +3072,10 @@
             bind:slOverride={_sharedSlOverride}
             bind:wingStrikeOffsetOverride={_sharedWingStrikeOffsetOverride}
             bind:wingPremPctOverride={_sharedWingPremPctOverride}
-            onSelectDefault={_onTemplSelectDefault}
-            onSelectNone={_onTemplSelectNone}
-            onSelectTemplate={_onTemplSelectTemplate}
+            bind:slTrailPctOverride={_sharedSlTrailPctOverride}
+            bind:tpOrderTypeOverride={_sharedTpOrderTypeOverride}
+            bind:tpScalesJsonOverride={_sharedTpScalesJsonOverride}
+            bind:draftMode={_sharedDraftMode}
             onMarginUpdate={showCommonActions ? _onMarginUpdate : null}
             onPreviewPlanUpdate={(plan, loading, err, capW) => {
               _modalPreviewPlan    = plan;
@@ -2718,8 +3123,6 @@
           bind:templateId={_sharedTemplateId}
           templateName={_selectedTemplate?.name || _selectedTemplate?.slug || ''}
           templateIsNone={_shellUsingNone}
-          showTemplateBar={_showTemplateBar}
-          showDemoTplNote={_showDemoTplNote}
           selectedTemplate={_selectedTemplate}
           sideAwareDefault={_sideAwareDefault}
           nonNoneTemplates={_nonNoneTemplates}
@@ -2776,49 +3179,17 @@
 
     </div>
 
-    <!-- Shell-level Template picker — sits BELOW the tab body. Two-
-         pill toggle (Default / None) mirrors the Side toggle in the
-         Ticket tab so the operator's mental model is the same.
-         Operator: "so just have default or none like add or close.
-         based on the symbol type order type, for default show the
-         specific template values."
-         Default → side-aware is_default template (resolved at render
-                   time via `_sideAwareDefault`; auto-refreshes on
-                   side flip + symbol change)
-         None    → explicit opt-out, no GTT attach
-         No dropdown: the operator never picks the template by name,
-         the platform picks the right one for the leg + side. Override
-         inputs surface inline only when Default is active and the
-         template has the relevant fields. -->
-    <!-- Symbol gate — the side-aware Default resolution depends on the
-         CE/PE regex against _localSymbol. Without a symbol picked the
-         scope would silently fall back to buy_any/sell_any and surface
-         the wrong template; better to hide the row entirely until the
-         operator has committed to what they're trading. Operator:
-         "when no order type selected, template should not be displayed.
-         when symbol and buy or sell selected, then template container
-         should be displayed". Side is always set (default BUY), so
-         symbol presence is the meaningful gate.
-         Operator (turn N+1): "in chain, the pill is hidden when
-         template is default in chain. in order ticket it shows."
-         On Chain tab the operator can drop legs via +CE / +PE without
-         typing a header symbol — _localSymbol stays empty in that
-         flow, hiding the Template row even though basket legs are
-         staged. Treat basket-leg presence as equivalent "symbol
-         context" so the Template row stays visible. The shell's
-         side-aware default resolver uses _modalSide for direction
-         and the focused-leg's symbol (last-leg by default) for the
-         CE/PE regex via _appliesToFor — falling back through
-         _localSymbol when no legs are staged. -->
-    <!-- Templ toggle — Chain renders its own copy via <OptionChainTab>'s
-         expiry row (2026-09-30). Ticket's copy (2026-10-16, 4th and
-         final decision on this exact question — see
-         CLAUDE.md/.claude/PLAN.md history) now renders INSIDE
-         OrderTicket.svelte itself, on the same row as CHASE/DRAFT
-         (operator: "keep bracket before draft on the same row"), using
-         the templateId/override bindings + onSelect* callbacks passed
-         into <OrderTicket> above — not here at shell level, to avoid a
-         duplicate. Nothing shell-level to render for Ticket any more. -->
+    <!-- BRACKET (TemplateBar) toggle — see the shared CHASE/BRACKET/
+         DRAFT row above (`.oes-chase-row`, inserted immediately below
+         `.oes-picker`). Default → side-aware is_default template
+         (`_sideAwareDefault`, auto-refreshes on side flip + symbol
+         change); None → explicit opt-out, no GTT attach. 2026-10-21 —
+         this is now ONE render site for BOTH tabs (previously Chain
+         rendered its own copy via <OptionChainTab>'s expiry row and
+         Ticket rendered its own copy inside OrderTicket.svelte; see
+         CLAUDE.md's "Order Ticket / Bracket-template re-wire" history
+         for the prior 4 reversals in this exact area). Nothing to
+         render at THIS point in the markup any more. -->
 
     <!-- On-fill preview chip + cap-warning strip, which stays at shell
          level (depends on several shell-only state vars) and keeps its
@@ -3333,7 +3704,7 @@
             class:oes-common-submit-narrow={basketLegs.length > 0}
             class:oes-common-submit-depth-pending={_ticketDepthPending || _basketDepthPending}
             title={basketLegs.length > 0
-              ? (_basketDepthPending ? 'Waiting for market depth (bid/ask) for a leg' : 'Submit')
+              ? (_basketDepthPending ? 'Waiting for market depth (bid/ask) for a leg' : (_sharedDraftMode ? 'Add legs to payoff chart (no broker order)' : 'Submit'))
               : (_activeTab === 'chain'
                   ? 'Add legs via +CE / +PE on the chain rows first'
                   : _ticketOwnSubmitBusy
@@ -3367,7 +3738,7 @@
             }}>{basketSubmitting
                 ? 'Placing…'
                 : (basketLegs.length > 0
-                    ? 'Submit'
+                    ? (_sharedDraftMode ? 'Add to Payoff' : 'Submit')
                     : _ticketOwnSubmitBusy
                       ? (_ticketState.pending ? 'Processing…' : 'Placing…')
                       : _submitLabel)}</button>
@@ -3846,6 +4217,16 @@
        cluster could silently clip off-screen on mobile instead of
        dropping to a second line. */
     flex-wrap: wrap;
+    /* 2026-10-21 (shared-row re-wire) — CHASE moved out of this row
+       into the new shared CHASE/BRACKET/DRAFT row below .oes-picker.
+       Before this fix, CHASE's own --ctl-h floor (see
+       .oes-common-chase-label below) was what kept this row from
+       visibly shrinking whenever LTP had nothing to show (_ltp null —
+       e.g. no symbol picked yet). Explicit floor here reproduces the
+       EXACT height-parity regression fix documented in the
+       .oes-cli-guide-link comment above, now that CHASE can no longer
+       hold the line for it. */
+    min-height: var(--ctl-h, 1.7rem);
   }
   /* See the `<div class="oes-tabs-inner">` wrapper note at the markup
      site — flex-shrink:0 has to land on a real element here since
@@ -5016,6 +5397,105 @@
      label had none, so the L/M/H picker sat flush against it. Operator
      (2026-09-29): "there should be space between chase and l/m/h". */
   .oes-chase-agg-gap { margin-left: 0.4rem; display: inline-flex; }
+
+  /* ── Shared CHASE/BRACKET/DRAFT row (2026-10-21 consolidation) ────── */
+  /* Normal in-flow block content, not `position: fixed` — flex-wrap
+     (not an overflow-x:auto scroll wrapper) so TemplateBar's inline
+     expand/collapse panel and any non-portaled popover anchored
+     inside the row are never clipped. Matches the existing
+     `.oes-tabs`/`.ot-chase-row` flex-wrap convention. */
+  .oes-chase-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    padding: 0.2rem 0.4rem;
+  }
+  /* Shared "greyed + non-interactive while Draft is on" treatment —
+     applied to BOTH the CHASE cluster (label + InfoHint +
+     ChaseAggPicker) and the BRACKET cluster (the single <TemplateBar>
+     instance), per coordinator: "no brackets in draft mode." Neither
+     ChaseAggPicker.svelte nor TemplateBar.svelte has its own
+     `disabled` prop, so both get wrapped in a container with this
+     class instead of threading a new prop through either component.
+     DRAFT itself is never wrapped in this — it must stay interactive,
+     it's the control being toggled. */
+  .oes-ctl-cluster-disabled {
+    opacity: 0.4;
+    pointer-events: none;
+  }
+  /* Market badge — duplicated from OrderTicket.svelte's own
+     .ot-mkt-badge/.ot-mkt-open/.ot-mkt-closed (Svelte scopes styles
+     per-component, so the original rule doesn't reach markup now
+     rendered here) — palette mirrors RefreshButton.svelte's
+     .rf-mkt-* convention exactly (open = green, closed = muted slate). */
+  .oes-mkt-badge {
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+    padding: 0.2rem 0.45rem;
+    border-radius: 3px;
+    font-size: var(--fs-xs);
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+  .oes-mkt-open {
+    background: var(--algo-green-bg-mid);
+    border: 1px solid var(--algo-green-border);
+    color: var(--algo-green-text);
+  }
+  .oes-mkt-closed {
+    background: var(--algo-muted-bg);
+    border: 1px solid var(--algo-muted-border);
+    color: var(--algo-dim);
+  }
+  /* Demo-mode note — replaces the Bracket toggle when exit rules
+     (TP/SL/Wing) aren't available to an anonymous session. Duplicated
+     from OrderTicket.svelte/OptionChainTab.svelte's own
+     `.oct-tpl-demo-note` (both now removed — this is the one surviving
+     copy, scoped to this component). */
+  .oct-tpl-demo-note {
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
+    color: var(--text-lo);
+    font-style: italic;
+  }
+  /* DRAFT toggle — class names + styling duplicated verbatim from
+     OrderTicket.svelte (now removed there) so existing Playwright
+     selectors keyed on `.ot-draft-toggle`/`.ot-draft-label` keep
+     matching without edits. Magenta/purple palette matches the
+     draft-row identity in CandidateLegRow.svelte. */
+  .ot-draft-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    cursor: pointer;
+    user-select: none;
+  }
+  .ot-draft-toggle input[type="checkbox"] {
+    accent-color: var(--algo-violet);
+    width: 0.85rem;
+    height: 0.85rem;
+    cursor: pointer;
+  }
+  .ot-draft-label {
+    font-family: monospace;
+    font-size: var(--fs-md);
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    padding: 0.15rem 0.4rem;
+    border-radius: 3px;
+    border: 1px solid rgba(255,255,255,0.12);
+    color: var(--text-muted);
+    background: rgba(255,255,255,0.04);
+  }
+  .ot-draft-label.on {
+    background: rgba(192,132,252,0.18);
+    border-color: rgba(192,132,252,0.55);
+    color: var(--algo-violet);
+  }
 
   /* Margin strip — sits BELOW the action buttons. MARGIN · Avail ·
      After · (Short) cells in a horizontal row. After is colour-coded

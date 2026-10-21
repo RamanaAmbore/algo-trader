@@ -310,3 +310,145 @@ class TestParameterizedCallTokens:
         )])
         assert self.REGISTRY.metric_factories == {}
         assert self.REGISTRY.metric("mean_pnl(30)") is None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  validate_action_dispatch_catalog() — closes the "7 dead grammar-resolver
+#  stub functions" drift gap (see CLAUDE.md's "Agent action-dispatch SSOT"
+#  note). Cross-references agent_grammar.yaml's action-type catalog against
+#  actions.py's real dispatch tables (_LIVE_ACTION_HANDLERS /
+#  _NOOP_ACTION_HANDLERS) in both directions, raising
+#  ActionDispatchDriftError (never a silent log line) on any undeclared
+#  mismatch. `REGISTRY.reload()` runs it first, before the DB read, so a
+#  real drift surfaces at startup / the admin reload endpoint.
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestValidateActionDispatchCatalog:
+    def test_real_catalog_and_dispatch_tables_pass_cleanly(self):
+        """Regression guard: today's real agent_grammar.yaml catalog, the
+        real _LIVE_ACTION_HANDLERS / _NOOP_ACTION_HANDLERS dispatch tables,
+        and the real ACTION_DISPATCH_CATALOG_ALLOWLIST must validate clean
+        with NO arguments (every default is the real code-level source).
+        This must stay green going forward — any future drift between the
+        YAML catalog and actions.py's dispatch tables should fail this test
+        before it ever reaches runtime/prod."""
+        from backend.api.algo.grammar_registry import validate_action_dispatch_catalog
+        validate_action_dispatch_catalog()  # must not raise
+
+    def test_documented_allowlist_entries_match_known_aliases(self):
+        """The one remaining confirmed-genuine dispatch-only-no-catalog
+        exception: `chase_close`, a deliberate alias for the catalog's
+        `chase_close_positions` token. `send_summary` (2026-10, operator
+        decision) gained a real catalog row instead of staying a dead
+        dispatch-only handler, so it's no longer allowlisted — see the
+        self-tightening tests below for what happens if it had stayed
+        stale."""
+        from backend.api.algo.grammar_registry import ACTION_DISPATCH_CATALOG_ALLOWLIST
+        assert set(ACTION_DISPATCH_CATALOG_ALLOWLIST.keys()) == {"chase_close"}
+
+    def test_raises_on_catalog_token_with_no_dispatch_handler(self):
+        """A YAML action token with NO entry in either dispatch dict — the
+        exact '7 dead stubs' bug class — must raise, not log."""
+        from backend.api.algo.grammar_registry import (
+            validate_action_dispatch_catalog, ActionDispatchDriftError,
+        )
+        import pytest
+        with pytest.raises(ActionDispatchDriftError, match="fake_undispatched_token"):
+            validate_action_dispatch_catalog(
+                catalog_tokens={"place_order", "fake_undispatched_token"},
+                live_handlers={"place_order": object()},
+                noop_handlers={},
+                allowlist={},
+            )
+
+    def test_raises_on_dispatch_handler_with_no_catalog_token(self):
+        """A dispatch-table entry (live or noop) with no catalog token and
+        no allowlist entry — a handler the operator/Lab-chat agent-builder
+        can never see — must raise."""
+        from backend.api.algo.grammar_registry import (
+            validate_action_dispatch_catalog, ActionDispatchDriftError,
+        )
+        import pytest
+        with pytest.raises(ActionDispatchDriftError, match="fake_undeclared_action"):
+            validate_action_dispatch_catalog(
+                catalog_tokens={"place_order"},
+                live_handlers={"place_order": object(), "fake_undeclared_action": object()},
+                noop_handlers={},
+                allowlist={},
+            )
+
+    def test_raises_on_dispatch_handler_with_no_catalog_token_noop_side(self):
+        """Same direction-2 check, exercised via the noop dict — a real
+        dict entry nothing but the allowlist covers must raise regardless
+        of which of the two dispatch dicts it lives in."""
+        from backend.api.algo.grammar_registry import (
+            validate_action_dispatch_catalog, ActionDispatchDriftError,
+        )
+        import pytest
+        with pytest.raises(ActionDispatchDriftError, match="fake_undeclared_noop"):
+            validate_action_dispatch_catalog(
+                catalog_tokens={"emit_log"},
+                live_handlers={},
+                noop_handlers={"emit_log": object(), "fake_undeclared_noop": object()},
+                allowlist={},
+            )
+
+    def test_raises_on_stale_allowlist_entry_no_longer_dispatched(self):
+        """An allowlist entry whose token has disappeared from BOTH
+        dispatch dicts is stale and must raise — the allowlist itself must
+        never be allowed to silently rot into describing a handler that no
+        longer exists."""
+        from backend.api.algo.grammar_registry import (
+            validate_action_dispatch_catalog, ActionDispatchDriftError,
+        )
+        import pytest
+        with pytest.raises(ActionDispatchDriftError, match="ghost_token"):
+            validate_action_dispatch_catalog(
+                catalog_tokens={"place_order"},
+                live_handlers={"place_order": object()},
+                noop_handlers={},
+                allowlist={"ghost_token": "no longer dispatched"},
+            )
+
+    def test_raises_on_stale_allowlist_entry_now_catalogued(self):
+        """An allowlist entry whose token has since gained a real catalog
+        row no longer needs the exception — leaving it in place would mask
+        a future genuine direction-2 regression for that same token, so
+        this must raise too."""
+        from backend.api.algo.grammar_registry import (
+            validate_action_dispatch_catalog, ActionDispatchDriftError,
+        )
+        import pytest
+        with pytest.raises(ActionDispatchDriftError, match="now_catalogued"):
+            validate_action_dispatch_catalog(
+                catalog_tokens={"place_order", "now_catalogued"},
+                live_handlers={"place_order": object(), "now_catalogued": object()},
+                noop_handlers={},
+                allowlist={"now_catalogued": "used to be dispatch-only"},
+            )
+
+    def test_reload_invokes_validator_and_propagates_its_error(self):
+        """`REGISTRY.reload()` must actually call the validator (not just
+        have it sit unused) and must let a raised ActionDispatchDriftError
+        propagate — never swallow it — so a real drift breaks startup /
+        the admin reload endpoint instead of silently loading a half-wired
+        registry. Patches the validator (imported into grammar_registry's
+        own namespace) to raise, and mocks the DB session the same way
+        `_make_grammar_db_session_mock` does elsewhere in this file, so the
+        DB read is never reached."""
+        import asyncio
+        import pytest
+        from backend.api.algo.grammar_registry import REGISTRY, ActionDispatchDriftError
+
+        mock_session = _make_grammar_db_session_mock([])
+        with patch(
+            "backend.api.algo.grammar_registry.validate_action_dispatch_catalog",
+            side_effect=ActionDispatchDriftError("boom"),
+        ) as mock_validate, patch(
+            "backend.api.database.async_session", return_value=mock_session,
+        ):
+            with pytest.raises(ActionDispatchDriftError, match="boom"):
+                asyncio.run(REGISTRY.reload())
+        mock_validate.assert_called_once()
+        # The DB was never touched — validation runs before the SELECT.
+        mock_session.execute.assert_not_called()

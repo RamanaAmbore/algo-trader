@@ -28,7 +28,6 @@
   import { get } from 'svelte/store';
   import OrderDepth from './OrderDepth.svelte';
   import ChaseAggPicker from './ChaseAggPicker.svelte';
-  import TemplateBar from '$lib/TemplateBar.svelte';
   import QtyInput from './QtyInput.svelte';
   import Select from '$lib/Select.svelte';
   import OrderKnobsRow from '$lib/order/OrderKnobsRow.svelte';
@@ -104,7 +103,7 @@
    *   onMarginUpdate?: ((preview:any, loading:boolean, meta?: {isCashMode:boolean, cash:number|null, availMargin:number|null, usedMargin:number|null, fundsAccount:string, kind:string, side:string}) => void) | null,
    *   onPreviewPlanUpdate?: ((plan:any, loading:boolean, error:string, capWarning:string) => void) | null,
    *   onValidationChange?: ((err: string) => void) | null,
-   *   onTicketStateChange?: ((state: {side: 'BUY'|'SELL'|null, qty: number, submitting: boolean, pending: boolean, depthPending: boolean}) => void) | null,
+   *   onTicketStateChange?: ((state: {side: 'BUY'|'SELL'|null, qty: number, submitting: boolean, pending: boolean, depthPending: boolean, mktOpen: boolean, mktExch: string, showDraftToggle: boolean, selectedTemplate: object|null, defaultTemplate: object|null, showsWing: boolean, isUsingNone: boolean}) => void) | null,
    *   fundsHidden?: boolean,
    *   symbolHidden?: boolean,
    *   symType?: 'ALL' | 'EQ' | 'FUT' | 'OPT',
@@ -127,9 +126,7 @@
    *   defaultChase?: boolean,
    *   defaultChaseAgg?: 'low' | 'med' | 'high',
    *   initialDraftId?: number | null,
-   *   onSelectDefault?: () => void,
-   *   onSelectNone?: () => void,
-   *   onSelectTemplate?: (id: number) => void,
+   *   draftMode?: boolean,
    * }} */
   let {
     symbol,
@@ -304,21 +301,20 @@
     defaultChaseAgg           = /** @type {'low'|'med'|'high'} */ ('low'),
     // When set to a payoffDrafts id (the real backend AlgoOrder id of a
     // mode='draft' row), the ticket opens pre-filled from that draft
-    // entry with _draftMode=true. Submit → "Update Draft" (PATCHes the
+    // entry with draftMode=true. Submit → "Update Draft" (PATCHes the
     // same row in place). Closing without submitting leaves the draft
     // untouched (2026-10 fix — closing used to discard it). When null
     // (default) the "Add to Payoff" path creates a new entry.
     initialDraftId            = /** @type {number|null} */ (null),
-    // 2026-10-16 — Bracket toggle moved onto the same row as CHASE/DRAFT
-    // (operator: "keep bracket before draft on the same row"). These
-    // three callbacks mirror the shell's own _onTemplSelectDefault/
-    // _onTemplSelectNone/_onTemplSelectTemplate so the shared per-scope
-    // remembered-pref bookkeeping stays correct when embedded. Undefined
-    // (standalone mount, no shell) falls back to mutating the bindable
-    // `templateId` prop directly.
-    onSelectDefault  = /** @type {(() => void)|undefined} */ (undefined),
-    onSelectNone     = /** @type {(() => void)|undefined} */ (undefined),
-    onSelectTemplate = /** @type {((id: number) => void)|undefined} */ (undefined),
+    // 2026-10-21 — "Add to Payoff" draft mode, promoted from local
+    // $state to a $bindable prop so the shell's single shared CHASE/
+    // BRACKET/DRAFT row (SymbolPanel.svelte) can read + toggle it for
+    // BOTH the Ticket and Chain tabs. Every write site inside this
+    // component gates on `suspended` (see the stale-draft effect below
+    // and the onMount draft-prefill block) — same convention as the
+    // `templateId` re-validation effect — so this component never
+    // clobbers the shared value while hidden behind Chain.
+    draftMode                 = $bindable(false),
   } = $props();
 
   // E1: focus ping — when PageHeaderActions increments the store while
@@ -330,8 +326,9 @@
   // "Add to Payoff" draft mode — when ON the submit button adds the leg
   // to the session-only payoffDrafts store instead of routing to the broker.
   // Only available for F&O instruments (isEquity false) and mutually exclusive
-  // with Chase (enabling one disables the other).
-  let _draftMode = $state(false);
+  // with Chase (enabling one disables the other). `draftMode` is now the
+  // $bindable prop declared above (2026-10-21 shared-row re-wire) — no
+  // local $state here any more.
   // Success message for the draft-add path (replaces submitOk temporarily).
   let _draftOk = $state('');
   // True when the ticket was opened from a specific draft (initialDraftId set)
@@ -361,17 +358,24 @@
 
   // B3: detect stale initialDraftId — if the ticket was opened for an
   // existing draft but that entry has since been removed from the store
-  // (e.g. another surface cleared it), warn the operator. _draftMode is
+  // (e.g. another surface cleared it), warn the operator. draftMode is
   // kept false so the submit does NOT silently create a duplicate draft.
   // Gated on payoffDrafts.loaded (2026-10) — the store's initial load()
   // is async (GET /api/orders/drafts); without this gate, a ticket that
   // mounts before that fetch resolves would see an empty Map and flag
   // every real draft as "missing" on the very first render.
+  // Gated on `suspended` FIRST (2026-10-21 shared-row re-wire) — same
+  // convention as the templateId re-validation effect below. draftMode
+  // is now a shared/bound value (SymbolPanel's _sharedDraftMode); this
+  // effect must not reset it while OrderTicket is hidden behind Chain.
+  // `suspended` is read first (before any early return below it) so it's
+  // tracked and the effect re-runs the moment Ticket becomes active again.
   $effect(() => {
+    if (suspended) return;
     if (!payoffDrafts.loaded) return;
     if (initialDraftId && !payoffDrafts.value.has(initialDraftId)) {
       _draftMissing = true;
-      _draftMode = false;
+      draftMode = false;
     }
   });
 
@@ -969,13 +973,15 @@
     _selectedTemplate?.slug === 'none' || templateId === null
   );
 
-  // 2026-10-16 — Bracket toggle, now rendered inline on the CHASE/DRAFT
-  // row (see .ot-chase-row below) instead of only via the shell's
-  // post-tab-body container. Reuses this component's own already-
-  // complete local template state (_templates/_selectedTemplate/
-  // _defaultTemplate/_isUsingNone all existed already — nothing new to
-  // fetch) so the embedded <TemplateBar> mount needs only two small
-  // additional derived values TemplateBar itself requires.
+  // 2026-10-21 — the Bracket toggle (TemplateBar) no longer renders
+  // inside this component at all (moved to SymbolPanel's shared row —
+  // see the comment near .ot-chase-row below). These derived values
+  // stay: _selectedTemplate/_isUsingNone/_templateCapWarning still
+  // drive Ticket's OWN inline wing-warning / GTT-preview / no-default-
+  // warning blocks further down, and _selectedTemplate/_defaultTemplate/
+  // _showsWing/_isUsingNone are mirrored up to the shell via the
+  // onTicketStateChange payload so it can render the Bracket toggle's
+  // display state for the Ticket tab without re-deriving it.
   const _nonNoneTemplates = $derived(_templates.filter(t => t.slug !== 'none'));
   const _showsWing = $derived(
     !!_selectedTemplate &&
@@ -983,31 +989,15 @@
   );
 
   // Mutual exclusion (operator: "only one can be active or both can be
-  // inactive") — Bracket and Draft can never both be ON. Draft turning
-  // ON deactivates an active Bracket; Bracket turning ON (picking
-  // Default) turns Draft OFF. Both OFF simultaneously is the normal
-  // rest state and is left alone.
-  function _onBracketSelectDefault() {
-    if (_draftMode) _draftMode = false;
-    if (onSelectDefault) onSelectDefault();
-    else templateId = _defaultTemplate?.id ?? null;
-  }
-  function _onBracketSelectNone() {
-    if (onSelectNone) onSelectNone();
-    else templateId = null;
-  }
-  function _onDraftToggleChange(/** @type {boolean} */ checked) {
-    _draftMode = checked;
-    if (checked && !_isUsingNone) {
-      if (onSelectNone) onSelectNone();
-      else templateId = null;
-    }
-  }
-  function _onBracketSelectTemplate(/** @type {number} */ id) {
-    if (_draftMode) _draftMode = false;
-    if (onSelectTemplate) onSelectTemplate(id);
-    else templateId = id;
-  }
+  // inactive") — Bracket and Draft can never both be ON. 2026-10-21
+  // shared-row re-wire: the Bracket toggle (TemplateBar) and the Draft
+  // checkbox both now render once, at shell level, inside SymbolPanel's
+  // single CHASE/BRACKET/DRAFT row — the `_onBracketSelectDefault`/
+  // `_onBracketSelectNone`/`_onDraftToggleChange`/`_onBracketSelectTemplate`
+  // wrapper functions that used to live here (and enforced this mutual
+  // exclusion) moved there too. See SymbolPanel.svelte's
+  // `_wrapTemplSelectDefault`/`_wrapTemplSelectNone`/`_wrapTemplSelectTemplate`/
+  // `_onSharedDraftToggleChange`.
 
   // #16 — side-flip template change flash. Set to true when _autoSelectTemplate
   // fires due to a scope mismatch (side/symbol change); auto-clears after 1.2s.
@@ -1891,6 +1881,18 @@
   // lots or flips side, and (b) stay disabled for the FULL duration of
   // a submit (not just the host's own separate `basketSubmitting` flag,
   // which doesn't cover a single-ticket submit at all).
+  // 2026-10-21 shared-row re-wire — extended with mktOpen/mktExch
+  // (mirrors the market badge so SymbolPanel can render it for the
+  // Ticket tab without duplicating/relocating `_isOpen`/
+  // `_mktOpenForExchange` itself — those stay exactly where they are,
+  // unedited, since an existing spec asserts against their source
+  // text) and the Bracket-display fields (showDraftToggle/
+  // selectedTemplate/defaultTemplate/showsWing/isUsingNone) so the
+  // shell's single TemplateBar instance can mirror Ticket's own
+  // resolution for the Ticket tab (Chain keeps the shell's own
+  // resolution — see SymbolPanel's `_currentScope()`). Every field here
+  // is a pure local-state read (no write to shared/bound state), so
+  // this effect does NOT need a `suspended` gate.
   $effect(() => {
     onTicketStateChange?.({
       side: _side,
@@ -1898,6 +1900,13 @@
       submitting,
       pending: !!submitPending,
       depthPending: _depthPending,
+      mktOpen: _isOpen,
+      mktExch: _mktBadgeExch,
+      showDraftToggle,
+      selectedTemplate: _selectedTemplate,
+      defaultTemplate: _defaultTemplate,
+      showsWing: _showsWing,
+      isUsingNone: _isUsingNone,
     });
   });
 
@@ -2091,6 +2100,17 @@
     // Skip when the ticket is incomplete — no point hitting Kite with
     // a half-typed form. Also skip drafts (no broker; cost is the limit
     // × qty multiplication which the operator can already see).
+    // 2026-10-21 fix (operator: "draft positions don't need margin
+    // check") — the comment above claimed this already worked, but the
+    // ONLY draft-related check below was `_mode === 'draft'`, the
+    // UNRELATED execution-mode enum ('sim'|'paper'|'live'|'shadow'|
+    // 'draft' from $executionMode) — not the Draft TOGGLE (`draftMode`,
+    // promoted to a shell-bound prop in the CHASE/BRACKET/DRAFT
+    // consolidation). Turning Draft ON while execution mode was
+    // 'live'/'paper' (the normal case) still fired a real
+    // /api/orders/preflight call on every 350ms-debounced change.
+    // `draftMode` added alongside the pre-existing `_mode === 'draft'`
+    // check — that one stays, it's a different, still-valid concept.
     if (suspended) {
       return;
     }
@@ -2098,7 +2118,7 @@
     // chip will not be displayed in the beginning." Gate the preflight
     // on _side being non-null so the chip stays empty until the
     // operator clicks BUY or SELL.
-    if (_isDemo || !_account || !symbol || !_side || Number(_qty) <= 0 || _mode === 'draft') {
+    if (_isDemo || !_account || !symbol || !_side || Number(_qty) <= 0 || _mode === 'draft' || draftMode) {
       _marginPreview = null;
       _marginLoading = false;
       // `_chipMeta` is read via untrack so it doesn't add itself to the
@@ -2185,7 +2205,7 @@
     _submitTried = true;
 
     // ── "Add to Payoff" / "Update Draft" path ───────────────────
-    // When _draftMode is ON, skip ALL broker interaction and persist
+    // When draftMode is ON, skip ALL broker interaction and persist
     // the leg via the server-backed payoffDrafts store. The derivatives
     // page reads that store and merges the entry into its
     // candidatePositions so the payoff curve updates.
@@ -2194,7 +2214,7 @@
     // PATCH that row in place (update) — NOT remove-then-add, which
     // would churn the id and break any UI state that remembered it
     // across a re-render. If no initialDraftId, create a new draft.
-    if (_draftMode && !isEquity) {
+    if (draftMode && !isEquity) {
       const sym = String(_resolvedSymbol || symbol || '').toUpperCase();
       if (!sym) { submitErr = 'Symbol required'; return; }
       const signedQty = _side === 'BUY'
@@ -2202,11 +2222,20 @@
         : -Math.abs(_qty || _lots * Math.max(_lotSize, 1));
       submitting = true; submitErr = ''; submitErrFull = '';
       try {
+        // 2026-10-21 — price the draft entry from the latest live tick
+        // (same canonical read `liveSnap()` CandidateLegRow.svelte uses)
+        // instead of whatever happens to be sitting in the price field —
+        // operator ask: draft entries should price from live LTP. Falls
+        // back to `_price` only when no live snapshot exists yet (cold
+        // symbol, no tick seen this session).
+        const _liveLtp = liveSnap(sym)?.ltp;
         const draftEntry = {
           symbol:     sym,
           exchange:   _resolvedExchange || exchange || 'NFO',
           qty:        signedQty,
-          avg_cost:   _price != null ? Number(_price) : null,
+          avg_cost:   (_liveLtp != null && _liveLtp > 0)
+                        ? Number(_liveLtp)
+                        : (_price != null ? Number(_price) : null),
           underlying: rootOf(sym, _resolvedExchange || exchange || 'NFO'),
           account:    _account || null,
         };
@@ -2227,7 +2256,7 @@
     }
 
     // NOTE (2026-10 fix): previously this is where a stale draft entry
-    // was removed when _draftMode had been toggled OFF mid-session
+    // was removed when draftMode had been toggled OFF mid-session
     // (submit proceeding to the real broker path below). That removal
     // fired BEFORE the broker/paper call even ran, so a failed
     // placement still lost the draft. Cleanup now happens only AFTER a
@@ -2370,12 +2399,12 @@
           strategyId: _strategyId,
           // Draft cleanup (2026-10 fix) — only when this submit is the
           // real-placement path for a ticket that was opened from an
-          // existing draft (_draftMode now off; see the draft-mode
+          // existing draft (draftMode now off; see the draft-mode
           // branch above for the companion "still editing" path).
           // Threaded into the /ticket payload as draft_id so the
           // BACKEND deletes the draft only on confirmed success — never
           // here, before the placement result is known.
-          draftId: (!_draftMode && initialDraftId) ? initialDraftId : null,
+          draftId: (!draftMode && initialDraftId) ? initialDraftId : null,
         };
         brokerResp = await placeTicketOrder(buildPlacePayload(placeCtx));
         // Show inline confirmation so the operator sees the order
@@ -2515,12 +2544,22 @@
     // Draft pre-fill — when opened from a payoffDrafts row (initialDraftId
     // is set), seed the form fields from the draft entry and activate draft
     // mode. The caller (orders page) already sets symbol/qty/price as
-    // props; we just need to enable _draftMode so the submit button reads
+    // props; we just need to enable draftMode so the submit button reads
     // "Update Draft". Closing without submitting leaves the draft as-is.
     if (initialDraftId) {
       const existing = payoffDrafts.value.get(initialDraftId);
       if (existing) {
-        _draftMode = true;
+        // 2026-10-21 — draftMode is now shared/bound (SymbolPanel's
+        // _sharedDraftMode); only seed it when Ticket is the actual
+        // active tab at mount time. Per CLAUDE.md's "Order Ticket /
+        // Bracket-template re-wire" incident history: writing to bound
+        // state from inside OrderTicket while hidden behind Chain is
+        // the exact bug class four prior reversals came from. This is
+        // a one-shot onMount seed, not a reactive $effect, so `suspended`
+        // is read once here rather than gated with an early return
+        // (an early return here would also skip account-fetch/template-
+        // load/the market-badge timer below, which must always run).
+        if (!suspended) draftMode = true;
         // Fields are already seeded via props (symbol, price, qty/lotSize).
         // Only override if the draft has non-null values the prop didn't carry.
         if (existing.avg_cost != null && !_price) {
@@ -2806,20 +2845,22 @@
           </span>
         </div>
       {/if}
-      <!-- D1: market open/closed badge — surfaces OrderTicket's own
-           belief about the traded exchange's session state (same
-           isNseOpen/isMcxOpen convention RefreshButton.svelte uses)
-           so a divergence from the submit-time backend gate is
-           visible here instead of only discoverable via a rejected
-           order. Deliberately OUTSIDE the `symbolHidden` gate above —
-           SymbolPanel.svelte (the only real caller) always passes
-           symbolHidden=true since it renders its own symbol picker,
-           so gating this badge on the same flag would make it never
-           render on the actual embedded surface operators use. -->
-      <span class="ot-mkt-badge" class:ot-mkt-open={_isOpen} class:ot-mkt-closed={!_isOpen}
-            data-testid="ot-market-badge" title={_mktBadgeTitle}>
-        {_mktBadgeExch} {_isOpen ? 'open' : 'closed'}
-      </span>
+      <!-- D1: market open/closed badge — markup REMOVED 2026-10-21
+           (shared-row re-wire). The underlying computation (`_isOpen`/
+           `_mktOpenForExchange`/`_mktBadgeExch`/`_mktBadgeTitle` above,
+           and its 30s visibleInterval re-check in onMount) is left
+           exactly where it is, unedited — an existing spec
+           (order_ticket_market_badge_and_error_toast.spec.js) asserts
+           against that exact source text. The visible badge itself now
+           renders once, at shell level, inside SymbolPanel's single
+           CHASE/BRACKET/DRAFT row for BOTH tabs — mirrored up via the
+           `onTicketStateChange` payload's `mktOpen`/`mktExch` fields
+           for Ticket; computed independently for Chain (no single
+           "the" exchange on Ticket's own bare-underlying picker the
+           way Chain always resolves one per leg). `data-testid="ot-market-badge"`
+           is preserved on the new markup so the existing "live:" DOM
+           tests in that spec keep passing unmodified — only its
+           "source:" text assertions need re-pointing (separate pass). -->
       <!-- Bare-underlying inline pickers (Possibility B). When the
            picker row's Type filter says FUT or OPT and the symbol is
            just the underlying name, we surface Expiry (FUT + OPT) +
@@ -3119,85 +3160,26 @@
          so the operator can toggle chase while watching the depth
          rather than hunting for it in the card header middle slot.
          Only shown when limit price is relevant + not hidden by host. -->
-    <!-- CHASE + BRACKET + DRAFT share one row. Each has its own gate: CHASE is
-         hidden by `modeChaseHidden` (host renders its own toolbar), DRAFT
-         by `hideDraftToggle` (2026-10 fix — it used to be nested under
-         the CHASE gate, so SymbolPanel's modeChaseHidden={true} made it
-         unreachable). BRACKET (2026-10-16 fix, operator: "keep bracket
-         before draft on the same row") sits between CHASE and DRAFT —
-         hidden for close orders (template attach doesn't apply there,
-         matching the other template-adjacent UI below) and in demo mode.
-         The row renders when any control is visible.
-         BRACKET and DRAFT are mutually exclusive (operator: "only one
-         can be active or both can be inactive") — see
-         _onBracketSelectDefault/_onBracketSelectNone/_onDraftToggleChange/_onBracketSelectTemplate
-         above: turning one ON auto-turns the other OFF; both OFF is the
-         normal rest state. DRAFT is also mutually exclusive with Chase.
-         When DRAFT is ON, the submit button adds the leg to the session
-         payoff draft store (payoffDrafts) instead of routing to the
-         broker. The derivatives page merges these into candidatePositions
-         so the payoff curve updates immediately. -->
-    {#if showLimit && (!modeChaseHidden || showDraftToggle || (!_isCloseOrder && !_isDemo))}
+    <!-- 2026-10-21 shared-row re-wire — BRACKET (TemplateBar) and DRAFT
+         no longer render here at all. Both now live once, at shell
+         level, inside SymbolPanel's single CHASE/BRACKET/DRAFT row
+         (visible identically on Ticket + Chain). This CHASE-only block
+         is dead at the one real mount site (SymbolPanel always passes
+         `modeChaseHidden={true}`) but is kept, narrowed to just CHASE,
+         for a hypothetical future standalone (non-shell) mount — same
+         rationale `showLimit` elsewhere in this file is kept for. -->
+    {#if showLimit && !modeChaseHidden}
       <div class="ot-chase-row">
-        {#if !modeChaseHidden}
-          <label class="ot-chase-toggle"
-                 title={_chase
-                   ? 'Chase ON — re-quote the limit each tick until filled'
-                   : 'Chase OFF — order rests at the initial limit; fills only if the market crosses'}>
-            <input type="checkbox" checked={_chase}
-                   onchange={(e) => _setChase(/** @type {HTMLInputElement} */ (e.currentTarget).checked)} />
-            <span class="ot-chase-label" class:on={_chase}>CHASE</span>
-          </label>
-          {#if _chase}
-            <ChaseAggPicker value={_chaseAgg} onChange={_setChaseAgg} />
-          {/if}
-        {/if}
-        {#if !suspended && _isDemo}
-          <span class="oct-tpl-demo-note">Exit rules (TP / SL / Wing) not available in demo.</span>
-        {:else if !suspended && !_isCloseOrder}
-          <!-- 2026-10-16 — gated on `!suspended` (not just the ancestor's
-               CSS display:none) so this <TemplateBar> is fully UNMOUNTED,
-               not merely hidden, while Chain is active. OrderTicket's
-               body stays mounted for its margin-preflight effect (see
-               the comment above .oes-ticket-body in SymbolPanel.svelte),
-               but without this gate a second, invisible .oes-tpl-button
-               existed in the DOM at all times — Playwright's/any
-               selector's .first() could resolve to the hidden Ticket
-               copy instead of Chain's visible one. Bracket is the only
-               control in this row bound to SHARED (shell) state, so
-               it's the only one that needed this — DRAFT is local-only
-               state and CHASE never even reaches this component when
-               embedded (modeChaseHidden is hardcoded true at the
-               SymbolPanel mount site; it renders via a separate
-               shell-level control instead). -->
-          <TemplateBar
-            selectedTemplate={_selectedTemplate}
-            sideAwareDefault={_defaultTemplate}
-            nonNoneTemplates={_nonNoneTemplates}
-            showsWing={_showsWing}
-            shellUsingNone={_isUsingNone}
-            bind:tpOverride
-            bind:slOverride
-            bind:wingStrikeOffsetOverride
-            bind:wingPremPctOverride
-            bind:slTrailPctOverride
-            bind:tpOrderTypeOverride
-            bind:tpScalesJsonOverride
-            onSelectDefault={_onBracketSelectDefault}
-            onSelectNone={_onBracketSelectNone}
-            onSelectTemplate={_onBracketSelectTemplate} />
-        {/if}
-        {#if showDraftToggle}
-          <label class="ot-draft-toggle"
-                 title={_draftMode
-                   ? 'Draft ON — submit adds this leg to the payoff chart without placing an order'
-                   : 'Draft OFF — submit routes to broker normally'}>
-            <input type="checkbox" checked={_draftMode}
-                   onchange={(e) => _onDraftToggleChange(/** @type {HTMLInputElement} */ (e.currentTarget).checked)} />
-            <span class="ot-draft-label" class:on={_draftMode}>DRAFT</span>
-          </label>
-          <InfoHint popup panel title="Draft"
-            text="When ON, Submit adds this leg to the session payoff chart instead of placing a real broker order — nothing is sent to the exchange. Useful for sketching a strategy before committing. Mutually exclusive with Bracket — turning Draft on clears any active bracket (no exit-rule attach is meaningful for a leg that was never actually placed)." />
+        <label class="ot-chase-toggle"
+               title={_chase
+                 ? 'Chase ON — re-quote the limit each tick until filled'
+                 : 'Chase OFF — order rests at the initial limit; fills only if the market crosses'}>
+          <input type="checkbox" checked={_chase}
+                 onchange={(e) => _setChase(/** @type {HTMLInputElement} */ (e.currentTarget).checked)} />
+          <span class="ot-chase-label" class:on={_chase}>CHASE</span>
+        </label>
+        {#if _chase}
+          <ChaseAggPicker value={_chaseAgg} onChange={_setChaseAgg} />
         {/if}
       </div>
     {/if}
@@ -3431,16 +3413,16 @@
                  for those. Label varies by action so the operator knows
                  what's about to fire. -->
             <button type="button" class="ot-submit"
-                    class:ot-submit-buy={_side === 'BUY' && !_draftMode && !(!_isDemo && _depthPending)}
-                    class:ot-submit-sell={_side === 'SELL' && !_draftMode && !(!_isDemo && _depthPending)}
-                    class:ot-submit-draft={_draftMode}
+                    class:ot-submit-buy={_side === 'BUY' && !draftMode && !(!_isDemo && _depthPending)}
+                    class:ot-submit-sell={_side === 'SELL' && !draftMode && !(!_isDemo && _depthPending)}
+                    class:ot-submit-draft={draftMode}
                     class:ot-submit-demo={_isDemo}
-                    class:ot-submit-depth-pending={!_isDemo && !_draftMode && _depthPending}
-                    disabled={_isDemo ? false : (!!validationErr || submitting || _noSymbol || (!_draftMode && _depthPending))}
-                    title={_isDemo ? 'Demo mode — click to learn how to enable real orders' : (_draftMode ? 'Add leg to payoff chart (no broker order)' : (_depthPending ? 'Waiting for market depth (bid/ask) for this strike' : ''))}
+                    class:ot-submit-depth-pending={!_isDemo && !draftMode && _depthPending}
+                    disabled={_isDemo ? false : (!!validationErr || submitting || _noSymbol || (!draftMode && _depthPending))}
+                    title={_isDemo ? 'Demo mode — click to learn how to enable real orders' : (draftMode ? 'Add leg to payoff chart (no broker order)' : (_depthPending ? 'Waiting for market depth (bid/ask) for this strike' : ''))}
                     onclick={submit}>
               {#if _isDemo}Submit (Demo){:else if submitting}…
-              {:else if _draftMode}Add to Payoff
+              {:else if draftMode}Add to Payoff
               {:else if action === 'modify'}Modify Order{orderId ? ' · #' + orderId : ''}
               {:else if action === 'close'}Close · {_side.toLowerCase()}
               {:else if action === 'repeat'}Place again
@@ -3687,15 +3669,9 @@
     flex-wrap: wrap;
   }
 
-  /* 2026-10-16 — Bracket toggle's demo-mode note, same row. Mirrors
-     OptionChainTab.svelte's .oct-tpl-demo-note exactly (Svelte scopes
-     styles per-component, so this needs its own copy here). */
-  .oct-tpl-demo-note {
-    font-family: var(--font-numeric);
-    font-size: var(--fs-xs);
-    color: var(--text-lo);
-    font-style: italic;
-  }
+  /* .oct-tpl-demo-note removed 2026-10-21 (shared-row re-wire) — the
+     demo-mode note now renders once, at shell level, inside
+     SymbolPanel's single CHASE/BRACKET/DRAFT row. */
 
   /* D2: wing warning */
   .ot-wing-warning {
@@ -3902,35 +3878,10 @@
     border-color: rgba(248, 113, 113, 0.35);
     color: var(--c-short);
   }
-  /* D1: market open/closed badge — mirrors RefreshButton.svelte's
-     .rf-mkt-* palette (open = green, closed = muted slate) so the
-     same exchange-state convention reads consistently across the app.
-     Center-aligned within its row (align-self: center below). On the
-     real embedding (SymbolPanel.svelte, symbolHidden={true}) there is
-     no adjacent Symbol chip — the badge renders alone in its row. */
-  .ot-mkt-badge {
-    display: inline-flex;
-    align-items: center;
-    flex-shrink: 0;
-    align-self: center;
-    padding: 0.2rem 0.45rem;
-    border-radius: 3px;
-    font-size: var(--fs-xs);
-    font-weight: 700;
-    letter-spacing: 0.02em;
-    text-transform: uppercase;
-    white-space: nowrap;
-  }
-  .ot-mkt-open {
-    background: var(--algo-green-bg-mid);
-    border: 1px solid var(--algo-green-border);
-    color: var(--algo-green-text);
-  }
-  .ot-mkt-closed {
-    background: var(--algo-muted-bg);
-    border: 1px solid var(--algo-muted-border);
-    color: var(--algo-dim);
-  }
+  /* .ot-mkt-badge/.ot-mkt-open/.ot-mkt-closed removed 2026-10-21
+     (shared-row re-wire) — duplicated as .oes-mkt-badge/.oes-mkt-open/
+     .oes-mkt-closed in SymbolPanel.svelte, which now renders the badge
+     markup for both tabs. */
   .ot-label {
     /* Section-header treatment so labels read as form structure
        cues, distinct from values / pills / numeric inputs. Amber
@@ -4292,39 +4243,12 @@
     user-select: none;
   }
 
-  /* Draft toggle — sits after Chase in the same row.
-     Uses magenta/purple palette (matches draft-row identity in
-     CandidateLegRow) to visually distinguish it from Chase (amber). */
-  .ot-draft-toggle {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.3rem;
-    cursor: pointer;
-    user-select: none;
-  }
-  .ot-draft-toggle input[type="checkbox"] {
-    accent-color: var(--algo-violet);
-    width: 0.85rem;
-    height: 0.85rem;
-    cursor: pointer;
-  }
-  .ot-draft-label {
-    font-family: monospace;
-    font-size: var(--fs-md);
-    font-weight: 700;
-    letter-spacing: 0.05em;
-    padding: 0.15rem 0.4rem;
-    border-radius: 3px;
-    border: 1px solid rgba(255,255,255,0.12);
-    color: var(--text-muted);
-    background: rgba(255,255,255,0.04);
-  }
-  .ot-draft-label.on {
-    background: rgba(192,132,252,0.18);
-    border-color: rgba(192,132,252,0.55);
-    color: var(--algo-violet);
-  }
-  /* Draft-mode submit button — magenta/violet instead of green/red. */
+  /* .ot-draft-toggle/.ot-draft-label removed 2026-10-21 (shared-row
+     re-wire) — duplicated unchanged in SymbolPanel.svelte, which now
+     renders the DRAFT checkbox for both tabs. The submit button's own
+     .ot-submit-draft styling below is UNRELATED to the toggle markup
+     (it's keyed off the bound `draftMode` prop, not any local toggle)
+     and stays — OrderTicket's own footer submit button still needs it. */
   .ot-submit.ot-submit-draft {
     background: rgba(192,132,252,0.22);
     border-color: rgba(192,132,252,0.55);

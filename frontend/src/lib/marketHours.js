@@ -142,6 +142,32 @@ export function isBookSnapshotGraceWindow(/** @type {Date} */ now = new Date()) 
 }
 
 /**
+ * Per-exchange open/closed resolution — Chain-tab counterpart to
+ * OrderTicket.svelte's own `_mktOpenForExchange()`. Deliberately a
+ * SEPARATE, duplicated function rather than OrderTicket delegating to
+ * this one (or vice versa): `e2e/order_ticket_market_badge_and_error_toast.spec.js`
+ * asserts against the exact literal source text of OrderTicket's own
+ * `_mktOpenForExchange` (its branches, its imports) — refactoring that
+ * function to call out to this module would change the source text the
+ * spec regex-matches against for no behavioural benefit. Keep the two
+ * mapping tables in sync by hand if the backend's
+ * `_EXCHANGE_TO_SEGMENT` table (agent_engine.py) ever changes.
+ *
+ * Mapping: MCX/NCO → isMcxOpen() (commodity segment); NFO/NSE/BSE/BFO/
+ * CDS/BCD → isNseOpen() (equity segment); any other/unrecognized
+ * exchange code → false (fail-closed, matching the backend's
+ * "unknown segment → never wrongly allow" convention).
+ *
+ * @param {string} exch — already-uppercased exchange code
+ * @returns {boolean}
+ */
+export function segmentOpenForExchange(exch) {
+  if (exch === 'MCX' || exch === 'NCO') return isMcxOpen();
+  if (exch === 'NFO' || exch === 'NSE' || exch === 'BSE' || exch === 'BFO' || exch === 'CDS' || exch === 'BCD') return isNseOpen();
+  return false;
+}
+
+/**
  * One-shot fetch of /api/market/status. Stores.js wires this into a
  * 5-min visibleInterval. Resolves silently on failure so a backend
  * outage just leaves the time-only fallback active.

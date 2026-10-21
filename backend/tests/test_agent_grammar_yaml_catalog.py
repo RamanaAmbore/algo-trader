@@ -80,6 +80,21 @@ place_order unification" note and `backend/tests/test_order_place_order_
 unification.py` for the dedicated dispatch-equivalence + backfill-
 migration coverage.
 
+Amendment (2026-10, action-dispatch drift validator): a new
+`(action, action_type, send_summary)` token was added to
+`agent_grammar.yaml` right after `emit_log` (and mirrored here at the
+same position, index 96) — `send_summary` already had a fully-wired,
+tested dispatch handler in `_NOOP_ACTION_HANDLERS`
+(`actions_live._action_send_summary`) but no catalog row at all, so
+`is_known_action_type()` rejected it and the Lab-chat agent-builder
+could never offer it. Caught by the new
+`validate_action_dispatch_catalog()` check (`grammar_registry.py`) added
+the same round, which cross-references the catalog against both
+dispatch dicts and would otherwise have let this exact "dead/orphaned
+handler" drift class — the same one CLAUDE.md's "7 dead grammar-resolver
+stub functions" incident describes in the opposite direction — go
+uncaught indefinitely. See `backend/tests/test_grammar_registry.py`.
+
 Perf: no DB / network calls, pure in-memory comparison.
 Reuse: shares the same SYSTEM_TOKENS / LOG_TAG_TOKENS module attributes
 every other grammar test and `seed_grammar_tokens()` read.

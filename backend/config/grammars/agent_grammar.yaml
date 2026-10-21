@@ -1204,6 +1204,27 @@ system_tokens:
       type: string
       required: true
       token_ref_ok: true
+- grammar_kind: action
+  token_kind: action_type
+  token: send_summary
+  value_type: void
+  description: Send a portfolio summary (holdings/positions/margins) via the configured
+    alert channels, per market segment.
+  resolver: backend.api.algo.actions_live._action_send_summary
+  params_schema:
+    segments:
+      type: array
+      required: false
+      description: Market segments to summarize.
+      default:
+      - equity
+      - commodity
+    summary_type:
+      type: enum
+      enum:
+      - open
+      - close
+      default: open
 
 # ════════════════════════════════════════════════════════════════════════
 #  EVENT AGENTS — RENDER ACTION (kind='event' agents only)

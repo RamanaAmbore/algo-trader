@@ -54,7 +54,7 @@ test.describe('derivatives +page.svelte — hasFNO wiring (Defect 1 blocker #1)'
 test.describe('derivatives +page.svelte — legs mapping uses buildPageLegs (Defect 1)', () => {
   test('legs is assigned via buildPageLegs, not an inline stripped mapping', () => {
     const src = readSrc(PAGE_PATH);
-    expect(src).toContain('legs = buildPageLegs(candidatePositions, _isLegEnabled, showDraftInPayoff)');
+    expect(src).toContain('legs = buildPageLegs(candidatePositions, _isLegEnabled)');
     // The old bug: an inline `.map()` that dropped pnl/realised/unrealised.
     // Must not reappear as a competing/duplicate mapping.
     expect(src).not.toMatch(/legs\s*=\s*candidatePositions\s*\n?\s*\.filter/);

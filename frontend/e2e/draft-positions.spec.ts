@@ -13,11 +13,13 @@
  *   2. Chase ↔ Draft mutual exclusion — enabling Draft disables Chase and
  *      vice versa (checkbox disabled).
  *
- *   3. Payoff legend DRAFT button — present in the OptionsPayoff chart legend
- *      when the derivatives page is mounted and an underlying is selected.
+ *   3. Payoff legend DRAFT button — REMOVED (2026-10 draft simplification).
+ *      Drafts are now always counted in the payoff like any real leg; there is
+ *      no showDraftInPayoff toggle. Asserted absent below.
  *
- *   4. Draft toggle in Legs card — the "Incl. draft/prov in payoff" bar
- *      appears whenever at least one draft row is in candidatePositions.
+ *   4. Draft toggle in Legs card — REMOVED (2026-10). The "Incl. draft/prov
+ *      in payoff" bar no longer exists; drafts are gated only by their own
+ *      per-row enable checkbox.
  *
  *   5. Persistence (UPDATED 2026-10, commit pending) — payoffDrafts is no
  *      longer pure in-memory $state. It's backed by /api/orders/drafts
@@ -36,7 +38,7 @@
  *   Performance — each assertion completes within 15 s (network + paint).
  *
  *   Stale code  — grep confirms ot-draft-toggle class exists in OrderTicket
- *                 and legend-toggle-draft exists in OptionsPayoff.
+ *                 (legend-toggle-draft was removed with showDraftInPayoff).
  *
  *   Reusable    — the DRAFT toggle reuses the same `.legend-toggle` CSS
  *                 as HOLD; OrderTicket reuses `.ot-chase-row` layout.
@@ -107,9 +109,11 @@ test('stale-code: ot-draft-toggle class exists in OrderTicket.svelte', async ({ 
   expect(true).toBe(true); // stale-code checked via grep in CI
 });
 
-// ── DIMENSION: Derivatives page — DRAFT button in payoff legend ─────────────
+// ── DIMENSION: Derivatives page — no DRAFT toggle in payoff legend ───────────
+// The showDraftInPayoff toggle was removed (2026-10 draft simplification):
+// drafts always count in the payoff. The legend must NOT carry a DRAFT button.
 
-test('payoff legend has DRAFT button when underlying is selected', async ({ page }) => {
+test('payoff legend has no DRAFT toggle (showDraftInPayoff removed)', async ({ page }) => {
   await loginAsAdmin(page);
   await page.goto(DERIV_URL, { waitUntil: 'domcontentloaded' });
 
@@ -117,35 +121,7 @@ test('payoff legend has DRAFT button when underlying is selected', async ({ page
   const payoffCard = page.locator('.opt-payoff');
   await expect(payoffCard).toBeVisible({ timeout: 15_000 });
 
-  // The DRAFT button is a .legend-toggle.legend-toggle-draft inside the payoff chart.
-  const draftBtn = page.locator('.legend-toggle-draft');
-  await expect(draftBtn).toBeVisible({ timeout: 10_000 });
-  await expect(draftBtn).toHaveText('DRAFT');
-});
-
-test('payoff legend DRAFT button toggles aria-pressed', async ({ page }) => {
-  await loginAsAdmin(page);
-  await page.goto(DERIV_URL, { waitUntil: 'domcontentloaded' });
-
-  const payoffCard = page.locator('.opt-payoff');
-  await expect(payoffCard).toBeVisible({ timeout: 15_000 });
-
-  const draftBtn = page.locator('.legend-toggle-draft');
-  await expect(draftBtn).toBeVisible({ timeout: 10_000 });
-
-  // Default state: ON (showDraftInPayoff = true by default from localStorage).
-  // aria-pressed reflects the current state.
-  const initialPressed = await draftBtn.getAttribute('aria-pressed');
-
-  // Click toggles the state.
-  await draftBtn.click();
-  const afterPressed = await draftBtn.getAttribute('aria-pressed');
-  expect(initialPressed).not.toBe(afterPressed);
-
-  // Click again restores.
-  await draftBtn.click();
-  const restoredPressed = await draftBtn.getAttribute('aria-pressed');
-  expect(restoredPressed).toBe(initialPressed);
+  await expect(page.locator('.legend-toggle-draft')).toHaveCount(0);
 });
 
 // ── DIMENSION: OrderTicket — DRAFT toggle visible for F&O ───────────────────
@@ -243,9 +219,8 @@ test('payoffDrafts store is accessible and integrates as session-only store', as
   // Inject a draft directly via the page context to simulate what OrderTicket does.
   // In a prod build module internals are not exposed; we verify the Legs card
   // empty state message instead (confirming the store path is wired).
-  // The DRAFT toggle in the payoff legend being present already proves wiring.
-  const draftBtn = page.locator('.legend-toggle-draft');
-  await expect(draftBtn).toBeVisible({ timeout: 10_000 });
+  // No DRAFT legend toggle any more (showDraftInPayoff removed).
+  await expect(page.locator('.legend-toggle-draft')).toHaveCount(0);
 
   // Confirm the HOLD button also renders (regression guard — both should coexist).
   const holdBtn = page.locator('.legend-toggle').filter({ hasText: 'HOLD' });
@@ -295,7 +270,7 @@ test('submit button label changes to "Add to Payoff" when Draft is ON', async ({
 
 // ── DIMENSION: Performance — all core interactions under 15 s ────────────────
 
-test('payoff card and DRAFT toggle render within 15 s of navigation', async ({ page }) => {
+test('payoff card renders within 15 s of navigation', async ({ page }) => {
   const t0 = Date.now();
 
   await loginAsAdmin(page);
@@ -303,9 +278,6 @@ test('payoff card and DRAFT toggle render within 15 s of navigation', async ({ p
 
   const payoffCard = page.locator('.opt-payoff');
   await expect(payoffCard).toBeVisible({ timeout: 15_000 });
-
-  const draftBtn = page.locator('.legend-toggle-draft');
-  await expect(draftBtn).toBeVisible({ timeout: 10_000 });
 
   const elapsed = Date.now() - t0;
   expect(elapsed).toBeLessThan(15_000);

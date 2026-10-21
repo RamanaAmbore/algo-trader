@@ -52,7 +52,7 @@
   import { positionStateBadge } from '$lib/data/positionStateBadge.js';
   import { POPULAR_UNDERLYINGS } from '$lib/data/popularUnderlyings';
   import { priceFmt, pctFmt, aggCompact, fmtPctFraction, ltpDayClass } from '$lib/format';
-  import { todayIST } from '$lib/dateFormat.js';
+  import { todayIST, isCurrentTradingSession } from '$lib/dateFormat.js';
   import { lotsForRow, fmtLots } from '$lib/data/lotsForRow';
   import {
     loadHedgeProxies, proxiesForTarget, targetsForProxy, getProxyRow,
@@ -198,12 +198,14 @@
         qty:      e.qty,
         avg_cost: e.avg_cost ?? '',
         ltp:      '',
+        // Already returned by the backend's AlgoOrderInfo schema (GET/
+        // POST/PATCH /drafts) — threaded through here for forward use by
+        // any future draft-dating logic. Not currently read by any
+        // consumer in this file.
+        created_at: e.created_at ?? null,
       })),
     ];
   });
-
-  // showDraftInPayoff is declared further down (near _loadDraftInPayoff)
-  // with localStorage persistence. No duplicate declaration here.
 
   // Non-blocking completion toast stack. Pushed by onTicketSubmit when
   // a paper/live order lands; rendered as fixed-position cards at the
@@ -305,6 +307,41 @@
       payoffDrafts.remove(Number(id.slice(3)));
     }
   }
+
+  // ── Legs grid draft bulk-select (2026-10) ───────────────────────────
+  // Operator selects SPECIFIC draft rows (checkbox in CandidateLegRow,
+  // next to the existing per-row × button) and clears only those — the
+  // header button is "Clear Selected Drafts (N)", never an unconditional
+  // clear-everything. Ids are the same `c.draftId` value removeDraft()
+  // already accepts (bare local id, or 'pd_<backend id>' for payoffDrafts
+  // entries), so clearing just calls removeDraft() per selected id —
+  // reuses the exact same per-item removal logic the × button uses.
+  let _selectedDraftIds = $state(/** @type {Set<number|string>} */ (new Set()));
+  function _toggleDraftSelected(/** @type {number|string} */ id) {
+    const next = new Set(_selectedDraftIds);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    _selectedDraftIds = next;
+  }
+  function _clearSelectedDrafts() {
+    const ids = [..._selectedDraftIds];
+    if (!ids.length) return;
+    _selectedDraftIds = new Set();
+    for (const id of ids) removeDraft(id);
+  }
+  // Prune selections that no longer correspond to a live draft (removed
+  // via the per-row × button, executed as a real order, etc.) so the
+  // header count never shows a stale, un-removable id.
+  $effect(() => {
+    const liveIds = new Set(_allDrafts.map(d => d.id));
+    if (_selectedDraftIds.size === 0) return;
+    let changed = false;
+    const next = new Set();
+    for (const id of _selectedDraftIds) {
+      if (liveIds.has(id)) next.add(id);
+      else changed = true;
+    }
+    if (changed) _selectedDraftIds = next;
+  });
 
   // Strategy mode v2 — pick (Account, Underlying) and the matching
   // open positions appear as toggleable candidates below the chart.
@@ -435,10 +472,6 @@
   // hold button is on... it is similar to exp p & L."
   let _includeHoldings = $state($includeHoldings);
   $effect(() => { _includeHoldings = $includeHoldings; });
-  // Stable callback reference for OptionsPayoff.onToggleDraft.
-  function _flipDraft() {
-    showDraftInPayoff = !showDraftInPayoff;
-  }
 
   // Stable callback reference for OptionsPayoff.onToggleHoldings.
   // Hoisting it out of the JSX prevents the fresh-closure problem —
@@ -454,27 +487,13 @@
     // the sessionStorage-cache fix in _saveCache/_loadCache above).
     includeHoldings.update(v => !v);
   }
-  /** Whether provisional (~) and draft-store (D) legs are included in the
-   *  payoff curve. Both non-confirmed sources are gated by one toggle so
-   *  the operator can quickly exclude unconfirmed legs from the analytics
-   *  without having to uncheck each row individually. Default ON so fills
-   *  that haven't settled yet still appear in the curve immediately.
-   *  Persisted to localStorage so the operator's choice survives reload. */
-  const _DRAFT_PAYOFF_KEY = 'ramboq:options-draft-in-payoff';
-  function _loadDraftInPayoff() {
-    if (typeof localStorage === 'undefined') return true;
-    try {
-      const v = localStorage.getItem(_DRAFT_PAYOFF_KEY);
-      return v === null ? true : v !== 'false';
-    } catch { return true; }
-  }
-  let showDraftInPayoff = $state(_loadDraftInPayoff());
-  $effect(() => {
-    if (typeof localStorage !== 'undefined') {
-      try { localStorage.setItem(_DRAFT_PAYOFF_KEY, String(showDraftInPayoff)); }
-      catch { /* quota / private mode — silent */ }
-    }
-  });
+  // Former showDraftInPayoff toggle (provisional (~)/draft-store (D)/
+  // payoff-draft inclusion gate) REMOVED (2026-10 draft-simplification,
+  // .claude/PLAN.md "Simplify draft positions to 'a real position, with
+  // 3 exceptions'") — those legs now always count toward the payoff
+  // curve/analytics, same as any real leg. The existing per-row
+  // `enabledSymbols`/`_isLegEnabled` checkbox is now the only per-leg
+  // inclusion control.
   // Composite key for the enabledSymbols map. Plain symbol collided
   // across accounts: a NIFTY24DEC25000PE held in both ZG#### and
   // ZJ#### would share one checkbox, and the candidatesActualPnl
@@ -769,6 +788,18 @@
     // and duplicate band headers.
     if (legsTab !== 'expiry') {
       rows = sortRowsByPairGroup(rows);
+      // Draft rows (payoff store, display-only) sort to the BOTTOM of the
+      // Legs grid, below every real position — 2026-10 operator design
+      // decision (misread-risk: a hypothetical row among real money rows
+      // is too easy to glance past as real; matches Sensibull's Draft
+      // Portfolios / thinkorswim's Simulated Trades keeping hypothetical
+      // legs structurally separate). Array.filter preserves relative
+      // order, so this is a pure reshuffle — each group keeps its own
+      // existing order from sortRowsByPairGroup above. Exp Close tab
+      // (legsTab === 'expiry') is untouched — its own band/theta ordering
+      // doesn't surface draft rows (expiryCloseAnalysis is a different,
+      // real-position-only pipeline).
+      rows = rows.filter(c => c.source !== 'draft').concat(rows.filter(c => c.source === 'draft'));
     }
     return rows;
   });
@@ -2400,6 +2431,11 @@
     for (const c of candidatePositions) {
       if (!_isLegEnabled(c)) continue;
       if (!_includeHoldings && c.kind === 'eq') continue;
+      // 2026-10 simplification (.claude/PLAN.md "Simplify draft positions
+      // to 'a real position, with 3 exceptions'") — the showDraftInPayoff
+      // gate (provisional/draft_store/draft source exclusion) is removed.
+      // The existing per-row `_isLegEnabled` checkbox above is now the
+      // ONLY per-leg inclusion control, same for a draft as for a real leg.
       hasLegs = true;
       s += _candDayPnl(c);
     }
@@ -2598,8 +2634,9 @@
   /** Exp P&L total for the CURRENTLY SELECTED underlying across all
    *  enabled, displayed candidate legs — the Legs-tab TOTAL row's own
    *  SSOT. Expiry-picker filtered (via `_legsTotalsBase`), what-if aware
-   *  (`_isLegEnabled`/`showDraftInPayoff` gates), scoped to
-   *  `selectedUnderlying` only.
+   *  (`_isLegEnabled` gate — the only per-leg inclusion control since the
+   *  2026-10 draft-simplification removed the separate showDraftInPayoff
+   *  gate), scoped to `selectedUnderlying` only.
    *
    *  NOT read by the Snapshot grid (item-3 fix, round 4) — every Snapshot
    *  row, including the one for `selectedUnderlying`, reads
@@ -2644,12 +2681,7 @@
     // diverging it from the payoff curve, which is built from the
     // unfiltered leg set (§5).
     return _legsTotalsBase
-      .filter(c => {
-        if (!_isLegEnabled(c)) return false;
-        if (!showDraftInPayoff &&
-            (c.source === 'provisional' || c.source === 'draft_store' || c.source === 'draft')) return false;
-        return true;
-      })
+      .filter(c => _isLegEnabled(c))
       .reduce((/** @type {number} */ s, c) => {
         const v = valuer(c);
         return v == null ? s : s + v;
@@ -2725,12 +2757,7 @@
    *  the tick-driven `spot` used for Exp P&L (item-2 fix). */
   const _legsExtrinsicTotal = $derived.by(() =>
     _legsTotalsBase
-      .filter(c => {
-        if (!_isLegEnabled(c)) return false;
-        if (!showDraftInPayoff &&
-            (c.source === 'provisional' || c.source === 'draft_store' || c.source === 'draft')) return false;
-        return true;
-      })
+      .filter(c => _isLegEnabled(c))
       .reduce((/** @type {number} */ s, c) => {
         const v = legExtrinsicDisplay(c, Number(c?.underlying_ltp) || 0);
         return v == null ? s : s + v;
@@ -2771,8 +2798,6 @@
     let s = 0;
     for (const c of _legsTotalsBase) {
       if (!_isLegEnabled(c) || c.kind === 'eq') continue;
-      if (!showDraftInPayoff &&
-          (c.source === 'provisional' || c.source === 'draft_store' || c.source === 'draft')) continue;
       if (c._expiredFrozen) {
         s += expiredLegFrozenPnl(c);
         continue;
@@ -2951,12 +2976,17 @@
   // legs stays scoped to the picked expiries even when the panel
   // shows extra context rows.
   //
-  // showDraftInPayoff gates provisional (~), draft-store (D), and
-  // payoffDraft (text-input + OrderTicket "Add to Payoff") legs:
-  // when OFF they still appear as rows in the Legs panel but are
-  // excluded from the payoff curve / analytics fetch.
+  // 2026-10 simplification (.claude/PLAN.md "Simplify draft positions to
+  // 'a real position, with 3 exceptions'") — provisional (~), draft-store
+  // (D), and payoffDraft legs now ALWAYS count toward the payoff curve /
+  // analytics fetch, same as any real leg; the former showDraftInPayoff
+  // toggle (and its gate inside buildPageLegs) is gone. `true` is passed
+  // unconditionally below so buildPageLegs' own `!showDraftInPayoff &&
+  // (...)` exclusion can never fire — kept as pageLoad.js's existing
+  // signature rather than also touching that file for this plan's
+  // narrower +page.svelte scope.
   $effect(() => {
-    void candidatePositions; void enabledSymbols; void showDraftInPayoff;
+    void candidatePositions; void enabledSymbols;
     untrack(() => {
       // 2026-09 audit fix (Defect 1, post-ship): this mapping is now the
       // SAME pure buildPageLegs (pageLoad.js) exercised directly by
@@ -2966,7 +2996,7 @@
       // fall back to 0 for every leg fed through this array — the exact
       // bug that shipped undetected in commit 07e3198a; see
       // sumExpiredFrozenLegsPnl's own call-site in _clientPayoffStub).
-      legs = buildPageLegs(candidatePositions, _isLegEnabled, showDraftInPayoff);
+      legs = buildPageLegs(candidatePositions, _isLegEnabled);
     });
   });
 
@@ -3103,7 +3133,9 @@
    *  therefore does not change this derived's value (Svelte 5 skips
    *  downstream reactions when a primitive $derived's value is
    *  unchanged). Only a genuine add/remove/qty-change leg, an
-   *  underlying switch, or a holdings/draft toggle flip changes it. */
+   *  underlying switch, or a holdings toggle flip changes it — the
+   *  former draft-toggle term is gone along with showDraftInPayoff
+   *  itself (2026-10 draft-simplification). */
   const _legSignature = $derived.by(() => {
     const optLegs = (strategy?.legs || [])
       .map(/** @param {{symbol:string, qty:number}} l */ l => `${l.symbol}:${l.qty}`)
@@ -3113,7 +3145,7 @@
       .map(l => `${l.key}:${l.qty.toFixed(2)}`)
       .sort()
       .join(',');
-    return `${selectedUnderlying}|${optLegs}|${eqLegs}|H${_includeHoldings ? 1 : 0}|D${showDraftInPayoff ? 1 : 0}`;
+    return `${selectedUnderlying}|${optLegs}|${eqLegs}|H${_includeHoldings ? 1 : 0}`;
   });
 
   // _eqExpPnlByKey / _equityLinearLegsByKey both removed (see the
@@ -4110,6 +4142,12 @@
       // defaultMode + availableModes removed (Wave C); navbar's
       // executionMode store decides mode for the modal.
       _draftId:  c.draftId,
+      // Draft → real promotion (2026-10, addendum 4): only Ticket/Chart
+      // may be active — Chain and CLI don't apply to a single-leg
+      // what-if promotion. SymbolPanel falls back to allowedTabs[0]
+      // ('ticket') for any unresolved default, which is exactly what
+      // this flow wants.
+      allowedTabs: ['ticket', 'chart'],
     });
   }
 
@@ -4122,7 +4160,16 @@
     if (payload.mode === 'paper' || payload.mode === 'live') {
       const did = ticketProps?._draftId;
       if (did != null) {
-        drafts = drafts.filter(d => d.id !== did);
+        // Fixed 2026-10 (same batch as MarketPulse's new click-to-convert
+        // entry point) — this used to filter ONLY the local drafts[]
+        // array by numeric id, which silently no-ops for a payoffDrafts-
+        // origin draft (did is the string 'pd_<backend id>' set by
+        // executeDraft() from _allDrafts). A draft added via OrderTicket's
+        // "Add to Payoff" button, then promoted to a real order from
+        // THIS page's own executeDraft() flow, never got cleaned up.
+        // removeDraft() already handles both id shapes (see its own
+        // docstring) — reuse it instead of duplicating the branch here.
+        removeDraft(did);
       }
       // Non-blocking completion notification — surfaces order_id +
       // status without making the operator close the OrderTicket modal
@@ -5703,8 +5750,6 @@
         spotAnchor={payoffDisplay?.spotAnchor ?? null}
         includeHoldings={_includeHoldings}
         onToggleHoldings={_flipHoldings}
-        showDraftInPayoff={showDraftInPayoff}
-        onToggleDraft={_flipDraft}
         netCost={payoffDisplay?.netCost}
         loading={!payoffDisplay && (loading || _strategyStale)}
         legSignature={_legSignature}
@@ -5754,6 +5799,14 @@
           { header: 'LTP',       key: 'ltp',             format: (v) => v == null ? '' : String(v) },
           { header: 'Day P&L',   key: 'day_change_val',  format: (v) => v == null ? '' : String(v) },
           { header: 'P&L',       key: 'pnl',             format: (v) => v == null ? '' : String(v) },
+          // Source column (2026-10, leakage audit) — this export previously
+          // shipped draft/provisional/draft_store rows with zero visible
+          // distinction from a real broker row once the data left the
+          // (magenta-tinted) grid for a CSV. 'live' is the real-position
+          // default (buildCandidatePositions never sets `source` to a
+          // falsy value for a genuine broker row, but the fallback covers
+          // it defensively).
+          { header: 'Source',    key: 'source',          format: (v) => String(v || 'live').toUpperCase() },
         ],
         'legs.csv'
       )}
@@ -5781,24 +5834,30 @@
           compact={true}
         />
       {/snippet}
+      {#snippet right()}
+        {#if candidatePositions.some(c => c.source === 'draft')}
+          <button type="button" class="legs-clear-drafts-btn"
+            disabled={_selectedDraftIds.size === 0}
+            onclick={_clearSelectedDrafts}
+            title="Remove the selected draft position(s) from the Payoff store — not a real broker order">
+            Clear Selected Drafts ({_selectedDraftIds.size})
+          </button>
+        {/if}
+      {/snippet}
     </CardHeader>
       {#if hiddenByAccount.rows > 0}
         <div class="cand-hidden-hint" title="Picker scopes legs to the chosen accounts. Clear the Account filter to include these rows in the payoff.">
           Hiding {hiddenByAccount.rows} position{hiddenByAccount.rows === 1 ? '' : 's'} on {hiddenByAccount.accts} other account{hiddenByAccount.accts === 1 ? '' : 's'}
         </div>
       {/if}
-      <!-- Draft/Provisional payoff toggle — shown when at least one
-           ~ or D row is present in the displayed candidates, OR when
-           payoffDrafts has any entries (added via OrderTicket). Amber
-           tint matches the "non-confirmed" palette of those chips. -->
-      {#if candidatePositions.some(c => c._provisional || c._draft_store || c.source === 'draft')}
-        <div class="cand-draft-payoff-bar">
-          <label class="cand-draft-payoff-toggle" title="Include provisional (~), draft-store (D), and payoff draft legs in the payoff curve and analytics. When off, they appear in the legs list but are excluded from the chart.">
-            <input type="checkbox" bind:checked={showDraftInPayoff} />
-            <span class="cand-draft-payoff-label">Incl. draft/prov in payoff</span>
-          </label>
-        </div>
-      {/if}
+      <!-- Draft/Provisional payoff toggle REMOVED (2026-10 draft-
+           simplification, .claude/PLAN.md "Simplify draft positions to
+           'a real position, with 3 exceptions'") — provisional (~),
+           draft-store (D), and payoff draft legs now always count
+           toward the payoff curve/analytics, same as any real leg. The
+           existing per-row `enabledSymbols`/`_isLegEnabled` checkbox
+           (the header "select all" + each leg row's own checkbox) is
+           now the ONLY per-leg inclusion control. -->
       <div class="cand-scroll algo-grid-chrome fs-content-fill" style="--fs-chrome-h: 4.5rem;">
         <div class="cand-grid">
           <!-- Header row checkbox = master toggle. Checked when
@@ -5954,6 +6013,8 @@
               onExecuteDraft={executeDraft}
               onClosePosition={closePosition}
               onRemoveDraft={removeDraft}
+              draftSelected={c.draftId != null && _selectedDraftIds.has(c.draftId)}
+              onToggleDraftSelected={_toggleDraftSelected}
               onOpenChartTicket={(candidate) => openTicket({
                 symbol:    candidate.symbol,
                 exchange:  'NFO',
@@ -7108,37 +7169,31 @@
     cursor: help;
   }
 
-  /* Draft/provisional payoff toggle bar — amber-tinted strip below the
-     hidden-account hint (when present). Shown only when at least one
-     ~ or D row is visible. Matches the amber "non-confirmed" palette. */
-  .cand-draft-payoff-bar {
-    margin-top: 0.4rem;
-    padding: 0.25rem 0.55rem;
+  /* .cand-draft-payoff-bar / .cand-draft-payoff-toggle / .cand-draft-
+     payoff-label REMOVED (2026-10 draft-simplification) along with the
+     showDraftInPayoff toggle markup above — the per-row
+     enabledSymbols/_isLegEnabled checkbox is now the only per-leg
+     inclusion control. */
+
+  /* Legs grid header "Clear Selected Drafts (N)" button (2026-10) — same
+     small outline-button chrome as MarketPulse's mp-clear-drafts-btn /
+     HeldOrdersCard's "Release all" button. Red (--btn-sell-*) since this
+     is a destructive bulk-remove action. Removes only the draft rows the
+     operator checked (CandidateLegRow's .cand-draft-select checkboxes),
+     never every draft unconditionally. */
+  .legs-clear-drafts-btn {
+    padding: 2px 8px;
+    border: 1px solid var(--btn-sell-border);
+    color: var(--btn-sell);
+    background: transparent;
+    border-radius: var(--btn-radius);
+    cursor: pointer;
     font-size: var(--fs-sm);
-    background: var(--algo-amber-bg);
-    border: 1px solid var(--algo-amber-border);
-    border-radius: 3px;
-    display: flex;
-    align-items: center;
+    flex-shrink: 0;
+    white-space: nowrap;
   }
-  .cand-draft-payoff-toggle {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.45rem;
-    cursor: pointer;
-    user-select: none;
-  }
-  .cand-draft-payoff-toggle input[type="checkbox"] {
-    accent-color: var(--c-action);
-    width: 0.9rem;
-    height: 0.9rem;
-    cursor: pointer;
-  }
-  .cand-draft-payoff-label {
-    color: var(--c-action);
-    font-weight: 600;
-    letter-spacing: 0.02em;
-  }
+  .legs-clear-drafts-btn:hover:not(:disabled) { background: var(--btn-sell-bg-hi); }
+  .legs-clear-drafts-btn:disabled { opacity: var(--btn-disabled-opacity); cursor: default; }
 
   /* Candidate row status chips — open/closed order state indicators. */
   .cand-status-chip {

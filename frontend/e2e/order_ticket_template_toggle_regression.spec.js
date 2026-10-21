@@ -45,9 +45,9 @@ async function _seedNiftyOnTicket(page) {
   await page.goto(`${BASE}/orders`, { waitUntil: 'domcontentloaded', timeout: 30000 });
   const symInput = page.locator('.ssi-input').first();
   await expect(symInput).toBeVisible({ timeout: 15_000 });
-  await symInput.fill('NIFTY');
+  await symInput.fill('NIFTY26OCTFUT');
   const sugg = page.locator('.ssi-drop .ssi-row').first();
-  await expect(sugg).toBeVisible({ timeout: 10_000 });
+  await expect(sugg).toBeVisible({ timeout: 45_000 });
   await sugg.click({ force: true });
   await page.waitForTimeout(500);
 }

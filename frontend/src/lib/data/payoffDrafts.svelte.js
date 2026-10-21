@@ -55,6 +55,7 @@ let _loaded = $state(false);
  *   strike: number | null,
  *   expiry: string | null,
  *   is_draft: true,
+ *   created_at: string | null,
  * }>}
  */
 let _map = $state(new Map());
@@ -114,7 +115,7 @@ export const payoffDrafts = {
     const id = resp?.id;
     if (id == null) return null;
     const next = new Map(_map);
-    next.set(id, draftRowToEntry({ ...body, id, initial_price: body.price }));
+    next.set(id, draftRowToEntry({ ...body, id, initial_price: body.price, created_at: resp?.created_at ?? null }));
     _map = next;
     return id;
   },

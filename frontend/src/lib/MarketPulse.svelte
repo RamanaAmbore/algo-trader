@@ -103,8 +103,9 @@
   } from '$lib/data/pulseColumns';
   import {
     mergeWatchlistRows, mergePositionRows, mergeHoldingRows,
+    mergeDraftRows,
     mergeUnderlyingAnchors, mergeMoverRows, tagWatchedIndices,
-    finalizeRows, sortUnifiedRows,
+    finalizeRows, sortUnifiedRows, sortDraftsLast,
     totalsRowFor,
   } from '$lib/data/pulseUnified';
   import {
@@ -115,6 +116,7 @@
     pulseRowId, summaryRowId, postSortGroups, pairGroupPostSort,
   } from '$lib/data/pulseGridSetup';
   import { splitPairedLots } from '$lib/data/lotPairSplit';
+  import { payoffDrafts } from '$lib/data/payoffDrafts.svelte.js';
 
   let {
     title              = 'Pulse',
@@ -707,6 +709,13 @@
   // genuinely has no single account (defensive only — shouldn't occur for
   // real position rows).
   function _expPnlForRow(data) {
+    // 2026-10 simplification (.claude/PLAN.md "Simplify draft positions
+    // to 'a real position, with 3 exceptions'") — the former draft-null
+    // guard here is REMOVED. A draft row now gets the same bare-symbol
+    // (+account) Exp P&L/Extrinsic lookup as any real row, including the
+    // case where a draft shares a tradingsymbol with a genuinely held
+    // position — that's now treated as expected/desired "same symbol,
+    // same book-level Exp P&L" behavior, not a leak to guard against.
     const sym = String(data?.tradingsymbol || '').toUpperCase();
     const acct = leadAccount(data);
     if (acct) {
@@ -1476,6 +1485,12 @@
     // here so this component can also be embedded in flows that
     // intentionally allow anonymous demo viewers.
     loadOverrides();
+    // Payoff drafts (2026-10) — survive a page refresh via the backend
+    // /drafts CRUD endpoints (payoffDrafts.svelte.js). Fire-and-forget,
+    // same convention as the derivatives/orders pages' own onMount call —
+    // unifiedRows' $derived.by reads payoffDrafts.value directly so the
+    // Positions grid picks these up reactively once the fetch resolves.
+    payoffDrafts.load();
     // Account selection defaults to ALL ACCOUNTS on every page load.
     // Operator: "all accounts should be default for positions and
     // holdings in pulse." Previously the picker restored its
@@ -1984,7 +1999,32 @@
   );
   // Per-tab row counts so the tab pill can show its denominator.
   const watchCounts = $derived(_rowBuckets.counts);
-  const positionsRows  = $derived(_rowBuckets.positions);
+  // Draft rows (payoff-store, display-only) sort to the BOTTOM of the
+  // Positions grid, below every real position — 2026-10 operator design
+  // decision (misread-risk: a hypothetical row among real money rows is
+  // too easy to glance past as real). Pure reshuffle via sortDraftsLast
+  // (pulseUnified.js) — does not disturb the real-row order already
+  // established by sortUnifiedRows/_compareMainRows above, and sits
+  // ABOVE the separate pinnedBottomRowData TOTAL row mechanism (that's
+  // not part of this array at all — see positionsTotalRows below).
+  // NOTE: ag-Grid's own postSortRows hook (pairGroupPostSort, wired in
+  // mountGrid()) re-sorts on every setGridOption call — it has its OWN
+  // matching draft-last partition (pulseGridSetup.js) so it doesn't
+  // silently undo this reshuffle by re-grouping a draft into its real
+  // underlying's block.
+  const positionsRows = $derived.by(() => {
+    const sorted = sortDraftsLast(_rowBuckets.positions);
+    // Re-stamp _majorFirst (2026-10 fix) — _annotateMainRowFlags set this
+    // flag once, globally, over the FULL mainRows list (watch+positions+
+    // holdings+movers); sortDraftsLast can relocate whichever row
+    // originally held it. This array only ever contains _majorGroup ===
+    // 'positions' rows, so "index 0 of THIS array" is the only correct
+    // definition of "first positions row" for the amber top-border
+    // divider _majorFirst drives (getRowClass). Safe to mutate directly
+    // — these row objects never render in any other grid.
+    for (let i = 0; i < sorted.length; i++) sorted[i]._majorFirst = (i === 0);
+    return sorted;
+  });
   const holdingsRows   = $derived(_rowBuckets.holdings);
   // Set of watchlist list-ids that are flagged `is_global`. Hoisted out
   // of `symRenderer` so the per-row `lists.find(l => l.id === ... &&
@@ -2131,6 +2171,40 @@
     const t = _totalsRowFor(holdingsRows, 'holdings', 'TOTAL Holdings');
     return t ? [t] : [];
   });
+
+  // ── Draft-row bulk selection (2026-10) ──────────────────────────────
+  // Operator can select SPECIFIC draft rows (checkbox in the symbol cell,
+  // see symRenderer) and clear only those — NOT a single unconditional
+  // "clear everything" button (payoffDrafts.clear() is deliberately never
+  // called here). Ids are the real backend draft id (payoffDrafts entry.id,
+  // a number) — same value carried on each draft row as `draftId`.
+  let _selectedDraftIds = $state(/** @type {Set<number>} */ (new Set()));
+  const _draftRowsPresent = $derived(positionsRows.some(r => r.source === 'draft'));
+  // Prune selections that no longer correspond to a live draft (removed
+  // elsewhere — derivatives page's own × button, or executed as a real
+  // order) so the header count never shows a stale, un-removable id.
+  $effect(() => {
+    const liveIds = new Set([...payoffDrafts.value.keys()]);
+    if (_selectedDraftIds.size === 0) return;
+    let changed = false;
+    const next = new Set();
+    for (const id of _selectedDraftIds) {
+      if (liveIds.has(id)) next.add(id);
+      else changed = true;
+    }
+    if (changed) _selectedDraftIds = next;
+  });
+  function _toggleDraftSelected(/** @type {number} */ id) {
+    const next = new Set(_selectedDraftIds);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    _selectedDraftIds = next;
+  }
+  async function _clearSelectedDrafts() {
+    const ids = [..._selectedDraftIds];
+    if (!ids.length) return;
+    _selectedDraftIds = new Set();
+    await Promise.all(ids.map(id => payoffDrafts.remove(id)));
+  }
 
   // Mobile breakpoint tracker — matches the Tailwind `lg:` 1024 px
   // cutoff the rest of the app uses. Cards on desktop fill the
@@ -3067,6 +3141,11 @@
       showPositions, showHoldings,
       movers, showMovers,
       showWatchlist,
+      // Draft rows (display-only — see mergeDraftRows in pulseUnified.js).
+      // Read directly here (not via untrack) so a payoffDrafts.add()/
+      // remove() elsewhere (OrderTicket "Add to Payoff", derivatives page's
+      // own × button) is picked up reactively by this $derived.by.
+      [...payoffDrafts.value.values()],
     );
   });
 
@@ -3101,7 +3180,7 @@
 
   // buildUnified — thin orchestrator. All logic is in pulseUnified.js helpers.
   // Called by the $derived.by(unifiedRows) derivation.
-  function buildUnified(actLists, pos, hold, pq, getInst, includePos, includeHold, moverRows, includeMovers, includeWatch = true) {
+  function buildUnified(actLists, pos, hold, pq, getInst, includePos, includeHold, moverRows, includeMovers, includeWatch = true, draftEntries = []) {
     const uq = pq?.underlyings || {};
     const cq = pq?.contracts   || {};
     /** @type {Record<string, any>} */
@@ -3117,6 +3196,7 @@
     const holdCtx = { snapOf, getInst, isMarketOpen };
     const anchCtx = { getInst, snapOf };
     const movCtx  = { snapOf };
+    const draftCtx = { snapOf, getInst };
     const finCtx  = { directional, leadAccount, acctColor };
 
     mergeWatchlistRows(byKey, actLists, wlCtx);
@@ -3128,6 +3208,13 @@
     // (handled inside mergePositionRows) so they don't collapse back into
     // one row.
     mergePositionRows(byKey, splitPairedLots(pos), includePos, cq, posCtx);
+    // Payoff-draft rows (2026-10) — display-only, never a real broker
+    // position. Merged right after the real positions so they land in the
+    // same 'positions' major bucket (see mergeDraftRows docblock in
+    // pulseUnified.js for the full never-contribute-to-totals guarantee).
+    // Gated on includePos the same way mergePositionRows is — drafts live
+    // in the Positions bucket, so hiding Positions hides drafts too.
+    if (includePos !== false) mergeDraftRows(byKey, draftEntries, draftCtx);
     mergeHoldingRows(byKey, hold, includeHold, cq, holdCtx);
     mergeUnderlyingAnchors(byKey, uq, pos, hold, includePos, includeHold, anchCtx);
     mergeMoverRows(byKey, moverRows, includeMovers, includePos, includeHold, includeWatch, movCtx);
@@ -3511,17 +3598,25 @@
     // Per-row actions menu — ⋯ pops a Chart / Watchlist / Trade
     // popover via handleRowClick → _actionsMenu state. Hidden on
     // bare-underlying placeholder rows where there's no resolvable
-    // symbol to act on.
+    // symbol to act on. Also hidden on draft rows (2026-10) — the ⋯
+    // menu's "Place order →" is a SEPARATE, non-draft-aware ticket path
+    // (ctxOpenTicket) that would bypass the draftId-threaded "promote
+    // to real" flow (_openTicketFromDraftRow) this row's own click
+    // already opens — two competing entry points for the same row would
+    // be confusing and one of them silently drops the draft cleanup.
+    const isDraftRow = row.source === 'draft';
     const sym = String(row.tradingsymbol || '').trim();
     const exch = String(row.exchange || '').trim();
-    const actionsBtn = sym
+    const actionsBtn = (sym && !isDraftRow)
       ? `<span class="sym-actions" data-sym="${sym}" data-exch="${exch}" data-watchitem="${row.watchlist_item_id ?? ''}" title="Symbol actions">⋯</span>`
       : '';
     // Per-row ↑/↓ buttons — move the row's whole underlying group up
     // or down within its bucket. Visible on row hover (CSS handles
     // the hover-only display); the actual move happens in
-    // handleRowClick via data-attr dispatch.
-    const moveBtns = (sym && !isDemo)
+    // handleRowClick via data-attr dispatch. Hidden on draft rows —
+    // they're sorted to a fixed bottom group (sortDraftsLast) and don't
+    // belong to a real underlying "move group" the operator can reorder.
+    const moveBtns = (sym && !isDemo && !isDraftRow)
       ? `<span class="sym-move" data-dir="-1" title="Move group up">▲</span>` +
         `<span class="sym-move" data-dir="1"  title="Move group down">▼</span>`
       : '';
@@ -3537,7 +3632,16 @@
     const provChip = row._provisional
       ? '<span class="sym-provisional" title="Provisional — awaiting broker confirmation">~</span>'
       : '';
-    return `${provChip}<span class="sym-main ${optClass}"${symTitle}>${main}</span>${lotChip}${aliasTail}${badgeHtml}${removeBtn}${moveBtns}${actionsBtn}${dirLabel}`;
+    // Draft rows (2026-10) — bulk-removal checkbox. Native <input>, not a
+    // data-attribute span like sym-remove/sym-actions, but the same
+    // click-delegation pattern: _tryHandleRowButton intercepts the click
+    // via target.closest('.draft-select-cb'), toggles _selectedDraftIds,
+    // and force-refreshes this column so the checked attribute (driven by
+    // the Set, not native DOM state) stays the single source of truth.
+    const draftCb = (isDraftRow && row.draftId != null)
+      ? `<input type="checkbox" class="draft-select-cb" data-draft-id="${row.draftId}" ${_selectedDraftIds.has(Number(row.draftId)) ? 'checked' : ''} title="Select this draft for removal" aria-label="Select draft ${row.tradingsymbol || ''} for removal" />`
+      : '';
+    return `${draftCb}${provChip}<span class="sym-main ${optClass}"${symTitle}>${main}</span>${lotChip}${aliasTail}${badgeHtml}${removeBtn}${moveBtns}${actionsBtn}${dirLabel}`;
   }
 
   // ag-Grid `cellRenderer` callbacks receive a single `params` arg — this
@@ -3652,6 +3756,7 @@
     classes.push(..._sourceRowClasses(r, s));
     if (r.account_stale === true) classes.push('row-account-stale');
     if (r._provisional === true) classes.push('row-provisional');
+    if (r.source === 'draft') classes.push('row-draft');
     return classes.join(' ');
   }
 
@@ -4020,6 +4125,20 @@
       }
       return true;
     }
+    // Draft-row bulk-removal checkbox (2026-10) — preventDefault blocks the
+    // browser's own native checkbox toggle so the checked attribute stays
+    // driven exclusively by _selectedDraftIds (the Set), not by whatever
+    // the DOM happens to do first; the force-refresh below re-renders this
+    // cell from that Set so the box visibly reflects the new selection.
+    const draftCb = target?.closest?.('.draft-select-cb');
+    if (draftCb) {
+      ev.event?.preventDefault?.();
+      ev.event?.stopPropagation?.();
+      const id = Number(draftCb.getAttribute('data-draft-id'));
+      if (Number.isFinite(id)) _toggleDraftSelected(id);
+      try { gridPositions?.refreshCells({ columns: ['tradingsymbol'], force: true }); } catch (_) {}
+      return true;
+    }
     return false;
   }
 
@@ -4075,11 +4194,58 @@
     });
   }
 
+  // "Promote a draft to a real order" (2026-10) — clicking a draft row
+  // (anywhere except the .draft-select-cb checkbox, intercepted earlier
+  // in _tryHandleRowButton) opens the SAME pre-filled ticket the
+  // derivatives page's own executeDraft() opens: qty defaults to ONE LOT
+  // regardless of the draft's recorded qty (operator steps it up in the
+  // ticket — matches executeDraft()'s own comment), side from the sign
+  // of the draft's qty, price from the draft's avg_cost, action:'open'
+  // (a draft is always a hypothetical NEW position, never a close).
+  // `_draftId` threads through so the SymbolPanel onSubmit handler below
+  // can clean up the originating payoffDrafts entry on a real PAPER/LIVE
+  // fill — nothing here auto-submits; the operator still reviews/edits
+  // in the ticket and presses Submit themselves.
+  async function _openTicketFromDraftRow(/** @type {any} */ r) {
+    await _instrumentsReady;
+    const sym  = String(r.tradingsymbol || '').toUpperCase();
+    const inst = getInstrument?.(sym);
+    const lot  = Number(inst?.ls) || 0;
+    const side = Number(r.qty_pos) < 0 ? 'SELL' : 'BUY';
+    const isRealAcct = (/** @type {any} */ a) => !!(a && !String(a).includes('#'));
+    const preAccount = isRealAcct(r.account) ? String(r.account) : '';
+    await _ensureRealAccountsLoaded();
+    const avg = Number(r.avg_combined);
+    openTicket({
+      symbol:    sym,
+      exchange:  r.exchange || inst?.e || 'NFO',
+      side,
+      action:    'open',
+      qty:       lot || 1,
+      lotSize:   lot,
+      price:     Number.isFinite(avg) && avg > 0 ? avg : undefined,
+      accounts:  realAccounts,
+      account:   preAccount,
+      _draftId:  r.draftId,
+      // Draft → real promotion (2026-10, addendum 4): only Ticket/Chart
+      // may be active — Chain and CLI don't apply to a single-leg
+      // what-if promotion. SymbolPanel falls back to allowedTabs[0]
+      // ('ticket') for any unresolved default, which is exactly what
+      // this flow wants. Mirrors the derivatives page's own
+      // executeDraft() — both entry points must behave identically.
+      allowedTabs: ['ticket', 'chart'],
+    });
+  }
+
   async function handleRowClick(ev) {
     if (!ev.data) return;
     const target = /** @type {HTMLElement | null} */ (ev.event?.target ?? null);
     if (_tryHandleRowButton(ev, target)) return;
     if (!allowOrders) return;
+    if (ev.data.source === 'draft') {
+      await _openTicketFromDraftRow(ev.data);
+      return;
+    }
     await _openTicketFromRow(ev.data);
   }
 
@@ -4554,7 +4720,21 @@
             label="Positions"
             onRefresh={refreshAllNow}
             refreshLoading={_refreshing}
-            onDownload={() => gridPositions?.exportDataAsCsv({ fileName: 'positions.csv' })}
+            onDownload={() => gridPositions?.exportDataAsCsv({
+              fileName: 'positions.csv',
+              // Leakage audit (2026-10) — a draft row's Symbol cell must
+              // never leave the grid looking indistinguishable from a
+              // real position once it's in a CSV (the grid's own magenta
+              // row-draft tint is lost in plain text). processCellCallback
+              // is ag-Grid Community's own export hook — no new column
+              // needed, and every OTHER cell in the row exports unchanged.
+              processCellCallback: (p) => {
+                if (p?.column?.getColId?.() === 'tradingsymbol' && p?.node?.data?.source === 'draft') {
+                  return `[DRAFT] ${p.value ?? ''}`;
+                }
+                return p.value;
+              },
+            })}
             detectOverflow={false}
           >
             {#snippet left()}
@@ -4566,6 +4746,16 @@
                     options={availableAccounts.map(a => ({ value: a, label: a }))}
                     ariaLabel="Filter Positions by broker account" />
                 </div>
+              {/if}
+            {/snippet}
+            {#snippet right()}
+              {#if _draftRowsPresent}
+                <button type="button" class="mp-clear-drafts-btn"
+                  disabled={_selectedDraftIds.size === 0}
+                  onclick={_clearSelectedDrafts}
+                  title="Remove the selected draft position(s) from the Payoff store — not a real broker order">
+                  Clear Selected Drafts ({_selectedDraftIds.size})
+                </button>
               {/if}
             {/snippet}
           </CardHeader>
@@ -4619,6 +4809,15 @@
       const sym = String(payload?.symbol || '');
       const side = String(payload?.side || '');
       toast.success(sym ? `${side} ${sym} placed` : 'Order placed');
+      // Draft → real promotion cleanup (2026-10) — mirrors the
+      // derivatives page's own onTicketSubmit() cleanup. Only on a
+      // genuine PAPER/LIVE fill (never 'draft' mode, which doesn't
+      // place anything) so the originating payoffDrafts entry
+      // disappears from every surface that reads the store (this grid,
+      // the derivatives Legs grid) once the real order actually lands.
+      if ((payload?.mode === 'paper' || payload?.mode === 'live') && ticketProps?._draftId != null) {
+        payoffDrafts.remove(ticketProps._draftId);
+      }
     }}
     onClose={closeTicket}
     onAddToWatchlist={async (sym, exch) => {
@@ -4825,6 +5024,47 @@
     opacity: 0.65;
     font-style: italic;
   }
+
+  /* Draft position (payoff draft store, 2026-10) — distinct from a real
+     broker position: magenta tint + left inset bar matches the derivatives
+     Legs grid's `.cand-draft` treatment (CandidateLegRow.svelte) exactly,
+     so the same "this isn't a real position" cue applies on both surfaces.
+     Never a real pos-long/pos-short row (mergeDraftRows never sets
+     row.src.p), so no competing green/red tint to override here. */
+  :global(.ag-theme-algo .ag-row.row-draft) {
+    background-color: rgba(240,171,252,0.04);
+  }
+  :global(.ag-theme-algo .ag-row.row-draft .ag-col-fill) {
+    background-color: rgba(240,171,252,0.08) !important;
+  }
+  :global(.ag-theme-algo .ag-row.row-draft .ag-col-sym) {
+    box-shadow: inset 2px 0 0 rgba(240,171,252,0.85);
+  }
+  /* Bulk-removal checkbox on a draft row's symbol cell (see symRenderer). */
+  :global(.draft-select-cb) {
+    accent-color: #f0abfc;
+    width: 0.85rem;
+    height: 0.85rem;
+    margin-right: 4px;
+    cursor: pointer;
+    vertical-align: middle;
+  }
+  /* Header "Clear Selected Drafts (N)" button — Positions card. Same small
+     outline-button chrome as HeldOrdersCard's "Release all" button, red
+     (--btn-sell-*) since this is a destructive bulk-remove action. */
+  .mp-clear-drafts-btn {
+    padding: 2px 8px;
+    border: 1px solid var(--btn-sell-border);
+    color: var(--btn-sell);
+    background: transparent;
+    border-radius: var(--btn-radius);
+    cursor: pointer;
+    font-size: var(--fs-sm);
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+  .mp-clear-drafts-btn:hover:not(:disabled) { background: var(--btn-sell-bg-hi); }
+  .mp-clear-drafts-btn:disabled { opacity: var(--btn-disabled-opacity); cursor: default; }
 
   /* Source badges (P / H / W / U) — sit right of the symbol. */
   :global(.sym-badges) {

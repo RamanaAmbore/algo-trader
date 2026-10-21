@@ -459,6 +459,10 @@ export function buildCandidatePositions({
     real.push({
       symbol: sym, account: '', qty, avg_cost: cost, ltp,
       source: 'draft', kind: isFut ? 'fut' : 'opt', draftId: d.id,
+      // Threaded through from the backend's AlgoOrderInfo schema for
+      // forward use — undefined for a local text-input draft (never
+      // persisted to the backend). Not currently read by any consumer.
+      created_at: d.created_at ?? null,
     });
   }
 
@@ -616,19 +620,18 @@ export function hasEnabledFOLegs(legs) {
  * `_expiredFrozen` leg) shipped completely undetected — nothing exercised
  * this exact mapping in isolation.
  *
+ * A draft leg is treated like any other leg here (2026-10 simplification —
+ * drafts behave as real positions everywhere except creation/margin/chase/
+ * bracket/close) — the per-row `isLegEnabled` checkbox is the only
+ * inclusion control now; there is no separate draft-specific toggle.
+ *
  * @param {any[]} candidatePositions
  * @param {(c: any) => boolean} isLegEnabled
- * @param {boolean} showDraftInPayoff
  * @returns {any[]}
  */
-export function buildPageLegs(candidatePositions, isLegEnabled, showDraftInPayoff) {
+export function buildPageLegs(candidatePositions, isLegEnabled) {
   return candidatePositions
-    .filter(c => {
-      if (!isLegEnabled(c)) return false;
-      if (!showDraftInPayoff &&
-          (c.source === 'provisional' || c.source === 'draft_store' || c.source === 'draft')) return false;
-      return true;
-    })
+    .filter(c => isLegEnabled(c))
     .map(c => ({
       symbol:   c.symbol,
       qty:      c.qty,

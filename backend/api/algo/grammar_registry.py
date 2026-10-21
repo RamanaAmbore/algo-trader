@@ -91,6 +91,127 @@ def _load_action(r, tables) -> bool:
     return True
 
 
+class ActionDispatchDriftError(RuntimeError):
+    """Raised when the agent_grammar.yaml action-type catalog and
+    actions.py's real dispatch tables (`_LIVE_ACTION_HANDLERS` /
+    `_NOOP_ACTION_HANDLERS`) disagree on which action tokens exist.
+
+    This is the automated guard for the "7 dead grammar-resolver stub
+    functions" incident (see CLAUDE.md's "Agent action-dispatch SSOT"
+    note): a YAML catalog entry with no real dispatch handler (declared
+    but never invocable), or a dispatch handler with no catalog entry
+    (invocable but never describable to the operator / Lab-chat
+    agent-builder, and rejected by `routes/agents.py`'s
+    `is_known_action_type()` gate at agent create/update time).
+    """
+
+
+# Dispatch-table action tokens that are DELIBERATELY not declared as their
+# own catalog row in agent_grammar.yaml. Each entry must be a real,
+# intentional exception — never a silent skip. `validate_action_dispatch_
+# catalog()` re-checks every key here on every call and raises if an
+# allowlisted token has since gained a catalog row (the exception is no
+# longer needed — remove it) or disappeared from the dispatch tables (the
+# exception is stale — remove it). This keeps the allowlist from quietly
+# decaying into the same kind of silent drift the check exists to catch.
+ACTION_DISPATCH_CATALOG_ALLOWLIST: dict[str, str] = {
+    # Deliberate alias for the catalog's own "chase_close_positions" token
+    # — both route to the exact same `_action_live_chase_close_positions`
+    # handler (see actions.py:200-202, `_LIVE_ACTION_HANDLERS`). Kept as a
+    # bare dispatch-only alias rather than a second catalog row so the
+    # operator-facing/Lab-chat catalog shows one canonical name.
+    "chase_close": (
+        "deliberate dispatch alias for the catalog's chase_close_positions "
+        "token — both route to _action_live_chase_close_positions"
+    ),
+    # `send_summary` resolved (2026-10, operator decision): a real catalog
+    # row was added to agent_grammar.yaml — it's no longer a dispatch-only
+    # exception, so its allowlist entry is removed, not left here stale.
+}
+
+
+def validate_action_dispatch_catalog(
+    catalog_tokens: Optional[set] = None,
+    live_handlers: Optional[dict] = None,
+    noop_handlers: Optional[dict] = None,
+    allowlist: Optional[dict] = None,
+) -> None:
+    """Cross-reference agent_grammar.yaml's action-type catalog against
+    actions.py's real dispatch tables. Raises `ActionDispatchDriftError`
+    (never just logs) on any undeclared mismatch in either direction:
+
+      1. A catalog token with no dispatch handler in either
+         `_LIVE_ACTION_HANDLERS` or `_NOOP_ACTION_HANDLERS` — declared but
+         never actually invocable (the "7 dead stubs" bug class).
+      2. A dispatch-table key with no catalog token and no entry in
+         `ACTION_DISPATCH_CATALOG_ALLOWLIST` — invocable but never
+         describable to the operator / Lab-chat agent-builder.
+
+    All arguments default to the real, code-level sources (lazy-imported
+    here, not at module level, matching `reload()`'s own import style and
+    avoiding any import-order coupling to `actions.py`). Validates against
+    the static YAML-derived catalog (`grammar._ACTION_PARAMS_SCHEMAS`), NOT
+    the live `grammar_tokens` DB rows `reload()` reads — the DB can carry
+    operator-added custom tokens and `is_active` flips that are expected to
+    differ from this code-reviewed baseline; only the YAML catalog is the
+    trust boundary this check is meant to pin.
+    """
+    if catalog_tokens is None:
+        from backend.api.algo.grammar import _ACTION_PARAMS_SCHEMAS
+        catalog_tokens = set(_ACTION_PARAMS_SCHEMAS.keys())
+    if live_handlers is None or noop_handlers is None:
+        from backend.api.algo.actions import (
+            _LIVE_ACTION_HANDLERS as _live_default,
+            _NOOP_ACTION_HANDLERS as _noop_default,
+        )
+        if live_handlers is None:
+            live_handlers = _live_default
+        if noop_handlers is None:
+            noop_handlers = _noop_default
+    if allowlist is None:
+        allowlist = ACTION_DISPATCH_CATALOG_ALLOWLIST
+
+    dispatch_tokens = set(live_handlers.keys()) | set(noop_handlers.keys())
+
+    # Direction 1 — catalog token declared but never dispatched.
+    undispatched = sorted(catalog_tokens - dispatch_tokens)
+    if undispatched:
+        raise ActionDispatchDriftError(
+            "agent_grammar.yaml declares action token(s) with NO dispatch "
+            f"handler in _LIVE_ACTION_HANDLERS or _NOOP_ACTION_HANDLERS: "
+            f"{undispatched} — either wire a handler or remove the catalog "
+            f"row (see the '7 dead grammar-resolver stub functions' "
+            f"incident in CLAUDE.md)."
+        )
+
+    # Direction 2 — dispatch handler with no catalog token, and not an
+    # explicit documented exception.
+    undeclared = sorted(dispatch_tokens - catalog_tokens - set(allowlist.keys()))
+    if undeclared:
+        raise ActionDispatchDriftError(
+            "actions.py dispatches action token(s) with NO agent_grammar."
+            f"yaml catalog row and no ACTION_DISPATCH_CATALOG_ALLOWLIST "
+            f"entry: {undeclared} — either add a catalog row or add a "
+            f"documented allowlist exception in grammar_registry.py."
+        )
+
+    # Allowlist self-tightening — every allowlisted token must STILL be a
+    # genuine dispatch-only-no-catalog exception. If it gained a catalog
+    # row, or vanished from the dispatch tables, the allowlist entry is
+    # stale and must be removed (never left to silently rot).
+    stale = sorted(
+        tok for tok in allowlist
+        if tok in catalog_tokens or tok not in dispatch_tokens
+    )
+    if stale:
+        raise ActionDispatchDriftError(
+            "ACTION_DISPATCH_CATALOG_ALLOWLIST entry/entries no longer "
+            f"describe a real dispatch-only-no-catalog exception: {stale} "
+            f"— remove the stale allowlist entry (it either gained a "
+            f"catalog row or no longer has a dispatch handler)."
+        )
+
+
 _TOKEN_LOADERS = {
     ('condition', 'metric'): _load_resolved('metrics', allow_bare=True),
     ('condition', 'scope'): _load_resolved('scopes', allow_bare=True),
@@ -264,7 +385,16 @@ class GrammarRegistry:
         Re-read the full catalog from grammar_tokens and rebuild the dispatch
         table. Idempotent; safe to call at startup, after admin edits, or on
         demand from an operator API endpoint.
+
+        Runs `validate_action_dispatch_catalog()` FIRST, before the DB read
+        and before any table swap, so a real drift (or a newly-stale
+        allowlist entry) raises before this reload can leave the registry
+        half-rebuilt — and so the error surfaces at startup
+        (`database.py`'s init path) or at the admin `/grammar/reload`
+        endpoint, never silently.
         """
+        validate_action_dispatch_catalog()
+
         from sqlalchemy import select
         from backend.api.database import async_session
         from backend.api.models import GrammarToken

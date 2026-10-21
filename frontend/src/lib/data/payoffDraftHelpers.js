@@ -15,7 +15,8 @@ import { rootOf } from './rootOf.js';
  * payoffDrafts.svelte.js's local Map-entry shape.
  *
  * @param {{id:number, symbol:string, exchange?:string, transaction_type?:string,
- *   quantity?:number, initial_price?:number|null, account?:string|null}} row
+ *   quantity?:number, initial_price?:number|null, account?:string|null,
+ *   created_at?:string|null}} row
  */
 export function draftRowToEntry(row) {
   const sym  = String(row.symbol || '').toUpperCase();
@@ -37,6 +38,11 @@ export function draftRowToEntry(row) {
     strike:           decomposed.strike ?? null,
     expiry:           null,
     is_draft:         /** @type {true} */ (true),
+    // Already returned by the backend's AlgoOrderInfo schema (GET/POST/PATCH
+    // /drafts) — threaded through so a draft surviving into a later trading
+    // session can be told apart from one created today (2026-10, Day P&L
+    // overnight-baseline fix — see derivatives +page.svelte's _candDayPnl).
+    created_at:       row.created_at ?? null,
   };
 }
 

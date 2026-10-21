@@ -1003,7 +1003,7 @@ test.describe('SPEC 8: Reactive-tracking bug fixes', () => {
 
     // The legs-update $effect ends with the legs assignment block.
     // The Bug 1 $effect must appear after it in source order.
-    const legsUpdateEndIdx = src.indexOf('void candidatePositions; void enabledSymbols; void showDraftInPayoff;');
+    const legsUpdateEndIdx = src.indexOf('void candidatePositions; void enabledSymbols;');
     const bug1EffectIdx    = src.indexOf('void legs;\n    const sel = selectedUnderlying;');
 
     expect(legsUpdateEndIdx, 'Legs-update $effect must exist').toBeGreaterThan(0);

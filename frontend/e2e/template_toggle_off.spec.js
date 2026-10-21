@@ -15,7 +15,10 @@ const SP = readFileSync(join(__dir, '../src/lib/SymbolPanel.svelte'), 'utf8');
 const OT = readFileSync(join(__dir, '../src/lib/order/OrderTicket.svelte'), 'utf8');
 
 test('toggle off clears the shared template id to null', () => {
-  const block = SP.match(/onSelectNone=\{\(\) => \{([\s\S]*?)\}\}/);
+  // The handler is passed by reference (`onSelectNone={_onTemplSelectNone}`,
+  // same named function at HEAD), so read its body rather than an inline arrow.
+  expect(SP, 'onSelectNone wired to the shared handler').toMatch(/onSelectNone=\{_onTemplSelectNone\}/);
+  const block = SP.match(/function _onTemplSelectNone\(\) \{([\s\S]*?)\n  \}/);
   expect(block, 'onSelectNone present').not.toBeNull();
   expect(block[1]).toMatch(/_sharedTemplateId = null;/);
   expect(block[1]).not.toMatch(/_noneTpl\.id/);

@@ -33,7 +33,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import {
   mergePositionRows, mergeHoldingRows, makeRowFactory, mergeUnderlyingAnchors,
-  totalsRowFor, finalizeRows,
+  totalsRowFor, finalizeRows, mergeDraftRows, sortDraftsLast,
 } from '../../data/pulseUnified.js';
 import { baseDayPnlForPosition, dayChangePct } from '$lib/data/nav.js';
 import { directional } from '$lib/format.js';
@@ -967,5 +967,226 @@ describe('D4 — same symbol held in two different accounts (GOLD26OCT149000CE i
     expect(outZJ._prev_market_value).toBe(108 * 25);
     expect(outZG.qty_pos).toBe(10);
     expect(outZJ.qty_pos).toBe(25);
+  });
+});
+
+// ============================================================================
+// mergeDraftRows / finalizeRows / accumTotalsRow — draft rows (payoff-store,
+// display-only, 2026-10) must display correctly but never contribute to any
+// real aggregate. Companion to the MarketPulse Part A/B UI work.
+// ============================================================================
+
+function draftCtx(snapMap = {}) {
+  return { snapOf: (sym) => snapMap[sym] ?? null, getInst: null };
+}
+
+describe('mergeDraftRows — builds a display-only row tagged source=draft', () => {
+  it('populates tradingsymbol/qty_pos/avg_combined/draftId from the entry, zeroes every aggregate field', () => {
+    const byKey = {};
+    const entry = {
+      id: 42, symbol: 'nifty25aug24000ce', exchange: 'NFO', qty: 75,
+      avg_cost: 123.45, underlying: 'NIFTY', account: 'ACC1',
+    };
+    mergeDraftRows(byKey, [entry], draftCtx());
+
+    const row = byKey['NIFTY25AUG24000CE::draft::42__pos'];
+    expect(row).toBeDefined();
+    expect(row.source).toBe('draft');
+    expect(row.draftId).toBe(42);
+    expect(row.tradingsymbol).toBe('NIFTY25AUG24000CE');
+    expect(row.qty_pos).toBe(75);
+    expect(row.qty_hold).toBe(0);
+    expect(row.account).toBe('ACC1');
+    expect(row.underlying).toBe('NIFTY');
+    // Never-contribute fields (see mergeDraftRows docblock).
+    expect(row.day_pnl).toBeNull();
+    expect(row.pnl).toBeNull();
+    expect(row.pnl_pct).toBeNull();
+    expect(row.exp_pnl).toBeNull();
+    expect(row._cost_basis).toBe(0);
+    expect(row._prev_market_value).toBe(0);
+    expect(row.has_gtt).toBeNull();
+    expect(row.pair_group_key).toBeNull();
+    expect(row.is_orphan).toBe(false);
+    // Never carries real-position src flags.
+    expect(row.src.p).toBe(false);
+  });
+
+  it('reads ltp from the live snapshot, never from the stored (always-stale) entry.ltp field', () => {
+    const byKey = {};
+    const entry = { id: 1, symbol: 'NIFTY25AUG24000CE', exchange: 'NFO', qty: 50, avg_cost: 100, ltp: 999999 };
+    mergeDraftRows(byKey, [entry], draftCtx({ NIFTY25AUG24000CE: { ltp: 155.5 } }));
+    const row = byKey['NIFTY25AUG24000CE::draft::1__pos'];
+    expect(row.ltp).toBe(155.5);
+    expect(row.ltp).not.toBe(999999);
+  });
+});
+
+describe('accumTotalsRow / totalsRowFor — a draft row now sums into the TOTAL like any other row (2026-10 simplification, .claude/PLAN.md "Simplify draft positions to \'a real position, with 3 exceptions\'")', () => {
+  it('totalsRowFor([real, draft]) sums a draft row\'s qty_pos/pnl/day_pnl/cost into the TOTAL — the former source===\'draft\' exclusion guard is removed', () => {
+    const real = {
+      tradingsymbol: 'NIFTY25AUG24000CE', qty_pos: 50, day_pnl: 100, pnl: 200,
+      _cost_basis: 5000, _prev_market_value: 6000,
+    };
+    // A draft row shaped exactly like mergeDraftRows would build it, but
+    // with deliberately NON-zero day_pnl/pnl/qty_pos — this test fixture
+    // predates the simplification (it used to prove the removed guard was
+    // what blocked these values); kept as-is so the SAME fixture now
+    // positively proves inclusion instead.
+    const draft = {
+      tradingsymbol: 'NIFTY25AUG24000CE', source: 'draft', draftId: 7,
+      qty_pos: 999, day_pnl: 50000, pnl: 50000,
+      _cost_basis: 50000, _prev_market_value: 50000,
+    };
+
+    const realOnly  = totalsRowFor([real], 'positions', 'TOTAL Positions');
+    const withDraft = totalsRowFor([real, draft], 'positions', 'TOTAL Positions');
+
+    expect(withDraft.qty_pos).toBe(realOnly.qty_pos + draft.qty_pos);
+    expect(withDraft.pnl).toBe(realOnly.pnl + draft.pnl);
+    expect(withDraft.day_pnl).toBe(realOnly.day_pnl + draft.day_pnl);
+    expect(withDraft._cost_basis).toBe(realOnly._cost_basis + draft._cost_basis);
+    expect(withDraft._prev_market_value).toBe(realOnly._prev_market_value + draft._prev_market_value);
+  });
+
+  it('a draft row with NO live tick yet (cold symbol) contributes only qty_pos, not a phantom P&L number', () => {
+    // mergeDraftRows only nulls day_pnl/pnl/_cost_basis/_prev_market_value
+    // when it genuinely has no live price to compute from (cold symbol,
+    // no tick seen yet) — never unconditionally. See the next test for
+    // the case where a live tick IS available.
+    const draft = {
+      tradingsymbol: 'NIFTY25AUG24000CE', source: 'draft', draftId: 7,
+      qty_pos: 50, day_pnl: null, pnl: null, _cost_basis: 0, _prev_market_value: 0,
+    };
+    const total = totalsRowFor([draft], 'positions', 'TOTAL Positions');
+    expect(total.qty_pos).toBe(50);
+    expect(total.day_pnl).toBeNull();
+    expect(total.pnl).toBeNull();
+    expect(total._cost_basis).toBe(0);
+    expect(total._prev_market_value).toBe(0);
+  });
+
+  it('mergeDraftRows computes REAL P&L (new-position-opened-today convention) once a live tick exists, and it sums into the TOTAL', () => {
+    // 2026-10 fix: a draft is a real position everywhere except creation/
+    // margin/chase/bracket/close — its P&L must not stay permanently null
+    // just because it has no broker fill. Matches PerformancePage's own
+    // _buildDraftPositionRows exactly, so the two surfaces never disagree
+    // on whether a draft has P&L.
+    const byKey = {};
+    mergeDraftRows(byKey, [
+      { id: 9, symbol: 'NIFTY25AUG24000CE', exchange: 'NFO', qty: 50, avg_cost: 100 },
+    ], draftCtx({ NIFTY25AUG24000CE: { ltp: 120 } }));
+    const row = byKey['NIFTY25AUG24000CE::draft::9__pos'];
+    expect(row.pnl).toBe(1000);       // (120 - 100) * 50
+    expect(row.day_pnl).toBe(1000);   // new position today: day_pnl === lifetime pnl
+    expect(row._cost_basis).toBe(5000);         // 100 * 50
+    expect(row._prev_market_value).toBe(5000);  // no prior settlement — same as cost basis
+
+    const real = { tradingsymbol: 'OTHER', qty_pos: 10, day_pnl: 200, pnl: 300, _cost_basis: 1000, _prev_market_value: 1200 };
+    const total = totalsRowFor([real, row], 'positions', 'TOTAL Positions');
+    expect(total.pnl).toBe(300 + 1000);
+    expect(total.day_pnl).toBe(200 + 1000);
+  });
+});
+
+describe('finalizeRows — a draft row keeps its own avg_combined/cost/prevMktValue, never the recomputed real-row values', () => {
+  it('skips the real-row cost/avg recompute for source=draft, preserving mergeDraftRows own avg_combined', () => {
+    const byKey = {};
+    mergeDraftRows(byKey, [
+      { id: 1, symbol: 'NIFTY25AUG24000CE', exchange: 'NFO', qty: 50, avg_cost: 155.5 },
+    ], draftCtx());
+    finalizeRows(byKey, _finCtx());
+
+    const row = byKey['NIFTY25AUG24000CE::draft::1__pos'];
+    // avg_combined set directly by mergeDraftRows — must survive
+    // finalizeRows unchanged (the real-row branch would have recomputed
+    // it from _avg_num/qty_pos and silently zeroed it, since mergeDraftRows
+    // never accumulates into _avg_num).
+    expect(row.avg_combined).toBe(155.5);
+    expect(row._cost_basis).toBe(0);
+    expect(row._prev_market_value).toBe(0);
+    // Temp accumulator fields cleaned up, same as the real-row path.
+    expect(row._avg_num).toBeUndefined();
+    expect(row._avg_hold_num).toBeUndefined();
+  });
+
+  it('a draft with avg_cost=null (operator left it blank) renders avg_combined=null, not 0', () => {
+    const byKey = {};
+    mergeDraftRows(byKey, [
+      { id: 2, symbol: 'NIFTY25AUG24000CE', exchange: 'NFO', qty: 50, avg_cost: null },
+    ], draftCtx());
+    finalizeRows(byKey, _finCtx());
+    expect(byKey['NIFTY25AUG24000CE::draft::2__pos'].avg_combined).toBeNull();
+  });
+});
+
+describe('mergeUnderlyingAnchors — a draft sharing the anchor contract does not suppress the real anchor row (2026-10 fix)', () => {
+  it('creates the bare-keyed anchor row even when a draft already occupies that exact tradingsymbol', () => {
+    const byKey = {};
+    // A draft on the SAME contract the underlying anchor would resolve to.
+    mergeDraftRows(byKey, [
+      { id: 1, symbol: 'CRUDEOIL26JUNFUT', exchange: 'MCX', qty: 10, avg_cost: 6400 },
+    ], draftCtx());
+    // A real option position so the anchor gate (at least one CE/PE present) passes.
+    const optionRow = makeOvernightPositionRow({
+      tradingsymbol: 'CRUDEOIL26JUN10500CE', account: 'ACC1', exchange: 'MCX',
+    });
+    mergePositionRows(byKey, [optionRow], true, {}, makeCtx());
+
+    const uq = {
+      CRUDEOIL: {
+        ltp: 6500,
+        _resolved: {
+          tradingsymbol: 'CRUDEOIL26JUNFUT',
+          exchange: 'MCX',
+          displayUnderlying: 'CRUDEOIL',
+          kind: 'fut',
+          _major: 'positions',
+        },
+      },
+    };
+    mergeUnderlyingAnchors(byKey, uq, [optionRow], [], true, true, { getInst: null, snapOf: () => null });
+
+    // The real anchor row (bare-keyed) must exist — the pre-fix behaviour
+    // would have matched the DRAFT row instead (same tradingsymbol,
+    // _majorGroup 'positions') and `continue`d before creating it.
+    const anchorRow = byKey['CRUDEOIL26JUNFUT__pos'];
+    expect(anchorRow).toBeDefined();
+    expect(anchorRow._isUnderlyingAnchor).toBe(true);
+    expect(anchorRow.ltp).toBe(6500);
+    // The draft row is untouched — still carries source:'draft', never
+    // silently promoted to src.u=true in place of the real anchor.
+    const draftRow = byKey['CRUDEOIL26JUNFUT::draft::1__pos'];
+    expect(draftRow).toBeDefined();
+    expect(draftRow.src.u).toBe(false);
+  });
+});
+
+// ============================================================================
+// sortDraftsLast — stable partition, draft rows move to the bottom without
+// disturbing either group's own existing relative order (2026-10).
+// ============================================================================
+
+describe('sortDraftsLast', () => {
+  it('moves every source=draft row after every non-draft row, preserving each group\'s relative order', () => {
+    const rows = [
+      { tradingsymbol: 'A', source: 'draft' },
+      { tradingsymbol: 'B' },
+      { tradingsymbol: 'C', source: 'draft' },
+      { tradingsymbol: 'D' },
+      { tradingsymbol: 'E' },
+    ];
+    const out = sortDraftsLast(rows);
+    expect(out.map(r => r.tradingsymbol)).toEqual(['B', 'D', 'E', 'A', 'C']);
+  });
+
+  it('is a no-op (same array reference) when no draft rows are present', () => {
+    const rows = [{ tradingsymbol: 'B' }, { tradingsymbol: 'D' }];
+    expect(sortDraftsLast(rows)).toBe(rows);
+  });
+
+  it('handles an empty or null input without throwing', () => {
+    expect(sortDraftsLast([])).toEqual([]);
+    expect(sortDraftsLast(/** @type {any} */ (null))).toEqual([]);
   });
 });

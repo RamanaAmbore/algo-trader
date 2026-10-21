@@ -22,7 +22,6 @@
   import { executionMode } from '$lib/stores';
   import { toast } from '$lib/data/toastStore.svelte.js';
   import Select from '$lib/Select.svelte';
-  import TemplateBar from '$lib/TemplateBar.svelte';
   import {
     loadInstruments, suggestUnderlyings,
     listExpiries, listFutures, getInstrument,
@@ -58,8 +57,6 @@
    *   templateId?:     number | null,
    *   templateName?:   string,
    *   templateIsNone?: boolean,
-   *   showTemplateBar?:  boolean,
-   *   showDemoTplNote?:  boolean,
    *   selectedTemplate?: object | null,
    *   sideAwareDefault?: object | null,
    *   nonNoneTemplates?: any[],
@@ -114,23 +111,11 @@
     // template-catalog lookup the shell already owns.
     templateName   = /** @type {string} */ (''),
     templateIsNone = false,
-    // Shell-computed visibility gates — replicate the exact original
-    // SymbolPanel if/else-if show/hide logic for the Templ row
-    // (`_templates.length > 0 && action === 'open' && (symbol-or-legs)`
-    // for the live toggle, `_isDemo && action === 'open' && (symbol-
-    // or-legs)` for the demo note) so this tab doesn't need its own
-    // duplicate copy of `action`/`_templates.length` state. Computed
-    // once in SymbolPanel where that state already lives; passed down
-    // as plain booleans, mirroring the existing templateId/templateName
-    // pass-through convention above.
-    showTemplateBar = false,
-    showDemoTplNote = false,
-    // TemplateBar pass-through props — the toggle + expand panel now
-    // render inline in this tab's expiry toolbar row (see markup
-    // below) instead of SymbolPanel mounting <TemplateBar> itself.
-    // Same prop shape TemplateBar.svelte declares; forwarded straight
-    // through, selection callbacks bubble back up to the shell (which
-    // owns `_sharedTemplateId` / the four override $state vars).
+    // `showTemplateBar`/`showDemoTplNote` props REMOVED 2026-10-21 —
+    // they existed only to gate this tab's own <TemplateBar> render,
+    // which moved to SymbolPanel's shared row (see markup above).
+    // Template-state props below stay — still read internally by
+    // `_effTemplateForLeg`/`_effWingParams`/the spread-gate effect.
     selectedTemplate = /** @type {any} */ (null),
     sideAwareDefault = /** @type {any} */ (null),
     nonNoneTemplates = /** @type {any[]} */ ([]),
@@ -1230,40 +1215,16 @@
           {_dte === 0 ? 'expires today' : `${_dte}d`}
         </span>
       {/if}
-      <!-- Template toggle — relocated from SymbolPanel's shell-level
-           row (2026-09-30) so it sits with the rest of the chain's own
-           per-basket controls. showDemoTplNote / showTemplateBar are
-           computed in the shell (SymbolPanel) mirroring the exact
-           original if/else-if gates: demo wins when both would be
-           true, matching the old branch's precedence.
-
-           RE-GATED (2026-09-30, same day) after finding and fixing the
-           actual root cause: loadOrderTemplates() (templates.js) was
-           permanently caching a transient fetch failure as an empty
-           template list for the rest of the browser tab's session,
-           which made `_templates.length > 0` (part of showTemplateBar's
-           definition) false indefinitely in a real operator session
-           that happened to hit the race once — unrelated to this gate's
-           own logic, which a temporary debug bypass correctly ruled
-           out as NOT the cause before the real fix was found. -->
-      {#if showDemoTplNote}
-        <span class="oct-tpl-demo-note">Exit rules (TP / SL / Wing) not available in demo.</span>
-      {:else if showTemplateBar}
-        <TemplateBar
-          {selectedTemplate}
-          {sideAwareDefault}
-          {nonNoneTemplates}
-          {showsWing}
-          {shellUsingNone}
-          bind:tpOverride
-          bind:slOverride
-          bind:wingStrikeOffsetOverride
-          bind:wingPremPctOverride
-          bind:spreadMaxPctOverride
-          {onSelectDefault}
-          {onSelectNone}
-          {onSelectTemplate} />
-      {/if}
+      <!-- Template toggle — REMOVED 2026-10-21 (shared-row re-wire).
+           The Bracket (TemplateBar) toggle + Draft checkbox now render
+           once, at shell level, inside SymbolPanel's single CHASE/
+           BRACKET/DRAFT row (visible identically on Ticket + Chain) —
+           this tab no longer mounts its own copy. `selectedTemplate`/
+           `nonNoneTemplates`/`shellUsingNone` stay as props (still read
+           internally by `_effTemplateForLeg`/`_effWingParams`/the
+           spread-gate effect below); `showTemplateBar`/`showDemoTplNote`
+           were removed entirely since they existed only to gate this
+           now-deleted render. -->
     </div>
   {/if}
 
@@ -1648,31 +1609,9 @@
     background: var(--algo-amber-bg);
     border-color: rgba(251, 191, 36, 0.42);
   }
-  /* Demo-mode note — replaces the Template toggle when exit rules
-     (TP/SL/Wing) aren't available to an anonymous session. Muted
-     slate italic so it reads as "not active" without competing with
-     the amber toggle it stands in for. */
-  .oct-tpl-demo-note {
-    font-family: var(--font-numeric);
-    font-size: var(--fs-xs);
-    color: var(--text-lo);
-    font-style: italic;
-    /* Audit fix (2026-09-30) — flex-shrink: 0 removed. Verified via an
-       isolated render (this rule's exact flex siblings + values) that
-       it was a no-op at every realistic viewport (320/375/412/600px):
-       the wrap-to-its-own-line decision is governed by this item's
-       max-content width vs the remaining space on the CURRENT line,
-       which is independent of flex-shrink — so the wrap behavior
-       operators already approved ("happens to look fine") is
-       unaffected at those widths. Below the realistic phone-viewport
-       floor (tested 180/250px) flex-shrink:0 actively made it WORSE:
-       the sentence's box stayed pinned to its full single-line width
-       and bled past the toolbar/viewport edge (the exact horizontal-
-       overflow class of bug .oes-modal's own mobile overflow-x:hidden
-       backstop exists to guard against) instead of wrapping in place.
-       Removing it lets the text wrap within its own box at any width
-       that's actually too narrow to hold it on one line. */
-  }
+  /* .oct-tpl-demo-note removed 2026-10-21 (shared-row re-wire) — the
+     demo-mode note now renders once, at shell level, inside
+     SymbolPanel's single CHASE/BRACKET/DRAFT row. */
   .oct-acct-single {
     font-family: monospace;
     font-size: var(--fs-lg);

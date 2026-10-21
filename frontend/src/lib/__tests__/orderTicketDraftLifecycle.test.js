@@ -91,8 +91,8 @@ describe('OrderTicket.svelte — submit() draft lifecycle (Bug A fix)', () => {
     expect(codeOnly).not.toMatch(/payoffDrafts\.remove\(/);
   });
 
-  it('threads draftId into placeCtx only when !_draftMode && initialDraftId', () => {
-    expect(block).toMatch(/draftId:\s*\(!_draftMode\s*&&\s*initialDraftId\)\s*\?\s*initialDraftId\s*:\s*null/);
+  it('threads draftId into placeCtx only when !draftMode && initialDraftId', () => {
+    expect(block).toMatch(/draftId:\s*\(!draftMode\s*&&\s*initialDraftId\)\s*\?\s*initialDraftId\s*:\s*null/);
   });
 
   it('forget()s the draft only AFTER a confirmed successful placeTicketOrder() call', () => {
@@ -111,7 +111,7 @@ describe('OrderTicket.svelte — submit() draft lifecycle (Bug A fix)', () => {
   });
 
   it('draft-mode branch (add/update) uses update() for an existing draft, not remove-then-add', () => {
-    const draftBranchIdx = block.indexOf("if (_draftMode && !isEquity) {");
+    const draftBranchIdx = block.indexOf("if (draftMode && !isEquity) {");
     const draftBranchEnd = block.indexOf('NOTE (2026-10 fix)', draftBranchIdx);
     const draftBlock = block.slice(draftBranchIdx, draftBranchEnd);
     expect(draftBlock).toContain('payoffDrafts.update(initialDraftId, draftEntry)');

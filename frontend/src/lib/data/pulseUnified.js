@@ -25,6 +25,11 @@
 
 // baseDayPnlForPosition injected via ctx bag — see mergePositionRows ctx param.
 
+// Shared identity/qty/price shaping for a draft entry, extracted so
+// PerformancePage.svelte can reuse the exact same mapping — see
+// draftRowMerge.js's own docblock for the full rationale.
+import { draftEntryToPositionRow } from './draftRowMerge.js';
+
 // ── Shared constants ─────────────────────────────────────────────────────────
 
 export const MAJOR_ORDER = { pinned: 0, watchlist: 1, positions: 2, holdings: 3, movers: 4 };
@@ -530,6 +535,95 @@ export function mergePositionRows(byKey, pos, includePos, cq, ctx) {
 }
 
 /**
+ * Section 2b — merge payoff-draft rows (major: 'positions', source: 'draft').
+ *
+ * These are NOT real broker positions — no live qty from the broker, no
+ * real fill. They render on the Positions grid for VISIBILITY (2026-10
+ * operator request: "draft positions visible... marked as draft") and,
+ * per the 2026-10 simplification (.claude/PLAN.md "Simplify draft
+ * positions to 'a real position, with 3 exceptions'"), now SUM into
+ * MarketPulse's own grid-local pinned TOTAL row like any other row —
+ * `accumTotalsRow`'s former dedicated `source === 'draft'` exclusion
+ * guard was deliberately removed. `day_pnl`/`pnl`/`pnl_pct`/`exp_pnl` are
+ * still null and `_cost_basis`/`_prev_market_value`/`qty_hold` still zero
+ * here (unchanged by that plan — a draft has no real fill to derive a
+ * P&L baseline from), so those specific fields still contribute nothing
+ * numerically to the TOTAL — not via a guard, but because there's
+ * nothing non-null/non-zero to add. `qty_pos` and (via the TOTAL's
+ * separate per-symbol Exp P&L lookup) Exp P&L DO now contribute.
+ * `finalizeRows` (below) still special-cases `source === 'draft'` rows so
+ * its normal cost/avg recompute never overwrites these deliberately-set
+ * fields with a real-looking value.
+ *
+ * One row per draft entry (never merged with a real position row, even
+ * when they share the same tradingsymbol) — the lookup key bakes in the
+ * draft's own id.
+ *
+ * @param {Record<string, any>} byKey
+ * @param {any[]} draftEntries  snapshot of payoffDrafts.value.values()
+ * @param {{ snapOf: (sym: string) => any, getInst: ((s: string) => any) | null }} ctx
+ */
+export function mergeDraftRows(byKey, draftEntries, ctx) {
+  const get = makeRowFactory(byKey);
+  const { snapOf, getInst } = ctx;
+  for (const d of (draftEntries || [])) {
+    // Shared identity/qty/price/live-quote shaping (draftRowMerge.js) —
+    // same mapping PerformancePage.svelte uses, so the two surfaces can
+    // never silently drift on how a draft entry becomes a position row.
+    const shaped = draftEntryToPositionRow(d, snapOf);
+    if (!shaped) continue;
+    const lookupKey = `${shaped.tradingsymbol}::draft::${shaped.draftId}`;
+    const row = get(lookupKey, 'positions');
+    row.exchange      = shaped.exchange || row.exchange || 'NFO';
+    row.tradingsymbol = shaped.tradingsymbol;
+    if (!row.quote_symbol) row.quote_symbol = shaped.tradingsymbol;
+    row.source  = 'draft';
+    row.draftId = shaped.draftId;
+    row.account = shaped.account;
+    if (shaped.account) row.accounts.add(String(shaped.account));
+    row.underlying = shaped.underlying || row.underlying || null;
+    row.qty_pos  = shaped.qty;
+    row.qty_hold = 0;
+    row.avg_combined = shaped.avg_cost;
+    // A draft is a real position everywhere except creation/margin/chase/
+    // bracket/close (2026-10 simplification) — its P&L is computed the
+    // same "new position opened today" way PerformancePage's own
+    // _buildDraftPositionRows does (no prior settlement, so day_pnl ==
+    // lifetime pnl), not nulled. Keeps the two surfaces from silently
+    // disagreeing on whether a draft has any P&L at all.
+    // shaped.ltp/avg_cost are `null` (never `0`) when genuinely unknown —
+    // `Number(null) === 0` in JS, so check `!= null` BEFORE converting,
+    // or a cold symbol (no live tick yet) would be misread as a
+    // confirmed ltp of 0 and produce a fake, large P&L number.
+    const _hasPrice = shaped.ltp != null && shaped.avg_cost != null;
+    const _ltp = _hasPrice ? Number(shaped.ltp) : null;
+    const _avg = _hasPrice ? Number(shaped.avg_cost) : null;
+    const _qty = Number(shaped.qty) || 0;
+    const _draftPnl = _hasPrice ? (_ltp - _avg) * _qty : null;
+    row.day_pnl  = _draftPnl;
+    row.pnl      = _draftPnl;
+    row.pnl_pct  = (_hasPrice && _avg !== 0) ? ((_ltp - _avg) / _avg) * 100 : null;
+    row.exp_pnl  = _draftPnl;
+    row._cost_basis        = _hasPrice ? _avg * _qty : 0;
+    row._prev_market_value = _hasPrice ? _avg * _qty : 0;
+    row.day_pct  = row.pnl_pct;
+    row.has_gtt        = null;
+    row.pair_group_key = null;
+    row.is_orphan       = false;
+    // Live tick via symbolStore — never the stored entry's own `.ltp`
+    // field (payoffDrafts.svelte.js documents it as always empty/stale).
+    row.ltp        = shaped.ltp;
+    row.bid        = shaped.bid;
+    row.ask        = shaped.ask;
+    row.open       = shaped.open;
+    row.close      = shaped.close;
+    row.change     = shaped.change;
+    row.change_pct = shaped.change_pct;
+    fillSymbolMeta(row, shaped.tradingsymbol, getInst);
+  }
+}
+
+/**
  * Section 3 — merge holdings rows (major: 'holdings').
  *
  * @param {Record<string, any>} byKey
@@ -699,9 +793,17 @@ export function mergeUnderlyingAnchors(byKey, uq, pos, hold, includePos, include
     // each of them in place and skip creating the bare-keyed row;
     // otherwise fall back to the original bare-keyed anchor-only row
     // (the common case — no position exists for this exact symbol).
+    // 2026-10 fix: exclude draft rows (payoff-store, display-only — see
+    // mergeDraftRows) from this match. A draft on the anchor's own exact
+    // contract would otherwise get silently enriched in place (src.u,
+    // underlying/kind overwritten) and the `continue` below would skip
+    // creating the real anchor row entirely — suppressing the legitimate
+    // underlying-anchor display whenever a draft happens to share that
+    // symbol. Real held rows are unaffected by this guard.
     const existingPosRows = anchorMajor === 'positions'
       ? Object.values(byKey).filter(
-          (r) => r._majorGroup === 'positions' && r.tradingsymbol === info.tradingsymbol)
+          (r) => r._majorGroup === 'positions' && r.source !== 'draft'
+            && r.tradingsymbol === info.tradingsymbol)
       : [];
     if (existingPosRows.length > 0) {
       for (const row of existingPosRows) {
@@ -802,6 +904,25 @@ export function tagWatchedIndices(byKey) {
 export function finalizeRows(byKey, ctx) {
   const { directional, leadAccount, acctColor } = ctx;
   for (const row of Object.values(byKey)) {
+    if (row.source === 'draft') {
+      // Draft rows are display-only (see mergeDraftRows docblock) —
+      // avg_combined/_cost_basis/_prev_market_value/day_pct were already
+      // set there (avg_combined from the store's own avg_cost;
+      // _cost_basis/_prev_market_value pinned to 0). The normal cost/avg
+      // recompute below reads `_avg_num` (always 0 for a draft row, since
+      // mergeDraftRows never accumulates into it), which would silently
+      // overwrite avg_combined with 0 and leave the zeroed cost/prev-value
+      // fields untouched anyway — skip the recompute entirely rather than
+      // relying on that coincidence. Still resolve the lead-account tint
+      // for visual consistency with real rows.
+      delete row._avg_num;
+      delete row._avg_hold_num;
+      delete row._prevCloseSsot;
+      delete row._prevCloseHoldSsot;
+      const _leadDraft = leadAccount(row);
+      row._acctColor = _leadDraft ? acctColor(_leadDraft) : null;
+      continue;
+    }
     if (row.qty_pos !== 0) {
       row.avg_pos = row._avg_num / row.qty_pos;
     }
@@ -947,6 +1068,33 @@ export function sortUnifiedRows(out, groupOrder, detachedSymbols) {
 }
 
 /**
+ * Section 8b — stable partition that moves every draft row (payoff-store,
+ * display-only — see mergeDraftRows) to the bottom of `rows`, below every
+ * real position. 2026-10 operator design decision (misread-risk): a
+ * hypothetical row sitting among real money rows, even when correctly
+ * tagged + excluded from totals, is too easy to glance past as real —
+ * grouping drafts at one edge makes the separation unmistakable (matches
+ * Sensibull's Draft Portfolios / thinkorswim's Simulated Trades keeping
+ * hypothetical legs structurally separate from the real book).
+ *
+ * `Array.prototype.filter` preserves relative order, so each group keeps
+ * its own existing order — this is a pure reshuffle, not a re-sort within
+ * either group. Applied AFTER the normal sort (sortUnifiedRows / a
+ * caller's own comparator), not instead of it.
+ *
+ * @param {any[]} rows
+ * @returns {any[]} new array — real rows first (original relative order),
+ *   then draft rows (original relative order)
+ */
+export function sortDraftsLast(rows) {
+  if (!rows?.length) return rows ?? [];
+  const real  = rows.filter(r => r.source !== 'draft');
+  const draft = rows.filter(r => r.source === 'draft');
+  if (draft.length === 0) return rows;
+  return [...real, ...draft];
+}
+
+/**
  * Section 9 — TOTAL-row accumulator for the Positions / Holdings grids.
  * Extracted from MarketPulse.svelte (2026-10 Part A) so it's a pure,
  * Vitest-reachable function rather than a closure inside the .svelte file.
@@ -989,6 +1137,15 @@ export function blankTotalsAcc() {
  * @param {Record<string, {exp_pnl: number|null, extrinsic: number|null}>} [expPnlByKey]
  */
 export function accumTotalsRow(acc, r, expPnlByKey) {
+  // 2026-10 simplification (see .claude/PLAN.md "Simplify draft positions
+  // to 'a real position, with 3 exceptions'") — the former `source ===
+  // 'draft'` early-return excluding a draft row from every TOTAL-row sum
+  // is REMOVED. A draft now sums in exactly like any other row: its
+  // qty_pos and (via the expPnlByKey lookup below) Exp P&L contribute to
+  // MarketPulse's own grid-local pinned TOTAL. day_pnl/pnl/_cost_basis/
+  // _prev_market_value still contribute nothing numerically — not via a
+  // guard here, but because mergeDraftRows() (unchanged by this plan)
+  // still sets those fields to null/0 for a draft row, same as before.
   const rowPnl    = r.pnl     ?? r._broker_pnl;
   const rowDayPnl = r.day_pnl ?? r._broker_day_pnl;
   if (rowDayPnl != null) { acc.day_pnl += Number(rowDayPnl) || 0; acc.anyDayPnl = true; }

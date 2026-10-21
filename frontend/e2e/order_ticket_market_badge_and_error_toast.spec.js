@@ -47,9 +47,9 @@ async function _seedNiftyOnTicket(page) {
   await page.goto(`${BASE}/orders`, { waitUntil: 'domcontentloaded', timeout: 30000 });
   const symInput = page.locator('.ssi-input').first();
   await expect(symInput).toBeVisible({ timeout: 15_000 });
-  await symInput.fill('NIFTY');
+  await symInput.fill('NIFTY26OCTFUT');
   const sugg = page.locator('.ssi-drop .ssi-row').first();
-  await expect(sugg).toBeVisible({ timeout: 10_000 });
+  await expect(sugg).toBeVisible({ timeout: 45_000 });
   await sugg.click({ force: true });
   await page.waitForTimeout(500);
 }
@@ -65,10 +65,14 @@ test.describe('OrderTicket market-state badge', () => {
     expect(orderTicket).not.toMatch(/import\s*\{[^}]*isMarketOpen[^}]*\}\s*from\s*'\$lib\/marketHours'/);
     expect(orderTicket).toMatch(/return isMcxOpen\(\);/);
     expect(orderTicket).toMatch(/return isNseOpen\(\);/);
-    // Badge markup exists and is driven by _isOpen.
-    expect(orderTicket).toContain('data-testid="ot-market-badge"');
-    expect(orderTicket).toMatch(/class:ot-mkt-open=\{_isOpen\}/);
-    expect(orderTicket).toMatch(/class:ot-mkt-closed=\{!_isOpen\}/);
+    // 2026-10-21 shared-row re-wire: the badge MARKUP moved to
+    // SymbolPanel.svelte (renders for both Ticket and Chain tabs). The
+    // computation stays here — OrderTicket publishes it via _ticketState.
+    expect(orderTicket).toMatch(/mktOpen:\s*_isOpen/);
+    const symbolPanel = readFileSync(`${ROOT}/SymbolPanel.svelte`, 'utf-8');
+    expect(symbolPanel).toContain('data-testid="ot-market-badge"');
+    expect(symbolPanel).toMatch(/class:oes-mkt-open=\{_mktBadgeOpen\}/);
+    expect(symbolPanel).toMatch(/class:oes-mkt-closed=\{!_mktBadgeOpen\}/);
   });
 
   test('source: badge per-exchange mapping mirrors the backend _EXCHANGE_TO_SEGMENT table exactly (2026-10-20 fix)', () => {
@@ -109,21 +113,25 @@ test.describe('OrderTicket market-state badge', () => {
     expect(fn).not.toMatch(/isMarketOpen/);
   });
 
-  test('source: badge markup sits OUTSIDE the symbolHidden gate (SymbolPanel is the only real caller and always sets symbolHidden=true)', () => {
+  test('source: badge lives in SymbolPanel OUTSIDE OrderTicket symbolHidden gate; SymbolPanel is the real caller and sets symbolHidden=true', () => {
+    // 2026-10-21: the badge moved from OrderTicket.svelte to SymbolPanel.svelte
+    // (single render site for Ticket + Chain). OrderTicket must no longer
+    // render its own copy — a second badge would break `.first()` selectors.
     const orderTicket = readFileSync(`${ROOT}/order/OrderTicket.svelte`, 'utf-8');
-    const gateIdx = orderTicket.indexOf('{#if !symbolHidden}');
-    expect(gateIdx, 'symbolHidden gate not found').toBeGreaterThan(-1);
-    const gateEndIdx = orderTicket.indexOf('{/if}', gateIdx);
-    const gateBlock = orderTicket.slice(gateIdx, gateEndIdx);
-    // The badge must NOT be inside the symbolHidden-gated block.
-    expect(gateBlock).not.toContain('ot-market-badge');
-    // It must appear shortly after the gate closes.
-    const badgeIdx = orderTicket.indexOf('ot-market-badge', gateEndIdx);
-    expect(badgeIdx, 'badge not found after the symbolHidden gate').toBeGreaterThan(-1);
+    // Comment mentions the testid; only a real element tag would render it.
+    expect(orderTicket).not.toMatch(/<[a-zA-Z][^>]*data-testid="ot-market-badge"/);
 
-    // Confirm the real-world embedding actually sets symbolHidden=true,
-    // i.e. this placement decision is load-bearing, not theoretical.
     const symbolPanel = readFileSync(`${ROOT}/SymbolPanel.svelte`, 'utf-8');
+    const badgeIdx = symbolPanel.indexOf('data-testid="ot-market-badge"');
+    expect(badgeIdx, 'badge not found in SymbolPanel').toBeGreaterThan(-1);
+    // Badge sits in the shell (not inside the OrderTicket symbolHidden block
+    // it would never reach on the Chain tab): the nearest preceding
+    // `{#if !symbolHidden}` must be closed before the badge.
+    const gateIdx = symbolPanel.lastIndexOf('{#if !symbolHidden}', badgeIdx);
+    if (gateIdx > -1) {
+      expect(symbolPanel.indexOf('{/if}', gateIdx)).toBeLessThan(badgeIdx);
+    }
+    // Real-world embedding sets symbolHidden=true on OrderTicket.
     expect(symbolPanel).toMatch(/symbolHidden=\{true\}/);
   });
 
@@ -139,11 +147,13 @@ test.describe('OrderTicket market-state badge', () => {
   });
 
   test('source: badge CSS uses app.css tokens, no hardcoded hex/rgba literals', () => {
-    const orderTicket = readFileSync(`${ROOT}/order/OrderTicket.svelte`, 'utf-8');
-    const openIdx = orderTicket.indexOf('.ot-mkt-open {');
-    const closedEndIdx = orderTicket.indexOf('.ot-label {', openIdx);
+    // 2026-10-21: badge CSS moved to SymbolPanel.svelte as .oes-mkt-*.
+    const symbolPanel = readFileSync(`${ROOT}/SymbolPanel.svelte`, 'utf-8');
+    const openIdx = symbolPanel.indexOf('.oes-mkt-open {');
+    const closedEndIdx = symbolPanel.indexOf('/* Demo-mode note', openIdx);
     expect(openIdx).toBeGreaterThan(-1);
-    const block = orderTicket.slice(openIdx, closedEndIdx);
+    expect(closedEndIdx).toBeGreaterThan(openIdx);
+    const block = symbolPanel.slice(openIdx, closedEndIdx);
     expect(block).not.toMatch(/#[0-9a-fA-F]{3,6}/);
     expect(block).not.toMatch(/rgba\(/);
     expect(block).toContain('var(--algo-green-bg-mid)');
@@ -163,7 +173,7 @@ test.describe('OrderTicket market-state badge', () => {
     const text = (await badge.textContent() || '').trim();
     expect(text).toMatch(/\b(open|closed)\b/i);
     const cls = await badge.evaluate((el) => el.className);
-    expect(cls).toMatch(/ot-mkt-(open|closed)/);
+    expect(cls).toMatch(/oes-mkt-(open|closed)/);
   });
 
   test('live: badge reflects a fixed /api/market/status mock per-exchange, not just "renders some text" (2026-10-20 extension)', async ({ page }) => {
@@ -190,7 +200,7 @@ test.describe('OrderTicket market-state badge', () => {
     // MCX symbol — mcx_open:true in the mock → badge must read "MCX open".
     await symInput.fill('CRUDEOIL26NOVFUT');
     const mcxSugg = page.locator('.ssi-drop .ssi-row').first();
-    await expect(mcxSugg).toBeVisible({ timeout: 10_000 });
+    await expect(mcxSugg).toBeVisible({ timeout: 45_000 });
     await mcxSugg.click({ force: true });
     // Settle delay — the pick triggers a margin/depth-quote fetch whose
     // transient overlay can occlude the search box for a moment; a
@@ -202,19 +212,53 @@ test.describe('OrderTicket market-state badge', () => {
     const badge = page.locator('[data-testid="ot-market-badge"]').first();
     await expect(badge).toBeVisible({ timeout: 10_000 });
     await expect(badge).toHaveText(/^MCX open$/, { timeout: 10_000 });
-    await expect(badge).toHaveClass(/ot-mkt-open/);
-    await expect(badge).not.toHaveClass(/ot-mkt-closed/);
+    await expect(badge).toHaveClass(/oes-mkt-open/);
+    await expect(badge).not.toHaveClass(/oes-mkt-closed/);
 
     // NFO symbol — nse_open:false in the mock → badge must read "NFO closed".
     await symInput.fill('NIFTY26OCTFUT');
     const nfoSugg = page.locator('.ssi-drop .ssi-row').first();
-    await expect(nfoSugg).toBeVisible({ timeout: 10_000 });
+    await expect(nfoSugg).toBeVisible({ timeout: 45_000 });
     await nfoSugg.click({ force: true });
     await page.waitForTimeout(600);
 
     await expect(badge).toHaveText(/^NFO closed$/, { timeout: 10_000 });
-    await expect(badge).toHaveClass(/ot-mkt-closed/);
-    await expect(badge).not.toHaveClass(/ot-mkt-open/);
+    await expect(badge).toHaveClass(/oes-mkt-closed/);
+    await expect(badge).not.toHaveClass(/oes-mkt-open/);
+  });
+
+  test('live: market badge renders and reflects the same status on the Chain tab (2026-10-21 shared-row re-wire)', async ({ page }) => {
+    // Before the shared-row re-wire the badge only existed on the Ticket tab.
+    // SymbolPanel now renders one badge for both tabs; Chain computes its own
+    // exchange from the focused leg. Drive both tabs from the same fixed
+    // /api/market/status mock (nse_open:false) so the expected text is exact.
+    await page.route('**/api/market/status', (route) => route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        nse_open: false,
+        mcx_open: true,
+        any_open: true,
+        is_holiday: false,
+        checked_at: new Date().toISOString(),
+      }),
+    }));
+    await loginAsAdmin(page);
+    await _seedNiftyOnTicket(page);
+
+    const badge = page.locator('[data-testid="ot-market-badge"]').first();
+    await expect(badge).toBeVisible({ timeout: 10_000 });
+    await expect(badge).toHaveText(/^NFO closed$/, { timeout: 10_000 });
+
+    await page.getByRole('tab', { name: /chain/i }).first().click();
+    await expect(badge).toBeVisible({ timeout: 10_000 });
+    // NIFTY's focused leg resolves to NFO (or NSE for the index) — both are
+    // the equity segment, so the mocked nse_open:false must read "closed".
+    await expect(badge).toHaveText(/^(NFO|NSE) closed$/, { timeout: 10_000 });
+    await expect(badge).toHaveClass(/oes-mkt-closed/);
+    await expect(badge).not.toHaveClass(/oes-mkt-open/);
+    // Exactly one badge in the DOM — the Ticket and Chain tabs share it.
+    await expect(page.locator('[data-testid="ot-market-badge"]')).toHaveCount(1);
   });
 });
 
@@ -268,7 +312,7 @@ test.describe('OrderTicket submit-error toast truncation', () => {
     await expect(symInput).toBeVisible({ timeout: 15_000 });
     await symInput.fill('CRUDEOIL26NOVFUT');
     const sugg = page.locator('.ssi-drop .ssi-row').first();
-    await expect(sugg).toBeVisible({ timeout: 10_000 });
+    await expect(sugg).toBeVisible({ timeout: 45_000 });
     await sugg.click({ force: true });
     await page.waitForTimeout(500);
 

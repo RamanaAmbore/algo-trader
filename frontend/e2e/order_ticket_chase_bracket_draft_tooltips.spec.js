@@ -40,9 +40,9 @@ async function _seedNiftyOnTicket(page) {
   await page.goto(`${BASE}/orders`, { waitUntil: 'domcontentloaded', timeout: 30000 });
   const symInput = page.locator('.ssi-input').first();
   await expect(symInput).toBeVisible({ timeout: 15_000 });
-  await symInput.fill('NIFTY');
+  await symInput.fill('NIFTY26OCTFUT');
   const sugg = page.locator('.ssi-drop .ssi-row').first();
-  await expect(sugg).toBeVisible({ timeout: 10_000 });
+  await expect(sugg).toBeVisible({ timeout: 45_000 });
   await sugg.click({ force: true });
   await page.waitForTimeout(500);
 }
@@ -53,8 +53,10 @@ test.describe('Chase/Bracket/Draft click-to-help tooltips', () => {
     expect(templateBar).toContain("import InfoHint from '$lib/InfoHint.svelte'");
     expect(templateBar).toMatch(/<InfoHint popup panel title="Bracket"/);
 
-    const orderTicket = readFileSync(`${ROOT}/order/OrderTicket.svelte`, 'utf-8');
-    expect(orderTicket).toMatch(/<InfoHint popup panel title="Draft"/);
+    // 2026-10-21 shared-row re-wire: the DRAFT chip moved from OrderTicket
+    // to SymbolPanel's single shared CHASE/BRACKET/DRAFT row.
+    const symbolPanel = readFileSync(`${ROOT}/SymbolPanel.svelte`, 'utf-8');
+    expect(symbolPanel).toMatch(/<InfoHint popup panel title="Draft"/);
   });
 
   test('source: Chase has NO separate "(i)" chip — the label itself is the hideButton/anchor trigger (2026-10-17)', () => {
@@ -67,9 +69,17 @@ test.describe('Chase/Bracket/Draft click-to-help tooltips', () => {
     // is the bind:this anchor target.
     const labelIdx = symbolPanel.indexOf('class="oes-common-chase-label on"');
     expect(labelIdx, 'CHASE label span not found').toBeGreaterThan(-1);
-    const labelBlock = symbolPanel.slice(labelIdx, labelIdx + 300);
+    // Slice to the span's own closing text, not a fixed char window — the
+    // 2026-10-21 shared-row markup (tabindex/aria-disabled/title) pushed
+    // onclick past any fixed offset.
+    const labelEnd = symbolPanel.indexOf('>CHASE</span>', labelIdx);
+    expect(labelEnd, 'CHASE label closing tag not found').toBeGreaterThan(labelIdx);
+    const labelBlock = symbolPanel.slice(labelIdx, labelEnd);
     expect(labelBlock).toMatch(/bind:this=\{_chaseInfoAnchor\}/);
     expect(labelBlock).toMatch(/onclick=\{.*_chaseInfoOpen = !_chaseInfoOpen.*\}/);
+    // Draft-on guard: the click must not open the tooltip while Chase is
+    // greyed out by Draft (shared-row re-wire, 2026-10-21).
+    expect(labelBlock).toMatch(/if \(!_sharedDraftMode\) _chaseInfoOpen = !_chaseInfoOpen/);
   });
 
   test("source: Chase's tooltip states the real per-tier wait times (30s/20s/10s), not invented numbers", () => {
@@ -130,6 +140,48 @@ test.describe('Chase/Bracket/Draft click-to-help tooltips', () => {
 
     const stillChecked = await draftCheckbox.isChecked();
     expect(stillChecked, 'clicking the Draft InfoHint must not flip the checkbox').toBe(wasChecked);
+  });
+
+  test('live: turning DRAFT on greys out CHASE and BRACKET, on both Ticket and Chain tabs', async ({ page }) => {
+    // 2026-10-21 shared-row re-wire: SymbolPanel wraps the CHASE cluster and
+    // the BRACKET cluster in `.oes-ctl-cluster-disabled` while Draft is on
+    // (opacity 0.4 + pointer-events none). Operator: "no brackets in draft mode".
+    // Seed an F&O future: the DRAFT toggle is only offered for non-equity legs,
+    // so a bare index (NIFTY) would hide it and make this test a no-op.
+    await loginAsAdmin(page);
+    await page.goto(`${BASE}/orders`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    const symInput = page.locator('.ssi-input').first();
+    await expect(symInput).toBeVisible({ timeout: 15_000 });
+    await symInput.fill('NIFTY26OCTFUT');
+    const sugg = page.locator('.ssi-drop .ssi-row').first();
+    await expect(sugg).toBeVisible({ timeout: 45_000 });
+    await sugg.click({ force: true });
+
+    const draftCheckbox = page.locator('.ot-draft-toggle input[type="checkbox"]').first();
+    await expect(draftCheckbox).toBeVisible({ timeout: 10_000 });
+    const chaseCluster = page.locator('.oes-chase-cluster').first();
+    const bracketCluster = page.locator('.oes-bracket-cluster').first();
+
+    // Ticket tab — Draft OFF: neither cluster greyed out.
+    await expect(chaseCluster).toBeVisible({ timeout: 10_000 });
+    if (await draftCheckbox.isChecked()) await draftCheckbox.click();
+    await expect(chaseCluster).not.toHaveClass(/oes-ctl-cluster-disabled/);
+    await expect(bracketCluster).not.toHaveClass(/oes-ctl-cluster-disabled/);
+
+    // Ticket tab — Draft ON: CHASE and BRACKET are both disabled.
+    await draftCheckbox.click();
+    await expect(draftCheckbox).toBeChecked();
+    await expect(chaseCluster).toHaveClass(/oes-ctl-cluster-disabled/);
+    await expect(bracketCluster).toHaveClass(/oes-ctl-cluster-disabled/);
+    await expect(chaseCluster).toHaveCSS('pointer-events', 'none');
+    await expect(bracketCluster).toHaveCSS('pointer-events', 'none');
+
+    // Chain tab — the same shared row; Draft state carries over and the
+    // same two clusters stay disabled there.
+    await page.getByRole('tab', { name: /chain/i }).first().click();
+    await expect(draftCheckbox).toBeChecked();
+    await expect(chaseCluster).toHaveClass(/oes-ctl-cluster-disabled/);
+    await expect(bracketCluster).toHaveClass(/oes-ctl-cluster-disabled/);
   });
 
   test('live: clicking the CHASE label itself (no separate chip) shows the wait-time tooltip', async ({ page }) => {

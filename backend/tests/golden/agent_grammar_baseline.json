@@ -5,8 +5,8 @@
       "token_kind": "metric",
       "token": "pnl",
       "value_type": "number",
-      "units": "₹",
-      "description": "Positions mark-to-market P&L in ₹ for the selected scope.",
+      "units": "\u20b9",
+      "description": "Positions mark-to-market P&L in \u20b9 for the selected scope.",
       "resolver": "backend.api.algo.grammar._metric_pnl"
     },
     {
@@ -23,8 +23,8 @@
       "token_kind": "metric",
       "token": "day_val",
       "value_type": "number",
-      "units": "₹",
-      "description": "Holdings day-change value in ₹ for the selected scope.",
+      "units": "\u20b9",
+      "description": "Holdings day-change value in \u20b9 for the selected scope.",
       "resolver": "backend.api.algo.grammar._metric_day_val"
     },
     {
@@ -41,7 +41,7 @@
       "token_kind": "metric",
       "token": "inv_val",
       "value_type": "number",
-      "units": "₹",
+      "units": "\u20b9",
       "description": "Holdings invested value (cost basis).",
       "resolver": "backend.api.algo.grammar._metric_inv_val"
     },
@@ -50,7 +50,7 @@
       "token_kind": "metric",
       "token": "cur_val",
       "value_type": "number",
-      "units": "₹",
+      "units": "\u20b9",
       "description": "Holdings current market value.",
       "resolver": "backend.api.algo.grammar._metric_cur_val"
     },
@@ -59,7 +59,7 @@
       "token_kind": "metric",
       "token": "cash",
       "value_type": "number",
-      "units": "₹",
+      "units": "\u20b9",
       "description": "Live available cash on the funds row (moves intraday). None when the broker does not report this field for the account.",
       "resolver": "backend.api.algo.grammar._metric_cash"
     },
@@ -68,8 +68,8 @@
       "token_kind": "metric",
       "token": "sod_cash",
       "value_type": "number",
-      "units": "₹",
-      "description": "Start-of-day cash (opening balance) — does not move intraday. None when the broker does not report this field for the account.",
+      "units": "\u20b9",
+      "description": "Start-of-day cash (opening balance) \u2014 does not move intraday. None when the broker does not report this field for the account.",
       "resolver": "backend.api.algo.grammar._metric_sod_cash"
     },
     {
@@ -77,7 +77,7 @@
       "token_kind": "metric",
       "token": "avail_margin",
       "value_type": "number",
-      "units": "₹",
+      "units": "\u20b9",
       "description": "Net available margin.",
       "resolver": "backend.api.algo.grammar._metric_avail_margin"
     },
@@ -86,7 +86,7 @@
       "token_kind": "metric",
       "token": "used_margin",
       "value_type": "number",
-      "units": "₹",
+      "units": "\u20b9",
       "description": "Utilised margin (positions denominator for pnl_pct).",
       "resolver": "backend.api.algo.grammar._metric_used_margin"
     },
@@ -95,7 +95,7 @@
       "token_kind": "metric",
       "token": "collateral",
       "value_type": "number",
-      "units": "₹",
+      "units": "\u20b9",
       "description": "Collateral component of margin.",
       "resolver": "backend.api.algo.grammar._metric_collateral"
     },
@@ -104,8 +104,8 @@
       "token_kind": "metric",
       "token": "pnl_rate_abs",
       "value_type": "number",
-      "units": "₹/min",
-      "description": "Positions P&L rate of change in ₹ per minute over the last window.",
+      "units": "\u20b9/min",
+      "description": "Positions P&L rate of change in \u20b9 per minute over the last window.",
       "resolver": "backend.api.algo.grammar._metric_pnl_rate_abs"
     },
     {
@@ -122,8 +122,8 @@
       "token_kind": "metric",
       "token": "day_rate_abs",
       "value_type": "number",
-      "units": "₹/min",
-      "description": "Holdings day-change rate of change in ₹ per minute over the last window.",
+      "units": "\u20b9/min",
+      "description": "Holdings day-change rate of change in \u20b9 per minute over the last window.",
       "resolver": "backend.api.algo.grammar._metric_day_rate_abs"
     },
     {
@@ -140,7 +140,7 @@
       "token_kind": "metric",
       "token": "mean_pnl_30m",
       "value_type": "number",
-      "units": "₹",
+      "units": "\u20b9",
       "description": "Average positions P&L over the last 30 minutes.",
       "resolver": "backend.api.algo.grammar._metric_mean_pnl_30m"
     },
@@ -149,7 +149,7 @@
       "token_kind": "metric",
       "token": "mean_pnl_1h",
       "value_type": "number",
-      "units": "₹",
+      "units": "\u20b9",
       "description": "Average positions P&L over the last hour.",
       "resolver": "backend.api.algo.grammar._metric_mean_pnl_1h"
     },
@@ -158,7 +158,7 @@
       "token_kind": "metric",
       "token": "mean_day_30m",
       "value_type": "number",
-      "units": "₹",
+      "units": "\u20b9",
       "description": "Average holdings day-change value over the last 30 minutes.",
       "resolver": "backend.api.algo.grammar._metric_mean_day_30m"
     },
@@ -167,7 +167,7 @@
       "token_kind": "metric",
       "token": "mean_day_1h",
       "value_type": "number",
-      "units": "₹",
+      "units": "\u20b9",
       "description": "Average holdings day-change value over the last hour.",
       "resolver": "backend.api.algo.grammar._metric_mean_day_1h"
     },
@@ -176,8 +176,8 @@
       "token_kind": "metric",
       "token": "max_drawdown_pnl_30m",
       "value_type": "number",
-      "units": "₹",
-      "description": "Worst peak-to-trough drop in positions P&L over the last 30 minutes (always ≤ 0).",
+      "units": "\u20b9",
+      "description": "Worst peak-to-trough drop in positions P&L over the last 30 minutes (always \u2264 0).",
       "resolver": "backend.api.algo.grammar._metric_max_drawdown_pnl_30m"
     },
     {
@@ -185,8 +185,8 @@
       "token_kind": "metric",
       "token": "max_drawdown_pnl_1h",
       "value_type": "number",
-      "units": "₹",
-      "description": "Worst peak-to-trough drop in positions P&L over the last hour (always ≤ 0).",
+      "units": "\u20b9",
+      "description": "Worst peak-to-trough drop in positions P&L over the last hour (always \u2264 0).",
       "resolver": "backend.api.algo.grammar._metric_max_drawdown_pnl_1h"
     },
     {
@@ -194,8 +194,8 @@
       "token_kind": "metric",
       "token": "max_drawdown_pnl_4h",
       "value_type": "number",
-      "units": "₹",
-      "description": "Worst peak-to-trough drop in positions P&L over the last 4 hours (always ≤ 0).",
+      "units": "\u20b9",
+      "description": "Worst peak-to-trough drop in positions P&L over the last 4 hours (always \u2264 0).",
       "resolver": "backend.api.algo.grammar._metric_max_drawdown_pnl_4h"
     },
     {
@@ -203,8 +203,8 @@
       "token_kind": "metric",
       "token": "max_drawdown_day_1h",
       "value_type": "number",
-      "units": "₹",
-      "description": "Worst peak-to-trough drop in holdings day-change over the last hour (always ≤ 0).",
+      "units": "\u20b9",
+      "description": "Worst peak-to-trough drop in holdings day-change over the last hour (always \u2264 0).",
       "resolver": "backend.api.algo.grammar._metric_max_drawdown_day_1h"
     },
     {
@@ -213,7 +213,7 @@
       "token": "max_drawdown_pnl_pct_30m",
       "value_type": "number",
       "units": "%",
-      "description": "Worst peak-to-trough drop in positions P&L percentage over the last 30 minutes (always ≤ 0).",
+      "description": "Worst peak-to-trough drop in positions P&L percentage over the last 30 minutes (always \u2264 0).",
       "resolver": "backend.api.algo.grammar._metric_max_drawdown_pnl_pct_30m"
     },
     {
@@ -222,7 +222,7 @@
       "token": "max_drawdown_pnl_pct_1h",
       "value_type": "number",
       "units": "%",
-      "description": "Worst peak-to-trough drop in positions P&L percentage over the last hour (always ≤ 0).",
+      "description": "Worst peak-to-trough drop in positions P&L percentage over the last hour (always \u2264 0).",
       "resolver": "backend.api.algo.grammar._metric_max_drawdown_pnl_pct_1h"
     },
     {
@@ -230,7 +230,7 @@
       "token_kind": "metric",
       "token": "stdev_pnl_30m",
       "value_type": "number",
-      "units": "₹",
+      "units": "\u20b9",
       "description": "Standard deviation of positions P&L over the last 30 minutes (volatility proxy).",
       "resolver": "backend.api.algo.grammar._metric_stdev_pnl_30m"
     },
@@ -239,7 +239,7 @@
       "token_kind": "metric",
       "token": "stdev_pnl_1h",
       "value_type": "number",
-      "units": "₹",
+      "units": "\u20b9",
       "description": "Standard deviation of positions P&L over the last hour.",
       "resolver": "backend.api.algo.grammar._metric_stdev_pnl_1h"
     },
@@ -248,8 +248,8 @@
       "token_kind": "metric",
       "token": "range_pnl_30m",
       "value_type": "number",
-      "units": "₹",
-      "description": "max(P&L) − min(P&L) over the last 30 minutes (swing magnitude).",
+      "units": "\u20b9",
+      "description": "max(P&L) \u2212 min(P&L) over the last 30 minutes (swing magnitude).",
       "resolver": "backend.api.algo.grammar._metric_range_pnl_30m"
     },
     {
@@ -257,8 +257,8 @@
       "token_kind": "metric",
       "token": "range_pnl_1h",
       "value_type": "number",
-      "units": "₹",
-      "description": "max(P&L) − min(P&L) over the last hour.",
+      "units": "\u20b9",
+      "description": "max(P&L) \u2212 min(P&L) over the last hour.",
       "resolver": "backend.api.algo.grammar._metric_range_pnl_1h"
     },
     {
@@ -266,7 +266,7 @@
       "token_kind": "metric",
       "token": "mean_pnl",
       "value_type": "number",
-      "units": "₹",
+      "units": "\u20b9",
       "description": "Average positions P&L over the last N minutes. Call syntax, e.g. mean_pnl(30).",
       "resolver": "backend.api.algo.grammar._metric_factory_mean_pnl",
       "params_schema": {
@@ -280,7 +280,7 @@
       "token_kind": "metric",
       "token": "mean_day",
       "value_type": "number",
-      "units": "₹",
+      "units": "\u20b9",
       "description": "Average holdings day-change value over the last N minutes. Call syntax, e.g. mean_day(30).",
       "resolver": "backend.api.algo.grammar._metric_factory_mean_day",
       "params_schema": {
@@ -294,8 +294,8 @@
       "token_kind": "metric",
       "token": "max_drawdown_pnl",
       "value_type": "number",
-      "units": "₹",
-      "description": "Worst peak-to-trough drop in positions P&L over the last N minutes (always ≤ 0). Call syntax, e.g. max_drawdown_pnl(30).",
+      "units": "\u20b9",
+      "description": "Worst peak-to-trough drop in positions P&L over the last N minutes (always \u2264 0). Call syntax, e.g. max_drawdown_pnl(30).",
       "resolver": "backend.api.algo.grammar._metric_factory_max_drawdown_pnl",
       "params_schema": {
         "minutes": {
@@ -308,8 +308,8 @@
       "token_kind": "metric",
       "token": "max_drawdown_day",
       "value_type": "number",
-      "units": "₹",
-      "description": "Worst peak-to-trough drop in holdings day-change over the last N minutes (always ≤ 0). Call syntax, e.g. max_drawdown_day(60).",
+      "units": "\u20b9",
+      "description": "Worst peak-to-trough drop in holdings day-change over the last N minutes (always \u2264 0). Call syntax, e.g. max_drawdown_day(60).",
       "resolver": "backend.api.algo.grammar._metric_factory_max_drawdown_day",
       "params_schema": {
         "minutes": {
@@ -323,7 +323,7 @@
       "token": "max_drawdown_pnl_pct",
       "value_type": "number",
       "units": "%",
-      "description": "Worst peak-to-trough drop in positions P&L percentage over the last N minutes (always ≤ 0). Call syntax, e.g. max_drawdown_pnl_pct(30).",
+      "description": "Worst peak-to-trough drop in positions P&L percentage over the last N minutes (always \u2264 0). Call syntax, e.g. max_drawdown_pnl_pct(30).",
       "resolver": "backend.api.algo.grammar._metric_factory_max_drawdown_pnl_pct",
       "params_schema": {
         "minutes": {
@@ -336,7 +336,7 @@
       "token_kind": "metric",
       "token": "stdev_pnl",
       "value_type": "number",
-      "units": "₹",
+      "units": "\u20b9",
       "description": "Standard deviation of positions P&L over the last N minutes (volatility proxy). Call syntax, e.g. stdev_pnl(30).",
       "resolver": "backend.api.algo.grammar._metric_factory_stdev_pnl",
       "params_schema": {
@@ -350,8 +350,8 @@
       "token_kind": "metric",
       "token": "range_pnl",
       "value_type": "number",
-      "units": "₹",
-      "description": "max(P&L) − min(P&L) over the last N minutes (swing magnitude). Call syntax, e.g. range_pnl(30).",
+      "units": "\u20b9",
+      "description": "max(P&L) \u2212 min(P&L) over the last N minutes (swing magnitude). Call syntax, e.g. range_pnl(30).",
       "resolver": "backend.api.algo.grammar._metric_factory_range_pnl",
       "params_schema": {
         "minutes": {
@@ -383,7 +383,7 @@
       "token": "is_ntm",
       "value_type": "number",
       "units": "",
-      "description": "Returns 1.0 when an option is within ±1.5%% of spot (near-the-money), 0.0 otherwise. Needs ctx.spot_prices.",
+      "description": "Returns 1.0 when an option is within \u00b11.5%% of spot (near-the-money), 0.0 otherwise. Needs ctx.spot_prices.",
       "resolver": "backend.api.algo.grammar._metric_is_ntm"
     },
     {
@@ -457,7 +457,7 @@
       "token_kind": "scope",
       "token": "positions.expiring_today",
       "value_type": "array",
-      "description": "Per-symbol position rows where the F&O contract is expiring today (≤ 1.5 days). Leaf is OR-combined.",
+      "description": "Per-symbol position rows where the F&O contract is expiring today (\u2264 1.5 days). Leaf is OR-combined.",
       "resolver": "backend.api.algo.grammar._scope_positions_expiring_today"
     },
     {
@@ -473,7 +473,7 @@
       "token_kind": "scope",
       "token": "positions.expiring_today.mcx_unhedged",
       "value_type": "array",
-      "description": "Per-symbol position rows expiring today on MCX where CE/PE net qty does NOT balance — i.e. unhedged. Hedged pairs (net = 0) are skipped because broker settles them against each other. Leaf is OR-combined.",
+      "description": "Per-symbol position rows expiring today on MCX where CE/PE net qty does NOT balance \u2014 i.e. unhedged. Hedged pairs (net = 0) are skipped because broker settles them against each other. Leaf is OR-combined.",
       "resolver": "backend.api.algo.grammar._scope_positions_expiring_today_mcx_unhedged"
     },
     {
@@ -521,7 +521,7 @@
       "token_kind": "metric",
       "token": "ltp",
       "value_type": "number",
-      "units": "₹",
+      "units": "\u20b9",
       "description": "Last-traded price of a watchlist row (or any row with a last_price column).",
       "resolver": "backend.api.algo.grammar._metric_ltp"
     },
@@ -562,7 +562,7 @@
       "token_kind": "scope",
       "token": "quote.tracked",
       "value_type": "array",
-      "description": "Pre-tracked ad-hoc market-data row(s) for symbols referenced by at least one active agent's quote.* condition leaf (via scope_filter.symbol), refreshed once per performance cycle — not a live per-condition broker fetch. REQUIRES a non-wildcard scope_filter.symbol. Leaf is OR-combined per row.",
+      "description": "Pre-tracked ad-hoc market-data row(s) for symbols referenced by at least one active agent's quote.* condition leaf (via scope_filter.symbol), refreshed once per performance cycle \u2014 not a live per-condition broker fetch. REQUIRES a non-wildcard scope_filter.symbol. Leaf is OR-combined per row.",
       "resolver": "backend.api.algo.grammar._scope_quote_tracked"
     },
     {
@@ -655,12 +655,12 @@
       "token_kind": "channel",
       "token": "telegram_info",
       "value_type": "enum",
-      "description": "Telegram via the dedicated 'info' key (secrets.telegram_chat_id_info), bypassing the regular 'telegram' capability gate — used by low-noise informational alerts (e.g. market-summary).",
+      "description": "Telegram via the dedicated 'info' key (secrets.telegram_chat_id_info), bypassing the regular 'telegram' capability gate \u2014 used by low-noise informational alerts (e.g. market-summary).",
       "params_schema": {
         "gate": {
           "type": "boolean",
           "required": false,
-          "description": "Structural no-op (capability is None for this channel) — declared only so a stored 'gate' key decompiles."
+          "description": "Structural no-op (capability is None for this channel) \u2014 declared only so a stored 'gate' key decompiles."
         }
       }
     },
@@ -714,7 +714,7 @@
       "token_kind": "channel",
       "token": "log",
       "value_type": "enum",
-      "description": "Write to the app log only — useful for silent testing of new agents."
+      "description": "Write to the app log only \u2014 useful for silent testing of new agents."
     },
     {
       "grammar_kind": "notify",
@@ -728,14 +728,14 @@
       "token_kind": "format",
       "token": "text_narrow",
       "value_type": "enum",
-      "description": "Two-line-per-row fixed-width monospace — sized for phone-width Telegram."
+      "description": "Two-line-per-row fixed-width monospace \u2014 sized for phone-width Telegram."
     },
     {
       "grammar_kind": "notify",
       "token_kind": "format",
       "token": "html_table",
       "value_type": "enum",
-      "description": "Structured HTML table with per-kind row colour — for email."
+      "description": "Structured HTML table with per-kind row colour \u2014 for email."
     },
     {
       "grammar_kind": "notify",
@@ -749,15 +749,15 @@
       "token_kind": "format",
       "token": "json",
       "value_type": "enum",
-      "description": "Machine-readable JSON — for webhook channels."
+      "description": "Machine-readable JSON \u2014 for webhook channels."
     },
     {
       "grammar_kind": "notify",
       "token_kind": "template",
       "token": "alert_loss_default",
       "value_type": "string",
-      "description": "Default body for P&L-loss alerts — a list of triggered rows.",
-      "template_body": "Alert — ${timestamp}\n\n${row_lines}"
+      "description": "Default body for P&L-loss alerts \u2014 a list of triggered rows.",
+      "template_body": "Alert \u2014 ${timestamp}\n\n${row_lines}"
     },
     {
       "grammar_kind": "notify",
@@ -811,7 +811,7 @@
           "type": "number",
           "required": true,
           "token_ref_ok": true,
-          "description": "Number of lots × lot size. Must be positive."
+          "description": "Number of lots \u00d7 lot size. Must be positive."
         },
         "order_type": {
           "type": "enum",
@@ -885,7 +885,7 @@
             "HIGH"
           ],
           "required": false,
-          "description": "Chase aggressiveness for the live adaptive limit-order chase engine — LOW (patient, long interval, small step, more attempts), MED (balanced, used when omitted), HIGH (urgent, short interval, big step, fewer attempts, crosses the spread fast). Threads into the same backend.api.routes.orders_helpers._live_chase_config() mapping every manual-ticket chase already uses."
+          "description": "Chase aggressiveness for the live adaptive limit-order chase engine \u2014 LOW (patient, long interval, small step, more attempts), MED (balanced, used when omitted), HIGH (urgent, short interval, big step, fewer attempts, crosses the spread fast). Threads into the same backend.api.routes.orders_helpers._live_chase_config() mapping every manual-ticket chase already uses."
         },
         "template_id": {
           "type": "number",
@@ -915,7 +915,7 @@
         "wing_strike_offset_override": {
           "type": "number",
           "required": false,
-          "description": "Per-action wing strike offset override (e.g. 500 → wing at +500 strike)."
+          "description": "Per-action wing strike offset override (e.g. 500 \u2192 wing at +500 strike)."
         }
       },
       "mutually_exclusive_groups": [
@@ -969,7 +969,7 @@
           "type": "number",
           "required": true,
           "token_ref_ok": true,
-          "description": "Number of lots × lot size. Must be positive."
+          "description": "Number of lots \u00d7 lot size. Must be positive."
         },
         "order_type": {
           "type": "enum",
@@ -1043,7 +1043,7 @@
             "HIGH"
           ],
           "required": false,
-          "description": "Chase aggressiveness for the live adaptive limit-order chase engine — LOW (patient, long interval, small step, more attempts), MED (balanced, used when omitted), HIGH (urgent, short interval, big step, fewer attempts, crosses the spread fast). Threads into the same backend.api.routes.orders_helpers._live_chase_config() mapping every manual-ticket chase already uses."
+          "description": "Chase aggressiveness for the live adaptive limit-order chase engine \u2014 LOW (patient, long interval, small step, more attempts), MED (balanced, used when omitted), HIGH (urgent, short interval, big step, fewer attempts, crosses the spread fast). Threads into the same backend.api.routes.orders_helpers._live_chase_config() mapping every manual-ticket chase already uses."
         },
         "template_id": {
           "type": "number",
@@ -1073,7 +1073,7 @@
         "wing_strike_offset_override": {
           "type": "number",
           "required": false,
-          "description": "Per-action wing strike offset override (e.g. 500 → wing at +500 strike)."
+          "description": "Per-action wing strike offset override (e.g. 500 \u2192 wing at +500 strike)."
         }
       },
       "mutually_exclusive_groups": [
@@ -1277,7 +1277,7 @@
             "SELL"
           ],
           "required": false,
-          "description": "Override auto-derived side. Default: long → SELL, short → BUY."
+          "description": "Override auto-derived side. Default: long \u2192 SELL, short \u2192 BUY."
         },
         "product": {
           "type": "enum",
@@ -1328,7 +1328,7 @@
       "token_kind": "action_type",
       "token": "deactivate_agent",
       "value_type": "void",
-      "description": "Pause the agent that fired — useful for one-shot safety rules.",
+      "description": "Pause the agent that fired \u2014 useful for one-shot safety rules.",
       "resolver": "backend.api.algo.actions.deactivate_agent",
       "params_schema": {}
     },
@@ -1372,6 +1372,33 @@
           "type": "string",
           "required": true,
           "token_ref_ok": true
+        }
+      }
+    },
+    {
+      "grammar_kind": "action",
+      "token_kind": "action_type",
+      "token": "send_summary",
+      "value_type": "void",
+      "description": "Send a portfolio summary (holdings/positions/margins) via the configured alert channels, per market segment.",
+      "resolver": "backend.api.algo.actions_live._action_send_summary",
+      "params_schema": {
+        "segments": {
+          "type": "array",
+          "required": false,
+          "description": "Market segments to summarize.",
+          "default": [
+            "equity",
+            "commodity"
+          ]
+        },
+        "summary_type": {
+          "type": "enum",
+          "enum": [
+            "open",
+            "close"
+          ],
+          "default": "open"
         }
       }
     },

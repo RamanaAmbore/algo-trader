@@ -241,18 +241,24 @@ export function postSortGroups2Level({ nodes, api }) {
  *
  * @param {{ nodes: import('ag-grid-community').IRowNode[], api: import('ag-grid-community').GridApi }} param
  */
-export function pairGroupPostSort({ nodes, api }) {
-  if (api?.getColumnState().some(col => col.sort != null)) return;
-  if (!nodes || nodes.length === 0) return;
-
+/**
+ * Core underlying-block + pair-sort algorithm — extracted (2026-10) so
+ * `pairGroupPostSort` can run it on a NODE LIST THAT EXCLUDES DRAFT ROWS
+ * (see that function's own docblock). Pure: returns a new ordered array,
+ * never mutates `nodeList`.
+ *
+ * @param {import('ag-grid-community').IRowNode[]} nodeList
+ * @returns {import('ag-grid-community').IRowNode[]}
+ */
+function _pairGroupBlocks(nodeList) {
   const byUnderlying = new Map();
   const orderedKeys = [];
-  for (const n of nodes) {
+  for (const n of nodeList) {
     const u = String(n.data?.underlying || '').toUpperCase() || `__row_${orderedKeys.length}_${n.id ?? ''}`;
     if (!byUnderlying.has(u)) { byUnderlying.set(u, []); orderedKeys.push(u); }
     byUnderlying.get(u).push(n);
   }
-  const firstIdxOf = new Map(orderedKeys.map(k => [k, nodes.indexOf(byUnderlying.get(k)[0])]));
+  const firstIdxOf = new Map(orderedKeys.map(k => [k, nodeList.indexOf(byUnderlying.get(k)[0])]));
   orderedKeys.sort((a, b) => firstIdxOf.get(a) - firstIdxOf.get(b));
 
   const out = [];
@@ -263,6 +269,32 @@ export function pairGroupPostSort({ nodes, api }) {
     pairGroupSort(rest);
     out.push(...anchors, ...rest);
   }
+  return out;
+}
+
+export function pairGroupPostSort({ nodes, api }) {
+  if (api?.getColumnState().some(col => col.sort != null)) return;
+  if (!nodes || nodes.length === 0) return;
+
+  // Draft rows (payoff-store, display-only, 2026-10) always sort to the
+  // very bottom, below every real position — operator design decision
+  // (misread-risk: a hypothetical row among real money rows is too easy
+  // to glance past as real). Partitioned OUT before the underlying-block
+  // grouping below runs: a draft row carries a REAL `underlying` value
+  // (payoffDraftHelpers.js's `rootOf(sym, exch)`), so without this split
+  // a draft sharing a real position's underlying would get pulled INTO
+  // that block by `_pairGroupBlocks` and could land anywhere in the
+  // grid, not at the bottom — this callback is ag-Grid's own
+  // `postSortRows` hook, so it re-runs on every `setGridOption('rowData',
+  // …)` and would silently undo the `sortDraftsLast` reshuffle MarketPulse
+  // already applies to `positionsRows` before handing it to the grid.
+  // Composition order matters here exactly as it does for the
+  // underlying-block-order-preservation fix documented in CLAUDE.md: the
+  // draft split must run BEFORE `_pairGroupBlocks`, not after.
+  const draftNodes = nodes.filter(n => n.data?.source === 'draft');
+  const realNodes  = draftNodes.length ? nodes.filter(n => n.data?.source !== 'draft') : nodes;
+  const ordered = _pairGroupBlocks(realNodes);
+  const out = draftNodes.length ? [...ordered, ...draftNodes] : ordered;
   nodes.length = 0;
   for (const n of out) nodes.push(n);
 }
