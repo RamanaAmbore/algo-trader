@@ -3177,28 +3177,32 @@ def fetch_special_sessions(exchange: str = "NSE") -> list[dict]:
     remainder of the day. Fixed: a guard/error result is never cached —
     only a real, successful (possibly empty) query result is.
 
-    This gap is now CLOSED (not just mitigated) for 3 of the 5 call sites
-    that reach it via ``_ae_segment_flags`` — ticket placement
-    (``orders_place.py``), basket (``orders_basket.py``), and chase
-    (``chase.py``) are all ``async def`` all the way up, so each now
-    awaits ``fetch_special_sessions_async`` (via
-    ``agent_engine.py``'s ``_prewarm_special_sessions_for_exchange``)
-    BEFORE calling the sync ``_build_now_ctx()`` — the cache is
-    guaranteed warm by the time this function runs for them, so the
-    guard never fires for these three.
+    This gap is now CLOSED (not just mitigated) for every real
+    order/template/chase/lifecycle call site, per-site status (not an
+    "N of M" count — that framing was wrong twice already as the fix set
+    grew):
 
-    ``template_attach.py``'s two call sites (``_check_offhours_wing_gate``,
-    ``apply_plan_live``) are plain ``def``, not ``async def`` — they
-    cannot ``await`` anything, so they remain on the MITIGATION only:
-    ``warm_special_sessions_cache()`` (called at startup after
-    ``seed_special_sessions()`` and after the daily 05:30 holiday
-    refresh) pre-populates the cache from async code elsewhere in the
-    process, so these two still usually hit a warm cache — but a
-    genuinely cold cache hit from the main loop mid-day still fails open
-    to ``[]`` for these two specifically. Converting them to ``async def``
-    would ripple into their callers (``apply_plan_live`` alone has 4:
-    admin reconcile, postback handler, paper engine, chase terminal) and
-    was judged out of scope for this pass.
+      - Ticket placement (``orders_place.py``), basket
+        (``orders_basket.py``), and chase (``chase.py``) are ``async def``
+        all the way up, so each awaits ``fetch_special_sessions_async``
+        (via ``agent_engine.py``'s ``_prewarm_special_sessions_for_exchange``)
+        BEFORE calling the sync ``_build_now_ctx()``.
+      - ``template_attach.py``'s ``_check_offhours_wing_gate`` is plain
+        ``def`` (cannot ``await``), but its one caller
+        (``_apply_template_to_order_impl``) IS ``async def`` and now
+        awaits the same prewarm helper immediately before calling it
+        (2026-10-20, item 2) — closed via the caller, not the gate itself.
+      - ``market_lifecycle.poll()`` (2026-10-20, item 1) awaits
+        ``fetch_special_sessions_async(segment["exchange"])`` directly
+        (NOT via ``_prewarm_special_sessions_for_exchange`` — that helper
+        resolves through ``holiday_exchange``, which disagrees with the
+        raw per-exchange key this function's own ``exch`` lookup uses for
+        the synthesized ``cds`` segment) for every exchange, before its
+        per-exchange ``_exchange_is_open()`` loop.
+      - ``apply_plan_live`` (``template_attach.py``) was never actually
+        exposed to this gap — confirmed it runs via ``asyncio.to_thread``
+        (``write_queue.py``'s guard condition), not inline on the main
+        loop, so it never hits the cold-cache-on-main-loop case at all.
     """
     from backend.shared.helpers.date_time_utils import timestamp_indian
 
@@ -3279,11 +3283,13 @@ async def warm_special_sessions_cache() -> None:
     (``database.py``), and again after each successful daily 05:30
     holiday refresh (``_task_holiday_refresh`` in ``background.py``) so
     the cache re-warms on the new calendar day before the first sync
-    caller needs it. Mitigates (does not eliminate — see
-    ``fetch_special_sessions``'s docstring) the cold-cache-on-main-loop
-    gap for the five async call sites that build a market-state context
-    from a coroutine already running on the main event loop (ticket
-    placement, basket, template attach ×2, chase).
+    caller needs it. This is now a BACKSTOP, not the primary mitigation
+    — every real call site (ticket, basket, chase, template attach's
+    offhours wing gate, ``market_lifecycle.poll()``) prewarms its own
+    exchange synchronously from its own async context before it's
+    needed (see ``fetch_special_sessions``'s docstring for the full
+    per-site list). This function still matters for the genuinely-sync
+    read paths that never prewarm per-call at all.
 
     Best-effort: any DB error for one exchange is swallowed (logged at
     debug) so a single failure never blocks the others or the caller's
@@ -3332,16 +3338,24 @@ async def fetch_special_sessions_async(exchange: str = "NSE") -> list[dict]:
     hop at all, so there is no self-deadlock guard to trip: the caller
     already IS the async context the DB read needs.
 
-    Callers: the genuinely-async call sites that reach ``_ae_segment_flags``
-    (ticket placement, basket, chase — see ``agent_engine.py``'s
-    ``_prewarm_special_sessions_for_exchange``) await this BEFORE calling
-    the existing sync ``_build_now_ctx()``, which then finds a warm cache
-    and never needs the guard-prone sync path at all for that call.
-    `template_attach.py`'s two call sites (``_check_offhours_wing_gate``,
-    ``apply_plan_live``) are plain ``def``, not ``async def`` — they cannot
-    ``await`` this, and stay on the warm-at-startup/after-daily-refresh
-    mitigation only; see ``fetch_special_sessions``'s docstring for the
-    residual gap that leaves open for those two specifically.
+    Callers:
+
+      - The genuinely-async call sites that reach ``_ae_segment_flags``
+        (ticket placement, basket, chase, and — since 2026-10-20, item 2
+        — ``template_attach.py``'s ``_apply_template_to_order_impl``,
+        immediately before its ``_check_offhours_wing_gate`` call) all
+        await this (ticket/basket/chase via ``agent_engine.py``'s
+        ``_prewarm_special_sessions_for_exchange``; template_attach
+        directly) BEFORE calling the existing sync ``_build_now_ctx()``,
+        which then finds a warm cache and never needs the guard-prone
+        sync path at all for that call.
+      - ``market_lifecycle.poll()`` (2026-10-20, item 1) also awaits
+        this directly, once per exchange in ``_enumerate_exchanges()``,
+        passing the raw ``segment["exchange"]`` value rather than going
+        through ``_prewarm_special_sessions_for_exchange``'s
+        ``holiday_exchange`` resolution — see that helper's own
+        docstring for why (the synthesized ``cds`` segment's raw key
+        disagrees with its ``holiday_exchange``).
     """
     from backend.shared.helpers.date_time_utils import timestamp_indian
 

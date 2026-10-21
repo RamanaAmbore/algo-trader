@@ -622,14 +622,28 @@ _segments_now = _build_now_ctx
 async def _prewarm_special_sessions_for_exchange(exchange: str) -> None:
     """Await the DB-backed special-sessions read for `exchange`'s holiday
     calendar BEFORE calling the sync `_build_now_ctx()` (2026-10-20 fix,
-    closes the cold-cache gap for the 3 call sites that can actually use
-    it — see `fetch_special_sessions_async`'s docstring in broker_apis.py).
+    closes the cold-cache gap for the call sites that use it — see
+    `fetch_special_sessions_async`'s docstring in broker_apis.py).
 
-    Callers: `orders_place.py`'s ticket market-hours gate, `orders_basket.py`'s
-    per-leg gate, `chase.py`'s chase-start gate — all `async def`, all able
-    to `await` this. `template_attach.py`'s two call sites are plain `def`
-    and cannot; they are NOT callers of this helper and stay on the
-    warm-at-startup/after-daily-refresh mitigation only.
+    Callers (all `async def`, all able to `await` this): `orders_place.py`'s
+    ticket market-hours gate, `orders_basket.py`'s per-leg gate,
+    `chase.py`'s chase-start gate, and (added 2026-10-20, item 2)
+    `template_attach.py`'s `_apply_template_to_order_impl`, immediately
+    before its `_check_offhours_wing_gate(...)` call —
+    `_check_offhours_wing_gate` itself stays plain `def` (cannot `await`);
+    its caller does the awaiting instead. `apply_plan_live`
+    (`template_attach.py`) was never actually exposed to this gap at all —
+    it runs via `asyncio.to_thread` (confirmed via `write_queue.py`'s guard
+    condition), not inline on the main loop.
+
+    `market_lifecycle.poll()` (item 1, 2026-10-20) does NOT call this
+    helper, deliberately — it resolves `holiday_exchange` via
+    `_segment_for_exchange()`, which for the synthesized `cds` segment
+    entry resolves to `"NSE"`, not the raw `"CDS"` key
+    `_exchange_is_open()` later looks up via `fetch_special_sessions`.
+    `poll()` instead awaits `fetch_special_sessions_async(segment["exchange"])`
+    directly, per segment, guaranteeing the warmed key always matches the
+    key that will be read.
 
     Best-effort: resolves the exchange's `holiday_exchange` (e.g. "NFO"→"NSE",
     "MCX"/"NCO"→"MCX") the same way `_ae_segment_flags` does, then awaits
