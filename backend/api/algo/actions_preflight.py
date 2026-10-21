@@ -1133,6 +1133,26 @@ async def run_preflight(
     from backend.brokers.adapters.kite import get_lot_size as _pf_margin_lot_fn
     _margin_lot_size = await _pf_margin_lot_fn(exchange, symbol)
     _margin_ctx = _preflight_margin_policy(broker, account, side)
+    # TEMPORARY diagnostic for the item 4/5 live-verification gate — runs
+    # in THIS process (backend/api/algo/, never the conn_service), so it
+    # fires on dev even before a conn-service restart. In conn-
+    # service/cutover mode (prod + dev share one conn_service instance
+    # seeded from /opt/ramboq — see deploy.sh's CONN_TOUCHED comment:
+    # "Dev pushes NEVER restart ramboq_conn ... conn-related code changes
+    # only take effect after merging to main"), `bm_res` arrives over the
+    # UDS RPC from whatever adapter code conn_service is CURRENTLY
+    # running — which may be older than this dev deploy. The adapter's
+    # own `"raw": resp` key was already present before this fix (both old
+    # and new code populate it), so this line still captures the real
+    # broker response shape even when conn_service hasn't been restarted
+    # with the new adapter code — unlike the adapter-internal
+    # [MARGIN-RAW-DHAN]/[MARGIN-RAW-GROWW] lines, which DO require a
+    # conn_service restart (prod-only) to fire at all.
+    if _margin_ctx["is_dhan_groww"]:
+        logger.info(
+            f"[MARGIN-RAW-API] {_margin_ctx['broker_id']} {account}/{symbol} "
+            f"bm_res={bm_res!r}"
+        )
     _margin_blockers, _margin_diag = await _preflight_check_margin(
         bm_res, margins_res, segment, account, symbol, qty, loop,
         exchange=exchange, lot_size=_margin_lot_size, margin_ctx=_margin_ctx,

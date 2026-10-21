@@ -440,11 +440,24 @@ async def _fetch_net_position_product(sym: str, exchange: str, account: str) -> 
     row-match helper `_fetch_net_position_qty` reads
     (`_fetch_net_position_row`) so qty and product can never be read
     from two different rows when a symbol momentarily carries more than
-    one product open at once."""
+    one product open at once.
+
+    NaN guard: a DataFrame column with a missing value for this row can
+    carry a real `float('nan')`, not `None` — and `bool(float('nan'))`
+    is `True` in Python, so a plain `if val else None` would silently
+    turn that into the literal string `"NAN"` (Kite would reject it
+    outright; Dhan's `_PRODUCT_TO_DHAN.get(..., "INTRADAY")` would
+    instead silently coerce it to INTRADAY). `pandas.isna` catches both
+    `None` and float NaN.
+    """
+    import pandas as pd
+
     row = await _fetch_net_position_row(sym, exchange, account)
     if row is None:
         return None
     val = row.get("product")
+    if val is None or pd.isna(val):
+        return None
     return str(val).upper() if val else None
 
 

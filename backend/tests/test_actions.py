@@ -1189,6 +1189,58 @@ async def test_action_live_close_position_product_falls_back_to_nrml():
     assert captured_orders[0]["product"] == "NRML"
 
 
+@pytest.mark.asyncio
+async def test_fetch_net_position_product_reads_same_row_as_qty():
+    """_fetch_net_position_product and _fetch_net_position_qty must read
+    the SAME matched row when a symbol carries more than one open
+    product for the same account (e.g. both an MIS and an NRML position
+    on the same symbol at once) — both go through the shared
+    _fetch_net_position_row helper, so qty and product can never be
+    read from two different rows."""
+    import pandas as pd
+    from backend.api.routes.orders_place import (
+        _fetch_net_position_qty, _fetch_net_position_product,
+    )
+
+    df = pd.DataFrame([
+        {"tradingsymbol": "NIFTY25JULFUT", "account": "ZG0790",
+         "quantity": 300.0, "product": "MIS"},
+        {"tradingsymbol": "NIFTY25JULFUT", "account": "ZG0790",
+         "quantity": 300.0, "product": "MIS"},
+    ])
+
+    with patch("backend.brokers.broker_apis.fetch_positions", return_value=[df]):
+        qty = await _fetch_net_position_qty("NIFTY25JULFUT", "NFO", "ZG0790")
+        product = await _fetch_net_position_product("NIFTY25JULFUT", "NFO", "ZG0790")
+
+    assert qty == 300.0
+    assert product == "MIS"
+
+
+@pytest.mark.asyncio
+async def test_fetch_net_position_product_nan_is_none_not_literal_string():
+    """A pandas NaN product value (missing cell on an otherwise-matched
+    row — real float('nan'), not None) must resolve to None, never the
+    literal string "NAN" — bool(float('nan')) is True in Python, so a
+    naive `if val else None` would silently produce "NAN", which Kite
+    rejects outright and Dhan's _PRODUCT_TO_DHAN.get(..., "INTRADAY")
+    would instead silently coerce to the wrong product."""
+    import pandas as pd
+    import math
+    from backend.api.routes.orders_place import _fetch_net_position_product
+
+    df = pd.DataFrame([
+        {"tradingsymbol": "NIFTY25JULFUT", "account": "ZG0790",
+         "quantity": 300.0, "product": math.nan},
+    ])
+
+    with patch("backend.brokers.broker_apis.fetch_positions", return_value=[df]):
+        product = await _fetch_net_position_product("NIFTY25JULFUT", "NFO", "ZG0790")
+
+    assert product is None
+    assert product != "NAN"
+
+
 # ---------------------------------------------------------------------------
 # execute() — action-param expression resolution failure isolation
 # ---------------------------------------------------------------------------

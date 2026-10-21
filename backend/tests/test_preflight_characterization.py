@@ -2145,6 +2145,47 @@ async def test_preflight_kite_close_never_reaches_dhan_groww_exemption_path():
     verify_mock.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_preflight_dhan_real_flat_shape_through_run_preflight_blocks_when_enforced():
+    """Reproduces item 4's exact bug end-to-end through run_preflight
+    itself: a REAL Dhan/Groww-shaped flat basket_order_margins response
+    (`[{"total": ...}]`, no final/initial nesting) must be parsed as a
+    genuine non-zero required margin — pre-fix, _preflight_leg_required
+    only read Kite's nested shape and this flat response always parsed
+    to required=0, making MARGIN_SHORTFALL structurally unable to fire
+    for Dhan/Groww regardless of how large the real required margin
+    was."""
+    from backend.api.algo.actions import run_preflight
+
+    broker = _make_broker_stub(broker_id="dhan", margin_net=50000.0)
+    # Override with the REAL flat Dhan/Groww shape (not the Kite-nested
+    # shape _make_broker_stub defaults to).
+    broker.basket_order_margins.return_value = [{"total": 200000.0}]
+    conns = _conns_with("ZG0790")
+
+    with patch("backend.brokers.connections.Connections", return_value=conns), \
+         patch("backend.brokers.registry.get_broker", return_value=broker), \
+         patch("backend.brokers.adapters.kite.get_lot_size",
+               new=AsyncMock(return_value=50)), \
+         patch("backend.shared.helpers.settings.get_bool", return_value=True):
+        result = await run_preflight("ZG0790", {
+            "exchange":      "NFO",
+            "tradingsymbol": "NIFTY25APRFUT",
+            "quantity":      100,
+            "order_type":    "LIMIT",
+            "product":       "NRML",
+            "variety":       "regular",
+            "side":          "BUY",
+            "price":         22000.0,
+        })
+
+    assert result["ok"] is False
+    codes = [b["code"] for b in result["blocked"]]
+    assert "MARGIN_SHORTFALL" in codes
+    ms = next(b for b in result["blocked"] if b["code"] == "MARGIN_SHORTFALL")
+    assert ms["data"]["required"] == pytest.approx(200000.0)
+
+
 # ---------------------------------------------------------------------------
 # Item 11 — _basket_margin_validate must use the real account's broker's
 # own translate_qty, not a hardcoded Kite-specific to_kite_qty.
