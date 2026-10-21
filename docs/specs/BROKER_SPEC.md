@@ -2660,7 +2660,30 @@ Virtual symbols (`CRUDEOIL`, `CRUDEOIL_NEXT`, `USDINR`, etc.) are never sent raw
 
 **I11 — Preflight honours intent**: `POST /api/orders/preflight` parses `intent` parameter and applies guard bypass consistently with order placement. Previously ignored intent.
 
-**I12 — Basket per-leg guards**: Basket LIVE dispatch validates each leg independently: market-hours gate (skip if closed unless `variety=amo`), MCX 20-lot cap (bypass for close), preflight (margin/segment checks). No leg placement without passing its guards. The market-hours gate is NOT the display-route `_segment_is_open()` path. It calls `_symbol_exchange_open()` via `backend/api/routes/orders_basket.py` → `backend/api/algo/agent_engine.py` (`_symbol_exchange_open` over `_build_context` → `_ae_segment_flags`). That chain lacked `evening_open_on_holidays`/`special_sessions` support until the 2026-10-20 fix (see CLAUDE.md "Market open/close determination"). Basket orders did not inherit market-hours fixes made elsewhere in the app; they are covered only by that fix.
+**I12 — Basket per-leg guards**: Basket LIVE dispatch validates each leg independently. The
+guards run in this order, and a leg that fails any of them is rejected without a broker call:
+
+1. **Market-hours gate** (skipped for `variety=amo`). It calls `_symbol_exchange_open()` over
+   `_build_now_ctx()`, the same chain as ticket and chase. Before each leg, the loop awaits
+   `_prewarm_special_sessions_for_exchange()`, so the DB-backed special-sessions cache is warm before
+   the synchronous check runs (2026-10-20, commit `0cabb3ec`). Without the prewarm, a cold cache on
+   the main loop would fail open and let a leg through on a closed evening.
+2. **MCX/NCO 20-lot cap** (bypassed for `intent="close"`, verified per leg — see §8.1).
+3. **Preflight** (`run_preflight`, the same function the ticket path uses). **Any non-ok preflight
+   result rejects the leg**, whatever its code (MARGIN_SHORTFALL, SEGMENT_INACTIVE, QTY_FREEZE,
+   INSUFFICIENT_FUNDS, LOT_MULTIPLE, LOT_SIZE_UNKNOWN, FAT_FINGER_5_LOT_CAP, ACCOUNT_UNKNOWN, and any
+   future code). Earlier code blocked only MARGIN_SHORTFALL and SEGMENT_INACTIVE and placed the leg on
+   every other code, so this was fail-open. A preflight block costs one leg, never the whole request.
+
+**NCO history.** `NCO` was missing from `_EXCHANGE_TO_SEGMENT` (`agent_engine.py`), so
+`_symbol_exchange_open("NCO", ...)` always returned `False`. Every NCO basket leg was rejected as
+"market closed" regardless of real time. Fixed in `a7c3375f` by mapping `NCO` to `commodity`. The
+same was true of the ticket and chase gates, which share the helper. NCO now gates on time.
+
+The market-hours gate is NOT the display-route `_segment_is_open()` path. The display routes and
+the order paths share one underlying check, `is_market_open()`, but the order path reaches it through
+`_ae_segment_flags`, which the 2026-10-20 fix now feeds `sessions=`, `evening_open_on_holidays=`
+and `special_sessions=`. See CLAUDE.md "Market open/close determination" for the per-site status.
 
 **I13 — RemoteBroker translate_qty delegation**: Any RemoteBroker proxy must override `translate_qty` to delegate via `_call`; the base-class no-op is unsafe for MCX/NCO contracts and sends raw contract qty to the adapter.
 

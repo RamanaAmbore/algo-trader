@@ -251,7 +251,7 @@ memoise returns. One broker round-trip per TTL window shared by routes, nav, inv
 `?fresh=1` + postbacks call `_raw_cache_invalidate(key)`.
 
 **Holiday calendar** — four-tier read: in-process LRU → module-level TTL → PostgreSQL 
-`market_holidays` (daily 04:00 IST refresh, retry 30min until 08:00 IST) → NSE API (cold-boot). 
+`market_holidays` (daily 05:30 IST refresh, retry 30min until 08:00 IST) → NSE API (cold-boot). 
 Empty sets cached; buster = date rollover Tiers 1+2, UPSERT Tier 3.
 
 **Market segments** — blocks carry `sessions: list[{start, end}]` + `evening_open_on_holidays`. 
@@ -520,88 +520,131 @@ denominator. **Two columns are headed "Chg %"**: the left grid `change_pct` colu
 and it is the one this fix changes. Movers keep their own poller and are not consolidated. Spec:
 PULSE_SPEC §11.3.
 
-**Market open/close determination — one call path for display routes (2026-10-20, commits `0b203d07`, `fdfa37a5`)** —
+**Market open/close determination — one call path for display routes; order paths prewarmed
+(2026-10-20; prior round `0b203d07`, `fdfa37a5`, `9e591248`, `0cabb3ec`, `a7c3375f`, `0e304f40`;
+this round `691a7373`, `274019bb`, `59b4c01b`, `634ce8e4`, `940debd2`, `b79cfbb0`, `eb94f67e`,
+`c6a947c7`, `c0fabec3`, `eae36fca`)** —
 "One path" means one function with one kwarg set, not one literal helper. Canonical helper:
 `_segment_is_open(seg_cfg, now)` ([`date_time_utils.py:304`](backend/shared/helpers/date_time_utils.py#L304))
 over `is_market_open()` ([`:217`](backend/shared/helpers/date_time_utils.py#L217)).
 **Scope of the one-path claim**: it covers the display, status, quote and movers routes listed
-below and nothing else. Order placement, template attach, chase, the agent close-all action and
+below. Order placement, template attach, chase, the agent close-all action and
 `market_hours`-scheduled agents did NOT use `_segment_is_open()`. They gated on
-`agent_engine.py` `_ae_segment_flags` until the fix described in the last bullet of this entry.
+`agent_engine.py` `_ae_segment_flags` until the fix described under "Order-path gate status" below.
 - **Routed through `_segment_is_open()`** with YAML-shaped config: `/market/status`
-  ([`routes/market.py:177-178`](backend/api/routes/market.py#L177)), quote gate
-  ([`routes/quote.py:308`](backend/api/routes/quote.py#L308)), watchlist movers gate
-  ([`routes/watchlist.py:1404-1405`](backend/api/routes/watchlist.py#L1404)).
+  (`routes/market.py` `_compute_market_status`, [`:177-178`](backend/api/routes/market.py#L177)),
+  quote gate (`routes/quote.py` `_is_exchange_segment_closed`), watchlist movers gate
+  (`routes/watchlist.py` movers handler, [`:1404-1405`](backend/api/routes/watchlist.py#L1404)).
 - **Direct `is_market_open()` with gate-shaped dicts** from `_get_segments()`. These pass the same
   `exchange=`, `evening_open_on_holidays=`, `special_sessions=` kwargs but keep each gate's own
   `hours_start`/`hours_end` (the per-date `exchange_schedule` window) instead of the YAML `sessions`
-  list: `background.py` `_perf_probe_open_segments` ([`:1043`](backend/api/background.py#L1043)) and
-  `_watchdog_check_market_open` ([`:5776`](backend/api/background.py#L5776)), and
-  `routes/simulator.py` ([`:227`](backend/api/routes/simulator.py#L227),
-  [`:260`](backend/api/routes/simulator.py#L260)). Commit `fdfa37a5` exists because the first pass
-  would have replaced these hours with the YAML sessions and broken per-date accuracy.
+  list: `background.py` `_perf_probe_open_segments` and `_watchdog_check_market_open`, and the
+  `routes/simulator.py` guards (`_markets_currently_open`, `_market_hours_block_check`). Commit
+  `fdfa37a5` exists because the first pass would have replaced these hours with the YAML sessions
+  and broken per-date accuracy.
 - **Holiday-branch weekday guard**: the evening-open rule in `is_market_open()` now requires
   `today.weekday() < 5` ([`date_time_utils.py:291`](backend/shared/helpers/date_time_utils.py#L291)).
   Before, a weekend holiday on an evening-open segment read "open" from 17:00.
-- **Former gap, fixed 2026-10-20 — `agent_engine.py` `_ae_segment_flags`**
-  ([`:2165`](backend/api/algo/agent_engine.py#L2165)). This was NOT a safety net layered on a correct
-  check. It was the REAL market-open gate for: ticket orders
-  ([`orders_place.py:231`](backend/api/routes/orders_place.py#L231),
-  [`:1519`](backend/api/routes/orders_place.py#L1519)), basket orders
-  ([`orders_basket.py:419`](backend/api/routes/orders_basket.py#L419)), GTT/wing template-attach
-  ([`template_attach.py:325`](backend/api/algo/template_attach.py#L325),
-  [`:2400`](backend/api/algo/template_attach.py#L2400)), chase re-pricing
-  ([`chase.py:2559`](backend/api/algo/chase.py#L2559)), the agent close-all action
-  ([`actions.py:165`](backend/api/algo/actions.py#L165)), and the `market_hours`-scheduled-agent gate
-  in `run_cycle` ([`agent_engine.py:3215`](backend/api/algo/agent_engine.py#L3215), `any_market_open`).
-  Those sites reach it via `_symbol_exchange_open()` ([`agent_engine.py:561`](backend/api/algo/agent_engine.py#L561))
-  over `_build_context()` → `_ae_segment_flags()` → `is_trading_day()`. It never honoured
-  `evening_open_on_holidays` or `special_sessions`, so it falsely rejected a genuinely open MCX
-  evening session on an NSE holiday (live-reported 2026-10-20). Fix, two parts:
+- **Former gap, fixed 2026-10-20 — `agent_engine.py` `_ae_segment_flags`**. This was NOT a safety
+  net layered on a correct check. It was the REAL market-open gate for ticket orders, basket
+  orders, GTT/wing template-attach, chase, the agent close-all action, and the `market_hours`
+  schedule gate in `run_cycle`. Those sites reached it via `_symbol_exchange_open()` over
+  `_build_context()` → `_ae_segment_flags()`. It never honoured `evening_open_on_holidays` or
+  `special_sessions`, so it falsely rejected a genuinely open MCX evening session on an NSE holiday
+  (live-reported 2026-10-20). Two parts:
   (1) `_ae_segment_flags` now threads `sessions=` / `evening_open_on_holidays=` into
-  `is_market_open()` via two new helpers, `_ae_resolve_matched_window()` (finds which session window
-  governs the clock, so `minutes_since_{prefix}_open` anchors to the real open — e.g. 17:00 on a
-  holiday evening, not 09:00) and `_ae_had_session_today()` (calendar-only `_closed` check, no
-  probe) — this alone closes the reported bug. Removes the live-probe fallback this path used to
-  fall through to on a holiday; that fallback never covered `evening_open_on_holidays` either, so
-  this brings order placement to parity with the display routes above, not below them — a bare
-  calendar holiday with an undocumented ad-hoc session (e.g. an unlisted SEBI special session) is
-  now unrecognised here exactly as it already was for `/market/status` and the other canonical-path
-  callers.
-  (2) `special_sessions=fetch_special_sessions(holiday_exchange)` is wired into the same call,
-  completing parity with `_segment_is_open()` — but reading the DB-backed override from these
-  call sites turned out to be structurally harder than "just call it": the main-loop DB bridge
-  (`run_on_main_loop()`, `backend/shared/helpers/write_queue.py`) cannot block-wait on a coroutine
-  scheduled on the same loop it's executing on, without deadlocking — there is no way to force a
-  real, synchronous DB read from inside a caller already on that loop. **Verified per call site**
-  (not assumed) which of the 6 are `async def` all the way up: `orders_place.py` (ticket, both
-  sites), `orders_basket.py`, `chase.py` are `async def` — these 3 now `await`
-  `fetch_special_sessions_async()` (via `agent_engine.py`'s new
-  `_prewarm_special_sessions_for_exchange()`) from that async context BEFORE calling the sync
-  `_build_now_ctx()`, so the cache is guaranteed warm by the time the sync path runs — **the gap is
-  fully CLOSED, not just mitigated, for these 3**. `template_attach.py`'s two sites
-  (`_check_offhours_wing_gate`, `apply_plan_live`) are plain `def`, not `async def` — `apply_plan_live`
-  alone has 4 callers (admin reconcile, postback handler, paper engine, chase terminal), so
-  converting it would ripple widely; judged out of scope. These two remain on the MITIGATION only:
-  (a) `fetch_special_sessions()` (`broker_apis.py`) no longer caches a cold-cache-guard miss as `[]`
-  — only a genuinely successful query (even an empty one) is cached, closing a real pre-existing
-  cache-poisoning bug that also affected `quote.py`'s and `watchlist.py`'s own `_segment_is_open()`
-  calls; (b) `warm_special_sessions_cache()` awaits the DB read directly (no deadlock risk), called
-  at startup and after every daily holiday refresh. **Residual, documented gap, narrowed and now
-  named precisely**: a genuinely cold cache hit mid-day from `_check_offhours_wing_gate` or
-  `apply_plan_live` specifically (and only these two) still fails open to `[]` — mitigated, not
-  eliminated. Both cache functions key on `timestamp_indian().date()`, not `date.today()` — the
-  prod/dev server runs on UTC (`timedatectl` confirmed), and a system-local date key would mis-key
-  the cache for the ~5.5h IST 00:00–05:30 window every night.
-- **`_EXCHANGE_TO_SEGMENT` (`agent_engine.py:542`) was missing `NCO`** — found while verifying the
-  fix above. Every other MCX/NCO call site in the app (~25) already treats `NCO` identically to
-  `MCX`; this one dict didn't, so `_symbol_exchange_open("NCO", ctx)` always returned `False`
-  regardless of actual market state — every NCO order/basket leg/GTT-wing attach/chase was
-  unconditionally rejected as "market closed". Fixed by adding `"NCO": "commodity"` — an
-  operator-visible, real-money-path behaviour change (NCO orders now actually gate on time, instead
-  of always failing).
+  `is_market_open()`, via `_ae_resolve_matched_window()` (which session window governs the clock, so
+  `minutes_since_{prefix}_open` anchors to the real open — 17:00 on a holiday evening, not 09:00) and
+  `_ae_had_session_today()` (calendar-only `_closed` check, no probe). The live-probe fallback this
+  path used to hit on holidays is removed; it never covered `evening_open_on_holidays` either.
+  (2) `special_sessions=fetch_special_sessions(holiday_exchange)` is wired into the same call. The
+  DB-backed read cannot be made synchronous from the main loop: `run_on_main_loop()`
+  (`backend/shared/helpers/write_queue.py`) cannot block-wait on a coroutine scheduled on the loop it
+  is already running on. So the gap is closed by prewarming from async callers, not by the sync path.
+  The caches key on `timestamp_indian().date()`, not `date.today()` — the prod/dev server runs on
+  UTC (`timedatectl` confirmed), so a system-local key would mis-key the cache every night in the
+  IST 00:00–05:30 window.
+- **`_EXCHANGE_TO_SEGMENT` was missing `NCO`** (`agent_engine.py`, `_EXCHANGE_TO_SEGMENT`; fixed in
+  `a7c3375f`). Every other MCX/NCO call site treated `NCO` like `MCX`; this dict did not, so
+  `_symbol_exchange_open("NCO", ctx)` always returned `False`. Every NCO order, basket leg, GTT-wing
+  attach and chase was unconditionally rejected as "market closed". Fixed by adding
+  `"NCO": "commodity"` — an operator-visible, real-money-path change (NCO now gates on time).
+- **Order-path gate status, per call site (no shared denominator — each line is its own status):**
+  - Ticket — `_ticket_gate_market_hours_and_align_price()` (`routes/orders_place.py`): **closed**.
+    Awaits `_prewarm_special_sessions_for_exchange()` before the sync `_build_now_ctx()`.
+  - Basket — per-leg LIVE gate in `routes/orders_basket.py`: **closed**. Same helper, awaited
+    inside the leg loop before `_bk_now_ctx()` (commit `0cabb3ec`).
+  - Chase — `_chase_order_impl()` (`algo/chase.py`): **closed**. Same helper, awaited before its
+    `_symbol_exchange_open` call.
+  - Template-attach offhours wing gate — `_check_offhours_wing_gate()` (`algo/template_attach.py`,
+    plain `def`). Its only caller, `_apply_template_to_order_impl()` (async), awaits
+    `_prewarm_special_sessions_for_exchange(parent_exchange)` immediately before calling it
+    (`59b4c01b`, cleaned up in `634ce8e4`). **Closed via the caller**, not the gate.
+  - `market_lifecycle.py` `poll()`: **closed**, and the highest-stakes site because it drives
+    `close_settled` and `daily_book` snapshot writes. A cold-cache fail-open here would hide a
+    DB-confirmed MCX evening closure and fire a spurious `mcx:open` → `close_settled` cycle. Added
+    in `691a7373`. It awaits `fetch_special_sessions_async(segment["exchange"])` DIRECTLY for each
+    exchange, not via `_prewarm_special_sessions_for_exchange()`. The helper resolves through
+    `holiday_exchange`, so the synthesized `cds` entry (raw key `"CDS"`, `holiday_exchange` `"NSE"`)
+    warmed the `"NSE"` key while `_exchange_is_open()` read `"CDS"` — CDS stayed cold. Corrected in
+    `274019bb`.
+  - `apply_plan_live` (`algo/template_attach.py`): **never exposed**. It is reached only via
+    `asyncio.to_thread(apply_plan_live, ...)` in `_route_apply_path()`. It runs in a worker thread,
+    so `run_on_main_loop()`'s self-deadlock guard never applies and its blocking DB read proceeds
+    normally. Earlier docs listing it as exposed were wrong.
+  - `_exchange_open_for_attach` (`routes/orders_place.py`): **deleted** in `b79cfbb0`. It was dead
+    code with zero production callers, so it was never a real gate. Earlier docs listed it as a
+    live ticket-gate call site, which was wrong.
+  - `run_cycle` and `actions.py` (`_exchange_gate_passes`): **never exposed**.
+    `run_cycle` builds its context via `asyncio.to_thread(_build_context, ...)`, so the cold-cache
+    path runs in a worker thread. `actions.py` reads the already-built context dict and does not
+    fetch.
+  - **Accepted residual, not fixed.** Sync main-loop callers still rely on the warm-cache mitigation
+    only. Known examples: the `routes/agents.py` dry-run (`_dry_run_context`), the
+    `routes/watchlist.py` movers gate, the `routes/quote.py` segment check, and the
+    `routes/simulator.py` guards. The list is not exhaustive. All of these are read-only, display,
+    dry-run, or sim-start paths, not real-money order placement. The mitigation is
+    `warm_special_sessions_cache()` at startup and after each daily refresh; `fetch_special_sessions()`
+    no longer caches a guard-miss as `[]`.
+- **Hardening rounds (items 5–9 of the 2026-10-20 audit), with their real behaviour:**
+  - *Malformed NSE feed returns `None`* — `_fetch_mcx_evening_closed_dates()` (`broker_apis.py`)
+    returns `None` on a network or parse failure AND on a malformed feed (missing, non-list, or
+    empty `COM`). `background.py` only calls the upsert when the result `is not None`.
+  - *Reconciliation guard* — `_upsert_mcx_evening_closed_sessions_coro()` skips its reconciliation
+    DELETE and logs a warning when the fresh closed-set is empty and existing auto-rows exist. It is a
+    second layer behind the `None` check. **Known residual edge, not fixed**: the guard tests the RAW
+    `dates` argument, not the weekday-filtered set. A fetch whose closed dates all fall on weekends
+    passes the guard and reconciles away every existing row. Fixing it changes behaviour beyond this
+    round's spec. A code comment at the guard site records the same edge.
+  - *IST keying in holiday caches* — `fetch_holidays()` Tiers 1/2 and `_read_market_holidays_async()`
+    key on the IST date or year (`timestamp_indian()`), not system-local `date.today()`. Same bug
+    class as the special-sessions cache.
+  - *Failure logs at WARNING* — prewarm and warm-cache failures log at `warning`, not `debug`.
+    Tradeoff: during a persistent DB outage, `market_lifecycle.poll()` alone can log up to 3 warnings
+    per 30s poll (NSE, MCX, CDS). Failures are deliberately never cached, so each poll retries.
+  - *Segment flags honour overrides* — `_ae_segment_flags()` computes `{prefix}_closed` and
+    `minutes_since_{prefix}_open/close` against a `special_sessions` row that applies today. A
+    zero-width row means no session today. A real window anchors to its own start and end. **Dormant:
+    no live reader of these keys exists.** The `minutes_since_open` grammar token reads
+    `alert_state['session_start']`, not the context dict, and `sim/driver.py` overrides replace the
+    values rather than reading them. The fix is correct for the context dict (admin introspection,
+    future consumers), but it changes no operator-visible behaviour today.
+- **Known limitation — same-day edits.** Same-day operator edits to `market_special_sessions` are not
+  picked up until a restart or the next 05:30 refresh. Per-call prewarm returns early on a same-day
+  cache hit, so it does not help here. Adding an admin cache-bust endpoint is a feature, not
+  implemented.
+- **Both cache functions** (`fetch_special_sessions`, `fetch_special_sessions_async`) only cache a
+  successful query, even an empty one. A DB failure returns `[]` without caching.
 - **Remaining unreconciled mechanism**: `exchange_clock`'s DB-schedule open/closed signal, which
   drives EOD scheduling. It is the one fifth mechanism still outstanding, flagged for a future pass.
+- **Known gap, found and NOT fixed — dry-run `any_market_open` is always `False`** (out of scope this
+  round; operator's call). `_dry_run_context()` (`routes/agents.py`) computes
+  `any_market_open = any(s.get("open") for s in base.get("segments", []))`. `_build_context()` never
+  emits a `segments` key; it emits flat `nse_open` / `mcx_open`. So every `schedule="market_hours"`
+  agent is reported as blocked by `_check_dry_run_gates()` regardless of real market state, and the
+  dry-run response's `segments` field is always empty. The production path is unaffected:
+  `background.py` builds its own agent context WITH `segments`, and `run_cycle` derives
+  `any_market_open` from `nse_open or mcx_open`. A fix would derive the dry-run value the same way.
 
 **Simulator market-hours guard restored (2026-10-20, operator-visible behaviour change)** —
 `_market_hours_block_check()` ([`routes/simulator.py:187`](backend/api/routes/simulator.py#L187))
@@ -620,37 +663,41 @@ an exchange is passed ([`date_time_utils.py:140-186`](backend/shared/helpers/dat
 Roughly once a minute per exchange, cached. If this becomes measurable, add a `probe=False`
 passthrough to `_segment_is_open()`. **Not implemented.**
 
-**MCX evening-closed holidays (2026-10-20, commits `85f2ade1`, `53c8da80`; gaps closed same day,
-see below)** — The NSE holiday-master `COM` entries carry `evening_session` ("Open"/"Closed").
-`_fetch_mcx_evening_closed_dates()` ([`broker_apis.py:3522`](backend/brokers/broker_apis.py#L3522))
-returns the dates marked "Closed" — `None` on a failed fetch, distinct from a genuine empty "nothing
-closed this year" result. `_upsert_mcx_evening_closed_sessions_coro()`
-([`broker_apis.py:3583`](backend/brokers/broker_apis.py#L3583)) writes a zero-width
-`market_special_sessions` row for each one: `exchange='MCX'`, `start_time = end_time = 00:00`, which
-`is_market_open()` reads as closed all day. Weekend dates are excluded (`broker_apis.py:3637`), because
-`next_market_open_ist()`'s weekend branch treats row existence as open. Rows carry `source='nse_auto'`.
-- **`MarketSpecialSession.source`** ([`models.py:2412`](backend/api/models.py#L2412)): NULL or
-  `"manual"` is operator-entered; `"nse_auto"` is auto-inserted. The ON CONFLICT clause updates only
-  `source='nse_auto'` rows ([`broker_apis.py:3656`](backend/brokers/broker_apis.py#L3656)), so an
-  operator Muhurat row is never overwritten. Migration:
-  `_migrate_market_special_sessions_source()` ([`database.py:842`](backend/api/database.py#L842),
-  called at [`:1227`](backend/api/database.py#L1227)), idempotent.
-- **Gaps closed (2026-10-20, same day as the original fix):** (a) the upsert now DELETEs any
-  `nse_auto` row whose date is no longer in the fetch's closed-set — i.e. NSE later revised that
-  date's evening back to Open — scoped to `exchange='MCX' AND source='nse_auto' AND
-  start_time=end_time AND date >= today`, computed as a set-difference against freshly-queried
-  existing rows, never touching history or operator rows. Gated on the fetch having actually
-  succeeded (`is not None`) — reconciling against a FAILED fetch's empty result would wipe every
-  real closed-evening row during a transient NSE outage. (b) the upsert's `except Exception` now
-  logs a warning instead of returning 0 silently. (c) `morning_session` checked directly against
-  the live feed (not assumed): all 21 `COM` entries for 2026 carry `morning_session: "Closed"` —
-  there is currently no date where morning is open and only evening is closed, so the "doesn't
-  recur in 2026" framing is confirmed by live data, not just asserted; still unmodeled, since
-  there's nothing to model against. (d) `_fetch_nse_holiday_master_json()`
-  ([`broker_apis.py:3454`](backend/brokers/broker_apis.py#L3454)) now memoizes a successful fetch
-  for a short (5s) TTL, collapsing the two independent calls `_fetch_holidays_from_nse` and
-  `_fetch_mcx_evening_closed_dates` each make into one real HTTP round-trip — a failure is never
-  memoized, so a retry a millisecond later still gets a real attempt.
+**MCX evening-closed holidays (2026-10-20; prior round `85f2ade1`, `53c8da80`, `61307c47`,
+`125cbfea`; this round `09e53dd7`, `33e3aa18`)** — The NSE holiday-master `COM` entries carry
+`evening_session` ("Open"/"Closed"). `_fetch_mcx_evening_closed_dates()`
+([`broker_apis.py:3558`](backend/brokers/broker_apis.py#L3558)) returns the dates marked "Closed".
+It returns `None` on any fetch, parse, or malformed-shape failure, which is distinct from a genuine
+empty "nothing closed this year" result. `_upsert_mcx_evening_closed_sessions_coro()`
+([`broker_apis.py:3633`](backend/brokers/broker_apis.py#L3633)) writes a zero-width
+`market_special_sessions` row for each date: `exchange='MCX'`, `start_time = end_time = 00:00`. It
+is read as closed all day by `is_market_open()`. Weekend dates are excluded (`non_weekend` in the
+same function), because `next_market_open_ist()`'s weekend branch treats row existence as open.
+Rows carry `source='nse_auto'`. The caller is `_task_holiday_refresh()` (`background.py`), which
+calls the upsert only when the fetch result `is not None`.
+- **`MarketSpecialSession.source`** (`backend/api/models.py`, `MarketSpecialSession`, comment near
+  L2406): NULL or `"manual"` is operator-entered; `"nse_auto"` is auto-inserted. The ON CONFLICT
+  clause updates only `source='nse_auto'` rows, so an operator Muhurat row is never overwritten.
+  Migration: `_migrate_market_special_sessions_source()` ([`database.py:842`](backend/api/database.py#L842)),
+  idempotent.
+- **Reconciliation** (prior round): the upsert DELETEs any `nse_auto` row whose date is no longer in
+  the fetch's closed-set — NSE revised that evening back to Open. Scoped to
+  `exchange='MCX' AND source='nse_auto' AND start_time=end_time AND date >= today`, computed as a
+  set-difference, never touching history or operator rows. It is gated on the fetch having succeeded.
+  A failed fetch's empty result would otherwise wipe every real closed-evening row during an NSE
+  outage. This round added the malformed-feed guard and a second guard that skips the DELETE when the
+  fresh closed-set is empty but auto-rows exist. The known weekend-only edge is documented under
+  "Hardening rounds" above.
+- **Other gaps closed (prior round):** the upsert's failure path logs a warning instead of returning 0
+  silently. `morning_session` was checked against the live feed: all 21 `COM` entries for 2026 carry
+  `morning_session: "Closed"`, so there is no date where only the evening is closed. It stays
+  unmodelled because there is nothing to model against. `_fetch_nse_holiday_master_json()`
+  ([`broker_apis.py:3490`](backend/brokers/broker_apis.py#L3490)) memoizes a successful response for
+  5s (`_NSE_HOLIDAY_JSON_MEMO`), so the two per-refresh calls cost one HTTP round-trip. Failures are
+  never memoized.
+- **Still open**: a COM-listed date is treated as an MCX holiday, so morning trading on such a date
+  is closed both before and after this work. Whether the feed ever lists a morning "Open" on such a
+  date is unverified.
 
 **Conn-service tick forwarder killed nightly, never revived — LTP froze while Chg% moved (2026-10-19, commit 7bf11fac)** — In conn-service mode (`RAMBOQ_USE_CONN_SERVICE=1`, the prod/dev config), the 23:31 IST `_snapshot_stop_ticker()` ([`background.py:2972`](backend/api/background.py#L2972)) called a real `.stop()` on the API process's local `MmapTickReader`, cancelling `_poll_task` — the task that tails the shared-memory tick buffer and republishes ticks to the `/api/quotes/stream` SSE stream. The method's own docstring claimed no such effect existed in this mode. The 08:00 `_snapshot_restart_ticker()` ([`background.py:3002`](backend/api/background.py#L3002)) checked for a nonexistent `.restart()` method and never revived it. Broker-side ticks kept landing in the buffer, so the outage was invisible server-side: LTP froze on every symbol with no flash (flash is tick-driven), while Chg% kept moving (computed from the independent periodic positions poll). Deploys had been masking it by restarting the process; logs show it recurring most nights since 2026-09-19. Fix: the three `hasattr()` sites now branch on the canonical `is_cutover_on()` ([`client/__init__.py:32`](backend/brokers/client/__init__.py#L32)). In conn-service mode stop and unsub are true no-ops; restart calls `check_and_heal()`. `MmapTickReader.check_and_heal()` ([`mmap_ticker.py:160`](backend/brokers/mmap_ticker.py#L160)) restarts a dead or done poll task, logs `[MMAP-WATCHDOG]` once per dead→alive transition, and escalates with a second critical line on 3+ heals within 10 minutes. `start()` and `ensure_started()` ([`mmap_ticker.py:133`](backend/brokers/mmap_ticker.py#L133), [`:156`](backend/brokers/mmap_ticker.py#L156)) now restart a done-but-non-None task; previously only `None` was restartable. `_task_ticker_watchdog` ([`background.py:5698`](backend/api/background.py#L5698)) calls `check_and_heal()` every 30s in this mode, replacing a 300s no-op sleep. Frontend: `lastLiveTickAt` ([`quoteStream.js:54`](frontend/src/lib/data/quoteStream.js#L54)) is set only by real SSE tick and snapshot events — deliberately not `symbolTickCount`, which background polls also advance and which would have masked this failure. `tickStaleness.svelte.js` (75s threshold, [line 52](frontend/src/lib/data/tickStaleness.svelte.js#L52)) drives an amber `TICKS STALE@HH:MM` badge ([`RefreshButton.svelte:485`](frontend/src/lib/RefreshButton.svelte#L485)) plus one toast per staleness episode. Invariant: a local forwarder stopped by a scheduled job must have a restart path that calls a method which actually exists, and any freshness indicator must key off delivered ticks, never poll activity.
 

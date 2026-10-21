@@ -3613,7 +3613,8 @@ gantt
   to avoid tight-loop polling when the conn service is not running; skipped at startup.
 
 **Schedule refresh tasks:**
-- 04:00 IST daily — calls `exchange_clock.load_today_open_time()` (before holiday refresh) to set dynamic NSE open time from `exchange_schedule` table. The fix fires at the actual session open time (which may differ on special sessions) and does not fire on holidays. Then runs `_task_holiday_refresh` to sync the market holidays calendar from NSE API.
+- 04:00 IST daily — calls `exchange_clock.load_today_open_time()` (before holiday refresh) to set dynamic NSE open time from `exchange_schedule` table. The fix fires at the actual session open time (which may differ on special sessions) and does not fire on holidays. The holiday calendar sync (`_task_holiday_refresh`) is a separate job that runs at 05:30 IST
+(`holiday_refresh_time`), not in this 04:00 slot.
 
 ⚙ **TECH — Why poll-based + not event-based** — `WHY` Vendor postbacks are unreliable (Dhan + Groww have no inbound webhook; Kite drops 0.5-2% in our experience). Polling is the conservative floor. `WHAT` Each task runs on its own asyncio cadence; no scheduler library. `HOW` Pick interval based on operator latency tolerance: trail-stop = 30s (slow ratchet OK), OCO watcher = 15s (faster because both legs settling within window means double-fire). `WHERE` `backend/api/background.py`.
 
@@ -3793,7 +3794,7 @@ calendar day via dedup sentinels keyed on trade-date.
 |------------|-------|----------|----------|-----------|
 | 00:15 | MCX settlement snapshot (`daily_book`) | MCX | `trigger_settlement_capture("MCX")` → `_snapshot_fire(label="mcx-settlement")` | background.py:1836–1847 |
 | 00:30 | KiteTicker full stop — reactor halt, WebSocket close, subscriptions cleared | ALL | `_snapshot_stop_ticker()` | background.py:1917–1935, 2089–2099 |
-| 05:30 | Holiday calendar refresh + token pre-warm (all brokers) | NSE+MCX | `_task_holiday_refresh()` | background.py:2314–2493 |
+| 05:30 | Holiday calendar refresh + token pre-warm (all brokers) | NSE+MCX | `_task_holiday_refresh()` | background.py `_task_holiday_refresh` (~L3997) |
 | 08:00 | KiteTicker restart with fresh token; `fix_daily_book_prev_close()` is marker-guarded (`task_markers.prev_close_fix_date`) and, in normal operation, updates zero rows (2026-10-20, see "Settlement re-arm rules" below) | ALL | `_snapshot_restart_ticker()`, `fix_daily_book_prev_close()` | background.py:2059–2112 |
 | 09:00 | MCX regular session opens | MCX | config | backend_config.yaml |
 | 09:15 | NSE/BSE/NFO/CDS regular session opens | NSE/BSE | config | backend_config.yaml |
@@ -3922,40 +3923,56 @@ prod, 2026-09-01 → 2026-10-19) agrees on 88.7% of pairs (2731 of 3079). All di
 cluster is **not root-caused**. The rollover fix removes the mechanism confirmed in code, but
 this design section does not claim it explains that window.
 
-#### Market open/closed — one call path (2026-10-20)
+#### Market open/closed — one call path for display routes; order paths prewarmed (2026-10-20)
 
-- `_segment_is_open(seg_cfg, now)` (`date_time_utils.py:304`) over `is_market_open()` (line 217) is the
-  canonical verdict. Callers that hold YAML-shaped config route through it: `/market/status`, the
-  quote gate, and the watchlist movers gate.
+- `_segment_is_open(seg_cfg, now)` (`date_time_utils.py:304`) over `is_market_open()` (line 217) is
+  the canonical verdict for *display* routes: `/market/status`, the quote gate, and the watchlist
+  movers gate. These hold YAML-shaped config.
 - Gate-shaped callers (`_get_segments()` dicts) call `is_market_open()` directly with the same
   `exchange=`, `evening_open_on_holidays=`, and `special_sessions=` kwargs. They keep each gate's own
-  `exchange_schedule` hours and do not substitute the YAML `sessions` list. This applies to the
-  perf probe, the ticker watchdog, and the simulator guard.
+  `exchange_schedule` hours and do not substitute the YAML `sessions` list. This applies to the perf
+  probe, the ticker watchdog, and the simulator guards.
 - Holiday branch: the evening-open rule requires a weekday (`today.weekday() < 5`).
-- **Scope**: the above is the one call path for *display* routes only. Order placement, GTT/wing
-  template-attach, chase re-pricing, the agent close-all action, and the `market_hours`-scheduled
-  agent gate did not use it — they gated on `agent_engine._ae_segment_flags` (line ~2165), which
-  never honoured `evening_open_on_holidays`/`special_sessions` and fell back to a live Kite probe on
-  holidays instead. This was not a deliberate safety net; it was a missed consumer, and it falsely
-  rejected a genuinely open MCX evening session on a holiday (live-reported 2026-10-20). Fixed the
-  same day: `_ae_segment_flags` now threads `sessions=`/`evening_open_on_holidays=` into
-  `is_market_open()`. For the DB-backed `special_sessions` read, 3 of the 6 call sites
-  (`orders_place.py` ticket, `orders_basket.py`, `chase.py`) are `async def` all the way up and now
-  `await` a pre-fetch before the sync context build — the gap is fully closed for them. The other 2
-  (`template_attach.py`'s `_check_offhours_wing_gate`/`apply_plan_live`) are plain `def` and would
-  need a wider async conversion to close properly (`apply_plan_live` alone has 4 callers) — out of
-  scope for this pass, left on the warm-cache mitigation only (`warm_special_sessions_cache()`,
-  refreshed at startup and after each daily holiday refresh); a cold cache mid-day still fails open
-  for just these two. Both cache functions key on the IST date (`timestamp_indian().date()`), not
-  the system-local date — the server runs on UTC, confirmed via `timedatectl`. Also found and fixed
-  the same day: `_EXCHANGE_TO_SEGMENT` had no `NCO` entry, so every NCO order was unconditionally
-  rejected as market-closed regardless of actual time — added. See CLAUDE.md's "Market open/close
-  determination" entry for the full call-site list. `exchange_clock`'s DB-schedule signal (EOD
-  scheduling) remains the one mechanism still unreconciled with the calendar verdict.
+- **Order-path gate.** Order placement, template attach, chase, the agent close-all action, and
+  `market_hours`-scheduled agents gated on `agent_engine._ae_segment_flags`. That function never
+  honoured `evening_open_on_holidays` or `special_sessions`, so it falsely rejected a genuinely open
+  MCX evening session on a holiday (live-reported 2026-10-20). It now threads both into
+  `is_market_open()` and no longer falls back to a live probe on holidays.
+- **Per-call-site status** (each line stands alone; there is no shared denominator):
+  - Ticket (`_ticket_gate_market_hours_and_align_price`), basket (per-leg LIVE gate), chase
+    (`_chase_order_impl`): **closed**. Each awaits `_prewarm_special_sessions_for_exchange()` before
+    the sync `_build_now_ctx()`.
+  - Template-attach offhours wing gate (`_check_offhours_wing_gate`, called only from the async
+    `_apply_template_to_order_impl`): **closed**. The caller awaits the same prewarm first.
+  - `market_lifecycle.poll()`: **closed**, and the highest-stakes site because it drives
+    `close_settled` and `daily_book` snapshot writes. It awaits
+    `fetch_special_sessions_async(segment["exchange"])` directly, not via the helper. The helper
+    resolves `holiday_exchange`, which for the synthesized `cds` segment (raw key `"CDS"`) warms the
+    wrong cache key.
+  - `apply_plan_live`: **never exposed**. It runs via `asyncio.to_thread` in `_route_apply_path()`,
+    so the main-loop self-deadlock guard never applies. Earlier docs listing it as exposed were
+    wrong.
+  - `_exchange_open_for_attach`: **deleted** (dead code, zero production callers). Earlier docs
+    listed it as a live ticket-gate call site, which was wrong.
+  - `run_cycle` and `actions.py`: **never exposed**. `run_cycle` builds its context in a worker
+    thread via `asyncio.to_thread(_build_context, ...)`.
+  - **Accepted residual, not fixed.** Sync main-loop callers (the `routes/agents.py` dry-run, the
+    watchlist movers gate, the quote segment check, the simulator guards) share the warm-cache
+    mitigation only. None is a real-money order-placement path. The list is not exhaustive.
+- **Other fixes in this pass.** `_EXCHANGE_TO_SEGMENT` had no `NCO` entry, so every NCO order was
+  rejected as market-closed; added (`a7c3375f`). Both cache functions key on the IST date
+  (`timestamp_indian().date()`), not the system-local date, because the server runs on UTC.
+  `fetch_special_sessions()` no longer caches a failed lookup as `[]`.
+- **Known limitation.** Same-day operator edits to `market_special_sessions` are not picked up until
+  a restart or the next 05:30 refresh.
 - Probe cost: `is_trading_day()` probes only when the calendar says closed, the clock is inside
   09:00–23:30, and an exchange is passed. About once a minute per exchange, cached. The newly
   exchange-passing sites are monitored. `probe=False` on `_segment_is_open` is the planned escape
   hatch and is not implemented.
+- `exchange_clock`'s DB-schedule signal (EOD scheduling) remains the one mechanism not reconciled with
+  the calendar verdict.
+- **Known gap, not fixed.** The dry-run preview's `any_market_open` is always `False`: it reads a
+  `segments` key that `_build_context()` never emits. See CLAUDE.md's "Known gap" entry.
 
 #### MCX evening-closed holidays (2026-10-20)
 
@@ -3963,14 +3980,23 @@ this design section does not claim it explains that window.
   `market_special_sessions` row (`exchange='MCX'`, `source='nse_auto'`) that closes MCX all day.
   Weekend dates are excluded, because `next_market_open_ist()` treats row existence as open on
   weekends.
+- The fetch returns `None` on any failure, including a malformed feed. Only a successful fetch
+  (even an empty one) is reconciled against.
 - The ON CONFLICT clause only updates `nse_auto` rows, so operator rows are never overwritten.
-- Gaps closed same day: the upsert now reconciles — deletes an `nse_auto` row once NSE revises that
-  date's evening back to Open, scoped to future-or-today dates, gated on the fetch having actually
-  succeeded (never reconciles against a failed fetch). The upsert's failure path now logs instead of
-  returning silently. `morning_session` checked against the live feed: all 21 `COM` entries for 2026
-  carry `morning_session: "Closed"`, so there's currently nothing to model. The shared NSE
-  holiday-master fetch is now short-TTL memoized, collapsing 2 real HTTP round-trips per refresh
-  into 1.
+- The upsert reconciles: it deletes an `nse_auto` row once NSE revises that date's evening back to
+  Open. The scope is future-or-today dates only. It also refuses to reconcile when the fresh set is
+  empty but auto-rows exist. **Known residual edge:** that guard tests the raw closed-set, not the
+  weekday-filtered one, so a fetch returning only weekend dates can still wipe existing rows.
+- The upsert's failure path logs instead of returning silently. `morning_session` checked against
+  the live feed: all 21 `COM` entries for 2026 carry `morning_session: "Closed"`, so there is
+  nothing to model. The shared NSE holiday-master fetch is short-TTL memoized (5s), so the two
+  per-refresh calls cost one HTTP round-trip.
+- Holiday caches (`fetch_holidays` Tiers 1/2, `_read_market_holidays_async`) key on the IST date and
+  year, not the system-local date.
+- Failure logs for prewarm and warm-cache are at WARNING. During a persistent DB outage,
+  `market_lifecycle.poll()` can log up to 3 warnings per 30s poll (NSE, MCX, CDS).
+- Commits: prior round `85f2ade1`, `53c8da80`, `61307c47`, `125cbfea`; this round `09e53dd7`,
+  `33e3aa18`, `eb94f67e`, `c6a947c7`.
 
 ---
 
