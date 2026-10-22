@@ -1,11 +1,3 @@
-<script module>
-  // MCX commodity-name pattern hoisted to module-level so the regex
-  // object is built once at module load, not rebuilt on every
-  // reactive tick of _modalNotice. Tail anchor stops NSE ETFs like
-  // GOLDBEES / SILVERBEES from being misclassified as MCX.
-  const _MCX_NAMES_RE = /^(CRUDEOIL|GOLD|SILVER|COPPER|NATURALGAS|ZINC|LEAD|ALUMINIUM|NICKEL|MENTHA|COTTON|CARDAMOM)(FUT$|(MINI|MICRO|M)?\d{2}[A-Z]{3}|(MINI|MICRO|M)$)/;
-</script>
-
 <script>
   // SymbolPanel — unified symbol-keyed modal. Replaces three older
   // surfaces: OrderEntryShell (tabbed order entry), SymbolChartModal
@@ -1835,35 +1827,37 @@
       return { level: 'err',  text: '⚠ ' + String(b?.reason || 'preview blocked').slice(0, 60), detail: String(b?.fix || '') };
     }
     // Market-hours check — operator: "when exchange is resolved
-    // showing the message is appropriate". So the warning only
-    // fires when we KNOW which segment the order is going to:
+    // showing the message is appropriate". So the warning only fires
+    // when we KNOW which segment the order is going to.
     //
-    //   1. explicit exchange (_pickedExchange OR exchange prop)
-    //   2. tradingsymbol-pattern fallback for common MCX
-    //      commodities (CRUDEOIL / GOLD / SILVER / ...) — counts
-    //      as resolved because the symbol itself disambiguates.
-    //
-    // When we can't resolve the exchange at all, suppress the
-    // notice rather than guessing — the broker will reject the
-    // order at submit time with a precise reason.
+    // Fixed 2026-10-22 (live incident: MCX order showed "Market closed
+    // — order will queue" while MCX was genuinely open) — this used to
+    // re-derive its OWN exchange resolution from `_pickedExchange ||
+    // exchange` (the raw, unresolved prop/picker hint) plus a narrow
+    // tradingsymbol-pattern regex as a fallback for bare MCX roots.
+    // Both are weaker than the resolution OrderTicket already does:
+    // PageHeaderActions (and several other callers) pass a generic
+    // 'NSE' exchange HINT for a blank/bare-underlying ticket — see
+    // OrderTicket.svelte's `_resolvedExchange` comment, which exists
+    // specifically to correct that wrong hint by looking the resolved
+    // symbol up in the instruments cache first. A bare commodity root
+    // ("GOLD", "CRUDEOIL" with no FUT/CE/PE suffix — the normal shape
+    // on the Chain tab, and for any ticket opened before the operator
+    // picks a specific contract) also never matched the old regex,
+    // which required a suffix tail. The badge above (`_mktBadgeOpen`/
+    // `_mktBadgeExchShell`) already resolves correctly for both tabs —
+    // Ticket mirrors OrderTicket's own `_resolvedExchange`-based belief,
+    // Chain resolves per-leg via the focused leg/instrument cache — so
+    // this now reads the SAME single source instead of guessing again
+    // with a weaker signal. `_mktBadgeExchShell` falls back to the
+    // literal 'Market' placeholder when nothing has resolved yet (no
+    // symbol at all); treat that placeholder as unresolved and suppress
+    // the notice, matching the old "don't guess" behavior.
     try {
-      const _sym = String(_localSymbol || symbol || '').toUpperCase();
-      // MCX-by-name pattern: commodity ROOT followed by either an
-      // MCX-specific tail (MINI, M, MICRO, or an expiry token like
-      // `25APRFUT` / `25APR` / `26JUNFUT`). The trailing anchor stops
-      // the regex from misclassifying NSE ETFs like GOLDBEES,
-      // GOLDIAM, SILVERBEES which begin with the same root.
-      // Tail patterns:
-      //   FUT$                         — month-future
-      //   (MINI|MICRO|M)?\d{2}[A-Z]{3}  — expiry token (`25APRFUT`, etc.)
-      //   (MINI|MICRO|M)$              — bare mini/micro
-      const _explicitExch = (_pickedExchange || exchange || '').toUpperCase();
-      const _isMcxByName = _MCX_NAMES_RE.test(_sym);
-      const isMcx = _explicitExch === 'MCX' || _explicitExch === 'NCO' || _isMcxByName;
-      const resolved = !!_explicitExch || _isMcxByName;
-      if (!resolved) return null;  // exchange not known — no warning
-      const open = isMcx ? isMcxOpen() : isNseOpen();
-      if (!open) {
+      const exch = _mktBadgeExchShell;
+      if (!exch || exch === 'Market') return null;  // exchange not known — no warning
+      const isMcx = exch === 'MCX' || exch === 'NCO';
+      if (!_mktBadgeOpen) {
         return {
           level: 'warn',
           text:  isMcx ? 'MCX closed — order will queue' : 'Market closed — order will queue',
@@ -2575,25 +2569,66 @@
     void _chainMktExch;
     _recomputeChainMktOpen();
   });
+  // Three-value market-status badge (2026-10-22, operator: "the market
+  // open badge should show the following values. market open, mcx
+  // open and non-mcx open") — distinct from `_mktBadgeOpen`/
+  // `_mktBadgeExchShell` above, which are tab/symbol-SPECIFIC (feed
+  // `_modalNotice`'s warning only). These three are fixed,
+  // symbol-agnostic global flags: ANY segment open, MCX open, and
+  // non-MCX (NSE/NFO/BSE/CDS/BCD/BFO — the equity/F&O segment)
+  // open — always visible regardless of what's being traded.
+  // isMarketOpen()/isMcxOpen()/isNseOpen() read a module-level cache
+  // in marketHours.js (refreshed every 5 min by the app-wide
+  // startMarketStatusPoller(), holiday-aware once that poll lands) —
+  // there's no Svelte store to subscribe to, so this polls on the same
+  // 30s visibleInterval tick as `_chainMktOpen` above (mirrors
+  // OrderTicket's own `_mktTimer` convention) rather than adding a
+  // second timer. Seeded synchronously here (not a hardcoded guess —
+  // see OrderTicket's own `_isOpen` comment for why a wrong initial
+  // guess is itself a regression class).
+  let _mktAnyOpen = $state(isMarketOpen());
+  let _mktMcxOpenFlag = $state(isMcxOpen());
+  let _mktNonMcxOpenFlag = $state(isNseOpen());
+  function _recomputeMktFlags() {
+    _mktAnyOpen = isMarketOpen();
+    _mktMcxOpenFlag = isMcxOpen();
+    _mktNonMcxOpenFlag = isNseOpen();
+  }
   /** @type {(() => void) | null} */
   let _chainMktTimer = null;
   onMount(() => {
-    _chainMktTimer = visibleInterval(_recomputeChainMktOpen, 30_000);
+    _chainMktTimer = visibleInterval(() => {
+      _recomputeChainMktOpen();
+      _recomputeMktFlags();
+    }, 30_000);
   });
   onDestroy(() => { _chainMktTimer?.(); });
 
-  // Resolved badge fields for the active tab — Ticket mirrors
-  // OrderTicket's own belief (via `_ticketState`); Chain uses the
-  // independent resolution above; Chart mirrors Ticket (OrderTicket
-  // keeps computing in the background on the Chart tab too, since it
-  // stays mounted with display:none the entire time).
+  // Resolved exchange/open fields for the active tab's SYMBOL — Ticket
+  // mirrors OrderTicket's own belief (via `_ticketState.mktOpen`/
+  // `mktExch`, which is `_resolvedExchange`-based: it looks the
+  // resolved symbol up in the instruments cache FIRST, falling back to
+  // the caller's `exchange` prop hint only on a cache miss — see
+  // OrderTicket.svelte's `_resolvedExchange` comment for why that
+  // ordering matters, PageHeaderActions passes a generic 'NSE' hint
+  // that's wrong for MCX commodities). Chain uses the independent
+  // per-leg resolution above (`_chainMktExch`/`_chainMktOpen`). Chart
+  // is excluded from rendering the shared row entirely (see the
+  // `.oes-chase-row` guard above) but OrderTicket keeps computing in
+  // the background regardless of active tab, so these two values stay
+  // valid to read from the Chart tab too.
+  //
+  // 2026-10-22: no longer rendered directly as a visible badge — the
+  // visible market-status pills below are three fixed, symbol-agnostic
+  // flags (`_mktAnyOpen`/`_mktMcxOpenFlag`/`_mktNonMcxOpenFlag`, per
+  // operator: "market open, mcx open and non-mcx open"). These two
+  // values are the single source of truth `_modalNotice` below reads
+  // for its SYMBOL-SPECIFIC "market closed — order will queue"
+  // warning, instead of `_modalNotice` re-deriving its own (and, until
+  // this fix, buggier) exchange resolution — keep them wired to
+  // `_modalNotice`; do not let them go unused.
   const _mktBadgeOpen = $derived(_activeTab === 'chain' ? _chainMktOpen : !!_ticketState.mktOpen);
   const _mktBadgeExchShell = $derived(_activeTab === 'chain' ? _chainMktExch : (_ticketState.mktExch || 'Market'));
-  const _mktBadgeTitleShell = $derived(
-    _mktBadgeOpen
-      ? `${_mktBadgeExchShell} session open`
-      : `${_mktBadgeExchShell} session closed — order submission may be rejected`
-  );
 
   // Shared Bracket/Draft cluster visibility — Ticket excludes close
   // orders (template attach doesn't apply there); Chain has no
@@ -2901,8 +2936,19 @@
          vertical space and give Chain parity with controls that used
          to only reach it via OrderTicket's own (display:none-while-
          Chain-active) body. Order left-to-right: CHASE, market badge,
-         BRACKET (TemplateBar) / demo note, DRAFT. -->
-    {#if _activeTab !== 'cli'}
+         BRACKET (TemplateBar) / demo note, DRAFT. Excluded on Chart
+         (2026-10-22, operator: "chase, mcx open, draft and brackets
+         are not applicable in chart tab") in addition to the
+         pre-existing CLI exclusion — none of these controls place or
+         manage a real order from the Chart tab, which is read-only
+         (OrderTicket keeps running underneath with display:none for
+         its own margin-preflight effect, but TemplateBar was already
+         excluded here via `_bracketDraftClusterWouldApply` not
+         matching 'chart'/'cli' — this just extends the same exclusion
+         to CHASE/the market badge/DRAFT so the whole row disappears
+         together instead of leaving an inert CHASE+badge+DRAFT strip
+         with no Bracket control beside it). -->
+    {#if _activeTab !== 'cli' && _activeTab !== 'chart'}
       <div class="oes-chase-row">
         <!-- CHASE — moved verbatim from .oes-tabs (unchanged markup);
              greyed + non-interactive whenever Draft is on (new
@@ -2928,14 +2974,32 @@
           </span>
         {/if}
 
-        <!-- Market badge — markup moved from OrderTicket.svelte, same
-             data-testid so existing DOM-level Playwright selectors
-             keep matching. Ticket mirrors OrderTicket's own belief via
-             `_ticketState`; Chain computes independently (see
-             `_chainMktExch`/`_chainMktOpen` above). -->
-        <span class="oes-mkt-badge" class:oes-mkt-open={_mktBadgeOpen} class:oes-mkt-closed={!_mktBadgeOpen}
-              data-testid="ot-market-badge" title={_mktBadgeTitleShell}>
-          {_mktBadgeExchShell} {_mktBadgeOpen ? 'open' : 'closed'}
+        <!-- Market-status badge group — markup originally moved from
+             OrderTicket.svelte as a single symbol-specific pill;
+             redesigned 2026-10-22 (operator: "the market open badge
+             should show the following values. market open, mcx open
+             and non-mcx open") into three fixed, symbol-agnostic
+             pills. Outer wrapper keeps the original `ot-market-badge`
+             testid + `.oes-mkt-badge` class so pre-existing DOM-level
+             selectors (count === 1, `.oes-mkt-open`/`.oes-mkt-closed`
+             presence) keep matching; each pill also gets its own
+             testid for selectors that need a single value. -->
+        <span class="oes-mkt-badge" data-testid="ot-market-badge">
+          <span class="oes-mkt-pill" class:oes-mkt-open={_mktAnyOpen} class:oes-mkt-closed={!_mktAnyOpen}
+                data-testid="ot-market-badge-any"
+                title={_mktAnyOpen ? 'At least one segment (NSE or MCX) is open' : 'Both NSE and MCX are closed'}>
+            Market {_mktAnyOpen ? 'open' : 'closed'}
+          </span>
+          <span class="oes-mkt-pill" class:oes-mkt-open={_mktMcxOpenFlag} class:oes-mkt-closed={!_mktMcxOpenFlag}
+                data-testid="ot-market-badge-mcx"
+                title={_mktMcxOpenFlag ? 'MCX commodity session is open' : 'MCX commodity session is closed'}>
+            MCX {_mktMcxOpenFlag ? 'open' : 'closed'}
+          </span>
+          <span class="oes-mkt-pill" class:oes-mkt-open={_mktNonMcxOpenFlag} class:oes-mkt-closed={!_mktNonMcxOpenFlag}
+                data-testid="ot-market-badge-nonmcx"
+                title={_mktNonMcxOpenFlag ? 'Non-MCX (NSE/NFO/BSE/CDS) session is open' : 'Non-MCX (NSE/NFO/BSE/CDS) session is closed'}>
+            Non-MCX {_mktNonMcxOpenFlag ? 'open' : 'closed'}
+          </span>
         </span>
 
         <!-- BRACKET — single surviving <TemplateBar> instance (removes
@@ -5424,12 +5488,27 @@
     opacity: 0.4;
     pointer-events: none;
   }
-  /* Market badge — duplicated from OrderTicket.svelte's own
+  /* Market badge group — three pills (Market/MCX/Non-MCX, 2026-10-22).
+     Originally a single pill duplicated from OrderTicket.svelte's own
      .ot-mkt-badge/.ot-mkt-open/.ot-mkt-closed (Svelte scopes styles
      per-component, so the original rule doesn't reach markup now
      rendered here) — palette mirrors RefreshButton.svelte's
-     .rf-mkt-* convention exactly (open = green, closed = muted slate). */
+     .rf-mkt-* convention exactly (open = green, closed = muted slate).
+     `.oes-mkt-badge` is now just the flex-wrap group container; the
+     pill-specific padding/border/font styling that used to live on it
+     moved to `.oes-mkt-pill`, applied per pill via the same
+     `.oes-mkt-open`/`.oes-mkt-closed` classes (kept, unrenamed, so
+     the existing CSS-token test slice — which runs from
+     `.oes-mkt-open {` to the Demo-mode-note comment — still finds
+     them). */
   .oes-mkt-badge {
+    display: inline-flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+    flex-shrink: 0;
+  }
+  .oes-mkt-pill {
     display: inline-flex;
     align-items: center;
     flex-shrink: 0;

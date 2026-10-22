@@ -426,6 +426,21 @@
     }
     if (symType === 'OPT') return _pickedOptType || 'CE';
     if (symType === 'FUT') return 'FUT';
+    // Bare commodity/index root fallback (2026-10-22 fix, live
+    // incident: an MCX order showed "Market closed" while MCX was
+    // open, AND silently defaulted to equity product/exchange
+    // defaults). A virtual/continuous root ("CRUDEOIL", "GOLD",
+    // "NIFTY" typed or passed via a prefill with no explicit picker
+    // Type filter) is NEVER itself a real instrument row — the
+    // `getInstrument(s)?.t === 'EQ'` check above always misses for it,
+    // same as the generic bare-underlying case. Without this check the
+    // function falls through to the generic `return 'EQ'` below,
+    // silently treating a commodity future as a cash-equity order:
+    // wrong exchange (NSE/BSE instead of MCX), wrong product (CNC
+    // instead of NRML), wrong tick size. Before defaulting to EQ, check
+    // whether the root actually has listed futures — if so it's a
+    // future, not an equity, regardless of the picker's Type filter.
+    if (s && listFutures(s).length > 0) return 'FUT';
     return 'EQ';
   });
   const isOption = $derived(kind === 'CE' || kind === 'PE');
@@ -562,6 +577,32 @@
     if (sym) {
       const inst = getInstrument(sym);
       if (inst?.e) return inst.e;
+      // Bare-root fallback (2026-10-22 fix, live incident: an MCX
+      // order was shown a "Market closed" warning while MCX was
+      // genuinely open). A commodity/virtual root with no FUT/CE/PE
+      // suffix ("CRUDEOIL", "GOLD") is NEVER itself a real instrument
+      // row — `getVirtualRoots()`/the Kite instrument dump never seed
+      // a bare-root entry into the cache `getInstrument()` reads above
+      // — so the lookup always misses for it, even though `sym` here
+      // is exactly the bare root. The ONLY other path that turns a
+      // bare root into a real contract is `_resolvedSymbol`'s
+      // bare-underlying auto-picker above, and that path requires the
+      // caller to have explicitly set `symType` to 'FUT'/'OPT'
+      // (`_isBareUnderlying` = `_wantsFut || _wantsOpt`, both gated on
+      // `symType === '...'`). A ticket opened from a bookmarked
+      // `/orders?symbol=CRUDEOIL` URL, or any other caller that passes
+      // only a bare symbol with no symType hint, never takes that
+      // path at all — it fell straight through to the caller's
+      // generic exchange hint below, which is exactly the bug. Resolve
+      // the nearest front-month future for the bare root directly
+      // here, independent of `symType`/`_isBareUnderlying`, as a last
+      // resort before trusting the hint — this generalizes beyond MCX
+      // to any bare NSE/NFO underlying root (e.g. "NIFTY") typed
+      // without an explicit Fut/Opt type filter.
+      if (!_hasContractSuffix) {
+        const fut = findNearestFuture(sym);
+        if (fut?.e) return fut.e;
+      }
     }
     return exchange || '';
   });
@@ -607,7 +648,24 @@
     // ground truth for contract listings; locking prevents the
     // operator from picking a non-existent broker-route.
     const actual = listExchangesForSymbol(sym);
-    if (actual.length === 0) return fallback;
+    if (actual.length === 0) {
+      // Bare root fallback (2026-10-22 fix) — `sym` here is a virtual/
+      // continuous root (e.g. "CRUDEOIL"), never itself a real
+      // instrument row, so `listExchangesForSymbol` always misses for
+      // it. The generic multi-exchange `fallback` list above is
+      // ORDER-OF-PREFERENCE, not ground truth (`['NFO','BFO','MCX',
+      // 'CDS']` puts NFO first even for an MCX-only commodity) — the
+      // auto-snap effect below always picks index 0, so returning the
+      // generic list here silently snapped a CRUDEOIL ticket to NFO.
+      // Resolve the real single exchange via the same
+      // findNearestFuture() mechanism `_resolvedExchange` above
+      // already uses, and prefer it when it resolves.
+      if (kind === 'FUT') {
+        const fut = findNearestFuture(sym);
+        if (fut?.e) return [fut.e];
+      }
+      return fallback;
+    }
     // Order by the static fallback so NFO precedes BFO / etc. (the
     // operator's mental scan order — primary national exchange first).
     const filtered = fallback.filter(e => actual.includes(e));
