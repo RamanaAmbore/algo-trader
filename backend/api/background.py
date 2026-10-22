@@ -3676,6 +3676,122 @@ def _ds_tick_ticker_restart(now: datetime, today: date, done_ref: list) -> None:
     done_ref[0] = today
 
 
+async def _sweep_stale_drafts() -> int:
+    """Delete `AlgoOrder` draft rows (`mode='draft'`, `status='OPEN'`)
+    whose `created_at` predates the CURRENT 08:00 IST trading-day boundary
+    (Item 2, 2026-10-22).
+
+    A draft's whole premise is "what if I enter *now*" — its `avg_cost` is
+    frozen at creation-time LTP, so a day-old draft no longer answers that
+    question. Reuses `orders.py:_draft_delete_by_id`'s own delete (the
+    same guard the manual Clear button goes through) rather than a
+    separate bulk-DELETE code path, so a row that somehow isn't actually
+    a draft by the time this runs is still left untouched.
+
+    Cutoff: `exchange_clock.settlement_cutoff_for("NON-MCX")` — the last
+    passed 08:00 IST boundary, same convention `positions.py` /
+    `holdings.py` use for the prev_close session boundary. A draft
+    created on the SAME trading day this sweep runs (i.e. after today's
+    08:00 boundary already passed) is NOT swept — `created_at` is after
+    the cutoff, so it survives until the NEXT occurrence.
+
+    Returns the number of rows actually deleted.
+    """
+    from sqlalchemy import select
+    from backend.api.database import async_session
+    from backend.api.models import AlgoOrder
+
+    cutoff = await exchange_clock.settlement_cutoff_for("NON-MCX")
+    try:
+        async with async_session() as s:
+            ids = (await s.execute(
+                select(AlgoOrder.id).where(
+                    AlgoOrder.mode == "draft",
+                    AlgoOrder.status == "OPEN",
+                    AlgoOrder.created_at < cutoff,
+                )
+            )).scalars().all()
+    except Exception as e:
+        logger.warning(f"[DRAFT-SWEEP] query failed: {e}")
+        return 0
+    if not ids:
+        return 0
+
+    from backend.api.routes.orders import _draft_delete_by_id
+    swept = 0
+    for draft_id in ids:
+        if await _draft_delete_by_id(draft_id):
+            swept += 1
+    return swept
+
+
+async def _draft_sweep_is_trading_day(today: date) -> bool:
+    """Calendar-only trading-day check for the draft sweep (Item 2,
+    2026-10-22). Deliberately NOT `exchange_clock.get_nse_open_time()` —
+    that function's `load_today_open_time()` falls back to
+    `_TODAY_NSE_OPEN = time(8, 0)` (NOT None) whenever
+    `_effective_gate_rows("NON-MCX")` returns an empty list, which is
+    exactly what happens on a plain weekend with no explicit
+    `exchange_schedule` override row — so `get_nse_open_time()` only
+    returns None for an explicit holiday override row, never for a bare
+    Saturday/Sunday. Using it here would have fired the sweep every
+    Saturday/Sunday 08:00 and swept Friday's still-fresh drafts a full
+    two days early.
+
+    Uses the authoritative `is_trading_day()` SSOT instead, called WITHOUT
+    `exchange=`/`now=` so it never probes the broker — pure calendar
+    (weekday + holiday set + `extra_trading_days` operator overrides).
+    """
+    from backend.shared.helpers.date_time_utils import is_trading_day
+    try:
+        from backend.brokers.broker_apis import fetch_holidays
+        holidays = fetch_holidays("NSE")
+    except Exception:
+        holidays = set()
+    return is_trading_day(today, holidays)
+
+
+async def _ds_tick_draft_sweep(now: datetime, today: date, done_ref: list) -> None:
+    """Fires once per trading day at 08:00 IST: sweep stale draft
+    AlgoOrder rows (Item 2, 2026-10-22). See `_draft_sweep_is_trading_day`
+    for why the gate is calendar-based rather than `exchange_clock`-based.
+    Silently no-ops on a non-trading day; the next trading day's own
+    firing naturally sweeps anything created since (drafts created the
+    same day this tick fires are NOT swept — their `created_at` is after
+    today's own 08:00 boundary).
+
+    Lightweight notification only (per plan — "keep this lightweight, do
+    not build new UI"): logs + an info-tier Telegram line when N > 0, so
+    an operator with notifications on sees "N draft(s) cleared at market
+    open" rather than a silent disappearance.
+    """
+    if now.time() < dtime(8, 0) or done_ref[0] == today:
+        return
+    if not await _draft_sweep_is_trading_day(today):
+        return
+    # Mark done BEFORE the sweep so a mid-sweep exception can't retry on
+    # every subsequent 30s tick for the rest of the day.
+    done_ref[0] = today
+    try:
+        n = await _sweep_stale_drafts()
+    except Exception as e:
+        logger.warning(f"[DRAFT-SWEEP] failed: {e}")
+        return
+    if n > 0:
+        logger.info(f"[DRAFT-SWEEP] cleared {n} stale draft(s) at market open")
+        try:
+            from backend.shared.helpers import alert_utils
+            # _send_telegram_info does a blocking requests.post (10s
+            # timeout) — offload so it never stalls this task's 30s loop
+            # (single-worker Kite constraint — see CLAUDE.md).
+            await asyncio.to_thread(
+                alert_utils._send_telegram_info,
+                f"{n} draft(s) cleared at market open (created before today's session).",
+            )
+        except Exception as e:
+            logger.warning(f"[DRAFT-SWEEP] notify failed: {e}")
+
+
 async def _task_daily_snapshot() -> None:
     """
     Daily close snapshot task.
@@ -3712,6 +3828,7 @@ async def _task_daily_snapshot() -> None:
     global _unsub_nonmcx_done_global, _ticker_stop_done_global
     _prev_close_fix_done: list = [None]   # mutable box: Optional[date]
     _ticker_restart_done: list = [None]   # mutable box: Optional[date]
+    _draft_sweep_done: list    = [None]   # mutable box: Optional[date] — Item 2, 2026-10-22
 
     _POLL_INTERVAL_S = 30
 
@@ -3736,6 +3853,7 @@ async def _task_daily_snapshot() -> None:
         await _ds_tick_nonmcx_unsub(now, today)
         _ds_tick_mcx_stop(now, today)
         _ds_tick_ticker_restart(now, today, _ticker_restart_done)
+        await _ds_tick_draft_sweep(now, today, _draft_sweep_done)
 
 
 async def _task_instruments() -> None:
