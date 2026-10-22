@@ -23,12 +23,18 @@
  *    2026-10-22 redesign (operator: "the market open badge should show
  *    the following values. market open, mcx open and non-mcx open") —
  *    the single symbol-specific pill became three fixed, symbol-agnostic
- *    pills (`_mktAnyOpen`/`_mktMcxOpenFlag`/`_mktNonMcxOpenFlag` in
- *    SymbolPanel.svelte, reading isMarketOpen()/isMcxOpen()/isNseOpen()
- *    directly). The OLD symbol-specific values (`_mktBadgeOpen`/
- *    `_mktBadgeExchShell`) are NOT dead code — they moved to being the
- *    single source of truth for `_modalNotice`'s "market closed — order
- *    will queue" warning (see the live-incident fix below), instead of
+ *    pills. Same day, later: those three pills moved AGAIN, out of this
+ *    modal entirely and into the shared page header
+ *    (`AlgoTimestamp.svelte`'s "M"/"MCX"/"Eq" pills) — market status is
+ *    page-wide ambient information, not something specific to having an
+ *    order ticket open. That coverage now lives in
+ *    `algo_timestamp_market_badge.spec.js`; this file keeps only the
+ *    OrderTicket-internal computation tests (which still exist — they
+ *    feed `_modalNotice` below) and drops the SymbolPanel-pill-specific
+ *    assertions. The OLD symbol-specific values (`_mktBadgeOpen`/
+ *    `_mktBadgeExchShell`) are NOT dead code — they remain the single
+ *    source of truth for `_modalNotice`'s "market closed — order will
+ *    queue" warning (see the live-incident fix below), instead of
  *    `_modalNotice` re-deriving its own, buggier exchange resolution.
  *
  * 1b. Live incident fix, same day: an MCX order showed the generic
@@ -96,19 +102,15 @@ test.describe('OrderTicket market-state badge', () => {
     // SymbolPanel.svelte (renders for both Ticket and Chain tabs). The
     // computation stays here — OrderTicket publishes it via _ticketState.
     expect(orderTicket).toMatch(/mktOpen:\s*_isOpen/);
+    // 2026-10-22, later same day: the visible 3-pill markup moved AGAIN,
+    // out of SymbolPanel.svelte entirely and into the shared page header
+    // (AlgoTimestamp.svelte) — see algo_timestamp_market_badge.spec.js
+    // for that coverage. `ot-market-badge` must no longer exist anywhere
+    // in SymbolPanel.svelte.
     const symbolPanel = readFileSync(`${ROOT}/SymbolPanel.svelte`, 'utf-8');
-    expect(symbolPanel).toContain('data-testid="ot-market-badge"');
-    // 2026-10-22: the visible pills are the three fixed, symbol-agnostic
-    // flags, not the old single `_mktBadgeOpen`-driven pill.
-    expect(symbolPanel).toMatch(/class:oes-mkt-open=\{_mktAnyOpen\}/);
-    expect(symbolPanel).toMatch(/class:oes-mkt-closed=\{!_mktAnyOpen\}/);
-    expect(symbolPanel).toMatch(/class:oes-mkt-open=\{_mktMcxOpenFlag\}/);
-    expect(symbolPanel).toMatch(/class:oes-mkt-open=\{_mktNonMcxOpenFlag\}/);
-    expect(symbolPanel).toContain('data-testid="ot-market-badge-any"');
-    expect(symbolPanel).toContain('data-testid="ot-market-badge-mcx"');
-    expect(symbolPanel).toContain('data-testid="ot-market-badge-nonmcx"');
+    expect(symbolPanel).not.toContain('data-testid="ot-market-badge"');
     // `_mktBadgeOpen`/`_mktBadgeExchShell` are NOT dead code after the
-    // redesign — they must still feed `_modalNotice`'s market-closed
+    // header move — they must still feed `_modalNotice`'s market-closed
     // warning (see the live-incident regression test below). Lock that
     // wiring here so a future edit can't silently drop it without this
     // test failing, which would otherwise look like "cleaning up unused
@@ -155,28 +157,6 @@ test.describe('OrderTicket market-state badge', () => {
     expect(fn).not.toMatch(/isMarketOpen/);
   });
 
-  test('source: badge lives in SymbolPanel OUTSIDE OrderTicket symbolHidden gate; SymbolPanel is the real caller and sets symbolHidden=true', () => {
-    // 2026-10-21: the badge moved from OrderTicket.svelte to SymbolPanel.svelte
-    // (single render site for Ticket + Chain). OrderTicket must no longer
-    // render its own copy — a second badge would break `.first()` selectors.
-    const orderTicket = readFileSync(`${ROOT}/order/OrderTicket.svelte`, 'utf-8');
-    // Comment mentions the testid; only a real element tag would render it.
-    expect(orderTicket).not.toMatch(/<[a-zA-Z][^>]*data-testid="ot-market-badge"/);
-
-    const symbolPanel = readFileSync(`${ROOT}/SymbolPanel.svelte`, 'utf-8');
-    const badgeIdx = symbolPanel.indexOf('data-testid="ot-market-badge"');
-    expect(badgeIdx, 'badge not found in SymbolPanel').toBeGreaterThan(-1);
-    // Badge sits in the shell (not inside the OrderTicket symbolHidden block
-    // it would never reach on the Chain tab): the nearest preceding
-    // `{#if !symbolHidden}` must be closed before the badge.
-    const gateIdx = symbolPanel.lastIndexOf('{#if !symbolHidden}', badgeIdx);
-    if (gateIdx > -1) {
-      expect(symbolPanel.indexOf('{/if}', gateIdx)).toBeLessThan(badgeIdx);
-    }
-    // Real-world embedding sets symbolHidden=true on OrderTicket.
-    expect(symbolPanel).toMatch(/symbolHidden=\{true\}/);
-  });
-
   test('source: badge re-checks on a 30s visibleInterval (not just on depth-quote ticks), mirroring RefreshButton.svelte', () => {
     const orderTicket = readFileSync(`${ROOT}/order/OrderTicket.svelte`, 'utf-8');
     expect(orderTicket).toMatch(/import \{[^}]*visibleInterval[^}]*\} from '\$lib\/stores'/);
@@ -188,141 +168,19 @@ test.describe('OrderTicket market-state badge', () => {
     expect(onDestroyBlock).toMatch(/_mktTimer\?\.\(\)/);
   });
 
-  test('source: badge CSS uses app.css tokens, no hardcoded hex/rgba literals', () => {
-    // 2026-10-21: badge CSS moved to SymbolPanel.svelte as .oes-mkt-*.
-    const symbolPanel = readFileSync(`${ROOT}/SymbolPanel.svelte`, 'utf-8');
-    const openIdx = symbolPanel.indexOf('.oes-mkt-open {');
-    const closedEndIdx = symbolPanel.indexOf('/* Demo-mode note', openIdx);
-    expect(openIdx).toBeGreaterThan(-1);
-    expect(closedEndIdx).toBeGreaterThan(openIdx);
-    const block = symbolPanel.slice(openIdx, closedEndIdx);
-    expect(block).not.toMatch(/#[0-9a-fA-F]{3,6}/);
-    expect(block).not.toMatch(/rgba\(/);
-    expect(block).toContain('var(--algo-green-bg-mid)');
-    expect(block).toContain('var(--algo-green-border)');
-    expect(block).toContain('var(--algo-green-text)');
-    expect(block).toContain('var(--algo-muted-bg)');
-    expect(block).toContain('var(--algo-muted-border)');
-    expect(block).toContain('var(--algo-dim)');
-  });
-
-  test('live: market badge group renders on the real embedded surface (/orders ticket, via SymbolPanel)', async ({ page }) => {
-    await loginAsAdmin(page);
-    await _seedNiftyOnTicket(page);
-
-    const group = page.locator('[data-testid="ot-market-badge"]').first();
-    await expect(group).toBeVisible({ timeout: 10_000 });
-    // 2026-10-22: the group now holds three pills, not a single pill —
-    // assert the group's combined text carries all three labels rather
-    // than a single "<exch> open/closed" string.
-    const text = (await group.textContent() || '').trim();
-    expect(text).toMatch(/Market\s+(open|closed)/);
-    expect(text).toMatch(/MCX\s+(open|closed)/);
-    expect(text).toMatch(/Non-MCX\s+(open|closed)/);
-    for (const testid of ['ot-market-badge-any', 'ot-market-badge-mcx', 'ot-market-badge-nonmcx']) {
-      const pill = page.locator(`[data-testid="${testid}"]`).first();
-      await expect(pill).toBeVisible();
-      const cls = await pill.evaluate((el) => el.className);
-      expect(cls).toMatch(/oes-mkt-(open|closed)/);
-    }
-  });
-
-  test('live: the three badge pills reflect a fixed /api/market/status mock, independent of the selected symbol/exchange (2026-10-22 redesign)', async ({ page }) => {
-    // Shape matches backend/api/routes/market.py:MarketStatusResponse
-    // exactly (nse_open, mcx_open, any_open, is_holiday, checked_at).
-    // Deliberately nse_open:false / mcx_open:true — differs from the
-    // wall-clock fallback for at least one segment at most times of
-    // day, so a pass actually proves the pills read server status
-    // rather than passing by coincidence of the time of day.
-    await page.route('**/api/market/status', (route) => route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({
-        nse_open: false,
-        mcx_open: true,
-        any_open: true,
-        is_holiday: false,
-        checked_at: new Date().toISOString(),
-      }),
-    }));
-
-    await loginAsAdmin(page);
-    await page.goto(`${BASE}/orders`, { waitUntil: 'domcontentloaded', timeout: 30_000 });
-
-    const symInput = page.locator('.ssi-input').first();
-    await expect(symInput).toBeVisible({ timeout: 15_000 });
-
-    const anyPill    = page.locator('[data-testid="ot-market-badge-any"]').first();
-    const mcxPill     = page.locator('[data-testid="ot-market-badge-mcx"]').first();
-    const nonMcxPill  = page.locator('[data-testid="ot-market-badge-nonmcx"]').first();
-
-    // Pick an MCX contract — the three generic pills must NOT depend on
-    // which symbol is selected (that's the whole point of the redesign:
-    // a per-symbol pill was the thing that went wrong in the live
-    // incident this fix addresses).
-    await symInput.fill('CRUDEOIL26NOVFUT');
-    const mcxSugg = page.locator('.ssi-drop .ssi-row').first();
-    await expect(mcxSugg).toBeVisible({ timeout: 45_000 });
-    await mcxSugg.click({ force: true });
-    await page.waitForTimeout(600);
-
-    await expect(anyPill).toHaveText(/^Market open$/, { timeout: 10_000 });
-    await expect(mcxPill).toHaveText(/^MCX open$/, { timeout: 10_000 });
-    await expect(mcxPill).toHaveClass(/oes-mkt-open/);
-    await expect(nonMcxPill).toHaveText(/^Non-MCX closed$/, { timeout: 10_000 });
-    await expect(nonMcxPill).toHaveClass(/oes-mkt-closed/);
-
-    // Switch to an NFO contract — the mock is unchanged, so all three
-    // pills must read EXACTLY the same as they did for the MCX symbol.
-    await symInput.fill('NIFTY26OCTFUT');
-    const nfoSugg = page.locator('.ssi-drop .ssi-row').first();
-    await expect(nfoSugg).toBeVisible({ timeout: 45_000 });
-    await nfoSugg.click({ force: true });
-    await page.waitForTimeout(600);
-
-    await expect(anyPill).toHaveText(/^Market open$/, { timeout: 10_000 });
-    await expect(mcxPill).toHaveText(/^MCX open$/, { timeout: 10_000 });
-    await expect(nonMcxPill).toHaveText(/^Non-MCX closed$/, { timeout: 10_000 });
-  });
-
-  test('live: market badge group renders identically on Ticket and Chain tabs (2026-10-21 shared-row re-wire; 2026-10-22 redesign)', async ({ page }) => {
-    await page.route('**/api/market/status', (route) => route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({
-        nse_open: false,
-        mcx_open: true,
-        any_open: true,
-        is_holiday: false,
-        checked_at: new Date().toISOString(),
-      }),
-    }));
-    await loginAsAdmin(page);
-    await _seedNiftyOnTicket(page);
-
-    const mcxPill    = page.locator('[data-testid="ot-market-badge-mcx"]').first();
-    const nonMcxPill = page.locator('[data-testid="ot-market-badge-nonmcx"]').first();
-    await expect(mcxPill).toHaveText(/^MCX open$/, { timeout: 10_000 });
-    await expect(nonMcxPill).toHaveText(/^Non-MCX closed$/, { timeout: 10_000 });
-
-    await page.getByRole('tab', { name: /chain/i }).first().click();
-    // 2026-10-22: the three pills are symbol/tab-agnostic global flags —
-    // switching tabs must not change their values at all (unlike the OLD
-    // single pill, which re-resolved per active tab's focused leg).
-    await expect(mcxPill).toHaveText(/^MCX open$/, { timeout: 10_000 });
-    await expect(nonMcxPill).toHaveText(/^Non-MCX closed$/, { timeout: 10_000 });
-    // Exactly one badge GROUP in the DOM — the Ticket and Chain tabs share it.
-    await expect(page.locator('[data-testid="ot-market-badge"]')).toHaveCount(1);
-  });
-
-  test('live: market badge group and the shared CHASE/BRACKET/DRAFT row are both absent on the Chart tab (2026-10-22 fix)', async ({ page }) => {
+  test('live: the shared CHASE/BRACKET/DRAFT row is absent on the Chart tab (2026-10-22 fix)', async ({ page }) => {
     // Operator: "chase, mcx open, draft and brackets are not applicable
     // in chart tab of order modal... remove it in chart tab." Before
-    // this fix the row's guard only excluded the CLI tab.
+    // this fix the row's guard only excluded the CLI tab. The market
+    // badge's own absence-on-Chart-tab coverage moved with it to the
+    // header (it's now page-wide and visible regardless of tab) — see
+    // algo_timestamp_market_badge.spec.js. This test keeps only the
+    // structural claim that's still true of THIS component: the
+    // CHASE/BRACKET/DRAFT row itself.
     await loginAsAdmin(page);
     await _seedNiftyOnTicket(page);
 
-    await expect(page.locator('[data-testid="ot-market-badge"]')).toHaveCount(1);
+    await expect(page.locator('.oes-chase-row')).toHaveCount(1);
 
     const chartTab = page.getByRole('tab', { name: /chart/i }).first();
     if (await chartTab.count() === 0) {
@@ -330,12 +188,11 @@ test.describe('OrderTicket market-state badge', () => {
       return;
     }
     await chartTab.click();
-    await expect(page.locator('[data-testid="ot-market-badge"]')).toHaveCount(0);
     await expect(page.locator('.oes-chase-row')).toHaveCount(0);
 
     // Switching back to Ticket restores the row.
     await page.getByRole('tab', { name: /ticket/i }).first().click();
-    await expect(page.locator('[data-testid="ot-market-badge"]')).toHaveCount(1);
+    await expect(page.locator('.oes-chase-row')).toHaveCount(1);
   });
 
   test('live incident regression: an unresolved-exchange prop ("NSE" hint, real symbol is MCX) must not show the generic "Market closed" notice while MCX is open (2026-10-22)', async ({ page }) => {
@@ -361,9 +218,13 @@ test.describe('OrderTicket market-state badge', () => {
     await loginAsAdmin(page);
     await page.goto(`${BASE}/orders?symbol=CRUDEOIL`, { waitUntil: 'domcontentloaded', timeout: 30_000 });
 
-    const mcxPill = page.locator('[data-testid="ot-market-badge-mcx"]').first();
+    // Market-status pills moved to the shared page header
+    // (AlgoTimestamp.svelte) same day — used here only as the "the mock
+    // has landed" sync point, not as the thing under test (that's
+    // algo_timestamp_market_badge.spec.js's job).
+    const mcxPill = page.locator('[data-testid="algo-ts-market-badge-mcx"]').first();
     await expect(mcxPill).toBeVisible({ timeout: 15_000 });
-    await expect(mcxPill).toHaveText(/^MCX open$/, { timeout: 10_000 });
+    await expect(mcxPill).toHaveClass(/ats-mkt-open/, { timeout: 10_000 });
 
     // Wait for the ticket's OWN bare-root exchange resolution to settle
     // before checking the notice — `/api/instruments` is a large (~90k

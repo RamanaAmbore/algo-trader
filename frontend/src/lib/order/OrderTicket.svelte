@@ -2904,21 +2904,22 @@
         </div>
       {/if}
       <!-- D1: market open/closed badge — markup REMOVED 2026-10-21
-           (shared-row re-wire). The underlying computation (`_isOpen`/
+           (shared-row re-wire) and REMOVED AGAIN 2026-10-22 (moved from
+           SymbolPanel's shared row into the page header, AlgoTimestamp.
+           svelte's "M"/"MCX"/"Eq" pills — market status is page-wide
+           ambient information, not something specific to having an
+           order ticket open). The underlying computation (`_isOpen`/
            `_mktOpenForExchange`/`_mktBadgeExch`/`_mktBadgeTitle` above,
            and its 30s visibleInterval re-check in onMount) is left
            exactly where it is, unedited — an existing spec
            (order_ticket_market_badge_and_error_toast.spec.js) asserts
-           against that exact source text. The visible badge itself now
-           renders once, at shell level, inside SymbolPanel's single
-           CHASE/BRACKET/DRAFT row for BOTH tabs — mirrored up via the
-           `onTicketStateChange` payload's `mktOpen`/`mktExch` fields
-           for Ticket; computed independently for Chain (no single
-           "the" exchange on Ticket's own bare-underlying picker the
-           way Chain always resolves one per leg). `data-testid="ot-market-badge"`
-           is preserved on the new markup so the existing "live:" DOM
-           tests in that spec keep passing unmodified — only its
-           "source:" text assertions need re-pointing (separate pass). -->
+           against that exact source text, since it still feeds
+           `_modalNotice`'s "market closed — order will queue" warning
+           via the `onTicketStateChange` payload's `mktOpen`/`mktExch`
+           fields. `data-testid="ot-market-badge"` no longer exists
+           anywhere — the header's badge uses its own
+           `algo-ts-market-badge*` testids
+           (algo_timestamp_market_badge.spec.js). -->
       <!-- Bare-underlying inline pickers (Possibility B). When the
            picker row's Type filter says FUT or OPT and the symbol is
            just the underlying name, we surface Expiry (FUT + OPT) +
@@ -3938,8 +3939,10 @@
   }
   /* .ot-mkt-badge/.ot-mkt-open/.ot-mkt-closed removed 2026-10-21
      (shared-row re-wire) — duplicated as .oes-mkt-badge/.oes-mkt-open/
-     .oes-mkt-closed in SymbolPanel.svelte, which now renders the badge
-     markup for both tabs. */
+     .oes-mkt-closed in SymbolPanel.svelte, which rendered the badge
+     markup for both tabs. Those in turn were removed 2026-10-22 — the
+     badge now lives in the shared page header (AlgoTimestamp.svelte's
+     .ats-mkt-* classes). */
   .ot-label {
     /* Section-header treatment so labels read as form structure
        cues, distinct from values / pills / numeric inputs. Amber

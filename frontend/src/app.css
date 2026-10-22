@@ -438,6 +438,25 @@
   --algo-violet-border-soft: rgba(192, 132, 252, 0.30);
   --algo-violet-border:    rgba(192, 132, 252, 0.55);
 
+  /* Market-status "equity open, MCX closed" state (2026-10-22). The
+     RefreshButton.svelte `.rf-mkt-*` 3-bucket scheme (both open =
+     emerald, MCX-only open = amber, everything closed = slate) folds
+     this narrow but real daily window — NSE open 09:15, MCX not yet
+     open until its corrected 09:30 start — into the "closed" slate
+     bucket, since `.rf-mkt-mcx` only branches on `_mcxOpen`. AlgoTimestamp.
+     svelte's header market-status badge needs a 4th, visually distinct
+     bucket to show this case correctly. Reuses the existing violet hue
+     (already a first-class algo colour, see above) rather than inventing
+     a new one — stays clearly apart from green (both open), amber (MCX-
+     only open, matches `--c-action`), slate (closed), and the adjacent
+     `--c-info` cyan timestamp text. Defined once here so any consumer —
+     today only AlgoTimestamp.svelte's badge — reads the same values;
+     RefreshButton.svelte itself is intentionally NOT wired to this token
+     in this round (its own 3-bucket scheme is unchanged). */
+  --algo-market-eq-only-bg:     var(--algo-violet-bg);
+  --algo-market-eq-only-border: var(--algo-violet-border);
+  --algo-market-eq-only-text:   var(--algo-violet-text);
+
   /* Font stacks. `--font-numeric` is the canonical monospace family for
      P&L cells, prices, qty fields, timestamps. `--font-text` matches
      the body stack. Bake at the root so palette tweaks land in one

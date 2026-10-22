@@ -55,7 +55,7 @@
   // resolveUnderlying / findNearestFuture / resolveAnchorToTradeable
   // dynamically imported inside effects only — no static imports needed.
   import { loadAccounts, getDefaultAccount, recentSymbolStore, setRecentSymbol, setRecentAccount } from '$lib/data/accounts';
-  import { isMarketOpen, isNseOpen, isMcxOpen, segmentOpenForExchange } from '$lib/marketHours';
+  import { segmentOpenForExchange } from '$lib/marketHours';
   import AlgoTabs from '$lib/AlgoTabs.svelte';
   import CardHeader from '$lib/CardHeader.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
@@ -2569,37 +2569,11 @@
     void _chainMktExch;
     _recomputeChainMktOpen();
   });
-  // Three-value market-status badge (2026-10-22, operator: "the market
-  // open badge should show the following values. market open, mcx
-  // open and non-mcx open") — distinct from `_mktBadgeOpen`/
-  // `_mktBadgeExchShell` above, which are tab/symbol-SPECIFIC (feed
-  // `_modalNotice`'s warning only). These three are fixed,
-  // symbol-agnostic global flags: ANY segment open, MCX open, and
-  // non-MCX (NSE/NFO/BSE/CDS/BCD/BFO — the equity/F&O segment)
-  // open — always visible regardless of what's being traded.
-  // isMarketOpen()/isMcxOpen()/isNseOpen() read a module-level cache
-  // in marketHours.js (refreshed every 5 min by the app-wide
-  // startMarketStatusPoller(), holiday-aware once that poll lands) —
-  // there's no Svelte store to subscribe to, so this polls on the same
-  // 30s visibleInterval tick as `_chainMktOpen` above (mirrors
-  // OrderTicket's own `_mktTimer` convention) rather than adding a
-  // second timer. Seeded synchronously here (not a hardcoded guess —
-  // see OrderTicket's own `_isOpen` comment for why a wrong initial
-  // guess is itself a regression class).
-  let _mktAnyOpen = $state(isMarketOpen());
-  let _mktMcxOpenFlag = $state(isMcxOpen());
-  let _mktNonMcxOpenFlag = $state(isNseOpen());
-  function _recomputeMktFlags() {
-    _mktAnyOpen = isMarketOpen();
-    _mktMcxOpenFlag = isMcxOpen();
-    _mktNonMcxOpenFlag = isNseOpen();
-  }
   /** @type {(() => void) | null} */
   let _chainMktTimer = null;
   onMount(() => {
     _chainMktTimer = visibleInterval(() => {
       _recomputeChainMktOpen();
-      _recomputeMktFlags();
     }, 30_000);
   });
   onDestroy(() => { _chainMktTimer?.(); });
@@ -2618,15 +2592,17 @@
   // the background regardless of active tab, so these two values stay
   // valid to read from the Chart tab too.
   //
-  // 2026-10-22: no longer rendered directly as a visible badge — the
-  // visible market-status pills below are three fixed, symbol-agnostic
-  // flags (`_mktAnyOpen`/`_mktMcxOpenFlag`/`_mktNonMcxOpenFlag`, per
-  // operator: "market open, mcx open and non-mcx open"). These two
-  // values are the single source of truth `_modalNotice` below reads
-  // for its SYMBOL-SPECIFIC "market closed — order will queue"
-  // warning, instead of `_modalNotice` re-deriving its own (and, until
-  // this fix, buggier) exchange resolution — keep them wired to
-  // `_modalNotice`; do not let them go unused.
+  // 2026-10-22: these two are NOT rendered as a visible badge here —
+  // the fixed, symbol-agnostic three-pill market-status badge (M / MCX
+  // / Eq, per operator: "market open, mcx open and non-mcx open") moved
+  // to the shared page header (`AlgoTimestamp.svelte`), since it's
+  // page-wide ambient information, not something specific to having an
+  // order ticket open. These two values remain the single source of
+  // truth `_modalNotice` below reads for its SYMBOL-SPECIFIC "market
+  // closed — order will queue" warning, instead of `_modalNotice`
+  // re-deriving its own (and, until a prior fix, buggier) exchange
+  // resolution — keep them wired to `_modalNotice`; do not let them go
+  // unused.
   const _mktBadgeOpen = $derived(_activeTab === 'chain' ? _chainMktOpen : !!_ticketState.mktOpen);
   const _mktBadgeExchShell = $derived(_activeTab === 'chain' ? _chainMktExch : (_ticketState.mktExch || 'Market'));
 
@@ -2974,33 +2950,15 @@
           </span>
         {/if}
 
-        <!-- Market-status badge group — markup originally moved from
-             OrderTicket.svelte as a single symbol-specific pill;
-             redesigned 2026-10-22 (operator: "the market open badge
-             should show the following values. market open, mcx open
-             and non-mcx open") into three fixed, symbol-agnostic
-             pills. Outer wrapper keeps the original `ot-market-badge`
-             testid + `.oes-mkt-badge` class so pre-existing DOM-level
-             selectors (count === 1, `.oes-mkt-open`/`.oes-mkt-closed`
-             presence) keep matching; each pill also gets its own
-             testid for selectors that need a single value. -->
-        <span class="oes-mkt-badge" data-testid="ot-market-badge">
-          <span class="oes-mkt-pill" class:oes-mkt-open={_mktAnyOpen} class:oes-mkt-closed={!_mktAnyOpen}
-                data-testid="ot-market-badge-any"
-                title={_mktAnyOpen ? 'At least one segment (NSE or MCX) is open' : 'Both NSE and MCX are closed'}>
-            Market {_mktAnyOpen ? 'open' : 'closed'}
-          </span>
-          <span class="oes-mkt-pill" class:oes-mkt-open={_mktMcxOpenFlag} class:oes-mkt-closed={!_mktMcxOpenFlag}
-                data-testid="ot-market-badge-mcx"
-                title={_mktMcxOpenFlag ? 'MCX commodity session is open' : 'MCX commodity session is closed'}>
-            MCX {_mktMcxOpenFlag ? 'open' : 'closed'}
-          </span>
-          <span class="oes-mkt-pill" class:oes-mkt-open={_mktNonMcxOpenFlag} class:oes-mkt-closed={!_mktNonMcxOpenFlag}
-                data-testid="ot-market-badge-nonmcx"
-                title={_mktNonMcxOpenFlag ? 'Non-MCX (NSE/NFO/BSE/CDS) session is open' : 'Non-MCX (NSE/NFO/BSE/CDS) session is closed'}>
-            Non-MCX {_mktNonMcxOpenFlag ? 'open' : 'closed'}
-          </span>
-        </span>
+        <!-- Market-status badge group — REMOVED 2026-10-22. Moved from
+             here (a single symbol-specific pill, then redesigned into
+             three fixed symbol-agnostic pills) into the shared page
+             header (`AlgoTimestamp.svelte`'s "M"/"MCX"/"Eq" pills,
+             `data-testid="algo-ts-market-badge*"`) since market status
+             is page-wide information, not something specific to having
+             an order ticket open. Once it rendered in the header
+             (visible on every page regardless of whether a ticket is
+             open), keeping a second copy here became redundant. -->
 
         <!-- BRACKET — single surviving <TemplateBar> instance (removes
              the two previous render sites inside OrderTicket.svelte and
@@ -5488,48 +5446,10 @@
     opacity: 0.4;
     pointer-events: none;
   }
-  /* Market badge group — three pills (Market/MCX/Non-MCX, 2026-10-22).
-     Originally a single pill duplicated from OrderTicket.svelte's own
-     .ot-mkt-badge/.ot-mkt-open/.ot-mkt-closed (Svelte scopes styles
-     per-component, so the original rule doesn't reach markup now
-     rendered here) — palette mirrors RefreshButton.svelte's
-     .rf-mkt-* convention exactly (open = green, closed = muted slate).
-     `.oes-mkt-badge` is now just the flex-wrap group container; the
-     pill-specific padding/border/font styling that used to live on it
-     moved to `.oes-mkt-pill`, applied per pill via the same
-     `.oes-mkt-open`/`.oes-mkt-closed` classes (kept, unrenamed, so
-     the existing CSS-token test slice — which runs from
-     `.oes-mkt-open {` to the Demo-mode-note comment — still finds
-     them). */
-  .oes-mkt-badge {
-    display: inline-flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 0.3rem;
-    flex-shrink: 0;
-  }
-  .oes-mkt-pill {
-    display: inline-flex;
-    align-items: center;
-    flex-shrink: 0;
-    padding: 0.2rem 0.45rem;
-    border-radius: 3px;
-    font-size: var(--fs-xs);
-    font-weight: 700;
-    letter-spacing: 0.02em;
-    text-transform: uppercase;
-    white-space: nowrap;
-  }
-  .oes-mkt-open {
-    background: var(--algo-green-bg-mid);
-    border: 1px solid var(--algo-green-border);
-    color: var(--algo-green-text);
-  }
-  .oes-mkt-closed {
-    background: var(--algo-muted-bg);
-    border: 1px solid var(--algo-muted-border);
-    color: var(--algo-dim);
-  }
+  /* Market badge group — REMOVED 2026-10-22 (.oes-mkt-badge/.oes-mkt-pill/
+     .oes-mkt-open/.oes-mkt-closed). Moved to the shared page header
+     (AlgoTimestamp.svelte's .ats-mkt-* classes) — see the markup-removal
+     comment above where this group used to render. */
   /* Demo-mode note — replaces the Bracket toggle when exit rules
      (TP/SL/Wing) aren't available to an anonymous session. Duplicated
      from OrderTicket.svelte/OptionChainTab.svelte's own

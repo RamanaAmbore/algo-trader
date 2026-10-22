@@ -74,6 +74,29 @@ function _istNow(/** @type {Date} */ now) {
 export function setServerMarketStatus(status) {
   if (!status || typeof status !== 'object') return;
   _serverStatus = { ...status, _at: Date.now() };
+  for (const cb of _statusListeners) {
+    try { cb(); } catch { /* one bad listener must not break the others */ }
+  }
+}
+
+/** @type {Set<() => void>} */
+const _statusListeners = new Set();
+
+/**
+ * Register a callback fired synchronously every time a fresh poll result
+ * lands via setServerMarketStatus(). Lets a consumer recompute immediately
+ * instead of waiting for its own next timer tick — closes a real race
+ * where a component mounts and seeds from the time-of-day fallback a few
+ * hundred ms before the in-flight /api/market/status poll resolves (the
+ * component would otherwise show a stale value until its next tick, up to
+ * 30s later). Returns an unsubscribe function.
+ *
+ * @param {() => void} cb
+ * @returns {() => void}
+ */
+export function onMarketStatusChange(cb) {
+  _statusListeners.add(cb);
+  return () => { _statusListeners.delete(cb); };
 }
 
 /** Any market segment open. Holiday-aware when the server poll has landed. */
