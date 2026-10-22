@@ -150,6 +150,32 @@ last populated once per tick by `agent_engine._update_underlying_theo_
 baseline()`, a sibling of `_update_pnl_history`). See
 `backend/tests/test_underlying_loss_divergence_tokens.py`.
 
+Amendment (2026-10-22, underlying_market_loss reference-point fix): the
+`underlying_market_loss` token's `description` (and the identical text
+baked into `agent_grammar_baseline.json`) was corrected in place — no
+new token, no position change. Original text said "Sum of day_change_val
+(the broker's own day P&L)," i.e. raw day_change_val measured from
+prev_close. `underlying_theoretical_loss` measures from a DIFFERENT
+baseline (each leg's own LTP/spot/IV frozen the first tick seen this
+session). A pure overnight gap move already reflected in day_change_val
+by the time the theo baseline was captured read as a large false
+"divergence" with zero real volatility surprise, holding the gate open
+all session for the wrong reason — flagged before activating the new
+`loss-positions-underlying-divergence` agent. Fixed: `_metric_underlying_
+market_loss` (`grammar.py`) now sums (day_change_val now − day_change_val
+at baseline capture) per leg, using a new `dcv_base` field
+`agent_engine._capture_leg_theo_baseline`/`_capture_opt_leg_baseline` now
+stamp onto each baseline entry at the SAME moment the rest of that leg's
+baseline is captured. A leg with no baseline yet doesn't contribute
+(skipped, not coerced to 0); the metric returns None only when NO leg of
+the underlying has a baseline. `underlying_loss_divergence` needed no
+change — it only subtracts whatever the two metric functions return.
+`loss-positions-underlying-divergence` flips from `status="inactive"` to
+active as part of this fix. See
+`backend/tests/test_underlying_loss_divergence_tokens.py` and
+`backend/tests/test_loss_agents.py` for the activation-state assertion
+move.
+
 Perf: no DB / network calls, pure in-memory comparison.
 Reuse: shares the same SYSTEM_TOKENS / LOG_TAG_TOKENS module attributes
 every other grammar test and `seed_grammar_tokens()` read.

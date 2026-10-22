@@ -555,12 +555,17 @@ def _theo_baseline_reconciles(reprice: float, ltp_base: float) -> bool:
 
 
 def _capture_opt_leg_baseline(parsed: dict, S_base: float, ltp_base: float,
-                              qty: int, is_mcx: bool, now) -> "dict | None":
+                              qty: int, is_mcx: bool, now, dcv_base: float = 0.0) -> "dict | None":
     """Calibrate σ for ONE option leg and return its baseline entry, or
     None when the time-to-expiry is degenerate or the calibration
     doesn't reconcile (advisor point 2 — the calibration-failure guard).
     Extracted from `_capture_leg_theo_baseline` to keep it under the
-    radon complexity gate."""
+    radon complexity gate.
+
+    `dcv_base` is the leg's own `day_change_val` at the same moment the
+    rest of the baseline is captured — see `_capture_leg_theo_baseline`'s
+    docstring for why this is needed (shared reference point for
+    `grammar._metric_underlying_market_loss`)."""
     from backend.api.algo.derivatives import (
         implied_vol, implied_vol_76, black_scholes, black_76,
         days_to_expiry, DEFAULT_RISK_FREE,
@@ -589,7 +594,8 @@ def _capture_opt_leg_baseline(parsed: dict, S_base: float, ltp_base: float,
         return None  # calibration failure guard (advisor point 2) — retry next tick
     return {'kind': 'opt', 'ltp_base': ltp_base, 'S_base': S_base,
             'sigma_base': sigma_base, 'K': float(strike), 'opt_type': opt_type,
-            'expiry': parsed['expiry'], 'is_mcx': is_mcx, 'qty': qty}
+            'expiry': parsed['expiry'], 'is_mcx': is_mcx, 'qty': qty,
+            'dcv_base': dcv_base}
 
 
 def _capture_leg_theo_baseline(row: dict, now, spot_prices: dict):
@@ -599,7 +605,15 @@ def _capture_leg_theo_baseline(row: dict, now, spot_prices: dict):
     time-to-expiry, or a σ-calibration that doesn't reconcile) — the
     caller simply retries next tick, never baking in a bad baseline.
     `row` is one `ctx.position_rows` entry for an already-confirmed
-    non-flat F&O leg."""
+    non-flat F&O leg.
+
+    Also captures `dcv_base` — the leg's own `day_change_val` at this
+    SAME moment — so `grammar._metric_underlying_market_loss` can later
+    measure "change since baseline capture" instead of raw day_change_val
+    (which is measured from prev_close, a DIFFERENT reference point than
+    this baseline's own ltp_base/S_base/sigma_base — see the module
+    comment above `grammar._scope_positions_any_underlying` for why the
+    two sides of the divergence gate must share one reference point)."""
     from backend.api.algo.derivatives import parse_tradingsymbol, is_mcx_underlying
     sym = row.get('tradingsymbol') or ''
     try:
@@ -624,14 +638,18 @@ def _capture_leg_theo_baseline(row: dict, now, spot_prices: dict):
         return None
     if ltp_base <= 0 or qty == 0:
         return None
+    try:
+        dcv_base = float(row.get('day_change_val', 0) or 0)
+    except (TypeError, ValueError):
+        dcv_base = 0.0
     is_mcx = is_mcx_underlying(underlying)
     kind = parsed.get('kind')
     if kind == 'fut':
         return {'kind': 'fut', 'ltp_base': ltp_base, 'S_base': S_base,
-                'is_mcx': is_mcx, 'qty': qty}
+                'is_mcx': is_mcx, 'qty': qty, 'dcv_base': dcv_base}
     if kind != 'opt':
         return None
-    return _capture_opt_leg_baseline(parsed, S_base, ltp_base, qty, is_mcx, now)
+    return _capture_opt_leg_baseline(parsed, S_base, ltp_base, qty, is_mcx, now, dcv_base)
 
 
 def _ae_sum_positions_partial_outage(sum_positions) -> bool:
@@ -1758,9 +1776,11 @@ _LOSS_AGENTS = [
     # book-wide ₹ threshold means something different for a single-lot
     # collar than a 50-lot straddle.
     #
-    # Ships INACTIVE like loss-rate-acct — a brand-new, more exotic
-    # metric; enable after validating a session's worth of divergence
-    # values on /admin/research or the simulator.
+    # Shipped INACTIVE at first (2026-10-22) pending a fix to the
+    # reference-point mismatch between this agent's two gate sides — see
+    # grammar.py's `_metric_underlying_market_loss` docstring. Fixed and
+    # activated the same day; status now defaults to "active" via
+    # `_LOSS_AGENT_DEFAULTS` like every other non-destructive loss agent.
     dict(slug="loss-positions-underlying-divergence",
          long_name="when:positions.any_underlying.divergence>100k AND pnl_rate   alert:critical/tg+ntfy+log   do:notify-only",
          tier="critical",
@@ -1788,7 +1808,6 @@ _LOSS_AGENTS = [
              ]},
          ]},
          cooldown_minutes=10,
-         status="inactive",
          ),
 
     # ── Positions: total guardrail (critical tier) ──────────────────────

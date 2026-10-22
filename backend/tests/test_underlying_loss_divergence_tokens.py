@@ -86,33 +86,67 @@ class TestScopePositionsAnyUnderlying:
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestMetricUnderlyingMarketLoss:
-    def test_sums_day_change_val_across_legs_of_one_underlying(self):
+    """2026-10-22 reference-point fix: this metric now sums
+    (day_change_val now − dcv_base) per BASELINED leg, not raw
+    day_change_val — see `_metric_underlying_market_loss`'s own
+    docstring for the full rationale (shares the theoretical side's
+    reference point, so a pure gap-day move doesn't read as a false
+    divergence)."""
+
+    def test_sums_baseline_relative_delta_across_legs_of_one_underlying(self):
         rows = [
-            {'underlying': 'NIFTY', 'day_change_val': -50.0},
-            {'underlying': 'NIFTY', 'day_change_val': -75.0},
-            {'underlying': 'CRUDEOIL', 'day_change_val': 10.0},
+            {'underlying': 'NIFTY', 'tradingsymbol': 'LEG_A', 'day_change_val': -50.0},
+            {'underlying': 'NIFTY', 'tradingsymbol': 'LEG_B', 'day_change_val': -75.0},
+            {'underlying': 'CRUDEOIL', 'tradingsymbol': 'LEG_C', 'day_change_val': 10.0},
         ]
-        ctx = Context(position_rows=rows)
+        alert_state = {'underlying_theo_baseline': {
+            'LEG_A': _fut_baseline(100.0, 1, dcv_base=-10.0),
+            'LEG_B': _fut_baseline(100.0, 1, dcv_base=-25.0),
+            'LEG_C': _fut_baseline(100.0, 1, dcv_base=0.0),
+        }}
+        ctx = Context(position_rows=rows, alert_state=alert_state)
         val = g._metric_underlying_market_loss(ctx, {'underlying': 'NIFTY'})
-        assert val == -125.0, f"expected -125.0, got {val}"
+        # (-50 - (-10)) + (-75 - (-25)) = -40 + -50 = -90
+        assert val == pytest.approx(-90.0), f"expected -90.0, got {val}"
 
     def test_missing_underlying_on_row_is_none(self):
         ctx = Context(position_rows=[{'underlying': 'NIFTY', 'day_change_val': -50.0}])
         assert g._metric_underlying_market_loss(ctx, {}) is None
 
-    def test_missing_day_change_val_treated_as_zero(self):
-        ctx = Context(position_rows=[{'underlying': 'NIFTY'}])
+    def test_leg_without_baseline_does_not_contribute(self):
+        """A leg not yet baselined is skipped entirely (not coerced to a
+        0 delta) — but a sibling leg of the SAME underlying that IS
+        baselined still contributes its own delta."""
+        rows = [
+            {'underlying': 'NIFTY', 'tradingsymbol': 'BASELINED', 'day_change_val': -50.0},
+            {'underlying': 'NIFTY', 'tradingsymbol': 'NOT_YET_BASELINED', 'day_change_val': -999999.0},
+        ]
+        alert_state = {'underlying_theo_baseline': {
+            'BASELINED': _fut_baseline(100.0, 1, dcv_base=-10.0),
+        }}
+        ctx = Context(position_rows=rows, alert_state=alert_state)
         val = g._metric_underlying_market_loss(ctx, {'underlying': 'NIFTY'})
-        assert val == 0.0
+        assert val == pytest.approx(-40.0), (
+            f"expected -40.0 (only the BASELINED leg's delta), got {val} — "
+            f"the un-baselined leg's -999999.0 must not leak in"
+        )
+
+    def test_no_legs_baselined_yet_is_none(self):
+        """Missing-vs-zero convention: if NOT A SINGLE leg of this
+        underlying has a baseline yet, the metric reports None, never a
+        false 0 (which would silently look like 'no loss')."""
+        rows = [{'underlying': 'NIFTY', 'tradingsymbol': 'SYM', 'day_change_val': -50.0}]
+        ctx = Context(position_rows=rows, alert_state={})
+        assert g._metric_underlying_market_loss(ctx, {'underlying': 'NIFTY'}) is None
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  Metric: underlying_theoretical_loss (+ underlying_loss_divergence)
 # ═══════════════════════════════════════════════════════════════════════════
 
-def _fut_baseline(S_base, qty, is_mcx=False):
+def _fut_baseline(S_base, qty, is_mcx=False, dcv_base=0.0):
     return {'kind': 'fut', 'ltp_base': S_base, 'S_base': S_base,
-            'is_mcx': is_mcx, 'qty': qty}
+            'is_mcx': is_mcx, 'qty': qty, 'dcv_base': dcv_base}
 
 
 class TestMetricUnderlyingTheoreticalLossAndDivergence:
@@ -202,6 +236,73 @@ class TestMetricUnderlyingTheoreticalLossAndDivergence:
                  'day_change_val': -150000.0}]
         ctx = Context(position_rows=rows, spot_prices={}, alert_state={}, now=IST_NOW)
         assert g._metric_underlying_loss_divergence(ctx, {'underlying': 'CRUDEOIL'}) is None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  2026-10-22 reference-point fix — the actual bug this fix closes.
+#
+#  Before this fix, `underlying_market_loss` summed RAW day_change_val
+#  (measured from prev_close), while `underlying_theoretical_loss`
+#  measures "change since the theoretical baseline was captured" (which
+#  can be well after prev_close's own 08:00 IST reset, e.g. a process
+#  restart mid-session, or any overnight gap). A pure gap-day move
+#  already reflected in day_change_val by the time the theo baseline was
+#  captured would then read as a large FALSE divergence with zero real
+#  volatility surprise, holding the gate open all session for the wrong
+#  reason — flagged by the implementing agent before activating
+#  loss-positions-underlying-divergence. This is the single most
+#  important test in this file: it reproduces the exact bug and proves
+#  the fix closes it.
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestMarketLossGapDayReferencePointFix:
+    def test_gap_day_already_priced_in_by_baseline_time_shows_small_not_large_divergence(self):
+        underlying = 'CRUDEOIL'
+        sym = 'CRUDEOILGAPFUT'
+        qty = 10
+        S_base = 6000.0
+        # A huge overnight gap (prev_close -> the LTP at the moment the
+        # theo baseline was captured this session) has ALREADY shown up
+        # as day_change_val by baseline-capture time.
+        dcv_base = -90000.0
+        baseline = {'kind': 'fut', 'ltp_base': S_base, 'S_base': S_base,
+                    'is_mcx': True, 'qty': qty, 'dcv_base': dcv_base}
+
+        # Only a SMALL real move has happened since baseline capture:
+        # spot drifts 6000 -> 5980 (-20 per unit, -200 for qty=10). The
+        # broker's own raw day_change_val (always measured from
+        # prev_close, never from the baseline) tracks the pre-existing
+        # gap PLUS this small incremental move.
+        S_now = 5980.0
+        dcv_now = -90200.0  # -90000 (gap, already baked into dcv_base) + -200 (real move)
+
+        rows = [{'underlying': underlying, 'tradingsymbol': sym, 'quantity': qty,
+                 'day_change_val': dcv_now}]
+        alert_state = {'underlying_theo_baseline': {sym: baseline}}
+        ctx = Context(position_rows=rows, spot_prices={underlying: S_now},
+                      alert_state=alert_state, now=IST_NOW)
+
+        market = g._metric_underlying_market_loss(ctx, {'underlying': underlying})
+        theo = g._metric_underlying_theoretical_loss(ctx, {'underlying': underlying})
+        divergence = g._metric_underlying_loss_divergence(ctx, {'underlying': underlying})
+
+        # The OLD (pre-fix) raw-day_change_val semantics would have
+        # reported market == dcv_now == -90200.0, and divergence ==
+        # 90000.0 — a huge false reading entirely attributable to the
+        # overnight gap, not to any real post-baseline volatility.
+        assert market == pytest.approx(-200.0), (
+            f"expected the baseline-relative delta (-200.0, the REAL "
+            f"post-baseline move only), got {market} — the pre-fix bug "
+            f"would have reported {dcv_now} (the raw, gap-inflated value)"
+        )
+        assert theo == pytest.approx(qty * (S_now - S_base)), f"got {theo}"
+        assert divergence == pytest.approx(0.0, abs=1e-6), (
+            f"expected ~0 divergence (both sides now measure the SAME "
+            f"small real post-baseline move) — got {divergence}; the "
+            f"pre-fix bug would have reported a false divergence of "
+            f"{abs(dcv_now - theo) if theo is not None else '?'} purely "
+            f"from the overnight gap"
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════

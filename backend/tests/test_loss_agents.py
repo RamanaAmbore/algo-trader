@@ -455,13 +455,20 @@ class TestLossAgentsConsistency:
         loss-positions-total agent and ship inactive by default, alongside
         the pre-existing inactive-by-default loss-pos-total-auto-close
         (destructive gate) and loss-margin-low (cross-account false-positive
-        source, superseded by loss-funds-negative)."""
+        source, superseded by loss-funds-negative).
+
+        loss-positions-underlying-divergence shipped inactive on
+        2026-10-22 pending a fix to a reference-point mismatch between its
+        two gate sides (underlying_market_loss vs underlying_theoretical_
+        loss — see grammar.py's `_metric_underlying_market_loss`
+        docstring); fixed and activated the same day, so it is now in the
+        active group below alongside loss-positions-total/loss-funds-
+        negative."""
         inactive_slugs = (
             "loss-pos-total-auto-close",
             "loss-margin-low",
             "loss-rate-acct",
             "loss-positions-acct",
-            "loss-positions-underlying-divergence",
         )
         for agent in BUILTIN_AGENTS:
             if not agent["slug"].startswith("loss-"):

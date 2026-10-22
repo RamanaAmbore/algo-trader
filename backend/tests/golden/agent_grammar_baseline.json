@@ -508,7 +508,7 @@
       "token": "underlying_market_loss",
       "value_type": "number",
       "units": "\u20b9",
-      "description": "Sum of day_change_val (the broker's own day P&L) across every currently-held leg of this underlying. Pairs with underlying_theoretical_loss / underlying_loss_divergence below under the positions.any_underlying scope.",
+      "description": "Sum of (day_change_val now − day_change_val at theoretical-baseline capture) across every currently-held leg of this underlying that has a baseline — the underlying's day_change_val change SINCE the theoretical baseline was captured, not its raw day P&L, so this metric shares the same reference point as underlying_theoretical_loss. A leg with no baseline yet does not contribute; None when no leg of this underlying has a baseline. Pairs with underlying_theoretical_loss / underlying_loss_divergence below under the positions.any_underlying scope.",
       "resolver": "backend.api.algo.grammar._metric_underlying_market_loss"
     },
     {
