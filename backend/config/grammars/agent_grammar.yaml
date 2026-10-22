@@ -366,6 +366,84 @@ system_tokens:
   description: Minutes until the nearest market segment close.
   resolver: backend.api.algo.grammar._metric_minutes_until_close
 
+# Market-cycle event tokens (2026-10-22) — condition/metric tokens over
+# agent_engine._ae_segment_flags()'s per-segment computed dict, so agents
+# can trigger on a state change (e.g. "the instant MCX opens") instead of
+# a fixed fire_at_time clock string. 1.0/0.0 booleans follow the
+# is_itm/is_ntm convention; minutes_* tokens return None (not a coerced
+# 0) when the quantity isn't meaningful right now — see each resolver's
+# own docstring in grammar.py.
+- grammar_kind: condition
+  token_kind: metric
+  token: is_mcx_open
+  value_type: number
+  units: binary
+  description: 1.0 when MCX's own trading session is currently open, 0.0 otherwise.
+  resolver: backend.api.algo.grammar._metric_is_mcx_open
+- grammar_kind: condition
+  token_kind: metric
+  token: is_nse_open
+  value_type: number
+  units: binary
+  description: 1.0 when NSE's own trading session is currently open, 0.0 otherwise.
+  resolver: backend.api.algo.grammar._metric_is_nse_open
+- grammar_kind: condition
+  token_kind: metric
+  token: minutes_since_mcx_open
+  value_type: number
+  units: min
+  description: Minutes since MCX's own session opened today. None while MCX is closed.
+  resolver: backend.api.algo.grammar._metric_minutes_since_mcx_open
+- grammar_kind: condition
+  token_kind: metric
+  token: minutes_since_nse_open
+  value_type: number
+  units: min
+  description: Minutes since NSE's own session opened today. None while NSE is closed.
+  resolver: backend.api.algo.grammar._metric_minutes_since_nse_open
+- grammar_kind: condition
+  token_kind: metric
+  token: minutes_until_mcx_close
+  value_type: number
+  units: min
+  description: Minutes until MCX's own session closes today. None while MCX is closed.
+  resolver: backend.api.algo.grammar._metric_minutes_until_mcx_close
+- grammar_kind: condition
+  token_kind: metric
+  token: minutes_until_nse_close
+  value_type: number
+  units: min
+  description: Minutes until NSE's own session closes today. None while NSE is closed.
+  resolver: backend.api.algo.grammar._metric_minutes_until_nse_close
+- grammar_kind: condition
+  token_kind: metric
+  token: minutes_until_mcx_open
+  value_type: number
+  units: min
+  description: Minutes until MCX's own session opens today. 0 once open; None after today's close or on a no-session day.
+  resolver: backend.api.algo.grammar._metric_minutes_until_mcx_open
+- grammar_kind: condition
+  token_kind: metric
+  token: minutes_until_nse_open
+  value_type: number
+  units: min
+  description: Minutes until NSE's own session opens today. 0 once open; None after today's close or on a no-session day.
+  resolver: backend.api.algo.grammar._metric_minutes_until_nse_open
+- grammar_kind: condition
+  token_kind: metric
+  token: is_past_holiday_refresh
+  value_type: number
+  units: binary
+  description: 1.0 once today's holiday_refresh_time (default 05:30 IST) clock boundary has passed, 0.0 before it.
+  resolver: backend.api.algo.grammar._metric_is_past_holiday_refresh
+- grammar_kind: condition
+  token_kind: metric
+  token: is_past_window_open
+  value_type: number
+  units: binary
+  description: 1.0 from today's 08:00 IST window boundary through the rest of the session (including the 23:31-23:59 IST tail, before the overnight window actually closes); 0.0 only during 00:00-07:59 IST.
+  resolver: backend.api.algo.grammar._metric_is_past_window_open
+
 # ════════════════════════════════════════════════════════════════════════
 #  CONDITION — SCOPES (row selectors)
 # ════════════════════════════════════════════════════════════════════════

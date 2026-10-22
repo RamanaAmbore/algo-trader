@@ -231,6 +231,21 @@ class Context:
     now:             Optional[datetime]     = None
     # Market segment definitions (open/close times) for minutes_until_close.
     segments:        list                   = field(default_factory=list)
+    # Market-cycle event tokens (2026-10-22) — the per-segment flags
+    # computed by `agent_engine._ae_segment_flags()` (nse_open/mcx_open/
+    # nse_closed/mcx_closed/nse_holiday/mcx_holiday/minutes_since_{nse,
+    # mcx}_open/minutes_since_{nse,mcx}_close/minutes_until_{nse,mcx}_open/
+    # minutes_until_{nse,mcx}_close), threaded through as a flat dict
+    # rather than individual dataclass fields so new segment-prefixed keys
+    # don't require touching this dataclass again. Deliberately a
+    # DIFFERENT dict from `alert_state`/sim's `market_state` override key
+    # (that one is the simulator's INPUT override; this is the engine's
+    # OUTPUT per-tick computation — conflating them would let a stale
+    # sim override silently freeze these flags on a reused context).
+    # Empty `{}` on any caller that doesn't populate it (log-feed-driven
+    # event agents, hand-built test Context) — every grammar.py resolver
+    # reading this degrades to `None`, never a false 0/closed reading.
+    segment_flags:   dict                   = field(default_factory=dict)
     rate_window_min: float                  = 10.0
     # The Agent that triggered this evaluation — set by the engine per agent.
     agent:           Any                    = None

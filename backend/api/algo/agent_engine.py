@@ -2324,6 +2324,34 @@ def _ae_had_session_today(now, is_holiday: bool, evening_open: bool) -> bool:
     return now.weekday() < 5
 
 
+def _ae_minutes_until(is_open: bool, had_session_today: bool, now,
+                       open_time, close_time) -> tuple:
+    """Return ``(minutes_until_open, minutes_until_close)`` for one
+    segment — new computed values, unlike `minutes_since_{prefix}_open`/
+    `_close` above (those reuse pre-existing fields). Extracted to its
+    own function to keep `_ae_segment_flags` under the radon complexity
+    ceiling (2026-10-22, market-cycle event tokens).
+
+    ``None`` (missing, never a coerced 0/1e9 sentinel) when the value
+    isn't meaningful right now:
+      - minutes_until_open  — 0 once open; counts down to `open_time`
+        while before it on a day with a session; None once past today's
+        close or on a no-session day (no more "today" open to count to).
+      - minutes_until_close — counts down to `close_time` while open;
+        None while closed (nothing to count down to).
+    """
+    if is_open:
+        mins_until_open = 0
+        mins_until_close = max(0, int((close_time - now).total_seconds() / 60))
+    else:
+        mins_until_close = None
+        if had_session_today and now < open_time:
+            mins_until_open = max(0, int((open_time - now).total_seconds() / 60))
+        else:
+            mins_until_open = None
+    return mins_until_open, mins_until_close
+
+
 def _ae_segment_flags(seg_name: str, seg_cfg: dict, now) -> dict:
     """Compute open/closed/holiday/minutes_since flags for one market segment.
 
@@ -2423,7 +2451,17 @@ def _ae_segment_flags(seg_name: str, seg_cfg: dict, now) -> dict:
         # 09:00, but trading only actually began at 17:00 on a holiday
         # evening session; anchoring "minutes since open" to the window
         # start would report ~540 min at 18:00 instead of ~60.
-        if is_holiday and evening_open and is_open:
+        #
+        # Deliberately NOT gated on `is_open` (unlike the original
+        # 2026-10-20 version of this block) — `mins_open` below still
+        # only USES `open_time` inside its own `if is_open` branch, so
+        # that field's value is unaffected either way. Gating removed so
+        # `had_session_today` and the new minutes_until_{prefix}_open
+        # calc (below) see the correct 17:00 anchor even BEFORE the
+        # evening session actually starts (e.g. 10:00 IST on an MCX
+        # holiday) — without this, minutes_until_open would measure
+        # against the regular 09:30 window start instead of 17:00.
+        if is_holiday and evening_open:
             evening_anchor = now.replace(hour=17, minute=0, second=0, microsecond=0)
             if evening_anchor > open_time:
                 open_time = evening_anchor
@@ -2434,12 +2472,17 @@ def _ae_segment_flags(seg_name: str, seg_cfg: dict, now) -> dict:
                   if is_open else 0)
     mins_close = (max(0, int((now - close_time).total_seconds() / 60))
                   if now > close_time and had_session_today else 0)
+    mins_until_open, mins_until_close = _ae_minutes_until(
+        is_open, had_session_today, now, open_time, close_time
+    )
     return {
         f"{prefix}_open":    is_open,
         f"{prefix}_closed":  (now > close_time) and had_session_today,
         f"{prefix}_holiday": is_holiday,
         f"minutes_since_{prefix}_open":  mins_open,
         f"minutes_since_{prefix}_close": mins_close,
+        f"minutes_until_{prefix}_open":  mins_until_open,
+        f"minutes_until_{prefix}_close": mins_until_close,
     }
 
 
@@ -2447,8 +2490,13 @@ def _build_context(now, sim_overrides: dict | None = None) -> dict:
     """
     Build the base context dict consumed by the schedule/market-open check
     in run_cycle. The v2 grammar engine reads the market DataFrames directly
-    via V2Context, so this function only emits the per-segment open/close
-    flags used to short-circuit `market_hours` agents.
+    via V2Context, so this function's main job is emitting the per-segment
+    open/close flags used to short-circuit `market_hours` agents — but
+    since 2026-10-22 the full dict is ALSO threaded into `run_cycle`'s
+    `context["segment_flags"]` and handed to V2Context, making it the live
+    source for the `is_mcx_open`/`is_nse_open`/`minutes_since_*_open`/
+    `minutes_until_*_open`/`minutes_until_*_close` grammar tokens
+    (`grammar.py`'s market-cycle-event resolvers).
 
     `sim_overrides` (optional) is the simulator's way to pretend the clock
     is somewhere it isn't. When non-None, keys in the override dict win
@@ -2459,6 +2507,8 @@ def _build_context(now, sim_overrides: dict | None = None) -> dict:
         nse_open / nse_closed / nse_holiday / mcx_open / mcx_closed / mcx_holiday (bool)
         minutes_since_nse_open / minutes_since_nse_close
         minutes_since_mcx_open / minutes_since_mcx_close   (int)
+        minutes_until_nse_open / minutes_until_nse_close
+        minutes_until_mcx_open / minutes_until_mcx_close   (int | None)
         is_expiry_day       (bool, reserved — expiry agents read it directly)
 
     The real path passes None and we fall through to the live computation.
@@ -2949,6 +2999,7 @@ def _cycle_evaluate_agent(agent, context: dict, cfg: dict, now, alert_state: dic
         alert_state=alert_state,
         now=now,
         segments=context.get("segments", []),
+        segment_flags=context.get("segment_flags") or {},
         rate_window_min=cfg['rate_window_min'],
         agent=agent,
         baseline_live=baseline_live,
@@ -3403,6 +3454,14 @@ async def run_cycle(context: dict, broadcast_fn=None,
     nse_open_flag = bool(base_ctx.get("nse_open"))
     mcx_open_flag = bool(base_ctx.get("mcx_open"))
     any_market_open = nse_open_flag or mcx_open_flag
+
+    # Market-cycle event tokens (2026-10-22) — thread `base_ctx`'s
+    # per-segment flags into `context` under a key distinct from
+    # `market_state` (the sim-override INPUT above) so `_cycle_evaluate_
+    # agent` can hand it to V2Context as `segment_flags` — the first live
+    # reader of this dict (see `Context.segment_flags`'s own docstring,
+    # agent_evaluator.py, for why it isn't folded into `market_state`).
+    context["segment_flags"] = dict(base_ctx)
 
     # Append the current P&L snapshot to alert_state.pnl_history so the
     # rate evaluator has samples to compute ΔP&L/min against. The

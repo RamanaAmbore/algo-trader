@@ -109,6 +109,31 @@ itself. Backs the new `market-status-report` built-in agent
 open-or-closed status. See `backend/tests/test_market_status_alert.py`
 for the handler's own dedicated coverage.
 
+Amendment (2026-10-22, market-cycle event tokens): ten new
+`(condition, metric, ...)` tokens were added to `agent_grammar.yaml` right
+after `minutes_until_close` (and mirrored here at the same position) —
+`is_mcx_open`, `is_nse_open`, `minutes_since_mcx_open`,
+`minutes_since_nse_open`, `minutes_until_mcx_close`,
+`minutes_until_nse_close`, `minutes_until_mcx_open`,
+`minutes_until_nse_open`, `is_past_holiday_refresh`,
+`is_past_window_open`. First real condition-tree consumers of
+`agent_engine._ae_segment_flags()`'s per-segment computed dict, which
+previously had zero grammar-token readers (see CLAUDE.md's "Segment
+flags honour overrides" note). Resolvers live in `grammar.py`, reading
+`ctx.segment_flags` — a new `Context` field (`agent_evaluator.py`)
+threaded from `run_cycle`'s `context["segment_flags"]`. No existing
+built-in agent (`market-open-nse`/`market-preclose-mcx`/
+`market-status-report`) was touched — those stay fixed-clock
+`fire_at_time` sentinels; these tokens are purely additive for a future
+condition-based agent. See `backend/tests/test_market_cycle_tokens.py`.
+Same-day correction: `is_past_window_open`'s description originally said
+"0.0 during the closed overnight window," which read as if the value
+drops at 23:31 IST — the code (and its own test,
+`TestIsPastWindowOpen::test_late_evening_same_session_is_still_true`)
+intentionally stays 1.0 through 23:59 IST, only reading 0.0 during
+00:00-07:59 IST (it answers "has today's session begun," not "is the
+window live right now"). Description corrected to say so explicitly.
+
 Perf: no DB / network calls, pure in-memory comparison.
 Reuse: shares the same SYSTEM_TOKENS / LOG_TAG_TOKENS module attributes
 every other grammar test and `seed_grammar_tokens()` read.

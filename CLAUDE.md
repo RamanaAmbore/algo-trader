@@ -1466,6 +1466,52 @@ accounts' GOLD books). Real segment open times, from `market_segments` in
   simulator guards) may still read the DB hours. Frontend duplicate: `MCX_OPEN_MIN` in
   [marketHours.js](frontend/src/lib/marketHours.js) must change in lockstep with the YAML.
 
+**Market-cycle event tokens — agents can trigger on a segment's open/close state (2026-10-22)** —
+This resolves the "Dormant" claim in the "Segment flags honour overrides" bullet
+([CLAUDE.md](CLAUDE.md#L653)), which said no live reader of `_ae_segment_flags()`'s keys existed.
+Before this round that was stronger than dormant: the dict was a local variable in `run_cycle()`
+and never reached any grammar resolver. The older `minutes_since_open` token still reads
+`alert_state['session_start']`, so that part of the earlier note remains true.
+- **Plumbing:** `_build_context()` emits the per-segment flags. `run_cycle()` stores them as
+  `context["segment_flags"]` ([agent_engine.py](backend/api/algo/agent_engine.py#L3464)).
+  `_cycle_evaluate_agent()` passes them to `Context.segment_flags`
+  ([agent_engine.py](backend/api/algo/agent_engine.py#L3002),
+  [agent_evaluator.py](backend/api/algo/agent_evaluator.py#L248)). The dry-run path passes its base
+  context through `_build_dry_run_response()`
+  ([routes/agents.py](backend/api/routes/agents.py#L537)). This dict is separate from the sim
+  `market_state` override, so a stale override cannot freeze these flags.
+- **Tokens:** ten condition/metric tokens are defined in
+  [agent_grammar.yaml](backend/config/grammars/agent_grammar.yaml#L369) and resolved in
+  [grammar.py](backend/api/algo/grammar.py#L573).
+
+| Token | Value |
+|---|---|
+| `is_mcx_open`, `is_nse_open` | 1.0 while the segment's session is open, else 0.0 |
+| `minutes_since_{mcx,nse}_open` | Minutes since today's open; `None` while closed |
+| `minutes_until_{mcx,nse}_close` | Minutes to today's close; `None` while closed |
+| `minutes_until_{mcx,nse}_open` | `0` once open; `None` after today's close |
+| `is_past_holiday_refresh` | 1.0 after `holiday_refresh_time` (default 05:30 IST), else 0.0 |
+| `is_past_window_open` | 1.0 after today's 08:00 IST boundary, else 0.0 |
+
+- **`is_past_window_open` is not `is_segment_pending_open()`.** That predicate has no 08:00 check
+  and is true at 02:00 and 08:30 alike. This token uses `session_date_of(now) == now.date()` from
+  [expiry_freeze.py](backend/api/algo/expiry_freeze.py), so 00:00–07:59 counts as the prior session.
+  Known mismatch: the YAML description says "0.0 during the closed overnight window", but
+  23:31–23:59 reads 1.0. Correct the description; the code is right.
+- **`None`, never a coerced 0, when not applicable.** `_ae_segment_flags()` writes
+  `minutes_since_*_open = 0` while closed for its other callers. The resolvers gate on the open
+  flag, so a closed segment never reads as "just opened".
+- **Evening-holiday anchor.** The `and is_open` guard was removed from the 17:00 anchor in
+  `_ae_segment_flags()` ([agent_engine.py](backend/api/algo/agent_engine.py#L2464)). Before 17:00 on
+  an MCX evening-holiday, `minutes_until_mcx_open` now counts to 17:00, not the regular open.
+- **Clock-only refresh check.** `is_past_holiday_refresh` tests the clock only. It does not confirm
+  that the refresh job ran or succeeded.
+- **Existing agents unchanged.** `market-open-nse`, `market-preclose-mcx`, and
+  `market-status-report` still use `fire_at_time` and do not need migrating.
+- **Tests:** [test_market_cycle_tokens.py](backend/tests/test_market_cycle_tokens.py), 32 tests.
+- **Invariant:** a state-change trigger must treat a missing flag as unknown, never as closed or
+  zero. An empty `segment_flags` (event-feed or hand-built `Context`) yields `None` for every token.
+
 **close_price / ltp invariant — DO NOT CHANGE without explicit operator instruction** —
 `prev_close` = previous session's **settlement LTP** (frozen from settlement until next session opens at 08:00 IST). `ltp` ticks live during session, freezes at settlement price at close. Day P&L = `(ltp − prev_close) × qty`.
 

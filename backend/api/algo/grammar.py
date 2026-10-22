@@ -570,6 +570,117 @@ def _metric_minutes_until_close(ctx, row):
     return ctx.minutes_until_close()
 
 
+# ── Market-cycle event tokens ─────────────────────────────────────────────
+#
+# First real consumers of `agent_engine._ae_segment_flags()`'s computed
+# dict — see that function and `Context.segment_flags` (agent_evaluator.py)
+# for how the values get here. `ctx.segment_flags` is `{}` on any caller
+# that doesn't populate it (log-feed-driven event agents via
+# `event_agents.py:Context(log_records=[rec])`, or a hand-built test
+# Context) — every resolver below degrades to `None` ("missing", not a
+# false 0/closed reading) rather than raising.
+
+def _metric_is_mcx_open(ctx, row):
+    """1.0/0.0 from `ctx.segment_flags['mcx_open']`. None when unset."""
+    v = (ctx.segment_flags or {}).get('mcx_open')
+    if v is None:
+        return None
+    return 1.0 if v else 0.0
+
+def _metric_is_nse_open(ctx, row):
+    """1.0/0.0 from `ctx.segment_flags['nse_open']`. None when unset."""
+    v = (ctx.segment_flags or {}).get('nse_open')
+    if v is None:
+        return None
+    return 1.0 if v else 0.0
+
+def _metric_minutes_since_mcx_open(ctx, row):
+    """Minutes since MCX's own session opened today. None while MCX is
+    closed — `_ae_segment_flags` coerces its `minutes_since_mcx_open`
+    field to 0 while closed (a diagnostic convention for that function's
+    other callers), which would otherwise read as "just opened" all
+    night; gate on the open flag here instead of trusting the raw 0."""
+    flags = ctx.segment_flags or {}
+    if not flags.get('mcx_open'):
+        return None
+    return flags.get('minutes_since_mcx_open')
+
+def _metric_minutes_since_nse_open(ctx, row):
+    """Minutes since NSE's own session opened today. None while NSE is
+    closed — see `_metric_minutes_since_mcx_open`'s docstring for why."""
+    flags = ctx.segment_flags or {}
+    if not flags.get('nse_open'):
+        return None
+    return flags.get('minutes_since_nse_open')
+
+def _metric_minutes_until_mcx_close(ctx, row):
+    """Minutes until MCX's own session closes today. None while MCX is
+    closed (nothing to count down to)."""
+    flags = ctx.segment_flags or {}
+    if not flags.get('mcx_open'):
+        return None
+    return flags.get('minutes_until_mcx_close')
+
+def _metric_minutes_until_nse_close(ctx, row):
+    """Minutes until NSE's own session closes today. None while NSE is
+    closed (nothing to count down to)."""
+    flags = ctx.segment_flags or {}
+    if not flags.get('nse_open'):
+        return None
+    return flags.get('minutes_until_nse_close')
+
+def _metric_minutes_until_mcx_open(ctx, row):
+    """Minutes until MCX's own session opens today — 0 while already
+    open; None after today's close or on a day with no session at all
+    (see `_ae_segment_flags`'s own computation)."""
+    return (ctx.segment_flags or {}).get('minutes_until_mcx_open')
+
+def _metric_minutes_until_nse_open(ctx, row):
+    """Minutes until NSE's own session opens today — 0 while already
+    open; None after today's close or on a day with no session at all
+    (see `_ae_segment_flags`'s own computation)."""
+    return (ctx.segment_flags or {}).get('minutes_until_nse_open')
+
+def _metric_is_past_holiday_refresh(ctx, row):
+    """1.0 once today's `holiday_refresh_time` (backend_config.yaml,
+    default 05:30 IST) clock boundary has passed; 0.0 before it. Face-
+    value clock check only — does not confirm the refresh job actually
+    ran or succeeded. None when ctx.now is unavailable."""
+    now = ctx.now
+    if now is None:
+        return None
+    from backend.shared.helpers.utils import config as _cfg
+    target_str = str(_cfg.get("holiday_refresh_time", "05:30") or "05:30")
+    try:
+        hh, mm = (int(x) for x in target_str.split(":", 1))
+    except Exception:
+        hh, mm = 5, 30
+    target_t = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    return 1.0 if now >= target_t else 0.0
+
+def _metric_is_past_window_open(ctx, row):
+    """1.0 from today's 08:00 IST broker-connectivity window boundary
+    through the rest of the same trading session (including the 23:31-
+    23:59 IST tail, before the closed overnight window actually starts
+    at 23:31); 0.0 only during 00:00-07:59 IST, before today's own 08:00
+    boundary has passed. This is a "has today's session begun" flag, not
+    a live "is the window currently open" check — it does NOT flip back
+    to 0.0 at 23:31 like `_segment_is_open()` would. Delegates to the
+    same trading-session-date convention `expiry_freeze.session_date_of()`
+    already uses (00:00-07:59 IST attributed to the PRIOR session) rather
+    than re-deriving the boundary — a bare `now.time() >= 08:00` check
+    would be wrong at e.g. 23:50 IST (still today's session, correctly
+    "past window open", but also "past 08:00" only by coincidence of
+    being later in the same calendar day — the session-date compare is
+    the one that generalises correctly across midnight). None when
+    ctx.now is unavailable."""
+    now = ctx.now
+    if now is None:
+        return None
+    from backend.api.algo.expiry_freeze import session_date_of
+    return 1.0 if session_date_of(now) == now.date() else 0.0
+
+
 # ── Scope selectors — "which rows does this leaf evaluate over?" ─────────
 
 def _scope_holdings_total(ctx):

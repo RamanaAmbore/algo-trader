@@ -528,6 +528,13 @@ def _build_dry_run_response(agent, slug, ctx, now) -> dict:
         alert_state={},   # empty — dry-run doesn't carry state
         now=now,
         segments=ctx.get("segments", []),
+        # `ctx` IS `_dry_run_context`'s `base` dict (`_build_context(now)`
+        # plus `.update(...)`), so it already carries the flat
+        # nse_open/mcx_open/minutes_since_*/minutes_until_* keys
+        # `_ae_segment_flags` emits — same dict `run_cycle` threads into
+        # `context["segment_flags"]` on the live path (2026-10-22,
+        # market-cycle event tokens).
+        segment_flags=ctx,
         rate_window_min=10,
         agent=agent,
     )
