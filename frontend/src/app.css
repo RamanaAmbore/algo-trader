@@ -2945,6 +2945,71 @@
   background: var(--st-bg, rgba(126,151,184,0.08));
   border: 1px solid var(--st-border, rgba(126,151,184,0.25));
 }
+
+/* Mode pills — green SIM/REPLAY, sky PAPER, orange SHADOW, red LIVE, dashed
+   muted DRAFT. Matches the navbar MODE_COLOR (canonical map, +layout.svelte)
+   and mirrored by ChaseCard's .cc-mode-* and OrderTimelineDrawer's
+   .otd-mode-*. Lifted here from LogPanel.svelte (2026-10 round 2) — that
+   file's own `:global(.mode-pill*)` copy only loaded CSS on routes that
+   happen to also import LogPanel.svelte, which left OrderCard.svelte's own
+   DRAFT-pill usage unstyled on any route rendering OrderBook.svelte without
+   LogPanel mounted alongside it. One SSOT here now; LogPanel.svelte's copy
+   was deleted, not left duplicated. */
+.mode-pill {
+  display: inline-block;
+  padding: 0 0.3rem;
+  margin-right: 0.25rem;
+  font-family: var(--font-numeric);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  border-radius: 2px;
+  border: 1px solid;
+  vertical-align: baseline;
+}
+.mode-pill-sim {
+  background: rgba(74,222,128,0.14);
+  color: var(--c-long);
+  border-color: rgba(74,222,128,0.45);
+}
+.mode-pill-live {
+  background: var(--c-short-14);
+  color: var(--c-short);
+  border-color: rgba(248,113,113,0.45);
+}
+.mode-pill-paper {
+  background: var(--algo-sky-bg);
+  color: var(--algo-sky);
+  border-color: var(--algo-sky-border);
+}
+.mode-pill-replay {
+  background: rgba(74,222,128,0.14);
+  color: var(--c-long);
+  border-color: rgba(74,222,128,0.45);
+}
+.mode-pill-shadow {
+  background: rgba(251,146,60,0.14);
+  color: var(--algo-orange);
+  border-color: rgba(251,146,60,0.45);
+}
+/* DRAFT — never placed, no broker round-trip. Dashed + muted so it reads
+   as distinctly "not live" even at a quick glance. */
+.mode-pill-draft {
+  background: rgba(126,151,184,0.10);
+  color: var(--algo-muted);
+  border-color: rgba(126,151,184,0.45);
+  border-style: dashed;
+}
+.mode-pill-armed {
+  background: rgba(167,139,250,0.14);
+  color: var(--algo-ai);
+  border-color: rgba(167,139,250,0.45);
+}
+.mode-pill-unknown {
+  background: rgba(148,163,184,0.15);
+  color: var(--algo-dim);
+  border-color: rgba(148,163,184,0.45);
+}
 /* ── Card and section heading SSOT ──────────────────────────────────────────
    Two semantic roles — pick the one that matches the nesting level:
      .algo-card-title    — heading ON a card  (inside .algo-card / .bucket-card)

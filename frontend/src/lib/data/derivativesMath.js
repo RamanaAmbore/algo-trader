@@ -806,6 +806,39 @@ export function curveBasisEqValue(eq, curveSpot, valueSpot, getProxyRow) {
   return (valueSpot - leg.cost) * leg.qty;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Scoped per-underlying draft-inclusion gate (2026-10 round 2)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Draft-inclusion gate for the derivatives page's per-underlying payoff
+ * draft toggle. Pure — extracted from `_isLegEnabled`'s inline body so it
+ * has a unit-testable surface (that function also folds in the operator's
+ * own per-leg checkbox state, which is page-local and not pure).
+ *
+ * A non-draft leg is always included — this function only ever narrows
+ * `source === 'draft'` legs, never anything else. Missing map key = include
+ * (default ON, per operator confirmation) — the map only ever records an
+ * EXPLICIT toggle-OFF for an underlying; reverting to the default deletes
+ * the key rather than writing `true`, so the map only grows with real
+ * operator choices.
+ *
+ * `key` must be the SAME canonical underlying-key form every other
+ * `selectedUnderlying` comparison in the derivatives page already uses
+ * (`selectedUnderlying.toUpperCase()` — see that page's `_strategyStale`
+ * derived) — deliberately not a fresh root-resolution helper, to avoid the
+ * MCX virtual-root-aliasing drift the architect review flagged.
+ *
+ * @param {{source?: string}} c
+ * @param {Map<string, boolean> | { get(k: string): boolean|undefined }} map
+ * @param {string} key
+ * @returns {boolean}
+ */
+export function isDraftLegIncluded(c, map, key) {
+  if (c?.source !== 'draft') return true;
+  return map?.get(key) !== false;
+}
+
 export function interpAt(arr, x, key) {
   if (!arr || arr.length === 0 || x == null || !Number.isFinite(x)) return null;
   if (arr.length === 1) {

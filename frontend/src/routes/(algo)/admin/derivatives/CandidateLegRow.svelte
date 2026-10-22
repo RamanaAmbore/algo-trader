@@ -11,7 +11,14 @@
   //   bandCount      — count of rows sharing c._band + c._segment (for band header)
   //   legsTab        — 'legs' | 'expiry'
   //   legAnalytics   — analytics object for c.symbol (legAnalyticsBySymbol[c.symbol])
-  //   enabled        — result of _isLegEnabled(c) computed by parent
+  //   enabled        — result of _isLegEnabled(c) computed by parent — the
+  //                    COMBINED gate (checkbox AND per-underlying draft
+  //                    toggle). Drives `cand-disabled` dimming only.
+  //   checked        — result of _isLegChecked(c) — the operator's own
+  //                    per-leg checkbox state ALONE (2026-10 round 2: split
+  //                    out of `enabled` so the checkbox never looks
+  //                    unchecked purely because the draft toggle is OFF).
+  //                    Drives the checkbox's own `checked` attribute.
   //   dayPnl         — _dayPnlForLeg(c, liveSpot) precomputed by parent
   //   expPnl         — _expiryPnl(c, liveSpot) precomputed by parent
   //   legExpired     — _isLegExpired(c) boolean precomputed by parent
@@ -48,6 +55,7 @@
    *   legsTab: string,
    *   legAnalytics: any,
    *   enabled: boolean,
+   *   checked?: boolean,
    *   dayPnl: number | null,
    *   expPnl: number | null,
    *   extrinsic?: number | null,
@@ -63,7 +71,6 @@
    *   onContextMenu: (c: any, ev: MouseEvent | PointerEvent) => void,
    *   pendingQty?: number,
    *   draftSelected?: boolean,
-   *   onToggleDraftSelected?: (draftId: any) => void,
    * }}
    */
   let {
@@ -74,6 +81,7 @@
     legsTab,
     legAnalytics: lg,
     enabled,
+    checked = enabled,
     dayPnl: _dayPnl,
     expPnl: _expPnlLeg,
     extrinsic: _extrinsicLeg = null,
@@ -88,10 +96,13 @@
     onRemoveDraft,
     onOpenChartTicket,
     onContextMenu,
-    // Bulk-removal checkbox selection (2026-10) — separate from the
-    // existing single-item cand-draft-x button, which is unchanged.
+    // Bulk-removal selection state (2026-10 round 2: long-press/right-
+    // click, see onContextMenu above + +page.svelte's branch) — separate
+    // from the existing single-item cand-draft-x button, which is
+    // unchanged. Toggling itself happens in the parent (+page.svelte),
+    // not via a callback prop here — onContextMenu already carries `c`,
+    // which has `.draftId`.
     draftSelected = false,
-    onToggleDraftSelected,
   } = $props();
 
   // ── Derived locals (identical logic to what was in {@const} blocks) ───
@@ -286,23 +297,38 @@
   </div>
 {/if}
 
+<!-- Row-level right-click (2026-10 round 2, draft rows only, see
+     `oncontextmenu` below) — the `.cand-sym` span's own `use:longPress`
+     already covers right-click on the SYMBOL specifically; the row-level
+     handler covers the rest of the row, so a right-click anywhere on a
+     draft row selects it (matching MarketPulse's draft rows, where
+     onCellContextMenu fires for any cell). A right-click ON .cand-sym
+     calls onContextMenu TWICE (this handler via bubbling + the span's
+     own) — harmless, the 800ms de-dupe guard inside +page.svelte's
+     _startDraftSelection absorbs it. Real (non-draft) rows are
+     unaffected — the attribute is `null` for them, so their row-level
+     right-click still falls through to the browser's native context
+     menu, same as before. -->
 <div class="cand-row {stripe} cand-row-{dir}"
      style={_acctColor ? `--acct-color: ${_acctColor};` : ''}
      class:cand-disabled={!enabled}
      class:cand-closed={isClosed}
      class:cand-draft={isDraft}
+     class:cand-draft-selected={isDraft && draftSelected}
      class:cand-eq={c.kind === 'eq'}
      class:expiry-band-close={legsTab === 'expiry' && c._band === 'close'}
      class:expiry-band-netted={legsTab === 'expiry' && c._band === 'netted'}
      class:expiry-band-otm={legsTab === 'expiry' && c._band === 'otm'}
      data-pair-tint={legsTab === 'expiry' && c._band === 'netted' ? (c._pairTint ?? 0) : null}
      data-lot-piece={c.lot_piece_label || null}
+     data-draft-id={isDraft ? (c.draftId ?? null) : null}
      class:cand-row-equity-close={c._expiryStatus === 'equity-close'}
      class:cand-row-commodity-close={c._expiryStatus === 'commodity-close'}
      role="button"
      tabindex="0"
+     oncontextmenu={isDraft ? (ev) => { ev.preventDefault(); onContextMenu(c, ev); } : null}
      title={isDraft
-       ? `Execute draft — open SymbolPanel on Ticket tab pre-filled`
+       ? `Execute draft — open SymbolPanel on Ticket tab pre-filled. Right-click or long-press to select for removal.`
        : isClosable
          ? `Close ${Math.abs(displayQty)} ${c.symbol} — SymbolPanel on Ticket tab`
          : `${c.symbol} — open SymbolPanel on Chart tab`}
@@ -314,7 +340,7 @@
        }
      }}>
   <input type="checkbox"
-         checked={enabled}
+         checked={checked}
          onclick={(e) => e.stopPropagation()}
          onchange={(e) => {
            const checked = /** @type {HTMLInputElement} */ (e.currentTarget).checked;
@@ -377,9 +403,18 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <!-- Context-menu is a secondary affordance (right-click / long-press).
        Primary symbol selection is via checkbox. No keyboard equivalent
-       needed here — the context-menu items are also accessible via row buttons. -->
+       needed here — the context-menu items are also accessible via row buttons.
+       2026-10 round 2 fix: the explicit `oncontextmenu` attribute was
+       REMOVED — longPress.js (the `use:` action below) already attaches
+       its own `contextmenu` listener (see that file's `onContextMenu`),
+       so having both meant a single right-click called `onContextMenu(c,
+       ev)` TWICE. Opening the real-row context menu twice was harmless
+       (idempotent), but once the parent started routing a DRAFT row's
+       press through this same callback to toggle selection (see
+       +page.svelte's onContextMenu prop), the double-call toggled the
+       row on then immediately back off — every desktop right-click on a
+       draft row did nothing. -->
   <span class="cand-sym cand-sym-acct"
-    oncontextmenu={(ev) => { ev.preventDefault(); onContextMenu(c, ev); }}
     use:longPress={(ev) => { onContextMenu(c, ev); }}>
     {#if (() => { const rl = rootOfLabel(c.symbol, c.exchange || ''); return rl !== c.symbol; })()}
       <span class="sym-main {_optClass}" title={c.symbol}>{rootOfLabel(c.symbol, c.exchange || '')}</span>
@@ -451,21 +486,13 @@
             title="Draft position from store — hypothetical, not yet confirmed">D</span>
     {/if}
     {#if isDraft}
-      <!-- Bulk-removal checkbox (2026-10) — separate from the × button
-           below, which still removes just this one draft immediately.
-           Checking this box only marks the row for the header's "Clear
-           Selected Drafts (N)" button; it never removes anything by
-           itself. Stops propagation on both click and change so the
-           row's executeDraft handler never fires. -->
-      <input type="checkbox" class="cand-draft-select"
-             checked={draftSelected}
-             title="Select this draft for bulk removal"
-             aria-label="Select draft {c.symbol} for removal"
-             onclick={(e) => e.stopPropagation()}
-             onchange={(e) => {
-               e.stopPropagation();
-               if (c.draftId != null) onToggleDraftSelected?.(c.draftId);
-             }} />
+      <!-- Bulk-removal checkbox REMOVED (2026-10 round 2) — selection now
+           happens via right-click/long-press on the symbol (see
+           `use:longPress` above + +page.svelte's onContextMenu branch,
+           which toggles instead of opening the real-row context menu for
+           a draft). `draftSelected` still drives the `.cand-draft-selected`
+           row-level tint/border above — same role the checkbox's
+           `checked` attribute used to play. -->
       <!-- Draft remove button — page-local removal only,
            NO order placed. Clicking the row body still
            opens the OrderTicket pre-filled to PLACE the
@@ -771,6 +798,17 @@
   .cand-row.cand-draft:hover {
     background-color: rgba(240,171,252,0.14);
   }
+  /* Selected-for-clear state (2026-10 round 2, long-press/right-click) —
+     stronger tint/border on top of the base .cand-draft treatment above.
+     Mirrors MarketPulse's `.draft-row-selected`. Replaces the removed
+     `.cand-draft-select` checkbox's visual role. */
+  .cand-row.cand-draft.cand-draft-selected {
+    background-color: rgba(240,171,252,0.20);
+    box-shadow: inset 3px 0 0 #f0abfc;
+  }
+  .cand-row.cand-draft.cand-draft-selected:hover {
+    background-color: rgba(240,171,252,0.26);
+  }
 
   /* ── Disabled (unchecked) rows ────────────────────────────────────── */
   .cand-disabled {
@@ -856,20 +894,6 @@
   }
   .cand-row.cand-row-long  .cand-sym-acct::after { background: rgba(74, 222, 128, 0.85); }
   .cand-row.cand-row-short .cand-sym-acct::after { background: rgba(248, 113, 113, 0.85); }
-
-  /* ── Draft bulk-select checkbox ──────────────────────────────────────── */
-  /* Separate from the per-row × below — checking this only marks the row
-     for the header's "Clear Selected Drafts (N)" bulk button, never
-     removes anything on its own. Same magenta identity as the × button. */
-  .cand-draft-select {
-    accent-color: #f0abfc;
-    width: 0.85rem;
-    height: 0.85rem;
-    margin-right: 0.3rem;
-    cursor: pointer;
-    vertical-align: middle;
-    flex: 0 0 auto;
-  }
 
   /* ── Draft × button ───────────────────────────────────────────────── */
   /* Draft × — sits inline with the symbol, lets operator discard

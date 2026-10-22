@@ -7,8 +7,11 @@
  *      a draft now sums into the pinned TOTAL like any real row — MarketPulse's
  *      TOTAL has no qty cell (qty_net is null on totals), so that sum is
  *      covered at unit level in pulseUnified.test.js, not in the DOM.)
- *   C. Select + "Clear Selected Drafts (N)": the header button counts only
- *      checked drafts, is disabled at 0, and removes exactly the checked ids.
+ *   C. Select via right-click (desktop) / long-press (touch) on a draft row —
+ *      no checkbox. "Clear Selected Drafts (N)" and the ✕ Cancel button are
+ *      absent from the DOM at 0 selected, appear once selection starts, Cancel
+ *      empties selection with no DELETE, Clear removes exactly the selected ids.
+ *      A plain click on another draft toggles membership while selecting.
  *   D. Click-to-promote: clicking a draft row (not its checkbox) opens the
  *      SymbolPanel ticket with ONLY the Ticket and Chart tabs, auto-submits
  *      nothing, and a confirmed Submit sends `draft_id` and removes the
@@ -64,27 +67,87 @@ test.describe('MarketPulse Positions — draft rows', () => {
 });
 
 test.describe('MarketPulse Positions — select and clear drafts', () => {
-  test('C: header button counts only checked drafts and removes exactly those', async ({ page }) => {
+  test('C: right-click selects a draft, header button counts only selected drafts and removes exactly those', async ({ page }) => {
     await loginAsAdmin(page);
     const state = await mockDrafts(page);
     await gotoPulse(page);
 
+    await skipUnlessRendered(draftSymbolCell(page, 'NIFTY26OCTFUT', 9001), 'MarketPulse draft rows');
     const clearBtn = page.locator('.mp-clear-drafts-btn');
-    await skipUnlessRendered(page.locator('.draft-select-cb[data-draft-id="9001"]').first(), 'MarketPulse draft checkbox');
-    await expect(clearBtn).toBeVisible({ timeout: 20_000 });
-    await expect(clearBtn).toBeDisabled();
-    await expect(clearBtn).toHaveText(/Clear Selected Drafts \(0\)/);
+    const cancelBtn = page.locator('.mp-draft-cancel-btn');
 
-    // Check only the NIFTY draft (id 9001).
-    await page.locator('.draft-select-cb[data-draft-id="9001"]').first().click();
+    // Nothing selected: both controls absent from the DOM, not merely disabled.
+    await expect(clearBtn).toHaveCount(0);
+    await expect(cancelBtn).toHaveCount(0);
+    // No per-row checkbox any more.
+    await expect(page.locator('.draft-select-cb')).toHaveCount(0);
+
+    // Right-click the NIFTY draft (id 9001) to enter selection.
+    await draftSymbolCell(page, 'NIFTY26OCTFUT', 9001).click({ button: 'right' });
+    await expect(clearBtn).toBeVisible({ timeout: 10_000 });
     await expect(clearBtn).toHaveText(/Clear Selected Drafts \(1\)/);
-    await expect(clearBtn).toBeEnabled();
+    await expect(cancelBtn).toBeVisible();
+    await expect(page.locator('.ag-row.row-draft.draft-row-selected')).not.toHaveCount(0);
 
     await clearBtn.click();
     await expect.poll(() => state.calls.filter((c) => c.method === 'DELETE').map((c) => c.id))
       .toEqual([9001]);
-    // The unchecked draft survives in the grid.
+    // The unselected draft survives in the grid.
     await expect.poll(() => draftRows(page).ids()).toEqual(['CRUDEOIL26NOVFUT::draft::9002']);
+    // Selection cleared with the delete: both controls gone again.
+    await expect(clearBtn).toHaveCount(0);
+    await expect(cancelBtn).toHaveCount(0);
+  });
+
+  test('C2: Cancel (✕) empties the selection without issuing any DELETE', async ({ page }) => {
+    await loginAsAdmin(page);
+    const state = await mockDrafts(page);
+    await gotoPulse(page);
+
+    await skipUnlessRendered(draftSymbolCell(page, 'NIFTY26OCTFUT', 9001), 'MarketPulse draft rows');
+    const clearBtn = page.locator('.mp-clear-drafts-btn');
+    const cancelBtn = page.locator('.mp-draft-cancel-btn');
+
+    await draftSymbolCell(page, 'NIFTY26OCTFUT', 9001).click({ button: 'right' });
+    await draftSymbolCell(page, 'CRUDEOIL26NOVFUT', 9002).click({ button: 'right' });
+    await expect(clearBtn).toHaveText(/Clear Selected Drafts \(2\)/);
+
+    await cancelBtn.click();
+    // Selection emptied: both controls removed from the DOM, no tint left.
+    await expect(clearBtn).toHaveCount(0);
+    await expect(cancelBtn).toHaveCount(0);
+    await expect(page.locator('.ag-row.row-draft.draft-row-selected')).toHaveCount(0);
+    // Both drafts still rendered, and crucially no DELETE went out.
+    await expect.poll(() => draftRows(page).ids())
+      .toEqual(['CRUDEOIL26NOVFUT::draft::9002', 'NIFTY26OCTFUT::draft::9001']);
+    expect(state.calls.filter((c) => c.method === 'DELETE')).toHaveLength(0);
+  });
+
+  test('C3: once selecting, a plain click on another draft toggles it instead of opening the ticket', async ({ page }) => {
+    await loginAsAdmin(page);
+    await mockDrafts(page);
+    const ticketCalls = [];
+    await page.route('**/api/orders/ticket', async (route) => {
+      ticketCalls.push(route.request().postDataJSON());
+      await route.fulfill({ status: 200, contentType: 'application/json', body: '{"status":"ok","order_id":1}' });
+    });
+    await gotoPulse(page);
+
+    await skipUnlessRendered(draftSymbolCell(page, 'NIFTY26OCTFUT', 9001), 'MarketPulse draft rows');
+    const clearBtn = page.locator('.mp-clear-drafts-btn');
+    await draftSymbolCell(page, 'NIFTY26OCTFUT', 9001).click({ button: 'right' });
+    await expect(clearBtn).toHaveText(/Clear Selected Drafts \(1\)/);
+
+    // Plain click on the OTHER draft adds it to the selection.
+    await draftSymbolCell(page, 'CRUDEOIL26NOVFUT', 9002).click();
+    await expect(clearBtn).toHaveText(/Clear Selected Drafts \(2\)/);
+    // And it did not open the promote ticket or hit /ticket.
+    expect(ticketCalls).toHaveLength(0);
+    await expect(page.locator('.oes-modal')).toHaveCount(0);
+
+    // Plain click on an already-selected draft deselects it.
+    await draftSymbolCell(page, 'CRUDEOIL26NOVFUT', 9002).click();
+    await expect(clearBtn).toHaveText(/Clear Selected Drafts \(1\)/);
   });
 });
 

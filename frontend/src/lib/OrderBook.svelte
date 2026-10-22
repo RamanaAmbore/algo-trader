@@ -49,6 +49,7 @@
   import { toast } from '$lib/data/toastStore.svelte.js';
   import { noteAttachObservation } from '$lib/data/templateAttachToast.js';
   import { noteOrderPollFills } from '$lib/data/orderFillDetector.js';
+  import { isDraftOrderRow } from '$lib/data/draftOrderRow.js';
 
   /** @type {{
    *   orderId?: string | null,
@@ -495,8 +496,12 @@
     return (st === 'OPEN' || st === 'TRIGGER PENDING' || st === 'TRIGGER_PENDING') && o?._rowOrigin === 'broker';
   }
 
-  /** Returns true when the order is in-flight and reconciling is meaningful. */
+  /** Returns true when the order is in-flight and reconciling is meaningful.
+   *  Excludes drafts (2026-10 round 2) — a draft row's status is always
+   *  'OPEN' but it never reached a broker, so `reconcileSingleOrder`
+   *  would be called with no real broker_order_id to reconcile against. */
   function _isInFlight(/** @type {any} */ o) {
+    if (isDraftOrderRow(o)) return false;
     const st = (o?.status || '').toUpperCase();
     return st === 'OPEN' || st === 'TRIGGER PENDING'
         || st === 'CANCEL_FAILED' || st === 'PARTIAL';
@@ -554,12 +559,41 @@
   // (e.g. Chase) whose only rows belong to a DIFFERENT account, showing
   // an empty list underneath.
   const _countScopedOrderRows = $derived.by(() => _applyAccountFilter(orderRows, accountFilter));
+  // Displayed chip badge numbers (2026-10 round 2) — exclude drafts from
+  // every count (`mode==='draft'`, status always 'OPEN'). A draft never
+  // reached a broker, so it must not inflate "Open" (or any other chip)
+  // the way a genuine resting/filled/rejected order does. Relabel, don't
+  // hide: `_applyStatusFilter`/`_STATUS_PREDICATES` below are deliberately
+  // UNCHANGED, so a draft row still renders inside whichever chip's list
+  // its real status naturally routes it to (see OrderCard.svelte for the
+  // DRAFT pill that replaces its status badge there) — only the NUMBER
+  // shown on the chip excludes it.
   const _statusCounts = $derived.by(() => ({
-    held:                _countScopedOrderRows.filter(o => _STATUS_PREDICATES.held((o.status || '').toUpperCase())).length,
+    held:                _countScopedOrderRows.filter(o => !isDraftOrderRow(o) && _STATUS_PREDICATES.held((o.status || '').toUpperCase())).length,
     chase:               _countScopedOrderRows.filter(_isChaseInFlight).length,
-    open:                _countScopedOrderRows.filter(o => _STATUS_PREDICATES.open((o.status || '').toUpperCase())).length,
-    complete:            _countScopedOrderRows.filter(o => _STATUS_PREDICATES.complete((o.status || '').toUpperCase())).length,
-    rejected_cancelled:  _countScopedOrderRows.filter(o => _STATUS_PREDICATES.rejected_cancelled((o.status || '').toUpperCase())).length,
+    open:                _countScopedOrderRows.filter(o => !isDraftOrderRow(o) && _STATUS_PREDICATES.open((o.status || '').toUpperCase())).length,
+    complete:            _countScopedOrderRows.filter(o => !isDraftOrderRow(o) && _STATUS_PREDICATES.complete((o.status || '').toUpperCase())).length,
+    rejected_cancelled:  _countScopedOrderRows.filter(o => !isDraftOrderRow(o) && _STATUS_PREDICATES.rejected_cancelled((o.status || '').toUpperCase())).length,
+  }));
+
+  // Display counts (draft-EXCLUDED, same as `_statusCounts`) + gtt, for
+  // the FIRST default-resolution pass below.
+  const _displayCountsById = $derived.by(() => ({ ..._statusCounts, gtt: _filteredGttRows.length }));
+
+  // Raw (draft-INCLUSIVE) counts — second-pass FALLBACK for default-chip
+  // resolution only, never for the displayed badge numbers. Without this
+  // fallback, an account whose only "open-shaped" rows are drafts would
+  // resolve `_defaultActiveId` to null (every chip reads 0 once drafts
+  // are excluded from `_statusCounts`/`_displayCountsById`), hiding the
+  // draft row entirely on page load — the same "keep visible"
+  // requirement the count fix above must not undo.
+  const _rawCountsById = $derived.by(() => ({
+    held:               _countScopedOrderRows.filter(o => _STATUS_PREDICATES.held((o.status || '').toUpperCase())).length,
+    chase:              _statusCounts.chase,
+    open:               _countScopedOrderRows.filter(o => _STATUS_PREDICATES.open((o.status || '').toUpperCase())).length,
+    complete:           _countScopedOrderRows.filter(o => _STATUS_PREDICATES.complete((o.status || '').toUpperCase())).length,
+    rejected_cancelled: _countScopedOrderRows.filter(o => _STATUS_PREDICATES.rejected_cancelled((o.status || '').toUpperCase())).length,
+    gtt:                _filteredGttRows.length,
   }));
 
   // ── Default chip resolution (2026-09-30, extended 2026-10 for Held) ────
@@ -574,14 +608,27 @@
   // `held` sits FIRST — a possibly-still-live, unprotected order (HELD /
   // CANCEL_FAILED) outranks every other bucket for default visibility.
   const CHIP_ORDER = ['held', 'chase', 'open', 'complete', 'rejected_cancelled', 'gtt'];
-  const _countsById = $derived.by(() => ({ ..._statusCounts, gtt: _filteredGttRows.length }));
   // Gated on `_loading` (the ORDERS fetch flag) so the default can't
   // transiently resolve to 'gtt' purely because the independent GTT poll
   // happened to land before the first orders poll — `_loading` clears
   // only once `_loadOrders` has run at least once (success or freeze-on-
-  // failure), by which point `_countsById`'s order-derived fields are
-  // trustworthy for picking the first-non-zero chip.
-  const _defaultActiveId = $derived(_loading ? null : (CHIP_ORDER.find(id => _countsById[id] > 0) ?? null));
+  // failure), by which point these counts are trustworthy for picking
+  // the first-non-zero chip.
+  //
+  // Two passes (2026-10 round 2): the FIRST pass reads `_displayCountsById`
+  // (draft-excluded) so a draft sitting in an otherwise-empty "Open"
+  // bucket never steals the default highlight away from a REAL non-zero
+  // bucket elsewhere (e.g. 3 genuinely Filled orders + 1 draft must
+  // default to "Filled", not an "Open" chip whose badge reads 0). The
+  // SECOND pass falls back to `_rawCountsById` (draft-inclusive) only
+  // when every display count is zero — the draft-only, no-real-orders
+  // case — so the draft row still gets a default chip to render under
+  // instead of resolving to null.
+  const _defaultActiveId = $derived(_loading ? null : (
+    CHIP_ORDER.find(id => _displayCountsById[id] > 0)
+    ?? CHIP_ORDER.find(id => _rawCountsById[id] > 0)
+    ?? null
+  ));
 
   // Explicit click wins (sticky, exclusive filter — unchanged behaviour);
   // otherwise fall back to the single first-non-zero chip above. Never

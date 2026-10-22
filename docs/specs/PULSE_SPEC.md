@@ -224,6 +224,52 @@ but is orthogonal to user-visible Day P&L rendering.
 - **Groww**: `_normalise_positions()` in `groww.py` pre-computes `day_change_val = (ltp - close) × qty` (guarded: `ltp > 0 and close > 0 and qty != 0`). Groww API does not return `day_change_val` or `day_pnl`, so this computation ensures Day P&L displays correctly on cold-cache page loads instead of showing 0
 - **Holdings live-path**: `_override_stale_close_for_holdings` now queries `COALESCE(daily_book.previous_close, daily_book.ltp)` and writes `previous_close` to all holding rows. Frontend prefers `previous_close` (frozen settlement) over `close_price` (Kite's mutable field). `apply_day_change_backstop()` now runs for holdings to handle NSE settlement case where `close_price == ltp` and stored `day_change_val` stales to 0, fixing H slot zeroing after settlement
 
+### 4.4.1 Draft Positions — Selection, Order-Book Relabel, Payoff Toggle (2026-10-21)
+
+Draft positions are hypothetical legs (`source='draft'`) shown in the MarketPulse Positions grid
+and the derivatives Legs grid. They never reach a broker. Prior round (`6bf3dfd7`) made them
+behave as real positions everywhere except margin, chase, bracket, and close.
+
+**Selecting drafts for bulk clear (replaces the per-row checkbox)**:
+- The per-row checkbox (`.draft-select-cb` on MarketPulse, `.cand-draft-select` on the Legs grid)
+  is removed.
+- Long-press (touch) or right-click (desktop) on a draft row enters selection mode for that grid
+  and selects the row. Real (non-draft) rows keep their existing context menu.
+- While selection mode is active, a plain click on another draft row toggles it in or out of the
+  selection instead of opening the promote ticket.
+- The header `Clear Selected Drafts (N)` button is hidden until at least one draft is selected. It
+  renders only when `_selectedDraftIds.size > 0` (`.mp-clear-drafts-btn` on MarketPulse; the Legs
+  grid header uses the same condition).
+- A Cancel (✕) button beside Clear exits selection mode without deleting anything.
+- A selected draft row shows a selected-state border/tint on top of the existing pink `row-draft`
+  tint. Draft rows carry a hover tooltip: "Right-click or long-press to select for removal".
+
+**OrderBook and LogPanel draft rows (relabel, not hide)**:
+- A draft `AlgoOrder` row (`mode='draft'`, `status='OPEN'`) stays visible in the merged order list.
+- It renders a `DRAFT` pill (`.mode-pill-draft`) in place of its status badge.
+- It is excluded from every status-chip count and classification (Open, Complete,
+  Rejected/Cancelled, Held). The single predicate is `isDraftOrderRow()` in
+  [`frontend/src/lib/data/draftOrderRow.js`](frontend/src/lib/data/draftOrderRow.js), shared by
+  [`OrderBook.svelte`](frontend/src/lib/OrderBook.svelte) and
+  [`LogPanel.svelte`](frontend/src/lib/LogPanel.svelte).
+- Why relabel rather than hide: a hidden draft is easy to forget. A draft shown as OPEN risks
+  being mistaken for a resting broker order. The DRAFT pill keeps it visible and unambiguous.
+- Chase visibility is unchanged. Drafts never appear in the active-chases panel
+  (`list_active_chases` excludes `mode='draft'`), and the OrderBook chase chip requires
+  `attempts > 0`, which a draft never has.
+
+**Derivatives payoff draft toggle (per underlying)**:
+- A `DRAFT ON` / `DRAFT OFF` button in the payoff chart's right slot appears only when the
+  underlying currently viewed has at least one draft leg.
+- State is a `SvelteMap` keyed by the canonical upper-cased underlying. It defaults to ON and is
+  session-only (no `localStorage`).
+- OFF excludes that underlying's draft legs from the payoff curve, the overlay stat card, Greeks,
+  Snapshot, and aggregate totals. The gate is a single predicate: `_isLegEnabled` calls
+  `isDraftLegIncluded()` in [`derivativesMath.js`](frontend/src/lib/data/derivativesMath.js).
+- The Legs and Positions grid rows show the draft regardless of toggle state, so Clear remains
+  available.
+- Intended use: toggle OFF for a "what if without this draft" comparison.
+
 ### 4.5 Chase Card Status Columns
 
 Active chase rows now display enhanced visual feedback for execution state.
@@ -2762,3 +2808,4 @@ See `PULSE_SPEC.md §9 Known Defects` section (BD1–BD4 fixed in `b1d7654c`, D1
 | 2026-10-17 | v1.24 Lot-split display for multi-group position pairing (uncommitted, frontend-only): (1) **§4.4 `pair_group_key`** — documents the known backend gap where `_auto_pair_positions()` overwrites a row's pairing fields when it matches 2+ counterparties (only the last group survives); the frontend now re-derives the match via `splitPairedLots()` (`frontend/src/lib/data/lotPairSplit.js`) before display. (2) **§14 Lot-split display** — new subsection: a multi-group or partially matched position renders as one row per matched group (`P1`, `P2`, …, ranked by matched qty) plus an `Unmatched` row for any leftover, each piece distinguished by the existing St-column badge (cyan paired / amber orphan). Amount fields are pro-rated with the last piece taking the remainder, so totals and account rollups are unchanged. Pieces use composite row key `symbol::account::label` in `mergePositionRows()` (`pulseUnified.js`). Wired into MarketPulse Positions (`MarketPulse.svelte`) and Derivatives Legs (`derivatives/pageLoad.js:buildPagePositionRows()`, after `splitClosedReopened()`). `PerformancePage` intentionally not wired. Display-only fields `_isLotSplit` / `lot_piece_label`; `/api/positions` schema unchanged. Tests: `frontend/src/lib/__tests__/data/lotPairSplit.test.js`, `pulseUnified.test.js`, `pageLoad.test.js`, `frontend/e2e/position_lot_pair_split.spec.js`. |
 | 2026-10-19 | v1.25 Tick staleness indicator (commit 7bf11fac): new §31.1 documents the `TICKS STALE@HH:MM` amber badge in `RefreshButton.svelte` and its one-per-episode 75 s toast. Signal is `lastLiveTickAt` (real SSE tick/snapshot only, not heartbeats or book-poller writes); gated to NSE-or-MCX open; checked every 5 s via `tickStaleness.svelte.js`. Badge is app-wide (every page mounting `RefreshButton`), not Pulse-only. §7 failure-modes table gains the API-side poller row (backend heal in BROKER_SPEC §9.1). Test: `frontend/e2e/tick_staleness_indicator.spec.js`. |
 | 2026-10-20 | v1.26 Single arbitrated source per field (commits 9a983ca5, 8d6be90e, 5ea76387): new §11.3. Day P&L % denominator now reads backend `prev_close` only (`_prevCloseSsot`), never live-quote `row.close`; zero-prior-settlement rows fall back to cost basis instead of blanking. Underlying-anchor rows consolidate onto `_applyQuoteFields`; `_applyUnderlyingQuoteFields` deleted. Left-grid `change_pct` (raw symbol change) is unchanged and remains live-quote-sourced. |
+| 2026-10-21 | v1.27 Draft positions UX round 2 (uncommitted): §4.4.1 new subsection. Long-press (touch) / right-click (desktop) on a draft row replaces the per-row checkbox for bulk clear; the Clear button is hidden until a draft is selected, with a Cancel control beside it. OrderBook and LogPanel relabel draft `AlgoOrder` rows with a DRAFT pill and exclude them from every status chip. Derivatives payoff gains a per-underlying DRAFT ON/OFF toggle, gated through `_isLegEnabled`. |

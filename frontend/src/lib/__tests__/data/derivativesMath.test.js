@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { annotateOptionCandidates, computeExpiryBands, rollupByUnderlying, perRootReduce, buildStrategyMatcher, interpAt, legPnlDisplay, legPnlTotal, isFOSymbol, equityLinearLeg, curveBasisEqValue } from '$lib/data/derivativesMath.js';
+import { annotateOptionCandidates, computeExpiryBands, rollupByUnderlying, perRootReduce, buildStrategyMatcher, interpAt, legPnlDisplay, legPnlTotal, isFOSymbol, equityLinearLeg, curveBasisEqValue, isDraftLegIncluded } from '$lib/data/derivativesMath.js';
 import { legExtrinsicDisplay } from '$lib/data/expiryPnl.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -954,5 +954,53 @@ describe('curveBasisEqValue', () => {
 
   it('returns null when the leg itself is unusable at curveSpot (e.g. curveSpot <= 0, cold start)', () => {
     expect(curveBasisEqValue(eq, 0, 160000, getProxyRow)).toBeNull();
+  });
+});
+
+// ============================================================================
+// isDraftLegIncluded — derivatives page's per-underlying payoff draft
+// toggle (2026-10 round 2). Pure gate extracted from the page's own
+// `_isLegEnabled` so the draft-map branch has a unit-testable surface
+// independent of the page-local checkbox/eq-memory state.
+// ============================================================================
+
+describe('isDraftLegIncluded', () => {
+  it('a non-draft leg is always included, regardless of the map', () => {
+    const map = new Map([['NIFTY', false]]);
+    expect(isDraftLegIncluded({ source: 'live' }, map, 'NIFTY')).toBe(true);
+    expect(isDraftLegIncluded({ source: 'sim' },  map, 'NIFTY')).toBe(true);
+    expect(isDraftLegIncluded({},                 map, 'NIFTY')).toBe(true);
+  });
+
+  it('a draft leg defaults to included when the underlying has no map entry (missing key = ON)', () => {
+    const map = new Map();
+    expect(isDraftLegIncluded({ source: 'draft' }, map, 'NIFTY')).toBe(true);
+  });
+
+  it('a draft leg is excluded once its underlying is explicitly toggled OFF', () => {
+    const map = new Map([['NIFTY', false]]);
+    expect(isDraftLegIncluded({ source: 'draft' }, map, 'NIFTY')).toBe(false);
+  });
+
+  it('the toggle is scoped per-underlying — a draft leg on a DIFFERENT underlying is unaffected', () => {
+    const map = new Map([['NIFTY', false]]);
+    expect(isDraftLegIncluded({ source: 'draft' }, map, 'CRUDEOIL')).toBe(true);
+  });
+
+  it('a draft leg is included again once the key is removed (toggle back ON deletes, not sets true)', () => {
+    const map = new Map([['NIFTY', false]]);
+    map.delete('NIFTY');
+    expect(isDraftLegIncluded({ source: 'draft' }, map, 'NIFTY')).toBe(true);
+  });
+
+  it('works with a map-like object exposing only .get (e.g. SvelteMap) — never calls .delete/.set', () => {
+    const fakeMap = { get: (k) => (k === 'NIFTY' ? false : undefined) };
+    expect(isDraftLegIncluded({ source: 'draft' }, fakeMap, 'NIFTY')).toBe(false);
+    expect(isDraftLegIncluded({ source: 'draft' }, fakeMap, 'CRUDEOIL')).toBe(true);
+  });
+
+  it('tolerates a null/undefined map (never throws) and defaults to included', () => {
+    expect(isDraftLegIncluded({ source: 'draft' }, null, 'NIFTY')).toBe(true);
+    expect(isDraftLegIncluded({ source: 'draft' }, undefined, 'NIFTY')).toBe(true);
   });
 });

@@ -18,6 +18,7 @@
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
   import { openActivityModal } from '$lib/stores';
+  import { isDraftOrderRow } from '$lib/data/draftOrderRow.js';
   import AlgoTabs from '$lib/AlgoTabs.svelte';
   import ActivityAccountSelect from '$lib/ActivityAccountSelect.svelte';
   import CardHeader from '$lib/CardHeader.svelte';
@@ -858,11 +859,15 @@
     // on duplicate order_id (most complete fields); algo-only rows
     // (paper / sim / shadow) keep their AlgoOrderInfo shape — `o.mode`
     // is read by `_terminalOrderLines()`'s Console-tab mode filter
-    // below. (`_modePill`/the `*_PILL` constants further down have no
-    // live caller as of 2026-10-18 — their only caller, the Order tab's
-    // old `_orderRowHtml`, was removed as dead code; flagged, not
-    // removed here, since deleting them would also orphan their
-    // `.mode-pill-*` CSS — an operator decision, not this fix's scope.)
+    // below. (`_modePill`/the `*_PILL` constants further down still have
+    // no live caller in THIS file as of 2026-10-20 — their only caller,
+    // the Order tab's old `_orderRowHtml`, was removed as dead code; kept,
+    // not removed, since `.mode-pill-draft` is the real class name
+    // OrderCard.svelte now renders for a draft row's status pill, and
+    // these constants document the full mode→pill mapping that CSS
+    // supports. The `.mode-pill*` CSS itself moved to app.css — see that
+    // file's own comment — so it's no longer scoped to routes that
+    // happen to also mount this component.)
     try {
       const [brokerResp, algoResp] = await Promise.allSettled([
         fetchOrders(),
@@ -1039,8 +1044,13 @@
     return (st === 'OPEN' || st === 'TRIGGER PENDING') && o?._rowOrigin === 'broker';
   }
 
-  /** Returns true when the order is in-flight and reconciling is meaningful. */
+  /** Returns true when the order is in-flight and reconciling is meaningful.
+   *  Excludes drafts (2026-10 round 2, mirrors OrderBook.svelte's identical
+   *  fix) — a draft row's status is always 'OPEN' but it never reached a
+   *  broker, so `reconcileSingleOrder` would be called with no real
+   *  broker_order_id to reconcile against. */
   function _isInFlight(/** @type {any} */ o) {
+    if (isDraftOrderRow(o)) return false;
     const st = (o?.status || '').toUpperCase();
     return st === 'OPEN' || st === 'TRIGGER PENDING'
         || st === 'CANCEL_FAILED' || st === 'PARTIAL';
@@ -2563,83 +2573,15 @@
     padding: 0.3rem 0.5rem !important;
   }
 
-  /* Mode pills — green SIM/REPLAY, sky PAPER, orange SHADOW, red LIVE.
-     Matches the navbar MODE_COLOR (canonical map, +layout.svelte) and
-     mirrored by ChaseCard's .cc-mode-* and OrderTimelineDrawer's
-     .otd-mode-*. Consistent across Simulator and Order tabs; replaces
-     the prior pink-on-pink SIM styling that dominated the Order log. */
-  :global(.mode-pill) {
-    display: inline-block;
-    padding: 0 0.3rem;
-    margin-right: 0.25rem;
-    font-family: var(--font-numeric);
-    font-size: var(--fs-xs);
-    font-weight: 700;
-    letter-spacing: 0.05em;
-    border-radius: 2px;
-    border: 1px solid;
-    vertical-align: baseline;
-  }
-  /* SIM — green, matching the navbar SIM badge and REPLAY below (both
-     sandbox/safe modes, grouped on the same hue by design). */
-  :global(.mode-pill-sim) {
-    background: rgba(74,222,128,0.14);
-    color: var(--c-long);
-    border-color: rgba(74,222,128,0.45);
-  }
-  /* LIVE pill — red to match the navbar LIVE badge + LIVE banner.
-     Reads as "this row hit the real broker" at a glance. Earlier
-     palette put LIVE on emerald which collided with REPLAY (also
-     emerald), making the two indistinguishable on a quick scan. */
-  :global(.mode-pill-live) {
-    background: var(--c-short-14);
-    color: var(--c-short);
-    border-color: rgba(248,113,113,0.45);
-  }
-  /* Mode-2 paper rows — sky-blue tint, distinct from green sim and
-     red live so the operator never confuses a paper fill with a real
-     one. Uses the --algo-sky family throughout (was previously a
-     mismatched darker blue, #38bdf8/rgba(56,189,248,...), on the bg
-     and border while the text already correctly used --algo-sky). */
-  :global(.mode-pill-paper) {
-    background: var(--algo-sky-bg);
-    color: var(--algo-sky);
-    border-color: var(--algo-sky-border);
-  }
-  /* Mode-4 replay — green, matching the navbar REPLAY badge. */
-  :global(.mode-pill-replay) {
-    background: rgba(74,222,128,0.14);
-    color: var(--c-long);
-    border-color: rgba(74,222,128,0.45);
-  }
-  /* Mode-5 shadow — orange, matching the navbar SHADOW badge. */
-  :global(.mode-pill-shadow) {
-    background: rgba(251,146,60,0.14);
-    color: var(--algo-orange);
-    border-color: rgba(251,146,60,0.45);
-  }
-  /* DRAFT — never placed, no broker round-trip. Dashed + muted so it
-     reads as distinctly "not live" even at a quick glance. */
-  :global(.mode-pill-draft) {
-    background: rgba(126,151,184,0.10);
-    color: var(--algo-muted);
-    border-color: rgba(126,151,184,0.45);
-    border-style: dashed;
-  }
-  /* ARMED — reserved for a future sprint (no rows carry this mode yet).
-     Violet, distinct from every mode above so it's ready when introduced. */
-  :global(.mode-pill-armed) {
-    background: rgba(167,139,250,0.14);
-    color: var(--algo-ai);
-    border-color: rgba(167,139,250,0.45);
-  }
-  /* UNKNOWN — any mode value this function doesn't recognize. Neutral
-     slate, matching OrderTimelineDrawer's otd-mode-unknown palette. */
-  :global(.mode-pill-unknown) {
-    background: rgba(148,163,184,0.15);
-    color: var(--algo-dim);
-    border-color: rgba(148,163,184,0.45);
-  }
+  /* .mode-pill / .mode-pill-* CSS MOVED to app.css (2026-10 round 2) — see
+     that file's own comment. Was `:global()` here, which only loaded on
+     routes that happen to also mount this component; OrderCard.svelte
+     (the shared order-row renderer used by both OrderBook.svelte and this
+     file's own Orders tab) needed the same classes available unconditionally
+     for its new DRAFT pill. The `_modePill`/`*_PILL` JS constants above
+     stay in this file (still no live caller here) — they document the
+     mode→pill mapping; deleting them is an operator decision, not this
+     fix's scope. */
 
   /* Order-status row classes — supplement the existing log-agent-* set.
      CANCELLED: muted slate — the order is gone but not an error. Uses

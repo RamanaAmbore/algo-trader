@@ -24,6 +24,7 @@
    */
 
   import { priceFmt, qtyFmt } from '$lib/format';
+  import { isDraftOrderRow } from '$lib/data/draftOrderRow.js';
   import { formatDualTz } from '$lib/stores';
   import { longPress } from '$lib/actions/longPress.js';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
@@ -80,6 +81,11 @@
   // Status → data-status attribute. .algo-status-card reads this for
   // the left-edge stripe colour; .algo-status-pill child inherits
   // --st-fg / --st-bg / --st-border via the parent's data-status.
+  // A draft (mode='draft') is excluded BEFORE this function runs (see
+  // the template's `data-status` binding below) — its real `status` is
+  // always 'OPEN', which this function would otherwise map to 'running'
+  // (amber, "actively working at the broker"), the exact look a draft
+  // must not carry since it never reached one.
   /** @param {string} s */
   function _statusDataAttr(s) {
     const c = (s || '').toUpperCase();
@@ -183,7 +189,7 @@
   onclick={() => onCardClick?.(order)}
   onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onCardClick?.(order); } }}
   class="algo-status-card text-left p-2.5 transition order-card"
-  data-status={_statusDataAttr(order.status)}>
+  data-status={isDraftOrderRow(order) ? 'inactive' : _statusDataAttr(order.status)}>
   <div class="flex items-center justify-start gap-2 mb-0.5">
     <!-- font-size via inline style (not Tailwind's text-xs) — matches the
          app's own --fs-* scale rather than Tailwind's stock 0.75rem,
@@ -206,11 +212,25 @@
          via --st-fg / --st-bg / --st-border CSS vars. CANCEL_FAILED gets
          a ⚠ prefix and tooltip so the operator can distinguish it from a
          clean CANCELLED row. ml-auto pushes it to the right edge now that
-         the container is justify-start (was justify-between). -->
-    <span class="algo-status-pill ml-auto flex-shrink-0"
-      title={order.status === 'CANCEL_FAILED'
-        ? 'Kill attempt failed — order may still be live at broker. Reconcile or retry kill.'
-        : ''}>{order.status === 'CANCEL_FAILED' ? '⚠ KILL FAILED' : order.status}</span>
+         the container is justify-start (was justify-between).
+         2026-10 round 2: a draft (mode='draft') never reached a broker —
+         its real `status` is always 'OPEN', which would otherwise render
+         exactly like a genuine resting order. Relabel, don't hide: a
+         DRAFT pill replaces the status badge here (reuses the
+         `.mode-pill-draft` token — originally defined in LogPanel.svelte
+         for this exact mode, now lifted to app.css, see that file's
+         `_modePill`) while the row itself stays fully visible in the
+         merged list, just uncounted in every OrderBook/LogPanel status
+         chip (see those files' own fixes). -->
+    {#if isDraftOrderRow(order)}
+      <span class="mode-pill mode-pill-draft ml-auto flex-shrink-0"
+        title="Draft position — never placed, no broker round-trip">DRAFT</span>
+    {:else}
+      <span class="algo-status-pill ml-auto flex-shrink-0"
+        title={order.status === 'CANCEL_FAILED'
+          ? 'Kill attempt failed — order may still be live at broker. Reconcile or retry kill.'
+          : ''}>{order.status === 'CANCEL_FAILED' ? '⚠ KILL FAILED' : order.status}</span>
+    {/if}
     {#if holdInfo}
       <span class="algo-status-pill held-badge ml-1"
         title={`Held: ${holdInfo.reason || holdInfo.category}`}>HELD</span>

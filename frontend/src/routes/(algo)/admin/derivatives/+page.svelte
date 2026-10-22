@@ -6,6 +6,7 @@
   // EV. Strategy analytics auto-refreshes whenever the leg set changes.
 
   import { onMount, onDestroy, untrack } from 'svelte';
+  import { SvelteMap } from 'svelte/reactivity';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import { authStore, marketAwareInterval, visibleInterval, selectedStrategyId, strategyOpenSymbols, includeHoldings, brokerHealthStore, lastRefreshAt } from '$lib/stores';
@@ -75,7 +76,7 @@
     buildAcctMatcher, buildStrategyMatcher,
     annotateOptionCandidates, computeExpiryBands,
     rollupByUnderlying, perRootReduce, interpAt, legPnlTotal,
-    equityLinearLeg, curveBasisEqValue,
+    equityLinearLeg, curveBasisEqValue, isDraftLegIncluded,
   } from '$lib/data/derivativesMath.js';
   import {
     isFOSymbol, buildExpiryMatcher, buildCandidatePositions,
@@ -308,10 +309,11 @@
     }
   }
 
-  // ── Legs grid draft bulk-select (2026-10) ───────────────────────────
-  // Operator selects SPECIFIC draft rows (checkbox in CandidateLegRow,
-  // next to the existing per-row × button) and clears only those — the
-  // header button is "Clear Selected Drafts (N)", never an unconditional
+  // ── Legs grid draft bulk-select (2026-10 round 2) ───────────────────
+  // Operator selects SPECIFIC draft rows — long-press (touch) / right-click
+  // (desktop) via CandidateLegRow's existing `use:longPress` binding, routed
+  // through onContextMenu below — and clears only those — the header
+  // button is "Clear Selected Drafts (N)", never an unconditional
   // clear-everything. Ids are the same `c.draftId` value removeDraft()
   // already accepts (bare local id, or 'pd_<backend id>' for payoffDrafts
   // entries), so clearing just calls removeDraft() per selected id —
@@ -322,12 +324,29 @@
     if (next.has(id)) next.delete(id); else next.add(id);
     _selectedDraftIds = next;
   }
+  // De-dupe window for the long-press/right-click ENTRY gesture only —
+  // mirrors MarketPulse.svelte's identical guard. A mobile browser can
+  // fire a native `contextmenu` event AND longPress.js's own touch timer
+  // for the SAME physical long-press (both are bound to the symbol span —
+  // see CandidateLegRow's `use:longPress`), which would otherwise toggle
+  // a draft row on then immediately back off on every single long-press.
+  /** @type {Map<number|string, number>} */
+  const _draftToggleLastAt = new Map();
+  function _startDraftSelection(/** @type {number|string} */ id) {
+    if (id == null) return;
+    const now = Date.now();
+    const prev = _draftToggleLastAt.get(id);
+    if (prev != null && now - prev < 800) return;
+    _draftToggleLastAt.set(id, now);
+    _toggleDraftSelected(id);
+  }
   function _clearSelectedDrafts() {
     const ids = [..._selectedDraftIds];
     if (!ids.length) return;
     _selectedDraftIds = new Set();
     for (const id of ids) removeDraft(id);
   }
+  function _cancelDraftSelection() { _selectedDraftIds = new Set(); }
   // Prune selections that no longer correspond to a live draft (removed
   // via the per-row × button, executed as a real order, etc.) so the
   // header count never shows a stale, un-removable id.
@@ -490,10 +509,29 @@
   // Former showDraftInPayoff toggle (provisional (~)/draft-store (D)/
   // payoff-draft inclusion gate) REMOVED (2026-10 draft-simplification,
   // .claude/PLAN.md "Simplify draft positions to 'a real position, with
-  // 3 exceptions'") — those legs now always count toward the payoff
-  // curve/analytics, same as any real leg. The existing per-row
-  // `enabledSymbols`/`_isLegEnabled` checkbox is now the only per-leg
-  // inclusion control.
+  // 3 exceptions'") — those legs counted toward the payoff curve/
+  // analytics, same as any real leg, for a while.
+  //
+  // REINSTATED (2026-10 round 2) — scoped per-underlying this time (a
+  // `SvelteMap`, not the deleted global boolean, which needed too much
+  // special-casing). Keyed by the SAME canonical underlying-key form
+  // `selectedUnderlying` comparisons already use elsewhere on this page
+  // (`.toUpperCase()` — see `_strategyStale`'s own comparison), not a
+  // fresh root-resolution helper, so button visibility and gate
+  // application can never drift apart on an MCX virtual-root alias.
+  // Missing key = include (default ON per operator confirmation) —
+  // toggling back ON deletes the key rather than writing `true`, so the
+  // map only grows with real explicit-OFF choices. Session-only: no
+  // localStorage persistence, resets to ON on reload.
+  /** @type {SvelteMap<string, boolean>} */
+  const _draftIncludeByUnderlying = new SvelteMap();
+  function _toggleDraftInclude(/** @type {string} */ key) {
+    if (_draftIncludeByUnderlying.get(key) === false) {
+      _draftIncludeByUnderlying.delete(key);
+    } else {
+      _draftIncludeByUnderlying.set(key, false);
+    }
+  }
   // Composite key for the enabledSymbols map. Plain symbol collided
   // across accounts: a NIFTY24DEC25000PE held in both ZG#### and
   // ZJ#### would share one checkbox, and the candidatesActualPnl
@@ -554,18 +592,23 @@
     _saveEqMemory();
   }
 
-  /** Single source of truth for "is this candidate row contributing to
-   *  the payoff right now?". Derivative legs default ON; equity-
-   *  holding legs default OFF — but eq legs also consult the long-
-   *  term `_eqMemory` so a previously-checked row stays checked
-   *  across page reloads / days / weeks. Session enabledSymbols
-   *  state takes precedence so an explicit toggle inside the page
-   *  reflects immediately.
+  /** The operator's own per-leg checkbox state ONLY — no draft-toggle
+   *  gate folded in. This is what CandidateLegRow's checkbox `checked`
+   *  attribute and `onToggleEnabled` must read/write; feeding it the
+   *  COMBINED `_isLegEnabled` gate instead would make the checkbox look
+   *  unchecked (and un-re-checkable, since the write path is keyed by
+   *  enKey, not the draft map) whenever the per-underlying draft toggle
+   *  is OFF, even though the operator never touched that leg's own
+   *  checkbox. Derivative legs default ON; equity-holding legs default
+   *  OFF — but eq legs also consult the long-term `_eqMemory` so a
+   *  previously-checked row stays checked across page reloads / days /
+   *  weeks. Session enabledSymbols state takes precedence so an explicit
+   *  toggle inside the page reflects immediately.
    *
    * @param {{kind?:string, account?:string, symbol?:string}} c
    * @returns {boolean}
    */
-  function _isLegEnabled(c) {
+  function _isLegChecked(c) {
     const v = enabledSymbols[enKey(c)];
     if (c?.kind === 'eq') {
       if (v === true) return true;
@@ -573,6 +616,25 @@
       return _eqMemory[enKey(c)] === true;
     }
     return v !== false;
+  }
+
+  /** Single source of truth for "is this candidate row contributing to
+   *  the payoff right now?" — the ONE gate every aggregate (payoff curve,
+   *  overlay stat card, Greeks, Snapshot's selected-root EV, Exp P&L /
+   *  extrinsic totals) reads. Combines the operator's own per-leg
+   *  checkbox (`_isLegChecked`) with the per-underlying draft-inclusion
+   *  toggle (2026-10 round 2) — the latter only ever narrows a
+   *  `source==='draft'` leg further, via the pure, unit-tested
+   *  `isDraftLegIncluded` helper in derivativesMath.js. Drives
+   *  CandidateLegRow's `cand-disabled` dimming; does NOT drive its
+   *  checkbox (see `_isLegChecked` above for that).
+   *
+   * @param {{kind?:string, account?:string, symbol?:string, source?:string}} c
+   * @returns {boolean}
+   */
+  function _isLegEnabled(c) {
+    return _isLegChecked(c)
+      && isDraftLegIncluded(c, _draftIncludeByUnderlying, selectedUnderlying.toUpperCase());
   }
 
   // Legs sent to the strategy endpoint — built from candidate positions
@@ -2817,13 +2879,22 @@
   // some off) — set via $effect so the indeterminate flag reflects
   // the live state without us having to manually clear it on toggle.
   let allCandidatesEl = $state(/** @type {HTMLInputElement|null} */ (null));
+  // 2026-10 round 2 fix: reads `_isLegChecked` (the raw per-leg checkbox
+  // state), NOT the combined `_isLegEnabled` gate. The master checkbox's
+  // own job is "is every row's CHECKBOX on" — if this read the combined
+  // gate, a single underlying-scoped draft toggle set to OFF would make
+  // `allCandidatesOn` permanently false even when every checkbox is
+  // genuinely checked, and `toggleAllCandidates()` below would then
+  // always compute `target=true` and write `true` to every already-true
+  // row — a no-op that makes bulk-unchecking impossible while the draft
+  // toggle is OFF.
   const allCandidatesOn = $derived.by(() => {
     if (!candidatePositions.length) return false;
-    return candidatePositions.every(c => _isLegEnabled(c));
+    return candidatePositions.every(c => _isLegChecked(c));
   });
   const someCandidatesOn = $derived.by(() => {
     if (!candidatePositions.length) return false;
-    return candidatePositions.some(c => _isLegEnabled(c));
+    return candidatePositions.some(c => _isLegChecked(c));
   });
   /** True when every enabled non-eq leg has qty=0 (all positions closed today).
    *  Distinct from "no legs selected" (operator unchecked rows) — legs ARE
@@ -2987,6 +3058,14 @@
   // narrower +page.svelte scope.
   $effect(() => {
     void candidatePositions; void enabledSymbols;
+    // 2026-10 round 2 — `_isLegEnabled` also reads
+    // `_draftIncludeByUnderlying` (the per-underlying draft toggle), but
+    // that read happens INSIDE `untrack()` below via `buildPageLegs`.
+    // Without a tracked read of the SAME key here, toggling the draft
+    // button would never re-run this effect — `legs` (and everything
+    // downstream: the payoff curve, Greeks, the strategy refetch gated
+    // on `legs` below) would silently keep the stale, pre-toggle set.
+    void _draftIncludeByUnderlying.get(selectedUnderlying.toUpperCase());
     untrack(() => {
       // 2026-09 audit fix (Defect 1, post-ship): this mapping is now the
       // SAME pure buildPageLegs (pageLoad.js) exercised directly by
@@ -5719,6 +5798,26 @@
           </span>
         </div>
       {/snippet}
+      {#snippet right()}
+        <!-- Scoped per-underlying draft-inclusion toggle (2026-10 round 2).
+             Visible only when the CURRENT underlying (candidatePositions
+             is already scoped to selectedUnderlying) has a draft leg —
+             same `c.source === 'draft'` check the Legs-grid Clear button
+             above uses, so button visibility and the gate inside
+             _isLegEnabled can never disagree on what counts as a draft. -->
+        {#if candidatePositions.some(c => c.source === 'draft')}
+          {@const _draftKey = selectedUnderlying.toUpperCase()}
+          {@const _draftOn = _draftIncludeByUnderlying.get(_draftKey) !== false}
+          <button type="button" class="payoff-draft-toggle"
+            class:is-on={_draftOn}
+            onclick={() => _toggleDraftInclude(_draftKey)}
+            title={_draftOn
+              ? `Draft legs on ${selectedUnderlying} count toward payoff/Greeks/Snapshot — click to exclude`
+              : `Draft legs on ${selectedUnderlying} are excluded from payoff/Greeks/Snapshot — click to include`}>
+            DRAFT {_draftOn ? 'ON' : 'OFF'}
+          </button>
+        {/if}
+      {/snippet}
     </CardHeader>
     <!--
       When the backend says spot_source='fallback' (e.g. CRUDEOIL
@@ -5835,9 +5934,18 @@
         />
       {/snippet}
       {#snippet right()}
-        {#if candidatePositions.some(c => c.source === 'draft')}
+        <!-- 2026-10 round 2: hidden entirely at 0 selected (was: always
+             rendered, disabled) — selection starts via long-press/
+             right-click on a draft row, not a checkbox. Cancel/✕ sits
+             alongside so the operator can exit selection without
+             deleting anything. -->
+        {#if candidatePositions.some(c => c.source === 'draft') && _selectedDraftIds.size > 0}
+          <button type="button" class="legs-draft-cancel-btn"
+            onclick={_cancelDraftSelection}
+            title="Exit selection without removing anything">
+            ✕
+          </button>
           <button type="button" class="legs-clear-drafts-btn"
-            disabled={_selectedDraftIds.size === 0}
             onclick={_clearSelectedDrafts}
             title="Remove the selected draft position(s) from the Payoff store — not a real broker order">
             Clear Selected Drafts ({_selectedDraftIds.size})
@@ -5998,6 +6106,7 @@
               legAnalytics={legAnalyticsBySymbol[c.symbol]}
               pendingQty={$openOrderQtyBySymbol[c.symbol] ?? 0}
               enabled={_isLegEnabled(c)}
+              checked={_isLegChecked(c)}
               dayPnl={_candDayPnl(c)}
               expPnl={_legExpPnlLive(c)}
               extrinsic={legExtrinsicDisplay(c, Number(c?.underlying_ltp) || 0)}
@@ -6010,11 +6119,25 @@
                 enabledSymbols = next;
                 if (candidate.kind === 'eq') _persistEqMemory(candidate, checked);
               }}
-              onExecuteDraft={executeDraft}
+              onExecuteDraft={(candidate) => {
+                // Selection mode active (2026-10 round 2, mirrors
+                // MarketPulse.svelte's identical handleRowClick branch) —
+                // once at least one draft is selected (long-press/right-
+                // click), a plain click on ANY draft row toggles its
+                // membership instead of opening the promote-to-real
+                // ticket. No dedupe guard needed here — a plain click is
+                // a single DOM click event, not a gesture a mobile
+                // browser can double-fire the way long-press/contextmenu
+                // can.
+                if (_selectedDraftIds.size > 0 && candidate.draftId != null) {
+                  _toggleDraftSelected(candidate.draftId);
+                  return;
+                }
+                executeDraft(candidate);
+              }}
               onClosePosition={closePosition}
               onRemoveDraft={removeDraft}
               draftSelected={c.draftId != null && _selectedDraftIds.has(c.draftId)}
-              onToggleDraftSelected={_toggleDraftSelected}
               onOpenChartTicket={(candidate) => openTicket({
                 symbol:    candidate.symbol,
                 exchange:  'NFO',
@@ -6023,6 +6146,14 @@
                 account:   _rowTicketAccount(candidate),
               })}
               onContextMenu={(candidate, ev) => {
+                // Draft rows (2026-10 round 2): long-press/right-click
+                // means "select for clear", not the real-position context
+                // menu — mirrors MarketPulse.svelte's identical swap. Real
+                // rows are unaffected.
+                if (candidate.source === 'draft') {
+                  if (candidate.draftId != null) _startDraftSelection(candidate.draftId);
+                  return;
+                }
                 _ctxMenu = { symbol: candidate.symbol, exchange: candidate.exchange || 'NFO', x: ev.clientX, y: ev.clientY };
               }}
             />
@@ -7170,17 +7301,18 @@
   }
 
   /* .cand-draft-payoff-bar / .cand-draft-payoff-toggle / .cand-draft-
-     payoff-label REMOVED (2026-10 draft-simplification) along with the
-     showDraftInPayoff toggle markup above — the per-row
-     enabledSymbols/_isLegEnabled checkbox is now the only per-leg
-     inclusion control. */
+     payoff-label (the former GLOBAL showDraftInPayoff toggle) REMOVED
+     (2026-10 draft-simplification). A scoped, per-underlying replacement
+     (`.payoff-draft-toggle`, near the Payoff chart header) was reinstated
+     in round 2 — see that button's own CSS below. */
 
-  /* Legs grid header "Clear Selected Drafts (N)" button (2026-10) — same
-     small outline-button chrome as MarketPulse's mp-clear-drafts-btn /
+  /* Legs grid header "Clear Selected Drafts (N)" button (2026-10, round 2:
+     selection via long-press/right-click, not a checkbox) — same small
+     outline-button chrome as MarketPulse's mp-clear-drafts-btn /
      HeldOrdersCard's "Release all" button. Red (--btn-sell-*) since this
      is a destructive bulk-remove action. Removes only the draft rows the
-     operator checked (CandidateLegRow's .cand-draft-select checkboxes),
-     never every draft unconditionally. */
+     operator selected, never every draft unconditionally. Only rendered
+     once something is selected, so no :disabled state needed. */
   .legs-clear-drafts-btn {
     padding: 2px 8px;
     border: 1px solid var(--btn-sell-border);
@@ -7192,8 +7324,44 @@
     flex-shrink: 0;
     white-space: nowrap;
   }
-  .legs-clear-drafts-btn:hover:not(:disabled) { background: var(--btn-sell-bg-hi); }
-  .legs-clear-drafts-btn:disabled { opacity: var(--btn-disabled-opacity); cursor: default; }
+  .legs-clear-drafts-btn:hover { background: var(--btn-sell-bg-hi); }
+  /* Cancel/✕ — exits selection mode without deleting anything. Same
+     neutral close-button chrome as MarketPulse's .mp-draft-cancel-btn. */
+  .legs-draft-cancel-btn {
+    background: var(--close-btn-neutral-bg);
+    border: none;
+    border-radius: 3px;
+    color: var(--algo-muted);
+    font-size: var(--fs-sm);
+    cursor: pointer;
+    line-height: 1;
+    padding: 2px 6px;
+    flex-shrink: 0;
+  }
+  .legs-draft-cancel-btn:hover { color: var(--algo-slate); background: var(--close-btn-neutral-bg-hover); }
+
+  /* Payoff draft-inclusion toggle (2026-10 round 2) — scoped per-underlying
+     replacement for the deleted global showDraftInPayoff toggle. Lives in
+     the Payoff CardHeader's right() snippet, visible only when the
+     current underlying has a draft leg. Amber action-palette "on" state
+     (matches the app's action/amber convention for a live toggle),
+     neutral/muted when off. */
+  .payoff-draft-toggle {
+    padding: 2px 8px;
+    border: 1px solid var(--algo-amber-border, rgba(251,191,36,0.45));
+    border-radius: var(--btn-radius);
+    cursor: pointer;
+    font-size: var(--fs-sm);
+    flex-shrink: 0;
+    white-space: nowrap;
+    background: transparent;
+    color: var(--algo-muted);
+  }
+  .payoff-draft-toggle.is-on {
+    color: var(--c-action);
+    background: var(--algo-amber-bg, rgba(251,191,36,0.14));
+  }
+  .payoff-draft-toggle:hover { background: var(--algo-amber-bg, rgba(251,191,36,0.14)); }
 
   /* Candidate row status chips — open/closed order state indicators. */
   .cand-status-chip {

@@ -2172,12 +2172,21 @@
     return t ? [t] : [];
   });
 
-  // ── Draft-row bulk selection (2026-10) ──────────────────────────────
-  // Operator can select SPECIFIC draft rows (checkbox in the symbol cell,
-  // see symRenderer) and clear only those — NOT a single unconditional
-  // "clear everything" button (payoffDrafts.clear() is deliberately never
-  // called here). Ids are the real backend draft id (payoffDrafts entry.id,
-  // a number) — same value carried on each draft row as `draftId`.
+  // ── Draft-row bulk selection (2026-10, round 2: long-press/right-click) ─
+  // Operator can select SPECIFIC draft rows and clear only those — NOT a
+  // single unconditional "clear everything" button (payoffDrafts.clear()
+  // is deliberately never called here). Ids are the real backend draft id
+  // (payoffDrafts entry.id, a number) — same value carried on each draft
+  // row as `draftId`.
+  //
+  // Selection entry point is now a long-press (touch, see
+  // _bindDraftTouchLongPress) or right-click (desktop, see the
+  // onCellContextMenu branch in makeBucketGrid) on a draft row — the old
+  // per-row `.draft-select-cb` checkbox is gone. Once at least one draft
+  // is selected, a plain click on ANY OTHER draft row toggles its
+  // membership too (see handleRowClick) instead of opening the
+  // promote-to-real ticket, so the operator can multi-select without
+  // repeating the long-press/right-click gesture per row.
   let _selectedDraftIds = $state(/** @type {Set<number>} */ (new Set()));
   const _draftRowsPresent = $derived(positionsRows.some(r => r.source === 'draft'));
   // Prune selections that no longer correspond to a live draft (removed
@@ -2203,6 +2212,13 @@
     const ids = [..._selectedDraftIds];
     if (!ids.length) return;
     _selectedDraftIds = new Set();
+    // Redraw immediately so the `.draft-row-selected` tint clears from
+    // every row right away (getRowClass only re-evaluates on redraw, see
+    // _toggleDraftSelectedAndRedraw) — without this, a draft whose
+    // `remove()` below fails (network blip) stays in the grid still
+    // visually "selected" even though _selectedDraftIds is now empty,
+    // until some unrelated poll happens to trigger the next redraw.
+    try { gridPositions?.redrawRows(); } catch (_) {}
     await Promise.all(ids.map(id => payoffDrafts.remove(id)));
   }
 
@@ -3632,16 +3648,20 @@
     const provChip = row._provisional
       ? '<span class="sym-provisional" title="Provisional — awaiting broker confirmation">~</span>'
       : '';
-    // Draft rows (2026-10) — bulk-removal checkbox. Native <input>, not a
-    // data-attribute span like sym-remove/sym-actions, but the same
-    // click-delegation pattern: _tryHandleRowButton intercepts the click
-    // via target.closest('.draft-select-cb'), toggles _selectedDraftIds,
-    // and force-refreshes this column so the checked attribute (driven by
-    // the Set, not native DOM state) stays the single source of truth.
-    const draftCb = (isDraftRow && row.draftId != null)
-      ? `<input type="checkbox" class="draft-select-cb" data-draft-id="${row.draftId}" ${_selectedDraftIds.has(Number(row.draftId)) ? 'checked' : ''} title="Select this draft for removal" aria-label="Select draft ${row.tradingsymbol || ''} for removal" />`
+    // Draft rows (2026-10 round 2) — the bulk-removal checkbox is gone;
+    // selection now happens via long-press (touch, _bindDraftTouchLongPress)
+    // or right-click (desktop, onCellContextMenu in makeBucketGrid). This
+    // wrapper carries `data-draft-id` so both delegated handlers can
+    // resolve the draft id from the DOM without a per-row listener (ag-Grid
+    // cellRenderer output is a plain HTML string that gets torn down on
+    // virtualization), and a `title` tooltip for discoverability — the
+    // header "Clear Selected Drafts" button stays hidden until something
+    // is selected, so this is the only passive hint on the row itself.
+    const draftWrapOpen = (isDraftRow && row.draftId != null)
+      ? `<span class="draft-row-hit" data-draft-id="${row.draftId}" title="Right-click or long-press to select for removal">`
       : '';
-    return `${draftCb}${provChip}<span class="sym-main ${optClass}"${symTitle}>${main}</span>${lotChip}${aliasTail}${badgeHtml}${removeBtn}${moveBtns}${actionsBtn}${dirLabel}`;
+    const draftWrapClose = draftWrapOpen ? '</span>' : '';
+    return `${draftWrapOpen}${provChip}<span class="sym-main ${optClass}"${symTitle}>${main}</span>${lotChip}${aliasTail}${badgeHtml}${removeBtn}${moveBtns}${actionsBtn}${dirLabel}${draftWrapClose}`;
   }
 
   // ag-Grid `cellRenderer` callbacks receive a single `params` arg — this
@@ -3756,7 +3776,15 @@
     classes.push(..._sourceRowClasses(r, s));
     if (r.account_stale === true) classes.push('row-account-stale');
     if (r._provisional === true) classes.push('row-provisional');
-    if (r.source === 'draft') classes.push('row-draft');
+    if (r.source === 'draft') {
+      classes.push('row-draft');
+      // Long-press/right-click selected-for-clear state (2026-10 round 2) —
+      // tint/border on top of the base row-draft tint, requires
+      // redrawRows() (not refreshCells) to re-apply after toggling.
+      if (r.draftId != null && _selectedDraftIds.has(Number(r.draftId))) {
+        classes.push('draft-row-selected');
+      }
+    }
     return classes.join(' ');
   }
 
@@ -3934,7 +3962,25 @@
         animateRows: false,
         onRowClicked: handleRowClick,
         onCellContextMenu: (ev) => {
-          if (ev.data) openContextMenu(ev.event, ev.data);
+          if (!ev.data) return;
+          // Draft rows (2026-10 round 2): right-click means "select for
+          // clear", not the real-position context menu — that menu's own
+          // "Place order →" entry (ctxOpenTicket) is a non-draft-aware
+          // ticket path that bypasses the draftId-threaded promote flow
+          // handleRowClick already opens on a plain click, so swapping the
+          // gesture here is a clean win, not a loss. Real rows are
+          // unaffected (unchanged openContextMenu branch below).
+          if (ev.data.source === 'draft') {
+            ev.event?.preventDefault?.();
+            // _startDraftSelection (not the bare toggle) — a mobile browser
+            // can fire this SAME native `contextmenu` event AND our own
+            // touch-timer (_bindDraftTouchLongPress) for one physical
+            // long-press; the de-dupe guard inside it stops the pair from
+            // toggling the row on then immediately off.
+            _startDraftSelection(Number(ev.data.draftId));
+            return;
+          }
+          openContextMenu(ev.event, ev.data);
         },
         ...extraOpts,
       });
@@ -3996,6 +4042,9 @@
           onFilterChanged: () => _applyPinnedTotal(gridPositions, _lastPositionsTotalRows),
         });
       gridPositionsReady = true;
+      // Draft-row long-press select (2026-10 round 2, mobile gesture pair
+      // to the onCellContextMenu right-click branch above).
+      _bindDraftTouchLongPress(gridPositionsEl);
     }
     if (gridHoldingsEl) {
       gridHoldings = makeBucketGrid(gridHoldingsEl, holdingsColDefs,
@@ -4125,21 +4174,43 @@
       }
       return true;
     }
-    // Draft-row bulk-removal checkbox (2026-10) — preventDefault blocks the
-    // browser's own native checkbox toggle so the checked attribute stays
-    // driven exclusively by _selectedDraftIds (the Set), not by whatever
-    // the DOM happens to do first; the force-refresh below re-renders this
-    // cell from that Set so the box visibly reflects the new selection.
-    const draftCb = target?.closest?.('.draft-select-cb');
-    if (draftCb) {
-      ev.event?.preventDefault?.();
-      ev.event?.stopPropagation?.();
-      const id = Number(draftCb.getAttribute('data-draft-id'));
-      if (Number.isFinite(id)) _toggleDraftSelected(id);
-      try { gridPositions?.refreshCells({ columns: ['tradingsymbol'], force: true }); } catch (_) {}
-      return true;
-    }
     return false;
+  }
+
+  // De-dupe window for the selection-ENTRY gesture (long-press / right-
+  // click) — NOT applied to the plain-click "toggle membership once
+  // already selecting" path below, which is a separate single click per
+  // call and has no double-fire risk of its own. Two real browser
+  // behaviours can fire the SAME physical long-press/right-click twice:
+  // (1) mobile browsers (confirmed on Android) can emit a native
+  // `contextmenu` event AND complete our own touch timer for one press,
+  // and (2) ag-Grid's `onCellContextMenu` can also see that native event.
+  // Without this, one long-press toggled a row on then immediately off.
+  /** @type {Map<number, number>} */
+  const _draftToggleLastAt = new Map();
+  function _draftToggleShouldFire(/** @type {number} */ id) {
+    const now = Date.now();
+    const prev = _draftToggleLastAt.get(id);
+    if (prev != null && now - prev < 800) return false;
+    _draftToggleLastAt.set(id, now);
+    return true;
+  }
+
+  /** Toggle one draft row's selection membership and redraw so the
+   *  `.draft-row-selected` row class (applied via getRowClass) picks up
+   *  the change — `redrawRows()` (not refreshCells) because getRowClass
+   *  is only re-evaluated on a row redraw, not a cell-level refresh. */
+  function _toggleDraftSelectedAndRedraw(/** @type {number} */ id) {
+    if (!Number.isFinite(id)) return;
+    _toggleDraftSelected(id);
+    try { gridPositions?.redrawRows(); } catch (_) {}
+  }
+
+  /** Entry-point wrapper for the long-press/right-click GESTURE only —
+   *  applies the double-fire guard above, then toggles. */
+  function _startDraftSelection(/** @type {number} */ id) {
+    if (!Number.isFinite(id) || !_draftToggleShouldFire(id)) return;
+    _toggleDraftSelectedAndRedraw(id);
   }
 
   // Derive BUY/SELL side from the position's signed qty.
@@ -4241,12 +4312,80 @@
     if (!ev.data) return;
     const target = /** @type {HTMLElement | null} */ (ev.event?.target ?? null);
     if (_tryHandleRowButton(ev, target)) return;
-    if (!allowOrders) return;
     if (ev.data.source === 'draft') {
+      // Selection mode active (2026-10 round 2) — once at least one draft
+      // is selected (via long-press/right-click), a plain click on ANY
+      // draft row toggles its membership instead of opening the
+      // promote-to-real ticket. Independent of `allowOrders` — selecting
+      // a draft for removal isn't placing an order.
+      if (_selectedDraftIds.size > 0) {
+        _toggleDraftSelectedAndRedraw(Number(ev.data.draftId));
+        return;
+      }
+      if (!allowOrders) return;
       await _openTicketFromDraftRow(ev.data);
       return;
     }
+    if (!allowOrders) return;
     await _openTicketFromRow(ev.data);
+  }
+
+  /** Mobile long-press for draft-row selection (2026-10 round 2). Desktop
+   *  right-click is covered by onCellContextMenu above (native `contextmenu`
+   *  event, reliable on desktop); on touch devices that event is
+   *  unreliable across browsers after a long press (the same reason
+   *  longPress.js exists for the derivatives Legs grid). ag-Grid's
+   *  cellRenderer output is a plain HTML string that gets torn down on
+   *  virtualization, so a per-row `use:longPress` Svelte action (as
+   *  CandidateLegRow.svelte uses for its own {#each}-rendered rows) can't
+   *  be attached here — this delegates the SAME 500ms-press timer on the
+   *  grid's container element instead, identifying the row via
+   *  `target.closest('[data-draft-id]')` (set by symRenderer on draft
+   *  rows only).
+   *
+   *  Mirrors longPress.js's own `fired`-flag + capture-phase click
+   *  suppression (that file's lines 11/19-21/37-45) — without it, the
+   *  synthetic `click` a browser fires after `touchend` reaches
+   *  `handleRowClick` a moment after the timer already selected the row,
+   *  and since selection mode is now active that click immediately
+   *  toggles the SAME row back off. Handles `pointercancel`-equivalent
+   *  touch events (touchend/touchcancel/touchmove) exactly like
+   *  longPress.js. */
+  function _bindDraftTouchLongPress(/** @type {HTMLElement | null} */ el) {
+    if (!el) return;
+    const DELAY = 500;
+    /** @type {ReturnType<typeof setTimeout> | null} */
+    let timer = null;
+    let fired = false;
+    function clearTimer() { if (timer) clearTimeout(timer); timer = null; }
+    function onTouchStart(/** @type {TouchEvent} */ e) {
+      clearTimer();
+      fired = false;
+      const hit = /** @type {HTMLElement | null} */ (e.target)?.closest?.('[data-draft-id]');
+      if (!hit) return;
+      const id = Number(hit.getAttribute('data-draft-id'));
+      timer = setTimeout(() => {
+        timer = null;
+        fired = true;
+        _startDraftSelection(id);
+      }, DELAY);
+    }
+    el.addEventListener('touchstart', onTouchStart, { passive: true });
+    el.addEventListener('touchend',    clearTimer);
+    el.addEventListener('touchcancel', clearTimer);
+    el.addEventListener('touchmove',   clearTimer);
+    // Capture phase so this runs BEFORE ag-Grid's own row click listener
+    // (attached directly on the `.ag-row` element, bubble phase) — fired
+    // stays true only for the trailing synthetic click right after the
+    // timer selected a row, then resets so a genuinely separate next tap
+    // is never swallowed.
+    el.addEventListener('click', (e) => {
+      if (fired) {
+        e.preventDefault();
+        e.stopPropagation();
+        fired = false;
+      }
+    }, { capture: true });
   }
 
   function openTicket(p) { ticketProps = { defaultTab: 'ticket', ...p }; }
@@ -4749,9 +4888,21 @@
               {/if}
             {/snippet}
             {#snippet right()}
-              {#if _draftRowsPresent}
+              <!-- 2026-10 round 2: button hidden entirely at 0 selected
+                   (was: always rendered, disabled) — selection mode starts
+                   via long-press/right-click on a draft row, not a
+                   checkbox. Cancel/✕ sits alongside so the operator can
+                   exit selection without deleting anything. -->
+              {#if _draftRowsPresent && _selectedDraftIds.size > 0}
+                <button type="button" class="mp-draft-cancel-btn"
+                  onclick={() => {
+                    _selectedDraftIds = new Set();
+                    try { gridPositions?.redrawRows(); } catch (_) {}
+                  }}
+                  title="Exit selection without removing anything">
+                  ✕
+                </button>
                 <button type="button" class="mp-clear-drafts-btn"
-                  disabled={_selectedDraftIds.size === 0}
                   onclick={_clearSelectedDrafts}
                   title="Remove the selected draft position(s) from the Payoff store — not a real broker order">
                   Clear Selected Drafts ({_selectedDraftIds.size})
@@ -5040,18 +5191,26 @@
   :global(.ag-theme-algo .ag-row.row-draft .ag-col-sym) {
     box-shadow: inset 2px 0 0 rgba(240,171,252,0.85);
   }
-  /* Bulk-removal checkbox on a draft row's symbol cell (see symRenderer). */
-  :global(.draft-select-cb) {
-    accent-color: #f0abfc;
-    width: 0.85rem;
-    height: 0.85rem;
-    margin-right: 4px;
-    cursor: pointer;
-    vertical-align: middle;
+  /* Selected-for-clear state (2026-10 round 2) — long-press/right-click
+     toggles this on top of the base .row-draft tint above; brighter
+     magenta background + a stronger symbol-cell inset bar so a selected
+     draft row reads as "armed for removal" distinctly from a merely
+     unselected draft row. Replaces the removed `.draft-select-cb`
+     checkbox's visual role. */
+  :global(.ag-theme-algo .ag-row.row-draft.draft-row-selected) {
+    background-color: rgba(240,171,252,0.14);
+  }
+  :global(.ag-theme-algo .ag-row.row-draft.draft-row-selected .ag-col-fill) {
+    background-color: rgba(240,171,252,0.18) !important;
+  }
+  :global(.ag-theme-algo .ag-row.row-draft.draft-row-selected .ag-col-sym) {
+    box-shadow: inset 3px 0 0 #f0abfc;
   }
   /* Header "Clear Selected Drafts (N)" button — Positions card. Same small
      outline-button chrome as HeldOrdersCard's "Release all" button, red
-     (--btn-sell-*) since this is a destructive bulk-remove action. */
+     (--btn-sell-*) since this is a destructive bulk-remove action. Only
+     rendered once something is selected (2026-10 round 2), so no
+     :disabled state needed any more. */
   .mp-clear-drafts-btn {
     padding: 2px 8px;
     border: 1px solid var(--btn-sell-border);
@@ -5063,8 +5222,23 @@
     flex-shrink: 0;
     white-space: nowrap;
   }
-  .mp-clear-drafts-btn:hover:not(:disabled) { background: var(--btn-sell-bg-hi); }
-  .mp-clear-drafts-btn:disabled { opacity: var(--btn-disabled-opacity); cursor: default; }
+  .mp-clear-drafts-btn:hover { background: var(--btn-sell-bg-hi); }
+  /* Cancel/✕ — exits selection mode without deleting anything. Neutral
+     close-button chrome (same `--close-btn-neutral-bg` tokens PnlAnalysis/
+     ShortcutCheatsheet use for their own ✕ buttons), not the destructive
+     red of Clear, so the two are visually distinct at a glance. */
+  .mp-draft-cancel-btn {
+    background: var(--close-btn-neutral-bg);
+    border: none;
+    border-radius: 3px;
+    color: var(--algo-muted);
+    font-size: var(--fs-sm);
+    cursor: pointer;
+    line-height: 1;
+    padding: 2px 6px;
+    flex-shrink: 0;
+  }
+  .mp-draft-cancel-btn:hover { color: var(--algo-slate); background: var(--close-btn-neutral-bg-hover); }
 
   /* Source badges (P / H / W / U) — sit right of the symbol. */
   :global(.sym-badges) {

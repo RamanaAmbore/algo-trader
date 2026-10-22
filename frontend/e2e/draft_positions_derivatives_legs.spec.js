@@ -2,9 +2,10 @@
  * draft_positions_derivatives_legs.spec.js
  *
  * 2026-10-21 — draft positions on the derivatives page's Legs grid.
- *   C. Select + "Clear Selected Drafts (N)": the header button counts only
- *      checked draft rows, is disabled at 0, and removes exactly the checked
- *      ids (one DELETE each via payoffDrafts.remove) — unchecked drafts survive.
+ *   C. Select via right-click / long-press on a draft leg (no checkbox). The
+ *      "Clear Selected Drafts (N)" and ✕ Cancel buttons are absent at 0 selected,
+ *      appear once selection starts; Clear removes exactly the selected ids
+ *      (one DELETE each) and unselected drafts survive; Cancel issues no DELETE.
  *   D. Click-to-promote: clicking a draft row body (not its checkbox) opens
  *      the SymbolPanel ticket restricted to Ticket + Chart tabs, nothing is
  *      sent to the broker until Submit, and a confirmed paper/live submit
@@ -44,21 +45,51 @@ test.describe('Derivatives Legs — select and clear drafts', () => {
     await page.goto(DERIV, { waitUntil: 'domcontentloaded', timeout: 30_000 });
 
     const clearBtn = page.locator('.legs-clear-drafts-btn');
-    await expect(clearBtn).toBeVisible({ timeout: LEG_WAIT });
-    await expect(clearBtn).toBeDisabled();
-    await expect(clearBtn).toHaveText(/Clear Selected Drafts \(0\)/);
-
+    const cancelBtn = page.locator('.legs-draft-cancel-btn');
     await skipUnlessRendered(draftLeg(page, 'OCT26'), 'OCT26 draft leg');
-    await draftLeg(page, 'OCT26').locator('.cand-draft-select').check();
+
+    // Nothing selected: both controls absent from the DOM, not merely disabled.
+    await expect(clearBtn).toHaveCount(0);
+    await expect(cancelBtn).toHaveCount(0);
+    await expect(page.locator('.cand-draft-select')).toHaveCount(0);
+
+    // Right-click the OCT26 draft leg to select it.
+    await draftLeg(page, 'OCT26').click({ button: 'right' });
+    await expect(clearBtn).toBeVisible({ timeout: 10_000 });
     await expect(clearBtn).toHaveText(/Clear Selected Drafts \(1\)/);
-    await expect(clearBtn).toBeEnabled();
+    await expect(cancelBtn).toBeVisible();
+    await expect(draftLeg(page, 'OCT26')).toHaveClass(/cand-draft-selected/);
 
     await clearBtn.click();
     await expect.poll(() => state.calls.filter((c) => c.method === 'DELETE').map((c) => c.id), { timeout: 15_000 })
       .toEqual([9001]);
-    // Unchecked NOV26 draft survives; the checked OCT26 one is gone.
+    // Unselected NOV26 draft survives; the selected OCT26 one is gone.
     await expect(draftLeg(page, 'NOV26')).toBeVisible();
-    await expect(page.locator('.cand-row.cand-draft', { hasText: 'OCT26' })).toHaveCount(0);
+    await expect(page.locator('.cand-row.cand-draft', { hasText: 'OCT26' })).toHaveCount(0, { timeout: 15_000 });
+    await expect(clearBtn).toHaveCount(0);
+  });
+
+  test('C2: Cancel (✕) empties the selection without issuing any DELETE', async ({ page }) => {
+    test.setTimeout(260_000);
+    await loginAsAdmin(page);
+    const state = await mockDrafts(page, ROWS);
+    await page.goto(DERIV, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+
+    await skipUnlessRendered(draftLeg(page, 'OCT26'), 'OCT26 draft leg');
+    const clearBtn = page.locator('.legs-clear-drafts-btn');
+    const cancelBtn = page.locator('.legs-draft-cancel-btn');
+
+    await draftLeg(page, 'OCT26').click({ button: 'right' });
+    await expect(clearBtn).toHaveText(/Clear Selected Drafts \(1\)/);
+
+    await cancelBtn.click();
+    await expect(clearBtn).toHaveCount(0);
+    await expect(cancelBtn).toHaveCount(0);
+    await expect(page.locator('.cand-row.cand-draft-selected')).toHaveCount(0);
+    // Both drafts still rendered, and no DELETE went out.
+    await expect(draftLeg(page, 'OCT26')).toBeVisible();
+    await expect(draftLeg(page, 'NOV26')).toBeVisible();
+    expect(state.calls.filter((c) => c.method === 'DELETE')).toHaveLength(0);
   });
 });
 
@@ -75,6 +106,15 @@ test.describe('Derivatives Legs — click-to-promote a draft', () => {
       await route.fulfill({
         status: 200, contentType: 'application/json',
         body: JSON.stringify({ status: 'ok', order_id: 1 }),
+      });
+    });
+    // Mock execution mode as paper so the pre-existing "Engine is idle —
+    // pick PAPER/SIM/REPLAY" guard doesn't block Submit from ever reaching
+    // the ticket endpoint (same pattern as draft_positions_pulse.spec.js D).
+    await page.route('**/api/admin/execution/mode', (route) => {
+      route.fulfill({
+        status: 200, contentType: 'application/json',
+        body: JSON.stringify({ mode: 'paper', paper_trading_mode: true, dev_active: true }),
       });
     });
     await page.goto(DERIV, { waitUntil: 'domcontentloaded', timeout: 30_000 });
