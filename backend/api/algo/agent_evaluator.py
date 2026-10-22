@@ -495,14 +495,53 @@ def evaluate(cond: dict, ctx: Context, _visited: set | None = None) -> list[dict
     return _eval_leaf(cond, ctx)
 
 
-def _all_matches_account_keyed(matches: list[dict]) -> bool:
-    """True when EVERY match in the list carries a real per-account row
-    (account not None and not 'TOTAL'). Used by `_eval_all` to decide
-    whether a child's matches can participate in the cross-account join —
+def _match_join_key(m: dict) -> "tuple | None":
+    """Return a typed join key for cross-row AND-intersection.
+
+    Fix B (underlying-divergence feature) — generalizes the old account-
+    only `_all_matches_account_keyed` predicate into a TYPED key so
+    `_eval_all` can recognize "underlying" as a second join dimension
+    alongside "account", without ever conflating the two (an account-
+    keyed child and an underlying-keyed child have no shared identity to
+    intersect against — see `_eval_all`'s docstring).
+
+    Returns:
+      ('acct', account)      — a real per-account row (account not None,
+                                not 'TOTAL').
+      ('und', underlying)    — no real account identity, but a real
+                                `underlying` (e.g. a `positions.
+                                any_underlying` match, which rolls up
+                                across every account holding that
+                                underlying and so carries no single
+                                `account`).
+      None                   — unkeyed (TOTAL-scoped leaves, watchlist
+                                rows, `not` synthetic matches, …) — not
+                                part of any intersection.
+    """
+    acct = m.get('account')
+    if acct not in (None, 'TOTAL'):
+        return ('acct', acct)
+    underlying = m.get('underlying')
+    if underlying:
+        return ('und', underlying)
+    return None
+
+
+def _all_matches_keyed_by(matches: list[dict], key_type: str) -> bool:
+    """True when EVERY match in the list carries a join key of the given
+    TYPE ('acct' or 'und'). Used by `_eval_all` to decide whether a
+    child's matches can participate in that dimension's cross-row join —
     extracted to keep `_eval_all` below the radon complexity gate."""
-    return bool(matches) and all(
-        m.get('account') not in (None, 'TOTAL') for m in matches
-    )
+    if not matches:
+        return False
+    for m in matches:
+        jk = _match_join_key(m)
+        if jk is None or jk[0] != key_type:
+            return False
+    return True
+
+
+_JOIN_KEY_TYPES = ('acct', 'und')
 
 
 def _eval_all(children: list, ctx: Context, _visited: set | None) -> list[dict]:
@@ -516,13 +555,21 @@ def _eval_all(children: list, ctx: Context, _visited: set | None) -> list[dict]:
     account's `avail_margin=373828.52` — each leaf matched on its own
     account, and the flatten made that look like an AND-satisfied fire).
 
-    Fix: when 2+ sibling leaves each produce matches that are ALL keyed
-    to a real per-account row (not TOTAL, not None), only accounts
-    present in EVERY such child's match set survive — a genuine row-level
-    AND. Children whose matches aren't account-keyed (TOTAL-scoped leaves,
-    watchlist rows, `not` synthetic matches, …) are not part of the
-    intersection — they behave as plain independent AND gates, same as
-    before, since there's no "same account" concept to violate for them.
+    Fix B (underlying-divergence feature) — the SAME bug exists on the
+    underlying dimension: `all[underlying_loss_divergence@any_underlying,
+    any[pnl_rate_abs@any_underlying, pnl_rate_pct@any_underlying]]` could
+    fire when underlying A breaches the divergence leaf and a DIFFERENT
+    underlying B independently breaches the rate leaf — no single
+    underlying satisfied the whole tree. Generalized: for EACH join-key
+    TYPE independently ('acct' then 'und'), when 2+ sibling children each
+    produce matches that are ALL keyed to that same type, only the keys
+    (accounts, or underlyings) present in EVERY such child's match set
+    survive — a genuine row-level AND for that dimension. An account-keyed
+    child is never intersected against an underlying-keyed child (no
+    shared identity). Children with fewer than 2 same-typed siblings, or
+    no join key at all (TOTAL-scoped leaves, watchlist rows, `not`
+    synthetic matches, …), behave as plain independent AND gates, same as
+    before — there's no "same row" concept to violate for them.
     """
     per_child: list[list[dict]] = []
     for c in children:
@@ -531,27 +578,25 @@ def _eval_all(children: list, ctx: Context, _visited: set | None) -> list[dict]:
             return []  # short-circuit — one child false ⇒ AND false
         per_child.append(m)
 
-    keyed   = [mc for mc in per_child if _all_matches_account_keyed(mc)]
-    unkeyed = [mc for mc in per_child if not _all_matches_account_keyed(mc)]
+    consumed = [False] * len(per_child)
+    out: list[dict] = []
+    for key_type in _JOIN_KEY_TYPES:
+        idx = [i for i, mc in enumerate(per_child) if _all_matches_keyed_by(mc, key_type)]
+        if len(idx) < 2:
+            # No cross-row ambiguity possible for this join dimension —
+            # at most one same-typed keyed child, nothing to intersect.
+            continue
+        key_sets = [{_match_join_key(m)[1] for m in per_child[i]} for i in idx]
+        common = set.intersection(*key_sets)
+        if not common:
+            return []  # no row satisfied every leaf of this dimension — AND is false
+        for i in idx:
+            out.extend(m for m in per_child[i] if _match_join_key(m)[1] in common)
+            consumed[i] = True
 
-    if len(keyed) < 2:
-        # No cross-account ambiguity possible — at most one account-keyed
-        # child, so nothing to intersect against. Preserve old behaviour.
-        out: list[dict] = []
-        for mc in per_child:
+    for i, mc in enumerate(per_child):
+        if not consumed[i]:
             out.extend(mc)
-        return out
-
-    acct_sets = [{m.get('account') for m in mc} for mc in keyed]
-    common_accounts = set.intersection(*acct_sets)
-    if not common_accounts:
-        return []  # no account satisfied every leaf — AND is false
-
-    out = []
-    for mc in keyed:
-        out.extend(m for m in mc if m.get('account') in common_accounts)
-    for mc in unkeyed:
-        out.extend(mc)
     return out
 
 
@@ -700,6 +745,16 @@ def _eval_leaf(leaf: dict, ctx: Context) -> list[dict]:
             'value':     val,
             'row':       row,
             'account':   row.get('account'),
+            # Underlying-scoped divergence feature (theoretical-vs-market
+            # loss gate, per underlying) — `positions.any_underlying` rows
+            # carry no `account` key at all (they roll up across every
+            # account holding that underlying), so without this, two
+            # DIFFERENT underlyings breaching in the same tick would
+            # collapse onto the same 'account'-less latch key / cross-row
+            # AND-join identity (the exact bug class CLAUDE.md's
+            # `loss-margin-low` incident already fixed for accounts — see
+            # `agent_engine._latch_key` / `_match_join_key` below).
+            'underlying': row.get('underlying'),
         }
         # Fix #5/#7/#8/#9 support — record EVERY successfully-resolved row
         # (matched or not) so the engine can tell "observed and recovered"

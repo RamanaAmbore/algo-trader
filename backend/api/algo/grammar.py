@@ -288,11 +288,33 @@ def _metric_collateral(ctx, row):
 
 # Rate-of-change metrics. They use the rolling history the engine maintains
 # per (section, scope). Section is inferred from the scope token.
+#
+# Scope-aware key (underlying-divergence feature): a row with an
+# `underlying` field and NO real `account` came from `positions.
+# any_underlying` — key off the namespaced `('positions_underlying',
+# underlying)` bucket `agent_engine._update_underlying_pnl_history()`
+# writes, instead of the per-account/TOTAL `('positions', account)`
+# bucket. Every other scope (any_acct/total/worst_acct/worst_symbol) still
+# carries a real `account`, so this is purely additive — zero behaviour
+# change for every existing caller of these two tokens.
+def _pnl_rate_key(row):
+    account = row.get('account')
+    if account is None:
+        underlying = row.get('underlying')
+        if underlying:
+            return ('positions_underlying', underlying)
+    return ('positions', account)
+
 def _metric_pnl_rate_abs(ctx, row):
-    return ctx.rate_abs(('positions', row.get('account')))
+    return ctx.rate_abs(_pnl_rate_key(row))
 
 def _metric_pnl_rate_pct(ctx, row):
-    return ctx.rate_pct(('positions', row.get('account')))
+    """See `_update_underlying_pnl_history`'s docstring — the pct slot is
+    deliberately recorded as None for the `positions_underlying`
+    namespace (no per-underlying margin denominator exists), so this
+    always returns None for `positions.any_underlying` rows. Use
+    `pnl_rate_abs` for underlying-scoped rate conditions."""
+    return ctx.rate_pct(_pnl_rate_key(row))
 
 def _metric_day_rate_abs(ctx, row):
     return ctx.rate_abs(('holdings', row.get('account')))
@@ -772,6 +794,207 @@ def _scope_funds_any_acct(ctx):
     return [r.to_dict() for _, r in df[mask].iterrows()]
 
 
+# ── Underlying-scoped theoretical-vs-market loss divergence ──────────────
+#
+# "Gate a rate-of-change loss alert on how far real market P&L has diverged
+# from the Greeks/IV-implied move" (per-underlying, not per-account — a
+# book-wide ₹ threshold means something different for a single-lot CRUDEOIL
+# collar than for a 50-lot NIFTY straddle).
+#
+# Scope (`positions.any_underlying`) and the three metrics below all read
+# `ctx.position_rows` directly, filtered by the SAME `row['underlying']`
+# grouping key — deliberately NOT `pnl_math.breakdown_positions_by_
+# underlying()` (that helper aggregates across every account unconditionally,
+# truncates to top_n=5, and has no 'accounts' key — wrong shape for a
+# condition-tree scope that must stay in lockstep with these metrics'
+# own per-leg walk). Using one grouping key for both guarantees scope
+# membership and metric computation never silently disagree (the same
+# defect class Fix A/B below close for account-vs-underlying latching and
+# cross-row AND-joins).
+#
+# Baseline-reprice design (why this is NOT `multileg_greeks`/`expected_
+# value`, and why IV is calibrated ONCE, not every tick):
+#
+#   `expected_value()` integrates a payoff curve against a risk-neutral
+#   lognormal density to get E[payoff AT EXPIRY] — a forward-looking
+#   expectation, not "what should today's P&L be given the realized spot
+#   move so far". Calibrating IV from the SAME tick's own LTP and then
+#   repricing at that IV reproduces the LTP by construction (circular —
+#   divergence would always be ≈0 and the gate could never open).
+#
+#   Instead: `_update_underlying_theo_baseline()` (agent_engine.py, called
+#   once per tick alongside `_update_pnl_history`) calibrates σ for each
+#   held leg ONCE — the first tick that leg is seen this session — and
+#   freezes it in `alert_state['underlying_theo_baseline']`. Every
+#   subsequent tick, `_underlying_theoretical_loss()` below re-prices each
+#   leg at that FROZEN σ against the CURRENT spot and CURRENT time-to-
+#   expiry (so theta decay is live, only vol is frozen) and diffs against
+#   the leg's own LTP at baseline time. Summed per leg, this is "what the
+#   book's P&L would be if nothing but spot/time had moved since the
+#   baseline" — the real quantity "theoretical loss" means here.
+
+def _scope_positions_any_underlying(ctx):
+    """One row per distinct F&O underlying currently held, grouped from
+    `ctx.position_rows`. Cash-equity / unparseable rows (no `underlying`)
+    are skipped — same skip rule `_scope_positions_expiring_today` already
+    uses for the same reason. Leaf is OR-combined per underlying.
+
+    `accounts` / `pnl` / `day_change_val` are cheap roll-ups useful for
+    alert-message enrichment — the metric resolvers below don't read them
+    off this summary row; they re-walk `ctx.position_rows` themselves for
+    full per-leg detail (qty, strike, expiry, ...) this summary row
+    doesn't carry.
+    """
+    rows = getattr(ctx, 'position_rows', None) or []
+    groups: dict = {}
+    for r in rows:
+        u = r.get('underlying')
+        if not u:
+            continue
+        groups.setdefault(u, []).append(r)
+    out = []
+    for u, group in groups.items():
+        out.append({
+            'underlying': u,
+            'accounts': sorted({r.get('account') for r in group if r.get('account')}),
+            'pnl': sum(float(r.get('pnl', 0) or 0) for r in group),
+            'day_change_val': sum(float(r.get('day_change_val', 0) or 0) for r in group),
+        })
+    return out
+
+
+def _metric_underlying_market_loss(ctx, row):
+    """Σ day_change_val across every currently-held leg of this
+    underlying — the broker's own already-computed day P&L, the same
+    column every other `day_val`/`pnl_rate_abs` metric in this module
+    reads. Re-walks `ctx.position_rows` directly (rather than trusting a
+    pre-summed field on `row`) so this metric also works against a
+    hand-built row that lacks it. None only when the row carries no
+    `underlying` at all (wrong scope)."""
+    underlying = row.get('underlying')
+    if not underlying:
+        return None
+    rows = getattr(ctx, 'position_rows', None) or []
+    return sum(float(r.get('day_change_val', 0) or 0)
+               for r in rows if r.get('underlying') == underlying)
+
+
+def _theo_reprice_fut_leg(b: dict, S_now: float) -> "float | None":
+    """Linear futures-leg theoretical P&L: qty × (S_now − S_base). None
+    on a malformed baseline entry."""
+    try:
+        qty = int(b.get('qty', 0) or 0)
+        S_base = float(b['S_base'])
+    except (TypeError, ValueError, KeyError):
+        return None
+    return qty * (S_now - S_base)
+
+
+def _theo_reprice_opt_leg(b: dict, S_now: float, now) -> "float | None":
+    """Option-leg theoretical P&L at the leg's FROZEN σ (`sigma_base`)
+    against the CURRENT spot and CURRENT time-to-expiry. None on any
+    malformed baseline entry or numeric reprice failure — extracted from
+    `_underlying_theoretical_loss` to keep it under the radon complexity
+    gate."""
+    from backend.api.algo.derivatives import black_scholes, black_76, days_to_expiry, DEFAULT_RISK_FREE
+    try:
+        qty = int(b.get('qty', 0) or 0)
+        K = float(b['K'])
+        sigma_base = float(b['sigma_base'])
+        ltp_base = float(b['ltp_base'])
+    except (TypeError, ValueError, KeyError):
+        return None
+    opt_type = b.get('opt_type')
+    if opt_type not in ('CE', 'PE'):
+        return None
+    is_mcx = bool(b.get('is_mcx'))
+    close_time = (23, 30) if is_mcx else (15, 30)
+    try:
+        T_now = days_to_expiry(b.get('expiry'), ref=now, close_time=close_time) / 365.0
+        if is_mcx:
+            price_now = black_76(S_now, K, T_now, DEFAULT_RISK_FREE, sigma_base, opt_type)
+        else:
+            price_now = black_scholes(S_now, K, T_now, DEFAULT_RISK_FREE, sigma_base, opt_type)
+    except Exception:
+        return None
+    return qty * (price_now - ltp_base)
+
+
+def _theo_reprice_leg(b: dict, S_now: float, now) -> "float | None":
+    """Dispatch ONE baselined leg to its fut/opt reprice helper. None on
+    any failure — the caller (`_underlying_theoretical_loss`) treats a
+    single-leg None as "whole underlying unavailable this tick", never a
+    silently-dropped leg."""
+    if b.get('kind') == 'fut':
+        return _theo_reprice_fut_leg(b, S_now)
+    return _theo_reprice_opt_leg(b, S_now, now)
+
+
+def _underlying_theoretical_loss(ctx, underlying):
+    """Baseline-reprice theoretical P&L for every currently-held leg of
+    `underlying`, summed. σ is whatever `_update_underlying_theo_baseline()`
+    (agent_engine.py) calibrated once this session for each leg — frozen;
+    only spot (`ctx.spot_prices`) and time-to-expiry move tick to tick.
+
+    Returns None (never a partial/understated sum) when:
+      - `underlying` is falsy, or no position rows exist for it, or
+      - no live spot price is available for it, or
+      - ANY one leg has no baseline entry yet (a brand-new leg gets ONE
+        captured the NEXT tick, not retro-filled this tick — see
+        `_update_underlying_theo_baseline`'s own docstring), or
+      - any one leg's reprice fails numerically (`_theo_reprice_leg`).
+    A partial failure on one leg would UNDERSTATE the true theoretical
+    loss if silently dropped, so the whole underlying is reported
+    unavailable for the tick instead — same "skip this tick entirely"
+    contract `_scope_positions_total`'s partial-outage guard already uses.
+    """
+    if not underlying:
+        return None
+    rows = [r for r in (getattr(ctx, 'position_rows', None) or [])
+            if r.get('underlying') == underlying]
+    if not rows:
+        return None
+    spot_prices = getattr(ctx, 'spot_prices', None) or {}
+    try:
+        S_now = float(spot_prices.get(underlying))
+    except (TypeError, ValueError):
+        return None
+    if S_now <= 0:
+        return None
+    baseline = ((getattr(ctx, 'alert_state', None) or {}).get('underlying_theo_baseline') or {})
+    total = 0.0
+    for row in rows:
+        b = baseline.get(row.get('tradingsymbol') or '')
+        if b is None:
+            return None
+        leg_pnl = _theo_reprice_leg(b, S_now, ctx.now)
+        if leg_pnl is None:
+            return None
+        total += leg_pnl
+    return total
+
+
+def _metric_underlying_theoretical_loss(ctx, row):
+    """Baseline-reprice theoretical P&L for this underlying — see
+    `_underlying_theoretical_loss`'s module-level docstring above for the
+    full formula and missing-data rules."""
+    return _underlying_theoretical_loss(ctx, row.get('underlying'))
+
+
+def _metric_underlying_loss_divergence(ctx, row):
+    """abs(theoretical − market) day loss for this underlying. None when
+    either side is unavailable — never a false 0 divergence that could
+    silently fail to gate a downstream rate-of-change leaf closed."""
+    underlying = row.get('underlying')
+    theo = _underlying_theoretical_loss(ctx, underlying)
+    if theo is None:
+        return None
+    market = _metric_underlying_market_loss(ctx, row)
+    if market is None:
+        return None
+    return abs(theo - market)
+
+
 # ── "Worst case" scope selectors — collapse N per-account agents to 1 ─────
 #
 # Returns the SINGLE row with the largest drawdown in the chosen dimension.
@@ -1227,6 +1450,17 @@ _SYMBOLS_COLUMNS = {
     'day_change_pct': _col('day_change_percentage', 'Day Change %'),
 }
 
+# Underlying-grouped positions summary (ctx.position_rows, grouped — see
+# `_scope_positions_any_underlying`). `accounts` is a list, not a scalar —
+# deliberately not exposed here (EXPOSED_COLUMNS only supports
+# number/string/boolean leaf types; see
+# `test_every_entry_has_a_valid_type_and_from_column`).
+_POSITIONS_ANY_UNDERLYING_COLUMNS = {
+    'underlying': _col('underlying', 'Underlying', 'string'),
+    'pnl':        _col('pnl', 'P&L (₹)'),
+    'day_val':    _col('day_change_val', 'Day Change (₹)'),
+}
+
 # scope token -> its exposed-column schema. MUST cover every real
 # `token_kind: scope` row in agent_grammar.yaml — enforced by
 # backend/tests/test_grammar_exposed_columns.py (walks the YAML itself,
@@ -1251,6 +1485,7 @@ EXPOSED_COLUMNS: dict[str, dict] = {
     'orders.any_acct':                        _ORDERS_COLUMNS,
     'quote.tracked':                          _QUOTE_COLUMNS,
     'symbols.all':                            _SYMBOLS_COLUMNS,
+    'positions.any_underlying':               _POSITIONS_ANY_UNDERLYING_COLUMNS,
 }
 
 # scope token -> (ctx attribute the resolver reads, resolver function name
@@ -1278,6 +1513,7 @@ EXPOSED_COLUMN_SCOPE_PROVENANCE: dict[str, tuple[str, str]] = {
     'orders.any_acct':                        ('ctx.orders_rows', '_scope_orders_any_acct'),
     'quote.tracked':                          ('ctx.quote_rows', '_scope_quote_tracked'),
     'symbols.all':                            ('ctx.symbols_rows', '_scope_symbols_all'),
+    'positions.any_underlying':               ('ctx.position_rows', '_scope_positions_any_underlying'),
 }
 
 

@@ -90,9 +90,22 @@ def _maybe_reset_v2_state(today, *, live: bool = True):
 
 
 def _latch_key(agent_slug: str, m: dict) -> tuple:
-    """Per-leaf, per-account latch key. `m` is a match/observation dict
-    from `agent_evaluator` — has 'metric', 'scope', 'account'."""
-    return (agent_slug, m.get('metric'), m.get('scope'), m.get('account') or 'TOTAL')
+    """Per-leaf, per-account (or per-underlying) latch key. `m` is a
+    match/observation dict from `agent_evaluator` — has 'metric',
+    'scope', 'account', 'underlying'.
+
+    Fix A (underlying-divergence feature) — `positions.any_underlying`
+    matches carry no 'account' at all (they roll up across every account
+    holding that underlying), so without the `m.get('underlying')`
+    fallback, every underlying's breach would collapse onto the SAME
+    'TOTAL' latch key — one underlying's re-alert timing would silently
+    gate every other underlying's, and a genuine recovery/escalation on
+    one underlying would corrupt another's state. Account still wins
+    when both are present (shouldn't happen in practice — the two scope
+    families are mutually exclusive on any one match — but preserves the
+    pre-existing account-keyed behaviour unconditionally)."""
+    return (agent_slug, m.get('metric'), m.get('scope'),
+            m.get('account') or m.get('underlying') or 'TOTAL')
 
 
 # Ops for which "worse" has a well-defined direction. -1 ⇒ smaller is
@@ -509,6 +522,266 @@ def _update_pnl_history(alert_state: dict, now, sum_positions, sum_holdings,
 
     _append('positions', sum_positions)
     _append('holdings',  sum_holdings)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Underlying-scoped theoretical-vs-market loss divergence (per-underlying
+#  rate-of-change gate)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# See `grammar.py`'s module-level comment above `_scope_positions_any_
+# underlying` for the full design rationale (baseline-reprice formula, why
+# σ is calibrated ONCE and frozen rather than every tick). This section is
+# the WRITE side: both sibling functions below are called once per tick
+# from the SAME call site that already calls `_update_pnl_history` (see
+# `run_cycle`), immediately after it, so they can read the `session_date`
+# that function just set/reconciled for this tick rather than re-deriving
+# the day-rollover boundary themselves.
+
+_UNDERLYING_THEO_BASELINE_KEY = 'underlying_theo_baseline'
+
+
+def _theo_baseline_reconciles(reprice: float, ltp_base: float) -> bool:
+    """σ-calibration sanity check — after calibrating `sigma_base` from
+    `ltp_base`, reprice at that σ and compare back to `ltp_base` within a
+    tolerance (1% of ltp_base, or ₹0.50, whichever is larger). A
+    reconciled reprice means the bisection genuinely bracketed a
+    solution; a failed one (bisection hit `DEFAULT_IV`/an edge fallback —
+    typically a near-zero-time-value / expiry-day contract) would
+    otherwise bake a fake divergence into every later tick for that leg
+    until it's closed."""
+    tol = max(0.01 * abs(ltp_base), 0.50)
+    return abs(reprice - ltp_base) <= tol
+
+
+def _capture_opt_leg_baseline(parsed: dict, S_base: float, ltp_base: float,
+                              qty: int, is_mcx: bool, now) -> "dict | None":
+    """Calibrate σ for ONE option leg and return its baseline entry, or
+    None when the time-to-expiry is degenerate or the calibration
+    doesn't reconcile (advisor point 2 — the calibration-failure guard).
+    Extracted from `_capture_leg_theo_baseline` to keep it under the
+    radon complexity gate."""
+    from backend.api.algo.derivatives import (
+        implied_vol, implied_vol_76, black_scholes, black_76,
+        days_to_expiry, DEFAULT_RISK_FREE,
+    )
+    strike = parsed.get('strike')
+    opt_type = parsed.get('opt_type')
+    if strike is None or opt_type not in ('CE', 'PE'):
+        return None
+    close_time = (23, 30) if is_mcx else (15, 30)
+    try:
+        T_base = days_to_expiry(parsed['expiry'], ref=now, close_time=close_time) / 365.0
+    except Exception:
+        return None
+    if T_base <= 0:
+        return None  # degenerate at/past expiry — IV undefined, retry next tick
+    try:
+        if is_mcx:
+            sigma_base = implied_vol_76(ltp_base, S_base, strike, T_base, DEFAULT_RISK_FREE, opt_type)
+            reprice = black_76(S_base, strike, T_base, DEFAULT_RISK_FREE, sigma_base, opt_type)
+        else:
+            sigma_base = implied_vol(ltp_base, S_base, strike, T_base, DEFAULT_RISK_FREE, opt_type)
+            reprice = black_scholes(S_base, strike, T_base, DEFAULT_RISK_FREE, sigma_base, opt_type)
+    except Exception:
+        return None
+    if not _theo_baseline_reconciles(reprice, ltp_base):
+        return None  # calibration failure guard (advisor point 2) — retry next tick
+    return {'kind': 'opt', 'ltp_base': ltp_base, 'S_base': S_base,
+            'sigma_base': sigma_base, 'K': float(strike), 'opt_type': opt_type,
+            'expiry': parsed['expiry'], 'is_mcx': is_mcx, 'qty': qty}
+
+
+def _capture_leg_theo_baseline(row: dict, now, spot_prices: dict):
+    """Calibrate ONE leg's baseline-reprice entry for `alert_state[
+    'underlying_theo_baseline']`, or return None when it can't be
+    captured yet THIS tick (missing spot, non-positive LTP, degenerate
+    time-to-expiry, or a σ-calibration that doesn't reconcile) — the
+    caller simply retries next tick, never baking in a bad baseline.
+    `row` is one `ctx.position_rows` entry for an already-confirmed
+    non-flat F&O leg."""
+    from backend.api.algo.derivatives import parse_tradingsymbol, is_mcx_underlying
+    sym = row.get('tradingsymbol') or ''
+    try:
+        parsed = parse_tradingsymbol(sym)
+    except Exception:
+        parsed = None
+    if not parsed or not parsed.get('expiry'):
+        return None
+    underlying = parsed.get('root')
+    if not underlying:
+        return None
+    try:
+        S_base = float(spot_prices.get(underlying))
+    except (TypeError, ValueError):
+        return None
+    if S_base <= 0:
+        return None
+    try:
+        ltp_base = float(row.get('last_price') or 0)
+        qty = int(row.get('quantity') or 0)
+    except (TypeError, ValueError):
+        return None
+    if ltp_base <= 0 or qty == 0:
+        return None
+    is_mcx = is_mcx_underlying(underlying)
+    kind = parsed.get('kind')
+    if kind == 'fut':
+        return {'kind': 'fut', 'ltp_base': ltp_base, 'S_base': S_base,
+                'is_mcx': is_mcx, 'qty': qty}
+    if kind != 'opt':
+        return None
+    return _capture_opt_leg_baseline(parsed, S_base, ltp_base, qty, is_mcx, now)
+
+
+def _ae_sum_positions_partial_outage(sum_positions) -> bool:
+    """True when `background._fetch_positions_direct` flagged this tick's
+    `sum_positions` frame as missing one or more (not all) accounts'
+    contribution — same `attrs['partial_outage']` signal
+    `grammar._scope_positions_total` already guards on. Shared by both
+    underlying-divergence writer functions below so neither has to poke
+    at `.attrs` independently."""
+    if sum_positions is None:
+        return False
+    return bool((getattr(sum_positions, 'attrs', {}) or {}).get('partial_outage'))
+
+
+def _update_underlying_theo_baseline(alert_state: dict, now, position_rows, spot_prices: dict,
+                                     *, sum_positions=None) -> None:
+    """Sibling to `_update_pnl_history` — captures/retires per-leg
+    baseline-reprice entries in `alert_state['underlying_theo_baseline']`
+    (keyed by tradingsymbol), one entry per currently-held non-flat F&O
+    leg. Read-only from `grammar._underlying_theoretical_loss`'s
+    perspective; this function is the sole mutator.
+
+    - A leg with no existing baseline entry gets ONE captured the first
+      tick it's seen with a usable spot + reconciling σ calibration
+      (`_capture_leg_theo_baseline`) — whether that's a position carried
+      from market open or one opened mid-day. A leg that can't be
+      captured yet is simply retried next tick.
+    - A leg that disappears (closed, or quantity goes to 0) has its
+      baseline entry dropped on the SAME tick — no stale legs accumulate
+      across a session.
+    - Reset keys off `alert_state['session_date']` — the SAME day-
+      rollover boundary `_update_pnl_history` already derives and sets,
+      read here rather than re-derived, since the call site always runs
+      this function immediately after that one on the same tick.
+    - Outage guard (fix #5 class — "absent ≠ recovered/closed"): when
+      `position_rows` is empty (a full fetch failure, or genuinely no
+      F&O book at all — Kite keeps an intraday-closed leg's row at
+      qty=0, it does NOT simply vanish, so an empty list here means no
+      real read happened) OR `sum_positions` carries the partial-outage
+      attrs flag (one account's rows silently missing), this function
+      does NOTHING — no capture, no drop. Without this guard, a single
+      bad poll would wipe every frozen σ baseline, and the next clean
+      poll would silently RE-baseline at the CURRENT (already-moved)
+      price — collapsing theoretical loss back to ~0 against a fresh
+      baseline and defeating the whole feature, exactly the bug class
+      fix #5 closed for latch recovery.
+    """
+    # Day-rollover reset is TIME-based, not data-based — it must still run
+    # even on an outage tick (e.g. the very first tick of a new day before
+    # any fetch has succeeded yet), so a stale prior-day baseline never
+    # survives into today regardless of fetch health.
+    session_date = alert_state.get('session_date')
+    if session_date and alert_state.get('_underlying_theo_baseline_date') != session_date:
+        alert_state[_UNDERLYING_THEO_BASELINE_KEY] = {}
+        alert_state['_underlying_theo_baseline_date'] = session_date
+
+    if not position_rows or _ae_sum_positions_partial_outage(sum_positions):
+        return  # outage guard — never capture/drop legs off untrustworthy data
+
+    baseline = alert_state.setdefault(_UNDERLYING_THEO_BASELINE_KEY, {})
+    spot_prices = spot_prices or {}
+    live_symbols = set()
+    for row in position_rows:
+        sym = row.get('tradingsymbol') or ''
+        if not sym:
+            continue
+        try:
+            if int(row.get('quantity') or 0) == 0:
+                continue  # flat leg — nothing to baseline
+        except (TypeError, ValueError):
+            continue
+        live_symbols.add(sym)
+        if sym in baseline:
+            continue  # already baselined this session — σ stays frozen
+        entry = _capture_leg_theo_baseline(row, now, spot_prices)
+        if entry is not None:
+            baseline[sym] = entry
+
+    for sym in list(baseline.keys()):
+        if sym not in live_symbols:
+            del baseline[sym]
+
+
+def _update_underlying_pnl_history(alert_state: dict, now, position_rows,
+                                   *, sum_positions=None,
+                                   market_state: dict | None = None) -> None:
+    """Sibling to `_update_pnl_history` — appends a per-underlying P&L
+    sample to its OWN namespaced bucket, `('positions_underlying',
+    <underlying>)`, so `pnl_rate_abs`/`pnl_rate_pct` can be evaluated
+    under the `positions.any_underlying` scope (grammar.py's
+    `_metric_pnl_rate_abs`/`_metric_pnl_rate_pct` key off this namespace
+    when a row carries `underlying` and no real `account`).
+
+    Deliberately a SEPARATE section name from `'positions'` (the existing
+    per-account/TOTAL bucket) — NOT reused — since an account id could in
+    principle collide with an underlying string and corrupt both
+    buckets' history.
+
+    `day_change_val_sum` is the same per-underlying sum `underlying_
+    market_loss` computes. The pct slot (field_idx=2) is recorded as
+    `None` — no per-underlying margin denominator exists in this codebase
+    today (fix #10's `day_change_pct_margin` is account-level only), so
+    `pnl_rate_pct` is deliberately inert for this scope; use
+    `pnl_rate_abs` for underlying-scoped rate conditions. This is a
+    scoped, documented limitation, not a silent bug.
+
+    Partial-outage guard: skips appending ANY underlying sample on a tick
+    where EITHER `position_rows` carries no rows at all (full-outage/
+    never-fetched tick) OR `sum_positions` carries the partial-outage
+    attrs flag (`_ae_sum_positions_partial_outage` — one account's rows
+    silently missing while others' are present) — mirrors `_update_pnl_
+    history`'s own TOTAL-bucket skip for the identical reason: a
+    per-underlying sum across accounts is exactly as vulnerable to a
+    silently-missing account's contribution as the TOTAL row is. Recording
+    a sample built from an understated sum would poison a FUTURE tick's
+    rate-of-change window once the missing account recovers — the same
+    failure mode `_update_pnl_history`'s own partial-outage guard exists
+    to prevent for the TOTAL bucket.
+
+    Reuses the SAME `market_state`-gated close-market skip and
+    `_PNL_HISTORY_CAP` trimming `_update_pnl_history` already applies —
+    not re-derived here independently, since both functions are always
+    called back-to-back on the same tick with the same `market_state`.
+    """
+    if market_state is not None:
+        any_open = bool(market_state.get('nse_open') or market_state.get('mcx_open'))
+        if not any_open:
+            return  # fix #6b parity — don't record the closed-market noise
+
+    if not position_rows or _ae_sum_positions_partial_outage(sum_positions):
+        return
+
+    hist_map = alert_state.setdefault('pnl_history', {})
+    sums: dict = {}
+    for row in position_rows:
+        u = row.get('underlying')
+        if not u:
+            continue
+        try:
+            v = float(row.get('day_change_val', 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        sums[u] = sums.get(u, 0.0) + v
+
+    for underlying, total in sums.items():
+        key = ('positions_underlying', underlying)
+        bucket = hist_map.setdefault(key, [])
+        bucket.append((now, total, None))
+        if len(bucket) > _PNL_HISTORY_CAP:
+            del bucket[:len(bucket) - _PNL_HISTORY_CAP]
 
 
 # ---------------------------------------------------------------------------
@@ -1028,7 +1301,14 @@ def _v2_match_to_alertrow(match: dict, *,
     pnl, pct    = _v2_extract_pnl_fields(row, section, metric, value)
     rate_val    = value if kind in ('rate_abs', 'rate_pct') else None
     thr_str     = _v2_format_threshold(kind, threshold)
-    scope_label = str(row.get('account', 'TOTAL'))
+    # Underlying-divergence feature — a `positions.any_underlying` row
+    # carries no 'account' key at all (same reason `_latch_key`/
+    # `_match_join_key` fall back to `underlying`), so the OLD
+    # `row.get('account', 'TOTAL')` silently mislabeled every such alert
+    # row as the generic 'TOTAL' scope instead of the real underlying
+    # that fired. Every pre-existing scope still carries a real, truthy
+    # `account` string, so this fallback changes nothing for them.
+    scope_label = str(row.get('account') or row.get('underlying') or 'TOTAL')
 
     # Enrichment (per-underlying breakdown lookup, static-rate pnl_history
     # lookup) MUST use the REAL, unmasked `scope_label` — it's a join/
@@ -1461,6 +1741,56 @@ _LOSS_AGENTS = [
          status="inactive",
          ),
 
+    # ── Positions: per-underlying burn-rate, gated on theoretical-vs-
+    # market loss divergence (critical tier) ────────────────────────────
+    #
+    # A plain rate-of-change alert (loss-rate-acct above) fires on ANY
+    # fast burn, including a burn that's just the EXPECTED Greeks-implied
+    # move for a big spot swing (e.g. a legit 3% NIFTY dump blowing
+    # through a short-gamma book exactly as priced). Gating on
+    # underlying_loss_divergence first means this agent only fires when
+    # the rate burn is ALSO diverging from what the frozen-vol
+    # Greeks/IV-implied reprice would predict — i.e. something beyond a
+    # plain, already-priced-in spot move (a vol blowup, a stale/bad
+    # quote, a broker pricing anomaly, …). See CLAUDE.md / grammar.py's
+    # module comment above `_scope_positions_any_underlying` for the full
+    # baseline-reprice design. Per-underlying (not per-account) because a
+    # book-wide ₹ threshold means something different for a single-lot
+    # collar than a 50-lot straddle.
+    #
+    # Ships INACTIVE like loss-rate-acct — a brand-new, more exotic
+    # metric; enable after validating a session's worth of divergence
+    # values on /admin/research or the simulator.
+    dict(slug="loss-positions-underlying-divergence",
+         long_name="when:positions.any_underlying.divergence>100k AND pnl_rate   alert:critical/tg+ntfy+log   do:notify-only",
+         tier="critical",
+         topic="positions_loss",
+         name="Per-underlying loss divergence + burn-rate guardrail",
+         description=(
+             "Fires when an underlying's theoretical-vs-market loss "
+             "divergence exceeds ₹100k AND that same underlying is also "
+             "burning fast (-₹10k/min). Divergence gates out a plain, "
+             "already-priced-in spot move — only a burn that's ALSO "
+             "drifting from the frozen-vol Greeks/IV-implied reprice "
+             "fires this agent. The condition tree also carries a "
+             "pnl_rate_pct (%/min) leaf to match the %/min vs ₹/min "
+             "pairing every other burn-rate agent uses, but it is "
+             "currently INERT for this scope — no per-underlying margin "
+             "denominator exists yet (see pnl_rate_pct's own docstring) — "
+             "so only the ₹/min leaf can fire today."
+         ),
+         conditions={"all": [
+             {"metric": "underlying_loss_divergence", "scope": "positions.any_underlying",
+              "op": ">", "value": 100000},
+             {"any": [
+                 {"metric": "pnl_rate_abs", "scope": "positions.any_underlying", "op": "<=", "value": -10000},
+                 {"metric": "pnl_rate_pct", "scope": "positions.any_underlying", "op": "<=", "value": -0.25},
+             ]},
+         ]},
+         cooldown_minutes=10,
+         status="inactive",
+         ),
+
     # ── Positions: total guardrail (critical tier) ──────────────────────
     dict(slug="loss-positions-total",
          long_name="when:positions.total.pnl<=total-thresholds   alert:critical/tg+email+log   do:notify-only",
@@ -1567,12 +1897,13 @@ _LOSS_AGENT_DEFAULTS = dict(
 
 # ntfy priority per agent slug. critical-tier agents → urgent; high-tier → high.
 _LOSS_AGENT_NTFY: dict[str, str] = {
-    "loss-positions-acct":        "high",
-    "loss-rate-acct":             "urgent",
-    "loss-positions-total":       "urgent",
-    "loss-margin-low":            "high",
-    "loss-funds-negative":        "urgent",
-    "loss-pos-total-auto-close":  "urgent",
+    "loss-positions-acct":                   "high",
+    "loss-rate-acct":                        "urgent",
+    "loss-positions-underlying-divergence":  "urgent",
+    "loss-positions-total":                  "urgent",
+    "loss-margin-low":                       "high",
+    "loss-funds-negative":                   "urgent",
+    "loss-pos-total-auto-close":             "urgent",
 }
 
 for _a in _LOSS_AGENTS:
@@ -3480,6 +3811,21 @@ async def run_cycle(context: dict, broadcast_fn=None,
             _alert_state, now,
             context.get("sum_positions"),
             context.get("sum_holdings"),
+            market_state=None if bypass_schedule else base_ctx,
+        )
+        # Underlying-divergence feature — sibling writers, same call site,
+        # same tick, run immediately after _update_pnl_history so they can
+        # read the session_date that call just set/reconciled. See
+        # grammar.py's module comment above `_scope_positions_any_
+        # underlying` for the full design.
+        _position_rows = context.get("position_rows") or []
+        _sum_positions = context.get("sum_positions")
+        _update_underlying_theo_baseline(
+            _alert_state, now, _position_rows, context.get("spot_prices") or {},
+            sum_positions=_sum_positions,
+        )
+        _update_underlying_pnl_history(
+            _alert_state, now, _position_rows, sum_positions=_sum_positions,
             market_state=None if bypass_schedule else base_ctx,
         )
 

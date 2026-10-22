@@ -438,10 +438,12 @@ class TestLossAgentsConsistency:
                 f"found {rate_metrics}"
             )
 
-    def test_loss_agents_count_is_six(self):
-        """Exactly 6 loss agents expected after rate/static split."""
+    def test_loss_agents_count_is_seven(self):
+        """Exactly 7 loss agents — 6 after the rate/static split, plus
+        loss-positions-underlying-divergence (theoretical-vs-market loss
+        divergence gate, per underlying)."""
         loss_agents = [a for a in BUILTIN_AGENTS if a["slug"].startswith("loss-")]
-        expected_count = 6
+        expected_count = 7
         assert len(loss_agents) == expected_count, (
             f"Expected {expected_count} loss agents, "
             f"found {len(loss_agents)}: {[a['slug'] for a in loss_agents]}"
@@ -459,6 +461,7 @@ class TestLossAgentsConsistency:
             "loss-margin-low",
             "loss-rate-acct",
             "loss-positions-acct",
+            "loss-positions-underlying-divergence",
         )
         for agent in BUILTIN_AGENTS:
             if not agent["slug"].startswith("loss-"):

@@ -504,6 +504,33 @@
     },
     {
       "grammar_kind": "condition",
+      "token_kind": "metric",
+      "token": "underlying_market_loss",
+      "value_type": "number",
+      "units": "\u20b9",
+      "description": "Sum of day_change_val (the broker's own day P&L) across every currently-held leg of this underlying. Pairs with underlying_theoretical_loss / underlying_loss_divergence below under the positions.any_underlying scope.",
+      "resolver": "backend.api.algo.grammar._metric_underlying_market_loss"
+    },
+    {
+      "grammar_kind": "condition",
+      "token_kind": "metric",
+      "token": "underlying_theoretical_loss",
+      "value_type": "number",
+      "units": "\u20b9",
+      "description": "Baseline-reprice theoretical P&L for every currently-held leg of this underlying \u2014 implied vol calibrated ONCE this session and held fixed; only spot and time-to-expiry move tick to tick. None until a frozen baseline exists for every leg and a live spot price is available.",
+      "resolver": "backend.api.algo.grammar._metric_underlying_theoretical_loss"
+    },
+    {
+      "grammar_kind": "condition",
+      "token_kind": "metric",
+      "token": "underlying_loss_divergence",
+      "value_type": "number",
+      "units": "\u20b9",
+      "description": "abs(underlying_theoretical_loss \u2212 underlying_market_loss) for this underlying \u2014 how far today's real market loss has diverged from what the frozen-vol Greeks/IV-implied move would predict. None when either side is unavailable (never a false 0 divergence).",
+      "resolver": "backend.api.algo.grammar._metric_underlying_loss_divergence"
+    },
+    {
+      "grammar_kind": "condition",
       "token_kind": "scope",
       "token": "holdings.total",
       "value_type": "object",
@@ -533,6 +560,14 @@
       "value_type": "array",
       "description": "Every non-TOTAL account row of the positions summary (leaf is OR-combined).",
       "resolver": "backend.api.algo.grammar._scope_positions_any_acct"
+    },
+    {
+      "grammar_kind": "condition",
+      "token_kind": "scope",
+      "token": "positions.any_underlying",
+      "value_type": "array",
+      "description": "One row per distinct F&O underlying currently held (grouped from per-symbol position rows; cash-equity/unparseable rows skipped). Leaf is OR-combined per underlying. Pairs with underlying_market_loss / underlying_theoretical_loss / underlying_loss_divergence.",
+      "resolver": "backend.api.algo.grammar._scope_positions_any_underlying"
     },
     {
       "grammar_kind": "condition",
@@ -1497,7 +1532,7 @@
       "token_kind": "action_type",
       "token": "send_market_status",
       "value_type": "void",
-      "description": "Send the NSE/MCX market open-or-closed status report (hours when open, holiday/weekend reason when closed) via the configured alert channels — Telegram always (open or closed), ntfy only when at least one segment is open today.",
+      "description": "Send the NSE/MCX market open-or-closed status report (hours when open, holiday/weekend reason when closed) via the configured alert channels \u2014 Telegram always (open or closed), ntfy only when at least one segment is open today.",
       "resolver": "backend.api.algo.actions_live._action_live_send_market_status",
       "params_schema": {}
     },

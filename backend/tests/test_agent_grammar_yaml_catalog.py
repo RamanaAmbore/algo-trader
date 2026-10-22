@@ -134,6 +134,22 @@ intentionally stays 1.0 through 23:59 IST, only reading 0.0 during
 00:00-07:59 IST (it answers "has today's session begun," not "is the
 window live right now"). Description corrected to say so explicitly.
 
+Amendment (theoretical-vs-market loss divergence, per underlying): three
+new `(condition, metric, ...)` tokens — `underlying_market_loss`,
+`underlying_theoretical_loss`, `underlying_loss_divergence` — were added
+to `agent_grammar.yaml` right after `is_past_window_open` (and mirrored
+here at the same position), plus one new `(condition, scope,
+positions.any_underlying)` token right after `positions.any_acct` (and
+mirrored here at the same position). Gates a rate-of-change loss alert on
+how far today's real market P&L has diverged from a frozen-vol Greeks/
+IV-implied reprice, per underlying rather than per account. Backs the new
+`loss-positions-underlying-divergence` built-in agent (`agent_engine.py`).
+Resolvers live in `grammar.py`, reading `ctx.position_rows` /
+`ctx.spot_prices` / `ctx.alert_state['underlying_theo_baseline']` (the
+last populated once per tick by `agent_engine._update_underlying_theo_
+baseline()`, a sibling of `_update_pnl_history`). See
+`backend/tests/test_underlying_loss_divergence_tokens.py`.
+
 Perf: no DB / network calls, pure in-memory comparison.
 Reuse: shares the same SYSTEM_TOKENS / LOG_TAG_TOKENS module attributes
 every other grammar test and `seed_grammar_tokens()` read.

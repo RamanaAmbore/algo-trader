@@ -443,6 +443,27 @@ system_tokens:
   units: binary
   description: 1.0 from today's 08:00 IST window boundary through the rest of the session (including the 23:31-23:59 IST tail, before the overnight window actually closes); 0.0 only during 00:00-07:59 IST.
   resolver: backend.api.algo.grammar._metric_is_past_window_open
+- grammar_kind: condition
+  token_kind: metric
+  token: underlying_market_loss
+  value_type: number
+  units: ₹
+  description: Sum of day_change_val (the broker's own day P&L) across every currently-held leg of this underlying. Pairs with underlying_theoretical_loss / underlying_loss_divergence below under the positions.any_underlying scope.
+  resolver: backend.api.algo.grammar._metric_underlying_market_loss
+- grammar_kind: condition
+  token_kind: metric
+  token: underlying_theoretical_loss
+  value_type: number
+  units: ₹
+  description: Baseline-reprice theoretical P&L for every currently-held leg of this underlying — implied vol calibrated ONCE this session and held fixed; only spot and time-to-expiry move tick to tick. None until a frozen baseline exists for every leg and a live spot price is available.
+  resolver: backend.api.algo.grammar._metric_underlying_theoretical_loss
+- grammar_kind: condition
+  token_kind: metric
+  token: underlying_loss_divergence
+  value_type: number
+  units: ₹
+  description: abs(underlying_theoretical_loss − underlying_market_loss) for this underlying — how far today's real market loss has diverged from what the frozen-vol Greeks/IV-implied move would predict. None when either side is unavailable (never a false 0 divergence).
+  resolver: backend.api.algo.grammar._metric_underlying_loss_divergence
 
 # ════════════════════════════════════════════════════════════════════════
 #  CONDITION — SCOPES (row selectors)
@@ -471,6 +492,12 @@ system_tokens:
   value_type: array
   description: Every non-TOTAL account row of the positions summary (leaf is OR-combined).
   resolver: backend.api.algo.grammar._scope_positions_any_acct
+- grammar_kind: condition
+  token_kind: scope
+  token: positions.any_underlying
+  value_type: array
+  description: One row per distinct F&O underlying currently held (grouped from per-symbol position rows; cash-equity/unparseable rows skipped). Leaf is OR-combined per underlying. Pairs with underlying_market_loss / underlying_theoretical_loss / underlying_loss_divergence.
+  resolver: backend.api.algo.grammar._scope_positions_any_underlying
 - grammar_kind: condition
   token_kind: scope
   token: funds.total
