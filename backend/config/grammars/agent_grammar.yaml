@@ -1225,6 +1225,16 @@ system_tokens:
       - open
       - close
       default: open
+- grammar_kind: action
+  token_kind: action_type
+  token: send_market_status
+  value_type: void
+  description: Send the NSE/MCX market open-or-closed status report (hours when
+    open, holiday/weekend reason when closed) via the configured alert channels —
+    Telegram always (open or closed), ntfy only when at least one segment is open
+    today.
+  resolver: backend.api.algo.actions_live._action_live_send_market_status
+  params_schema: {}
 
 # ════════════════════════════════════════════════════════════════════════
 #  EVENT AGENTS — RENDER ACTION (kind='event' agents only)

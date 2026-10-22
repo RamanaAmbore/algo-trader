@@ -235,6 +235,10 @@ _LIVE_ACTION_HANDLERS: dict[str, _HandlerRef] = {
 # `_action_chase_close` in actions_live.py, was deleted alongside it.
 _NOOP_ACTION_HANDLERS: dict[str, _HandlerRef] = {
     "send_summary":     _HandlerRef("backend.api.algo.actions_live", "_action_send_summary", False),
+    # send_market_status (Item 3, 2026-10-22) — mirrors send_summary's
+    # wiring exactly (alert-sending side effect, no broker call), so it
+    # belongs in this table, not _LIVE_ACTION_HANDLERS.
+    "send_market_status": _HandlerRef("backend.api.algo.actions_live", "_action_live_send_market_status", False),
     "monitor_order":    _HandlerRef(__name__, "monitor_order", True),
     "deactivate_agent": _HandlerRef(__name__, "deactivate_agent", True),
     "set_flag":         _HandlerRef(__name__, "set_flag", True),

@@ -95,6 +95,20 @@ handler" drift class — the same one CLAUDE.md's "7 dead grammar-resolver
 stub functions" incident describes in the opposite direction — go
 uncaught indefinitely. See `backend/tests/test_grammar_registry.py`.
 
+Amendment (Item 3, 2026-10-22, pre-open LTP pinning + daily draft sweep +
+market-status-report plan): a new `(action, action_type,
+send_market_status)` token was added to `agent_grammar.yaml` (and
+mirrored here) right after `send_summary` — index 97, pushing the first
+log tag (`orders`) to 98. Mirrors `send_summary`'s own wiring exactly: no
+`ACTION_DISPATCH_CATALOG_ALLOWLIST` entry needed (a real catalog row +
+dispatch handler exist from the start), registered in
+`_NOOP_ACTION_HANDLERS` (`actions.py`) rather than `_LIVE_ACTION_HANDLERS`
+— it only sends alerts, no broker call, same category as `send_summary`
+itself. Backs the new `market-status-report` built-in agent
+(`agent_engine.py`), which fires at 05:35 IST daily reporting NSE/MCX
+open-or-closed status. See `backend/tests/test_market_status_alert.py`
+for the handler's own dedicated coverage.
+
 Perf: no DB / network calls, pure in-memory comparison.
 Reuse: shares the same SYSTEM_TOKENS / LOG_TAG_TOKENS module attributes
 every other grammar test and `seed_grammar_tokens()` read.

@@ -3792,6 +3792,161 @@ async def _ds_tick_draft_sweep(now: datetime, today: date, done_ref: list) -> No
             logger.warning(f"[DRAFT-SWEEP] notify failed: {e}")
 
 
+async def _msr_marker_date() -> "date | None":
+    """DB-backed 'did today's market-status report already fire' marker
+    (Item 3, 2026-10-22) — same pattern as `_pcf_marker_date()` above.
+    Required because `done_ref` is an in-memory `[None]` box reset to
+    `None` on every process restart: without this marker, a deploy (or
+    any restart) landing inside the firing window re-sends the Telegram
+    + ntfy report, and a restart can happen several times a day."""
+    from backend.shared.helpers.settings import get_string
+    raw = get_string("task_markers.market_status_report_date", "")
+    if not raw:
+        return None
+    try:
+        return date.fromisoformat(raw)
+    except Exception:
+        return None
+
+
+async def _msr_mark_done(today: date) -> None:
+    from backend.shared.helpers.settings import set_string
+    await set_string(
+        "task_markers.market_status_report_date", today.isoformat(),
+        category="task_markers",
+        description=(
+            "Last IST date the 05:35 market-status report fired. "
+            "Restart-safety marker so a process restart inside the "
+            "firing window never re-sends the same day's report."
+        ),
+    )
+
+
+def _market_status_window_end() -> "dtime":
+    """Earliest configured `market_segments` session start across all
+    segments (today: NSE 09:15, MCX 09:30 -> returns 09:15) — the upper
+    bound of the market-status report's firing window. Falls back to
+    09:15 on any config error.
+
+    The window's purpose: `_ds_tick_market_status_report` must fire only
+    in `[05:35, this)`, never later — a tick landing at, say, 10:00
+    (process restart, long GC pause, clock skew) must NOT send a stale
+    "market status" report hours into the trading session."""
+    try:
+        from backend.shared.helpers.utils import config as _cfg
+        segments = _cfg.get("market_segments", {}) or {}
+        starts: list[dtime] = []
+        for seg_cfg in segments.values():
+            sessions = (seg_cfg or {}).get("sessions") or []
+            for sess in sessions:
+                hh, mm = (int(x) for x in str(sess.get("start", "09:15")).split(":", 1))
+                starts.append(dtime(hh, mm))
+        return min(starts) if starts else dtime(9, 15)
+    except Exception:
+        return dtime(9, 15)
+
+
+async def _market_status_agent_is_active() -> bool:
+    """Best-effort read of the `market-status-report` Agent row's
+    `status` column (Item 3, 2026-10-22) — lets the operator pause this
+    report from the /agents page even though it is not actually triggered
+    via `run_cycle()` (see `_ds_tick_market_status_report`'s docstring).
+
+    Fails OPEN (returns True — fire) on any DB error, or when the row
+    doesn't exist yet (e.g. the seed hasn't run on a fresh DB) — a
+    transient DB hiccup must never silently suppress the report.
+    """
+    try:
+        from sqlalchemy import select
+        from backend.api.database import async_session
+        from backend.api.models import Agent
+        async with async_session() as s:
+            row = (await s.execute(
+                select(Agent.status).where(Agent.slug == "market-status-report")
+            )).scalar_one_or_none()
+        return row is None or row == "active"
+    except Exception as e:
+        logger.warning(f"[MARKET-STATUS] agent-status read failed (firing anyway): {e}")
+        return True
+
+
+async def _ds_tick_market_status_report(now: datetime, today: date, done_ref: list) -> None:
+    """Fires once per CALENDAR day (deliberately NOT trading-day gated —
+    see below), inside the window `[05:35, _market_status_window_end())`
+    IST: sends the daily NSE/MCX market-status report (Item 3,
+    2026-10-22).
+
+    Architecture note — this does NOT go through `run_cycle()` /
+    BUILTIN_AGENTS evaluation, even though a `market-status-report` Agent
+    row exists (for /agents-page visibility + the `status` pause toggle
+    `_market_status_agent_is_active` reads). `_task_performance`'s loop
+    (the sole caller of `run_cycle`) does `if not open_segments: continue`
+    — it skips agent evaluation ENTIRELY whenever no configured segment
+    is currently open. `_get_segments()`'s own hours are the broad
+    exchange_schedule window (08:00 open), not each segment's real
+    09:15/09:30 session start — `market-open-nse` (fire_at_time=09:15)
+    and `market-preclose-mcx` (23:00) both fire because 09:15/23:00 are
+    already PAST that 08:00 open, not because either literally coincides
+    with NSE/MCX's own session boundary. 05:35 IST is still BEFORE that
+    08:00 gate on every day, open or closed — on a fully-closed day
+    (weekend, or a holiday with no MCX evening session) `run_cycle` is
+    never called AT ALL that day. No `fire_at_time` choice within the
+    existing agent-engine trigger mechanism can satisfy the plan's
+    "fires whether the market is open or closed" requirement, so this
+    dedicated tick (same pattern as `_ds_tick_draft_sweep` above — the
+    existing 30s loop this function runs from is itself unconditional,
+    unlike `_task_performance`) calls the action handler directly
+    instead.
+
+    A side effect of this correction: the Agent row's own `conditions`/
+    `fire_at_time`/`schedule` fields are informational metadata only
+    (`schedule="never"` so `run_cycle` never attempts to evaluate it) —
+    the real trigger is this tick, gated on the clock alone.
+
+    Restart safety: `done_ref` alone is an in-memory `[None]` box that
+    resets on every process restart — without the DB-backed
+    `_msr_marker_date()` check below, a deploy/restart landing inside
+    the firing window would re-send the report (confirmed real risk:
+    this app deploys multiple times a day). The window's own upper bound
+    (`_market_status_window_end()`, ~09:15) additionally guards against a
+    late tick (long restart, clock skew) sending an hours-stale "market
+    status" message well into the trading session.
+
+    Dev-idle gate: mirrors `_task_performance`'s own `is_engine_idle()`
+    check — on a non-main dev branch with no operator-picked execution
+    mode, no alert should fire (this tick is NOT gated by
+    `_task_performance`'s loop at all, so it must apply the same check
+    itself; `send_ntfy_alert` in particular has no idle-suppression of
+    its own, unlike `_send_telegram`).
+    """
+    if now.time() < dtime(5, 35) or now.time() >= _market_status_window_end():
+        return
+    if done_ref[0] == today:
+        return
+    try:
+        from backend.shared.helpers.utils import is_engine_idle
+        if is_engine_idle():
+            done_ref[0] = today
+            return
+    except Exception:
+        pass
+    if await _msr_marker_date() == today:
+        # Already fired today via an earlier process instance (restart
+        # inside the window) — seed the local sentinel and stop.
+        done_ref[0] = today
+        return
+    done_ref[0] = today
+    try:
+        await _msr_mark_done(today)
+        if not await _market_status_agent_is_active():
+            logger.debug("[MARKET-STATUS] agent paused (status != active) — skipping")
+            return
+        from backend.api.algo.actions_live import _action_live_send_market_status
+        await _action_live_send_market_status({}, {})
+    except Exception as e:
+        logger.warning(f"[MARKET-STATUS] send failed: {e}")
+
+
 async def _task_daily_snapshot() -> None:
     """
     Daily close snapshot task.
@@ -3829,6 +3984,7 @@ async def _task_daily_snapshot() -> None:
     _prev_close_fix_done: list = [None]   # mutable box: Optional[date]
     _ticker_restart_done: list = [None]   # mutable box: Optional[date]
     _draft_sweep_done: list    = [None]   # mutable box: Optional[date] — Item 2, 2026-10-22
+    _market_status_done: list = [None]   # mutable box: Optional[date] — Item 3, 2026-10-22
 
     _POLL_INTERVAL_S = 30
 
@@ -3854,6 +4010,7 @@ async def _task_daily_snapshot() -> None:
         _ds_tick_mcx_stop(now, today)
         _ds_tick_ticker_restart(now, today, _ticker_restart_done)
         await _ds_tick_draft_sweep(now, today, _draft_sweep_done)
+        await _ds_tick_market_status_report(now, today, _market_status_done)
 
 
 async def _task_instruments() -> None:

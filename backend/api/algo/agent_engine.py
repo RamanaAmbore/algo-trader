@@ -1819,6 +1819,72 @@ for _a in _INFO_AGENTS:
 BUILTIN_AGENTS.extend(_INFO_AGENTS)
 
 
+# ── Market status report agent (Item 3, 2026-10-22) ─────────────────
+#
+# Reports NSE/MCX open-or-closed status, hours when open, closure reason
+# when closed, at 05:35 IST daily. `_task_performance`'s loop (the only
+# caller of `run_cycle()`) does `if not open_segments: continue` — it
+# skips agent evaluation entirely whenever no `_get_segments()` segment
+# is open per THAT function's own gate, which uses the broad
+# exchange_schedule hours (08:00 open), NOT each segment's real
+# 09:15/09:30 session start. `market-open-nse` (fire_at_time=09:15) and
+# `market-preclose-mcx` (23:00) both fire because 09:15/23:00 are already
+# PAST that 08:00 gate — not because either time literally coincides
+# with NSE/MCX's own session boundary. 05:35 IST is still BEFORE that
+# 08:00 gate on every day, open or closed, so it is unconditionally true
+# at 05:35 regardless of market state. No `fire_at_time` choice inside
+# the normal agent-engine trigger mechanism can satisfy "fires whether
+# the market is open or closed" (a fully closed day never calls
+# `run_cycle` at all — the 08:00 gate never opens that day either). So
+# this agent's real
+# trigger is a dedicated background tick,
+# `background.py:_ds_tick_market_status_report` (runs from
+# `_task_daily_snapshot`'s own unconditional 30s loop, which is NOT
+# gated on any segment being open) — NOT `run_cycle`/BUILTIN_AGENTS
+# evaluation. This row exists purely so the report shows up on the
+# /agents page and the operator can pause it via the ordinary active/
+# inactive status toggle (`background._market_status_agent_is_active`
+# reads this row's `status` column before firing). `schedule="never"`
+# makes that explicit — `run_cycle` always skips a `schedule="never"`
+# agent (see `_cycle_should_skip_schedule`), so `conditions`/
+# `fire_at_time` below are informational metadata only, not a real
+# trigger. The actual telegram-vs-ntfy routing (ntfy only when at least
+# one segment is open today) is content-conditional — something the
+# generic `events` channel fan-out can't express — so delivery is
+# entirely inside the `send_market_status` action handler
+# (`actions_live._action_live_send_market_status`), called directly by
+# the background tick. `events` here deliberately lists ONLY the `log`
+# channel; it is never actually consulted by the real trigger path, and
+# including telegram/ntfy here would be actively misleading (they are
+# NOT what fires).
+_MARKET_STATUS_AGENTS = [
+    {
+        "slug": "market-status-report",
+        "name": "Daily market status report",
+        "long_name": "when:fire_at=05:35(bg-tick, not run_cycle)   alert:info/log   do:send_market_status",
+        "description": (
+            "Fires at 05:35 IST daily via a dedicated background tick (not "
+            "run_cycle — no fire_at_time inside the agent engine can run "
+            "before any segment opens) — reports NSE/MCX open-or-closed "
+            "status, hours when open, closure reason when closed. Telegram "
+            "always (open or closed); ntfy only when at least one segment "
+            "is open today. Pause/resume via this row's status toggle."
+        ),
+        "fire_at_time": "05:35",
+        "schedule": "never",
+        "conditions": {"op": ">=", "scope": "funds.any_acct", "metric": "avail_margin", "value": -999999999},
+        "actions": [{"type": "send_market_status"}],
+        "events": [{"channel": "log", "enabled": True}],
+    },
+]
+
+for _a in _MARKET_STATUS_AGENTS:
+    for _k, _v in _INFO_AGENT_DEFAULTS.items():
+        _a.setdefault(_k, _v)
+
+BUILTIN_AGENTS.extend(_MARKET_STATUS_AGENTS)
+
+
 # ── Manual agent: every operator-initiated order submit fires under
 #    this slug so the audit trail (/agents Events tab + agent_events
 #    table) shows manual + automated fires in one consistent stream.
