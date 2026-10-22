@@ -515,6 +515,52 @@ async def _override_stale_close_for_holdings(raw: pd.DataFrame) -> None:
     recompute_row_percentages(raw, pd.Index(all_pc_indices))
 
 
+def _pin_pending_open_holdings(raw: pd.DataFrame) -> None:
+    """In-place: for any holding row on an exchange whose configured
+    `market_segments` session has not genuinely opened yet, pin
+    last_price to prev_close and recompute cur_val/pnl/day_change(_val/
+    _percentage) so the row reads as "no move yet" (Item 1, 2026-10-22 —
+    same live incident and rationale as `positions.py:_pin_pending_open_
+    rows`; see `snapshot_gate.is_segment_pending_open`'s docstring).
+
+    Must run AFTER `_override_stale_close_for_holdings` (needs prev_close
+    already resolved) and BEFORE `_compute_summary_df` so the account-
+    level rollup also reflects the pin.
+    """
+    if raw.empty or 'exchange' not in raw.columns or 'prev_close' not in raw.columns:
+        return
+    from backend.api.helpers.snapshot_gate import is_segment_pending_open
+    from backend.shared.helpers.date_time_utils import timestamp_indian
+    now = timestamp_indian()
+    exchanges = {str(e).upper() for e in raw['exchange'].dropna().unique()}
+    pending = {e for e in exchanges if is_segment_pending_open(e, now)}
+    if not pending:
+        return
+    pc = pd.to_numeric(raw['prev_close'], errors='coerce').fillna(0)
+    mask = raw['exchange'].astype(str).str.upper().isin(pending) & (pc > 0)
+    if not mask.any():
+        return
+    sel = raw.index[mask]
+    cls = pc.loc[sel]
+    raw.loc[sel, 'last_price'] = cls
+    qty = pd.to_numeric(raw.loc[sel, 'quantity'], errors='coerce').fillna(0)
+    avg = pd.to_numeric(raw.loc[sel, 'average_price'], errors='coerce').fillna(0)
+    if 'cur_val' in raw.columns:
+        raw.loc[sel, 'cur_val'] = cls * qty
+    if 'inv_val' in raw.columns:
+        raw.loc[sel, 'inv_val'] = avg * qty
+    if {'cur_val', 'inv_val'}.issubset(raw.columns):
+        raw.loc[sel, 'pnl'] = raw.loc[sel, 'cur_val'] - raw.loc[sel, 'inv_val']
+    raw.loc[sel, 'day_change'] = 0.0
+    raw.loc[sel, 'day_change_val'] = 0.0
+    raw.loc[sel, 'day_change_percentage'] = 0.0
+    recompute_row_percentages(raw, sel)
+    logger.info(
+        f"holdings: pending_open pin applied to {len(sel)}/{len(raw)} rows "
+        f"(exchanges={sorted(pending)})"
+    )
+
+
 def _hold_tag_open_row(r, _msc) -> object:
     """Tag a single holding row when its exchange is open."""
     live_ltp = float(getattr(r, "last_price", 0.0) or 0.0)
@@ -599,6 +645,40 @@ async def _overlay_snapshot_for_closed_exchanges(rows: list) -> list:
         else:
             key = (getattr(r, "account", ""), getattr(r, "tradingsymbol", ""))
             out.append(_hold_tag_closed_row(r, snap_map.get(key), _msc))
+    return out
+
+
+def _apply_pending_open_tag_holdings(rows: list) -> list:
+    """Final post-overlay pass (Item 1, 2026-10-22): re-tag any holding row
+    whose exchange segment has not genuinely opened yet as
+    ``price_source='pending_open'``, ``is_animating=False`` — mirrors
+    `positions.py:_apply_pending_open_tag`. Numeric fields were already
+    pinned upstream in `_pin_pending_open_holdings`.
+    """
+    if not rows:
+        return rows
+    import msgspec as _msc
+    from backend.api.helpers.snapshot_gate import is_segment_pending_open
+    from backend.shared.helpers.date_time_utils import timestamp_indian
+    now = timestamp_indian()
+    cache: dict = {}
+
+    def _pending(exch: str) -> bool:
+        e = (exch or "").upper()
+        if e not in cache:
+            cache[e] = is_segment_pending_open(e, now)
+        return cache[e]
+
+    out = []
+    for r in rows:
+        pc = getattr(r, "prev_close", 0.0) or 0.0
+        if pc > 0 and _pending(getattr(r, "exchange", "")):
+            out.append(_msc.structs.replace(
+                r, price_source="pending_open", is_animating=False,
+                current_price=float(pc),
+            ))
+        else:
+            out.append(r)
     return out
 
 
@@ -726,6 +806,23 @@ async def _fetch() -> HoldingsResponse:
     # and recompute day_change_val for ALL rows with prev_close > 0 using
     # (ltp - prev_close) × qty — the canonical holdings day P&L formula.
     await _override_stale_close_for_holdings(raw)
+
+    # Item 1 (2026-10-22) pending-open pin — see
+    # `_pin_pending_open_holdings`'s own docstring. Runs on this same raw
+    # frame, before `_compute_summary_df`, so the account-level summary
+    # rollup reflects the pin too, not just the per-row display.
+    #
+    # Prewarm special-sessions before the sync is_segment_pending_open()
+    # chain — this coroutine is already on the main loop, so a cold cache
+    # would silently fail open to `[]` on a real Muhurat/MCX-evening
+    # special-session day (same bug class as the 2026-10-20 "4-site
+    # residual sweep").
+    if not raw.empty and 'exchange' in raw.columns:
+        from backend.api.helpers.snapshot_gate import prewarm_pending_open_segments
+        await prewarm_pending_open_segments(
+            {str(e).upper() for e in raw['exchange'].dropna().unique()}
+        )
+    _pin_pending_open_holdings(raw)
 
     df = pl.from_pandas(raw)
     row_cols = [c for c in _ROW_COLS if c in df.columns]
@@ -907,6 +1004,19 @@ class HoldingsController(Controller):
                 # on the broker path so NSE-closed / MCX-open windows serve
                 # mixed live+snap.
                 _new_rows = await _overlay_snapshot_for_closed_exchanges(list(_resp.rows))
+                # Item 1 (2026-10-22) — the overlay above tags every
+                # broad-window-open row "live"/is_animating=True. Numeric
+                # fields were already pinned at the raw-DataFrame stage
+                # (_pin_pending_open_holdings); this only corrects the two
+                # display-tag fields the overlay sets independently.
+                # Prewarm (cheap no-op on an already-warm cache from the
+                # _fetch() call site above, within this same request).
+                if _new_rows:
+                    from backend.api.helpers.snapshot_gate import prewarm_pending_open_segments
+                    await prewarm_pending_open_segments(
+                        {str(getattr(r, "exchange", "")).upper() for r in _new_rows}
+                    )
+                _new_rows = _apply_pending_open_tag_holdings(_new_rows)
                 import msgspec as _msc
                 return _msc.structs.replace(_resp, rows=_new_rows)
 

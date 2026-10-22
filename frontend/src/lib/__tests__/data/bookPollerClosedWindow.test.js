@@ -98,8 +98,23 @@ describe('isBookSnapshotGraceWindow (real export, marketHours.js)', () => {
     expect(isBookSnapshotGraceWindow(MON(8, 30))).toBe(true);
   });
 
-  it('false once MCX opens (09:00 IST) — live isMcxOpen() path takes over', () => {
-    expect(isBookSnapshotGraceWindow(MON(9, 0))).toBe(false);
+  // 2026-10-22: MCX's real session moved 09:00 -> 09:30 IST
+  // (backend_config.yaml::market_segments.commodity), so NSE (09:15) now
+  // opens FIRST — the grace window's upper bound is
+  // min(NSE_OPEN_MIN, MCX_OPEN_MIN) = NSE's 09:15, not MCX's old 09:00/new
+  // 09:30. 09:00 is still inside the grace window (before EITHER segment
+  // opens); the window closes once NSE's own live isNseOpen() path takes
+  // over at 09:15.
+  it('still true at 09:00 IST — before either NSE (09:15) or MCX (09:30) opens', () => {
+    expect(isBookSnapshotGraceWindow(MON(9, 0))).toBe(true);
+  });
+
+  it('false once NSE opens (09:15 IST) — live isNseOpen() path takes over', () => {
+    expect(isBookSnapshotGraceWindow(MON(9, 15))).toBe(false);
+  });
+
+  it('false between NSE and MCX open (09:20 IST) — NSE live path already covers it', () => {
+    expect(isBookSnapshotGraceWindow(MON(9, 20))).toBe(false);
   });
 
   it('false mid-session (12:00 IST) — handled by the live path, not grace', () => {

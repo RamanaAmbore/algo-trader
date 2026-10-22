@@ -88,9 +88,17 @@ deploy_branch: main
 #                          for `holiday_exchange` the segment is still considered
 #                          open when `now.time() >= 17:00`. Models MCX's evening
 #                          session on days when the daytime session was
-#                          holiday-closed (single continuous MCX session 09:00-
+#                          holiday-closed (single continuous MCX session 09:30-
 #                          23:30 means the calendar cannot flag the whole day
 #                          closed without collapsing the evening leg).
+#
+# commodity.sessions start corrected 09:00 -> 09:30 (2026-10-22, live incident
+# — see CLAUDE.md "Critical math guards" / Item 1 pending_open pinning). MCX's
+# real local order book opens at 09:30 IST, not 09:00 — the old 09:00 value let
+# order placement, chase, GTT/wing attach, market_lifecycle's poll, the
+# navbar market badge, watchlist movers, and the simulator's market-hours
+# guard all treat MCX as tradeable 30 minutes too early. frontend's
+# marketHours.js:MCX_OPEN_MIN must stay in lockstep with this value.
 market_segments:
   equity:
     holiday_exchange: "NSE"
@@ -105,10 +113,10 @@ market_segments:
     holiday_exchange: "MCX"
     exchanges: ["MCX"]
     sessions:
-      - {start: "09:00", end: "23:30"}
+      - {start: "09:30", end: "23:30"}
     evening_open_on_holidays: true
     # legacy shape — kept for readers that predate the sessions list.
-    hours_start: "09:00"
+    hours_start: "09:30"
     hours_end:   "23:30"
 
 # Daily holiday refresh cron (fires `_task_holiday_refresh`). Time in IST,

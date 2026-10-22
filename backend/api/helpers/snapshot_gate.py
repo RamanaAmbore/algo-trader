@@ -123,6 +123,94 @@ def _get_stale_live(route_key: str) -> Any | None:
 # resolves each exchange to its gate via the ``exchanges`` column in the DB.
 
 
+def is_segment_pending_open(exchange: str, now=None) -> bool:
+    """Return True when *exchange*'s configured `market_segments` session
+    has not genuinely opened yet, even though the broader broker-
+    connectivity window (`is_exchange_closed_now` above, 08:00-23:31 IST)
+    already reports it open.
+
+    Item 1 (2026-10-22, live incident): the system's broad window is wider
+    than each exchange SEGMENT's own real trading-session hours
+    (`market_segments.equity` 09:15, `market_segments.commodity` 09:30 —
+    `backend/config/backend_config.yaml`). Once the broker reconnects at
+    08:00, live quote/LTP calls start flowing immediately — MCX options in
+    particular already carry a reference price tied to international gold
+    movement well before the local order book opens, so `last_price` can
+    diverge from `prev_close` purely from this gap, producing a
+    phantom Day P&L move. `positions.py` / `holdings.py` pin last_price to
+    prev_close for any row where this returns True.
+
+    Matches `quote.py:_qt_is_seg_open`'s exchange-membership rule (against
+    each segment's own `exchanges` list / `holiday_exchange`), NOT
+    `agent_engine.py`'s separate `_EXCHANGE_TO_SEGMENT` table — CLAUDE.md
+    documents that table can drift from a given route file's own match
+    rule (it is missing NCO, for example).
+
+    Delegates the actual open/closed determination to
+    `date_time_utils._segment_is_open` (holiday + special-session aware,
+    not a hand-rolled hour check).
+
+    Fail-open: returns False (don't pin — keep the live broker value) when
+    *exchange* matches no configured segment, or on any config/holiday-
+    fetch error. A row from an unrecognised exchange is never silently
+    pinned forever.
+    """
+    try:
+        from backend.shared.helpers.utils import config as _cfg
+        from backend.shared.helpers.date_time_utils import _segment_is_open, timestamp_indian
+        if now is None:
+            now = timestamp_indian()
+        exch_upper = (exchange or "").upper()
+        segments = _cfg.get("market_segments", {}) or {}
+        for seg_cfg in segments.values():
+            seg_exch = (seg_cfg.get("holiday_exchange") or "NSE").upper()
+            seg_exchanges = {e.upper() for e in (seg_cfg.get("exchanges") or [seg_exch])}
+            if exch_upper in seg_exchanges or exch_upper == seg_exch:
+                return not _segment_is_open(seg_cfg, now)
+        return False
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"is_segment_pending_open({exchange!r}) failed: {exc}")
+        return False
+
+
+async def prewarm_pending_open_segments(exchanges: "set[str] | None" = None) -> None:
+    """Await the special-sessions cache warm for every `market_segments`
+    entry (or only those whose exchange membership matches *exchanges*,
+    when given) before a SYNC `is_segment_pending_open()` call from a
+    coroutine already on the main loop (2026-10-22 fix — same bug class
+    as the 2026-10-20 "4-site residual sweep" documented in CLAUDE.md:
+    `fetch_special_sessions()` silently fails open to `[]` on a cold
+    cache hit from the main loop, so a real Muhurat session or an
+    MCX-evening-closed special session would be ignored on the first
+    pending-open check of the day).
+
+    Call sites: `positions.py:_patch_raw_positions`/`_fetch` and
+    `holdings.py:_fetch`/`get_holdings` — each is itself a coroutine
+    already running on the main loop (not inside `asyncio.to_thread`),
+    so the self-deadlock guard `run_on_main_loop()` would otherwise hit
+    never applies here; a plain `await` is safe and correct.
+
+    Mirrors `quote.py:_qt_prewarm_special_sessions`'s own exchange-
+    membership match rule rather than routing through
+    `agent_engine.py`'s separate `_EXCHANGE_TO_SEGMENT` table (which can
+    drift from a given route file's own match rule).
+    """
+    from backend.shared.helpers.utils import config as _cfg
+    from backend.brokers.broker_apis import fetch_special_sessions_async
+
+    segments = _cfg.get("market_segments", {}) or {}
+    upper_set = {e.upper() for e in exchanges} if exchanges else None
+    for seg_cfg in segments.values():
+        seg_exch = (seg_cfg.get("holiday_exchange") or "NSE").upper()
+        seg_exchanges = {e.upper() for e in (seg_cfg.get("exchanges") or [seg_exch])}
+        if upper_set is not None and not (upper_set & seg_exchanges) and seg_exch not in upper_set:
+            continue
+        try:
+            await fetch_special_sessions_async(seg_exch)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"prewarm_pending_open_segments: failed for {seg_exch!r}: {e}")
+
+
 def is_exchange_closed_now(exchange: str) -> bool:
     """Return True when `exchange` is currently closed (row-level gate).
 

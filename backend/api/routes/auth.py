@@ -410,10 +410,35 @@ async def _auth_nav_live_session_fallback(
     round 3, item #3)."""
     from backend.api.background import _rebuild_holdings_summary, _rebuild_positions_summary
     try:
-        from backend.api.routes.holdings import _override_stale_close_for_holdings
-        from backend.api.routes.positions import _override_stale_close_from_snapshot
+        from backend.api.routes.holdings import (
+            _override_stale_close_for_holdings, _pin_pending_open_holdings,
+        )
+        from backend.api.routes.positions import (
+            _override_stale_close_from_snapshot, _resolve_pending_open_exchanges,
+            _pin_pending_open_rows,
+        )
+        from backend.api.helpers.snapshot_gate import prewarm_pending_open_segments
         await _override_stale_close_for_holdings(df_h)
         await _override_stale_close_from_snapshot(df_p)
+        # Item 1 (2026-10-22) — `_any_segment_open()` (this function's own
+        # caller gate) is the BROAD broker-connectivity window, exactly
+        # the gap the live incident exploited: this fallback can run at
+        # 08:47 IST, before MCX's real 09:30 session start, and feed a
+        # phantom Day P&L straight into firm-NAV / the NavStrip P badge
+        # without this pin. `_fetch_holdings_direct`/`_fetch_positions_
+        # direct` (this function's own callers) run no later backstop of
+        # their own after this point, so pinning here before the summary
+        # rebuild is safe and final.
+        if not df_h.empty and 'exchange' in df_h.columns:
+            await prewarm_pending_open_segments(
+                {str(e).upper() for e in df_h['exchange'].dropna().unique()}
+            )
+            _pin_pending_open_holdings(df_h)
+        if not df_p.empty and 'exchange' in df_p.columns:
+            await prewarm_pending_open_segments(
+                {str(e).upper() for e in df_p['exchange'].dropna().unique()}
+            )
+            _pin_pending_open_rows(df_p, _resolve_pending_open_exchanges(df_p))
         sum_h = _rebuild_holdings_summary(df_h)
         sum_p = _rebuild_positions_summary(df_p)
         total_h = _auth_nav_total_row(sum_h)

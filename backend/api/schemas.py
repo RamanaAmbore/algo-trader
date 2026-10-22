@@ -47,11 +47,15 @@ class HoldingRow(msgspec.Struct):
     # account. Non-empty only when account_stale=True. Frontend renders
     # this as a small "STALE @ HH:MM" badge next to the account name.
     account_stale_since: str = ""
-    # Per-row price source tag — three values under the unified animation
-    # model (Jul 2026):
+    # Per-row price source tag:
     #   • "live"                 — exchange open, broker/ticker LTP
     #   • "snapshot_settled"     — exchange closed and settled window passed
     #   • "snapshot_unsettled"   — exchange closed, pre-settled window
+    #   • "pending_open"         — broker-connectivity window open but this
+    #                              row's own exchange SEGMENT hasn't opened
+    #                              yet (Item 1, 2026-10-22); last_price is
+    #                              pinned to prev_close, day_change(_val/
+    #                              _percentage) == 0.
     # Legacy value "snapshot" is still accepted by consumers — treat it as
     # equivalent to "snapshot_settled".
     price_source: str = "live"
@@ -169,11 +173,15 @@ class PositionRow(msgspec.Struct):
     # "live" for broker-fetched rows; "paper" for synthesized paper rows.
     # Default "live" preserves backward compatibility with all existing callers.
     mode: str = "live"
-    # Per-row price source tag — three values under the unified animation
-    # model (Jul 2026):
+    # Per-row price source tag:
     #   • "live"                 — exchange open, broker/ticker LTP
     #   • "snapshot_settled"     — exchange closed and settled window passed
     #   • "snapshot_unsettled"   — exchange closed, pre-settled window
+    #   • "pending_open"         — broker-connectivity window open but this
+    #                              row's own exchange SEGMENT hasn't opened
+    #                              yet (Item 1, 2026-10-22); last_price is
+    #                              pinned to prev_close, day_change(_val/
+    #                              _percentage) == 0.
     # Legacy value "snapshot" is still accepted by consumers — treat it as
     # equivalent to "snapshot_settled".
     price_source: str = "live"

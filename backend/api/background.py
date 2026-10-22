@@ -1066,8 +1066,22 @@ async def _perf_fetch_all_broker_data() -> tuple:
             _run(_fetch_holdings_direct), timeout=45
         )
         try:
-            from backend.api.routes.holdings import _override_stale_close_for_holdings
+            from backend.api.routes.holdings import (
+                _override_stale_close_for_holdings, _pin_pending_open_holdings,
+            )
+            from backend.api.helpers.snapshot_gate import prewarm_pending_open_segments
             await _override_stale_close_for_holdings(df_holdings)
+            # Item 1 (2026-10-22) — this path feeds sum_holdings into the
+            # loss-* agent engine AND the NavStrip P badge via
+            # `_perf_run_agent_engine`/intraday-equity below; it must get
+            # the same pending-open pin the live `/api/holdings` route
+            # gets, or the live incident's phantom Day P&L move survives
+            # here even after the route itself is fixed.
+            if not df_holdings.empty and 'exchange' in df_holdings.columns:
+                await prewarm_pending_open_segments(
+                    {str(e).upper() for e in df_holdings['exchange'].dropna().unique()}
+                )
+                _pin_pending_open_holdings(df_holdings)
             sum_holdings = _rebuild_holdings_summary(df_holdings)
         except Exception as _oe:
             logger.warning(f"[PERF] holdings close-override failed (summary unchanged): {_oe}")
@@ -1080,8 +1094,25 @@ async def _perf_fetch_all_broker_data() -> tuple:
             _run(_fetch_positions_direct), timeout=45
         )
         try:
-            from backend.api.routes.positions import _override_stale_close_from_snapshot
+            from backend.api.routes.positions import (
+                _override_stale_close_from_snapshot, _resolve_pending_open_exchanges,
+                _pin_pending_open_rows,
+            )
+            from backend.api.helpers.snapshot_gate import prewarm_pending_open_segments
             await _override_stale_close_from_snapshot(df_positions)
+            # Item 1 (2026-10-22) — same rationale as the holdings branch
+            # above. `_fetch_positions_direct` already ran
+            # `apply_day_change_backstop` INSIDE itself (before this
+            # function's own override call), so there is no later
+            # backstop call here to re-derive day_change_val from this
+            # pin's (now-zeroed) value — safe to pin immediately before
+            # rebuilding the summary.
+            if not df_positions.empty and 'exchange' in df_positions.columns:
+                await prewarm_pending_open_segments(
+                    {str(e).upper() for e in df_positions['exchange'].dropna().unique()}
+                )
+                _pending_exch = _resolve_pending_open_exchanges(df_positions)
+                _pin_pending_open_rows(df_positions, _pending_exch)
             sum_positions = _rebuild_positions_summary(df_positions)
         except Exception as _oe:
             logger.warning(f"[PERF] positions close-override failed (summary unchanged): {_oe}")

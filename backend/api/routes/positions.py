@@ -1385,8 +1385,8 @@ def _apply_flat_row_hygiene(raw: "pd.DataFrame") -> None:
 
 
 async def _patch_raw_positions(raw: "pd.DataFrame") -> "pd.DataFrame":
-    """Apply the close-price override and day P&L backstop to the raw
-    positions DataFrame, in that order.
+    """Apply the close-price override, day P&L backstop, and pending-open
+    pin to the raw positions DataFrame, in that order.
 
     Ordering invariant (tested):
       1. _override_stale_close_from_snapshot — patches close_price so
@@ -1395,6 +1395,10 @@ async def _patch_raw_positions(raw: "pd.DataFrame") -> "pd.DataFrame":
       2. apply_day_change_backstop — rescues Case 1 (new position,
          overnight_quantity=0) and Case 3 (flat intraday, quantity=0)
          where Kite omits day_change_val.
+      3. _pin_pending_open_rows — Item 1 (2026-10-22): pins last_price to
+         prev_close for any row whose exchange segment hasn't genuinely
+         opened yet, overriding whatever the backstop derived above. Must
+         run LAST so it has final authority.
 
     Extracted from _fetch() as part of the CC-reduction refactor so the
     sequence can be tested independently without running a full broker call.
@@ -1413,6 +1417,26 @@ async def _patch_raw_positions(raw: "pd.DataFrame") -> "pd.DataFrame":
     # background performance task calls the same helper so NavStrip P
     # "today" slot agrees with the /api/positions route.
     raw = apply_day_change_backstop(raw)
+
+    # Item 1 pending-open pin — see _pin_pending_open_rows's own docstring.
+    # Runs on the raw frame (not just the final PositionRow structs) so the
+    # account/symbol summary rollups built from this same `raw` a few lines
+    # later in _fetch() also reflect the pin — that NavStrip P-badge rollup
+    # was exactly what the live incident surfaced.
+    #
+    # Prewarm special-sessions BEFORE the sync _resolve_pending_open_
+    # exchanges() → is_segment_pending_open() → _segment_is_open() call
+    # chain — this coroutine already runs on the main loop (no
+    # asyncio.to_thread between _fetch() and here), so a cold cache would
+    # silently fail open to `[]` and miss a real Muhurat/MCX-evening
+    # special session on the first check of the day.
+    if not raw.empty and 'exchange' in raw.columns:
+        from backend.api.helpers.snapshot_gate import prewarm_pending_open_segments
+        await prewarm_pending_open_segments(
+            {str(e).upper() for e in raw['exchange'].dropna().unique()}
+        )
+    pending_exchanges = _resolve_pending_open_exchanges(raw)
+    _pin_pending_open_rows(raw, pending_exchanges)
     return raw
 
 
@@ -1555,6 +1579,20 @@ async def _fetch(force_refresh: bool = False) -> PositionsResponse:
     await _asyncio.to_thread(_enrich_position_greeks, rows)
     # Per-exchange close-snapshot overlay (Jul 2026 unified animation model).
     rows = await _overlay_snapshot_for_closed_exchanges(rows, kind="positions")
+    # Item 1 (2026-10-22) — the overlay above tags every broad-window-open
+    # row as price_source="live"/is_animating=True; numeric fields were
+    # already pinned at the raw-DataFrame stage (_pin_pending_open_rows),
+    # so last_price/current_price already read prev_close by this point —
+    # this only corrects the two display-tag fields the overlay sets
+    # independently of that pin. Prewarm (same rationale as the
+    # _patch_raw_positions call site above — cheap no-op on an
+    # already-warm cache from that earlier call in this same request).
+    if rows:
+        from backend.api.helpers.snapshot_gate import prewarm_pending_open_segments
+        await prewarm_pending_open_segments(
+            {str(getattr(r, "exchange", "")).upper() for r in rows}
+        )
+    rows = _apply_pending_open_tag(rows)
     summary = _polars_df_to_structs(PositionsSummaryRow, summary_df)
     symbol_summary = _polars_df_to_structs(PositionsSymbolSummaryRow, symbol_summary_df)
     stale_accts = sorted(
@@ -2169,6 +2207,111 @@ async def _override_stale_close_from_snapshot(raw: pd.DataFrame) -> None:
         )
 
 
+def _resolve_pending_open_exchanges(raw: pd.DataFrame) -> set:
+    """Return the subset of *raw*'s ``exchange`` values whose configured
+    `market_segments` session has not genuinely opened yet (Item 1,
+    2026-10-22). See `snapshot_gate.is_segment_pending_open`'s docstring
+    for the live incident this closes — the system's broad broker-
+    connectivity window (08:00-23:31 IST) is wider than each exchange's
+    real session hours (NSE 09:15, MCX 09:30), so a row can carry a live
+    `last_price` genuinely diverging from `prev_close` purely from that
+    gap, with no real local trade behind it.
+    """
+    if raw.empty or 'exchange' not in raw.columns:
+        return set()
+    from backend.api.helpers.snapshot_gate import is_segment_pending_open
+    from backend.shared.helpers.date_time_utils import timestamp_indian
+    now = timestamp_indian()
+    exchanges = {str(e).upper() for e in raw['exchange'].dropna().unique()}
+    return {e for e in exchanges if is_segment_pending_open(e, now)}
+
+
+def _pin_pending_open_rows(raw: pd.DataFrame, pending_exchanges: set) -> None:
+    """In-place: for any row on a *pending_exchanges* exchange with a
+    resolved ``prev_close`` > 0, pin last_price to prev_close and
+    recompute unrealised/pnl/day_change(_val/_percentage) so the row
+    reads as "no move yet" — both Day P&L AND lifetime P&L, since no
+    real local trade has happened during this pre-open gap (Item 1,
+    2026-10-22).
+
+    Must run AFTER `apply_day_change_backstop` so this pin has final
+    authority — the backstop's Case 1/3 rescues would otherwise re-derive
+    a nonzero day_change_val from this row's (now-pinned) pnl.
+
+    `price_source='pending_open'` tagging happens separately, at the
+    PositionRow-struct level (`_apply_pending_open_tag`) — this raw-
+    DataFrame step runs before `_build_polars_summary`, so the
+    account/symbol rollups (the NavStrip P badge the live incident
+    surfaced) see the pinned numbers too, not just the per-row display.
+    """
+    if raw.empty or not pending_exchanges or 'exchange' not in raw.columns:
+        return
+    if 'prev_close' not in raw.columns:
+        return
+    pc = pd.to_numeric(raw['prev_close'], errors='coerce').fillna(0)
+    mask = raw['exchange'].astype(str).str.upper().isin(pending_exchanges) & (pc > 0)
+    if not mask.any():
+        return
+    sel = raw.index[mask]
+    cls = pc.loc[sel]
+    raw.loc[sel, 'last_price'] = cls
+    avg = pd.to_numeric(raw.loc[sel, 'average_price'], errors='coerce').fillna(0)
+    qty = pd.to_numeric(raw.loc[sel, 'quantity'], errors='coerce').fillna(0)
+    unreal = (cls - avg) * qty
+    if 'unrealised' in raw.columns:
+        raw.loc[sel, 'unrealised'] = unreal
+    if 'realised' in raw.columns:
+        realised = pd.to_numeric(raw.loc[sel, 'realised'], errors='coerce').fillna(0)
+    else:
+        realised = pd.Series(0.0, index=sel)
+    raw.loc[sel, 'pnl'] = realised + unreal
+    raw.loc[sel, 'day_change'] = 0.0
+    raw.loc[sel, 'day_change_val'] = 0.0
+    raw.loc[sel, 'day_change_percentage'] = 0.0
+    recompute_row_percentages(raw, sel)
+    logger.info(
+        f"positions: pending_open pin applied to {len(sel)}/{len(raw)} rows "
+        f"(exchanges={sorted(pending_exchanges)})"
+    )
+
+
+def _apply_pending_open_tag(rows: list) -> list:
+    """Final post-overlay pass (Item 1, 2026-10-22): re-tag any row whose
+    exchange segment has not genuinely opened yet as
+    ``price_source='pending_open'``, ``is_animating=False`` — overriding
+    `_overlay_snapshot_for_closed_exchanges`'s "live" tag for broad-window
+    -open rows. Numeric fields (last_price/current_price/pnl/day_change*)
+    were already pinned upstream in `_pin_pending_open_rows`; this step
+    only corrects the two tag fields the overlay sets independently of
+    that pin.
+    """
+    if not rows:
+        return rows
+    import msgspec as _msc
+    from backend.api.helpers.snapshot_gate import is_segment_pending_open
+    from backend.shared.helpers.date_time_utils import timestamp_indian
+    now = timestamp_indian()
+    cache: dict = {}
+
+    def _pending(exch: str) -> bool:
+        e = (exch or "").upper()
+        if e not in cache:
+            cache[e] = is_segment_pending_open(e, now)
+        return cache[e]
+
+    out = []
+    for r in rows:
+        pc = getattr(r, "prev_close", 0.0) or 0.0
+        if pc > 0 and _pending(getattr(r, "exchange", "")):
+            out.append(_msc.structs.replace(
+                r, price_source="pending_open", is_animating=False,
+                current_price=float(pc),
+            ))
+        else:
+            out.append(r)
+    return out
+
+
 async def _build_paper_positions_response() -> PositionsResponse:
     """Synthesize paper positions from filled AlgoOrder rows and mark-to-market
     them using the KiteTicker tick map + daily_book close_price snapshot.
@@ -2244,6 +2387,22 @@ async def _build_paper_positions_response() -> PositionsResponse:
             raw['day_change_val'] / _prev_val.replace(0, float('nan')) * 100
         ).fillna(0)
 
+    # Item 1 (2026-10-22) pending-open pin — paper positions are
+    # mark-to-market against the SAME live broker/ticker LTP as live
+    # positions (`_override_stale_ltp_from_ticker` above), so they carry
+    # the identical pre-open-gap exposure `_pin_pending_open_rows` fixes
+    # for the live path. Must run AFTER the paper-specific pnl/
+    # day_change_val recompute above (that block unconditionally
+    # overwrites both columns for every row) so this pin has final
+    # authority, same ordering invariant as `_patch_raw_positions`.
+    if not raw.empty and 'exchange' in raw.columns:
+        from backend.api.helpers.snapshot_gate import prewarm_pending_open_segments
+        await prewarm_pending_open_segments(
+            {str(e).upper() for e in raw['exchange'].dropna().unique()}
+        )
+        pending_exchanges = _resolve_pending_open_exchanges(raw)
+        _pin_pending_open_rows(raw, pending_exchanges)
+
     # prev_settlement_pnl is deliberately excluded from the blanket
     # numeric fillna(0) below — NaN there means "no overnight baseline"
     # (every fill happened today) and must reach PositionRow as None,
@@ -2264,6 +2423,13 @@ async def _build_paper_positions_response() -> PositionsResponse:
         kwargs['mode'] = 'paper'
         kwargs = {k: v for k, v in kwargs.items() if k in valid}
         rows.append(PositionRow(**kwargs))
+
+    # Item 1 (2026-10-22) tag correction — this function has no
+    # `_overlay_snapshot_for_closed_exchanges` call of its own (paper
+    # rows default to price_source="live"/is_animating=True unconditionally
+    # at construction above), so the pending_open tag never gets applied
+    # by anything else on this path.
+    rows = _apply_pending_open_tag(rows)
 
     summary = build_summary_from_rows(rows)
     symbol_summary = build_symbol_summary_from_rows(rows)
