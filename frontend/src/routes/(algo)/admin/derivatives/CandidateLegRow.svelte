@@ -298,17 +298,22 @@
 {/if}
 
 <!-- Row-level right-click (2026-10 round 2, draft rows only, see
-     `oncontextmenu` below) — the `.cand-sym` span's own `use:longPress`
-     already covers right-click on the SYMBOL specifically; the row-level
-     handler covers the rest of the row, so a right-click anywhere on a
-     draft row selects it (matching MarketPulse's draft rows, where
-     onCellContextMenu fires for any cell). A right-click ON .cand-sym
-     calls onContextMenu TWICE (this handler via bubbling + the span's
-     own) — harmless, the 800ms de-dupe guard inside +page.svelte's
-     _startDraftSelection absorbs it. Real (non-draft) rows are
-     unaffected — the attribute is `null` for them, so their row-level
-     right-click still falls through to the browser's native context
-     menu, same as before. -->
+     `oncontextmenu` below; action changed 2026-10-22 context-menu
+     unification) — the `.cand-sym` span's own `use:longPress` already
+     covers right-click on the SYMBOL specifically; the row-level handler
+     covers the rest of the row, so a right-click anywhere on a draft row
+     opens the unified context menu (matching MarketPulse's draft rows,
+     where onCellContextMenu fires for any cell). `onContextMenu(c, ev)`
+     now just opens that menu (previously toggled selection directly) —
+     "Select for clear" / "Promote to real" are items inside it. A
+     right-click ON .cand-sym calls onContextMenu TWICE (this handler via
+     bubbling + the span's own) — harmless, since opening the menu twice
+     is idempotent (unlike the old direct toggle, which needed the 800ms
+     de-dupe guard in +page.svelte's _startDraftSelection to avoid
+     double-firing on-then-off). Real (non-draft) rows are unaffected —
+     the attribute is `null` for them, so their row-level right-click
+     still falls through to the browser's native context menu, same as
+     before. -->
 <div class="cand-row {stripe} cand-row-{dir}"
      style={_acctColor ? `--acct-color: ${_acctColor};` : ''}
      class:cand-disabled={!enabled}
@@ -328,7 +333,7 @@
      tabindex="0"
      oncontextmenu={isDraft ? (ev) => { ev.preventDefault(); onContextMenu(c, ev); } : null}
      title={isDraft
-       ? `Execute draft — open SymbolPanel on Ticket tab pre-filled. Right-click or long-press to select for removal.`
+       ? `Click to promote this draft to a real order. Right-click or long-press for more options.`
        : isClosable
          ? `Close ${Math.abs(displayQty)} ${c.symbol} — SymbolPanel on Ticket tab`
          : `${c.symbol} — open SymbolPanel on Chart tab`}

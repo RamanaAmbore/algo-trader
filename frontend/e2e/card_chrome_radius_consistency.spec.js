@@ -15,6 +15,10 @@ const pulseSrc = readFileSync(new URL('../src/lib/MarketPulse.svelte', import.me
 const navBdSrc = readFileSync(new URL('../src/lib/NavBreakdown.svelte', import.meta.url).pathname, 'utf8');
 const navTabSrc = readFileSync(new URL('../src/lib/NavTab.svelte', import.meta.url).pathname, 'utf8');
 const posStripSrc = readFileSync(new URL('../src/lib/PositionStrip.svelte', import.meta.url).pathname, 'utf8');
+// .ctx-menu/.ctx-item/.ctx-sep relocated here from MarketPulse.svelte during
+// the 2026-10-22 context-menu unification (MarketPulse now renders this
+// shared component instead of its own hand-rolled menu markup).
+const symCtxMenuSrc = readFileSync(new URL('../src/lib/SymbolContextMenu.svelte', import.meta.url).pathname, 'utf8');
 
 // Anchored to the START of a line so a descendant selector sharing the same
 // trailing class name (e.g. `.mp-col > .mp-bucket-wrap {`) never wins the
@@ -128,8 +132,8 @@ test.describe('popup chrome — converges on .algo-modal\'s real recipe', () => 
     expect(modal).not.toMatch(/linear-gradient\(180deg, #0c1830/);
   });
 
-  test('.ctx-menu (MarketPulse) border-alpha + radius converge on .algo-modal; background stays distinct', () => {
-    const menu = rule(pulseSrc, '.ctx-menu');
+  test('.ctx-menu (SymbolContextMenu, shared) border-alpha + radius converge on .algo-modal; background stays distinct', () => {
+    const menu = rule(symCtxMenuSrc, '.ctx-menu');
     expect(normSpace(menu)).toContain(normSpace(algoModalBorder));
     expect(menu).toContain(`border-radius: ${algoModalRadius}`);
     // Deliberately-kept distinct dark background for the context-menu

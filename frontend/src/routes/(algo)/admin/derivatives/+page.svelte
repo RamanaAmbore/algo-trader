@@ -102,7 +102,10 @@
   }
 
   // Context menu state — right-click / long-press on any candidate symbol.
-  /** @type {{ symbol: string, exchange: string, x: number, y: number } | null} */
+  // `candidate` (2026-10-22 unification) carries the full row so the menu's
+  // draft-only actions (select-draft/promote) and currentQty/isDraft props
+  // can resolve without a second lookup.
+  /** @type {{ symbol: string, exchange: string, x: number, y: number, candidate?: any } | null} */
   let _ctxMenu = $state(null);
   /** @type {'place-order' | 'chart' | 'log' | null} */ let _ctxAction = $state(null);
   /** @type {string} */ let _ctxSym  = $state('');
@@ -309,27 +312,35 @@
     }
   }
 
-  // ── Legs grid draft bulk-select (2026-10 round 2) ───────────────────
-  // Operator selects SPECIFIC draft rows — long-press (touch) / right-click
-  // (desktop) via CandidateLegRow's existing `use:longPress` binding, routed
-  // through onContextMenu below — and clears only those — the header
-  // button is "Clear Selected Drafts (N)", never an unconditional
-  // clear-everything. Ids are the same `c.draftId` value removeDraft()
-  // already accepts (bare local id, or 'pd_<backend id>' for payoffDrafts
-  // entries), so clearing just calls removeDraft() per selected id —
-  // reuses the exact same per-item removal logic the × button uses.
+  // ── Legs grid draft bulk-select (2026-10 round 2; gesture reversed
+  // 2026-10-22 context-menu unification) ──────────────────────────────
+  // Operator selects SPECIFIC draft rows via the unified context menu's
+  // "Select for clear" item (long-press / right-click via
+  // CandidateLegRow's existing `use:longPress` binding now OPENS THAT
+  // MENU, routed through onContextMenu below, instead of toggling
+  // selection directly) — and clears only those — the header button is
+  // "Clear Selected Drafts (N)", never an unconditional clear-everything.
+  // Ids are the same `c.draftId` value removeDraft() already accepts
+  // (bare local id, or 'pd_<backend id>' for payoffDrafts entries), so
+  // clearing just calls removeDraft() per selected id — reuses the exact
+  // same per-item removal logic the × button uses.
   let _selectedDraftIds = $state(/** @type {Set<number|string>} */ (new Set()));
   function _toggleDraftSelected(/** @type {number|string} */ id) {
     const next = new Set(_selectedDraftIds);
     if (next.has(id)) next.delete(id); else next.add(id);
     _selectedDraftIds = next;
   }
-  // De-dupe window for the long-press/right-click ENTRY gesture only —
-  // mirrors MarketPulse.svelte's identical guard. A mobile browser can
-  // fire a native `contextmenu` event AND longPress.js's own touch timer
-  // for the SAME physical long-press (both are bound to the symbol span —
-  // see CandidateLegRow's `use:longPress`), which would otherwise toggle
-  // a draft row on then immediately back off on every single long-press.
+  // De-dupe window — now vestigial but harmless. Originally guarded the
+  // long-press/right-click GESTURE itself (a mobile browser could fire a
+  // native `contextmenu` event AND longPress.js's own touch timer for
+  // the SAME physical press, which used to toggle a draft row on then
+  // immediately back off). Since 2026-10-22 the gesture only ever OPENS
+  // the menu (idempotent even if fired twice); this function is reached
+  // solely from the menu's "Select for clear" item — a single deliberate
+  // click — so a double-fire within 800ms is no longer a realistic
+  // concern. Left in place rather than stripped, since it costs nothing
+  // on a single click and keeps this function's signature unchanged for
+  // its one remaining caller.
   /** @type {Map<number|string, number>} */
   const _draftToggleLastAt = new Map();
   function _startDraftSelection(/** @type {number|string} */ id) {
@@ -811,6 +822,12 @@
   // card header. Empty = no filter; otherwise case-insensitive
   // substring match against the row's symbol field.
   let _filterLegs = $state('');
+  // Measured real width of the Legs grid's scroll VIEWPORT (`.cand-scroll`'s
+  // own box — never affected by its scrolled content's width, since that
+  // element is `overflow-x: auto`). 2026-10-22 empty-state centering fix:
+  // see `.cand-empty`'s own CSS comment for why this is needed instead of
+  // the item's own intrinsic width.
+  let _candScrollW = $state(0);
   const displayedCandidates = $derived.by(() => {
     let rows;
     if (legsTab !== 'expiry') {
@@ -5919,7 +5936,17 @@
         <AlgoTabs
           tabs={[
             { id: 'legs', label: 'Legs',
-              badge: candidatePositions.length > 0 ? candidatePositions.length : null },
+              /* 2026-10-22 fix — this used to read `candidatePositions`
+                 (pre-holdings-toggle, pre-search-filter), which could
+                 show a nonzero badge while the grid directly below
+                 simultaneously renders "No candidates" — e.g. the
+                 underlying's only candidate is an equity holding and
+                 `_includeHoldings` is OFF, or the Legs search box
+                 excludes it. The badge now counts the same
+                 `displayedCandidates` set the grid (and its empty-state
+                 message) actually renders, so the two can never
+                 disagree. */
+              badge: displayedCandidates.length > 0 ? displayedCandidates.length : null },
             { id: 'expiry', label: 'Exp close',
               /* Operator (2026-07-01): "active tab text color must be
                  consistent". Warning cue for unfilled expiry-close
@@ -5966,7 +5993,9 @@
            existing per-row `enabledSymbols`/`_isLegEnabled` checkbox
            (the header "select all" + each leg row's own checkbox) is
            now the ONLY per-leg inclusion control. -->
-      <div class="cand-scroll algo-grid-chrome fs-content-fill" style="--fs-chrome-h: 4.5rem;">
+      <div class="cand-scroll algo-grid-chrome fs-content-fill"
+           bind:clientWidth={_candScrollW}
+           style="--fs-chrome-h: 4.5rem; --cand-vw: {_candScrollW}px;">
         <div class="cand-grid">
           <!-- Header row checkbox = master toggle. Checked when
                EVERY candidate is on; unchecked when none; the
@@ -6146,15 +6175,22 @@
                 account:   _rowTicketAccount(candidate),
               })}
               onContextMenu={(candidate, ev) => {
-                // Draft rows (2026-10 round 2): long-press/right-click
-                // means "select for clear", not the real-position context
-                // menu — mirrors MarketPulse.svelte's identical swap. Real
-                // rows are unaffected.
-                if (candidate.source === 'draft') {
-                  if (candidate.draftId != null) _startDraftSelection(candidate.draftId);
-                  return;
-                }
-                _ctxMenu = { symbol: candidate.symbol, exchange: candidate.exchange || 'NFO', x: ev.clientX, y: ev.clientY };
+                // 2026-10-22 unification: long-press/right-click always
+                // opens the unified SymbolContextMenu, draft rows included
+                // — "Select for clear" / "Promote to real" are menu items
+                // inside it now (reversing the round-2 behaviour where a
+                // draft row's press toggled selection directly, mirroring
+                // the same reversal in MarketPulse.svelte). The full
+                // `candidate` is carried on `_ctxMenu` so the menu's
+                // onAction below can resolve draft-only actions and the
+                // real currentQty for Close.
+                _ctxMenu = {
+                  symbol: candidate.symbol,
+                  exchange: candidate.exchange || 'NFO',
+                  x: ev.clientX,
+                  y: ev.clientY,
+                  candidate,
+                };
               }}
             />
           {/each}
@@ -6697,8 +6733,22 @@
     exchange={_ctxMenu?.exchange}
     x={_ctxMenu?.x}
     y={_ctxMenu?.y}
+    isDraft={_ctxMenu?.candidate?.source === 'draft'}
     onClose={() => { _ctxMenu = null; }}
     onAction={(action, sym, exch) => {
+      // Draft-only actions are intercepted here — they don't map to
+      // the generic `_ctxAction` modal-open pattern below (2026-10-22
+      // unification; _ctxMenu.candidate carries the full row, needed
+      // for both).
+      const candidate = _ctxMenu?.candidate;
+      if (action === 'select-draft') {
+        if (candidate?.draftId != null) _startDraftSelection(candidate.draftId);
+        return;
+      }
+      if (action === 'promote') {
+        if (candidate) executeDraft(candidate);
+        return;
+      }
       _ctxSym  = sym;
       _ctxExch = exch;
       _ctxAction = /** @type {any} */ (action);
@@ -7393,7 +7443,24 @@
      so it reads as a single placeholder line, not a half-width cell
      in the leftmost column. Keeps the scroll wrapper + header row
      mounted across underlying switches (the grid only rebuilds its
-     row contents, not its chrome). */
+     row contents, not its chrome).
+
+     2026-10-22 centering fix — this item spans every one of the 21
+     `max-content`-sized subgrid column tracks (grid-column: 1/-1
+     below). With no row data to size those tracks off of, the grid's
+     intrinsic width collapsed to THIS item's own content width instead
+     — and an unwrapped sentence like "No candidates for ABLBL on the
+     current filter" is wider than the sum of 21 short column-header
+     labels, so the grid (and this centered placeholder along with it)
+     rendered wider than the visible `.cand-scroll` viewport, shifting
+     it off to the right of true center. Pinning an EXPLICIT width
+     (measured off `.cand-scroll`'s own real box via `--cand-vw`, a
+     `bind:clientWidth` var set on that element — never affected by its
+     own scrolled CONTENT's width, since it's `overflow-x: auto`) stops
+     this item contributing its content width to track sizing at all;
+     `position: sticky; left: 0` then keeps it pinned to the visible
+     left edge even on the rare narrow viewport where the header row
+     ITSELF still forces horizontal scroll while empty. */
   .cand-empty {
     grid-column: 1 / -1;
     padding: 0.85rem 0.7rem;
@@ -7402,6 +7469,11 @@
     color: var(--c-muted);
     font-style: italic;
     align-self: start;
+    width: var(--cand-vw, 100%);
+    min-width: 0;
+    box-sizing: border-box;
+    position: sticky;
+    left: 0;
   }
   .cand-empty.cand-loading {
     align-self: stretch;
@@ -7409,6 +7481,30 @@
     align-items: center;
     justify-content: flex-start;
     min-height: 8rem;
+  }
+  /* Fullscreen vertical centering (2026-10-22) — scoped to the plain
+     "No candidates" branch only (`:not(.cand-loading)` excludes both
+     the "Loading candidates…" and "No underlying selected" branches,
+     which keep their existing flex-start/center treatment unchanged —
+     not in scope for this fix). `.cand-body-rows`'s own fullscreen
+     `align-content: start` (below) deliberately keeps real LEG rows
+     pinned to the top; when the body's only child is this placeholder,
+     overriding back to `stretch` lets its auto-sized row track actually
+     claim the full 1fr height, `align-self: stretch` lets THIS item
+     fill that track, and `height: 100%` on the EmptyState's own
+     `.es-rich` wrapper (rich mode; the two unaffected branches above
+     use compact `.es`/message mode's different internal layout) gives
+     its pre-existing `justify-content: center` a real height to center
+     within — true 2-axis centering with no change to EmptyState.svelte
+     itself. */
+  :global(.opt-legs-card.fs-card-on) .cand-body-rows:has(.cand-empty) {
+    align-content: stretch;
+  }
+  :global(.opt-legs-card.fs-card-on) .cand-empty:not(.cand-loading) {
+    align-self: stretch;
+  }
+  :global(.opt-legs-card.fs-card-on) .cand-empty:not(.cand-loading) :global(.es-rich) {
+    height: 100%;
   }
 
   /* ── Per-underlying snapshot card ────────────────────────────────

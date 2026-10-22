@@ -87,6 +87,7 @@
   import Select      from '$lib/Select.svelte';
   import { openActivityModal } from '$lib/stores';
   import ChartModal from '$lib/ChartModal.svelte';
+  import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
   import AddToPulseModal from '$lib/AddToPulseModal.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
@@ -1695,7 +1696,6 @@
 
     // Keyboard shortcuts — scoped to this wrapper only.
     document.addEventListener('keydown', handleKeydown);
-    document.addEventListener('click', onDocClick);
 
     // SSE quote stream lifecycle (start/stop) belongs solely to the algo
     // layout's startMarketGatedQuoteStream()/stopMarketGatedQuoteStream()
@@ -2172,21 +2172,24 @@
     return t ? [t] : [];
   });
 
-  // ── Draft-row bulk selection (2026-10, round 2: long-press/right-click) ─
+  // ── Draft-row bulk selection (2026-10 round 2; gesture reversed 2026-10-22
+  // context-menu unification) ───────────────────────────────────────────
   // Operator can select SPECIFIC draft rows and clear only those — NOT a
   // single unconditional "clear everything" button (payoffDrafts.clear()
   // is deliberately never called here). Ids are the real backend draft id
   // (payoffDrafts entry.id, a number) — same value carried on each draft
   // row as `draftId`.
   //
-  // Selection entry point is now a long-press (touch, see
-  // _bindDraftTouchLongPress) or right-click (desktop, see the
-  // onCellContextMenu branch in makeBucketGrid) on a draft row — the old
-  // per-row `.draft-select-cb` checkbox is gone. Once at least one draft
-  // is selected, a plain click on ANY OTHER draft row toggles its
-  // membership too (see handleRowClick) instead of opening the
-  // promote-to-real ticket, so the operator can multi-select without
-  // repeating the long-press/right-click gesture per row.
+  // Selection entry point is the unified context menu's "Select for
+  // clear" item — long-press (touch, see _bindDraftTouchLongPress) or
+  // right-click (desktop, see the onCellContextMenu branch in
+  // makeBucketGrid) on a draft row now OPENS THAT MENU, same as every
+  // other row type, rather than toggling selection directly (the round-2
+  // behaviour this reverses). The old per-row `.draft-select-cb` checkbox
+  // is still gone. Once at least one draft is selected, a plain click on
+  // ANY OTHER draft row toggles its membership too (see handleRowClick)
+  // instead of opening the promote-to-real ticket, so the operator can
+  // multi-select without reopening the menu per row.
   let _selectedDraftIds = $state(/** @type {Set<number>} */ (new Set()));
   const _draftRowsPresent = $derived(positionsRows.some(r => r.source === 'draft'));
   // Prune selections that no longer correspond to a live draft (removed
@@ -2769,7 +2772,6 @@
     for (const t of _prefetchTimers) { try { clearTimeout(t); } catch { /* no-op */ } }
     _prefetchTimers.length = 0;
     document.removeEventListener('keydown', handleKeydown);
-    document.removeEventListener('click', onDocClick);
     gridPinned?.destroy?.();
     gridWatch?.destroy?.();
     gridPositions?.destroy?.();
@@ -3611,19 +3613,20 @@
     const removeBtn = (row.src?.w && row.watchlist_item_id != null && _canRemoveHere)
       ? `<span class="sym-remove" data-item="${row.watchlist_item_id}" data-list="${row.watchlist_list_id ?? ''}" title="Remove from watchlist">×</span>`
       : '';
-    // Per-row actions menu — ⋯ pops a Chart / Watchlist / Trade
-    // popover via handleRowClick → _actionsMenu state. Hidden on
-    // bare-underlying placeholder rows where there's no resolvable
-    // symbol to act on. Also hidden on draft rows (2026-10) — the ⋯
-    // menu's "Place order →" is a SEPARATE, non-draft-aware ticket path
-    // (ctxOpenTicket) that would bypass the draftId-threaded "promote
-    // to real" flow (_openTicketFromDraftRow) this row's own click
-    // already opens — two competing entry points for the same row would
-    // be confusing and one of them silently drops the draft cleanup.
+    // Per-row actions menu — ⋯ opens the unified SymbolContextMenu via
+    // handleRowClick → `_tryHandleRowButton`'s `.sym-actions` branch
+    // (openContextMenu, same entry point right-click/long-press uses).
+    // Previously ALSO hidden on draft rows (2026-10) because the old
+    // menu's "Place order →" was a non-draft-aware ticket path that
+    // bypassed the draftId-threaded promote flow — fixed by the 2026-10-22
+    // unification (the menu is now isDraft-aware: it offers Promote to
+    // real / Select for clear instead), so the ⋯ affordance is safe and
+    // shown on draft rows too. Still hidden on bare-underlying placeholder
+    // rows where there's no resolvable symbol to act on.
     const isDraftRow = row.source === 'draft';
     const sym = String(row.tradingsymbol || '').trim();
     const exch = String(row.exchange || '').trim();
-    const actionsBtn = (sym && !isDraftRow)
+    const actionsBtn = sym
       ? `<span class="sym-actions" data-sym="${sym}" data-exch="${exch}" data-watchitem="${row.watchlist_item_id ?? ''}" title="Symbol actions">⋯</span>`
       : '';
     // Per-row ↑/↓ buttons — move the row's whole underlying group up
@@ -3648,17 +3651,19 @@
     const provChip = row._provisional
       ? '<span class="sym-provisional" title="Provisional — awaiting broker confirmation">~</span>'
       : '';
-    // Draft rows (2026-10 round 2) — the bulk-removal checkbox is gone;
-    // selection now happens via long-press (touch, _bindDraftTouchLongPress)
-    // or right-click (desktop, onCellContextMenu in makeBucketGrid). This
-    // wrapper carries `data-draft-id` so both delegated handlers can
-    // resolve the draft id from the DOM without a per-row listener (ag-Grid
-    // cellRenderer output is a plain HTML string that gets torn down on
-    // virtualization), and a `title` tooltip for discoverability — the
-    // header "Clear Selected Drafts" button stays hidden until something
-    // is selected, so this is the only passive hint on the row itself.
+    // Draft rows (2026-10 round 2; gesture reversed 2026-10-22) — the
+    // bulk-removal checkbox is gone; long-press (touch,
+    // _bindDraftTouchLongPress) or right-click (desktop, onCellContextMenu
+    // in makeBucketGrid) now opens the unified context menu, whose own
+    // "Select for clear" item enters selection. This wrapper carries
+    // `data-draft-id` so both delegated handlers can resolve the draft id
+    // from the DOM without a per-row listener (ag-Grid cellRenderer output
+    // is a plain HTML string that gets torn down on virtualization), and a
+    // `title` tooltip for discoverability — the header "Clear Selected
+    // Drafts" button stays hidden until something is selected, so this is
+    // the only passive hint on the row itself.
     const draftWrapOpen = (isDraftRow && row.draftId != null)
-      ? `<span class="draft-row-hit" data-draft-id="${row.draftId}" title="Right-click or long-press to select for removal">`
+      ? `<span class="draft-row-hit" data-draft-id="${row.draftId}" title="Click to promote to a real order. Right-click or long-press for more options.">`
       : '';
     const draftWrapClose = draftWrapOpen ? '</span>' : '';
     return `${draftWrapOpen}${provChip}<span class="sym-main ${optClass}"${symTitle}>${main}</span>${lotChip}${aliasTail}${badgeHtml}${removeBtn}${moveBtns}${actionsBtn}${dirLabel}${draftWrapClose}`;
@@ -3963,23 +3968,13 @@
         onRowClicked: handleRowClick,
         onCellContextMenu: (ev) => {
           if (!ev.data) return;
-          // Draft rows (2026-10 round 2): right-click means "select for
-          // clear", not the real-position context menu — that menu's own
-          // "Place order →" entry (ctxOpenTicket) is a non-draft-aware
-          // ticket path that bypasses the draftId-threaded promote flow
-          // handleRowClick already opens on a plain click, so swapping the
-          // gesture here is a clean win, not a loss. Real rows are
-          // unaffected (unchanged openContextMenu branch below).
-          if (ev.data.source === 'draft') {
-            ev.event?.preventDefault?.();
-            // _startDraftSelection (not the bare toggle) — a mobile browser
-            // can fire this SAME native `contextmenu` event AND our own
-            // touch-timer (_bindDraftTouchLongPress) for one physical
-            // long-press; the de-dupe guard inside it stops the pair from
-            // toggling the row on then immediately off.
-            _startDraftSelection(Number(ev.data.draftId));
-            return;
-          }
+          // 2026-10-22 unification: right-click always opens the unified
+          // SymbolContextMenu, draft rows included — "Select for clear" /
+          // "Promote to real" are now menu items inside it (reversing the
+          // round-2 behaviour where a draft row's right-click toggled
+          // selection directly, bypassing any menu at all). Real rows were
+          // already routed through openContextMenu; draft rows now share
+          // the exact same call.
           openContextMenu(ev.event, ev.data);
         },
         ...extraOpts,
@@ -4177,40 +4172,22 @@
     return false;
   }
 
-  // De-dupe window for the selection-ENTRY gesture (long-press / right-
-  // click) — NOT applied to the plain-click "toggle membership once
-  // already selecting" path below, which is a separate single click per
-  // call and has no double-fire risk of its own. Two real browser
-  // behaviours can fire the SAME physical long-press/right-click twice:
-  // (1) mobile browsers (confirmed on Android) can emit a native
-  // `contextmenu` event AND complete our own touch timer for one press,
-  // and (2) ag-Grid's `onCellContextMenu` can also see that native event.
-  // Without this, one long-press toggled a row on then immediately off.
-  /** @type {Map<number, number>} */
-  const _draftToggleLastAt = new Map();
-  function _draftToggleShouldFire(/** @type {number} */ id) {
-    const now = Date.now();
-    const prev = _draftToggleLastAt.get(id);
-    if (prev != null && now - prev < 800) return false;
-    _draftToggleLastAt.set(id, now);
-    return true;
-  }
-
   /** Toggle one draft row's selection membership and redraw so the
    *  `.draft-row-selected` row class (applied via getRowClass) picks up
    *  the change — `redrawRows()` (not refreshCells) because getRowClass
-   *  is only re-evaluated on a row redraw, not a cell-level refresh. */
+   *  is only re-evaluated on a row redraw, not a cell-level refresh.
+   *  2026-10-22 unification: this is now reached ONLY via the unified
+   *  context menu's "Select for clear" item (a single deliberate button
+   *  click) — the long-press/right-click GESTURE itself no longer calls
+   *  this directly (it opens the menu instead, same as every other row
+   *  type), so the old entry-point de-dupe guard (which existed solely
+   *  because a mobile browser could fire the SAME physical long-press
+   *  twice into a direct toggle) is gone — opening a menu twice for one
+   *  gesture is harmless (idempotent), unlike toggling a selection twice. */
   function _toggleDraftSelectedAndRedraw(/** @type {number} */ id) {
     if (!Number.isFinite(id)) return;
     _toggleDraftSelected(id);
     try { gridPositions?.redrawRows(); } catch (_) {}
-  }
-
-  /** Entry-point wrapper for the long-press/right-click GESTURE only —
-   *  applies the double-fire guard above, then toggles. */
-  function _startDraftSelection(/** @type {number} */ id) {
-    if (!Number.isFinite(id) || !_draftToggleShouldFire(id)) return;
-    _toggleDraftSelectedAndRedraw(id);
   }
 
   // Derive BUY/SELL side from the position's signed qty.
@@ -4262,6 +4239,37 @@
       account:    preAccount,
       currentQty: posQty,
       action:     posQty !== 0 ? 'close' : 'open',
+    });
+  }
+
+  // "Place order" context-menu item (2026-10-22 unification) — a
+  // GENERIC, always-BUY-default ticket, distinct from `_openTicketFromRow`
+  // above (which is reverse-side/close-biased whenever a position
+  // exists — the same ticket a plain row click has always opened). The
+  // menu needs both: "Place order" for adding a fresh leg regardless of
+  // any existing position's direction, and "Close (sell/buy)" (wired to
+  // `_openTicketFromRow`) for flattening it. For watchlist/mover rows
+  // with no position, the two are functionally identical (both open a
+  // fresh BUY/open ticket) — Close simply never renders there since
+  // currentQty is 0.
+  async function _openTicketGeneric(/** @type {any} */ r) {
+    await _instrumentsReady;
+    const inst = getInstrument?.(r.tradingsymbol);
+    const lot = Number(inst?.ls) || 0;
+    const isRealAcct = (/** @type {any} */ a) => !!(a && !String(a).includes('#'));
+    const preAccount = isRealAcct(r.account) ? String(r.account) : '';
+    await _ensureRealAccountsLoaded();
+    const posQty = r.src?.p ? (Number(r.qty_pos) || 0) : 0;
+    openTicket({
+      symbol:     r.tradingsymbol,
+      exchange:   r.exchange,
+      side:       'BUY',
+      qty:        lot || 1,
+      lotSize:    lot,
+      accounts:   realAccounts,
+      account:    preAccount,
+      currentQty: posQty,
+      action:     'open',
     });
   }
 
@@ -4330,27 +4338,37 @@
     await _openTicketFromRow(ev.data);
   }
 
-  /** Mobile long-press for draft-row selection (2026-10 round 2). Desktop
-   *  right-click is covered by onCellContextMenu above (native `contextmenu`
-   *  event, reliable on desktop); on touch devices that event is
-   *  unreliable across browsers after a long press (the same reason
-   *  longPress.js exists for the derivatives Legs grid). ag-Grid's
-   *  cellRenderer output is a plain HTML string that gets torn down on
-   *  virtualization, so a per-row `use:longPress` Svelte action (as
-   *  CandidateLegRow.svelte uses for its own {#each}-rendered rows) can't
-   *  be attached here — this delegates the SAME 500ms-press timer on the
-   *  grid's container element instead, identifying the row via
+  /** Mobile long-press for draft rows (2026-10 round 2; action changed
+   *  2026-10-22 — see below). Desktop right-click is covered by
+   *  onCellContextMenu above (native `contextmenu` event, reliable on
+   *  desktop); on touch devices that event is unreliable across browsers
+   *  after a long press (the same reason longPress.js exists for the
+   *  derivatives Legs grid). ag-Grid's cellRenderer output is a plain
+   *  HTML string that gets torn down on virtualization, so a per-row
+   *  `use:longPress` Svelte action (as CandidateLegRow.svelte uses for
+   *  its own {#each}-rendered rows) can't be attached here — this
+   *  delegates the SAME 500ms-press timer on the grid's container
+   *  element instead, identifying the row via
    *  `target.closest('[data-draft-id]')` (set by symRenderer on draft
    *  rows only).
+   *
+   *  2026-10-22 unification: a long-press on a draft row now OPENS THE
+   *  UNIFIED MENU at the touch point (same `openContextMenu()` every
+   *  other row's right-click/long-press already uses), instead of
+   *  directly toggling selection — "Select for clear" is a menu item now.
+   *  The touch timer only ever learns the draft's id (from the
+   *  `data-draft-id` attribute), not its row object, so the row is
+   *  looked up via ag-Grid's own `forEachNode` right before opening —
+   *  cheap (one short-lived Positions-bucket scan) and exactly the same
+   *  row shape `onCellContextMenu`'s `ev.data` already hands to real
+   *  rows.
    *
    *  Mirrors longPress.js's own `fired`-flag + capture-phase click
    *  suppression (that file's lines 11/19-21/37-45) — without it, the
    *  synthetic `click` a browser fires after `touchend` reaches
-   *  `handleRowClick` a moment after the timer already selected the row,
-   *  and since selection mode is now active that click immediately
-   *  toggles the SAME row back off. Handles `pointercancel`-equivalent
-   *  touch events (touchend/touchcancel/touchmove) exactly like
-   *  longPress.js. */
+   *  `handleRowClick` a moment after the timer already opened the menu.
+   *  Handles `pointercancel`-equivalent touch events (touchend/
+   *  touchcancel/touchmove) exactly like longPress.js. */
   function _bindDraftTouchLongPress(/** @type {HTMLElement | null} */ el) {
     if (!el) return;
     const DELAY = 500;
@@ -4364,10 +4382,15 @@
       const hit = /** @type {HTMLElement | null} */ (e.target)?.closest?.('[data-draft-id]');
       if (!hit) return;
       const id = Number(hit.getAttribute('data-draft-id'));
+      const t = e.touches[0];
+      const x = t?.clientX ?? 0;
+      const y = t?.clientY ?? 0;
       timer = setTimeout(() => {
         timer = null;
         fired = true;
-        _startDraftSelection(id);
+        /** @type {any} */ let row = null;
+        try { gridPositions?.forEachNode((node) => { if (Number(node.data?.draftId) === id) row = node.data; }); } catch (_) {}
+        if (row) openContextMenu({ clientX: x, clientY: y, preventDefault: () => {} }, row);
       }, DELAY);
     }
     el.addEventListener('touchstart', onTouchStart, { passive: true });
@@ -4377,7 +4400,7 @@
     // Capture phase so this runs BEFORE ag-Grid's own row click listener
     // (attached directly on the `.ag-row` element, bubble phase) — fired
     // stays true only for the trailing synthetic click right after the
-    // timer selected a row, then resets so a genuinely separate next tap
+    // timer opened the menu, then resets so a genuinely separate next tap
     // is never swallowed.
     el.addEventListener('click', (e) => {
       if (fired) {
@@ -4404,9 +4427,13 @@
   // operator clicks Add with target = 'NEW'.
 
   // ── Context menu ─────────────────────────────────────────────────
+  // Outside-click/Esc dismissal is now owned entirely by
+  // SymbolContextMenu.svelte itself (2026-10-22) — the old `ctxMenuEl` +
+  // `onDocClick` pair (dismissing the hand-rolled `<div class="ctx-menu">`
+  // this component used to render directly) is gone along with that
+  // markup.
   /** @type {{ x: number, y: number, row: any } | null} */
   let ctxMenu = $state(null);
-  let ctxMenuEl = $state(/** @type {HTMLElement | null} */ (null));
 
   function openContextMenu(ev, row) {
     ev.preventDefault();
@@ -4419,11 +4446,6 @@
     const ts = String(row.tradingsymbol || '').toUpperCase();
     const root = ts.replace(/\d.*$/, '') || String(row.underlying || '').replace(/\s+/g, '') || ts;
     window.location.href = `/admin/derivatives?u=${encodeURIComponent(root)}`;
-  }
-  function ctxOpenTicket(row) {
-    closeContextMenu();
-    // Synthesise a fake ag-Grid event shape handleRowClick expects.
-    handleRowClick({ data: row, event: null });
   }
   async function ctxCopySymbol(row) {
     closeContextMenu();
@@ -4513,13 +4535,6 @@
   function _closeChartModal() {
     _chartModalOpen = false;
     queueMicrotask(() => { _chartModalSym = ''; _chartModalExch = ''; });
-  }
-
-  // Dismiss context menu on outside click.
-  function onDocClick(ev) {
-    if (ctxMenu && ctxMenuEl && !ctxMenuEl.contains(/** @type {Node} */ (ev.target))) {
-      closeContextMenu();
-    }
   }
 
   // ── Keyboard shortcuts ────────────────────────────────────────────
@@ -4761,6 +4776,28 @@
                         class="mp-add-btn">+</button>
               {/if}
             {/snippet}
+            {#snippet right()}
+              <!-- "Reset all overrides" (2026-10-22, relocated from the
+                   per-row context menu during its unification) — this
+                   isn't a row-scoped action (it clears the WHOLE board's
+                   manual group-order + detached-symbol state, both
+                   persisted to localStorage via saveGroupOrder/
+                   saveDetached), so it belongs at the card level, not
+                   buried in a single row's menu. Lives on this card
+                   specifically since groupOrder/detachedSymbols' most
+                   visible effect is the Pinned bucket's own sort
+                   (pinnedTopRows filters out detached symbols). Hidden
+                   entirely (not disabled) when there's nothing to reset —
+                   same "absent, not disabled" convention as the draft
+                   Clear/Cancel buttons elsewhere on this page. -->
+              {#if hasOverrides && !isDemo}
+                <button type="button" class="mp-reset-overrides-btn"
+                  onclick={resetOverrides}
+                  title="Reset all group-order and detached-symbol overrides">
+                  ↻ Reset overrides
+                </button>
+              {/if}
+            {/snippet}
           </CardHeader>
           <!-- Sub-tab strip retired — each user watchlist now lives
                as its own top-tab next to Pinned. -->
@@ -4985,40 +5022,59 @@
     }} />
 {/if}
 
-<!-- Context menu (item 2) -->
+<!-- Unified context menu (2026-10-22) — SymbolContextMenu.svelte, the
+     SAME shared component OrderBook/LogPanel/PerformancePage/
+     /orders/derivatives all use, replacing MarketPulse's own
+     hand-rolled 10-item menu. Row-type-aware via props below, derived
+     straight off `ctxMenu.row` (every one of the six buckets funnels
+     through the same `openContextMenu()`/`ctxMenu` state, so there is
+     exactly one place that needs this derivation). "Reset all
+     overrides" is NOT carried over as a per-row item — it isn't row-
+     scoped (it resets the WHOLE board's group-order + detached-symbol
+     state) — see the Pinned/Watchlist CardHeader's own
+     `.mp-reset-overrides-btn` below instead. -->
 {#if ctxMenu}
-  <div
-    bind:this={ctxMenuEl}
-    class="ctx-menu"
-    style="left:{ctxMenu?.x}px;top:{ctxMenu?.y}px"
-    role="menu">
-    <button class="ctx-item" role="menuitem" onclick={() => ctxOpenChart(ctxMenu?.row)}>Chart →</button>
-    <button class="ctx-item" role="menuitem" onclick={() => ctxOpenOptions(ctxMenu?.row)}>Open in Options →</button>
-    <button class="ctx-item" role="menuitem" onclick={() => ctxOpenTicket(ctxMenu?.row)}>Place order →</button>
-    <button class="ctx-item" role="menuitem" onclick={() => ctxOpenOrders(ctxMenu?.row)}>Orders →</button>
-    <button class="ctx-item" role="menuitem" onclick={() => ctxOpenLog(ctxMenu?.row)}>Log →</button>
-    <div class="ctx-sep"></div>
-    {#if !ctxMenu?.row?.src?.w && !isDemo}
-      <!-- ★ Add to watchlist — visible when the symbol is NOT already
-           in the operator's watchlist. The other branch below shows
-           the Remove counterpart. -->
-      <button class="ctx-item" role="menuitem" onclick={() => ctxAddWatch(ctxMenu?.row)}>★ Add to watchlist</button>
-    {/if}
-    <button class="ctx-item" role="menuitem" onclick={() => ctxCopySymbol(ctxMenu?.row)}>Copy symbol</button>
-    <div class="ctx-sep"></div>
-    {#if isDetached(ctxMenu?.row?.tradingsymbol)}
-      <button class="ctx-item" role="menuitem" onclick={() => { reattachSymbol(ctxMenu?.row); closeContextMenu(); }}>↩ Re-attach to group</button>
-    {:else if ctxMenu?.row?.underlying}
-      <button class="ctx-item" role="menuitem" onclick={() => { detachSymbol(ctxMenu?.row); closeContextMenu(); }}>↗ Detach from group</button>
-    {/if}
-    {#if hasOverrides}
-      <button class="ctx-item" role="menuitem" onclick={() => { resetOverrides(); closeContextMenu(); }}>↻ Reset all overrides</button>
-    {/if}
-    {#if ctxMenu?.row?.src?.w && ctxMenu?.row?.watchlist_item_id != null && !isDemo}
-      <div class="ctx-sep"></div>
-      <button class="ctx-item ctx-item-danger" onclick={() => ctxRemoveWatch(ctxMenu?.row)}>Remove from watchlist</button>
-    {/if}
-  </div>
+  <SymbolContextMenu
+    symbol={ctxMenu?.row?.tradingsymbol}
+    exchange={ctxMenu?.row?.exchange || ''}
+    x={ctxMenu?.x}
+    y={ctxMenu?.y}
+    currentQty={ctxMenu?.row?.src?.p ? (Number(ctxMenu?.row?.qty_pos) || 0) : 0}
+    isDraft={ctxMenu?.row?.source === 'draft'}
+    canPlaceOrders={allowOrders}
+    showOpenInOptions={ctxMenu?.row?.source !== 'draft'}
+    showCopySymbol={ctxMenu?.row?.source !== 'draft'}
+    watchlist={(ctxMenu?.row?.source === 'draft' || isDemo) ? null : {
+      inWatchlist: !!ctxMenu?.row?.src?.w && ctxMenu?.row?.watchlist_item_id != null,
+    }}
+    group={ctxMenu?.row?.source === 'draft' ? null : (
+      isDetached(ctxMenu?.row?.tradingsymbol)
+        ? { isDetached: true }
+        : (ctxMenu?.row?.underlying ? { isDetached: false, hasUnderlying: true } : null)
+    )}
+    onClose={closeContextMenu}
+    onAction={(action) => {
+      const row = ctxMenu?.row;
+      if (!row) return;
+      switch (action) {
+        case 'place-order':      _openTicketGeneric(row); break;
+        case 'close':            _openTicketFromRow(row); break;
+        case 'promote':          _openTicketFromDraftRow(row); break;
+        case 'select-draft':
+          if (row.draftId != null) _toggleDraftSelectedAndRedraw(Number(row.draftId));
+          break;
+        case 'chart':            ctxOpenChart(row); break;
+        case 'open-options':     ctxOpenOptions(row); break;
+        case 'orders':           ctxOpenOrders(row); break;
+        case 'log':              ctxOpenLog(row); break;
+        case 'copy-symbol':      ctxCopySymbol(row); break;
+        case 'add-watchlist':    ctxAddWatch(row); break;
+        case 'remove-watchlist': ctxRemoveWatch(row); break;
+        case 'detach':           detachSymbol(row); break;
+        case 'reattach':         reattachSymbol(row); break;
+      }
+    }}
+  />
 {/if}
 
 <!-- ActivityLogModal singleton lives in the (algo) layout via the
@@ -5239,6 +5295,24 @@
     flex-shrink: 0;
   }
   .mp-draft-cancel-btn:hover { color: var(--algo-slate); background: var(--close-btn-neutral-bg-hover); }
+
+  /* "Reset overrides" (2026-10-22) — same neutral, non-destructive chrome
+     as the draft Cancel button above; resetting group-order/detach state
+     is reversible (re-drag/re-detach), not a deletion, so it doesn't get
+     the red Clear-button treatment. */
+  .mp-reset-overrides-btn {
+    background: var(--close-btn-neutral-bg);
+    border: none;
+    border-radius: 3px;
+    color: var(--algo-muted);
+    font-size: var(--fs-sm);
+    cursor: pointer;
+    line-height: 1;
+    padding: 2px 8px;
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+  .mp-reset-overrides-btn:hover { color: var(--algo-slate); background: var(--close-btn-neutral-bg-hover); }
 
   /* Source badges (P / H / W / U) — sit right of the symbol. */
   :global(.sym-badges) {
@@ -5998,49 +6072,10 @@
      .st-src, .st-chip, .st-val, .st-pos, .st-neg, .st-sym, .st-sep)
      dropped per audit. */
 
-  /* Context menu (item 2). Border-alpha + radius converged onto
-     .algo-modal's canonical popup recipe (2026-10 card-chrome audit);
-     background stays its own darker literal — a context menu is a
-     different interaction pattern than a modal and doesn't need an
-     identical surface. */
-  :global(.ctx-menu) {
-    position: fixed;
-    z-index: var(--z-tooltip);
-    min-width: 10rem;
-    background: rgba(10,22,40,0.97);
-    border: 1px solid rgba(251,191,36,0.55);
-    border-radius: 6px;
-    box-shadow: 0 4px 20px rgba(0,0,0,0.55);
-    padding: 0.25rem 0;
-    font-size: var(--fs-md);
-  }
-  :global(.ctx-item) {
-    display: block;
-    width: 100%;
-    text-align: left;
-    padding: 0.3rem 0.75rem;
-    background: transparent;
-    border: none;
-    /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved.
-       Verified .ctx-item/.ctx-sep are only consumed by MarketPulse.svelte
-       and SymbolContextMenu.svelte, neither public-mounted. */
-    color: color-mix(in srgb, var(--algo-slate) 85%, transparent);
-    cursor: pointer;
-    font-size: var(--fs-md);
-    white-space: nowrap;
-    transition: background 0.1s, color 0.1s;
-  }
-  :global(.ctx-item:hover) {
-    background: rgba(251,191,36,0.1);
-    color: var(--c-action);
-  }
-  :global(.ctx-item-danger) { color: rgba(248,113,113,0.8); }
-  :global(.ctx-item-danger:hover) { background: rgba(248,113,113,0.1); color: var(--c-short); }
-  :global(.ctx-sep) {
-    height: 1px;
-    background: color-mix(in srgb, var(--algo-slate) 10%, transparent);
-    margin: 0.2rem 0;
-  }
+  /* Context menu CSS (.ctx-menu/.ctx-item/.ctx-sep) relocated to
+     SymbolContextMenu.svelte (2026-10-22 unification) — MarketPulse now
+     renders that shared component instead of its own hand-rolled menu
+     markup, so the styles moved with their one remaining consumer. */
 
   /* ── Search popup ─────────────────────────────────────────────────
      Lightweight overlay + modal for the symbol-add input. Mirrors

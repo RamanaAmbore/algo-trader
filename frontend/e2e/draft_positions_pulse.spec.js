@@ -2,16 +2,21 @@
  * draft_positions_pulse.spec.js
  *
  * 2026-10-21 — draft positions on MarketPulse's Positions grid (shared-row
- * re-wire round). Covers:
+ * re-wire round). Gesture updated 2026-10-22 (context-menu unification):
+ * right-click / long-press on a draft row now OPENS THE UNIFIED
+ * SymbolContextMenu instead of toggling selection directly — "Select for
+ * clear" is a menu item inside it. Covers:
  *   B. Draft rows render with the `row-draft` class. (2026-10 simplification:
  *      a draft now sums into the pinned TOTAL like any real row — MarketPulse's
  *      TOTAL has no qty cell (qty_net is null on totals), so that sum is
  *      covered at unit level in pulseUnified.test.js, not in the DOM.)
- *   C. Select via right-click (desktop) / long-press (touch) on a draft row —
- *      no checkbox. "Clear Selected Drafts (N)" and the ✕ Cancel button are
- *      absent from the DOM at 0 selected, appear once selection starts, Cancel
- *      empties selection with no DELETE, Clear removes exactly the selected ids.
- *      A plain click on another draft toggles membership while selecting.
+ *   C. Right-click (desktop) / long-press (touch) opens the unified menu;
+ *      its "Select for clear" item enters selection — no checkbox. "Clear
+ *      Selected Drafts (N)" and the ✕ Cancel button are absent from the DOM
+ *      at 0 selected, appear once selection starts, Cancel empties selection
+ *      with no DELETE, Clear removes exactly the selected ids. A plain click
+ *      on another draft toggles membership while selecting (unchanged —
+ *      this path never went through the menu).
  *   D. Click-to-promote: clicking a draft row (not its checkbox) opens the
  *      SymbolPanel ticket with ONLY the Ticket and Chart tabs, auto-submits
  *      nothing, and a confirmed Submit sends `draft_id` and removes the
@@ -50,6 +55,19 @@ function draftSymbolCell(page, symbol, id) {
   return page.locator(`.ag-row[row-id^="${symbol}::draft::${id}"] .ag-cell[col-id="tradingsymbol"]`).first();
 }
 
+/**
+ * Right-click a draft cell, wait for the unified SymbolContextMenu to open,
+ * and click its "Select for clear" item — the 2026-10-22 replacement for
+ * the old direct-toggle gesture. Leaves the menu closed afterward (every
+ * item click closes it).
+ */
+async function selectDraftViaMenu(page, cell) {
+  await cell.click({ button: 'right' });
+  const menu = page.locator('.scm-menu');
+  await expect(menu).toBeVisible({ timeout: 10_000 });
+  await menu.locator('[data-action="select-draft"]').click();
+}
+
 test.describe('MarketPulse Positions — draft rows', () => {
   test('B: draft rows render tagged row-draft and show their symbols', async ({ page }) => {
     await loginAsAdmin(page);
@@ -67,7 +85,7 @@ test.describe('MarketPulse Positions — draft rows', () => {
 });
 
 test.describe('MarketPulse Positions — select and clear drafts', () => {
-  test('C: right-click selects a draft, header button counts only selected drafts and removes exactly those', async ({ page }) => {
+  test('C: right-click opens the unified menu; Select for clear enters selection, header button counts only selected drafts and removes exactly those', async ({ page }) => {
     await loginAsAdmin(page);
     const state = await mockDrafts(page);
     await gotoPulse(page);
@@ -82,8 +100,21 @@ test.describe('MarketPulse Positions — select and clear drafts', () => {
     // No per-row checkbox any more.
     await expect(page.locator('.draft-select-cb')).toHaveCount(0);
 
-    // Right-click the NIFTY draft (id 9001) to enter selection.
-    await draftSymbolCell(page, 'NIFTY26OCTFUT', 9001).click({ button: 'right' });
+    // Right-click alone (no menu-item click yet) selects nothing.
+    const cell = draftSymbolCell(page, 'NIFTY26OCTFUT', 9001);
+    await cell.click({ button: 'right' });
+    const menu = page.locator('.scm-menu');
+    await expect(menu).toBeVisible({ timeout: 10_000 });
+    await expect(clearBtn).toHaveCount(0);
+    // Draft-only menu: Promote to real + Select for clear, no Close/Place order.
+    await expect(menu.locator('[data-action="promote"]')).toBeVisible();
+    await expect(menu.locator('[data-action="select-draft"]')).toBeVisible();
+    await expect(menu.locator('[data-action="place-order"]')).toHaveCount(0);
+    await expect(menu.locator('[data-action="close"]')).toHaveCount(0);
+
+    // "Select for clear" is what actually enters selection.
+    await menu.locator('[data-action="select-draft"]').click();
+    await expect(menu).toHaveCount(0);
     await expect(clearBtn).toBeVisible({ timeout: 10_000 });
     await expect(clearBtn).toHaveText(/Clear Selected Drafts \(1\)/);
     await expect(cancelBtn).toBeVisible();
@@ -108,8 +139,8 @@ test.describe('MarketPulse Positions — select and clear drafts', () => {
     const clearBtn = page.locator('.mp-clear-drafts-btn');
     const cancelBtn = page.locator('.mp-draft-cancel-btn');
 
-    await draftSymbolCell(page, 'NIFTY26OCTFUT', 9001).click({ button: 'right' });
-    await draftSymbolCell(page, 'CRUDEOIL26NOVFUT', 9002).click({ button: 'right' });
+    await selectDraftViaMenu(page, draftSymbolCell(page, 'NIFTY26OCTFUT', 9001));
+    await selectDraftViaMenu(page, draftSymbolCell(page, 'CRUDEOIL26NOVFUT', 9002));
     await expect(clearBtn).toHaveText(/Clear Selected Drafts \(2\)/);
 
     await cancelBtn.click();
@@ -135,7 +166,7 @@ test.describe('MarketPulse Positions — select and clear drafts', () => {
 
     await skipUnlessRendered(draftSymbolCell(page, 'NIFTY26OCTFUT', 9001), 'MarketPulse draft rows');
     const clearBtn = page.locator('.mp-clear-drafts-btn');
-    await draftSymbolCell(page, 'NIFTY26OCTFUT', 9001).click({ button: 'right' });
+    await selectDraftViaMenu(page, draftSymbolCell(page, 'NIFTY26OCTFUT', 9001));
     await expect(clearBtn).toHaveText(/Clear Selected Drafts \(1\)/);
 
     // Plain click on the OTHER draft adds it to the selection.

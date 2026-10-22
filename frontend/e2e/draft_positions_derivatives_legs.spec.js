@@ -1,10 +1,14 @@
 /**
  * draft_positions_derivatives_legs.spec.js
  *
- * 2026-10-21 — draft positions on the derivatives page's Legs grid.
- *   C. Select via right-click / long-press on a draft leg (no checkbox). The
- *      "Clear Selected Drafts (N)" and ✕ Cancel buttons are absent at 0 selected,
- *      appear once selection starts; Clear removes exactly the selected ids
+ * 2026-10-21 — draft positions on the derivatives page's Legs grid. Gesture
+ * updated 2026-10-22 (context-menu unification): right-click / long-press on
+ * a draft leg now OPENS THE UNIFIED SymbolContextMenu instead of toggling
+ * selection directly — "Select for clear" is a menu item inside it.
+ *   C. Right-click / long-press opens the unified menu; its "Select for
+ *      clear" item enters selection (no checkbox). The "Clear Selected
+ *      Drafts (N)" and ✕ Cancel buttons are absent at 0 selected, appear
+ *      once selection starts; Clear removes exactly the selected ids
  *      (one DELETE each) and unselected drafts survive; Cancel issues no DELETE.
  *   D. Click-to-promote: clicking a draft row body (not its checkbox) opens
  *      the SymbolPanel ticket restricted to Ticket + Chart tabs, nothing is
@@ -37,6 +41,18 @@ function draftLeg(page, expiryTag) {
   return page.locator('.cand-row.cand-draft', { hasText: expiryTag }).first();
 }
 
+/**
+ * Right-click a draft leg, wait for the unified SymbolContextMenu to open,
+ * and click its "Select for clear" item — the 2026-10-22 replacement for
+ * the old direct-toggle gesture.
+ */
+async function selectDraftViaMenu(page, leg) {
+  await leg.click({ button: 'right' });
+  const menu = page.locator('.scm-menu');
+  await expect(menu).toBeVisible({ timeout: 10_000 });
+  await menu.locator('[data-action="select-draft"]').click();
+}
+
 test.describe('Derivatives Legs — select and clear drafts', () => {
   test('C: header button counts only checked draft legs and removes exactly those', async ({ page }) => {
     test.setTimeout(260_000);
@@ -53,8 +69,20 @@ test.describe('Derivatives Legs — select and clear drafts', () => {
     await expect(cancelBtn).toHaveCount(0);
     await expect(page.locator('.cand-draft-select')).toHaveCount(0);
 
-    // Right-click the OCT26 draft leg to select it.
+    // Right-click the OCT26 draft leg: opens the unified menu, selects nothing yet.
     await draftLeg(page, 'OCT26').click({ button: 'right' });
+    const menu = page.locator('.scm-menu');
+    await expect(menu).toBeVisible({ timeout: 10_000 });
+    await expect(clearBtn).toHaveCount(0);
+    // Draft-only menu: Promote to real + Select for clear, no Close/Place order.
+    await expect(menu.locator('[data-action="promote"]')).toBeVisible();
+    await expect(menu.locator('[data-action="select-draft"]')).toBeVisible();
+    await expect(menu.locator('[data-action="place-order"]')).toHaveCount(0);
+    await expect(menu.locator('[data-action="close"]')).toHaveCount(0);
+
+    // "Select for clear" is what actually enters selection.
+    await menu.locator('[data-action="select-draft"]').click();
+    await expect(menu).toHaveCount(0);
     await expect(clearBtn).toBeVisible({ timeout: 10_000 });
     await expect(clearBtn).toHaveText(/Clear Selected Drafts \(1\)/);
     await expect(cancelBtn).toBeVisible();
@@ -79,7 +107,7 @@ test.describe('Derivatives Legs — select and clear drafts', () => {
     const clearBtn = page.locator('.legs-clear-drafts-btn');
     const cancelBtn = page.locator('.legs-draft-cancel-btn');
 
-    await draftLeg(page, 'OCT26').click({ button: 'right' });
+    await selectDraftViaMenu(page, draftLeg(page, 'OCT26'));
     await expect(clearBtn).toHaveText(/Clear Selected Drafts \(1\)/);
 
     await cancelBtn.click();
