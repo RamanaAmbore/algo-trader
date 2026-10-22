@@ -304,8 +304,8 @@ Worst state drives color. Click opens per-account modal.
 **Agent action-dispatch SSOT (2026-10-08)** — `_LIVE_ACTION_HANDLERS`/`_NOOP_ACTION_HANDLERS`
 in `backend/api/algo/actions.py` are the explicit, sole action-dispatch tables — real broker
 actions route through `_dispatch_live_action()` to `_action_live_*` functions in
-`actions_live.py`; non-broker noops (`monitor_order`/`deactivate_agent`/`set_flag`/`emit_log`)
-route through `_al_run_noop_handler()`. `GrammarRegistry`'s `actions` table
+`actions_live.py`; non-broker noops (`monitor_order`/`deactivate_agent`/`set_flag`/`emit_log`/`send_summary`/
+`send_market_status`) route through `_al_run_noop_handler()`. `GrammarRegistry`'s `actions` table
 (`grammar_registry.py`) is catalog metadata only — token name + `params_schema` — and is never
 live-dispatched (`REGISTRY.action()` has zero callers); `routes/grammar.py` only reads
 `len(REGISTRY.actions)` for an admin stats count. The `grammar_tokens` DB rows' own
@@ -866,10 +866,15 @@ take-profit, template/wing attach, and chase; no longer settable from the UI) re
 order-level pairing signal execution paths read.
 
 **Draft positions — long-press selection, OrderBook/LogPanel relabel, per-underlying payoff toggle (2026-10-21; prior round `6bf3dfd7`)** — `6bf3dfd7` made draft positions behave as real positions everywhere except margin, chase, bracket, and close, and deleted the single global `showDraftInPayoff` payoff toggle. This round changes three surfaces. Spec: [PULSE_SPEC.md](docs/specs/PULSE_SPEC.md) §4.4.1.
-- **Selection for bulk clear.** The per-row checkbox is gone from the MarketPulse Positions grid and the derivatives Legs grid. Long-press (touch) or right-click (desktop) on a draft row enters selection mode for that grid and selects the row. Real (non-draft) rows keep their existing context menu. The header `Clear Selected Drafts (N)` button renders only while N > 0. A Cancel (✕) button beside it exits selection without deleting. Gesture reuses the `longPress.js` contextmenu+touch pair; the Legs grid row-level handler carries an 800 ms de-dupe guard in `_startDraftSelection` ([`derivatives/+page.svelte`](frontend/src/routes/(algo)/admin/derivatives/+page.svelte)).
+- **Selection for bulk clear.** The per-row checkbox is gone from the MarketPulse Positions grid and the derivatives Legs grid. Long-press (touch) or right-click (desktop) on a draft row enters selection mode for that grid and selects the row. Real (non-draft) rows keep their existing context menu. The header `Clear Selected Drafts (N)` button renders only while N > 0. A Cancel (✕) button beside it exits selection without deleting. Gesture reuses the `longPress.js` contextmenu+touch pair; the Legs grid row-level handler carries an 800 ms de-dupe guard in `_startDraftSelection` ([`derivatives/+page.svelte`](frontend/src/routes/(algo)/admin/derivatives/+page.svelte)). **Superseded 2026-10-22 (commit `85a275cd`):** the gesture on a draft row now opens the unified menu instead of selecting directly — see the amendment below.
 - **Relabel, not hide, in OrderBook and LogPanel.** A draft `AlgoOrder` row (`mode='draft'`, `status='OPEN'`) stays in the merged list with a `DRAFT` pill (`.mode-pill-draft`) in place of its status badge, and is excluded from every status-chip count. Hiding was rejected because an operator could lose track of a draft. Showing it as OPEN was rejected because it risks mistaking it for a resting broker order, which is worse. The predicate is `isDraftOrderRow()` in [`draftOrderRow.js`](frontend/src/lib/data/draftOrderRow.js), shared by both panels so they cannot drift. Chase visibility needed no change: `list_active_chases` excludes `mode='draft'`, and the chase chip requires `attempts > 0`.
 - **Per-underlying payoff toggle (`DRAFT ON` / `DRAFT OFF`).** Shown only when the viewed underlying has a draft leg. State is a `SvelteMap` keyed by `selectedUnderlying.toUpperCase()`, defaults ON, and is session-only. The 6bf3dfd7 global toggle was deleted because its exclusion was scattered as `!showDraft &&` across ~8 aggregate sites, and each new aggregate risked skipping it. This version differs in two ways. It is per-underlying, because Snapshot and EV render rows for underlyings other than the charted one, so one global boolean would either leak into or blank those rows. And it is gated in one place: `_isLegEnabled` calls `isDraftLegIncluded()` ([`derivativesMath.js`](frontend/src/lib/data/derivativesMath.js)), so every aggregate that already reads enabled-state inherits it. The button key reuses the page's existing `toUpperCase()` underlying canonicalisation, not a fresh root helper, so MCX virtual-root aliasing cannot make button visibility and the gate disagree.
 - Invariant: a draft row is never counted in an order-status chip. The payoff toggle narrows only `source === 'draft'` legs, and only through `_isLegEnabled`. It never hides the Legs or Positions grid row, so Clear stays reachable regardless of toggle state.
+
+**Draft sweep at market open, and draft gestures moved into the unified context menu (2026-10-22; commits `e8ca302b`, `85a275cd`)** — two amendments to the round above.
+- **Sweep (`e8ca302b`).** A draft that survives to the next trading-day 08:00 IST boundary after its creation is auto-cleared. `_sweep_stale_drafts()` in [background.py](backend/api/background.py) selects `AlgoOrder` rows with `mode='draft'`, `status='OPEN'`, and `created_at < settlement_cutoff_for("NON-MCX")`. It deletes each through `orders.py:_draft_delete_by_id`, the same guard the manual Clear button uses. The tick `_ds_tick_draft_sweep` runs once per day at or after 08:00 IST and is marked done before the sweep starts, so a mid-sweep failure is not retried every 30s. Drafts created after today's boundary survive until the next day's boundary. The gate is calendar-only (`_draft_sweep_is_trading_day` → `is_trading_day()`), not `exchange_clock.get_nse_open_time()`. That function falls back to 08:00 on a plain weekend, which would have swept Friday's drafts on Saturday. When N > 0, one info-tier Telegram line reports the count. No new UI.
+- **Gesture (`85a275cd`).** The round-2 diversion is superseded. Long-press and right-click on any row, draft rows included, open the unified [SymbolContextMenu.svelte](frontend/src/lib/SymbolContextMenu.svelte). "Select for clear" and "Promote to real" are draft-only items inside that menu. "Select for clear" is the only path into selection mode. MarketPulse's hand-rolled menu is gone, and all six of its buckets use the shared component. The touch long-press timer and `pointercancel` handling are unchanged. Only the action taken on the gesture changed. The header Clear and Cancel controls described above are unchanged.
+- Invariant: a draft row's gesture opens the one unified menu, like every other row. Selection for clear is reached only through that menu's item, never through a bare gesture.
 
 **Auto-pairing is CE/PE-aware, and the Positions grid is per-account (2026-10-17, commit
 8a59a17e, amends existing entry)** — The lot-waterfall grouping key in
@@ -1415,6 +1420,52 @@ never at bare midnight hours before market open. Invariant: Exp P&L session boun
 derived from the trading-session-date convention, matching `_SESSION_ANCHOR_CUTOFF_TS_SQL` 
 and the Day P&L / nav rules elsewhere in CLAUDE.md.
 
+**Pre-open LTP pinning — last_price = prev_close until each row's own segment opens (2026-10-22,
+commit `0538f0a7`)** — The system's broker-connectivity window (08:00–23:31 IST) is wider than
+each exchange segment's own trading session. Once the broker reconnects at 08:00, live LTP flows
+immediately, and MCX options can carry a reference price tied to international gold before the
+local order book opens. Left alone, that produced a phantom Day P&L move before any real trade
+(live incident: `GOLD26OCT142000PE` last_price 439 vs prev_close 420; about −₹7,050 across two
+accounts' GOLD books). Real segment open times, from `market_segments` in
+[backend_config.yaml](backend/config/backend_config.yaml): NSE/equity 09:15, MCX/commodity 09:30
+(corrected from 09:00 in the same round).
+- **Predicate:** `is_segment_pending_open(exchange, now)` in
+  [snapshot_gate.py](backend/api/helpers/snapshot_gate.py). True when the exchange's segment has not
+  genuinely opened per `_segment_is_open()` (holiday and special-session aware). It matches
+  `quote.py`'s exchange-membership rule, not `agent_engine.py`'s `_EXCHANGE_TO_SEGMENT` table.
+  Fail-open: an unrecognised exchange or a config/holiday error returns False, so the live value is
+  kept. A row is never pinned forever by accident.
+- **Prewarm:** `prewarm_pending_open_segments()` awaits the special-sessions cache before the sync
+  predicate runs on the main loop. This is the same cold-cache fail-open class as the 2026-10-20
+  residual sweep.
+- **Pin, positions:** `_resolve_pending_open_exchanges` then `_pin_pending_open_rows` in
+  [positions.py](backend/api/routes/positions.py); the `price_source` tag comes from
+  `_apply_pending_open_tag`. The pin runs AFTER `apply_day_change_backstop`, so it has final
+  authority over day_change.
+- **Pin, holdings:** `_pin_pending_open_holdings` and `_apply_pending_open_tag_holdings` in
+  [holdings.py](backend/api/routes/holdings.py).
+- **Upstream prev_close:** `_override_stale_close_from_snapshot` (positions.py) and
+  `_override_stale_close_for_holdings` (holdings.py) run first and set prev_close from
+  `daily_book.ltp`. The pin reads that value.
+- **Call sites:** the perf poller in [background.py](backend/api/background.py) (holdings and
+  positions pin blocks) and the live-session NAV fallback in
+  [auth.py](backend/api/routes/auth.py).
+- **Pinned values:** `last_price = prev_close`; `unrealised = (prev_close − avg_price) × qty`;
+  `pnl = realised + unrealised`; `day_change`, `day_change_val`, `day_change_percentage = 0`;
+  `price_source = 'pending_open'`. Both Day and Lifetime P&L pin, since no local trade has happened
+  yet. The closed-hours snapshot path is untouched. No frontend change is needed:
+  `nav.js:baseDayPnlForPosition` reads ~0 once `pnl` equals `prev_settlement_pnl`.
+- **Invariant:** last_price never diverges from prev_close until the row's own exchange segment has
+  genuinely opened. The 08:00 system window is NOT the trigger.
+- **Shared-config note (2026-10-22):** `market_segments.commodity` open moved 09:00 → 09:30. The
+  value is shared config, so the change is not specific to pinning. Confirmed readers of
+  `market_segments` include `/market/status`, the quote gate, and watchlist movers, plus the
+  order-path gates that route through `_segment_is_open()`. When the `exchange_clock` cache is warm,
+  `_get_segments()` ([background.py](backend/api/background.py)) sources gate hours from the DB
+  `exchange_schedule` table instead of YAML, so gate-shaped consumers (watchdog, perf probe,
+  simulator guards) may still read the DB hours. Frontend duplicate: `MCX_OPEN_MIN` in
+  [marketHours.js](frontend/src/lib/marketHours.js) must change in lockstep with the YAML.
+
 **close_price / ltp invariant — DO NOT CHANGE without explicit operator instruction** —
 `prev_close` = previous session's **settlement LTP** (frozen from settlement until next session opens at 08:00 IST). `ltp` ticks live during session, freezes at settlement price at close. Day P&L = `(ltp − prev_close) × qty`.
 
@@ -1587,6 +1638,7 @@ now caches + returns a `stale` flag; `/api/nav/by-account` masks `errors` for no
 | Baseline query (Day P&L snapshot path) | `backend/api/routes/positions.py:_SESSION_ANCHOR_CUTOFF_TS_SQL` + `_fetch_baseline_pnl_map` (derives 08:00 IST session boundary from `captured_at`, not `date` column; handles holdings-sold CNC split via `kind IN ('positions','holdings')`) |
 | Market daily window / WebSocket lifecycle | `backend/api/background.py` + `backend/brokers/kite_ticker.py` |
 | Market open/closed check | `backend/shared/helpers/date_time_utils.py:_segment_is_open` (YAML config) or `is_market_open` (gate-shaped dicts) |
+| 05:35 IST market-status alert (Telegram always; ntfy only when a segment is open) | `backend/api/background.py:_ds_tick_market_status_report` (trigger) + `backend/api/algo/actions_live.py:_action_live_send_market_status` (handler, registered in `_NOOP_ACTION_HANDLERS` in `backend/api/algo/actions.py`) + `backend/config/grammars/agent_grammar.yaml` (`send_market_status` token) + `market-status-report` built-in in `backend/api/algo/agent_engine.py` |
 | MCX evening-closed holiday handling | `backend/brokers/broker_apis.py:_fetch_mcx_evening_closed_dates` + `_upsert_mcx_evening_closed_sessions_coro` |
 | Pulse Chg% / Day P&L % denominator | `frontend/src/lib/data/pulseUnified.js` (`_prevCloseSsot`, `finalizeRows`) |
 | Postback subscribe new instrument | `backend/api/routes/orders.py:_subscribe_filled_pairs()` — canonical helper resolves (symbol, exchange) to token and calls `subscribe_with_sym()` (NOT bare `subscribe()`, which silently drops ticks). Wired into: Kite/Dhan/Groww postbacks, admin reconcile sweep, open-order watchdog, chase terminal-fill detection |
