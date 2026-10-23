@@ -4,6 +4,7 @@
   import { browser } from '$app/environment';
   import { lastRefreshAt, formatDualTz } from '$lib/stores';
   import { isNseOpen, isMcxOpen, onMarketStatusChange } from '$lib/marketHours';
+  import InfoHint from '$lib/InfoHint.svelte';
 
   let _lastRefresh = $state(browser ? get(lastRefreshAt) : 0);
   let _showRefresh = $state(false);
@@ -64,6 +65,22 @@
     : _mktBucket === 'eq'   ? 'Non-MCX (NSE/NFO/BSE/CDS) session is open; MCX is closed'
     :                         'Both MCX and non-MCX sessions are closed'
   );
+  // Tooltip (2026-10-23) — same hover-preview / click-to-pin InfoHint
+  // convention PositionStrip.svelte's own single-letter P/M/C/H pills
+  // already use (`InfoHint popup panel label=...`), not a native `title`
+  // attribute, for visual/UX consistency with that sibling badge family.
+  // `hideButton` + `anchor` keeps this pill's own bucket-coloured markup
+  // as the trigger instead of letting InfoHint render its separate small
+  // "(i)" chip look, which doesn't fit this badge's design.
+  const _mktAccent = $derived(
+    _mktBucket === 'both'   ? '#4ade80'
+    : _mktBucket === 'mcx'  ? '#fbbf24'
+    : _mktBucket === 'eq'   ? '#a78bfa'
+    :                         '#94a3b8'
+  );
+  /** @type {HTMLSpanElement | undefined} */
+  let _mktPillEl = $state();
+  let _mktInfoOpen = $state(false);
 
   $effect(() => {
     const lr = $lastRefreshAt;
@@ -123,12 +140,18 @@
       </span>
     </button>
 
-    <!-- Market-status badge — one short, purely informational pill (no
-         click target — rendered as a plain <span>, not inside the button,
-         so it never inherits the button's tap-to-toggle behaviour or its
-         desktop `pointer-events: none`). Label switches between M / MCX /
-         EQ depending on the compound 4-bucket state; colour carries the
-         same signal, full sentence in the title tooltip. -->
+    <!-- Market-status badge — one short pill rendered as a plain <span>,
+         not inside the clock button, so it never inherits the button's
+         tap-to-toggle behaviour or its desktop `pointer-events: none`.
+         Label switches between M / MCX / EQ depending on the compound
+         4-bucket state; colour carries the same signal. Tooltip is the
+         InfoHint hover-preview/click-to-pin popover (hideButton+anchor
+         onto this pill itself), matching PositionStrip's P/M/C/H
+         convention — not a native `title` attribute. The pill's own
+         click/Enter/Space toggles the pin directly (its own `onclick`,
+         not InfoHint's — hideButton mode renders no button of InfoHint's
+         own to attach one to), so touch devices (no hover) can still
+         reach the tooltip. -->
     <span class="ats-mkt-badge" data-testid="algo-ts-market-badge">
       <span class="ats-mkt-pill"
             class:ats-mkt-open={_mktBucket === 'both'}
@@ -136,9 +159,16 @@
             class:ats-mkt-eq-only={_mktBucket === 'eq'}
             class:ats-mkt-closed={_mktBucket === 'closed'}
             data-testid="algo-ts-market-badge-any"
-            title={_mktTitle}>
+            role="button" tabindex="0"
+            aria-label="Market status details"
+            onclick={() => { _mktInfoOpen = !_mktInfoOpen; }}
+            onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); _mktInfoOpen = !_mktInfoOpen; } }}
+            bind:this={_mktPillEl}>
         {_mktLabel}
       </span>
+      <InfoHint popup hideButton panel
+        anchor={_mktPillEl} bind:open={_mktInfoOpen}
+        accentColor={_mktAccent} title="Market status" text={_mktTitle} />
     </span>
   </div>
 </div>
@@ -219,6 +249,7 @@
     font-weight: 700;
     letter-spacing: 0.02em;
     white-space: nowrap;
+    cursor: pointer;
   }
   .ats-mkt-open {
     background: var(--algo-green-bg-mid);

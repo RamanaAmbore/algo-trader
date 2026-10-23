@@ -20,7 +20,13 @@
  *   - One pill whose LABEL switches: "M" (both open or both closed), "MCX"
  *     (MCX-only open), "EQ" (non-MCX/equity-only open — NSE/NFO/BSE/CDS/
  *     BCD/BFO). Colour alone still carries the open/closed signal within
- *     each label; full sentence lives in the pill's `title` tooltip.
+ *     each label; full sentence lives in a tooltip (see below).
+ *   - Tooltip (2026-10-23): InfoHint's hover-preview/click-to-pin popover
+ *     (`hideButton` + `anchor` onto the pill itself), matching
+ *     PositionStrip's P/M/C/H convention — not a native `title` attribute.
+ *     The pill's own click/Enter/Space toggles the pin (hideButton mode
+ *     renders no button of InfoHint's own), so touch devices without
+ *     hover can still reach it.
  *   - Colour is the same 4-bucket compound state mirroring
  *     RefreshButton.svelte's `.rf-mkt-*` scheme (both open = green,
  *     MCX-only open = amber, closed = slate) EXTENDED with a 4th bucket —
@@ -108,6 +114,26 @@ test.describe('AlgoTimestamp market-status badge — source', () => {
     // Label switches via a derived off the same bucket.
     expect(src).toMatch(/_mktBucket === 'mcx' \? 'MCX'/);
     expect(src).toMatch(/_mktBucket === 'eq' \? 'EQ'/);
+  });
+
+  test('tooltip reuses InfoHint (hideButton+anchor+popup+panel), not a native title attribute, matching PositionStrip\'s P/M/C/H convention', () => {
+    const src = readFileSync(COMPONENT, 'utf-8');
+    expect(src).toMatch(/import\s+InfoHint\s+from\s+'\$lib\/InfoHint\.svelte'/);
+    expect(src).not.toMatch(/data-testid="algo-ts-market-badge-any"[^>]*title=/s);
+    const infoHintIdx = src.indexOf('<InfoHint');
+    expect(infoHintIdx).toBeGreaterThan(-1);
+    const infoHintTag = src.slice(infoHintIdx, src.indexOf('/>', infoHintIdx));
+    expect(infoHintTag).toMatch(/\bpopup\b/);
+    expect(infoHintTag).toMatch(/\bhideButton\b/);
+    expect(infoHintTag).toMatch(/\bpanel\b/);
+    expect(infoHintTag).toMatch(/anchor=\{_mktPillEl\}/);
+    expect(infoHintTag).toMatch(/bind:open=\{_mktInfoOpen\}/);
+    expect(infoHintTag).toMatch(/text=\{_mktTitle\}/);
+    // The pill itself is the click/keyboard trigger (hideButton mode
+    // renders no button of InfoHint's own) — covers touch, which has no
+    // hover concept.
+    expect(src).toMatch(/bind:this=\{_mktPillEl\}/);
+    expect(src).toMatch(/onclick=\{\(\) => \{ _mktInfoOpen = !_mktInfoOpen; \}\}/);
   });
 
   test('badge markup is a sibling of the clock button, not nested inside it (pointer-events / tap-toggle isolation)', () => {
@@ -253,6 +279,41 @@ test.describe('AlgoTimestamp market-status badge — bucket matrix (pulse only, 
     const pill = page.locator('[data-testid="algo-ts-market-badge-any"]').first();
     await expect(pill).toHaveClass(/ats-mkt-closed/, { timeout: 10_000 });
     await expect(pill).toHaveText('M');
+  });
+});
+
+test.describe('AlgoTimestamp market-status badge — tooltip (click-to-pin)', () => {
+  test('clicking the pill opens an InfoHint popover with the full sentence; clicking again closes it', async ({ page }) => {
+    await _mockStatus(page, { nse_open: false, mcx_open: true });
+    await loginAsAdmin(page);
+    await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+
+    const pill = page.locator('[data-testid="algo-ts-market-badge-any"]').first();
+    await expect(pill).toBeVisible({ timeout: 15_000 });
+
+    const popover = page.locator('[role="tooltip"]', { hasText: 'MCX commodity session is open' });
+    await expect(popover).toHaveCount(0);
+
+    await pill.click();
+    await expect(popover).toBeVisible({ timeout: 5_000 });
+    await expect(popover).toContainText('Market status');
+
+    await pill.click();
+    await expect(popover).toHaveCount(0);
+  });
+
+  test('Escape dismisses a pinned tooltip', async ({ page }) => {
+    await _mockStatus(page, { nse_open: true, mcx_open: true });
+    await loginAsAdmin(page);
+    await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+
+    const pill = page.locator('[data-testid="algo-ts-market-badge-any"]').first();
+    await pill.click();
+    const popover = page.locator('[role="tooltip"]', { hasText: 'Both MCX and non-MCX' });
+    await expect(popover).toBeVisible({ timeout: 5_000 });
+
+    await page.keyboard.press('Escape');
+    await expect(popover).toHaveCount(0);
   });
 });
 
