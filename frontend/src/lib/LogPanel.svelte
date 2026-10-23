@@ -920,6 +920,17 @@
           const bid = String(o?.broker_order_id || '');
           return !bid || !brokerIds.has(bid);
         });
+        // Chase-field passthrough (plan: starry-tickling-dolphin, frontend
+        // item 1) — mirrors OrderBook.svelte's identical fix: a broker-
+        // fetched row never carries chase bookkeeping (attempts/
+        // current_limit/next_attempt_at live only on the AlgoOrder row),
+        // so without this, "broker rows win" below silently dropped them
+        // the instant a live chased order reached the broker book.
+        const _algoByBrokerId = new Map();
+        for (const row of algoRows) {
+          const bid = String(row?.broker_order_id || '');
+          if (bid) _algoByBrokerId.set(bid, row);
+        }
         // Newest first — broker orders carry order_timestamp; algo rows
         // carry created_at. Date.parse falls back to 0 on bad strings so
         // empty/null timestamps land at the bottom.
@@ -928,7 +939,12 @@
         // `_isOpenBroker` below reads instead of the old `!o?.mode`
         // heuristic — mirrors OrderBook.svelte's identical fix.
         const merged = [
-          ...brokerRows.map(o => ({ ...o, _rowOrigin: 'broker' })),
+          ...brokerRows.map(o => {
+            const _m = _algoByBrokerId.get(String(o?.order_id || ''));
+            return _m
+              ? { ...o, _rowOrigin: 'broker', attempts: _m.attempts, current_limit: _m.current_limit, next_attempt_at: _m.next_attempt_at }
+              : { ...o, _rowOrigin: 'broker' };
+          }),
           ...algoOnly.map(o => ({ ...o, _rowOrigin: 'algo' })),
         ];
         merged.sort((a, b) => {

@@ -103,6 +103,37 @@
   let _supersededBrokerIds = /** @type {Map<string, {algoOrderId: any, ts: number}>} */ (new Map());
   const _SUPERSEDED_GRACE_MS = 25_000;
 
+  // ── Backend-authoritative supersede detection (plan: starry-tickling-
+  // dolphin, frontend item 2) ────────────────────────────────────────────
+  // `superseded_broker_order_ids` on `AlgoOrderInfo` has NOT shipped yet
+  // as of this writing (confirmed via grep against
+  // backend/api/routes/orders_helpers.py / orders.py before this change) —
+  // when the backend item lands, it's the authoritative fix for the
+  // cancel-and-replace poll-timing race the grace-window map above exists
+  // to paper over: the chase engine knows its own cancel-and-replace
+  // history directly, no inference from poll-to-poll diffing needed.
+  // `_backendSupersededShipped` flips true the first poll any algo row
+  // carries the KEY (an empty array is a valid "shipped, nothing
+  // superseded right now" answer — presence of the key is the signal, not
+  // a non-empty array), at which point `_isSupersededBrokerId` below
+  // switches to it as the sole source of truth. Until then both stay at
+  // their initial empty state and it falls back to `_supersededBrokerIds`.
+  // TODO(starry-tickling-dolphin, frontend item 2): once backend item 6
+  // ships the field, the poll-diffing block above
+  // (`_prevAlgoBrokerIdById`/`_supersededBrokerIds`/`_SUPERSEDED_GRACE_MS`)
+  // can likely be deleted outright rather than kept as a permanent
+  // fallback — re-evaluate once that lands.
+  let _backendSupersededShipped = false;
+  let _backendSupersededIds = /** @type {Set<string>} */ (new Set());
+
+  /** Single predicate both the merge filter (`_loadOrders`) and the
+   *  Cancel-button guard (`_cancelRow`) call, so they can never disagree
+   *  about which broker_order_id counts as superseded. */
+  function _isSupersededBrokerId(/** @type {string} */ bid) {
+    if (_backendSupersededShipped) return _backendSupersededIds.has(bid);
+    return _supersededBrokerIds.has(bid);
+  }
+
   /**
    * Row timestamp → epoch-ms, tolerant of both source field conventions
    * this merged view carries: Kite's `order_timestamp` ("YYYY-MM-DD
@@ -187,6 +218,32 @@
       const algoRows = (algoResp.status === 'fulfilled' && Array.isArray(algoResp.value))
         ? algoResp.value
         : [];
+      // Chase-field passthrough (plan: starry-tickling-dolphin, frontend
+      // item 1) — a broker-fetched row never carries chase bookkeeping
+      // (attempts/current_limit/next_attempt_at live only on the
+      // AlgoOrder row). Without this, "broker rows win" below (see
+      // `brokerRowsVisible`/`merged`) silently dropped those fields the
+      // instant a live chased order reached the broker book, so the
+      // "Chase in flight" chip (`_isChaseInFlight`) and OrderCard's
+      // `chase:#N` marker never fired for a REAL live chase — only for
+      // paper/sim orders, which never have a broker-row counterpart to
+      // begin with and so never hit this branch. Mirrors the equivalent
+      // fix in LogPanel.svelte's own merge.
+      const _algoByBrokerId = new Map();
+      for (const row of algoRows) {
+        const bid = String(row?.broker_order_id || '');
+        if (bid) _algoByBrokerId.set(bid, row);
+      }
+      // Recomputed every poll (see declaration above for the full
+      // rationale) so a field that's absent one poll and present the
+      // next (e.g. a deploy landing mid-session) is picked up immediately
+      // without needing a page reload.
+      _backendSupersededShipped = algoRows.some(r => r && Object.prototype.hasOwnProperty.call(r, 'superseded_broker_order_ids'));
+      _backendSupersededIds = new Set(
+        algoRows.flatMap(r => Array.isArray(r?.superseded_broker_order_ids)
+          ? r.superseded_broker_order_ids.map(String)
+          : [])
+      );
       // Chase cancel-and-replace dedup (2026-10-23 fix — see
       // _prevAlgoBrokerIdById/_supersededBrokerIds declared near the top
       // of the component for the full rationale). Gated on a genuinely
@@ -264,11 +321,26 @@
       // `algoOnly`) is the one card the operator needs to see.
       const brokerRowsVisible = brokerRows.filter(o => {
         const oid = String(o?.order_id || '');
-        if (!_supersededBrokerIds.has(oid)) return true;
+        if (!_isSupersededBrokerId(oid)) return true;
         return _STATUS_PREDICATES.complete((o?.status || '').toUpperCase());
       });
       const merged = [
-        ...brokerRowsVisible.map(o => ({ ...o, _rowOrigin: 'broker' })),
+        // Chase-field passthrough (see `_algoByBrokerId` above) — a
+        // matching algo row's attempts/current_limit/next_attempt_at ride
+        // along onto the broker row that otherwise wins the merge.
+        // `_algoId` (the algo row's own DB id, distinct from the broker
+        // `order_id`) rides along too — NOT for display, but so
+        // `_cancelRow`'s stale-broker-id guard can re-resolve this exact
+        // row against a FRESH fetch later, rather than re-checking the
+        // same stale poll data that already decided this row belongs in
+        // `brokerRowsVisible` in the first place (see that function's
+        // own comment for why re-checking stale data can never fire).
+        ...brokerRowsVisible.map(o => {
+          const _m = _algoByBrokerId.get(String(o?.order_id || ''));
+          return _m
+            ? { ...o, _rowOrigin: 'broker', attempts: _m.attempts, current_limit: _m.current_limit, next_attempt_at: _m.next_attempt_at, _algoId: _m.id }
+            : { ...o, _rowOrigin: 'broker' };
+        }),
         ...algoOnly.map(o => ({ ...o, _rowOrigin: 'algo' })),
       ].filter(_isCurrentSessionRow);
       merged.sort((a, b) => {
@@ -580,6 +652,46 @@
   async function _cancelRow(/** @type {any} */ o) {
     const key = String(o.order_id || o.id || '');
     if (!key || _cancelling.has(key)) return;
+    // Stale-broker-id guard (plan: starry-tickling-dolphin, frontend
+    // item 3) — `mark_killed`-driven Cancel is keyed by broker_order_id;
+    // if chase has already cancelled-and-replaced this exact id since the
+    // POLL that rendered this Cancel button, sending Cancel now would
+    // target a dead order while chase keeps working the new one.
+    //
+    // Re-checking `_isSupersededBrokerId` against that SAME poll's data
+    // (the one `brokerRowsVisible` already used to decide this row
+    // belongs in the grid at all) can never fire here — a row only
+    // reaches a clickable Cancel button once that exact check has
+    // already passed for the current poll. The race this guards against
+    // happens strictly AFTER that poll and BEFORE the click, so this
+    // re-fetches `fetchAlgoOrdersRecent` fresh, right now, instead of
+    // trusting anything already sitting in `orderRows`/
+    // `_supersededBrokerIds`/`_backendSupersededIds`. `o._algoId` (stamped
+    // onto the merged row in `_loadOrders`) is how this row's algo
+    // counterpart is re-resolved against that fresh fetch.
+    const _oid = String(o?.order_id || '');
+    if (_oid && o?._algoId != null) {
+      try {
+        const _fresh = await fetchAlgoOrdersRecent(100, 'all');
+        const _freshRows = Array.isArray(_fresh) ? _fresh : [];
+        const _freshRow = _freshRows.find(r => r?.id === o._algoId);
+        const _freshBid = _freshRow ? String(_freshRow?.broker_order_id || '') : '';
+        const _movedOn = !!_freshRow && !!_freshBid && _freshBid !== _oid;
+        const _freshSuperseded = _freshRows.some(r =>
+          Array.isArray(r?.superseded_broker_order_ids)
+          && r.superseded_broker_order_ids.map(String).includes(_oid));
+        if (_movedOn || _freshSuperseded) {
+          toast.warning('Order superseded — refresh to retry', { timeoutMs: 4000 });
+          await _loadOrders();
+          return;
+        }
+      } catch (_) {
+        // The re-fetch itself failed (network blip) — a safety check must
+        // never become the reason a genuine, needed cancel never goes
+        // out. Fall through and proceed with the cancel attempt as if
+        // the guard had passed.
+      }
+    }
     _cancelling = new Set([..._cancelling, key]);
     _cancelErr = '';
     try {
