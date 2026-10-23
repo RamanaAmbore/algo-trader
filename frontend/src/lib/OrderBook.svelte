@@ -786,7 +786,7 @@
 </CardHeader>
 
 <!-- Order card grid -->
-  <div class="ob-status-bar">
+  <div class="ob-status-bar scroll-x">
     {#each [
       { id: 'held',               label: 'Held/Attn',          status: 'held',    count: _statusCounts.held },
       { id: 'chase',              label: 'Chase',              status: 'chase',   count: _statusCounts.chase },
@@ -1101,12 +1101,8 @@
     padding: 0.3rem 0.4rem 0.2rem;
     max-width: 100%;
     min-width: 0;
-    overflow-x: auto;
     overflow-y: hidden;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: none;
   }
-  .ob-status-bar::-webkit-scrollbar { display: none; }
 
   /* Status filter chips — match .oc-filter-card chrome from the orders page.
      Navy gradient base, status-tinted gradient overlay via data-status,

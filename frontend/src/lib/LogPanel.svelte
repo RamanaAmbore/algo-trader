@@ -2257,19 +2257,17 @@
     border-bottom: 1px solid rgba(255, 255, 255, 0.06) !important;
   }
 
-  /* Tab strip wrapper — grows to fill remaining space in the flex row (legacy path).
-     overflow-x: auto + hidden scrollbar allows the tab strip to scroll
-     on narrow viewports without visible scrollbar chrome eating vertical space. */
+  /* Tab strip wrapper — grows to fill remaining space in the flex row (legacy
+     path, currently unused in markup — no element carries this class today).
+     Pair with the shared `.scroll-x` utility (app.css) on the element's own
+     class= attribute if this wrapper is ever reinstated; the scrollbar-hiding
+     mechanics live there now, not duplicated here. */
   .lp-tab-strip-wrap {
     flex: 1 1 0;
     min-width: 0;
     display: flex;
     align-items: stretch;
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: none;
   }
-  .lp-tab-strip-wrap::-webkit-scrollbar { display: none; }
   /* Allow the AlgoTabs strip itself to be fully visible inside the scrollable
      wrapper — without this the tabs component clips its own overflow and the
      active-tab underline / indicator is cut at the wrapper boundary. */

@@ -121,7 +121,7 @@
 {/if}
 
 <!-- ── Filter bar ──────────────────────────────────────────────────── -->
-<div class="filter-bar">
+<div class="filter-bar scroll-x">
   <div class="filter-item">
     <label class="filter-label" for="pnl-period">Period</label>
     <div class="pill-group" id="pnl-period">
@@ -237,11 +237,7 @@
     background: var(--card-bg-gradient);
     border: 1px solid rgba(255,255,255,0.07);
     border-radius: 4px;
-    overflow-x: auto;
-    scrollbar-width: none;
-    -webkit-overflow-scrolling: touch;
   }
-  .filter-bar::-webkit-scrollbar { display: none; }
   .filter-item {
     display: flex;
     flex-direction: row;

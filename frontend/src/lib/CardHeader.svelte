@@ -102,7 +102,7 @@
 
 <div class="card-header" role="presentation">
   <span class="ch-overflow-anchor" aria-hidden="true" bind:this={_overflowAnchorEl} style="position:absolute;pointer-events:none;"></span>
-  <div class="ch-left">
+  <div class="ch-left scroll-x">
     {@render prefix?.()}
     {#if title}<span class="ch-title algo-label-decor">{title}</span>{/if}
     {#if loading !== undefined}
@@ -126,7 +126,7 @@
   </div>
 
   {#if middle}<span class="ch-sep" aria-hidden="true"></span>{/if}
-  <div class="ch-middle">
+  <div class="ch-middle scroll-x">
     {@render middle?.()}
   </div>
 
@@ -165,7 +165,6 @@
     gap: var(--ch-gap, 0.4rem);
     flex: 0 1 auto;
     min-width: 0;
-    overflow-x: auto;
     /* Stretch to .card-header's full height (2026-10, operator: "the
        left white border before header label does not extend the
        bottom of the header") — .card-header itself uses align-items:
@@ -177,9 +176,7 @@
        item only — .ch-middle/.ch-right (separate siblings) are
        unaffected. */
     align-self: stretch;
-    scrollbar-width: none;
   }
-  .ch-left::-webkit-scrollbar { display: none; }
   .ch-title {
     font-family: var(--ch-title-font-family, inherit);
     font-size: var(--ch-title-size, var(--fs-sm, 0.6rem));
@@ -253,11 +250,8 @@
     display: flex;
     align-items: center;
     min-width: 0;
-    overflow-x: auto;
     overflow-y: visible;
-    scrollbar-width: none;
   }
-  .ch-middle::-webkit-scrollbar { display: none; }
   .ch-right {
     display: flex;
     align-items: center;

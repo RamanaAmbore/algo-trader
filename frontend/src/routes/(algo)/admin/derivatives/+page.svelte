@@ -5732,7 +5732,7 @@
       detectOverflow={false}
     >
       {#snippet middle()}
-        <div class="opt-section-chips">
+        <div class="opt-section-chips scroll-x">
           <!-- Expected value chip — probability-weighted average payoff
                under the lognormal distribution. Positive = positive
                expectancy; negative = lose money on average. Companion
@@ -7030,12 +7030,8 @@
     gap: 0.5rem;
     flex: 1 1 0;
     min-width: 0;
-    overflow-x: auto;
     overflow-y: visible;
-    scrollbar-width: none;
-    -webkit-overflow-scrolling: touch;
   }
-  .opt-section-chips::-webkit-scrollbar { display: none; }
   .opt-section-tag {
     font-size: var(--fs-md);
     padding: 1px 5px;

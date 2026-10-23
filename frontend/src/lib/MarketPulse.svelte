@@ -4826,7 +4826,7 @@
                 <span class="mp-bucket-label algo-label-decor mp-bucket-label-winners">Gainers</span>
               {/snippet}
               {#snippet middle()}
-                <div class="mp-head-tabs">
+                <div class="mp-head-tabs scroll-x">
                   <AlgoTabs
                     tabs={MOVER_TABS.map(t => ({ id: t, label: MOVER_TAB_LABEL[t], badge: winnerCounts[t] || undefined }))}
                     value={_effWinTab}
@@ -4856,7 +4856,7 @@
                 <span class="mp-bucket-label algo-label-decor mp-bucket-label-losers">Losers</span>
               {/snippet}
               {#snippet middle()}
-                <div class="mp-head-tabs">
+                <div class="mp-head-tabs scroll-x">
                   <AlgoTabs
                     tabs={MOVER_TABS.map(t => ({ id: t, label: MOVER_TAB_LABEL[t], badge: loserCounts[t] || undefined }))}
                     value={_effLoseTab}
@@ -6117,11 +6117,17 @@
     flex: 0 1 auto;
     min-width: 0;
     flex-wrap: nowrap;
-    overflow-x: auto;
-    scrollbar-width: none;
-    -webkit-overflow-scrolling: touch;
   }
-  .mp-head-tabs::-webkit-scrollbar { display: none; }
+  /* mp-head-tabs is itself the scroll container (via .scroll-x) — without
+     this override the embedded AlgoTabs' own .algo-tabs-strip scroller
+     nests a second overflow-x:auto inside it, creating a double-scroll
+     container. Matches LogPanel.svelte's equivalent override for the
+     same embedding scenario (`:global(.lp-header-wrap .algo-tabs-strip)`). */
+  .mp-head-tabs :global(.algo-tabs-strip) {
+    overflow-x: visible;
+    max-width: none;
+    flex-shrink: 0;
+  }
 
   /* Manage-watchlists button — single chip at the end of the chrome
      row. Pencil-edits-list glyph reads as "manage list" rather than

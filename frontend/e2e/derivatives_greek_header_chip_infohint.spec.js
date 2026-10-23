@@ -89,7 +89,7 @@ test.describe('Source audit — header-chip Greek InfoHint text + hideButton wir
   // Isolate the header-chips block (opt-section-chips) and the Greeks-card
   // block (opt-kv-greeks) independently so we're comparing the right pair
   // of occurrences even though each Greek's text appears twice in the file.
-  const chipsBlockStart = src.indexOf('<div class="opt-section-chips">');
+  const chipsBlockStart = src.indexOf('<div class="opt-section-chips scroll-x">');
   const chipsBlockEnd   = src.indexOf('{/snippet}', chipsBlockStart);
   const chipsBlock      = src.slice(chipsBlockStart, chipsBlockEnd);
 

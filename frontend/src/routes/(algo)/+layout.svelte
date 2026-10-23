@@ -1644,7 +1644,7 @@
          comment block for the full ladder. -->
     <ToastContainer />
 
-    <footer class="algo-footer">
+    <footer class="algo-footer scroll-x">
       <span class="algo-footer-brand">
         <span class="algo-footer-text"><span class="algo-brand-full">RamboQuant Analytics</span><span class="algo-brand-short">RamboQuant</span></span>
         <span class="algo-footer-sep">·</span>
@@ -2249,21 +2249,29 @@
     display: flex;
     flex-wrap: nowrap;
     align-items: center;
-    justify-content: center;
+    /* flex-start, not center — `justify-content: center` inside a
+       scrollable (`overflow-x: auto`) row centers the CONTENT'S VIRTUAL
+       BOX, not the visible viewport, so when content overflows, the
+       default scroll position (scrollLeft: 0) lands partway into that
+       centered box — clipping the FIRST item ("RamboQuant", the most
+       important text) from the very start, even though it's never been
+       scrolled. flex-start guarantees the first item is always fully
+       visible on load; only the later, less-important content
+       (page name, credits) needs a scroll to reach. Matches every other
+       scrollable row in this app (.ats-scroll, .ob-status-bar) — none
+       of them center-justify either. */
+    justify-content: flex-start;
     gap: 0;
     padding: 0 0.5rem;
     /* Scroll horizontally instead of wrapping/shrinking when the row
        doesn't fit — same `.ats-scroll`/`.ob-status-bar` pattern used
-       elsewhere in this app. Every child below is `white-space: nowrap`
-       so nothing wraps internally either; overflow is reachable by
-       scroll, never by growing the footer's height. */
-    overflow-x: auto;
+       elsewhere in this app (scrollbar-hiding mechanics shared via the
+       `.scroll-x` utility, app.css). Every child below is `white-space:
+       nowrap` so nothing wraps internally either; overflow is reachable
+       by scroll, never by growing the footer's height. */
     overflow-y: hidden;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: none;
     overscroll-behavior-x: contain;
   }
-  .algo-footer::-webkit-scrollbar { display: none; }
   .algo-footer-brand { flex-shrink: 0; white-space: nowrap; }
   .algo-footer-text { font-size: var(--fs-sm); color: rgba(160,185,220,0.7); font-family: var(--font-numeric); flex-shrink: 0; white-space: nowrap; }
   .algo-footer-sep  { font-size: var(--fs-sm); color: rgba(251,191,36,0.6); margin: 0 0.4rem; flex-shrink: 0; }

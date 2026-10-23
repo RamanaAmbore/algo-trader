@@ -1676,7 +1676,7 @@
            doesn't fight the stat overlay. Each chip carries the
            matching series colour as background tint + border so the
            chip → curve mapping reads at a glance. -->
-      <div class="eq-legend" role="group" aria-label="Equity chart series">
+      <div class="eq-legend scroll-x" role="group" aria-label="Equity chart series">
         {#each _EQ_SERIES as s (s.id)}
           <button
             type="button"
@@ -2133,11 +2133,7 @@
     gap: 0.35rem;
     padding: 0.25rem 0.1rem 0.5rem;
     align-items: center;
-    overflow-x: auto;
-    scrollbar-width: none;
-    -webkit-overflow-scrolling: touch;
   }
-  .eq-legend::-webkit-scrollbar { display: none; }
   .eq-legend > * { flex-shrink: 0; }
   .eq-chip {
     display: inline-flex;

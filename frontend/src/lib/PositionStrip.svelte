@@ -747,7 +747,7 @@
 
 <div class={'ps-strip' + (_heartbeatOn ? ' ps-heartbeat' : '') + (_pollPulseOn ? ' ps-poll-pulse' : '') + (_isStale ? ' ps-stale' : '')}
      title={_isStale ? `Showing last-known-good — STALE@${_staleSinceStr}` : undefined}>
-  <div class="ps-strip-scroll">
+  <div class="ps-strip-scroll scroll-x">
   <span class="ps-agg">
     <span class="ps-agg-k ps-k-p"><InfoHint popup panel label="P" accentColor="#fbbf24"
       title="P — Positions P&L"
@@ -954,17 +954,13 @@
     height: 100%;
     box-sizing: border-box;
     padding: 0 0.75rem 0 0.5rem;
-    overflow-x: auto;
     overflow-y: hidden;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: none;
     /* Keeps a continuing swipe from handing momentum off to the page
        once this inner scroller hits its edge — same reasoning as the
        2026-09-30 fix, just moved to the element that now actually owns
        the scroll. */
     overscroll-behavior-x: contain;
   }
-  .ps-strip-scroll::-webkit-scrollbar { display: none; }
   /* Heartbeat — fires on every successful 30s poll completion via a
      class toggle that resolves after 300ms (unified tick-bus duration).
      Amber glow pulse that reads as "data refreshed" without competing

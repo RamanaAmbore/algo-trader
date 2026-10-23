@@ -134,7 +134,7 @@
      clock + badge group scroll horizontally inside the shrunk box instead
      of being clipped. -->
 <div class="ats-root">
-  <div class="ats-scroll">
+  <div class="ats-scroll scroll-x">
     <!-- Market-status badge — rendered BEFORE the clock (operator:
          "move market open badge before timestamp"), as a plain <span>,
          not inside the clock button, so it never inherits the button's
@@ -215,13 +215,9 @@
     display: flex;
     align-items: center;
     gap: 0.4rem;
-    overflow-x: auto;
     overflow-y: hidden;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: none;
     overscroll-behavior-x: contain;
   }
-  .ats-scroll::-webkit-scrollbar { display: none; }
   .ats-group {
     background: none;
     border: none;

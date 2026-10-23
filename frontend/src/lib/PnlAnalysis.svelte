@@ -487,7 +487,7 @@
 </script>
 
 <!-- ── Range presets + filters ───────────────────────────────────── -->
-<div class="filter-bar">
+<div class="filter-bar scroll-x">
   <div class="preset-strip" role="tablist" aria-label="Range preset">
     {#each [['today','Today'], ['5d','5D'], ['1m','1M'], ['3m','3M'], ['1y','1Y'], ['ytd','YTD'], ['custom','Custom']] as [val, label]}
       <button class="preset-chip {preset === val ? 'preset-on' : ''}"
@@ -679,7 +679,7 @@
       {/if}
     </div>
 
-      <div class="legend-row">
+      <div class="legend-row scroll-x">
         {#each legendValues as lv}
           <span class="legend-chip" style="border-color:{lv.color};color:{lv.color}">
             <span class="legend-dot" style="background:{lv.color}"></span>
@@ -904,11 +904,7 @@
     flex-wrap: nowrap;
     gap: 0.4rem;
     margin-bottom: 0.6rem;
-    overflow-x: auto;
-    scrollbar-width: none;
-    -webkit-overflow-scrolling: touch;
   }
-  .filter-bar::-webkit-scrollbar { display: none; }
   .preset-strip {
     display: inline-flex;
     gap: 0;
@@ -1150,10 +1146,7 @@
     flex-wrap: nowrap;
     gap: 0.35rem;
     margin-top: 0.35rem;
-    overflow-x: auto;
-    scrollbar-width: none;
   }
-  .legend-row::-webkit-scrollbar { display: none; }
   .legend-chip {
     display: inline-flex;
     align-items: center;
@@ -1165,6 +1158,8 @@
     border-radius: 3px;
     border: 1px solid currentColor;
     opacity: 0.85;
+    flex-shrink: 0;
+    white-space: nowrap;
   }
   .legend-dot {
     width: 6px;

@@ -140,5 +140,19 @@ test.describe('Footer credits — Ramana R. Ambore & Gopi Podicheti', () => {
     }));
     expect(overflowX).toBe('auto');
     expect(scrollWidth).toBeGreaterThanOrEqual(clientWidth);
+
+    // Regression guard: `justify-content: center` combined with
+    // `overflow-x: auto` centers the content's VIRTUAL box, not the
+    // viewport — the default scroll position (scrollLeft: 0) then lands
+    // partway into that box, clipping the FIRST item ("RamboQuant") from
+    // the very start, before the operator has scrolled at all. Fixed via
+    // `justify-content: flex-start`. Assert the brand text's left edge
+    // sits at (or past) the footer's own left edge at scrollLeft: 0 — it
+    // must never start partially off-screen to the left on initial load.
+    expect(await footer.evaluate((el) => el.scrollLeft)).toBe(0);
+    const brand = footer.locator('.algo-footer-brand');
+    const footerBox = await footer.boundingBox();
+    const brandBox = await brand.boundingBox();
+    expect(brandBox?.x).toBeGreaterThanOrEqual((footerBox?.x ?? 0) - 1);
   });
 });

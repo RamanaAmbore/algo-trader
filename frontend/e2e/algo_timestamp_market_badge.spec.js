@@ -157,10 +157,16 @@ test.describe('AlgoTimestamp market-status badge — source', () => {
     const rootBlock = src.slice(rootIdx, src.indexOf('}', rootIdx));
     expect(rootBlock).toContain('min-width: 0');
     expect(rootBlock).toContain('overflow: hidden');
-    const scrollIdx = src.indexOf('.ats-scroll {');
-    expect(scrollIdx).toBeGreaterThan(rootIdx);
-    const scrollBlock = src.slice(scrollIdx, src.indexOf('}', scrollIdx));
-    expect(scrollBlock).toContain('overflow-x: auto');
+    // 2026-10-23 scroll-x extraction: the inner scroller's overflow-x/
+    // scrollbar-hiding mechanics moved to the shared `.scroll-x` utility
+    // (app.css), applied via class="ats-scroll scroll-x" in markup rather
+    // than duplicated in this component's own <style> block.
+    expect(src).toContain('class="ats-scroll scroll-x"');
+    const appCss = readFileSync(APP_CSS, 'utf-8');
+    const scrollXIdx = appCss.indexOf('.scroll-x {');
+    expect(scrollXIdx).toBeGreaterThan(-1);
+    const scrollXBlock = appCss.slice(scrollXIdx, appCss.indexOf('}', scrollXIdx));
+    expect(scrollXBlock).toContain('overflow-x: auto');
   });
 
   test('colour tokens for the shared states mirror RefreshButton\'s .rf-mkt-* resolved text colours; new 4th token for EQ-only', () => {

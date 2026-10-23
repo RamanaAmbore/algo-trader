@@ -30,7 +30,7 @@
   }
 </script>
 
-<div role="tablist" class="algo-tabs-strip">
+<div role="tablist" class="algo-tabs-strip scroll-x">
   {#each tabs as tab (tab.id)}
     {@const color = tab.color ?? 'amber'}
     {@const isDisabled = !!tab.disabled}
@@ -66,12 +66,8 @@
        managed horizontal scroll. Hide the scrollbar — the active-tab
        underline + tab edges make the swipe affordance obvious. */
     max-width: 100%;
-    overflow-x: auto;
     overflow-y: hidden;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: none;
   }
-  .algo-tabs-strip::-webkit-scrollbar { display: none; }
   /* Disabled tab — dimmer, no underline, cursor signals non-interactive. */
   .algo-tab.algo-tab--disabled {
     opacity: 0.42;
