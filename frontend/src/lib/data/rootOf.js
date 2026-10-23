@@ -48,6 +48,7 @@
 
 import { displaySymbol } from './displaySymbol.js';
 import { formatSymbol } from './decomposeSymbol.js';
+import { isMcxFutureStillCurrent } from '../dateFormat.js';
 
 // ---------------------------------------------------------------------------
 // Internal state
@@ -98,13 +99,26 @@ export function seedRootMapFromInstruments(items) {
 
   for (const inst of items) {
     if (inst.t !== 'FUT' || !inst.u || !inst.x) continue;
-    // Only active contracts (not settling today)
-    if (inst.x <= todayIso) continue;
     const root = inst.u.toUpperCase();
     if (inst.e === 'MCX') {
+      // MCX: stays current through its own entire expiry day + the closed
+      // overnight window, rolling only after the next trading day's 08:00
+      // IST open — mirrors the backend's `is_mcx_future_still_current`
+      // (2026-10-16 incident fix). Previously used the same bare
+      // `inst.x <= todayIso` midnight cutoff as the CDS branch below,
+      // which rolled a virtual root's front-month slot to the NEXT
+      // contract the instant the current one's own expiry date began
+      // (hours before settlement) — disagreeing with the backend and
+      // causing the Snapshot/NavStrip spot basis to flip depending on
+      // which contract last ticked (2026-10-23 fix).
+      if (!isMcxFutureStillCurrent(inst.x)) continue;
       if (!mcxBuild[root]) mcxBuild[root] = [];
       mcxBuild[root].push({ s: inst.s, x: inst.x });
     } else if (inst.e === 'CDS') {
+      // CDS keeps the original plain bare-midnight compare — the
+      // backend's freeze rule is MCX-only by design (operator: "virtual
+      // root anyway will not app[l]y to non-mcx").
+      if (inst.x <= todayIso) continue;
       if (!cdsBuild[root]) cdsBuild[root] = [];
       cdsBuild[root].push({ s: inst.s, x: inst.x });
     }

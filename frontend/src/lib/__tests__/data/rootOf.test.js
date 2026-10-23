@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   rootOf,
   rootOfLabel,
@@ -188,6 +188,60 @@ describe('seedRootMapFromInstruments', () => {
   it('non-array input does not throw', () => {
     expect(() => seedRootMapFromInstruments(null)).not.toThrow();
     expect(() => seedRootMapFromInstruments(undefined)).not.toThrow();
+  });
+});
+
+// ── seedRootMapFromInstruments — MCX session-boundary fix (3B, 2026-10-23) ──
+//
+// `seedRootMapFromInstruments` is a pure, synchronous function with no
+// IndexedDB/cache dependency — directly testable with fake timers, unlike
+// `findNearestFuture` (see mcxFutureRollover.test.js for that one).
+
+describe('seedRootMapFromInstruments — MCX stays current through expiry day + overnight', () => {
+  /** Set the fake system clock to a specific IST wall-clock instant. */
+  function setISTTime(/** @type {string} */ isoDateNoOffset) {
+    vi.setSystemTime(new Date(`${isoDateNoOffset}+05:30`));
+  }
+
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  const EXPIRING = 'CRUDEOIL26OCTFUT';
+  const NEXT     = 'CRUDEOIL26NOVFUT';
+  const items = [
+    makeInstrument({ s: EXPIRING, u: 'CRUDEOIL', e: 'MCX', t: 'FUT', x: '2026-10-15' }),
+    makeInstrument({ s: NEXT,     u: 'CRUDEOIL', e: 'MCX', t: 'FUT', x: '2026-11-19' }),
+  ];
+
+  it('THE BUG THIS FIXES: just after midnight the day after expiry, the expiring contract is still the seeded front-month slot', () => {
+    setISTTime('2026-10-16T00:30:00');
+    seedRootMapFromInstruments(items);
+    expect(rootOf(EXPIRING, 'MCX')).toBe('CRUDEOIL');
+    expect(rootOf(NEXT, 'MCX')).toBe('CRUDEOIL_NEXT');
+  });
+
+  it('right up to 07:59 IST next day, still seeded as front-month', () => {
+    setISTTime('2026-10-16T07:59:00');
+    seedRootMapFromInstruments(items);
+    expect(rootOf(EXPIRING, 'MCX')).toBe('CRUDEOIL');
+  });
+
+  it('at the next trading day 08:00 IST boundary, rolls — expiring contract drops out of the map', () => {
+    setISTTime('2026-10-16T08:00:00');
+    seedRootMapFromInstruments(items);
+    // No longer seeded — passes through raw (not a recognised virtual root slot).
+    expect(rootOf(EXPIRING, 'MCX')).toBe(EXPIRING);
+    expect(rootOf(NEXT, 'MCX')).toBe('CRUDEOIL');
+  });
+
+  it('a Friday-expiry MCX contract survives the whole weekend as the seeded front-month', () => {
+    const fridayItems = [
+      makeInstrument({ s: 'GOLDM26OCTFUT', u: 'GOLDM', e: 'MCX', t: 'FUT', x: '2026-10-16' }),
+      makeInstrument({ s: 'GOLDM26NOVFUT', u: 'GOLDM', e: 'MCX', t: 'FUT', x: '2026-11-20' }),
+    ];
+    setISTTime('2026-10-18T12:00:00'); // Sunday
+    seedRootMapFromInstruments(fridayItems);
+    expect(rootOf('GOLDM26OCTFUT', 'MCX')).toBe('GOLDM');
   });
 });
 

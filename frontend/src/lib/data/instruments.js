@@ -1,6 +1,7 @@
 import { writable } from 'svelte/store';
 import { _setExpiryLookup } from './decomposeSymbol.js';
 import { seedRootMapFromInstruments, getVirtualRoots } from './rootOf.js';
+import { isMcxFutureStillCurrent } from '../dateFormat.js';
 
 /**
  * Reactive signal bumped once each time `_buildIndexes` finishes — i.e.
@@ -458,19 +459,31 @@ export function findOption(underlying, type, strike, expiry) {
 }
 
 /** Find the future contract for an underlying (nearest expiry).
- *  Uses `r.x > today` so the front-month is considered expired on its
- *  actual expiry date — the page rolls to the next contract immediately
- *  rather than quoting the expiring contract's last-traded price, which
- *  diverges from the new front-month (CRUDEOIL: old contract at ₹7000
- *  vs live front at ₹5800). Falls back to the last row only when all
- *  rows are expired — instrument-cache lag; caller should show a stale
- *  warning in that case.
+ *
+ *  MCX rows (`r.e === 'MCX'`) use `isMcxFutureStillCurrent` (dateFormat.js)
+ *  — a contract stays the front-month through its own entire expiry day
+ *  and the closed overnight window, rolling only after the next trading
+ *  day's 08:00 IST open (2026-10-23 fix: this used to roll at bare
+ *  midnight of the expiry date via `r.x > today`, disagreeing with the
+ *  backend's `list_active_futures`/`is_mcx_future_still_current`, shipped
+ *  2026-10-16, which keeps the expiring contract current through that
+ *  whole window — causing the Snapshot/NavStrip spot basis to flip
+ *  depending on which contract last ticked).
+ *
+ *  Non-MCX rows (NFO, CDS) keep the original plain `r.x > today` compare
+ *  unchanged — the backend's freeze rule is MCX-only by design.
+ *
+ *  Falls back to the last row only when all rows are expired —
+ *  instrument-cache lag; caller should show a stale warning in that case.
  */
 export function findNearestFuture(underlying) {
   const rows = listFutures(underlying);
   if (rows.length === 0) return null;
   const today = _todayIST();
-  for (const r of rows) if (r.x > today) return r;
+  for (const r of rows) {
+    const current = r.e === 'MCX' ? isMcxFutureStillCurrent(r.x) : r.x > today;
+    if (current) return r;
+  }
   return rows[rows.length - 1];
 }
 

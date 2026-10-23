@@ -68,6 +68,74 @@ export function isCurrentTradingSession(ms) {
   return tradingSessionDateIST(ms) === tradingSessionDateIST();
 }
 
+/**
+ * First WEEKDAY (Mon–Fri, IST) strictly AFTER `dateIso` (YYYY-MM-DD),
+ * returned as YYYY-MM-DD. Used by `isMcxFutureStillCurrent` below to
+ * approximate the backend's holiday-aware `next_market_open_ist` without
+ * a client-side holiday calendar (see that function's docstring for the
+ * known residual gap this leaves).
+ *
+ * @param {string} dateIso
+ * @returns {string}
+ */
+function _firstWeekdayIsoAfter(dateIso) {
+  let d = new Date(`${dateIso}T00:00:00+05:30`);
+  const dateFmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit',
+  });
+  const wdFmt = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', weekday: 'short' });
+  // Bounded loop (7 iterations always finds a weekday) — defensive against
+  // an unexpected Intl/Date edge case rather than looping forever.
+  for (let i = 0; i < 7; i++) {
+    d = new Date(d.getTime() + 24 * 60 * 60 * 1000);
+    const wd = wdFmt.format(d);
+    if (wd !== 'Sat' && wd !== 'Sun') return dateFmt.format(d);
+  }
+  return dateFmt.format(d);
+}
+
+/**
+ * MCX-only: true when a future whose REAL listed expiry is `expiryIso`
+ * (YYYY-MM-DD, straight from the instruments cache's own `x` field) should
+ * still be treated as the live/front-month contract right now.
+ *
+ * Mirrors the backend's `is_mcx_future_still_current`
+ * (`backend/api/algo/expiry_freeze.py`, 2026-10-16 incident fix): a
+ * contract stays current through its own ENTIRE expiry day and the whole
+ * closed overnight window (23:31→08:00 IST), rolling only once the next
+ * trading day's 08:00 IST open has passed — not at bare midnight of the
+ * expiry date, which is what `findNearestFuture`/`seedRootMapFromInstruments`
+ * used to do (2026-10-23 fix, frontend/backend front-month disagreement).
+ *
+ * Weekend-aware: a Friday expiry stays current through Saturday and Sunday,
+ * rolling only at the following Monday's 08:00 IST (via
+ * `_firstWeekdayIsoAfter`), not at Saturday 08:00 — matching the backend's
+ * `next_market_open_ist` weekend-skip for the common (non-holiday) case.
+ *
+ * KNOWN GAP: this module has no client-side holiday calendar (unlike the
+ * backend's `next_market_open_ist`, which also consults `market_holidays` +
+ * `market_special_sessions`) — a holiday landing immediately after expiry
+ * (e.g. a Thursday-expiry Friday-holiday) still rolls at that holiday's own
+ * 08:00 instead of waiting for the next REAL trading day. Accepted residual
+ * — see CLAUDE.md's "Frontend/backend disagree on front-month MCX contract"
+ * entry. Weekends are the overwhelming common case and ARE handled exactly.
+ *
+ * MCX-only by design, matching the backend ("virtual root anyway will not
+ * app[l]y to non-mcx" — operator). Callers for other exchanges (NFO, CDS)
+ * must keep their own plain `expiry > today` compare unchanged.
+ *
+ * @param {string|null|undefined} expiryIso
+ * @param {number} [nowMs] epoch-ms to evaluate (defaults to `Date.now()`).
+ * @returns {boolean}
+ */
+export function isMcxFutureStillCurrent(expiryIso, nowMs = Date.now()) {
+  if (!expiryIso) return false;
+  const sessionToday = tradingSessionDateIST(nowMs);
+  if (expiryIso >= sessionToday) return true;
+  const boundaryIso = _firstWeekdayIsoAfter(expiryIso);
+  return sessionToday < boundaryIso;
+}
+
 /** @param {Date|string|number} d @returns {string} e.g. "21 Jul" */
 export function formatDateShort(d) {
   return new Intl.DateTimeFormat('en-IN', {
