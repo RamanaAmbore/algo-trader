@@ -97,4 +97,26 @@ test.describe('Footer credits — Ramana R. Ambore & Gopi Podicheti', () => {
     const footerText = await footer.textContent();
     expect(footerText).toMatch(/Ramana R\. Ambore\s*&\s*Gopi Podicheti/);
   });
+
+  test('footer items top-align on mobile, not center-align (page-name wrap fix)', async ({ page }) => {
+    // Regression test for: on narrow viewports, a wrapped page-name span
+    // (taller than its single-line siblings) was vertically CENTERED
+    // against the single-line "RamboQuant" brand text via the footer's
+    // `align-items: center`, reading as offset instead of top-aligned.
+    // Fixed via `align-items: flex-start` inside the existing
+    // `@media (max-width: 640px)` block for `.algo-footer` — assert the
+    // computed style directly rather than depending on exact text-wrap
+    // pixel geometry, which is fragile across fonts/renderers.
+    await page.setViewportSize({ width: 360, height: 800 });
+    await loginAsAdmin(page);
+    await page.goto('/pulse', { waitUntil: 'domcontentloaded' });
+
+    const footer = page.locator('footer.algo-footer');
+    await expect(footer).toBeAttached({ timeout: TIMEOUT });
+
+    const alignItems = await footer.evaluate(
+      (el) => getComputedStyle(el).alignItems
+    );
+    expect(alignItems).toBe('flex-start');
+  });
 });
