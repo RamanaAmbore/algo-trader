@@ -481,6 +481,82 @@ async def _is_offsetting_position(sym: str, exchange: str, side: str, account: s
     return False
 
 
+async def _ticket_strip_template_on_close(data, sym: str, side: str, account: str):
+    """Close/offset gate — strip ALL template state (saved `template_id`
+    AND every ad-hoc override field) when this order would reduce/close
+    an existing opposite position, verified against the REAL broker
+    position taken BEFORE this order is placed — this runs inside
+    `ticket_order_handler` ahead of any broker call, so it is a
+    genuinely pre-fill read, unlike a post-fill check run after a fill
+    postback/reconcile arrives.
+
+    T15 fix (2026-10-23 template/bracket audit) — this gate used to run
+    ONLY when `data.template_id` was set (2026-09 council audit fix,
+    `_is_offsetting_position` instead of trusting a client `intent`
+    flag). An override-only ticket (no saved template, inline
+    `tp_pct_override`/`sl_pct_override`/`wing_*_override` fields) sailed
+    through un-checked and carried its overrides into the persisted
+    AlgoOrder row. The ONLY defense left for that case was
+    `orders_postback.py:_pb_check_and_fire_template_attach`'s POST-fill
+    `_is_offsetting_position` read — which, for a FULL close, always
+    reads a flat/zero position (indistinguishable from "no prior
+    position at all"), the exact bug class `chase.py`'s 2026-09-30
+    "Bug 1" fix addresses for the chase path (see
+    `_ch_check_and_fire_template_attach`'s docstring). Reusing THIS
+    gate for the override-only case closes the gap at the source:
+    `_pb_wants_template_attach` and `_opl_reconcile_attach_eligible`
+    both already refuse to fire template attach once `template_id` AND
+    `template_overrides_json` are both empty, so a row stripped here
+    never reaches either path's post-fill fallback at all.
+
+    Does NOT set `intent='close'` / `is_close_intent` — those flags
+    bypass the G2 fat-finger cap and the MCX/NCO size cap
+    (`_verify_close_intent`'s whole reason for existing); a sign-only
+    offsetting read must never grant that bypass.
+
+    `orders_basket.py` has no equivalent gate at all (out of scope for
+    this fix — not in T15's file list) — a basket leg's `template_id`
+    is passed straight through with no check.
+    """
+    from backend.api.algo.template_attach import has_any_override
+    from backend.api.routes.orders_helpers import _ticket_overrides_dict
+
+    if not (data.template_id or has_any_override(_ticket_overrides_dict(data))):
+        return data
+    # Cache-freshness fix: invalidate the raw positions cache first (same
+    # pattern as chase.py's `_ch_capture_pre_fill_net_qty`) so a fill
+    # from the last few seconds — e.g. a different leg of the same
+    # basket, or a chase-managed order on the same symbol that just
+    # filled — isn't read through a stale 30s cache entry.
+    try:
+        from backend.brokers.broker_apis import _raw_cache_invalidate
+        _raw_cache_invalidate("positions")
+    except Exception:
+        pass
+    _is_close = await _is_offsetting_position(
+        sym=sym, exchange=str(data.exchange or "NFO"),
+        side=side, account=str(account),
+    )
+    if not _is_close:
+        return data
+    logger.info(
+        "[TPL-ATTACH] clearing template_id + ad-hoc overrides — "
+        "close/offset order for %s %s", account, sym,
+    )
+    import msgspec as _ms
+    return _ms.structs.replace(
+        data,
+        template_id=None,
+        tp_pct_override=None,
+        sl_pct_override=None,
+        wing_premium_pct_override=None,
+        wing_strike_offset_override=None,
+        wing_max_spread_pct_override=None,
+        sl_trail_pct_override=None,
+        tp_scales_json_override=None,
+    )
+
+
 async def _verify_close_intent(
     sym: str, exchange: str, side: str, account: str, contracts: int,
 ) -> bool:
@@ -2469,31 +2545,13 @@ async def ticket_order_handler(data, request) -> object:  # type: ignore[return]
             detail="wing_max_spread_pct must be > 0",
         )
 
-    # Close/offset gate: strip template_id when this order would reduce an
-    # existing opposite position (close-intent or net-offsetting).
-    #
-    # 2026-09 council audit fix: previously trusted a CLIENT-claimed
-    # data.intent == "close" directly here, only falling back to the real
-    # `_is_offsetting_position` check when the client hadn't claimed close.
-    # Always run the real, position-backed check instead — it's the same
-    # cost (one cached position fetch) as the fallback path already paid,
-    # and removes reliance on a client-side flag for a decision that
-    # affects live GTT/template state.
-    if data.template_id:
-        _is_close = await _is_offsetting_position(
-            sym=sym,
-            exchange=str(data.exchange or "NFO"),
-            side=side,
-            account=str(account),
-        )
-        if _is_close:
-            logger.info(
-                "[TPL-ATTACH] clearing template_id — close/offset order for %s %s",
-                account,
-                sym,
-            )
-            import msgspec as _ms
-            data = _ms.structs.replace(data, template_id=None)
+    # Close/offset gate: strip ALL template state (saved template_id AND
+    # ad-hoc override fields) when this order would reduce an existing
+    # opposite position. See `_ticket_strip_template_on_close`'s own
+    # docstring (T15 fix) for why this is the correct place for this
+    # check — it runs BEFORE the broker call, so it reads a genuinely
+    # pre-fill position.
+    data = await _ticket_strip_template_on_close(data, sym, side, account)
 
     await _ticket_enforce_lot_and_fat_finger(data, account, sym, qty, lot_size)
 

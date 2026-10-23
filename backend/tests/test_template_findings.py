@@ -1374,3 +1374,174 @@ class TestCloseOffsetGate:
         assert captured["data_at_enforce"].template_id == 9, (
             "template_id must NOT clear when the close claim isn't server-verified"
         )
+
+    # ── T15 fix (2026-10-23) — override-only tickets must ALSO verify
+    # close/offset before persist, not just saved-template tickets. ────
+
+    @pytest.mark.asyncio
+    async def test_override_only_close_verifies_and_strips_overrides(self):
+        """Pre-fix: the gate only ran `if data.template_id:` — an
+        override-only ticket (no template_id, inline tp_pct_override)
+        sailed through un-checked here and reached
+        `_pb_check_and_fire_template_attach`'s buggy POST-fill
+        `_is_offsetting_position` read instead. This test fails against
+        the pre-fix code because `_is_offsetting_position` is never
+        called at all for this shape of request."""
+        from backend.api.schemas import TicketOrderRequest
+
+        data = TicketOrderRequest(
+            mode="live",
+            side="SELL",
+            tradingsymbol="NIFTY25JUL24000CE",
+            quantity=1,
+            exchange="NFO",
+            account="ZG0001",
+            template_id=None,
+            tp_pct_override=30.0,
+            sl_pct_override=10.0,
+        )
+
+        captured = {"offsetting_called_with": None}
+
+        async def _fake_validate(d, req):
+            return "SELL", "NIFTY25JUL24000CE", 50, 50
+
+        def _fake_account(d):
+            return "ZG0001"
+
+        async def _fake_offsetting(sym, exchange, side, account):
+            captured["offsetting_called_with"] = (sym, exchange, side, account)
+            return True  # verified real close
+
+        async def _fake_enforce(d, acc, sym, qty, ls):
+            captured["data_at_enforce"] = d
+
+        async def _fake_gate(d, sym):
+            pass
+
+        async def _fake_capacity(*a, **kw):
+            pass
+
+        with patch("backend.api.routes.orders_place._ticket_validate_input",
+                   new=_fake_validate), \
+             patch("backend.api.routes.orders_place._ticket_validate_account",
+                   new=_fake_account), \
+             patch("backend.api.routes.orders_place._is_offsetting_position",
+                   new=_fake_offsetting), \
+             patch("backend.api.routes.orders_place._ticket_enforce_lot_and_fat_finger",
+                   new=_fake_enforce), \
+             patch("backend.api.routes.orders_place._ticket_gate_market_hours_and_align_price",
+                   new=_fake_gate), \
+             patch("backend.api.routes.orders_place._enforce_capacity_guard",
+                   new=_fake_capacity), \
+             patch("backend.shared.helpers.settings.get_bool", return_value=False), \
+             patch("backend.shared.helpers.utils.config",
+                   {"deploy_branch": "dev"}), \
+             patch("backend.api.routes.orders_place._ticket_place_live",
+                   new_callable=AsyncMock, return_value=None), \
+             patch("backend.api.routes.orders_place._ticket_place_paper",
+                   new_callable=AsyncMock, return_value=None):
+            from backend.api.routes.orders_place import ticket_order_handler
+            await ticket_order_handler(data, MagicMock())
+
+        assert captured["offsetting_called_with"] == (
+            "NIFTY25JUL24000CE", "NFO", "SELL", "ZG0001",
+        ), "_is_offsetting_position must be called for an override-only ticket too"
+        stripped = captured["data_at_enforce"]
+        assert stripped.template_id is None
+        assert stripped.tp_pct_override is None
+        assert stripped.sl_pct_override is None
+
+    @pytest.mark.asyncio
+    async def test_override_only_new_open_keeps_overrides(self):
+        """Sanity check the other direction: a genuine new open (not
+        offsetting) must keep its override fields intact."""
+        from backend.api.schemas import TicketOrderRequest
+
+        data = TicketOrderRequest(
+            mode="live",
+            side="BUY",
+            tradingsymbol="NIFTY25JUL24000CE",
+            quantity=1,
+            exchange="NFO",
+            account="ZG0001",
+            template_id=None,
+            tp_pct_override=30.0,
+        )
+
+        captured = {}
+
+        async def _fake_validate(d, req):
+            return "BUY", "NIFTY25JUL24000CE", 50, 50
+
+        def _fake_account(d):
+            return "ZG0001"
+
+        async def _fake_offsetting(sym, exchange, side, account):
+            return False
+
+        async def _fake_enforce(d, acc, sym, qty, ls):
+            captured["data_at_enforce"] = d
+
+        async def _fake_gate(d, sym):
+            pass
+
+        async def _fake_capacity(*a, **kw):
+            pass
+
+        with patch("backend.api.routes.orders_place._ticket_validate_input",
+                   new=_fake_validate), \
+             patch("backend.api.routes.orders_place._ticket_validate_account",
+                   new=_fake_account), \
+             patch("backend.api.routes.orders_place._is_offsetting_position",
+                   new=_fake_offsetting), \
+             patch("backend.api.routes.orders_place._ticket_enforce_lot_and_fat_finger",
+                   new=_fake_enforce), \
+             patch("backend.api.routes.orders_place._ticket_gate_market_hours_and_align_price",
+                   new=_fake_gate), \
+             patch("backend.api.routes.orders_place._enforce_capacity_guard",
+                   new=_fake_capacity), \
+             patch("backend.shared.helpers.settings.get_bool", return_value=False), \
+             patch("backend.shared.helpers.utils.config",
+                   {"deploy_branch": "dev"}), \
+             patch("backend.api.routes.orders_place._ticket_place_live",
+                   new_callable=AsyncMock, return_value=None), \
+             patch("backend.api.routes.orders_place._ticket_place_paper",
+                   new_callable=AsyncMock, return_value=None):
+            from backend.api.routes.orders_place import ticket_order_handler
+            await ticket_order_handler(data, MagicMock())
+
+        assert captured["data_at_enforce"].tp_pct_override == 30.0
+
+    @pytest.mark.asyncio
+    async def test_positions_cache_invalidated_before_offsetting_check(self):
+        """A fill from the last few seconds must not be read through a
+        stale 30s positions cache entry when deciding to strip."""
+        from backend.api.routes.orders_place import _ticket_strip_template_on_close
+        from backend.api.schemas import TicketOrderRequest
+
+        data = TicketOrderRequest(
+            mode="live", side="SELL", tradingsymbol="NIFTY25JUL24000CE",
+            quantity=1, exchange="NFO", account="ZG0001",
+            tp_pct_override=30.0,
+        )
+        call_order = []
+
+        def _fake_invalidate(key):
+            call_order.append(("invalidate", key))
+
+        async def _fake_offsetting(sym, exchange, side, account):
+            call_order.append(("offsetting", sym))
+            return False
+
+        with patch("backend.brokers.broker_apis._raw_cache_invalidate",
+                   new=_fake_invalidate), \
+             patch("backend.api.routes.orders_place._is_offsetting_position",
+                   new=_fake_offsetting):
+            await _ticket_strip_template_on_close(
+                data, "NIFTY25JUL24000CE", "SELL", "ZG0001",
+            )
+
+        assert call_order == [
+            ("invalidate", "positions"), ("offsetting", "NIFTY25JUL24000CE"),
+        ], "cache must be invalidated BEFORE the offsetting check runs"
