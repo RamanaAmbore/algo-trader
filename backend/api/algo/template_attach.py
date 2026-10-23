@@ -401,8 +401,22 @@ def _fire_wing_unprotected_alert(
 
 
 def template_attach_fail_message(*, order_id, symbol, account, err_summary, ist_label,
-                                  agent_id: "int | None" = None) -> str:
-    """Telegram-HTML body of the template attach failure alert. Pure; shared by sender and renderer."""
+                                  agent_id: "int | None" = None,
+                                  placed_untracked_ids: "list | None" = None) -> str:
+    """Telegram-HTML body of the template attach failure alert. Pure; shared by sender and renderer.
+
+    `placed_untracked_ids` (T16 fix, 2026-10-23) — set ONLY when the
+    exits genuinely placed at the broker (GTT ids / wing order id) but
+    the DB write recording them failed (see
+    `orders_place.py:_opp_handle_persist_failure`). The default footer
+    ("Exits NOT attached. Arm exits manually if needed.") is actively
+    WRONG and dangerous in that case — live exits already exist at the
+    broker; an operator who follows that instruction and arms a SECOND
+    set of exits can over-close or flip the position. Left at its
+    default (None) the rendered text is byte-identical to before this
+    param existed — required for `test_alert_golden.py`'s existing
+    golden-text assertion.
+    """
     import html as _html
     from backend.shared.helpers.utils import mask_account
     from backend.shared.helpers.alert_utils import format_notification_header
@@ -415,6 +429,18 @@ def template_attach_fail_message(*, order_id, symbol, account, err_summary, ist_
     origin_header = _html.escape(
         format_notification_header(None, agent_id, ist_display=ist_label).splitlines()[0]
     )
+    if placed_untracked_ids:
+        _ids_html = _html.escape(", ".join(str(i) for i in placed_untracked_ids))
+        footer = (
+            f"Exits PLACED at broker (ids {_ids_html}) but NOT recorded — "
+            f"OCO/trailing/cancel-on-close won't track them.\n"
+            f"Do NOT arm manually; reconcile the broker GTT book."
+        )
+    else:
+        footer = (
+            f"Parent order FILLED. Exits NOT attached.\n"
+            f"Arm exits manually if needed."
+        )
     return (
         f"{origin_header}\n"
         f"<b>⚠ Template attach failed — {ist_label}</b>\n\n"
@@ -423,8 +449,7 @@ def template_attach_fail_message(*, order_id, symbol, account, err_summary, ist_
         f"symbol:   {symbol}\n"
         f"account:  {masked_account}\n\n"
         f"errors:   {err_summary_html}\n\n"
-        f"Parent order FILLED. Exits NOT attached.\n"
-        f"Arm exits manually if needed.</code>"
+        f"{footer}</code>"
     )
 
 
@@ -435,6 +460,7 @@ def _fire_attach_fail_alert(
     account: str,
     errors: list,
     agent_id: "int | None" = None,
+    placed_untracked_ids: "list | None" = None,
 ) -> None:
     """Fire a Telegram-only alert when template attach fails due to an
     operational error (G1 guard, lot_size cache miss, broker placement
@@ -449,6 +475,11 @@ def _fire_attach_fail_alert(
     returns None from apply_template_to_order (no AttachResult), so
     this alert only fires when an AttachResult with errors exists and
     guard_alert_fired is False.
+
+    `placed_untracked_ids` — see `template_attach_fail_message`'s
+    docstring (T16 fix). Threaded through to the log record's `extra`
+    so `event_agents.py:_render_attach_fail` can pass it to the
+    message builder too.
     """
     import asyncio as _asyncio
     import html as _html
@@ -463,6 +494,7 @@ def _fire_attach_fail_alert(
     tg_msg = template_attach_fail_message(
         order_id=order_id, symbol=symbol, account=account,
         err_summary=err_summary, ist_label=ist_label, agent_id=agent_id,
+        placed_untracked_ids=placed_untracked_ids,
     )
     logger.warning(
         "attach fail alert dispatched: order #%s %s %s errors=[%s]",
@@ -471,6 +503,7 @@ def _fire_attach_fail_alert(
             "tags": ["orders"], "alert_event": "template_attach_fail",
             "order_id": order_id, "symbol": symbol, "account": account,
             "err_summary": err_summary, "ist_label": ist_label, "agent_id": agent_id,
+            "placed_untracked_ids": placed_untracked_ids,
         },
     )
 

@@ -307,6 +307,27 @@ _TEMPLATE_ATTACH_META_LOCK = asyncio.Lock()
 # still finds the lock before it expires. Raised from 1 h (M6).
 _TPL_LOCK_TTL_S = 14400
 
+# T16 fix (2026-10-23) — in-process hold for a template attach whose
+# broker placement SUCCEEDED but whose DB write (attached_gtts_json)
+# failed even after retry. Keyed by parent_row_id, value is
+# `{"attached": list, "fill_price": float}` — the exact payload the
+# failed persist attempt was trying to write. Deliberately in-process
+# only, mirroring `chase.py:_CH_PRE_FILL_NET_QTY`'s precedent — a
+# duplicate placement at this exact point can only come from a
+# redelivered postback, a reconcile sweep, or an order-poll pass, all
+# of which run in THIS process and already serialise on
+# `_get_template_attach_lock`'s per-row lock. Writing a DB-persisted
+# marker instead would (a) add a write to the same database that just
+# failed, (b) risk `_retry_precheck_row` permanently refusing a retry
+# if the process crashed between writing the marker and placing at the
+# broker, and (c) require every OTHER reader of `attached_gtts_json`
+# (OCO watcher, trail poller, OrderBook chips) to learn to skip it.
+# Residual: a process restart drops this hold, so a later trigger
+# would place a genuinely duplicate set of exits — the
+# `template_attach_failed` alert has already listed the broker ids by
+# then, so the operator has what they need to reconcile manually.
+_TPL_ATTACH_PERSIST_PENDING: dict[int, dict] = {}
+
 
 async def _get_template_attach_lock(parent_row_id: int) -> "asyncio.Lock":
     """Lazily mint one asyncio.Lock per parent_row_id. The meta-lock
@@ -849,6 +870,114 @@ async def _opp_persist_attached_gtts(
     )
 
 
+_TPL_PERSIST_RETRY_BACKOFFS_S = (0.5, 1.0)
+
+
+async def _opp_persist_with_retry(
+    parent_row_id: int, attached: list, fill_price: float,
+) -> bool:
+    """Call `_opp_persist_attached_gtts` up to `1 + len(backoffs)` times
+    with a short sleep between attempts. Most DB write failures here
+    are transient (connection blip) — a few in-call retries handle the
+    common case without ever needing the persist-pending hold below.
+    Returns True on the first successful attempt, False once every
+    attempt has failed.
+    """
+    _attempts = 1 + len(_TPL_PERSIST_RETRY_BACKOFFS_S)
+    for _i in range(_attempts):
+        try:
+            await _opp_persist_attached_gtts(parent_row_id, attached, fill_price)
+            return True
+        except Exception as _e:
+            _is_last = _i == _attempts - 1
+            logger.warning(
+                f"[TPL-ATTACH] persist attempt {_i + 1}/{_attempts} failed "
+                f"for parent #{parent_row_id}"
+                f"{' (giving up)' if _is_last else ', retrying'}: {_e}"
+            )
+            if not _is_last:
+                await asyncio.sleep(_TPL_PERSIST_RETRY_BACKOFFS_S[_i])
+    return False
+
+
+def _opp_attached_ids(attached: list) -> list:
+    """Extract every broker id (GTT + wing) from an attached-entries
+    list, for the T16 persist-failure alert's `placed_untracked_ids`."""
+    return [e.get("id") for e in attached
+            if isinstance(e, dict) and e.get("id")]
+
+
+async def _opp_handle_persist_failure(
+    parent_row_id: int, attached: list, fill_price: float,
+    parent_symbol: str, parent_account: str, agent_id,
+) -> None:
+    """T16 fix — called once `_opp_persist_with_retry` has exhausted
+    every attempt. The exits named in *attached* are genuinely LIVE at
+    the broker; only the DB record of them failed. Holds the
+    unpersisted payload (see `_TPL_ATTACH_PERSIST_PENDING`'s own
+    docstring) so a later trigger for this row retries the persist
+    instead of placing a duplicate set of exits, and fires the SAME
+    `template_attach_failed` alert path a broker placement failure
+    already uses — with `placed_untracked_ids` set so the rendered
+    footer tells the operator NOT to arm exits manually (they already
+    exist) instead of the default, actively-wrong "Exits NOT attached"
+    text.
+    """
+    _TPL_ATTACH_PERSIST_PENDING[parent_row_id] = {
+        "attached": attached, "fill_price": fill_price,
+    }
+    _ids = _opp_attached_ids(attached)
+    from backend.api.algo.template_attach import _fire_attach_fail_alert
+    _fire_attach_fail_alert(
+        order_id=parent_row_id, symbol=parent_symbol, account=parent_account,
+        errors=[f"exits placed at broker (ids {_ids}) but the DB write "
+                f"recording them (attached_gtts_json) failed after retries"],
+        agent_id=agent_id, placed_untracked_ids=_ids,
+    )
+    try:
+        from backend.api.algo.order_events import write_event
+        await write_event(
+            parent_row_id, "template_attach_failed",
+            f"Exits placed at broker for {parent_symbol} but the DB "
+            f"persist failed after retries — ids={_ids}",
+            {"placed_untracked_ids": _ids},
+        )
+    except Exception as _we:
+        # DB may genuinely be down right now — this write can fail too.
+        # The telegram/ntfy/email alert above already fired independent
+        # of this write, so the operator is still notified.
+        logger.warning(
+            f"[TPL-ATTACH] write_event for persist-failure also failed "
+            f"for parent #{parent_row_id}: {_we}"
+        )
+
+
+async def _opp_flush_pending_persist(parent_row_id: int) -> bool:
+    """Attempt ONE flush of a held, previously-failed persist for
+    *parent_row_id*. Returns True and pops the hold on success; leaves
+    the hold in place and returns False on another failure. A no-op
+    (returns False) when nothing is held for this row.
+    """
+    _pending = _TPL_ATTACH_PERSIST_PENDING.get(parent_row_id)
+    if _pending is None:
+        return False
+    try:
+        await _opp_persist_attached_gtts(
+            parent_row_id, _pending["attached"], _pending["fill_price"],
+        )
+    except Exception as _e:
+        logger.warning(
+            f"[TPL-ATTACH] pending-persist retry flush failed for "
+            f"parent #{parent_row_id}: {_e}"
+        )
+        return False
+    _TPL_ATTACH_PERSIST_PENDING.pop(parent_row_id, None)
+    logger.info(
+        f"[TPL-ATTACH] pending-persist flush succeeded for parent #{parent_row_id}"
+    )
+    return True
+
+
 async def _fire_template_attach_on_fill(
     *,
     parent_row_id: int,
@@ -954,6 +1083,13 @@ async def _fire_template_attach_on_fill(
         return None
     _row_lock = await _get_template_attach_lock(parent_row_id)
     async with _row_lock:
+        # T16 fix — a prior call for this SAME row already placed exits
+        # at the broker but failed to persist them (see
+        # _TPL_ATTACH_PERSIST_PENDING's own docstring). Never place a
+        # second set; just retry the persist and return.
+        if parent_row_id in _TPL_ATTACH_PERSIST_PENDING:
+            await _opp_flush_pending_persist(parent_row_id)
+            return None
         try:
             from backend.api.algo.template_attach import apply_template_to_order
 
@@ -1019,7 +1155,14 @@ async def _fire_template_attach_on_fill(
                         attached = _attach_list
                     except Exception:
                         pass
-                await _opp_persist_attached_gtts(parent_row_id, attached, fill_price)
+                _persist_ok = await _opp_persist_with_retry(
+                    parent_row_id, attached, fill_price,
+                )
+                if not _persist_ok:
+                    await _opp_handle_persist_failure(
+                        parent_row_id, attached, fill_price,
+                        parent_symbol, parent_account, row_info.get("agent_id"),
+                    )
             return result
 
         except Exception as _e:

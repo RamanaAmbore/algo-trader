@@ -511,6 +511,17 @@ def _retry_precheck_row(row) -> Optional[dict]:
     if row.attached_gtts_json:
         return {"ok": False, "reason":
                 "template already attached — nothing to retry"}
+    # T16 fix (2026-10-23) — a row whose exits placed at the broker but
+    # whose DB persist failed (see orders_place.py:
+    # _TPL_ATTACH_PERSIST_PENDING) has NO attached_gtts_json yet, so the
+    # check above doesn't catch it. Without this, Retry-attach would
+    # read "nothing attached" and place a SECOND live set of exits on
+    # top of the first, now-untracked, one.
+    from backend.api.routes.orders_place import _TPL_ATTACH_PERSIST_PENDING
+    if row.id in _TPL_ATTACH_PERSIST_PENDING:
+        return {"ok": False, "reason":
+                "exits already placed at the broker but not recorded — "
+                "do not Re-attach; reconcile the broker GTT book manually"}
     if (row.status or "").upper() != "FILLED":
         return {"ok": False,
                 "reason": f"parent must be FILLED to attach (status={row.status})"}
@@ -1292,7 +1303,23 @@ async def _rco_attached_gtts_already_set(row_id: int) -> bool:
     GTT/wing set and orphaning the first (now-untracked) one. Mirrors
     `orders_place.py:_opp_load_row_for_attach`'s in-lock idempotency
     read on the fill-triggered path.
+
+    T16 fix (2026-10-23) — also checks `_TPL_ATTACH_PERSIST_PENDING`
+    first: a row whose exits already placed at the broker but whose
+    DB persist failed carries NO `attached_gtts_json` yet (the write
+    that would set it is exactly what failed), so the plain DB read
+    below would wrongly say "not attached" and let this path place a
+    SECOND live set of exits. Attempts one flush of the pending
+    persist (best-effort — the flush outcome doesn't change the
+    verdict) and returns True unconditionally when a hold exists.
     """
+    from backend.api.routes.orders_place import (
+        _TPL_ATTACH_PERSIST_PENDING, _opp_flush_pending_persist,
+    )
+    if row_id in _TPL_ATTACH_PERSIST_PENDING:
+        await _opp_flush_pending_persist(row_id)
+        return True
+
     from sqlalchemy import select as _sel_rco
     from backend.api.database import async_session as _async_s_rco
     from backend.api.models import AlgoOrder as _AO_rco

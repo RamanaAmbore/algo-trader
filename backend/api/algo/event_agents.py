@@ -170,7 +170,8 @@ def _render_attach_fail(rec: dict) -> tuple:
     x = rec.get("extra") or {}
     tg = template_attach_fail_message(order_id=x.get("order_id"), symbol=x.get("symbol"),
                                       account=x.get("account"), err_summary=x.get("err_summary") or "",
-                                      ist_label=x.get("ist_label"), agent_id=x.get("agent_id"))
+                                      ist_label=x.get("ist_label"), agent_id=x.get("agent_id"),
+                                      placed_untracked_ids=x.get("placed_untracked_ids"))
     title = "Template attach failed"
     email_subject = f"RamboQuant {title}: {x.get('symbol') or ''}"
     email_body = f"<html><body style='font-family:sans-serif'>{tg}</body></html>"
