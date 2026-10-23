@@ -518,7 +518,7 @@ def _retry_precheck_row(row) -> Optional[dict]:
     # read "nothing attached" and place a SECOND live set of exits on
     # top of the first, now-untracked, one.
     from backend.api.routes.orders_place import _TPL_ATTACH_PERSIST_PENDING
-    if row.id in _TPL_ATTACH_PERSIST_PENDING:
+    if getattr(row, "id", None) in _TPL_ATTACH_PERSIST_PENDING:
         return {"ok": False, "reason":
                 "exits already placed at the broker but not recorded — "
                 "do not Re-attach; reconcile the broker GTT book manually"}
