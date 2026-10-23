@@ -13,12 +13,18 @@
  *     active — unblocking the tmpl:#N chip / Re-attach button gated on
  *     that row being reachable in the currently-active status-chip view.
  *
- *  2. `.ob-status-bar`'s 5 status chips (Chase/Open/Filled/Rejected/
- *     Cancelled) fit within a 320-375px phone viewport without forcing
- *     horizontal overflow on the page — `grid-template-columns:
- *     repeat(5, minmax(0, 1fr))` (was a plain `1fr`, which cannot shrink
- *     below the "CANCELLED" label's content width) plus truncation on
- *     `.ob-sc-l`.
+ *  2. `.ob-status-bar`'s 6 status chips (Held-Attn/Chase/Open/Filled/
+ *     Rejected-Cancelled/GTT) stay fully READABLE at a 320-375px phone
+ *     viewport without forcing horizontal overflow on the PAGE.
+ *     2026-10-23 fix (amends the original `repeat(6, minmax(0, 1fr))` +
+ *     `.ob-sc-l` ellipsis-truncation design documented here previously):
+ *     that grid squeezed "Rejected/Cancelled" (the longest label) into
+ *     unreadable fragments — a silent-clip violation of this app's
+ *     overflow-not-clip convention. Now a horizontally-scrolling flex row
+ *     (`overflow-x: auto`, children `flex-shrink: 0`-equivalent via
+ *     `flex: 1 0 auto`) — every chip keeps its full label; the ROW
+ *     scrolls on narrow viewports instead of the page, and instead of
+ *     clipping text.
  *
  * Mocks GET /api/orders/ (broker book) and GET /api/orders/algo/recent
  * (algo-tracked book) — same pattern as
@@ -146,7 +152,17 @@ test.describe('OrderBook — FILLED predicate + mobile status-bar overflow', () 
     // 6, not 5 (audit fix, 2026-10) — the "Held/Attn" chip (HELD /
     // CANCEL_FAILED) was added to .ob-status-bar; see
     // order_book_held_attention_chip.spec.js for the chip's own coverage.
-    test(`status-bar 6 chips fit without horizontal page overflow at ${vw}px width`, async ({ page }) => {
+    //
+    // 2026-10-23 fix rewrites this test's own assertions: the row is now a
+    // horizontally-scrolling flex strip, not a fixed 6-column grid, so
+    // "each chip's right edge sits inside the bar's current box" is no
+    // longer the right invariant — a chip is explicitly ALLOWED to sit
+    // past the bar's initially-visible width now; that's the whole point
+    // of making it scrollable. What must hold instead: (a) the chip's
+    // own LABEL text is never ellipsis-clipped (full text, readable), and
+    // (b) the PAGE itself never gains horizontal scroll from this row —
+    // the row's own `overflow-x: auto` must contain it.
+    test(`status-bar 6 chips stay readable (no ellipsis-clip) and never force page-level overflow at ${vw}px width`, async ({ page }) => {
       await page.setViewportSize({ width: vw, height: 720 });
       await authOnce(page);
       await page.clock.setFixedTime(new Date(_NOW_ISO));
@@ -161,21 +177,34 @@ test.describe('OrderBook — FILLED predicate + mobile status-bar overflow', () 
       await expect(chips).toHaveCount(6);
 
       // The document must not scroll horizontally past the viewport —
-      // a plain `1fr` track previously forced the grid wider than the
-      // 320-375px card once the 5th (Chase) chip was added.
+      // the row's own `overflow-x: auto` must absorb the 6 chips'
+      // combined width, never leaking into page-level scroll.
       const overflowX = await page.evaluate(
         () => document.documentElement.scrollWidth - document.documentElement.clientWidth
       );
       expect(overflowX).toBeLessThanOrEqual(1);
 
-      // Each chip itself must not exceed its allotted grid track width —
-      // confirms the chips shrank to fit rather than merely being clipped
-      // by an ancestor's overflow:hidden.
+      // "Rejected/Cancelled" (the longest label) must render FULLY —
+      // `scrollWidth > clientWidth` on the label itself is the reliable
+      // signal that `overflow:hidden` + `text-overflow:ellipsis` is
+      // actually clipping real content, even though ellipsis visually
+      // hides the cut rather than reflowing it.
+      const rejCancLabel = page.locator('.ob-status-bar .ob-sc-l', { hasText: /^Rejected\/Cancelled$/ });
+      await expect(rejCancLabel).toHaveCount(1);
+      const [scrollW, clientW] = await rejCancLabel.evaluate(
+        (el) => [el.scrollWidth, el.clientWidth]
+      );
+      expect(scrollW, 'Rejected/Cancelled label must not be ellipsis-clipped').toBeLessThanOrEqual(clientW);
+
+      // The last chip (GTT) must be reachable by scrolling the row —
+      // proves the row is a real scroll container, not merely wide and
+      // silently cut off by an ancestor's own overflow:hidden.
+      const lastChip = chips.last();
+      await lastChip.scrollIntoViewIfNeeded();
       const barBox = await page.locator('.ob-status-bar').boundingBox();
-      for (let i = 0; i < 6; i++) {
-        const box = await chips.nth(i).boundingBox();
-        expect(box.x + box.width).toBeLessThanOrEqual(barBox.x + barBox.width + 1);
-      }
+      const lastBox = await lastChip.boundingBox();
+      expect(lastBox.x, 'last chip (GTT) must be scrollable into view').toBeGreaterThanOrEqual(barBox.x - 1);
+      expect(lastBox.x + lastBox.width, 'last chip (GTT) must be scrollable into view').toBeLessThanOrEqual(barBox.x + barBox.width + 1);
     });
   }
 });
