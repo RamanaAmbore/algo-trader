@@ -14,20 +14,20 @@
  *    `showChaseChip` was ALWAYS false and the chip + drawer were
  *    structurally unreachable regardless of the drawer's own fix.
  *
- * This spec mocks the real response shapes for both
- * `/api/orders/events/recent` and `/api/orders/algo/recent` (the latter
- * supplies the per-order symbol/side/qty/mode context events don't carry)
- * and asserts:
- *   1. The navbar chase chip becomes visible (proves the layout-level feed
- *      fix — previously impossible under any mock).
- *   2. Opening the drawer shows the real symbol/side/qty/mode per order,
- *      sourced from orderContext, not from the (nonexistent) event fields.
- *   3. A LIVE order never renders the PAPER pill (the old `?? 'paper'`
- *      default bug).
- *   4. Price is parsed out of `payload_json`, matching the real shapes
- *      written by chase.py / paper.py / orders_postback.py.
- *   5. Sections sort non-terminal-first, newest-activity-first within
- *      group — using the real event `ts`, not a nonexistent `created_at`.
+ * 2026-10-23 AMENDMENT — the navbar chip's click target changed from this
+ * OrderTimelineDrawer event-log to a live-STATUS view (ChaseCard — see
+ * chase_badge_live_status_drawer.spec.js for that surface's own coverage).
+ * `openOrderIds`/`chaseOrderContext` (this spec's original subject) are
+ * KEPT but now feed only the chip's tooltip + 60s post-terminal linger —
+ * the chip's displayed NUMBER and the drawer's actual content both come
+ * from ChaseCard's own `/orders/chases/active` poll instead. The test
+ * below is updated to mock that endpoint too and assert the new
+ * ChaseCard-format drawer content, while still proving the original
+ * fields-mismatch fix: real symbol/side/qty/mode still resolve from
+ * `orderContext` (sourced from `/orders/algo/recent`) rather than from
+ * nonexistent event fields — just surfaced via the chip's tooltip
+ * (`openSymbols`) and `_ensureChaseOrderContext` now, not via the old
+ * drawer's per-order header row.
  *
  * Run:
  *   cd frontend && npx playwright test \
@@ -78,6 +78,23 @@ const _ALGO_ROWS = [
     created_at: '2026-01-01T08:00:00' },
 ];
 
+// ── Real AlgoOrderInfo shape, shaped for ChaseCard's /chases/active poll
+//    (the new source for the chip's displayed number + drawer content).
+//    Orders 101/102 are active (OPEN, non-terminal); 103 is COMPLETE
+//    (terminal — chase.py / list_active_chases never returns a terminal
+//    row from this endpoint), so the active count is 2, not 3. ───────────
+const _NOW_SEC = Math.floor(Date.now() / 1000);
+const _CHASES_ACTIVE = [
+  { id: 101, account: 'T1', transaction_type: 'BUY', quantity: 50,
+    symbol: 'RBQ-LIVE1', current_limit: 101, initial_price: 100,
+    attempts: 2, status: 'active', next_attempt_at: _NOW_SEC + 10,
+    mode: 'live', child_order_ids: [] },
+  { id: 102, account: 'T1', transaction_type: 'SELL', quantity: 20,
+    symbol: 'RBQ-LIVE2', current_limit: 205, initial_price: 200,
+    attempts: 3, status: 'active', next_attempt_at: _NOW_SEC + 5,
+    mode: 'live', child_order_ids: [] },
+];
+
 async function mockOrdersEndpoints(page) {
   await page.route('**/api/orders/**', async (route) => {
     const req = route.request();
@@ -87,6 +104,13 @@ async function mockOrdersEndpoints(page) {
       await route.fulfill({
         status: 200, contentType: 'application/json',
         body: JSON.stringify({ gtts: [], count: 0 }),
+      });
+      return;
+    }
+    if (url.includes('/orders/chases/active')) {
+      await route.fulfill({
+        status: 200, contentType: 'application/json',
+        body: JSON.stringify(_CHASES_ACTIVE),
       });
       return;
     }
@@ -118,64 +142,55 @@ async function mockOrdersEndpoints(page) {
 test.describe('OrderTimelineDrawer — field-mismatch fix', () => {
   test.setTimeout(60_000);
 
-  test('navbar chase chip appears and drawer shows real fields from orderContext, not invented event fields', async ({ page }) => {
+  test('navbar chase chip appears; the field-mismatch fix still resolves real symbol/side/qty/mode via orderContext (now surfaced through the tooltip + ChaseCard live view, not the old event-log)', async ({ page }) => {
     await loginAsAdmin(page);
     await mockOrdersEndpoints(page);
 
-    await page.goto('/orders');
+    // Run on /pulse, not /orders — /orders embeds its OWN separate
+    // <ChaseCard> instance, which would make a bare `.cc-root` locator
+    // ambiguous (two instances: the page's own card + the header drawer).
+    await page.goto('/pulse');
     await page.waitForLoadState('domcontentloaded');
 
     // 1. The chip is reachable at all — previously structurally impossible
     //    (showChaseChip was always false under the old field-mismatch bug).
     const chip = page.locator('.chase-chip:visible');
     await expect(chip).toBeVisible({ timeout: 15_000 });
-    // 3 distinct order_ids in _EVENTS are all OPEN per the mocked backend
-    // contract (status=open query) — chip shows the open-order count.
-    await expect(chip).toContainText('3');
+    // 2026-10-23: the chip's NUMBER now reflects ChaseCard's own
+    // `/orders/chases/active` poll (2 active rows), not the 3 distinct
+    // order_ids in the `/orders/events/recent` feed — this is the fix's
+    // whole point: the two could previously disagree.
+    await expect(chip).toContainText('2');
+    // The field-mismatch fix's original subject — real per-order
+    // symbol/side/qty/mode resolved via orderContext from
+    // `/orders/algo/recent`, never invented event fields — is still
+    // exercised: the tooltip lists symbols resolved through
+    // `chaseOrderContext`, built from the same `_ALGO_ROWS` fixture.
+    await expect(chip).toHaveAttribute('title', /RBQ-LIVE1|RBQ-LIVE2|RBQ-PAPER1/);
 
     // The chip carries a perpetual `algo-mode-dot` pulse animation (CLAUDE.md
     // palette convention, unrelated to this fix) — Playwright's actionability
     // check never sees it "stable" across animation frames, so force the click.
     await chip.click({ force: true });
 
-    const drawer = page.locator('.otd-drawer');
-    await expect(drawer).toBeVisible();
+    // The live ChaseCard view, not the old event-log drawer.
+    const ccRoot = page.locator('.chd-drawer .cc-root');
+    await expect(ccRoot).toBeVisible({ timeout: 10_000 });
+    const rows = page.locator('.chd-drawer .cc-row:not(.cc-row-h)');
+    await expect(rows).toHaveCount(2);
 
-    const sections = drawer.locator('.otd-section');
-    await expect(sections).toHaveCount(3);
+    // Real symbol/side/qty/mode — straight from `_CHASES_ACTIVE`, not from
+    // any invented event field.
+    const liveRow = page.locator('.chd-drawer .cc-row', { hasText: 'RBQ-LIVE1' });
+    await expect(liveRow.locator('.cc-side-buy')).toHaveText('BUY');
+    await expect(liveRow.locator('.cc-col-qty')).toHaveText('50');
+    await expect(liveRow).toContainText('LIVE');
 
-    // 5. Sort order: order 102 (latest activity 09:20) first, order 101
-    //    (latest activity 09:05) second, order 103 (terminal) last —
-    //    regardless of its own 08:10 timestamp being earliest of all.
-    await expect(sections.nth(0)).toContainText('RBQ-LIVE2');
-    await expect(sections.nth(1)).toContainText('RBQ-LIVE1');
-    await expect(sections.nth(2)).toContainText('RBQ-PAPER1');
-    await expect(sections.nth(2)).toHaveClass(/otd-section-terminal/);
+    const sellRow = page.locator('.chd-drawer .cc-row', { hasText: 'RBQ-LIVE2' });
+    await expect(sellRow.locator('.cc-side-sell')).toHaveText('SELL');
+    await expect(sellRow).toContainText('LIVE');
 
-    // 2 + 3. Real symbol/side/qty/mode come from orderContext — a LIVE
-    //    order never falls back to the PAPER pill.
-    const liveSection = sections.filter({ hasText: 'RBQ-LIVE1' });
-    await expect(liveSection.locator('.otd-side')).toHaveText('BUY');
-    await expect(liveSection.locator('.otd-qty')).toHaveText('50');
-    await expect(liveSection.locator('.otd-mode-pill')).toHaveText('LIVE');
-    await expect(liveSection.locator('.otd-mode-pill')).not.toHaveText('PAPER');
-
-    const sellSection = sections.filter({ hasText: 'RBQ-LIVE2' });
-    await expect(sellSection.locator('.otd-side')).toHaveText('SELL');
-    await expect(sellSection.locator('.otd-mode-pill')).toHaveText('LIVE');
-
-    const paperSection = sections.filter({ hasText: 'RBQ-PAPER1' });
-    await expect(paperSection.locator('.otd-mode-pill')).toHaveText('PAPER');
-
-    // 4. Price is parsed from payload_json (chase_modify → payload.price;
-    //    fill → payload.fill_price) — never read from a nonexistent
-    //    ev.price/ev.limit_price on the raw event row.
-    await expect(liveSection.locator('.otd-ev-price', { hasText: '₹101.00' })).toBeVisible();
-    await expect(sellSection.locator('.otd-ev-price', { hasText: '₹205.00' })).toBeVisible();
-    await expect(paperSection.locator('.otd-ev-price', { hasText: '₹303.25' })).toBeVisible();
-
-    // "placed" events here carry no payload at all (live ticket convention)
-    // — must render with no price chip rather than crashing/showing ₹NaN.
-    await expect(liveSection.locator('.otd-ev-kind', { hasText: 'placed' })).toBeVisible();
+    // The old event-log drawer never renders for this entry point.
+    await expect(page.locator('.otd-drawer')).toHaveCount(0);
   });
 });

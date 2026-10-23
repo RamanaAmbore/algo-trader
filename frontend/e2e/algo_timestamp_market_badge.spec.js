@@ -349,4 +349,49 @@ test.describe('AlgoTimestamp market-status badge — mobile scroll fallback', ()
     });
     expect(scrollStyle?.overflowX).toBe('auto');
   });
+
+  // 2026-10-23 (Fix 2, `.page-header` switched to `nowrap`) — the test
+  // above only proves the CSS *mechanism* exists; it doesn't prove the
+  // row actually SHRINKS instead of wrapping once genuinely squeezed,
+  // since a single short pill fits at 360px without needing to shrink at
+  // all. This test forces a narrower viewport (280px) specifically to
+  // force genuine overflow of the clock + badge group, then asserts:
+  //   (a) the header row did NOT wrap (`.page-header`'s own box height
+  //       stays within a single-row bound — see
+  //       page_header_nowrap_mobile.spec.js's own doc comment for why a
+  //       per-child `top`-offset comparison is the wrong check under
+  //       `align-items: center`), and
+  //   (b) `.ats-scroll` itself genuinely overflows its own box
+  //       (scrollWidth > clientWidth), proving `.ats-root`'s `flex: 1 1 0`
+  //       actually let it shrink below its content's natural width
+  //       rather than the shrink never engaging (the pre-fix bug — see
+  //       AlgoTimestamp.svelte's own `.ats-root` doc comment).
+  test('at a forced-narrow viewport (280px) the timestamp row shrinks + genuinely scrolls instead of wrapping the header', async ({ page }) => {
+    await page.setViewportSize({ width: 280, height: 800 });
+    await loginAsAdmin(page);
+    await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+
+    const header = page.locator('.page-header').first();
+    await expect(header).toBeVisible({ timeout: 15_000 });
+
+    const headerBox = await header.boundingBox();
+    expect(headerBox).not.toBeNull();
+    expect(headerBox.height).toBeLessThanOrEqual(40);
+
+    const scrollMetrics = await page.evaluate(() => {
+      const el = document.querySelector('.ats-scroll');
+      if (!el) return null;
+      return { scrollWidth: el.scrollWidth, clientWidth: el.clientWidth };
+    });
+    expect(scrollMetrics).not.toBeNull();
+    expect(scrollMetrics.scrollWidth).toBeGreaterThan(scrollMetrics.clientWidth);
+
+    // Document itself still doesn't overflow — the overflow is fully
+    // absorbed inside `.ats-scroll`.
+    const docOverflow = await page.evaluate(() => ({
+      scrollWidth: document.documentElement.scrollWidth,
+      clientWidth: document.documentElement.clientWidth,
+    }));
+    expect(docOverflow.scrollWidth).toBeLessThanOrEqual(docOverflow.clientWidth + 1);
+  });
 });

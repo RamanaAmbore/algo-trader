@@ -17,7 +17,7 @@
   } from '$lib/api';
   import { userRole, hasCap, userCaps } from '$lib/rbac';
   import { toast } from '$lib/data/toastStore.svelte.js';
-  import OrderTimelineDrawer from '$lib/order/OrderTimelineDrawer.svelte';
+  import ChaseCard from '$lib/order/ChaseCard.svelte';
   import { TERMINAL_KINDS as TERMINAL_CHASE_KINDS } from '$lib/order/orderTimelineLogic.js';
   import { portal } from '$lib/portal';
   import PositionStrip from '$lib/PositionStrip.svelte';
@@ -720,7 +720,7 @@
     }
   }
 
-  // ── Chase chip + timeline drawer ───────────────────────────────────
+  // ── Chase chip + live-status drawer ─────────────────────────────────
   // Sprint 2a fix (docs/proposals/SPRINT2_LAYER_INTEGRATION.md §1 finding 1,
   // §4.2): this feed previously assumed events carried `status`/`symbol`/
   // `created_at` fields that don't exist on the real `AlgoOrderEventInfo`
@@ -730,11 +730,48 @@
   // reachable at all. Fixed below; `chaseOrderContext` supplies the
   // symbol/side/qty/mode the events themselves don't carry (see
   // orderTimelineLogic.js), built from AlgoOrderInfo rows keyed by id.
+  //
+  // 2026-10-23 — the chip's click target changed from an event-TIMELINE
+  // log (OrderTimelineDrawer) to a live-STATUS view (ChaseCard — current
+  // price, countdown to next re-quote, Kill). `chaseOrders` /
+  // `chaseOrderContext` / `openOrderIds` are KEPT, but now feed only the
+  // chip's tooltip (`openSymbols`) and the 60s post-terminal auto-hide
+  // linger (`lastTerminalAt`) — the chip's displayed NUMBER and its
+  // click-to-open VISIBILITY both now come from ChaseCard's own
+  // `activeCount` bindable (`_chaseCardActiveCount` below), so the badge
+  // and the popup it opens can never disagree (previously two different
+  // endpoints — fetchOrderEvents('open') vs the chase engine's own
+  // /chases/active — could report different counts).
   let chaseOrders       = $state(/** @type {any[]} */ ([]));
   let chaseOrderContext = $state(/** @type {Record<string, {symbol:string, side:string, qty:number, mode:string}>} */ ({}));
   let drawerOpen        = $state(false);
   let lastTerminalAt    = $state(/** @type {Date|null} */ (null));
   let chaseInteracted   = $state(false);  // tracks hover/click in the 60s auto-hide window
+  // Mirrors ChaseCard's own `activeCount`/`loadError` bindables — the ONE
+  // persistent ChaseCard instance mounted below (see the drawer markup
+  // near PositionStrip) keeps these live even while the drawer itself is
+  // closed, via its `headless` prop (polling continues; template render
+  // is suppressed).
+  let _chaseCardActiveCount = $state(0);
+  let _chaseCardLoadError   = $state(/** @type {string | null} */ (null));
+
+  // Escape-stack coordinator (layerStack.js) — same convention as
+  // `menuOpen` / `modeOpen` above. The drawer previously relied on
+  // OrderTimelineDrawer's own internal `window.addEventListener('keydown',
+  // ...)`, which only existed while that component was mounted (gated by
+  // `{#if open}` at its own template root). The live-status drawer below
+  // is mounted unconditionally (so ChaseCard's polling never stops), so
+  // Escape handling must be wired explicitly here instead.
+  /** @type {string | null} */
+  let _chaseDrawerLayerId = null;
+  $effect(() => {
+    if (drawerOpen) {
+      _chaseDrawerLayerId = pushLayer(() => { drawerOpen = false; });
+    } else if (_chaseDrawerLayerId) {
+      popLayer(_chaseDrawerLayerId);
+      _chaseDrawerLayerId = null;
+    }
+  });
 
   // Every row returned by fetchOrderEvents(50, 'open') belongs to an order
   // the backend already filtered to AlgoOrder.status === 'OPEN' (see
@@ -809,8 +846,14 @@
     _chaseHideTimer = setTimeout(() => { chaseInteracted = false; }, 60_000);
   }
 
+  // Gate on ChaseCard's own `activeCount` (the chase engine's real
+  // /chases/active rows) rather than `openOrderIds` (the events feed) —
+  // the displayed number (template below) also reads `_chaseCardActiveCount`,
+  // so visibility and the number can never disagree. `lastTerminalAt`'s
+  // 60s post-terminal linger (from the events feed) is kept as a
+  // supplementary "just finished" affordance.
   const showChaseChip = $derived.by(() => {
-    if (openOrderIds.size > 0) return true;
+    if (_chaseCardActiveCount > 0) return true;
     if (!lastTerminalAt) return false;
     if (chaseInteracted) return true;
     const age = Date.now() - lastTerminalAt.getTime();
@@ -1299,7 +1342,7 @@
             <svg width="10" height="10" viewBox="0 0 20 20" fill="currentColor">
               <path fill-rule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z" clip-rule="evenodd"/>
             </svg>
-            <span>{openOrderIds.size} chasing</span>
+            <span>{_chaseCardActiveCount} chasing</span>
             <span class="chase-chip-arrow">→</span>
           </button>
         {/if}
@@ -1436,7 +1479,7 @@
             <svg width="10" height="10" viewBox="0 0 20 20" fill="currentColor">
               <path fill-rule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z" clip-rule="evenodd"/>
             </svg>
-            <span>{openOrderIds.size}</span>
+            <span>{_chaseCardActiveCount}</span>
             <span class="chase-chip-arrow">→</span>
           </button>
         {/if}
@@ -1521,14 +1564,56 @@
          when the operator has no positions. -->
     <PositionStrip />
 
-    <!-- Chase timeline drawer — rendered outside normal flow so it
-         overlays everything. Mounts inside .algo-card for z-index context. -->
-    <OrderTimelineDrawer
-      open={drawerOpen}
-      orders={chaseOrders}
-      orderContext={chaseOrderContext}
-      onClose={() => { drawerOpen = false; }}
-    />
+    <!-- Chase live-status drawer — rendered outside normal flow so it
+         overlays everything. Mounts inside .algo-card for z-index context.
+         Shows ChaseCard's live dashboard (price / countdown / Kill), NOT
+         an event-log — that remains OrderBook.svelte's own per-order
+         "view timeline" entry point (OrderTimelineDrawer, unchanged,
+         reached only from an OrderCard click).
+
+         ChaseCard mounts unconditionally (gated on `$authStore.user`
+         only, not on `drawerOpen`) so its `activeCount`/`loadError`
+         bindables stay live for the chip's own count/visibility even
+         while the drawer is closed — same mounted-but-hidden convention
+         as OrderTicket's Chain-tab pairing (CLAUDE.md "Order Ticket /
+         Bracket-template re-wire"). Visibility toggles via the
+         `chd-drawer-open` CSS class (opacity/visibility/transform), never
+         `{#if}` — so this ChaseCard instance never remounts/re-polls when
+         the drawer opens or closes. `headless={!drawerOpen}` additionally
+         suppresses ChaseCard's own template render while the drawer is
+         closed, so there is never more than one visible `.cc-root` from
+         this instance at a time (pages that embed their own separate
+         ChaseCard — /orders, the order-ticket Chase tab, the Activity
+         modal — are untouched and may render alongside this one). -->
+    {#if $authStore.user}
+      {#if drawerOpen}
+        <div class="chd-backdrop" role="presentation"
+             onclick={() => { drawerOpen = false; }}></div>
+      {/if}
+      <div class="chd-drawer" class:chd-drawer-open={drawerOpen}
+           role="dialog" aria-modal="true" aria-label="Active chases"
+           aria-hidden={!drawerOpen}>
+        <div class="chd-header">
+          <span class="chd-title">Active Chases</span>
+          <button class="chd-close" onclick={() => { drawerOpen = false; }} aria-label="Close">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <path d="M2 2l10 10M12 2L2 12" stroke="currentColor" stroke-width="1.8"
+                    stroke-linecap="round"/>
+            </svg>
+          </button>
+        </div>
+        <div class="chd-body">
+          {#if _chaseCardLoadError}
+            <div class="chd-error">Chase status unavailable</div>
+          {:else if _chaseCardActiveCount === 0}
+            <div class="chd-empty">No active chases</div>
+          {/if}
+          <ChaseCard compact={false} headless={!drawerOpen}
+                     bind:activeCount={_chaseCardActiveCount}
+                     bind:loadError={_chaseCardLoadError} />
+        </div>
+      </div>
+    {/if}
 
     <ImpersonationBanner />
 
@@ -2203,8 +2288,16 @@
   }
 
   /* Page-top header row — H1 on the left, timestamp right-aligned on
-     the same line to conserve vertical space. Wraps to its own line on
-     narrow widths. Used by every admin page via `.page-header`. */
+     the same line to conserve vertical space. Used by every admin page
+     via `.page-header`. Fixed-position (see below) — if this ever wraps
+     to a second row, that second row visually covers the first card
+     underneath it (.algo-content's padding-top only reserves ONE row's
+     height), so overflow here must be absorbed by a shrinking child
+     (.ats-root, via AlgoTimestamp.svelte's own `.ats-scroll` horizontal
+     scroll — see AlgoTimestamp.svelte), never by wrapping the row itself.
+     2026-10-23 fix: was `flex-wrap: wrap` — confirmed live to wrap the
+     row on narrow viewports, with the wrapped second line covering the
+     page's first card/content row. */
   :global(.page-header) {
     display: flex;
     /* align-items: baseline pushed tall buttons (1.4-1.6rem) above
@@ -2214,11 +2307,12 @@
        strip box reliably. */
     align-items: center;
     justify-content: space-between;
-    /* Tight gap so title chip + timestamp + action cluster stay on
-       one row on mobile. flex-wrap still kicks in only when the row
-       genuinely overflows. */
     gap: 0.15rem;
-    flex-wrap: wrap;
+    /* Never wrap — see the rule's own doc comment above. The title
+       chip (.algo-title-group) and action cluster (.page-header-actions)
+       are both pinned (flex-shrink: 0); only AlgoTimestamp's `.ats-root`
+       shrinks + internally scrolls when the row is tight. */
+    flex-wrap: nowrap;
     margin-bottom: 0;
     /* Operator: "i don't want header row to scroll in all the
        pages". Fixed at top:3rem, full viewport width, so the
@@ -2259,28 +2353,53 @@
   :global(.algo-viewport:has(.ps-strip)) .algo-content {
     padding-top: calc(3rem + 1.5rem + 1.8rem);  /* 100.8px */
   }
-  /* Title chip cluster on the LEFT of every algo page header. Without
-     this, flex-wrap separates them onto two lines on narrow viewports.
-     Shared so per-page declarations like .pulse-title-group /
+  /* Title chip cluster on the LEFT of every algo page header. Pinned
+     (flex-shrink: 0 + white-space: nowrap) so it keeps its natural
+     content width under `.page-header`'s `nowrap` — without this, the
+     h1 text itself could wrap inside the chip once AlgoTimestamp's
+     `.ats-root` (the one child designed to shrink) has nothing left to
+     give. Shared so per-page declarations like .pulse-title-group /
      .opt-title-group can be retired. */
   :global(.page-header .algo-title-group) {
     display: inline-flex;
     align-items: center;
     gap: 0.4rem;
     align-self: stretch;
+    flex-shrink: 0;
+    white-space: nowrap;
     border-right: 1px solid rgba(255,255,255,0.10);
     padding-right: 0.35rem;
     margin-right: 0.1rem;
   }
   /* Action icon cluster on the RIGHT — RefreshButton + PageHeaderActions
-     (+ any page-specific buttons). Keeps all icons on the same flex line
-     even when the title + timestamp wrap to the first row on narrow
-     viewports. flex-shrink: 0 prevents the span from collapsing;
-     white-space: nowrap keeps the inner buttons together. */
+     (+ any page-specific buttons). Pinned (flex-shrink: 0 + white-space:
+     nowrap) on EVERY viewport width, including mobile — the invariant is
+     that the button group must always stay visible, never wrap/shrink
+     away. (2026-10-23: a mobile-only override that relaxed this pin used
+     to live in the ≤640px block below; removed — see that block's own
+     comment for why.) */
   :global(.page-header-actions) {
     display: inline-flex;
     align-items: center;
     gap: 0.35rem;
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+  /* A handful of pages (/admin "+ Create User", /admin/tokens "+ New
+     token") render a page-specific content-action button as a DIRECT
+     child of `.page-header`, between AlgoTimestamp and the `ml-auto`
+     spacer — those pages' own comments call it "LEFT-aligned per
+     canonical header rule". It has no pin of its own, so under
+     `nowrap` its button text could wrap onto two lines instead of the
+     outer row wrapping — a smaller version of the same invariant
+     violation this fix targets (confirmed live: ~45px single-row
+     height on /admin at 360px vs. the ~26-30px baseline on every other
+     page, tall enough to intrude into the fixed-position header's
+     reserved clearance below it). Pinned here (direct-child selector
+     only — never reaches a button nested inside `.algo-title-group` or
+     `.page-header-actions`) so it stays single-line like every other
+     header element; `.ats-root` remains the sole shrink/scroll target. */
+  :global(.page-header > button) {
     flex-shrink: 0;
     white-space: nowrap;
   }
@@ -2333,7 +2452,13 @@
        of which there is a lot of wasted space before and after cards
        on mobile". */
     .algo-nav-inner { padding: 0 0.25rem; }
-    .algo-footer    { padding: 0 0.25rem; }
+    /* align-items: flex-start (overrides the desktop `center`) — on
+       narrow viewports the page-name span can wrap to two lines when
+       it doesn't fit; `center` then centers that taller wrapped block
+       against its single-line siblings (the "RamboQuant" brand text),
+       reading as vertically offset instead of top-aligned. flex-start
+       keeps every footer item's top edge level regardless of wrap. */
+    .algo-footer    { padding: 0 0.25rem; align-items: flex-start; }
     .algo-content   { padding-left: 0; padding-right: 0; }
     /* Tighter card padding on mobile — operator: "increase card width
        to reduce wasted space". algo-status-card defaults to 0.75rem
@@ -2374,21 +2499,19 @@
     :global(.algo-viewport:has(.ps-strip)) .algo-content {
       padding-top: calc(3rem + 1.5rem + 1.4rem + 0.3rem);
     }
-    /* Mobile relaxation: the page-header action cluster has
-       `white-space: nowrap` + `flex-shrink: 0` for desktop so the
-       buttons stay glued together when there's headroom. On a
-       375px viewport the automation page injects two extra pills
-       (History + Ask AI) and the cluster's max-content width
-       overflows the viewport — `flex-wrap: wrap` on `.page-header`
-       can't help because the cluster itself refuses to shrink.
-       Allow the buttons to wrap and shrink on narrow viewports so
-       the navbar stops being pushed out of frame. */
-    :global(.page-header-actions) {
-      flex-wrap: wrap;
-      white-space: normal;
-      flex-shrink: 1;
-      min-width: 0;
-    }
+    /* Mobile relaxation REMOVED (2026-10-23) — this used to let the
+       button group wrap/shrink on narrow viewports (the comment cited
+       an /automation page that injected two extra pills, History + Ask
+       AI, wider than 375px). That content no longer exists on
+       /automation (confirmed via grep — its `.page-header-actions` is
+       just RefreshButton + PageHeaderActions, same as every other
+       page), and relaxing the pin here was the exact violation of the
+       "button group always visible, never wraps/clips" invariant: it
+       let the action icons split across two lines or shrink away
+       instead of staying pinned, the opposite of the already-correct
+       desktop rule above (now unconditionally in force — see that
+       rule's own comment). AlgoTimestamp's `.ats-root` is the one
+       element designed to absorb a tight mobile header. */
     /* Mobile — squeeze the dual-TZ timestamp so the title chip + timestamp
        + RefreshButton + PageHeaderActions trio all fit on the same flex row.
        Smaller font-size + slight negative letter-spacing trims ~20 % width
@@ -2399,9 +2522,16 @@
     }
   }
 
-  @media (max-width: 480px) {
-    :global(.algo-ts) { overflow: hidden; text-overflow: ellipsis; }
-  }
+  /* ≤480px `.algo-ts` ellipsis rule REMOVED (2026-10-23) — `.algo-ts` is
+     a bare (unscoped-to-`.page-header`) global class. AlgoTimestamp.svelte
+     no longer renders it at all (it renders `.ats-*` classes — see that
+     component); the sole remaining consumer is PnlPanel.svelte's own
+     `.algo-ts` timestamp span, whose parent `.pnl-header` is
+     `flex-wrap: wrap`, so an overflowing `.algo-ts` simply wraps to a
+     new line rather than overflowing its box — the ellipsis rule was
+     already dead there too (text-overflow:ellipsis has no effect inside
+     a wrapping flex container with no fixed width). PnlPanel.svelte's
+     own rendering is unaffected by this removal. */
 
   /* Algo dark-theme overrides for classes shared with public pages */
   :global(.algo-content .text-muted) { color: var(--algo-muted); }
@@ -2687,6 +2817,107 @@
     filter: brightness(1.1);
   }
   .chase-chip-arrow { opacity: 0.7; }
+
+  /* ── Chase live-status drawer (2026-10-23) ──────────────────────────
+     Right-edge slide-in panel wrapping a single persistent ChaseCard
+     instance — see the template comment above the markup for the full
+     mount/visibility design. Visually mirrors OrderTimelineDrawer's own
+     `.otd-*` shell (same backdrop dim, same slide animation) but is a
+     separate, local style block — OrderTimelineDrawer.svelte's scoped
+     CSS isn't reachable here, and (per the fix's own scope) that
+     component is left completely unchanged for OrderBook's per-order
+     timeline view. */
+  .chd-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: var(--z-drawer);
+    background: rgba(8, 12, 20, 0.42);
+  }
+  .chd-drawer {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: calc(var(--z-drawer) + 1);
+    width: min(400px, 100vw);
+    background: #0d1829;
+    border-left: 1px solid var(--algo-amber-border-soft);
+    display: flex;
+    flex-direction: column;
+    box-shadow: -4px 0 24px rgba(0, 0, 0, 0.6);
+    /* Mounted unconditionally (not {#if}) so the inner ChaseCard never
+       remounts/re-polls — visibility is purely this transform/opacity
+       toggle, not DOM presence. */
+    transform: translateX(100%);
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition: transform 0.18s ease-out, opacity 0.18s ease-out, visibility 0.18s;
+  }
+  .chd-drawer-open {
+    transform: translateX(0);
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .chd-drawer { transition: none; }
+  }
+  .chd-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.6rem 0.85rem;
+    border-bottom: 1px solid rgba(251, 191, 36, 0.2);
+    background: var(--algo-bg-elev1);
+    flex-shrink: 0;
+  }
+  .chd-title {
+    font-family: var(--font-numeric);
+    font-size: var(--fs-lg);
+    font-weight: 700;
+    color: var(--c-action);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  .chd-close {
+    background: var(--close-btn-neutral-bg);
+    border: none;
+    cursor: pointer;
+    color: var(--text-lo);
+    padding: 0.15rem;
+    border-radius: 3px;
+    display: flex;
+    align-items: center;
+    transition: color 0.08s, background 0.08s;
+    outline: none;
+  }
+  .chd-close:hover { color: var(--c-short); background: var(--close-btn-neutral-bg-hover); }
+  .chd-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0.5rem;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(251, 191, 36, 0.35) transparent;
+  }
+  /* Shell owns the empty/error state explicitly — ChaseCard itself stays
+     silent (renders nothing) when it has zero chases/pending/draft rows,
+     which would otherwise leave this drawer looking blank. */
+  .chd-empty {
+    font-family: var(--font-numeric);
+    font-size: var(--fs-md);
+    color: var(--text-muted);
+    text-align: center;
+    padding: 2rem 1rem;
+  }
+  .chd-error {
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
+    font-weight: 700;
+    color: var(--c-short);
+    text-align: center;
+    padding: 0.6rem 1rem;
+  }
 
   /* ── Persistence bypass chip (slice AK) ───────────────────────────
      Same chip-shape as .chase-chip but with mode-specific colours so

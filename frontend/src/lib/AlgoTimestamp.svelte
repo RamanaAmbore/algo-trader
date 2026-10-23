@@ -115,14 +115,24 @@
 <!-- `.ats-root` / `.ats-scroll` — fixed-shell / inner-scroll split, the
      exact pattern PositionStrip.svelte's `.ps-strip` / `.ps-strip-scroll`
      uses for NavStrip's own mobile-overflow fix. `.page-header` is
-     `flex-wrap: wrap`, so a plain content-sized flex item just wraps to a
-     new line once it doesn't fit rather than shrinking — `.ats-root`'s
-     explicit `min-width: 0` overrides the flex item's automatic minimum
-     (which would otherwise floor at the content's own min-content width)
-     so the browser shrinks this item instead of wrapping the whole header,
-     and `.ats-scroll`'s `overflow-x: auto` lets the clock + badge group
-     scroll horizontally inside that shrunk box instead of being clipped or
-     forcing the row to wrap. -->
+     `flex-wrap: nowrap` (2026-10-23 — was `wrap`; a wrapped second row
+     covered the page's first card underneath the fixed-position header)
+     with its other two children (`.algo-title-group`, `.page-header-actions`)
+     both pinned via `flex-shrink: 0`, so `.ats-root` is the ONE child
+     designed to absorb a tight row. Under the OLD `wrap` parent, the
+     browser's first resort when content overflowed was to wrap the whole
+     row onto a second line rather than shrink any item — `.ats-root`'s
+     default `flex-shrink: 1` never got a chance to engage. Under `nowrap`
+     there is no wrap fallback, so that same default shrink now does the
+     job; `.ats-root` only needed an explicit `min-width: 0` (overriding
+     the flex item's automatic minimum, which would otherwise floor at the
+     content's own min-content width) for the shrink to go low enough to
+     matter. `flex-grow` is deliberately left at its default `0`, not `1`
+     — see the CSS rule's own comment for why a grow value here would
+     wrongly steal space from an `ml-auto` spacer some host pages render
+     after this component. `.ats-scroll`'s `overflow-x: auto` lets the
+     clock + badge group scroll horizontally inside the shrunk box instead
+     of being clipped. -->
 <div class="ats-root">
   <div class="ats-scroll">
     <button
@@ -177,6 +187,20 @@
   .ats-root {
     display: flex;
     align-items: center;
+    /* Explicit `0 1 auto` (shrink, no grow, natural basis) — NOT `1 1 0`.
+       A `flex-grow: 1` here would make `.ats-root` compete with the
+       `ml-auto` spacer some host pages render between it and
+       `.page-header-actions` (e.g. `/admin`'s "+ Create User",
+       `/admin/tokens`'s "+ New token" — see each page's own "Content-
+       action button is LEFT-aligned per canonical header rule" comment):
+       a flex-grow item claims free space during the flexible-length
+       resolution pass, before `margin-left: auto` ever gets a turn,
+       which would drag that content button all the way over to sit
+       flush against the action icons instead of staying left-aligned
+       right after the timestamp. `shrink: 1` is enough on its own under
+       `.page-header`'s `nowrap` — see the template comment above for why
+       it didn't engage under the old `wrap`. */
+    flex: 0 1 auto;
     min-width: 0;
     overflow: hidden;
   }

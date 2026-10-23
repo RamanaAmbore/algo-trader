@@ -13,6 +13,29 @@
    *   pollMs?       — poll interval (default 3000)
    *   compact?      — hide age / mode badge for narrow surfaces
    *   onKilled?     — callback fired after a successful kill
+   *   headless?     — when true, suppress the component's own template
+   *                   render entirely (no `.cc-root` in the DOM) while
+   *                   polling + the `activeCount`/`loadError` bindables
+   *                   keep updating in the background. Added 2026-10-23
+   *                   so (algo)/+layout.svelte's header chase-chip drawer
+   *                   can mount ONE persistent ChaseCard instance (to
+   *                   keep the chip's live count correct even while the
+   *                   drawer itself is closed) without leaving a hidden,
+   *                   still-focusable `.cc-kill` button set in the DOM —
+   *                   and without colliding with a second `.cc-root` on
+   *                   pages that already embed their own ChaseCard
+   *                   (/orders, the order-ticket Chase tab, the Activity
+   *                   modal). Default false — every pre-existing call
+   *                   site is unaffected.
+   *   loadError?    — bindable, mirrors the internal `_err` string (or
+   *                   null). Additive alongside `activeCount`/
+   *                   `chaseOrderIds` — added so a host that keeps this
+   *                   component mounted while hidden (see `headless`
+   *                   above) can still surface a failed fetch; the
+   *                   component's own `_err` banner only renders inside
+   *                   `.cc-root`, which stays hidden whenever `_chases`
+   *                   is empty (including on a failed fetch, since `_err`
+   *                   does not populate `_chases`).
    */
   import { onMount, onDestroy } from 'svelte';
   import { fetchActiveChases, killChase, reconcileAlgoOrders } from '$lib/api';
@@ -48,15 +71,22 @@
     pendingOrders = /** @type {any[]} */ ([]),
     // Called when the operator clicks a pending order row body.
     onPendingModify = /** @type {((o: any) => void) | undefined} */ (undefined),
+    // See the component doc comment above for both of these.
+    headless  = false,
+    loadError = $bindable(/** @type {string | null} */ (null)),
   } = $props();
 
   let _chases  = $state(/** @type {any[]} */ ([]));
-  // Mirror the chase count and broker_order_id set out to bindable
-  // props so the parent's gate and dedup logic can react.
+  // Mirror the chase count, broker_order_id set, and load-error string
+  // out to bindable props so the parent's gate / dedup / error-surfacing
+  // logic can react — this effect runs regardless of `headless`, since
+  // it's script-level, not gated by the template's own `{#if}` below.
   $effect(() => {
     const n = _chases.length;
     if (n !== activeCount) activeCount = n;
     chaseOrderIds = new Set(_chases.map(c => String(c.broker_order_id || '')).filter(Boolean));
+    const errOrNull = _err || null;
+    if (loadError !== errOrNull) loadError = errOrNull;
   });
   // Group children directly under their parents so the operator sees
   // parent + protective wing as a visual cluster. Rows are partitioned
@@ -275,7 +305,7 @@
      Root is gated on real chases OR pending broker orders OR draft orders.
      Polling auto-slows in _rescheduleTimer when idle so background
      traffic drops to one fetch every ~30s. -->
-{#if _chases.length || pendingOrders.length || draftOrders.length}
+{#if !headless && (_chases.length || pendingOrders.length || draftOrders.length)}
 <div class="cc-root" class:cc-compact={compact}>
   <!-- 2026-10 CardHeader adoption sweep — this is now the ONE header
        ChaseCard renders, consolidating what used to be a second,
