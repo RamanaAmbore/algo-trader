@@ -41,6 +41,7 @@
   import { fetchActiveChases, killChase, reconcileAlgoOrders } from '$lib/api';
   import { priceFmt } from '$lib/format';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
+  import { toast } from '$lib/data/toastStore.svelte.js';
   import CardHeader from '$lib/CardHeader.svelte';
   import { visibleInterval } from '$lib/stores';
 
@@ -273,9 +274,17 @@
       const results = await Promise.all(toKill.map(async (id) => {
         try {
           const r = await killChase(id);
-          return { id, ok: !!r?.ok, err: r?.err || null };
+          // 2026-10-23 Kill-lifecycle fix — `ok` alone used to be
+          // trusted as success even when the SAME response carried a
+          // non-null `err` (the backend's own pre-fix bug: it always
+          // returned ok:true, even on a genuine broker-cancel failure).
+          // A real success never carries an error message — treat
+          // `ok && err` as a failure too, as defense in depth even
+          // after the backend fix (operator instruction).
+          const ok = !!r?.ok && !r?.err;
+          return { id, ok, err: r?.err || null, pending: !!r?.pending };
         } catch (e) {
-          return { id, ok: false, err: e?.message || 'failed' };
+          return { id, ok: false, err: e?.message || 'failed', pending: false };
         }
       }));
       const successIds = new Set(results.filter(r => r.ok).map(r => r.id));
@@ -288,6 +297,19 @@
         // Surface only the first failure to keep the error banner short.
         const f = failures[0];
         _err = `kill #${f.id}: ${f.err || 'failed'}`;
+        // A toast — not just the in-card `_err` banner — because (a)
+        // ChaseCard's own 3s poll (`_load()`) unconditionally clears
+        // `_err` at the start of every fetch, so the banner can vanish
+        // within 3s of appearing, and (b) the ENTIRE card collapses to
+        // nothing (`{#if !headless && (_chases.length || ...)}`) if a
+        // kill success elsewhere in the same cascade emptied `_chases`,
+        // taking the banner down with it. `pending` (chase still
+        // actively cancelling its own replacement order) is a distinct,
+        // milder case — warning, not error, since nothing has actually
+        // failed yet.
+        const msg = `Kill #${f.id} failed: ${f.err || 'failed'}`;
+        if (f.pending) toast.warning(msg);
+        else toast.error(msg);
       }
     } finally {
       const next = new Set(_killing);
