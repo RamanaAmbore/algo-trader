@@ -58,6 +58,8 @@ async def test_rco_run_template_attach_holds_the_per_row_lock():
 
     with patch.object(orders_mod, "_get_template_attach_lock",
                        new=AsyncMock(return_value=real_lock)), \
+         patch.object(orders_mod, "_rco_attached_gtts_already_set",
+                      new=AsyncMock(return_value=False)), \
          patch("backend.api.algo.template_attach.apply_template_to_order",
                new=AsyncMock(side_effect=_fake_apply_template_to_order)), \
          patch.object(orders_mod, "_retry_effective_parent_qty",

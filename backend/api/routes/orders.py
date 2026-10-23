@@ -1220,12 +1220,42 @@ def _pb_verify_shared_token(request: Request, broker_id: str) -> bool:
     return _hmac.compare_digest(expected, str(supplied))
 
 
+async def _rco_attached_gtts_already_set(row_id: int) -> bool:
+    """Fresh DB read of `attached_gtts_json` for *row_id*.
+
+    T13 fix: `_rco_run_template_attach`'s only caller
+    (`retry_template_attach`) checks `attached_gtts_json` via
+    `_retry_precheck_row` BEFORE acquiring the per-row lock below. A
+    concurrent fill-triggered attach (postback / chase terminal, via
+    `_fire_template_attach_on_fill`) can win that lock first and persist
+    `attached_gtts_json` in the window between that precheck and this
+    function actually acquiring the lock — without a re-check taken
+    INSIDE the lock, this path would still proceed to call
+    `apply_template_to_order` a second time, placing a second live
+    GTT/wing set and orphaning the first (now-untracked) one. Mirrors
+    `orders_place.py:_opp_load_row_for_attach`'s in-lock idempotency
+    read on the fill-triggered path.
+    """
+    from sqlalchemy import select as _sel_rco
+    from backend.api.database import async_session as _async_s_rco
+    from backend.api.models import AlgoOrder as _AO_rco
+
+    async with _async_s_rco() as _s:
+        _val = (await _s.execute(
+            _sel_rco(_AO_rco.attached_gtts_json).where(_AO_rco.id == row_id)
+        )).scalar_one_or_none()
+    return bool(_val)
+
+
 async def _rco_run_template_attach(row) -> "tuple | None":
     """Run apply_template_to_order for *row* and persist attached_gtts_json.
 
     Returns (result, payload_persisted) where payload_persisted is True
     when attached_gtts_json was written to the row. Returns None when
-    apply_template_to_order returned no result.
+    apply_template_to_order returned no result, OR when a concurrent
+    fill-triggered attach already populated attached_gtts_json while
+    this call was waiting for the per-row lock (see
+    _rco_attached_gtts_already_set).
 
     Must be called within an active SQLAlchemy session context (row is
     session-attached). The caller must commit after this returns.
@@ -1243,6 +1273,17 @@ async def _rco_run_template_attach(row) -> "tuple | None":
     # old loop-blocking behaviour.
     _row_lock = await _get_template_attach_lock(row.id)
     async with _row_lock:
+        # T13 fix — re-check attached_gtts_json INSIDE the lock, not just
+        # at the call site's precheck (which runs before the lock is
+        # acquired and can race a concurrent fill-triggered attach).
+        if await _rco_attached_gtts_already_set(row.id):
+            logger.info(
+                "[TPL-ATTACH] retry-attach for #%s skipped — a concurrent "
+                "fill-triggered attach already populated attached_gtts_json "
+                "while this retry was waiting for the per-row lock",
+                row.id,
+            )
+            return None
         result = await apply_template_to_order(
             template_id=row.template_id,
             template_slug=None,
