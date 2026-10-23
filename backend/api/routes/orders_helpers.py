@@ -662,10 +662,12 @@ class AlgoOrderInfo(msgspec.Struct, kw_only=True):
     # the first attempt's price.
     current_limit: float | None = None
     fill_price: float | None = None
-    # How many times the chase engine re-quoted this order before a
-    # terminal state. Bumped live on every `modify` event so the
-    # Order tab can show "chase #3" as it's happening, not just
-    # after fill/unfilled.
+    # Current chase attempt number (1-based: 1 = placed once, not yet
+    # re-quoted). Written live on every cancel-and-replace placement by
+    # `_sync_algo_order_id` (see L659/L702 above), finalized by
+    # `_chase_apply_terminal_mutation` on fill/unfilled/cancel/reject —
+    # so the Order tab can show "chase #3" as it's happening, not just
+    # after the chase reaches a terminal state.
     attempts: int
     status: str
     engine: str

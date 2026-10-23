@@ -1041,12 +1041,20 @@ async def _run(fn, *args):
 async def _sync_algo_order_id(algo_order_id: int | None,
                               new_broker_order_id: str,
                               current_limit: float | None = None,
-                              interval_seconds: int | None = None) -> bool:
+                              interval_seconds: int | None = None,
+                              attempt: int | None = None) -> bool:
     """Update AlgoOrder.broker_order_id to the latest one the chase
     just placed. Best-effort — never raises. Phase 0.5 — without this
     every chase cancel-and-replace orphaned the row from its broker
     id, so the terminal lookup in _emit_chase_terminal (and the
     postback handler) couldn't match the row by broker_order_id.
+
+    2026-10 fix — also writes `attempts` (the current cancel-and-replace
+    attempt number) on every call, same as the other per-attempt sync
+    fields below. Before this, `attempts` was only written once, at the
+    very end, by `_chase_apply_terminal_mutation` — so the operator-facing
+    "Attempts" column (ChaseCard.svelte / OrderCard.svelte) showed a
+    stale count while a chase was actively running.
 
     Audit fix (M-6) — also writes `current_limit` so the chase panel
     shows the LIVE re-quoted limit price instead of the FIRST
@@ -1110,6 +1118,7 @@ async def _sync_algo_order_id(algo_order_id: int | None,
                 else:
                     if _ch_apply_broker_sync_fields(
                         row, new_broker_order_id, current_limit, interval_seconds,
+                        attempt,
                     ):
                         await _s.commit()
     except Exception as _e:
@@ -1127,14 +1136,20 @@ async def _sync_algo_order_id(algo_order_id: int | None,
 
 def _ch_apply_broker_sync_fields(
     row, new_broker_order_id: str, current_limit: float | None,
-    interval_seconds: int | None,
+    interval_seconds: int | None, attempt: int | None = None,
 ) -> bool:
-    """Apply broker_order_id/current_limit/timing field writes onto a
-    non-final AlgoOrder row (the normal cancel-and-replace sync path).
-    Returns True when any field actually changed, so the caller knows
-    whether a commit is needed. Extracted out of `_sync_algo_order_id`
-    (2026-10) purely to keep that function's cyclomatic complexity
-    within the project's radon gate — no behavior change."""
+    """Apply broker_order_id/current_limit/timing/attempts field writes
+    onto a non-final AlgoOrder row (the normal cancel-and-replace sync
+    path). Returns True when any field actually changed, so the caller
+    knows whether a commit is needed. Extracted out of
+    `_sync_algo_order_id` (2026-10) purely to keep that function's
+    cyclomatic complexity within the project's radon gate — no behavior
+    change.
+
+    2026-10 fix — also writes `attempts` on every call (same pattern as
+    the timing fields below), so the live attempt count the operator
+    sees in ChaseCard/OrderCard tracks the chase loop in real time
+    instead of only updating once at the terminal mutation."""
     _dirty = False
     if row.broker_order_id != str(new_broker_order_id):
         row.broker_order_id = str(new_broker_order_id)
@@ -1142,6 +1157,14 @@ def _ch_apply_broker_sync_fields(
     if current_limit is not None and float(current_limit) > 0:
         if row.current_limit != float(current_limit):
             row.current_limit = float(current_limit)
+            _dirty = True
+    if attempt is not None:
+        try:
+            _attempt_int = int(attempt)
+        except (TypeError, ValueError):
+            _attempt_int = None
+        if _attempt_int is not None and row.attempts != _attempt_int:
+            row.attempts = _attempt_int
             _dirty = True
     # Write timing fields so the chase panel shows a live countdown.
     # Both columns are nullable; skip on models that predate the
@@ -2688,6 +2711,7 @@ async def _chase_order_impl(
                 algo_order_id, current_order_id,
                 current_limit=price,
                 interval_seconds=cfg.interval_seconds,
+                attempt=attempt,
             )
             if not _synced:
                 # 2026-10 audit fix — the AlgoOrder row this chase is
