@@ -83,15 +83,19 @@ const _ALGO_ROWS = [
 //    Orders 101/102 are active (OPEN, non-terminal); 103 is COMPLETE
 //    (terminal — chase.py / list_active_chases never returns a terminal
 //    row from this endpoint), so the active count is 2, not 3. ───────────
+// Real backend vocabulary — `list_active_chases` only ever returns
+// 'OPEN' or 'CANCEL_FAILED' (never 'active'; see ChaseCard.svelte's
+// 2026-10-23 status-gate fix and chase_badge_live_status_drawer.spec.js's
+// fixture comment for the regression this masked).
 const _NOW_SEC = Math.floor(Date.now() / 1000);
 const _CHASES_ACTIVE = [
   { id: 101, account: 'T1', transaction_type: 'BUY', quantity: 50,
     symbol: 'RBQ-LIVE1', current_limit: 101, initial_price: 100,
-    attempts: 2, status: 'active', next_attempt_at: _NOW_SEC + 10,
+    attempts: 2, status: 'OPEN', next_attempt_at: _NOW_SEC + 10,
     mode: 'live', child_order_ids: [] },
   { id: 102, account: 'T1', transaction_type: 'SELL', quantity: 20,
     symbol: 'RBQ-LIVE2', current_limit: 205, initial_price: 200,
-    attempts: 3, status: 'active', next_attempt_at: _NOW_SEC + 5,
+    attempts: 3, status: 'OPEN', next_attempt_at: _NOW_SEC + 5,
     mode: 'live', child_order_ids: [] },
 ];
 

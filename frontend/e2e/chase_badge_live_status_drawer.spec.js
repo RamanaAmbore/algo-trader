@@ -64,17 +64,23 @@ async function mockChaseEndpoints(page, { chases = [], events = [], algoRows = [
 
 const _NOW_SEC = Math.floor(Date.now() / 1000);
 
+// Real backend vocabulary — `backend/api/routes/orders.py:list_active_chases`
+// filters `AlgoOrder.status.in_(["OPEN", "CANCEL_FAILED"])`; it never
+// returns 'active'. A fixture mocking 'active' here masked the countdown/
+// pulse-dot gate bug in ChaseCard.svelte (fixed 2026-10-23) — this fixture
+// must use real status vocabulary so a regression in that gate shows up
+// here again.
 const _ACTIVE_CHASE = {
   id: 501, account: 'T1', transaction_type: 'BUY', quantity: 50,
   symbol: 'RBQ-CHASEBADGE', current_limit: 102, initial_price: 100,
-  attempts: 2, status: 'active', next_attempt_at: _NOW_SEC + 12,
+  attempts: 2, status: 'OPEN', next_attempt_at: _NOW_SEC + 12,
   mode: 'live', child_order_ids: [],
 };
 
 test.describe('Header chase badge — live ChaseCard view (Fix 3)', () => {
   test.setTimeout(60_000);
 
-  test('mocked active chase: clicking the badge shows the ChaseCard live view (price, countdown, Kill)', async ({ page }) => {
+  test('mocked active chase (real OPEN status): clicking the badge shows the ChaseCard live view (price, countdown, pulse dot, Kill)', async ({ page }) => {
     await loginAsAdmin(page);
     await mockChaseEndpoints(page, { chases: [_ACTIVE_CHASE] });
 
@@ -90,11 +96,23 @@ test.describe('Header chase badge — live ChaseCard view (Fix 3)', () => {
     // The ChaseCard-format live view, not the old event-log drawer.
     const ccRoot = page.locator('.chd-drawer .cc-root');
     await expect(ccRoot).toBeVisible({ timeout: 10_000 });
-    await expect(page.locator('.chd-drawer .cc-row', { hasText: 'RBQ-CHASEBADGE' })).toBeVisible();
+    const row = page.locator('.chd-drawer .cc-row', { hasText: 'RBQ-CHASEBADGE' });
+    await expect(row).toBeVisible();
     // Price.
-    await expect(page.locator('.chd-drawer .cc-col-limit', { hasText: '₹' })).toBeVisible();
-    // Countdown.
-    await expect(page.locator('.chd-drawer .cc-countdown')).toBeVisible();
+    await expect(row.locator('.cc-col-limit')).toContainText('₹');
+    // 2026-10-23 regression guard — the countdown and pulse dot are gated
+    // on `row.status === 'OPEN'` (the real backend vocabulary; the fixture
+    // above now mocks 'OPEN', not the invented 'active' value that used to
+    // mask this exact bug in production). Assert the countdown renders a
+    // real ticking numeric value, not just that the element exists.
+    const countdown = row.locator('.cc-countdown');
+    await expect(countdown).toBeVisible();
+    await expect(countdown).toHaveText(/^(\d+s|now)$/);
+    await expect(row.locator('.cc-pulse')).toBeVisible();
+    // Limit-moved chip — current_limit (102) vs initial_price (100) have
+    // diverged after attempts=2 (1 initial placement + 1 re-quote), so the
+    // chip reflects 1 modify, not the raw placement count of 2.
+    await expect(row.locator('.cc-limit-moved')).toHaveText('·1');
     // Kill button.
     await expect(page.locator('.chd-drawer .cc-kill', { hasText: 'Kill' })).toBeVisible();
 

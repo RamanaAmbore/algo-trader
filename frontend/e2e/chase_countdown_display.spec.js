@@ -159,4 +159,83 @@ test.describe('Chase countdown display', () => {
     expect(ruleNoComments, 'countdown must not declare the smallest font-size token (--fs-2xs)').not.toMatch(/font-size:\s*var\(--fs-2xs\)/);
     expect(ruleNoComments).toMatch(/font-weight:\s*700/);
   });
+
+  // ── Test 6: Live render — countdown against the REAL backend status
+  //    vocabulary ────────────────────────────────────────────────────────
+  //
+  // 2026-10-23 fix. ChaseCard's countdown + pulse dot were gated on
+  // `row.status === 'active'` — a value `GET /api/orders/chases/active`
+  // (`backend/api/algo/chase.py` / `backend/api/routes/orders.py:
+  // list_active_chases`) never returns; that query filters
+  // `AlgoOrder.status.in_(["OPEN", "CANCEL_FAILED"])`. The countdown has
+  // shown '—' against real production data this whole time, on every
+  // surface embedding ChaseCard — undetected because the Playwright
+  // fixtures that exercised this path also mocked the wrong 'active'
+  // value, so they passed for the wrong reason. This test mocks the
+  // REAL status value ('OPEN') to prove the countdown and pulse dot
+  // actually render against realistic data, not just that they render
+  // against a fixture shaped to match the (buggy) component.
+  test('6-UX: countdown + pulse dot render against a realistic OPEN-status chase row, not the invented "active" value', async ({ page }) => {
+    await loginAsAdmin(page);
+
+    const nowSec = Math.floor(Date.now() / 1000);
+    const chaseRow = {
+      id: 9001, account: 'T1', transaction_type: 'BUY', quantity: 50,
+      symbol: 'RBQ-COUNTDOWN6', current_limit: 102, initial_price: 100,
+      attempts: 2, status: 'OPEN', next_attempt_at: nowSec + 12,
+      mode: 'live', child_order_ids: [],
+    };
+
+    await page.route('**/api/orders/**', async (route) => {
+      const req = route.request();
+      const url = req.url();
+      if (req.method() !== 'GET') { await route.continue(); return; }
+      if (url.includes('/orders/chases/active')) {
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([chaseRow]) });
+        return;
+      }
+      if (url.includes('/orders/events/recent')) {
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([]) });
+        return;
+      }
+      if (url.includes('/orders/algo/recent')) {
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([]) });
+        return;
+      }
+      if (url.includes('/orders/gtts')) {
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ gtts: [], count: 0 }) });
+        return;
+      }
+      if (/\/api\/orders\/?(\?.*)?$/.test(url)) {
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ rows: [], refreshed_at: new Date().toISOString() }) });
+        return;
+      }
+      await route.continue();
+    });
+
+    // /pulse doesn't embed its own <ChaseCard> — only the header drawer's
+    // instance is in the DOM, so `.cc-row` is unambiguous.
+    await page.goto('/pulse');
+    await page.waitForLoadState('domcontentloaded');
+
+    const chip = page.locator('.chase-chip:visible').first();
+    await expect(chip).toBeVisible({ timeout: 15_000 });
+    await chip.click({ force: true });
+
+    const row = page.locator('.chd-drawer .cc-row', { hasText: 'RBQ-COUNTDOWN6' });
+    await expect(row).toBeVisible({ timeout: 10_000 });
+
+    // Countdown — must render a real ticking numeric value, never '—'.
+    const countdown = row.locator('.cc-countdown');
+    await expect(countdown).toBeVisible();
+    await expect(countdown).toHaveText(/^(\d+s|now)$/);
+
+    // Pulse dot — gated on the same status check as the countdown.
+    await expect(row.locator('.cc-pulse')).toBeVisible();
+
+    // Limit-moved chip — attempts=2 is 1 initial placement + 1 re-quote,
+    // so the chip must read the modify count (1), not the raw attempts
+    // field (2) — the off-by-one fixed alongside the status gate.
+    await expect(row.locator('.cc-limit-moved')).toHaveText('·1');
+  });
 });

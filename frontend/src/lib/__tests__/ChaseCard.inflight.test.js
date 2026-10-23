@@ -141,36 +141,46 @@ describe('ChaseCard in-flight guard (_poll)', () => {
 
 /**
  * Mirrors ChaseCard.svelte's `_nextIn` function.
+ *
+ * 2026-10-23 fix — was gated on `status !== 'active'`, a value the real
+ * backend (`GET /api/orders/chases/active`) never returns — its query
+ * filters `AlgoOrder.status.in_(["OPEN", "CANCEL_FAILED"])`. This mirror
+ * reproduced the exact bug the real component had: the countdown gate
+ * matched only a status value that could never arrive in production, so
+ * this test suite kept passing while the countdown stayed permanently
+ * '—' against real data. Fixed to gate on 'OPEN', matching the real
+ * component and the real backend vocabulary.
  * @param {number|null|undefined} nextAttemptAt
  * @param {string} status
  * @param {number} nowSec
  * @returns {number|null}
  */
 function _nextIn(nextAttemptAt, status, nowSec) {
-  if (nextAttemptAt == null || status !== 'active') return null;
+  if (nextAttemptAt == null || status !== 'OPEN') return null;
   return Math.max(0, Math.ceil(nextAttemptAt - nowSec));
 }
 
 describe('ChaseCard next-action countdown (_nextIn)', () => {
   it('counts down toward zero as nowSec approaches next_attempt_at', () => {
     const nextAttemptAt = 1000;
-    expect(_nextIn(nextAttemptAt, 'active', 990)).toBe(10);
-    expect(_nextIn(nextAttemptAt, 'active', 997)).toBe(3);
-    expect(_nextIn(nextAttemptAt, 'active', 999.5)).toBe(1);
+    expect(_nextIn(nextAttemptAt, 'OPEN', 990)).toBe(10);
+    expect(_nextIn(nextAttemptAt, 'OPEN', 997)).toBe(3);
+    expect(_nextIn(nextAttemptAt, 'OPEN', 999.5)).toBe(1);
   });
 
   it('clamps to 0 rather than going negative once the attempt time has passed', () => {
-    expect(_nextIn(1000, 'active', 1005)).toBe(0);
+    expect(_nextIn(1000, 'OPEN', 1005)).toBe(0);
   });
 
-  it('returns null (no countdown) when the row is not active', () => {
+  it('returns null (no countdown) when the row is not OPEN — includes CANCEL_FAILED, the other real status value this endpoint returns', () => {
+    expect(_nextIn(1000, 'CANCEL_FAILED', 990)).toBeNull();
     expect(_nextIn(1000, 'cancelled', 990)).toBeNull();
     expect(_nextIn(1000, 'filled', 990)).toBeNull();
   });
 
   it('returns null when there is no scheduled next attempt', () => {
-    expect(_nextIn(null, 'active', 990)).toBeNull();
-    expect(_nextIn(undefined, 'active', 990)).toBeNull();
+    expect(_nextIn(null, 'OPEN', 990)).toBeNull();
+    expect(_nextIn(undefined, 'OPEN', 990)).toBeNull();
   });
 });
 

@@ -261,10 +261,22 @@
   // the row's sole timing column). `nowSec` is the component's existing
   // 1-second `_nowSec` clock, so this ticks every second between polls.
   // '—' for a row with no pending next attempt (no `next_attempt_at`, or
-  // not currently `active`) — e.g. a chase that's between poll cycles
+  // not currently `OPEN`) — e.g. a chase that's between poll cycles
   // with nothing scheduled, or a terminal row.
+  //
+  // 2026-10-23 fix — this was gated on `status === 'active'`, a value
+  // GET /api/orders/chases/active NEVER returns: the real query
+  // (`backend/api/routes/orders.py:list_active_chases`) filters
+  // `AlgoOrder.status.in_(["OPEN", "CANCEL_FAILED"])`, so every row this
+  // component ever receives is literally 'OPEN' or 'CANCEL_FAILED'. The
+  // countdown and pulse dot (below) were structurally unreachable in
+  // production — permanently '—'. CANCEL_FAILED deliberately stays
+  // excluded here: that status means the chase's own cancel-and-replace
+  // loop has already stopped (the order may still be resting live at
+  // the broker, but nothing is scheduling a next re-quote attempt for
+  // it), so showing a live countdown for it would be misleading.
   function _nextIn(/** @type {number|null|undefined} */ nextAttemptAt, /** @type {string} */ status, /** @type {number} */ nowSec) {
-    if (nextAttemptAt == null || status !== 'active') return null;
+    if (nextAttemptAt == null || status !== 'OPEN') return null;
     const s = Math.max(0, Math.ceil(nextAttemptAt - nowSec));
     return s;
   }
@@ -361,7 +373,7 @@
         </span>
         <span class="cc-col cc-col-qty">{row.quantity}</span>
         <span class="cc-col cc-col-sym" title={row.symbol}>
-          {#if row.status === 'active'}
+          {#if row.status === 'OPEN'}
             <span class="cc-pulse cc-pulse-{(row.transaction_type || '').toLowerCase()}" aria-hidden="true"></span>
           {/if}
           {formatSymbol(row.symbol)}
@@ -374,7 +386,17 @@
              to initial_price for the first iteration. A small "·N"
              chip after the price indicates the price has moved through
              N modifies so the operator knows it's not the entry price.
-             Title surfaces both values for context. -->
+             Title surfaces both values for context.
+
+             2026-10-23 fix — N was raw `row.attempts`, which counts
+             PLACEMENTS starting at 1 (chase.py's `for attempt in
+             range(1, max_attempts + 1)`: attempt 1 is the initial
+             placement, attempt 2 is the first cancel-and-replace
+             re-quote). This chip only renders once current_limit has
+             actually diverged from initial_price, which can't happen
+             before attempt 2 — so after exactly ONE re-quote it read
+             "·2" instead of "·1". Subtract 1 so the number reflects
+             re-quotes/modifies, matching the chip's own label. -->
         <span class="cc-col cc-col-limit"
               title={row.current_limit != null && row.initial_price != null
                      && Number(row.current_limit) !== Number(row.initial_price)
@@ -387,12 +409,12 @@
             : '—'}
           {#if row.current_limit != null && row.initial_price != null
                && Number(row.current_limit) !== Number(row.initial_price)}
-            <span class="cc-limit-moved">·{row.attempts || 0}</span>
+            <span class="cc-limit-moved">·{Math.max(0, (row.attempts || 0) - 1)}</span>
           {/if}
         </span>
         <span class="cc-col cc-col-att">{row.attempts || 0}</span>
         <span class="cc-col cc-col-age">
-          {#if row.next_attempt_at != null && row.status === 'active'}
+          {#if row.next_attempt_at != null && row.status === 'OPEN'}
             {#if _nowSec < row.next_attempt_at}
               <span class="cc-countdown" title="Seconds until next re-quote">{_nextIn(row.next_attempt_at, row.status, _nowSec)}s</span>
             {:else}
