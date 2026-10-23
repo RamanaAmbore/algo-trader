@@ -133,3 +133,49 @@ class TestGttMarketCoerce:
         assert exc_info.value.broker == "zerodha_kite", (
             f"Expected broker='zerodha_kite', got {exc_info.value.broker!r}"
         )
+
+    def test_two_leg_oco_tp_market_also_drops_the_sl_leg(self, kite_adapter):
+        """Audit item T17 (2026-10-23) — real-world shape: a TP+SL bracket
+        is placed as ONE two-leg OCO `place_gtt` call
+        (template_attach.py:_build_tp_sl_gtts), not two separate calls.
+        When the operator picks tp_order_type=MARKET, the TP leg's
+        order_type='MARKET' guard trips BEFORE the SDK call — which means
+        the SL leg (order_type='LIMIT', otherwise perfectly valid) is
+        never placed either. This is the "silently loses the SL too"
+        behavior the T17 UI-warning fix (brokerCapWarnings.js) exists to
+        warn the operator about before they submit."""
+        tp_leg = {"order_type": "MARKET", "transaction_type": "SELL",
+                  "quantity": 1, "price": 250.0, "product": "NRML"}
+        sl_leg = {"order_type": "LIMIT", "transaction_type": "SELL",
+                  "quantity": 1, "price": 180.0, "product": "NRML"}
+        with pytest.raises(BrokerCapabilityError):
+            kite_adapter.place_gtt(
+                trigger_type="two-leg",
+                tradingsymbol="NIFTY24JUNFUT",
+                exchange="NFO",
+                last_price=220.0,
+                trigger_values=[250.0, 180.0],
+                orders=[tp_leg, sl_leg],
+            )
+        # Neither leg reached the broker — the whole OCO call was refused,
+        # not just the MARKET TP leg.
+        kite_adapter.kite.place_gtt.assert_not_called()
+
+    def test_two_leg_oco_sl_market_also_blocked(self, kite_adapter):
+        """Symmetry check — a MARKET leg in the SL position (not just TP)
+        also trips the guard, since place_gtt loops over every leg in
+        `orders` regardless of which position it occupies."""
+        tp_leg = {"order_type": "LIMIT", "transaction_type": "SELL",
+                  "quantity": 1, "price": 250.0, "product": "NRML"}
+        sl_leg = {"order_type": "MARKET", "transaction_type": "SELL",
+                  "quantity": 1, "price": 180.0, "product": "NRML"}
+        with pytest.raises(BrokerCapabilityError):
+            kite_adapter.place_gtt(
+                trigger_type="two-leg",
+                tradingsymbol="NIFTY24JUNFUT",
+                exchange="NFO",
+                last_price=220.0,
+                trigger_values=[250.0, 180.0],
+                orders=[tp_leg, sl_leg],
+            )
+        kite_adapter.kite.place_gtt.assert_not_called()

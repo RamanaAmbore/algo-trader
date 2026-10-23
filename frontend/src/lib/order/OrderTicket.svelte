@@ -1057,7 +1057,14 @@
   // MCX / postback-lag warnings.
   const _templateCapWarning = $derived.by(() => {
     const ex = String(_exchange || _resolvedExchange || exchange || '');
-    return capWarningFor(_selectedTemplate, _brokerCaps, ex);
+    // Thread the live TP-type/TP%/SL% overrides through — the Kite
+    // MARKET-leg check (T17) needs the operator's in-session choice, not
+    // just the saved template row (see brokerCapWarnings.js docstring).
+    return capWarningFor(_selectedTemplate, _brokerCaps, ex, {
+      tpOrderType: tpOrderTypeOverride,
+      tpPct: tpOverride,
+      slPct: slOverride,
+    });
   });
   const _isUsingNone = $derived(
     _selectedTemplate?.slug === 'none' || templateId === null

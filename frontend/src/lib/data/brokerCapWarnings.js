@@ -18,10 +18,18 @@
  * @param {any} t  selected OrderTemplate row
  * @param {any} c  BrokerCapabilities for the routing account
  * @param {string} exchange  resolved exchange (e.g. 'NFO', 'MCX', 'NSE')
+ * @param {{tpOrderType?: string, tpPct?: number|'', slPct?: number|''}} [ov]
+ *   Live operator overrides (TemplateBar's inline TP-type/TP%/SL% inputs).
+ *   These are NOT persisted on the template row, so every OTHER check in
+ *   this function deliberately stays template-level (`t.*`) — only the
+ *   Kite MARKET-leg check below needs the live value, because an operator
+ *   can flip TP order type to MARKET at compose time on a LIMIT-saved
+ *   template and get no warning otherwise (2026-10-23, audit item T17).
  * @returns {string}
  */
-export function capWarningFor(t, c, exchange) {
+export function capWarningFor(t, c, exchange, ov) {
   if (!t || !c) return '';
+  const _ov             = ov || {};
   const wantsOco        = (t.tp_pct != null && t.sl_pct != null);
   const wantsTrail      = t.sl_trail_pct != null;
   // wantsGttComplex: needs OCO, trail, or scale-ladder — features that go
@@ -35,6 +43,27 @@ export function capWarningFor(t, c, exchange) {
   const isMcx           = ['MCX', 'NCO'].includes(String(exchange || '').toUpperCase());
   const display         = c.display_name || 'broker';
 
+  // Kite MARKET-leg GTT rejection (T17) — Kite's place_gtt raises
+  // BrokerCapabilityError when ANY leg of a GTT carries order_type=MARKET
+  // (backend/brokers/adapters/kite.py:561), checked across every leg in
+  // ONE `orders` list regardless of trigger_type — a TP+SL bracket is
+  // placed as a single two-leg OCO call, so a MARKET TP leg fails the
+  // WHOLE GTT and silently drops the SL too, not just the TP. Resolve the
+  // effective TP order type override-first (template-saved tp_order_type
+  // alone would miss an operator picking MARKET live via TemplateBar's
+  // inline toggle without saving it).
+  const effTpOrderType = String(
+    (_ov.tpOrderType != null && _ov.tpOrderType !== '') ? _ov.tpOrderType : (t.tp_order_type || 'LIMIT')
+  ).toUpperCase();
+  const effTpPct = (_ov.tpPct != null && _ov.tpPct !== '') ? Number(_ov.tpPct) : t.tp_pct;
+  const effSlPct = (_ov.slPct != null && _ov.slPct !== '') ? Number(_ov.slPct) : t.sl_pct;
+  const isKite   = ['zerodha_kite', 'kite'].includes(String(c.broker_id || '').toLowerCase());
+  // A TP leg only exists at all when a plain TP% or a scale-out ladder is
+  // configured — tp_order_type is otherwise never read by the backend.
+  const hasTpTarget   = effTpPct != null || !!t.tp_scales_json;
+  const hasActiveSl   = effSlPct != null;
+  const isKiteMarketTp = isKite && effTpOrderType === 'MARKET' && hasTpTarget;
+
   // Poll-lag warning: only raise it when the template needs a complex GTT
   // (OCO, trail, or scale-ladder) OR when the broker has no native single-
   // GTT support. A TP-only template on a broker with gtt_single=true uses
@@ -45,6 +74,8 @@ export function capWarningFor(t, c, exchange) {
     { when: !!t.tp_scales_json && !c.gtt_single,                                              msg: `${display} has no GTT — scale-out won't attach` },
     { when: isMcx && c.gtt_supports_mcx === false,                                            msg: `${display} GTT can't run on MCX — template won't attach` },
     { when: c.postback_gtt === 'poll_only' && (wantsGttComplex || !c.gtt_single) && wantsGtt, msg: `${display} GTT fires via poll — up to ~15s detection lag` },
+    { when: isKiteMarketTp && hasActiveSl,                                                    msg: `${display} GTT rejects MARKET legs — SL will also fail to attach` },
+    { when: isKiteMarketTp && !hasActiveSl,                                                   msg: `${display} GTT rejects MARKET legs — TP won't attach` },
   ];
   return checks.filter(x => x.when).map(x => x.msg).join(' · ');
 }
@@ -60,14 +91,18 @@ export function capWarningFor(t, c, exchange) {
  *
  * @param {any} template  selected OrderTemplate row (shell template)
  * @param {Array<{account:string, caps:any, exchange:string}>} accountCaps
+ * @param {{tpOrderType?: string, tpPct?: number|'', slPct?: number|''}} [ov]
+ *   Live operator overrides — same shape as `capWarningFor`'s `ov`. The
+ *   basket shares ONE override set across every leg (TemplateBar renders
+ *   once at shell level), so the same `ov` is applied to every tuple.
  * @returns {string}
  */
-export function aggregateCapWarnings(template, accountCaps) {
+export function aggregateCapWarnings(template, accountCaps, ov) {
   if (!template || !accountCaps || accountCaps.length === 0) return '';
   /** @type {Map<string, string[]>} */
   const byMsg = new Map();
   for (const { account, caps, exchange } of accountCaps) {
-    const w = capWarningFor(template, caps, exchange);
+    const w = capWarningFor(template, caps, exchange, ov);
     if (!w) continue;
     // Each capWarningFor call returns ` · `-joined messages — split + dedupe.
     for (const piece of w.split(' · ')) {

@@ -767,7 +767,16 @@
       if (!c) continue;   // caps not loaded yet — chip stays empty
       tuples.push({ account: a, caps: c, exchange: e });
     }
-    return aggregateCapWarnings(_selectedTemplate, tuples);
+    // Thread the live TP-type/TP%/SL% overrides through — the Kite
+    // MARKET-leg check (T17) needs the operator's in-session choice, not
+    // just the saved template row (see brokerCapWarnings.js docstring).
+    // TemplateBar renders once at shell level, so one override set
+    // applies across every leg/account in the basket.
+    return aggregateCapWarnings(_selectedTemplate, tuples, {
+      tpOrderType: _sharedTpOrderTypeOverride,
+      tpPct: _sharedTpOverride,
+      slPct: _sharedSlOverride,
+    });
   });
 
   // Debounced effect — fires 500 ms after any basket change when basket
