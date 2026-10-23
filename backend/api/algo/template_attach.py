@@ -347,9 +347,18 @@ def _check_offhours_wing_gate(
         if _symbol_exchange_open(parent_exchange, _build_now_ctx()):
             return None, None
         if _template_has_wing(template):
+            # T25 fix (2026-10-23) — this used to say "attach deferred",
+            # which promises a retry that does not exist anywhere in
+            # this codebase (only a TODO(#2) placeholder elsewhere).
+            # TP/SL are ALSO dropped here, not just the wing — the
+            # caller (`_apply_template_to_order_impl`) returns this
+            # AttachResult immediately (`if _early is not None: return
+            # _early`), before TP/SL are ever built. Nothing ever
+            # retries this plan; the correct word is "refused".
             _err_msg = (
-                f"Exchange {parent_exchange} closed — "
-                "wing MARKET leg requires open market; attach deferred"
+                f"Exchange {parent_exchange} closed — wing MARKET leg "
+                "requires open market; template attach REFUSED (TP/SL/"
+                "wing all skipped — nothing will retry this fill)"
             )
             logger.warning("[TEMPLATE-GUARD] %s", _err_msg)
             _plan = TemplatePlan(
