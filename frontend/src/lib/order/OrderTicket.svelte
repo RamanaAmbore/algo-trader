@@ -602,6 +602,20 @@
       if (!_hasContractSuffix) {
         const fut = findNearestFuture(sym);
         if (fut?.e) return fut.e;
+      } else {
+        // Suffixed-symbol cache-miss rescue (2026-10-23 fix, same live
+        // incident as above — defense in depth, mirrors the CE/PE
+        // rescue in `exchangeOptions` below). A cache miss on an
+        // already-resolved CE/PE/FUT contract used to fall straight
+        // through to the caller's `exchange` hint, which several
+        // callers pass as a generic default (e.g. derivatives page's
+        // `executeDraft()` / MarketPulse's `_openTicketFromDraftRow()`
+        // both default to 'NFO' on their OWN cache miss). Resolve the
+        // contract's root and check for a listed future on that root
+        // before trusting the hint.
+        const root = String(sym.match(/^([A-Z]+)/)?.[1] || '');
+        const fut = root ? findNearestFuture(root) : null;
+        if (fut?.e) return fut.e;
       }
     }
     return exchange || '';
@@ -662,6 +676,24 @@
       // already uses, and prefer it when it resolves.
       if (kind === 'FUT') {
         const fut = findNearestFuture(sym);
+        if (fut?.e) return [fut.e];
+      } else if (kind === 'CE' || kind === 'PE') {
+        // Suffixed-option cache-miss rescue (2026-10-23 fix, live
+        // incident: an MCX GOLD option showed the generic "Market
+        // closed" warning — not "MCX closed" — while MCX was genuinely
+        // open). `sym` here is an already-resolved option contract
+        // ("GOLD26OCT142000CE"), not a bare root, so the FUT-only
+        // rescue above never ran for it — this branch was the one gap
+        // the 2026-10-22 fix left: it fixed the bare-root FUT case but
+        // never gave CE/PE an equivalent rescue, so any options
+        // cache-miss fell straight through to the generic kind
+        // fallback (['NFO','BFO'] for CE/PE — no MCX/BFO-commodity
+        // entry at all). Resolve the contract's ROOT ("GOLD" from
+        // "GOLD26OCT142000CE") and check whether that root has a
+        // listed future — an option always trades on the same exchange
+        // as its underlying future.
+        const root = String(sym.match(/^([A-Z]+)/)?.[1] || '');
+        const fut = root ? findNearestFuture(root) : null;
         if (fut?.e) return [fut.e];
       }
       return fallback;

@@ -4228,8 +4228,15 @@
    *  on ticketProps; onTicketSubmit removes the draft from drafts[]
    *  on a successful PAPER / LIVE submit, so the operator doesn't
    *  end up with both a draft AND a real position for the same leg. */
-  function executeDraft(/** @type {any} */ c) {
+  async function executeDraft(/** @type {any} */ c) {
     if (c.source !== 'draft' || !c.symbol) return;
+    // Await the instruments cache before resolving lot size / exchange
+    // (2026-10-23 fix — this function never awaited `loadInstruments()`,
+    // unlike its close-path sibling `handleCloseFromRow` a few lines up,
+    // so a click landing before the cache warmed always missed and fell
+    // to the hardcoded 'NFO' default below). No-op once the cache is
+    // already warm.
+    await loadInstruments().catch(() => {});
     const sym  = String(c.symbol).toUpperCase();
     const inst = getInstrument(sym);
     const lot  = Number(inst?.ls || 1);
@@ -4238,9 +4245,19 @@
     const qty  = lot;
     const side = Number(c.qty || 0) < 0 ? 'SELL' : 'BUY';
     const acct = _ticketAccountDefault();
+    // Exchange resolution (2026-10-23 fix, live incident: a hardcoded
+    // 'NFO' default here reached OrderTicket as a misleading hint on an
+    // instruments-cache miss — an MCX GOLD option showed the generic
+    // "Market closed" warning while MCX was genuinely open). OrderTicket
+    // itself now does a root-based rescue as a last resort before
+    // trusting this hint, but resolve it here too so the hint is never
+    // actively wrong when the cache IS warm for the contract's root
+    // future even though the option row itself missed.
+    const _draftRoot = sym.match(/^([A-Z]+)/)?.[1] || '';
+    const _draftRootFut = _draftRoot ? findNearestFuture(_draftRoot) : null;
     openTicket({
       symbol:    sym,
-      exchange:  inst?.e || 'NFO',
+      exchange:  inst?.e || _draftRootFut?.e || 'NFO',
       side,
       action:    'open',
       qty,

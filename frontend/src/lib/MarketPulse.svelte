@@ -4293,9 +4293,19 @@
     const preAccount = isRealAcct(r.account) ? String(r.account) : '';
     await _ensureRealAccountsLoaded();
     const avg = Number(r.avg_combined);
+    // Exchange resolution (2026-10-23 fix, live incident: a hardcoded
+    // 'NFO' default here reached OrderTicket as a misleading hint on an
+    // instruments-cache miss — an MCX GOLD option showed the generic
+    // "Market closed" warning while MCX was genuinely open). OrderTicket
+    // itself now does the SAME root-based rescue as a last resort before
+    // trusting this hint, but resolve it here too so the hint is never
+    // actively wrong when the cache IS warm for the contract's root
+    // future even though the option row itself missed.
+    const _draftRoot = sym.match(/^([A-Z]+)/)?.[1] || '';
+    const _draftRootFut = _draftRoot && findNearestFuture ? findNearestFuture(_draftRoot) : null;
     openTicket({
       symbol:    sym,
-      exchange:  r.exchange || inst?.e || 'NFO',
+      exchange:  r.exchange || inst?.e || _draftRootFut?.e || 'NFO',
       side,
       action:    'open',
       qty:       lot || 1,
