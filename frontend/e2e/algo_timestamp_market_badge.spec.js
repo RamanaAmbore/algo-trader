@@ -11,38 +11,41 @@
  * insertion point makes the badge page-wide for free, with zero per-page
  * wiring.
  *
- * Design (see `.claude/plans/starry-tickling-dolphin.md` for the full
- * spec):
- *   - Three abbreviated pills: "M" (any segment open — a compound 4-bucket
- *     indicator), "MCX" (commodity segment), "Eq" (non-MCX/equity segment
- *     — NSE/NFO/BSE/CDS/BCD/BFO). Colour alone carries the open/closed
- *     signal; full text lives in each pill's `title` tooltip.
- *   - "M"'s colour is a 4-bucket compound state mirroring
+ * 2026-10-23 — collapsed from three simultaneous pills to ONE (operator:
+ * "only one badge can be active at a time. M, MCX, or EQ."). The prior
+ * 3-pill layout was mostly redundant: in the "both open" and "closed"
+ * states all three pills repeated the same colour, and the MCX/EQ pills
+ * only ever added information in the two mixed states, which the compound
+ * 4-bucket state already disambiguated. Design now:
+ *   - One pill whose LABEL switches: "M" (both open or both closed), "MCX"
+ *     (MCX-only open), "EQ" (non-MCX/equity-only open — NSE/NFO/BSE/CDS/
+ *     BCD/BFO). Colour alone still carries the open/closed signal within
+ *     each label; full sentence lives in the pill's `title` tooltip.
+ *   - Colour is the same 4-bucket compound state mirroring
  *     RefreshButton.svelte's `.rf-mkt-*` scheme (both open = green,
  *     MCX-only open = amber, closed = slate) EXTENDED with a 4th bucket —
- *     "Eq-only open" (NSE open, MCX closed — not reachable under either
+ *     "EQ-only open" (NSE open, MCX closed — not reachable under either
  *     segment's default open time since MCX (09:00) opens before NSE
  *     (09:15), but still reachable on an MCX-specific holiday while NSE
  *     trades normally) — which RefreshButton's own scheme folds into
- *     "closed" (it only branches on `_mcxOpen`). The new bucket uses a new
+ *     "closed" (it only branches on `_mcxOpen`). The new bucket uses the
  *     `--algo-market-eq-only-*` token (app.css), aliased to the existing
  *     violet family rather than a brand-new hue.
- *   - "MCX"/"Eq" are plain two-colour open/closed pills (green/slate),
- *     reusing the exact tokens the now-removed SymbolPanel pills used.
  *   - Data source: the SAME module-level cache in $lib/marketHours that
  *     RefreshButton.svelte already reads (fed by the app-wide 5-min
- *     /api/market/status poll) — no second poller. A new
- *     `onMarketStatusChange()` listener (marketHours.js) lets the badge
- *     recompute the instant a fresh poll lands, instead of waiting up to
- *     30s for its own next tick — closes a real mount-order race (this
- *     component can mount and seed from the time-of-day fallback a moment
- *     before the layout's in-flight poll resolves).
+ *     /api/market/status poll) — no second poller. `onMarketStatusChange()`
+ *     listener (marketHours.js) lets the badge recompute the instant a
+ *     fresh poll lands, instead of waiting up to 30s for its own next tick
+ *     — closes a real mount-order race (this component can mount and seed
+ *     from the time-of-day fallback a moment before the layout's in-flight
+ *     poll resolves).
  *   - Scrollable fallback: `.ats-root` (outer, `min-width:0; overflow:
  *     hidden`) / `.ats-scroll` (inner, `overflow-x:auto`) split — the same
  *     fixed-shell/inner-scroll pattern PositionStrip.svelte's
  *     `.ps-strip`/`.ps-strip-scroll` already uses for NavStrip's own
  *     mobile-overflow fix — so a tight header scrolls the clock+badge
- *     group horizontally instead of wrapping or overflowing.
+ *     group horizontally instead of wrapping or overflowing. Retained even
+ *     though a single pill is far less likely to need it.
  */
 
 import { test, expect } from '@playwright/test';
@@ -86,20 +89,25 @@ test.describe('AlgoTimestamp market-status badge — source', () => {
     expect(src).not.toMatch(/visibleInterval\(/);
   });
 
-  test('three pills rendered: M (compound 4-bucket), MCX, Eq — each with its own testid', () => {
+  test('exactly one pill rendered, label switches M/MCX/EQ off the compound 4-bucket state', () => {
     const src = readFileSync(COMPONENT, 'utf-8');
     expect(src).toContain('data-testid="algo-ts-market-badge"');
     expect(src).toContain('data-testid="algo-ts-market-badge-any"');
-    expect(src).toContain('data-testid="algo-ts-market-badge-mcx"');
-    expect(src).toContain('data-testid="algo-ts-market-badge-eq"');
-    // M pill carries all 4 buckets.
+    // The removed per-segment testids must not reappear — collapsing to
+    // one pill means there is no standalone MCX/EQ element any more.
+    expect(src).not.toContain('data-testid="algo-ts-market-badge-mcx"');
+    expect(src).not.toContain('data-testid="algo-ts-market-badge-eq"');
+    // Only one `.ats-mkt-pill` span in the markup.
+    const pillMatches = src.match(/class="ats-mkt-pill"/g) || [];
+    expect(pillMatches.length).toBe(1);
+    // The one pill carries all 4 buckets.
     expect(src).toMatch(/class:ats-mkt-open=\{_mktBucket === 'both'\}/);
     expect(src).toMatch(/class:ats-mkt-mcx-only=\{_mktBucket === 'mcx'\}/);
     expect(src).toMatch(/class:ats-mkt-eq-only=\{_mktBucket === 'eq'\}/);
     expect(src).toMatch(/class:ats-mkt-closed=\{_mktBucket === 'closed'\}/);
-    // MCX/Eq pills are plain booleans.
-    expect(src).toMatch(/class:ats-mkt-open=\{_mcxOpen\}/);
-    expect(src).toMatch(/class:ats-mkt-open=\{_nseOpen\}/);
+    // Label switches via a derived off the same bucket.
+    expect(src).toMatch(/_mktBucket === 'mcx' \? 'MCX'/);
+    expect(src).toMatch(/_mktBucket === 'eq' \? 'EQ'/);
   });
 
   test('badge markup is a sibling of the clock button, not nested inside it (pointer-events / tap-toggle isolation)', () => {
@@ -123,14 +131,14 @@ test.describe('AlgoTimestamp market-status badge — source', () => {
     expect(scrollBlock).toContain('overflow-x: auto');
   });
 
-  test('colour tokens for the shared states mirror RefreshButton\'s .rf-mkt-* resolved values; new 4th token for Eq-only', () => {
+  test('colour tokens for the shared states mirror RefreshButton\'s .rf-mkt-* resolved values; new 4th token for EQ-only', () => {
     const src = readFileSync(COMPONENT, 'utf-8');
     const openIdx = src.indexOf('.ats-mkt-open {');
     const eqOnlyEndIdx = src.indexOf('}', src.indexOf('.ats-mkt-eq-only {'));
     expect(openIdx).toBeGreaterThan(-1);
     const block = src.slice(openIdx, eqOnlyEndIdx);
-    // "open" (both-open bucket + MCX/Eq boolean-open) — same green tokens
-    // the removed SymbolPanel pills used.
+    // "open" (both-open bucket) — same green tokens the removed SymbolPanel
+    // pills used.
     expect(block).toContain('var(--algo-green-bg-mid)');
     expect(block).toContain('var(--algo-green-border)');
     expect(block).toContain('var(--algo-green-text)');
@@ -145,7 +153,7 @@ test.describe('AlgoTimestamp market-status badge — source', () => {
     expect(block).toContain('var(--c-action-14)');
     expect(block).toContain('var(--algo-amber-border)');
     expect(block).toContain('var(--c-action)');
-    // "Eq-only open" — the new 4th token.
+    // "EQ-only open" — the 4th token.
     expect(block).toContain('var(--algo-market-eq-only-bg)');
     expect(block).toContain('var(--algo-market-eq-only-border)');
     expect(block).toContain('var(--algo-market-eq-only-text)');
@@ -153,7 +161,7 @@ test.describe('AlgoTimestamp market-status badge — source', () => {
     expect(block).not.toMatch(/rgba\(/);
   });
 
-  test('app.css defines the new --algo-market-eq-only-* token, aliased to an existing hue (no brand-new raw colour)', () => {
+  test('app.css defines the --algo-market-eq-only-* token, aliased to an existing hue (no brand-new raw colour)', () => {
     const css = readFileSync(APP_CSS, 'utf-8');
     const idx = css.indexOf('--algo-market-eq-only-bg:');
     expect(idx).toBeGreaterThan(-1);
@@ -172,9 +180,7 @@ for (const { path, label } of PAGES) {
 
       const badge = page.locator('[data-testid="algo-ts-market-badge"]').first();
       await expect(badge).toBeVisible({ timeout: 15_000 });
-      for (const testid of ['algo-ts-market-badge-any', 'algo-ts-market-badge-mcx', 'algo-ts-market-badge-eq']) {
-        await expect(page.locator(`[data-testid="${testid}"]`).first()).toBeVisible();
-      }
+      await expect(page.locator('[data-testid="algo-ts-market-badge-any"]').first()).toBeVisible();
 
       // Structural placement: badge sits after the clock button and before
       // (or inside) the .page-header-actions button group, all within the
@@ -192,73 +198,61 @@ for (const { path, label } of PAGES) {
       expect(order).toBe(true);
     });
 
-    test(`reflects a mocked /api/market/status response for all four bucket states on ${path}`, async ({ page }) => {
+    test(`reflects a mocked /api/market/status response on ${path}`, async ({ page }) => {
       await _mockStatus(page, { nse_open: true, mcx_open: true });
       await loginAsAdmin(page);
       await page.goto(`${BASE}${path}`, { waitUntil: 'domcontentloaded', timeout: 30_000 });
 
-      const anyPill = page.locator('[data-testid="algo-ts-market-badge-any"]').first();
-      const mcxPill = page.locator('[data-testid="algo-ts-market-badge-mcx"]').first();
-      const eqPill  = page.locator('[data-testid="algo-ts-market-badge-eq"]').first();
-
-      await expect(anyPill).toHaveClass(/ats-mkt-open\b/, { timeout: 10_000 });
-      await expect(mcxPill).toHaveClass(/ats-mkt-open/, { timeout: 10_000 });
-      await expect(eqPill).toHaveClass(/ats-mkt-open/, { timeout: 10_000 });
+      const pill = page.locator('[data-testid="algo-ts-market-badge-any"]').first();
+      await expect(pill).toHaveClass(/ats-mkt-open\b/, { timeout: 10_000 });
+      await expect(pill).toHaveText('M');
     });
   });
 }
 
 test.describe('AlgoTimestamp market-status badge — bucket matrix (pulse only, representative)', () => {
-  test('both open -> M is ats-mkt-open (green)', async ({ page }) => {
+  test('both open -> pill reads "M", ats-mkt-open (green)', async ({ page }) => {
     await _mockStatus(page, { nse_open: true, mcx_open: true });
     await loginAsAdmin(page);
     await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded', timeout: 30_000 });
-    const anyPill = page.locator('[data-testid="algo-ts-market-badge-any"]').first();
-    await expect(anyPill).toHaveClass(/ats-mkt-open\b/, { timeout: 10_000 });
+    const pill = page.locator('[data-testid="algo-ts-market-badge-any"]').first();
+    await expect(pill).toHaveClass(/ats-mkt-open\b/, { timeout: 10_000 });
+    await expect(pill).toHaveText('M');
   });
 
-  test('MCX-only open -> M is ats-mkt-mcx-only (amber)', async ({ page }) => {
+  test('MCX-only open -> pill reads "MCX", ats-mkt-mcx-only (amber)', async ({ page }) => {
     await _mockStatus(page, { nse_open: false, mcx_open: true });
     await loginAsAdmin(page);
     await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded', timeout: 30_000 });
-    const anyPill = page.locator('[data-testid="algo-ts-market-badge-any"]').first();
-    const mcxPill = page.locator('[data-testid="algo-ts-market-badge-mcx"]').first();
-    const eqPill  = page.locator('[data-testid="algo-ts-market-badge-eq"]').first();
-    await expect(anyPill).toHaveClass(/ats-mkt-mcx-only/, { timeout: 10_000 });
-    await expect(mcxPill).toHaveClass(/ats-mkt-open/, { timeout: 10_000 });
-    await expect(eqPill).toHaveClass(/ats-mkt-closed/, { timeout: 10_000 });
+    const pill = page.locator('[data-testid="algo-ts-market-badge-any"]').first();
+    await expect(pill).toHaveClass(/ats-mkt-mcx-only/, { timeout: 10_000 });
+    await expect(pill).toHaveText('MCX');
   });
 
-  test('Eq-only open (NSE open, MCX closed) -> M is ats-mkt-eq-only (new 4th bucket)', async ({ page }) => {
+  test('EQ-only open (NSE open, MCX closed) -> pill reads "EQ", ats-mkt-eq-only (new 4th bucket)', async ({ page }) => {
     await _mockStatus(page, { nse_open: true, mcx_open: false });
     await loginAsAdmin(page);
     await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded', timeout: 30_000 });
-    const anyPill = page.locator('[data-testid="algo-ts-market-badge-any"]').first();
-    const mcxPill = page.locator('[data-testid="algo-ts-market-badge-mcx"]').first();
-    const eqPill  = page.locator('[data-testid="algo-ts-market-badge-eq"]').first();
-    await expect(anyPill).toHaveClass(/ats-mkt-eq-only/, { timeout: 10_000 });
-    await expect(mcxPill).toHaveClass(/ats-mkt-closed/, { timeout: 10_000 });
-    await expect(eqPill).toHaveClass(/ats-mkt-open/, { timeout: 10_000 });
+    const pill = page.locator('[data-testid="algo-ts-market-badge-any"]').first();
+    await expect(pill).toHaveClass(/ats-mkt-eq-only/, { timeout: 10_000 });
+    await expect(pill).toHaveText('EQ');
 
     // Colour-token cross-check: resolved background-color must differ from
     // both the amber MCX-only bucket and the slate closed bucket, proving
     // the new token actually renders a distinct colour (not a silent
     // fallback to an existing bucket).
-    const eqOnlyBg = await anyPill.evaluate((el) => getComputedStyle(el).backgroundColor);
+    const eqOnlyBg = await pill.evaluate((el) => getComputedStyle(el).backgroundColor);
     expect(eqOnlyBg).toBeTruthy();
     expect(eqOnlyBg).not.toBe('rgba(0, 0, 0, 0)');
   });
 
-  test('both closed -> M is ats-mkt-closed (slate)', async ({ page }) => {
+  test('both closed -> pill reads "M", ats-mkt-closed (slate)', async ({ page }) => {
     await _mockStatus(page, { nse_open: false, mcx_open: false });
     await loginAsAdmin(page);
     await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded', timeout: 30_000 });
-    const anyPill = page.locator('[data-testid="algo-ts-market-badge-any"]').first();
-    const mcxPill = page.locator('[data-testid="algo-ts-market-badge-mcx"]').first();
-    const eqPill  = page.locator('[data-testid="algo-ts-market-badge-eq"]').first();
-    await expect(anyPill).toHaveClass(/ats-mkt-closed/, { timeout: 10_000 });
-    await expect(mcxPill).toHaveClass(/ats-mkt-closed/, { timeout: 10_000 });
-    await expect(eqPill).toHaveClass(/ats-mkt-closed/, { timeout: 10_000 });
+    const pill = page.locator('[data-testid="algo-ts-market-badge-any"]').first();
+    await expect(pill).toHaveClass(/ats-mkt-closed/, { timeout: 10_000 });
+    await expect(pill).toHaveText('M');
   });
 });
 
@@ -284,8 +278,8 @@ test.describe('AlgoTimestamp market-status badge — mobile scroll fallback', ()
     // The inner .ats-scroll container itself is a valid horizontal-scroll
     // candidate (overflow-x: auto with a bounded box) — assert the CSS
     // property directly rather than requiring genuine overflow at this
-    // exact viewport (three short pills may legitimately fit at 360px on
-    // some pages' header layouts; the mechanism must exist regardless).
+    // exact viewport (a single short pill will almost always fit at 360px;
+    // the mechanism must exist regardless).
     const scrollStyle = await page.evaluate(() => {
       const el = document.querySelector('.ats-scroll') || document.querySelector('[data-testid="algo-ts-market-badge"]')?.closest('div');
       if (!el) return null;

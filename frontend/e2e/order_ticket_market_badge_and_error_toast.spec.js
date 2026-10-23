@@ -218,13 +218,15 @@ test.describe('OrderTicket market-state badge', () => {
     await loginAsAdmin(page);
     await page.goto(`${BASE}/orders?symbol=CRUDEOIL`, { waitUntil: 'domcontentloaded', timeout: 30_000 });
 
-    // Market-status pills moved to the shared page header
-    // (AlgoTimestamp.svelte) same day — used here only as the "the mock
-    // has landed" sync point, not as the thing under test (that's
-    // algo_timestamp_market_badge.spec.js's job).
-    const mcxPill = page.locator('[data-testid="algo-ts-market-badge-mcx"]').first();
-    await expect(mcxPill).toBeVisible({ timeout: 15_000 });
-    await expect(mcxPill).toHaveClass(/ats-mkt-open/, { timeout: 10_000 });
+    // Market-status badge moved to the shared page header
+    // (AlgoTimestamp.svelte) same day, later collapsed to a single pill
+    // (2026-10-23) — used here only as the "the mock has landed" sync
+    // point, not as the thing under test (that's
+    // algo_timestamp_market_badge.spec.js's job). mcx_open=true/
+    // nse_open=false resolves to the "mcx-only" bucket on the one pill.
+    const mktPill = page.locator('[data-testid="algo-ts-market-badge-any"]').first();
+    await expect(mktPill).toBeVisible({ timeout: 15_000 });
+    await expect(mktPill).toHaveClass(/ats-mkt-mcx-only/, { timeout: 10_000 });
 
     // Wait for the ticket's OWN bare-root exchange resolution to settle
     // before checking the notice — `/api/instruments` is a large (~90k

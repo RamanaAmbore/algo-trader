@@ -34,19 +34,36 @@
     _mcxOpen = isMcxOpen();
   }
 
-  // Compound bucket for the single "M" (overall) pill — mirrors
+  // Compound bucket for the single market-status pill — mirrors
   // RefreshButton's `_mktClass` 3-bucket idea (both open / MCX-only open /
   // closed) extended with a 4th bucket ("eq" — NSE open, MCX not yet open,
-  // see the new `--algo-market-eq-only-*` token in app.css) that
-  // RefreshButton's own scheme doesn't distinguish. MCX and Eq below are
-  // plain two-colour open/closed pills for their own single segment.
+  // see the `--algo-market-eq-only-*` token in app.css) that RefreshButton's
+  // own scheme doesn't distinguish.
+  //
+  // Collapsed to ONE pill (2026-10-23, operator: "only one badge can be
+  // active at a time") — the prior 3-pill layout (M / MCX / EQ shown
+  // simultaneously) was mostly redundant: in the "both open" and "closed"
+  // states all three pills repeated the same colour, and MCX/EQ only ever
+  // added information in the two mixed states, which the compound bucket
+  // already disambiguates. One pill whose label switches carries the same
+  // information with less header clutter.
   const _mktBucket = $derived(
     _nseOpen && _mcxOpen ? 'both'
     : _mcxOpen            ? 'mcx'
     : _nseOpen            ? 'eq'
     :                       'closed'
   );
-  const _mktAnyOpen = $derived(_nseOpen || _mcxOpen);
+  const _mktLabel = $derived(
+    _mktBucket === 'mcx' ? 'MCX'
+    : _mktBucket === 'eq' ? 'EQ'
+    :                       'M'
+  );
+  const _mktTitle = $derived(
+    _mktBucket === 'both'   ? 'Both MCX and non-MCX (NSE/NFO/BSE/CDS) sessions are open'
+    : _mktBucket === 'mcx'  ? 'MCX commodity session is open; non-MCX is closed'
+    : _mktBucket === 'eq'   ? 'Non-MCX (NSE/NFO/BSE/CDS) session is open; MCX is closed'
+    :                         'Both MCX and non-MCX sessions are closed'
+  );
 
   $effect(() => {
     const lr = $lastRefreshAt;
@@ -106,12 +123,12 @@
       </span>
     </button>
 
-    <!-- Market-status badge — three short, purely informational pills
-         (no click target — rendered as a plain <span>, not inside the
-         button, so it never inherits the button's tap-to-toggle behaviour
-         or its desktop `pointer-events: none`). "M" is the compound
-         4-bucket indicator (both/MCX-only/Eq-only/closed); MCX and Eq are
-         plain per-segment open/closed pills. -->
+    <!-- Market-status badge — one short, purely informational pill (no
+         click target — rendered as a plain <span>, not inside the button,
+         so it never inherits the button's tap-to-toggle behaviour or its
+         desktop `pointer-events: none`). Label switches between M / MCX /
+         EQ depending on the compound 4-bucket state; colour carries the
+         same signal, full sentence in the title tooltip. -->
     <span class="ats-mkt-badge" data-testid="algo-ts-market-badge">
       <span class="ats-mkt-pill"
             class:ats-mkt-open={_mktBucket === 'both'}
@@ -119,18 +136,8 @@
             class:ats-mkt-eq-only={_mktBucket === 'eq'}
             class:ats-mkt-closed={_mktBucket === 'closed'}
             data-testid="algo-ts-market-badge-any"
-            title={_mktAnyOpen ? 'At least one segment (NSE or MCX) is open' : 'Both NSE and MCX are closed'}>
-        M
-      </span>
-      <span class="ats-mkt-pill" class:ats-mkt-open={_mcxOpen} class:ats-mkt-closed={!_mcxOpen}
-            data-testid="algo-ts-market-badge-mcx"
-            title={_mcxOpen ? 'MCX commodity session is open' : 'MCX commodity session is closed'}>
-        MCX
-      </span>
-      <span class="ats-mkt-pill" class:ats-mkt-open={_nseOpen} class:ats-mkt-closed={!_nseOpen}
-            data-testid="algo-ts-market-badge-eq"
-            title={_nseOpen ? 'Non-MCX (NSE/NFO/BSE/CDS) session is open' : 'Non-MCX (NSE/NFO/BSE/CDS) session is closed'}>
-        EQ
+            title={_mktTitle}>
+        {_mktLabel}
       </span>
     </span>
   </div>
@@ -185,7 +192,7 @@
     font-size: inherit;
     opacity: 0.5;
   }
-  /* Market-status badge — compact, abbreviated pills (M / MCX / Eq);
+  /* Market-status badge — one compact pill, label switches (M / MCX / EQ);
      colour alone carries the open/closed signal (title attr carries the
      full sentence for a11y + hover). Palette: open = the app's canonical
      green (same tokens the removed SymbolPanel pills used); closed =
