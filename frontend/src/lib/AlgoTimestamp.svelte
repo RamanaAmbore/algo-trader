@@ -135,33 +135,25 @@
      of being clipped. -->
 <div class="ats-root">
   <div class="ats-scroll">
-    <button
-      type="button"
-      class="ats-group"
-      onclick={_toggle}
-      onkeydown={(e) => e.key === 'Enter' && _toggle()}
-      style="touch-action: manipulation; user-select: none; -webkit-tap-highlight-color: transparent;">
-      <span class="ats-slot">
-        <span class="ats-now" class:ats-mobile-hide={_showRefresh}>{_nowTs}</span>
-        {#if _refreshTs}
-          <span class="ats-sep" aria-hidden="true">|</span>
-          <span class="ats-refresh" class:ats-mobile-hide={!_showRefresh}>{_refreshTs}</span>
-        {/if}
-      </span>
-    </button>
-
-    <!-- Market-status badge — one short pill rendered as a plain <span>,
+    <!-- Market-status badge — rendered BEFORE the clock (operator:
+         "move market open badge before timestamp"), as a plain <span>,
          not inside the clock button, so it never inherits the button's
          tap-to-toggle behaviour or its desktop `pointer-events: none`.
-         Label switches between M / MCX / EQ depending on the compound
-         4-bucket state; colour carries the same signal. Tooltip is the
-         InfoHint hover-preview/click-to-pin popover (hideButton+anchor
-         onto this pill itself), matching PositionStrip's P/M/C/H
-         convention — not a native `title` attribute. The pill's own
-         click/Enter/Space toggles the pin directly (its own `onclick`,
-         not InfoHint's — hideButton mode renders no button of InfoHint's
-         own to attach one to), so touch devices (no hover) can still
-         reach the tooltip. -->
+         Styled as plain colored text, not a button/chip (operator:
+         "don't decorate it like button. make it look like normal
+         text.") — no background/border/padding/radius, font-size
+         inherits from the surrounding timestamp text; only the text
+         colour carries the open/closed signal. Still a real click
+         target (cursor: pointer, role=button) since it opens the
+         InfoHint tooltip. Label switches between M / MCX / EQ depending
+         on the compound 4-bucket state. Tooltip is the InfoHint
+         hover-preview/click-to-pin popover (hideButton+anchor onto this
+         span itself), matching PositionStrip's P/M/C/H convention — not
+         a native `title` attribute. The span's own click/Enter/Space
+         toggles the pin directly (its own `onclick`, not InfoHint's —
+         hideButton mode renders no button of InfoHint's own to attach
+         one to), so touch devices (no hover) can still reach the
+         tooltip. -->
     <span class="ats-mkt-badge" data-testid="algo-ts-market-badge">
       <span class="ats-mkt-pill"
             class:ats-mkt-open={_mktBucket === 'both'}
@@ -180,6 +172,21 @@
         anchor={_mktPillEl} bind:open={_mktInfoOpen}
         accentColor={_mktAccent} title="Market status" text={_mktTitle} />
     </span>
+
+    <button
+      type="button"
+      class="ats-group"
+      onclick={_toggle}
+      onkeydown={(e) => e.key === 'Enter' && _toggle()}
+      style="touch-action: manipulation; user-select: none; -webkit-tap-highlight-color: transparent;">
+      <span class="ats-slot">
+        <span class="ats-now" class:ats-mobile-hide={_showRefresh}>{_nowTs}</span>
+        {#if _refreshTs}
+          <span class="ats-sep" aria-hidden="true">|</span>
+          <span class="ats-refresh" class:ats-mobile-hide={!_showRefresh}>{_refreshTs}</span>
+        {/if}
+      </span>
+    </button>
   </div>
 </div>
 
@@ -264,37 +271,21 @@
     flex-shrink: 0;
   }
   .ats-mkt-pill {
-    display: inline-flex;
-    align-items: center;
-    flex-shrink: 0;
-    padding: 0.08rem 0.3rem;
-    border-radius: 3px;
-    font-size: var(--fs-xs);
-    font-weight: 700;
-    letter-spacing: 0.02em;
+    /* Plain text, not a button/chip (operator: "don't decorate it like
+       button. make it look like normal text.") — no background, border,
+       radius, or padding; font-size inherits from the surrounding
+       timestamp text instead of a dedicated chip size. Colour alone
+       carries the open/closed signal, same palette as before. Still a
+       real click target (role=button, opens the InfoHint tooltip), so
+       cursor stays `pointer` as the one remaining interactive affordance. */
+    display: inline;
     white-space: nowrap;
     cursor: pointer;
   }
-  .ats-mkt-open {
-    background: var(--algo-green-bg-mid);
-    border: 1px solid var(--algo-green-border);
-    color: var(--algo-green-text);
-  }
-  .ats-mkt-closed {
-    background: var(--algo-muted-bg);
-    border: 1px solid var(--algo-muted-border);
-    color: var(--algo-dim);
-  }
-  .ats-mkt-mcx-only {
-    background: var(--c-action-14);
-    border: 1px solid var(--algo-amber-border);
-    color: var(--c-action);
-  }
-  .ats-mkt-eq-only {
-    background: var(--algo-market-eq-only-bg);
-    border: 1px solid var(--algo-market-eq-only-border);
-    color: var(--algo-market-eq-only-text);
-  }
+  .ats-mkt-open   { color: var(--algo-green-text); }
+  .ats-mkt-closed { color: var(--algo-dim); }
+  .ats-mkt-mcx-only { color: var(--c-action); }
+  .ats-mkt-eq-only  { color: var(--algo-market-eq-only-text); }
   @media (max-width: 640px) {
     .ats-group {
       cursor: pointer;

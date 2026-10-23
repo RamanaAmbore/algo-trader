@@ -137,11 +137,17 @@ test.describe('AlgoTimestamp market-status badge — source', () => {
   });
 
   test('badge markup is a sibling of the clock button, not nested inside it (pointer-events / tap-toggle isolation)', () => {
+    // Operator: "move market open badge before timstamp" — the badge now
+    // precedes the clock <button> in markup order (was: after). Sibling-
+    // ness (not nesting) is what actually matters for pointer-events/
+    // tap-toggle isolation; check the badge's own opening tag comes before
+    // the clock button's opening tag, both direct children of .ats-scroll.
     const src = readFileSync(COMPONENT, 'utf-8');
-    const buttonCloseIdx = src.indexOf('</button>');
+    const buttonOpenIdx = src.indexOf('class="ats-group"');
     const badgeIdx = src.indexOf('data-testid="algo-ts-market-badge"');
-    expect(buttonCloseIdx).toBeGreaterThan(-1);
-    expect(badgeIdx).toBeGreaterThan(buttonCloseIdx);
+    expect(buttonOpenIdx).toBeGreaterThan(-1);
+    expect(badgeIdx).toBeGreaterThan(-1);
+    expect(badgeIdx).toBeLessThan(buttonOpenIdx);
   });
 
   test('CSS uses the fixed-shell/inner-scroll split (.ats-root/.ats-scroll), matching PositionStrip\'s .ps-strip pattern', () => {
@@ -157,34 +163,31 @@ test.describe('AlgoTimestamp market-status badge — source', () => {
     expect(scrollBlock).toContain('overflow-x: auto');
   });
 
-  test('colour tokens for the shared states mirror RefreshButton\'s .rf-mkt-* resolved values; new 4th token for EQ-only', () => {
+  test('colour tokens for the shared states mirror RefreshButton\'s .rf-mkt-* resolved text colours; new 4th token for EQ-only', () => {
+    // Operator: "don't decorate it like button. make it look like normal
+    // text." — the pill no longer carries background/border tokens (those
+    // were the chip/button decoration); only the text colour carries the
+    // open/closed signal now, same palette as before.
     const src = readFileSync(COMPONENT, 'utf-8');
-    const openIdx = src.indexOf('.ats-mkt-open {');
-    const eqOnlyEndIdx = src.indexOf('}', src.indexOf('.ats-mkt-eq-only {'));
+    const openIdx = src.indexOf('.ats-mkt-open');
+    const eqOnlyEndIdx = src.indexOf('}', src.indexOf('.ats-mkt-eq-only'));
     expect(openIdx).toBeGreaterThan(-1);
     const block = src.slice(openIdx, eqOnlyEndIdx);
-    // "open" (both-open bucket) — same green tokens the removed SymbolPanel
-    // pills used.
-    expect(block).toContain('var(--algo-green-bg-mid)');
-    expect(block).toContain('var(--algo-green-border)');
     expect(block).toContain('var(--algo-green-text)');
-    // "closed" — byte-identical to RefreshButton's .rf-mkt-closed, which
-    // hardcodes rgba(126,151,184,…)/#94a3b8, the exact values these
-    // tokens resolve to.
-    expect(block).toContain('var(--algo-muted-bg)');
-    expect(block).toContain('var(--algo-muted-border)');
     expect(block).toContain('var(--algo-dim)');
-    // "MCX-only open" — the exact tokens RefreshButton's .rf-mkt-mcx
-    // already uses.
-    expect(block).toContain('var(--c-action-14)');
-    expect(block).toContain('var(--algo-amber-border)');
     expect(block).toContain('var(--c-action)');
-    // "EQ-only open" — the 4th token.
-    expect(block).toContain('var(--algo-market-eq-only-bg)');
-    expect(block).toContain('var(--algo-market-eq-only-border)');
     expect(block).toContain('var(--algo-market-eq-only-text)');
     expect(block).not.toMatch(/#[0-9a-fA-F]{3,6}/);
     expect(block).not.toMatch(/rgba\(/);
+    // No chip/button decoration left on the pill itself — match actual CSS
+    // declarations (`prop:`), not the explanatory comment's own prose,
+    // which legitimately mentions these words without a trailing colon.
+    const pillIdx = src.indexOf('.ats-mkt-pill {');
+    const pillBlock = src.slice(pillIdx, src.indexOf('}', pillIdx));
+    expect(pillBlock).not.toMatch(/\bbackground\s*:/);
+    expect(pillBlock).not.toMatch(/\bborder\s*:/);
+    expect(pillBlock).not.toMatch(/\bpadding\s*:/);
+    expect(pillBlock).not.toMatch(/\bborder-radius\s*:/);
   });
 
   test('app.css defines the --algo-market-eq-only-* token, aliased to an existing hue (no brand-new raw colour)', () => {
@@ -208,18 +211,23 @@ for (const { path, label } of PAGES) {
       await expect(badge).toBeVisible({ timeout: 15_000 });
       await expect(page.locator('[data-testid="algo-ts-market-badge-any"]').first()).toBeVisible();
 
-      // Structural placement: badge sits after the clock button and before
-      // (or inside) the .page-header-actions button group, all within the
-      // same .page-header row.
+      // Structural placement: badge sits BEFORE the clock button (operator:
+      // "move market open badge before timstamp") and before (or inside)
+      // the .page-header-actions button group, all within the same
+      // .page-header row.
       const order = await page.evaluate(() => {
         const header = document.querySelector('.page-header');
         if (!header) return null;
         const badgeEl = header.querySelector('[data-testid="algo-ts-market-badge"]');
+        const clockEl = header.querySelector('.ats-group');
         const actions = header.querySelector('.page-header-actions');
-        if (!badgeEl || !actions) return null;
-        // compareDocumentPosition: Node.DOCUMENT_POSITION_FOLLOWING === 4
+        if (!badgeEl || !clockEl || !actions) return null;
+        // compareDocumentPosition: Node.DOCUMENT_POSITION_PRECEDING === 2
         // eslint-disable-next-line no-bitwise
-        return !!(actions.compareDocumentPosition(badgeEl) & Node.DOCUMENT_POSITION_PRECEDING);
+        const badgeBeforeClock = !!(clockEl.compareDocumentPosition(badgeEl) & Node.DOCUMENT_POSITION_PRECEDING);
+        // eslint-disable-next-line no-bitwise
+        const badgeBeforeActions = !!(actions.compareDocumentPosition(badgeEl) & Node.DOCUMENT_POSITION_PRECEDING);
+        return badgeBeforeClock && badgeBeforeActions;
       });
       expect(order).toBe(true);
     });
@@ -263,13 +271,15 @@ test.describe('AlgoTimestamp market-status badge — bucket matrix (pulse only, 
     await expect(pill).toHaveClass(/ats-mkt-eq-only/, { timeout: 10_000 });
     await expect(pill).toHaveText('EQ');
 
-    // Colour-token cross-check: resolved background-color must differ from
-    // both the amber MCX-only bucket and the slate closed bucket, proving
-    // the new token actually renders a distinct colour (not a silent
-    // fallback to an existing bucket).
-    const eqOnlyBg = await pill.evaluate((el) => getComputedStyle(el).backgroundColor);
-    expect(eqOnlyBg).toBeTruthy();
-    expect(eqOnlyBg).not.toBe('rgba(0, 0, 0, 0)');
+    // Colour-token cross-check: resolved text colour must differ from both
+    // the amber MCX-only bucket and the slate closed bucket, proving the
+    // new token actually renders a distinct colour (not a silent fallback
+    // to an existing bucket). The pill is plain text now (no background —
+    // operator: "make it look like normal text"), so the signal lives in
+    // `color`, not `backgroundColor`.
+    const eqOnlyColor = await pill.evaluate((el) => getComputedStyle(el).color);
+    expect(eqOnlyColor).toBeTruthy();
+    expect(eqOnlyColor).not.toBe('rgba(0, 0, 0, 0)');
   });
 
   test('both closed -> pill reads "M", ats-mkt-closed (slate)', async ({ page }) => {
