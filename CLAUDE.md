@@ -350,6 +350,46 @@ generic multiplexer). Tests: `test_alert_golden.py::test_rich_alert_priority_res
 multiplexer agent (one that renders OTHER agents' alerts) must never use its own tier/hardcoded
 priority for a per-record notification — only the real triggering agent's tier.
 
+**Every alert leads with its origin; manual-sentinel classification; two dead alert paths fixed
+(2026-10-23; commit `70802eb5`)** — This extends the "Rich-alert ntfy priority" entry above to every
+channel (Telegram, ntfy, email). Three defects:
+- **Origin was inconsistent across renderers.** Rich/dispatch alerts carried `Agent:` on line 2. Fill
+  alerts put `Source: MANUAL OPERATOR ORDER` on line 4. Template guard/attach-fail, chase-cancel,
+  partial-GTT and gtt-not-accepted carried no origin at all.
+- **The manual sentinel was misclassified on failure.** `_classify_order_origin_label()` checked
+  `agent_id is not None`, which does not recognise the manual sentinel. A manual order's FILL alert
+  said "manual" while its REJECTION alert said `[Agent]`.
+- **Two alert paths were dead.** `_opp_send_cancel_alert()`
+  ([`orders.py:802-818`](backend/api/routes/orders.py#L802)) called `send_ntfy_alert(msg)` with one
+  positional argument, which bound to `title` and raised `TypeError` inside a fire-and-forget task.
+  Every postback CANCELLED alert was silently lost. `background.py` had five calls to
+  `_alert_route()`, which no longer exists (`ImportError`). Those covered gtt-asymmetric,
+  OCO-sibling, ticker-recovered, ticker-degraded and visitor-report. Two had no try/except, so the
+  error reached the ticker watchdog. Two embedded unmasked account numbers.
+
+The fix:
+- `resolve_origin(agent_id, agent_name)` ([`alert_utils.py:535`](backend/shared/helpers/alert_utils.py#L535))
+  returns the real name, or `"manual"` for a `None` id, the cached manual-sentinel id, or the
+  name "Manual operator order". An unresolved real id yields `Agent #{id}`, never `"manual"`.
+- `format_notification_header()` ([`alert_utils.py:568`](backend/shared/helpers/alert_utils.py#L568))
+  always emits `Agent: {origin}` as line 1, or `Agent: {name} (#{id})` when a real id is present
+  ([`:603`](backend/shared/helpers/alert_utils.py#L603)). Every renderer in
+  [`event_agents.py`](backend/api/algo/event_agents.py) routes through it, so fill, failure,
+  template, chase-cancel, partial-GTT and gtt-not-accepted all lead with origin.
+- `_classify_order_origin_label()` ([`alert_utils.py:1017`](backend/shared/helpers/alert_utils.py#L1017))
+  uses `resolve_origin()`, so a manual order's fill and failure alerts agree.
+- `_opp_send_cancel_alert()` splits title from message, masks the account, and prefixes
+  `format_notification_header(None, None)`. The postback fan-out has no agent context, so it
+  reads `Agent: manual`.
+- The five `background.py` sites moved to the log-record and event-agent pipeline (e.g.
+  `TICKER_RECOVERED_AGENT`, [`background.py:6203-6213`](backend/api/background.py#L6203)). The two
+  unguarded ones are wrapped in try/except, and account numbers are masked.
+- Known imprecision: `_render_error()` ([`event_agents.py:244`](backend/api/algo/event_agents.py#L244))
+  is not order-scoped, so a generic ERROR+ log alert reads `Agent: manual`. That is the honest answer
+  for a log line with no agent. A caller that attaches a real `agent_id` gets the real name.
+- Invariant: origin is always line 1 of every outbound message. A manual order shows the same origin
+  on every alert for that order, never `manual` on one and `[Agent]` on another.
+
 **Alert evaluation and latching** (2026-09, fixes 11 confirmed loss/rate-of-change condition bugs) —
 Agent condition evaluation enforces three critical invariants via the alert engine 
 ([`backend/api/algo/agent_engine.py`](backend/api/algo/agent_engine.py)):
@@ -807,6 +847,29 @@ Invariant: when a component is kept mounted-but-hidden for background-effect rea
 
 **Chase countdown column minimum-width guard on mobile (2026-10-16, commit de68fbda)** — The age/countdown column in `ChaseCard.svelte` had no minimum width (`minmax(0, 0.6fr)`), allowing it to shrink to unreadable slivers on narrow mobile viewports competing with 8+ other columns and a locked-minimum kill button. Fixed by setting `minmax(2.1rem, 0.6fr)` in both `.cc-row` and `.cc-compact .cc-row` grid templates.
 
+**Mobile page header never wraps; footer top-aligns; status pills stay whole (2026-10-23; commits
+`b8e0ae0f`, `7d281276`)** — Three mobile overflow defects, all on the algo shell in
+[`+layout.svelte`](<frontend/src/routes/(algo)/+layout.svelte>).
+- **`.page-header` wrapped on narrow widths, on all 24 algo pages.** The header is
+  `position: fixed`, and `.algo-content`'s padding-top reserves exactly one row. A wrapped second row
+  therefore covered the page's first card. `AlgoTimestamp`'s shrink-and-scroll never ran, because a
+  wrapping parent breaks the line using full max-content width. Mobile `.page-header-actions` also
+  had `flex-wrap: wrap; flex-shrink: 1`, the opposite of the desktop rule.
+  Fix: `.page-header` is `flex-wrap: nowrap` ([`+layout.svelte:2315`](<frontend/src/routes/(algo)/+layout.svelte#L2315>)).
+  `.ats-root` is the only child that shrinks and scrolls. The button group is `flex-shrink: 0` on
+  mobile too, so it stays pinned at every width.
+- **Footer page-name centred against single-line brand text.** When the page name wrapped to two
+  lines, it was vertically centred against the one-line brand. `.algo-footer` now sets
+  `align-items: flex-start` at ≤640px ([`+layout.svelte:2461`](<frontend/src/routes/(algo)/+layout.svelte#L2461>)).
+  Regression test added in `7d281276`.
+- **Status pills and chips clipped at 360px.** `OrderCard`'s `.algo-status-pill` is
+  `flex-shrink-0` ([`OrderCard.svelte:229`](frontend/src/lib/order/OrderCard.svelte#L229)), so the
+  symbol side gives way instead of pushing the pill off-screen. `OrderBook`'s status-chip row
+  ([`OrderBook.svelte:1104-1114`](frontend/src/lib/OrderBook.svelte#L1104)) scrolls horizontally
+  rather than ellipsis-clipping "Rejected/Cancelled".
+- Invariant: header overflow is absorbed by a shrinking child (AlgoTimestamp's scroll), never by
+  wrapping the row. Button groups are always pinned and visible.
+
 **Order Ticket Chase/Bracket/Draft click-to-pin tooltips (2026-10-16, commit bd2f0946)** — Added small "(i)" InfoHint chips next to the CHASE/BRACKET/DRAFT labels in `SymbolPanel.svelte`, `TemplateBar.svelte`, and `OrderTicket.svelte`, separate from their own toggles so help-seeking clicks don't flip real order behavior. Chase tooltip displays per-tier wait times from `backend/api/routes/orders_helpers.py:_live_chase_config` (low=30s/30 attempts, med=20s/20 attempts, high=10s/10 attempts). Test: `frontend/e2e/order_ticket_chase_bracket_draft_tooltips.spec.js`.
 
 **Order price tick-rounding carries floating-point residue (2026-09-28, commit 4c61e47f, CRITICAL)** — Order submission (`OrderTicket.svelte:_roundToTick`, line 1183; used by ticket, basket, chain, and modify routes) was snapping prices to the nearest tick but carrying genuine IEEE 754 floating-point residue from that snap operation. Example: 590.80 @ tick 0.05 snapped to 590.8000000000001 (before rounding), sent directly to Kite → rejected with "invalid price / decimal places" error. Live incident verified on multiple orders. Fix: after snapping to tick via `Math.round(px / tick) × tick`, re-round the result to the tick's own decimal precision: `Number(result.toFixed(decimalPlaces))`. Also applied in `backend/api/routes/orders_helpers.py:_align_price_to_tick` for POST endpoint validation. Invariant: tick-snap results are always rounded to the tick's own precision before transmission to broker.
@@ -822,6 +885,42 @@ Invariant: when a component is kept mounted-but-hidden for background-effect rea
 - **Chase offsetting-position guard** — Chase path now verifies the same offsetting-position guard the Kite postback path was already running (reject close-legs with opposite-sign position or quantity exceeding open), bringing all paths to parity.
 
 **Cancel paths must call chase's mark_killed(), or chase silently re-places the "cancelled" order (2026-10-15, commit ecc829c8)** — Chase distinguishes operator-kill from broker auto-cancel via an in-process `is_killed(broker_order_id)` flag (`chase.py`), set ONLY by `mark_killed()`. Before this fix, `mark_killed()` was called ONLY from `_rco_kill_live_mode` (the dedicated `POST /chases/{id}/kill` route) — the admin `cancel_order` REST route, the agent-grammar `_action_live_cancel_order` action, and `_action_live_cancel_all_orders`'s fleet-cancel loop (`_al_cancel_broker_orders`) never called it. Result: cancelling a chase-managed order via any of those three paths got silently undone — chase's poll loop saw CANCELLED, `is_killed()==False`, took the `cancelled_continue` branch, and re-placed the order at a fresh price, leaving the operator believing the position was dead while chase kept working it. Fix: all three paths now call `mark_killed(order_id)` — BEFORE the broker cancel call, not after, since the broker's own `await` yields the event loop and a chase poll could land mid-cancel. Invariant: any operator-initiated cancel — UI, agent DO-action, or CLI — must call `mark_killed()` so chase never re-places a genuinely cancelled order. New `POST /api/orders/cancel-all` route (and the CLI's `cancel_all_orders(...)` bare statement, see Common Tasks) reuses the same `cancel_all_orders_scoped()` helper as the pre-existing agent action, so both get this fix for free.
+
+**Chase live attempts, broker cancel throttling, superseded-row dedup, and header chase popup
+(2026-10-23; commits `f008db13`, `ad4b7b0a`, `0033c0a0`, `63580cff`, `60ef55b0`, `b8e0ae0f`)** —
+Four defects on the chase cancel-and-replace path, one entry because they share that cycle.
+- **`AlgoOrder.attempts` was written only at the terminal transition.** An in-flight chase showed
+  `attempts=0` for its whole life. `_ch_apply_broker_sync_fields()`
+  ([`chase.py:1137`](backend/api/algo/chase.py#L1137), write at
+  [`:1166-1167`](backend/api/algo/chase.py#L1166)) now writes `row.attempts` on every
+  cancel-and-replace sync, in the same call that already writes `last_attempt_at`,
+  `next_attempt_at` and `current_limit`. Retry and cancel-confirmation logic is unchanged.
+- **Kite and Groww `cancel_order` were unthrottled.** Chase calls `cancel_order` on every re-quote,
+  and `place_order` was already rate-limited. Kite's `cancel_order`
+  ([`kite.py:504`](backend/brokers/adapters/kite.py#L504)) now calls
+  `_KITE_RATE_LIMITER.throttle("orders")` and wraps the SDK call in `_kite_exc`
+  ([`:505-508`](backend/brokers/adapters/kite.py#L505)). Groww's
+  ([`groww.py:1411`](backend/brokers/adapters/groww.py#L1411), inside `cancel_order` at
+  [`:1399`](backend/brokers/adapters/groww.py#L1399)) calls `_GROWW_RATE_LIMITER.throttle("orders")`.
+  Dhan is unchanged: its SDK proxy already throttles every call by bucket.
+- **The superseded broker order rendered as a second "open" card.** During cancel-and-replace the
+  old `broker_order_id` is no longer referenced by any `AlgoOrder` row, so until the broker's book
+  caught up it appeared as an independent card next to the replacement. `OrderBook.svelte` keeps
+  `_supersededBrokerIds` ([`:92-104`](frontend/src/lib/OrderBook.svelte#L92)) with a
+  `_SUPERSEDED_GRACE_MS = 25_000` window, pruned each poll. A broker-only row matching a
+  superseded id is suppressed ([`:255-267`](frontend/src/lib/OrderBook.svelte#L255)), and the new
+  card shows a "repricing — previous order cancelling" note. Frontend only.
+- **The header chase badge showed the event-history log, not the live view.**
+  `OrderTimelineDrawer` has no countdown and no Kill. The popup now mounts
+  `<ChaseCard compact={false}>` ([`+layout.svelte:1611`](<frontend/src/routes/(algo)/+layout.svelte#L1611>)),
+  so the countdown and the LIVE/mode pill match "within order". Non-compact keeps the mode pill
+  visible in an aggregated real-money view. The drawer shell owns the empty and error states
+  (ChaseCard self-hides at zero chases), and the header count is bound to ChaseCard's `activeCount`
+  so the number and the popup share one poll. `OrderBook`'s per-order "view timeline" still opens
+  the event-log drawer, since terminal orders are not in ChaseCard.
+- Invariant: a chase's `attempts` reflects the in-flight cancel-and-replace, and a superseded
+  broker order must never render as an independent open order while its own cancel is pending.
+  Any operator cancel path must also call `mark_killed()` (see the entry above).
 
 **Live ticket placement fail-closed on AlgoOrder pre-persist (2026-09-28, commit 8fca413b)** — Ticket placement (`orders_place.py:ticket_order_handler`) used to silently ignore DB insert failures when pre-persisting the `AlgoOrder` row, swallowing exceptions and proceeding to place a live order completely untracked. Root-caused via live prod incident: `AlgoOrder #1088` was placed live, chased for ~12 minutes, never appeared in operator views, and was never reconciled post-session. Fix: any DB insert failure (constraint violation, transaction rollback, timeout) now returns `HTTPException(503 SERVICE_UNAVAILABLE)` immediately, refusing the order and rolling back to client. Client sees a clear failure and can retry; no untracked live orders escape.
 

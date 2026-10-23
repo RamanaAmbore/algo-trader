@@ -750,7 +750,9 @@ automation/agent use.
 ### Status Histogram Filter
 
 **Above grid**: 5 status chips (Chase / Open / Filled / Rejected-Cancelled / GTT)
-- **Chase** — orders with active cancel-and-replace attempts in progress
+- **Chase** — orders with active cancel-and-replace attempts in progress. While a cancel-and-replace
+  is in flight, the superseded broker row is hidden for 25s (`_SUPERSEDED_GRACE_MS`), so it never
+  shows as a second open card.
 - **Open** — orders placed but not yet filled (includes PENDING states)
 - **Filled** — terminal filled orders (broker COMPLETE or platform FILLED)
 - **Rejected-Cancelled** — merged chip for both rejection and cancellation (red styling)
@@ -921,8 +923,9 @@ may show (due to the `== null` condition), but clicking it will fail.
 
 ## 12. OrderTimelineDrawer
 
-**Purpose**: Right-edge slide-in drawer showing live event timeline for every
-OPEN chase order.
+**Purpose**: Right-edge slide-in drawer showing the event timeline for an order. Opened from
+OrderBook's "view timeline" entry point. The header chase badge no longer uses this drawer. It
+mounts `ChaseCard` (live countdown, Kill) instead, so the drawer is forensic history only.
 
 **Trigger**: Click on an OPEN OrderCard or via modal context menu
 
@@ -1429,7 +1432,8 @@ List concrete things to verify in an audit:
    - Backend: price sent as null
 
 9. **Chase attempts incremented correctly**
-   - `attempts` counter increases on each retry
+   - `attempts` counter increases on each retry, and is written live on every cancel-and-replace
+     (not only at the terminal state)
    - Stops at `max_attempts` (default 20 for live mode, 5 for paper mode)
 
 10. **Template attach fires only once per parent fill** (via `attached_gtts_json` check)

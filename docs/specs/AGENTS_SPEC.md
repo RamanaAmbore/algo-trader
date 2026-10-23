@@ -167,6 +167,10 @@ RamboQuant Agent: <agent_long_name> [SIM/PAPER/—]
 RamboQuant Agent: <agent_long_name>
 ```
 
+**Body header**: the first line of every message (Telegram, ntfy, email) is `Agent: {name} (#{id})`
+or `Agent: manual`, built by `format_notification_header()`. Subjects above are unchanged. Origin
+is never placed later in the body. Manual orders (no agent) read `Agent: manual` on every alert.
+
 **Content**:
 - Matched condition summary (free-text from condition tree evaluation)
 - P&L snapshot (positions pnl, holdings pnl, day_pct if available)

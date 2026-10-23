@@ -2089,6 +2089,8 @@ When a chase order attempts to cancel and replace an existing order:
 
 4. **Exhaust-attempts alert**: `_ch_exhaust_max_attempts()` (chase gives up after max_attempts) previously fired NO operator alert at all, unlike its sibling `_chase_abort_on_consecutive_errors()`. Now alerts consistently and notes explicitly whether the final cancel attempt may have also failed.
 
+5. **Cancel throttling (2026-10-23, commit `f008db13`)**: Kite's and Groww's `cancel_order` now call `_KITE_RATE_LIMITER.throttle("orders")` / `_GROWW_RATE_LIMITER.throttle("orders")`, matching `place_order`. Chase calls `cancel_order` on every re-quote, so the cancel leg was previously unthrottled. Kite's cancel also wraps SDK errors in `_kite_exc`. Dhan is unchanged.
+
 **Invariant**: Never replace a live order without proof that the previous cancel reached the broker in a terminal state.
 
 ### Chase error recovery — error classification and backoff (2026-10)
