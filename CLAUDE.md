@@ -847,6 +847,23 @@ Invariant: when a component is kept mounted-but-hidden for background-effect rea
 
 **Chase countdown column minimum-width guard on mobile (2026-10-16, commit de68fbda)** — The age/countdown column in `ChaseCard.svelte` had no minimum width (`minmax(0, 0.6fr)`), allowing it to shrink to unreadable slivers on narrow mobile viewports competing with 8+ other columns and a locked-minimum kill button. Fixed by setting `minmax(2.1rem, 0.6fr)` in both `.cc-row` and `.cc-compact .cc-row` grid templates.
 
+**Chase hidden (not greyed) while Draft is on; one submit label (2026-10-23; commit `75685b7b`)** —
+Operator report: "when submitting draft order, chase is getting invoked." A live DB query on prod
+and dev found no `mode='draft'` `AlgoOrder` row ever created. Both draft-submit paths
+(`OrderTicket.svelte`, `SymbolPanel.svelte:submitBasket()`) return before any chase or broker call.
+Nothing was invoked. The confusion came from the CHASE toggle and picker staying rendered, greyed,
+while Draft was on. They are now hidden entirely (`_chaseEnabled && !_sharedDraftMode`,
+[`SymbolPanel.svelte:2965`](frontend/src/lib/SymbolPanel.svelte#L2965)). BRACKET keeps its
+grey-not-hide treatment. The shared `.oes-common-submit` button's "Add to Payoff" label is gone. A
+single staged leg gets the standard `formatSubmitLabel` like every other mode. A multi-leg basket
+keeps the plain "Submit".
+
+**Chain ITM wash spans the strike column; basket-leg pill contrast (2026-10-23; commit `a0e2e3e0`)**
+— Cosmetic. The ITM call and put background wash stopped at the CE/PE cell boundary. It now extends
+into the shared strike column: ITM calls spread right toward centre, ITM puts spread left toward
+centre. The Chain-tab basket-leg pill in `SymbolPanel.svelte` moves from the faint rest-state alpha
+(-14) to the existing -22 emphasis tier. No new colour is introduced.
+
 **Mobile page header never wraps; footer top-aligns; status pills stay whole (2026-10-23; commits
 `b8e0ae0f`, `7d281276`)** — Three mobile overflow defects, all on the algo shell in
 [`+layout.svelte`](<frontend/src/routes/(algo)/+layout.svelte>).
@@ -922,11 +939,127 @@ Four defects on the chase cancel-and-replace path, one entry because they share 
   broker order must never render as an independent open order while its own cancel is pending.
   Any operator cancel path must also call `mark_killed()` (see the entry above).
 
+**Chase robustness round 2 — fail-closed finalization, stuck/timeout detection, header drawer,
+ChaseCard remount-loop fix (2026-10-23; commits `1d2e369e`, `fc77a8f8`, `7d68b8d4`, `a3ade9db`,
+`06c4ee45`, `23651dd4`)** — Deepens the "Chase live attempts" entry above. Grouped by surface.
+- **Finalization never guesses broker fate.** Every chase abort that leaves a broker order's fate
+  unknown writes `CANCEL_FAILED`, not `REJECTED`. `REJECTED` is final, and every writer refuses to
+  overwrite it (see `ALGO_ORDER_FINAL_STATUSES` under Order-lifecycle races). A later real fill on
+  a genuinely-unknown-fate order was therefore permanently unrecordable. No abort path may leave a
+  row silently `OPEN` with no trace.
+- **Broker-call ceiling and ambiguous-placement abort.** `_run()` in
+  [`chase.py`](backend/api/algo/chase.py) wraps each broker call in a 30s `asyncio.wait_for`
+  ceiling. A `_place_order` timeout takes a dedicated non-retrying ambiguous-abort path, not the
+  generic retry, so a timed-out placement cannot become a second live order. A wall-clock stuck
+  detector aborts and alerts a chase making no real progress. Its ceiling is always below the
+  natural exhaustion budget.
+- **Canonical order-truth accessor.** `get_broker_order_truth()` and `apply_order_truth()`
+  ([`orders_helpers.py:730`](backend/api/routes/orders_helpers.py#L730),
+  [`:762`](backend/api/routes/orders_helpers.py#L762)) are the one way to ask what the broker says
+  about an order. They are safe on a missing broker response (never guess a status), row-locked,
+  and write the FIFO ledger on a reconciled fill. Chase's in-loop check and its
+  post-ambiguous-abort backstop both call them. Every other reconcile path is in the Order-poll
+  entry below.
+- **ntfy is a binary action-required gate, decided at dispatch.** Every outcome needing operator
+  action reaches ntfy as urgent. Fills and other FYI outcomes go to Telegram, email, or log, never
+  ntfy. Non-recoverable errors always alert. Recoverable errors still retry, with no alert
+  (regression-tested). Alert suppression (market-closed, 10-minute dedup) is bypassed for
+  abandonment, exhaustion and stuck alerts, since reconciliation matters regardless of market hours.
+- **`AlgoOrder.superseded_broker_order_ids_json`.** New column with a migration. Written at
+  cancel-confirm time in `chase.py`, before the replacement is placed
+  ([`chase.py:886`](backend/api/algo/chase.py#L886)). The frontend `_supersededBrokerIds` window
+  above inferred the same thing from poll timing. This writes it authoritatively, closing the
+  duplicate-card race at source.
+- **Caller consistency.** Close-position surfaces a FAILED/HELD `ChaseResult` instead of discarding
+  it. The ticket path no longer double-alerts on a recoverable error that then succeeds.
+- **Countdown status gate.** ChaseCard's countdown and pulse dot were gated on
+  `status === 'active'`. `/api/orders/chases/active` never returns that value; it returns only
+  `OPEN` and `CANCEL_FAILED`. The countdown showed "—" in production on every surface, while
+  Playwright passed because the fixtures mocked the wrong status. The gate is now `OPEN`.
+  `CANCEL_FAILED` is excluded on purpose: chase has stopped scheduling re-quotes, and a countdown
+  would mislead. The "limit moved" chip's off-by-one is fixed too. `attempts` counts placements
+  from 1, not modifications.
+- **OrderBook chase-in-flight chip and stale-broker-id Cancel guard.**
+  [`OrderBook.svelte`](frontend/src/lib/OrderBook.svelte) and
+  [`LogPanel.svelte`](frontend/src/lib/LogPanel.svelte) merged rows so the broker row won over the
+  algo row. Broker rows carry no `attempts` / `current_limit` / `next_attempt_at`, so the chip and
+  OrderCard's `chase:#N` marker only fired for paper/sim. The merge now copies those fields from
+  the algo row. Cancel re-fetches the algo row first, and refuses with a toast and no broker call
+  if the `broker_order_id` has changed since the last poll.
+- **Header chase drawer, relocated.** The standalone `.chase-chip` is gone. Right-click (desktop)
+  or long-press (mobile) on the header Order button opens the chase drawer, via the existing
+  `longPress.js` gesture. A normal click still opens a fresh ticket. A plain coloured dot shows
+  while a chase is active (no letter, since "C" already means Cash on PositionStrip's pills), with
+  a one-time dismissible InfoHint. State lives in the `chaseActiveCount` / `chaseDrawerOpen` stores
+  in [`stores.js`](frontend/src/lib/stores.js). `/orders` passes `hideOrder`, since its own
+  ChaseCard is always visible.
+- **ChaseCard remount-loop fix (`a3ade9db`).** `/orders` mounted two ChaseCard instances as
+  mutually exclusive `{#if}`/`{:else}` branches sharing one `bind:activeCount`. Each fresh
+  instance wrote its own empty pre-fetch count, which flipped the page's show/hide derivation and
+  remounted the other branch, forever. Measured 590-600 req/s against `/chases/active`. Fixed in
+  the component, so every consumer is protected: a `_loadedOnce` guard defers the mirror write
+  until this instance's first fetch resolves, and the effect's own reads are `untrack()`'d.
+- **`/orders` single-instance migration (`23651dd4`).** One always-mounted
+  `<ChaseCard headless={!_showChases}>`, matching the header drawer. Section chrome stays mounted
+  and toggles with `style:display`, not `{#if}`. There is no empty-state window for the bug class
+  to recur in.
+- Invariant: a chase never finalizes an order whose broker fate it cannot confirm. A bound value
+  written by several component instances must be written only once its writer holds real data.
+
+**Order reconcile consolidated onto one accessor; periodic order-poll sweep; postback follow-up
+verification (2026-10-23; commit `8c0d5180`)** — Three reconcile paths and the open-order watchdog
+each carried their own broker-truth logic. The riskiest guessed `UNFILLED` on a missing or empty
+broker response. All four now route through `get_broker_order_truth()` / `apply_order_truth()`
+(see the round-2 chase entry above): `list_active_chases`, the admin bulk and per-card
+`/algo/reconcile` routes in `backend/api/routes/orders.py`, and `background.py`'s watchdog.
+- **The accessor is deliberately thin.** It omits side effects. The new
+  [`order_poll.py`](backend/api/algo/order_poll.py#L60) `reconcile_row_and_followup()` adds them
+  back: template attach, ws-resubscribe, and an `order_correction` alert on a genuine correction.
+  The correction alert is urgent ntfy (action-required). It renders through
+  `format_notification_header()` with the corrected row's own `agent_id`, so it leads with origin.
+- **Chase-active no-op guard.** `reconcile_row_and_followup()` is a full no-op while
+  `is_chase_active()` ([`chase.py:722`](backend/api/algo/chase.py#L722)) is true. The hazard it
+  prevents: a background corrector racing a routine, still-in-flight chase fill sees the broker
+  fill before chase records it, and fires a false `order_correction` on every normal fill. The
+  chase owns that row until it finishes.
+- **Periodic sweep.** `_task_order_poll()` ([`order_poll.py:258`](backend/api/algo/order_poll.py#L258))
+  covers every live `OPEN` / `CANCEL_FAILED` order broker-wide, independent of chase. Cadence is the
+  existing 5-minute book-poll backstop (`performance.refresh_interval`, same YAML fallback chain).
+- **Postback follow-up.** After every terminal postback event, `orders_postback.py` schedules
+  `_pb_followup_verify` 5 seconds later
+  ([`_pb_schedule_followup_verify`](backend/api/routes/orders_postback.py#L940)). It is
+  non-blocking, so the webhook response is not slowed, and it catches a wrong or incomplete
+  payload.
+- **Admin HTTP contract changed.** Two behaviours that a frontend or operator doc may still assume
+  the old way:
+  - Admin bulk reconcile's `missing` field used to mean "broker confirmed gone, marked UNFILLED".
+    It now means "broker response unavailable, row left untouched".
+  - Per-card reconcile no longer returns HTTP 502 on a broker fetch failure. It returns
+    `truth.available=False` with an explanatory `note`. Safer, but a hard error became a soft one.
+- **Accepted tradeoff.** A prior-day abandoned `OPEN` row no longer auto-resolves to `UNFILLED`,
+  because the watchdog's day-scoped broker snapshot cannot see it. The impact is UI and DB noise
+  only. `recover_live_chases()` in `background.py` re-verifies each order with a targeted lookup
+  (Kite's `order_history(order_id)`, not the day-scoped bulk list) before resuming a chase, and
+  skips the restart if it cannot confirm. A dead row therefore cannot be resurrected into a live
+  order.
+
 **Live ticket placement fail-closed on AlgoOrder pre-persist (2026-09-28, commit 8fca413b)** — Ticket placement (`orders_place.py:ticket_order_handler`) used to silently ignore DB insert failures when pre-persisting the `AlgoOrder` row, swallowing exceptions and proceeding to place a live order completely untracked. Root-caused via live prod incident: `AlgoOrder #1088` was placed live, chased for ~12 minutes, never appeared in operator views, and was never reconciled post-session. Fix: any DB insert failure (constraint violation, transaction rollback, timeout) now returns `HTTPException(503 SERVICE_UNAVAILABLE)` immediately, refusing the order and rolling back to client. Client sees a clear failure and can retry; no untracked live orders escape.
 
 **OrderBook no longer flickers on transient broker-fetch failure (2026-09-28, commit 298cd38c)** — Order display grid (`OrderBook.svelte`) was falling through to algo-only stale data (a 5-min-old cache) on any transient broker fetch failure (network timeout, 429, DNS), causing rows to flicker cancelled/filled back to OPEN and breaking operator visibility. Related to "Staleness indicator freeze rule" — this is a sibling consumer. Fix: froze to last-known-good broker state on failure, showing the last fetch's result (empty if never fetched) instead of silently collapsing to local-only stale cache.
 
 **Multi-leg basket submit must not close the SymbolPanel modal mid-placement (2026-10-16)** — `SymbolPanel.svelte:submitBasket()` calls the host's `onSubmit` prop once PER PLACED LEG (same payload shape as a single-order submit), by design — SymbolPanel itself never closes on submit ("modal stays open after a successful chain submit so they can place more legs without re-opening"). Every host honors this except `MarketPulse.svelte`, whose `onSubmit={() => closeTicket()}` closed unconditionally on the very first callback — so a multi-leg Chain basket placed from MarketPulse vanished after leg 1 even though every leg genuinely placed. `derivatives/+page.svelte` and `orders/+page.svelte` already use a non-closing pattern (toast/refresh only); MarketPulse now matches — `onSubmit` shows a brief `toast.success(...)` instead of calling `closeTicket()` (which remains wired to the × button / `onClose` only). Invariant: a `SymbolPanel` host's `onSubmit` must never assume "called once" — basket submits call it N times, and closing on the first call truncates the UI mid-placement even when every leg succeeds.
+
+**Order-ticket "Market closed" false warning on MCX CE/PE cache miss (2026-10-23; commit
+`20b3b71a`)** — Live report: a GOLD CE ticket showed "Market closed — order will queue" while MCX
+was open. The 2026-10-22 root-future rescue in `exchangeOptions`
+([`OrderTicket.svelte`](frontend/src/lib/order/OrderTicket.svelte)) covered only `kind === 'FUT'`. A
+resolved CE/PE whose exact row missed the instruments cache fell through to the generic
+`['NFO','BFO']` list, which has no MCX entry. The rescue now also covers CE/PE, in both
+`exchangeOptions` and `_resolvedExchange`: extract the root by regex, then `findNearestFuture`. The
+two draft-promotion callers (MarketPulse `_openTicketFromDraftRow`, derivatives `executeDraft`) try
+the same rescue before the hardcoded NFO hint. `executeDraft` also never awaited the instruments
+cache, a real cold-cache race. This was a misleading warning, not a silent placement failure. The
+backend segment gate checks the real segment independently and was never blocked.
 
 **Order submission gated on market depth; chase classifies recoverable vs non-recoverable failures (2026-10, commit daee65d2)** — Every template/ticket places only LIMIT or GTT orders (no MARKET), so submission needs the active strike's own bid/ask at least once before a price can be meaningful. `OrderTicket.svelte`'s `_lastQuote` (set via `onDepthQuote`) was never reset on a strike change, so switching strikes left a PREVIOUS strike's stale quote satisfying the "depth has loaded" check — an operator who clicked Submit the instant a new strike opened could reach the server and get a late, confusing "limit price required" rejection instead of a disabled button. Fix: `_lastQuote` resets to `null` on every resolved-symbol change (same effect that already resets `_lots`/`_lotsTouched`); a new `_depthPending` derived (`showLimit && !_lastQuote`) gates `submit()` (explicit early return before the broker call), OrderTicket's own footer Submit button (excluded for `_draftMode`, which never calls the broker), and — piped through the existing `onTicketStateChange` mirror — SymbolPanel's shared common-action Submit button (`_ticketDepthPending`) and its `_modalFireSubmit()` click handler.
 
@@ -1370,6 +1503,9 @@ stop ratchet, and order modify paths; all patches deployed together. Key invaria
   all, unlike its sibling `_chase_abort_on_consecutive_errors` — now alerts
   consistently and notes explicitly if its own final cancel attempt may have
   also failed.
+  - *Amended 2026-10-23:* the abort also writes a `CANCEL_FAILED` marker on the row, never
+    `REJECTED`, which would block a later real fill. Its alert goes through the binary ntfy
+    action-required gate, so it still reaches ntfy as urgent. See "Chase robustness round 2" above.
 - **Groww's `translate_qty` had no structural safety net (2026-09 orders-page
   council audit, finding #6)** — Kite and Dhan both inherit the base
   `translate_qty`, decorated with `@exchange_qty_convention`, which routes
@@ -1811,6 +1947,7 @@ now caches + returns a `stale` flag; `/api/nav/by-account` masks `errors` for no
 | Chart state (symbol, range, OHLCV) | `frontend/src/lib/data/chartStore.svelte.js` |
 | Activity tab persistence | `frontend/src/lib/data/activityStore.svelte.js` |
 | Order ticket prefill | `frontend/src/lib/stores.js` |
+| Order reconcile / broker-truth check | `backend/api/routes/orders_helpers.py:get_broker_order_truth` / `apply_order_truth` (the accessor) + `backend/api/algo/order_poll.py` (`reconcile_row_and_followup`, `_task_order_poll`) |
 | Update feature spec | `docs/specs/<NAME>_SPEC.md` |
 | Update operator guide | `docs/guides/<NAME>_GUIDE.md` |
 | Update architecture doc | `docs/DESIGN_GUIDE.md` → regenerate with `python3 docs/generate_pdf.py` |

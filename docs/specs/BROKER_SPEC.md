@@ -3,7 +3,7 @@
 Single source of truth for `backend/brokers/` — the vendor-agnostic broker abstraction layer.
 Code, tests, and documentation must stay in sync with this file.
 
-**Version**: 1.33 — 2026-10-19  
+**Version**: 1.34 — 2026-10-23  
 **Owner**: Platform  
 **Linked files**: `backend/brokers/base.py` · `backend/brokers/registry.py` · `backend/brokers/connections.py` · `backend/brokers/kite_ticker.py` · `backend/brokers/mmap_ticker.py` · `backend/brokers/adapters/` · `backend/brokers/service/` · `backend/brokers/client/`
 
@@ -43,7 +43,10 @@ Code, tests, and documentation must stay in sync with this file.
 8.3 [GTT Template Attachment System Enhancements](#83-gtt-template-attachment-system-enhancements-jul-2026)
 8.4 [Broker Postback Fill-Status Mapping](#84-broker-postback-fill-status-mapping)
 8.5 [Orders Fetching Resilience & Chase Timeouts](#85-orders-fetching-resilience--chase-timeouts)
+8.5.1 [Canonical Broker-Truth Accessor (2026-10-23)](#851-canonical-broker-truth-accessor-2026-10-23)
+8.5.2 [Chase Robustness Overhaul (2026-10-23)](#852-chase-robustness-overhaul-2026-10-23)
 8.6 [Order Pairing — Parent-Child Relationship Linking](#86-order-pairing--parent-child-relationship-linking)
+8.7 [Order Poll Sweep & Broker-Truth Reconciliation (2026-10-23)](#87-order-poll-sweep--broker-truth-reconciliation-2026-10-23)
 9. [Remote Broker & Conn Service](#9-remote-broker--conn-service)
 9.1 [Background Task Supervisor](#91-background-task-supervisor)
 10. [Virtual Root Resolution](#10-virtual-root-resolution)
@@ -1988,6 +1991,19 @@ Six linked defects converged around race windows during order fills:
 
 **Final-status write guard**: `backend/api/models.py` defines `ALGO_ORDER_TERMINAL_STATUSES` (the full lifecycle vocabulary, informational) and the narrower `ALGO_ORDER_FINAL_STATUSES` (`{FILLED, REJECTED}` — the set actually guarded against). `CANCELLED`/`CANCEL_FAILED`/`UNFILLED` are deliberately excluded: a failed cancel can still have a broker-side order resting live that fills later, so a genuine late FILLED must still apply. `_sync_apply_row_status`/`_pb_apply_status_to_row` (`orders_postback.py`) and `_chase_terminal_update_db` (`chase.py`) each check `row.status in ALGO_ORDER_FINAL_STATUSES` on the locked row before mutating and refuse (log + no-op) if already final — an application-level check on the read row, not a model-level interceptor. Admin reconcile (`orders.py:list_active_chases`) does NOT get this guard — it's the repair path that must be able to correct stuck rows from broker truth.
 
+**AMENDED (2026-10-23, commit `06c4ee45`, `8c0d5180`)** — the "does NOT get this guard" sentence
+above is superseded in two ways:
+- **Admin reconcile now DOES get the final-status guard.** Every reconcile path (`list_active_chases`,
+  `POST /api/orders/algo/reconcile`, `POST /api/orders/{broker_order_id}/reconcile`, the open-order
+  watchdog, and the new order-poll sweep) writes through `apply_order_truth()`, which refuses to move
+  a row already in `ALGO_ORDER_FINAL_STATUSES`. It still corrects stuck non-final rows
+  (OPEN / CANCEL_FAILED / CANCELLED / UNFILLED) from broker truth. See §8.5.1.
+- **`CANCEL_FAILED` is now the abort marker for unknown-fate chases.** A chase abort caused by an
+  unconfirmed cancel, consecutive broker errors, or a placement timeout writes `CANCEL_FAILED`, not
+  `REJECTED`. `REJECTED` is final and un-overwritable, so writing it on an order whose real fate is
+  unknown would make a later genuine fill unrecordable. Every chase abort path now writes some
+  terminal-ish marker; none leave a row silently `OPEN` with no trace. See §8.5.2.
+
 **SELECT...FOR UPDATE locking across all mutation paths**: Kite postback (`orders_postback.py:_pb_event_kite`), Dhan/Groww postback (`orders_postback.py:_sync_algo_order_rows`), chase's terminal update (`chase.py:_chase_terminal_update_db`), and admin reconcile's bulk scan (`orders.py:list_active_chases`) all lock the `AlgoOrder` row(s) via `.with_for_update()` before mutating, serialising concurrent fill detections and manual edits.
 
 **FIFO ledger writes on all fill paths**: Dhan/Groww postback, chase's own terminal-fill path, and admin reconcile now all call `_pb_write_ledger_fills` (`orders_postback.py`) after a row transitions to FILLED — same helper the Kite path already used, reused rather than duplicated.
@@ -2070,6 +2086,10 @@ On timeout:
 - Logs a warning (no exception raised)
 - Chase reconcile treats missing order IDs as "keep row as OPEN"
 - Prevents `/chases/active` panel from lock-starving when broker order fetch hangs
+
+**AMENDED (2026-10-23)**: "keep the row OPEN" on missing broker data is no longer specific to chase
+reconcile. It is the single behaviour of every reconcile path, via the accessor in §8.5.1. Before
+2026-10-23 the watchdog and the admin reconcile routes flipped such rows to UNFILLED.
 
 **Impact**: Chase panel never blocks the operator even if the broker order list fetch 
 exceeds 10 seconds. Operator sees in-flight orders (cached state) rather than a blank 
@@ -2266,6 +2286,84 @@ When a fill is detected (via postback or confirmed by order status), positions m
 
 **Invariant**: Position refresh after fill is triggered BOTH via postback (immediate for Kite, fallback for Dhan/Groww) AND via ticket-placement success (immediate for all brokers), ensuring the fastest refresh possible for each broker's callback reliability.
 
+### 8.5.1 Canonical Broker-Truth Accessor (2026-10-23)
+
+**File**: `backend/api/routes/orders_helpers.py` — `get_broker_order_truth()` (line 730) and
+`apply_order_truth()` (line 762) · tests: `backend/tests/test_order_truth_accessor.py`
+
+Broker-truth reconciliation used to exist in four separate implementations with different safety
+behaviour. They are now one SSOT pair.
+
+**Pre-consolidation state (SUPERSEDED 2026-10-23)**:
+
+| Path | On missing/empty broker response | Row lock | FIFO ledger |
+|---|---|---|---|
+| `_task_open_order_watchdog` (`background.py`) | Flipped row to UNFILLED (unsafe — a broker glitch could finalise a live order) | No | No |
+| Admin `POST /api/orders/algo/reconcile` and `POST /api/orders/{broker_order_id}/reconcile` | Same unconditional UNFILLED | No | No |
+| `list_active_chases` (`GET /api/orders/chases/active`) | Kept OPEN, treated as unavailable (safe) | Yes | Yes |
+
+**Current state**: all four call the same accessor pair. The unconditional-UNFILLED-on-missing-data
+behaviour is gone from every path. Every caller now gets the "unavailable, do not guess" semantics,
+row locking and ledger writes.
+
+**`get_broker_order_truth(broker_order_id, broker_status_by_id=None)`** — read-only. Resolves broker
+truth from a bulk `broker.orders()` snapshot (`_broker_order_snapshot()`, cache-backed). A falsy id,
+or an id absent from the snapshot, or a snapshot entry with no status, returns
+`OrderTruth(available=False)`. It never returns a guessed terminal status. A scanner can pass one
+shared snapshot to avoid refetching per row.
+
+**`apply_order_truth(algo_order_id, truth, *, withhold_if_active=False)`** — the only writer.
+- Locks the `AlgoOrder` row with `.with_for_update()`.
+- Writes `truth.algo_status` only when it is resolved (terminal) AND differs from the row's status.
+- Refuses to move a row already in `ALGO_ORDER_FINAL_STATUSES` (`{FILLED, REJECTED}`). It logs
+  `[ORDER-TRUTH]` and returns `False`.
+- On a FILLED resolution, writes the FIFO ledger via `_pb_write_ledger_fills`.
+- With `withhold_if_active=True`, a resolved non-FILLED status is withheld for a row that is HELD or
+  under an active chase retry. It reuses `orders_postback.py:_pb_should_withhold_status`, the same
+  check the postback path applies. A FILLED resolution is never withheld.
+- Returns `False` (no-op) for: `algo_order_id is None`, `truth.available is False`, no resolved
+  status, row not found, or status already equal.
+
+**Scope gap (deliberate)**: `apply_order_truth` does NOT fire template-attach or WebSocket
+re-subscribe on a reconciled FILLED. Callers that need those side effects go through
+`order_poll.py:reconcile_row_and_followup()` (§8.7), which wraps this accessor.
+
+**Callers (all four paths, plus chase)**:
+
+| Caller | Uses |
+|---|---|
+| `_task_open_order_watchdog` and the §8.7 sweep | `reconcile_row_and_followup()` → accessor |
+| `POST /api/orders/algo/reconcile` (bulk) | accessor, `withhold_if_active=True` |
+| `POST /api/orders/{broker_order_id}/reconcile` (per card) | accessor, `withhold_if_active=True` |
+| `GET /api/orders/chases/active` (`_chase_process_live_row` finalizer, `orders.py:331`) | accessor, `withhold_if_active=True` |
+| `chase.py` in-loop broker-truth check and post-ambiguous-abort backstop (`chase.py:837`, `:2939`) | `get_broker_order_truth` + `apply_order_truth` (no withhold; chase owns its own timing) |
+
+**Invariant**: a missing, empty or failed broker response is "unavailable", never "gone". No caller
+may translate an unavailable response into a status write.
+
+### 8.5.2 Chase Robustness Overhaul (2026-10-23)
+
+**File**: `backend/api/algo/chase.py` · `backend/api/models.py` · `backend/api/database.py`
+
+Commit `06c4ee45`. Amends the chase error-recovery and final-status subsections above.
+
+- **Per-call ceiling**: each chase broker call runs under `asyncio.wait_for(…, 30s)` inside
+  `_run()`. A placement timeout takes a dedicated **ambiguous-abort** path. That path does not retry,
+  because the broker may already hold the order. It then runs the accessor backstop (§8.5.1).
+- **Stuck detector**: a wall-clock check aborts and alerts a chase that is making no real progress.
+- **Terminal marker on every abort**: cancel-unconfirmed and consecutive-error aborts write
+  `CANCEL_FAILED`, not `REJECTED` (see §8.4.1 AMENDED). Every abort path writes some marker. None
+  leave a row silently OPEN.
+- **ntfy is a binary action-required gate**:
+  - Action-required outcomes reach ntfy as urgent: HELD, cancel-unconfirmed, consecutive-error abort,
+    non-recoverable rejection, stuck/timeout abort.
+  - FYI outcomes (a clean fill) go to Telegram, email and the log only. They never touch ntfy.
+- **`AlgoOrder.superseded_broker_order_ids_json`** (`models.py`; migration `database.py`, around
+  line 886): a JSON list written at cancel-confirm time, before the replacement order is placed. It
+  is the authoritative record of which `broker_order_id`s a cancel-and-replace has superseded. It is
+  surfaced on `AlgoOrderInfo.superseded_broker_order_ids` (parsed list; malformed JSON yields `[]`).
+  Written in `chase.py` near line 878.
+
 ## 8.6 Order Pairing — Parent-Child Relationship Linking (manual route REMOVED 2026-10-17)
 
 The manual `POST /api/orders/pair` route and its `OrderPairModal.svelte` UI (and the
@@ -2279,6 +2377,90 @@ The position-side `pair_group_key` / `is_orphan` fields are auto-detected lot-wa
 from `_auto_pair_positions()`, not order-derived. See
 [PULSE_SPEC.md](PULSE_SPEC.md) §4.4. Their former order-level derivation (from
 `parent_order_id`) is no longer in effect.
+
+---
+
+## 8.7 Order Poll Sweep & Broker-Truth Reconciliation (2026-10-23)
+
+**Files**: `backend/api/algo/order_poll.py` · `backend/api/background.py` (`_task_order_poll`,
+`bg-order-poll`) · `backend/api/routes/orders_postback.py` (follow-up verify) ·
+tests: `backend/tests/test_order_poll.py`, `backend/tests/test_chase_postback_active_gate.py`
+
+Commit `8c0d5180`. Builds on the accessor in §8.5.1.
+
+> **HTTP CONTRACT CHANGES (2026-10-23) — any API consumer of the two reconcile endpoints must read
+> this subsection.** Both changes are in the same commit as the sweep.
+>
+> | Endpoint | Field / status | Before (≤ 2026-10-19) | Now (2026-10-23) |
+> |---|---|---|---|
+> | `POST /api/orders/algo/reconcile` | response `missing` | Count of orders the broker confirmed gone. Each was marked **UNFILLED**. | Count of orders whose broker response was **unavailable**. Each row was **left untouched**. Same field name, different meaning. |
+> | `POST /api/orders/{broker_order_id}/reconcile` | HTTP status on broker fetch failure | **HTTP 502** (hard error). | **HTTP 200** with `truth.available = false` and an explanatory `note`. Soft-unavailable. |
+>
+> Consequences: a client that treated `missing > 0` as "broker says gone" is now wrong. A client
+> that caught 502 to show a retry banner now receives 200 and must check `truth.available`. The
+> bulk response shape is `{scanned, updated, missing}` (`orders.py:1853`). The per-card response
+> carries `truth` and `note`.
+
+### `order_poll.py` — the shared wrapper
+
+`reconcile_row_and_followup(row, ...)` ([`order_poll.py:60`](../../backend/api/algo/order_poll.py#L60))
+is the one wrapper that the open-order watchdog, the periodic sweep, and the postback follow-up all
+call. It runs the accessor (§8.5.1) and then the side effects.
+
+On a **genuine correction** — a row the DB thought OPEN turns out FILLED, CANCELLED or similar at
+the broker:
+- fires template-attach;
+- re-subscribes the instrument to the WebSocket tick feed;
+- logs an `order_correction` alert event via `ORDER_CORRECTION_AGENT`
+  ([`event_agents.py:750`](../../backend/api/algo/event_agents.py#L750)). It is urgent ntfy and
+  action-required, and also goes to Telegram. Pass `fire_alert=False` to suppress.
+
+### Chase-active no-op guard (WHY it exists)
+
+`reconcile_row_and_followup` is a **full no-op** when `chase.py:is_chase_active(row.id)` is True. The
+check runs **before** broker truth is touched.
+
+Reason: a low-tier chase can run for about 15 minutes. That is well past the 5-minute age cutoff
+every automatic caller uses. Without the gate, a background corrector could race the chase's own
+fill detection and fire a false `order_correction` alert for a completely normal fill that the chase
+was about to resolve itself. The chase owns its row while it is active. Corrections apply only after
+the chase exits.
+
+### Periodic sweep — `bg-order-poll`
+
+- **Task**: `_task_order_poll` ([`background.py:5612`](../../backend/api/background.py#L5612)),
+  registered as `bg-order-poll` through `_supervised` (`background.py:8894`). **This is a standing
+  background task.** It sits alongside the existing `bg-*` tasks in §9.1.
+- **Scope**: every live `OPEN` or `CANCEL_FAILED` `AlgoOrder`, broker-wide. It is not limited to
+  chase-driven rows. Rows younger than the 5-minute age cutoff are excluded
+  (`order_poll.py:215`).
+- **Cadence**: `performance.refresh_interval` in minutes, with the same resolver and fallback as the
+  book-poll backstop (`_task_performance`). Default 5 minutes.
+- Every row goes through `reconcile_row_and_followup`, so the chase-active gate applies to the sweep
+  too.
+
+### Postback follow-up verification
+
+`orders_postback.py` schedules a re-check of the same row **5 seconds** after every **terminal**
+postback event: Kite, Dhan and Groww.
+- `_pb_schedule_followup_verify` ([`orders_postback.py:940`](../../backend/api/routes/orders_postback.py#L940))
+  fires `_pb_followup_verify` as a fire-and-forget `asyncio.create_task`. The webhook response is not
+  delayed. A strong reference is kept in `_PB_FOLLOWUP_TASKS`.
+- The re-check reads real broker truth through the accessor, so it catches a wrong or incomplete
+  event payload.
+- Non-terminal events (OPEN / UPDATE) schedule no follow-up.
+- Delay constant: `_PB_FOLLOWUP_VERIFY_DELAY_S = 5.0`.
+
+### Accepted tradeoff — prior-day abandoned OPEN rows
+
+The watchdog and the sweep read a **day-scoped** broker snapshot. That snapshot cannot see an order
+from a prior trading day. A prior-day abandoned `OPEN` row is therefore **no longer auto-resolved to
+UNFILLED** by either path.
+
+This is UI and DB noise only, not a money-safety regression. `recover_live_chases()`
+(`background.py`, startup) independently re-verifies any such row with a **targeted per-order
+lookup** (Kite `order_history(order_id)`, not the bulk list). It resumes a chase only when it
+confirms a live state. Otherwise it skips the restart outright.
 
 ---
 
@@ -2353,6 +2535,13 @@ never binds the port.
 
 **Rule**: Any `_task_*` function that exits before its main `while True:` loop MUST include an 
 `await asyncio.sleep(N)` before the `return` to yield control and prevent tight looping.
+
+### Standing Task Added: `bg-order-poll` (2026-10-23)
+
+`_task_order_poll` (`bg-order-poll`) is a new standing task in this supervisor. It scans every live
+`OPEN` / `CANCEL_FAILED` order broker-wide, on the `performance.refresh_interval` cadence. It is
+supervised like the other `bg-*` tasks and it must follow the early-return rule above. Full
+behaviour, including the chase-active gate: §8.7.
 
 ### Token Refresh Delegation to Conn-Service
 
@@ -2727,6 +2916,18 @@ and `special_sessions=`. See CLAUDE.md "Market open/close determination" for the
 
 **I32 — API-side local tick poller is supervised, and lifecycle hooks never stop it (Oct 2026)**: In conn-service mode, the API process's `MmapTickReader` poll task is the only thing forwarding ticks to the browser SSE stream. `check_and_heal()` (every 30 s via `_task_ticker_watchdog`, and at 08:00 via `_snapshot_restart_ticker`) must restart it when dead. The snapshot lifecycle hooks (`_snapshot_unsub_nonmcx`, `_snapshot_stop_ticker`) must be no-ops in this mode, because they would otherwise stop the local poller with nothing scheduled to revive it. Details: §9.1 "API-Side Local Tick Poller Supervision".
 
+**I33 — Broker-truth reads never guess (2026-10-23)**: `get_broker_order_truth()` returns
+`available=False` for a missing, empty or failed broker response. Every reconcile path (watchdog,
+sweep, both admin reconcile routes, `/chases/active`, chase in-loop and backstop) writes only through
+`apply_order_truth()`. That writer locks the row, refuses to overwrite `FILLED` or `REJECTED`, and
+writes the FIFO ledger on a fill. An unavailable response is never a status write. Details: §8.5.1.
+Consumers of the reconcile HTTP responses: the contract changes flagged in §8.7.
+
+**I34 — A running chase owns its row (2026-10-23)**: the order-poll sweep, the watchdog and the
+postback follow-up all no-op for a row where `is_chase_active(row.id)` is True. The check runs before
+any broker truth read. This prevents false `order_correction` alerts on normal chase fills. Details:
+§8.7.
+
 ---
 
 ## 12. Test Coverage Map
@@ -2743,6 +2944,12 @@ and `special_sessions=`. See CLAUDE.md "Market open/close determination" for the
 | `test_ticker_failover.py` | Account swap, cooloff logic |
 | `test_market_data_broker.py` | Kite-only historical selection |
 | `test_virtual_root_endpoints.py` | resolve_symbol, root_of, _NEXT edge cases |
+| `test_order_truth_accessor.py` | `get_broker_order_truth` / `apply_order_truth` (§8.5.1, I33) |
+| `test_order_poll.py` | `reconcile_row_and_followup`, chase-active gate, sweep scope (§8.7, I34) |
+| `test_chase_postback_active_gate.py` | Postback withholding while a chase is active (§8.4.1) |
+| `test_chase_robustness_2026_10_23.py` | Chase ceilings, terminal markers, superseded-id column (§8.5.2) |
+| `test_chase_sync_final_status_race.py` | Final-status guard on racing sync writes (§8.4.1) |
+| `test_algo_order_info_broker_fields.py` | `AlgoOrderInfo.superseded_broker_order_ids` parsing (§8.5.2) |
 
 ### Gaps:
 - `translate_qty` raises on MCX `lot_size=0` (instruments cache miss path)
@@ -3280,3 +3487,4 @@ broker to prefetch during the quiet window without polluting snapshots.
 | 2026-10-07 | v1.32 RemoteBroker error type map completeness (commit e8d9a4d7): Updated §9 Remote Broker & Conn Service with new "Error type map completeness" paragraph. `_ERROR_TYPE_MAP` in `remote_broker.py` (lines 125–133) now includes all `BrokerError` subclasses: `BrokerAuthError`, `BrokerRateLimitError`, `BrokerNetworkError`, `BrokerOrderError`, `BrokerInputError`, `BrokerCapabilityError`, plus base `BrokerError`. Previously missing `BrokerInputError`, `BrokerOrderError`, `BrokerCapabilityError` degraded to generic `BrokerError` in conn-service mode, causing `_ch_is_recoverable_error()` misclassification as recoverable. Added drift-guard test in `backend/tests/broker/test_broker_robustness_batch2.py` enumerating every `BrokerError` subclass via introspection, failing automatically if new subclass added without map entry. No silent regressions if future code adds exception type to hierarchy. |
 | 2026-10-19 | v1.33 API-side local tick poller self-heal (commit 7bf11fac): §7 documents `MmapTickReader.check_and_heal()` (dead poll task restarted via `ensure_started()`, `[MMAP-WATCHDOG]` critical log per dead→alive transition, escalation at ≥3 heals per 600 s) and the conn-service scope of `_task_ticker_watchdog`. §9.1 new subsection "API-Side Local Tick Poller Supervision" with the snapshot-lifecycle table (`_snapshot_unsub_nonmcx` / `_snapshot_stop_ticker` no-op, `_snapshot_restart_ticker` heals instead of restarting the broker ticker); replaces stale `_task_ticker_watchdog` early-return example. §5.4 08:00 row qualified for conn-service mode. New I32 invariant. Browser-side symptom documented in PULSE_SPEC §31.1. Tests: `test_mmap_ticker.py`, `test_bg_ticker_watchdog.py`, `test_bg_snapshot_ticker_lifecycle.py`. |
 | 2026-10-07 | v1.32 Active-chase registry prevents false "untracked order" aborts (commits cc353596, c5322d53): Added §8.5 subsection "Active-chase registry prevents false untracked order aborts" documenting in-process registry pattern. Module-level `_ACTIVE_CHASE_REFCOUNT` dict (`backend/api/algo/chase.py` line 648) tracks in-flight chases; `chase_order()` calls `mark_chase_active(algo_order_id)` at entry (line 660, increments refcount) and `unmark_chase_active()` at exit in try/finally (lines 672–676). Kite postback, Dhan/Groww postback, and `_chase_process_live_row()` reconcile finalizer (`orders.py` line 225) check `is_chase_active()` before writing non-FILLED terminal status — if active, withhold write (log + continue), allowing active chase to finish naturally. FILLED always applies. **Causal chain**: (1) Chase places order (T0). (2) Seconds later, postback arrives REJECTED. (3) Old code: `_sync_algo_order_id()` (line 1064) correctly refused update on FINAL row but loop still aborted with false "untracked" alert (saw final row, had no way to know postback caused it vs another race). (4) Registry: postback checks `is_chase_active(row.id)` — if active, skips status write. (5) Chase loop's `_emit_chase_terminal()` completes naturally, reads genuinely-REJECTED order, terminates correctly (not false "untracked" abort). Root cause fix for cc353596's original guard. Files: `backend/api/algo/chase.py` (functions `mark_chase_active`, `unmark_chase_active`, `is_chase_active`, `_sync_algo_order_id`); `backend/api/routes/orders_postback.py` (Kite/Dhan/Groww postback handlers); `backend/api/routes/orders.py` (`_chase_process_live_row`). |
+| 2026-10-23 | v1.34 Chase robustness overhaul + order-poll consolidation (commits `06c4ee45`, `8c0d5180`). **HTTP CONTRACT CHANGES** on `POST /api/orders/algo/reconcile` (`missing` now means "broker unavailable, row untouched", not "gone, marked UNFILLED") and `POST /api/orders/{broker_order_id}/reconcile` (502 on broker fetch failure replaced by 200 with `truth.available=false`). Added §8.5.1 canonical `get_broker_order_truth` / `apply_order_truth` accessor, superseding the four divergent reconcile implementations (SUPERSEDED table kept). Added §8.5.2 chase robustness (30 s per-call ceiling, ambiguous-abort path, stuck detector, `CANCEL_FAILED` as the unknown-fate abort marker, binary ntfy gate, `superseded_broker_order_ids_json`). Added §8.7 `order_poll.py` (shared wrapper, chase-active no-op gate, `bg-order-poll` sweep, 5 s postback follow-up verify, prior-day OPEN tradeoff, `order_correction` alert). §8.4.1 "does NOT get this guard" sentence AMENDED: admin reconcile now receives the final-status guard. §9.1 standing-task note. I33, I34 invariants. Test map rows added. |

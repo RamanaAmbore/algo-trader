@@ -152,7 +152,7 @@ For shorts, invert (lowest_ltp_seen, subtraction becomes addition). Context (`hi
 
 | Issue | Check |
 |---|---|
-| Template not attaching after fill | Order's `attached_gtts_json` null? Check `/api/admin/logs` for "template attach error". As of Sprint A the attach fires from FOUR paths: postback handler, chase terminal, reconcile path, AND paper-engine fill. If one of those is silent the row still has another shot. Per-row `asyncio.Lock` (WeakValueDictionary) serialises concurrent fire attempts so duplicate GTTs can't be placed. |
+| Template not attaching after fill | Order's `attached_gtts_json` null? Check `/api/admin/logs` for "template attach error". As of Sprint A the attach fires from FOUR paths: postback handler, chase terminal, reconcile path, AND paper-engine fill. If one of those is silent the row still has another shot. Per-row `asyncio.Lock` (WeakValueDictionary) serialises concurrent fire attempts so duplicate GTTs can't be placed. As of 2026-10-23 the open-order watchdog, the order-poll sweep, and the postback follow-up also fire attach when they correct a row to FILLED (see [Order reconciliation](#order-reconciliation--correctors-order-poll-and-order_correction)). |
 | Wing not filling / showing wrong strike | Check `templates.wing_min_oi` and `templates.wing_max_spread_pct` settings. Highly illiquid options may have no candidates. Check broker logs. |
 | Trailing stop not advancing | Check `templates.trail_poll_interval_seconds` (default 30s). Two-leg OCO trails: Sprint A persists `tp_trigger` in `attached_gtts_json` so the poller can pass both `[tp, new_sl]` to `modify_gtt`. Pre-Sprint-A entries without `tp_trigger` log a one-time INFO line and skip — re-attach to enable trailing. Dhan OCO trail: Sprint C fixed the silent ENTRY_LEG-only bug; both legs now modify correctly. Groww: `modify_gtt` for compound `oco:` ids is not yet wired for trail (it's emulated single trails only). |
 | Operator says "I can't pick my template in OrderTicket" | Confirm template `is_active=True` (soft-delete, if you want to hide it). No UI toggle yet; DB edit required (or re-save from admin form). |
@@ -1837,6 +1837,99 @@ postback received
 
 ---
 
+## Order reconciliation — correctors, order poll, and `order_correction`
+
+An AlgoOrder row can leave `OPEN` through four automatic paths and two operator paths. All of
+them resolve broker truth through one accessor, `get_broker_order_truth()` and
+`apply_order_truth()` in [orders_helpers.py](backend/api/routes/orders_helpers.py). Rule across
+all of them: if the broker response is unavailable, the row is left untouched and retried later.
+Nothing is guessed.
+
+| Path | Trigger | Fires `order_correction`? |
+|---|---|---|
+| Postback follow-up (`source=postback-followup`) | Runs a few seconds after each postback's own fast apply | Yes, on a correction |
+| Open-order watchdog (`source=open-order-watchdog`) | `_task_open_order_watchdog`, 60 s default | Yes |
+| Order poll sweep (`source=order-poll`) | `_task_order_poll`, broker-wide, 5 min default | Yes |
+| `GET /api/orders/chases/active` | Polled by the chase panel while a tab is open | No, by design |
+| `POST /api/orders/algo/reconcile` (admin bulk) | Operator click or script | No |
+| `POST /api/orders/{broker_order_id}/reconcile` (admin per-card) | Operator click or script | No |
+
+**Order poll sweep** ([order_poll.py](backend/api/algo/order_poll.py)) is the broker-wide backstop
+added 2026-10-23. It does not depend on chase.
+
+- Scans every live `OPEN` or `CANCEL_FAILED` row older than 5 minutes, across all accounts.
+- Cadence: `orders.order_poll_seconds` on `/admin/settings` (floor 60 s). Unset, it follows the
+  performance refresh interval, which is 5 min by default. Re-read every cycle, no restart needed.
+- Skipped on a non-main branch with no PAPER, SIM, or REPLAY session running (`is_engine_idle()`).
+- Log line per sweep: `[ORDER-POLL] sweep scanned=N corrected=M`.
+- Re-checks `CANCEL_FAILED` rows too, so an unconfirmed cancel gets re-verified automatically.
+
+**Guards that apply to every corrector:**
+
+- A row with an active chase is skipped entirely (`is_chase_active()`). Chase's own broker checks
+  are authoritative for rows it owns.
+- `FILLED` and `REJECTED` are final. A corrector never overwrites them.
+- Without postback configuration (see [Broker postback webhooks](#broker-postback-webhooks)), the
+  order poll is the effective fill-detection backstop, at up to one cycle of lag.
+
+**Admin reconcile responses.** Both routes are operator-triggered and send no alert. The response
+is the only feedback.
+
+Bulk `POST /api/orders/algo/reconcile` returns counts only:
+
+```
+{"scanned": 12, "updated": 1, "missing": 0}
+```
+
+- `missing` is an integer count, not a list of rows, and its meaning has changed. It now counts
+  rows whose broker response was **unavailable**, which were left untouched. It does **not**
+  mean "broker confirmed the order is gone". Earlier builds set those rows to `UNFILLED`. That no
+  longer happens.
+- Rows with no `broker_order_id` are skipped silently and are not counted.
+
+Per-card `POST /api/orders/{broker_order_id}/reconcile` no longer returns HTTP 502 when the broker
+fetch fails. It returns 200:
+
+```
+{"broker_order_id": "240101000123", "broker_status": null, "algo_status": "OPEN",
+ "updated": false,
+ "note": "broker response unavailable for this order_id — left untouched (no guess)"}
+```
+
+- The response has no `truth` object and no `available` field. Detect a broker failure from
+  `broker_status: null` with `updated: false`, and read `note` for the reason.
+- Scripts that treated 502 as "reconcile failed" must be updated to check `updated` and `note`.
+- Caveat: when the algo row is missing and the broker response is also unavailable, `note` reads
+  "broker has no order", which is misleading. Treat that wording as "no answer from broker".
+
+**`order_correction` alert.** Sent by the three automatic correctors only, and only when they
+change a row.
+
+- Channels: Telegram plus urgent ntfy. ntfy urgent priority sends the push three times.
+- Title: `Order corrected: SYMBOL #<algo_order_id>`. The first body line is the origin
+  (`Agent: <name>` or `Agent: manual`), followed by `AlgoOrder #id <masked account> SYMBOL EXCH:
+  <prior> -> <new> (source=<corrector>)`.
+- `source=` names the path that caught it: `postback-followup`, `open-order-watchdog`, or
+  `order-poll`. Use it to see which path missed the event.
+- Frequent `order-poll` corrections mean the event-driven paths are missing fills. Check postback
+  configuration and ticker health (see the Connection Audit Log).
+- Log record: tag `orders`, level WARNING, `alert_event=order_correction`. Search
+  `/api/admin/logs` for `order_correction`.
+
+**Chase failure modes (2026-10-23).**
+
+- **`CANCEL_FAILED` instead of `REJECTED`.** When a chase aborts after consecutive client-side
+  errors and the broker's final state cannot be confirmed, the row is set to `CANCEL_FAILED`.
+  This is deliberate. `REJECTED` is final everywhere else, and marking it that way would block a
+  later real fill from being recorded. Check the broker order book. Cancel manually if the order
+  is still resting. The order poll keeps re-checking the row.
+- **Stuck-chase abort.** A chase with no fill and no confirmed-cancel progress for longer than
+  `max(60 s, max_attempts × interval_seconds × 0.5)` is aborted. It emits a `chase_stuck` event,
+  makes a final cancel attempt, and sends an alert titled "Chase stuck". It no longer hangs
+  silently until the attempt budget runs out.
+
+---
+
 ## History — `/admin/history`
 
 Multi-day forensic surface for the three "book of record" datasets — Orders (every order the platform placed), Trades (broker-confirmed fills), Funds (per-account margins ledger). Cap-gated by `view_audit` (designated / admin / risk) for read access; backfill endpoint gated by `admin_guard` (designated / admin only). Read-only; pairs with `/admin/audit` (event-level log) — this is the row-level book view.
@@ -2097,6 +2190,12 @@ Pre-optimization baseline of the hot-path bundle (every page-load assets) was ~1
 | Fired but no broker order | Check `/admin/settings` execution flags; might be `execution.live.<action>=false` |
 | Day P&L looks wrong | Verify against broker. Uses decomposed formula (see CLAUDE.md). MCX: ensure multiplier applied. |
 | "Invalid username or password" | Admin resets password (no forgot-password flow yet) |
+| Order still OPEN after broker filled or cancelled it | Wait one order-poll cycle (5 min default; watchdog ~60 s). Look for `[ORDER-POLL] sweep` log lines. Still OPEN → per-card Reconcile. If `note` says unavailable, the broker fetch is failing: check `fetch_fail` in the Connection Audit Log. |
+| Bulk reconcile returns `missing > 0` | Broker response was unavailable, not "confirmed gone". Rows were left untouched. Retry after the broker recovers. Do not set them to UNFILLED by hand. |
+| Per-card reconcile returns 200 with `updated: false` | Expected when the broker is unavailable or the order is not yet terminal. Read `note`. Scripts that expected 502 must be updated. |
+| "Order corrected" alert received | See [Order reconciliation](#order-reconciliation--correctors-order-poll-and-order_correction). Check `source=`, then confirm the position and any attached exit orders at the broker. |
+| Chase row shows `CANCEL_FAILED` | Deliberate: the final broker state is unconfirmed. Check the broker order book and cancel manually if still resting. The order poll keeps re-checking it. |
+| "Chase stuck" alert | No fill or confirmed-cancel progress within `max(60 s, max_attempts × interval × 0.5)`. The chase aborts and attempts a final cancel. Check the broker order book and the order's event timeline. |
 
 ---
 

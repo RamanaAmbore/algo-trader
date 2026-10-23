@@ -367,10 +367,14 @@ strategy would look like. Use this when modelling a trade you don't own
 yet: "what if I add a 24500 PE here?"
 
 Drafts persist server-side and survive page refresh. A draft is removed
-only when you confirm the real order (turn DRAFT OFF and submit). The
-DRAFT checkbox is independent of the CHASE toggle — both can be ON
-together, but when DRAFT is the active mode, no broker call happens
-even if chase is toggled.
+only when you confirm the real order (turn DRAFT OFF and submit).
+
+The CHASE control is hidden entirely while DRAFT is ON, not just greyed
+out. A draft never reaches your broker, so chase has nothing to act on,
+and showing the control suggested otherwise. Turning DRAFT OFF brings
+CHASE back. Chase status for live orders is unaffected; see
+[Watching a chase live](#watching-a-chase-live--the-order-button) in the
+chase section.
 
 **Where drafts show up:**
 - `/admin/derivatives` — the Candidates grid includes draft rows marked
@@ -547,6 +551,40 @@ If you submit an order with chase enabled and the exchange is already closed at 
   Console tab on `/automation` or the CLI tab on `/orders`, the
   chase engine handles it just like an agent-driven order.
 - **Post-placement chase failures** — if an order is placed but the fill chase later fails (e.g. price moves too far from the limit and attempts are exhausted), a Telegram + email alert fires so you know the position wasn't fully executed. Previously these post-placement failures were silent.
+- **Stuck chases** — a chase that makes no real progress (no fill and no confirmed
+  cancel) for an abnormally long stretch is aborted and alerted as "stuck", rather
+  than repricing silently until its attempt budget runs out.
+- **Cancel not confirmed** — if a chase gives up and the broker's final state can't
+  be confirmed, the order shows as `CANCEL_FAILED`, not `REJECTED`. This is
+  deliberate: the order may still be resting at the broker, so check your broker's
+  order book before assuming it is dead.
+
+### Watching a chase live — the Order button
+
+Chase status is not a standalone chip in the page header. It lives on the **Order**
+button:
+
+- **Click or tap** — opens a new order ticket, as before.
+- **Right-click (desktop) or long-press (mobile)** — opens the chase drawer. It shows
+  each chasing order's countdown to its next re-quote, its attempt count, and a Kill
+  control.
+
+A small dot on the Order button means at least one chase is running, so you can tell
+at a glance without opening anything. The first time the dot appears, a one-time hint
+explains the gesture.
+
+### "Order corrected" alerts
+
+Occasionally the platform finds an order whose local record disagreed with what the
+broker actually did, such as a fill that arrived without the normal signal. It
+corrects the record from the broker's version and sends a Telegram message plus an
+urgent push titled **"Order corrected: SYMBOL #id"**.
+
+This is a diagnostic signal, not a trading decision. It means the normal fill or
+cancel path missed the event and a backup check caught it. Two things to look at:
+
+- Confirm the order's position matches what you expect at your broker.
+- If the order had a template attached, its exit orders were placed at the moment of correction. Check them at your broker too.
 
 ---
 
