@@ -211,18 +211,27 @@ _OPT_SYM_RE = re.compile(
 
 
 def template_guard_message(*, template_slug, applies_to, reason, parent_order_id, parent_side,
-                           parent_qty, parent_symbol, parent_fill_price, parent_account, ist_label) -> str:
+                           parent_qty, parent_symbol, parent_fill_price, parent_account, ist_label,
+                           agent_id: "int | None" = None) -> str:
     """Telegram-HTML body of the template guard alert. Pure; shared by the sender and the renderer."""
     import html as _html
     from backend.shared.helpers.utils import mask_account
+    from backend.shared.helpers.alert_utils import format_notification_header
     reason_html        = _html.escape(str(reason))
     applies_to_html    = _html.escape(str(applies_to))
     template_slug_html = _html.escape(str(template_slug))
     # Account masked (2026-10 audit fix) — matches the masking convention
     # every other correctly-masked alert path already uses.
     masked_account = mask_account(parent_account) if parent_account else parent_account
+    # 2026-10 audit fix: origin header leads every alert — this order is
+    # always order-scoped (`AlgoOrder.agent_id`), so `agent_id` resolves
+    # to "manual" for a human-placed order, the real agent name otherwise.
+    origin_header = _html.escape(
+        format_notification_header(None, agent_id, ist_display=ist_label).splitlines()[0]
+    )
 
     tg_msg = (
+        f"{origin_header}\n"
         f"<b>⚠ Template guard fired — {ist_label}</b>\n\n"
         f"<code>"
         f"order #{parent_order_id}\n"
@@ -244,7 +253,8 @@ def _fire_guard_alert(*, template_slug: str, applies_to: str,
                        parent_account: str, parent_qty: int,
                        parent_fill_price: float,
                        parent_order_id: Optional[int],
-                       reason: str) -> None:
+                       reason: str,
+                       agent_id: "int | None" = None) -> None:
     """Fire a Telegram + email alert when the applies_to guard
     refuses an attach. Out-of-band via asyncio.create_task so the
     fill-path latency stays untouched. Every failure mode logs +
@@ -299,7 +309,7 @@ def _fire_guard_alert(*, template_slug: str, applies_to: str,
             "parent_order_id": parent_order_id, "parent_side": parent_side,
             "parent_qty": parent_qty, "parent_symbol": parent_symbol,
             "parent_fill_price": float(parent_fill_price), "parent_account": parent_account,
-            "ist_label": ist_label,
+            "ist_label": ist_label, "agent_id": agent_id,
         },
     )
 
@@ -315,6 +325,7 @@ def _check_offhours_wing_gate(
     parent_qty: int,
     parent_fill_price: float,
     parent_order_id,
+    parent_agent_id: "int | None" = None,
 ) -> "tuple[Optional[AttachResult], Optional[str]]":
     """(C1/#22) Return (early_result, offhours_note). early_result is non-None only
     when the template has a wing and exchange is closed — caller returns it immediately."""
@@ -344,7 +355,7 @@ def _check_offhours_wing_gate(
             )
             _res = AttachResult(plan=_plan)
             _res.errors.append(_err_msg)
-            _fire_attach_fail_alert(order_id=parent_order_id, symbol=parent_symbol, account=parent_account, errors=[_err_msg])
+            _fire_attach_fail_alert(order_id=parent_order_id, symbol=parent_symbol, account=parent_account, errors=[_err_msg], agent_id=parent_agent_id)
             return _res, None
         note = (
             f"GTT registered off-hours ({parent_exchange} closed) — "
@@ -378,16 +389,23 @@ def _fire_wing_unprotected_alert(
     )
 
 
-def template_attach_fail_message(*, order_id, symbol, account, err_summary, ist_label) -> str:
+def template_attach_fail_message(*, order_id, symbol, account, err_summary, ist_label,
+                                  agent_id: "int | None" = None) -> str:
     """Telegram-HTML body of the template attach failure alert. Pure; shared by sender and renderer."""
     import html as _html
     from backend.shared.helpers.utils import mask_account
+    from backend.shared.helpers.alert_utils import format_notification_header
     # Escape before embedding: err_summary is raw broker/guard text and may hold a literal '<'.
     err_summary_html = _html.escape(err_summary)
     # Account masked (2026-10 audit fix) — matches the masking convention
     # every other correctly-masked alert path already uses.
     masked_account = mask_account(account) if account else account
+    # 2026-10 audit fix: origin header leads every alert.
+    origin_header = _html.escape(
+        format_notification_header(None, agent_id, ist_display=ist_label).splitlines()[0]
+    )
     return (
+        f"{origin_header}\n"
         f"<b>⚠ Template attach failed — {ist_label}</b>\n\n"
         f"<code>"
         f"order #{order_id}\n"
@@ -405,6 +423,7 @@ def _fire_attach_fail_alert(
     symbol: str,
     account: str,
     errors: list,
+    agent_id: "int | None" = None,
 ) -> None:
     """Fire a Telegram-only alert when template attach fails due to an
     operational error (G1 guard, lot_size cache miss, broker placement
@@ -432,7 +451,7 @@ def _fire_attach_fail_alert(
     err_summary = "; ".join((str(e) for e in errors[:2]))
     tg_msg = template_attach_fail_message(
         order_id=order_id, symbol=symbol, account=account,
-        err_summary=err_summary, ist_label=ist_label,
+        err_summary=err_summary, ist_label=ist_label, agent_id=agent_id,
     )
     logger.warning(
         "attach fail alert dispatched: order #%s %s %s errors=[%s]",
@@ -440,7 +459,7 @@ def _fire_attach_fail_alert(
         extra={
             "tags": ["orders"], "alert_event": "template_attach_fail",
             "order_id": order_id, "symbol": symbol, "account": account,
-            "err_summary": err_summary, "ist_label": ist_label,
+            "err_summary": err_summary, "ist_label": ist_label, "agent_id": agent_id,
         },
     )
 
@@ -2012,7 +2031,8 @@ def _ta_live_place_one_gtt(
                     "GTT %s for %s not accepted: %s", spec.label, plan.parent_symbol, _gtt_reason,
                     extra={"tags": ["orders", "gtt"], "alert_event": "gtt_not_accepted",
                            "symbol": plan.parent_symbol, "label": spec.label,
-                           "gtt_id": str(gtt_id), "reason": _gtt_reason},
+                           "gtt_id": str(gtt_id), "reason": _gtt_reason,
+                           "agent_id": plan.parent_agent_id},
                 )
                 return pair_first_id
             _cancel_exc_msg: Optional[str] = None
@@ -2030,7 +2050,8 @@ def _ta_live_place_one_gtt(
                     plan.parent_symbol, _gtt_reason,
                     extra={"tags": ["orders", "gtt"], "alert_event": "gtt_not_accepted",
                            "symbol": plan.parent_symbol, "label": spec.label,
-                           "gtt_id": str(gtt_id), "reason": _gtt_reason},
+                           "gtt_id": str(gtt_id), "reason": _gtt_reason,
+                           "agent_id": plan.parent_agent_id},
                 )
                 return pair_first_id
             spec.unverified = True
@@ -2593,6 +2614,7 @@ def _check_applies_to_guard(
     parent_qty:        int,
     parent_fill_price: float,
     parent_order_id:   Optional[int],
+    parent_agent_id:   "int | None" = None,
 ) -> bool:
     """Enforce the template's applies_to field against the parent order's
     side and kind (incident 2026-06-22 guard).
@@ -2636,6 +2658,7 @@ def _check_applies_to_guard(
             parent_fill_price=parent_fill_price,
             parent_order_id=parent_order_id,
             reason=mismatch_reason,
+            agent_id=parent_agent_id,
         )
         return True
 
@@ -3036,6 +3059,7 @@ def _mcx_capability_guard(
     parent_fill_price: float,
     parent_order_id,
     template: dict,
+    parent_agent_id: "int | None" = None,
 ) -> "AttachResult | None":
     """Return a pre-filled AttachResult error if the broker doesn't support GTT
     on MCX/NCO, else return None. Fires an attach-fail alert when blocking."""
@@ -3065,6 +3089,7 @@ def _mcx_capability_guard(
         symbol=parent_symbol,
         account=parent_account,
         errors=[_err],
+        agent_id=parent_agent_id,
     )
     result.guard_alert_fired = True
     return result
@@ -3112,6 +3137,7 @@ def _ta_handle_unresolved_template_ref(
     parent_exchange:    str,
     parent_fill_price:  float,
     parent_order_id:    Optional[int],
+    parent_agent_id:    "int | None" = None,
 ):
     """Decide what `_apply_template_to_order_impl` does when
     `load_template_for_slug_or_id` returned None. Extracted to keep
@@ -3146,6 +3172,7 @@ def _ta_handle_unresolved_template_ref(
             f"Agent(kind='bracket') row — exits were NOT armed for "
             f"this fill"
         ],
+        agent_id=parent_agent_id,
     )
     if not has_any_override(overrides):
         return AttachResult(
@@ -3217,7 +3244,7 @@ async def _apply_template_to_order_impl(
             parent_account=parent_account, parent_symbol=parent_symbol,
             parent_side=parent_side, parent_qty=parent_qty,
             parent_exchange=parent_exchange, parent_fill_price=parent_fill_price,
-            parent_order_id=parent_order_id,
+            parent_order_id=parent_order_id, parent_agent_id=parent_agent_id,
         )
         # Non-dict (None, or an AttachResult carrying a loud failure) —
         # both are valid `Optional[AttachResult]` return values of THIS
@@ -3245,6 +3272,7 @@ async def _apply_template_to_order_impl(
     if _check_applies_to_guard(
         template, parent_side, parent_symbol,
         parent_account, parent_qty, parent_fill_price, parent_order_id,
+        parent_agent_id,
     ):
         return None
 
@@ -3269,6 +3297,7 @@ async def _apply_template_to_order_impl(
     _mcx_guard = _mcx_capability_guard(
         caps, parent_exchange, parent_account, parent_symbol,
         parent_side, parent_qty, parent_fill_price, parent_order_id, template,
+        parent_agent_id,
     )
     if _mcx_guard is not None:
         return _mcx_guard
@@ -3291,6 +3320,7 @@ async def _apply_template_to_order_impl(
                 symbol=parent_symbol,
                 account=parent_account,
                 errors=_lot_err.errors,
+                agent_id=parent_agent_id,
             )
         return _lot_err
 
@@ -3320,7 +3350,7 @@ async def _apply_template_to_order_impl(
     _early, _offhours_note = _check_offhours_wing_gate(
         apply_path, parent_exchange, template, parent_lot_size,
         parent_account, parent_symbol, parent_side, parent_qty,
-        parent_fill_price, parent_order_id,
+        parent_fill_price, parent_order_id, parent_agent_id,
     )
     if _early is not None:
         return _early
@@ -3379,6 +3409,7 @@ async def _apply_template_to_order_impl(
             symbol=parent_symbol,
             account=parent_account,
             errors=result.errors,
+            agent_id=parent_agent_id,
         )
     return result
 

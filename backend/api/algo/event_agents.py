@@ -63,6 +63,7 @@ def _render_chase_cancel(rec: dict) -> tuple[str, str]:
     """Chase cancel-and-replace could not confirm the cancel landed."""
     from backend.shared.helpers.utils import mask_account_in_text
     from backend.shared.helpers.date_time_utils import timestamp_display
+    from backend.shared.helpers.alert_utils import format_notification_header
     x = rec.get("extra") or {}
     # 2026-10 audit fix: the prior wording
     # "after attempt {attempt}/{quantity-remaining_qty} filled." reads
@@ -70,13 +71,17 @@ def _render_chase_cancel(rec: dict) -> tuple[str, str]:
     # actually "contracts already filled so far" — an unrelated number.
     # Spelled out unambiguously below.
     filled_so_far = x.get('quantity', 0) - x.get('remaining_qty', 0)
+    # 2026-10 audit fix: origin header leads every alert (order-scoped —
+    # `agent_id` threaded from the chase loop's own AlgoOrder context,
+    # "manual" when the chased order was placed by a human).
+    origin_header = format_notification_header(None, x.get('agent_id'), ist_display=timestamp_display())
     body = (
+        f"{origin_header}\n"
         f"{x.get('transaction_type')} {x.get('symbol')} — cancel of order {x.get('order_id')} "
         f"on {x.get('account')} could not be confirmed after attempt "
         f"{x.get('attempt')} ({filled_so_far} contracts filled so far). "
         f"The chase has been ABORTED without placing a replacement order. "
-        f"Manually verify the broker's order book — the old order may still be live.\n"
-        f"{timestamp_display()}"
+        f"Manually verify the broker's order book — the old order may still be live."
     )
     return "Chase cancel unconfirmed — possible resting duplicate order", mask_account_in_text(body)
 
@@ -84,12 +89,15 @@ def _render_chase_cancel(rec: dict) -> tuple[str, str]:
 def _render_partial_gtt(rec: dict) -> tuple[str, str]:
     """Only some of a parent order's planned GTTs were placed."""
     from backend.shared.helpers.date_time_utils import timestamp_display
+    from backend.shared.helpers.alert_utils import format_notification_header
     x = rec.get("extra") or {}
+    # 2026-10 audit fix: origin header leads every alert.
+    origin_header = format_notification_header(None, x.get('agent_id'), ist_display=timestamp_display())
     body = (
+        f"{origin_header}\n"
         f"parent #{x.get('parent_row_id')} {x.get('parent_symbol')}: "
         f"{x.get('placed')}/{x.get('planned')} GTTs placed. "
-        f"Errors: {'; '.join(x.get('errors') or [])}\n"
-        f"{timestamp_display()}"
+        f"Errors: {'; '.join(x.get('errors') or [])}"
     )
     return "Partial GTT placement", body
 
@@ -143,7 +151,7 @@ def _render_template_guard(rec: dict) -> tuple:
     from backend.shared.helpers.alert_utils import _html_to_plain
     x = rec.get("extra") or {}
     keys = ("template_slug", "applies_to", "reason", "parent_order_id", "parent_side", "parent_qty",
-            "parent_symbol", "parent_fill_price", "parent_account", "ist_label")
+            "parent_symbol", "parent_fill_price", "parent_account", "ist_label", "agent_id")
     tg = template_guard_message(**{k: x.get(k) for k in keys})
     title = "Template guard fired"
     email_subject = f"RamboQuant {title}: {x.get('parent_symbol') or ''}"
@@ -162,7 +170,7 @@ def _render_attach_fail(rec: dict) -> tuple:
     x = rec.get("extra") or {}
     tg = template_attach_fail_message(order_id=x.get("order_id"), symbol=x.get("symbol"),
                                       account=x.get("account"), err_summary=x.get("err_summary") or "",
-                                      ist_label=x.get("ist_label"))
+                                      ist_label=x.get("ist_label"), agent_id=x.get("agent_id"))
     title = "Template attach failed"
     email_subject = f"RamboQuant {title}: {x.get('symbol') or ''}"
     email_body = f"<html><body style='font-family:sans-serif'>{tg}</body></html>"
@@ -177,7 +185,19 @@ def _render_mcp_ping(rec: dict) -> tuple[str, str, str]:
 
 
 def _render_deploy_sync(rec: dict) -> tuple[str, str]:
-    """dev/main branches or their deploy webhooks have drifted out of sync."""
+    """dev/main branches or their deploy webhooks have drifted out of sync.
+
+    Also registered as the "generic_notice" renderer (see
+    `register_renderer("generic_notice")` below) — this function was
+    already a pure (title, body) passthrough with no deploy-sync-
+    specific logic, so it's reused as-is for the 2026-10 audit fix that
+    migrated 5 background.py alert call sites (gtt_asymmetric,
+    oco_double_fire, ticker_recovered, ticker_degraded, visitor_report)
+    off the deleted `alert_utils._alert_route()` dispatcher onto the
+    log-record + event-agent pipeline every other alert in this codebase
+    already uses. Kept under its original "deploy_sync" render key too
+    so DEPLOY_SYNC_AGENT's own behaviour is unchanged.
+    """
     x = rec.get("extra") or {}
     return x.get("title") or "Deploy out of sync", x.get("body") or ""
 
@@ -212,24 +232,41 @@ def _render_breach(rec: dict) -> tuple:
 def _render_gtt_not_accepted(rec: dict) -> tuple[str, str]:
     """A placed GTT was not accepted by the broker (status mismatch)."""
     from backend.shared.helpers.date_time_utils import timestamp_display
+    from backend.shared.helpers.alert_utils import format_notification_header
     x = rec.get("extra") or {}
+    # 2026-10 audit fix: origin header leads every alert.
+    origin_header = format_notification_header(None, x.get('agent_id'), ist_display=timestamp_display())
     return ("GTT not accepted at broker",
-            f"{x.get('symbol')} {x.get('label')} GTT {x.get('gtt_id')}: {x.get('reason')}\n"
-            f"{timestamp_display()}")
+            f"{origin_header}\n"
+            f"{x.get('symbol')} {x.get('label')} GTT {x.get('gtt_id')}: {x.get('reason')}")
 
 
 def _render_error(rec: dict) -> tuple[str, str, str]:
-    """An ERROR+ log line was written somewhere in the app."""
+    """An ERROR+ log line was written somewhere in the app.
+
+    2026-10 audit fix: this renderer is NOT order-scoped (a generic
+    ERROR+ log line, from anywhere in the app, rarely carries an
+    `agent_id` in its `extra` dict) — so the origin header below almost
+    always resolves to "Agent: manual". That's an accepted, known
+    imprecision ("no identifiable originating agent" is the honest
+    answer for a generic error log), not a claim that the error was
+    literally caused by a manual order. Any future caller that DOES
+    attach a real `agent_id` to an error-tagged log record gets the
+    real name for free.
+    """
     from backend.shared.helpers.utils import mask_account_in_text
     from backend.shared.helpers.date_time_utils import timestamp_display
+    from backend.shared.helpers.alert_utils import format_notification_header
+    x = rec.get("extra") or {}
     name = rec.get("logger") or ""
     msg = clean_message(mask_account_in_text(rec.get("message") or "") or "")
     repeats = rec.get("repeats") or 0
     suffix = f" (+{repeats} repeats)" if repeats else ""
     ts = timestamp_display()
-    tg = (f"<b>RamboQuant error</b>\n<code>{html.escape(name)}</code>\n"
+    origin_line = format_notification_header(None, x.get("agent_id"), ist_display=ts).splitlines()[0]
+    tg = (f"{html.escape(origin_line)}\n<b>RamboQuant error</b>\n<code>{html.escape(name)}</code>\n"
           f"{html.escape(msg)}{html.escape(suffix)}\n{html.escape(ts)}")
-    return "RamboQuant error", f"{name}\n{msg}{suffix}\n{ts}", tg
+    return "RamboQuant error", f"{origin_line}\n{name}\n{msg}{suffix}\n{ts}", tg
 
 
 def register_renderer(name: str):
@@ -249,6 +286,7 @@ register_renderer("template_guard")(_render_template_guard)
 register_renderer("template_attach_fail")(_render_attach_fail)
 register_renderer("mcp_ping")(_render_mcp_ping)
 register_renderer("deploy_sync")(_render_deploy_sync)
+register_renderer("generic_notice")(_render_deploy_sync)
 register_renderer("rich_alert")(_render_rich_alert)
 register_renderer("summary")(_render_summary)
 register_renderer("breach")(_render_breach)
@@ -710,6 +748,65 @@ BREACH_AGENT = {
     "actions": [{"type": "render", "render": "breach"}],
 }
 
+GTT_ASYMMETRIC_AGENT = {
+    "slug": "gtt-asymmetric-alert",
+    "name": "GTT asymmetric",
+    "conditions": {"log": {"tag": "gtt", "min_level": "WARNING",
+                           "where": {"alert_event": "gtt_asymmetric"}}},
+    "events": [
+        {"channel": "telegram", "enabled": True, "gate": False},
+        {"channel": "ntfy", "enabled": True, "priority": "high", "gate": False},
+    ],
+    "actions": [{"type": "render", "render": "generic_notice"}],
+}
+
+OCO_DOUBLE_FIRE_AGENT = {
+    "slug": "oco-double-fire-alert",
+    "name": "OCO double-fire",
+    "conditions": {"log": {"tag": "gtt", "min_level": "WARNING",
+                           "where": {"alert_event": "oco_double_fire"}}},
+    "events": [
+        {"channel": "telegram", "enabled": True, "gate": False},
+        {"channel": "ntfy", "enabled": True, "priority": "urgent", "gate": False},
+    ],
+    "actions": [{"type": "render", "render": "generic_notice"}],
+}
+
+TICKER_RECOVERED_AGENT = {
+    "slug": "ticker-recovered-alert",
+    "name": "Ticker recovered",
+    "conditions": {"log": {"tag": "broker", "min_level": "INFO",
+                           "where": {"alert_event": "ticker_recovered"}}},
+    "events": [
+        {"channel": "telegram", "enabled": True, "gate": False},
+        {"channel": "ntfy", "enabled": True, "priority": "high", "gate": False},
+    ],
+    "actions": [{"type": "render", "render": "generic_notice"}],
+}
+
+TICKER_DEGRADED_AGENT = {
+    "slug": "ticker-degraded-alert",
+    "name": "Ticker degraded",
+    "conditions": {"log": {"tag": "broker", "min_level": "WARNING",
+                           "where": {"alert_event": "ticker_degraded"}}},
+    "events": [
+        {"channel": "telegram", "enabled": True, "gate": False},
+        {"channel": "ntfy", "enabled": True, "priority": "urgent", "gate": False},
+    ],
+    "actions": [{"type": "render", "render": "generic_notice"}],
+}
+
+VISITOR_REPORT_AGENT = {
+    "slug": "visitor-report-alert",
+    "name": "Visitor report",
+    "conditions": {"log": {"tag": "visitor", "min_level": "INFO",
+                           "where": {"alert_event": "visitor_report"}}},
+    "events": [
+        {"channel": "telegram_info", "enabled": True, "gate": False},
+    ],
+    "actions": [{"type": "render", "render": "generic_notice"}],
+}
+
 GTT_NOT_ACCEPTED_AGENT = {
     "slug": "gtt-not-accepted-alert",
     "name": "GTT not accepted",
@@ -777,7 +874,8 @@ SEEDED_AGENTS = (
     TEMPLATE_ATTACH_URGENT_AGENT, TEMPLATE_ATTACH_HIGH_AGENT, ORDER_FAILURE_AGENT,
     TEMPLATE_GUARD_AGENT, TEMPLATE_ATTACH_FAIL_AGENT, MCP_PING_AGENT,
     DEPLOY_SYNC_AGENT, RICH_ALERT_AGENT, SUMMARY_AGENT, BREACH_AGENT,
-    GTT_NOT_ACCEPTED_AGENT,
+    GTT_NOT_ACCEPTED_AGENT, GTT_ASYMMETRIC_AGENT, OCO_DOUBLE_FIRE_AGENT,
+    TICKER_RECOVERED_AGENT, TICKER_DEGRADED_AGENT, VISITOR_REPORT_AGENT,
 )
 
 

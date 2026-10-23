@@ -800,9 +800,22 @@ async def _positions_refresh_after_fill(
 
 
 async def _opp_send_cancel_alert(account: str, symbol: str, txn: str, qty: object, status_message: str) -> None:
-    from backend.shared.helpers.alert_utils import send_ntfy_alert
-    msg = f"Order cancelled: {mask_account(account)} {txn} {qty} {symbol} — {status_message}"
-    await asyncio.to_thread(send_ntfy_alert, msg)
+    # 2026-10 audit fix: `send_ntfy_alert(title, message, priority=None)`
+    # was called with a single positional argument (`msg` bound to
+    # `title`), raising a `TypeError` inside the fire-and-forget
+    # `create_task` this is scheduled from (orders.py's postback
+    # fan-out) — every postback CANCELLED alert silently never sent.
+    # Fixed: proper title/message split, routed through the shared
+    # origin-first header (this call bypasses the event-agent pipeline
+    # entirely, so it previously carried no agent info at all;
+    # `format_notification_header(None, None, ...)` degrades to
+    # "Agent: manual" — there is no agent context threaded to this
+    # fan-out helper today).
+    from backend.shared.helpers.alert_utils import send_ntfy_alert, format_notification_header
+    title = f"Order cancelled: {symbol}"
+    header = format_notification_header(None, None)
+    message = f"{header}\n{mask_account(account)} {txn} {qty} {symbol} — {status_message}"
+    await asyncio.to_thread(send_ntfy_alert, title, message)
 
 
 def _postback_broadcast_fanout(

@@ -1402,3 +1402,5 @@ log_tags:
     description: 'Deploy state: branch sync and webhook health (owner: background tasks).'
   - token: summary
     description: 'Open and close market summaries (owner: background tasks).'
+  - token: visitor
+    description: 'Daily visitor/traffic log report (owner: background tasks).'

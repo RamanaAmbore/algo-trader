@@ -4881,18 +4881,30 @@ async def _send_trail_partial_modify_alert(
         f"intervention required."
     )
     try:
-        from backend.shared.helpers.alert_utils import _alert_route
-        await asyncio.to_thread(
-            _alert_route,
-            'gtt_asymmetric',
-            "GTT asymmetric",
-            (
-                f"⚠ Dhan GTT asymmetric: "
-                f"{parent_symbol} on {row.account} — "
-                f"trail ratcheted entry but target "
-                f"leg rejected. Cancel + recreate "
-                f"or verify at broker."
-            ),
+        # 2026-10 audit fix: `alert_utils._alert_route()` (the old
+        # config-driven routing dispatcher) was deleted in commit
+        # 83dfd346 ("the legacy routing table and dispatcher are
+        # removed, so agent rows are the only channel source") — this
+        # call site was missed in that migration and had raised
+        # AttributeError on every GTT-asymmetric incident since, with no
+        # alert ever reaching the operator. Fixed by routing through the
+        # same log-record + event-agent pipeline every other alert in
+        # this codebase already uses (GTT_ASYMMETRIC_AGENT,
+        # event_agents.py). Account masked — matches the masking
+        # convention every other correctly-masked alert path uses.
+        from backend.shared.helpers.utils import mask_account
+        masked_account = mask_account(row.account) if getattr(row, "account", None) else "-"
+        msg = (
+            f"⚠ Dhan GTT asymmetric: "
+            f"{parent_symbol} on {masked_account} — "
+            f"trail ratcheted entry but target "
+            f"leg rejected. Cancel + recreate "
+            f"or verify at broker."
+        )
+        logger.warning(
+            "[GTT-ASYMMETRIC] %s", msg,
+            extra={"tags": ["gtt"], "alert_event": "gtt_asymmetric",
+                   "title": "GTT asymmetric", "body": msg},
         )
     except Exception:
         pass
@@ -5339,19 +5351,26 @@ async def _oco_handle_settled_pair(
         f"verify no double-close at the broker."
     )
     try:
-        from backend.shared.helpers.alert_utils import _alert_route
-        await asyncio.to_thread(
-            _alert_route,
-            'oco_double_fire',
-            "OCO double-fire",
-            (
-                f"⚠ OCO double-fire (emulated): "
-                f"{entry.get('parent_symbol', '?')} on "
-                f"{entry.get('parent_account', '?')} — "
-                f"both legs settled in one 15s poll "
-                f"window. Verify broker position; "
-                f"manual close may be needed."
-            ),
+        # 2026-10 audit fix: `_alert_route()` was deleted (commit
+        # 83dfd346) and this call site was missed — see
+        # `_send_trail_partial_modify_alert`'s docstring above for the
+        # full rationale. Routed through the log-record + event-agent
+        # pipeline (OCO_DOUBLE_FIRE_AGENT). Account masked.
+        from backend.shared.helpers.utils import mask_account
+        parent_account = entry.get("parent_account", "?")
+        masked_account = mask_account(parent_account) if parent_account and parent_account != "?" else "?"
+        msg = (
+            f"⚠ OCO double-fire (emulated): "
+            f"{entry.get('parent_symbol', '?')} on "
+            f"{masked_account} — "
+            f"both legs settled in one 15s poll "
+            f"window. Verify broker position; "
+            f"manual close may be needed."
+        )
+        logger.warning(
+            "[OCO-DOUBLE-FIRE] %s", msg,
+            extra={"tags": ["gtt"], "alert_event": "oco_double_fire",
+                   "title": "OCO double-fire", "body": msg},
         )
     except Exception as _alert_err:
         logger.debug(f"[OCO-WATCH] double-fire alert failed: {_alert_err}")
@@ -6164,14 +6183,15 @@ async def _watchdog_check_market_open(
 
 async def _watchdog_handle_recovery(ticker: object, status: dict) -> None:
     """Send a recovery alert when a previously-degraded ticker reconnects."""
-    from backend.shared.helpers.alert_utils import _alert_route
     _ticker_alert_state["alert_active"] = False
     now_ts = _time.time()
     duration_min = int((now_ts - _ticker_alert_state["incident_start"]) / 60)
     branch = config.get("deploy_branch", "main")
     branch_tag = f" [{branch}]" if branch != "main" else ""
     ts = timestamp_display()
-    connected_acct = status.get("account", ticker.current_account() or "?")  # type: ignore[union-attr]
+    from backend.shared.helpers.utils import mask_account
+    raw_acct = status.get("account", ticker.current_account() or "?")  # type: ignore[union-attr]
+    connected_acct = mask_account(raw_acct) if raw_acct and raw_acct != "?" else "?"
     msg = (
         f"TickerWatchdog{branch_tag} — recovered\n"
         f"Ticker connected on {connected_acct}\n"
@@ -6179,7 +6199,21 @@ async def _watchdog_handle_recovery(ticker: object, status: dict) -> None:
         f"Time: {ts}"
     )
     logger.info(f"ticker watchdog: recovered on {connected_acct} after {duration_min} min")
-    await asyncio.to_thread(_alert_route, 'ticker_recovered', "Ticker recovered", msg)
+    try:
+        # 2026-10 audit fix: `_alert_route()` was deleted (commit
+        # 83dfd346) and this call site was missed — see
+        # `_send_trail_partial_modify_alert`'s docstring above for the
+        # full rationale. Routed through the log-record + event-agent
+        # pipeline (TICKER_RECOVERED_AGENT). Previously had NO try/except
+        # at all — a failure here (e.g. a future alert-pipeline change)
+        # would have propagated straight into the ticker watchdog loop.
+        logger.info(
+            "[TICKER-RECOVERED] %s", msg,
+            extra={"tags": ["broker"], "alert_event": "ticker_recovered",
+                   "title": "Ticker recovered", "body": msg},
+        )
+    except Exception as _alert_err:
+        logger.debug(f"ticker-recovered alert record failed: {_alert_err}")
 
 
 def _watchdog_select_failover(
@@ -6213,19 +6247,21 @@ def _bg_build_degraded_msg(
     is_refire: bool,
 ) -> str:
     """Build the Telegram message for a ticker-degraded incident."""
+    from backend.shared.helpers.utils import mask_account
     branch = config.get("deploy_branch", "main")
     branch_tag = f" [{branch}]" if branch != "main" else ""
     ts = timestamp_display()
     disconnected_s = ticker.seconds_since_disconnect()  # type: ignore[union-attr]
     acct_list = ", ".join(
-        b_acct for b in eligible
+        mask_account(b_acct) for b in eligible
         if (b_acct := getattr(b, "account", "") or "")
     ) or "?"
+    current_masked = mask_account(current) if current else "?"
     refire_note = " (re-alert)" if is_refire else ""
     return (
         f"TickerWatchdog{branch_tag} — degraded{refire_note}\n"
         f"Both Kite accounts in failover cool-off.\n"
-        f"Disconnect: {current or '?'} → {acct_list} (all blocked)\n"
+        f"Disconnect: {current_masked} → {acct_list} (all blocked)\n"
         f"Sparkline degrading to broker.ltp() polling.\n"
         f"Disconnected for: {disconnected_s:.0f}s\n"
         f"Time: {ts}"
@@ -6239,7 +6275,6 @@ async def _watchdog_alert_degraded(
     alert_refire_s: float,
 ) -> None:
     """Fire (or re-fire) the degraded alert when all accounts are blocked."""
-    from backend.shared.helpers.alert_utils import _alert_route
     now_ts = _time.time()
     should_alert = (
         not _ticker_alert_state["alert_active"]
@@ -6259,7 +6294,21 @@ async def _watchdog_alert_degraded(
         f"(current={current or '?'}, disconnected_s={disconnected_s:.0f}) — "
         f"continuing to wait for primary to recover"
     )
-    await asyncio.to_thread(_alert_route, 'ticker_degraded', "Ticker degraded", msg)
+    try:
+        # 2026-10 audit fix: `_alert_route()` was deleted (commit
+        # 83dfd346) and this call site was missed — see
+        # `_send_trail_partial_modify_alert`'s docstring above for the
+        # full rationale. Routed through the log-record + event-agent
+        # pipeline (TICKER_DEGRADED_AGENT). Previously had NO try/except
+        # at all — a failure here would have propagated straight into
+        # the ticker watchdog loop.
+        logger.warning(
+            "[TICKER-DEGRADED] %s", msg,
+            extra={"tags": ["broker"], "alert_event": "ticker_degraded",
+                   "title": "Ticker degraded", "body": msg},
+        )
+    except Exception as _alert_err:
+        logger.debug(f"ticker-degraded alert record failed: {_alert_err}")
 
 
 def _bg_watchdog_reset_alert_state() -> None:
@@ -6457,11 +6506,22 @@ async def _task_visitor_log_daily() -> None:
 
             if send_telegram:
                 try:
-                    from backend.shared.helpers.alert_utils import _alert_route
+                    # 2026-10 audit fix: `_alert_route()` was deleted
+                    # (commit 83dfd346) and this call site was missed —
+                    # see `_send_trail_partial_modify_alert`'s docstring
+                    # above for the full rationale. Routed through the
+                    # log-record + event-agent pipeline
+                    # (VISITOR_REPORT_AGENT, "telegram_info" channel —
+                    # same dedicated RamboQuant-alerts channel the old
+                    # `telegram: info` routing config used).
                     from backend.scripts.visitor_report import summary_for_telegram
                     tg_body = summary_for_telegram(report_path)
                     msg = f"<b>Visitors{branch_tag}</b>\n{tg_body}"
-                    await asyncio.to_thread(_alert_route, 'visitor_report', "Visitor report", msg)
+                    logger.info(
+                        "[VISITOR-REPORT] %s", msg,
+                        extra={"tags": ["visitor"], "alert_event": "visitor_report",
+                               "title": "Visitor report", "body": msg},
+                    )
                 except Exception as tg_err:
                     logger.warning(f"Background: visitor log alert failed: {tg_err}")
             # Operator request (Jun 2026): visitor reports ship to the

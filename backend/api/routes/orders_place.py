@@ -888,6 +888,7 @@ async def _fire_template_attach_on_fill(
                         "parent_row_id": parent_row_id, "parent_symbol": parent_symbol,
                         "planned": _planned_gtt_count, "placed": _placed_gtt_count,
                         "errors": [str(e) for e in result.errors[:2]],
+                        "agent_id": row_info.get("agent_id"),
                     },
                 )
 

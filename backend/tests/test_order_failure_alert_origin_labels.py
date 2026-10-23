@@ -51,6 +51,58 @@ class TestClassifyOrderOriginLabel:
         assert _classify_order_origin_label("template_wing_chase", 42) == "Agent Bracket"
 
 
+class TestManualSentinelRecognisedByIdAlone:
+    """2026-10 audit fix — regression test for the confirmed bug: a
+    manual order's `AlgoOrder.agent_id` is the REAL id of the synthetic
+    "manual" Agent row (not None). Before this fix,
+    `_classify_order_origin_label` treated `agent_id is not None` as
+    "agent-fired", so a manual order's FAILURE/REJECTION alert was
+    mislabeled "Agent"/"Agent Bracket" even though that SAME order's
+    FILL alert (via fill_notify, which resolves the real name through
+    the DB) correctly showed "manual". This test fails against the
+    pre-fix `agent_id is not None` check for any sentinel id other than
+    the Python singleton `None` itself.
+    """
+
+    def test_fill_and_failure_paths_resolve_to_the_same_origin(self, monkeypatch):
+        from backend.shared.helpers import alert_utils
+        from backend.api.algo import fill_notify
+        from types import SimpleNamespace
+
+        sentinel_id = 99
+        monkeypatch.setitem(alert_utils._MANUAL_AGENT_ID_CACHE, "id", sentinel_id)
+
+        # FILL path: fill_notify always resolves a real name string for
+        # ANY agent_id via its own DB round-trip (notify_fills) — for
+        # the manual sentinel that name is "Manual operator order".
+        fill_row = SimpleNamespace(
+            id=1, account="ZG0790", symbol="NIFTY26OCTFUT", exchange="NFO",
+            transaction_type="BUY", quantity=75, fill_price=100.0, product="NRML",
+            agent_name="Manual operator order",
+        )
+        _, fill_body = fill_notify.format_fill_message(fill_row)
+        fill_origin_line = fill_body.splitlines()[0]
+
+        # FAILURE path: only the bare sentinel agent_id reaches
+        # `_classify_order_origin_label` — no name available.
+        failure_label = alert_utils._classify_order_origin_label("chase", sentinel_id)
+
+        assert fill_origin_line == "Agent: manual"
+        assert failure_label == "Manual", (
+            "a manual order's failure alert must label the SAME as its "
+            "fill alert — both must resolve to the manual sentinel, "
+            "not 'Agent'"
+        )
+
+    def test_real_agent_id_still_labeled_agent(self, monkeypatch):
+        from backend.shared.helpers import alert_utils
+
+        monkeypatch.setitem(alert_utils._MANUAL_AGENT_ID_CACHE, "id", 99)
+        # A genuinely different, real agent id must still classify as
+        # "Agent" — the cache check is scoped to the sentinel's own id.
+        assert alert_utils._classify_order_origin_label("chase", 7) == "Agent"
+
+
 class TestOrderFailureMessagesEmbedLabel:
     def _call(self, **overrides):
         from backend.shared.helpers.alert_utils import order_failure_messages

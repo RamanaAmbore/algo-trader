@@ -67,3 +67,58 @@ class TestOrderLifecycleGapFixes:
         assert '"placed"' in src or "'placed'" in src, (
             '_opp_live_handle_success must call write_event with "placed" kind'
         )
+
+
+class TestCancelAlertSendsWithoutTypeError:
+    """2026-10 audit fix — `_opp_send_cancel_alert` called
+    `send_ntfy_alert(msg)` with a single positional argument. The real
+    signature is `(title, message, priority=None)`, so `msg` bound to
+    `title` and the required `message` parameter was missing —
+    `TypeError` on every real call, swallowed silently inside the
+    fire-and-forget `create_task` this is scheduled from (orders.py's
+    postback fan-out), losing every postback CANCELLED alert.
+    """
+
+    @pytest.mark.asyncio
+    async def test_real_call_no_longer_raises_typeerror(self, monkeypatch):
+        import backend.api.routes.orders as orders_mod
+
+        captured = {}
+
+        def _fake_send(title, message, priority=None):
+            captured["title"] = title
+            captured["message"] = message
+
+        monkeypatch.setattr(
+            "backend.shared.helpers.alert_utils.send_ntfy_alert", _fake_send,
+        )
+        # No exception means the TypeError regression is fixed — a bare
+        # call with the pre-fix single-argument signature would have
+        # raised here.
+        await orders_mod._opp_send_cancel_alert(
+            "ZG0790", "NIFTY26OCTFUT", "SELL", 75, "Cancelled by user",
+        )
+        assert captured["title"] == "Order cancelled: NIFTY26OCTFUT"
+        assert "ZG0790" not in captured["message"], "account must be masked"
+        assert "ZG####" in captured["message"]
+        assert "SELL 75 NIFTY26OCTFUT" in captured["message"]
+        assert "Cancelled by user" in captured["message"]
+
+    @pytest.mark.asyncio
+    async def test_message_leads_with_the_shared_origin_header(self, monkeypatch):
+        """This call site bypasses the event-agent pipeline entirely and
+        carries no agent context — `format_notification_header(None, None)`
+        degrades to "Agent: manual" as the message's first line."""
+        import backend.api.routes.orders as orders_mod
+
+        captured = {}
+        monkeypatch.setattr(
+            "backend.shared.helpers.alert_utils.send_ntfy_alert",
+            lambda title, message, priority=None: captured.update(
+                title=title, message=message,
+            ),
+        )
+        await orders_mod._opp_send_cancel_alert(
+            "ZG0790", "NIFTY26OCTFUT", "SELL", 75, "Cancelled by user",
+        )
+        assert captured["message"].splitlines()[0] == "Agent: manual"

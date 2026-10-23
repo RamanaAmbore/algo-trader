@@ -1643,6 +1643,18 @@
         "column": "tags",
         "match": "contains"
       }
+    },
+    {
+      "grammar_kind": "log",
+      "token_kind": "tag",
+      "token": "visitor",
+      "value_type": "string",
+      "description": "Daily visitor/traffic log report (owner: background tasks).",
+      "source": {
+        "table": "log_events",
+        "column": "tags",
+        "match": "contains"
+      }
     }
   ],
   "log_tags": [
@@ -1748,6 +1760,18 @@
       "token": "summary",
       "value_type": "string",
       "description": "Open and close market summaries (owner: background tasks).",
+      "source": {
+        "table": "log_events",
+        "column": "tags",
+        "match": "contains"
+      }
+    },
+    {
+      "grammar_kind": "log",
+      "token_kind": "tag",
+      "token": "visitor",
+      "value_type": "string",
+      "description": "Daily visitor/traffic log report (owner: background tasks).",
       "source": {
         "table": "log_events",
         "column": "tags",

@@ -214,10 +214,12 @@ class TestSeededAgentsGateKeysAreDeclared:
         assert undeclared == [], f"undeclared render-action keys found: {undeclared}"
 
     def test_inventory_channel_level_gate_agent_count(self):
-        """Regression guard on the confirmed inventory (Sprint 18): 8 of
-        15 real seeded agents carry a channel-level `gate` key. If this
-        count changes, the commit's own inventory claim is now wrong —
-        update both in lockstep, don't just bump the number here."""
+        """Regression guard on the confirmed inventory (Sprint 18, updated
+        2026-10 audit fix for the 5 agents that replaced the deleted
+        `alert_utils._alert_route()` dispatcher): 13 of 20 real seeded
+        agents carry a channel-level `gate` key. If this count changes,
+        the commit's own inventory claim is now wrong — update both in
+        lockstep, don't just bump the number here."""
         slugs = {
             agent["slug"]
             for agent in ea.SEEDED_AGENTS
@@ -227,6 +229,8 @@ class TestSeededAgentsGateKeysAreDeclared:
             "order-failure-alert", "template-guard-alert", "template-attach-fail-alert",
             "mcp-ping-alert", "deploy-sync-alert", "agent-alert-rich",
             "market-summary", "gtt-not-accepted-alert",
+            "gtt-asymmetric-alert", "oco-double-fire-alert",
+            "ticker-recovered-alert", "ticker-degraded-alert", "visitor-report-alert",
         }
 
     def test_inventory_action_level_gate_agent_count(self):

@@ -2258,6 +2258,7 @@ def _ch_build_cancel_unconfirmed_abort(
     result: "ChaseResult", symbol: str, account: str, transaction_type: str,
     quantity: int, remaining_qty: int, attempt: int,
     current_order_id: "str | None", algo_order_id: "int | None", emit: Callable,
+    agent_id: "int | None" = None,
 ) -> "ChaseResult":
     """2026-09 council audit fix (risk lens) — abort path for a cancel
     that could not be confirmed. Fail-SAFE: never place a replacement
@@ -2285,6 +2286,7 @@ def _ch_build_cancel_unconfirmed_abort(
             "transaction_type": transaction_type, "symbol": symbol, "account": account,
             "order_id": current_order_id, "attempt": attempt,
             "quantity": quantity, "remaining_qty": remaining_qty,
+            "agent_id": agent_id,
         },
     )
     emit("chase_cancel_unconfirmed", {
@@ -2316,6 +2318,7 @@ async def _ch_cancel_and_capture(
     quantity: int, remaining_qty: int,
     cumulative_filled: int, current_order_filled: int,
     algo_order_id: "int | None", result: "ChaseResult", transaction_type: str,
+    agent_id: "int | None" = None,
 ) -> "tuple[int, int, int, ChaseResult | None]":
     """Cancel the previous resting order (if any) and capture any fill
     that landed in the race window before the cancel confirmed (C2).
@@ -2351,6 +2354,7 @@ async def _ch_cancel_and_capture(
         early = _ch_build_cancel_unconfirmed_abort(
             result, symbol, account, transaction_type, quantity,
             remaining_qty, attempt, current_order_id, algo_order_id, emit,
+            agent_id=agent_id,
         )
         return cumulative_filled, current_order_filled, remaining_qty, early
     if remaining_qty <= 0:
@@ -2681,7 +2685,7 @@ async def _chase_order_impl(
                 await _ch_cancel_and_capture(
                     account, current_order_id, cfg, symbol, attempt, emit,
                     quantity, remaining_qty, cumulative_filled, current_order_filled,
-                    algo_order_id, result, transaction_type,
+                    algo_order_id, result, transaction_type, agent_id=agent_id,
                 )
             )
             if _early is not None:

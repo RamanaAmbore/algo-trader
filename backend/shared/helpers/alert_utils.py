@@ -430,11 +430,12 @@ def _email_message(
 ) -> tuple[str, str]:
     """Subject and HTML body of an agent or summary email. Pure.
 
-    `agent_line` — the real firing agent's "Agent: {name} (#{id})" label,
-    shown as an additional paragraph right below the existing dual-tz
-    `ist_display` header line. Empty string (the default) when the alert
-    has no single originating agent (summaries) — never put into the
-    subject, which must stay single-line."""
+    `agent_line` — the real firing agent's "Agent: {name} (#{id})" label.
+    2026-10 audit fix: now shown ABOVE the dual-tz `ist_display` header
+    paragraph (was below it) — origin leads, matching the Telegram body's
+    same reordering. Empty string (the default) when the alert has no
+    single originating agent (summaries) — never put into the subject,
+    which must stay single-line."""
     subj_pfx = f"{email_prefix_full}{branch_tag}{(' ' + mode_tag) if mode_tag else ''}"
     subject = (
         f"{subj_pfx}{subject_detail}"
@@ -452,10 +453,10 @@ def _email_message(
         f"color:{_EMAIL_TEXT};margin:0;padding:18px'>"
         f"<div style='max-width:760px;margin:0 auto'>"
         f"{banners}"
+        f"{agent_line_html}"
         f"<p style='font-size:14px;color:{_EMAIL_AMBER};letter-spacing:0.04em;"
         f"margin:0 0 14px 0'>"
         f"<b>{tg_prefix_full}{branch_tag} — {ist_display}</b></p>"
-        f"{agent_line_html}"
         f"{email_table_html}"
         f"</div>"
         f"</body></html>"
@@ -495,17 +496,95 @@ def _build_email_banners(sim_mode: bool, branch: str) -> str:
     return banners
 
 
+# ---------------------------------------------------------------------------
+# Agent-origin resolution — "who really fired this" for every alert.
+#
+# `resolve_origin()` is a SYNC, no-I/O function (it is called from deep
+# inside the renderer/dispatch hot-path — event_agents.py renderers are
+# plain sync functions, never awaited for a DB round-trip). The manual
+# sentinel Agent row's id is resolved ONCE at startup (and re-resolvable
+# on demand) into `_MANUAL_AGENT_ID_CACHE` so a caller that only has a
+# bare `agent_id` int (no name — e.g. order_failure_messages) can still
+# recognise "this IS the manual sentinel" without a DB hit per alert.
+# A caller that already resolved a real `agent_name` (e.g.
+# fill_notify.notify_fills's own DB round-trip) gets the sentinel-by-name
+# check for free, with no dependency on the cache being warm.
+# ---------------------------------------------------------------------------
+
+_MANUAL_SENTINEL_NAME = "manual operator order"
+_MANUAL_AGENT_ID_CACHE: dict = {"id": None}
+
+
+async def warm_manual_agent_id_cache() -> None:
+    """Resolve + cache the manual-sentinel Agent row's id once.
+
+    Called at startup (`backend/api/database.py`'s init sequence) so the
+    very first alert after a restart already recognises the sentinel by
+    id. Never raises — a warm failure just leaves the id-based check
+    unavailable; the name-based check in `resolve_origin()` still works
+    for any caller that already has `agent_name` resolved.
+    """
+    try:
+        from backend.api.algo.agent_engine import get_agent_id_by_slug
+        aid = await get_agent_id_by_slug("manual")
+        _MANUAL_AGENT_ID_CACHE["id"] = aid
+    except Exception as e:
+        logger.warning(f"warm_manual_agent_id_cache failed: {e}")
+
+
+def resolve_origin(agent_id: "int | None", agent_name: "str | None" = None) -> str:
+    """Return the real originating agent's name, or the literal string
+    "manual" when the order/alert genuinely has no real originating
+    agent.
+
+    Resolution order:
+      1. A real, non-sentinel `agent_name` is trusted as-is and returned
+         directly — this covers every caller that already resolved a
+         name via the DB (fill_notify) even when `agent_id` itself
+         wasn't carried along with it (a real, documented shape —
+         `event_agents.py:_render_fill` rebuilds its row from a replayed
+         log record that only carries `agent_name`, never `agent_id`).
+      2. `agent_name` matching the manual sentinel's own row name
+         ("Manual operator order", case-insensitive) -> "manual".
+      3. No name at all and `agent_id is None` -> "manual" (the bare
+         manual ticket/basket case — no Agent row was ever involved).
+      4. No name, but `agent_id` matches the cached manual-sentinel id
+         (`warm_manual_agent_id_cache`) -> "manual".
+      5. No name, a real non-sentinel `agent_id` -> "Agent #{id}" — an
+         unresolved name must NEVER be misread as "no agent at all".
+    """
+    if agent_name:
+        if agent_name.strip().lower() == _MANUAL_SENTINEL_NAME:
+            return "manual"
+        return agent_name
+    if agent_id is None:
+        return "manual"
+    cached_manual_id = _MANUAL_AGENT_ID_CACHE.get("id")
+    if cached_manual_id is not None and agent_id == cached_manual_id:
+        return "manual"
+    return f"Agent #{agent_id}"
+
+
 def format_notification_header(
     agent_name: "str | None", agent_id: "int | None", *, ist_display: "str | None" = None,
 ) -> str:
     """Single source of truth for the "who fired this + when" header shown
     at the top of every notification body (Telegram/email/ntfy).
 
-    Returns ``"Agent: {name} (#{id})\\n{dual-tz timestamp}"`` when BOTH
-    `agent_name` and `agent_id` are truthy — a real Agent row genuinely
-    originated this alert. Otherwise returns just the dual-tz timestamp
-    alone — the agent-less case (system/order/broker-level event with no
-    agent concept, or a caller that only has a bare id with no name).
+    ALWAYS emits an "Agent: {origin}" line as the FIRST line, followed by
+    the dual-tz timestamp — `origin` resolved via `resolve_origin()`, so
+    a genuinely agent-less alert reads "Agent: manual" rather than
+    silently omitting any origin at all (2026-10 operator requirement:
+    "make sure it has agent info in the beginning... if it is not by
+    agent, add manual").
+
+    When BOTH `agent_name` and `agent_id` are truthy and resolve to a
+    real (non-manual) agent, the line keeps its original
+    "Agent: {name} (#{id})" shape — unchanged from before this fix, so
+    every existing caller that already has a full agent identity pair
+    (rich alerts, breach alerts) renders byte-identical output. A bare
+    `agent_id` with no resolvable name renders as the self-describing
+    "Agent #{id}" (no redundant "Agent: " prefix).
 
     `ist_display` lets a caller that already computed this request's
     dual-tz string (so Telegram/email/ntfy all share one timestamp
@@ -519,9 +598,14 @@ def format_notification_header(
     """
     from backend.shared.helpers.date_time_utils import timestamp_display
     ts = ist_display if ist_display is not None else timestamp_display()
-    if agent_name and agent_id is not None:
-        return f"Agent: {agent_name} (#{agent_id})\n{ts}"
-    return ts
+    origin = resolve_origin(agent_id, agent_name)
+    if agent_name and agent_id is not None and origin == agent_name:
+        header_line = f"Agent: {origin} (#{agent_id})"
+    elif origin.startswith("Agent #"):
+        header_line = origin
+    else:
+        header_line = f"Agent: {origin}"
+    return f"{header_line}\n{ts}"
 
 
 def dispatch_payload(msg_type: str, ist_display: str, tg_table: str, email_table_html: str,
@@ -565,9 +649,14 @@ def dispatch_payload(msg_type: str, ist_display: str, tg_table: str, email_table
         agent_line = format_notification_header(agent_name, agent_id, ist_display=ist_display).splitlines()[0]
 
     warning_block = _build_tg_warning_block(sim_mode, branch)
-    agent_line_tg = f"\n{html.escape(agent_line)}" if agent_line else ''
+    # 2026-10 audit fix: the agent-identity line now leads the message
+    # (was appended after the bold title line) — operator requirement
+    # that origin always appears first. Only ever populated when a real
+    # agent identity pair is known (see `agent_line` above); summaries
+    # and other agent-less dispatches are unaffected.
+    agent_line_tg = f"{html.escape(agent_line)}\n" if agent_line else ''
     telegram_msg = (
-        f"<b>{tg_prefix_full}{branch_tag} {mode_pfx}— {ist_display}</b>{warning_block}{agent_line_tg}\n\n"
+        f"{agent_line_tg}<b>{tg_prefix_full}{branch_tag} {mode_pfx}— {ist_display}</b>{warning_block}\n\n"
         f"<code>{html.escape(tg_table)}</code>"
     )
     event_key = 'market_open' if msg_type == 'open' else (
@@ -935,9 +1024,19 @@ def _classify_order_origin_label(source: str, agent_id: "int | None") -> str:
     "Agent" / "Agent Bracket" instead — parallel naming, no slug (the
     existing agent-CONDITION rich-alert path already renders
     "Agent [{slug}]" separately; this is the order-failure path only).
+
+    2026-10 audit fix: routed through `resolve_origin()` instead of the
+    bare `agent_id is not None` check — a manually-placed order's
+    `AlgoOrder.agent_id` is the REAL id of the synthetic "manual" Agent
+    row (not None), so the old check misclassified a manual order's
+    failure/rejection alert as "Agent"/"Agent Bracket" even though that
+    same order's FILL alert (via fill_notify, which resolves the real
+    name) correctly showed "Manual operator order". Both paths now
+    agree: `resolve_origin()` recognises the sentinel id via the warmed
+    `_MANUAL_AGENT_ID_CACHE`.
     """
     is_bracket = source in _BRACKET_SOURCES
-    is_agent = agent_id is not None
+    is_agent = resolve_origin(agent_id, None) != "manual"
     if is_agent:
         return "Agent Bracket" if is_bracket else "Agent"
     return "Manual Bracket" if is_bracket else "Manual"
@@ -966,17 +1065,21 @@ def order_failure_messages(
     # No agent NAME reaches this call site (callers only carry the bare
     # `agent_id` int off an AlgoOrder row — resolving the name would need
     # a DB round-trip per alert across every chase/template_attach/
-    # orders_place call site). `format_notification_header` already
-    # degrades gracefully: passing agent_name=None returns just the
-    # dual-tz timestamp with no "Agent: ..." line, which is exactly what
-    # we want here — the existing [Manual]/[Agent]/[Agent Bracket]
-    # `origin_label` above already distinguishes agent-fired from
-    # manually-placed orders without needing the real name.
+    # orders_place call site). `format_notification_header` degrades to
+    # "Agent: manual" / "Agent #{id}" via `resolve_origin()` in that
+    # case — the existing [Manual]/[Agent]/[Agent Bracket] `origin_label`
+    # above still carries the bracket distinction this literal origin
+    # text doesn't.
+    #
+    # 2026-10 audit fix: moved to the FIRST line of the message (was line
+    # 2, after the bold "Order rejected" title) — operator requirement
+    # that every alert shows "who/what triggered this" before anything
+    # else.
     header_line = format_notification_header(None, agent_id, ist_display=ist_disp)
 
     tg_body = (
-        f"<b>&#10060; Order rejected</b>  [{origin_label}]  {mode_tag}{sup_note}\n"
         f"{header_line}\n"
+        f"<b>&#10060; Order rejected</b>  [{origin_label}]  {mode_tag}{sup_note}\n"
         f"{masked}  {side}  {qty}  {symbol}  ({exchange})\n"
         f"source: {source}\n"
         f"<code>{error_short_html}</code>"

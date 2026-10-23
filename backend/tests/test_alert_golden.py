@@ -61,17 +61,21 @@ def error_agent(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_error_alert_golden_text(sent, error_agent):
+    # 2026-10 audit fix: `_render_error` now leads with an origin line
+    # ("Agent: manual" — a generic ERROR+ log line almost never carries
+    # a real `agent_id`, see `_render_error`'s own docstring for why
+    # that's an accepted, honest default rather than a claim of cause).
     from backend.api.algo import event_agents
     await event_agents.dispatch([_error_rec("boom: bad value")], [error_agent])
-    assert sent["ntfy"] == [("RamboQuant error", f"backend.x\nboom: bad value\n{_FIXED_TS}")]
-    assert sent["tg"] == [f"<b>RamboQuant error</b>\n<code>backend.x</code>\nboom: bad value\n{_FIXED_TS}"]
+    assert sent["ntfy"] == [("RamboQuant error", f"Agent: manual\nbackend.x\nboom: bad value\n{_FIXED_TS}")]
+    assert sent["tg"] == [f"Agent: manual\n<b>RamboQuant error</b>\n<code>backend.x</code>\nboom: bad value\n{_FIXED_TS}"]
 
 
 @pytest.mark.asyncio
 async def test_error_alert_strips_html_like_fragments_as_before(sent, error_agent):
     from backend.api.algo import event_agents
     await event_agents.dispatch([_error_rec("boom <bad>")], [error_agent])
-    assert sent["ntfy"] == [("RamboQuant error", f"backend.x\nboom\n{_FIXED_TS}")]
+    assert sent["ntfy"] == [("RamboQuant error", f"Agent: manual\nbackend.x\nboom\n{_FIXED_TS}")]
 
 
 @pytest.mark.asyncio
@@ -85,9 +89,9 @@ async def test_error_alert_repeat_suffix_after_cooldown(monkeypatch, sent, error
     clock["t"] = error_alerts.COOLDOWN_S + 1
     await event_agents.dispatch([_error_rec("down", alert_now=True)], [error_agent])
     assert [b for _, b in sent["ntfy"]] == [
-        f"backend.x\ndown\n{_FIXED_TS}", f"backend.x\ndown (+1 repeats)\n{_FIXED_TS}",
+        f"Agent: manual\nbackend.x\ndown\n{_FIXED_TS}", f"Agent: manual\nbackend.x\ndown (+1 repeats)\n{_FIXED_TS}",
     ]
-    assert sent["tg"][1] == f"<b>RamboQuant error</b>\n<code>backend.x</code>\ndown (+1 repeats)\n{_FIXED_TS}"
+    assert sent["tg"][1] == f"Agent: manual\n<b>RamboQuant error</b>\n<code>backend.x</code>\ndown (+1 repeats)\n{_FIXED_TS}"
 
 
 @pytest.mark.asyncio
@@ -100,10 +104,14 @@ async def test_error_alert_masks_account_numbers(sent, error_agent):
 def test_fill_format_golden():
     from datetime import timezone
     # No agent_name resolved (agent_id=None, the manual-order case) —
-    # Source defaults to the same "Manual operator order" name the
-    # Agents log's own chip shows for a human-placed order (2026-10-17
-    # fix: Source reflects WHO triggered the order, not AlgoOrder.engine,
-    # which is the execution mode and is "live" even for manual orders).
+    # origin resolves to "manual", the same signal the Agents log's own
+    # chip shows for a human-placed order (2026-10-17 fix: origin
+    # reflects WHO triggered the order, not AlgoOrder.engine, which is
+    # the execution mode and is "live" even for manual orders).
+    #
+    # 2026-10 audit fix: the ad-hoc "Source:"/"Time:" lines are replaced
+    # by the shared `format_notification_header` — origin is now the
+    # message's FIRST line (with its own dual-tz timestamp as line 2).
     row = SimpleNamespace(id=101, account="ZG0790", symbol="NIFTY26OCT25000CE", exchange="NFO",
                           transaction_type="BUY", quantity=75, fill_price=112.5, product="NRML",
                           mode="live", engine="live")
@@ -114,12 +122,12 @@ def test_fill_format_golden():
     # HIGHEST-VOLUME live notification (every fill, Telegram+ntfy), and
     # was previously the one unmasked account surface in the app.
     assert body == "\n".join([
+        "Agent: manual",
+        _FIXED_TS,
         "Account: ZG####",
         "BUY 75 NIFTY26OCT25000CE (NFO) @ 112.50",
         "Product: NRML",
-        "Source: MANUAL OPERATOR ORDER",
         "Order id: 101",
-        f"Time: {_FIXED_TS}",
     ])
 
 
@@ -144,7 +152,7 @@ def test_fill_format_golden_agent_triggered():
                           mode="live", engine="live", agent_name="Chase close positions")
     _, body = fill_notify.format_fill_message(
         row, when=_dt.datetime(2026, 10, 6, 4, 45, 30, tzinfo=timezone.utc))
-    assert "Source: CHASE CLOSE POSITIONS" in body
+    assert body.splitlines()[0] == "Agent: Chase close positions"
 
 
 @pytest.mark.asyncio
@@ -167,13 +175,15 @@ async def test_fill_delivery_golden_via_event_agent(monkeypatch):
            "tags": ["orders"], "extra": records[0]}
     agent = SimpleNamespace(slug=event_agents.FILL_AGENT["slug"], **{k: event_agents.FILL_AGENT[k] for k in ("conditions", "events", "actions")})
     await event_agents.dispatch([rec], [agent])
-    # No agent_id on `row` -> no agent_name resolved -> Source defaults to
-    # "MANUAL OPERATOR ORDER" (2026-10-17 fix, see test_fill_format_golden).
-    # Account masked (2026-10 audit fix) — ZG0790 -> ZG####.
+    # No agent_id on `row` -> no agent_name resolved -> origin defaults to
+    # "manual" (2026-10-17 fix, see test_fill_format_golden). Account
+    # masked (2026-10 audit fix) — ZG0790 -> ZG####. 2026-10 audit fix:
+    # origin ("Agent: manual") is now the FIRST line, its own dual-tz
+    # timestamp the second — no more separate "Source:"/"Time:" lines.
     assert sent["ntfy"] == [("Order filled: SELL 1 CRUDEOIL26OCTFUT",
-                             f"Account: ZG####\nSELL 1 CRUDEOIL26OCTFUT (MCX) @ 8750.00\nProduct: NRML\nSource: MANUAL OPERATOR ORDER\nOrder id: 7\nTime: {_FIXED_TS}")]
+                             f"Agent: manual\n{_FIXED_TS}\nAccount: ZG####\nSELL 1 CRUDEOIL26OCTFUT (MCX) @ 8750.00\nProduct: NRML\nOrder id: 7")]
     assert sent["tg"] == ["<b>Order filled: SELL 1 CRUDEOIL26OCTFUT</b>\n"
-                          f"Account: ZG####\nSELL 1 CRUDEOIL26OCTFUT (MCX) @ 8750.00\nProduct: NRML\nSource: MANUAL OPERATOR ORDER\nOrder id: 7\nTime: {_FIXED_TS}"]
+                          f"Agent: manual\n{_FIXED_TS}\nAccount: ZG####\nSELL 1 CRUDEOIL26OCTFUT (MCX) @ 8750.00\nProduct: NRML\nOrder id: 7"]
 
 
 def _chase_rec():
@@ -200,13 +210,17 @@ async def test_chase_cancel_golden_text_and_urgent_priority(monkeypatch):
     # read like a fraction (attempt N of M attempts) when the
     # denominator was actually "contracts already filled" — unrelated
     # numbers. Now spelled out unambiguously.
+    #
+    # 2026-10 audit fix (origin header): leads with "Agent: manual" (no
+    # `agent_id` in this record's extra) + the shared dual-tz timestamp,
+    # replacing the old standalone trailing timestamp line.
     assert sent == [(
         "Chase cancel unconfirmed — possible resting duplicate order",
+        f"Agent: manual\n{_FIXED_TS}\n"
         "BUY NIFTY26OCTFUT — cancel of order O1 on ZG#### could not be confirmed after attempt "
         "2 (40 contracts filled so far). "
         "The chase has been ABORTED without placing a replacement order. "
-        "Manually verify the broker's order book — the old order may still be live.\n"
-        f"{_FIXED_TS}",
+        "Manually verify the broker's order book — the old order may still be live.",
         "urgent",
     )]
 
@@ -228,8 +242,11 @@ async def test_partial_gtt_golden_text_and_urgent_priority(monkeypatch):
     agent = SimpleNamespace(slug="partial-gtt-alert",
                             **{k: event_agents.PARTIAL_GTT_AGENT[k] for k in ("conditions", "events", "actions")})
     await event_agents.dispatch([rec], [agent])
+    # 2026-10 audit fix: origin header ("Agent: manual" — no `agent_id`
+    # in this record's extra) leads, replacing the old standalone
+    # trailing timestamp line.
     assert sent == [("Partial GTT placement",
-                     f"parent #1088 CRUDEOIL26OCTFUT: 1/3 GTTs placed. Errors: rate limit; invalid price\n{_FIXED_TS}",
+                     f"Agent: manual\n{_FIXED_TS}\nparent #1088 CRUDEOIL26OCTFUT: 1/3 GTTs placed. Errors: rate limit; invalid price",
                      "urgent")]
 
 
@@ -298,14 +315,13 @@ async def test_order_failure_golden_text_channels_and_html(monkeypatch):
     # the mode tag — this record's `extra` has no "agent_id" key (the
     # shape persisted logs had before that fix), so it correctly
     # defaults to "Manual" (see alert_utils._classify_order_origin_label).
-    # The dual-tz header line is "10:15:30 IST" unchanged (not _FIXED_TS)
-    # because this test's `ist_disp` is passed straight through
-    # format_notification_header's `ist_display=` kwarg — no agent name
-    # is available at this call site (see alert_utils.order_failure_messages),
-    # so no "Agent: ..." line is added, only the reused timestamp string.
-    assert sent["tg"] == ['<b>&#10060; Order rejected</b>  [Manual]  [LIVE]  (+2 suppressed)\n10:15:30 IST\nZG####  BUY  75  NIFTY26OCTFUT  (NFO)\nsource: ticket\n<code>Insufficient funds &lt;x&gt;</code>']
+    # 2026-10 audit fix: the shared origin header ("Agent: manual" + the
+    # dual-tz timestamp passed straight through via `ist_display=`) now
+    # leads the message as its own first two lines — moved from line 2
+    # (after the bold "Order rejected" title) to line 1.
+    assert sent["tg"] == ['Agent: manual\n10:15:30 IST\n<b>&#10060; Order rejected</b>  [Manual]  [LIVE]  (+2 suppressed)\nZG####  BUY  75  NIFTY26OCTFUT  (NFO)\nsource: ticket\n<code>Insufficient funds &lt;x&gt;</code>']
     assert sent["ntfy"] == [("Order Rejected: NIFTY26OCTFUT BUY",
-                             "❌ Order rejected  [Manual]  [LIVE]  (+2 suppressed)\n10:15:30 IST\nZG####  BUY  75  NIFTY26OCTFUT  (NFO)\nsource: ticket\nInsufficient funds <x>",
+                             "Agent: manual\n10:15:30 IST\n❌ Order rejected  [Manual]  [LIVE]  (+2 suppressed)\nZG####  BUY  75  NIFTY26OCTFUT  (NFO)\nsource: ticket\nInsufficient funds <x>",
                              "urgent")]
     assert len(sent["mail"]) == 1
     _, addr, subj, body = sent["mail"][0]
@@ -339,7 +355,9 @@ async def test_template_guard_golden_text_and_channels(monkeypatch):
                             **{k: event_agents.TEMPLATE_GUARD_AGENT[k] for k in ("conditions", "events", "actions")})
     await event_agents.dispatch([rec], [agent])
     # Account masked (2026-10 audit fix) — ZG0790 -> ZG####.
-    expected_tg = ("<b>⚠ Template guard fired — Tue, Oct 06 2026, 14:30 IST</b>\n\n<code>order #1088\nSELL 75 NIFTY26OCTFUT\n"
+    # 2026-10 audit fix: origin header ("Agent: manual" — no agent_id in
+    # this record's extra) now leads every template-guard alert.
+    expected_tg = ("Agent: manual\n<b>⚠ Template guard fired — Tue, Oct 06 2026, 14:30 IST</b>\n\n<code>order #1088\nSELL 75 NIFTY26OCTFUT\n"
                    "@ ₹112.50  (ZG####)\n\ntemplate:    default-bull\napplies_to:  sell_option\nreason:      qty &lt; lot_size\n\n"
                    "Parent order FILLED. Exits NOT attached.\nArm exits manually if needed.\n\n"
                    "Fix: at /admin/templates, change this template's 'applies_to' to 'both' or 'buy_option'.</code>")
@@ -379,7 +397,9 @@ async def test_template_attach_fail_golden_text_and_channels(monkeypatch):
                             **{k: event_agents.TEMPLATE_ATTACH_FAIL_AGENT[k] for k in ("conditions", "events", "actions")})
     await event_agents.dispatch([rec], [agent])
     # Account masked (2026-10 audit fix) — ZG0790 -> ZG####.
-    assert sent["tg"] == ["<b>⚠ Template attach failed — Tue, Oct 06 2026, 14:30 IST</b>\n\n<code>order #1088\nsymbol:   NIFTY26OCTFUT\naccount:  ZG####\n\nerrors:   qty &lt; lot_size; rate limit\n\nParent order FILLED. Exits NOT attached.\nArm exits manually if needed.</code>"]
+    # 2026-10 audit fix: origin header ("Agent: manual" — no agent_id in
+    # this record's extra) now leads every template-attach-fail alert.
+    assert sent["tg"] == ["Agent: manual\n<b>⚠ Template attach failed — Tue, Oct 06 2026, 14:30 IST</b>\n\n<code>order #1088\nsymbol:   NIFTY26OCTFUT\naccount:  ZG####\n\nerrors:   qty &lt; lot_size; rate limit\n\nParent order FILLED. Exits NOT attached.\nArm exits manually if needed.</code>"]
     assert sent["ntfy"][0][0] == "Template attach failed" and sent["ntfy"][0][2] == "urgent"
     # 2026-10 audit fix (item 10): TEMPLATE_ATTACH_FAIL_AGENT now also
     # delivers to email — same missing backstop as TEMPLATE_GUARD_AGENT.

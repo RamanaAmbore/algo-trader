@@ -16,30 +16,42 @@ logger = get_logger(__name__)
 
 def format_fill_message(row, when: datetime | None = None) -> tuple[str, str]:
     from backend.shared.helpers.date_time_utils import format_dual_tz
+    from backend.shared.helpers.alert_utils import format_notification_header
     side = str(row.transaction_type or "").upper() or "ORDER"
     qty = int(row.quantity or 0)
     symbol = str(row.symbol or "")
     title = f"Order filled: {side} {qty} {symbol}"
-    # Source line (2026-10-15, revised 2026-10-17 — operator: "telegram
-    # order fill alert does not show manual... any order triggered by an
-    # agent... it's basically how it was triggered. presently it is
-    # shown as a tag with the log") — the ORIGINAL 2026-10-15 fix read
-    # `row.engine`, reasoning it mirrored the Agents log's own chip. That
-    # was wrong: `engine` is the EXECUTION mode (sim/paper/live/replay/
-    # shadow/expiry) — a manually-placed LIVE order gets `engine="live"`
-    # (orders_place.py), never the literal string "manual", so "Source:
-    # MANUAL" was structurally unreachable for any real order. The
-    # Agents log's chip (LogPanel.svelte's `log-agent-chip`) actually
-    # resolves `AlgoOrder.agent_id` -> the originating `agents` row's
-    # `name` — NULL/the synthetic "Manual operator order" agent
-    # (agent_engine.py's MANUAL_AGENT) for a human-placed order, the real
-    # automation agent's name otherwise (e.g. "Chase close positions").
-    # `agent_name` is resolved once, async, in `notify_fills()` below
-    # (where a DB session is natural) and threaded through the log
-    # record's `extra` dict, since `_render_fill` (event_agents.py)
-    # rebuilds this `row` from THAT dict alone, long after the DB row
-    # itself is gone.
-    source = str(getattr(row, "agent_name", None) or "Manual operator order").upper()
+    # Origin header (2026-10-15, revised 2026-10-17, re-derived 2026-10
+    # audit fix) — operator: "telegram order fill alert does not show
+    # manual... any order triggered by an agent... it's basically how it
+    # was triggered." The ORIGINAL 2026-10-15 fix read `row.engine`,
+    # reasoning it mirrored the Agents log's own chip. That was wrong:
+    # `engine` is the EXECUTION mode (sim/paper/live/replay/shadow/
+    # expiry) — a manually-placed LIVE order gets `engine="live"`
+    # (orders_place.py), never the literal string "manual". The Agents
+    # log's chip (LogPanel.svelte's `log-agent-chip`) actually resolves
+    # `AlgoOrder.agent_id` -> the originating `agents` row's `name` —
+    # NULL/the synthetic "Manual operator order" agent (agent_engine.py's
+    # MANUAL_AGENT) for a human-placed order, the real automation agent's
+    # name otherwise (e.g. "Chase close positions"). `agent_name` is
+    # resolved once, async, in `notify_fills()` below (where a DB session
+    # is natural) and threaded through the log record's `extra` dict,
+    # since `_render_fill` (event_agents.py) rebuilds this `row` from
+    # THAT dict alone, long after the DB row itself is gone — note that
+    # path never carries a real `agent_id` (only `agent_name`), which is
+    # exactly why `format_notification_header`/`resolve_origin` resolve
+    # from `agent_name` first.
+    #
+    # 2026-10 audit fix: the ad-hoc "Source: {NAME}" line (previously
+    # body line 4) is replaced by the shared `format_notification_header`
+    # — origin is now the message's FIRST line (operator requirement:
+    # every alert shows "who/what triggered this" before anything else),
+    # and its own dual-tz timestamp replaces the separate trailing
+    # "Time:" line.
+    agent_id = getattr(row, "agent_id", None)
+    agent_name = getattr(row, "agent_name", None)
+    ts_disp = format_dual_tz(when or datetime.now(timezone.utc))
+    header = format_notification_header(agent_name, agent_id, ist_display=ts_disp)
     from backend.shared.helpers.utils import mask_account
     # Account masked (2026-10 audit fix) — this is the HIGHEST-VOLUME live
     # notification (every fill, Telegram+ntfy); matches the masking
@@ -49,12 +61,11 @@ def format_fill_message(row, when: datetime | None = None) -> tuple[str, str]:
     # price must never render as a fabricated "0.00".
     fill_px = (f"{float(row.fill_price):.2f}" if row.fill_price is not None else "—")
     body = "\n".join([
+        header,
         f"Account: {masked_account}",
         f"{side} {qty} {symbol} ({row.exchange or '-'}) @ {fill_px}",
         f"Product: {row.product or '-'}",
-        f"Source: {source}",
         f"Order id: {row.id}",
-        f"Time: {format_dual_tz(when or datetime.now(timezone.utc))}",
     ])
     return title, body
 

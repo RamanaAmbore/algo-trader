@@ -64,11 +64,15 @@ def test_format_uses_the_given_time_in_ist():
     # of the clock. Seconds are dropped by that formatter; assert on the
     # IST wall-clock minute (unambiguous from the UTC input) and that an ET
     # zone abbreviation is present, rather than a brittle exact string.
+    #
+    # 2026-10 audit fix: the timestamp now lives on the header's own
+    # second line (no more standalone "Time:" label — the shared
+    # `format_notification_header` owns it), so this asserts on the
+    # dual-tz content directly rather than a "Time: " prefix.
     from datetime import datetime, timezone
     title, body = fill_notify.format_fill_message(
         _row(), when=datetime(2026, 10, 6, 4, 45, 30, tzinfo=timezone.utc))
     assert title == "Order filled: BUY 75 NIFTY26OCT25000CE"
-    assert "Time: " in body
     assert "10:15 IST" in body
     assert ("EDT" in body) or ("EST" in body)
 
@@ -83,28 +87,33 @@ def test_fill_message_shows_masked_account():
     assert "Account: ZG####" in body
 
 
-def test_fill_message_shows_agent_name_as_source_matching_agents_log_chip():
-    # 2026-10-17 fix — Source now reflects WHO/WHAT triggered the order
+def test_fill_message_shows_agent_name_as_origin_matching_agents_log_chip():
+    # 2026-10-17 fix — origin now reflects WHO/WHAT triggered the order
     # (the originating agent's name, resolved via AlgoOrder.agent_id),
     # the same signal LogPanel.svelte's `log-agent-chip` already shows —
     # NOT AlgoOrder.engine (execution mode: live/sim/paper/replay/shadow/
     # expiry), which a manually-placed LIVE order sets to "live", never
     # the literal string "manual" (see orders_place.py).
+    #
+    # 2026-10 audit fix: the ad-hoc "Source: {NAME}" line (uppercased)
+    # is replaced by the shared `format_notification_header`'s origin
+    # line — now the message's FIRST line, in natural case (not
+    # uppercased), matching every other alert renderer in the app.
     _, body = fill_notify.format_fill_message(_row(agent_name="Chase close positions"))
-    assert "Source: CHASE CLOSE POSITIONS" in body
+    assert body.splitlines()[0] == "Agent: Chase close positions"
     _, body = fill_notify.format_fill_message(_row(agent_name="Manual operator order"))
-    assert "Source: MANUAL OPERATOR ORDER" in body
+    assert body.splitlines()[0] == "Agent: manual"
 
 
-def test_fill_message_defaults_source_to_manual_when_agent_name_missing():
+def test_fill_message_defaults_origin_to_manual_when_agent_name_missing():
     # A row that somehow arrives without agent_name resolved (e.g. the
-    # agent row was deleted, or agent_id was NULL) still gets a sensible,
-    # non-blank Source line rather than "Source: NONE".
+    # agent row was deleted, or agent_id was NULL) still gets a sensible
+    # origin line rather than silently omitting one.
     row = SimpleNamespace(id=101, account="ZG0790", symbol="NIFTY26OCT25000CE",
                            exchange="NFO", transaction_type="BUY", quantity=75,
                            fill_price=112.5, product="NRML")
     _, body = fill_notify.format_fill_message(row)
-    assert "Source: MANUAL OPERATOR ORDER" in body
+    assert body.splitlines()[0] == "Agent: manual"
 
 
 @pytest.mark.asyncio

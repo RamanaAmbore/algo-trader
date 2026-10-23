@@ -15,8 +15,42 @@ from unittest.mock import MagicMock, patch
 
 from backend.shared.helpers.alert_utils import (
     format_notification_header,
+    resolve_origin,
     _TIER_TO_NTFY_PRIORITY,
 )
+
+
+# ---------------------------------------------------------------------------
+# resolve_origin()
+# ---------------------------------------------------------------------------
+
+class TestResolveOrigin:
+    def test_real_agent_name_is_trusted_as_is(self):
+        assert resolve_origin(None, "Chase close positions") == "Chase close positions"
+        assert resolve_origin(42, "Chase close positions") == "Chase close positions"
+
+    def test_no_agent_id_and_no_name_is_manual(self):
+        assert resolve_origin(None, None) == "manual"
+
+    def test_manual_sentinel_name_is_manual_case_insensitive(self):
+        assert resolve_origin(7, "Manual operator order") == "manual"
+        assert resolve_origin(7, "MANUAL OPERATOR ORDER") == "manual"
+        assert resolve_origin(None, "manual operator order") == "manual"
+
+    def test_bare_real_agent_id_with_no_name_is_not_manual(self):
+        # Advisor/P2 guard: an unresolved name must never be misread as
+        # "no agent at all" — a real, non-sentinel id renders self-
+        # describing text, not "manual".
+        assert resolve_origin(42, None) == "Agent #42"
+
+    def test_cached_manual_sentinel_id_resolves_to_manual_with_no_name(self):
+        from backend.shared.helpers import alert_utils
+        alert_utils._MANUAL_AGENT_ID_CACHE["id"] = 99
+        try:
+            assert resolve_origin(99, None) == "manual"
+            assert resolve_origin(7, None) == "Agent #7"
+        finally:
+            alert_utils._MANUAL_AGENT_ID_CACHE["id"] = None
 
 
 # ---------------------------------------------------------------------------
@@ -30,19 +64,34 @@ class TestFormatNotificationHeader:
         assert lines[0] == "Agent: loss-margin-low (#42)"
         assert lines[1] == "FIXED_TS"
 
-    def test_without_agent_name_is_timestamp_only(self):
+    def test_without_agent_name_falls_back_to_bare_agent_id(self):
+        # 2026-10 audit fix: the header now ALWAYS carries an origin line
+        # — a bare, unresolved agent_id with no name renders as the
+        # self-describing "Agent #{id}" rather than silently omitting
+        # any origin at all.
         header = format_notification_header(None, 42, ist_display="FIXED_TS")
-        assert header == "FIXED_TS"
-        assert "Agent:" not in header
+        lines = header.splitlines()
+        assert lines[0] == "Agent #42"
+        assert lines[1] == "FIXED_TS"
 
-    def test_without_agent_id_is_timestamp_only(self):
+    def test_without_agent_id_still_shows_the_real_name(self):
+        # A genuinely real agent_name reaching this call with no
+        # agent_id (e.g. fill_notify's replayed-record shape, which
+        # never carries agent_id) still shows the real name — it is NOT
+        # "manual" just because the id happens to be missing.
         header = format_notification_header("some-agent", None, ist_display="FIXED_TS")
-        assert header == "FIXED_TS"
-        assert "Agent:" not in header
+        lines = header.splitlines()
+        assert lines[0] == "Agent: some-agent"
+        assert lines[1] == "FIXED_TS"
 
-    def test_without_either_is_timestamp_only(self):
+    def test_without_either_shows_manual(self):
+        # 2026-10 operator requirement: "make sure it has agent info in
+        # the beginning... if it is not by agent, add manual" — no
+        # longer a bare timestamp.
         header = format_notification_header(None, None, ist_display="FIXED_TS")
-        assert header == "FIXED_TS"
+        lines = header.splitlines()
+        assert lines[0] == "Agent: manual"
+        assert lines[1] == "FIXED_TS"
 
     def test_omitting_ist_display_calls_the_real_dual_tz_clock(self):
         # No ist_display kwarg -> falls through to timestamp_display(),
@@ -63,6 +112,20 @@ class TestFormatNotificationHeader:
         header = format_notification_header("x", 1, ist_display="FIXED_TS")
         first_line = header.splitlines()[0]
         assert "\n" not in first_line
+
+    @pytest.mark.parametrize("agent_name, agent_id", [
+        ("loss-margin-low", 42),
+        (None, 42),
+        ("some-agent", None),
+        (None, None),
+    ])
+    def test_origin_is_always_the_first_line_regardless_of_inputs(self, agent_name, agent_id):
+        # 2026-10 audit fix invariant: every call ALWAYS emits an origin
+        # line first — never silently falls back to a bare timestamp.
+        header = format_notification_header(agent_name, agent_id, ist_display="FIXED_TS")
+        first_line = header.splitlines()[0]
+        assert first_line.startswith("Agent") or first_line.startswith("Agent #")
+        assert header.splitlines()[1] == "FIXED_TS"
 
 
 # ---------------------------------------------------------------------------

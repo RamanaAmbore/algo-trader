@@ -1335,6 +1335,14 @@ async def init_db() -> None:
     from backend.shared.helpers.alert_utils import refresh_alert_recipients
     await refresh_alert_recipients()
 
+    # Warm the manual-sentinel agent id cache (2026-10 audit fix) — lets
+    # `resolve_origin()` (a sync, no-I/O function used deep inside the
+    # alert renderer hot-path) recognise the "manual" sentinel Agent row
+    # by id alone, for callers that only have a bare `agent_id` with no
+    # resolved name (e.g. order-failure alerts).
+    from backend.shared.helpers.alert_utils import warm_manual_agent_id_cache
+    await warm_manual_agent_id_cache()
+
 
 async def seed_special_sessions() -> None:
     """Insert illustrative special-session rows at boot (idempotent).
