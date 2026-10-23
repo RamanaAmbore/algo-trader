@@ -27,7 +27,6 @@
    *   realizedPnl?: number,
    *   expiryPnlOffset?: number,
    *   dayPnl?:      number|null,
-   *   legsExpPnlAtSpot?: number|null,
    *   onRefresh?:   (() => void) | null,
    *   loading?:     boolean,
    *   prevClose?:   number|null,
@@ -79,14 +78,6 @@
     // relationship: when the basket covers EVERY open position in the
     // operator's book, DAY equals P∆ exactly. null / 0 → DAY row hides.
     dayPnl = /** @type {number|null} */ (null),
-    // Expiry P&L at the current spot computed from the legs grid's
-    // canonical _legsExpPnlTotal helper — intrinsic-value formula
-    // applied to the enabled, displayed candidate legs. When provided,
-    // the stat overlay's EXP row shows this value instead of the
-    // backend payoff curve's expiry_value, ensuring the chart overlay
-    // matches the legs grid TOTAL and snapshot row exactly.
-    // null / undefined → fall back to curveAtSpot.expiry_value (prior behaviour).
-    legsExpPnlAtSpot = /** @type {number|null|undefined} */ (null),
     onRefresh  = /** @type {(() => void) | null} */ (null),
     loading    = false,
     prevClose  = /** @type {number|null|undefined} */ (null),
@@ -1037,21 +1028,27 @@
           </div>
         {/if}
         {/if}
-        {@const _expDisplayVal = (legsExpPnlAtSpot != null && Number.isFinite(legsExpPnlAtSpot))
-          ? legsExpPnlAtSpot
-          : curveAtSpot.expiry_value}
+        <!-- Exp P&L readout (C1 invariant, 2026-10-23 fix) — ALWAYS reads
+             curveAtSpot.expiry_value, the identical interpolated backend-
+             curve value that positions the expiry dart below (same
+             `yOf(curveAtSpot.expiry_value)` expression). There is
+             deliberately no second, locally-recomputed Exp P&L figure
+             here any more — a caller-supplied override previously let
+             this number and the dart visually disagree whenever a leg's
+             true backend valuation (MCX multi-month scale_ratio,
+             calendar-spread time value, or a futures leg's own live LTP)
+             differed from a simple per-leg intrinsic-at-spot sum. See
+             CLAUDE.md "Payoff chart Exp P&L basis" for the full history. -->
         <div class="ps-row">
           <span class="ps-k" bind:this={_psHintAnchor.expPnl} role="button" tabindex="0"
                 aria-expanded={_psHintOpen.expPnl}
                 onclick={() => { _psHintOpen.expPnl = !_psHintOpen.expPnl; }}
                 onkeydown={(e) => _psHintKeydown(e, () => _psHintOpen.expPnl = !_psHintOpen.expPnl)}>Exp P&amp;L
             <InfoHint popup hideButton id="ps-hint-exp-pnl" anchor={_psHintAnchor.expPnl} bind:open={_psHintOpen.expPnl}
-              panel title="Exp P&amp;L" text={legsExpPnlAtSpot != null
-              ? 'Strategy P&amp;L if every open leg expired RIGHT NOW at the current spot — intrinsic value minus cost basis, summed across the enabled legs. SSOT shared with the legs grid TOTAL and snapshot Exp P&amp;L column.'
-              : 'Strategy P&amp;L at expiry (intrinsic only) for the current spot — same vertical offset as TODAY.'} />
+              panel title="Exp P&amp;L" text="Strategy P&amp;L at expiry for the current spot — the same backend-computed curve value the expiry marker (dart) below is plotted at, plus any locked-in realised P&amp;L from closed/expired legs (ADJ)." />
           </span>
-          <span class={'ps-v ' + (_expDisplayVal >= 0 ? 'ps-pos' : 'ps-neg')}>
-            {fmtMoney(_expDisplayVal)}
+          <span class={'ps-v ' + (curveAtSpot.expiry_value >= 0 ? 'ps-pos' : 'ps-neg')}>
+            {fmtMoney(curveAtSpot.expiry_value)}
           </span>
         </div>
       {/if}

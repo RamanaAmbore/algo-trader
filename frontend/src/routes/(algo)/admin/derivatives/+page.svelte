@@ -76,7 +76,7 @@
     buildAcctMatcher, buildStrategyMatcher,
     annotateOptionCandidates, computeExpiryBands,
     rollupByUnderlying, perRootReduce, interpAt, legPnlTotal,
-    equityLinearLeg, curveBasisEqValue, isDraftLegIncluded,
+    equityLinearLeg, isDraftLegIncluded,
   } from '$lib/data/derivativesMath.js';
   import {
     isFOSymbol, buildExpiryMatcher, buildCandidatePositions,
@@ -2752,18 +2752,26 @@
    *  `_throttledTick` — that gate belongs to a different derived further
    *  down in this file), so using it as the sole spot source keeps this
    *  cascade bounded without a separate throttle here. */
-  /** Shared filter+sum used by both _legsExpPnlTotal (the Legs-grid TOTAL
-   *  row's SSOT — store-first via _legExpPnlLive, live/front-month basis)
-   *  and _chartExpPnlAtSpot (payoffSpot / anchor-contract basis — feeds
-   *  ONLY the payoff chart's own on-chart Exp P&L readout next to the
-   *  expiry marker, C1 fix, ALWAYS local compute — the chart's spot basis
-   *  deliberately differs from the store's, so it must never read the
-   *  store's value). Extracted so the two consumers can never drift apart
-   *  in FILTER logic — only in which per-row valuer function is passed.
-   *  2026-09 Commit 5: takes a valuer function instead of a bare spot
-   *  number, so the TOTAL and chart consumers can use genuinely different
-   *  VALUATION STRATEGIES (store-first vs. always-local), not just
-   *  different spot inputs to the same local formula. */
+  /** Filter+sum used by _legsExpPnlTotal (the Legs-grid TOTAL row's SSOT
+   *  — store-first via _legExpPnlLive, live/front-month basis). Takes a
+   *  valuer function (not a bare spot number) so the per-row formula is
+   *  swappable without duplicating the filter/reduce shell.
+   *
+   *  2026-10-23 (C1 dart-vs-number fix): this used to have a SECOND
+   *  consumer, `_chartExpPnlAtSpot` — a locally-recomputed "payoffSpot
+   *  basis" sum feeding the payoff chart's own on-chart Exp P&L readout.
+   *  That second computation diverged from the backend payoff curve (the
+   *  SAME curve the chart's expiry dart is drawn from) for three leg
+   *  shapes it couldn't replicate: a multi-month MCX basket's per-leg
+   *  `scale_ratio`, a calendar/diagonal spread's far-leg Black-Scholes
+   *  time value, and a futures leg's own live LTP vs. the backend's
+   *  scaled-spot valuation — visibly breaking the "chart value = marker
+   *  position" invariant (CLAUDE.md "Payoff chart Exp P&L basis").
+   *  Fix: the chart now reads `curveAtSpot.expiry_value` directly inside
+   *  OptionsPayoff.svelte (interpolated from the SAME backend curve +
+   *  `expiryPnlOffset` the dart uses) instead of a locally-summed
+   *  approximation — `_chartExpPnlAtSpot` is deleted, not fixed in
+   *  parallel, so there is exactly one place this value is computed. */
   function _sumEnabledLegsExpPnl(/** @type {(c:any) => number|null} */ valuer) {
     // Single pass: `valuer` is the canonical per-candidate formula for
     // this consumer, so sum(per-leg rows in the grid) == this TOTAL by
@@ -2781,62 +2789,6 @@
       }, 0);
   }
   const _legsExpPnlTotal = $derived.by(() => _sumEnabledLegsExpPnl(_legExpPnlLive));
-  /** Chart-only Exp P&L at spot (C1 fix) — evaluated at `payoffSpot`
-   *  (anchor-contract basis) instead of `liveSpot` (front-month), so the
-   *  number the chart displays next to the expiry marker/dart always
-   *  agrees with what the dart visually points at (both already use
-   *  payoffSpot — see the LTP row, spot line, CHG%, and marker position).
-   *  ALWAYS local compute (never the store — see _sumEnabledLegsExpPnl's
-   *  own docstring) so the C1 invariant can never be silently broken by a
-   *  future edit that makes the store's value "look convenient" to reuse
-   *  here. Feeds ONLY the OptionsPayoff `legsExpPnlAtSpot` prop — the
-   *  separate Legs-grid TOTAL row keeps reading `_legsExpPnlTotal`
-   *  (store-first, liveSpot fallback), a deliberately different,
-   *  correctly-scoped consumer per the operator's decision (see plan C1).
-   *
-   *  Post-ship audit fix (D4), two parts, both required for the C1
-   *  invariant ("chart marker position = chart number"):
-   *  (a) `_expiredFrozen`-tagged legs (2026-09 audit fix, Defect 1/2 —
-   *      supersedes an interim design that keyed on the BROADER
-   *      `_expired` tag) return `expiredLegFrozenPnl(c)` — the frozen
-   *      settlement value. `_expiredFrozen` is the NARROW, shared
-   *      `isExpiredHeldContract` predicate (same one portfolioStore's
-   *      Snapshot pipeline calls) — a leg that's `_expired` (unresolvable
-   *      in cache) but NOT confidently `_expiredFrozen` (BFO, cold start)
-   *      still returns null here (excluded), matching pre-session D4(a)
-   *      behaviour AND the store's own treatment of that same symbol (no
-   *      new divergence for the uncertain case). The curve
-   *      (`buildCleanLegs` excludes ANY `_expired` leg — the broader tag —
-   *      from the /strategy-analytics request, so the backend curve has
-   *      zero contribution from it regardless) picks up the SAME frozen
-   *      value via `_expiryPnlOffset`'s matching fix for the confidently-
-   *      expired case, so this total still agrees with what the
-   *      curve+offset actually represents — it no longer silently reads 0
-   *      for a root whose ENTIRE F&O book is expired-but-held (the
-   *      GOLD/GOLDM regression: previously this returned null for every
-   *      leg, summing to 0, while Snapshot — which has no such exclusion —
-   *      showed a real, though separately wrong, number).
-   *      `_legsTotalsBase`/`_legsExpPnlTotal`/`_legsDayPnlTotal` are
-   *      DELIBERATELY UNCHANGED — those are Legs-GRID totals, which must
-   *      still count expired-but-held legs per Commit 2's whole point.
-   *  (b) eq/proxy legs route through `curveBasisEqValue` instead of
-   *      `_legExpPnlDisplay`'s eq branch — the CURVE (`_mergedPayoff`)
-   *      scales each eq leg's effective (qty,cost) at `strategy.spot`
-   *      (S0) via `_equityLinearLegs`, then values at every grid point;
-   *      the on-chart readout must use that SAME S0-scaled basis, valued
-   *      at `payoffSpot`, not re-derive a spot-independent value scaled
-   *      AND valued both at payoffSpot (`_legExpPnlDisplay`'s own,
-   *      correct-for-ITS-OWN-purpose behavior for the Legs grid). Using
-   *      the wrong pairing reintroduces a real gap
-   *      (`β·MV·(payoffSpot−S0)/S0`) whenever the two spots diverge. */
-  const _chartExpPnlAtSpot = $derived.by(() => _sumEnabledLegsExpPnl(c => {
-    if (c._expiredFrozen) return expiredLegFrozenPnl(c);
-    if (c._expired) return null;
-    if (c.kind === 'eq') {
-      return curveBasisEqValue(c, Number(strategy?.spot) || 0, payoffSpot ?? null, getProxyRow);
-    }
-    return _legExpPnlDisplay(c, payoffSpot ?? null);
-  }));
 
   /** Legs-tab TOTAL row Extrinsic — same enabled/draft gate as
    *  `_legsExpPnlTotal` above, so sum(visible leg rows' Extrinsic) equals
@@ -3340,11 +3292,10 @@
     // into EVERY grid point as a constant shift, so a root whose ENTIRE
     // F&O book is expired-but-held (this stub IS the active render path
     // for that exact scenario — `strategy` correctly wipes to null via
-    // D2's fix, and `_chartExpPnlAtSpot`'s `legsExpPnlAtSpot` prop is
-    // `undefined` in that case, so OptionsPayoff reads its readout number
-    // directly off THIS curve's `expiry_value` at the marker — see
-    // OptionsPayoff.svelte's `_expDisplayVal` fallback) shows its real,
-    // non-zero exposure instead of a flat 0 line. A leg that's `_expired`
+    // D2's fix) shows its real, non-zero exposure instead of a flat 0
+    // line — OptionsPayoff always reads its Exp P&L readout directly off
+    // THIS curve's `expiry_value` at the marker (2026-10-23 C1 fix, see
+    // `curveAtSpot` in OptionsPayoff.svelte). A leg that's `_expired`
     // but NOT `_expiredFrozen` (BFO, cold start) contributes nothing here
     // either — excluded from BOTH `activeLegs` and the constant, matching
     // the store's own treatment of that same symbol (no new divergence).
@@ -5473,7 +5424,7 @@
   // atomically — previously only `payoff`/`intermediateCurves` were
   // gated on `_strategyStale`; breakevens/spanSigmas/spanPct/dte/
   // ivProxy/legCount/legSymbols/spotAnchor/realizedPnl/expiryPnlOffset/
-  // legsExpPnlAtSpot/netCost/multiExpiry all kept reading the OLD
+  // netCost/multiExpiry all kept reading the OLD
   // `strategy` during the stale window right after an underlying
   // switch, while `spot`/`prevClose` (payoffSpot/payoffPrevClose) had
   // ALREADY switched to the new root — briefly showing the new
@@ -5503,7 +5454,6 @@
     multiExpiry:        strategy?.multi_expiry ?? false,
     realizedPnl:        chartPnlOffset,
     expiryPnlOffset:    _expiryPnlOffset,
-    legsExpPnlAtSpot:   _chartExpPnlAtSpot,
     legSymbols:         (strategy?.legs ?? []).map(/** @param {{symbol:string}} l */ l => l.symbol),
     spotAnchor:         strategy?.spot_anchor_contract
       ? { contract: strategy.spot_anchor_contract,
@@ -5892,7 +5842,6 @@
         realizedPnl={payoffDisplay?.realizedPnl ?? 0}
         expiryPnlOffset={payoffDisplay?.expiryPnlOffset ?? 0}
         dayPnl={candidatesDayPnl}
-        legsExpPnlAtSpot={payoffDisplay?.legsExpPnlAtSpot}
         legSymbols={payoffDisplay?.legSymbols ?? []}
         spotAnchor={payoffDisplay?.spotAnchor ?? null}
         includeHoldings={_includeHoldings}
