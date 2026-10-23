@@ -98,25 +98,47 @@ test.describe('Footer credits — Ramana R. Ambore & Gopi Podicheti', () => {
     expect(footerText).toMatch(/Ramana R\. Ambore\s*&\s*Gopi Podicheti/);
   });
 
-  test('footer items top-align on mobile, not center-align (page-name wrap fix)', async ({ page }) => {
-    // Regression test for: on narrow viewports, a wrapped page-name span
-    // (taller than its single-line siblings) was vertically CENTERED
-    // against the single-line "RamboQuant" brand text via the footer's
-    // `align-items: center`, reading as offset instead of top-aligned.
-    // Fixed via `align-items: flex-start` inside the existing
-    // `@media (max-width: 640px)` block for `.algo-footer` — assert the
-    // computed style directly rather than depending on exact text-wrap
-    // pixel geometry, which is fragile across fonts/renderers.
-    await page.setViewportSize({ width: 360, height: 800 });
+  test('footer scrolls horizontally instead of wrapping on a small mobile viewport, height never grows', async ({ page }) => {
+    // Regression test for two linked fixes in `.algo-footer`:
+    // 1. (original) a wrapped page-name span, taller than its single-line
+    //    siblings, was vertically centered against them via
+    //    `align-items: center`, reading as offset instead of top-aligned.
+    // 2. (this fix) rather than band-aiding the wrap with
+    //    `align-items: flex-start`, every footer child is now
+    //    `white-space: nowrap; flex-shrink: 0` and the row scrolls
+    //    horizontally (`overflow-x: auto`) instead of wrapping at all —
+    //    `height`/`min-height`/`max-height` are all pinned to 1.6rem so
+    //    the footer's box can never grow taller on a narrow viewport,
+    //    matching the standing header-overflow invariant (content
+    //    scrolls, chrome never resizes).
+    await page.setViewportSize({ width: 320, height: 800 });
     await loginAsAdmin(page);
     await page.goto('/pulse', { waitUntil: 'domcontentloaded' });
 
     const footer = page.locator('footer.algo-footer');
     await expect(footer).toBeAttached({ timeout: TIMEOUT });
 
-    const alignItems = await footer.evaluate(
-      (el) => getComputedStyle(el).alignItems
-    );
-    expect(alignItems).toBe('flex-start');
+    // Height is pinned — never taller than the 1.6rem box regardless of
+    // how much content doesn't fit at 320px.
+    const box = await footer.boundingBox();
+    expect(box?.height).toBeLessThanOrEqual(28); // 1.6rem ≈ 25.6px + rounding slack
+
+    // Nothing wraps internally — every text node stays on one line.
+    const anyWraps = await footer.evaluate((el) => {
+      const kids = el.querySelectorAll('.algo-footer-text, .algo-footer-link, .algo-footer-brand');
+      return Array.from(kids).some((k) => getComputedStyle(k).whiteSpace !== 'nowrap');
+    });
+    expect(anyWraps).toBe(false);
+
+    // The row is horizontally scrollable when content overflows its box —
+    // scrollWidth exceeding clientWidth confirms overflow is reachable by
+    // scroll (not clipped, not forcing the box to grow).
+    const { scrollWidth, clientWidth, overflowX } = await footer.evaluate((el) => ({
+      scrollWidth: el.scrollWidth,
+      clientWidth: el.clientWidth,
+      overflowX: getComputedStyle(el).overflowX,
+    }));
+    expect(overflowX).toBe('auto');
+    expect(scrollWidth).toBeGreaterThanOrEqual(clientWidth);
   });
 });

@@ -2237,19 +2237,41 @@
        navbar's --algo-amber-border so all three chrome bands share
        the same hairline weight. */
     border-top: 1px solid var(--algo-amber-border);
+    /* height is a hard ceiling (not just a target) — min-height/
+       max-height pin it so wrapped/overflowing content can never grow
+       the footer taller, consistent with the standing header-overflow
+       invariant (content scrolls, chrome never resizes). Without this,
+       a narrow viewport that still allowed internal text wrap could
+       make the footer's box taller than 1.6rem despite `height`. */
     height: 1.6rem;
+    min-height: 1.6rem;
+    max-height: 1.6rem;
     display: flex;
+    flex-wrap: nowrap;
     align-items: center;
     justify-content: center;
     gap: 0;
     padding: 0 0.5rem;
+    /* Scroll horizontally instead of wrapping/shrinking when the row
+       doesn't fit — same `.ats-scroll`/`.ob-status-bar` pattern used
+       elsewhere in this app. Every child below is `white-space: nowrap`
+       so nothing wraps internally either; overflow is reachable by
+       scroll, never by growing the footer's height. */
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    overscroll-behavior-x: contain;
   }
-  .algo-footer-text { font-size: var(--fs-sm); color: rgba(160,185,220,0.7); font-family: var(--font-numeric); }
-  .algo-footer-sep  { font-size: var(--fs-sm); color: rgba(251,191,36,0.6); margin: 0 0.4rem; }
+  .algo-footer::-webkit-scrollbar { display: none; }
+  .algo-footer-brand { flex-shrink: 0; white-space: nowrap; }
+  .algo-footer-text { font-size: var(--fs-sm); color: rgba(160,185,220,0.7); font-family: var(--font-numeric); flex-shrink: 0; white-space: nowrap; }
+  .algo-footer-sep  { font-size: var(--fs-sm); color: rgba(251,191,36,0.6); margin: 0 0.4rem; flex-shrink: 0; }
   .algo-footer-link {
     color: rgba(251,191,36,0.85);
     text-decoration: none;
     border-bottom: 1px dotted rgba(251,191,36,0.45);
+    white-space: nowrap;
   }
   .algo-footer-link:hover { color: var(--c-action); border-bottom-color: var(--c-action); }
 
@@ -2452,13 +2474,13 @@
        of which there is a lot of wasted space before and after cards
        on mobile". */
     .algo-nav-inner { padding: 0 0.25rem; }
-    /* align-items: flex-start (overrides the desktop `center`) — on
-       narrow viewports the page-name span can wrap to two lines when
-       it doesn't fit; `center` then centers that taller wrapped block
-       against its single-line siblings (the "RamboQuant" brand text),
-       reading as vertically offset instead of top-aligned. flex-start
-       keeps every footer item's top edge level regardless of wrap. */
-    .algo-footer    { padding: 0 0.25rem; align-items: flex-start; }
+    /* No align-items override needed here anymore — every footer child
+       is `white-space: nowrap; flex-shrink: 0` and the row scrolls
+       horizontally instead of wrapping (see `.algo-footer`'s own rule),
+       so there's never a taller wrapped item to mis-center against its
+       single-line siblings. The base rule's `align-items: center` is
+       correct at every viewport now. */
+    .algo-footer    { padding: 0 0.25rem; }
     .algo-content   { padding-left: 0; padding-right: 0; }
     /* Tighter card padding on mobile — operator: "increase card width
        to reduce wasted space". algo-status-card defaults to 0.75rem
