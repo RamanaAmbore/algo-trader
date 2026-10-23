@@ -228,6 +228,35 @@ R:R = max_profit / |max_loss|
 Infinity when max_loss = 0 (credit-spread corner case). NaN when max_profit and
 max_loss both zero (flat payoff, rare).
 
+**Expiry dart and printed Exp P&L read one value (2026-10-23, commit `c9fc16d5`, 3C)**: the
+expiry marker (dart) on the chart and the Exp P&L number printed beside it must always agree. Both
+read `curveAtSpot.expiry_value`, the backend curve interpolated at the current spot.
+- The dart's y-position is `yOf(curveAtSpot.expiry_value)`.
+- The printed readout is `fmtMoney(curveAtSpot.expiry_value)`.
+- The frontend per-leg recomputation (`_chartExpPnlAtSpot`) and the `legsExpPnlAtSpot` prop feeding
+  `OptionsPayoff.svelte` were DELETED, not reconciled. Two formulas had diverged whenever basis was
+  not zero: a multi-month MCX basket's per-leg `scale_ratio`, a calendar or diagonal
+  spread's far-leg time value, and a futures leg's live LTP against the backend's
+  scaled-spot valuation.
+- Regression guard: `frontend/e2e/derivatives_payoff_dart_number_parity.spec.js` covers all three
+  divergence cases plus a static grep that fails if a second Exp P&L computation reappears.
+- Invariant: the chart's number and its marker are computed once, on the backend, and never
+  recomputed locally. A future change that reintroduces a local sum is a user-facing defect.
+
+**TDAY-at-spot anchor (2026-10-23, commit `33b66acf`)**: the merged payoff curve's x-axis is
+anchored to `strategy.spot_anchor_contract`, the backend's resolved anchor future (MCX). The TDAY
+alignment offset used to read the FIRST enabled candidate's `underlying_ltp`, whatever its contract
+month. On a calendar or diagonal basket, a far-month leg first in array order made TDAY-at-spot
+disagree with `candidatesActualPnl`. `resolveAnchorPollSpot()` (`pageLoad.js`) now matches on
+contract month (via `decomposeSymbol`), not on exact symbol. `spot_anchor_contract` is always a
+future, so an exact-symbol match could never hit a pure-options basket. It falls back to the first
+enabled candidate when there is no anchor (non-MCX) or no leg's month matches (single-month basket,
+the common case).
+
+**Derivatives Exp P&L dedup (CLAUDE.md "Payoff chart Exp P&L basis")**: the earlier note that the
+chart's Exp P&L is priced at `payoffSpot` no longer describes a separate local computation. The
+number now IS the backend value above.
+
 ---
 
 ## 5. Multi-Leg Strategy
@@ -429,6 +458,62 @@ Early gate `if (!spot || !cps.length) return empty` blocked analysis when spot=0
 resolves independently, supporting mixed-underlying baskets. Full-book expiry close works across
 all positions regardless of selectedUnderlying selection.
 
+### MCX front-month continuity through expiry day (2026-10-23)
+
+Backend and frontend must agree on which MCX contract is "front-month" during expiry day and the
+overnight window. Otherwise the Snapshot/NavStrip spot basis flips depending on which contract
+ticked last.
+
+- **Backend SSOT**: `is_mcx_future_still_current()` (`backend/api/algo/expiry_freeze.py`). An MCX
+  future stays current through its whole expiry day and the closed overnight window. It rolls to
+  the next listed contract only after the next trading day's 08:00 IST open.
+- **Frontend parity (`5c56af5a`)**: `findNearestFuture` (`instruments.js`) and
+  `seedRootMapFromInstruments` (`rootOf.js`) used to roll an MCX future at bare midnight of its own
+  expiry date. They now call the shared predicate `isMcxFutureStillCurrent` (`dateFormat.js`),
+  which mirrors the backend rule and is weekend-aware. A Friday expiry stays current through Monday
+  08:00, not Saturday.
+- **Known residual**: no client-side holiday calendar exists. A holiday immediately after expiry is
+  therefore not covered on the frontend, and can disagree with the backend until the next refresh.
+- Scope: MCX only. NFO and CDS keep their bare-midnight compare unchanged.
+
+### Expired-leg session boundary in `pageLoad.js` (2026-10-23, commit `79c0ca77`)
+
+`buildCandidatePositions`' `isUnresolvable` check and `buildCleanLegs`' safety-net filter compared a
+leg's expiry against bare-midnight `todayIST()`. `expiryPnl.js`'s `isExpiredHeldContract` already
+used the 08:00 IST `tradingSessionDateIST()`. Between 00:00 and 08:00 IST the day after expiry, a
+leg still inside its freeze window was excluded from the chart's Exp P&L sum and offset calculation.
+The Legs TOTAL and NavStrip, which used the correct boundary, kept showing the right value. Both
+call sites now use the session boundary. The draft-position expiry check in the same file still
+uses `todayIST()`. It is out of this fix's scope and was left as is.
+
+### Live-row expiry freeze for base-metal MCX futures (2026-10-23, commit `a2f21798`, 3A)
+
+`is_live_row_past_freeze_window()` (`backend/api/algo/expiry_freeze.py`) derived a held MCX future's
+expiry from its symbol, approximating every MCX future as the last Thursday of the contract month.
+That is correct for CRUDEOIL, GOLDM, SILVER and NATURALGAS. It is wrong for COPPER, ZINC, LEAD,
+ALUMINIUM and NICKEL (and their mini variants). Those expire on the last business day of the month,
+which can be a Friday after the approximated Thursday. On its real expiry day such a contract was
+dropped from the live `/api/positions` fetch, corrupting the account and symbol rollups and every
+downstream consumer.
+
+- `_mcx_future_real_expiry()` resolves the real per-contract expiry from the instruments cache. It
+  uses the same read as `symbol_resolver.list_active_futures` and `kite.py:get_lot_size`.
+- It is consulted only on the branch that can actually drop a row, when the approximated expiry
+  already looks past. On a cache hit the row defers to `is_mcx_future_still_current()` against the
+  real expiry. On a miss (for example, Kite has purged the contract) it falls back to the old
+  approximation. This is the same fail-safe posture as the rest of the module.
+- Non-MCX futures and all options are unchanged. Tests: `backend/tests/test_expiry_freeze.py`.
+
+### Snapshot per-underlying rollup gate (2026-10-23, commit `7111bbe1`)
+
+`rollupByUnderlying` and `perRootReduce` (`derivativesMath.js`) still used the bare `/(CE|PE)$/`
+regex that `isFOSymbol` was introduced to replace. An equity position in a ticker that ends in CE or
+PE (RELIANCE, BAJFINANCE) was read as an option. That produced a spurious underlying row in the
+Snapshot grid with quantity and P&L that do not belong there, while the TOTAL row, already on
+`isFOSymbol`, correctly excluded it. Both rollups now gate on `isFOSymbol`. Four test fixtures
+using the malformed shape `TCS25SEPCFUT` were corrected to the real futures shape `TCS25SEPFUT`,
+which the gate requires. Tests: `frontend/src/lib/__tests__/data/derivativesMath.test.js`.
+
 ### TOTAL row decoration — CSS convention (unified amber stratum)
 
 **Unified stratum rule** (covers BOTH Legs + Snapshot TOTAL rows):
@@ -550,6 +635,13 @@ implementation paths, identical visual output.
 
 - `derivatives_page.spec.js` — Legs grid renders + totals row matches backend
 - `payoff_chart.spec.js` — D3 curve rendering, range clamp visualization
+- `derivatives_payoff_dart_number_parity.spec.js` — dart and printed Exp P&L read one backend
+  value across three divergence cases, plus a static grep guard (2026-10-23)
+- Vitest, 2026-10-23: `mcxFutureRollover.test.js` (front-month parity),
+  `pageLoad_sessionBoundary.test.js` (08:00 boundary in `pageLoad.js`), `derivativesMath.test.js`
+  (`isFOSymbol` gate in the Snapshot rollup)
+- `backend/tests/test_expiry_freeze.py` — base-metal real expiry resolution and the
+  `is_mcx_future_still_current` rule through the expiry day
 
 ### Frontend — gaps
 
@@ -563,6 +655,7 @@ implementation paths, identical visual output.
 
 | Date | Change |
 |---|---|
+| 2026-10-23 | v1.3 P1/P2 audit remediation. Payoff dart and printed Exp P&L now read one backend value (`_chartExpPnlAtSpot` and `legsExpPnlAtSpot` deleted). TDAY anchor month-match via `resolveAnchorPollSpot`. MCX front-month parity (`isMcxFutureStillCurrent`, expiry-day and overnight). `pageLoad.js` 08:00 session boundary. Base-metal MCX futures resolve their real expiry from the instruments cache, not the last-Thursday approximation. Snapshot rollups gated on `isFOSymbol`. |
 | 2026-10-02 | v1.2 correct drift from actual code: IV solver is bisection (not BFGS/Newton), actual bracket `[0.0001, 5.0]`/80-iter cap (not `[0.05, 2.0]`), `qty` arrives pre-lot-scaled, mixed-expiry legs are accepted-not-rejected, "no LTP" fails the request rather than contributing 0, `side` field removed from request examples (signed `qty` is canonical), stale test-file references replaced with real ones. Added "Pricing model by underlying" documenting the new Black-76 branch for MCX commodities (`black_76()`/`greeks_76()`/`implied_vol_76()`, generalized cost-of-carry `b` core shared with plain BS). |
 | 2026-08-13 | v1.1 add Underlying Picker (6 tiers: options/futures/holdings/pinned/watchlist/popular) + Data Loading (positions fallback to pulsePositionsStore) |
 | 2026-07-11 | v1.0 initial spec from codebase audit |

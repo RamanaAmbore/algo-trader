@@ -390,6 +390,53 @@ The fix:
 - Invariant: origin is always line 1 of every outbound message. A manual order shows the same origin
   on every alert for that order, never `manual` on one and `[Agent]` on another.
 
+**Alert routing hygiene — chase re-quote suppression, self-alerted ERROR gate, masking (2026-10-23;
+commit `6ba6936e`)** — Four alert-path defects, bundled into one commit: routine chase events paging the
+operator, an unscoped ERROR catch-all double-alerting, a silently hidden DB write failure, and an
+unmasked account number.
+- **A chase's own re-quote CANCELLED no longer fires an urgent push.** Every cancel-and-replace
+  produces a broker CANCELLED postback for the superseded order. `_opp_cancel_is_own_chase_requote()`
+  ([`orders.py:909`](backend/api/routes/orders.py#L909)) recognises it: the row maps to an AlgoOrder
+  that `chase.is_chase_active()` reports as live in this process. `_opp_send_cancel_alert()`
+  ([`orders.py:940`](backend/api/routes/orders.py#L940)) gates on that check, so a 30-attempt chase no
+  longer produces 30 urgent 3x-repeat pushes (see "Rich-alert ntfy priority" above). Fail-safe: any
+  lookup error returns False, which means the alert still fires. A genuine cancel always alerts.
+- **ERROR_AGENT no longer double-alerts on errors that already alert.** ERROR_AGENT is a blanket
+  catch-all: every `logger.error` matches it. Callers that already fire their own operator alert tag
+  the log call with `extra={"self_alerted": True}`. Current callers are chase's max-attempts exhaustion
+  ([`chase.py:2333-2341`](backend/api/algo/chase.py#L2333)) and `actions_live.py`'s close-position
+  failure path ([`actions_live.py:752-759`](backend/api/algo/actions_live.py#L752)). The gate is
+  `_error_agent_self_alerted()` ([`event_agents.py:718`](backend/api/algo/event_agents.py#L718)). It
+  applies only to ERROR_AGENT, so any other agent keyed on ERROR is unaffected. Note the
+  `_render_error()` imprecision above: the `self_alerted` flag does not change how an unscoped ERROR
+  line renders.
+- **Kite postback DB-write failures are logged at WARNING, not DEBUG.** `_pb_event_kite`'s catch-all
+  around the COMPLETE/REJECTED status write hid real failures at the production log level. A failed
+  write skips the ledger and template-attach fan-out, and the 5s follow-up only catches the status
+  mismatch.
+- **Account numbers are masked in every chase-path alert.** One chase alert embedded a raw account
+  number. Its source is fixed at the source (`_ch_abort_ambiguous_place_timeout`). Defense in depth
+  sits in `order_failure_messages()` ([`alert_utils.py:1045`](backend/shared/helpers/alert_utils.py#L1045)),
+  which runs `mask_account_in_text()` on the caller-supplied `error` text before rendering.
+- Invariant: a routine, self-resolving chase event never pages the operator. A genuine cancel, error
+  or failure always does, and an account number never reaches a channel unmasked.
+
+**generic_notice HTML leak — Telegram showed literal `<b>` tags (2026-10-23; commit `cb9d24d0`)** —
+Operator report: visitor-report alerts showed `&lt;b&gt;` text in Telegram (email rendered them
+correctly). Root cause: the `generic_notice` renderer, `_render_deploy_sync`
+([`event_agents.py:220`](backend/api/algo/event_agents.py#L220), registered at
+[`:351`](backend/api/algo/event_agents.py#L351)), returned only `(title, body)` and had no separate
+HTML slot. Its body is shared by the agents rendering `generic_notice` (see the `"render":
+"generic_notice"` actions at [`event_agents.py:917-964`](backend/api/algo/event_agents.py#L917)). The
+visitor-report body is genuine Telegram HTML (`<b>Visitors</b>`). Telegram's escape fallback then
+double-escaped those tags. The fix matches the other HTML-capable renderers in the file: the plain
+slot (ntfy and the escape fallback) now gets `_html_to_plain(body)`, and Telegram's HTML slot gets
+the raw HTML. Tag-free bodies are byte-identical, so the four plain-text callers are unchanged. The five agents that render `generic_notice` are the
+same five `background.py` alert sites migrated to the event-agent pipeline in "Every alert leads with
+its origin" above.
+Invariant: a renderer that takes a body which may contain HTML must split plain and HTML slots. It
+must never hand a tagged body to an escape-fallback path.
+
 **Alert evaluation and latching** (2026-09, fixes 11 confirmed loss/rate-of-change condition bugs) —
 Agent condition evaluation enforces three critical invariants via the alert engine 
 ([`backend/api/algo/agent_engine.py`](backend/api/algo/agent_engine.py)):
@@ -827,6 +874,12 @@ the row's own 08:00-IST session boundary (same convention as
   P&L rollups. Defensive hardening also added to `background.py:_preload_db_lkg_cache()`.
   Invariant: both DB-snapshot and live-fetch paths now check expiry status; no path can
   leak an expired contract with stale pricing into live account totals.
+  - *Residual, 2026-10-23 (see commit `a2f21798`, 3A):* the live-fetch filter above approximated an
+    MCX future's expiry as the last Thursday of its month. It now reads the real per-contract expiry
+    via `_mcx_future_real_expiry()`, which is documented under "MCX base-metal futures dropped from
+    live positions" in Critical math guards. `expiry_if_closed_on_own_expiry_day()`, the
+    closed-hours sweep classifier, still uses the approximation. Out of scope for that fix; it is an
+    open item.
 
 **WebSocket subscription** — `MODE_LTP`, event-driven push. All brokers (Kite, Dhan, Groww) use the **same KiteTicker WebSocket** — there is no Dhan or Groww WebSocket. LTP for Dhan/Groww positions is delivered via KiteTicker after the instrument token is resolved from (tradingsymbol, exchange). **Critical: always use `subscribe_with_sym([(token, symbol)])` to subscribe**, not bare `subscribe([token])`** — bare subscriptions never populate the ticker's `_token_to_sym`/`_sym_to_token` mapping, causing every tick to publish with `sym=""` and be silently dropped by symbol-keyed frontend consumers until the next 5-min background cycle rediscovers the instrument. New instrument from order fill: use `_subscribe_filled_pairs()` helper (`backend/api/routes/orders.py`) to resolve (symbol, exchange) to instrument token and subscribe immediately — this canonical path now covers Kite/Dhan/Groww postbacks, admin reconcile sweep, open-order watchdog, and chase's terminal-fill detection. Full design: memory `project_websocket_design`.
 
@@ -846,6 +899,19 @@ the row's own 08:00-IST session boundary (same convention as
 Invariant: when a component is kept mounted-but-hidden for background-effect reasons, every effect inside it that writes to *shared/bound* state must be gated on the same visibility flag — an effect reading only local state is safe to leave ungated, but one that writes to a value another visible component also owns is not. Tests: `e2e/order_ticket_template_toggle_regression.spec.js` (includes a network-interception test asserting a real `template_id` reaches `/api/orders/ticket` — confirmed to fail against the pre-fix severed code, the strongest guard for this exact class of bug).
 
 **Chase countdown column minimum-width guard on mobile (2026-10-16, commit de68fbda)** — The age/countdown column in `ChaseCard.svelte` had no minimum width (`minmax(0, 0.6fr)`), allowing it to shrink to unreadable slivers on narrow mobile viewports competing with 8+ other columns and a locked-minimum kill button. Fixed by setting `minmax(2.1rem, 0.6fr)` in both `.cc-row` and `.cc-compact .cc-row` grid templates.
+
+**ChaseCard header-drawer column floors on mobile (2026-10-23; commit `bcb9bad6`, amends the entry
+above)** — The age-column floor above was the only column with a locked minimum. In the non-compact
+grid (`compact={false}`, the header drawer and `/orders` mount), `side`, `qty` and `att` still
+collapsed to a single ellipsized character on a ~360px panel. A measurement pass also showed `limit`
+and `mode` clipping, which the original finding had not named. Every track in the non-compact
+`.cc-row` now has a content-derived floor
+([`ChaseCard.svelte:729-744`](frontend/src/lib/order/ChaseCard.svelte#L729)). When the container is
+narrower than the sum of the floors, the existing `.cc-grid` `overflow-x: auto` takes over and the row
+scrolls. Nothing changes above ~460px. The compact `.cc-row` override
+([`:754-760`](frontend/src/lib/order/ChaseCard.svelte#L754)) keeps its `minmax(0, …)` tracks, because
+compact cards are not in the drawer. Invariant: a grid track may not squeeze its content past
+legibility. Overflow scrolls instead.
 
 **Chase hidden (not greyed) while Draft is on; one submit label (2026-10-23; commit `75685b7b`)** —
 Operator report: "when submitting draft order, chase is getting invoked." A live DB query on prod
@@ -902,6 +968,14 @@ centre. The Chain-tab basket-leg pill in `SymbolPanel.svelte` moves from the fai
 - **Chase offsetting-position guard** — Chase path now verifies the same offsetting-position guard the Kite postback path was already running (reject close-legs with opposite-sign position or quantity exceeding open), bringing all paths to parity.
 
 **Cancel paths must call chase's mark_killed(), or chase silently re-places the "cancelled" order (2026-10-15, commit ecc829c8)** — Chase distinguishes operator-kill from broker auto-cancel via an in-process `is_killed(broker_order_id)` flag (`chase.py`), set ONLY by `mark_killed()`. Before this fix, `mark_killed()` was called ONLY from `_rco_kill_live_mode` (the dedicated `POST /chases/{id}/kill` route) — the admin `cancel_order` REST route, the agent-grammar `_action_live_cancel_order` action, and `_action_live_cancel_all_orders`'s fleet-cancel loop (`_al_cancel_broker_orders`) never called it. Result: cancelling a chase-managed order via any of those three paths got silently undone — chase's poll loop saw CANCELLED, `is_killed()==False`, took the `cancelled_continue` branch, and re-placed the order at a fresh price, leaving the operator believing the position was dead while chase kept working it. Fix: all three paths now call `mark_killed(order_id)` — BEFORE the broker cancel call, not after, since the broker's own `await` yields the event loop and a chase poll could land mid-cancel. Invariant: any operator-initiated cancel — UI, agent DO-action, or CLI — must call `mark_killed()` so chase never re-places a genuinely cancelled order. New `POST /api/orders/cancel-all` route (and the CLI's `cancel_all_orders(...)` bare statement, see Common Tasks) reuses the same `cancel_all_orders_scoped()` helper as the pre-existing agent action, so both get this fix for free.
+
+*Amended 2026-10-23 (commits `fa70a893`, with its `chase.py` half in `6ba6936e`):* the Kill route (`kill_chase`,
+[`orders.py:1988`](backend/api/routes/orders.py#L1988), which takes `algo_order_id`) used to resolve
+its marker from a `broker_order_id` read at click time. If chase cancelled-and-replaced in that window,
+the cancel hit a dead id and the row was wrongly stamped `CANCEL_FAILED`. The Kill route now marks the
+algo-order id first, via `mark_order_killed()` ([`chase.py:687`](backend/api/algo/chase.py#L687)),
+which survives a broker-id swap. The `mark_killed()` / `is_killed()` contract above still applies to
+the other cancel paths.
 
 **Chase live attempts, broker cancel throttling, superseded-row dedup, and header chase popup
 (2026-10-23; commits `f008db13`, `ad4b7b0a`, `0033c0a0`, `63580cff`, `60ef55b0`, `b8e0ae0f`)** —
@@ -1006,6 +1080,33 @@ ChaseCard remount-loop fix (2026-10-23; commits `1d2e369e`, `fc77a8f8`, `7d68b8d
 - Invariant: a chase never finalizes an order whose broker fate it cannot confirm. A bound value
   written by several component instances must be written only once its writer holds real data.
 
+**Chase Kill lifecycle — algo-order-keyed kill, re-killable CANCEL_FAILED, truthful `ok` (2026-10-23;
+commits `fa70a893`, `d53ad4c9`)** — Three linked defects in the Kill path. The Kill route is
+`kill_chase` ([`orders.py:1988`](backend/api/routes/orders.py#L1988)).
+- **Kill targets the live order, not a snapshot.** The marker is set first, via `mark_order_killed()`
+  (see the amendment under "Cancel paths must call chase's mark_killed()" above). If the first cancel
+  fails while chase still runs the row, `_rco_kill_resolve_dispatch_race`
+  ([`orders.py:1577`](backend/api/routes/orders.py#L1577)) re-reads the row and retries against the
+  freshly resolved broker id. If the retry is still ambiguous and chase is active, the response is
+  `pending: true` and no status is written. Chase's own terminal write is never stomped.
+- **`ok` reflects the real outcome.** The response used to be `ok: true` even on a broker-cancel
+  failure or an already-FILLED/REJECTED row. `ok` is now the true outcome. The paper-engine test
+  `test_kill_chase_paper.py` pins the new `ok: false` case.
+- **CANCEL_FAILED is re-killable.** The gate used to accept only `OPEN`, so a `CANCEL_FAILED` row was
+  stuck forever. It now accepts `CANCEL_FAILED` too. A retry first checks broker truth through
+  `get_broker_order_truth()`. A row is force-resolved only when two things hold: the broker's error
+  text reads as "this order is gone", and the row predates the current trading session. An ambiguous
+  failure is never force-resolved. The known AMO variety mismatch is one such ambiguous case.
+- **ChaseCard reads `ok` strictly.** `_kill()` in
+  [`ChaseCard.svelte`](frontend/src/lib/order/ChaseCard.svelte) treats success as `!!r?.ok && !r?.err`.
+  That holds even if the backend regresses to the old shape. A failure fires a sticky toast with the
+  real error text, because the in-card banner is cleared by the next 3s poll. `pending: true` fires a
+  warning toast, not an error.
+- Invariant: a Kill response never reports success for an unconfirmed cancel. A Kill never writes a
+  terminal status while a chase still owns the row.
+- Deploy coupling: `fa70a893` requires `6ba6936e` (the `mark_order_killed` marker lives in `chase.py`).
+  `d53ad4c9` pairs with `fa70a893` (the frontend `ok` contract). Ship them together.
+
 **Order reconcile consolidated onto one accessor; periodic order-poll sweep; postback follow-up
 verification (2026-10-23; commit `8c0d5180`)** — Three reconcile paths and the open-order watchdog
 each carried their own broker-truth logic. The riskiest guessed `UNFILLED` on a missing or empty
@@ -1022,6 +1123,15 @@ broker response. All four now route through `get_broker_order_truth()` / `apply_
   prevents: a background corrector racing a routine, still-in-flight chase fill sees the broker
   fill before chase records it, and fires a false `order_correction` on every normal fill. The
   chase owns that row until it finishes.
+  - *Amended 2026-10-23 (commit `64810434`, O5):* the no-op is no longer absolute.
+    `reconcile_row_and_followup()` ([`order_poll.py:66`](backend/api/algo/order_poll.py#L66)) takes an
+    `owning_chase=True` kwarg, which skips the `is_chase_active` gate for exactly one caller: chase's
+    own periodic broker-truth check, `_ch_periodic_broker_truth_check`
+    ([`chase.py:3046`](backend/api/algo/chase.py#L3046)). That check runs while the marker is set, so
+    without the bypass the migration would be a permanent no-op. It passes `fire_alert=False`, so a
+    routine self-resolving chase fill does not raise an `order_correction` alert. The backstop reconcile
+    `_ch_backstop_reconcile_one` ([`chase.py:824`](backend/api/algo/chase.py#L824)) needs no bypass,
+    because it runs after the marker is cleared.
 - **Periodic sweep.** `_task_order_poll()` ([`order_poll.py:258`](backend/api/algo/order_poll.py#L258))
   covers every live `OPEN` / `CANCEL_FAILED` order broker-wide, independent of chase. Cadence is the
   existing 5-minute book-poll backstop (`performance.refresh_interval`, same YAML fallback chain).
@@ -1042,6 +1152,28 @@ broker response. All four now route through `get_broker_order_truth()` / `apply_
   (Kite's `order_history(order_id)`, not the day-scoped bulk list) before resuming a chase, and
   skips the restart if it cannot confirm. A dead row therefore cannot be resurrected into a live
   order.
+
+**Chase correctness — restart safety and circuit-breaker scope (2026-10-23; commits `ceddd178`,
+`d6632590`; O2 and O5 are amended into the entries above)** —
+- **Restart recovery never trusts a failed cancel (`ceddd178`).**
+  `_recover_query_and_cancel_resting` ([`background.py:8012`](backend/api/background.py#L8012)) used to
+  swallow a `cancel_order` exception at WARNING and return the post-cancel read. If that read showed the
+  order still resting, `recover_live_chases()` ([`background.py:8193`](backend/api/background.py#L8193))
+  restarted chase with the full remaining quantity, on top of the live original. Now, when the cancel
+  call itself raised, the status must be re-verified as gone (`_CH_CONFIRMED_GONE_STATUSES`). If it
+  cannot be, that restart is skipped for this cycle and an alert fires for manual review. This is the
+  same fail-closed shape as chase's own ambiguous-cancel abort. A cancel that returns normally is
+  unaffected. This extends the "Accepted tradeoff" note in the order-reconcile entry above: restart
+  now also refuses on an ambiguous cancel, not only on a failed lookup.
+- **A confirm-window timeout is not a broker rejection (`d6632590`).** The 15s ticket-confirm
+  `asyncio.wait_for` can expire while `_ch_seed_pre_fill_net_qty` fetches positions across all accounts.
+  The order may still land and be handled by the abandonment path. `_start_live_chase` now raises
+  `ChaseConfirmTimeout` ([`orders_helpers.py:294`](backend/api/routes/orders_helpers.py#L294), a
+  `RuntimeError` subclass) only on that timeout. `_ticket_handle_live_place_error` skips
+  `_record_rejection` and `_maybe_send_breaker_alert` for this type alone. A genuine broker rejection
+  still counts toward the breaker.
+- Invariant: restart and abort paths never guess broker fate. The circuit breaker counts only real
+  rejections.
 
 **Live ticket placement fail-closed on AlgoOrder pre-persist (2026-09-28, commit 8fca413b)** — Ticket placement (`orders_place.py:ticket_order_handler`) used to silently ignore DB insert failures when pre-persisting the `AlgoOrder` row, swallowing exceptions and proceeding to place a live order completely untracked. Root-caused via live prod incident: `AlgoOrder #1088` was placed live, chased for ~12 minutes, never appeared in operator views, and was never reconciled post-session. Fix: any DB insert failure (constraint violation, transaction rollback, timeout) now returns `HTTPException(503 SERVICE_UNAVAILABLE)` immediately, refusing the order and rolling back to client. Client sees a clear failure and can retry; no untracked live orders escape.
 
@@ -1239,6 +1371,41 @@ against pre-fix code). Invariant: an MCX future is "current" for virtual-root/un
 purposes through its own entire expiry day and the whole closed overnight window (23:31→08:00
 IST); it rolls to the next listed contract only once the next trading day's 08:00 IST open has
 passed — never at the bare calendar-date boundary.
+
+**MCX base-metal futures dropped from live positions on their real expiry day (2026-10-23; commit
+`a2f21798`, 3A)** — `is_live_row_past_freeze_window()`
+([`expiry_freeze.py:425`](backend/api/algo/expiry_freeze.py#L425)) derived an MCX future's expiry
+through `parse_tradingsymbol`'s FUT branch. That branch approximates every MCX future as the last
+Thursday of its month. The approximation is right for CRUDEOIL, GOLDM, SILVER and NATURALGAS. It is
+wrong for COPPER, ZINC, LEAD, ALUMINIUM and NICKEL (and mini variants), whose real expiry is often the
+last business day, which can be a Friday after the approximated Thursday. On its real expiry day the
+contract was treated as already expired and dropped from the live `/api/positions` fetch for the whole
+day. That corrupted account and symbol rollups and every consumer of the response: NavStrip, the Legs
+grid, MarketPulse and the LKG cache.
+- Fix: `_mcx_future_real_expiry()` ([`expiry_freeze.py:363`](backend/api/algo/expiry_freeze.py#L363))
+  reads the real expiry from the instruments-cache lookup that `list_active_futures` and
+  `kite.py:get_lot_size` already share. The check consults it only on the branch that can drop a row.
+  On a cache hit it defers to `is_mcx_future_still_current()` against the real expiry. On a miss (for
+  example, Kite purged the contract) it falls back to the old approximation, unchanged.
+- Non-MCX futures and all options are untouched. Residual: `expiry_if_closed_on_own_expiry_day()`, the
+  closed-hours sweep classifier, still uses the same approximation. See the residual note in the
+  expiry-day freeze entry above.
+- Invariant: a held MCX future is never dropped from the live fetch on its own expiry day. The real
+  expiry date, not a calendar approximation, governs that decision.
+
+**MCX front-month parity in the frontend — expiry day and overnight (2026-10-23; commit `5c56af5a`, 3B)**
+— `findNearestFuture()` ([`instruments.js:479`](frontend/src/lib/data/instruments.js#L479)) and
+`seedRootMapFromInstruments()` (`frontend/src/lib/data/rootOf.js`) rolled an MCX future at bare
+midnight on its expiry date. The backend keeps it current through the expiry day and the closed
+overnight window, rolling only after the next trading day's 08:00 IST open. So the Snapshot and NavStrip
+spot basis flipped depending on which contract last ticked.
+- Both paths now use `isMcxFutureStillCurrent()` ([`dateFormat.js:131`](frontend/src/lib/dateFormat.js#L131))
+  for `r.e === 'MCX'` rows. The predicate is weekend-aware: a Friday expiry stays current until Monday
+  08:00. NFO and CDS keep their bare-midnight compare.
+- Residual: there is no client-side holiday calendar, so a holiday immediately after an MCX expiry is a
+  known gap. The backend rule covers it.
+- Invariant: frontend and backend agree on which MCX contract is front-month at every instant,
+  except during the holiday residual above.
 
 **F&O order qty convention** — API now accepts LOTS as input for instruments with 
 `lot_size > 1`. `backend/api/routes/orders_place.py:_ticket_validate_input` converts 
@@ -1506,6 +1673,12 @@ stop ratchet, and order modify paths; all patches deployed together. Key invaria
   - *Amended 2026-10-23:* the abort also writes a `CANCEL_FAILED` marker on the row, never
     `REJECTED`, which would block a later real fill. Its alert goes through the binary ntfy
     action-required gate, so it still reaches ntfy as urgent. See "Chase robustness round 2" above.
+  - *Amended 2026-10-23 (commit `3f4392e4`, O2):* `_ch_exhaust_max_attempts`
+    ([`chase.py:2265`](backend/api/algo/chase.py#L2265)) and `_ch_abort_stuck`
+    ([`chase.py:3156`](backend/api/algo/chase.py#L3156)) both run a final cancel-and-confirm read
+    before choosing the terminal outcome. Each now checks whether that read shows `cumulative_filled`
+    has reached `quantity`. If so, the chase is recorded `FILLED`, not `UNFILLED`. This matches the in-loop path `_ch_zero_remaining_fill`. A late full fill
+    therefore fires template attach and auto-TP, which matters most for Dhan and Groww.
 - **Groww's `translate_qty` had no structural safety net (2026-09 orders-page
   council audit, finding #6)** — Kite and Dhan both inherit the base
   `translate_qty`, decorated with `@exchange_qty_convention`, which routes
@@ -1562,6 +1735,92 @@ terminal (chase.py:243). Test: `backend/tests/test_template_attach_paper_mode_sa
 Invariant: `_fire_template_attach_on_fill` (and anything that could reach 
 `apply_plan_live`) must never run for a non-'live' AlgoOrder — 
 paper/sim/replay/shadow fills never place real broker orders.
+
+**Template and bracket attach hardening — retry lock, persist-failure hold, scale-out OCO, close gate,
+validation (2026-10-23; commits `df9d3189`, `f626457a`, `8e26a0b3`, `1d8622fb`, `91ba7923`, `7fd3eeba`,
+`270e7e26`, `1a883590`, `6d4b6c10`, `510e0a30`, `20ee0815`)** — Nine defects in the template attach
+path, grouped by mechanism. Each bullet names its own fix.
+- **Retry re-checks inside the lock (T13, `df9d3189`).** The retry route checked `attached_gtts_json`
+  before the per-row lock. A concurrent fill-triggered attach could persist in that gap, and retry then
+  placed a second live GTT and wing set. `_rco_attached_gtts_already_set()`
+  ([`orders.py:1317`](backend/api/routes/orders.py#L1317)) re-reads the row inside the lock (called at
+  [`orders.py:1389`](backend/api/routes/orders.py#L1389)). It matches the fill path's own in-lock check.
+- **GTT persist failure holds and alerts, never silently duplicates (T16, `f626457a`, `8e26a0b3`).**
+  `_opp_persist_attached_gtts` runs after broker placement. A DB failure there used to log a WARNING
+  only. The exits stayed live but unrecorded, so a redelivery or a manual retry placed a second set.
+  Now `_opp_persist_with_retry` ([`orders_place.py:876`](backend/api/routes/orders_place.py#L876))
+  retries 3 times (0.5s, then 1s). On exhaustion, `_opp_handle_persist_failure`
+  ([`orders_place.py:910`](backend/api/routes/orders_place.py#L910)) holds the payload in
+  `_TPL_ATTACH_PERSIST_PENDING` ([`orders_place.py:329`](backend/api/routes/orders_place.py#L329)),
+  keyed by parent row id. It then fires `template_attach_failed` with `placed_untracked_ids`. That
+  footer says the exits are placed but unrecorded and must not be armed by hand. The default footer
+  is unchanged. The hold is checked in three places: `_fire_template_attach_on_fill`
+  ([`orders_place.py:1129`](backend/api/routes/orders_place.py#L1129)), `_rco_attached_gtts_already_set`
+  and `_retry_precheck_row` ([`orders.py:517`](backend/api/routes/orders.py#L517)). Residual: the hold
+  is in-memory, so a process restart drops it and a later trigger could place a real duplicate. The
+  alert has already listed the broker ids. The hold is deliberately not DB-persisted. A marker written
+  after a failed DB write could block a legitimate retry.
+- **Scale-out ladder plus SL gets OCO pairing (T14, `1d8622fb`, `91ba7923`).** The old pairing matched
+  only an exact `{"TP","SL"}` two-leg set. A scale-out ladder's rung labels never matched, so every
+  surviving rung stayed live after SL fired. `_ta_detect_scale_sl_group()`
+  ([`template_attach.py:2442`](backend/api/algo/template_attach.py#L2442)) records an asymmetric
+  `(sl_id, [tp_ids])` group on `AttachResult.sibling_groups`. The group is SL-side only, so
+  sequential scale-out fires never cancel each other. `_task_oco_pair_watcher` runs
+  `_oco_process_group_entry` ([`background.py:5597`](backend/api/background.py#L5597)). Liveness uses
+  `_oco_gtt_is_live` ([`background.py:5449`](backend/api/background.py#L5449)), which treats a
+  `triggered` or `cancelled` GTT still listed by Kite as gone.
+  - Follow-up (`91ba7923`): "gone" is not "closed". A rung rejected at placement, or a fired-but-unfilled
+    exit, also reads as gone. Cancelling then could leave a live position with no stop. The cancel now
+    requires `_oco_group_position_is_flat()` ([`background.py:5477`](backend/api/background.py#L5477)) to
+    return exactly `True`, from a fresh positions read. `None` (fetch failed or no row) is never flat.
+    Otherwise sibling ids are left untouched and retried next cycle.
+- **The close gate covers override-only tickets (T15, `7fd3eeba`).** The pre-fill close gate ran only
+  when `template_id` was set. An override-only ticket (inline `tp_pct_override`, `sl_pct_override`,
+  `wing_*_override`) skipped it, and its overrides reached the persisted row. The gate is now
+  `_ticket_strip_template_on_close()` ([`orders_place.py:505`](backend/api/routes/orders_place.py#L505)).
+  It triggers on `template_id or has_any_override`. On a server-verified close it nulls every override
+  field. The fill-time offsetting check in `_pb_check_and_fire_template_attach`
+  ([`orders_postback.py:787`](backend/api/routes/orders_postback.py#L787)) cannot see a full close,
+  because the position is already flat. This gate runs upstream of it. It does NOT set `intent="close"`,
+  which would bypass the G2 and MCX size caps. A sign-only read must never grant that bypass. See
+  "Verified-intent propagation" above. Not covered, by design: partial closes fall through to the
+  postback check, reconcile has no offsetting check, and `orders_basket.py` has no equivalent gate. A
+  basket leg's `template_id` still passes unchecked.
+- **A chase-routed wing inherits the parent's product (T18, `270e7e26`).** `_chase_wing` built its
+  `ChaseConfig` without `product=`, so a chase-routed wing went NRML while its own row said the parent's
+  product. The fix threads `plan.wing.product` through. This is the same class as the close-path product
+  defaults above.
+- **Template save rejects `wing_premium_pct <= 0` (T19, `1a883590`).**
+  `_validate_wing_premium_pct()` ([`templates.py:113`](backend/api/routes/templates.py#L113)) mirrors the
+  resolver's own rejection on both create and PATCH. Before, every fill raised a 422 deep in
+  `_parse_template_overrides` and logged a WARNING only. For already-saved bad templates,
+  `_opp_handle_fill_path_exception` ([`orders_place.py:981`](backend/api/routes/orders_place.py#L981))
+  fires the real `template_attach_failed` alert for an HTTPException only. Other exceptions keep their
+  silent behaviour. tp and sl values are deliberately not validated, because the resolver soft-degrades
+  them.
+- **Kite MARKET-leg TP cap warning (T17, `6d4b6c10`).** Kite's `place_gtt` raises
+  `BrokerCapabilityError` when any leg is MARKET ([`kite.py:561`](backend/brokers/adapters/kite.py#L561)).
+  A TP and SL bracket goes as one two-leg OCO, so `tp_order_type=MARKET` on Kite silently loses the SL
+  too. `capWarningFor()` ([`brokerCapWarnings.js:30`](frontend/src/lib/data/brokerCapWarnings.js#L30))
+  takes a live override `ov`, so the warning follows the TemplateBar MKT toggle even when the template
+  is unsaved. Basket warnings go through `aggregateCapWarnings()`
+  ([`:100`](frontend/src/lib/data/brokerCapWarnings.js#L100)).
+- **Retry-attach writes OCO pairing (T20, `510e0a30`).** `_retry_build_attached_payload`
+  ([`orders.py:394`](backend/api/routes/orders.py#L394)) claimed field-for-field parity with the fill
+  path but never wrote `sibling_id` or `sibling_ids`. On Groww, which has no broker-side OCO, the
+  watcher then had no pointer to cancel the surviving leg. It now reuses the same map builders. See
+  "Fill bookkeeping completeness" below.
+- **Off-hours wing-gate text says "refused" (T25, `20ee0815`).** `_check_offhours_wing_gate()`
+  ([`template_attach.py:328`](backend/api/algo/template_attach.py#L328)) said "deferred", but nothing
+  retries it. TP and SL are dropped too, because the caller returns before building them. The text now
+  says the attach was refused and names TP, SL and wing. Text only, no scheduler. See the gate bullet in
+  "Order-path gate status" above.
+- Invariant: a template attach runs at most once per parent. Every failure is recorded, alerted, or
+  refused with an accurate message. The operator is never told to arm exits that are already live.
+- Deploy coupling (not independently shippable, same convention as the close_settled entry): `91ba7923`
+  requires `1d8622fb`. Without the flat-position gate, the scale-ladder OCO watcher can cancel a live
+  SL. `f626457a` requires `8e26a0b3` (the `getattr` guard on the pending-hold check). `510e0a30` and
+  `20ee0815` are independent. Ship the full range together.
 
 **Chain template scope and remembered preference (2026-09-30, commit b8bd1b7b)** —
 Two UI defects blocked option-specific template selection on Chain:
@@ -1656,6 +1915,39 @@ to the frozen actual/settled P&L only once the next trading session actually beg
 never at bare midnight hours before market open. Invariant: Exp P&L session boundary is always 
 derived from the trading-session-date convention, matching `_SESSION_ANCHOR_CUTOFF_TS_SQL` 
 and the Day P&L / nav rules elsewhere in CLAUDE.md.
+
+**Derivatives frontend parity — 08:00 boundary in pageLoad, Snapshot CE/PE misclassification, TDAY
+anchor (2026-10-23; commits `79c0ca77`, `7111bbe1`, `33b66acf`)** — Three frontend derivatives
+defects. Each is a view that disagreed with the rule the backend or another view already applied.
+- **Expired-leg checks use the 08:00 IST boundary (3D, `79c0ca77`).**
+  `buildCandidatePositions`'s `isUnresolvable` check
+  ([`pageLoad.js:467`](frontend/src/lib/derivatives/pageLoad.js#L467)) and `buildCleanLegs`'s
+  safety-net filter ([`pageLoad.js:668`](frontend/src/lib/derivatives/pageLoad.js#L668)) compared expiry
+  against bare-midnight `todayIST()`. `expiryPnl.js` already used `tradingSessionDateIST()`. Between
+  00:00 and 08:00 IST after an expiry day, the chart dropped a leg still inside its freeze window. That
+  reproduced the GOLDM flat-zero curve eight hours early. Both sites now use `tradingSessionDateIST()`.
+  The draft-position check further down the same file still uses `todayIST()`. It was outside this
+  cluster's scope. `/strategy-analytics` floors T at 0 for an at-or-past-expiry leg, so an included
+  leg prices at intrinsic value, not an error. See "Exp P&L session-boundary fix" above.
+- **Snapshot no longer reads equity tickers ending in CE or PE as options (3E, `7111bbe1`).**
+  `rollupByUnderlying` and `perRootReduce` in
+  [`derivativesMath.js`](frontend/src/lib/data/derivativesMath.js#L504) used a bare `/(CE|PE)$/`
+  regex. RELIANCE or BAJFINANCE then produced a spurious underlying row, while TOTAL correctly
+  excluded it. Both functions now use `isFOSymbol()`
+  ([`derivativesMath.js:662`](frontend/src/lib/data/derivativesMath.js#L662)). This is the same class
+  as "Auto-pairing is CE/PE-aware" above. Four test fixtures with a malformed `...CFUT` shape were
+  corrected to real Kite futures shapes, because the stricter gate rejects them.
+- **TDAY-at-spot anchors to the backend's curve anchor (3F, `33b66acf`).** `_pollSpot` returned the
+  first enabled candidate's `underlying_ltp`, whatever its contract month. The merged payoff curve is
+  anchored to `strategy.spot_anchor_contract`. On a calendar or diagonal MCX basket where a far-month
+  leg came first, TDAY interpolated at the wrong price. Then TDAY-at-spot disagreed with the candidates'
+  actual P&L. `resolveAnchorPollSpot()` ([`pageLoad.js:251`](frontend/src/lib/derivatives/pageLoad.js#L251))
+  matches on contract month via `decomposeSymbol`, because the anchor is always a futures symbol. It
+  falls back to the first enabled candidate when there is no anchor (non-MCX) or no leg's month matches
+  (the common single-month case). This is the TDAY theoretical curve alignment. It is related to, but
+  distinct from, the Exp P&L readout in "Payoff chart Exp P&L basis" above.
+- Invariant: the derivatives views agree on one session boundary, one F&O classifier, and one anchor
+  contract.
 
 **Pre-open LTP pinning — last_price = prev_close until each row's own segment opens (2026-10-22,
 commit `0538f0a7`, MCX open time corrected back to 09:00 later the same day)** — The system's
@@ -1955,6 +2247,11 @@ now caches + returns a `stale` flag; `/api/nav/by-account` masks `errors` for no
 | Update architecture doc | `docs/DESIGN_GUIDE.md` → regenerate with `python3 docs/generate_pdf.py` |
 | Add audit snapshot | `docs/audits/AUDIT_<TOPIC>.md` |
 | Update ops runbook | `docs/deployment.md` |
+| Chase Kill / CANCEL_FAILED retry | `backend/api/routes/orders.py:kill_chase` + `chase.py:mark_order_killed` |
+| Template persist-failure hold (in-memory) | `orders_place.py:_TPL_ATTACH_PERSIST_PENDING` + `_opp_handle_persist_failure` |
+| Scale-out ladder OCO pairing | `template_attach.py:_ta_detect_scale_sl_group` + `background.py:_oco_process_group_entry` |
+| MCX real per-contract expiry (live freeze filter) | `expiry_freeze.py:_mcx_future_real_expiry` |
+| generic_notice Telegram/ntfy HTML split | `event_agents.py:_render_deploy_sync` + `alert_utils.py:_html_to_plain` |
 
 ---
 

@@ -408,6 +408,8 @@ ready to use.
 ### Exit mechanics (plain English)
 
 **Take-Profit (TP)** — auto-sell at a higher price (long) or auto-buy at a lower price (short). Pick % above your entry or ₹ per contract. When the market touches your target, the platform executes it. Type: LIMIT (exact price, may miss in fast markets) or MARKET (fills fast, no price guarantee).
+On a Kite account, a MARKET take-profit cannot attach (see the warning under the broker table
+below). Choose LIMIT for Kite.
 
 **Stop-Loss (SL)** — auto-sell (long) or auto-buy (short) if the market moves against you. Same per-entry or per-₹ choices. Always LIMIT to cap your slippage.
 
@@ -426,6 +428,11 @@ Platform ships with two:
 | **default-long-option** | Buying calls or puts | TP at +80% MARKET. No SL, no wing, no scale. |
 | **default-short-vol** | Selling puts / calls | TP at +10% LIMIT, SL at −20%, buys a hedge wing 1 strike away. |
 
+**Note for Kite accounts (2026-10-23):** `default-long-option`'s take-profit is a MARKET order. Kite
+refuses any exit order that contains a MARKET leg. On a Kite account, the warning appears on the
+order ticket, and the take-profit will not attach after the buy fills. Before you rely on this
+template with Kite, change its take-profit to LIMIT, or set LIMIT on the order ticket for that trade.
+
 You can edit these, create new ones, and mark any template as your default so it auto-fills in the Chain tab.
 
 ### Off-market-hours behaviour
@@ -434,6 +441,10 @@ When a postback arrives while the exchange is closed:
 
 - **GTT-only templates** (TP + SL legs only): GTT orders are accepted by Kite 24×7 and will be placed normally. The template attaches as usual.
 - **Templates with a wing leg** (a MARKET order placed immediately on fill): The wing MARKET order cannot be placed while the exchange is closed. RamboQuant will skip the wing and fire a Telegram alert. The TP + SL GTTs are still placed. If you need the wing, you must place it manually once the market opens.
+  - **Correction (2026-10-23):** the sentence above is wrong about the TP and SL. When the exchange
+    is closed and a template has a wing leg, the platform REFUSES the whole attach. The TP, the SL
+    and the wing are all skipped, and nothing retries them later. Once the market opens, place all
+    of your exits by hand. Check the alert you received for the list of skipped legs.
 
 ### Template `applies_to` gate
 
@@ -453,6 +464,11 @@ If a template is auto-selected and the order side doesn't match `applies_to`, th
 ### Multi-broker support — what works where
 
 Templates now work on **all three brokers**, with a small caveat on Groww. The Chain tab shows an inline warning chip (amber) below the template summary when the selected template asks for a feature the selected broker can't provide natively — you see the gap at submit time, not at fill time.
+
+On Kite, the warning "GTT rejects MARKET legs" appears when the take-profit is set to MARKET. Kite
+will not place an exit order that contains a MARKET leg, and a take-profit and stop-loss go in as one
+pair, so the stop-loss fails too. Change the take-profit to LIMIT before you submit. The warning
+follows the MKT toggle on the order ticket, even when the saved template is LIMIT. (2026-10-23)
 
 | Broker | TP only | SL only | TP + SL (OCO) | Trailing stop | Notes |
 |---|---|---|---|---|---|
@@ -558,6 +574,9 @@ If you submit an order with chase enabled and the exchange is already closed at 
   be confirmed, the order shows as `CANCEL_FAILED`, not `REJECTED`. This is
   deliberate: the order may still be resting at the broker, so check your broker's
   order book before assuming it is dead.
+- **Late fill during the final check** (2026-10-23) — if a chase gives up or is stopped as stuck,
+  and a last check shows the order was fully filled, the order is recorded as FILLED, not
+  UNFILLED. Your exit orders are placed the same way as for any other fill.
 
 ### Watching a chase live — the Order button
 
@@ -572,6 +591,13 @@ button:
 A small dot on the Order button means at least one chase is running, so you can tell
 at a glance without opening anything. The first time the dot appears, a one-time hint
 explains the gesture.
+
+**Killing a chase (2026-10-23)** — Kill now targets the live order, even if the chase
+has just moved to a new broker order. A chase stuck in `CANCEL_FAILED` can be killed again.
+When a Kill does not go through, a popup shows the reason. A "still cancelling, retry"
+popup means the chase is mid-replacement, so press Kill again in a few seconds. Kill reports success only when the cancel has actually gone through at
+the broker, or the order had already ended without a fill. If the order had already filled or
+been rejected, Kill reports that there is nothing to kill.
 
 ### "Order corrected" alerts
 
@@ -1136,6 +1162,7 @@ Every action that changes state in RamboQuant — placing an order, a broker fil
 |---|---|
 | Agent didn't fire when I expected it to | `/automation?tab=agents` → expand the row → check "Last fire" timestamp + "Count" + cooldown. Also try **Run in Simulator** to confirm. |
 | Telegram / email not arriving | `/admin/settings` → notifications block. Make sure `cap_in_<branch>.telegram` and `mail` are on. |
+| Telegram shows literal `<b>` tags (e.g. the visitor report) | Fixed 2026-10-23. Bold headings now render as bold in Telegram. Email was never affected. |
 | Options page shows yellow "stale" chips | The broker has no fresh quote. Likely because: market closed, contract illiquid, weekend. Fallback values are still useful for the *shape* of the payoff, just not absolute P&L. |
 | Brokers page shows "PENDING" status pill | The DB row exists but the platform's connection map hasn't picked it up yet. Wait 15 s — the page polls. Or click **Test** to force a load. |
 | Sim won't start | Check `cap_in_<branch>.simulator` in `backend_config.yaml` — defaults to ON on both dev and prod. |

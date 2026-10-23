@@ -42,6 +42,12 @@ When the operator picks a template whose features exceed the selected broker's n
 - "Groww OCO emulated — ~15s race window"
 - "Dhan can't trail — SL stays fixed" (only on brokers without `modify_gtt`)
 - "{broker} has no GTT — scale-out won't attach"
+- Kite only, when the effective take-profit order type is MARKET (2026-10-23, commit `6d4b6c10`):
+  - "{broker} GTT rejects MARKET legs — SL will also fail to attach" (TP and SL both set)
+  - "{broker} GTT rejects MARKET legs — TP won't attach" (TP only)
+
+  Kite's `place_gtt` refuses a GTT if ANY leg is MARKET, so a TP+SL bracket with a MARKET TP
+  fails as one unit. The chip checks the live TemplateBar override, not just the saved template.
 
 The chip is sourced from `GET /api/admin/brokers/{account}/capabilities` — a pure read of the `BrokerCapabilities` dataclass; no broker round-trip.
 
@@ -75,6 +81,37 @@ After fill: `tmpl:#1 ✓` (all GTTs placed) or `tmpl:#1 …` (placing, ~1 sec) o
 |---|---|---|---|---|---|
 | `default-long-option` | +80% MARKET | none | none | none | none |
 | `default-short-vol` | +10% LIMIT | −20% LIMIT | −1 strike | none | none |
+
+**Operator attention — `default-long-option` on Kite.** Its take-profit is MARKET. On a Kite account
+the cap-warning chip above appears, and Kite refuses the GTT at attach time, so the take-profit does
+not attach. Set its TP order type to LIMIT for Kite use, or override it per trade. The MARKET
+setting is confirmed in the seed definition (`backend/api/algo/templates_seed.py`).
+
+### Attach safety rules (2026-10-23)
+
+Changes from the template-attach audit round. Each one is in force now.
+
+- **Save-time validation.** `wing_premium_pct` of zero or below is refused on create and on PATCH,
+  with HTTP 400 and the detail `wing_premium_pct must be > 0`. A template already saved with a bad value now fires a real
+  `template_attach_failed` alert on its next fill. It used to fail silently.
+- **Off-hours wing refusal.** If the exchange is closed and the template has a wing leg, the whole
+  attach is REFUSED, not deferred. TP, SL and the wing are all skipped, and nothing retries it. Arm
+  all exits manually once the market opens. See the correction under "Off-market-hours behaviour"
+  in [USER_GUIDE.md](USER_GUIDE.md).
+- **Scale-out ladder plus SL pairing.** A scale-out ladder with an SL now cancels the surviving rungs
+  when the SL fires, and cancels the SL when every rung has fired. Cancellation waits until the
+  broker's net position for the symbol is exactly zero. A rung rejected at placement cannot trigger
+  a cancel by itself.
+- **Override-only close tickets.** A close ticket with inline overrides and no saved template is
+  now checked for a close, the same as a template close. On a server-verified close the overrides
+  are stripped.
+- **Placed but unrecorded exits.** If the exits were placed at the broker but the local record write
+  failed after three retries, the `template_attach_failed` alert says so. Do NOT arm exits manually.
+  Duplicates would result. Retry-attach reports "already placed, not recorded" while the in-process
+  hold exists. A process restart drops the hold, so check the broker's GTT book before a manual
+  retry.
+- **Retry-attach pairing.** Retry-attach now writes the same OCO sibling links as the fill path, so
+  a Groww OCO or scale-plus-SL group cancels its surviving leg when one fires.
 
 ### API routes (admin-guarded)
 
@@ -1927,6 +1964,29 @@ change a row.
   `max(60 s, max_attempts × interval_seconds × 0.5)` is aborted. It emits a `chase_stuck` event,
   makes a final cancel attempt, and sends an alert titled "Chase stuck". It no longer hangs
   silently until the attempt budget runs out.
+- **Kill on a `CANCEL_FAILED` row (2026-10-23, commit `fa70a893`).** The chase card's Kill control
+  now works on `CANCEL_FAILED` rows, which used to be stuck with no way to clear them. Kill goes
+  through `POST /api/orders/chases/{algo_order_id}/kill` (admin-guarded). It checks broker truth
+  first. If the broker still has the order resting, the Kill cancels it. Responses:
+  - `ok: true`: the cancel landed. Also returned when the row is already in a non-fill terminal
+    state (CANCELLED, UNFILLED, HELD, ...), with `already_terminal: true`.
+  - `ok: false` with `err`: the broker cancel genuinely failed, or the row is already FILLED or
+    REJECTED (`err` reads "order already filled — nothing to kill"). A sticky toast shows the error.
+  - `ok: false` with `pending: true`: chase is still cancelling its own replacement order. Wait a
+    few seconds and retry. Kill writes no status in this case.
+- **Force-resolve of a stale row.** Only when the broker's own error says the order is gone, and the
+  row predates the current trading session, Kill force-resolves the row. An ambiguous error never
+  force-resolves.
+- **Restart recovery after a failed cancel (2026-10-23, commit `ceddd178`).** If the process
+  restarts while a chase's cancel failed and cannot be confirmed, recovery does not place a new
+  order. It alerts for manual review and skips that row for the cycle. Check the broker's order
+  book, cancel any resting order by hand, then let the row resolve.
+- **Late full fill at exhaustion (2026-10-23, commit `3f4392e4`).** If a chase gives up or is
+  stuck-aborted and the final read shows the order fully filled, the row is recorded as FILLED. It
+  is not left as UNFILLED. Template exits and auto-TP fire as for any fill.
+- **Confirm-timeout is not a broker rejection (2026-10-23, commit `d6632590`).** If the ticket's
+  15s confirm window expires while the order is still placing, the circuit breaker is not tripped.
+  The order is still killed by the abandonment path, so check the order's row.
 
 ---
 
@@ -2194,8 +2254,14 @@ Pre-optimization baseline of the hot-path bundle (every page-load assets) was ~1
 | Bulk reconcile returns `missing > 0` | Broker response was unavailable, not "confirmed gone". Rows were left untouched. Retry after the broker recovers. Do not set them to UNFILLED by hand. |
 | Per-card reconcile returns 200 with `updated: false` | Expected when the broker is unavailable or the order is not yet terminal. Read `note`. Scripts that expected 502 must be updated. |
 | "Order corrected" alert received | See [Order reconciliation](#order-reconciliation--correctors-order-poll-and-order_correction). Check `source=`, then confirm the position and any attached exit orders at the broker. |
-| Chase row shows `CANCEL_FAILED` | Deliberate: the final broker state is unconfirmed. Check the broker order book and cancel manually if still resting. The order poll keeps re-checking it. |
+| Chase row shows `CANCEL_FAILED` | Deliberate: the final broker state is unconfirmed. Check the broker order book and cancel manually if still resting. The order poll keeps re-checking it. As of 2026-10-23 you can also click Kill on the chase card: it re-checks broker truth and retries the cancel. A `pending` response means retry shortly. |
 | "Chase stuck" alert | No fill or confirmed-cancel progress within `max(60 s, max_attempts × interval × 0.5)`. The chase aborts and attempts a final cancel. Check the broker order book and the order's event timeline. |
+| Kill returns `ok: false` with `err` | The broker cancel did not land. Read `err`, check the broker order book, and cancel by hand if the order is still resting. |
+| Kill returns `pending: true` | Chase is still cancelling its own replacement order. Wait a few seconds and press Kill again. |
+| Order-failure alert with source `chase-recovery`, or log tag `[CHASE-RECOVERY] ... could not be confirmed cancelled on restart` | A cancel could not be confirmed before the restart, so recovery skipped the restart to avoid a duplicate. The alert text reads "could not be confirmed cancelled after a service restart — it may still be resting live". Check the broker order book and cancel the resting order by hand if present. |
+| `template_attach_failed` says exits are placed but unrecorded | The exits ARE live at the broker. Do not arm exits manually. Check the broker's GTT list and the listed ids. A restart drops the in-process hold, so check before any retry. |
+| `template_attach_failed` on an off-hours wing template | The attach was refused, not deferred. TP, SL and the wing were all skipped. Arm all exits manually after the open. |
+| Take-profit did not attach, Kite account | A MARKET take-profit is refused by Kite. Check the cap-warning chip the ticket showed and set the template's TP to LIMIT. |
 
 ---
 

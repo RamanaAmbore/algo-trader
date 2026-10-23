@@ -45,6 +45,7 @@ Code, tests, and documentation must stay in sync with this file.
 8.5 [Orders Fetching Resilience & Chase Timeouts](#85-orders-fetching-resilience--chase-timeouts)
 8.5.1 [Canonical Broker-Truth Accessor (2026-10-23)](#851-canonical-broker-truth-accessor-2026-10-23)
 8.5.2 [Chase Robustness Overhaul (2026-10-23)](#852-chase-robustness-overhaul-2026-10-23)
+8.5.3 [Chase Kill lifecycle (2026-10-23)](#853-chase-kill-lifecycle-2026-10-23-commit-fa70a893-1a)
 8.6 [Order Pairing — Parent-Child Relationship Linking](#86-order-pairing--parent-child-relationship-linking)
 8.7 [Order Poll Sweep & Broker-Truth Reconciliation (2026-10-23)](#87-order-poll-sweep--broker-truth-reconciliation-2026-10-23)
 9. [Remote Broker & Conn Service](#9-remote-broker--conn-service)
@@ -1814,6 +1815,15 @@ Non-close orders remain subject to all guards. The verification check is strict 
    - Fails open (returns False) on any exception — does not block the order on position-fetch failure
    - When close intent is detected: `template_id` is cleared via `msgspec.structs.replace(data, template_id=None)` before AlgoOrder persistence
    - Also guards explicit `intent="close"` flow
+   - **AMENDED (2026-10-23, commit `7fd3eeba`, T15)**: the gate now runs when the ticket carries a
+     saved `template_id` OR any inline override (`tp_pct_override`, `sl_pct_override`,
+     `wing_*_override`), not only a saved template. On a server-verified close it nulls every
+     override field alongside `template_id`, so an override-only close ticket can no longer carry
+     its overrides into the persisted `AlgoOrder` row. The raw positions cache is invalidated first,
+     so a fill from the last few seconds is not read from a stale 30s entry. The gate deliberately
+     does NOT set `intent='close'`: that flag bypasses the G2 fat-finger cap and the MCX/NCO size
+     cap, and a sign-only offsetting read must never grant that bypass. Known gap: basket legs
+     (`orders_basket.py`) have no equivalent gate, so a leg's `template_id` passes unchecked.
 
 2. **Reconcile layer** — `_opl_reconcile_attach_eligible()` in `orders_place.py`:
    - Returns False when `row.intent == "close"` (stored on AlgoOrder)
@@ -1885,6 +1895,58 @@ this before submit so they can adjust settings or skip the wing.
 
 **Postback idempotency lock** (TOCTOU fix): Template-attach idempotency now re-fetches the row INSIDE the critical section (per-parent-order async lock) instead of once before acquiring the lock. Prevents a race where the postback handler and reconcile path both pass the `attached_gtts_json is None` check simultaneously and double-place GTTs.
 
+**Template-attach audit round (2026-10-23)** — P1/P2 remediation across the attach path. Each
+item names its finding ID and commit; the behaviour is the one in force now.
+
+- **In-lock retry recheck (T13, `df9d3189`)**: `_rco_run_template_attach` (retry-attach) re-reads
+  `attached_gtts_json` inside its per-row lock via `_rco_attached_gtts_already_set()`
+  (`orders.py:1317`) before calling `apply_template_to_order`. A fill-triggered attach that won the
+  lock first can no longer be followed by a second live GTT/wing set from the retry path.
+- **GTT persist failure holds, does not retry blindly (T16, `f626457a`)**: a broker placement that
+  succeeds followed by a failed `attached_gtts_json` write is retried 3 times
+  (`_opp_persist_with_retry`, `orders_place.py:876`, 0.5s then 1s backoff). On exhaustion,
+  `_opp_handle_persist_failure` (`orders_place.py:910`) holds the unpersisted payload in process
+  memory (`_TPL_ATTACH_PERSIST_PENDING`, keyed by parent row id) and fires the same
+  `template_attach_failed` alert a broker failure fires. The alert footer, when the exits are
+  placed but unrecorded, reads that the exits are live and must NOT be armed manually. The default
+  footer ("Exits NOT attached. Arm exits manually") is wrong for this failure mode and is replaced
+  for this case only. With no placed ids the rendered text is unchanged. While a hold exists, `_fire_template_attach_on_fill`, `_rco_attached_gtts_already_set`
+  and `_retry_precheck_row` all refuse to place again, so Retry-attach reports "already placed, not
+  recorded". Residual: the hold is in memory only. A process restart drops it, so a later trigger
+  can place a genuine duplicate. The alert has already listed the broker ids by then.
+- **Retry-attach writes OCO sibling pairing (T20, `510e0a30`)**: `_retry_build_attached_payload`
+  now writes `sibling_id` / `sibling_ids` using the same builders the fill path uses
+  (`_opl_build_sibling_map`, `_opl_build_group_sibling_map`). On Groww, which has no native OCO,
+  an admin Retry-attach used to leave both TP and SL live after one fired.
+- **Scale-out ladder plus SL gets OCO pairing (T14, `1d8622fb`, follow-up `91ba7923`)**:
+  `pair_two_singles` only matched an exact `{"TP","SL"}` two-leg label set, so a scale-out ladder's
+  rung labels were never paired. `_ta_detect_scale_sl_group` (`template_attach.py:2442`) records an
+  asymmetric `(sl_id, [tp_ids])` group on `AttachResult.sibling_groups`. The SL side only, so TP
+  rungs never cancel each other on ordinary sequential scale-out fires. `_task_oco_pair_watcher`
+  (`background.py`) then:
+  - cancels every surviving rung once the SL fires or is gone (`_oco_process_group_entry`);
+  - cancels the SL once every rung has fired or gone.
+  Liveness is status-aware (`_oco_gtt_is_live`, `background.py:5449`): a `triggered` or `cancelled`
+  GTT still listed by Kite's `get_gtts()` counts as gone.
+  **Confirmed-flat gate (`91ba7923`)**: "gone" is not proof the position closed. A rung rejected at
+  placement, an operator-cancelled leg, or a fired-but-unfilled exit all read as gone. Before any
+  cancel, `_oco_group_position_is_flat` (`background.py:5477`) invalidates the raw positions cache
+  and reads the real net qty for `(account, exchange, symbol)`. Only an exactly-zero reading
+  counts as flat. `None` (fetch failed, no matching row) is never flat. On any other reading the
+  watcher leaves `sibling_ids` untouched and retries next poll.
+- **Wing leg inherits the parent's real product (T18, `270e7e26`)**: `_chase_wing` threads
+  `plan.wing.product` into its `ChaseConfig`. Before, a chase-routed wing defaulted to NRML
+  regardless of the parent's MIS/CNC product, mismatching its own `AlgoOrder` row.
+- **Wing premium validated at template save (T19, `1a883590`)**: `_validate_wing_premium_pct`
+  (`routes/templates.py:113`) rejects `wing_premium_pct <= 0` on both create and PATCH. It mirrors
+  the resolver's own rejection rule exactly. `tp_pct` and `sl_pct` are not validated, because the
+  resolver only soft-degrades those. For a template already saved with a bad value,
+  `_opp_handle_fill_path_exception` (`orders_place.py:981`) now fires the real
+  `template_attach_failed` alert when the fill-path exception is an `HTTPException`. Previously
+  that was a WARNING log only, and the template unarmed silently. Other exception types keep their
+  existing behaviour.
+- **Close/offset gate covers override tickets (T15)**: see the AMENDED bullet under item 1 above.
+
 **GTT trigger validation** (#9, #29): Preview endpoint validates trigger direction vs parent side and circuit band:
 - BUY parent TP trigger must be above fill price; SL must be below.
 - SELL parent TP trigger must be below fill price; SL must be above.
@@ -1894,6 +1956,15 @@ this before submit so they can adjust settings or skip the wing.
 Returns `gtt_trigger_errors` in `TicketPreviewResponse` (422 on submit if present).
 
 **Kite MARKET GTT rejection** (#6): Orders requesting `tp_order_type=MARKET` for GTT now raise `BrokerCapabilityError` (added to error hierarchy) instead of silently coercing to LIMIT. Operator sees the error at preview time.
+
+**AMENDED (2026-10-23, commit `6d4b6c10`, T17)**: the "preview time" claim above is wrong. The
+`BrokerCapabilityError` is raised by Kite's `place_gtt` (`kite.py:561`) when ANY leg of a GTT is
+MARKET. A TP+SL bracket is one two-leg OCO call, so a MARKET TP fails the whole GTT, SL included,
+and the SL is silently dropped. Nothing warned the operator before submit. Now an amber cap-warning
+chip (`.oes-tpl-cap-warn`) appears in the Ticket and in the Chain basket whenever the account's
+broker is Kite and the effective TP order type is MARKET with a TP target set. The check
+(`capWarningFor()` / `aggregateCapWarnings()` in `brokerCapWarnings.js`) takes the live TemplateBar
+override, so an inline MKT toggle warns even when the saved template is LIMIT.
 
 **Full fill detection** (#2): AttachResult carries `wing_skipped_reason` field (set when wing scan returns no candidate). Consumed by API response + alert channel so operator knows WHY the wing wasn't attached (hard-reject, no candidates, OI too low, etc.).
 
@@ -1939,6 +2010,14 @@ on breach to catch untranslated lots-vs-contracts bugs before they reach the Dha
 **MCX/Dhan fail-fast in `apply_template_to_order`** (commit b8b1214c): After resolving `caps = capabilities_for(account)`, if `caps.gtt_supports_mcx=False` and `parent_exchange` is MCX or NCO, the function returns an `AttachResult` with errors immediately — before lot-size resolution, plan resolution, or any broker call. Fires `_fire_attach_fail_alert`. `guard_alert_fired=True` suppresses the duplicate alert at the bottom of the function.
 
 **Off-hours GTT note** (commit b8b1214c): When a GTT-only template (no wing) is attached while the exchange is closed, `AttachResult.plan.notes` now includes: "GTT registered off-hours ({exchange} closed) — will activate at next session open". Only applies when no wing leg exists — `_check_offhours_wing_gate` defers the whole attach (not just the wing) whenever a wing is configured and the exchange is closed, regardless of which direction the wing resolves to (BUY MARKET or SELL LIMIT, per `_wing_direction` above — the gate is direction-agnostic, keyed only on `_template_has_wing`). See `apply_template_to_order` line 2026–2030.
+
+**AMENDED (2026-10-23, commit `20ee0815`, T25)**: the wing-gate sentence above ("defers the whole
+attach") is wrong. `_check_offhours_wing_gate` (`template_attach.py:328`) REFUSES the attach. No
+retry scheduler exists for this path, so nothing ever retries it. The caller
+(`_apply_template_to_order_impl`) returns this `AttachResult` before TP and SL are built. So TP, SL
+and the wing are ALL skipped, not just the wing. The alert and the `AttachResult` text now say
+"refused", and name TP/SL/wing as skipped. Operators must arm all exits manually once the market is
+open.
 
 ## 8.4. Broker Postback Fill-Status Mapping & Authentication (2026-09)
 
@@ -2113,6 +2192,25 @@ When a chase order attempts to cancel and replace an existing order:
 
 **Invariant**: Never replace a live order without proof that the previous cancel reached the broker in a terminal state.
 
+**Late full fill at exhaustion is FILLED, not UNFILLED (O2, commit `3f4392e4`, 2026-10-23)**:
+`_ch_exhaust_max_attempts` (max-attempts give-up) and `_ch_abort_stuck` (stuck-detector abort) each
+run a final cancel-and-confirm read before deciding the terminal outcome. Before this fix, neither
+checked whether that read showed `cumulative_filled` had reached `quantity`. Both emitted
+`chase_unfilled` / `chase_cancel_failed` unconditionally. Both now apply the same check the in-loop
+path (`_ch_cancel_and_capture` → `_ch_zero_remaining_fill`) already had. A fill that completes during
+the final read is recorded as FILLED, which fires template-attach and auto-TP. This matters most for
+Dhan and Groww, which lack reliable postback self-healing.
+
+**Restart recovery fails closed after an unconfirmed cancel (O3, commit `ceddd178`, 2026-10-23)**:
+`_recover_query_and_cancel_resting` (`background.py:8012`) used to swallow a `cancel_order`
+exception at WARNING and return the post-cancel status read, even when that read showed the order
+still resting live. `recover_live_chases()` then restarted `chase_order()` fresh
+(`current_order_id=None`), placing a second order for the full remaining quantity on top of the
+original. Now, when the cancel call itself raised, the order must be re-verified as confirmed gone
+(`_CH_CONFIRMED_GONE_STATUSES`) before its read is trusted. Otherwise recovery skips the restart for
+this cycle and alerts for manual review. This mirrors `_ch_build_cancel_unconfirmed_abort` in
+`chase.py`. A cancel call that returns normally is unaffected.
+
 ### Chase error recovery — error classification and backoff (2026-10)
 
 **File**: `backend/api/algo/chase.py` — `_ch_is_recoverable_error()`, `_ch_rejection_is_recoverable()`, `_ch_handle_attempt_error()`
@@ -2150,6 +2248,33 @@ If the message contains BOTH a recoverable hint and a non-recoverable override, 
 - Otherwise: abort the chase immediately, alert the operator, record terminal FAILED event
 
 **Invariant**: Non-recoverable errors and non-recoverable rejections terminate the chase immediately without any retry, preventing futile loops on errors that a repriced order cannot fix (bad input, permission denied, margin shortfall). Recoverable errors are bounded by `_MAX_CHASE_ERRORS` so a burst of transients (network blips, rate limits) cannot cause an unbounded retry loop.
+
+### Chase confirm-timeout is not a broker rejection (O8, 2026-10-23)
+
+**File**: `backend/api/routes/orders_helpers.py` (`ChaseConfirmTimeout` at line 294,
+`_start_live_chase` at line 312) · `backend/api/routes/orders_place.py`
+(`_ticket_handle_live_place_error` at line 2251) · tests:
+`backend/tests/test_chase_confirm_timeout_breaker.py`
+
+`_start_live_chase` runs `_ch_seed_pre_fill_net_qty` inside the 15s ticket-confirm window. That
+seed invalidates the raw positions cache and fetches positions across every account. A slow broker
+with several accounts can exceed the window even though the order still lands. The order is then
+killed through the existing abandonment path, so it is not a rejection. Before this fix,
+`_ticket_handle_live_place_error` recorded every exception as a rejection, which could trip the
+circuit breaker falsely.
+
+- `_start_live_chase` now raises `ChaseConfirmTimeout` (a `RuntimeError` subclass) only on the
+  `asyncio.TimeoutError` confirm-window path.
+- `_ticket_handle_live_place_error` skips `_record_rejection` and `_maybe_send_breaker_alert` for
+  that type only. Any other exception still records as a genuine rejection.
+
+### Chase-path logging and wing product (2026-10-23)
+
+- **Kite postback DB failure logs at WARNING (O10, `6ba6936e`)**: `_pb_event_kite`'s catch-all
+  around the COMPLETE/REJECTED status write was logging at DEBUG, which is invisible at production
+  level. A failed write loses the ledger and template-attach fan-out, and the 5s follow-up only
+  catches the status mismatch, so it is now WARNING.
+- **Chase-routed wing product (T18)**: see the template-attach audit round above.
 
 ### Broker exception type preservation — Dhan & Groww wrapping fixes (2026-10)
 
@@ -2341,6 +2466,19 @@ re-subscribe on a reconciled FILLED. Callers that need those side effects go thr
 **Invariant**: a missing, empty or failed broker response is "unavailable", never "gone". No caller
 may translate an unavailable response into a status write.
 
+**AMENDED (2026-10-23, commit `64810434`, O5)**: the `chase.py` row in the table above is stale.
+The periodic broker-truth check (`_ch_periodic_broker_truth_check`) and the post-ambiguous backstop
+(`_ch_backstop_reconcile_one`) no longer call `apply_order_truth` directly. Both now go through
+`order_poll.py:reconcile_row_and_followup()`, the same wrapper the watchdog and the §8.7 sweep use.
+A fill that a chase check catches therefore gets the same template-attach and WebSocket re-subscribe
+treatment as any other corrector. Two arguments are specific to chase:
+- `owning_chase=True` on the periodic check. That check runs while `chase_order()` marks the row
+  active, so the wrapper's own `is_chase_active` no-op gate would otherwise make the migration a
+  permanent no-op.
+- `fire_alert=False` on the periodic check. An `order_correction` alert there would be a false alarm
+  for a normal, self-resolving chase fill. The backstop needs no bypass, because it runs after
+  `chase_order()`'s `finally` clears the active marker.
+
 ### 8.5.2 Chase Robustness Overhaul (2026-10-23)
 
 **File**: `backend/api/algo/chase.py` · `backend/api/models.py` · `backend/api/database.py`
@@ -2363,6 +2501,48 @@ Commit `06c4ee45`. Amends the chase error-recovery and final-status subsections 
   is the authoritative record of which `broker_order_id`s a cancel-and-replace has superseded. It is
   surfaced on `AlgoOrderInfo.superseded_broker_order_ids` (parsed list; malformed JSON yields `[]`).
   Written in `chase.py` near line 878.
+
+### 8.5.3 Chase Kill lifecycle (2026-10-23, commit `fa70a893`, 1A)
+
+**Files**: `backend/api/routes/orders.py` (`POST /api/orders/chases/{algo_order_id}/kill`,
+admin-guarded, `kill_chase`) · `backend/api/algo/chase.py` (`mark_order_killed`, line 687) ·
+`frontend/src/lib/order/ChaseCard.svelte` (`_kill`)
+
+Kill had three linked defects. Each is fixed:
+
+- **Keyed to the live algo order, not a snapshot broker id.** The old `kill_chase` keyed only on a
+  `broker_order_id` read at click time. If chase cancel-and-replaced to a new broker id around the
+  click, the cancel hit the dead old id, failed, and the row was wrongly stamped `CANCEL_FAILED`
+  while chase kept working the new order. Now `chase.mark_order_killed()` is keyed by
+  `algo_order_id`, survives a broker-id swap, and is set before any broker I/O.
+- **Dispatch-race retry.** If the first cancel fails while chase is still actively running the row,
+  `_rco_kill_resolve_dispatch_race` re-reads the row (`session.refresh()`) and retries against the
+  freshly resolved broker id. If the retry is still ambiguous and chase is still active, the
+  response is `{"ok": false, "pending": true, "status": "OPEN"}` and NO status is written. That
+  avoids stomping chase's own terminal write.
+- **`ok` reflects the real outcome.** Before, `ok` was always `true`, even on a genuine broker
+  cancel failure or an already-FILLED/REJECTED row. A failure now returns `ok: false` with `err`.
+  `test_kill_chase_paper.py`'s "engine not tracking" case moved to expect `ok: false`.
+  The already-terminal early return (`_rco_kill_already_terminal_response`, `orders.py:1480`) is
+  split by status. FILLED and REJECTED return `ok: false`, `err: "order already <status> — nothing
+  to kill"`. Any other non-retryable status (CANCELLED, UNFILLED, HELD, ...) returns `ok: true`
+  with `already_terminal: true`, because the desired end state is already reached.
+
+**CANCEL_FAILED is re-killable (and ages out)**: the kill gate accepts `CANCEL_FAILED` as well as
+`OPEN`. A retry first checks real broker truth via `get_broker_order_truth` (§8.5.1). A retry whose
+broker call also fails with a "this order is gone"-shaped message (`_rco_kill_error_looks_gone`)
+force-resolves a row that predates the current trading session (`_rco_kill_predates_current_session`,
+`_rco_kill_force_resolve_stale`). The message text is required, not just staleness. So an ambiguous
+failure, such as the separately tracked AMO variety mismatch, is never force-resolved.
+
+**Operator surface (`d53ad4c9`)**: `ChaseCard._kill()` treats success as `!!r?.ok && !r?.err`, which
+holds even if the old `ok: true` plus `err` shape comes back. A genuine failure raises a sticky toast
+with the real error text. The in-card banner is not relied on, because the next 3s poll clears it.
+A `pending: true` response raises a warning toast, not an error, because nothing has failed yet.
+
+**Invariant**: an operator Kill must never report success when the broker cancel did not land. Every
+operator cancel path must also call `mark_killed()`, or chase silently re-places the order (see
+CLAUDE.md, "Cancel paths must call chase's mark_killed()").
 
 ## 8.6 Order Pairing — Parent-Child Relationship Linking (manual route REMOVED 2026-10-17)
 
