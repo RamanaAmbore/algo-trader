@@ -185,6 +185,16 @@ class AttachResult:
     # consumer (cancel/lookup by id) can tell the two cases apart without
     # guessing from the string value. See `_ta_live_place_wing`.
     wing_chased:          bool = False
+    # T14 fix (2026-10-23) — a scale-out TP ladder (2+ TP rungs) plus one
+    # SL leg can never be expressed as a single pairwise sibling (that
+    # model only covers exactly 2 legs — see `sibling_pairs` above). Each
+    # entry here is `(sl_placed_id, [tp_placed_id, ...])`: the SL leg's
+    # placed id, and the full list of placed TP-rung ids it must be
+    # mutually watched against. Populated ONLY on the SL side (not on
+    # each TP rung) — see `_ta_detect_scale_sl_group`'s docstring for why
+    # the group is intentionally asymmetric. Empty whenever the plan
+    # isn't a scale-out-plus-SL shape (the overwhelmingly common case).
+    sibling_groups:       list[tuple[str, list[str]]] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -192,6 +202,7 @@ class AttachResult:
             "gtt_ids":            list(self.gtt_ids),
             "wing_order_id":      self.wing_order_id,
             "sibling_pairs":      [list(p) for p in self.sibling_pairs],
+            "sibling_groups":     [[sl, list(tps)] for sl, tps in self.sibling_groups],
             "errors":             list(self.errors),
             "wing_skipped_reason": self.wing_skipped_reason,
             "wing_chased":        self.wing_chased,
@@ -2374,6 +2385,46 @@ def _ta_live_place_wing(
         result.errors.append(msg)
 
 
+def _ta_detect_scale_sl_group(plan: TemplatePlan) -> Optional[tuple[str, list[str]]]:
+    """T14 fix — detect a scale-out TP ladder placed alongside one SL
+    leg, and return `(sl_placed_id, [tp_placed_id, ...])` when found
+    (only successfully-PLACED legs — a rejected/never-placed spec has
+    `placed_id is None` and is excluded), else `None`.
+
+    Deliberately asymmetric and SL-only (no bare rung-to-rung pairing):
+    `_build_scale_out_gtts` places each TP rung as an independent,
+    non-overlapping slice of the ORIGINAL parent_qty — one rung firing
+    does not invalidate another rung's own GTT, so rungs must never
+    cancel each other (that would defeat the entire point of a
+    multi-stage scale-out). The hazard this fixes is specifically: SL
+    fires (position now flat) while scale-ladder TP GTTs for the SAME
+    now-flat position stay live and can later open an unintended naked
+    position when one of them fires into thin air. The caller
+    (`_task_oco_pair_watcher` / `_oco_process_group_entry`) also
+    applies the symmetric case — SL stays live but every TP rung has
+    already fired/gone — by cancelling the now-pointless SL once the
+    ladder has fully closed the position.
+
+    Only matches a plan that is NOT the existing 2-leg Groww-style
+    `{"TP","SL"}` single-pair split — that exact label set is always
+    `_build_tp_sl_gtts`'s shape (literal labels "TP" / "SL") and is
+    already owned by `pair_two_singles` above; `_build_scale_out_gtts`
+    always labels its TP rungs `"TP+{pct}% × {qty}"`, never the literal
+    "TP", so the two mechanisms structurally never double-handle the
+    same plan — this guard just makes that explicit instead of relying
+    on it implicitly.
+    """
+    if not all(g.trigger_type == "single" for g in plan.gtts):
+        return None
+    if {g.label for g in plan.gtts} == {"TP", "SL"}:
+        return None
+    sl_specs = [g for g in plan.gtts if g.label == "SL" and g.placed_id]
+    tp_specs = [g for g in plan.gtts if g.label != "SL" and g.placed_id]
+    if len(sl_specs) != 1 or len(tp_specs) < 1:
+        return None
+    return (str(sl_specs[0].placed_id), [str(s.placed_id) for s in tp_specs])
+
+
 def apply_plan_live(
     plan: TemplatePlan,
     broker,   # KiteBroker (or any Broker adapter with place_gtt)
@@ -2453,6 +2504,14 @@ def apply_plan_live(
             broker, plan, spec, idx, pair_first_id,
             pair_two_singles, result,
         )
+
+    # T14 fix — scale-out TP ladder + SL group, computed AFTER every leg
+    # has attempted placement so a rejected/unplaced leg (placed_id is
+    # None) is structurally excluded, same safety property the existing
+    # pair_two_singles rejection tests rely on.
+    _scale_group = _ta_detect_scale_sl_group(plan)
+    if _scale_group is not None:
+        result.sibling_groups.append(_scale_group)
 
     _ta_live_place_wing(broker, plan, result, parent_order_id)
     return result

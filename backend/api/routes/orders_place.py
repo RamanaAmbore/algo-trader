@@ -627,6 +627,26 @@ def _opl_build_sibling_map(sibling_pairs) -> dict[str, str]:
     return sibling_by_id
 
 
+def _opl_build_group_sibling_map(sibling_groups) -> dict[str, list[str]]:
+    """Build an id -> [other ids in group] map from AttachResult.sibling_groups.
+
+    T14 fix (2026-10-23) — a scale-out TP ladder + SL group is kept
+    deliberately ASYMMETRIC (see `template_attach.py:
+    _ta_detect_scale_sl_group`'s docstring): only the SL leg's id maps
+    to the full list of TP-rung ids; the TP rungs themselves get no
+    entry here (they must never cancel each other on a normal,
+    sequential scale-out fire). Shared by both the fill-triggered path
+    (`_opp_build_attach_entries` below) and the retry-attach path
+    (`orders.py:_retry_build_attached_payload`) so the two can never
+    drift on how a group is represented in `attached_gtts_json`.
+    """
+    group_by_id: dict[str, list[str]] = {}
+    for sl_id, tp_ids in (sibling_groups or []):
+        if sl_id and tp_ids:
+            group_by_id[str(sl_id)] = [str(t) for t in tp_ids if t]
+    return group_by_id
+
+
 def _opp_build_attach_entries(
     result,
     fill_price: float,
@@ -649,6 +669,7 @@ def _opp_build_attach_entries(
     silently disabling trailing for every fresh fill.
     """
     sibling_by_id = _opl_build_sibling_map(result.sibling_pairs)
+    group_by_id = _opl_build_group_sibling_map(getattr(result, "sibling_groups", None))
     attached = []
     for spec in (result.plan.gtts or []):
         if not spec.placed_id:
@@ -659,8 +680,16 @@ def _opp_build_attach_entries(
             "id":    spec.placed_id,
         }
         _sib = sibling_by_id.get(str(spec.placed_id))
+        _group_tps = group_by_id.get(str(spec.placed_id))
         if _sib:
             entry["sibling_id"]      = _sib
+            entry["parent_account"]  = str(result.plan.parent_account)
+            entry["parent_exchange"] = str(result.plan.parent_exchange)
+        elif _group_tps:
+            # T14 fix — SL leg of a scale-ladder-plus-SL group; carries
+            # the full list of TP-rung ids it must be mutually watched
+            # against (see _opl_build_group_sibling_map's docstring).
+            entry["sibling_ids"]     = _group_tps
             entry["parent_account"]  = str(result.plan.parent_account)
             entry["parent_exchange"] = str(result.plan.parent_exchange)
         if spec.sl_trail_pct is not None and spec.trigger_values:

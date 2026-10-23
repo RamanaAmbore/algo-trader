@@ -5250,9 +5250,17 @@ async def _task_trail_stop() -> None:
 
 
 def _bg_oco_first_sibling_account(attached: list) -> Optional[str]:
-    """Return the first parent_account from any sibling entry, or None."""
+    """Return the first parent_account from any sibling entry, or None.
+
+    T14 fix — recognises `sibling_ids` (plural, the scale-ladder-plus-SL
+    group pointer written only on the SL leg — see
+    `orders_place.py:_opl_build_group_sibling_map`) alongside the
+    original pairwise `sibling_id`, so a row that is ONLY part of a
+    scale-ladder group (no classic 2-leg pair) is still picked up by
+    `_oco_parse_entries` below for the watcher to process.
+    """
     for e in attached:
-        if isinstance(e, dict) and e.get("sibling_id"):
+        if isinstance(e, dict) and (e.get("sibling_id") or e.get("sibling_ids")):
             acct = e.get("parent_account")
             if acct:
                 return acct
@@ -5413,6 +5421,183 @@ async def _oco_cancel_survivor(
         return False
 
 
+async def _oco_cancel_group_members(
+    broker: object,
+    row_id: int,
+    exchange: str,
+    ids: list[str],
+    reason: str,
+) -> list[str]:
+    """Cancel every id in *ids*; returns the subset that failed to
+    cancel (left live so the next poll cycle retries them). Extracted
+    from `_oco_process_group_entry` purely to keep that function's own
+    branch count low (CC gate)."""
+    still_live: list[str] = []
+    for _id in ids:
+        try:
+            await asyncio.to_thread(broker.cancel_gtt, _id, exchange=exchange)
+            logger.info(f"[OCO-WATCH] row={row_id} {reason} — cancelled {_id}")
+        except Exception as e:
+            logger.warning(f"[OCO-WATCH] row={row_id} failed to cancel {_id} ({reason}): {e}")
+            still_live.append(_id)
+    return still_live
+
+
+_OCO_GROUP_LIVE_STATUSES = frozenset({"active", "enabled", "pending"})
+
+
+def _oco_gtt_is_live(entry_id: str, broker_gtts: dict) -> bool:
+    """True when *entry_id* is present in a `get_gtts()` snapshot AND
+    its own status (when the broker supplies one) indicates it can
+    still fire.
+
+    `broker_gtts` membership alone (what the pre-existing pairwise
+    sibling_id watcher below uses) is not enough: Kite's `get_gtts()`
+    keeps listing a GTT after it has fired or been cancelled, carrying
+    a `status` of e.g. "triggered" / "cancelled" / "deleted" rather
+    than dropping the id from the response. For the group path, "my
+    SL already fired" and "my TP rung already fired" MUST be detected
+    even while the id is still listed, or `_oco_process_group_entry`
+    would never see a fire at all on Kite — the main real-world
+    scale-out broker, since `_build_scale_out_gtts` has no
+    broker-capability gate.
+
+    Narrower than `template_attach.py`'s `_GTT_ACCEPTED_STATUSES` by
+    design: that set treats "triggered" as an acceptable PLACEMENT
+    outcome (the GTT wasn't rejected at submit time). Here "triggered"
+    means the leg has ALREADY FIRED and must count as gone, not live.
+    """
+    g = broker_gtts.get(entry_id)
+    if g is None:
+        return False
+    status = str((g or {}).get("status", "")).lower()
+    return (not status) or status in _OCO_GROUP_LIVE_STATUSES
+
+
+async def _oco_group_handle_sl_fired(
+    entry: dict, broker: object, row_id: int, exchange: str,
+    my_id: str, active_tps: list[str],
+) -> bool:
+    """Case 1 — SL has fired/gone; cancel every still-live TP rung so a
+    surviving one can't open an unintended naked position."""
+    still_live = await _oco_cancel_group_members(
+        broker, row_id, exchange, active_tps,
+        f"SL {my_id} fired, flattening scale-ladder position",
+    )
+    if still_live:
+        entry["sibling_ids"] = still_live
+    else:
+        entry.pop("sibling_ids", None)
+    return True
+
+
+async def _oco_group_handle_ladder_closed(
+    entry: dict, broker: object, row_id: int, exchange: str, my_id: str,
+) -> bool:
+    """Case 2 — every TP rung already gone; the SL is now pointless
+    (ladder fully closed the position) — cancel it too."""
+    still_live = await _oco_cancel_group_members(
+        broker, row_id, exchange, [my_id],
+        "scale ladder fully closed — SL now pointless",
+    )
+    if still_live:
+        return False
+    entry.pop("sibling_ids", None)
+    return True
+
+
+def _oco_group_prune_or_settle(
+    entry: dict, row_id: int, my_id: str, active_tps: list[str],
+) -> bool:
+    """Case 3 — normal scale-out progress: prune already-gone rungs
+    from the tracked list. Case 4 — both sides already settled within
+    one poll window (active_tps empty): clear the pointer, log once."""
+    if active_tps:
+        entry["sibling_ids"] = active_tps
+        return True
+    logger.info(
+        f"[OCO-WATCH] row={row_id} scale-ladder group settled — "
+        f"SL {my_id} and all TP rungs already gone"
+    )
+    entry.pop("sibling_ids", None)
+    return True
+
+
+async def _oco_process_group_entry(
+    entry: dict,
+    broker: object,
+    row_id: int,
+    broker_gtts: dict,
+) -> bool:
+    """T14 fix — dispatch one scale-ladder-plus-SL group entry (the SL
+    leg only; it alone carries `sibling_ids` — see
+    `orders_place.py:_opl_build_group_sibling_map`) to the matching
+    case helper, mirroring `_ta_detect_scale_sl_group`'s asymmetric
+    design. Returns True when *entry* was mutated (caller must
+    persist). Kept as a thin dispatcher (CC gate) — see each
+    `_oco_group_handle_*` / `_oco_group_prune_or_settle` helper for the
+    actual case logic.
+    """
+    my_id = str(entry.get("id") or "")
+    sibling_ids = [str(s) for s in (entry.get("sibling_ids") or []) if s]
+    if not (my_id and sibling_ids):
+        return False
+    my_active = _oco_gtt_is_live(my_id, broker_gtts)
+    active_tps = [s for s in sibling_ids if _oco_gtt_is_live(s, broker_gtts)]
+    some_tps_gone = len(active_tps) < len(sibling_ids)
+    exchange = entry.get("parent_exchange") or "NFO"
+
+    if not my_active and active_tps:
+        return await _oco_group_handle_sl_fired(
+            entry, broker, row_id, exchange, my_id, active_tps,
+        )
+    if my_active and not active_tps:
+        return await _oco_group_handle_ladder_closed(
+            entry, broker, row_id, exchange, my_id,
+        )
+    if not my_active and not active_tps:
+        return _oco_group_prune_or_settle(entry, row_id, my_id, active_tps)
+    if some_tps_gone:
+        return _oco_group_prune_or_settle(entry, row_id, my_id, active_tps)
+    return False
+
+
+async def _oco_process_one_entry(
+    entry: dict,
+    by_id: dict,
+    broker: object,
+    row_id: int,
+    broker_gtts: dict,
+) -> bool:
+    """Dispatch one `attached_gtts_json` entry to the right OCO handler.
+
+    T14 fix — a scale-ladder-plus-SL group entry (`sibling_ids`, plural,
+    SL leg only) routes to `_oco_process_group_entry`; the pre-existing
+    classic 2-leg pair (`sibling_id`, singular) keeps its original
+    inline logic unchanged below it. Extracted out of
+    `_oco_process_account_entries`'s loop body purely to keep that
+    function's own branch count under the CC gate — this dispatcher
+    carries the branching instead.
+    """
+    if not isinstance(entry, dict):
+        return False
+    if entry.get("sibling_ids"):
+        return await _oco_process_group_entry(entry, broker, row_id, broker_gtts)
+    my_id  = str(entry.get("id") or "")
+    sib_id = str(entry.get("sibling_id") or "")
+    if not (my_id and sib_id):
+        return False
+    my_active  = my_id in broker_gtts
+    sib_active = sib_id in broker_gtts
+    if my_active or not sib_active:
+        if not my_active and not sib_active:
+            await _oco_handle_settled_pair(entry, by_id, row_id, my_id, sib_id)
+            return True
+        return False
+    # MY leg gone, sibling still alive → cancel it.
+    return await _oco_cancel_survivor(entry, by_id, broker, row_id, my_id, sib_id)
+
+
 async def _oco_process_account_entries(
     acct: str,
     acct_rows: list,
@@ -5438,22 +5623,7 @@ async def _oco_process_account_entries(
             if isinstance(e, dict) and e.get("id")
         }
         for entry in attached:
-            if not (isinstance(entry, dict) and entry.get("sibling_id")):
-                continue
-            my_id  = str(entry.get("id") or "")
-            sib_id = str(entry.get("sibling_id") or "")
-            if not (my_id and sib_id):
-                continue
-            my_active  = my_id in broker_gtts
-            sib_active = sib_id in broker_gtts
-            if my_active or not sib_active:
-                if not my_active and not sib_active:
-                    await _oco_handle_settled_pair(entry, by_id, row.id, my_id, sib_id)
-                    changed = True
-                continue
-            # MY leg gone, sibling still alive → cancel it.
-            did_cancel = await _oco_cancel_survivor(entry, by_id, broker, row.id, my_id, sib_id)
-            if did_cancel:
+            if await _oco_process_one_entry(entry, by_id, broker, row.id, broker_gtts):
                 changed = True
         if changed:
             pending.append((row.id, _json.dumps(attached)))
