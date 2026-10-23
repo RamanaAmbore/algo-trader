@@ -2232,6 +2232,23 @@ async def _ch_exhaust_max_attempts(
             cumulative_filled, current_order_filled, algo_order_id,
         )
     )
+    # 2026-10-23 fix (audit O2) — the final cancel-confirm read above can
+    # reveal the order actually reached full fill in the race window
+    # before exhaustion fired. The in-loop path
+    # (`_ch_cancel_and_capture` -> `_ch_zero_remaining_fill`) already
+    # applies this exact check; apply it here too so a late full fill is
+    # recorded as FILLED (firing template-attach/auto-TP), not
+    # UNFILLED — critical for Dhan/Groww, which lack reliable postback
+    # self-healing.
+    if quantity > 0 and cumulative_filled >= quantity:
+        logger.info(
+            f"Chase {symbol}: late full fill ({cumulative_filled}/{quantity}) "
+            f"detected at max-attempts exhaustion — recording FILLED, not UNFILLED."
+        )
+        return _ch_zero_remaining_fill(
+            result, symbol, transaction_type, quantity, cfg.max_attempts,
+            current_order_id, algo_order_id, emit, _avg,
+        )
     _cancel_failed = bool(current_order_id) and not cancel_confirmed
     if _cancel_failed:
         logger.warning(
@@ -3019,6 +3036,19 @@ async def _ch_abort_stuck(
             cumulative_filled, current_order_filled, algo_order_id,
         )
     )
+    # 2026-10-23 fix (audit O2) — same late-full-fill check as
+    # `_ch_exhaust_max_attempts` (see its comment for the full rationale):
+    # the final cancel-confirm read above can reveal the order actually
+    # reached full fill before the stuck-abort fired.
+    if quantity > 0 and cumulative_filled >= quantity:
+        logger.info(
+            f"Chase {symbol}: late full fill ({cumulative_filled}/{quantity}) "
+            f"detected at stuck-abort — recording FILLED, not UNFILLED."
+        )
+        return _ch_zero_remaining_fill(
+            result, symbol, transaction_type, quantity, attempt,
+            current_order_id, algo_order_id, emit, _avg,
+        )
     abort_msg = (
         f"Chase stuck — no fill/confirmed-cancel progress for "
         f"{elapsed:.0f}s (ceiling {ceiling:.0f}s) across {attempt} "
