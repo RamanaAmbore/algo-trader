@@ -2092,6 +2092,19 @@
   .chain-row-itm-call .chain-td-pe { background: rgba(248,113,113,0.015); }
   .chain-row-itm-put  .chain-td-pe { background: rgba(248,113,113,0.05); }
   .chain-row-itm-put  .chain-td-ce { background: rgba(74,222,128,0.015); }
+  /* Spread the ITM wash into the strike column too (operator: "spread
+     the left background color to right which is basically in the money
+     call strike... spread the color in the money put strikes to the
+     left"), so the ITM side reads as one continuous tinted zone from
+     the table edge through the strike number, instead of stopping at
+     the CE/PE cell boundary. Only matches non-ATM rows — `dir` is
+     'atm' (not 'itm-call'/'itm-put') for the ATM row, so
+     .chain-td-strike-atm's own distinct styling is untouched, per
+     "keep the ATM strip as is". Same alpha as the strong (ITM-side)
+     wash above, not the weak OTM-side one, since the strike cell is
+     shared and must pick one side's intensity. */
+  .chain-row-itm-call .chain-td-strike { background: rgba(74,222,128,0.05); }
+  .chain-row-itm-put  .chain-td-strike { background: rgba(248,113,113,0.05); }
   /* Softened 2026-09-29 — operator: the top+bottom amber border read
      as an "overpowering underline" at 0.55 alpha. Same mechanism,
      gentler weight; still reads clearly as "this is the ATM row"

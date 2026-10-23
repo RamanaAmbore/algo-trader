@@ -1597,3 +1597,16 @@ test.describe('TP%/SL% param inputs restyled to match the order ticket price fie
     expect(maxDelta, `toolbar control heights should be within 1px of each other: ${JSON.stringify(heights)}`).toBeLessThanOrEqual(1);
   });
 });
+
+test.describe('Basket leg pill background uses the stronger -22 token, not the faint -14 rest tier (operator: "order info card background the text is not very user friendly")', () => {
+  test('.oes-basket-pill-buy/-sell use var(--c-long-22)/var(--c-short-22)', () => {
+    const buyRule = SYMBOL_PANEL.match(/\.oes-basket-pill-buy\s*\{[^}]*\}/)?.[0] ?? '';
+    const sellRule = SYMBOL_PANEL.match(/\.oes-basket-pill-sell\s*\{[^}]*\}/)?.[0] ?? '';
+    expect(buyRule).toMatch(/background:\s*var\(--c-long-22\)/);
+    expect(sellRule).toMatch(/background:\s*var\(--c-short-22\)/);
+    // Regression guard — must not have silently reverted to the faint
+    // rest-state tier this fix moved away from.
+    expect(buyRule).not.toMatch(/background:\s*var\(--c-long-14\)/);
+    expect(sellRule).not.toMatch(/background:\s*var\(--c-short-14\)/);
+  });
+});

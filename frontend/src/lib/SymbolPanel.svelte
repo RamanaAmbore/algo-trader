@@ -4627,12 +4627,19 @@
   .oes-basket-pill-buy {
     color:        var(--c-long);
     border-color: rgba(74,222,128,0.35);
-    background:   var(--c-long-14);
+    /* -22 (stronger tier), not the faint -14 rest-state alpha most
+       other -14 consumers use — operator: "the order info card
+       background the text is not very user friendly". -14 read as
+       low-contrast against the dark modal background; -22 is this
+       app's existing "needs more visual weight" tier (already used
+       for hover/emphasis elsewhere, e.g. --close-btn-danger-bg-hover),
+       reused here rather than inventing a new alpha value. */
+    background:   var(--c-long-22);
   }
   .oes-basket-pill-sell {
     color:        var(--c-short);
     border-color: rgba(248,113,113,0.55);
-    background:   var(--c-short-14);
+    background:   var(--c-short-22);
   }
   .oes-basket-pill-side {
     font-weight: 900;
