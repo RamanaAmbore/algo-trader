@@ -16,6 +16,10 @@ Scenario catalogue:
   5. Supervised task restarts after crash with exponential backoff.
   6. Dhan cross-process login lock uses /tmp/ramboq_locks/ (shared prod+dev).
   7. MMAP-MISSING-SYM warning fires once per token, not on every poll.
+  8. Kite cancel_order() throttles before SDK call + wraps SDK exceptions
+     (previously had neither, unlike place_order).
+  9. Groww cancel_order() throttles before SDK call (previously had none,
+     unlike place_order).
 """
 
 from __future__ import annotations
@@ -26,9 +30,11 @@ import time as _time
 import asyncio
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch, call as mock_call
+from unittest.mock import MagicMock, create_autospec, patch, call as mock_call
 
 import pytest
+from kiteconnect import KiteConnect
+from kiteconnect.exceptions import InputException as _KiteInputException
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -216,6 +222,126 @@ class TestKiteRateLimit:
                 interval="day"
             )
             mock_throttle.assert_called_with("history")
+
+    def test_kite_cancel_order_calls_throttle_before_sdk(self):
+        """KiteBroker.cancel_order() must call throttle('orders') before
+        the SDK call — previously cancel_order had NO client-side
+        throttling at all, unlike place_order's existing throttle call.
+
+        Uses create_autospec(KiteConnect, instance=True) (not a bare
+        MagicMock) so the mock enforces the real cancel_order signature
+        — same lesson as the 2026-10-01 cancel-order exchange-kwarg
+        incident (TestKiteBrokerCancelOrder in test_kite_adapter.py).
+        """
+        from backend.brokers.adapters.kite import KiteBroker, _KITE_RATE_LIMITER
+
+        mock_conn = MagicMock()
+        mock_kite = create_autospec(KiteConnect, instance=True)
+        mock_kite.cancel_order.return_value = "order_cxl_1"
+        mock_conn.get_kite_conn = MagicMock(return_value=mock_kite)
+
+        broker = KiteBroker(mock_conn)
+
+        call_order: list[str] = []
+        mock_kite.cancel_order.side_effect = (
+            lambda *a, **k: call_order.append("sdk_call") or "order_cxl_1"
+        )
+
+        def _throttle_side_effect(bucket):
+            call_order.append(f"throttle:{bucket}")
+
+        with patch.object(
+            _KITE_RATE_LIMITER, "throttle", side_effect=_throttle_side_effect
+        ) as mock_throttle:
+            result = broker.cancel_order("251001000000000", variety="regular")
+
+        assert result == "order_cxl_1"
+        mock_throttle.assert_called_once_with("orders")
+        # Throttle must happen BEFORE the SDK call, not after.
+        assert call_order == ["throttle:orders", "sdk_call"]
+
+    def test_kite_cancel_order_wraps_sdk_exception_in_broker_error(self):
+        """cancel_order must wrap a raw kiteconnect SDK exception into the
+        typed BrokerError hierarchy via _kite_exc, mirroring place_order's
+        existing try/except pattern. Previously cancel_order had no
+        exception wrapping at all — a raw kiteconnect exception leaked
+        straight out to callers."""
+        from backend.brokers.adapters.kite import KiteBroker
+        from backend.brokers.errors import BrokerInputError
+
+        mock_conn = MagicMock()
+        mock_kite = create_autospec(KiteConnect, instance=True)
+        mock_kite.cancel_order.side_effect = _KiteInputException("bad input")
+        mock_conn.get_kite_conn = MagicMock(return_value=mock_kite)
+
+        broker = KiteBroker(mock_conn)
+
+        with pytest.raises(BrokerInputError) as exc_info:
+            broker.cancel_order("251001000000000", variety="regular")
+
+        assert "bad input" in str(exc_info.value)
+        assert isinstance(exc_info.value.__cause__, _KiteInputException)
+
+
+# ---------------------------------------------------------------------------
+# Test 3b: Groww rate limiter throttles cancel_order endpoint
+# ---------------------------------------------------------------------------
+
+class TestGrowwRateLimit:
+    """GrowwBroker.cancel_order() must call throttle('orders') before the
+    SDK call — previously cancel_order had NO client-side throttling at
+    all, unlike place_order's existing throttle call."""
+
+    def _broker(self):
+        from backend.brokers.adapters.groww import GrowwBroker
+
+        conn = MagicMock()
+        conn.account = "test_account"
+        conn.get_groww_conn = MagicMock()
+        return GrowwBroker(conn)
+
+    def test_groww_cancel_order_calls_throttle_before_sdk(self):
+        from backend.brokers.adapters.groww import _GROWW_RATE_LIMITER
+
+        broker = self._broker()
+        call_order: list[str] = []
+        broker.groww.cancel_order = MagicMock(
+            side_effect=lambda **k: call_order.append("sdk_call") or {"status": "SUCCESS"}
+        )
+
+        def _throttle_side_effect(bucket):
+            call_order.append(f"throttle:{bucket}")
+
+        with patch.object(
+            _GROWW_RATE_LIMITER, "throttle", side_effect=_throttle_side_effect
+        ) as mock_throttle:
+            result = broker.cancel_order("ORD123", exchange="NSE")
+
+        assert result == "ORD123"
+        mock_throttle.assert_called_once_with("orders")
+        # Throttle must happen BEFORE the SDK call, not after.
+        assert call_order == ["throttle:orders", "sdk_call"]
+
+    def test_groww_cancel_order_no_exchange_resolution_failure_skips_throttle(self):
+        """A cancel that fails to resolve an exchange (ValueError, before
+        the SDK call) must never consume an 'orders'-bucket rate-limit
+        token — mirrors place_order's existing behavior where a
+        pre-SDK-call failure (e.g. the AMO NotImplementedError) doesn't
+        throttle either. (The exchange-resolution lookup itself throttles
+        its own 'data' bucket via broker.orders() — unrelated to the
+        'orders' bucket this fix adds to the actual cancel SDK call.)"""
+        from backend.brokers.adapters.groww import _GROWW_RATE_LIMITER
+
+        broker = self._broker()
+        broker.groww.get_order_list = MagicMock(return_value={"data": {}})
+
+        with patch.object(
+            _GROWW_RATE_LIMITER, "throttle", wraps=_GROWW_RATE_LIMITER.throttle
+        ) as mock_throttle:
+            with pytest.raises(ValueError):
+                broker.cancel_order("ORD999")
+
+        assert mock_call("orders") not in mock_throttle.call_args_list
 
 
 # ---------------------------------------------------------------------------

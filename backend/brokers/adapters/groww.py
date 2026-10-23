@@ -1408,6 +1408,7 @@ class GrowwBroker(Broker):
                 f"from broker.orders() for order_id={order_id!r}"
             )
         _, seg = _groww_exchange_and_segment(exchange)
+        _GROWW_RATE_LIMITER.throttle("orders")
         resp = self.groww.cancel_order(segment=seg, groww_order_id=order_id)
         # 2026-10 audit fix: response status was previously discarded —
         # see modify_order's identical fix above for rationale.

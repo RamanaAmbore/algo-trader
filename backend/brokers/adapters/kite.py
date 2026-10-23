@@ -501,7 +501,11 @@ class KiteBroker(Broker):
         sdk_kwargs = {
             k: kwargs[k] for k in ("variety", "parent_order_id") if k in kwargs
         }
-        return self.kite.cancel_order(order_id=order_id, **sdk_kwargs)
+        _KITE_RATE_LIMITER.throttle("orders")
+        try:
+            return self.kite.cancel_order(order_id=order_id, **sdk_kwargs)
+        except Exception as e:
+            raise _kite_exc(e) from e
 
     # ── GTT / trigger orders ──────────────────────────────────────────
     #
