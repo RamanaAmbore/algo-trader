@@ -19,8 +19,13 @@ def test_confirms_on_retry_and_does_not_abort(monkeypatch):
     monkeypatch.setattr(chase, "_ch_capture_late_fill", AsyncMock(side_effect=reads))
     monkeypatch.setattr(chase, "_ch_cancel_previous", AsyncMock(return_value=None))
     monkeypatch.setattr(chase, "_ch_write_cancel_confirmed_event", AsyncMock(return_value=None))
+    monkeypatch.setattr(chase, "_ch_append_superseded_id", AsyncMock(return_value=None))
     monkeypatch.setattr(chase.asyncio, "sleep", AsyncMock(return_value=None))
-    abort = MagicMock(return_value="ABORT")
+    # 2026-10-23 chase robustness: _ch_build_cancel_unconfirmed_abort is now
+    # `async def` (its terminal write is `await`ed, not fire-and-forget, so
+    # the item-8b backstop never races a late write) — the mock must be
+    # awaitable too.
+    abort = AsyncMock(return_value="ABORT")
     monkeypatch.setattr(chase, "_ch_build_cancel_unconfirmed_abort", abort)
 
     out = _run(chase._ch_cancel_and_capture(
@@ -37,7 +42,8 @@ def test_still_unconfirmed_after_all_reads_aborts(monkeypatch):
     monkeypatch.setattr(chase, "_ch_capture_late_fill", capture)
     monkeypatch.setattr(chase, "_ch_cancel_previous", AsyncMock(return_value=None))
     monkeypatch.setattr(chase.asyncio, "sleep", sleep)
-    abort = MagicMock(return_value="ABORT")
+    # See comment above — must be an AsyncMock now.
+    abort = AsyncMock(return_value="ABORT")
     monkeypatch.setattr(chase, "_ch_build_cancel_unconfirmed_abort", abort)
 
     out = _run(chase._ch_cancel_and_capture(
@@ -76,7 +82,9 @@ def test_cancel_and_capture_aborts_on_read_failure(monkeypatch):
     monkeypatch.setattr(chase, "_run", run_mock)
     monkeypatch.setattr(chase, "_ch_cancel_previous", AsyncMock(return_value=None))
     monkeypatch.setattr(chase.asyncio, "sleep", AsyncMock(return_value=None))
-    abort = MagicMock(return_value="ABORT")
+    # See comment in test_still_unconfirmed_after_all_reads_aborts above —
+    # must be an AsyncMock now.
+    abort = AsyncMock(return_value="ABORT")
     monkeypatch.setattr(chase, "_ch_build_cancel_unconfirmed_abort", abort)
 
     out = _run(chase._ch_cancel_and_capture(

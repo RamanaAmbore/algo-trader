@@ -238,6 +238,14 @@ async def test_attempts_updates_live_during_chase_not_just_at_terminal():
         patch("backend.api.algo.chase._ch_post_replace_kill_check", return_value=False),
         patch("backend.api.algo.chase._emit_chase_terminal", new_callable=AsyncMock),
         patch("backend.api.algo.chase._ch_seed_pre_fill_net_qty", new_callable=AsyncMock),
+        # 2026-10-23 chase robustness (fix #6) — _ch_append_superseded_id
+        # now runs a real DB commit on every confirmed cancel-and-replace
+        # (to flag the just-superseded broker_order_id), which would
+        # otherwise add extra entries into `attempts_snapshots` below
+        # (this test's `mock_session.commit` side effect fires on ANY
+        # commit, not just _sync_algo_order_id's). Out of scope for this
+        # test's own assertion — stubbed out, covered by its own test.
+        patch("backend.api.algo.chase._ch_append_superseded_id", new_callable=AsyncMock),
         patch("asyncio.sleep", new_callable=AsyncMock),
     ):
         cfg = ChaseConfig(interval_seconds=0, max_attempts=5, exchange="NFO")

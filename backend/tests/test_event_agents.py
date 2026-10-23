@@ -37,9 +37,18 @@ def senders(monkeypatch):
     return calls
 
 
+_TG_NTFY_EVENTS = [{"channel": "telegram", "enabled": True}, {"channel": "ntfy", "enabled": True}]
+
+
 @pytest.mark.asyncio
 async def test_live_fill_record_sends_to_both_channels(senders):
-    sent = await event_agents.dispatch([_rec()], [_agent()])
+    """2026-10-23 chase robustness (fix #4) — FILL_AGENT's own stored
+    `events` no longer includes ntfy (a fill is FYI, never action-
+    required); this test is about generic 2-channel dispatch mechanics,
+    not FILL_AGENT's specific config, so it supplies its own explicit
+    telegram+ntfy `events` list instead of relying on FILL_AGENT's."""
+    agent = _agent(events=_TG_NTFY_EVENTS)
+    sent = await event_agents.dispatch([_rec()], [agent])
     assert sent == 2
     assert [t for t, _ in senders["ntfy"]] == ["Order filled: BUY 1 X"]
     assert len(senders["tg"]) == 1
@@ -81,7 +90,8 @@ async def test_one_failing_channel_does_not_block_the_other(monkeypatch, senders
         raise RuntimeError("ntfy down")
 
     monkeypatch.setitem(event_agents.CHANNELS, "ntfy", ("ntfy", boom))
-    sent = await event_agents.dispatch([_rec()], [_agent()])
+    agent = _agent(events=_TG_NTFY_EVENTS)  # see _TG_NTFY_EVENTS comment above
+    sent = await event_agents.dispatch([_rec()], [agent])
     assert sent == 1 and len(senders["tg"]) == 1
     assert "ntfy send failed" in capsys.readouterr().err
 
@@ -109,13 +119,18 @@ def test_fill_agent_condition_validates_against_a_registered_tag(monkeypatch):
 def test_fill_agent_is_seeded_as_an_event_agent_with_live_only_match():
     spec = event_agents.FILL_AGENT
     assert spec["conditions"]["log"]["where"] == {"alert_event": "filled", "mode": "live"}
-    assert {c["channel"] for c in spec["events"]} == {"telegram", "ntfy"}
+    # 2026-10-23 chase robustness (fix #4) — a fill is FYI, never
+    # action-required: ntfy removed from FILL_AGENT's own stored channel
+    # list (cosmetic — the real enforcement is the binary
+    # action_required gate in _dispatch_record_channels, which skips
+    # ntfy for every fill record regardless of this list's content).
+    assert {c["channel"] for c in spec["events"]} == {"telegram"}
 
 
 @pytest.mark.asyncio
 async def test_registered_renderer_is_used(monkeypatch, senders):
     monkeypatch.setitem(event_agents.RENDERS, "custom", lambda rec: ("T", "B"))
-    agent = _agent(actions=[{"type": "render", "render": "custom"}])
+    agent = _agent(actions=[{"type": "render", "render": "custom"}], events=_TG_NTFY_EVENTS)
     await event_agents.dispatch([_rec()], [agent])
     assert senders["ntfy"] == [("T", "B")]
 

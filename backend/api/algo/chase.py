@@ -40,6 +40,21 @@ _OUTCOME_TO_STATUS: dict[str, str] = {
     "chase_unfilled":  "UNFILLED",
     "chase_cancelled": "CANCELLED",
     "chase_failed":    "REJECTED",
+    # 2026-10-23 chase robustness (fix #1) — a cancel-unconfirmed abort or
+    # a consecutive-client-side-errors abort means the broker-side fate of
+    # the order is genuinely UNKNOWN (it may still be resting live). Both
+    # used to route through "chase_failed" -> REJECTED, a status in
+    # ALGO_ORDER_FINAL_STATUSES that permanently blocks any later real
+    # fill from ever being recorded. CANCEL_FAILED already exists for
+    # exactly this "might still be live" case (see
+    # models.ALGO_ORDER_FINAL_STATUSES's own docstring) and is
+    # deliberately excluded from that frozenset. Verified safe to
+    # introduce as a brand-new outcome: grepped frontend/src for
+    # chase_failed/chase_unfilled/chase_cancelled (zero matches — the
+    # frontend only reads AlgoOrder.status, never the raw outcome
+    # string), and LogPanel.svelte's `_agentLevel` humanizer classifies
+    # any `*_failed`-shaped event_type as 'error' generically.
+    "chase_cancel_failed": "CANCEL_FAILED",
 }
 
 
@@ -236,7 +251,15 @@ async def _chase_terminal_update_db(
                 _sql_select(_AlgoOrder).where(_AlgoOrder.id == int(algo_order_id))
                 .with_for_update()
             )).scalar_one_or_none()
-        if row is None:
+        # 2026-10-23 audit fix — only run the broker_order_id fallback
+        # lookup when it's a real (non-empty) id. Several abort paths now
+        # call this with `broker_order_id=""` when nothing was ever
+        # placed (see the "always write a marker" fix below) — querying
+        # `WHERE broker_order_id == ''` could match an unrelated row that
+        # happens to carry a stored empty string, or raise
+        # MultipleResultsFound if more than one does, either of which
+        # would silently mutate/crash on an arbitrary row.
+        if row is None and broker_order_id:
             row = (await _s.execute(
                 _sql_select(_AlgoOrder).where(
                     _AlgoOrder.broker_order_id == broker_order_id
@@ -710,6 +733,154 @@ def is_chase_active(algo_order_id: "int | None") -> bool:
         return int(algo_order_id) in _ACTIVE_CHASE_REFCOUNT
 
 
+# ── Item 8b: immediate backstop reconcile after an ambiguous abort ──────
+# 2026-10-23 chase robustness. An "ambiguous" abort (cancel-unconfirmed,
+# consecutive-errors, stuck, place-timeout — every path that writes
+# CANCEL_FAILED because the broker-side fate of the order genuinely
+# couldn't be confirmed) gets ONE immediate follow-up reconcile attempt
+# right after `chase_order()`'s wrapper clears the active-chase marker,
+# instead of relying solely on a later periodic sweep or a manual operator
+# reconcile trigger. Mirrors `_ACTIVE_CHASE_REFCOUNT`'s plain dict/lock
+# pattern (not a set — same reasoning doesn't strictly apply here since an
+# algo_order_id can't be ambiguously-aborted twice concurrently in
+# practice, but a plain set is simplest and sufficient).
+_CH_AMBIGUOUS_ABORT_IDS: set[int] = set()
+_CH_AMBIGUOUS_ABORT_LOCK = __import__("threading").Lock()
+
+
+def _ch_mark_ambiguous_abort(algo_order_id: "int | None") -> None:
+    """Flag `algo_order_id` for the one-shot backstop reconcile run by
+    `chase_order()`'s wrapper after this chase_order() call returns.
+    No-op for None (legacy callers with no row to reconcile)."""
+    if algo_order_id is None:
+        return
+    with _CH_AMBIGUOUS_ABORT_LOCK:
+        _CH_AMBIGUOUS_ABORT_IDS.add(int(algo_order_id))
+
+
+def _ch_pop_ambiguous_abort(algo_order_id: "int | None") -> bool:
+    """True + clears the flag when `algo_order_id` was marked ambiguous
+    by this same chase_order() call. False (no-op) otherwise."""
+    if algo_order_id is None:
+        return False
+    with _CH_AMBIGUOUS_ABORT_LOCK:
+        key = int(algo_order_id)
+        if key in _CH_AMBIGUOUS_ABORT_IDS:
+            _CH_AMBIGUOUS_ABORT_IDS.discard(key)
+            return True
+        return False
+
+
+async def _ch_backstop_reconcile_one(algo_order_id: int) -> None:
+    """One-shot broker-truth reconcile for a single row, run immediately
+    after an ambiguous abort.
+
+    2026-10-23 (coordinator redirect) — uses the canonical single-
+    order-view accessor (`orders_helpers.py:get_broker_order_truth` /
+    `apply_order_truth`), the SAME one chase's own periodic in-loop
+    check (`_ch_periodic_broker_truth_check`) calls, instead of reusing
+    `orders.py:list_active_chases`'s own `_rco_reconcile_active_rows`
+    path as an interim measure. Both of chase's item-8 auto-reconcile
+    triggers now go through one shared accessor rather than two
+    divergent ones. Migrating `list_active_chases` itself (and the
+    watchdog / admin reconcile routes) onto this same accessor is
+    separate, explicitly out-of-scope follow-up work — see
+    `orders_helpers.py`'s module-level note next to `OrderTruth`.
+
+    Best-effort: any exception is logged and swallowed; this is a
+    backstop on top of an already-written CANCEL_FAILED/chase_unfilled
+    row, never a new way for the chase itself to fail. Known scope gap
+    (deliberate): does not fire template-attach on a reconciled FILLED
+    — see `apply_order_truth`'s own docstring.
+    """
+    try:
+        from backend.api.cache import invalidate as _cache_invalidate
+        # Invalidate the 15s-cached "orders" broker snapshot so the
+        # reconcile below reads fresh broker state instead of a
+        # pre-ambiguity-abort cache entry.
+        _cache_invalidate("orders")
+    except Exception:
+        pass
+    try:
+        async with _async_session() as _s:
+            row = (await _s.execute(
+                _sql_select(_AlgoOrder)
+                .where(
+                    _AlgoOrder.id == int(algo_order_id),
+                    _AlgoOrder.status.in_(["OPEN", "CANCEL_FAILED"]),
+                )
+            )).scalar_one_or_none()
+            if row is None:
+                return   # nothing left to reconcile (already final elsewhere)
+            broker_order_id = row.broker_order_id
+        if not (broker_order_id or "").strip():
+            # Nothing to check against the broker (e.g. a place-timeout
+            # abort where no id was ever obtained) — `get_broker_order_
+            # truth` already treats a falsy id as `available=False`, but
+            # short-circuit here too to skip the snapshot fetch entirely.
+            return
+        from backend.api.routes.orders_helpers import (
+            get_broker_order_truth, apply_order_truth,
+        )
+        truth = await get_broker_order_truth(broker_order_id)
+        mutated = await apply_order_truth(algo_order_id, truth)
+        if mutated:
+            logger.info(
+                "[CHASE] backstop reconcile for AlgoOrder #%s applied "
+                "broker truth (%s) after an ambiguous abort.",
+                algo_order_id, truth.algo_status,
+            )
+    except Exception as _e:
+        logger.debug(
+            "[CHASE] backstop reconcile for AlgoOrder #%s failed "
+            "(non-fatal — leaves the row for the periodic/manual sweep): %s",
+            algo_order_id, _e,
+        )
+
+
+async def _ch_append_superseded_id(
+    algo_order_id: "int | None", old_broker_order_id: "str | None",
+) -> None:
+    """Append `old_broker_order_id` to this row's
+    `superseded_broker_order_ids_json` (fix #6) — called at cancel-confirm
+    time, BEFORE the replacement order is placed, so the frontend's
+    duplicate-open-order-card dedup has an authoritative, race-free
+    answer by the time the new order becomes visible broker-side. A
+    direct column write (not derived from algo_order_events, which is a
+    batched `on_full="drop"` queue and misses the rejected_continue /
+    cancelled_continue replacement paths entirely). Best-effort — never
+    raises; a failure here must never block placing the replacement
+    order.
+    """
+    if algo_order_id is None or not old_broker_order_id:
+        return
+    try:
+        import json as _json
+        async with _async_session() as _s:
+            row = (await _s.execute(
+                _sql_select(_AlgoOrder).where(_AlgoOrder.id == int(algo_order_id))
+                .with_for_update()
+            )).scalar_one_or_none()
+            if row is None:
+                return
+            try:
+                ids = _json.loads(row.superseded_broker_order_ids_json or "[]")
+                if not isinstance(ids, list):
+                    ids = []
+            except Exception:
+                ids = []
+            old_id = str(old_broker_order_id)
+            if old_id not in ids:
+                ids.append(old_id)
+                row.superseded_broker_order_ids_json = _json.dumps(ids)
+                await _s.commit()
+    except Exception as _e:
+        logger.debug(
+            "[CHASE] _ch_append_superseded_id failed for #%s (old id %s): %s",
+            algo_order_id, old_broker_order_id, _e,
+        )
+
+
 class ChaseStatus(str, Enum):
     PENDING   = "pending"
     CHASING   = "chasing"
@@ -1033,9 +1204,36 @@ def _order_status(account: str, order_id: str) -> dict:
     return broker.order_status(order_id)
 
 
+# 2026-10-23 chase robustness (fix #3) — ceiling for any single broker
+# call made via `_run`. Without this, one hung SDK call (dead socket,
+# broker-side stall) parks the awaiting chase-loop coroutine forever —
+# `_chase_order_impl`'s `for` loop never reaches its next iteration, so
+# neither the normal max_attempts bound nor the stuck-wall-clock check
+# below ever get a chance to run.
+#
+# Honest limitation (do not oversell this in docs/alerts): `asyncio.
+# wait_for` only unblocks the AWAITING COROUTINE — it does not, and
+# cannot, forcibly kill the underlying `ThreadPoolExecutor` worker
+# thread (Python threads can't be pre-empted). A genuinely hung SDK call
+# may still occupy that worker until it eventually returns or errors at
+# the socket layer. Real socket-level timeouts belong in
+# `backend/brokers/`. The value here is narrower and still real: the
+# CHASE LOOP ITSELF can never be stuck awaiting one dead call forever.
+_CH_BROKER_CALL_TIMEOUT_S = 30
+
+
 async def _run(fn, *args):
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(_executor, fn, *args)
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(_executor, fn, *args),
+            timeout=_CH_BROKER_CALL_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError as _te:
+        raise TimeoutError(
+            f"broker call {getattr(fn, '__name__', fn)!r} did not return "
+            f"within {_CH_BROKER_CALL_TIMEOUT_S}s"
+        ) from _te
 
 
 async def _sync_algo_order_id(algo_order_id: int | None,
@@ -1612,28 +1810,54 @@ async def _chase_abort_on_consecutive_errors(
     emit: Callable,
     algo_order_id: int | None,
     agent_id: "int | None" = None,
+    cumulative_filled: int = 0,
+    current_order_filled: int = 0,
 ) -> "ChaseResult":
     """Handle consecutive-error abort in the chase loop.
 
-    Fires an alert, cancels the live order (best-effort), schedules the
-    terminal event task, and returns the mutated result ready for `return`.
-    Only called when `consecutive_errors >= _MAX_CHASE_ERRORS`.
+    Fires an alert, cancels the live order (best-effort, with full
+    confirm-read retries), writes the terminal status, and returns the
+    mutated result ready for `return`. Only called when
+    `consecutive_errors >= _MAX_CHASE_ERRORS`.
+
+    2026-10-23 chase robustness: the client-side errors that triggered
+    this abort may themselves have corrupted our view of what actually
+    happened broker-side on recent attempts — repeated network/SDK
+    errors mean we can't fully trust even a clean-looking cancel read.
+    So this ALWAYS writes `CANCEL_FAILED` (not `REJECTED`), regardless of
+    whether `_ch_final_cancel_and_confirm` reports the cancel as
+    confirmed or not — "consecutive client-side errors" is itself the
+    ambiguity, not just whether the final cancel landed. Terminal write
+    is now `await`ed (not fire-and-forget) and the row is marked for the
+    item-8b one-shot backstop reconcile. The "write some marker" gap is
+    also fixed here: the terminal write now fires whenever EITHER
+    `current_order_id` OR `algo_order_id` is available (previously it
+    required `current_order_id` truthy, silently leaving the row at
+    OPEN with no trace whenever all 3 consecutive errors happened before
+    any order was ever successfully placed this chase cycle).
     """
+    cancel_confirmed, cumulative_filled, current_order_filled, _avg = (
+        await _ch_final_cancel_and_confirm(
+            account, current_order_id, cfg, symbol, quantity,
+            cumulative_filled, current_order_filled, algo_order_id,
+        )
+    )
     abort_msg = (
         f"Chase abandoned after {consecutive_errors} consecutive errors "
-        f"({attempt} total attempts) — last error: {last_error}"
+        f"({attempt} total attempts, {cumulative_filled}/{quantity} filled) "
+        f"— last error: {last_error}"
     )
+    if current_order_id and not cancel_confirmed:
+        abort_msg += (
+            f" — cancel of order {current_order_id} could NOT be confirmed; "
+            f"it may still be resting live at the broker."
+        )
     logger.error(f"Chase {symbol}: {abort_msg}")
     result.status = ChaseStatus.FAILED
     result.detail = abort_msg
     emit("chase_failed", {"attempts": attempt, "error": str(last_error),
-                          "reason": "consecutive_errors"})
-    try:
-        if current_order_id:
-            await _run(_cancel_order, account, current_order_id, cfg.variety,
-                       cfg.exchange)
-    except Exception:
-        pass
+                          "reason": "consecutive_errors",
+                          "cancel_confirmed": cancel_confirmed})
     try:
         from backend.shared.helpers.alert_utils import send_order_failure_alert
         send_order_failure_alert(
@@ -1642,17 +1866,27 @@ async def _chase_abort_on_consecutive_errors(
             qty=quantity, mode="live", source="chase",
             agent_id=agent_id,
             error=abort_msg,
+            # 2026-10-23 fix #7 — an abandonment alert must never be
+            # swallowed by the 10-minute dedup window or the
+            # market-closed suppression; reconciliation matters
+            # regardless of market hours, and a second genuinely-new
+            # abandonment must not be swallowed by the first one's dedup.
+            bypass_gates=True,
         )
     except Exception:
         pass
-    if current_order_id:
-        import asyncio as _asyncio
-        _asyncio.create_task(_emit_chase_terminal(
-            current_order_id, "chase_failed",
-            symbol, transaction_type, quantity,
-            attempts=attempt, error=abort_msg,
-            algo_order_id=algo_order_id,
-        ))
+    if current_order_id or algo_order_id is not None:
+        if algo_order_id is not None:
+            _ch_mark_ambiguous_abort(algo_order_id)
+        try:
+            await _emit_chase_terminal(
+                current_order_id or "", "chase_cancel_failed",
+                symbol, transaction_type, quantity,
+                attempts=attempt, error=abort_msg,
+                algo_order_id=algo_order_id,
+            )
+        except Exception:
+            pass
     return result
 
 
@@ -1692,6 +1926,16 @@ async def _ch_hold_on_repeated_rejection(
     (default `"CHASE_MED"`). Without this, `order_release.py` had no way
     to know the row was originally chased at HIGH/LOW and silently
     resumed every release at a hardcoded MED tuple.
+
+    2026-10-23 chase robustness (item 5, deviation from the literal plan
+    text) — `expiry.py`'s expiry-close chase call site has NO AlgoOrder
+    row to pass as `algo_order_id` (an `OptionPosition` carries no row
+    id; expiry-close chases have never created one). Pre-persisting a
+    row just for this would make `recover_live_chases()` start resuming
+    expiry-close chases on restart — a materially bigger change than
+    this fix, and not requested. Instead, the alert text below is now
+    conditional on `algo_order_id`: when `None`, it does NOT promise an
+    `/orders/held` entry that will never exist.
     """
     from backend.api.algo.order_hold import HoldCategory, hold_record
 
@@ -1742,11 +1986,28 @@ async def _ch_hold_on_repeated_rejection(
 
     try:
         from backend.shared.helpers.alert_utils import send_order_failure_alert
+        if algo_order_id is not None:
+            _hold_msg = (
+                f"{reason}. No further auto-retry will be attempted — "
+                f"review and release via /orders/held."
+            )
+        else:
+            # No AlgoOrder row exists for this chase (e.g. expiry-close)
+            # — don't promise an operator-review row that will never
+            # appear there.
+            _hold_msg = (
+                f"{reason}. No further auto-retry will be attempted. "
+                f"No order row exists for this symbol/account to release "
+                f"via /orders/held — manually re-trigger the expiry-close "
+                f"scan (or equivalent) if this position still needs closing."
+            )
         send_order_failure_alert(
             account=account, symbol=symbol, exchange=cfg.exchange,
             side=transaction_type, qty=quantity, mode="live", source="chase",
             agent_id=agent_id,
-            error=f"{reason}. No further auto-retry will be attempted.",
+            error=_hold_msg,
+            # HELD is action-required by definition (fix #7).
+            bypass_gates=True,
         )
     except Exception:
         pass
@@ -1821,6 +2082,8 @@ async def _ch_handle_attempt_error(
     emit: Callable,
     algo_order_id: "int | None",
     agent_id: "int | None" = None,
+    cumulative_filled: int = 0,
+    current_order_filled: int = 0,
 ) -> "tuple[ChaseResult | None, int]":
     """Handle a broker exception in the chase loop.
 
@@ -1841,7 +2104,30 @@ async def _ch_handle_attempt_error(
             "capability_unsupported" if isinstance(exc, _BrokerCapabilityError) else
             "input_rejected"
         )
+        # 2026-10-23 fix #4b — broker fate here IS known (the broker
+        # explicitly refused the request, or the session/capability is
+        # invalid — nothing was ever accepted), so this stays
+        # "chase_failed" -> REJECTED. But a still-live PREVIOUS order
+        # (already cancel-confirmed earlier this iteration in the
+        # common case) may be the one this exception is actually about
+        # in a rarer case — attempt a best-effort cancel of it before
+        # alerting, so the alert can state accurately whether anything
+        # was left resting.
+        _cancel_attempted = False
+        _cancel_failed = False
+        if current_order_id:
+            _cancel_attempted = True
+            try:
+                await _run(_cancel_order, account, current_order_id, cfg.variety, cfg.exchange)
+            except Exception:
+                _cancel_failed = True
         abort_msg = f"Order rejected by broker ({_reason}): {exc}"
+        if _cancel_attempted:
+            abort_msg += (
+                f" — cancel of order {current_order_id} "
+                + ("FAILED; it may still be resting live." if _cancel_failed
+                   else "succeeded.")
+            )
         logger.error(
             f"Chase {symbol}: non-recoverable {type(exc).__name__} — "
             f"terminating immediately. {exc}"
@@ -1859,13 +2145,20 @@ async def _ch_handle_attempt_error(
             )
         except Exception:
             pass
-        if current_order_id:
-            import asyncio as _asyncio
-            _asyncio.create_task(_emit_chase_terminal(
-                current_order_id, "chase_failed",
-                symbol, transaction_type, quantity,
-                attempts=attempt, error=abort_msg, algo_order_id=algo_order_id,
-            ))
+        # 2026-10-23 fix #2 — "write some marker" gap: fire the terminal
+        # write whenever EITHER current_order_id OR algo_order_id is
+        # available, not only when current_order_id is truthy. A
+        # non-recoverable exception on attempt 1 (before any order was
+        # ever placed) used to leave the row at OPEN with no trace.
+        if current_order_id or algo_order_id is not None:
+            try:
+                await _emit_chase_terminal(
+                    current_order_id or "", "chase_failed",
+                    symbol, transaction_type, quantity,
+                    attempts=attempt, error=abort_msg, algo_order_id=algo_order_id,
+                )
+            except Exception:
+                pass
         return result, consecutive_errors
 
     consecutive_errors += 1
@@ -1880,6 +2173,8 @@ async def _ch_handle_attempt_error(
             account, symbol, transaction_type, quantity,
             current_order_id, cfg, result, emit, algo_order_id,
             agent_id=agent_id,
+            cumulative_filled=cumulative_filled,
+            current_order_filled=current_order_filled,
         )
         return abort, consecutive_errors
     # Rate-limit responses get a longer cool-off than a normal re-quote
@@ -1899,8 +2194,10 @@ async def _ch_exhaust_max_attempts(
     account: str, symbol: str, transaction_type: str,
     quantity: int, algo_order_id: "int | None", emit: Callable,
     agent_id: "int | None" = None,
+    cumulative_filled: int = 0,
+    current_order_filled: int = 0,
 ) -> "ChaseResult":
-    """Handle max-attempts exhaustion: cancel live order, set FAILED, schedule terminal.
+    """Handle max-attempts exhaustion: cancel live order, set FAILED/UNFILLED, schedule terminal.
 
     2026-09 council audit fix (risk lens) — this path previously fired
     NO operator-visible alert at all (only a log line + an internal
@@ -1910,30 +2207,46 @@ async def _ch_exhaust_max_attempts(
     the operator needs to know a chase gave up AND whether the final
     cancel attempt (also best-effort/swallowed here) may have left an
     order resting live with nothing watching it anymore.
+
+    2026-10-23 chase robustness (fix #4) — the bare best-effort cancel is
+    replaced with `_ch_final_cancel_and_confirm` (the same multi-read
+    confirm loop the normal per-attempt cancel-and-replace uses), so the
+    exhaustion alert can report the REAL cumulative filled quantity
+    instead of always claiming "(no fill)", and so the final
+    `AlgoOrder.filled_quantity`-adjacent bookkeeping reflects reality.
     """
-    _cancel_failed = False
-    if current_order_id:
-        try:
-            await _run(_cancel_order, account, current_order_id, cfg.variety, cfg.exchange)
-        except Exception as _cancel_exc:
-            _cancel_failed = True
-            logger.warning(
-                "Chase %s: final cancel of order %s failed at max-attempts "
-                "exhaustion: %s — order may still be resting live.",
-                symbol, current_order_id, _cancel_exc,
-            )
+    cancel_confirmed, cumulative_filled, current_order_filled, _avg = (
+        await _ch_final_cancel_and_confirm(
+            account, current_order_id, cfg, symbol, quantity,
+            cumulative_filled, current_order_filled, algo_order_id,
+        )
+    )
+    _cancel_failed = bool(current_order_id) and not cancel_confirmed
+    if _cancel_failed:
+        logger.warning(
+            "Chase %s: final cancel of order %s could not be confirmed at "
+            "max-attempts exhaustion — order may still be resting live.",
+            symbol, current_order_id,
+        )
     result.status = ChaseStatus.FAILED
-    result.detail = f"Failed after {cfg.max_attempts} attempts"
+    result.detail = f"Failed after {cfg.max_attempts} attempts ({cumulative_filled}/{quantity} filled)"
     if _cancel_failed:
         result.detail += (
             f" — final cancel of order {current_order_id} may have failed; "
             f"it could still be resting live."
         )
-    emit("chase_failed", {"attempts": cfg.max_attempts, "cancel_failed": _cancel_failed})
-    logger.error(f"Chase {symbol}: FAILED after {cfg.max_attempts} attempts")
+    emit("chase_failed", {"attempts": cfg.max_attempts, "cancel_failed": _cancel_failed,
+                          "cumulative_filled": cumulative_filled})
+    logger.error(
+        f"Chase {symbol}: FAILED after {cfg.max_attempts} attempts "
+        f"({cumulative_filled}/{quantity} filled)"
+    )
     try:
         from backend.shared.helpers.alert_utils import send_order_failure_alert
-        _msg = f"Chase failed after {cfg.max_attempts} attempts (no fill)"
+        _msg = (
+            f"Chase failed after {cfg.max_attempts} attempts "
+            f"({cumulative_filled}/{quantity} filled)"
+        )
         if _cancel_failed:
             _msg += (
                 f" — final cancel of order {current_order_id} may ALSO have "
@@ -1945,6 +2258,9 @@ async def _ch_exhaust_max_attempts(
             qty=quantity, mode="live", source="chase",
             agent_id=agent_id,
             error=_msg,
+            # 2026-10-23 fix #7 — exhaustion is an abandonment-class
+            # alert; never let it be swallowed by dedup/market-hours gate.
+            bypass_gates=True,
         )
     except Exception as _alert_exc:
         logger.warning(f"Chase {symbol}: max-attempts alert failed: {_alert_exc}")
@@ -1958,13 +2274,21 @@ async def _ch_exhaust_max_attempts(
         f"(cancel_failed={_cancel_failed})",
         {"max_attempts": cfg.max_attempts, "cancel_failed": _cancel_failed},
     )
-    if result.order_id:
-        import asyncio as _asyncio
-        _asyncio.create_task(_emit_chase_terminal(
-            result.order_id, "chase_unfilled",
-            symbol, transaction_type, quantity,
-            attempts=cfg.max_attempts, algo_order_id=algo_order_id,
-        ))
+    # 2026-10-23 fix #2 — "write some marker" gap: fire even when
+    # `result.order_id` was never set (e.g. every attempt hit the
+    # `price <= 0: continue` branch without ever successfully placing an
+    # order) as long as there's an AlgoOrder row to mark. Previously this
+    # left such a row at OPEN forever, silently resurrectable by
+    # `recover_live_chases()` on the next service restart.
+    if result.order_id or algo_order_id is not None:
+        try:
+            await _emit_chase_terminal(
+                result.order_id or "", "chase_unfilled",
+                symbol, transaction_type, quantity,
+                attempts=cfg.max_attempts, algo_order_id=algo_order_id,
+            )
+        except Exception:
+            pass
     return result
 
 
@@ -2228,6 +2552,47 @@ async def _ch_capture_late_fill(
     return cumulative_filled, current_order_filled, remaining_qty, avg_price, cancel_confirmed
 
 
+async def _ch_final_cancel_and_confirm(
+    account: str, order_id: "str | None", cfg: "ChaseConfig", symbol: str,
+    quantity: int, cumulative_filled: int, current_order_filled: int,
+    algo_order_id: "int | None",
+) -> "tuple[bool, int, int, float]":
+    """Best-effort cancel + multi-read confirm for an ABORT context
+    OUTSIDE the normal per-attempt cancel-and-replace flow (exhaustion,
+    consecutive-errors, stuck — fix #1/#2/#3/#4). Reuses the exact same
+    cancel-previous + multi-read confirm loop the normal mid-chase path
+    already runs (`_ch_cancel_previous` + `_ch_capture_late_fill`, the
+    same constants `_CH_CANCEL_CONFIRM_READS` / `_CH_CANCEL_CONFIRM_WAIT_S`)
+    instead of a bare fire-and-forget `_cancel_order` call that swallows
+    its own exception and never tells the caller whether anything is
+    still resting live.
+
+    No-op (vacuously "confirmed" — nothing was resting, so there's
+    nothing ambiguous) when `order_id` is falsy.
+
+    Returns (cancel_confirmed, cumulative_filled, current_order_filled,
+    avg_price).
+    """
+    if not order_id:
+        return True, cumulative_filled, current_order_filled, 0.0
+    _noop_emit: Callable = lambda *_a, **_k: None
+    await _ch_cancel_previous(account, order_id, cfg, symbol, 0, _noop_emit)
+    avg_price = 0.0
+    cancel_confirmed = False
+    for _confirm_try in range(_CH_CANCEL_CONFIRM_READS):
+        cumulative_filled, current_order_filled, _remaining, avg_price, cancel_confirmed = (
+            await _ch_capture_late_fill(
+                account, order_id, cfg, symbol, quantity,
+                cumulative_filled, current_order_filled, algo_order_id,
+            )
+        )
+        if cancel_confirmed:
+            break
+        if _confirm_try + 1 < _CH_CANCEL_CONFIRM_READS:
+            await asyncio.sleep(_CH_CANCEL_CONFIRM_WAIT_S)
+    return cancel_confirmed, cumulative_filled, current_order_filled, avg_price
+
+
 def _ch_already_filled_at_start(
     quantity: int, cumulative_filled: int, remaining_qty: int,
     result: "ChaseResult", symbol: str, transaction_type: str,
@@ -2254,7 +2619,7 @@ def _ch_already_filled_at_start(
     )
 
 
-def _ch_build_cancel_unconfirmed_abort(
+async def _ch_build_cancel_unconfirmed_abort(
     result: "ChaseResult", symbol: str, account: str, transaction_type: str,
     quantity: int, remaining_qty: int, attempt: int,
     current_order_id: "str | None", algo_order_id: "int | None", emit: Callable,
@@ -2270,6 +2635,20 @@ def _ch_build_cancel_unconfirmed_abort(
     fix neither this path nor its sibling (_chase_abort_on_consecutive_
     errors, _ch_exhaust_max_attempts) fired any operator-visible alert
     for a cancel failure.
+
+    2026-10-23 chase robustness: (1) now `async` — the terminal write
+    below is `await`ed (not fire-and-forget) so the CANCEL_FAILED status
+    is guaranteed committed before `chase_order()`'s wrapper runs its
+    item-8b backstop reconcile; a late fire-and-forget write landing
+    AFTER that backstop could otherwise stomp a correctly-reconciled
+    CANCELLED/FILLED status back to CANCEL_FAILED (CANCEL_FAILED is
+    deliberately not in ALGO_ORDER_FINAL_STATUSES, so nothing else would
+    block that overwrite). (2) outcome is the new `chase_cancel_failed`
+    (-> AlgoOrder.status = CANCEL_FAILED), not `chase_failed` (->
+    REJECTED) — the broker-side fate here is genuinely UNKNOWN, so
+    REJECTED (which permanently blocks a later real fill from ever being
+    recorded) is wrong. (3) marks this algo_order_id for the one-shot
+    backstop reconcile.
     """
     result.status = ChaseStatus.FAILED
     result.order_id = current_order_id or ""
@@ -2283,6 +2662,12 @@ def _ch_build_cancel_unconfirmed_abort(
         "Chase %s: %s", symbol, result.detail,
         extra={
             "tags": ["chase"], "alert_event": "cancel_unconfirmed",
+            # 2026-10-23 fix #4 — binary ntfy gate: this is an
+            # action-required outcome (operator must manually verify the
+            # broker's order book), so it forces urgent ntfy regardless
+            # of the dispatching agent's own stored channel config. See
+            # event_agents.py:_dispatch_agent.
+            "action_required": True,
             "transaction_type": transaction_type, "symbol": symbol, "account": account,
             "order_id": current_order_id, "attempt": attempt,
             "quantity": quantity, "remaining_qty": remaining_qty,
@@ -2294,19 +2679,14 @@ def _ch_build_cancel_unconfirmed_abort(
         "remaining_qty": remaining_qty,
     })
     if algo_order_id is not None:
+        _ch_mark_ambiguous_abort(algo_order_id)
         try:
-            # Reuses the "chase_failed" outcome (not a new value) — the
-            # AlgoOrder-row terminal-status mapping in record_chase_terminal
-            # only recognizes chase_fill/chase_unfilled/chase_failed/
-            # chase_cancelled; this is semantically a failed chase (never
-            # completed), just with a more specific reason captured in
-            # `error` and in the panel-level emit() call above.
-            asyncio.create_task(_emit_chase_terminal(
-                current_order_id or "", "chase_failed",
+            await _emit_chase_terminal(
+                current_order_id or "", "chase_cancel_failed",
                 symbol, transaction_type, quantity,
                 attempts=attempt, algo_order_id=algo_order_id,
                 error="cancel_unconfirmed — possible resting duplicate order",
-            ))
+            )
         except Exception:
             pass
     return result
@@ -2351,7 +2731,7 @@ async def _ch_cancel_and_capture(
         if _confirm_try + 1 < _CH_CANCEL_CONFIRM_READS:
             await asyncio.sleep(_CH_CANCEL_CONFIRM_WAIT_S)
     if remaining_qty > 0 and not cancel_confirmed:
-        early = _ch_build_cancel_unconfirmed_abort(
+        early = await _ch_build_cancel_unconfirmed_abort(
             result, symbol, account, transaction_type, quantity,
             remaining_qty, attempt, current_order_id, algo_order_id, emit,
             agent_id=agent_id,
@@ -2367,6 +2747,13 @@ async def _ch_cancel_and_capture(
     # was True (both abort branches above already returned otherwise) —
     # i.e. the cancel genuinely landed and the caller is about to place
     # the replacement order.
+    #
+    # 2026-10-23 chase robustness (fix #6) — flag the just-superseded id
+    # BEFORE the caller places the replacement order (the exact point
+    # that closes the original duplicate-open-order-card race: by the
+    # time the new order is visible broker-side, the old id is already
+    # recorded here).
+    await _ch_append_superseded_id(algo_order_id, current_order_id)
     await _ch_write_cancel_confirmed_event(
         algo_order_id, current_order_id, attempt, remaining_qty,
     )
@@ -2449,6 +2836,312 @@ async def _ch_post_replace_kill_check(
     return True
 
 
+# ── 2026-10-23 chase robustness: stuck/timeout detection (fix #3) + ─────
+# external-final-status drift check (fix #8a). Kept as small, standalone
+# `_ch_*` helpers composed through ONE combined call site
+# (`_ch_loop_guards`) so `_chase_order_impl`'s own branch count grows by
+# exactly one `if` for both checks together (CC gate).
+
+def _ch_stuck_ceiling_seconds(cfg: "ChaseConfig") -> float:
+    """Wall-clock ceiling for the stuck-detector, derived from `cfg` (not
+    a fixed constant) so it is always strictly LESS than the full
+    `max_attempts x interval_seconds` budget `_ch_exhaust_max_attempts`
+    would eventually hit on its own — this fires FIRST, as an earlier,
+    more specific "stuck" signal for a chase making no real progress,
+    instead of silently grinding through recoverable-rejection retries /
+    cancelled_continue / price<=0-continue loops for the chase's entire
+    attempt budget before anyone is told anything. Floor of 60s so a
+    fast/aggressive HIGH-tier config (e.g. interval=10s) doesn't trip
+    this on perfectly normal early-chase latency.
+    """
+    return max(60.0, cfg.max_attempts * cfg.interval_seconds * 0.5)
+
+
+async def _ch_check_external_final_status(algo_order_id: "int | None") -> "str | None":
+    """Fix #8a — cheap, read-only, UNLOCKED single-column re-read of the
+    AlgoOrder row's OWN status, run at the top of every attempt
+    iteration. Catches drift an external writer (a postback that landed
+    ahead of this chase's own next poll, or an admin reconcile) may have
+    introduced since the chase loop's local state was last synced —
+    closing the gap where the chase would otherwise place a FRESH
+    cancel-and-replace order AFTER the row was already finalized
+    elsewhere, instead of only detecting that race post-hoc at the next
+    `_sync_algo_order_id` call (`_ch_abort_on_sync_race`).
+
+    Returns the row's current status string when it's ALREADY in
+    `ALGO_ORDER_FINAL_STATUSES`; `None` otherwise (the common case —
+    nothing to react to). Fails open (returns `None`) on any DB error —
+    a check that can't run must never itself abort a healthy chase.
+    """
+    if algo_order_id is None:
+        return None
+    try:
+        from backend.api.models import ALGO_ORDER_FINAL_STATUSES
+        async with _async_session() as _s:
+            st = (await _s.execute(
+                _sql_select(_AlgoOrder.status).where(_AlgoOrder.id == int(algo_order_id))
+            )).scalar_one_or_none()
+        return st if st in ALGO_ORDER_FINAL_STATUSES else None
+    except Exception as _e:
+        logger.debug("[CHASE] external-final-status check failed: %s", _e)
+        return None
+
+
+# Cadence for the DEEPER broker-truth check below — a real broker round
+# trip (cache-backed, but still real work), so it runs less often than
+# the zero-broker-call plain DB-status check above.
+_CH_RECONCILE_EVERY_N_ATTEMPTS = 3
+
+
+async def _ch_periodic_broker_truth_check(
+    account: str, current_order_id: "str | None", algo_order_id: "int | None",
+    attempt: int,
+) -> "str | None":
+    """Fix #8a, "during an active chase" trigger — every
+    `_CH_RECONCILE_EVERY_N_ATTEMPTS` attempts, re-verify the CURRENTLY-
+    tracked resting order against real broker truth via the canonical
+    single-order-view accessor (`orders_helpers.py:get_broker_order_truth`
+    / `apply_order_truth` — 2026-10-23 coordinator redirect: the SAME
+    accessor the item-8b backstop below uses, not a second divergent
+    implementation), beyond the normal per-attempt single-order poll
+    (`_chase_poll_status`'s own `_order_status` call). Catches drift a
+    missed postback or an external admin action introduced that the
+    plain DB-status check (`_ch_check_external_final_status`) wouldn't
+    see if nothing has written a new status yet.
+
+    Returns the resolved `AlgoOrder.status` string when
+    `apply_order_truth` actually wrote one this call; `None` otherwise
+    (not this attempt's turn to check, nothing resolved yet, or the
+    check itself failed — fails open, same as its sibling).
+    """
+    if algo_order_id is None or not current_order_id:
+        return None
+    if attempt % _CH_RECONCILE_EVERY_N_ATTEMPTS != 0:
+        return None
+    try:
+        from backend.api.routes.orders_helpers import (
+            get_broker_order_truth, apply_order_truth,
+        )
+        truth = await get_broker_order_truth(current_order_id)
+        if not truth.available or truth.algo_status is None:
+            return None
+        mutated = await apply_order_truth(algo_order_id, truth)
+        return truth.algo_status if mutated else None
+    except Exception as _e:
+        logger.debug("[CHASE] periodic broker-truth check failed: %s", _e)
+        return None
+
+
+async def _ch_external_final_status_result(
+    ext_status: str, algo_order_id: int, symbol: str, transaction_type: str,
+    quantity: int, attempt: int, result: "ChaseResult", emit: Callable,
+) -> "ChaseResult":
+    """Build a `ChaseResult` reflecting a row ALREADY finalized — either
+    by some OTHER writer entirely (fix #8a's plain DB-status check: a
+    postback or admin reconcile raced ahead of this chase's own poll —
+    no write happens here, that writer already wrote it including its
+    own ledger pipeline), or by THIS chase's own periodic broker-truth
+    check (`_ch_periodic_broker_truth_check`, which just wrote the
+    status itself via `apply_order_truth`). Either way, no NEW write or
+    alert happens in this function — it only builds the in-memory
+    result so the loop can stop cleanly before placing another order
+    against an already-decided row.
+    """
+    if ext_status == "FILLED":
+        fill_price = 0.0
+        try:
+            async with _async_session() as _s:
+                row = (await _s.execute(
+                    _sql_select(_AlgoOrder).where(_AlgoOrder.id == int(algo_order_id))
+                )).scalar_one_or_none()
+                if row is not None:
+                    fill_price = float(row.fill_price or 0)
+        except Exception:
+            pass
+        result.status = ChaseStatus.FILLED
+        result.fill_price = fill_price
+        result.detail = (
+            "Chase stopped — AlgoOrder row already FILLED by another "
+            "writer (postback or admin reconcile raced ahead of this "
+            "chase's own poll)."
+        )
+        emit("order_filled", {"fill_price": fill_price, "attempts": attempt,
+                              "reason": "external_final_status"})
+        logger.info(
+            "[CHASE] %s: stopping — AlgoOrder #%s already FILLED by "
+            "another writer.", symbol, algo_order_id,
+        )
+        return result
+    result.status = ChaseStatus.FAILED
+    result.detail = f"Chase stopped — AlgoOrder row already {ext_status} by another writer"
+    emit("chase_failed", {"attempts": attempt, "reason": "external_final_status",
+                          "external_status": ext_status})
+    logger.warning(
+        "[CHASE] %s: stopping — AlgoOrder #%s already %s by another writer.",
+        symbol, algo_order_id, ext_status,
+    )
+    return result
+
+
+async def _ch_abort_stuck(
+    result: "ChaseResult", account: str, current_order_id: "str | None",
+    cfg: "ChaseConfig", symbol: str, transaction_type: str, quantity: int,
+    cumulative_filled: int, current_order_filled: int,
+    algo_order_id: "int | None", emit: Callable, attempt: int,
+    elapsed: float, ceiling: float, agent_id: "int | None" = None,
+) -> "ChaseResult":
+    """Fix #3B — abort when the chase has made NO real progress (no
+    fill, no confirmed cancel-and-replace cycle) for longer than
+    `_ch_stuck_ceiling_seconds(cfg)`. Reuses `_ch_final_cancel_and_confirm`
+    so a resting PREVIOUS order (e.g. a run of `price<=0: continue`
+    iterations never even reaches the normal cancel-and-replace step) is
+    actually cancelled and verified, not just silently abandoned.
+
+    Outcome: `CANCEL_FAILED` (ambiguous, marked for the item-8b backstop)
+    when a resting order couldn't be confirmed gone; `UNFILLED` (not
+    ambiguous — confirmed-gone, matches the exhaustion path's own
+    convention) otherwise.
+    """
+    cancel_confirmed, cumulative_filled, current_order_filled, _avg = (
+        await _ch_final_cancel_and_confirm(
+            account, current_order_id, cfg, symbol, quantity,
+            cumulative_filled, current_order_filled, algo_order_id,
+        )
+    )
+    abort_msg = (
+        f"Chase stuck — no fill/confirmed-cancel progress for "
+        f"{elapsed:.0f}s (ceiling {ceiling:.0f}s) across {attempt} "
+        f"attempts so far ({cumulative_filled}/{quantity} filled)."
+    )
+    _ambiguous = bool(current_order_id) and not cancel_confirmed
+    if _ambiguous:
+        abort_msg += (
+            f" Cancel of order {current_order_id} could NOT be "
+            f"confirmed; it may still be resting live at the broker."
+        )
+    logger.error(f"Chase {symbol}: {abort_msg}")
+    result.status = ChaseStatus.FAILED
+    result.detail = abort_msg
+    emit("chase_stuck", {"attempts": attempt, "elapsed_s": elapsed, "ceiling_s": ceiling,
+                        "cancel_confirmed": cancel_confirmed})
+    try:
+        from backend.shared.helpers.alert_utils import send_order_failure_alert
+        send_order_failure_alert(
+            account=account, symbol=symbol, exchange=cfg.exchange,
+            side=transaction_type, qty=quantity, mode="live", source="chase",
+            agent_id=agent_id, error=abort_msg,
+            # Fix #7 — stuck is an abandonment-class alert; never let it
+            # be swallowed by dedup/market-hours suppression.
+            bypass_gates=True,
+        )
+    except Exception:
+        pass
+    _outcome = "chase_cancel_failed" if _ambiguous else "chase_unfilled"
+    if current_order_id or algo_order_id is not None:
+        if _ambiguous and algo_order_id is not None:
+            _ch_mark_ambiguous_abort(algo_order_id)
+        try:
+            await _emit_chase_terminal(
+                current_order_id or "", _outcome,
+                symbol, transaction_type, quantity,
+                attempts=attempt, error=abort_msg, algo_order_id=algo_order_id,
+            )
+        except Exception:
+            pass
+    return result
+
+
+async def _ch_abort_ambiguous_place_timeout(
+    result: "ChaseResult", account: str, symbol: str, transaction_type: str,
+    quantity: int, cfg: "ChaseConfig", algo_order_id: "int | None",
+    emit: Callable, attempt: int, agent_id: "int | None" = None,
+) -> "ChaseResult":
+    """Fix #3A-2 — a `_place_order` call that timed out (see `_run`'s
+    wrap) is NOT a generic recoverable error: the underlying worker
+    thread may still be running and the order may actually land, with
+    its real `order_id` discarded by the timeout. Retrying via the
+    normal recoverable-error path would risk a SECOND live order on top
+    of a possibly-already-landed first one. Hard stop — no retry,
+    always `CANCEL_FAILED` (genuinely unknowable), always marked for the
+    item-8b backstop (which itself no-ops safely here since there is no
+    broker_order_id to check against).
+    """
+    abort_msg = (
+        f"Chase ABORTED — placing order (attempt {attempt}) timed out "
+        f"after {_CH_BROKER_CALL_TIMEOUT_S}s. The broker call MAY have "
+        f"landed with an order_id we never received. No retry was "
+        f"attempted, to avoid risking a second live order. Manually "
+        f"check {account}'s order book for {symbol} for an untracked "
+        f"fresh order."
+    )
+    logger.critical("Chase %s: %s", symbol, abort_msg)
+    result.status = ChaseStatus.FAILED
+    result.detail = abort_msg
+    emit("chase_failed", {"attempts": attempt, "reason": "place_timeout"})
+    try:
+        from backend.shared.helpers.alert_utils import send_order_failure_alert
+        send_order_failure_alert(
+            account=account, symbol=symbol, exchange=cfg.exchange,
+            side=transaction_type, qty=quantity, mode="live", source="chase",
+            agent_id=agent_id, error=abort_msg, bypass_gates=True,
+        )
+    except Exception:
+        pass
+    if algo_order_id is not None:
+        _ch_mark_ambiguous_abort(algo_order_id)
+        try:
+            await _emit_chase_terminal(
+                "", "chase_cancel_failed",
+                symbol, transaction_type, quantity,
+                attempts=attempt, error=abort_msg, algo_order_id=algo_order_id,
+            )
+        except Exception:
+            pass
+    return result
+
+
+async def _ch_loop_guards(
+    *,
+    algo_order_id: "int | None", attempt: int, last_progress_mono: float,
+    cfg: "ChaseConfig", account: str, symbol: str, transaction_type: str,
+    quantity: int, current_order_id: "str | None",
+    cumulative_filled: int, current_order_filled: int,
+    result: "ChaseResult", emit: Callable, agent_id: "int | None" = None,
+) -> "ChaseResult | None":
+    """Combined per-iteration guard (fix #3B stuck check + fix #8a's two
+    reconcile checks), run at the TOP of every attempt iteration, kept
+    in ONE function/ONE call site so `_chase_order_impl`'s own branch
+    count grows by exactly one `if` for three otherwise-unrelated safety
+    checks (CC gate).
+
+    Returns a finalized `ChaseResult` when any check decides the chase
+    must stop now; `None` (the common case) to proceed normally.
+    """
+    ext_status = await _ch_check_external_final_status(algo_order_id)
+    if ext_status is None:
+        # Deeper, less-frequent broker-truth check (every
+        # _CH_RECONCILE_EVERY_N_ATTEMPTS attempts) — catches drift the
+        # cheap DB-status check above can't see because nothing has
+        # written a new status yet.
+        ext_status = await _ch_periodic_broker_truth_check(
+            account, current_order_id, algo_order_id, attempt,
+        )
+    if ext_status is not None:
+        return await _ch_external_final_status_result(
+            ext_status, algo_order_id, symbol, transaction_type, quantity,
+            attempt, result, emit,
+        )
+    ceiling = _ch_stuck_ceiling_seconds(cfg)
+    elapsed = _time.monotonic() - last_progress_mono
+    if elapsed > ceiling:
+        return await _ch_abort_stuck(
+            result, account, current_order_id, cfg, symbol, transaction_type,
+            quantity, cumulative_filled, current_order_filled, algo_order_id,
+            emit, attempt, elapsed, ceiling, agent_id=agent_id,
+        )
+    return None
+
+
 async def chase_order(
     account: str,
     symbol: str,
@@ -2493,6 +3186,29 @@ async def chase_order(
         )
     finally:
         _ch_mark_chase_inactive(algo_order_id)
+        # 2026-10-23 chase robustness (fix #8b) — immediately after an
+        # ambiguous abort (cancel-unconfirmed / consecutive-errors /
+        # stuck / place-timeout — every path that just wrote
+        # CANCEL_FAILED because broker-side fate couldn't be confirmed),
+        # make one follow-up broker-truth check to try to resolve the
+        # ambiguity on the spot, instead of always leaving it for a
+        # later periodic sweep or a manual operator reconcile trigger.
+        # MUST run strictly after `_ch_mark_chase_inactive` above (the
+        # reused reconcile logic withholds non-FILLED writes while
+        # `is_chase_active()` is true) and after the ambiguous abort's
+        # own terminal write, which is now `await`ed (not fire-and-
+        # forget) by every path that marks `_CH_AMBIGUOUS_ABORT_IDS` —
+        # otherwise a late fire-and-forget CANCEL_FAILED write could
+        # stomp a correctly-reconciled CANCELLED/FILLED status back to
+        # CANCEL_FAILED (CANCEL_FAILED is deliberately non-final).
+        if _ch_pop_ambiguous_abort(algo_order_id):
+            try:
+                await _ch_backstop_reconcile_one(algo_order_id)
+            except Exception as _bs_e:
+                logger.debug(
+                    "[CHASE] item-8b backstop reconcile raised for #%s "
+                    "(swallowed — non-fatal): %s", algo_order_id, _bs_e,
+                )
 
 
 async def _chase_order_impl(
@@ -2645,9 +3361,35 @@ async def _chase_order_impl(
     if _already_done is not None:
         return _already_done
 
+    # 2026-10-23 chase robustness (fix #3B) — "real progress" = a fill
+    # (full or partial) or a confirmed cancel-and-replace cycle
+    # completing for a previously-resting order. Deliberately NOT
+    # "_early is None", which is also true in the cancelled_continue/
+    # nothing-was-resting case and would never fire. Checked against
+    # `_ch_stuck_ceiling_seconds(cfg)` at the top of every iteration.
+    _last_progress_mono = _time.monotonic()
+
     for attempt in range(1, cfg.max_attempts + 1):
         result.attempts = attempt
         result.status = ChaseStatus.CHASING
+
+        # 2026-10-23 chase robustness (fix #3B + #8a) — one combined
+        # per-iteration guard call (kept as ONE call site so this
+        # function's own branch count doesn't grow by more than one
+        # `if` for two unrelated safety checks — see the CC-gate note on
+        # `_ch_loop_guards`'s own docstring).
+        _guard_result = await _ch_loop_guards(
+            algo_order_id=algo_order_id, attempt=attempt,
+            last_progress_mono=_last_progress_mono, cfg=cfg,
+            account=account, symbol=symbol, transaction_type=transaction_type,
+            quantity=quantity, current_order_id=current_order_id,
+            cumulative_filled=cumulative_filled, current_order_filled=current_order_filled,
+            result=result, emit=emit, agent_id=agent_id,
+        )
+        if _guard_result is not None:
+            return _guard_result
+
+        _cum_before_iteration = cumulative_filled
 
         try:
             # Get market depth
@@ -2696,10 +3438,31 @@ async def _chase_order_impl(
                 # even though it's already complete.
                 return _early
 
+            # 2026-10-23 fix #3B — a confirmed cancel-and-replace cycle
+            # completing for a PREVIOUSLY-resting order counts as real
+            # progress (captured before `current_order_id` is overwritten
+            # by the fresh placement below).
+            _confirmed_cancel_this_iter = bool(current_order_id)
+
             # Place new order
-            current_order_id = await _run(
-                _place_order, account, symbol, transaction_type, remaining_qty, price, cfg
-            )
+            try:
+                current_order_id = await _run(
+                    _place_order, account, symbol, transaction_type, remaining_qty, price, cfg
+                )
+            except TimeoutError:
+                # 2026-10-23 fix #3A-2 — a place-order call that timed out
+                # is NOT a generic recoverable error: `_run`'s underlying
+                # worker thread may still be running and the order may
+                # actually land, with its real order_id discarded by the
+                # timeout. Caught HERE (before the outer `except
+                # Exception` below, which would otherwise treat an
+                # untyped TimeoutError as recoverable-and-retry) so this
+                # never places a second live order on top of a possibly-
+                # already-landed first one. Hard stop, no retry.
+                return await _ch_abort_ambiguous_place_timeout(
+                    result, account, symbol, transaction_type, quantity, cfg,
+                    algo_order_id, emit, attempt, agent_id=agent_id,
+                )
             current_order_filled = 0  # fresh order — starts unfilled
             consecutive_errors = 0   # successful placement resets the error streak
             last_placed_price = price  # track for minimum-tick progression check
@@ -2764,11 +3527,20 @@ async def _chase_order_impl(
             if done:
                 return result
 
+            # 2026-10-23 fix #3B — update the stuck-detector's "last real
+            # progress" clock when THIS iteration made any: a confirmed
+            # cancel-and-replace cycle for a previously-resting order, or
+            # a fill (full or partial) increasing `cumulative_filled`.
+            if _confirmed_cancel_this_iter or cumulative_filled > _cum_before_iteration:
+                _last_progress_mono = _time.monotonic()
+
         except Exception as e:
             abort, consecutive_errors = await _ch_handle_attempt_error(
                 e, consecutive_errors, attempt, symbol,
                 account, transaction_type, quantity, current_order_id,
                 cfg, result, emit, algo_order_id, agent_id=agent_id,
+                cumulative_filled=cumulative_filled,
+                current_order_filled=current_order_filled,
             )
             if abort is not None:
                 return abort
@@ -2777,4 +3549,6 @@ async def _chase_order_impl(
         result, current_order_id, cfg,
         account, symbol, transaction_type, quantity, algo_order_id, emit,
         agent_id=agent_id,
+        cumulative_filled=cumulative_filled,
+        current_order_filled=current_order_filled,
     )

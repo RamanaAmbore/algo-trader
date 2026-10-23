@@ -882,6 +882,17 @@ async def _migrate_algo_orders_gtt_order_id(conn) -> None:
     ))
 
 
+async def _migrate_algo_orders_superseded_ids(conn) -> None:
+    """Add superseded_broker_order_ids_json column to algo_orders (2026-10-23
+    chase robustness). See AlgoOrder.superseded_broker_order_ids_json's own
+    docstring in models.py for the full rationale."""
+    from sqlalchemy import text
+    await conn.execute(text(
+        "ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS "
+        "superseded_broker_order_ids_json TEXT"
+    ))
+
+
 async def _migrate_app_messages_table(conn) -> None:
     """Idempotent — create app_messages table + indexes.
 
@@ -1213,6 +1224,7 @@ async def init_db() -> None:
         await _migrate_algo_orders_chase_timing(conn)
         await _migrate_algo_orders_intent(conn)
         await _migrate_algo_orders_gtt_order_id(conn)
+        await _migrate_algo_orders_superseded_ids(conn)
         await _migrate_exchange_schedule_table(conn)
         await _migrate_app_messages_table(conn)
         await _migrate_order_templates_wing_max_spread_pct(conn)

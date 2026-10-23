@@ -397,25 +397,33 @@ async def _start_live_chase(account: str, symbol: str, exchange: str,
             # Suppress the post-placement alert below for an abandoned
             # chase — the operator already saw the ticket-side failure.
         else:
-            # Initial placement already succeeded (future resolved). Alert on
-            # terminal chase failures so the operator knows the fill didn't land.
+            # Initial placement already succeeded (future resolved).
+            #
+            # 2026-10-23 chase robustness (item 5) — this used to call
+            # send_order_failure_alert on EVERY "error"/"chase_failed"
+            # event, including a plain RECOVERABLE "error" that chase
+            # keeps retrying from (and very often fills cleanly on the
+            # very next attempt) — a false alarm that violates the
+            # action-required ntfy gate (a mid-chase retry is not
+            # action-required) and confused the operator with a
+            # "failure" alert for an order that went on to fill fine.
+            # Separately, EVERY terminal "chase_failed"/"chase_cancel_
+            # failed" emission site inside chase.py (consecutive-errors
+            # abort, exhaustion, non-recoverable rejection/exception,
+            # stuck, place-timeout) already fires its own
+            # send_order_failure_alert — alerting here on "chase_failed"
+            # too was ALWAYS a guaranteed duplicate. Fix: log only, for
+            # local telemetry/debugging; no alert from this handler at
+            # all — chase.py's own alerting already covers every
+            # genuinely terminal outcome.
             if evt in ("error", "chase_failed"):
                 _err = detail.get("error") or f"chase {evt}"
-                logger.warning(
+                logger.info(
                     "[CHASE-POST-PLACEMENT] %s algo_order_id=%s %s %s "
                     "acct=%s qty=%s: %s",
                     evt, algo_order_id, symbol, transaction_type,
                     account, quantity, _err,
                 )
-                try:
-                    from backend.shared.helpers.alert_utils import send_order_failure_alert
-                    send_order_failure_alert(
-                        account=account, symbol=symbol, exchange=exchange,
-                        side=transaction_type, qty=quantity, mode="live",
-                        source="chase:post-placement", error=_err,
-                    )
-                except Exception:
-                    pass
 
     _chase_task = asyncio.create_task(chase_order(
         account=account, symbol=symbol,
@@ -625,6 +633,191 @@ def _fetch_orders() -> OrdersResponse:
     return OrdersResponse(rows=rows, refreshed_at=timestamp_display())
 
 
+# ── Canonical single-order-view accessor (2026-10-23) ──────────────────
+#
+# Research (read-only, same session) found THREE separate, divergent
+# reconcile implementations already in this codebase disagreeing on
+# safety behavior: `_task_open_order_watchdog` (background.py) and the
+# two admin `/algo/reconcile` routes (orders.py) unconditionally flip a
+# row to UNFILLED when the broker response is missing/empty (risky on a
+# transient API glitch); `orders.py:list_active_chases`'s own inline
+# reconcile correctly treats that as "unavailable, don't guess" and is
+# also the only one of the three that writes FIFO ledger entries.
+#
+# `get_broker_order_truth` + `apply_order_truth` below are the single
+# canonical "what is this order's real broker-side state right now"
+# accessor, built around the SAFE semantics. Chase's own item-8
+# auto-reconcile (chase.py — the periodic in-active-chase check and the
+# post-ambiguous-abort backstop) is the first caller. Migrating
+# `_task_open_order_watchdog` and the two admin reconcile routes onto
+# this accessor is explicitly OUT of scope here — tracked as separate
+# follow-up work (see the "Order poll" plan) — but this function is
+# written generally enough (broker_order_id in, resolved status out,
+# safe-by-construction on a missing response) that doing so later is a
+# thin wrapper, not a rewrite.
+#
+# Deliberately does NOT import anything from orders.py (this module's
+# own docstring: "No imports from orders.py — must be importable
+# stand-alone") — `_broker_order_snapshot` below is a small, intentional
+# duplicate of `orders.py:_chase_snapshot_broker_status_by_id`'s body
+# (built on this file's own `_fetch_orders`), not an import of it.
+# Reconciling the two into one is also follow-up work, not this change.
+
+import dataclasses as _dc
+
+_ORDER_TRUTH_LIVE_TERMINAL = frozenset({"COMPLETE", "CANCELLED", "REJECTED", "EXPIRED"})
+_ORDER_TRUTH_KITE_TO_ALGO = {
+    "COMPLETE":  "FILLED",
+    "CANCELLED": "CANCELLED",
+    "REJECTED":  "REJECTED",
+    "EXPIRED":   "UNFILLED",
+}
+
+
+@_dc.dataclass(frozen=True)
+class OrderTruth:
+    """Result of the canonical single-order-view accessor.
+
+    `available=False` means the broker response was missing, empty, or
+    the id itself was falsy — callers MUST treat this as "unavailable,
+    don't guess" and leave the row untouched. This is the exact safety
+    property the existing watchdog/admin-reconcile paths lack today
+    (they coerce this case to a guessed UNFILLED).
+
+    `algo_status` is the broker's status mapped onto AlgoOrder.status
+    vocabulary (FILLED/CANCELLED/REJECTED/UNFILLED) ONLY when the
+    broker's own status is genuinely terminal; `None` when the order is
+    still resting (OPEN/TRIGGER_PENDING at the broker) — a real, usable
+    read, just not yet a terminal answer.
+    """
+    available: bool
+    algo_status: "str | None" = None
+    average_price: "float | None" = None
+    raw_broker_status: "str | None" = None
+
+
+async def _broker_order_snapshot() -> dict[str, dict]:
+    """Broker-wide order-book snapshot keyed by broker_order_id, cached
+    15s via the shared `get_or_fetch("orders", ...)` cache so a sweep or
+    a chase's periodic check costs at most one broker round-trip per
+    account per TTL window, shared with every other `/api/orders` reader.
+    Mirrors `orders.py:_chase_snapshot_broker_status_by_id`'s body
+    exactly (see the module-level note above for why this isn't a direct
+    import). On any failure, returns `{}` — callers see every id as
+    unavailable, never a guessed status.
+    """
+    out: dict[str, dict] = {}
+    try:
+        from backend.api.cache import get_or_fetch
+        from backend.brokers.adapters.kite import ensure_lot_index
+        await ensure_lot_index()
+        _ord_resp = await asyncio.wait_for(
+            get_or_fetch("orders", _fetch_orders, ttl_seconds=_ORDERS_TTL),
+            timeout=10.0,
+        )
+        for _o in (_ord_resp.rows or []):
+            _bid = str(getattr(_o, "order_id", "") or "")
+            if _bid:
+                out[_bid] = {
+                    "status": str(getattr(_o, "status", "") or "").upper(),
+                    "average_price": float(getattr(_o, "average_price", 0) or 0),
+                }
+    except Exception as _e:
+        logger.debug(f"_broker_order_snapshot failed (treated as unavailable): {_e}")
+    return out
+
+
+async def get_broker_order_truth(
+    broker_order_id: "str | None",
+    broker_status_by_id: "dict | None" = None,
+) -> "OrderTruth":
+    """Canonical single-order-view read. SAFE by construction: a falsy
+    `broker_order_id`, or one absent from the snapshot, returns
+    `OrderTruth(available=False)` — never a guessed terminal status.
+
+    `broker_status_by_id` lets a caller scanning MANY rows (a future
+    sweep) pass in one already-fetched shared snapshot instead of
+    refetching per row; omitted single-row callers (chase.py) fetch a
+    fresh (cache-backed) one.
+    """
+    if not broker_order_id:
+        return OrderTruth(available=False)
+    if broker_status_by_id is None:
+        broker_status_by_id = await _broker_order_snapshot()
+    bo = broker_status_by_id.get(str(broker_order_id))
+    if not bo or not bo.get("status"):
+        return OrderTruth(available=False)
+    raw = str(bo["status"]).upper()
+    if raw not in _ORDER_TRUTH_LIVE_TERMINAL:
+        return OrderTruth(available=True, algo_status=None, raw_broker_status=raw)
+    avg = bo.get("average_price")
+    return OrderTruth(
+        available=True,
+        algo_status=_ORDER_TRUTH_KITE_TO_ALGO[raw],
+        average_price=float(avg) if avg else None,
+        raw_broker_status=raw,
+    )
+
+
+async def apply_order_truth(algo_order_id: "int | None", truth: "OrderTruth") -> bool:
+    """Lock the AlgoOrder row (`with_for_update()`, matching the
+    existing final-status-guard pattern in chase.py/orders_postback.py)
+    and write `truth.algo_status` when it's resolved (terminal) AND
+    genuinely differs from the row's current status. Writes the FIFO
+    ledger entry via `_pb_write_ledger_fills` on a FILLED resolution —
+    so every caller of this function gets ledger correctness, not just
+    chase's own path.
+
+    No-op (returns `False`) when: `algo_order_id` is None,
+    `truth.available` is False, `truth.algo_status` is None (broker
+    order isn't terminal yet), the row isn't found, the row's status
+    already matches, or the row is already in
+    `ALGO_ORDER_FINAL_STATUSES` (never overwrite an already-final row —
+    the same invariant every other writer in this codebase enforces).
+    This is the SAFE "don't guess" behavior this function exists to
+    guarantee for every caller.
+
+    Known scope gap (deliberate, see the module-level note above): does
+    NOT fire template-attach on a reconciled FILLED — only chase's own
+    normal fill path and `orders.py:list_active_chases`'s existing
+    reconcile sweep do that today. Flagged, not silently dropped.
+    """
+    if algo_order_id is None or not truth.available or truth.algo_status is None:
+        return False
+    from sqlalchemy import select as _at_select
+    from backend.api.database import async_session as _at_async_session
+    from backend.api.models import AlgoOrder as _AtAlgoOrder, ALGO_ORDER_FINAL_STATUSES
+    async with _at_async_session() as _s:
+        row = (await _s.execute(
+            _at_select(_AtAlgoOrder).where(_AtAlgoOrder.id == int(algo_order_id))
+            .with_for_update()
+        )).scalar_one_or_none()
+        if row is None:
+            return False
+        if row.status == truth.algo_status:
+            return False
+        if row.status in ALGO_ORDER_FINAL_STATUSES:
+            logger.warning(
+                "[ORDER-TRUTH] refusing to move AlgoOrder #%s from final "
+                "status %s to %s — late/racing reconcile, ignoring.",
+                algo_order_id, row.status, truth.algo_status,
+            )
+            return False
+        row.status = truth.algo_status
+        if truth.algo_status == "FILLED":
+            if truth.average_price:
+                row.fill_price = float(truth.average_price)
+            row.filled_quantity = int(row.quantity or 0)
+            from datetime import datetime as _dt, timezone as _tz
+            row.filled_at = _dt.now(_tz.utc)
+        await _s.commit()
+        if truth.algo_status == "FILLED":
+            from backend.api.routes.orders_postback import _pb_write_ledger_fills
+            await _pb_write_ledger_fills(_s, [row])
+            await _s.commit()
+    return True
+
+
 # ── AlgoOrder response structs ────────────────────────────────────────────────
 
 class AlgoOrderEventInfo(msgspec.Struct):
@@ -720,6 +913,14 @@ class AlgoOrderInfo(msgspec.Struct, kw_only=True):
     broker_order_id: Optional[str] = None
     source: Optional[str] = None
     agent_id: Optional[int] = None
+    # 2026-10-23 chase robustness (fix #6) — every broker_order_id this
+    # row has superseded via cancel-and-replace, oldest-first. Populated
+    # from AlgoOrder.superseded_broker_order_ids_json (parsed JSON list,
+    # `[]` default on null/empty/parse failure). Authoritative fix for
+    # the frontend's duplicate-open-order-card race — OrderBook.svelte
+    # already feature-detects this exact field name/shape
+    # (`_backendSupersededShipped`).
+    superseded_broker_order_ids: list[str] = []
 
 
 async def _fetch_child_order_ids(session, parent_ids: list[int]) -> dict[int, list[int]]:

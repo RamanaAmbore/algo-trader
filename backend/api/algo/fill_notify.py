@@ -111,6 +111,14 @@ async def notify_fills(rows: list) -> None:
                     "product": row.product,
                     "engine": getattr(row, "engine", None),
                     "agent_name": names.get(agent_id),
+                    # 2026-10-23 chase robustness (fix #4) — a fill is
+                    # FYI, never action-required: Telegram/email/log for
+                    # the record, but ntfy must never fire for it.
+                    # Binary gate consumed by
+                    # event_agents.py:_dispatch_agent, independent of
+                    # whatever's already seeded in the `agents` DB table
+                    # for FILL_AGENT's own stored channel list.
+                    "action_required": False,
                 },
             )
         except Exception as e:

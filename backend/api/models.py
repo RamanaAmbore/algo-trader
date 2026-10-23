@@ -829,6 +829,18 @@ class AlgoOrder(Base):
     # /admin/templates audit reporting. NULL means "no attach yet"
     # (parent not yet filled, or no template was picked).
     attached_gtts_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # 2026-10-23 chase robustness — JSON list[str] of every broker_order_id
+    # this row has ever superseded via cancel-and-replace, oldest-first.
+    # Written directly (chase.py:_ch_append_superseded_id) at cancel-confirm
+    # time — BEFORE the replacement order is placed — not derived from
+    # algo_order_events (that table is a batched, on_full="drop" queue, and
+    # misses the rejected_continue/cancelled_continue replacement paths
+    # entirely). Authoritative fix for the frontend's duplicate-open-order-
+    # card race (OrderBook.svelte already feature-detects this field): by
+    # the time a cancel-and-replace's NEW order is visible broker-side, the
+    # OLD id is already flagged here. NULL/empty for a never-chased or
+    # single-attempt row.
+    superseded_broker_order_ids_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     # Hold state for automated orders (see order_hold.py): JSON with category,
     # reason, override, price policy, and held_at. NULL for orders never held.
     # Per-ticket template exit hold: True held, False released, None = global switch.

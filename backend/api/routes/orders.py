@@ -478,6 +478,22 @@ def _retry_precheck_row(row) -> Optional[dict]:
     return None
 
 
+def _chase_row_superseded_ids(r) -> list[str]:
+    """Parse `AlgoOrder.superseded_broker_order_ids_json` into a plain
+    `list[str]` for the API response (fix #6). `[]` on null/empty/parse
+    failure — never raises.
+    """
+    raw = getattr(r, "superseded_broker_order_ids_json", None)
+    if not raw:
+        return []
+    try:
+        import json as _json
+        parsed = _json.loads(raw)
+        return [str(x) for x in parsed] if isinstance(parsed, list) else []
+    except Exception:
+        return []
+
+
 def _chase_row_to_info(r, masked_acct, child_map: dict) -> "AlgoOrderInfo":
     """Materialise an AlgoOrder ORM row into the API response Struct.
     Extracted so the list_active_chases + list_orders response builders
@@ -509,6 +525,7 @@ def _chase_row_to_info(r, masked_acct, child_map: dict) -> "AlgoOrderInfo":
         broker_order_id=r.broker_order_id,
         source=getattr(r, "source", None),
         agent_id=getattr(r, "agent_id", None),
+        superseded_broker_order_ids=_chase_row_superseded_ids(r),
     )
 
 

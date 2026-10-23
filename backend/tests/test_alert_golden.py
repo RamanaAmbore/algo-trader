@@ -180,8 +180,13 @@ async def test_fill_delivery_golden_via_event_agent(monkeypatch):
     # masked (2026-10 audit fix) — ZG0790 -> ZG####. 2026-10 audit fix:
     # origin ("Agent: manual") is now the FIRST line, its own dual-tz
     # timestamp the second — no more separate "Source:"/"Time:" lines.
-    assert sent["ntfy"] == [("Order filled: SELL 1 CRUDEOIL26OCTFUT",
-                             f"Agent: manual\n{_FIXED_TS}\nAccount: ZG####\nSELL 1 CRUDEOIL26OCTFUT (MCX) @ 8750.00\nProduct: NRML\nOrder id: 7")]
+    #
+    # 2026-10-23 chase robustness (fix #4) — a fill is FYI, never
+    # action-required: `notify_fills` now tags its log record
+    # `action_required: False`, and `_apply_action_required_ntfy_gate`
+    # skips the ntfy channel entirely for it, independent of whatever
+    # FILL_AGENT's own stored `events` list says. Telegram is untouched.
+    assert sent["ntfy"] == []
     assert sent["tg"] == ["<b>Order filled: SELL 1 CRUDEOIL26OCTFUT</b>\n"
                           f"Agent: manual\n{_FIXED_TS}\nAccount: ZG####\nSELL 1 CRUDEOIL26OCTFUT (MCX) @ 8750.00\nProduct: NRML\nOrder id: 7"]
 

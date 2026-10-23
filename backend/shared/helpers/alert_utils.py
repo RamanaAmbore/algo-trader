@@ -1142,6 +1142,15 @@ def _send_order_failure_messages(
             "suppressed_count": suppressed_count, "ist_disp": ist_disp,
             "agent_id": agent_id,
             "branch": config.get("deploy_branch", "main"),
+            # 2026-10-23 chase robustness (fix #4) — every order-failure
+            # alert is, by definition, action-required: the operator
+            # needs to look at something (a rejection, an abandoned
+            # chase, a stuck chase, an ambiguous cancel). Binary ntfy
+            # gate consumed by event_agents.py:_dispatch_agent — True
+            # forces urgent ntfy regardless of the dispatching agent's
+            # own stored channel config, independent of whatever's
+            # already seeded in the `agents` DB table.
+            "action_required": True,
         },
     )
 
@@ -1158,6 +1167,7 @@ def send_order_failure_alert(
     error: str,
     detail: dict | None = None,
     agent_id: "int | None" = None,
+    bypass_gates: bool = False,
 ) -> None:
     """
     Telegram + email alert when an order placement fails.
@@ -1182,18 +1192,31 @@ def send_order_failure_alert(
     or "Agent"/"Agent Bracket" (agent_id is set) — see
     `_classify_order_origin_label`. Callers with no row context (a plain
     manual ticket placement) omit it, correctly defaulting to "Manual".
+
+    `bypass_gates` (2026-10-23 chase robustness, fix #7) — when True,
+    skips BOTH the market-hours suppression and the dedup cooldown check
+    below, always sending. Reserved for genuine abandonment/exhaustion-
+    class alerts (chase consecutive-errors abort, max-attempts
+    exhaustion, stuck/wall-clock abort, ambiguous place-timeout abort) —
+    reconciliation matters regardless of whether the market happens to
+    be open, and a second genuinely-new abandonment must never be
+    swallowed by the first one's 10-minute dedup window. Every other
+    caller (plain non-recoverable rejections, preflight blocks, etc.)
+    leaves this False — dedup/market-hours suppression remain correct
+    and wanted there.
     """
     try:
-        try:
-            from backend.api.helpers.snapshot_gate import _any_segment_open
-            if not _any_segment_open():
-                logger.debug(
-                    f"order-failure alert suppressed (all markets closed) "
-                    f"for {account} {side} {symbol}"
-                )
-                return
-        except Exception as _mh_e:
-            logger.debug(f"order-failure market-hours check failed (fail-open): {_mh_e}")
+        if not bypass_gates:
+            try:
+                from backend.api.helpers.snapshot_gate import _any_segment_open
+                if not _any_segment_open():
+                    logger.debug(
+                        f"order-failure alert suppressed (all markets closed) "
+                        f"for {account} {side} {symbol}"
+                    )
+                    return
+            except Exception as _mh_e:
+                logger.debug(f"order-failure market-hours check failed (fail-open): {_mh_e}")
 
         from backend.shared.helpers.date_time_utils import timestamp_display
         from backend.shared.helpers.utils import mask_account
@@ -1206,22 +1229,24 @@ def send_order_failure_alert(
         _redis_raw = f"{masked}|{symbol.upper()}|{side.upper()}|{sig}"
         _redis_key = "ramboq:order_alert:" + hashlib.sha256(_redis_raw.encode()).hexdigest()[:32]
 
-        should_suppress, suppressed_count, _used_redis = _redis_cooldown_check(
-            _redis_key, key, now
-        )
-        if should_suppress:
-            logger.debug(
-                f"order-failure alert suppressed (Redis TTL) "
-                f"for {masked} {side} {symbol}: {sig}"
-            )
-            return
-
-        if not _used_redis:
-            should_suppress, suppressed_count = _inprocess_cooldown_check(
-                key, now, masked, side, symbol, sig
+        suppressed_count = 0
+        if not bypass_gates:
+            should_suppress, suppressed_count, _used_redis = _redis_cooldown_check(
+                _redis_key, key, now
             )
             if should_suppress:
+                logger.debug(
+                    f"order-failure alert suppressed (Redis TTL) "
+                    f"for {masked} {side} {symbol}: {sig}"
+                )
                 return
+
+            if not _used_redis:
+                should_suppress, suppressed_count = _inprocess_cooldown_check(
+                    key, now, masked, side, symbol, sig
+                )
+                if should_suppress:
+                    return
 
         _send_order_failure_messages(
             masked=masked, symbol=symbol, exchange=exchange,

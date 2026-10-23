@@ -932,7 +932,7 @@ async def _action_live_close_position(agent, context: dict, params: dict):
     The chase engine drives the actual Kite calls; any placement or fill
     event is logged by chase.py itself.
     """
-    from backend.api.algo.chase import chase_order, ChaseConfig
+    from backend.api.algo.chase import chase_order, ChaseConfig, ChaseStatus
     from backend.api.algo.actions import _write_live_order
 
     account, symbol, exchange, qty_param, side_param, product_param = (
@@ -997,7 +997,7 @@ async def _action_live_close_position(agent, context: dict, params: dict):
 
     cfg = ChaseConfig(exchange=exchange, product=product, intent="close")
     try:
-        await chase_order(
+        _result = await chase_order(
             account=account, symbol=symbol,
             transaction_type=side, quantity=qty,
             cfg=cfg,
@@ -1009,6 +1009,36 @@ async def _action_live_close_position(agent, context: dict, params: dict):
             e, agent, broker, account, symbol, exchange, side, qty, price, product,
         )
         raise
+
+    # 2026-10-23 chase robustness (item 5) — a FAILED/HELD ChaseResult
+    # was previously silently discarded here: chase_order() reports
+    # almost every abort as a RETURNED result, not a raised exception,
+    # so this action's own execute()-level bookkeeping (the agent's
+    # event trail showing success/action_failed) never reflected a
+    # chase that genuinely gave up. Every ChaseStatus.FAILED/HELD path
+    # INSIDE chase.py already fires its own operator alert — EXCEPT the
+    # market-closed and non-prod-branch early returns, which happen
+    # before chase_order() even constructs its `emit`/alert plumbing.
+    # Alert ONLY for that specific uncovered case; every other
+    # FAILED/HELD just raises so `execute()` records action_failed,
+    # without firing a second, duplicate alert.
+    if _result.status == ChaseStatus.FAILED:
+        _detail = _result.detail or ""
+        if "chase not started" in _detail or "non-prod branch" in _detail:
+            try:
+                from backend.shared.helpers.alert_utils import send_order_failure_alert
+                await asyncio.to_thread(
+                    send_order_failure_alert,
+                    account=account, symbol=symbol, exchange=exchange,
+                    side=side, qty=qty, mode="live",
+                    source=f"agent:{getattr(agent, 'slug', 'close_position')}",
+                    error=_detail,
+                )
+            except Exception:
+                pass
+        raise RuntimeError(f"close_position chase ended in FAILED: {_detail}")
+    if _result.status == ChaseStatus.HELD:
+        raise RuntimeError(f"close_position chase HELD: {_result.detail}")
 
 
 def _al_modify_build_kwargs(params: dict) -> dict:

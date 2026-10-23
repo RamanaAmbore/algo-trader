@@ -88,3 +88,29 @@ def test_chase_row_to_info_tolerates_missing_attrs_via_getattr():
     info = _chase_row_to_info(row, _identity_mask, {})
     assert info.source is None
     assert info.agent_id is None
+
+
+# ── 2026-10-23 chase robustness (fix #6) — superseded_broker_order_ids ──
+
+def test_chase_row_to_info_parses_superseded_ids_json():
+    row = _make_row(superseded_broker_order_ids_json='["OID-1", "OID-2"]')
+    info = _chase_row_to_info(row, _identity_mask, {})
+    assert info.superseded_broker_order_ids == ["OID-1", "OID-2"]
+
+
+def test_chase_row_to_info_defaults_superseded_ids_to_empty_list():
+    row = _make_row()  # no superseded_broker_order_ids_json attr at all
+    info = _chase_row_to_info(row, _identity_mask, {})
+    assert info.superseded_broker_order_ids == []
+
+
+def test_chase_row_to_info_superseded_ids_tolerates_malformed_json():
+    row = _make_row(superseded_broker_order_ids_json="{not valid json")
+    info = _chase_row_to_info(row, _identity_mask, {})
+    assert info.superseded_broker_order_ids == []
+
+
+def test_chase_row_to_info_superseded_ids_tolerates_non_list_json():
+    row = _make_row(superseded_broker_order_ids_json='{"not": "a list"}')
+    info = _chase_row_to_info(row, _identity_mask, {})
+    assert info.superseded_broker_order_ids == []

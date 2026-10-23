@@ -442,6 +442,40 @@ async def _send_channel(ch: dict, out: tuple, agent) -> bool:
         return False
 
 
+async def _dispatch_record_channels(
+    agent, rec: dict, out: tuple, channels: list, log_only: bool,
+) -> int:
+    """Send one rendered record to every channel in its (static or
+    per-record) channel list. Extracted from `_dispatch_agent` (2026-
+    10-23) purely to keep that function's cyclomatic complexity within
+    the project's radon gate — no behavior change beyond the binary
+    ntfy action-required gate itself.
+    """
+    rec_priority = _rec_tracked_ntfy_priority(rec)
+    action_required = (rec.get("extra") or {}).get("action_required")
+    sent = 0
+    for ch in channels:
+        # A `_log_only` record is one the branch gate or sim-notify
+        # gate would normally have suppressed entirely — 'log' is
+        # exempt from both (local log write, no external notification
+        # cost), every other channel in the SAME record still must not
+        # fire. See dispatch_rows docstring for the full rationale.
+        if log_only and (not isinstance(ch, dict) or ch.get("channel") != "log"):
+            continue
+        eff_ch = _channel_with_tracked_priority(ch, rec_priority)
+        # 2026-10-23 chase robustness (fix #4) — binary ntfy gate: skips
+        # ntfy entirely for a pure-FYI record, forces urgent for an
+        # action-required one, leaves every other channel/record type
+        # unchanged. See `_apply_action_required_ntfy_gate`'s own
+        # docstring.
+        eff_ch = _apply_action_required_ntfy_gate(eff_ch, action_required)
+        if eff_ch is None:
+            continue
+        if await _send_channel(eff_ch, out, agent):
+            sent += 1
+    return sent
+
+
 async def _dispatch_agent(agent, records: list[dict]) -> int:
     key = _render_key(agent)
     render = RENDERS.get(key)
@@ -472,18 +506,7 @@ async def _dispatch_agent(agent, records: list[dict]) -> int:
             continue
         out = render(to_render)
         channels = out[4] if len(out) > 4 else (agent.events or [])
-        rec_priority = _rec_tracked_ntfy_priority(rec)
-        for ch in channels:
-            # A `_log_only` record is one the branch gate or sim-notify
-            # gate would normally have suppressed entirely — 'log' is
-            # exempt from both (local log write, no external notification
-            # cost), every other channel in the SAME record still must not
-            # fire. See dispatch_rows docstring for the full rationale.
-            if log_only and (not isinstance(ch, dict) or ch.get("channel") != "log"):
-                continue
-            eff_ch = _channel_with_tracked_priority(ch, rec_priority)
-            if await _send_channel(eff_ch, out, agent):
-                sent += 1
+        sent += await _dispatch_record_channels(agent, rec, out, channels, log_only)
     return sent
 
 
@@ -510,6 +533,37 @@ def _channel_with_tracked_priority(ch: dict, rec_priority: "str | None") -> dict
     if (rec_priority and isinstance(ch, dict)
             and ch.get("channel") == "ntfy" and not ch.get("priority")):
         return {**ch, "priority": rec_priority}
+    return ch
+
+
+def _apply_action_required_ntfy_gate(ch: dict, action_required: "bool | None") -> "dict | None":
+    """2026-10-23 chase robustness (fix #4) — binary ntfy gate, applied
+    at DISPATCH time rather than by editing any agent's own stored
+    `events` channel list (which would not retroactively change an
+    already-seeded `agents` DB row on prod/dev — `load_agents()` reads
+    from the DB, not from this module's seed dicts).
+
+    `action_required` is read from the log record's own `extra` dict
+    (set `False` by `fill_notify.notify_fills`, `True` by
+    `send_order_failure_alert` and the chase cancel-unconfirmed record):
+      - `False` (a pure-FYI outcome, e.g. a fill) -> this function
+        returns `None` for an ntfy channel, meaning the caller must skip
+        sending it entirely, regardless of how the agent's own channel
+        list is configured.
+      - `True` (operator must take action) -> forces `priority="urgent"`
+        on an ntfy channel, overriding any existing per-channel priority
+        — a simple binary, not a tier spread.
+      - Absent (`None`, the default for every record type not yet
+        tagged — ticker/gtt/deploy/etc.) -> `ch` passed through
+        unchanged, preserving every existing agent's current behavior.
+    Non-ntfy channels are always passed through unchanged.
+    """
+    if not isinstance(ch, dict) or ch.get("channel") != "ntfy":
+        return ch
+    if action_required is False:
+        return None
+    if action_required is True:
+        return {**ch, "priority": "urgent"}
     return ch
 
 
@@ -821,7 +875,13 @@ FILL_AGENT = {
     "name": "Fill alert",
     "conditions": {"log": {"tag": "orders", "min_level": "INFO",
                            "where": {"alert_event": "filled", "mode": "live"}}},
-    "events": [{"channel": "telegram", "enabled": True}, {"channel": "ntfy", "enabled": True}],
+    # 2026-10-23 chase robustness (fix #4) — a fill is FYI, never
+    # action-required; ntfy channel removed from this seed (cosmetic —
+    # the REAL enforcement is the binary action_required gate in
+    # _dispatch_agent/_apply_action_required_ntfy_gate, which skips ntfy
+    # for every fill record regardless of what's already seeded in the
+    # `agents` DB table on an existing deployment).
+    "events": [{"channel": "telegram", "enabled": True}],
     "actions": [{"type": "render", "render": "fill"}],
 }
 
