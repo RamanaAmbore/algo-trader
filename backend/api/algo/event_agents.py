@@ -177,6 +177,38 @@ def _render_attach_fail(rec: dict) -> tuple:
     return title, _html_to_plain(tg), tg, (email_subject, email_body)
 
 
+def _render_order_correction(rec: dict) -> tuple[str, str]:
+    """2026-10-23 order-poll consolidation — a background corrector
+    (the open-order watchdog, the periodic order-poll sweep, or
+    postback's non-blocking follow-up verification) found and fixed a
+    stuck AlgoOrder row. This firing is itself the signal that some
+    live path already failed to do its job on its own — see
+    `backend/api/algo/order_poll.py`'s module docstring for exactly
+    which callers fire it (deliberately NOT `list_active_chases` or
+    the operator-triggered admin reconcile routes).
+
+    Leads with `format_notification_header()` (2026-10-23 "every alert
+    leads with its origin" invariant — same convention every other
+    order-scoped renderer in this file uses, e.g. `_render_order_failure`
+    via `order_failure_messages`) so this renderer doesn't silently skip
+    the origin line every other renderer carries. `agent_id` comes from
+    the corrected AlgoOrder row itself (`order_poll.py:_opo_postprocess`'s
+    `static_agent_id`) — `None` resolves to "manual" via `resolve_origin`,
+    same as any other agent-less order."""
+    from backend.shared.helpers.alert_utils import format_notification_header
+    x = rec.get("extra") or {}
+    header = format_notification_header(None, x.get("agent_id"))
+    title = f"Order corrected: {x.get('symbol') or ''} #{x.get('algo_order_id')}"
+    body = (
+        f"{header}\n"
+        f"AlgoOrder #{x.get('algo_order_id')} {x.get('masked') or ''} "
+        f"{x.get('symbol') or ''} {x.get('exchange') or ''}: "
+        f"{x.get('prior_status')} -> {x.get('new_status')} "
+        f"(source={x.get('source') or 'order-poll'})"
+    )
+    return title, body
+
+
 def _render_mcp_ping(rec: dict) -> tuple[str, str, str]:
     """An MCP tool call performed an audited action (place/cancel/modify/...)."""
     from backend.shared.helpers.alert_utils import _html_to_plain
@@ -291,6 +323,7 @@ register_renderer("rich_alert")(_render_rich_alert)
 register_renderer("summary")(_render_summary)
 register_renderer("breach")(_render_breach)
 register_renderer("gtt_not_accepted")(_render_gtt_not_accepted)
+register_renderer("order_correction")(_render_order_correction)
 
 
 def _send_ntfy(title: str, body: str, tg: str | None = None, priority: str | None = None) -> None:
@@ -714,6 +747,18 @@ ORDER_FAILURE_AGENT = {
     "actions": [{"type": "render", "render": "order_failure"}],
 }
 
+ORDER_CORRECTION_AGENT = {
+    "slug": "order-correction-alert",
+    "name": "Order poll correction",
+    "conditions": {"log": {"tag": "orders", "min_level": "WARNING",
+                           "where": {"alert_event": "order_correction"}}},
+    "events": [
+        {"channel": "telegram", "enabled": True, "gate": False},
+        {"channel": "ntfy", "enabled": True, "priority": "urgent", "gate": False},
+    ],
+    "actions": [{"type": "render", "render": "order_correction"}],
+}
+
 TEMPLATE_GUARD_AGENT = {
     "slug": "template-guard-alert",
     "name": "Template guard",
@@ -932,7 +977,7 @@ def _log_leaves(cond) -> list[dict]:
 SEEDED_AGENTS = (
     FILL_AGENT, ERROR_AGENT, CHASE_CANCEL_AGENT, PARTIAL_GTT_AGENT,
     TEMPLATE_ATTACH_URGENT_AGENT, TEMPLATE_ATTACH_HIGH_AGENT, ORDER_FAILURE_AGENT,
-    TEMPLATE_GUARD_AGENT, TEMPLATE_ATTACH_FAIL_AGENT, MCP_PING_AGENT,
+    TEMPLATE_GUARD_AGENT, TEMPLATE_ATTACH_FAIL_AGENT, MCP_PING_AGENT, ORDER_CORRECTION_AGENT,
     DEPLOY_SYNC_AGENT, RICH_ALERT_AGENT, SUMMARY_AGENT, BREACH_AGENT,
     GTT_NOT_ACCEPTED_AGENT, GTT_ASYMMETRIC_AGENT, OCO_DOUBLE_FIRE_AGENT,
     TICKER_RECOVERED_AGENT, TICKER_DEGRADED_AGENT, VISITOR_REPORT_AGENT,

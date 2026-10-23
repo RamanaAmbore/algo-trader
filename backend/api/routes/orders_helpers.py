@@ -759,7 +759,10 @@ async def get_broker_order_truth(
     )
 
 
-async def apply_order_truth(algo_order_id: "int | None", truth: "OrderTruth") -> bool:
+async def apply_order_truth(
+    algo_order_id: "int | None", truth: "OrderTruth",
+    *, withhold_if_active: bool = False,
+) -> bool:
     """Lock the AlgoOrder row (`with_for_update()`, matching the
     existing final-status-guard pattern in chase.py/orders_postback.py)
     and write `truth.algo_status` when it's resolved (terminal) AND
@@ -777,10 +780,26 @@ async def apply_order_truth(algo_order_id: "int | None", truth: "OrderTruth") ->
     This is the SAFE "don't guess" behavior this function exists to
     guarantee for every caller.
 
+    `withhold_if_active` (2026-10-23, order-poll consolidation) — when
+    True, a resolved NON-FILLED terminal status (CANCELLED/REJECTED/
+    UNFILLED) is withheld (no-op, returns False) for a row that's HELD
+    or under an active `chase_order()` retry right now, reusing
+    `orders_postback.py:_pb_should_withhold_status` — the SAME HELD/
+    active-chase check the postback path already applies, so a sweep/
+    watchdog/`/chases/active` poll can't race a chase's own
+    cancel-and-replace and finalize a row mid-retry (the row still
+    carries the OLD broker_order_id at that instant). A FILLED
+    resolution is NEVER withheld — a genuine fill always applies,
+    matching every other writer's convention. Defaults to False so the
+    existing accessor tests and chase.py's own two callers (which
+    already have their own narrower in-loop timing control) are
+    unaffected.
+
     Known scope gap (deliberate, see the module-level note above): does
-    NOT fire template-attach on a reconciled FILLED — only chase's own
-    normal fill path and `orders.py:list_active_chases`'s existing
-    reconcile sweep do that today. Flagged, not silently dropped.
+    NOT fire template-attach / ws-resubscribe on a reconciled FILLED —
+    callers that need those side effects use the shared
+    `backend/api/algo/order_poll.py:reconcile_row_and_followup` wrapper
+    instead of calling this function directly.
     """
     if algo_order_id is None or not truth.available or truth.algo_status is None:
         return False
@@ -803,6 +822,15 @@ async def apply_order_truth(algo_order_id: "int | None", truth: "OrderTruth") ->
                 algo_order_id, row.status, truth.algo_status,
             )
             return False
+        if withhold_if_active:
+            from backend.api.routes.orders_postback import _pb_should_withhold_status
+            if _pb_should_withhold_status(row, truth.algo_status):
+                logger.info(
+                    "[ORDER-TRUTH] withholding %s for AlgoOrder #%s — "
+                    "row is HELD or under an active chase retry; status "
+                    "stays %s.", truth.algo_status, algo_order_id, row.status,
+                )
+                return False
         row.status = truth.algo_status
         if truth.algo_status == "FILLED":
             if truth.average_price:

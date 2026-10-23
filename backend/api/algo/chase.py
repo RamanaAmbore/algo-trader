@@ -726,6 +726,14 @@ def is_chase_active(algo_order_id: "int | None") -> bool:
     Used by the postback handlers (`orders_postback.py`) and the
     `/chases/active` reconcile sweep (`orders.py`) to withhold a
     non-FILLED terminal status write for a row chase may still retry.
+    Also used directly by `backend/api/algo/order_poll.py:
+    reconcile_row_and_followup` (2026-10-23) as a full no-op gate —
+    including for a FILLED resolution, which the non-FILLED-only
+    withhold above deliberately does NOT cover — so a background
+    corrector (the open-order watchdog, the periodic order-poll sweep,
+    postback's follow-up verification) can never race ahead of chase's
+    own fill detection and fire a false action-required alert for a
+    perfectly normal, self-resolving chase fill.
     """
     if algo_order_id is None:
         return False
@@ -779,13 +787,16 @@ async def _ch_backstop_reconcile_one(algo_order_id: int) -> None:
     order-view accessor (`orders_helpers.py:get_broker_order_truth` /
     `apply_order_truth`), the SAME one chase's own periodic in-loop
     check (`_ch_periodic_broker_truth_check`) calls, instead of reusing
-    `orders.py:list_active_chases`'s own `_rco_reconcile_active_rows`
-    path as an interim measure. Both of chase's item-8 auto-reconcile
-    triggers now go through one shared accessor rather than two
-    divergent ones. Migrating `list_active_chases` itself (and the
-    watchdog / admin reconcile routes) onto this same accessor is
-    separate, explicitly out-of-scope follow-up work — see
-    `orders_helpers.py`'s module-level note next to `OrderTruth`.
+    `orders.py:list_active_chases`'s own inline reconcile logic as an
+    interim measure. Both of chase's item-8 auto-reconcile triggers now
+    go through one shared accessor rather than two divergent ones.
+    `list_active_chases` itself, the admin bulk/per-card reconcile
+    routes, and `background.py:_task_open_order_watchdog` have since
+    ALSO migrated onto this same accessor (the "Order poll" follow-up
+    plan referenced above) — see `orders_helpers.py`'s module-level
+    note next to `OrderTruth`, and `backend/api/algo/order_poll.py`
+    for the shared wrapper the watchdog + the new periodic sweep +
+    postback's follow-up verification use.
 
     Best-effort: any exception is logged and swallowed; this is a
     backstop on top of an already-written CANCEL_FAILED/chase_unfilled

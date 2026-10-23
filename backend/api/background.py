@@ -5543,17 +5543,44 @@ async def _task_open_order_watchdog() -> None:
     still overrides per-deploy if this task specifically needs a cadence
     different from the rest of SLOW.
 
-    Cutoff: orders created more than 5 minutes ago. Accounts are reconciled
-    individually against the broker order book; FILLED rows trigger template
-    attach; UNFILLED/CANCELLED rows are updated in the same session + commit.
+    Cutoff: orders created more than 5 minutes ago.
+
+    2026-10-23 (order-poll consolidation) — migrated off its own
+    `_rco_reconcile_account`/`_rco_reconcile_one_row` logic (which
+    unconditionally guessed UNFILLED on a missing/empty broker
+    response — a real correctness hazard this migration removes) onto
+    `backend/api/algo/order_poll.py:reconcile_row_and_followup`, the
+    same canonical single-order-view accessor every other reconcile
+    caller now shares. A row whose broker response is unavailable is
+    simply left alone this cycle and retried next time — "unavailable,
+    don't guess," never a guessed terminal status. FILLED rows still
+    fire template-attach + ws-resubscribe (now via the shared
+    wrapper's own post-processing); this path also now writes the FIFO
+    ledger (via `apply_order_truth`) and fires the `order_correction`
+    alert on a real correction, neither of which this watchdog did
+    before.
+
+    Known accepted consequence (reported, not newly invented): because
+    the bulk broker order-book snapshot this accessor reads
+    (`broker.orders()`) is day-scoped, a genuinely abandoned OPEN row
+    from a PRIOR trading day that's no longer in today's snapshot will
+    now sit as OPEN forever instead of eventually being flipped to
+    UNFILLED — a UI/DB-noise cost, not a money-safety one:
+    `recover_live_chases()` (this module) independently re-verifies
+    via `chase.py`'s own per-order `_order_status` (Kite's targeted
+    `order_history(order_id)`, not the day-scoped bulk list) before
+    ever resuming a chase, and skips the restart outright
+    ("skipping restart this cycle") whenever that targeted lookup
+    can't confirm a live state — so an ancient, truly-gone order is
+    never resurrected into placing a new real order.
 
     Failure shape: best-effort. Any single iteration error is logged at
     WARNING and retried next cycle.
     """
     from backend.api.database import async_session
     from backend.api.models import AlgoOrder
-    from backend.api.routes.orders import _rco_reconcile_account
-    from backend.api.routes.orders_place import _maybe_fire_template_attach_for_reconcile
+    from backend.api.algo.order_poll import reconcile_row_and_followup
+    from backend.api.routes.orders_helpers import _broker_order_snapshot
     from sqlalchemy import select as _sel
 
     _slow_default_s = get_int("polling.slow_ms", 60000) // 1000
@@ -5562,7 +5589,6 @@ async def _task_open_order_watchdog() -> None:
         await asyncio.sleep(interval)
         try:
             cutoff = datetime.now(timezone.utc) - timedelta(minutes=5)
-            attach_queue: list = []
             async with async_session() as sess:
                 result = await sess.execute(
                     _sel(AlgoOrder).where(
@@ -5572,28 +5598,23 @@ async def _task_open_order_watchdog() -> None:
                     )
                 )
                 rows = result.scalars().all()
-                if not rows:
-                    continue
-                by_account: dict[str, list] = {}
-                for r in rows:
-                    by_account.setdefault(r.account, []).append(r)
-                for acct, acct_rows in by_account.items():
-                    await _rco_reconcile_account(acct, acct_rows, attach_queue)
-                await sess.commit()
-            for item in attach_queue:
-                _maybe_fire_template_attach_for_reconcile(item)
-            # Gap fix (2026-10): this watchdog reconciles orders directly
-            # against the broker without ever going through the primary
-            # postback flow — without this, a position newly detected
-            # FILLED here would wait for the *next* watchdog/perf cycle
-            # before its WS tick subscription became symbol-addressable.
-            if attach_queue:
-                from backend.api.routes.orders import _subscribe_filled_pairs
-                await _subscribe_filled_pairs(
-                    [(r.symbol, r.exchange) for r in attach_queue]
+            if not rows:
+                continue
+            broker_status_by_id = await _broker_order_snapshot()
+            for r in rows:
+                await reconcile_row_and_followup(
+                    r, broker_status_by_id, source="open-order-watchdog",
                 )
         except Exception as exc:
             logger.warning("open_order_watchdog error: %s", exc)
+
+
+async def _task_order_poll() -> None:
+    """Thin `on_startup` wrapper — the real loop lives in
+    `backend/api/algo/order_poll.py:_task_order_poll` (same lazy-import-
+    the-real-work convention as `_task_market_lifecycle` above)."""
+    from backend.api.algo.order_poll import _task_order_poll as _real_task_order_poll
+    await _real_task_order_poll()
 
 
 async def _snapshot_book_symbols(days: int = 7) -> list[tuple[str, str]]:
@@ -8866,6 +8887,11 @@ async def on_startup(app) -> None:
         asyncio.create_task(_supervised(_task_trail_stop,                      name="bg-trail-stop"),      name="bg-trail-stop"),
         asyncio.create_task(_supervised(_task_oco_pair_watcher,                name="bg-oco-pair-watcher"), name="bg-oco-pair-watcher"),
         asyncio.create_task(_supervised(_task_open_order_watchdog,              name="bg-open-order-watchdog"), name="bg-open-order-watchdog"),
+        # "Order poll" (2026-10-23) — periodic, chase-independent
+        # broker-truth sweep covering every live OPEN/CANCEL_FAILED
+        # order, not just chase-driven ones. See
+        # backend/api/algo/order_poll.py's module docstring.
+        asyncio.create_task(_supervised(_task_order_poll,                      name="bg-order-poll"),      name="bg-order-poll"),
         # _task_post_market_cron consolidates: close summary, NAV snapshot,
         # strategy snapshot, monthly statement, and late-night app_messages
         # cleanup — all in one poll-and-debounce loop (30 s cadence).

@@ -162,51 +162,19 @@ class TestSubscribeFilledPairsHelper:
 
 
 # ===========================================================================
-# _rco_reconcile_one_row — captures (symbol, exchange) the fix depends on
-# ===========================================================================
-
-class TestReconcileOneRowCapturesSymbolExchange:
-    """Pure-logic test: confirms the row object appended to `_attach_queue`
-    on a FILLED transition carries `.symbol`/`.exchange`, which is exactly
-    what the watchdog + admin-sweep gap fixes read to build the
-    (sym, exch) pairs handed to `_subscribe_filled_pairs`."""
-
-    def test_filled_transition_appends_row_with_symbol_and_exchange(self):
-        from backend.api.routes.orders import _rco_reconcile_one_row
-
-        row = SimpleNamespace(
-            broker_order_id="BO123", status="OPEN", detail="",
-            symbol="NIFTY24800CE", exchange="NFO", quantity=50,
-            fill_price=None, filled_quantity=0, filled_at=None,
-        )
-        by_id = {"BO123": {"status": "COMPLETE", "average_price": 150.0}}
-        attach_queue: list = []
-
-        updated, missing = _rco_reconcile_one_row(row, by_id, attach_queue)
-
-        assert (updated, missing) == (1, 0)
-        assert row.status == "FILLED"
-        assert attach_queue == [row]
-        assert (row.symbol, row.exchange) == ("NIFTY24800CE", "NFO")
-
-    def test_non_filled_transition_does_not_populate_attach_queue(self):
-        from backend.api.routes.orders import _rco_reconcile_one_row
-
-        row = SimpleNamespace(
-            broker_order_id="BO456", status="OPEN", detail="",
-            symbol="INFY", exchange="NSE", quantity=10,
-            fill_price=None, filled_quantity=0, filled_at=None,
-        )
-        by_id = {"BO456": {"status": "CANCELLED"}}
-        attach_queue: list = []
-
-        updated, missing = _rco_reconcile_one_row(row, by_id, attach_queue)
-
-        assert updated == 1
-        assert row.status == "CANCELLED"
-        assert attach_queue == []  # nothing to subscribe for a non-fill
-
-
+# 2026-10-23 (order-poll consolidation) — `_rco_reconcile_one_row` (the
+# pure Kite-status-mapping function this section used to test standalone)
+# is DELETED; its "map broker status onto AlgoOrder, capture (symbol,
+# exchange) for the subscribe fan-out" job is now split across the
+# canonical accessor (`orders_helpers.py:get_broker_order_truth` /
+# `apply_order_truth`, exhaustively tested in test_order_truth_accessor.py)
+# and `backend/api/algo/order_poll.py`'s `_opo_postprocess` (re-fetches
+# the row and reads `.symbol`/`.exchange` before calling
+# `_subscribe_filled_pairs`). That invariant is now covered end-to-end by
+# `TestAdminSweepFunctional` / `TestPerCardReconcileFunctional` /
+# `TestWatchdogFunctional` below, which assert the real
+# `(symbol, exchange)` pair reaches `_subscribe_filled_pairs` through
+# each migrated call site.
 # ===========================================================================
 # Groww postback — no-regression check, now delegates to the shared helper
 # ===========================================================================
@@ -266,9 +234,13 @@ class TestAdminSweepGapFix:
         src = _source_of(OrdersController.reconcile_algo_orders)
         assert "_subscribe_filled_pairs(" in src, (
             "Admin /algo/reconcile sweep must call _subscribe_filled_pairs "
-            "for rows that just transitioned to FILLED via _attach_queue"
+            "for rows that just transitioned to FILLED"
         )
-        assert "_attach_queue" in src
+        # 2026-10-23 (order-poll consolidation): the queue holding
+        # newly-filled row ids is now `filled_ids` (re-fetched fresh as
+        # `attach_rows` before the subscribe call), not the old
+        # `_attach_queue` list of mutated-in-place row objects.
+        assert "filled_ids" in src
 
 
 class TestPerCardReconcileGapFix:
@@ -280,31 +252,40 @@ class TestPerCardReconcileGapFix:
             "Per-card reconcile endpoint must call _subscribe_filled_pairs "
             "when a row transitions to FILLED"
         )
-        # Must gate on r.status == "FILLED" directly, not solely on
-        # _attach_after_commit (which is False when the broker order dict
-        # lacks average_price — see _rco_reconcile_apply_target — and
-        # would otherwise silently miss some genuine FILLED transitions).
+        # 2026-10-23 (order-poll consolidation): `r` now predates the
+        # canonical accessor's own mutation (made in `apply_order_truth`'s
+        # own locked session), so the gate reads the locally-tracked
+        # `algo_status` variable (set to `truth.algo_status` only on a
+        # confirmed `apply_order_truth` write) instead of `r.status`
+        # directly — same invariant (never gate solely on
+        # `_attach_after_commit`/average-price presence), new variable.
         sub_pos = src.index("_subscribe_filled_pairs(")
         preceding = src[:sub_pos]
-        last_if = preceding.rfind("if ")
-        gate_line = preceding[last_if:sub_pos]
-        assert 'r.status == "FILLED"' in gate_line, (
-            "The subscribe-on-fill call must be gated on r.status == "
-            "'FILLED' directly, not only on _attach_after_commit"
+        assert 'algo_status == "FILLED"' in preceding, (
+            "The subscribe-on-fill call must be reachable only when the "
+            "canonical accessor actually confirmed a FILLED resolution "
+            "(algo_status == 'FILLED'), not merely a broker dict with "
+            "an average_price"
         )
 
 
 class TestWatchdogGapFix:
-    def test_open_order_watchdog_subscribes_newly_filled_rows(self):
+    def test_open_order_watchdog_delegates_to_shared_accessor_wrapper(self):
+        """2026-10-23 (order-poll consolidation): the watchdog no longer
+        builds its own attach_queue / calls _subscribe_filled_pairs
+        inline — it delegates every row to the shared
+        `order_poll.reconcile_row_and_followup` wrapper, which itself
+        calls `_subscribe_filled_pairs` on a confirmed FILLED
+        correction. See `TestWatchdogFunctional` below for the real
+        end-to-end behavioral check (not just a source grep)."""
         import backend.api.background as bg
 
         src = _source_of(bg._task_open_order_watchdog)
-        assert "_subscribe_filled_pairs(" in src, (
-            "_task_open_order_watchdog must call _subscribe_filled_pairs "
-            "for rows reconciled to FILLED, instead of waiting for the "
-            "next 5-minute cycle"
+        assert "reconcile_row_and_followup(" in src, (
+            "_task_open_order_watchdog must delegate to the shared "
+            "canonical single-order-view wrapper instead of its own "
+            "reconcile logic"
         )
-        assert "attach_queue" in src
 
 
 class TestChaseTerminalGapFix:
@@ -429,37 +410,61 @@ class TestKitePostbackSubscribeWithSym:
 # Functional tests — gap sites invoked for real (not just source-inspected)
 # ===========================================================================
 
+def _opt_scalars_first(row):
+    """Build an execute()-result mock for `.scalars().first()`."""
+    m = MagicMock()
+    m.scalars.return_value.first.return_value = row
+    return m
+
+
+def _opt_scalar_one_or_none(row):
+    """Build an execute()-result mock for a bare `.scalar_one_or_none()`
+    (the shape `order_poll.py:_opo_postprocess`'s own refetch and
+    `reconcile_single_order`'s own refetch both use)."""
+    m = MagicMock()
+    m.scalar_one_or_none.return_value = row
+    return m
+
+
 class TestPerCardReconcileFunctional:
     """Call reconcile_single_order directly (unwrapping Litestar's `.fn`)
-    with a fully-mocked DB session + broker-order lookup."""
+    against the canonical accessor (get_broker_order_truth /
+    apply_order_truth), fully mocked."""
 
     @pytest.mark.asyncio
-    async def test_fill_without_average_price_still_subscribes(self):
-        """The case _attach_after_commit=False (no average_price on the
-        broker order dict) is exactly where a gate on _attach_after_commit
-        alone would have missed the fill — r.status == 'FILLED' must
-        still trigger the subscribe."""
+    async def test_confirmed_fill_subscribes(self):
+        """A FILLED resolution — regardless of whether the broker dict
+        carried an average_price — must subscribe. `algo_status` (set
+        only on a confirmed `apply_order_truth` write) is the real gate
+        now, not a raw broker-dict field."""
         from backend.api.routes.orders import OrdersController
         from backend.api.schemas import ReconcileSingleRequest
+        from backend.api.routes.orders_helpers import OrderTruth
 
         fake_row = SimpleNamespace(
-            status="OPEN", symbol="NIFTY24800CE", exchange="NFO",
+            id=1, status="OPEN", symbol="NIFTY24800CE", exchange="NFO",
             quantity=50, fill_price=None, filled_quantity=0,
             filled_at=None, detail="",
         )
-
-        mock_scalars = MagicMock()
-        mock_scalars.first.return_value = fake_row
-        mock_exec_result = MagicMock()
-        mock_exec_result.scalars.return_value = mock_scalars
+        fresh_row = SimpleNamespace(
+            id=1, status="FILLED", symbol="NIFTY24800CE", exchange="NFO",
+            quantity=50, fill_price=150.0, filled_quantity=50,
+            filled_at=None, detail="", template_id=None,
+            template_overrides_json=None, parent_order_id=None,
+            intent=None, is_close_intent=False, mode="live",
+        )
 
         mock_session = AsyncMock()
-        mock_session.execute = AsyncMock(return_value=mock_exec_result)
+        mock_session.execute = AsyncMock(side_effect=[
+            _opt_scalars_first(fake_row),
+            _opt_scalar_one_or_none(fresh_row),
+        ])
         mock_session.commit = AsyncMock()
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
-        bo_no_avg_price = {"status": "COMPLETE"}  # no average_price key
+        truth = OrderTruth(available=True, algo_status="FILLED",
+                           average_price=150.0, raw_broker_status="COMPLETE")
 
         captured: list = []
 
@@ -468,12 +473,21 @@ class TestPerCardReconcileFunctional:
 
         with (
             patch("backend.api.routes.orders.is_admin_request", return_value=True),
-            patch(
-                "backend.api.routes.orders._rco_fetch_broker_order",
-                new=AsyncMock(return_value=(bo_no_avg_price, "COMPLETE", "FILLED")),
-            ),
+            patch("backend.brokers.get_broker", return_value=MagicMock()),
             patch("backend.api.database.async_session", return_value=mock_session),
             patch("backend.api.routes.orders.invalidate"),
+            patch(
+                "backend.api.routes.orders_helpers._broker_order_snapshot",
+                new=AsyncMock(return_value={}),
+            ),
+            patch(
+                "backend.api.routes.orders_helpers.get_broker_order_truth",
+                new=AsyncMock(return_value=truth),
+            ),
+            patch(
+                "backend.api.routes.orders_helpers.apply_order_truth",
+                new=AsyncMock(return_value=True),
+            ),
             patch("backend.api.routes.orders._maybe_fire_template_attach_for_reconcile"),
             patch(
                 "backend.api.routes.orders._subscribe_filled_pairs",
@@ -485,32 +499,31 @@ class TestPerCardReconcileFunctional:
                 MagicMock(), "BO1", MagicMock(), data,
             )
 
-        assert fake_row.status == "FILLED"
+        assert result["algo_status"] == "FILLED"
         assert result["updated"] is True
         assert captured == [[("NIFTY24800CE", "NFO")]], (
-            "subscribe-on-fill must fire even when the broker order dict "
-            "has no average_price"
+            "subscribe-on-fill must fire on a confirmed FILLED resolution"
         )
 
     @pytest.mark.asyncio
     async def test_non_fill_update_does_not_subscribe(self):
         from backend.api.routes.orders import OrdersController
         from backend.api.schemas import ReconcileSingleRequest
+        from backend.api.routes.orders_helpers import OrderTruth
 
         fake_row = SimpleNamespace(
-            status="OPEN", symbol="INFY", exchange="NSE",
+            id=2, status="OPEN", symbol="INFY", exchange="NSE",
             quantity=5, fill_price=None, filled_quantity=0,
             filled_at=None, detail="",
         )
-        mock_scalars = MagicMock()
-        mock_scalars.first.return_value = fake_row
-        mock_exec_result = MagicMock()
-        mock_exec_result.scalars.return_value = mock_scalars
         mock_session = AsyncMock()
-        mock_session.execute = AsyncMock(return_value=mock_exec_result)
+        mock_session.execute = AsyncMock(return_value=_opt_scalars_first(fake_row))
         mock_session.commit = AsyncMock()
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        truth = OrderTruth(available=True, algo_status="CANCELLED",
+                           raw_broker_status="CANCELLED")
 
         captured: list = []
 
@@ -519,12 +532,21 @@ class TestPerCardReconcileFunctional:
 
         with (
             patch("backend.api.routes.orders.is_admin_request", return_value=True),
-            patch(
-                "backend.api.routes.orders._rco_fetch_broker_order",
-                new=AsyncMock(return_value=({"status": "CANCELLED"}, "CANCELLED", "CANCELLED")),
-            ),
+            patch("backend.brokers.get_broker", return_value=MagicMock()),
             patch("backend.api.database.async_session", return_value=mock_session),
             patch("backend.api.routes.orders.invalidate"),
+            patch(
+                "backend.api.routes.orders_helpers._broker_order_snapshot",
+                new=AsyncMock(return_value={}),
+            ),
+            patch(
+                "backend.api.routes.orders_helpers.get_broker_order_truth",
+                new=AsyncMock(return_value=truth),
+            ),
+            patch(
+                "backend.api.routes.orders_helpers.apply_order_truth",
+                new=AsyncMock(return_value=True),
+            ),
             patch("backend.api.routes.orders._maybe_fire_template_attach_for_reconcile"),
             patch(
                 "backend.api.routes.orders._subscribe_filled_pairs",
@@ -532,11 +554,11 @@ class TestPerCardReconcileFunctional:
             ),
         ):
             data = ReconcileSingleRequest(account="ZG0790")
-            await OrdersController.reconcile_single_order.fn(
+            result = await OrdersController.reconcile_single_order.fn(
                 MagicMock(), "BO2", MagicMock(), data,
             )
 
-        assert fake_row.status == "CANCELLED"
+        assert result["algo_status"] == "CANCELLED"
         assert captured == []
 
 
@@ -544,25 +566,33 @@ class TestAdminSweepFunctional:
     @pytest.mark.asyncio
     async def test_admin_sweep_subscribes_rows_that_just_filled(self):
         from backend.api.routes.orders import OrdersController
+        from backend.api.routes.orders_helpers import OrderTruth
 
         fake_row = SimpleNamespace(
-            account="ZG0790", status="FILLED", symbol="INFY", exchange="NSE",
+            id=1, account="ZG0790", status="OPEN", symbol="INFY",
+            exchange="NSE", broker_order_id="BO1",
+        )
+        fresh_row = SimpleNamespace(
+            id=1, account="ZG0790", status="FILLED", symbol="INFY",
+            exchange="NSE", broker_order_id="BO1", fill_price=100.0,
+            filled_quantity=10, quantity=10, template_id=None,
+            template_overrides_json=None, parent_order_id=None,
+            intent=None, is_close_intent=False, mode="live",
         )
 
-        mock_scalars = MagicMock()
-        mock_scalars.all.return_value = [fake_row]
-        mock_exec_result = MagicMock()
-        mock_exec_result.scalars.return_value = mock_scalars
+        mock_scalars_all = MagicMock()
+        mock_scalars_all.all.side_effect = [[fake_row], [fresh_row]]
+        mock_exec_scan = MagicMock()
+        mock_exec_scan.scalars.return_value = mock_scalars_all
 
         mock_session = AsyncMock()
-        mock_session.execute = AsyncMock(return_value=mock_exec_result)
+        mock_session.execute = AsyncMock(return_value=mock_exec_scan)
         mock_session.commit = AsyncMock()
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
-        async def _fake_reconcile_account(acct, acct_rows, attach_queue):
-            attach_queue.append(fake_row)
-            return 1, 0
+        truth = OrderTruth(available=True, algo_status="FILLED",
+                           average_price=100.0, raw_broker_status="COMPLETE")
 
         captured: list = []
 
@@ -573,8 +603,16 @@ class TestAdminSweepFunctional:
             patch("backend.api.routes.orders.is_admin_request", return_value=True),
             patch("backend.api.database.async_session", return_value=mock_session),
             patch(
-                "backend.api.routes.orders._rco_reconcile_account",
-                new=AsyncMock(side_effect=_fake_reconcile_account),
+                "backend.api.routes.orders_helpers._broker_order_snapshot",
+                new=AsyncMock(return_value={}),
+            ),
+            patch(
+                "backend.api.routes.orders_helpers.get_broker_order_truth",
+                new=AsyncMock(return_value=truth),
+            ),
+            patch(
+                "backend.api.routes.orders_helpers.apply_order_truth",
+                new=AsyncMock(return_value=True),
             ),
             patch("backend.api.routes.orders.invalidate"),
             patch("backend.api.routes.orders._maybe_fire_template_attach_for_reconcile"),
@@ -593,23 +631,34 @@ class TestWatchdogFunctional:
     @pytest.mark.asyncio
     async def test_watchdog_subscribes_rows_reconciled_to_filled(self):
         import backend.api.background as bg
+        from backend.api.routes.orders_helpers import OrderTruth
 
-        fake_row = SimpleNamespace(account="ZG0790", symbol="TCS", exchange="NSE")
+        fake_row = SimpleNamespace(
+            id=1, account="ZG0790", symbol="TCS", exchange="NSE",
+            status="OPEN", broker_order_id="BO1",
+        )
+        fresh_row = SimpleNamespace(
+            id=1, account="ZG0790", symbol="TCS", exchange="NSE",
+            status="FILLED", broker_order_id="BO1", fill_price=250.0,
+            filled_quantity=10, quantity=10, template_id=None,
+            template_overrides_json=None, parent_order_id=None,
+            intent=None, is_close_intent=False, mode="live",
+        )
 
-        mock_scalars = MagicMock()
-        mock_scalars.all.return_value = [fake_row]
-        mock_exec_result = MagicMock()
-        mock_exec_result.scalars.return_value = mock_scalars
+        mock_scan_result = MagicMock()
+        mock_scan_result.scalars.return_value.all.return_value = [fake_row]
 
         mock_session = AsyncMock()
-        mock_session.execute = AsyncMock(return_value=mock_exec_result)
+        mock_session.execute = AsyncMock(side_effect=[
+            mock_scan_result,
+            _opt_scalar_one_or_none(fresh_row),
+        ])
         mock_session.commit = AsyncMock()
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
-        async def _fake_reconcile_account(acct, acct_rows, attach_queue):
-            attach_queue.append(fake_row)
-            return 1, 0
+        truth = OrderTruth(available=True, algo_status="FILLED",
+                           average_price=250.0, raw_broker_status="COMPLETE")
 
         captured: list = []
 
@@ -626,8 +675,16 @@ class TestWatchdogFunctional:
         with (
             patch("backend.api.database.async_session", return_value=mock_session),
             patch(
-                "backend.api.routes.orders._rco_reconcile_account",
-                new=AsyncMock(side_effect=_fake_reconcile_account),
+                "backend.api.routes.orders_helpers._broker_order_snapshot",
+                new=AsyncMock(return_value={}),
+            ),
+            patch(
+                "backend.api.routes.orders_helpers.get_broker_order_truth",
+                new=AsyncMock(return_value=truth),
+            ),
+            patch(
+                "backend.api.routes.orders_helpers.apply_order_truth",
+                new=AsyncMock(return_value=True),
             ),
             patch(
                 "backend.api.routes.orders_place._maybe_fire_template_attach_for_reconcile",

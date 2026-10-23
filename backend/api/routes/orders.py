@@ -126,13 +126,40 @@ import time as _time  # used by _postback_broadcast_fanout for ts fields
 
 
 # ── Chase-reconcile helpers (extracted from list_active_chases, reconcile_algo_orders, retry_template) ─
-_CHASE_LIVE_TERMINAL = frozenset({"COMPLETE", "CANCELLED", "REJECTED", "EXPIRED"})
-_CHASE_KITE_TO_ALGO = {
-    "COMPLETE":  "FILLED",
-    "CANCELLED": "CANCELLED",
-    "REJECTED":  "REJECTED",
-    "EXPIRED":   "UNFILLED",
-}
+#
+# 2026-10-23 (order-poll consolidation) — the "has a broker_order_id"
+# branch that used to live here (`_chase_process_live_row`'s broker-id
+# path, plus the standalone bulk/per-card reconcile writers
+# `_rco_reconcile_one_row` / `_rco_reconcile_account` /
+# `_rco_apply_reconcile_status` / `_rco_reconcile_apply_target` /
+# `_rco_fetch_broker_order`) is DELETED. All four callers
+# (`list_active_chases`, the admin bulk `/algo/reconcile` sweep, the
+# admin per-card `/{broker_order_id}/reconcile`, and
+# `background.py:_task_open_order_watchdog`) now resolve broker truth
+# via the single canonical accessor
+# (`orders_helpers.py:get_broker_order_truth` / `apply_order_truth`),
+# which is SAFE by construction on a missing/empty broker response
+# ("unavailable, don't guess" — never a guessed UNFILLED), takes the
+# row lock only for a row that actually needs writing, and writes the
+# FIFO ledger on a confirmed fill. See `_rco_reconcile_live_row` /
+# `_rco_reconcile_no_id_row` / `_rco_reconcile_paper_row` below for the
+# per-mode wrappers `list_active_chases` composes; the sweep/watchdog
+# use the shared `backend/api/algo/order_poll.py:reconcile_row_and_
+# followup` wrapper instead (they also need template-attach + ws
+# resubscribe + an alert on a real correction, which `list_active_
+# chases` deliberately does NOT fire — see that module's docstring).
+#
+# `_chase_process_paper_row` is UNCHANGED — paper-mode rows are not
+# broker-truth (no Kite/Dhan/Groww round-trip involved), so they stay
+# outside the canonical accessor's scope; its own pre-existing tests in
+# test_orders_chase_helpers.py keep passing unmodified.
+#
+# The "no broker_order_id at all" cleanup (`_rco_reconcile_no_id_row`
+# below) is likewise NOT broker truth — it's a distinct, pre-existing
+# business rule (placement itself never returned an id, so there's
+# nothing a canonical accessor could ever resolve) kept local to
+# `list_active_chases` only, not extended to the sweep/watchdog/admin
+# routes, none of which had an equivalent concept before this change.
 
 
 def _chase_snapshot_paper_open_ids() -> Optional[set]:
@@ -197,88 +224,114 @@ def _chase_process_paper_row(r, _paper_open_ids: set, dry_run: bool = False) -> 
     return True, 0
 
 
-def _rco_apply_fill_price(r, bo: dict) -> None:
-    """Stamp fill_price + filled_at on a row that just transitioned to FILLED.
-    Silently skips when average_price is absent or unconvertible.
+async def _single_row_locked_update(row_id: int, allowed_statuses: set, mutator) -> bool:
+    """Lock exactly one AlgoOrder row by id (`.with_for_update()`,
+    scoped to that single row — never the full unlocked batch) and
+    apply `mutator(row)` + commit ONLY if the row's CURRENT status
+    (re-read fresh under the lock, guarding against a race since the
+    caller's own classification read was unlocked) is still in
+    `allowed_statuses`. Returns True iff a write actually happened.
 
-    Bug fix (2026-09-30): also stamps filled_quantity = quantity. The
-    caller only reaches this helper when the broker's status has mapped
-    to FILLED (Kite COMPLETE via _CHASE_KITE_TO_ALGO) — by definition a
-    full fill, since a genuine partial fill leaves the order OPEN until
-    COMPLETE fires. filled_quantity was never written here, which
-    permanently blocked the reconcile-path template-attach full-fill gate
-    (_maybe_fire_template_attach_for_reconcile).
+    Shared by the "no broker_order_id" and paper-engine-drop cleanups
+    below — neither is broker-truth, so neither goes through
+    `apply_order_truth`, but both need the identical lock-only-when-
+    needed shape `list_active_chases`'s callers depend on (see
+    test_chases_active_lock_scoping.py).
     """
-    if bo.get("average_price"):
-        try:
-            r.fill_price = float(bo["average_price"])
-        except (TypeError, ValueError):
-            pass
-    r.filled_quantity = int(r.quantity or 0)
-    r.filled_at = datetime.now(timezone.utc)
+    from sqlalchemy import select as _sru_select
+    from backend.api.database import async_session as _sru_async_session
+    from backend.api.models import AlgoOrder as _SruAlgoOrder
+    async with _sru_async_session() as s:
+        _rows = (await s.execute(
+            _sru_select(_SruAlgoOrder).where(_SruAlgoOrder.id == row_id)
+            .with_for_update()
+        )).scalars().all()
+        row = _rows[0] if _rows else None
+        if row is None or row.status not in allowed_statuses:
+            return False
+        mutator(row)
+        await s.commit()
+        return True
 
 
-def _chase_process_live_row(
-    r,
-    _broker_status_by_id: dict[str, dict],
-    _reconciled_filled: list,
-    dry_run: bool = False,
-) -> tuple[bool, int, int]:
-    """Handle one live-mode row. Returns
-    `(drop, dropped_live_delta, reconciled_live_delta)`. Appends to
-    `_reconciled_filled` when a row flips to FILLED so the caller can
-    fire template-attach post-commit.
+def _rco_mark_no_id_rejected(row) -> None:
+    row.status = "REJECTED"
+    row.detail = ((row.detail or "")[:200]
+                  + " · live placement never returned broker_order_id")
 
-    `dry_run=True` computes the SAME decision without mutating `r` or
-    appending to `_reconciled_filled` — used by `list_active_chases`'s
-    unlocked classification pass (see `_chase_process_paper_row` for
-    the identical rationale).
 
-    2026-10 fix — same active-chase withhold rule as the postback
-    handlers (`orders_postback.py:_pb_should_withhold_status`): this
-    sweep backs the `/chases/active` panel, polled every ~3s, and reads
-    the SAME cached live broker order book a postback would. A row
-    mid-retry (chase just rejected on a price-shaped reason and is
-    about to place a repriced order) can have its just-rejected
-    broker_order_id's cached status read here and get finalized to a
-    non-FILLED terminal status before the retry's own
-    `_sync_algo_order_id` writes the new broker_order_id — tripping the
-    exact same false-CRITICAL-alert collision via a different writer.
-    Only non-FILLED outcomes are withheld; a genuine fill always applies.
+def _rco_mark_paper_dropped(row) -> None:
+    row.status = "UNFILLED"
+    row.detail = ((row.detail or "")[:200] + " · paper engine no longer tracking")
+
+
+async def _rco_reconcile_no_id_row(r) -> bool:
+    """A live-mode row with NO broker_order_id at all — placement
+    itself never succeeded. Deliberately NOT broker truth (the
+    canonical accessor treats a falsy id as 'unavailable, don't guess'
+    and leaves the row alone) — this is a distinct, pre-existing
+    business rule kept local to `list_active_chases` (see the
+    module-level note above this block). Reuses
+    `orders_postback._pb_should_withhold_status`'s HELD/active-chase
+    check for consistency with every other writer instead of a
+    standalone `is_chase_active` call. Returns True iff REJECTED was
+    actually written (row dropped from `kept`).
     """
-    try:
-        from backend.api.algo.chase import is_chase_active
-        _chase_is_active = is_chase_active(getattr(r, "id", None))
-    except Exception:
-        _chase_is_active = False
+    from backend.api.routes.orders_postback import _pb_should_withhold_status
+    if _pb_should_withhold_status(r, "REJECTED"):
+        return False
+    return await _single_row_locked_update(
+        r.id, {"OPEN", "CANCEL_FAILED"}, _rco_mark_no_id_rejected,
+    )
 
-    if not (r.broker_order_id or "").strip():
-        if _chase_is_active:
-            return False, 0, 0
-        if not dry_run:
-            r.status = "REJECTED"
-            r.detail = ((r.detail or "")[:200]
-                        + " · live placement never returned broker_order_id")
-        return True, 1, 0
 
-    _bo = _broker_status_by_id.get(str(r.broker_order_id))
-    if not _bo or _bo["status"] not in _CHASE_LIVE_TERMINAL:
-        return False, 0, 0
+async def _rco_reconcile_paper_row(r, paper_open_ids: "set | None") -> bool:
+    """Returns True iff dropped from `kept`. Classification reuses the
+    UNCHANGED `_chase_process_paper_row(..., dry_run=True)` (pure,
+    no mutation) so the drop/write decision stays the single source of
+    truth that function's own tests already cover; the write itself (only
+    when actually needed) goes through `_single_row_locked_update` so a
+    row that doesn't need a write never takes a lock.
+    `paper_open_ids=None` (paper engine unreachable) means 'unknown,
+    keep as-is' — never drop, matching the pre-existing behavior.
+    """
+    if paper_open_ids is None:
+        return False
+    drop, write_needed = _chase_process_paper_row(r, paper_open_ids, dry_run=True)
+    if not drop:
+        return False
+    if write_needed:
+        await _single_row_locked_update(r.id, {"OPEN"}, _rco_mark_paper_dropped)
+    return True
 
-    new_status = _CHASE_KITE_TO_ALGO[_bo["status"]]
-    if new_status != "FILLED" and _chase_is_active:
-        return False, 0, 0
-    if r.status != new_status:
-        if dry_run:
-            return True, 0, 1
-        r.status = new_status
-        if new_status == "FILLED":
-            _rco_apply_fill_price(r, _bo)
-            _reconciled_filled.append(r)
-        r.detail = ((r.detail or "")[:200]
-                    + f" · broker says {_bo['status']}")
-        return True, 0, 1
-    return True, 0, 0
+
+async def _rco_reconcile_live_row(r, broker_status_by_id: dict) -> "tuple[bool, bool]":
+    """Reconcile one live-mode row that IS known to carry a
+    broker_order_id, via the canonical single-order-view accessor
+    (`orders_helpers.py:get_broker_order_truth` / `apply_order_truth`).
+    Returns `(dropped, filled)` — `dropped=True` means the row actually
+    transitioned this call and must not appear in `kept`.
+
+    `withhold_if_active=True` reuses `_pb_should_withhold_status`
+    internally (same HELD/active-chase-retry guard the old inline
+    `_chase_process_live_row` enforced) — a mid-retry row's just-
+    rejected broker_order_id can't be finalized to a non-FILLED
+    terminal status ahead of the retry's own `_sync_algo_order_id`
+    write. A withheld write, OR a write lost to a race with another
+    writer (apply_order_truth's own idempotency/final-status guards),
+    both return `dropped=False` — the stale in-memory `r` keeps
+    showing for at most one more ~3s poll cycle, a display-only
+    staleness, never a safety issue (the authoritative DB state is
+    correct either way).
+    """
+    from backend.api.routes.orders_helpers import get_broker_order_truth, apply_order_truth
+    truth = await get_broker_order_truth(r.broker_order_id, broker_status_by_id)
+    if not truth.available or truth.algo_status is None:
+        return False, False
+    changed = await apply_order_truth(r.id, truth, withhold_if_active=True)
+    if not changed:
+        return False, False
+    return True, truth.algo_status == "FILLED"
 
 
 def _retry_parse_overrides(overrides_json) -> dict:
@@ -980,66 +1033,6 @@ async def _rco_kill_live_mode(row) -> str:
         return f"broker cancel failed: {e}"
 
 
-def _rco_reconcile_active_rows(
-    rows: list,
-    paper_open_ids: "set | None",
-    broker_status_by_id: dict,
-    dry_run: bool = False,
-) -> "tuple[list, list, bool, set]":
-    """Scan OPEN/CANCEL_FAILED rows and inline-reconcile paper + live modes.
-
-    Returns (kept, reconciled_filled, needs_commit, mutate_ids).
-    `reconciled_filled` is the list of rows that just transitioned to FILLED
-    so the caller can fire template-attach after the DB commit.
-    `mutate_ids` is the set of row ids that required a field change
-    (dropped-via-mutation, e.g. UNFILLED/REJECTED, or reconciled to a
-    new status) — computed identically whether or not `dry_run` is set,
-    so a caller can run this once over an UNLOCKED read (`dry_run=True`,
-    no row touched) purely to learn which ids need a row lock, then run
-    it again for real (`dry_run=False`) over just that locked subset.
-    Row ids dropped WITHOUT any field change (e.g. a paper row already
-    terminal, or a live row whose broker status already matches) are
-    excluded from `mutate_ids` — no write, no lock needed for those.
-    """
-    kept: list = []
-    reconciled_filled: list = []
-    mutate_ids: set = set()
-    dropped_paper = dropped_live = reconciled_live = 0
-    for r in rows:
-        mode = (r.mode or "").lower()
-        if mode == "paper" and paper_open_ids is not None:
-            drop, d_delta = _chase_process_paper_row(r, paper_open_ids, dry_run=dry_run)
-            dropped_paper += d_delta
-            if d_delta:
-                mutate_ids.add(r.id)
-            if drop:
-                continue
-        elif mode == "live":
-            drop, d_delta, r_delta = _chase_process_live_row(
-                r, broker_status_by_id, reconciled_filled, dry_run=dry_run,
-            )
-            dropped_live += d_delta
-            reconciled_live += r_delta
-            if d_delta or r_delta:
-                mutate_ids.add(r.id)
-            if drop:
-                continue
-        kept.append(r)
-    needs_commit = bool(dropped_paper or dropped_live or reconciled_live)
-    return kept, reconciled_filled, needs_commit, mutate_ids
-
-
-def _rco_merge_kept_rows(dry_kept: list, locked_kept: list) -> list:
-    """Merge the untouched-rows subset from `list_active_chases`'s
-    unlocked classification pass with the freshly-reconciled subset
-    from its locked re-read, then re-sort newest-first — `locked_kept`
-    came from an unordered `id IN (...)` query so the combined list
-    isn't naturally sorted."""
-    merged = list(dry_kept) + list(locked_kept)
-    merged.sort(key=lambda r: r.id, reverse=True)
-    return merged
-
-
 _PREVIEW_FO_EXCHANGES = frozenset({"NFO", "MCX", "CDS", "BFO", "BCD", "NCO"})
 
 
@@ -1285,35 +1278,6 @@ def _rco_persist_attach_payload(row, result, session) -> bool:
     return False
 
 
-async def _rco_fetch_broker_order(acct: str, broker_order_id: str) -> "tuple[dict | None, str | None, str | None]":
-    """Fetch broker order book for *acct* and look up *broker_order_id*.
-
-    Returns (bo, kite_status, target) where:
-    - bo is the matching order dict or None when not found
-    - kite_status is the UPPER-cased Kite status string or None
-    - target is the mapped algo status ("FILLED", "CANCELLED", …) or None
-
-    Raises HTTPException on auth / network failure.
-    """
-    from backend.brokers import get_broker
-
-    try:
-        broker = get_broker(acct)
-    except Exception as e:
-        raise HTTPException(status_code=404, detail=f"account {acct} not loaded ({e})")
-    try:
-        broker_orders = await asyncio.to_thread(broker.orders)
-    except Exception as e:
-        logger.warning(f"reconcile {broker_order_id}: broker.orders() failed: {e}")
-        raise HTTPException(status_code=502, detail=f"broker fetch failed: {e}")
-
-    by_id = {str(o.get("order_id")): o for o in (broker_orders or [])}
-    bo = by_id.get(str(broker_order_id))
-    kite_status = str(bo.get("status") or "").upper() if bo else None
-    target = _RECONCILE_KITE_TO_ALGO.get(kite_status) if kite_status else None
-    return bo, kite_status, target
-
-
 async def _rco_dispatch_kill(row) -> str:
     """Dispatch the mode-appropriate cancel for a chase row.
     Returns an error string on failure, empty string on success.
@@ -1336,86 +1300,6 @@ def _rco_apply_kill_status(row, err_msg: str) -> None:
         row.detail = ((row.detail or "")[:200] + " · killed by operator")
 
 
-_RECONCILE_KITE_TO_ALGO = {
-    "COMPLETE":  "FILLED",
-    "CANCELLED": "CANCELLED",
-    "REJECTED":  "REJECTED",
-    "EXPIRED":   "UNFILLED",
-}
-
-
-def _rco_stamp_fill_price(r, bo: dict) -> None:
-    """Write fill_price + filled_at from broker order dict onto AlgoOrder row.
-    Uses average_price, falls back to price; silently skips on bad value.
-
-    Bug fix (2026-09-30): also stamps filled_quantity = quantity. This
-    writer only ever runs when `_rco_reconcile_one_row` has already mapped
-    the broker's own order status to FILLED (Kite COMPLETE via
-    _RECONCILE_KITE_TO_ALGO) — by definition a full fill. filled_quantity
-    was never written here, which permanently blocked the bulk-reconcile
-    template-attach full-fill gate.
-    """
-    from datetime import datetime, timezone
-    try:
-        ap = bo.get("average_price") or bo.get("price")
-        if ap is not None:
-            r.fill_price = float(ap)
-    except (TypeError, ValueError):
-        pass
-    r.filled_quantity = int(r.quantity or 0)
-    r.filled_at = datetime.now(timezone.utc)
-
-
-def _rco_reconcile_one_row(r, by_id: dict, _attach_queue: list) -> tuple[int, int]:
-    """Reconcile one AlgoOrder row against the broker snapshot dict.
-    Returns (updated_delta, missing_delta). Appends to _attach_queue on FILLED.
-    """
-    bid = str(r.broker_order_id or "")
-    if not bid:
-        return 0, 0
-    bo = by_id.get(bid)
-    if bo is None:
-        r.status = "UNFILLED"
-        r.detail = (r.detail or "") + " [reconciled — broker no longer carries order_id]"
-        return 0, 1
-    kite_status = str(bo.get("status") or "").upper()
-    new_status = _RECONCILE_KITE_TO_ALGO.get(kite_status)
-    if new_status and r.status != new_status:
-        r.status = new_status
-        if new_status == "FILLED":
-            _rco_stamp_fill_price(r, bo)
-            _attach_queue.append(r)
-        return 1, 0
-    return 0, 0
-
-
-async def _rco_reconcile_account(
-    acct: str, acct_rows: list, _attach_queue: list,
-) -> tuple[int, int]:
-    """Reconcile one account's OPEN live rows against the broker order book.
-    Returns (updated, missing) delta counts. Appends FILLED rows to
-    _attach_queue for post-commit template-attach dispatch."""
-    from backend.brokers import get_broker
-
-    try:
-        broker = get_broker(acct)
-    except Exception as e:
-        logger.warning(f"reconcile: get_broker({acct}) failed: {e}")
-        return 0, 0
-    try:
-        broker_orders = await asyncio.to_thread(broker.orders)
-    except Exception as e:
-        logger.warning(f"reconcile: broker.orders() for {acct} failed: {e}")
-        return 0, 0
-
-    by_id = {str(o.get("order_id")): o for o in (broker_orders or [])}
-    updated = 0
-    missing = 0
-    for r in acct_rows:
-        upd, mis = _rco_reconcile_one_row(r, by_id, _attach_queue)
-        updated += upd
-        missing += mis
-    return updated, missing
 
 
 def _rco_parse_preflight_identity(body: dict) -> tuple:
@@ -1469,71 +1353,6 @@ def _rco_validate_preflight_params(
             detail=f"exchange must be one of {sorted(_EXCHANGES)}")
     if side not in _TXN_TYPES:
         raise HTTPException(status_code=400, detail="side must be BUY or SELL")
-
-
-def _rco_reconcile_apply_target(r, bo: Optional[dict], kite_status: Optional[str], target: str) -> tuple[bool, str, bool]:
-    """Apply a known target status onto an AlgoOrder row (both row and broker order present).
-    Returns (updated, note, attach_after_commit).
-
-    Bug fix (2026-09-30, same class as _rco_apply_fill_price /
-    _rco_stamp_fill_price): also stamps filled_quantity = quantity when
-    flipping to FILLED. `target` only resolves to "FILLED" when the
-    broker's own status maps via _RECONCILE_KITE_TO_ALGO (Kite COMPLETE)
-    — by definition a full fill — so filled_quantity was never written
-    here, permanently blocking the per-order reconcile template-attach
-    full-fill gate.
-    """
-    from datetime import datetime, timezone
-
-    if r.status != target:
-        r.status = target
-        if target == "FILLED":
-            # Stamp filled_quantity as soon as the row becomes FILLED,
-            # not only when bo carries a usable average_price — FILLED
-            # is a final status (ALGO_ORDER_FINAL_STATUSES), so a row
-            # that takes the no-average_price branch below would
-            # otherwise be stuck at filled_quantity=0 forever with no
-            # later reconcile able to retry it.
-            r.filled_quantity = int(r.quantity or 0)
-        if target == "FILLED" and bo and bo.get("average_price"):
-            try:
-                r.fill_price = float(bo["average_price"])
-                r.filled_at = datetime.now(timezone.utc)
-            except Exception:
-                pass
-            return True, f"broker status={kite_status} → {target}", True
-        r.detail = (r.detail or "") + f" [reconciled → {target}]"
-        return True, f"broker status={kite_status} → {target}", False
-    return False, f"already {target}", False
-
-
-def _rco_apply_reconcile_status(
-    r,
-    bo: Optional[dict],
-    kite_status: Optional[str],
-    target: Optional[str],
-) -> tuple[bool, str, bool]:
-    """Apply the broker status onto a single AlgoOrder row.
-
-    Returns (updated, note, attach_after_commit).
-    `attach_after_commit` is True when the row was just flipped to FILLED
-    and has a template that should be fired post-commit.
-    """
-    if r is None:
-        if bo is None:
-            return False, "broker has no order (no algo row to update)", False
-        return False, f"broker status={kite_status} (no algo row to update)", False
-
-    if bo is None:
-        if r.status == "OPEN":
-            r.status = "UNFILLED"
-            r.detail = (r.detail or "") + " [reconciled — broker no longer carries order_id]"
-            return True, "broker no longer carries order_id", False
-        return False, "broker has no order and algo row already terminal", False
-
-    if target:
-        return _rco_reconcile_apply_target(r, bo, kite_status, target)
-    return False, f"broker status={kite_status} (no algo mapping)", False
 
 
 _GROWW_EXCHANGE_TO_KITE: dict[str, str] = {
@@ -1705,24 +1524,31 @@ class OrdersController(Controller):
              set — marked UNFILLED in DB, dropped from response.
           2. live rows with no broker_order_id (placement never
              succeeded) — marked REJECTED in DB, dropped.
+          3. live rows WITH a broker_order_id reconcile via the
+             canonical single-order-view accessor (2026-10-23 order-poll
+             consolidation — see the module-level note above
+             `_single_row_locked_update`).
 
-        Live rows that DO carry a broker_order_id are trusted to be
-        legitimately in-flight; the operator-triggered reconcile
-        endpoint does the broker round-trip when they want a
-        thorough sweep.
+        Live rows that DO carry a broker_order_id and resolve as
+        genuinely in-flight are trusted; the operator-triggered
+        reconcile endpoint does a forced-fresh broker round-trip when
+        they want a thorough sweep.
 
-        2026-10 fix — this panel is polled every ~3s from several
-        simultaneously-mounted UI components (`/orders`, `SymbolPanel`,
-        `ActivityLogModal`), and used to take a `.with_for_update()` row
-        lock across up to 500 rows on EVERY poll, even when nothing
-        actually needed reconciling — contending with the chase engine's
-        own per-attempt locking and with postback writers for no reason.
-        Fixed with a two-pass read: an UNLOCKED select classifies which
-        rows (if any) actually need a field change (`dry_run=True`, no
-        row touched); only if that set is non-empty does a SECOND,
-        narrowly-scoped select re-fetch JUST those ids with the row lock
-        and perform the real mutation. The common case (nothing to
-        reconcile) now takes zero locks.
+        2026-10 fix (lock scoping, preserved by the 2026-10-23
+        consolidation above) — this panel is polled every ~3s from
+        several simultaneously-mounted UI components (`/orders`,
+        `SymbolPanel`, `ActivityLogModal`), so it must never take a row
+        lock across the whole unlocked batch on every poll. Each
+        per-mode helper below only ever opens a session + takes a lock
+        for a row it has ALREADY determined (via a cheap, lock-free
+        check) needs a write — `get_broker_order_truth` itself does no
+        DB work at all, and `apply_order_truth` scopes its own lock to
+        exactly one row. The common case (nothing to reconcile) still
+        takes zero locks. No alert fires from this endpoint — see
+        `backend/api/algo/order_poll.py`'s module docstring for why
+        alerting is reserved for the automatic background correctors
+        (the watchdog, the periodic sweep, postback's follow-up) and
+        deliberately excluded here (polled every ~3s — would spam).
         """
         from sqlalchemy import desc, select as sql_select
         from backend.api.database import async_session
@@ -1742,6 +1568,9 @@ class OrdersController(Controller):
         # had the KiteConnection bug — separate fix in this commit).
         # Inline broker lookup uses the existing /api/orders cache so we
         # pay 1 broker.orders() per account per 15 s, not 1 per 3 s poll.
+        # Fed into `get_broker_order_truth(..., broker_status_by_id=...)`
+        # per row below so a sweep over many rows costs one fetch, not
+        # one per row.
         _broker_status_by_id = await _chase_snapshot_broker_status_by_id()
 
         async with async_session() as s:
@@ -1751,11 +1580,10 @@ class OrdersController(Controller):
             # (status != OPEN) and the operator had no surface short of
             # browsing /orders. The order is still LIVE at the broker;
             # recovery is via Reconcile or another Kill attempt.
-            # 2026-10 fix — exclude mode='draft'. _rco_reconcile_active_rows
-            # below only special-cases mode in ("paper", "live"); every
-            # other mode (draft included) falls through to
-            # kept.append(r) unconditionally, so a draft row (status='OPEN'
-            # by construction, never cleaned up by a chase/postback since
+            # 2026-10 fix — exclude mode='draft'. Every mode other than
+            # 'paper'/'live' falls through to kept.append(r) below
+            # unconditionally, so a draft row (status='OPEN' by
+            # construction, never cleaned up by a chase/postback since
             # it never reaches a broker) would otherwise sit in this
             # "in-flight chase" panel forever.
             #
@@ -1763,8 +1591,9 @@ class OrdersController(Controller):
             # NOT given the FINAL-status write-refuse guard the
             # postback/chase paths have — reconcile is the repair path
             # that corrects stuck rows from broker truth, so it must be
-            # able to write any status (enforced by the locked re-read
-            # below, not here).
+            # able to write any status (enforced per-row by
+            # `apply_order_truth` / `_single_row_locked_update` below,
+            # not here).
             unlocked_rows = (await s.execute(
                 sql_select(AlgoOrder)
                 .where(
@@ -1775,55 +1604,39 @@ class OrdersController(Controller):
                 .limit(500)
             )).scalars().all()
 
-            # Classification pass — dry_run=True guarantees no row here
-            # is mutated, so this is safe to run without a lock.
-            _dry_kept, _, _, _mutate_ids = _rco_reconcile_active_rows(
-                unlocked_rows, _paper_open_ids, _broker_status_by_id,
-                dry_run=True,
-            )
-
-            _reconciled_filled: list = []
-            if not _mutate_ids:
-                # Nothing to reconcile — zero row locks taken this poll.
-                kept = list(_dry_kept)
-            else:
-                # Lock ONLY the specific rows the dry run found need a
-                # write. The status filter here also protects against a
-                # postback/chase write that finalized one of these rows
-                # to a non-OPEN/CANCEL_FAILED status in between the two
-                # reads — such a row simply won't come back here and is
-                # correctly dropped from the response (it's no longer
-                # an active chase).
-                locked_rows = (await s.execute(
-                    sql_select(AlgoOrder)
-                    .where(
-                        AlgoOrder.id.in_(_mutate_ids),
-                        AlgoOrder.status.in_(["OPEN", "CANCEL_FAILED"]),
-                        AlgoOrder.mode != "draft",
-                    )
-                    .with_for_update()
-                    .execution_options(populate_existing=True)
-                )).scalars().all()
-
-                _locked_kept, _reconciled_filled, _, _ = _rco_reconcile_active_rows(
-                    locked_rows, _paper_open_ids, _broker_status_by_id,
-                )
-                await s.commit()
-                if _reconciled_filled:
-                    # 2026-09-27 audit fix (finding #4): admin reconcile
-                    # never wrote FIFO ledger entries for rows it flips to
-                    # FILLED from broker truth — only the Kite postback
-                    # path did. A reconcile-recovered fill with a
-                    # strategy_id silently never reached the ledger.
-                    from backend.api.routes.orders_postback import _pb_write_ledger_fills
-                    await _pb_write_ledger_fills(s, _reconciled_filled)
-                    await s.commit()
-                for _filled_row in _reconciled_filled:
-                    _maybe_fire_template_attach_for_reconcile(_filled_row)
-
-                kept = _rco_merge_kept_rows(_dry_kept, _locked_kept)
+            kept: list = []
+            filled_ids: list[int] = []
+            for r in unlocked_rows:
+                mode = (r.mode or "").lower()
+                if mode == "paper":
+                    if await _rco_reconcile_paper_row(r, _paper_open_ids):
+                        continue
+                elif mode == "live":
+                    if not (r.broker_order_id or "").strip():
+                        if await _rco_reconcile_no_id_row(r):
+                            continue
+                    else:
+                        dropped, filled = await _rco_reconcile_live_row(
+                            r, _broker_status_by_id,
+                        )
+                        if dropped:
+                            if filled:
+                                filled_ids.append(r.id)
+                            continue
+                kept.append(r)
 
             child_map = await _fetch_child_order_ids(s, [r.id for r in kept])
+
+        # Template-attach fires AFTER the lock above releases, same as
+        # before — `apply_order_truth` already wrote the FIFO ledger
+        # entry and committed for every row in `filled_ids`.
+        if filled_ids:
+            async with async_session() as _s2:
+                _filled_rows = (await _s2.execute(
+                    sql_select(AlgoOrder).where(AlgoOrder.id.in_(filled_ids))
+                )).scalars().all()
+            for _filled_row in _filled_rows:
+                _maybe_fire_template_attach_for_reconcile(_filled_row)
 
         do_mask = not is_admin_request(request)
         masked_acct = mask_account if do_mask else (lambda a: a)
@@ -1947,15 +1760,26 @@ class OrdersController(Controller):
     @post("/algo/reconcile")
     async def reconcile_algo_orders(self, request: Request) -> dict:
         """Admin sweep — re-syncs stale OPEN algo_orders rows against the
-        broker. Operator-triggered after observing rows stuck at OPEN
-        when the broker has already moved the order to a terminal
-        status (postback miss, network drop, etc.).
+        broker via the canonical single-order-view accessor
+        (`orders_helpers.py:get_broker_order_truth` / `apply_order_truth`).
+        Operator-triggered after observing rows stuck at OPEN when the
+        broker has already moved the order to a terminal status
+        (postback miss, network drop, etc.).
 
-        Strategy: group OPEN live rows by account, fetch each
-        account's order book once, then map Kite's per-order status
-        through _KITE_STATUS_MAP. If the broker no longer carries the
-        order_id at all, mark it UNFILLED (best-effort — operator can
-        still re-fire manually).
+        2026-10-23 (order-poll consolidation) — previously this route
+        ran its own `_rco_reconcile_account`/`_rco_reconcile_one_row`
+        logic, which unconditionally guessed UNFILLED whenever the
+        broker no longer carried the order_id — including a transient
+        API glitch or an empty response. Now: an unavailable broker
+        response leaves the row untouched ("missing" below means
+        *unavailable, left untouched*, not "confirmed gone" — see
+        `OrderTruth.available`'s own docstring), never a guess.
+        `invalidate("orders")` busts the 15s broker-snapshot cache
+        FIRST so this operator-triggered sweep always reads fresh
+        broker state, not up to 15s of staleness. `withhold_if_active`
+        protects against finalizing a row the chase engine is actively
+        mid-retry on (same `_pb_should_withhold_status` guard every
+        other writer in this codebase now shares).
         """
         if not is_admin_request(request):
             raise HTTPException(status_code=403, detail="admin only")
@@ -1963,6 +1787,9 @@ class OrdersController(Controller):
         from sqlalchemy import select as _sql_select
         from backend.api.database import async_session
         from backend.api.models import AlgoOrder
+        from backend.api.routes.orders_helpers import (
+            get_broker_order_truth, apply_order_truth, _broker_order_snapshot,
+        )
 
         # Pull every live OPEN algo_orders row.
         async with async_session() as s:
@@ -1973,46 +1800,55 @@ class OrdersController(Controller):
                 )
             )).scalars().all()
 
-            if not rows:
-                return {"scanned": 0, "updated": 0, "missing": 0}
+        if not rows:
+            return {"scanned": 0, "updated": 0, "missing": 0}
 
-            # Group rows by account so each broker call is one lookup.
-            by_acct: dict[str, list] = {}
-            for r in rows:
-                by_acct.setdefault(str(r.account or ""), []).append(r)
+        invalidate("orders")
+        broker_status_by_id = await _broker_order_snapshot()
 
-            updated = 0
-            missing = 0
-            # Audit fix — collect rows that need template attach AFTER
-            # commit so the attach pipeline reads the committed FILLED
-            # state rather than the in-memory pre-commit mutation.
-            _attach_queue: list = []
+        updated = 0
+        missing = 0
+        filled_ids: list[int] = []
+        for r in rows:
+            bid = str(r.broker_order_id or "")
+            if not bid:
+                continue
+            truth = await get_broker_order_truth(bid, broker_status_by_id)
+            if not truth.available:
+                missing += 1
+                continue
+            if truth.algo_status is None:
+                continue
+            if await apply_order_truth(r.id, truth, withhold_if_active=True):
+                updated += 1
+                if truth.algo_status == "FILLED":
+                    filled_ids.append(r.id)
 
-            for acct, acct_rows in by_acct.items():
-                _upd, _miss = await _rco_reconcile_account(
-                    acct, acct_rows, _attach_queue,
-                )
-                updated += _upd
-                missing += _miss
+        if updated:
+            invalidate("orders")
 
-            await s.commit()
-            if updated or missing:
-                invalidate("orders")
-            # Fire template attach AFTER commit so the new session reads
-            # the committed FILLED state.
-            for _r in _attach_queue:
-                _maybe_fire_template_attach_for_reconcile(_r)
-            # Gap fix (2026-10): this sweep can mark a row FILLED without
-            # ever going through the primary postback flow (which already
-            # kicks the performance task + resubscribes the ticker on
-            # fill) — without this, a newly-filled position's WS tick
-            # subscription silently waits for the next _task_performance
-            # cycle (up to 5 min). _attach_queue already holds exactly
-            # the rows that just transitioned to FILLED.
-            if _attach_queue:
-                await _subscribe_filled_pairs(
-                    [(_r.symbol, _r.exchange) for _r in _attach_queue]
-                )
+        # Re-fetch the freshly-filled rows for attach/subscribe — the
+        # `rows` fetched above predate every mutation above (each made
+        # in `apply_order_truth`'s own locked session), so their
+        # fill_price/filled_quantity/template fields are stale.
+        attach_rows: list = []
+        if filled_ids:
+            async with async_session() as s2:
+                attach_rows = (await s2.execute(
+                    _sql_select(AlgoOrder).where(AlgoOrder.id.in_(filled_ids))
+                )).scalars().all()
+        for _r in attach_rows:
+            _maybe_fire_template_attach_for_reconcile(_r)
+        # Gap fix (2026-10): this sweep can mark a row FILLED without
+        # ever going through the primary postback flow (which already
+        # kicks the performance task + resubscribes the ticker on
+        # fill) — without this, a newly-filled position's WS tick
+        # subscription silently waits for the next _task_performance
+        # cycle (up to 5 min).
+        if attach_rows:
+            await _subscribe_filled_pairs(
+                [(_r.symbol, _r.exchange) for _r in attach_rows]
+            )
 
         return {"scanned": len(rows), "updated": updated, "missing": missing}
 
@@ -2023,12 +1859,17 @@ class OrdersController(Controller):
         request: Request,
         data: ReconcileSingleRequest,
     ) -> dict:
-        """Per-card reconcile — re-sync ONE order against the broker.
-        Looks the broker_order_id up in the broker's live order book,
-        then maps any terminal status back onto the matching algo_orders
-        row (when one exists). Operator-triggered from the OrderCard
-        Reconcile button so a stuck row can be cleared without running
-        the full sweep across every account.
+        """Per-card reconcile — re-sync ONE order against the broker via
+        the canonical single-order-view accessor. Operator-triggered
+        from the OrderCard Reconcile button so a stuck row can be
+        cleared without running the full sweep across every account.
+
+        2026-10-23 (order-poll consolidation) — a missing/unavailable
+        broker response now leaves the row untouched with an explicit
+        `note`, instead of the old unconditional UNFILLED guess.
+        `invalidate("orders")` forces a fresh broker snapshot first —
+        an operator clicking Reconcile wants broker truth NOW, not a
+        cached read.
         """
         if not is_admin_request(request):
             raise HTTPException(status_code=403, detail="admin only")
@@ -2036,12 +1877,22 @@ class OrdersController(Controller):
         from sqlalchemy import select as _sql_select
         from backend.api.database import async_session
         from backend.api.models import AlgoOrder
+        from backend.api.routes.orders_helpers import (
+            get_broker_order_truth, apply_order_truth, _broker_order_snapshot,
+        )
+        from backend.brokers import get_broker
 
         acct = (data.account or "").strip()
         if not acct:
             raise HTTPException(status_code=400, detail="account required")
+        try:
+            get_broker(acct)
+        except Exception as e:
+            raise HTTPException(status_code=404, detail=f"account {acct} not loaded ({e})")
 
-        bo, kite_status, target = await _rco_fetch_broker_order(acct, broker_order_id)
+        invalidate("orders")
+        broker_status_by_id = await _broker_order_snapshot()
+        truth = await get_broker_order_truth(broker_order_id, broker_status_by_id)
 
         async with async_session() as s:
             r = (await s.execute(
@@ -2050,31 +1901,46 @@ class OrdersController(Controller):
                 )
             )).scalars().first()
 
-            updated, note, _attach_after_commit = _rco_apply_reconcile_status(
-                r, bo, kite_status, target,
-            )
-
+        updated = False
+        algo_status = r.status if r is not None else None
+        if r is None:
+            note = ("broker has no order (no algo row to update)" if not truth.available
+                    else f"broker status={truth.raw_broker_status} (no algo row to update)")
+        elif not truth.available:
+            note = "broker response unavailable for this order_id — left untouched (no guess)"
+        elif truth.algo_status is None:
+            note = f"broker status={truth.raw_broker_status} (not yet terminal)"
+        else:
+            updated = await apply_order_truth(r.id, truth, withhold_if_active=True)
             if updated:
-                await s.commit()
-                invalidate("orders")
-            # Fire template attach AFTER commit so the attach pipeline's
-            # new session reads the committed FILLED state.
-            if updated and r is not None and _attach_after_commit:
-                _maybe_fire_template_attach_for_reconcile(r)
-            # Gap fix (2026-10): same as the admin sweep above — a
-            # per-card reconcile can flip a row to FILLED with no postback
-            # involved. Gate on r.status == "FILLED" directly (not
-            # _attach_after_commit, which is False whenever the broker
-            # order dict lacks average_price — see
-            # _rco_reconcile_apply_target — so it would otherwise miss
-            # some genuine FILLED transitions).
-            if updated and r is not None and r.status == "FILLED":
-                await _subscribe_filled_pairs([(r.symbol, r.exchange)])
+                algo_status = truth.algo_status
+                note = f"broker status={truth.raw_broker_status} → {truth.algo_status}"
+            elif r.status == truth.algo_status:
+                note = f"already {truth.algo_status}"
+            else:
+                note = ("withheld — row is HELD or under an active chase retry, "
+                        "or already finalized by another writer")
+
+        if updated:
+            invalidate("orders")
+            # Gap fix (2026-10): a per-card reconcile can flip a row to
+            # FILLED with no postback involved. Re-fetch a fresh row for
+            # the attach pipeline — `r` above predates the mutation
+            # (made in `apply_order_truth`'s own locked session), so its
+            # fill_price/filled_quantity/template fields are stale.
+            if algo_status == "FILLED":
+                async with async_session() as s2:
+                    _fresh = (await s2.execute(
+                        _sql_select(AlgoOrder).where(AlgoOrder.id == r.id)
+                    )).scalar_one_or_none()
+                if _fresh is not None:
+                    _maybe_fire_template_attach_for_reconcile(_fresh)
+                    await _subscribe_filled_pairs([(_fresh.symbol, _fresh.exchange)])
 
         return {
             "broker_order_id": str(broker_order_id),
-            "broker_status":   kite_status,
-            "algo_status":     (r.status if r is not None else None),
+            "broker_status":   truth.raw_broker_status,
+            "algo_status":     algo_status,
             "updated":         updated,
             "note":            note,
         }

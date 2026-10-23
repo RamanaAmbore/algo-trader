@@ -156,89 +156,57 @@ class TestSyncApplyRowStatusSetsFilledQuantity:
         assert r.filled_quantity == 0
 
 
-# ── 3. Chase / admin "chases/active" live-row reconcile ────────────────────
+# ── 3/4/5. Chase / admin bulk sweep / per-card reconcile — all three
+#    now share ONE writer (2026-10-23 order-poll consolidation):
+#    orders_helpers.py:apply_order_truth. `_rco_apply_fill_price`,
+#    `_rco_stamp_fill_price`, and `_rco_reconcile_apply_target` (the
+#    three separate writers this section used to test) are DELETED —
+#    `list_active_chases`, the admin bulk sweep, and the per-card
+#    reconcile endpoint all call `apply_order_truth` instead, which
+#    already stamps `filled_quantity = quantity` unconditionally on a
+#    FILLED resolution (see `test_order_truth_accessor.py::
+#    test_apply_order_truth_writes_filled_and_records_ledger` for the
+#    direct unit coverage of that). This section keeps the one
+#    genuinely distinct round-trip check: that a FILLED row produced by
+#    `apply_order_truth` actually unblocks
+#    `_maybe_fire_template_attach_for_reconcile`'s full-fill gate.
 
-class TestRcoApplyFillPriceSetsFilledQuantity:
-    def test_sets_filled_quantity_to_quantity(self):
-        from backend.api.routes.orders import _rco_apply_fill_price
-        r = _live_row(qty=60, filled=0)
-        bo = {"average_price": 120.0}
-
-        _rco_apply_fill_price(r, bo)
-
-        assert r.filled_quantity == 60
-        assert r.fill_price == 120.0
-
-    def test_sets_filled_quantity_even_when_average_price_absent(self):
-        """average_price missing/zero must not block filled_quantity —
-        the row's OWN quantity is broker-truth-independent here."""
-        from backend.api.routes.orders import _rco_apply_fill_price
-        r = _live_row(qty=60, filled=0)
-        _rco_apply_fill_price(r, {})
-        assert r.filled_quantity == 60
-
-
-# ── 4. Bulk reconcile sweep ("/reconcile" endpoint) ─────────────────────────
-
-class TestRcoStampFillPriceSetsFilledQuantity:
-    def test_sets_filled_quantity_to_quantity(self):
-        from backend.api.routes.orders import _rco_stamp_fill_price
-        r = _live_row(qty=40, filled=0)
-        bo = {"average_price": 99.0}
-
-        _rco_stamp_fill_price(r, bo)
-
-        assert r.filled_quantity == 40
-
-
-# ── 5. Per-card single-order reconcile (same defect class, found during
-#      this fix — not one of the two originally-named locations) ──────────
-
-class TestRcoReconcileApplyTargetSetsFilledQuantity:
-    def test_full_fill_sets_filled_quantity_and_flags_attach(self):
-        from backend.api.routes.orders import _rco_reconcile_apply_target
-        r = _live_row(qty=60, filled=0, status="OPEN")
-        bo = {"average_price": 200.0}
-
-        updated, note, attach_after_commit = _rco_reconcile_apply_target(
-            r, bo, "COMPLETE", "FILLED",
-        )
-
-        assert updated is True
-        assert attach_after_commit is True
-        assert r.filled_quantity == 60
-
-    def test_filled_without_average_price_still_sets_filled_quantity(self):
-        """No usable average_price on the broker order dict → the row
-        still flips to FILLED (target) via the fallthrough branch, but
-        attach_after_commit is False since there's no fill_price to work
-        with. FILLED is a final status, so filled_quantity must still be
-        set here — otherwise the row is stuck at 0 forever with no later
-        reconcile able to retry it."""
-        from backend.api.routes.orders import _rco_reconcile_apply_target
-        r = _live_row(qty=60, filled=0, status="OPEN")
-
-        updated, note, attach_after_commit = _rco_reconcile_apply_target(
-            r, {}, "COMPLETE", "FILLED",
-        )
-
-        assert updated is True
-        assert attach_after_commit is False
-        assert r.filled_quantity == 60
-
-    def test_unblocks_maybe_fire_template_attach_for_reconcile(self):
-        """Full round-trip: writer output must satisfy both
-        `_opl_reconcile_attach_eligible` and the inline full-fill guard
-        inside `_maybe_fire_template_attach_for_reconcile`, which creates
-        the attach task via asyncio.create_task."""
-        from backend.api.routes.orders import _rco_reconcile_apply_target
+class TestApplyOrderTruthUnblocksTemplateAttach:
+    @pytest.mark.asyncio
+    async def test_filled_row_unblocks_maybe_fire_template_attach_for_reconcile(self):
+        from unittest.mock import AsyncMock
+        from backend.api.routes.orders_helpers import apply_order_truth, OrderTruth
         from backend.api.routes.orders_place import (
             _maybe_fire_template_attach_for_reconcile,
         )
 
         r = _live_row(qty=60, filled=0, status="OPEN")
-        bo = {"average_price": 200.0}
-        _rco_reconcile_apply_target(r, bo, "COMPLETE", "FILLED")
+        r.id = 1
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = r
+        mock_session = AsyncMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+        mock_session.execute = AsyncMock(return_value=mock_result)
+        mock_session.commit = AsyncMock()
+
+        with patch("backend.api.database.async_session", return_value=mock_session), \
+             patch(
+                 "backend.api.routes.orders_postback._pb_write_ledger_fills",
+                 new=AsyncMock(),
+             ):
+            mutated = await apply_order_truth(
+                1, OrderTruth(available=True, algo_status="FILLED", average_price=200.0),
+            )
+
+        assert mutated is True
+        assert r.status == "FILLED"
+        assert r.filled_quantity == 60, (
+            "apply_order_truth must stamp filled_quantity = quantity on a "
+            "FILLED resolution — otherwise every migrated reconcile caller "
+            "is stuck at 0 forever, reproducing the original defect class"
+        )
 
         with patch("backend.api.routes.orders_place.asyncio") as mock_asyncio:
             _maybe_fire_template_attach_for_reconcile(r)

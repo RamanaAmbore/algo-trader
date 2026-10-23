@@ -183,17 +183,32 @@ class TestForUpdateLockingPresent:
         )
 
     def test_admin_reconcile_locks_its_select_but_has_no_refuse_guard(self):
-        # Locked (serializes against postback/chase on the same rows)...
+        """2026-10-23 (order-poll consolidation) amends this test's own
+        title/intent: `list_active_chases` (the "repair path that
+        corrects stuck rows from broker truth") no longer has its OWN
+        bespoke lock/guard logic (`_rco_reconcile_active_rows`,
+        deleted) — it delegates to the SAME canonical accessor
+        (`orders_helpers.py:apply_order_truth`) every other writer in
+        the codebase uses, which DOES carry the universal FINAL-status
+        write-refuse guard (`ALGO_ORDER_FINAL_STATUSES`). That's a
+        deliberate consolidation, not a regression: the guard only
+        ever matters when another writer raced ahead and ALREADY
+        finalized the row to a DIFFERENT final status between
+        `list_active_chases`'s own unlocked read and its per-row lock
+        attempt — refusing to stomp that is strictly safer than the
+        old guard-less design, and is exactly the "every caller gets
+        the safer semantics" outcome the consolidation plan called
+        for. Still locked (serializes against postback/chase on the
+        same rows) via `.with_for_update()`.
+        """
         assert (
             'AlgoOrder.status.in_(["OPEN", "CANCEL_FAILED"])' in _ORDERS_SRC
             and ".with_for_update()" in _ORDERS_SRC
         )
-        # ...but must NOT gain the FINAL-status write-refuse guard — this
-        # is the repair path that corrects stuck rows from broker truth.
-        assert "_rco_reconcile_active_rows" in _ORDERS_SRC
-        _rco_src = _ORDERS_SRC[_ORDERS_SRC.index("def _rco_reconcile_active_rows"):]
-        _rco_src = _rco_src[:_rco_src.index("\ndef _rco_")] if "\ndef _rco_" in _rco_src[20:] else _rco_src
-        assert "ALGO_ORDER_FINAL_STATUSES" not in _rco_src
+        from backend.api.routes.orders_helpers import apply_order_truth
+        _apply_src = inspect.getsource(apply_order_truth)
+        assert ".with_for_update()" in _apply_src
+        assert "ALGO_ORDER_FINAL_STATUSES" in _apply_src
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -218,9 +233,17 @@ def test_chase_terminal_update_db_writes_ledger_fills():
 
 
 def test_admin_reconcile_writes_ledger_fills():
-    assert "_pb_write_ledger_fills" in _ORDERS_SRC, (
-        "admin reconcile must write FIFO ledger entries for rows it "
-        "flips to FILLED from broker truth"
+    """2026-10-23 (order-poll consolidation) — admin reconcile no
+    longer writes the ledger itself; it delegates to
+    `orders_helpers.py:apply_order_truth`, which writes it for EVERY
+    caller (watchdog, order-poll sweep, postback follow-up,
+    list_active_chases, both admin routes) — one write path instead
+    of four divergent ones."""
+    from backend.api.routes.orders_helpers import apply_order_truth
+    _apply_src = inspect.getsource(apply_order_truth)
+    assert "_pb_write_ledger_fills" in _apply_src, (
+        "the canonical accessor must write FIFO ledger entries for "
+        "rows it flips to FILLED from broker truth"
     )
 
 
@@ -818,48 +841,52 @@ async def test_chase_terminal_update_db_ledger_write_actually_invoked():
 @pytest.mark.asyncio
 async def test_admin_reconcile_writes_ledger_for_reconciled_fills():
     """Behavioral check that list_active_chases' ledger-write call
-    actually fires for rows _rco_reconcile_active_rows flips to FILLED —
+    actually fires for a row the canonical accessor flips to FILLED —
     not just a source grep.
 
-    2026-10 fix (lock-scoping): list_active_chases now calls
-    _rco_reconcile_active_rows TWICE — once in dry_run=True mode over
-    an unlocked read (to find which ids need a lock), once for real
-    over a locked re-read of just that subset. The fake here
-    distinguishes the two calls via the dry_run kwarg: the dry run
-    reports row #77 as needing a lock (mutate_ids={77}); the real pass
-    (over the "locked" rows — still the same mocked session, so no
-    real DB involved) actually reconciles it to FILLED."""
+    2026-10-23 (order-poll consolidation) — list_active_chases no
+    longer calls its own `_rco_reconcile_active_rows` (deleted); it
+    calls `_rco_reconcile_live_row`, a thin wrapper over
+    `orders_helpers.py:get_broker_order_truth` / `apply_order_truth`.
+    This test drives the REAL `apply_order_truth` (not mocked) against
+    a mocked DB session so the ledger write is exercised end-to-end
+    through the actual migrated endpoint, not a fake stand-in."""
     from backend.api.routes.orders import OrdersController
     from backend.api.routes import orders_postback as pb_mod
 
-    mock_filled_row = MagicMock()
-    mock_filled_row.id = 77
+    scan_row = SimpleNamespace(
+        id=77, mode="live", status="OPEN", broker_order_id="BO77",
+    )
+    locked_row = SimpleNamespace(id=77, status="OPEN", quantity=50)
 
-    _rows_result = MagicMock()
-    _rows_result.scalars.return_value.all.return_value = []
+    _scan_result = MagicMock()
+    _scan_result.scalars.return_value.all.return_value = [scan_row]
+
+    _apply_result = MagicMock()
+    _apply_result.scalar_one_or_none.return_value = locked_row
+
+    _refetch_result = MagicMock()
+    _refetch_result.scalars.return_value.all.return_value = [locked_row]
 
     mock_session = AsyncMock()
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session.__aexit__ = AsyncMock(return_value=False)
-    mock_session.execute = AsyncMock(return_value=_rows_result)
+    mock_session.execute = AsyncMock(
+        side_effect=[_scan_result, _apply_result, _refetch_result],
+    )
     mock_session.commit = AsyncMock()
 
     mock_request = MagicMock()
 
     controller = OrdersController.__new__(OrdersController)
 
-    def _fake_reconcile(rows, paper_open_ids, broker_status_by_id, dry_run=False):
-        if dry_run:
-            return ([], [], True, {77})
-        return ([mock_filled_row], [mock_filled_row], True, {77})
+    truth = {"BO77": {"status": "COMPLETE", "average_price": 123.0}}
 
     with patch("backend.api.database.async_session", return_value=mock_session), \
          patch("backend.api.routes.orders._chase_snapshot_paper_open_ids",
                return_value=set()), \
          patch("backend.api.routes.orders._chase_snapshot_broker_status_by_id",
-               new=AsyncMock(return_value={})), \
-         patch("backend.api.routes.orders._rco_reconcile_active_rows",
-               side_effect=_fake_reconcile), \
+               new=AsyncMock(return_value=truth)), \
          patch("backend.api.routes.orders._fetch_child_order_ids",
                new=AsyncMock(return_value={})), \
          patch("backend.api.routes.orders._maybe_fire_template_attach_for_reconcile"), \
@@ -867,4 +894,6 @@ async def test_admin_reconcile_writes_ledger_for_reconciled_fills():
          patch.object(pb_mod, "_pb_write_ledger_fills", new=AsyncMock()) as mock_ledger:
         await OrdersController.list_active_chases.fn(controller, request=mock_request)
 
-    mock_ledger.assert_awaited_once_with(mock_session, [mock_filled_row])
+    mock_ledger.assert_awaited_once()
+    _ledger_session, _ledger_rows = mock_ledger.await_args.args
+    assert _ledger_rows == [locked_row]

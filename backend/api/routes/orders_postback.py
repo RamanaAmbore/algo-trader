@@ -438,6 +438,20 @@ async def _process_broker_postback(
         exchange=exchange, status_message=status_message,
     )
 
+    # Non-blocking follow-up verification (order-poll plan, item 6) —
+    # `_process_broker_postback` is awaited INLINE by the Dhan/Groww
+    # webhook handlers (unlike `_pb_event_kite`, which already runs
+    # inside its own `asyncio.create_task`), so scheduling here via
+    # `create_task` (not `await`) is what keeps the webhook response
+    # path itself non-blocking — see `_pb_schedule_followup_verify`'s
+    # own docstring. Gated on `_terminal` only — a non-terminal event
+    # (OPEN/UPDATE/TRIGGER PENDING) has no resolved status to verify,
+    # and scheduling one anyway would needlessly bust the shared
+    # "orders" cache (`_pb_followup_verify`'s own `invalidate("orders")`)
+    # on every intermediate postback, not just a genuinely terminal one.
+    if _terminal:
+        _pb_schedule_followup_verify(order_id)
+
 
 # ── Kite postback handler ─────────────────────────────────────────────────────
 
@@ -887,8 +901,96 @@ async def _pb_event_kite(
             new_status=_new_status,
         )
         _pb_dispatch_take_profit_and_template(_filled_rows)
+        # Gated on `_new_status is not None` — a non-terminal Kite event
+        # (OPEN/TRIGGER PENDING/etc.) has nothing to verify, and
+        # scheduling one anyway would needlessly bust the shared
+        # "orders" cache on every intermediate postback (see the
+        # identical gate + rationale in `_process_broker_postback`).
+        if _new_status is not None:
+            _pb_schedule_followup_verify(order_id)
     except Exception as _pe:
         logger.debug(f"postback event write failed: {_pe}")
+
+
+# ── Non-blocking follow-up verification (2026-10-23 order-poll plan,
+#    item 6) ───────────────────────────────────────────────────────────
+#
+# Every postback path's own fast direct-apply (above) trusts the
+# broker's event payload at face value — that's deliberate, so fill
+# detection stays immediate. A few seconds later, this schedules a
+# SEPARATE, non-blocking re-verification of the SAME row against real
+# broker truth via the canonical accessor
+# (`order_poll.py:reconcile_row_and_followup`), catching a wrong/
+# incomplete event payload quickly without adding a broker round-trip
+# to the webhook response path itself. Deliberately NOT routing the
+# postback's own apply step through the accessor directly — see the
+# "Postback gets a lightweight, non-blocking follow-up verification"
+# plan rationale.
+#
+# `_PB_FOLLOWUP_TASKS` keeps a strong reference (same pattern as
+# `orders_helpers._LIVE_CHASE_TASKS`) so a scheduled task isn't
+# garbage-collected mid-sleep before it runs.
+_PB_FOLLOWUP_TASKS: set = set()
+
+# Module constant so tests can shrink the delay via monkeypatch instead
+# of sleeping the full window.
+_PB_FOLLOWUP_VERIFY_DELAY_S = 5.0
+
+
+def _pb_schedule_followup_verify(broker_order_id: str) -> None:
+    """Fire-and-forget: schedule `_pb_followup_verify` on the event
+    loop and return immediately. Called from BOTH `_pb_event_kite`
+    (already running inside its own `asyncio.create_task`, so this is
+    non-blocking by construction) and `_process_broker_postback`
+    (awaited inline by the Dhan/Groww webhook handlers — `create_task`
+    here, not `await`, is what keeps THIS call non-blocking for them).
+    No-op on a falsy id.
+    """
+    if not broker_order_id:
+        return
+    task = asyncio.create_task(_pb_followup_verify(str(broker_order_id)))
+    _PB_FOLLOWUP_TASKS.add(task)
+    task.add_done_callback(_PB_FOLLOWUP_TASKS.discard)
+
+
+async def _pb_followup_verify(broker_order_id: str) -> None:
+    """Sleep `_PB_FOLLOWUP_VERIFY_DELAY_S`, then re-verify this
+    broker_order_id's AlgoOrder row against real broker truth.
+    Best-effort — any failure is logged and swallowed; this is a
+    backstop on top of the postback's own already-applied write, never
+    a new way for the postback pipeline to fail.
+    """
+    try:
+        await asyncio.sleep(_PB_FOLLOWUP_VERIFY_DELAY_S)
+        from sqlalchemy import select as _sql_select
+        from backend.api.database import async_session as _async_session
+        from backend.api.models import AlgoOrder as _AlgoOrder
+        async with _async_session() as _s:
+            row = (await _s.execute(
+                _sql_select(_AlgoOrder).where(
+                    _AlgoOrder.broker_order_id == broker_order_id,
+                )
+            )).scalars().first()
+        if row is None:
+            return
+        from backend.api.cache import invalidate as _cache_invalidate
+        _cache_invalidate("orders")
+        from backend.api.algo.order_poll import reconcile_row_and_followup
+        truth = await reconcile_row_and_followup(
+            row, source="postback-followup",
+        )
+        if truth is not None:
+            logger.info(
+                "[POSTBACK-FOLLOWUP] AlgoOrder #%s corrected to %s on "
+                "follow-up re-verification (postback payload disagreed "
+                "with broker truth, or confirmed it).",
+                row.id, truth.algo_status,
+            )
+    except Exception as _fe:
+        logger.debug(
+            f"[POSTBACK-FOLLOWUP] verification failed for "
+            f"broker_order_id={broker_order_id}: {_fe}"
+        )
 
 
 def _pb_ordered_candidates(account: str, kite_candidates: list[str]) -> list[str]:

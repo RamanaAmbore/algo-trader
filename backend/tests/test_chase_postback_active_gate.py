@@ -294,77 +294,133 @@ class TestSyncApplyRowStatusActiveChaseGate:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# orders.py — _chase_process_live_row (the /chases/active 3s-poll sweep)
+# orders.py — _rco_reconcile_live_row / _rco_reconcile_no_id_row (the
+# /chases/active 3s-poll sweep)
+#
+# 2026-10-23 (order-poll consolidation) — `_chase_process_live_row` (the
+# function this section used to test directly) is DELETED. The "has a
+# broker_order_id" branch is now `_rco_reconcile_live_row`, a thin
+# wrapper around the canonical accessor (`apply_order_truth(...,
+# withhold_if_active=True)`), which enforces the SAME
+# `_pb_should_withhold_status` predicate this whole file is about — so
+# these tests now drive the REAL predicate end-to-end through a mocked
+# DB session, instead of a bespoke in-function check. The "no
+# broker_order_id at all" branch is `_rco_reconcile_no_id_row`, which
+# explicitly reuses `_pb_should_withhold_status` too (see that
+# function's own docstring in orders.py).
 # ─────────────────────────────────────────────────────────────────────────
 
-class TestChaseProcessLiveRowActiveChaseGate:
-    def test_withholds_nonfill_terminal_write_for_active_chase_row(self):
+def _live_row_mock_session(row):
+    """Fake async session shaped for `apply_order_truth`'s own
+    `.scalar_one_or_none()` unwrap AND `_single_row_locked_update`'s
+    `.scalars().all()` unwrap, so the same helper serves both
+    `_rco_reconcile_live_row` (accessor path) and
+    `_rco_reconcile_no_id_row` (local lock-only-when-needed path)."""
+    _result = MagicMock()
+    _result.scalar_one_or_none.return_value = row
+    _result.scalars.return_value.all.return_value = [row] if row is not None else []
+
+    mock_session = AsyncMock()
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+    mock_session.execute = AsyncMock(return_value=_result)
+    mock_session.commit = AsyncMock()
+    return mock_session
+
+
+@pytest.mark.asyncio
+class TestReconcileLiveRowActiveChaseGate:
+    async def test_withholds_nonfill_terminal_write_for_active_chase_row(self):
         from backend.api.algo.chase import _ch_mark_chase_active, _ch_mark_chase_inactive
-        from backend.api.routes.orders import _chase_process_live_row
+        from backend.api.routes.orders import _rco_reconcile_live_row
 
         r = SimpleNamespace(id=999940, status="OPEN", broker_order_id="B1",
                             detail="", quantity=100, filled_quantity=0,
                             fill_price=None, filled_at=None)
         broker = {"B1": {"status": "REJECTED", "average_price": 0}}
+        # The row apply_order_truth fetches under its own lock — same
+        # logical row, status still OPEN (nothing has written yet).
+        locked_row = SimpleNamespace(id=999940, status="OPEN")
+        mock_session = _live_row_mock_session(locked_row)
+
         _ch_mark_chase_active(999940)
         try:
-            drop, dd, rd = _chase_process_live_row(r, broker, [])
+            with patch("backend.api.database.async_session", return_value=mock_session):
+                dropped, filled = await _rco_reconcile_live_row(r, broker)
         finally:
             _ch_mark_chase_inactive(999940)
 
-        assert drop is False
-        assert r.status == "OPEN"
+        assert dropped is False
+        assert filled is False
+        assert locked_row.status == "OPEN", "withheld — must not write REJECTED mid-retry"
+        mock_session.commit.assert_not_awaited()
 
-    def test_regression_nonfill_terminal_still_applies_when_not_chased(self):
-        from backend.api.routes.orders import _chase_process_live_row
+    async def test_regression_nonfill_terminal_still_applies_when_not_chased(self):
+        from backend.api.routes.orders import _rco_reconcile_live_row
 
         r = SimpleNamespace(id=999941, status="OPEN", broker_order_id="B1",
                             detail="", quantity=100, filled_quantity=0,
                             fill_price=None, filled_at=None)
         broker = {"B1": {"status": "REJECTED", "average_price": 0}}
-        drop, dd, rd = _chase_process_live_row(r, broker, [])
+        locked_row = SimpleNamespace(id=999941, status="OPEN", quantity=100)
+        mock_session = _live_row_mock_session(locked_row)
 
-        assert drop is True
-        assert r.status == "REJECTED"
+        with patch("backend.api.database.async_session", return_value=mock_session):
+            dropped, filled = await _rco_reconcile_live_row(r, broker)
 
-    def test_fill_still_applies_even_under_active_chase(self):
+        assert dropped is True
+        assert filled is False
+        assert locked_row.status == "REJECTED"
+
+    async def test_fill_still_applies_even_under_active_chase(self):
         from backend.api.algo.chase import _ch_mark_chase_active, _ch_mark_chase_inactive
-        from backend.api.routes.orders import _chase_process_live_row
+        from backend.api.routes.orders import _rco_reconcile_live_row
 
         r = SimpleNamespace(id=999942, status="OPEN", broker_order_id="B1",
                             detail="", quantity=100, filled_quantity=0,
                             fill_price=None, filled_at=None)
         broker = {"B1": {"status": "COMPLETE", "average_price": 42.0}}
-        q: list = []
+        locked_row = SimpleNamespace(id=999942, status="OPEN", quantity=100)
+        mock_session = _live_row_mock_session(locked_row)
+
         _ch_mark_chase_active(999942)
         try:
-            drop, dd, rd = _chase_process_live_row(r, broker, q)
+            with patch("backend.api.database.async_session", return_value=mock_session), \
+                 patch(
+                     "backend.api.routes.orders_postback._pb_write_ledger_fills",
+                     new=AsyncMock(),
+                 ):
+                dropped, filled = await _rco_reconcile_live_row(r, broker)
         finally:
             _ch_mark_chase_inactive(999942)
 
-        assert drop is True
-        assert r.status == "FILLED"
-        assert q == [r]
+        assert dropped is True
+        assert filled is True
+        assert locked_row.status == "FILLED", "a fill is NEVER withheld, even mid-chase"
 
-    def test_missing_broker_order_id_withheld_for_active_chase_row(self):
+    async def test_missing_broker_order_id_withheld_for_active_chase_row(self):
         """Edge case: the tiny window between chase_order() entry
         (marked active) and its first successful _sync_algo_order_id
         write — broker_order_id is still empty but this is NOT a
         genuinely stuck/never-placed row."""
         from backend.api.algo.chase import _ch_mark_chase_active, _ch_mark_chase_inactive
-        from backend.api.routes.orders import _chase_process_live_row
+        from backend.api.routes.orders import _rco_reconcile_no_id_row
 
         r = SimpleNamespace(id=999943, status="OPEN", broker_order_id="",
                             detail="", quantity=100, filled_quantity=0,
                             fill_price=None, filled_at=None)
         _ch_mark_chase_active(999943)
         try:
-            drop, dd, rd = _chase_process_live_row(r, {}, [])
+            with patch("backend.api.database.async_session") as mock_session_cls:
+                dropped = await _rco_reconcile_no_id_row(r)
         finally:
             _ch_mark_chase_inactive(999943)
 
-        assert drop is False
+        assert dropped is False
         assert r.status == "OPEN"
+        # Withheld BEFORE even opening a session — _pb_should_withhold_
+        # status is checked first, so no lock is taken at all.
+        mock_session_cls.assert_not_called()
 
 
 # ─────────────────────────────────────────────────────────────────────────
