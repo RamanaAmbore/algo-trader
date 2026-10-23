@@ -7778,14 +7778,33 @@ async def _recover_query_and_cancel_resting(row, cfg, broker_order_id: str) -> "
     `_ch_capture_late_fill`). Returns None (caller must skip restarting
     this row) on any broker-call failure — never silently trusts a
     stale/unverifiable read, which could be hiding a still-resting
-    orphaned order at the broker."""
-    from backend.api.algo.chase import _order_status, _cancel_order, _run
+    orphaned order at the broker.
 
-    _TERMINAL = ("COMPLETE", "REJECTED", "CANCELLED", "EXPIRED")
+    2026-10-23 fix (audit O3) — a `cancel_order` exception was
+    previously swallowed at WARNING and the function proceeded to
+    return whatever the post-cancel re-read showed, even when that
+    re-read confirmed the order was STILL resting live (not actually
+    cancelled). The caller (`_recover_chase_already_filled`) would then
+    derive an `already_filled` figure from that still-open order, and
+    `recover_live_chases()` would restart `chase_order()` fresh
+    (`current_order_id=None`) — placing a BRAND-NEW order for the full
+    remaining quantity on top of the still-resting original. Fix:
+    re-verify the order's status is CONFIRMED gone
+    (`_CH_CONFIRMED_GONE_STATUSES`, the same set chase.py's own
+    cancel-and-replace path uses to decide this) before returning a
+    status the caller will trust; otherwise fail closed (return None,
+    same as the unverifiable-read case) and alert for manual review —
+    mirrors chase.py's own `_ch_build_cancel_unconfirmed_abort` pattern
+    for the identical ambiguous-cancel scenario mid-chase."""
+    from backend.api.algo.chase import (
+        _order_status, _cancel_order, _run, _CH_CONFIRMED_GONE_STATUSES,
+    )
+
     try:
         status = await _run(_order_status, row.account, broker_order_id)
         order_state = str((status or {}).get("status", "") or "").upper()
-        if order_state and order_state not in _TERMINAL:
+        if order_state and order_state not in _CH_CONFIRMED_GONE_STATUSES:
+            _cancel_raised = False
             try:
                 await _run(_cancel_order, row.account, broker_order_id,
                            cfg.variety, cfg.exchange)
@@ -7794,11 +7813,50 @@ async def _recover_query_and_cancel_resting(row, cfg, broker_order_id: str) -> "
                     "for #%s before restart", broker_order_id, row.id,
                 )
             except Exception as _ce:
+                _cancel_raised = True
                 logger.warning(
                     "[CHASE-RECOVERY] cancel failed for orphaned resting "
                     "order %s (#%s): %s", broker_order_id, row.id, _ce,
                 )
             status = await _run(_order_status, row.account, broker_order_id) or status
+            order_state = str((status or {}).get("status", "") or "").upper()
+            # Only the cancel-call-raised branch needs the stricter
+            # confirmed-gone re-verification below — a cancel call that
+            # returned normally is already covered by the existing
+            # post-cancel re-read (the caller derives already_filled
+            # from whatever this returns, same as before this fix).
+            if _cancel_raised and order_state not in _CH_CONFIRMED_GONE_STATUSES:
+                logger.critical(
+                    "[CHASE-RECOVERY] order %s (#%s) could not be confirmed "
+                    "cancelled on restart — still %s at the broker. "
+                    "Skipping restart this cycle to avoid placing a "
+                    "duplicate order on top of the still-resting original; "
+                    "manually verify %s's order book for %s.",
+                    broker_order_id, row.id, order_state or "unknown",
+                    row.account, row.symbol,
+                )
+                try:
+                    from backend.shared.helpers.alert_utils import send_order_failure_alert
+                    send_order_failure_alert(
+                        account=row.account, symbol=row.symbol,
+                        exchange=cfg.exchange,
+                        side=getattr(row, "transaction_type", ""),
+                        qty=getattr(row, "quantity", 0), mode="live",
+                        source="chase-recovery",
+                        agent_id=getattr(row, "agent_id", None),
+                        error=(
+                            f"Chase recovery: order {broker_order_id} could "
+                            f"not be confirmed cancelled after a service "
+                            f"restart — it may still be resting live. "
+                            f"Restart skipped this cycle to avoid a "
+                            f"duplicate order; manually verify the "
+                            f"broker's order book."
+                        ),
+                        bypass_gates=True,
+                    )
+                except Exception:
+                    pass
+                return None
         return status
     except Exception as e:
         logger.warning(
