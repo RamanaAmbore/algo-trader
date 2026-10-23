@@ -869,7 +869,41 @@ async def _positions_refresh_after_fill(
         logger.debug("[FILL-POLL] outer error: %s", _outer)
 
 
-async def _opp_send_cancel_alert(account: str, symbol: str, txn: str, qty: object, status_message: str) -> None:
+async def _opp_cancel_is_own_chase_requote(order_id: "str | int | None") -> bool:
+    """True when `order_id` (a broker_order_id) belongs to an AlgoOrder
+    row that `chase.is_chase_active()` reports as currently inside an
+    active `chase_order()` retry loop in THIS process.
+
+    2026-10-23 audit fix (O4) — the signal used here is the SAME
+    in-process marker `orders_postback.py:_pb_should_withhold_status`
+    already relies on to decide whether a CANCELLED postback is chase's
+    own cancel-and-replace cycle. A CANCELLED event for a row chase is
+    actively managing is, for all practical purposes, always chase's
+    own routine re-quote cancel — not an operator action or a genuinely
+    unexpected broker-side cancel. Fail-safe: any lookup/import error
+    returns False (treat as action-required, never silently swallow a
+    genuine cancel alert because of a DB hiccup).
+    """
+    if not order_id:
+        return False
+    try:
+        from sqlalchemy import select as _sql_select
+        from backend.api.database import async_session as _async_s
+        from backend.api.models import AlgoOrder as _AO
+        from backend.api.algo.chase import is_chase_active
+        async with _async_s() as _s:
+            row_id = (await _s.execute(
+                _sql_select(_AO.id).where(_AO.broker_order_id == str(order_id))
+            )).scalars().first()
+        return is_chase_active(row_id)
+    except Exception:
+        return False
+
+
+async def _opp_send_cancel_alert(
+    account: str, symbol: str, txn: str, qty: object, status_message: str,
+    order_id: "str | int | None" = None,
+) -> None:
     # 2026-10 audit fix: `send_ntfy_alert(title, message, priority=None)`
     # was called with a single positional argument (`msg` bound to
     # `title`), raising a `TypeError` inside the fire-and-forget
@@ -881,11 +915,32 @@ async def _opp_send_cancel_alert(account: str, symbol: str, txn: str, qty: objec
     # `format_notification_header(None, None, ...)` degrades to
     # "Agent: manual" — there is no agent context threaded to this
     # fan-out helper today).
+    #
+    # 2026-10-23 audit fix (O4) — this fired a direct, unconditional
+    # `send_ntfy_alert`, bypassing the binary action_required ntfy gate
+    # every other chase alert now uses. Worse, it fired for EVERY
+    # CANCELLED postback including each of chase's own routine
+    # cancel-and-replace re-quotes — a single low-tier chase (30 max
+    # attempts) could generate ~87 urgent pushes for completely normal
+    # repricing. Fix: when the row behind this broker_order_id is
+    # currently under an active chase retry loop, the cancel is not
+    # action-required — skip ntfy entirely (log-only; nothing else
+    # needs to fire for a routine re-quote). Otherwise this is an
+    # operator-initiated or genuinely unexpected broker-side cancel —
+    # still action-required, so it must reach ntfy, forced urgent
+    # (not the clock-based day/night default).
+    if await _opp_cancel_is_own_chase_requote(order_id):
+        logger.debug(
+            "[CANCEL-ALERT] suppressed ntfy for chase's own re-quote cancel "
+            "order_id=%s symbol=%s", order_id, symbol,
+        )
+        return
+
     from backend.shared.helpers.alert_utils import send_ntfy_alert, format_notification_header
     title = f"Order cancelled: {symbol}"
     header = format_notification_header(None, None)
     message = f"{header}\n{mask_account(account)} {txn} {qty} {symbol} — {status_message}"
-    await asyncio.to_thread(send_ntfy_alert, title, message)
+    await asyncio.to_thread(send_ntfy_alert, title, message, "urgent")
 
 
 def _postback_broadcast_fanout(
@@ -981,7 +1036,9 @@ def _postback_broadcast_fanout(
             }))
 
         if str(status).upper() == "CANCELLED":
-            asyncio.create_task(_opp_send_cancel_alert(account, symbol, txn, qty, status_message or ""))
+            asyncio.create_task(
+                _opp_send_cancel_alert(account, symbol, txn, qty, status_message or "", order_id)
+            )
     except Exception as _be:
         logger.warning(f"postback fan-out failed: {_be}")
 
@@ -1341,6 +1398,105 @@ def _rco_apply_kill_status(row, err_msg: str) -> None:
         row.detail = ((row.detail or "")[:200] + " · killed by operator")
 
 
+# ── 2026-10-23 Kill / CANCEL_FAILED lifecycle fix ───────────────────────
+# Three linked bugs in the kill path (see .claude/PLAN.md cluster 1A):
+#   1. Kill was keyed only by a `broker_order_id` snapshot read at click
+#      time — if chase had just cancelled-and-replaced under a NEW id in
+#      the window around the click, the broker cancel targeted a dead
+#      id, failed, and the row was wrongly stamped CANCEL_FAILED while
+#      chase kept chasing under the new id, unaware. Fixed via
+#      `chase.mark_order_killed()` (algo-order-id-keyed, survives a
+#      broker_order_id swap — see its own docstring) plus a fresh
+#      re-read of the row's current state right before dispatching the
+#      broker cancel.
+#   2. The HTTP response always returned `ok: true` even when the
+#      broker cancel genuinely failed. Fixed below — `ok` now reflects
+#      whether the row actually ended up CANCELLED (or was already
+#      resolved).
+#   3. A CANCEL_FAILED row could never be re-killed (gate required
+#      status == "OPEN"), and never aged out on its own. Fixed: the
+#      gate now also accepts CANCEL_FAILED, a retry first checks real
+#      broker truth (the earlier failed attempt may have actually
+#      landed), and a retry whose broker call ALSO fails force-resolves
+#      a row that predates the current trading session — a day-validity
+#      order genuinely cannot still be resting from a prior session.
+
+_KILL_RETRYABLE_STATUSES = frozenset({"OPEN", "CANCEL_FAILED"})
+
+
+def _rco_kill_already_terminal_response(status: str) -> dict:
+    """Early-return response for a row this endpoint will not act on.
+    FILLED/REJECTED are genuinely final — nothing could still be
+    cancelled, so `ok: false` (the kill did not, and could not, achieve
+    anything — never read this as a successful kill). Every other
+    non-retryable status (already CANCELLED, UNFILLED, HELD, ...) is
+    the desired end-state already reached — `ok: true`.
+    """
+    ok = status not in ("FILLED", "REJECTED")
+    return {
+        "ok": ok, "already_terminal": True, "status": status,
+        "err": None if ok else f"order already {status.lower()} — nothing to kill",
+    }
+
+
+async def _rco_kill_resolve_cancel_failed(row) -> "str | None":
+    """For a CANCEL_FAILED retry, consult the canonical single-order-view
+    accessor (`orders_helpers.get_broker_order_truth`) BEFORE attempting
+    another broker cancel call — the earlier failed attempt may have
+    actually landed at the broker (or the order may have since filled),
+    just never reflected onto this row. Returns the resolved terminal
+    status ('CANCELLED'/'FILLED'/'REJECTED') when broker truth already
+    answers the question; `None` when the order is genuinely still
+    resting at the broker, or when broker truth is unavailable — either
+    way a real cancel attempt is still required.
+    """
+    broker_order_id = str(getattr(row, "broker_order_id", "") or "")
+    if not broker_order_id:
+        return None
+    try:
+        from backend.api.routes.orders_helpers import get_broker_order_truth
+        truth = await get_broker_order_truth(broker_order_id)
+    except Exception:
+        return None
+    if not truth.available or truth.algo_status is None:
+        return None
+    if truth.algo_status in ("CANCELLED", "FILLED", "REJECTED"):
+        return truth.algo_status
+    return None
+
+
+def _rco_kill_predates_current_session(row) -> bool:
+    """True when *row* was created in a PRIOR trading session (the
+    [08:00 IST, next 08:00 IST) boundary this codebase uses everywhere
+    else — see `expiry_freeze.session_date_of`). Every order this app
+    places is day-validity — a row from a prior session cannot still be
+    genuinely resting live at the broker, no matter what our own stale
+    CANCEL_FAILED status says or what the broker's cancel call just
+    returned (almost certainly "order not found" — the broker's own
+    book has long since rolled over)."""
+    from backend.api.algo.expiry_freeze import session_date_of
+    created_at = getattr(row, "created_at", None)
+    if created_at is None:
+        return False
+    return session_date_of(created_at) < session_date_of(datetime.now(timezone.utc))
+
+
+def _rco_kill_force_resolve_stale(row, err_msg: str) -> None:
+    """Force-resolve a CANCEL_FAILED retry whose broker cancel ALSO
+    failed, for a row that predates the current trading session (see
+    `_rco_kill_predates_current_session`) — the operator's ONLY path to
+    clear a permanently-stuck stale CANCEL_FAILED row, reusing the
+    existing Kill button rather than adding new UI/endpoints. Resolves
+    to CANCELLED (deliberately non-final — a genuinely-confused late
+    fill postback can still apply) with an explicit note distinguishing
+    this from a real broker-confirmed cancel."""
+    row.status = "CANCELLED"
+    row.detail = ((row.detail or "")[:200]
+                  + f" · force-resolved by operator: order predates current "
+                  f"trading session, broker has no record ({err_msg}) — "
+                  f"verify positions/order book manually")
+
+
 
 
 def _rco_parse_preflight_identity(body: dict) -> tuple:
@@ -1695,12 +1851,28 @@ class OrdersController(Controller):
         - Shadow: just flip the row's status (nothing real to cancel).
         Sets AlgoOrder.status='CANCELLED' (or CANCEL_FAILED on error) and
         writes a 'killed' event so the timeline reflects the operator action.
+
+        2026-10-23 Kill-lifecycle fix (see `_rco_kill_already_terminal_response`
+        and friends above for the per-bug rationale):
+        - Re-killable: a row already at CANCEL_FAILED may be re-killed
+          (not just OPEN) — it is deliberately non-final; the earlier
+          cancel may have failed while the order was still genuinely
+          resting, or it may already be resolved at the broker.
+        - `ok` in the response reflects whether the kill actually
+          succeeded (row ended up CANCELLED/resolved-non-FILLED), never
+          a blanket `true`.
+        - The algo-order-id-level kill intent (`chase.mark_order_killed`)
+          is set BEFORE any broker I/O and BEFORE re-reading the row's
+          current broker_order_id, so a concurrently-running chase loop
+          sees the kill regardless of which broker_order_id it is
+          currently chasing under.
         """
         from sqlalchemy import select as _sql_select
         from datetime import datetime, timezone
         from backend.api.database import async_session
         from backend.api.models import AlgoOrder
         from backend.api.algo.order_events import write_event as _write_event
+        from backend.api.algo.chase import mark_order_killed, mark_killed
 
         async with async_session() as s:
             row = (await s.execute(
@@ -1708,13 +1880,73 @@ class OrdersController(Controller):
             )).scalar_one_or_none()
             if row is None:
                 raise HTTPException(status_code=404, detail="order not found")
-            if row.status != "OPEN":
-                return {"ok": True, "already_terminal": True, "status": row.status}
+            if row.status not in _KILL_RETRYABLE_STATUSES:
+                return _rco_kill_already_terminal_response(row.status)
+
+            was_cancel_failed = row.status == "CANCEL_FAILED"
+
+            # Mark the kill intent at the ALGO-ORDER level first, before
+            # any broker call — a concurrently-running chase loop may be
+            # mid cancel-and-replace right now, under a broker_order_id
+            # different from the one we're about to read below. Marking
+            # this signal first means the chase loop's very next guard
+            # check (`_ch_loop_guards` / `_ch_post_replace_kill_check`)
+            # sees the kill regardless of timing.
+            mark_order_killed(algo_order_id)
+            if (row.broker_order_id or "").strip():
+                mark_killed(str(row.broker_order_id))
+
+            if was_cancel_failed:
+                _resolved = await _rco_kill_resolve_cancel_failed(row)
+                if _resolved is not None:
+                    row.status = _resolved
+                    row.detail = ((row.detail or "")[:200]
+                                  + f" · resolved via broker truth: {_resolved}")
+                    await s.commit()
+                    _row_id = row.id
+                    _ok = _resolved != "FILLED"
+                    invalidate("orders")
+                    await _write_event(
+                        _row_id, "killed",
+                        f"Chase kill resolved via broker truth: {_resolved}",
+                        payload={
+                            "err": None if _ok else f"order {_resolved} at broker",
+                            "ts": datetime.now(timezone.utc).isoformat(),
+                        },
+                    )
+                    return {
+                        "ok": _ok, "status": _resolved,
+                        "err": None if _ok else f"order already {_resolved.lower()} at broker",
+                    }
+
+            _row_id = row.id
+
+        # Re-resolve the row's CURRENT state in a fresh read right
+        # before dispatching the broker cancel — narrows the staleness
+        # window between the gate check above and the real broker call.
+        # The remaining window is closed by the algo-order-level kill
+        # intent marked above (a concurrent chase loop self-aborts on
+        # its own next check) rather than by this re-read alone.
+        async with async_session() as s:
+            row = (await s.execute(
+                _sql_select(AlgoOrder).where(AlgoOrder.id == _row_id)
+            )).scalar_one_or_none()
+            if row is None:
+                return {"ok": False, "err": "order vanished during kill"}
+            if row.status not in _KILL_RETRYABLE_STATUSES:
+                # Chase's own loop (now aware of the kill intent marked
+                # above) may already have finalized the row between the
+                # two reads.
+                return _rco_kill_already_terminal_response(row.status)
 
             err_msg = await _rco_dispatch_kill(row)
-            _rco_apply_kill_status(row, err_msg)
+            if err_msg and was_cancel_failed and _rco_kill_predates_current_session(row):
+                _rco_kill_force_resolve_stale(row, err_msg)
+                err_msg = ""
+            else:
+                _rco_apply_kill_status(row, err_msg)
             await s.commit()
-            _row_id = row.id
+            _final_status = row.status
 
         invalidate("orders")
         await _write_event(
@@ -1723,7 +1955,7 @@ class OrdersController(Controller):
             payload={"err": err_msg or None,
                      "ts": datetime.now(timezone.utc).isoformat()},
         )
-        return {"ok": True, "err": err_msg or None}
+        return {"ok": not bool(err_msg), "err": err_msg or None, "status": _final_status}
 
     @post("/{algo_order_id:int}/retry-template", guards=[admin_guard])
     async def retry_template(self, algo_order_id: int, request: Request) -> dict:

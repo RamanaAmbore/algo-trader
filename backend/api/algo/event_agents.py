@@ -531,6 +531,8 @@ async def _dispatch_agent(agent, records: list[dict]) -> int:
     for rec in records:
         if not evaluate(agent.conditions, Context(log_records=[rec])):
             continue
+        if _error_agent_self_alerted(agent, rec):
+            continue
         log_only = bool(rec.get("_log_only"))
         if log_only and gated and not static_has_log:
             continue
@@ -681,6 +683,32 @@ ERROR_AGENT = {
     "events": [{"channel": "telegram", "enabled": True}, {"channel": "ntfy", "enabled": True}],
     "actions": [{"type": "render", "render": "error", "gate": True}],
 }
+
+
+def _error_agent_self_alerted(agent, rec: dict) -> bool:
+    """2026-10-23 audit fix (O9) — ERROR_AGENT is a blanket catch-all:
+    `log_store.py:tags_for` auto-tags EVERY record with its level name
+    lowercased, so ERROR_AGENT's condition (`tag="error", min_level=
+    "ERROR"`) matches ANY `logger.error(...)` call anywhere in the
+    codebase, regardless of logger name or intent. Several call sites
+    (chase's max-attempts exhaustion, `actions_live.py`'s
+    `close_position` failure path) already fire their own specific
+    operator alert (`send_order_failure_alert`) immediately around the
+    same `logger.error` call — without this gate those events
+    double-alert: once via their own specific path, once via this
+    generic catch-all.
+
+    Callers that already alert mark their `logger.error(...)` call with
+    `extra={"self_alerted": True}`. This gate only applies to
+    ERROR_AGENT itself (matched by slug) — any other agent that happens
+    to condition on `tag="error"`/ERROR level is unaffected, and an
+    ERROR record with no `self_alerted` flag dispatches exactly as
+    before.
+    """
+    if getattr(agent, "slug", None) != ERROR_AGENT["slug"]:
+        return False
+    return bool((rec.get("extra") or {}).get("self_alerted"))
+
 
 CHASE_CANCEL_AGENT = {
     "slug": "chase-cancel-alert",

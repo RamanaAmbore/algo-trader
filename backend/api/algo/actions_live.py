@@ -747,8 +747,16 @@ async def _close_position_on_failure(
             diag = "broker resolve failed — no diagnosis available"
     except Exception:
         diag = "diagnosis unavailable"
+    # 2026-10-23 audit fix (O9) — `send_order_failure_alert` just below
+    # already fires this failure's own operator alert. Without
+    # `self_alerted=True`, this ERROR-level log line ALSO matches
+    # ERROR_AGENT's blanket catch-all condition (any ERROR-or-above
+    # record, regardless of logger/tag — see log_store.py:tags_for),
+    # double-alerting the same close_position failure. See
+    # event_agents.py:_error_agent_self_alerted.
     logger.error(f"[LIVE] close_position failed for {account} {exchange}/{symbol} "
-                 f"{side} {qty}: {e} | diag: {diag}")
+                 f"{side} {qty}: {e} | diag: {diag}",
+                 extra={"self_alerted": True})
     try:
         from backend.shared.helpers.alert_utils import send_order_failure_alert
         await asyncio.to_thread(

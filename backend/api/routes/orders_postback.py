@@ -909,7 +909,15 @@ async def _pb_event_kite(
         if _new_status is not None:
             _pb_schedule_followup_verify(order_id)
     except Exception as _pe:
-        logger.debug(f"postback event write failed: {_pe}")
+        # 2026-10-23 audit fix (O10) — this is a genuine DB write failure
+        # applying a COMPLETE/REJECTED status to the AlgoOrder row, not
+        # an expected skip. DEBUG made it invisible at the file's own
+        # usual production log level; the 5s postback follow-up
+        # verification only catches the resulting status MISMATCH, not
+        # the ledger/template-attach fan-out already lost from this
+        # failed write. Raised to WARNING, matching the file's own
+        # convention for a real write failure.
+        logger.warning(f"postback event write failed: {_pe}")
 
 
 # ── Non-blocking follow-up verification (2026-10-23 order-poll plan,

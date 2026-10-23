@@ -664,6 +664,48 @@ def is_killed(broker_order_id: str) -> bool:
         return str(broker_order_id) in _KILLED_ORDER_IDS
 
 
+# 2026-10-23 Kill-lifecycle fix — `_KILLED_ORDER_IDS` above is keyed by
+# broker_order_id, which chase's own cancel-and-replace cycle REPLACES
+# every attempt. If the operator's Kill click reads the AlgoOrder row's
+# broker_order_id at t0 and chase swaps in a brand-new broker_order_id
+# at t0+ε (a replacement already in flight), `mark_killed(old_id)` never
+# matches the new id — chase keeps chasing, completely unaware an
+# operator tried to stop it, and the operator sees a confusing
+# "KILL FAILED" (the broker genuinely can't cancel an id that's already
+# been cancelled-and-replaced) while live orders keep being placed
+# underneath. This second, ALGO-ORDER-id-keyed registry survives a
+# broker_order_id swap: the chase loop checks `is_order_killed(row.id)`
+# (not just `is_killed(current_order_id)`) at the top of every attempt
+# iteration (`_ch_loop_guards`) AND immediately after every replacement
+# (`_ch_post_replace_kill_check`), so the operator's kill intent is
+# honored no matter which broker_order_id is currently in flight. Same
+# TTL/lazy-sweep shape as `_KILLED_ORDER_IDS` above — see that registry's
+# own docstring for the full reasoning.
+_KILLED_ALGO_ORDER_IDS: dict[int, float] = {}
+
+
+def mark_order_killed(algo_order_id: "int | None") -> None:
+    """Signal the chase loop that the WHOLE chase for this AlgoOrder id
+    was killed by the operator — survives a cancel-and-replace cycle
+    that swaps the broker_order_id out from under a stale
+    `mark_killed(broker_order_id)` call. No-op for `None`. Idempotent."""
+    if algo_order_id is None:
+        return
+    with _KILLED_LOCK:
+        _KILLED_ALGO_ORDER_IDS[int(algo_order_id)] = _time.monotonic() + _KILLED_TTL_SECONDS
+
+
+def is_order_killed(algo_order_id: "int | None") -> bool:
+    if algo_order_id is None:
+        return False
+    with _KILLED_LOCK:
+        now = _time.monotonic()
+        for k, expires in list(_KILLED_ALGO_ORDER_IDS.items()):
+            if expires <= now:
+                _KILLED_ALGO_ORDER_IDS.pop(k, None)
+        return int(algo_order_id) in _KILLED_ALGO_ORDER_IDS
+
+
 # ── In-process "is this row currently being chased" signal ─────────────
 # 2026-10 fix — AlgoOrder.status conflates two different questions: (a)
 # what is the live status of the CURRENTLY-resting broker order (which a
@@ -1660,7 +1702,16 @@ def _ch_poll_handle_cancelled(
     algo_order_id: "int | None", emit: Callable,
 ) -> "tuple[str, int]":
     """Handle CANCELLED status: distinguish operator-kill from broker auto-cancel."""
-    killed_by_op = is_killed(current_order_id)
+    # 2026-10-23 Kill-lifecycle fix — also check the algo-order-id-keyed
+    # signal, not just the broker_order_id-keyed one: a broker-side
+    # CANCELLED landing for an id the operator's Kill click never even
+    # read (because chase had already cancelled-and-replaced past it)
+    # must still be recognized as an operator kill, not misclassified
+    # as a broker auto-cancel that triggers `cancelled_continue` (which
+    # would silently re-place the order the operator just tried to stop).
+    killed_by_op = is_killed(current_order_id) or (
+        algo_order_id is not None and is_order_killed(algo_order_id)
+    )
     logger.warning(
         f"Chase {symbol}: order CANCELLED "
         f"(operator_kill={killed_by_op}) — "
@@ -2173,7 +2224,20 @@ async def _ch_handle_attempt_error(
         return result, consecutive_errors
 
     consecutive_errors += 1
-    logger.error(
+    # 2026-10-23 audit fix (O9) — this is a routine, auto-retried
+    # recoverable error (network blip, rate limit, etc.), not a real
+    # failure: the loop reprices and retries on the very next
+    # iteration, and nothing here fires an operator alert of its own.
+    # Logging it at ERROR made EVERY such retry match ERROR_AGENT's
+    # blanket catch-all condition (`tag="error"` is auto-assigned to
+    # any ERROR-or-above record by log_store.py, regardless of logger
+    # name), firing a full telegram+ntfy alert for completely normal
+    # repricing — a single low-tier chase could generate dozens of
+    # these. Only genuine escalation (`_chase_abort_on_consecutive_errors`,
+    # once `_MAX_CHASE_ERRORS` is reached) is actually action-required
+    # and alerts explicitly. Downgraded to WARNING so it stays visible
+    # in logs without false urgency.
+    logger.warning(
         f"Chase {symbol}: attempt {attempt} recoverable error "
         f"({consecutive_errors}/{_MAX_CHASE_ERRORS} consecutive): {exc}"
     )
@@ -2265,9 +2329,16 @@ async def _ch_exhaust_max_attempts(
         )
     emit("chase_failed", {"attempts": cfg.max_attempts, "cancel_failed": _cancel_failed,
                           "cumulative_filled": cumulative_filled})
+    # 2026-10-23 audit fix (O9) — `send_order_failure_alert` below already
+    # fires this abort's own operator alert. Without `self_alerted=True`,
+    # this ERROR-level log line ALSO matches ERROR_AGENT's blanket
+    # catch-all condition (any ERROR-or-above record, regardless of
+    # logger/tag — see log_store.py:tags_for), double-alerting the same
+    # exhaustion event. See event_agents.py:_error_agent_self_alerted.
     logger.error(
         f"Chase {symbol}: FAILED after {cfg.max_attempts} attempts "
-        f"({cumulative_filled}/{quantity} filled)"
+        f"({cumulative_filled}/{quantity} filled)",
+        extra={"self_alerted": True},
     )
     try:
         from backend.shared.helpers.alert_utils import send_order_failure_alert
@@ -2827,27 +2898,78 @@ def _ch_zero_remaining_fill(
 
 
 async def _ch_post_replace_kill_check(
-    account: str, current_order_id: str,
+    account: str, current_order_id: "str | None",
     cfg: "ChaseConfig", result: "ChaseResult",
     symbol: str, transaction_type: str, quantity: int,
     attempt: int, algo_order_id: "int | None", emit: Callable,
 ) -> bool:
-    """Check and handle operator-kill race immediately after place_order.
+    """Check and handle an operator-kill race, both immediately after a
+    cancel-and-replace (called right after `place_order`, `current_order_id`
+    always set) AND at the top of every loop iteration via `_ch_loop_guards`
+    (`current_order_id` may be `None`/empty on attempt 1, before anything
+    has been placed yet).
+
+    2026-10-23 Kill-lifecycle fix — checks BOTH the broker_order_id-keyed
+    signal (`is_killed`, the pre-existing one-shot check) and the new
+    algo-order-id-keyed signal (`is_order_killed`). The broker_order_id
+    check alone misses the case where the operator's Kill click read a
+    STALE broker_order_id (chase had already replaced it, concurrently,
+    by the time the broker cancel call landed) — `is_order_killed` is set
+    by `kill_chase` regardless of which broker_order_id it read, so it
+    still fires here even when the id-keyed check can't match.
 
     Returns True when the kill was detected and the caller should
-    `return result`.  Returns False (normal path) when no kill is pending.
+    `return result`. Returns False (normal path) when no kill is pending.
     """
-    if not is_killed(current_order_id):
+    if not (
+        is_killed(current_order_id or "")
+        or (algo_order_id is not None and is_order_killed(algo_order_id))
+    ):
         return False
     logger.info(
-        f"Chase {symbol}: operator-kill detected for new "
-        f"broker_order_id={current_order_id} immediately "
-        f"after replace. Cancelling + terminating."
+        f"Chase {symbol}: operator-kill detected for "
+        f"broker_order_id={current_order_id or '(none placed yet)'}. "
+        f"Cancelling + terminating."
     )
-    try:
-        await _run(_cancel_order, account, current_order_id, cfg.variety, cfg.exchange)
-    except Exception as _ke:
-        logger.warning(f"Chase {symbol}: post-replace kill cancel failed: {_ke}")
+    _cancel_confirmed = True
+    if current_order_id:
+        try:
+            await _run(_cancel_order, account, current_order_id, cfg.variety, cfg.exchange)
+        except Exception as _ke:
+            logger.warning(f"Chase {symbol}: post-replace kill cancel failed: {_ke}")
+            _cancel_confirmed = False
+    if not _cancel_confirmed:
+        # 2026-10-23 Kill-lifecycle fix — a failed cancel here is the
+        # SAME ambiguity class as every other unconfirmed-cancel abort
+        # in this file (see `_ch_cancel_and_capture`'s identical
+        # pattern): the order may still be resting live at the broker.
+        # Reporting CANCELLED unconditionally would recreate, inside
+        # the chase loop itself, the exact false-success bug this fix
+        # closed at the `kill_chase` HTTP response layer. Write
+        # CANCEL_FAILED (non-final — a late fill still applies) and
+        # mark for the item-8b backstop reconcile instead.
+        result.status = ChaseStatus.FAILED
+        result.detail = (
+            f"Kill requested but broker cancel for {current_order_id} could "
+            f"not be confirmed — it may still be resting live. Manually "
+            f"check {account}'s order book for {symbol}."
+        )
+        emit("chase_cancel_unconfirmed", {
+            "order_id": current_order_id, "attempt": attempt,
+            "reason": "operator-kill-cancel-failed",
+        })
+        if algo_order_id is not None:
+            _ch_mark_ambiguous_abort(algo_order_id)
+            try:
+                await _emit_chase_terminal(
+                    current_order_id or "", "chase_cancel_failed",
+                    symbol, transaction_type, quantity,
+                    attempts=attempt, algo_order_id=algo_order_id,
+                    error="Killed by operator — cancel unconfirmed",
+                )
+            except Exception:
+                pass
+        return True
     result.status = ChaseStatus.CANCELLED
     result.detail = "Killed by operator (post-replace race)"
     emit("order_cancelled", {
@@ -2856,7 +2978,7 @@ async def _ch_post_replace_kill_check(
     })
     import asyncio as _asyncio
     _asyncio.create_task(_emit_chase_terminal(
-        current_order_id, "chase_cancelled",
+        current_order_id or "", "chase_cancelled",
         symbol, transaction_type, quantity,
         attempts=attempt, algo_order_id=algo_order_id,
         error="Killed by operator",
@@ -3107,12 +3229,21 @@ async def _ch_abort_ambiguous_place_timeout(
     item-8b backstop (which itself no-ops safely here since there is no
     broker_order_id to check against).
     """
+    # 2026-10-23 audit fix (O11) — this message flows unmasked into
+    # `send_order_failure_alert(error=abort_msg, ...)` below, which
+    # (via `order_failure_messages`'s `error_short`) reaches the
+    # operator-facing telegram/ntfy/email alert text verbatim —
+    # `alert_utils.py` never passes `error` through
+    # `mask_account_in_text`, unlike `_render_chase_cancel`'s own body,
+    # which does. Mask here at the source.
+    from backend.shared.helpers.utils import mask_account
+    _masked_acct = mask_account(account)
     abort_msg = (
         f"Chase ABORTED — placing order (attempt {attempt}) timed out "
         f"after {_CH_BROKER_CALL_TIMEOUT_S}s. The broker call MAY have "
         f"landed with an order_id we never received. No retry was "
         f"attempted, to avoid risking a second live order. Manually "
-        f"check {account}'s order book for {symbol} for an untracked "
+        f"check {_masked_acct}'s order book for {symbol} for an untracked "
         f"fresh order."
     )
     logger.critical("Chase %s: %s", symbol, abort_msg)
@@ -3158,6 +3289,20 @@ async def _ch_loop_guards(
     Returns a finalized `ChaseResult` when any check decides the chase
     must stop now; `None` (the common case) to proceed normally.
     """
+    # 2026-10-23 Kill-lifecycle fix — check the operator-kill signal
+    # FIRST, before any other guard, so a kill that lands while the
+    # chase is sleeping between attempts (no cancel-and-replace in
+    # flight right now) is honored at the very next iteration instead
+    # of only being caught by the narrower post-replace check. Reuses
+    # `_ch_post_replace_kill_check` (handles both the `current_order_id`
+    # present and `None`/not-yet-placed cases, and the cancel-failed
+    # ambiguous-abort path) rather than duplicating its cancel/emit/
+    # terminal logic here.
+    if await _ch_post_replace_kill_check(
+        account, current_order_id, cfg, result, symbol, transaction_type,
+        quantity, attempt, algo_order_id, emit,
+    ):
+        return result
     ext_status = await _ch_check_external_final_status(algo_order_id)
     if ext_status is None:
         # Deeper, less-frequent broker-truth check (every

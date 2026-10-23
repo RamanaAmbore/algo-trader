@@ -1052,6 +1052,16 @@ def order_failure_messages(
     branch      = config.get("deploy_branch", "main")
     mode_tag    = f"[{mode.upper()}]" if mode else ""
     sup_note    = f"  (+{suppressed_count} suppressed)" if suppressed_count else ""
+    # 2026-10-23 audit fix (O11) — `error` is raw caller-supplied text
+    # (e.g. a chase abort message) that can embed an unmasked broker
+    # account number (`_ch_abort_ambiguous_place_timeout` was one
+    # confirmed source, now fixed at the source too). Every other field
+    # here reaches this function already masked (`masked`); `error` did
+    # not, inconsistent with `_render_chase_cancel`'s own body, which
+    # masks unconditionally. Defense in depth: mask here too, so any
+    # future caller that embeds a raw account in `error` can't leak it.
+    from backend.shared.helpers.utils import mask_account_in_text
+    error = mask_account_in_text(error) or error
     error_short = error[:160].strip()
     # Raw broker rejection text can contain a literal '<' (e.g. guard
     # comparison text like "qty < lot_size") with no matching '>' before
