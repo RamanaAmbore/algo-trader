@@ -297,6 +297,70 @@ class TestBuildAttachedPayload:
         payload = _retry_build_attached_payload(result, "NRML")
         assert payload == []
 
+    # ── T20 fix (2026-10-23) — sibling_id / sibling_ids must reach
+    # attached_gtts_json via the retry-attach path too, not just the
+    # fill-triggered path (orders_place.py:_opp_build_attach_entries).
+    # Pre-fix, `_retry_build_attached_payload` ignored
+    # `result.sibling_pairs` / `result.sibling_groups` entirely —
+    # these assertions fail against that code because neither key is
+    # ever present on the built entry.
+
+    def test_two_singles_pair_writes_sibling_id_on_both_legs(self):
+        """Groww-style TP+SL two-singles split — both legs must carry
+        `sibling_id` so `_task_oco_pair_watcher` can cancel the
+        survivor when one fires."""
+        tp_spec = SimpleNamespace(
+            label="TP", trigger_type="single",
+            trigger_values=[110.0], sl_trail_pct=None, placed_id="G1",
+        )
+        sl_spec = SimpleNamespace(
+            label="SL", trigger_type="single",
+            trigger_values=[90.0], sl_trail_pct=None, placed_id="G2",
+        )
+        plan = _plan()
+        plan.gtts = [tp_spec, sl_spec]
+        result = SimpleNamespace(
+            plan=plan, gtt_ids=["G1", "G2"], wing_order_id=None, errors=[],
+            sibling_pairs=[("G1", "G2")], sibling_groups=[],
+        )
+        payload = _retry_build_attached_payload(result, "NRML")
+        by_id = {e["id"]: e for e in payload}
+        assert by_id["G1"]["sibling_id"] == "G2"
+        assert by_id["G2"]["sibling_id"] == "G1"
+
+    def test_scale_sl_group_writes_sibling_ids_on_sl_entry_only(self):
+        """Scale-ladder-plus-SL group — only the SL entry carries the
+        (plural) `sibling_ids` list; the TP rungs get neither key."""
+        tp1 = SimpleNamespace(
+            label="TP+30% × 50", trigger_type="single",
+            trigger_values=[105.0], sl_trail_pct=None, placed_id="TP1",
+        )
+        tp2 = SimpleNamespace(
+            label="TP+60% × 50", trigger_type="single",
+            trigger_values=[110.0], sl_trail_pct=None, placed_id="TP2",
+        )
+        sl = SimpleNamespace(
+            label="SL", trigger_type="single",
+            trigger_values=[90.0], sl_trail_pct=None, placed_id="SL1",
+        )
+        plan = _plan()
+        plan.gtts = [tp1, tp2, sl]
+        result = SimpleNamespace(
+            plan=plan, gtt_ids=["TP1", "TP2", "SL1"], wing_order_id=None,
+            errors=[], sibling_pairs=[],
+            sibling_groups=[("SL1", ["TP1", "TP2"])],
+        )
+        payload = _retry_build_attached_payload(result, "NRML")
+        by_id = {e["id"]: e for e in payload}
+        assert "sibling_id" not in by_id["TP1"]
+        assert "sibling_ids" not in by_id["TP1"]
+        assert "sibling_id" not in by_id["TP2"]
+        assert "sibling_ids" not in by_id["TP2"]
+        assert by_id["SL1"]["sibling_ids"] == ["TP1", "TP2"]
+        # _retry_build_gtt_entry already writes parent_symbol
+        # unconditionally — confirm the group branch didn't disturb it.
+        assert by_id["SL1"]["parent_symbol"] == "NIFTY26JUN20000CE"
+
 
 # ── _retry_build_result_response ─────────────────────────────────────────
 class TestBuildResultResponse:

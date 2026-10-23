@@ -404,15 +404,41 @@ def _retry_build_attached_payload(result, product: str) -> list:
     `placed_id` set, so it's skipped here too, instead of letting the
     positional zip silently pair a *different* spec's id/trigger/label
     onto this one.
+
+    T20 fix (2026-10-23) — this function's own docstring claimed
+    field-for-field parity with `_opp_build_attach_entries`
+    (orders_place.py) but never actually wrote `sibling_id` /
+    `sibling_ids` at all. On Groww (no native broker-side OCO),
+    `_task_oco_pair_watcher` has no pointer to cancel the surviving
+    leg when one of a pair/group fires via THIS path (retry-attach),
+    so both TP and SL — or an entire scale-ladder-plus-SL group — stay
+    live. Reuses the SAME map builders `_opp_build_attach_entries`
+    uses (`_opl_build_sibling_map` / `_opl_build_group_sibling_map`)
+    so the two paths can never represent a pair/group differently.
+    `parent_symbol`/`parent_account`/`parent_exchange` need no extra
+    work here — `_retry_build_gtt_entry` already writes them
+    unconditionally on every entry.
     """
+    from backend.api.routes.orders_place import (
+        _opl_build_sibling_map, _opl_build_group_sibling_map,
+    )
+    sibling_by_id = _opl_build_sibling_map(getattr(result, "sibling_pairs", None))
+    group_by_id = _opl_build_group_sibling_map(getattr(result, "sibling_groups", None))
     payload: list = []
     if result.plan:
         for _spec in result.plan.gtts:
             if not _spec.placed_id:
                 continue
-            payload.append(_retry_build_gtt_entry(
+            _entry = _retry_build_gtt_entry(
                 _spec, _spec.placed_id, result.plan, product,
-            ))
+            )
+            _sib = sibling_by_id.get(str(_spec.placed_id))
+            _group_tps = group_by_id.get(str(_spec.placed_id))
+            if _sib:
+                _entry["sibling_id"] = _sib
+            elif _group_tps:
+                _entry["sibling_ids"] = _group_tps
+            payload.append(_entry)
     if result.wing_order_id:
         # Mirror orders_place.py:_opp_build_attach_entries field-for-field —
         # `chased=True` means `result.wing_order_id` is the sentinel string
