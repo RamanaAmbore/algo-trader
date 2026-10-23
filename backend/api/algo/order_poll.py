@@ -63,6 +63,7 @@ async def reconcile_row_and_followup(
     *,
     source: str = "order-poll",
     fire_alert: bool = True,
+    owning_chase: bool = False,
 ) -> "object | None":
     """Reconcile one AlgoOrder *row* (any session state — only
     `.id` / `.broker_order_id` / `.status` / `.account` / `.symbol` /
@@ -89,10 +90,26 @@ async def reconcile_row_and_followup(
     and apply FILLED first — firing a false `order_correction` alert
     (3x-repeat urgent ntfy) for what is actually a completely normal,
     self-resolving chase fill, not a genuine "something needed manual
-    reconciliation" event. While a chase owns a row, chase's own
-    `_ch_periodic_broker_truth_check` / terminal fill hooks are the sole
-    authority over it — this function defers entirely. The registry is
-    in-process only; a service restart clears it, and
+    reconciliation" event. While a chase owns a row, every EXTERNAL
+    caller of this function (the watchdog, the periodic order-poll
+    sweep, postback's follow-up verification) defers entirely via this
+    check.
+
+    `owning_chase` (2026-10-23, audit fix O5) — set ONLY by chase's own
+    periodic in-loop broker-truth check
+    (`chase.py:_ch_periodic_broker_truth_check`), which runs WHILE this
+    exact row is marked active (`chase.py`'s `_ch_mark_chase_active` /
+    `_ch_mark_chase_inactive` pair spans the WHOLE retry loop, not just
+    one check) — for that one caller, the row's own active chase IS the
+    caller, so the `is_chase_active` deferral above would otherwise
+    ALWAYS short-circuit it into a permanent no-op. When True: skips the
+    `is_chase_active` early-return, and passes `withhold_if_active=False`
+    to `apply_order_truth` — matching `_ch_periodic_broker_truth_check`'s
+    own pre-existing call (it never passed `withhold_if_active`, i.e.
+    the function's default of False), unchanged by this migration. Every
+    other caller keeps `withhold_if_active=True`.
+
+    The registry is in-process only; a service restart clears it, and
     `recover_live_chases()` (background.py) is the real safety net for
     an interrupted chase at that point, not this function.
 
@@ -109,18 +126,21 @@ async def reconcile_row_and_followup(
     algo_order_id = getattr(row, "id", None)
     if algo_order_id is None:
         return None
-    try:
-        from backend.api.algo.chase import is_chase_active
-        if is_chase_active(algo_order_id):
-            return None
-    except Exception:
-        pass
+    if not owning_chase:
+        try:
+            from backend.api.algo.chase import is_chase_active
+            if is_chase_active(algo_order_id):
+                return None
+        except Exception:
+            pass
     prior_status = str(getattr(row, "status", "") or "")
 
     truth = await get_broker_order_truth(broker_order_id, broker_status_by_id)
     if not truth.available or truth.algo_status is None:
         return None
-    changed = await apply_order_truth(algo_order_id, truth, withhold_if_active=True)
+    changed = await apply_order_truth(
+        algo_order_id, truth, withhold_if_active=not owning_chase,
+    )
     if not changed:
         return None
 

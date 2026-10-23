@@ -840,11 +840,21 @@ async def _ch_backstop_reconcile_one(algo_order_id: int) -> None:
     for the shared wrapper the watchdog + the new periodic sweep +
     postback's follow-up verification use.
 
+    2026-10-23 audit fix (O5) — now routes the actual reconcile through
+    `order_poll.py:reconcile_row_and_followup` (this function already
+    runs AFTER `chase_order()`'s `finally` calls `_ch_mark_chase_inactive`,
+    so `is_chase_active(algo_order_id)` is already False by the time
+    this runs — no `owning_chase` bypass needed here, unlike the
+    periodic in-loop check below), so a fill this ambiguous-abort
+    backstop resolves gets the same template-attach / ws-resubscribe
+    treatment the watchdog and order-poll sweep already get, closing
+    the scope gap the previous direct `apply_order_truth` call left
+    (that call deliberately omits those side effects — see its own
+    docstring).
+
     Best-effort: any exception is logged and swallowed; this is a
     backstop on top of an already-written CANCEL_FAILED/chase_unfilled
-    row, never a new way for the chase itself to fail. Known scope gap
-    (deliberate): does not fire template-attach on a reconciled FILLED
-    — see `apply_order_truth`'s own docstring.
+    row, never a new way for the chase itself to fail.
     """
     try:
         from backend.api.cache import invalidate as _cache_invalidate
@@ -865,19 +875,9 @@ async def _ch_backstop_reconcile_one(algo_order_id: int) -> None:
             )).scalar_one_or_none()
             if row is None:
                 return   # nothing left to reconcile (already final elsewhere)
-            broker_order_id = row.broker_order_id
-        if not (broker_order_id or "").strip():
-            # Nothing to check against the broker (e.g. a place-timeout
-            # abort where no id was ever obtained) — `get_broker_order_
-            # truth` already treats a falsy id as `available=False`, but
-            # short-circuit here too to skip the snapshot fetch entirely.
-            return
-        from backend.api.routes.orders_helpers import (
-            get_broker_order_truth, apply_order_truth,
-        )
-        truth = await get_broker_order_truth(broker_order_id)
-        mutated = await apply_order_truth(algo_order_id, truth)
-        if mutated:
+        from backend.api.algo.order_poll import reconcile_row_and_followup
+        truth = await reconcile_row_and_followup(row, source="chase-backstop")
+        if truth is not None:
             logger.info(
                 "[CHASE] backstop reconcile for AlgoOrder #%s applied "
                 "broker truth (%s) after an ambiguous abort.",
@@ -3045,7 +3045,7 @@ _CH_RECONCILE_EVERY_N_ATTEMPTS = 3
 
 async def _ch_periodic_broker_truth_check(
     account: str, current_order_id: "str | None", algo_order_id: "int | None",
-    attempt: int,
+    attempt: int, symbol: str, cfg: "ChaseConfig", agent_id: "int | None" = None,
 ) -> "str | None":
     """Fix #8a, "during an active chase" trigger — every
     `_CH_RECONCILE_EVERY_N_ATTEMPTS` attempts, re-verify the CURRENTLY-
@@ -3059,6 +3059,23 @@ async def _ch_periodic_broker_truth_check(
     plain DB-status check (`_ch_check_external_final_status`) wouldn't
     see if nothing has written a new status yet.
 
+    2026-10-23 audit fix (O5) — now routes through the shared
+    `order_poll.py:reconcile_row_and_followup` wrapper (via its
+    `owning_chase=True` kwarg — this check runs WHILE the chase is
+    marked active for this very row via `_ch_mark_chase_active`, which
+    spans the whole `chase_order()` retry loop, so the wrapper's normal
+    `is_chase_active` no-op gate would otherwise ALWAYS short-circuit
+    it; `owning_chase=True` skips that gate for exactly this one
+    caller), instead of calling `apply_order_truth` directly, so a fill
+    this check catches gets the same template-attach / ws-resubscribe
+    treatment the watchdog and order-poll sweep already get.
+    `fire_alert=False` is deliberate: an `order_correction` alert here
+    would be a false alarm for what is actually a completely normal,
+    self-resolving chase fill — chase's own `_emit_chase_terminal`/
+    alert path (for the normal in-loop fill) is the correct
+    notification channel for this outcome, not the generic corrector
+    alert.
+
     Returns the resolved `AlgoOrder.status` string when
     `apply_order_truth` actually wrote one this call; `None` otherwise
     (not this attempt's turn to check, nothing resolved yet, or the
@@ -3069,14 +3086,17 @@ async def _ch_periodic_broker_truth_check(
     if attempt % _CH_RECONCILE_EVERY_N_ATTEMPTS != 0:
         return None
     try:
-        from backend.api.routes.orders_helpers import (
-            get_broker_order_truth, apply_order_truth,
+        from types import SimpleNamespace
+        from backend.api.algo.order_poll import reconcile_row_and_followup
+        _row = SimpleNamespace(
+            id=algo_order_id, broker_order_id=current_order_id,
+            status="OPEN", account=account, symbol=symbol,
+            exchange=cfg.exchange, agent_id=agent_id,
         )
-        truth = await get_broker_order_truth(current_order_id)
-        if not truth.available or truth.algo_status is None:
-            return None
-        mutated = await apply_order_truth(algo_order_id, truth)
-        return truth.algo_status if mutated else None
+        truth = await reconcile_row_and_followup(
+            _row, source="chase-periodic", fire_alert=False, owning_chase=True,
+        )
+        return truth.algo_status if truth is not None else None
     except Exception as _e:
         logger.debug("[CHASE] periodic broker-truth check failed: %s", _e)
         return None
@@ -3311,6 +3331,7 @@ async def _ch_loop_guards(
         # written a new status yet.
         ext_status = await _ch_periodic_broker_truth_check(
             account, current_order_id, algo_order_id, attempt,
+            symbol, cfg, agent_id=agent_id,
         )
     if ext_status is not None:
         return await _ch_external_final_status_result(
