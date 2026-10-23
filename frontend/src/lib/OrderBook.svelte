@@ -84,6 +84,25 @@
   // (now-inert) `statusFilter` prop — see its JSDoc above for why.
   let _internalStatus = $state(/** @type {string|null} */ (null));
 
+  // ── Chase cancel-and-replace dedup (2026-10-23 fix) ────────────────────
+  // During a chase cancel-and-replace, the algo row moves on to a NEW
+  // `broker_order_id` immediately, but the broker's own order book can lag
+  // behind the cancel by a second or more (confirmed via logs: a
+  // transient `CANCEL PENDING` broker status). In that gap, the just-
+  // superseded OLD broker_order_id no longer matches any algo row's
+  // CURRENT broker_order_id, so the existing dedup (`algoOnly` filter
+  // below) can't catch it — it rendered as its own independent, unlinked
+  // "open" card right alongside the new repriced order. Plain (non-
+  // reactive) bookkeeping Maps — never rendered directly, so no need for
+  // `$state`.
+  /** Previous poll's algo-row id → broker_order_id, used only to detect a
+   *  same-row id whose broker_order_id just changed between polls. */
+  let _prevAlgoBrokerIdById = new Map();
+  /** Just-superseded broker_order_id → {algoOrderId, ts} for a short
+   *  grace window, pruned every poll. */
+  let _supersededBrokerIds = /** @type {Map<string, {algoOrderId: any, ts: number}>} */ (new Map());
+  const _SUPERSEDED_GRACE_MS = 25_000;
+
   /**
    * Row timestamp → epoch-ms, tolerant of both source field conventions
    * this merged view carries: Kite's `order_timestamp` ("YYYY-MM-DD
@@ -168,6 +187,38 @@
       const algoRows = (algoResp.status === 'fulfilled' && Array.isArray(algoResp.value))
         ? algoResp.value
         : [];
+      // Chase cancel-and-replace dedup (2026-10-23 fix — see
+      // _prevAlgoBrokerIdById/_supersededBrokerIds declared near the top
+      // of the component for the full rationale). Gated on a genuinely
+      // fresh algo poll — a rejected algoResp (network blip) must not
+      // overwrite the previous-ids history, which would blind the very
+      // next poll to a supersede that's still mid-flight.
+      if (algoResp.status === 'fulfilled') {
+        const _now = Date.now();
+        // Prune expired grace-window entries first so the map never
+        // grows unbounded across a long-running session.
+        for (const [bid, info] of _supersededBrokerIds) {
+          if (_now - info.ts > _SUPERSEDED_GRACE_MS) _supersededBrokerIds.delete(bid);
+        }
+        // Diff against the PREVIOUS poll's algo rows (by algo row `id`,
+        // stable across a cancel-and-replace) to detect a broker_order_id
+        // that just changed — that's the signal a cancel-and-replace is
+        // in flight and the OLD id is about to go stale at the broker.
+        for (const row of algoRows) {
+          const rid = row?.id;
+          if (rid == null) continue;
+          const prevBid = _prevAlgoBrokerIdById.get(rid);
+          const curBid = String(row?.broker_order_id || '');
+          if (prevBid && curBid && prevBid !== curBid) {
+            _supersededBrokerIds.set(prevBid, { algoOrderId: rid, ts: _now });
+          }
+        }
+        const _nextAlgoSnapshot = new Map();
+        for (const row of algoRows) {
+          if (row?.id != null) _nextAlgoSnapshot.set(row.id, String(row?.broker_order_id || ''));
+        }
+        _prevAlgoBrokerIdById = _nextAlgoSnapshot;
+      }
       const brokerIds = new Set(brokerRows.map(o => String(o?.order_id || '')));
       // Dedup key fix (Sprint 2a, docs/proposals/SPRINT2_LAYER_INTEGRATION.md
       // §1 finding 2 / §2) — `AlgoOrderInfo` never carried an `order_id`
@@ -200,8 +251,24 @@
       // explicit origin flag `_isOpenBroker` below reads instead of the
       // old `!o?.mode` heuristic — see that function's comment for why
       // the heuristic needed replacing now rather than later.
+      //
+      // Drop a just-superseded broker row (chase cancel-and-replace gap,
+      // see above) UNLESS it's already terminal-filled — a late fill
+      // racing the cancel (the exact race the backend's
+      // `_ch_capture_late_fill` exists for) must still render and still
+      // feed `noteOrderPollFills` below, never be silently hidden. Every
+      // other status (still OPEN, CANCEL PENDING, etc.) is the
+      // "confusing second open card" this fix targets and is dropped —
+      // the simplest, safe default per the fix's own design: the live
+      // replacement order (already in `merged` via `brokerRows`/
+      // `algoOnly`) is the one card the operator needs to see.
+      const brokerRowsVisible = brokerRows.filter(o => {
+        const oid = String(o?.order_id || '');
+        if (!_supersededBrokerIds.has(oid)) return true;
+        return _STATUS_PREDICATES.complete((o?.status || '').toUpperCase());
+      });
       const merged = [
-        ...brokerRows.map(o => ({ ...o, _rowOrigin: 'broker' })),
+        ...brokerRowsVisible.map(o => ({ ...o, _rowOrigin: 'broker' })),
         ...algoOnly.map(o => ({ ...o, _rowOrigin: 'algo' })),
       ].filter(_isCurrentSessionRow);
       merged.sort((a, b) => {
@@ -985,7 +1052,18 @@
 
   .ob-scroll :global(.oc-book-grid) {
     display: grid;
-    grid-template-columns: 1fr;
+    /* minmax(0, 1fr) — NOT bare `1fr` (shorthand for minmax(auto, 1fr)).
+       A bare `1fr` track floors at the grid ITEM's min-content width —
+       for an OrderCard that's the unwrapped max-content width of its top
+       summary row (txn-type + account + symbol + status pill). The
+       symbol span's own `min-w-0 truncate` can never free up room until
+       the TRACK ITSELF is allowed to shrink below that floor. Confirmed
+       live via Playwright at 360px: card right edge measured past the
+       viewport, status pill clipped off-screen entirely (2026-10-23
+       fix). The 640px/1024px multi-column breakpoints below already
+       used `minmax(0, 1fr)` and were never affected — only this
+       single-column base rule had the bare-`1fr` trap. */
+    grid-template-columns: minmax(0, 1fr);
     gap: 0.5rem;
   }
   @media (min-width: 640px) {
@@ -994,25 +1072,58 @@
   @media (min-width: 1024px) {
     .ob-scroll :global(.oc-book-grid) { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   }
+  /* Backstop (belt-and-suspenders) — even with the minmax(0, 1fr) track
+     fix above, a grid ITEM's own default `min-width: auto` can still
+     floor it at content size in edge cases (e.g. a future non-wrapping
+     addition to the card). Pin both grid-item shapes this grid ever
+     renders (OrderCard's `.order-card` and OrderBook's own inline GTT
+     card `.gtt-card`) to `min-width: 0` directly, matching LogPanel's
+     `.lp-multicol .log-row { min-width: 0 }` convention for the
+     identical CSS-grid-intrinsic-sizing trap. */
+  .ob-scroll :global(.oc-book-grid .order-card),
+  .ob-scroll :global(.oc-book-grid .gtt-card) {
+    min-width: 0;
+  }
 
+  /* 2026-10-23 fix — was `display:grid; grid-template-columns:
+     repeat(6, minmax(0, 1fr))` with `.ob-sc-l` ellipsis-truncating the
+     label text to fit. At 320-375px that squeezed "Rejected/Cancelled"
+     (the longest label) into unreadable fragments — a silent-clip
+     violation of this app's overflow-not-clip convention (see
+     AlgoTabs.svelte's `.algo-tabs-strip` for the reference pattern this
+     mirrors). Now a horizontally-scrolling flex row: every chip keeps
+     its full, untruncated label; the row itself scrolls on narrow
+     viewports instead of the page. */
   .ob-status-bar {
-    display: grid;
-    grid-template-columns: repeat(6, minmax(0, 1fr));
+    display: flex;
+    flex-wrap: nowrap;
     gap: 0.25rem;
     padding: 0.3rem 0.4rem 0.2rem;
+    max-width: 100%;
+    min-width: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
   }
+  .ob-status-bar::-webkit-scrollbar { display: none; }
 
   /* Status filter chips — match .oc-filter-card chrome from the orders page.
      Navy gradient base, status-tinted gradient overlay via data-status,
-     amber inset ring on .is-active. */
+     amber inset ring on .is-active. `flex: 1 0 auto` (not a bare
+     `flex-shrink: 0`) so the 6 chips still stretch to fill a wide
+     desktop card evenly (matching the pre-2026-10-23 grid's equal-width
+     look) while never shrinking below their own label's content width
+     on a narrow viewport — the row scrolls instead. */
   .ob-sc {
     display: flex;
+    flex: 1 0 auto;
     flex-direction: column;
     align-items: center;
     justify-content: center;
     gap: 0.15rem;
     padding: 0.45rem 0.6rem;
-    min-width: 0;
+    white-space: nowrap;
     background:
       linear-gradient(180deg,
         rgba(255, 255, 255, 0.04) 0%,
@@ -1134,6 +1245,10 @@
   .ob-sc[data-status="gtt"]       .ob-sc-n { color: var(--algo-cyan, #22d3ee); }
   .ob-sc[data-status="held"]      .ob-sc-n { color: var(--algo-violet, #c084fc); }
 
+  /* No overflow/text-overflow/max-width here (2026-10-23 fix, removed) —
+     the row now scrolls horizontally instead of ellipsis-clipping the
+     label; see `.ob-status-bar`'s comment above. `white-space: nowrap`
+     stays so a label never wraps onto a second line inside its chip. */
   .ob-sc-l {
     font-size: var(--fs-xs, 0.6rem);
     font-weight: 700;
@@ -1141,18 +1256,15 @@
     text-transform: uppercase;
     color: var(--algo-muted, rgba(255,255,255,0.4));
     line-height: 1;
-    max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  /* 6 status chips (Held-Attn/Chase/Open/Filled/Rejected-Cancelled/GTT)
-     need to fit a 320-375px phone viewport without forcing the grid wider
-     than the card — tighten padding + letter-spacing below 600px so the
-     labels truncate gracefully instead of overflowing. "Rejected/Cancelled"
-     is the longest label in the row and relies on .ob-sc-l's existing
-     overflow:hidden + ellipsis to degrade instead of wrapping/overflowing. */
+  /* 6 status chips (Held-Attn/Chase/Open/Filled/Rejected-Cancelled/GTT) —
+     below 600px, tighten padding + letter-spacing so more of the
+     horizontally-scrolling row is visible before the operator needs to
+     swipe; the row itself now absorbs any remaining width via
+     `.ob-status-bar`'s `overflow-x: auto` rather than clipping
+     "Rejected/Cancelled" (the longest label) into illegible fragments. */
   @media (max-width: 600px) {
     .ob-sc { padding: 0.35rem 0.2rem; }
     .ob-sc-l { font-size: var(--fs-xs); letter-spacing: 0.03em; }

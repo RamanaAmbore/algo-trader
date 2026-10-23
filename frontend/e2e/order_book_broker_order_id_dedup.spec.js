@@ -211,3 +211,130 @@ test.describe('OrderBook / ChaseCard — broker_order_id dedup (Sprint 2a)', () 
     await expect(pendingRows).toHaveCount(0);
   });
 });
+
+// ── Chase cancel-and-replace dedup (2026-10-23 fix) ─────────────────────────
+// A DIFFERENT dedup gap from the broker_order_id fix above: that fix dedups
+// a broker row against an algo row's CURRENT broker_order_id. During a chase
+// cancel-and-replace, the algo row moves to a NEW broker_order_id
+// immediately, but the broker's own order book can lag the cancel by a
+// second or more — in that gap the just-superseded OLD broker_order_id no
+// longer matches ANY algo row's current broker_order_id, so it rendered as
+// its own independent, unlinked "open" card right alongside the new
+// repriced order. Two simultaneous OPEN-looking cards for one logical chase
+// attempt.
+//
+// Uses a closure "phase" flag flipped directly by the test (not a request
+// counter) — `/orders/algo/recent` is ALSO polled independently by
+// `(algo)/+layout.svelte`'s fill-watch backstop (see
+// order_book_poll_inflight_guard.spec.js's own header comment for the same
+// caveat), so a count-based phase switch would be corrupted by that
+// unrelated poller sharing the same URL.
+// average_price deliberately OMITTED (not 0) — OrderCard's price chip reads
+// `order.average_price ?? order.fill_price ?? order.price`, and `??` only
+// treats null/undefined as absent, not 0. A literal `average_price: 0`
+// (the real Kite shape for an unfilled order, used elsewhere in this file)
+// would make the chip render "0.00" instead of the limit price, which this
+// spec relies on to tell phase 1 (200.00) apart from phase 2 (198.00).
+const _PHASE1_BROKER_ROWS = [
+  { order_id: 'B9001', account: 'T1', exchange: 'NFO', tradingsymbol: 'RBQ-CHASEREPL',
+    transaction_type: 'SELL', quantity: 25, pending_quantity: 25, filled_quantity: 0,
+    price: 200, trigger_price: 0, status: 'OPEN',
+    order_type: 'LIMIT', product: 'MIS', variety: 'regular',
+    order_timestamp: '2026-09-30 09:10:00' },
+];
+const _PHASE1_ALGO_ROWS = [
+  { id: 501, account: 'T1', symbol: 'RBQ-CHASEREPL', exchange: 'NFO', transaction_type: 'SELL',
+    quantity: 25, initial_price: 200, current_limit: 200, fill_price: null,
+    attempts: 0, status: 'OPEN', engine: 'live', mode: 'live', detail: null,
+    created_at: '2026-09-30T04:08:00',
+    broker_order_id: 'B9001', source: 'ticket', agent_id: null },
+];
+// Phase 2 — the chase engine has cancelled B9001 and placed B9002 at a
+// repriced limit. The broker book hasn't caught up with the cancel yet
+// (still lists B9001 as OPEN) — the exact gap this fix closes.
+const _PHASE2_BROKER_ROWS = [
+  { ..._PHASE1_BROKER_ROWS[0] },
+  { order_id: 'B9002', account: 'T1', exchange: 'NFO', tradingsymbol: 'RBQ-CHASEREPL',
+    transaction_type: 'SELL', quantity: 25, pending_quantity: 25, filled_quantity: 0,
+    price: 198, trigger_price: 0, status: 'OPEN',
+    order_type: 'LIMIT', product: 'MIS', variety: 'regular',
+    order_timestamp: '2026-09-30 09:10:06' },
+];
+const _PHASE2_ALGO_ROWS = [
+  { id: 501, account: 'T1', symbol: 'RBQ-CHASEREPL', exchange: 'NFO', transaction_type: 'SELL',
+    quantity: 25, initial_price: 198, current_limit: 198, fill_price: null,
+    attempts: 1, status: 'OPEN', engine: 'live', mode: 'live', detail: null,
+    created_at: '2026-09-30T04:08:00',
+    broker_order_id: 'B9002', source: 'ticket', agent_id: null },
+];
+
+test.describe('OrderBook — chase cancel-and-replace dedup (2026-10-23)', () => {
+  test.setTimeout(60_000);
+
+  test('a superseded broker order_id does not render as a second simultaneous OPEN card', async ({ page }) => {
+    let phase = 1;
+    await page.route('**/api/orders/**', async (route) => {
+      const req = route.request();
+      if (req.method() !== 'GET') { await route.continue(); return; }
+      const url = req.url();
+      if (url.includes('/orders/gtts')) {
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ gtts: [], count: 0 }) });
+        return;
+      }
+      if (url.includes('/orders/chases/active')) {
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([]) });
+        return;
+      }
+      if (url.includes('/orders/algo/recent')) {
+        const rows = phase === 1 ? _PHASE1_ALGO_ROWS : _PHASE2_ALGO_ROWS;
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(rows) });
+        return;
+      }
+      if (/\/api\/orders\/?(\?.*)?$/.test(url)) {
+        const rows = phase === 1 ? _PHASE1_BROKER_ROWS : _PHASE2_BROKER_ROWS;
+        await route.fulfill({
+          status: 200, contentType: 'application/json',
+          body: JSON.stringify({ rows, refreshed_at: new Date().toISOString() }),
+        });
+        return;
+      }
+      await route.continue();
+    });
+
+    await authOnce(page);
+    await page.clock.setFixedTime(new Date(_NOW_ISO));
+
+    await page.goto('/orders');
+    await page.waitForLoadState('domcontentloaded');
+    await page.waitForSelector('.ob-status-bar', { timeout: 15_000 });
+    await page.waitForTimeout(600);
+
+    const card = page.locator('.oc-book-grid .order-card', { hasText: 'RBQ-CHASEREPL' });
+
+    // Phase 1 — exactly one card for the pre-replace order (B9001, deduped
+    // against its algo row the normal way), priced at the phase-1 limit.
+    await expect(card).toHaveCount(1);
+    await expect(card).toContainText('200.00');
+
+    // Flip to phase 2 — the cancel-and-replace has happened. OrderBook's
+    // next poll tick (default pollMs=5000, unset on /orders) picks up both
+    // the superseded B9001 (still OPEN at the broker) and the new B9002.
+    phase = 2;
+
+    // First, prove the SECOND poll has genuinely landed — wait for the new
+    // repriced limit (198.00, phase-2-only) to actually appear. Without
+    // this, a naive "still 1 card" check right after flipping `phase`
+    // would trivially pass on the STALE phase-1 render, before the next
+    // fetch cycle ever ran — true both with and without the fix, so it
+    // would prove nothing.
+    await expect.poll(
+      async () => card.first().innerText(),
+      { timeout: 12_000, intervals: [500] }
+    ).toContain('198.00');
+
+    // NOW the real regression check: still exactly ONE card, not two — the
+    // superseded B9001 row must be dropped once its supersede is detected,
+    // not rendered as a second "open" card alongside B9002.
+    await expect(card).toHaveCount(1);
+  });
+});
