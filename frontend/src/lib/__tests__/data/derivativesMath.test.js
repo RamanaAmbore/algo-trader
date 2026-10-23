@@ -368,7 +368,7 @@ describe('rollupByUnderlying — holdingsDayPnlByKey param', () => {
   /**
    * Build a minimal position row for rollupByUnderlying input.
    * Symbols should be F&O (futures/options) with format UNDERLYING+EXPIRY+TYPE.
-   * @param {string} sym  F&O symbol (e.g., 'NIFTY25SEPCFUT', 'TCS25SEPCFUT')
+   * @param {string} sym  F&O symbol (e.g., 'NIFTY25SEPFUT', 'TCS25SEPFUT')
    * @param {number} qty
    * @param {Partial<any>} extra
    * @returns {any}
@@ -418,7 +418,7 @@ describe('rollupByUnderlying — holdingsDayPnlByKey param', () => {
     // Holdings row with day_change_val: 100, but holdingsDayPnlByKey['TCS']: 250
     // Expected: day_with in rollup uses 250 (from override), not 100.
     const holdings = [makeHold('TCS', 100, { day_change_val: 100 })];
-    const positions = [makePos('TCS25SEPCFUT', 50)]; // TCS future to satisfy legs_without > 0 for TCS root
+    const positions = [makePos('TCS25SEPFUT', 50)]; // TCS future to satisfy legs_without > 0 for TCS root
     const result = rollupByUnderlying({
       positions,
       holdings,
@@ -446,7 +446,7 @@ describe('rollupByUnderlying — holdingsDayPnlByKey param', () => {
     // Holdings row with day_change_val: 200. holdingsDayPnlByKey: {} (empty)
     // Expected: day_with uses 200 (fallback).
     const holdings = [makeHold('INFY', 50, { day_change_val: 200 })];
-    const positions = [makePos('INFY25SEPCFUT', 50)]; // INFY future
+    const positions = [makePos('INFY25SEPFUT', 50)]; // INFY future
     const result = rollupByUnderlying({
       positions,
       holdings,
@@ -472,7 +472,7 @@ describe('rollupByUnderlying — holdingsDayPnlByKey param', () => {
   it('defaults to empty holdingsDayPnlByKey when param is omitted', () => {
     // Same as above, but param is not passed — should still use day_change_val.
     const holdings = [makeHold('RELIANCE', 75, { day_change_val: 300 })];
-    const positions = [makePos('RELIANCE25SEPCFUT', 50)];
+    const positions = [makePos('RELIANCE25SEPFUT', 50)];
     const result = rollupByUnderlying({
       positions,
       holdings,
@@ -500,7 +500,7 @@ describe('rollupByUnderlying — holdingsDayPnlByKey param', () => {
     // Nullish coalescing: 0 ?? 500 → 0 (0 is not null/undefined)
     // Expected: day_with uses 0.
     const holdings = [makeHold('HCLTECH', 60, { day_change_val: 500 })];
-    const positions = [makePos('HCLTECH25SEPCFUT', 50)];
+    const positions = [makePos('HCLTECH25SEPFUT', 50)];
     const result = rollupByUnderlying({
       positions,
       holdings,
@@ -532,9 +532,9 @@ describe('rollupByUnderlying — holdingsDayPnlByKey param', () => {
       makeHold('RELIANCE', 75, { day_change_val: 300 }),
     ];
     const positions = [
-      makePos('TCS25SEPCFUT', 50),
-      makePos('INFY25SEPCFUT', 50),
-      makePos('RELIANCE25SEPCFUT', 50),
+      makePos('TCS25SEPFUT', 50),
+      makePos('INFY25SEPFUT', 50),
+      makePos('RELIANCE25SEPFUT', 50),
     ];
     const result = rollupByUnderlying({
       positions,
@@ -565,6 +565,75 @@ describe('rollupByUnderlying — holdingsDayPnlByKey param', () => {
     expect(tcsGroup.day_with).toBe(250);
     expect(infyGroup.day_with).toBe(200);
     expect(relianceGroup.day_with).toBe(300);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// rollupByUnderlying — 3E fix (2026-10-23): equity-in-F&O-position
+// misclassification via the bare /(CE|PE)$/ regex. isFOSymbol was
+// introduced specifically to fix this class of bug elsewhere (the TOTAL
+// row via _accumulateFnOTotal) — this proves the same gate is now applied
+// here too.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('rollupByUnderlying — equity position ending in CE/PE is never misclassified as F&O (3E fix)', () => {
+  function makePos(sym, qty, extra = {}) {
+    return { symbol: sym, tradingsymbol: sym, quantity: qty, pnl: 500, source: 'live', account: 'ACC1', ...extra };
+  }
+  const identityDecompose = (sym) => ({ root: sym });
+
+  it('THE BUG THIS FIXES: an equity intraday position in RELIANCE (ends in "CE") does not create a spurious underlying group', () => {
+    const positions = [makePos('RELIANCE', 10)];
+    const result = rollupByUnderlying({
+      positions,
+      holdings: [],
+      wantedSource: 'live',
+      matchAccount: () => true,
+      matchStrategy: () => true,
+      filterQ: '',
+      decomposeSymbol: identityDecompose,
+      targetsForProxy: () => [],
+      getOptionUnderlyingLot: () => 0,
+      baseDayPnlForPosition: () => 0,
+    });
+    expect(result.find((g) => g.underlying === 'RELIANCE')).toBeUndefined();
+  });
+
+  it('a genuine F&O position (TCS future) still produces a group', () => {
+    const positions = [makePos('TCS25SEPFUT', 50)];
+    const result = rollupByUnderlying({
+      positions,
+      holdings: [],
+      wantedSource: 'live',
+      matchAccount: () => true,
+      matchStrategy: () => true,
+      filterQ: '',
+      decomposeSymbol: (sym) => {
+        const m = /^([A-Z&]+?)\d+/.exec(sym);
+        return { root: m ? m[1] : sym };
+      },
+      targetsForProxy: () => [],
+      getOptionUnderlyingLot: () => 0,
+      baseDayPnlForPosition: () => 0,
+    });
+    expect(result.find((g) => g.underlying === 'TCS')).toBeDefined();
+  });
+
+  it('BAJFINANCE (also ends in "CE") does not create a spurious underlying group', () => {
+    const positions = [makePos('BAJFINANCE', 5)];
+    const result = rollupByUnderlying({
+      positions,
+      holdings: [],
+      wantedSource: 'live',
+      matchAccount: () => true,
+      matchStrategy: () => true,
+      filterQ: '',
+      decomposeSymbol: identityDecompose,
+      targetsForProxy: () => [],
+      getOptionUnderlyingLot: () => 0,
+      baseDayPnlForPosition: () => 0,
+    });
+    expect(result.find((g) => g.underlying === 'BAJFINANCE')).toBeUndefined();
   });
 });
 
@@ -628,6 +697,42 @@ describe('perRootReduce — Extrinsic, multi-account same-symbol (item-2 fix)', 
     const matchStrategyExcluding = buildStrategyMatcher('strat-1', new Set(['CRUDEOIL6500PE']));
     const outExcluded = perRootReduce({ ...reduceParams(() => true), matchStrategy: matchStrategyExcluding });
     expect(outExcluded.CRUDEOIL).toBeUndefined();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// perRootReduce — 3E fix (2026-10-23): same equity-misclassification bug as
+// rollupByUnderlying above, via the bare /(CE|PE)$/ regex.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('perRootReduce — equity position ending in CE/PE is never misclassified as F&O (3E fix)', () => {
+  it('THE BUG THIS FIXES: RELIANCE (ends in "CE") contributes nothing to the output map', () => {
+    const positions = [{ symbol: 'RELIANCE', account: 'A', source: 'live', qty: 10, avg_cost: 100, ltp: 110 }];
+    const out = perRootReduce({
+      positions,
+      wantedSource: 'live',
+      matchAccount: () => true,
+      matchStrategy: () => true,
+      decomposeSymbol: (sym) => ({ root: sym }),
+      getSpot: () => 0,
+      accessor: () => 1, // would contribute 1 if (wrongly) included
+    });
+    expect(out.RELIANCE).toBeUndefined();
+    expect(Object.keys(out)).toHaveLength(0);
+  });
+
+  it('a genuine option position (CRUDEOIL6000CE) still contributes', () => {
+    const positions = [{ symbol: 'CRUDEOIL6000CE', account: 'A', source: 'live', qty: 100, avg_cost: 125, ltp: 130, underlying_ltp: 6100 }];
+    const out = perRootReduce({
+      positions,
+      wantedSource: 'live',
+      matchAccount: () => true,
+      matchStrategy: () => true,
+      decomposeSymbol: () => ({ root: 'CRUDEOIL' }),
+      getSpot: () => 0,
+      accessor: () => 1,
+    });
+    expect(out.CRUDEOIL).toBe(1);
   });
 });
 

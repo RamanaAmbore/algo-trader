@@ -494,9 +494,14 @@ export function rollupByUnderlying({
     if (!matchStrategy(p.symbol || p.tradingsymbol)) continue;
     const sym = String(p.symbol || p.tradingsymbol || '').toUpperCase();
     if (!sym) continue;
-    const isFut = /FUT$/i.test(sym);
-    const isOpt = /(CE|PE)$/i.test(sym);
-    if (!isFut && !isOpt) continue;
+    // 2026-10-23 fix (3E): was a bare `/FUT$/.test(sym) || /(CE|PE)$/.test(sym)`
+    // gate — matched "ACE"/"RELIANCE"/"BAJFINANCE" (real NSE equities ending
+    // in CE) as F&O, the same bug Commit 7/9 already fixed everywhere else
+    // via the shared isFOSymbol predicate (see _accumulateFnOTotal in
+    // +page.svelte) but missed here, so a misclassified equity position
+    // produced a spurious underlying row in the Snapshot grid whose TOTAL
+    // row (already on isFOSymbol) correctly excluded it.
+    if (!isFOSymbol(sym)) continue;
     const root = (decomposeSymbol(sym).root || sym).toUpperCase();
     if (!root) continue;
     const g = ensure(root);
@@ -584,9 +589,11 @@ export function perRootReduce({
     if (!matchStrategy(p.symbol || p.tradingsymbol || '')) continue;
     const sym = String(p.symbol || p.tradingsymbol || '').toUpperCase();
     if (!sym) continue;
-    const isFut = /FUT$/i.test(sym);
+    // 2026-10-23 fix (3E) — same isFOSymbol gate swap as rollupByUnderlying
+    // above. isOpt is still computed (now gated behind a confirmed real
+    // F&O symbol) to classify kind — that part was never the bug.
+    if (!isFOSymbol(sym)) continue;
     const isOpt = /(CE|PE)$/i.test(sym);
-    if (!isFut && !isOpt) continue;
     const c = { ...p, kind: isOpt ? 'opt' : 'fut' };
     const root = (decomposeSymbol(sym).root || sym).toUpperCase();
     if (!root) continue;
