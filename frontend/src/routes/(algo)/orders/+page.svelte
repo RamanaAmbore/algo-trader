@@ -407,19 +407,36 @@
 
 <!-- Chases in flight — every OPEN algo_orders row across paper /
      live / shadow. Per-row Kill button cancels the chase
-     (paper-engine flip OR broker.cancel_order). Reusable card; see
-     ChaseCard.svelte for the markup + polling. Section hides when
+     (paper-engine flip OR broker.cancel_order). Section hides when
      no chases are running AND no orders are OPEN — keeps the page
-     clean during idle hours. -->
-{#if _showChases}
-<section class="bucket-card bucket-card-chase">
+     clean during idle hours.
+
+     Single always-mounted ChaseCard instance (2026-10-23 migration,
+     replaces the old dual-mount `{#if _showChases}...ChaseCard...{:else}
+     ...display:none...ChaseCard compact.../if}` swap) — matches
+     (algo)/+layout.svelte's header drawer: ONE ChaseCard stays
+     mounted continuously (never destroyed/recreated), so its poller
+     never stops and `_activeChases` keeps updating even while this
+     section is hidden — without that, the section could never
+     reappear on the first chase fire. `headless={!_showChases}`
+     suppresses ChaseCard's own template render while idle instead of
+     swapping mounted instances. The old dual-mount pattern (two
+     separate instances both bound to the same `_activeChases`
+     variable) was the root cause of a runaway remount loop fixed in
+     ChaseCard itself (commit a3ade9db) — migrating off it here removes
+     the whole risk class, not just the one instance the prior fix
+     covered. The outer section also stays mounted unconditionally;
+     `style:display` (not an `{#if}`) hides its chrome while idle, so
+     neither the section nor ChaseCard is ever destroyed/recreated by
+     this toggle. -->
+<section class="bucket-card bucket-card-chase" style:display={_showChases ? null : 'none'}>
   <!-- ChaseCard now owns its own single CardHeader (2026-10 CardHeader
        adoption sweep) — the page no longer wraps it in a second "Chases"
        bar, which used to stack two shaded header rows on top of each
        other. ChaseCard's own title ("Chases in flight") replaces this
        page's plain "Chases" label. -->
   <div class="card-body oc-chase-body">
-    <ChaseCard pollMs={3000} onKilled={() => loadOrders()} bind:activeCount={_activeChases}
+    <ChaseCard pollMs={3000} headless={!_showChases} onKilled={() => loadOrders()} bind:activeCount={_activeChases}
       bind:chaseOrderIds={_chaseOrderIds}
       draftOrders={_draftOrdersList}
       onDraftRemove={(id) => payoffDrafts.remove(id)}
@@ -428,18 +445,6 @@
       onPendingModify={(o) => { orderTicketProps = _buildModifyProps(o); }} />
   </div>
 </section>
-{:else}
-<!-- Even when hidden, keep ChaseCard mounted so its poller updates
-     _activeChases — without this the section would never re-appear on
-     the first chase fire. compact + display:none keeps the DOM small. -->
-<div style="display:none"><ChaseCard pollMs={3000} compact bind:activeCount={_activeChases}
-  bind:chaseOrderIds={_chaseOrderIds}
-  draftOrders={_draftOrdersList}
-  onDraftRemove={(id) => payoffDrafts.remove(id)}
-  onDraftClick={_openDraftTicket}
-  pendingOrders={_pendingOrders}
-  onPendingModify={(o) => { orderTicketProps = _buildModifyProps(o); }} /></div>
-{/if}
 
 <!-- Order Activity card — NOT the tabbed LogPanel surface (that claim was
      stale/inaccurate; corrected 2026-10-13). `OrderBook.svelte` is a

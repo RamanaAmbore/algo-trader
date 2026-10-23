@@ -1,18 +1,26 @@
 /**
- * Verifies the Chases section visibility gate on /orders (commit a7f60400).
+ * Verifies the Chases section visibility gate on /orders.
  *
- * Gate logic:
- *   {#if _openOrderCount > 0 || _activeChases > 0}
- *     <section class="bucket-card bucket-card-chase">...</section>
- *   {:else}
- *     <div style="display:none"><ChaseCard … /></div>  ← hidden poller
- *   {/if}
+ * 2026-10-23 — migrated off the dual-mount `{#if}/{:else}` swap (commit
+ * a7f60400's gate) onto the single-instance `headless` pattern already
+ * used by (algo)/+layout.svelte's header drawer. The `<section
+ * class="bucket-card-chase">` wrapper and its one `<ChaseCard>` child are
+ * now BOTH always mounted; visibility is driven by an inline
+ * `style="display: none"` on the section (`style:display={_showChases ?
+ * null : 'none'}`) plus `headless={!_showChases}` on ChaseCard itself —
+ * never a template-level `{#if}`/`{:else}` around either element. There
+ * is no separate hidden poller `<div>` anymore; ChaseCard's own polling
+ * continues in the background regardless of visibility.
  *
  * Invariants:
  *   1. Status strip (.oc-filter-card buttons) shows 5 chips including Open.
- *   2. Exactly ONE of: visible chase section OR hidden-div poller exists.
- *   3. Gate state is consistent with Open order count.
- *   4. When hidden, display:none poller div is mounted.
+ *   2. Exactly one `section.bucket-card-chase` exists, always (no XOR with
+ *      a separate hidden-poller container — that container no longer
+ *      exists at all).
+ *   3. Visibility (CSS, not presence/absence) is consistent with Open
+ *      order count.
+ *   4. The section's inline `display: none` is present exactly when it
+ *      should be hidden, and absent exactly when visible.
  *   5. LogPanel Activity section is present.
  *   6. LogPanel default-active tab is "Order".
  *   7. Document order: chase region appears before Activity section.
@@ -53,18 +61,18 @@ test.describe('/orders — Chases section visibility gate', () => {
     expect(labels).toContain('Open');
   });
 
-  test('exactly one chase-related container exists (section XOR hidden div)', async ({ page }) => {
+  test('exactly one chase section container exists, always mounted', async ({ page }) => {
     const chaseSection = await page.locator('section.bucket-card-chase').count();
     const hiddenPoller = await page.locator('div[style*="display:none"]').count();
 
-    // The gate is {#if} / {:else} — exactly one branch is rendered.
-    expect(
-      chaseSection + hiddenPoller,
-      'Exactly one chase container should exist',
-    ).toBe(1);
+    // The section is no longer template-gated — it's always in the DOM
+    // now, visible or not. There is no separate hidden-poller <div> to
+    // XOR against anymore (that pattern is gone entirely).
+    expect(chaseSection, 'section.bucket-card-chase should always be mounted').toBe(1);
+    expect(hiddenPoller, 'the old hidden-poller div must no longer exist').toBe(0);
   });
 
-  test('gate state is consistent with Open order count', async ({ page }) => {
+  test('gate state (visibility) is consistent with Open order count', async ({ page }) => {
     // Read the "Open" count from the .oc-filter-count inside the Open card.
     const openCount = await page.evaluate(() => {
       const cards = Array.from(document.querySelectorAll('.oc-filter-card'));
@@ -78,7 +86,9 @@ test.describe('/orders — Chases section visibility gate', () => {
       return 0;
     });
 
-    const chaseVisible = await page.locator('section.bucket-card-chase').count() > 0;
+    // The section is always present now — "visible" means CSS-visible
+    // (display != none), not presence/absence in the DOM.
+    const chaseVisible = await page.locator('section.bucket-card-chase').isVisible();
 
     console.log(`Open count: ${openCount}, Chase section visible: ${chaseVisible}`);
 
@@ -100,16 +110,22 @@ test.describe('/orders — Chases section visibility gate', () => {
     }
   });
 
-  test('when hidden, display:none poller div is present; when visible, it is absent', async ({ page }) => {
-    const chaseVisible = await page.locator('section.bucket-card-chase').count() > 0;
+  test('section carries an inline display:none exactly when hidden, and no hidden-poller div exists either way', async ({ page }) => {
+    const chaseVisible = await page.locator('section.bucket-card-chase').isVisible();
+    const sectionHasDisplayNone = (await page.locator('section.bucket-card-chase')
+      .getAttribute('style') ?? '').includes('display: none') ||
+      (await page.locator('section.bucket-card-chase').getAttribute('style') ?? '').includes('display:none');
     const hiddenDivCount = await page.locator('div[style*="display:none"]').count();
 
+    // There is no separate hidden-poller <div> in either state anymore —
+    // the single ChaseCard instance stays mounted inside the (always
+    // present) section regardless of visibility.
+    expect(hiddenDivCount).toBe(0);
+
     if (!chaseVisible) {
-      // Gate rendered the {:else} branch — exactly one hidden div must be there.
-      expect(hiddenDivCount).toBe(1);
+      expect(sectionHasDisplayNone, 'hidden section should carry inline display:none').toBeTruthy();
     } else {
-      // Gate rendered {#if} branch — no display:none div should exist.
-      expect(hiddenDivCount).toBe(0);
+      expect(sectionHasDisplayNone, 'visible section must not carry display:none').toBeFalsy();
     }
   });
 
@@ -130,9 +146,9 @@ test.describe('/orders — Chases section visibility gate', () => {
 
   test('document order: chase region appears before Activity/LogPanel section', async ({ page }) => {
     const result = await page.evaluate(() => {
-      const chase =
-        document.querySelector('section.bucket-card-chase') ||
-        document.querySelector('div[style*="display:none"]');
+      // The section is always mounted now (visible or hidden via inline
+      // style) — no fallback to a separate hidden-poller div is needed.
+      const chase = document.querySelector('section.bucket-card-chase');
       const activity = document.querySelector('section.bucket-card-activity');
       if (!chase || !activity) return null;
 

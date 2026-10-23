@@ -39,7 +39,24 @@
  *     e2e/orders_chase_remount_loop_regression.spec.js --project=chromium-desktop
  */
 import { test, expect } from '@playwright/test';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { loginAsAdmin } from './fixtures/auth.js';
+
+// 2026-10-23 follow-up — /orders migrated off the dual-mount `{#if
+// _showChases}<ChaseCard/>{:else}<div style="display:none"><ChaseCard
+// compact/></div>{/if}` swap onto the single-instance `headless` pattern
+// already used by (algo)/+layout.svelte's header drawer (see that file's
+// own ChaseCard mount for the reference implementation). ONE <ChaseCard>
+// now stays mounted continuously; `headless={!_showChases}` suppresses its
+// own template render while idle, so there is never a destroy/recreate
+// cycle on this page at all — not just a safer one guarded by ChaseCard's
+// own `_loadedOnce` fix.
+const _ORDERS_PAGE_PATH = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '../src/routes/(algo)/orders/+page.svelte',
+);
 
 const _NOW_SEC = Math.floor(Date.now() / 1000);
 const _ACTIVE_CHASE = {
@@ -73,6 +90,14 @@ async function _mockOrdersApis(page, getChases) {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ gtts: [], count: 0 }) });
       return;
     }
+    if (url.includes('/orders/drafts')) {
+      // payoffDrafts.load() — must be an explicit empty array so the
+      // idle-state test below isn't accidentally desynced by real
+      // backend draft rows (this route previously fell through to
+      // route.continue(), hitting the real backend unmocked).
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([]) });
+      return;
+    }
     if (/\/api\/orders\/?(\?.*)?$/.test(url)) {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ rows: [], refreshed_at: new Date().toISOString() }) });
       return;
@@ -83,6 +108,31 @@ async function _mockOrdersApis(page, getChases) {
 
 test.describe('/orders — ChaseCard dual-mount remount-loop regression', () => {
   test.setTimeout(60_000);
+
+  // Structural check — no page fixture needed. Confirms the migration
+  // actually happened in source, not just that the behavioral tests
+  // below happen to stay under a request-count threshold (a single
+  // instance polling at a slightly slower cadence could also pass a
+  // volume-only check without the dual-mount pattern actually being
+  // gone). Confirmed to fail against the pre-migration file
+  // (`git show HEAD:"frontend/src/routes/(algo)/orders/+page.svelte"`
+  // has 2 `<ChaseCard` tags; this file has 1).
+  test('orders +page.svelte source mounts exactly one <ChaseCard>, no hidden-instance swap', () => {
+    const src = fs.readFileSync(_ORDERS_PAGE_PATH, 'utf8');
+    const chaseCardTags = src.match(/<ChaseCard\b/g) || [];
+    expect(chaseCardTags.length).toBe(1);
+    // The old dual-mount pattern's hidden branch used `compact` on the
+    // second instance and a `display:none` wrapper div — confirm both
+    // are gone, not just that the tag count dropped (a future
+    // regression could reintroduce a second instance via some other
+    // wrapper shape).
+    expect(src).not.toMatch(/style="display:\s*none"/);
+    expect(src).not.toMatch(/<ChaseCard[^>]*\bcompact\b/);
+    // The single surviving instance must drive its visibility via the
+    // `headless` prop (the whole point of this migration), not via a
+    // template-level {#if}/{:else} around the element itself.
+    expect(src).toMatch(/<ChaseCard[^>]*\bheadless=\{!_showChases\}/);
+  });
 
   test('a non-empty /chases/active mock does not trigger a runaway poll loop', async ({ page }) => {
     await loginAsAdmin(page);
@@ -96,15 +146,16 @@ test.describe('/orders — ChaseCard dual-mount remount-loop regression', () => 
     await page.waitForTimeout(10_000);
 
     // /orders runs TWO independent ~3s pollers by design (the layout's
-    // persistent headless ChaseCard, plus this page's own) — a healthy
-    // 10s window lands around 6-10 hits. The pre-fix bug produced
-    // hundreds to thousands of hits in the same window.
+    // persistent headless ChaseCard, plus this page's own single
+    // always-mounted instance) — a healthy 10s window lands around
+    // 6-10 hits. The pre-fix bug produced hundreds to thousands of
+    // hits in the same window.
     console.log(`[regression] hits to /chases/active in 10s: ${hitCount}`);
     expect(hitCount).toBeGreaterThan(0);
     expect(hitCount).toBeLessThan(20);
   });
 
-  test('transitioning from idle (no chases) to an active chase mid-session stays bounded — the hidden-poller use case', async ({ page }) => {
+  test('transitioning from idle (no chases) to an active chase mid-session stays bounded', async ({ page }) => {
     await loginAsAdmin(page);
 
     let chasesActive = false;
@@ -117,17 +168,28 @@ test.describe('/orders — ChaseCard dual-mount remount-loop regression', () => 
     await page.goto('/orders');
     await page.waitForLoadState('domcontentloaded');
 
-    // Idle for a few seconds first — confirms the hidden instance's own
-    // mount (and the layout's persistent instance) don't themselves spin.
+    // Idle for a few seconds first — confirms the single always-mounted
+    // instance's own idle-cadence poll (and the layout's persistent
+    // instance) don't spin on their own while headless/closed.
     await page.waitForTimeout(3000);
     expect(hitCount).toBeLessThan(10);
 
-    // Flip the mock — simulates a chase firing mid-session. The hidden
-    // instance's own idle-cadence poller (max(15000, pollMs*10) = 30s)
-    // must still pick this up and show the section — this is the exact
-    // use case the hidden `display:none` instance exists to serve.
+    // Idle state must actually be hidden on screen — the chrome section
+    // is always mounted now (never `{#if}`-destroyed) and relies on
+    // `style:display` to hide while `_showChases` is false, so this is
+    // the one check that distinguishes "genuinely hidden" from "always
+    // visible, just empty".
+    await expect(page.locator('.bucket-card-chase')).toBeHidden();
+
+    // Flip the mock — simulates a chase firing mid-session. The page's
+    // own instance polls in the background throughout (it is never
+    // unmounted while idle, per the single-instance `headless` pattern)
+    // and must pick this up on its own idle-cadence poller
+    // (max(15000, pollMs*10) = 30s) without a page reload or remount.
     chasesActive = true;
     await expect(page.locator('.cc-root').first()).toBeVisible({ timeout: 40_000 });
+    await expect(page.locator('.bucket-card-chase')).toBeVisible();
+    await expect(page.getByText('Chases in flight')).toBeVisible();
 
     // And once visible, request volume for the next 10s must stay sane
     // — not degenerate into the remount loop the fix closes.
