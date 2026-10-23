@@ -130,7 +130,7 @@
       <span class="ats-mkt-pill" class:ats-mkt-open={_nseOpen} class:ats-mkt-closed={!_nseOpen}
             data-testid="algo-ts-market-badge-eq"
             title={_nseOpen ? 'Non-MCX (NSE/NFO/BSE/CDS) session is open' : 'Non-MCX (NSE/NFO/BSE/CDS) session is closed'}>
-        Eq
+        EQ
       </span>
     </span>
   </div>

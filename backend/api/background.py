@@ -3824,9 +3824,9 @@ async def _msr_mark_done(today: date) -> None:
 
 def _market_status_window_end() -> "dtime":
     """Earliest configured `market_segments` session start across all
-    segments (today: NSE 09:15, MCX 09:30 -> returns 09:15) — the upper
+    segments (today: MCX 09:00, NSE 09:15 -> returns 09:00) — the upper
     bound of the market-status report's firing window. Falls back to
-    09:15 on any config error.
+    09:00 on any config error.
 
     The window's purpose: `_ds_tick_market_status_report` must fire only
     in `[05:35, this)`, never later — a tick landing at, say, 10:00
@@ -3841,9 +3841,9 @@ def _market_status_window_end() -> "dtime":
             for sess in sessions:
                 hh, mm = (int(x) for x in str(sess.get("start", "09:15")).split(":", 1))
                 starts.append(dtime(hh, mm))
-        return min(starts) if starts else dtime(9, 15)
+        return min(starts) if starts else dtime(9, 0)
     except Exception:
-        return dtime(9, 15)
+        return dtime(9, 0)
 
 
 async def _market_status_agent_is_active() -> bool:
@@ -3884,10 +3884,10 @@ async def _ds_tick_market_status_report(now: datetime, today: date, done_ref: li
     — it skips agent evaluation ENTIRELY whenever no configured segment
     is currently open. `_get_segments()`'s own hours are the broad
     exchange_schedule window (08:00 open), not each segment's real
-    09:15/09:30 session start — `market-open-nse` (fire_at_time=09:15)
+    09:00/09:15 session start — `market-open-nse` (fire_at_time=09:15)
     and `market-preclose-mcx` (23:00) both fire because 09:15/23:00 are
     already PAST that 08:00 open, not because either literally coincides
-    with NSE/MCX's own session boundary. 05:35 IST is still BEFORE that
+    with MCX/NSE's own session boundary. 05:35 IST is still BEFORE that
     08:00 gate on every day, open or closed — on a fully-closed day
     (weekend, or a holiday with no MCX evening session) `run_cycle` is
     never called AT ALL that day. No `fire_at_time` choice within the

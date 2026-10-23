@@ -323,20 +323,19 @@
   // toastStore's 3000ms default.
   //
   // The toast says when the markets next reopen so the operator knows
-  // when live ticks will resume. Equity opens 09:15 IST, MCX 09:30 IST
-  // (corrected 2026-10-22 — MCX's real session start, was wrongly
-  // configured as 09:00); we surface NSE (earlier of the two, since the
-  // MCX correction) as the next-open window.
+  // when live ticks will resume. MCX opens 09:00 IST, equity opens
+  // 09:15 IST; we surface MCX (earlier of the two) as the next-open
+  // window.
   let _showClosedNotice = $state(false); // retained for back-compat popups
   function _nextOpenLabel() {
     // Reopen-time hint: which window comes next?
+    //   MCX 09:00-23:30 — commodities
     //   NSE 09:15-15:30 — equity
-    //   MCX 09:30-23:30 — commodities
-    // Outside both, NSE opens earliest (09:15 IST) on the next trading
+    // Outside both, MCX opens earliest (09:00 IST) on the next trading
     // day. We don't compute the holiday-aware next-trading-day here —
     // the server-side market status poller already gates polls; this
     // toast just gives a quick human cue.
-    return '09:15 IST';
+    return '09:00 IST';
   }
   function _handleClick() {
     if (_showSpinning) return;

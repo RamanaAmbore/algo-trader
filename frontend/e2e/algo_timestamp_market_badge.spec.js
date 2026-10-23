@@ -20,11 +20,13 @@
  *   - "M"'s colour is a 4-bucket compound state mirroring
  *     RefreshButton.svelte's `.rf-mkt-*` scheme (both open = green,
  *     MCX-only open = amber, closed = slate) EXTENDED with a 4th bucket —
- *     "Eq-only open" (NSE open, MCX not yet open — a real ~09:15-09:30 IST
- *     window since MCX's corrected 09:30 start) — which RefreshButton's
- *     own scheme folds into "closed" (it only branches on `_mcxOpen`).
- *     The new bucket uses a new `--algo-market-eq-only-*` token (app.css),
- *     aliased to the existing violet family rather than a brand-new hue.
+ *     "Eq-only open" (NSE open, MCX closed — not reachable under either
+ *     segment's default open time since MCX (09:00) opens before NSE
+ *     (09:15), but still reachable on an MCX-specific holiday while NSE
+ *     trades normally) — which RefreshButton's own scheme folds into
+ *     "closed" (it only branches on `_mcxOpen`). The new bucket uses a new
+ *     `--algo-market-eq-only-*` token (app.css), aliased to the existing
+ *     violet family rather than a brand-new hue.
  *   - "MCX"/"Eq" are plain two-colour open/closed pills (green/slate),
  *     reusing the exact tokens the now-removed SymbolPanel pills used.
  *   - Data source: the SAME module-level cache in $lib/marketHours that

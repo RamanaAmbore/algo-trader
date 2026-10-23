@@ -3,7 +3,7 @@ Item 1 (2026-10-22) — pin LTP to prev_close until each exchange segment's
 real session opens.
 
 Live incident: at 08:47 IST (past the system's broad 08:00 broker-
-connectivity window but before MCX's real 09:30 session start), MCX GOLD
+connectivity window but before MCX's real 09:00 session start), MCX GOLD
 option legs already carried a live `last_price` diverging from
 `prev_close`, producing a phantom Day P&L move purely from the gap between
 the broad window and each segment's real trading-session hours.
@@ -46,23 +46,23 @@ def _patch_calendar():
 
 
 class TestIsSegmentPendingOpen:
-    def test_mcx_pending_before_0930(self):
+    def test_mcx_pending_before_0900(self):
         from backend.api.helpers.snapshot_gate import is_segment_pending_open
         now = datetime(2026, 10, 19, 8, 47, tzinfo=IST)  # Monday
         p1, p2 = _patch_calendar()
         with p1, p2:
             assert is_segment_pending_open("MCX", now) is True
 
-    def test_mcx_open_at_exactly_0930(self):
+    def test_mcx_open_at_exactly_0900(self):
         from backend.api.helpers.snapshot_gate import is_segment_pending_open
-        now = datetime(2026, 10, 19, 9, 30, tzinfo=IST)
+        now = datetime(2026, 10, 19, 9, 0, tzinfo=IST)
         p1, p2 = _patch_calendar()
         with p1, p2:
             assert is_segment_pending_open("MCX", now) is False
 
     def test_mcx_still_pending_one_minute_before_open(self):
         from backend.api.helpers.snapshot_gate import is_segment_pending_open
-        now = datetime(2026, 10, 19, 9, 29, tzinfo=IST)
+        now = datetime(2026, 10, 19, 8, 59, tzinfo=IST)
         p1, p2 = _patch_calendar()
         with p1, p2:
             assert is_segment_pending_open("MCX", now) is True
@@ -157,7 +157,7 @@ class TestPositionsPendingOpenPin:
             _resolve_pending_open_exchanges, _pin_pending_open_rows,
         )
         df = pd.DataFrame([self._row()])
-        now = datetime(2026, 10, 19, 11, 0, tzinfo=IST)  # well past 09:30
+        now = datetime(2026, 10, 19, 11, 0, tzinfo=IST)  # well past 09:00
         p1, p2 = _patch_calendar()
         with p1, p2, patch(
             "backend.shared.helpers.date_time_utils.timestamp_indian", return_value=now,
@@ -176,7 +176,7 @@ class TestPositionsPendingOpenPin:
             _resolve_pending_open_exchanges, _pin_pending_open_rows,
         )
         df = pd.DataFrame([self._row()])
-        now = datetime(2026, 10, 19, 9, 30, tzinfo=IST)  # exactly MCX open
+        now = datetime(2026, 10, 19, 9, 0, tzinfo=IST)  # exactly MCX open
         p1, p2 = _patch_calendar()
         with p1, p2, patch(
             "backend.shared.helpers.date_time_utils.timestamp_indian", return_value=now,
@@ -333,7 +333,7 @@ class TestHoldingsPendingOpenPin:
 class TestPendingOpenPinIncidentReplication:
     """Replicates the exact live incident: GOLD26OCT142000PE,
     last_price=439 vs prev_close=420, at 08:47 IST on MCX before its real
-    09:30 session start — confirmed via a real `/api/positions` pull
+    09:00 session start — confirmed via a real `/api/positions` pull
     (`price_source: "live"`). Asserts the pin reaches the REAL summary
     rollup (`_build_polars_summary`, the NavStrip P badge's data source),
     not just the per-row fields — `_build_polars_summary` discards the

@@ -2177,10 +2177,10 @@ BUILTIN_AGENTS.extend(_INFO_AGENTS)
 # skips agent evaluation entirely whenever no `_get_segments()` segment
 # is open per THAT function's own gate, which uses the broad
 # exchange_schedule hours (08:00 open), NOT each segment's real
-# 09:15/09:30 session start. `market-open-nse` (fire_at_time=09:15) and
+# 09:00/09:15 session start. `market-open-nse` (fire_at_time=09:15) and
 # `market-preclose-mcx` (23:00) both fire because 09:15/23:00 are already
 # PAST that 08:00 gate — not because either time literally coincides
-# with NSE/MCX's own session boundary. 05:35 IST is still BEFORE that
+# with MCX/NSE's own session boundary. 05:35 IST is still BEFORE that
 # 08:00 gate on every day, open or closed, so it is unconditionally true
 # at 05:35 regardless of market state. No `fire_at_time` choice inside
 # the normal agent-engine trigger mechanism can satisfy "fires whether
@@ -2810,7 +2810,7 @@ def _ae_segment_flags(seg_name: str, seg_cfg: dict, now) -> dict:
         # calc (below) see the correct 17:00 anchor even BEFORE the
         # evening session actually starts (e.g. 10:00 IST on an MCX
         # holiday) — without this, minutes_until_open would measure
-        # against the regular 09:30 window start instead of 17:00.
+        # against the regular 09:00 window start instead of 17:00.
         if is_holiday and evening_open:
             evening_anchor = now.replace(hour=17, minute=0, second=0, microsecond=0)
             if evening_anchor > open_time:

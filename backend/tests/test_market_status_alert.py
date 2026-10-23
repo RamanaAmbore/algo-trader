@@ -44,7 +44,7 @@ class TestMarketStatusForSegment:
         assert eq["open"] is True
         assert eq["hours"] == "09:15–15:30 IST"
         assert co["open"] is True
-        assert co["hours"] == "09:30–23:30 IST"
+        assert co["hours"] == "09:00–23:30 IST"
 
     @pytest.mark.asyncio
     async def test_weekend_reports_closed(self):
@@ -121,10 +121,10 @@ class TestFormatMarketStatusMessage:
         from backend.api.algo.actions_live import _format_market_status_message
         now = datetime(2026, 10, 22, 5, 35, tzinfo=IST)
         eq = {"open": True, "hours": "09:15–15:30 IST", "reason": None}
-        co = {"open": True, "hours": "09:30–23:30 IST", "reason": None}
+        co = {"open": True, "hours": "09:00–23:30 IST", "reason": None}
         msg = _format_market_status_message(now, eq, co)
         assert "NSE/Equity: OPEN 09:15–15:30 IST" in msg
-        assert "MCX/Commodity: OPEN 09:30–23:30 IST" in msg
+        assert "MCX/Commodity: OPEN 09:00–23:30 IST" in msg
 
     def test_both_closed(self):
         from backend.api.algo.actions_live import _format_market_status_message
@@ -385,11 +385,11 @@ class TestMarketStatusBackgroundTick:
 
 
 class TestMarketStatusWindowEnd:
-    def test_default_window_end_is_0915(self):
+    def test_default_window_end_is_0900(self):
         from backend.api.background import _market_status_window_end
-        assert _market_status_window_end() == dtime(9, 15)
+        assert _market_status_window_end() == dtime(9, 0)
 
-    def test_config_error_falls_back_to_0915(self):
+    def test_config_error_falls_back_to_0900(self):
         from backend.api.background import _market_status_window_end
         with patch("backend.shared.helpers.utils.config", {}):
-            assert _market_status_window_end() == dtime(9, 15)
+            assert _market_status_window_end() == dtime(9, 0)

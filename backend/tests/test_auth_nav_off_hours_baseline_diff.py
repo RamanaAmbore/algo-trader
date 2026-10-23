@@ -84,10 +84,21 @@ class TestAuthLiveSessionBaselineDiff:
 
     def test_live_session_firm_day_pnl_uses_baseline_diff_not_legacy_backstop(self):
         from backend.api.routes import auth as auth_mod
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
 
         # Reset the module-level NAV memo cache so this test isn't served
         # a stale cached value from an earlier test/run.
         auth_mod._NAV_CACHE.update(ts=0.0, value=None)
+
+        # Pin timestamp_indian() to a fixed mid-session IST time, and the
+        # holiday/special-session calendar to empty, so this test's exact
+        # day_pnl assertion isn't incidentally affected by the
+        # pending-open LTP pin (Item 1, 2026-10-22, also wired into this
+        # exact live-session fallback in auth.py) — either from the real
+        # wall clock falling before NSE's 09:15 session open, or from the
+        # real holiday calendar reading the fixed date as closed.
+        _mid_session = datetime(2026, 10, 21, 11, 0, tzinfo=ZoneInfo("Asia/Kolkata"))  # Wednesday, non-holiday
 
         df_p = _positions_df_groww_style()
         df_h = pd.DataFrame(columns=["account"])  # no holdings — isolates positions math
@@ -119,6 +130,12 @@ class TestAuthLiveSessionBaselineDiff:
                 side_effect=_fake_override_holdings,
             ) as mock_override_h,
             patch("backend.api.algo.nav.compute_firm_nav", side_effect=_fake_compute_firm_nav),
+            patch("backend.shared.helpers.date_time_utils.timestamp_indian",
+                  return_value=_mid_session),
+            patch("backend.brokers.broker_apis.fetch_holidays", return_value=set()),
+            patch("backend.brokers.broker_apis.fetch_special_sessions", return_value=[]),
+            patch("backend.brokers.broker_apis.fetch_special_sessions_async",
+                  new=AsyncMock(return_value=[])),
         ):
             firm_nav, firm_day_pnl, firm_cum_pnl, as_of_iso, _stale = asyncio.run(
                 auth_mod._compute_firm_nav()

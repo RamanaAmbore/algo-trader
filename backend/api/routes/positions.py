@@ -2213,7 +2213,7 @@ def _resolve_pending_open_exchanges(raw: pd.DataFrame) -> set:
     2026-10-22). See `snapshot_gate.is_segment_pending_open`'s docstring
     for the live incident this closes — the system's broad broker-
     connectivity window (08:00-23:31 IST) is wider than each exchange's
-    real session hours (NSE 09:15, MCX 09:30), so a row can carry a live
+    real session hours (MCX 09:00, NSE 09:15), so a row can carry a live
     `last_price` genuinely diverging from `prev_close` purely from that
     gap, with no real local trade behind it.
     """

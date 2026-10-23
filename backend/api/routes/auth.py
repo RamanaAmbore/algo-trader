@@ -423,7 +423,7 @@ async def _auth_nav_live_session_fallback(
         # Item 1 (2026-10-22) — `_any_segment_open()` (this function's own
         # caller gate) is the BROAD broker-connectivity window, exactly
         # the gap the live incident exploited: this fallback can run at
-        # 08:47 IST, before MCX's real 09:30 session start, and feed a
+        # 08:47 IST, before MCX's real 09:00 session start, and feed a
         # phantom Day P&L straight into firm-NAV / the NavStrip P badge
         # without this pin. `_fetch_holdings_direct`/`_fetch_positions_
         # direct` (this function's own callers) run no later backstop of

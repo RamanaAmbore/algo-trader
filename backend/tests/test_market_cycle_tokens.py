@@ -13,11 +13,11 @@ overrides" note). Three layers of coverage, per that note's own
 "dormant, no live reader" callout — a resolver-only test would pass even
 if the engine never actually threads the data through:
 
-  1. `_ae_segment_flags` boundary tests — the 09:30 IST MCX open time
-     (corrected from 09:00 earlier the same day, commit 0538f0a7) is
-     read LIVE from `backend_config.yaml` via the module-level `config`
-     dict (loaded once at process start, no separate caching layer —
-     see `backend/shared/helpers/utils.py`), not a stale literal.
+  1. `_ae_segment_flags` boundary tests — MCX's configured open time
+     (09:00 IST) is read LIVE from `backend_config.yaml` via the
+     module-level `config` dict (loaded once at process start, no
+     separate caching layer — see `backend/shared/helpers/utils.py`),
+     not a stale literal.
   2. Resolver-level true/false/missing tests on a hand-built `Context`.
   3. A `run_cycle` wiring test proving `context["segment_flags"]` is
      actually populated from `_build_context()`'s output — the gap this
@@ -70,33 +70,32 @@ def _at(hh: int, mm: int) -> datetime:
 
 
 # ---------------------------------------------------------------------------
-# Layer 1 — `_ae_segment_flags` boundary tests (empirical 09:30 proof +
+# Layer 1 — `_ae_segment_flags` boundary tests (empirical 09:00 proof +
 # the new minutes_until_* fields).
 # ---------------------------------------------------------------------------
 
-def test_mcx_still_closed_one_minute_before_the_corrected_open_time():
-    """Pre-flight verification target: MCX's configured open is 09:30 IST
-    (corrected from 09:00 same-day, commit 0538f0a7), read live from
-    backend_config.yaml — not a stale 09:00. At 09:29 MCX must read
-    closed."""
+def test_mcx_still_closed_one_minute_before_the_configured_open_time():
+    """Pre-flight verification target: MCX's configured open is 09:00 IST,
+    read live from backend_config.yaml — not a stale literal. At 08:59
+    MCX must read closed."""
     from backend.api.algo.agent_engine import _ae_segment_flags
 
-    flags = _ae_segment_flags("commodity", _commodity_seg(), _at(9, 29))
+    flags = _ae_segment_flags("commodity", _commodity_seg(), _at(8, 59))
     assert flags["mcx_open"] is False, flags
     assert flags["minutes_since_mcx_open"] == 0
     assert flags["minutes_until_mcx_close"] is None
     assert flags["minutes_until_mcx_open"] == 1, flags
 
 
-def test_mcx_open_one_minute_after_the_corrected_open_time():
+def test_mcx_open_one_minute_after_the_configured_open_time():
     from backend.api.algo.agent_engine import _ae_segment_flags
 
-    flags = _ae_segment_flags("commodity", _commodity_seg(), _at(9, 31))
+    flags = _ae_segment_flags("commodity", _commodity_seg(), _at(9, 1))
     assert flags["mcx_open"] is True, flags
     assert flags["minutes_since_mcx_open"] == 1
     assert flags["minutes_until_mcx_open"] == 0
-    # 23:30 close - 09:31 = 839 minutes.
-    assert flags["minutes_until_mcx_close"] == 839, flags
+    # 23:30 close - 09:01 = 869 minutes.
+    assert flags["minutes_until_mcx_close"] == 869, flags
 
 
 def test_mcx_minutes_until_close_counts_down_while_open():

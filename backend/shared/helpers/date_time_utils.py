@@ -339,11 +339,10 @@ def is_any_segment_open(now) -> bool:
     edits (e.g. adding a new exchange segment) land on the next call without a
     service restart.
 
-    Handles the common NSE-open / MCX-closed window (09:15-09:30 IST,
-    since the 2026-10-22 MCX 09:00->09:30 correction — NSE now opens
-    FIRST) by checking each segment independently with its own hours and
-    holiday calendar, then returning the logical OR.  This is the
-    canonical way for background pollers to decide "should I fetch
+    Handles the common MCX-open / NSE-closed window (09:00-09:15 IST, and
+    again 15:30-23:30 IST) by checking each segment independently with its
+    own hours and holiday calendar, then returning the logical OR.  This is
+    the canonical way for background pollers to decide "should I fetch
     broker data right now?"
 
     Callers:

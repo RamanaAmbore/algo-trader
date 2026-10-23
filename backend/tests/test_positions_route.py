@@ -1356,8 +1356,22 @@ async def test_fetch_filters_expired_past_freeze_window_row():
 async def test_fetch_expired_row_excluded_from_pnl_rollups():
     """The P&L-corruption half of the bug: the expired row's -69860 pnl
     must not leak into either the account-level `summary` or the
-    symbol-level `symbol_summary` rollup."""
+    symbol-level `symbol_summary` rollup.
+
+    Pins `timestamp_indian()` to a fixed mid-session IST time, and the
+    holiday/special-session calendar to empty, so this test's exact pnl
+    assertion isn't incidentally affected by the pending-open LTP pin
+    (Item 1, 2026-10-22) — either from the real wall clock falling
+    before NSE's 09:15 session open, or from the real holiday calendar
+    (e.g. 2026-10-20 is a real NSE holiday) reading the fixed date as
+    closed. That pin would otherwise override the (deliberately raw)
+    `pnl=5000.0` on the live INFY row to a prev_close-derived value,
+    unrelated to what this test is actually checking."""
     from backend.api.routes import positions as positions_module
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    _mid_session = datetime(2026, 10, 21, 11, 0, tzinfo=ZoneInfo("Asia/Kolkata"))  # Wednesday, non-holiday
 
     valid_row = _make_live_position_row(tradingsymbol="INFY", exchange="NSE", pnl=5000.0)
     expired_row = _make_live_position_row(
@@ -1377,7 +1391,13 @@ async def test_fetch_expired_row_excluded_from_pnl_rollups():
          patch("backend.api.database.async_session", return_value=mock_session), \
          patch("backend.brokers.registry._loaded_accounts", return_value=["ZJ6294"]), \
          patch("backend.api.algo.expiry_freeze.is_live_row_past_freeze_window",
-               side_effect=_fake_past_freeze):
+               side_effect=_fake_past_freeze), \
+         patch("backend.shared.helpers.date_time_utils.timestamp_indian",
+               return_value=_mid_session), \
+         patch("backend.brokers.broker_apis.fetch_holidays", return_value=set()), \
+         patch("backend.brokers.broker_apis.fetch_special_sessions", return_value=[]), \
+         patch("backend.brokers.broker_apis.fetch_special_sessions_async",
+               new=AsyncMock(return_value=[])):
         resp = await positions_module._fetch()
 
     symbol_syms = {s.tradingsymbol for s in resp.symbol_summary}

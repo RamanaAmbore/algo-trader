@@ -3,7 +3,7 @@
  *
  * Indian market segments (matches `backend_config.yaml::market_segments`):
  *   NSE equity:    09:15-15:30 IST, Mon-Fri
- *   MCX commodity: 09:30-23:30 IST, Mon-Fri
+ *   MCX commodity: 09:00-23:30 IST, Mon-Fri
  *
  * Two sources of truth:
  *   1. Time-of-day (weekday + minute window) — cheap, sync, always-on.
@@ -28,16 +28,17 @@ import { browser } from '$app/environment';
 // Minute-of-day boundaries (IST).
 const NSE_OPEN_MIN  = 9 * 60 + 15;   // 09:15
 const NSE_CLOSE_MIN = 15 * 60 + 30;  // 15:30
-const MCX_OPEN_MIN  = 9 * 60 + 30;   // 09:30 (corrected 2026-10-22 — matches
+const MCX_OPEN_MIN  = 9 * 60 + 0;    // 09:00 (reverted 2026-10-22 — matches
                                       // backend_config.yaml::market_segments.
-                                      // commodity.sessions; MCX's real local
-                                      // order book opens at 09:30, not 09:00)
+                                      // commodity.sessions; MCX's own official
+                                      // circular, MCX/TRD/068/2026, confirms
+                                      // non-agri commodities trade from 09:00
+                                      // IST. A same-day 09:30 change earlier
+                                      // was wrong and has been reverted.)
 const MCX_CLOSE_MIN = 23 * 60 + 30;  // 23:30
-// 2026-10-22 fix: NSE now opens FIRST (09:15) since MCX moved to 09:30 —
-// ANY_OPEN_MIN must be the earlier of the two, not a hardcoded alias to
-// MCX_OPEN_MIN (which was only correct back when MCX opened at 09:00).
-// A hardcoded alias would have read "closed" from 09:15-09:30 even
-// though NSE is genuinely open in that window.
+// MCX opens first (09:00), NSE second (09:15) — ANY_OPEN_MIN is the earlier
+// of the two rather than a hardcoded alias to either, so a future change to
+// either segment's open time can't silently desync this derived constant.
 const ANY_OPEN_MIN  = Math.min(NSE_OPEN_MIN, MCX_OPEN_MIN);
 const ANY_CLOSE_MIN = MCX_CLOSE_MIN;
 
@@ -139,11 +140,10 @@ export function isMarketHoliday() {
 // window" section:
 //   - 08:00 IST: fix_daily_book_prev_close() resets prev_close for the new
 //     session (the only moment prev_close changes outside a close
-//     snapshot). Window runs until the earlier of NSE/MCX open (NSE,
-//     09:15, since the 2026-10-22 MCX 09:00→09:30 correction) — once
-//     either segment is open, the live isNseOpen()/isMcxOpen() path
-//     already fetches, so the grace window only needs to bridge
-//     08:00→open.
+//     snapshot). Window runs until the earlier of NSE/MCX open (MCX,
+//     09:00) — once either segment is open, the live
+//     isNseOpen()/isMcxOpen() path already fetches, so the grace window
+//     only needs to bridge 08:00→open.
 //   - MCX close (23:30) + 15 min: the MCX settlement snapshot write lands
 //     at 23:45; +5min buffer absorbs write/cron jitter. The NSE-only
 //     15:45 close snapshot needs no separate window of its own — MCX is

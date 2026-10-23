@@ -1421,14 +1421,18 @@ derived from the trading-session-date convention, matching `_SESSION_ANCHOR_CUTO
 and the Day P&L / nav rules elsewhere in CLAUDE.md.
 
 **Pre-open LTP pinning — last_price = prev_close until each row's own segment opens (2026-10-22,
-commit `0538f0a7`)** — The system's broker-connectivity window (08:00–23:31 IST) is wider than
-each exchange segment's own trading session. Once the broker reconnects at 08:00, live LTP flows
-immediately, and MCX options can carry a reference price tied to international gold before the
-local order book opens. Left alone, that produced a phantom Day P&L move before any real trade
-(live incident: `GOLD26OCT142000PE` last_price 439 vs prev_close 420; about −₹7,050 across two
-accounts' GOLD books). Real segment open times, from `market_segments` in
-[backend_config.yaml](backend/config/backend_config.yaml): NSE/equity 09:15, MCX/commodity 09:30
-(corrected from 09:00 in the same round).
+commit `0538f0a7`, MCX open time corrected back to 09:00 later the same day)** — The system's
+broker-connectivity window (08:00–23:31 IST) is wider than each exchange segment's own trading
+session. Once the broker reconnects at 08:00, live LTP flows immediately, and MCX options can
+carry a reference price tied to international gold before the local order book opens. Left alone,
+that produced a phantom Day P&L move before any real trade (live incident: `GOLD26OCT142000PE`
+last_price 439 vs prev_close 420; about −₹7,050 across two accounts' GOLD books). Real segment
+open times, from `market_segments` in
+[backend_config.yaml](backend/config/backend_config.yaml): NSE/equity 09:15, MCX/commodity 09:00.
+A same-day intermediate change moved MCX to 09:30 on an unverified verbal claim; MCX's own official
+circular (MCX/TRD/068/2026) confirms non-agri commodities trade from 09:00 IST, and the 09:30 value
+was reverted the same day once that circular was checked. There is no source supporting a 09:30 MCX
+open.
 - **Predicate:** `is_segment_pending_open(exchange, now)` in
   [snapshot_gate.py](backend/api/helpers/snapshot_gate.py). True when the exchange's segment has not
   genuinely opened per `_segment_is_open()` (holiday and special-session aware). It matches
@@ -1457,13 +1461,14 @@ accounts' GOLD books). Real segment open times, from `market_segments` in
   `nav.js:baseDayPnlForPosition` reads ~0 once `pnl` equals `prev_settlement_pnl`.
 - **Invariant:** last_price never diverges from prev_close until the row's own exchange segment has
   genuinely opened. The 08:00 system window is NOT the trigger.
-- **Shared-config note (2026-10-22):** `market_segments.commodity` open moved 09:00 → 09:30. The
-  value is shared config, so the change is not specific to pinning. Confirmed readers of
-  `market_segments` include `/market/status`, the quote gate, and watchlist movers, plus the
-  order-path gates that route through `_segment_is_open()`. When the `exchange_clock` cache is warm,
-  `_get_segments()` ([background.py](backend/api/background.py)) sources gate hours from the DB
-  `exchange_schedule` table instead of YAML, so gate-shaped consumers (watchdog, perf probe,
-  simulator guards) may still read the DB hours. Frontend duplicate: `MCX_OPEN_MIN` in
+- **Shared-config note (2026-10-22):** `market_segments.commodity` open moved 09:00 → 09:30 → back
+  to 09:00 (final, correct value), all the same day. The value is shared config, so the change is
+  not specific to pinning. Confirmed readers of `market_segments` include `/market/status`, the
+  quote gate, and watchlist movers, plus the order-path gates that route through
+  `_segment_is_open()`. When the `exchange_clock` cache is warm, `_get_segments()`
+  ([background.py](backend/api/background.py)) sources gate hours from the DB `exchange_schedule`
+  table instead of YAML, so gate-shaped consumers (watchdog, perf probe, simulator guards) may still
+  read the DB hours. Frontend duplicate: `MCX_OPEN_MIN` in
   [marketHours.js](frontend/src/lib/marketHours.js) must change in lockstep with the YAML.
 
 **Market-cycle event tokens — agents can trigger on a segment's open/close state (2026-10-22)** —

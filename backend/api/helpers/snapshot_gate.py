@@ -131,7 +131,7 @@ def is_segment_pending_open(exchange: str, now=None) -> bool:
 
     Item 1 (2026-10-22, live incident): the system's broad window is wider
     than each exchange SEGMENT's own real trading-session hours
-    (`market_segments.equity` 09:15, `market_segments.commodity` 09:30 —
+    (`market_segments.equity` 09:15, `market_segments.commodity` 09:00 —
     `backend/config/backend_config.yaml`). Once the broker reconnects at
     08:00, live quote/LTP calls start flowing immediately — MCX options in
     particular already carry a reference price tied to international gold
