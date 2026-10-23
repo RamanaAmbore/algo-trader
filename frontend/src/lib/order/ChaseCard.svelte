@@ -675,14 +675,42 @@
     display: grid;
     /* Mix of fr columns and tight fixed widths so the row fits the
        card on common viewports. minmax(0, ...) lets cells shrink
-       past their content with text-overflow:ellipsis. */
+       past their content with text-overflow:ellipsis.
+       2026-10-23 fix (compact=false — the header-drawer/orders/Chain
+       mount) — an audit found side ("BUY"/"SELL") and qty collapsing
+       to a single ellipsized character on a ~375px viewport, and att
+       (attempt count) clipping, because those tracks were left at the
+       `minmax(0, …)` pattern the 2026-10-16 fix already identified as
+       the mobile footgun for the age column below. A first pass gave
+       floors to only those 3 tracks; a Playwright measurement pass
+       (not just reasoning about the CSS) showed that just pushed the
+       squeeze onto limit/mode instead — a `fr` track with no floor
+       absorbs whatever space its locked-minimum siblings take, so
+       widening a subset always starves the rest. Measured pre-fix
+       baseline on a 360px viewport confirmed limit and mode were
+       ALREADY clipping too (29px/76 and 21px/29 content-vs-rendered),
+       just not named in the original finding. Every track below now
+       carries a real content-derived floor, so the fix is "stop
+       squeezing any column past legibility" rather than "move the
+       squeeze elsewhere" — re-measured post-fix: side/qty/att/mode all
+       render at or above their natural content width, limit improves
+       from 29px to 72px (vs. 76px needed). On a container narrower
+       than the sum of these floors, `.cc-grid`'s pre-existing
+       `overflow-x: auto` (see its own comment above) takes over and
+       the row scrolls horizontally instead of rendering any column
+       unreadably small — that escape hatch already existed for
+       exactly this case and was simply never reached before, because
+       no column's floor was previously high enough to trigger it.
+       Wide viewports are unaffected: the fr portion of each minmax
+       still grows past its floor with room to spare, so nothing
+       changes above ~460px. */
     grid-template-columns:
-      minmax(0, 1.4fr)     /* acct  */
-      minmax(0, 0.6fr)     /* side  */
-      minmax(0, 0.6fr)     /* qty   */
-      minmax(0, 2.4fr)     /* sym   */
-      minmax(0, 1fr)       /* limit */
-      minmax(0, 0.8fr)     /* att   */
+      minmax(2.6rem, 1.4fr) /* acct  */
+      minmax(2.1rem, 0.6fr) /* side  */
+      minmax(2.1rem, 0.6fr) /* qty   */
+      minmax(4rem, 2.4fr)   /* sym   */
+      minmax(4.5rem, 1fr)   /* limit */
+      minmax(1.6rem, 0.8fr) /* att   */
       /* 2026-10-16 fix — locked min so the countdown ("Next") stays
          legible on narrow (mobile) viewports instead of shrinking to
          an unreadable sliver under flex pressure from the other 8
@@ -690,7 +718,7 @@
          kill button's own minmax below. Operator: "the count time is
          not visible on mobile for chase." */
       minmax(2.1rem, 0.6fr) /* age   */
-      minmax(0, 0.8fr)     /* mode  */
+      minmax(2.6rem, 0.8fr) /* mode  */
       minmax(2.6rem, auto); /* kill — locked min so the button always fits */
     column-gap: 0.4rem;
     align-items: center;
