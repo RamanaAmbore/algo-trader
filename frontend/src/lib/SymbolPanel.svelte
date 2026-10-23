@@ -1527,11 +1527,31 @@
   // steppers and side flips made INSIDE the ticket, not just the
   // initial props this modal was opened with.
   const _submitLabel = $derived.by(() => {
-    // 2026-10-21 shared-row re-wire — Draft mode on either tab always
-    // reads "Add to Payoff" (no broker call will fire; matches
-    // OrderTicket's own pre-existing footer-button label for the
-    // single-ticket Draft path).
-    if (_sharedDraftMode) return 'Add to Payoff';
+    // 2026-10-23 fix (operator: "it is not add to payoff. better to use
+    // the same submit button.") — Draft mode no longer gets a distinct
+    // "Add to Payoff" label; it falls through to the exact same label
+    // logic every other mode uses. The DRAFT toggle itself already
+    // signals the mode; the button's `title` tooltip still says "no
+    // broker order" on hover. A dedicated label existed from the
+    // 2026-10-21 shared-row re-wire (matching OrderTicket's own
+    // now-unreachable-at-the-real-mount footer label) but made this the
+    // one button whose text changes shape/width based on mode, which is
+    // also what caused it to drop to its own row on a narrow viewport
+    // instead of sitting beside the single-leg basket pill above it.
+    //
+    // 2026-10-23 follow-up (operator: "use submit draft like close buy
+    // format for button when draft is selected") — a single staged
+    // Chain-tab leg has one unambiguous side, same as the Ticket tab's
+    // single order, so it gets the same CLOSE/BUY-style formatted label
+    // instead of a bare "Submit" — even in draft mode. A multi-leg
+    // basket has no one coherent side to format and keeps the existing
+    // plain "Submit" (unchanged, this is the pre-existing non-draft rule
+    // too — operator 2026-09-30: "chain button ... shows submit").
+    if (_sharedDraftMode && basketLegs.length === 1) {
+      const leg = basketLegs[0];
+      const legCq = Number(_ticketProps?.currentQty ?? currentQty) || 0;
+      return formatSubmitLabel({ side: leg.side, currentQty: legCq, qty: leg.lots || 0, basketCount: 0 });
+    }
     // Chain tab always shows plain "Submit" — operator (2026-09-30):
     // "chain button to start with shows submit suffixed by additional
     // text. which should be removed." Before this fix, an EMPTY basket
@@ -2926,26 +2946,34 @@
          with no Bracket control beside it). -->
     {#if _activeTab !== 'cli' && _activeTab !== 'chart'}
       <div class="oes-chase-row">
-        <!-- CHASE — moved verbatim from .oes-tabs (unchanged markup);
-             greyed + non-interactive whenever Draft is on (new
-             enforcement — a stale comment in OrderTicket.svelte long
-             claimed Draft/Chase were mutually exclusive but nothing
-             enforced it). BRACKET gets the identical disabled/greyed
+        <!-- CHASE — moved verbatim from .oes-tabs (unchanged markup).
+             2026-10-23 fix: hidden entirely (not just greyed) while
+             Draft is on — operator report: "when submitting draft
+             order, chase is getting invoked and chase status is
+             shown." Investigated: no backend invocation ever occurs
+             (both OrderTicket's single-leg draft path and
+             SymbolPanel's own `submitBasket()` return before any
+             chase/broker call; confirmed live — zero mode='draft' rows
+             exist on prod or dev, and every recent real chase has
+             mode='live'). The confusion was this cluster staying
+             visually present (greyed, non-interactive) during Draft
+             mode instead of disappearing — a draft has zero chase
+             semantics, so there is nothing for it to show here.
+             BRACKET intentionally keeps its own grey-not-hide
              treatment below (coordinator: "no brackets in draft
-             mode") — both share the `.oes-ctl-cluster-disabled` class. -->
-        {#if _chaseEnabled}
-          <span class="oes-chase-cluster" class:oes-ctl-cluster-disabled={_sharedDraftMode}>
+             mode") — not touched here, out of scope for this fix. -->
+        {#if _chaseEnabled && !_sharedDraftMode}
+          <span class="oes-chase-cluster">
             <span class="oes-common-chase-label on" bind:this={_chaseInfoAnchor}
-                  role="button" tabindex={_sharedDraftMode ? -1 : 0} aria-expanded={_chaseInfoOpen}
-                  aria-disabled={_sharedDraftMode}
-                  title={_sharedDraftMode ? 'Chase is unavailable while Draft is on' : 'Chase is active — click for details'}
-                  onclick={() => { if (!_sharedDraftMode) _chaseInfoOpen = !_chaseInfoOpen; }}
-                  onkeydown={(e) => { if (!_sharedDraftMode) _chaseInfoKeydown(e); }}>CHASE</span>
+                  role="button" tabindex={0} aria-expanded={_chaseInfoOpen}
+                  title="Chase is active — click for details"
+                  onclick={() => { _chaseInfoOpen = !_chaseInfoOpen; }}
+                  onkeydown={_chaseInfoKeydown}>CHASE</span>
             <InfoHint popup hideButton id="chase-info-hint" anchor={_chaseInfoAnchor} bind:open={_chaseInfoOpen}
               panel title="Chase"
               text="Chase is automatic for every limit order (on for LIMIT/SL order types, Chain legs are always limit) — re-quotes the price each interval until filled or max attempts is reached. Wait time between re-quotes depends on the aggressiveness picker beside it: <b>Low</b> — 30s, patient, eases into the spread (30 attempts max). <b>Med</b> — 20s, balanced (20 attempts max). <b>High</b> — 10s, crosses the spread fast (10 attempts max)." />
             <span class="oes-chase-agg-gap">
-              <ChaseAggPicker value={_sharedChaseAgg} onChange={(v) => { if (!_sharedDraftMode) _setSharedChaseAgg(v); }} variant="panel" />
+              <ChaseAggPicker value={_sharedChaseAgg} onChange={_setSharedChaseAgg} variant="panel" />
             </span>
           </span>
         {/if}
@@ -3760,7 +3788,7 @@
             }}>{basketSubmitting
                 ? 'Placing…'
                 : (basketLegs.length > 0
-                    ? (_sharedDraftMode ? 'Add to Payoff' : 'Submit')
+                    ? _submitLabel
                     : _ticketOwnSubmitBusy
                       ? (_ticketState.pending ? 'Processing…' : 'Placing…')
                       : _submitLabel)}</button>
