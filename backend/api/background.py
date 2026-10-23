@@ -5474,12 +5474,65 @@ def _oco_gtt_is_live(entry_id: str, broker_gtts: dict) -> bool:
     return (not status) or status in _OCO_GROUP_LIVE_STATUSES
 
 
+async def _oco_group_position_is_flat(account: str, exchange: str, symbol: str) -> Optional[bool]:
+    """2026-10-23 follow-up fix — True ONLY when the real broker position
+    for (account, symbol) is confirmed exactly flat (qty == 0). False on
+    a confirmed non-zero qty. `None` when unknown (fetch failed, or no
+    matching row at all) — callers must NEVER treat `None` as flat.
+
+    Without this gate, `_oco_gtt_is_live` reporting a leg as "gone" does
+    NOT reliably mean the position closed: a rung rejected at placement
+    (never reaches the broker, so it's never "listed" either), a rung
+    the operator cancelled manually, or an SL that genuinely fired but
+    whose own exit LIMIT leg didn't fill (price gap) would all have been
+    read as "gone" and wrongly treated as a real close — stripping a
+    still-live SL, or cancelling a still-live TP rung, on a position
+    that never actually closed. This is the exact class of bug T14 was
+    meant to fix, reintroduced in the other direction. Invalidates the
+    raw positions cache first (same pattern as chase's
+    `_ch_capture_pre_fill_net_qty`) so a fill from the last few seconds
+    isn't read through a stale 30s cache entry.
+    """
+    try:
+        from backend.brokers.broker_apis import _raw_cache_invalidate
+        _raw_cache_invalidate("positions")
+    except Exception:
+        pass
+    try:
+        from backend.api.routes.orders_place import _fetch_net_position_qty
+        net_qty = await _fetch_net_position_qty(symbol, exchange, account)
+    except Exception as e:
+        logger.debug(f"[OCO-WATCH] group position check failed: {e}")
+        return None
+    if net_qty is None:
+        return None
+    return net_qty == 0
+
+
 async def _oco_group_handle_sl_fired(
     entry: dict, broker: object, row_id: int, exchange: str,
     my_id: str, active_tps: list[str],
 ) -> bool:
     """Case 1 — SL has fired/gone; cancel every still-live TP rung so a
-    surviving one can't open an unintended naked position."""
+    surviving one can't open an unintended naked position.
+
+    Gated on the real position being CONFIRMED flat (follow-up fix) —
+    an SL-looks-gone read that isn't corroborated by a flat position
+    (ambiguous fetch, or a genuinely still-open residual) leaves
+    sibling_ids untouched for the next poll cycle instead of cancelling
+    TP rungs that may still be legitimately protecting an open position.
+    """
+    is_flat = await _oco_group_position_is_flat(
+        entry.get("parent_account") or "", exchange,
+        entry.get("parent_symbol") or "",
+    )
+    if is_flat is not True:
+        logger.debug(
+            f"[OCO-WATCH] row={row_id} SL {my_id} looks gone but position "
+            f"is not confirmed flat (is_flat={is_flat}) — not cancelling "
+            f"TP rungs this cycle"
+        )
+        return False
     still_live = await _oco_cancel_group_members(
         broker, row_id, exchange, active_tps,
         f"SL {my_id} fired, flattening scale-ladder position",
@@ -5495,7 +5548,25 @@ async def _oco_group_handle_ladder_closed(
     entry: dict, broker: object, row_id: int, exchange: str, my_id: str,
 ) -> bool:
     """Case 2 — every TP rung already gone; the SL is now pointless
-    (ladder fully closed the position) — cancel it too."""
+    (ladder fully closed the position) — cancel it too.
+
+    Same position-confirmation gate as case 1, in the mirror direction:
+    "every TP rung looks gone" is not proof the position actually
+    closed (one could have been rejected at placement, or cancelled
+    manually) — only cancel the SL once the broker position itself
+    confirms flat.
+    """
+    is_flat = await _oco_group_position_is_flat(
+        entry.get("parent_account") or "", exchange,
+        entry.get("parent_symbol") or "",
+    )
+    if is_flat is not True:
+        logger.debug(
+            f"[OCO-WATCH] row={row_id} scale ladder looks closed but "
+            f"position is not confirmed flat (is_flat={is_flat}) — not "
+            f"cancelling SL {my_id} this cycle"
+        )
+        return False
     still_live = await _oco_cancel_group_members(
         broker, row_id, exchange, [my_id],
         "scale ladder fully closed — SL now pointless",
