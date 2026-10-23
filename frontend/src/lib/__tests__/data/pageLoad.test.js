@@ -26,6 +26,7 @@ import {
   buildPagePositionRows, buildSimPositionRows,
   buildHoldingRowFromBroker, buildPageHoldingRows,
   storeRowKey, liveStoreExpPnl, isRootPositionsTrusted,
+  resolveAnchorPollSpot,
 } from '$lib/derivatives/pageLoad.js';
 import { baseDayPnlForPosition } from '$lib/data/nav.js';
 import { expiryPnlWithRealised, positionExpPnl, positionExpPnlPieces } from '$lib/data/expiryPnl.js';
@@ -1192,5 +1193,92 @@ describe('row-source parity — buildPagePositionRows output agrees with buildCa
       const key = `${String(c.account).toUpperCase()}|${String(c.symbol).toUpperCase()}`;
       expect(c.ltp).toBe(storeLtpByKey.get(key));
     }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// resolveAnchorPollSpot — 3F fix (2026-10-23): TDAY alignment offset computed
+// at the wrong leg's spot on a multi-month basket.
+//
+// Bug: the old _pollSpot body returned the FIRST enabled candidate's
+// underlying_ltp regardless of which contract-month that leg belonged to.
+// On a calendar/diagonal MCX spread (e.g. CRUDEOIL near-month + far-month
+// legs), if the far-month leg happened to be first in array order, the
+// chart's theoretical-at-spot interpolation used the WRONG month's price —
+// disagreeing with the backend's own curve anchor (strategy.spot_anchor_
+// contract, always the resolved anchor FUTURE for MCX commodities, per
+// _resolve_spot's docstring in backend/api/routes/options.py).
+//
+// Fix: resolveAnchorPollSpot prefers the candidate whose own contract-month
+// (via decomposeSymbol) matches the anchor future's month, not whichever
+// candidate is first in array order.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('resolveAnchorPollSpot — picks the leg matching the backend\'s anchor month, not array order (3F fix)', () => {
+  const ANCHOR = 'CRUDEOIL26NOVFUT'; // strategy.spot_anchor_contract
+  const enabledAlways = () => true;
+
+  it('THE BUG THIS FIXES: a far-month leg first in array order must NOT win over the anchor-month leg', () => {
+    const candidatePositions = [
+      // Far-month leg — first in array order, has a usable underlying_ltp.
+      { symbol: 'CRUDEOIL26DEC6200CE', kind: 'opt', underlying_ltp: 6100 },
+      // Anchor-month leg (matches CRUDEOIL26NOVFUT's own month, "26NOV") —
+      // second in array order.
+      { symbol: 'CRUDEOIL26NOV6000CE', kind: 'opt', underlying_ltp: 6000 },
+      // A futures leg — underlying_ltp is always 0 for futures rows (the
+      // backend's enrichment pass skips them), matching real data shape.
+      { symbol: ANCHOR, kind: 'fut', underlying_ltp: 0 },
+    ];
+    const v = resolveAnchorPollSpot(
+      candidatePositions, enabledAlways, true, ANCHOR, 0, decomposeSymbol,
+    );
+    expect(v).toBe(6000);
+  });
+
+  it('single-month basket (no month mismatch) — unchanged, first enabled candidate wins (no-op for the common case)', () => {
+    const candidatePositions = [
+      { symbol: 'CRUDEOIL26NOV6000CE', kind: 'opt', underlying_ltp: 6000 },
+      { symbol: 'CRUDEOIL26NOV6500PE', kind: 'opt', underlying_ltp: 6000 },
+    ];
+    const v = resolveAnchorPollSpot(
+      candidatePositions, enabledAlways, true, ANCHOR, 0, decomposeSymbol,
+    );
+    expect(v).toBe(6000);
+  });
+
+  it('no anchor available (non-MCX basket, spot_anchor_contract null) — falls back to first enabled candidate', () => {
+    const candidatePositions = [
+      { symbol: 'NIFTY26NOV24000CE', kind: 'opt', underlying_ltp: 24100 },
+      { symbol: 'NIFTY26DEC24500PE', kind: 'opt', underlying_ltp: 24200 },
+    ];
+    const v = resolveAnchorPollSpot(
+      candidatePositions, enabledAlways, true, null, 0, decomposeSymbol,
+    );
+    expect(v).toBe(24100);
+  });
+
+  it('no enabled candidate has a usable underlying_ltp — falls back to strategy.spot', () => {
+    const candidatePositions = [
+      { symbol: 'CRUDEOIL26NOVFUT', kind: 'fut', underlying_ltp: 0 },
+    ];
+    const v = resolveAnchorPollSpot(
+      candidatePositions, enabledAlways, true, ANCHOR, 5950, decomposeSymbol,
+    );
+    expect(v).toBe(5950);
+  });
+
+  it('disabled/holdings-excluded legs are skipped even when they would otherwise match the anchor month', () => {
+    const candidatePositions = [
+      { symbol: 'CRUDEOIL26NOV6000CE', kind: 'opt', underlying_ltp: 6000, _id: 'disabled' },
+      { symbol: 'CRUDEOIL26DEC6200CE', kind: 'opt', underlying_ltp: 6100, _id: 'enabled' },
+    ];
+    const isLegEnabled = (c) => c._id === 'enabled';
+    const v = resolveAnchorPollSpot(
+      candidatePositions, isLegEnabled, true, ANCHOR, 0, decomposeSymbol,
+    );
+    // The anchor-month leg is disabled, so the only usable candidate is
+    // the far-month one — falls through to it (no match found among
+    // ENABLED legs), not to the disabled anchor-month leg's value.
+    expect(v).toBe(6100);
   });
 });

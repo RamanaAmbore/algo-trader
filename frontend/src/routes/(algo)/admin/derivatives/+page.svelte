@@ -85,7 +85,7 @@
     buildPageHoldingRows, storeRowKey, liveStoreExpPnl,
     buildCleanLegs, computeLegsKey, didUnderlyingChange, hasEnabledFOLegs,
     synthCacheKey, synthEquityOnlyStrategy, isRootPositionsTrusted,
-    buildPageLegs, sumExpiredFrozenLegsPnl,
+    buildPageLegs, sumExpiredFrozenLegsPnl, resolveAnchorPollSpot,
   } from '$lib/derivatives/pageLoad.js';
   import CandidateLegRow from './CandidateLegRow.svelte';
   import { openOrderQtyBySymbol } from '$lib/data/openOrdersStore.svelte.js';
@@ -2942,15 +2942,17 @@
   // sawtooth the plan describes). Falls back to strategy.spot for a
   // futures/equity-only basket (no option legs ⇒ no underlying_ltp
   // stamped on any row).
-  const _pollSpot = $derived.by(() => {
-    for (const c of candidatePositions) {
-      if (!_isLegEnabled(c)) continue;
-      if (!_includeHoldings && c.kind === 'eq') continue;
-      const v = Number(c.underlying_ltp) || 0;
-      if (v > 0) return v;
-    }
-    return Number(strategy?.spot || 0);
-  });
+  //
+  // 2026-10-23 fix (3F): delegates to resolveAnchorPollSpot (pageLoad.js)
+  // instead of inlining "first enabled candidate wins" — on a multi-month
+  // MCX basket (calendar/diagonal spread) that picked whichever leg
+  // happened to be first in array order, not the leg matching the
+  // backend's own curve anchor (strategy.spot_anchor_contract), making
+  // TDAY-at-spot disagree with the actual P&L it's meant to match.
+  const _pollSpot = $derived.by(() => resolveAnchorPollSpot(
+    candidatePositions, _isLegEnabled, _includeHoldings,
+    strategy?.spot_anchor_contract, strategy?.spot, decomposeSymbol,
+  ));
 
   // Backend's BS-theoretical TDAY at the poll-clock spot (C5) — the
   // value the chart would render WITHOUT any offset. Linearly

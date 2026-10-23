@@ -207,6 +207,73 @@ export function liveStoreExpPnl(c, piecesByKey) {
 }
 
 /**
+ * Resolve the poll-clock underlying spot for `chartTheoreticalAtSpot`/
+ * `candidatesActualPnl`'s shared-clock alignment (see `_pollSpot`'s own
+ * comment in +page.svelte for why this must use the POLL-frozen
+ * `underlying_ltp` stamped on each candidate row, not a live tick).
+ *
+ * 2026-10-23 fix (3F): the previous implementation returned the FIRST
+ * enabled candidate's `underlying_ltp`, regardless of which contract-month
+ * that leg belonged to. On a multi-month MCX basket (calendar/diagonal
+ * spread), if the first candidate in array/position order happened to be
+ * a far-month leg, the chart's theoretical-at-spot interpolation used that
+ * leg's own matching-month future price instead of the backend's real
+ * curve anchor — making TDAY-at-spot disagree with the actual P&L it's
+ * meant to match (this function's whole purpose).
+ *
+ * Fix: prefer the candidate whose own contract-month matches the backend's
+ * resolved `spot_anchor_contract` (`strategy.spot_anchor_contract` — only
+ * populated for MCX commodities, per `_resolve_spot`'s docstring in
+ * `backend/api/routes/options.py`; always a FUTURES symbol, e.g.
+ * CRUDEOIL26NOVFUT, never an option symbol directly — this is why month
+ * comparison is used instead of a direct symbol match, which would never
+ * fire for a pure-options basket). Each MCX option leg's own
+ * `underlying_ltp` is stamped to its OWN matching-month future's price
+ * (per the backend's option-Greeks enrichment pass — "the matching-month
+ * future, which serves as the spot proxy for MCX"), so a month match
+ * correctly identifies the candidate priced on the SAME contract the
+ * backend's curve anchors to, regardless of array order.
+ *
+ * Falls back to the first enabled candidate with a usable `underlying_ltp`
+ * when no anchor is available (non-MCX baskets — `spot_anchor_contract` is
+ * null) or no leg's month matches it (single-month basket — the common
+ * case, where this is a no-op) — identical to the pre-fix behaviour in
+ * both of those cases.
+ *
+ * @param {any[]} candidatePositions
+ * @param {(c: any) => boolean} isLegEnabled
+ * @param {boolean} includeHoldings
+ * @param {string|null|undefined} anchorContract  strategy.spot_anchor_contract
+ * @param {number|null|undefined} fallbackSpot    strategy.spot
+ * @param {(sym: string) => {month: string|null}} decomposeSymbolFn
+ * @returns {number}
+ */
+export function resolveAnchorPollSpot(
+  candidatePositions, isLegEnabled, includeHoldings,
+  anchorContract, fallbackSpot, decomposeSymbolFn,
+) {
+  const anchorMonth = anchorContract
+    ? decomposeSymbolFn(String(anchorContract).toUpperCase()).month
+    : null;
+  let anchorMatch = null;
+  let firstEnabled = null;
+  for (const c of candidatePositions || []) {
+    if (!isLegEnabled(c)) continue;
+    if (!includeHoldings && c.kind === 'eq') continue;
+    const v = Number(c.underlying_ltp) || 0;
+    if (v <= 0) continue;
+    if (firstEnabled === null) firstEnabled = v;
+    if (anchorMonth && anchorMatch === null) {
+      const legMonth = decomposeSymbolFn(String(c.symbol || '').toUpperCase()).month;
+      if (legMonth && legMonth === anchorMonth) anchorMatch = v;
+    }
+  }
+  if (anchorMatch != null) return anchorMatch;
+  if (firstEnabled != null) return firstEnabled;
+  return Number(fallbackSpot || 0);
+}
+
+/**
  * Build the derivatives page's own per-row F&O position rows from raw
  * broker/store position rows, splitting each into closed/open display
  * pieces. Consolidates the identical `isFOSymbol` filter +
