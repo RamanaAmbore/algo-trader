@@ -2325,7 +2325,19 @@ async def _chase_wing(
             symbol=plan.wing.tradingsymbol,
             transaction_type=plan.wing.transaction_type,
             quantity=int(plan.wing.quantity),
-            cfg=ChaseConfig(exchange=plan.wing.exchange),
+            # T18 fix (2026-10-23) — ChaseConfig.product defaults to
+            # "NRML"; without threading plan.wing.product through
+            # explicitly, chase placed every wing leg as NRML regardless
+            # of the parent's real product (e.g. MIS on a BUY-option
+            # intraday parent), mismatching the AlgoOrder row's own
+            # `product` column (already correctly set to plan.wing.product
+            # a few lines above) and the direct-placement path
+            # (`_place_wing_leg`, which already reads plan.wing.product).
+            # `_build_wing_spec` already sets `WingSpec.product =
+            # parent_product` on every branch — this was purely a
+            # dropped-at-the-last-hop bug, same class CLAUDE.md documents
+            # as already fixed for `_chase_build_tasks`.
+            cfg=ChaseConfig(exchange=plan.wing.exchange, product=plan.wing.product),
             algo_order_id=algo_order_id,
             agent_id=plan.parent_agent_id,
         )

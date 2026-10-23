@@ -1050,6 +1050,39 @@ async def test_chase_wing_row_links_back_to_parent_and_template(monkeypatch):
     assert saved[0].template_id == 11
 
 
+@pytest.mark.asyncio
+async def test_chase_wing_threads_parent_product_into_chase_config(monkeypatch):
+    """T18 fix — a BUY-option MIS parent's chase-routed wing leg must be
+    chased with ChaseConfig.product="MIS", not the ChaseConfig default
+    ("NRML"). Pre-fix: `_chase_wing` built `ChaseConfig(exchange=...)`
+    with no `product=` kwarg at all, so every chase-routed wing was
+    placed as NRML regardless of the parent's real product — even
+    though the wing's OWN AlgoOrder row (asserted below too) and the
+    direct-placement path (`_place_wing_leg`) both already read
+    `plan.wing.product` correctly."""
+    from types import SimpleNamespace
+    import backend.api.algo.template_attach as ta
+    plan, saved, chased = _wing_chase_fixture(monkeypatch)
+    # Override the fixture's hardcoded NRML wing product with MIS —
+    # mirrors a BUY-option intraday parent.
+    plan.wing = SimpleNamespace(
+        tradingsymbol=plan.wing.tradingsymbol, exchange=plan.wing.exchange,
+        transaction_type=plan.wing.transaction_type, quantity=plan.wing.quantity,
+        product="MIS", limit_price=plan.wing.limit_price,
+        order_type=plan.wing.order_type,
+    )
+
+    await ta._chase_wing(plan, parent_order_id=999)
+
+    assert saved[0].product == "MIS", (
+        "the wing's own AlgoOrder row must carry the real parent product"
+    )
+    assert chased[0]["cfg"].product == "MIS", (
+        "ChaseConfig must carry the real parent product, not its own "
+        "NRML default"
+    )
+
+
 # ── _chase_wing error-handling (asyncio.run_coroutine_threadsafe swallows
 #    unhandled exceptions — see `_start_wing_chase`'s docstring) ───────────
 
