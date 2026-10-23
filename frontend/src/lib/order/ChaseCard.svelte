@@ -37,7 +37,7 @@
    *                   is empty (including on a failed fetch, since `_err`
    *                   does not populate `_chases`).
    */
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, untrack } from 'svelte';
   import { fetchActiveChases, killChase, reconcileAlgoOrders } from '$lib/api';
   import { priceFmt } from '$lib/format';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
@@ -77,16 +77,53 @@
   } = $props();
 
   let _chases  = $state(/** @type {any[]} */ ([]));
+  // Guards the mirror effect below until this instance's own FIRST
+  // fetch has resolved (success or failure — set in _load()'s finally).
+  //
+  // 2026-10-23 fix — runaway refetch loop on /orders. Root cause: a
+  // freshly-mounted instance starts with `_chases = []` (n = 0) while
+  // `activeCount` is a bindable that can already be non-zero — either
+  // inherited from a sibling instance sharing the same bound variable
+  // (/orders mounts two ChaseCards, one hidden via `{#if}/{:else}`,
+  // both `bind:activeCount` to the SAME page variable), or simply
+  // because the parent's `{#if}` show/hide condition is itself derived
+  // from that same bound variable. Before this fix, the un-guarded
+  // effect wrote `activeCount = 0` on every fresh mount BEFORE its own
+  // `_load()` had a chance to resolve — on /orders that zero flipped
+  // the page's `{#if _showChases}` condition back to hidden, which
+  // destroyed the just-mounted instance and remounted the other
+  // branch, whose own `onMount` → `_load()` fired a brand new network
+  // request, resolved non-empty, wrote `activeCount = 1`, flipped the
+  // condition again, and repeated — unboundedly, with one real fetch
+  // per cycle. Confirmed empirically: ~350 requests/second.
+  // `_loadedOnce` closes this by refusing to touch any bindable until
+  // this instance has a real answer, so a fresh empty `_chases` can
+  // never stomp an inherited non-zero value.
+  let _loadedOnce = $state(false);
   // Mirror the chase count, broker_order_id set, and load-error string
   // out to bindable props so the parent's gate / dedup / error-surfacing
   // logic can react — this effect runs regardless of `headless`, since
   // it's script-level, not gated by the template's own `{#if}` below.
+  //
+  // `untrack()` around the CURRENT values of `activeCount`/`loadError`
+  // is the second half of the 2026-10-23 fix: without it, this effect
+  // re-runs whenever ANY holder of the shared bindable writes to it
+  // (not just when this instance's own `_chases`/`_err` change) —
+  // two simultaneous instances bound to the same variable (a future
+  // consumer, or a page that mounts more than one ChaseCard at once)
+  // would otherwise re-read and re-write each other's value in a tight
+  // ping-pong. Reading the bound props through `untrack` makes this
+  // effect depend ONLY on this instance's own local state, which is
+  // the invariant a bindable mirror must hold to be safe to share.
   $effect(() => {
     const n = _chases.length;
-    if (n !== activeCount) activeCount = n;
+    if (!_loadedOnce) return;
+    const curActiveCount = untrack(() => activeCount);
+    if (n !== curActiveCount) activeCount = n;
     chaseOrderIds = new Set(_chases.map(c => String(c.broker_order_id || '')).filter(Boolean));
     const errOrNull = _err || null;
-    if (loadError !== errOrNull) loadError = errOrNull;
+    const curLoadError = untrack(() => loadError);
+    if (curLoadError !== errOrNull) loadError = errOrNull;
   });
   // Group children directly under their parents so the operator sees
   // parent + protective wing as a visual cluster. Rows are partitioned
@@ -156,6 +193,11 @@
       _err = e?.message || 'load failed';
     } finally {
       _loading = false;
+      // Set on both success AND failure — a failed first fetch must
+      // still be allowed to propagate `loadError` to the parent (see
+      // `_loadedOnce`'s doc comment above), not get stuck silently
+      // deferring forever.
+      _loadedOnce = true;
     }
     // Switch the poll cadence based on the result. Empty result =
     // idle; slow the poll way down (default 30s) and hide the card
