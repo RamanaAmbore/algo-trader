@@ -92,6 +92,10 @@
   import { payoffDrafts } from '$lib/data/payoffDrafts.svelte.js';
   import { debugLog } from '$lib/debug/debugLog.js';
   import { underlyingSpotStore, loadUnderlyingSpots as _loadUnderlyingSpotsFn, patchUnderlyingSpot, pruneUnderlyingSpotRoots, getUnderlyingSpot } from '$lib/data/underlyingSpotStore.svelte.js';
+  import { rootForOptionsLink } from '$lib/data/symbolContextHelpers.js';
+  import { groupPropFor } from '$lib/data/pulseDetached.svelte.js';
+  import { isSymbolInWatchlist } from '$lib/data/watchlistContextActions.js';
+  import { isSharedContextAction, dispatchSharedContextAction } from '$lib/data/symbolContextDispatch.js';
 
   // Row-level chart modal for Candidates panel rows.
   let _chartModalSym  = $state('');
@@ -105,11 +109,21 @@
   // `candidate` (2026-10-22 unification) carries the full row so the menu's
   // draft-only actions (select-draft/promote) and currentQty/isDraft props
   // can resolve without a second lookup.
-  /** @type {{ symbol: string, exchange: string, x: number, y: number, candidate?: any } | null} */
+  /** @type {{ symbol: string, exchange: string, x: number, y: number, candidate?: any, watchlistInfo?: { inWatchlist: boolean } | null } | null} */
   let _ctxMenu = $state(null);
   /** @type {'place-order' | 'chart' | 'log' | null} */ let _ctxAction = $state(null);
   /** @type {string} */ let _ctxSym  = $state('');
   /** @type {string} */ let _ctxExch = $state('');
+
+  /** Resolve watchlist membership async for the open context menu —
+   *  this page has no watchlist state of its own (2026-10-22 parity). */
+  function _resolveDerivCtxWatchlist(symbol) {
+    isSymbolInWatchlist(symbol).then((inWatchlist) => {
+      if (_ctxMenu && _ctxMenu.symbol === symbol) {
+        _ctxMenu = { ..._ctxMenu, watchlistInfo: { inWatchlist } };
+      }
+    });
+  }
 
   // Source card semantics (v4): no more single-vs-multi distinction.
   // Everything is multi-leg. One leg analyses fine through the strategy
@@ -6190,7 +6204,9 @@
                   x: ev.clientX,
                   y: ev.clientY,
                   candidate,
+                  watchlistInfo: null,
                 };
+                if (candidate.source !== 'draft') _resolveDerivCtxWatchlist(candidate.symbol);
               }}
             />
           {/each}
@@ -6734,8 +6750,17 @@
     x={_ctxMenu?.x}
     y={_ctxMenu?.y}
     isDraft={_ctxMenu?.candidate?.source === 'draft'}
+    showOpenInOptions={rootForOptionsLink(_ctxMenu?.symbol, _ctxMenu?.candidate?.underlying).toUpperCase() !== String(selectedUnderlying || '').toUpperCase()}
+    showCopySymbol
+    group={groupPropFor(_ctxMenu?.symbol)}
+    watchlist={_ctxMenu?.watchlistInfo ?? null}
     onClose={() => { _ctxMenu = null; }}
     onAction={(action, sym, exch) => {
+      if (isSharedContextAction(action)) {
+        dispatchSharedContextAction(action, sym, exch);
+        _ctxMenu = null;
+        return;
+      }
       // Draft-only actions are intercepted here — they don't map to
       // the generic `_ctxAction` modal-open pattern below (2026-10-22
       // unification; _ctxMenu.candidate carries the full row, needed

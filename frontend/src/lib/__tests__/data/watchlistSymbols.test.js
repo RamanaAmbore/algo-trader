@@ -237,6 +237,116 @@ describe('loadWatchlistSymbols — error paths', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// membership / defaultListId (2026-10-22 context-menu parity work) —
+// watchlistContextActions.js's Add/Remove-watchlist implementation reads
+// these two fields exclusively.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('loadWatchlistSymbols — membership map', () => {
+  it('records listId/itemId/isGlobal per symbol', async () => {
+    const lists = [makeList(1, { is_default: true })];
+    fetchWatchlists.mockResolvedValue(lists);
+    fetchWatchlist.mockResolvedValue({ items: [{ id: 101, tradingsymbol: 'NIFTY' }] });
+
+    const { membership } = await loadWatchlistSymbols();
+
+    expect(membership.get('NIFTY')).toEqual([{ listId: 1, itemId: 101, isGlobal: false }]);
+  });
+
+  it('records a separate entry per list for a symbol on more than one list', async () => {
+    const lists = [makeList(1), makeList(2, { is_global: true })];
+    fetchWatchlists.mockResolvedValue(lists);
+    fetchWatchlist.mockImplementation(async (id) => ({
+      items: [{ id: id === 1 ? 10 : 20, tradingsymbol: 'NIFTY' }],
+    }));
+
+    const { membership } = await loadWatchlistSymbols();
+    const entries = membership.get('NIFTY');
+
+    expect(entries).toHaveLength(2);
+    expect(entries).toContainEqual({ listId: 1, itemId: 10, isGlobal: false });
+    expect(entries).toContainEqual({ listId: 2, itemId: 20, isGlobal: true });
+  });
+
+  it('uppercases the membership key', async () => {
+    const lists = [makeList(1)];
+    fetchWatchlists.mockResolvedValue(lists);
+    fetchWatchlist.mockResolvedValue({ items: [{ id: 1, tradingsymbol: 'nifty' }] });
+
+    const { membership } = await loadWatchlistSymbols();
+
+    expect(membership.has('NIFTY')).toBe(true);
+    expect(membership.has('nifty')).toBe(false);
+  });
+
+  it('skips an item with no id rather than recording a broken entry', async () => {
+    const lists = [makeList(1)];
+    fetchWatchlists.mockResolvedValue(lists);
+    fetchWatchlist.mockResolvedValue({ items: [{ tradingsymbol: 'NIFTY' }] });
+
+    const { membership } = await loadWatchlistSymbols();
+
+    expect(membership.has('NIFTY')).toBe(false);
+  });
+
+  it('is an empty Map when there are no lists', async () => {
+    fetchWatchlists.mockResolvedValue([]);
+    const { membership } = await loadWatchlistSymbols();
+    expect(membership.size).toBe(0);
+  });
+});
+
+describe('loadWatchlistSymbols — defaultListId', () => {
+  it('picks the is_default list over any other', async () => {
+    const lists = [makeList(1), makeList(2, { is_default: true }), makeList(3, { is_global: true })];
+    fetchWatchlists.mockResolvedValue(lists);
+    fetchWatchlist.mockResolvedValue({ items: [] });
+
+    const { defaultListId } = await loadWatchlistSymbols();
+    expect(defaultListId).toBe(2);
+  });
+
+  it('falls back to the first non-global list when no list is marked default', async () => {
+    const lists = [makeList(1, { is_global: true }), makeList(2)];
+    fetchWatchlists.mockResolvedValue(lists);
+    fetchWatchlist.mockResolvedValue({ items: [] });
+
+    const { defaultListId } = await loadWatchlistSymbols();
+    expect(defaultListId).toBe(2);
+  });
+
+  it('falls back to a non-global pinned list when every other list is global', async () => {
+    const lists = [makeList(1, { is_global: true }), makeList(2, { is_pinned: true })];
+    fetchWatchlists.mockResolvedValue(lists);
+    fetchWatchlist.mockResolvedValue({ items: [] });
+
+    const { defaultListId } = await loadWatchlistSymbols();
+    expect(defaultListId).toBe(2);
+  });
+
+  it('is null when the operator has no personal list at all', async () => {
+    const lists = [makeList(1, { is_global: true })];
+    fetchWatchlists.mockResolvedValue(lists);
+    fetchWatchlist.mockResolvedValue({ items: [] });
+
+    const { defaultListId } = await loadWatchlistSymbols();
+    expect(defaultListId).toBeNull();
+  });
+
+  it('is null when there are no lists', async () => {
+    fetchWatchlists.mockResolvedValue([]);
+    const { defaultListId } = await loadWatchlistSymbols();
+    expect(defaultListId).toBeNull();
+  });
+
+  it('is null on a fetch failure', async () => {
+    fetchWatchlists.mockRejectedValue(new Error('network error'));
+    const { defaultListId } = await loadWatchlistSymbols();
+    expect(defaultListId).toBeNull();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Cache behaviour
 // ─────────────────────────────────────────────────────────────────────────────
 

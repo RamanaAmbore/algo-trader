@@ -31,6 +31,11 @@
   import { instrumentsCacheVersion } from '$lib/data/instruments';
   import { resolveVirtual, formatPositionSymbol } from '$lib/data/rootOf.js';
   import { displaySymbol } from '$lib/data/displaySymbol.js';
+  import {
+    isDetached as _pdIsDetached, detachSymbol as _pdDetachSymbol,
+    reattachSymbol as _pdReattachSymbol, detachedSymbolsList, resetDetached,
+  } from '$lib/data/pulseDetached.svelte.js';
+  import { openInOptionsHref, copySymbolToClipboard } from '$lib/data/symbolContextHelpers.js';
 
   // Module-scope cache for hyphenated symbol display. The cellRenderer
   // re-runs for every row × redraw; parsing each symbol once per session
@@ -970,27 +975,27 @@
   //
   // Persistence: localStorage, per-browser. Backend sync would need a
   // schema migration we don't want yet. Reset clears both overrides.
+  //
+  // Detached-symbol state itself (2026-10-22) moved to the shared
+  // `pulseDetached.svelte.js` module — LogPanel's ActivityLogModal is
+  // layout-mounted on every (algo) route including /pulse and /dashboard
+  // (where MarketPulse is ALSO embedded), so a detach fired from its
+  // context menu must regroup this live grid immediately, and a second
+  // independent `$state` copy here would race the shared module's own
+  // localStorage writes. groupOrder has no other surface that needs it
+  // yet, so it stays local.
   const LS_GROUP_ORDER = 'pulse:groupOrder';   // { NIFTY: 0, BANKNIFTY: 1, ... }
-  const LS_DETACHED    = 'pulse:detached';     // ["NIFTY25APR21000PE", ...]
   let groupOrder       = $state(/** @type {Record<string, number>} */ ({}));
-  let detachedSymbols  = $state(/** @type {string[]} */ ([]));
 
   function loadOverrides() {
     try {
       const g = JSON.parse(localStorage.getItem(LS_GROUP_ORDER) || '{}');
       if (g && typeof g === 'object') groupOrder = g;
     } catch (_) { /* corrupt JSON — start fresh */ }
-    try {
-      const d = JSON.parse(localStorage.getItem(LS_DETACHED) || '[]');
-      if (Array.isArray(d)) detachedSymbols = d;
-    } catch (_) { /* corrupt JSON — start fresh */ }
   }
 
   function saveGroupOrder() {
     try { localStorage.setItem(LS_GROUP_ORDER, JSON.stringify(groupOrder)); } catch (_) {}
-  }
-  function saveDetached() {
-    try { localStorage.setItem(LS_DETACHED, JSON.stringify(detachedSymbols)); } catch (_) {}
   }
 
   /** Move the row's underlying group up (-1) or down (+1) within its bucket. */
@@ -1022,32 +1027,25 @@
 
   /** True iff the symbol is currently in the detached set. */
   function isDetached(sym) {
-    return detachedSymbols.includes(String(sym || '').toUpperCase());
+    return _pdIsDetached(sym);
   }
 
   function detachSymbol(row) {
-    const sym = String(row?.tradingsymbol || '').toUpperCase();
-    if (!sym || isDetached(sym)) return;
-    detachedSymbols = [...detachedSymbols, sym];
-    saveDetached();
+    _pdDetachSymbol(row?.tradingsymbol);
   }
 
   function reattachSymbol(row) {
-    const sym = String(row?.tradingsymbol || '').toUpperCase();
-    if (!sym) return;
-    detachedSymbols = detachedSymbols.filter(s => s !== sym);
-    saveDetached();
+    _pdReattachSymbol(row?.tradingsymbol);
   }
 
   function resetOverrides() {
     groupOrder = {};
-    detachedSymbols = [];
     saveGroupOrder();
-    saveDetached();
+    resetDetached();
   }
 
   const hasOverrides = $derived(
-    Object.keys(groupOrder).length > 0 || detachedSymbols.length > 0
+    Object.keys(groupOrder).length > 0 || detachedSymbolsList().length > 0
   );
 
   // Bucket-of helper — mirrors the bucket logic inside buildUnified
@@ -3143,7 +3141,7 @@
 
   const unifiedRows = $derived.by(() => {
     // eslint-disable-next-line no-unused-expressions
-    groupOrder; detachedSymbols;
+    groupOrder; detachedSymbolsList();
     // Positions + Holdings are the only account-scoped sources. Empty
     // picker = "All accounts" (default) — show every row. Non-empty
     // picker = scope to the picked accounts (filter lives in
@@ -3238,7 +3236,7 @@
     mergeMoverRows(byKey, moverRows, includeMovers, includePos, includeHold, includeWatch, movCtx);
     tagWatchedIndices(byKey);
     finalizeRows(byKey, finCtx);
-    return sortUnifiedRows(Object.values(byKey), groupOrder, detachedSymbols);
+    return sortUnifiedRows(Object.values(byKey), groupOrder, detachedSymbolsList());
   }
 
   // ── Add / remove ────────────────────────────────────────────────
@@ -4443,13 +4441,11 @@
 
   function ctxOpenOptions(row) {
     closeContextMenu();
-    const ts = String(row.tradingsymbol || '').toUpperCase();
-    const root = ts.replace(/\d.*$/, '') || String(row.underlying || '').replace(/\s+/g, '') || ts;
-    window.location.href = `/admin/derivatives?u=${encodeURIComponent(root)}`;
+    window.location.href = openInOptionsHref(row.tradingsymbol, row.underlying);
   }
   async function ctxCopySymbol(row) {
     closeContextMenu();
-    try { await navigator.clipboard.writeText(row.tradingsymbol || ''); } catch (_) {}
+    await copySymbolToClipboard(row.tradingsymbol || '');
   }
 /** 📈 Chart action — opens ChartModal directly for the row's symbol.
    *  SymbolPanel's TABS no longer includes 'chart' (it was retired when

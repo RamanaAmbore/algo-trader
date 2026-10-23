@@ -27,6 +27,9 @@
   import { noteAttachObservation } from '$lib/data/templateAttachToast.js';
   import { noteOrderPollFills } from '$lib/data/orderFillDetector.js';
   import { userRole, userCaps, hasCap } from '$lib/rbac';
+  import { groupPropFor } from '$lib/data/pulseDetached.svelte.js';
+  import { isSymbolInWatchlist } from '$lib/data/watchlistContextActions.js';
+  import { isSharedContextAction, dispatchSharedContextAction } from '$lib/data/symbolContextDispatch.js';
 
   // mode (sim/paper/live/shadow/replay): when set, auto-flips logTab to
   // the mapped tab AND auto-applies the matching order filter — sim →
@@ -1016,11 +1019,23 @@
   let _symPanelSym  = $state('');
   /** @type {string} */
   let _symPanelExch = $state('');
-  /** @type {{ symbol: string, exchange: string, x: number, y: number } | null} */
+  /** @type {{ symbol: string, exchange: string, x: number, y: number, watchlistInfo?: { inWatchlist: boolean } | null } | null} */
   let _ctxMenu = $state(null);
   /** @type {'place-order' | 'chart' | 'log' | null} */ let _ctxAction = $state(null);
   /** @type {string} */ let _ctxSym  = $state('');
   /** @type {string} */ let _ctxExch = $state('');
+
+  /** Open the shared context menu, then resolve watchlist membership
+   *  async — this surface has no watchlist state of its own, unlike
+   *  MarketPulse (2026-10-22 parity). */
+  function _openLogPanelCtxMenu(symbol, exchange, x, y) {
+    _ctxMenu = { symbol, exchange, x, y, watchlistInfo: null };
+    isSymbolInWatchlist(symbol).then((inWatchlist) => {
+      if (_ctxMenu && _ctxMenu.symbol === symbol) {
+        _ctxMenu = { ..._ctxMenu, watchlistInfo: { inWatchlist } };
+      }
+    });
+  }
 
   // ── Order-card inline actions (Cancel / Modify) ──────────────────────────
   // Cancel hits the broker DELETE endpoint directly; Modify dispatches a
@@ -2173,8 +2188,17 @@
     exchange={_ctxMenu?.exchange}
     x={_ctxMenu?.x}
     y={_ctxMenu?.y}
+    showOpenInOptions
+    showCopySymbol
+    group={groupPropFor(_ctxMenu?.symbol)}
+    watchlist={_ctxMenu?.watchlistInfo ?? null}
     onClose={() => { _ctxMenu = null; }}
     onAction={(action, sym, exch) => {
+      if (isSharedContextAction(action)) {
+        dispatchSharedContextAction(action, sym, exch);
+        _ctxMenu = null;
+        return;
+      }
       _ctxSym  = sym;
       _ctxExch = exch;
       // 'log' opens the singleton ActivityLogModal via the store

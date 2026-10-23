@@ -50,6 +50,9 @@
   import { noteAttachObservation } from '$lib/data/templateAttachToast.js';
   import { noteOrderPollFills } from '$lib/data/orderFillDetector.js';
   import { isDraftOrderRow } from '$lib/data/draftOrderRow.js';
+  import { groupPropFor } from '$lib/data/pulseDetached.svelte.js';
+  import { isSymbolInWatchlist } from '$lib/data/watchlistContextActions.js';
+  import { isSharedContextAction, dispatchSharedContextAction } from '$lib/data/symbolContextDispatch.js';
 
   /** @type {{
    *   orderId?: string | null,
@@ -677,12 +680,25 @@
   // ── Symbol panel / chart modal / context menu state ───────────────────
   let _symPanelSym  = $state('');
   let _symPanelExch = $state('');
-  /** @type {{ symbol: string, exchange: string, x: number, y: number } | null} */
+  /** @type {{ symbol: string, exchange: string, x: number, y: number, watchlistInfo?: { inWatchlist: boolean } | null } | null} */
   let _ctxMenu = $state(null);
   /** @type {'place-order' | 'chart' | null} */
   let _ctxAction = $state(null);
   let _ctxSym  = $state('');
   let _ctxExch = $state('');
+
+  /** Open the shared context menu, then resolve watchlist membership
+   *  async (2026-10-22 parity — this surface has no watchlist state of
+   *  its own, unlike MarketPulse). `watchlist` prop stays null until
+   *  resolved, which hides Add/Remove until then. */
+  function _openOrderBookCtxMenu(symbol, exchange, x, y) {
+    _ctxMenu = { symbol, exchange, x, y, watchlistInfo: null };
+    isSymbolInWatchlist(symbol).then((inWatchlist) => {
+      if (_ctxMenu && _ctxMenu.symbol === symbol) {
+        _ctxMenu = { ..._ctxMenu, watchlistInfo: { inWatchlist } };
+      }
+    });
+  }
 </script>
 
 <div class="ob-root" class:fs-card-on={isFullscreen}>
@@ -784,7 +800,7 @@
             _symPanelSym = ord.tradingsymbol || ord.symbol || '';
             _symPanelExch = ord.exchange || '';
           }}
-          onSymbolContext={(ord, e) => { _ctxMenu = { symbol: ord.tradingsymbol || ord.symbol || '', exchange: ord.exchange || '', x: /** @type {MouseEvent} */ (e).clientX, y: /** @type {MouseEvent} */ (e).clientY }; }}
+          onSymbolContext={(ord, e) => { _openOrderBookCtxMenu(ord.tradingsymbol || ord.symbol || '', ord.exchange || '', /** @type {MouseEvent} */ (e).clientX, /** @type {MouseEvent} */ (e).clientY); }}
           onCardClick={_openOrderTimeline}>
           {#snippet actions(ord)}
             <div class="lp-oc-actions" role="group" aria-label="Order actions">
@@ -860,8 +876,17 @@
     exchange={_ctxMenu?.exchange}
     x={_ctxMenu?.x}
     y={_ctxMenu?.y}
+    showOpenInOptions
+    showCopySymbol
+    group={groupPropFor(_ctxMenu?.symbol)}
+    watchlist={_ctxMenu?.watchlistInfo ?? null}
     onClose={() => { _ctxMenu = null; }}
     onAction={(action, sym, exch) => {
+      if (isSharedContextAction(action)) {
+        dispatchSharedContextAction(action, sym, exch);
+        _ctxMenu = null;
+        return;
+      }
       _ctxSym  = sym;
       _ctxExch = exch;
       _ctxAction = /** @type {any} */ (action);

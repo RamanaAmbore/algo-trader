@@ -5,10 +5,21 @@
 // symbols Pulse shows — operator: "Symbol dropdown is not showing all
 // the pinned symbols from pulse. every symbol dropdown should be
 // consistent and use the same code".
+//
+// `membership` + `defaultListId` (2026-10-22 context-menu parity work)
+// let non-Pulse surfaces (OrderBook, LogPanel, PerformancePage, the
+// derivatives Legs grid) implement the unified SymbolContextMenu's
+// Add/Remove-watchlist item without re-building MarketPulse's own
+// lists/activeIds/focusedListId state machine — see
+// `watchlistContextActions.js` for the actions built on top of this.
 
 import { fetchWatchlists, fetchWatchlist } from '$lib/api';
 
-let _cache = /** @type {{ syms: string[]; pinnedSyms: string[]; regularSyms: string[]; lists: any[]; loadedAt: number } | null} */ (null);
+let _cache = /** @type {{
+ *   syms: string[]; pinnedSyms: string[]; regularSyms: string[]; lists: any[]; loadedAt: number;
+ *   membership: Map<string, Array<{ listId: number, itemId: number, isGlobal: boolean }>>;
+ *   defaultListId: number | null;
+ * } | null} */ (null);
 const _TTL_MS = 30_000;
 
 /** Force-refresh on next call. */
@@ -33,7 +44,10 @@ export async function loadWatchlistSymbols() {
     const raw = await fetchWatchlists();
     const lists = Array.isArray(raw) ? raw : (raw?.watchlists ?? []);
     if (!lists.length) {
-      _cache = { syms: [], pinnedSyms: [], regularSyms: [], lists: [], loadedAt: now };
+      _cache = {
+        syms: [], pinnedSyms: [], regularSyms: [], lists: [], loadedAt: now,
+        membership: new Map(), defaultListId: null,
+      };
       return _cache;
     }
     // Pinned + global first so the order matches Pulse's `pinned` major.
@@ -50,23 +64,58 @@ export async function loadWatchlistSymbols() {
     /** @type {string[]} */ const regularSyms = [];
     /** @type {string[]} */ const syms = [];
     const seen = new Set();
+    /** @type {Map<string, Array<{ listId: number, itemId: number, isGlobal: boolean }>>} */
+    const membership = new Map();
 
-    for (const d of pinnedDetails) {
+    /** @param {any} list @param {any} detail */
+    function _recordMembership(list, detail) {
+      for (const it of (detail?.items ?? [])) {
+        const sym = String(it?.tradingsymbol ?? '').trim().toUpperCase();
+        if (!sym || it?.id == null) continue;
+        const entry = { listId: list.id, itemId: it.id, isGlobal: !!list?.is_global };
+        const arr = membership.get(sym);
+        if (arr) arr.push(entry); else membership.set(sym, [entry]);
+      }
+    }
+
+    for (let i = 0; i < pinnedLists.length; i++) {
+      const list = pinnedLists[i];
+      const d = pinnedDetails[i];
+      _recordMembership(list, d);
       for (const it of (d?.items ?? [])) {
         const sym = String(it?.tradingsymbol ?? '').trim().toUpperCase();
         if (sym && !seen.has(sym)) { seen.add(sym); syms.push(sym); pinnedSyms.push(sym); }
       }
     }
-    for (const d of regularDetails) {
+    for (let i = 0; i < regularLists.length; i++) {
+      const list = regularLists[i];
+      const d = regularDetails[i];
+      _recordMembership(list, d);
       for (const it of (d?.items ?? [])) {
         const sym = String(it?.tradingsymbol ?? '').trim().toUpperCase();
         if (sym && !seen.has(sym)) { seen.add(sym); syms.push(sym); regularSyms.push(sym); }
       }
     }
-    _cache = { syms, pinnedSyms, regularSyms, lists, loadedAt: now };
+
+    // Default add-target for surfaces with no "focused watchlist" concept
+    // of their own (everything except MarketPulse): the operator's own
+    // is_default list, else the first non-global list (a global/shared
+    // seed list is never a sane default add-target for one operator's
+    // own symbol), else null (operator has no personal list — Add to
+    // watchlist stays hidden at the call site).
+    const defaultListId =
+      lists.find(l => l?.is_default)?.id
+      ?? regularLists[0]?.id
+      ?? pinnedLists.find(l => !l?.is_global)?.id
+      ?? null;
+
+    _cache = { syms, pinnedSyms, regularSyms, lists, loadedAt: now, membership, defaultListId };
     return _cache;
   } catch (_) {
-    _cache = { syms: [], pinnedSyms: [], regularSyms: [], lists: [], loadedAt: now };
+    _cache = {
+      syms: [], pinnedSyms: [], regularSyms: [], lists: [], loadedAt: now,
+      membership: new Map(), defaultListId: null,
+    };
     return _cache;
   }
 }

@@ -23,6 +23,8 @@
     setRecentSymbol, setRecentAccount,
   } from '$lib/data/accounts';
   import { createPerformanceSocket } from '$lib/ws';
+  import { groupPropFor } from '$lib/data/pulseDetached.svelte.js';
+  import { isSharedContextAction, dispatchSharedContextAction } from '$lib/data/symbolContextDispatch.js';
   import ChartModal from '$lib/ChartModal.svelte';
   import { payoffDrafts } from '$lib/data/payoffDrafts.svelte.js';
 
@@ -180,7 +182,7 @@
   // inline shell handles fresh placement; this separate modal handles
   // single-target modify / repeat.
   let orderTicketProps = $state(/** @type {any|null} */(null));
-  /** @type {{ symbol: string, exchange: string, x: number, y: number, currentQty?: number } | null} */
+  /** @type {{ symbol: string, exchange: string, x: number, y: number, currentQty?: number, watchlistInfo?: { inWatchlist: boolean } | null } | null} */
   let _ctxMenu = $state(null);
   /** @type {'place-order' | 'chart' | 'log' | 'close' | null} */ let _ctxAction = $state(null);
   /** @type {string} */ let _ctxSym  = $state('');
@@ -507,8 +509,17 @@
     x={_ctxMenu?.x}
     y={_ctxMenu?.y}
     currentQty={_ctxMenu?.currentQty ?? 0}
+    showOpenInOptions
+    showCopySymbol
+    group={groupPropFor(_ctxMenu?.symbol)}
+    watchlist={_ctxMenu?.watchlistInfo ?? null}
     onClose={() => { _ctxMenu = null; }}
     onAction={(action, sym, exch) => {
+      if (isSharedContextAction(action)) {
+        dispatchSharedContextAction(action, sym, exch);
+        _ctxMenu = null;
+        return;
+      }
       _ctxSym  = sym;
       _ctxExch = exch;
       _ctxQty  = _ctxMenu?.currentQty ?? 0;

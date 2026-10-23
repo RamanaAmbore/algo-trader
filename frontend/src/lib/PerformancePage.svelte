@@ -30,6 +30,9 @@
   import { rootOfLabel } from '$lib/data/rootOf.js';
   import { navTotalRow, aggregateDayPnlForPositions, baseDayPnlForPosition, dayChangePct } from '$lib/data/nav';
   import { applyFill, clearFill, clearAll as clearAllProvisional } from '$lib/data/provisionalPositions.svelte.js';
+  import { groupPropFor } from '$lib/data/pulseDetached.svelte.js';
+  import { isSymbolInWatchlist } from '$lib/data/watchlistContextActions.js';
+  import { isSharedContextAction, dispatchSharedContextAction } from '$lib/data/symbolContextDispatch.js';
 
   // Module-scope cache for hyphenated display strings. ag-Grid
   // re-runs cellRenderer on every redraw — a Map cache avoids
@@ -115,12 +118,36 @@
   }
 
   // Context menu state — right-click / long-press on any symbol cell.
-  /** @type {{ symbol: string, exchange: string, x: number, y: number } | null} */
+  /** @type {{ symbol: string, exchange: string, x: number, y: number, watchlistInfo?: { inWatchlist: boolean } | null } | null} */
   let _ctxMenu = $state(null);
   /** @type {'place-order' | 'chart' | 'log' | null} */
   let _ctxAction = $state(null);
   /** @type {string} */ let _ctxSym  = $state('');
   /** @type {string} */ let _ctxExch = $state('');
+
+  // Open-in-Options / watchlist mutation gate (2026-10-22 parity work) —
+  // this component is also embedded on the PUBLIC /performance page
+  // (cream, anonymous visitors allowed). Open in Options dead-ends at
+  // the admin-gated /admin/derivatives route for anyone else, and
+  // watchlist add/remove needs a real authenticated session — gated on
+  // the same designated/trader signal `openOrderTicket` already uses
+  // for the place-order capability, so an anonymous or partner/admin
+  // session sees neither.
+  const _perfCtxOpsAllowed = $derived(
+    $authStore.user?.role === 'designated' || $authStore.user?.role === 'trader'
+  );
+
+  /** Open the shared context menu, then resolve watchlist membership
+   *  async when the operator session is allowed to mutate it. */
+  function _openPerfCtxMenu(symbol, exchange, x, y) {
+    _ctxMenu = { symbol, exchange, x, y, watchlistInfo: null };
+    if (!_perfCtxOpsAllowed) return;
+    isSymbolInWatchlist(symbol).then((inWatchlist) => {
+      if (_ctxMenu && _ctxMenu.symbol === symbol) {
+        _ctxMenu = { ..._ctxMenu, watchlistInfo: { inWatchlist } };
+      }
+    });
+  }
   // Effective mask flag — designated (firm owner) and admin
   // (operational) never see masked codes, regardless of what the
   // parent passed. The prop still wins for partner / demo (default
@@ -949,7 +976,7 @@
         if (!sym || sym === 'TOTAL') return;
         ev.event.preventDefault();
         const me = /** @type {MouseEvent} */ (ev.event);
-        _ctxMenu = { symbol: sym, exchange: exch, x: me.clientX, y: me.clientY };
+        _openPerfCtxMenu(sym, exch, me.clientX, me.clientY);
       },
       ...extraOpts,
     });
@@ -1769,8 +1796,17 @@
     exchange={_ctxMenu?.exchange}
     x={_ctxMenu?.x}
     y={_ctxMenu?.y}
+    showOpenInOptions={_perfCtxOpsAllowed}
+    showCopySymbol
+    group={groupPropFor(_ctxMenu?.symbol)}
+    watchlist={_perfCtxOpsAllowed ? (_ctxMenu?.watchlistInfo ?? null) : null}
     onClose={() => { _ctxMenu = null; }}
     onAction={(action, sym, exch) => {
+      if (isSharedContextAction(action)) {
+        dispatchSharedContextAction(action, sym, exch);
+        _ctxMenu = null;
+        return;
+      }
       _ctxSym  = sym;
       _ctxExch = exch;
       if (action === 'log') {

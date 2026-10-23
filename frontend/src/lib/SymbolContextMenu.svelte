@@ -9,10 +9,9 @@
   // ActivityLogModal) are mounted alongside in the parent so they survive
   // after the menu closes. The parent drives this via the `onAction` prop.
   //
-  // Base actions, emitted on every host regardless of props (identical to
-  // the original 5-item menu — OrderBook, LogPanel, PerformancePage,
-  // /orders, derivatives real rows pass none of the new props below and
-  // must keep seeing exactly this set, same order, same labels):
+  // Base actions, emitted on every host regardless of props (the
+  // original 5-item menu; every host still gets this set unconditionally,
+  // in addition to whichever opt-in items below its data supports):
   //   place-order  — parent should open SymbolPanel
   //   close        — parent should open SymbolPanel pre-seeded with the
   //                  reverse-side / close-position context (slice AV
@@ -23,15 +22,30 @@
   //   orders       — navigate to /orders?symbol=<sym>
   //   log          — parent should open ActivityLogModal
   //
-  // Opt-in actions (only rendered when the matching prop is passed —
-  // every pre-2026-10-22 consumer leaves these at their defaults, so the
-  // base 5-item set above is unaffected):
-  //   open-options     — showOpenInOptions=true (MarketPulse: jump to the
-  //                      derivatives page for this row's underlying root)
-  //   copy-symbol      — showCopySymbol=true
-  //   detach / reattach — group={isDetached, hasUnderlying} (underlying-root
-  //                      visual clustering override — MarketPulse only)
-  //   add-watchlist / remove-watchlist — watchlist={inWatchlist}
+  // Opt-in actions (only rendered when the matching prop is passed /
+  // the underlying data is actually available for that row — gated on
+  // DATA, not on which page is rendering it; 2026-10-22 parity pass made
+  // all four available from every host that mounts this menu —
+  // MarketPulse, OrderBook, LogPanel, PerformancePage, the derivatives
+  // Legs grid — each host decides per-row whether the prop applies):
+  //   open-options     — showOpenInOptions=true — jump to the
+  //                      derivatives page for this row's underlying root.
+  //                      Every host passes true except when the root
+  //                      already matches the page's own selected
+  //                      underlying (the derivatives page itself —
+  //                      otherwise genuinely redundant, same page).
+  //   copy-symbol      — showCopySymbol=true. Needs only the symbol
+  //                      string, universal everywhere.
+  //   detach / reattach — group={isDetached, hasUnderlying} (underlying-
+  //                      root visual clustering override — the override
+  //                      itself only visibly affects MarketPulse's own
+  //                      grid, but is wired from every host so an
+  //                      operator can detach a symbol while looking at
+  //                      it on any surface; `hasUnderlying` gates on
+  //                      whether the symbol parses as an option/future).
+  //   add-watchlist / remove-watchlist — watchlist={inWatchlist}. Gated
+  //                      on membership data being loaded/available for
+  //                      that symbol; null hides both items.
   //   select-draft / promote — isDraft=true. Replaces the base
   //                      place-order/close pair entirely (a draft/what-if
   //                      row has nothing real to close) and suppresses
@@ -85,18 +99,22 @@
     /** Gate for place-order / close / promote / select-draft — mirrors
      * the host's own "does clicking this row place an order" gate. */
     canPlaceOrders = true,
-    /** MarketPulse-only: jump to the derivatives page for this row's
-     * underlying root. */
+    /** Jump to the derivatives page for this row's underlying root. Any
+     * host may pass true — gate on data (e.g. suppress when the root
+     * already matches the page's own selected underlying), not on
+     * which page is rendering. */
     showOpenInOptions = false,
-    /** MarketPulse-only: "Copy symbol" item. */
+    /** "Copy symbol" item. Needs only the symbol string — safe to pass
+     * true unconditionally from any host. */
     showCopySymbol = false,
-    /** MarketPulse-only: watchlist add/remove. Omit (null) to hide both. */
+    /** Watchlist add/remove. Omit (null) to hide both — e.g. while
+     * membership is still loading, or the row has no resolvable symbol. */
     watchlist = /** @type {{ inWatchlist: boolean } | null} */ (null),
-    /** MarketPulse-only: underlying-root group attach/detach. Omit (null)
-     * to hide both. `hasUnderlying` only matters when `isDetached` is
-     * false — a detached symbol always gets the Re-attach escape hatch
-     * regardless, since that state is otherwise only reversible via
-     * clearing localStorage. */
+    /** Underlying-root group attach/detach (Pulse's grouping override).
+     * Omit (null) to hide both. `hasUnderlying` only matters when
+     * `isDetached` is false — a detached symbol always gets the
+     * Re-attach escape hatch regardless, since that state is otherwise
+     * only reversible via clearing localStorage. */
     group = /** @type {{ isDetached: boolean, hasUnderlying?: boolean } | null} */ (null),
     onClose,
     onAction = null,
