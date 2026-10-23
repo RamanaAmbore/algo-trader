@@ -217,7 +217,7 @@ def _render_mcp_ping(rec: dict) -> tuple[str, str, str]:
     return "MCP", _html_to_plain(tg), tg
 
 
-def _render_deploy_sync(rec: dict) -> tuple[str, str]:
+def _render_deploy_sync(rec: dict) -> tuple[str, str, str]:
     """dev/main branches or their deploy webhooks have drifted out of sync.
 
     Also registered as the "generic_notice" renderer (see
@@ -230,9 +230,38 @@ def _render_deploy_sync(rec: dict) -> tuple[str, str]:
     log-record + event-agent pipeline every other alert in this codebase
     already uses. Kept under its original "deploy_sync" render key too
     so DEPLOY_SYNC_AGENT's own behaviour is unchanged.
+
+    2026-10-23 fix — raw HTML tags leaking into Telegram/ntfy: the
+    `extra["body"]` these 5 call sites supply is sometimes genuinely
+    HTML-formatted (e.g. `background.py`'s visitor-report send builds
+    `f"<b>Visitors</b>\\n{tg_body}"`), but this renderer used to pass it
+    straight through as the plain-text `body` tuple slot with no `tg`
+    (HTML) slot at all. `_send_channel` (`out[1]`=body, `out[2]`=tg)
+    then fed that raw-HTML string into `_send_telegram_info_html`'s
+    `tg or f"<b>{html.escape(title)}</b>\\n{html.escape(body)}"`
+    fallback — since `tg` was always `None` here, `html.escape(body)`
+    double-escaped the already-literal `<b>` tags into `&lt;b&gt;`,
+    which Telegram then displayed as literal angle-bracket text instead
+    of bold. ntfy (which reads `body` directly, never `tg`) would show
+    the same raw tags verbatim for any future generic_notice caller that
+    embeds HTML, even though no current call site triggers it on that
+    channel. Fixed the same way every other HTML-capable renderer in
+    this file already does it (`_render_rich_alert`, `_render_summary`,
+    `_render_mcp_ping`): treat `extra["body"]` as the HTML-safe source
+    of truth, return `_html_to_plain(body)` as the plain slot (`ntfy`,
+    and `_send_telegram_info_html`'s own escape-fallback when the
+    content has no tags to begin with) and the raw `body` as `tg`
+    (Telegram's real HTML-rendering slot) — a plain-text body with no
+    tags is unchanged by `_html_to_plain`, so the 4 other, currently
+    tag-free call sites (gtt_asymmetric, oco_double_fire,
+    ticker_recovered, ticker_degraded) and DEPLOY_SYNC_AGENT's own
+    plain-text body are byte-identical post-fix.
     """
+    from backend.shared.helpers.alert_utils import _html_to_plain
     x = rec.get("extra") or {}
-    return x.get("title") or "Deploy out of sync", x.get("body") or ""
+    title = x.get("title") or "Deploy out of sync"
+    body = x.get("body") or ""
+    return title, _html_to_plain(body), body
 
 
 def _render_rich_alert(rec: dict) -> tuple:
