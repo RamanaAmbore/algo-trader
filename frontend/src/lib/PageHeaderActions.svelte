@@ -11,11 +11,13 @@
    */
 
   import { getContext, onMount, onDestroy } from 'svelte';
-  import { executionMode, openActivityModal, orderTicketModal, closeOrderTicketModal, openChartModal, orderModalFocusPing } from '$lib/stores';
+  import { executionMode, openActivityModal, orderTicketModal, closeOrderTicketModal, openChartModal, orderModalFocusPing, chaseActiveCount, chaseDrawerOpen } from '$lib/stores';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import { toast } from '$lib/data/toastStore.svelte.js';
   import { prefetchChartBars } from '$lib/ChartWorkspace.svelte';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
+  import { longPress } from '$lib/actions/longPress.js';
+  import InfoHint from '$lib/InfoHint.svelte';
   // Symbol-resolver imports retired — operators pick tradeable
   // symbols directly (no NIFTY 50 → NIFTY26JUNFUT mapping). Operator:
   // "we don't have symbol and resolver concept now."
@@ -126,6 +128,36 @@
 
   // ── Internal modal state ──────────────────────────────────────────────
   let _orderOpen = $state(false);
+
+  // ── Chase indicator + drawer gesture (2026-10-23 relocation) ──────────
+  // The standalone header `.chase-chip` is gone — the chase surface is
+  // now reached by long-press (mobile) / right-click (desktop) on this
+  // page's own Order button, reusing the longPress.js action the same
+  // way OrderCard.svelte already combines it with a primary onclick
+  // (contextmenu + touch-long-press both fire the same handler; the
+  // normal onclick below stays completely unchanged). `chaseActiveCount`
+  // mirrors the persistent `<ChaseCard>` instance mounted in
+  // (algo)/+layout.svelte — see that file + $lib/stores.js for why this
+  // is a shared store rather than a prop (this component has no direct
+  // parent/child relationship to the layout's drawer state).
+  function _onOrderLongPress() {
+    chaseDrawerOpen.set(true);
+  }
+
+  // One-time discoverability hint — the first time the indicator dot
+  // appears in this browser session, auto-pin the "(i)" InfoHint open
+  // (no click needed) so "long-press/right-click this" isn't
+  // undiscoverable. `_chaseHintEverShown` is a plain variable (not
+  // `$state`) — it's a write-once gate read only inside this effect,
+  // not something the template needs to react to directly.
+  let _chaseHintOpen = $state(false);
+  let _chaseHintEverShown = false;
+  $effect(() => {
+    if ($chaseActiveCount > 0 && !_chaseHintEverShown) {
+      _chaseHintEverShown = true;
+      _chaseHintOpen = true;
+    }
+  });
   // _chartOpen lifted to the global chartModal store (same as _logOpen →
   // activityModal). ChartModal is now mounted once in (algo)/+layout.svelte.
   // _logOpen lifted to the global activityModal store — the modal is
@@ -201,10 +233,17 @@
        button said "Place order" and the chart button said "Chart —
        …", which read as a different surface from the modal that
        actually opens. -->
+  <!-- `hideOrder` also hides the chase indicator + gesture on this page
+       (e.g. /orders) — the only current `hideOrder` caller already
+       embeds its own always-visible <ChaseCard> section directly in the
+       page body, so chase status is never actually unreachable there;
+       no fallback trigger is added. -->
   {#if !hideOrder}
     <button type="button" class="pha-btn pha-order"
             onclick={() => _openOrder()}
-            title="Orders{symbol ? ` — ${formatSymbol(symbol)}` : ''}"
+            oncontextmenu={(e) => { e.preventDefault(); _onOrderLongPress(); }}
+            use:longPress={_onOrderLongPress}
+            title="Orders{symbol ? ` — ${formatSymbol(symbol)}` : ''}{$chaseActiveCount > 0 ? ' — long-press/right-click for chase status' : ''}"
             aria-label="Open Orders">
       <!-- Order-slip / receipt glyph — a small rectangle with order
            lines inside. Reads as "open the order entry form" without
@@ -218,7 +257,25 @@
               stroke="currentColor" stroke-width="1.4"
               stroke-linecap="round"/>
       </svg>
+      <!-- Passive chase-active indicator — color + dot only, no letter
+           (CLAUDE.md: "C" already means Cash on PositionStrip's P/M/C/H
+           pills). Long-press/right-click opens the chase drawer via the
+           handlers above; this span itself has no click of its own. -->
+      {#if $chaseActiveCount > 0}
+        <span class="pha-chase-dot" aria-hidden="true"></span>
+      {/if}
     </button>
+  {/if}
+  {#if !hideOrder && $chaseActiveCount > 0}
+    <!-- Separate "(i)" chip, not wired into the Order button's own
+         click — same convention as the Bracket/Draft tooltips in
+         SymbolPanel.svelte (a real-action element's click must not be
+         overloaded with a help affordance). Auto-pins open once per
+         session the first time the dot appears (see _chaseHintOpen
+         effect above); stays available for a later deliberate click
+         afterward. -->
+    <InfoHint popup panel title="Chase active" bind:open={_chaseHintOpen}
+      text="{$chaseActiveCount} order{$chaseActiveCount === 1 ? '' : 's'} currently chasing (auto-repricing). Long-press (mobile) or right-click (desktop) the Order button to view live status and Kill." />
   {/if}
 
   {#if !hideChart}
@@ -353,6 +410,7 @@
 
   /* ── Order button — muted amber ──────────────────────────────── */
   .pha-order {
+    position: relative; /* hosts the .pha-chase-dot indicator below */
     border: 1px solid rgba(251, 191, 36, 0.40);
     color: var(--c-action);
   }
@@ -360,6 +418,30 @@
     background: var(--c-action-14);
     border-color: rgba(252, 211, 77, 0.65);
     color: #fcd34d;
+  }
+
+  /* ── Chase-active indicator (2026-10-23 relocation) ─────────────
+     Passive dot, no letter — "C" already means Cash on PositionStrip's
+     P/M/C/H pills, a real collision to avoid. Long-press (mobile) /
+     right-click (desktop) on the Order button opens the chase drawer;
+     this dot is purely a glance-only "something is chasing" signal. */
+  .pha-chase-dot {
+    position: absolute;
+    top: -2px;
+    right: -2px;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--c-action);
+    box-shadow: 0 0 0 1.5px #0d1829;
+    animation: pha-chase-pulse 2s ease-in-out infinite;
+  }
+  @keyframes pha-chase-pulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.45; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .pha-chase-dot { animation: none; }
   }
 
   /* ── Chart button — muted cyan ───────────────────────────────── */

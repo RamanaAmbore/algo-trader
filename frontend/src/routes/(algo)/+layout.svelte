@@ -3,7 +3,7 @@
   import { page } from '$app/state';
   import { onMount, onDestroy, setContext } from 'svelte';
   import { get } from 'svelte/store';
-  import { authStore, visibleInterval, executionMode, connStatus, startConnStatusPoller, startMarketStatusPoller, brokerHealthStore, startBrokerHealthPoller, activityModal, openActivityModal, closeActivityModal, setHibernationIdleMinutes, openOrderTicketModal, chartModal, openChartModal } from '$lib/stores';
+  import { authStore, visibleInterval, executionMode, connStatus, startConnStatusPoller, startMarketStatusPoller, brokerHealthStore, startBrokerHealthPoller, activityModal, openActivityModal, closeActivityModal, setHibernationIdleMinutes, openOrderTicketModal, chartModal, openChartModal, chaseActiveCount, chaseDrawerOpen } from '$lib/stores';
   import ActivityLogModal from '$lib/ActivityLogModal.svelte';
   import ChartModal from '$lib/ChartModal.svelte';
   import {
@@ -18,7 +18,6 @@
   import { userRole, hasCap, userCaps } from '$lib/rbac';
   import { toast } from '$lib/data/toastStore.svelte.js';
   import ChaseCard from '$lib/order/ChaseCard.svelte';
-  import { TERMINAL_KINDS as TERMINAL_CHASE_KINDS } from '$lib/order/orderTimelineLogic.js';
   import { portal } from '$lib/portal';
   import PositionStrip from '$lib/PositionStrip.svelte';
   import ImpersonationBanner from '$lib/ImpersonationBanner.svelte';
@@ -720,40 +719,41 @@
     }
   }
 
-  // ── Chase chip + live-status drawer ─────────────────────────────────
+  // ── Chase live-status drawer ─────────────────────────────────────────
   // Sprint 2a fix (docs/proposals/SPRINT2_LAYER_INTEGRATION.md §1 finding 1,
-  // §4.2): this feed previously assumed events carried `status`/`symbol`/
-  // `created_at` fields that don't exist on the real `AlgoOrderEventInfo`
-  // shape (`id, order_id, ts, kind, message, payload_json`) — openOrderIds
-  // was always empty and lastTerminalAt always resolved to the 1970 epoch,
-  // so `showChaseChip` was always false and the chip/drawer were never
-  // reachable at all. Fixed below; `chaseOrderContext` supplies the
-  // symbol/side/qty/mode the events themselves don't carry (see
-  // orderTimelineLogic.js), built from AlgoOrderInfo rows keyed by id.
+  // §4.2): events-feed fields didn't match the real `AlgoOrderEventInfo`
+  // shape — fixed historically; `chaseOrders`/`openOrderIds` below still
+  // exist solely to drive the adaptive poll cadence (fast while an order
+  // is open, slow otherwise), not any visible UI.
   //
-  // 2026-10-23 — the chip's click target changed from an event-TIMELINE
-  // log (OrderTimelineDrawer) to a live-STATUS view (ChaseCard — current
-  // price, countdown to next re-quote, Kill). `chaseOrders` /
-  // `chaseOrderContext` / `openOrderIds` are KEPT, but now feed only the
-  // chip's tooltip (`openSymbols`) and the 60s post-terminal auto-hide
-  // linger (`lastTerminalAt`) — the chip's displayed NUMBER and its
-  // click-to-open VISIBILITY both now come from ChaseCard's own
-  // `activeCount` bindable (`_chaseCardActiveCount` below), so the badge
-  // and the popup it opens can never disagree (previously two different
-  // endpoints — fetchOrderEvents('open') vs the chase engine's own
-  // /chases/active — could report different counts).
-  let chaseOrders       = $state(/** @type {any[]} */ ([]));
-  let chaseOrderContext = $state(/** @type {Record<string, {symbol:string, side:string, qty:number, mode:string}>} */ ({}));
-  let drawerOpen        = $state(false);
-  let lastTerminalAt    = $state(/** @type {Date|null} */ (null));
-  let chaseInteracted   = $state(false);  // tracks hover/click in the 60s auto-hide window
+  // 2026-10-23 — the entry point to this drawer changed from an event-
+  // TIMELINE log (OrderTimelineDrawer) to a live-STATUS view (ChaseCard —
+  // current price, countdown to next re-quote, Kill).
+  //
+  // 2026-10-23 (relocation) — the standalone header `.chase-chip` that
+  // used to open this drawer is REMOVED. The trigger moved to a long-
+  // press/right-click gesture on the per-page Order button
+  // (PageHeaderActions.svelte), which has no direct parent/child
+  // relationship to this layout — so `chaseActiveCount`/`chaseDrawerOpen`
+  // (shared stores, $lib/stores.js) now carry that cross-component
+  // state instead of the chip's own local `drawerOpen`/the tooltip/
+  // auto-hide bookkeeping the chip used to need (`openSymbols`,
+  // `chaseOrderContext`, `lastTerminalAt`, `chaseInteracted`, the 60s
+  // hide timer) — all deleted, they had no other consumer.
+  let chaseOrders = $state(/** @type {any[]} */ ([]));
   // Mirrors ChaseCard's own `activeCount`/`loadError` bindables — the ONE
   // persistent ChaseCard instance mounted below (see the drawer markup
   // near PositionStrip) keeps these live even while the drawer itself is
   // closed, via its `headless` prop (polling continues; template render
-  // is suppressed).
+  // is suppressed). `_chaseCardActiveCount` is mirrored into the shared
+  // `chaseActiveCount` store below so PageHeaderActions can read it;
+  // `_chaseCardLoadError` stays local — only this file's own drawer body
+  // renders it.
   let _chaseCardActiveCount = $state(0);
   let _chaseCardLoadError   = $state(/** @type {string | null} */ (null));
+  $effect(() => {
+    chaseActiveCount.set(_chaseCardActiveCount);
+  });
 
   // Escape-stack coordinator (layerStack.js) — same convention as
   // `menuOpen` / `modeOpen` above. The drawer previously relied on
@@ -765,8 +765,8 @@
   /** @type {string | null} */
   let _chaseDrawerLayerId = null;
   $effect(() => {
-    if (drawerOpen) {
-      _chaseDrawerLayerId = pushLayer(() => { drawerOpen = false; });
+    if ($chaseDrawerOpen) {
+      _chaseDrawerLayerId = pushLayer(() => { chaseDrawerOpen.set(false); });
     } else if (_chaseDrawerLayerId) {
       popLayer(_chaseDrawerLayerId);
       _chaseDrawerLayerId = null;
@@ -776,7 +776,8 @@
   // Every row returned by fetchOrderEvents(50, 'open') belongs to an order
   // the backend already filtered to AlgoOrder.status === 'OPEN' (see
   // orders.py:recent_order_events) — no per-event status field exists to
-  // re-check here.
+  // re-check here. Drives only the adaptive poll cadence below (fast
+  // while something is open), no UI reads this directly anymore.
   const openOrderIds = $derived.by(() => {
     const ids = new Set();
     for (const ev of chaseOrders) {
@@ -785,80 +786,14 @@
     return ids;
   });
 
-  /** Unique symbols in open orders — shown in the hover tooltip. Events
-   *  carry no symbol of their own; resolved via chaseOrderContext. */
-  const openSymbols = $derived.by(() => {
-    const syms = new Set();
-    for (const id of openOrderIds) {
-      const sym = chaseOrderContext[id]?.symbol;
-      if (sym) syms.add(sym);
-    }
-    return [...syms];
-  });
-
-  /** Best-effort fill-in of order context (symbol/side/qty/mode) for any
-   *  order id not yet cached — fetchAlgoOrdersRecent's 2nd arg is `mode`
-   *  (live/sim/paper/replay/shadow/all), NOT a status filter, so 'all' is
-   *  the correct call here, mirroring _fillWatchTick's own usage below. */
-  async function _ensureChaseOrderContext(/** @type {any[]} */ ids) {
-    const missing = ids.filter(id => id != null && !(id in chaseOrderContext));
-    if (!missing.length) return;
-    try {
-      const rows = await fetchAlgoOrdersRecent(100, 'all');
-      const next = { ...chaseOrderContext };
-      for (const o of (Array.isArray(rows) ? rows : [])) {
-        if (o?.id == null) continue;
-        next[o.id] = {
-          symbol: o.symbol ?? '',
-          side:   o.transaction_type ?? '',
-          qty:    o.quantity ?? null,
-          mode:   o.mode ?? '',
-        };
-      }
-      chaseOrderContext = next;
-    } catch (_) { /* keep stale context on error */ }
-  }
-
   async function pollChase() {
     try {
       const res = await fetchOrderEvents(50, 'open');
       // Accept { events: [...] } or bare array.
       const raw = Array.isArray(res) ? res : (res?.events ?? res?.orders ?? []);
       chaseOrders = raw;
-      _ensureChaseOrderContext(raw.map(e => e.order_id));
-      // Track last terminal event for auto-hide timer.
-      const terminal = raw.filter(e => TERMINAL_CHASE_KINDS.has(e.kind));
-      if (terminal.length) {
-        const ts = terminal.map(e => new Date(e.ts ?? 0));
-        const newest = new Date(Math.max(...ts.map(d => d.getTime())));
-        if (!lastTerminalAt || newest > lastTerminalAt) lastTerminalAt = newest;
-      }
     } catch (_) { /* treat as no open orders */ }
   }
-
-  // Auto-hide chip + drawer 60s after last terminal unless the operator
-  // is currently hovering/has clicked (chaseInteracted). The interaction
-  // flag resets itself 60s after last interaction so idle eventually wins.
-  let _chaseHideTimer = /** @type {ReturnType<typeof setTimeout>|null} */ (null);
-  function _onChaseInteract() {
-    chaseInteracted = true;
-    if (_chaseHideTimer) clearTimeout(_chaseHideTimer);
-    _chaseHideTimer = setTimeout(() => { chaseInteracted = false; }, 60_000);
-  }
-
-  // Gate on ChaseCard's own `activeCount` (the chase engine's real
-  // /chases/active rows) rather than `openOrderIds` (the events feed) —
-  // the displayed number (template below) also reads `_chaseCardActiveCount`,
-  // so visibility and the number can never disagree. `lastTerminalAt`'s
-  // 60s post-terminal linger (from the events feed) is kept as a
-  // supplementary "just finished" affordance.
-  const showChaseChip = $derived.by(() => {
-    if (_chaseCardActiveCount > 0) return true;
-    if (!lastTerminalAt) return false;
-    if (chaseInteracted) return true;
-    const age = Date.now() - lastTerminalAt.getTime();
-    return age < 60_000;
-  });
 
   // ── Polling pipeline ───────────────────────────────────────────────
   // The state vars are declared at the top of the script so the
@@ -1331,21 +1266,11 @@
           </button>
         {/if}
 
-        <!-- ── Chase chip ─────────────────────────────────────────── -->
-        {#if $authStore.user && showChaseChip}
-          <button
-            class="chase-chip"
-            onclick={() => { drawerOpen = !drawerOpen; _onChaseInteract(); }}
-            onmouseenter={() => { _onChaseInteract(); }}
-            title={openSymbols.length ? `Chasing: ${openSymbols.join(', ')}` : 'Chase orders'}
-          >
-            <svg width="10" height="10" viewBox="0 0 20 20" fill="currentColor">
-              <path fill-rule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z" clip-rule="evenodd"/>
-            </svg>
-            <span>{_chaseCardActiveCount} chasing</span>
-            <span class="chase-chip-arrow">→</span>
-          </button>
-        {/if}
+        <!-- Chase chip removed (2026-10-23 relocation) — the chase
+             surface is now reached via long-press/right-click on the
+             per-page Order button (PageHeaderActions.svelte), not a
+             standalone header element. See chaseActiveCount/
+             chaseDrawerOpen in $lib/stores.js. -->
 
         <!-- DEMO badge — session-state indicator (anonymous-on-prod),
              not a mode setting, so it stays separate from the mode chip. -->
@@ -1469,20 +1394,8 @@
           </button>
         {/if}
 
-        {#if $authStore.user && showChaseChip}
-          <button
-            class="chase-chip"
-            onclick={() => { drawerOpen = !drawerOpen; _onChaseInteract(); }}
-            onmouseenter={() => { _onChaseInteract(); }}
-            title={openSymbols.length ? `Chasing: ${openSymbols.join(', ')}` : 'Chase orders'}
-          >
-            <svg width="10" height="10" viewBox="0 0 20 20" fill="currentColor">
-              <path fill-rule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z" clip-rule="evenodd"/>
-            </svg>
-            <span>{_chaseCardActiveCount}</span>
-            <span class="chase-chip-arrow">→</span>
-          </button>
-        {/if}
+        <!-- Chase chip removed (2026-10-23 relocation) — see desktop
+             comment above; mobile mirror is gone too, same reasoning. -->
         {#if $authStore.user}
           <span class="algo-user-pill">
             {$authStore.user.username ?? ''}
@@ -1572,30 +1485,34 @@
          reached only from an OrderCard click).
 
          ChaseCard mounts unconditionally (gated on `$authStore.user`
-         only, not on `drawerOpen`) so its `activeCount`/`loadError`
-         bindables stay live for the chip's own count/visibility even
+         only, not on `$chaseDrawerOpen`) so its `activeCount`/`loadError`
+         bindables stay live for the Order button's indicator dot even
          while the drawer is closed — same mounted-but-hidden convention
          as OrderTicket's Chain-tab pairing (CLAUDE.md "Order Ticket /
          Bracket-template re-wire"). Visibility toggles via the
          `chd-drawer-open` CSS class (opacity/visibility/transform), never
          `{#if}` — so this ChaseCard instance never remounts/re-polls when
-         the drawer opens or closes. `headless={!drawerOpen}` additionally
-         suppresses ChaseCard's own template render while the drawer is
-         closed, so there is never more than one visible `.cc-root` from
-         this instance at a time (pages that embed their own separate
-         ChaseCard — /orders, the order-ticket Chase tab, the Activity
-         modal — are untouched and may render alongside this one). -->
+         the drawer opens or closes. `headless={!$chaseDrawerOpen}`
+         additionally suppresses ChaseCard's own template render while the
+         drawer is closed, so there is never more than one visible
+         `.cc-root` from this instance at a time (pages that embed their
+         own separate ChaseCard — /orders, the order-ticket Chase tab, the
+         Activity modal — are untouched and may render alongside this
+         one). Opened by a long-press/right-click gesture on the per-page
+         Order button (PageHeaderActions.svelte) via the shared
+         `chaseDrawerOpen` store ($lib/stores.js) — see that file's own
+         comment for why this is a store, not a prop. -->
     {#if $authStore.user}
-      {#if drawerOpen}
+      {#if $chaseDrawerOpen}
         <div class="chd-backdrop" role="presentation"
-             onclick={() => { drawerOpen = false; }}></div>
+             onclick={() => { chaseDrawerOpen.set(false); }}></div>
       {/if}
-      <div class="chd-drawer" class:chd-drawer-open={drawerOpen}
+      <div class="chd-drawer" class:chd-drawer-open={$chaseDrawerOpen}
            role="dialog" aria-modal="true" aria-label="Active chases"
-           aria-hidden={!drawerOpen}>
+           aria-hidden={!$chaseDrawerOpen}>
         <div class="chd-header">
           <span class="chd-title">Active Chases</span>
-          <button class="chd-close" onclick={() => { drawerOpen = false; }} aria-label="Close">
+          <button class="chd-close" onclick={() => { chaseDrawerOpen.set(false); }} aria-label="Close">
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
               <path d="M2 2l10 10M12 2L2 12" stroke="currentColor" stroke-width="1.8"
                     stroke-linecap="round"/>
@@ -1608,7 +1525,7 @@
           {:else if _chaseCardActiveCount === 0}
             <div class="chd-empty">No active chases</div>
           {/if}
-          <ChaseCard compact={false} headless={!drawerOpen}
+          <ChaseCard compact={false} headless={!$chaseDrawerOpen}
                      bind:activeCount={_chaseCardActiveCount}
                      bind:loadError={_chaseCardLoadError} />
         </div>
@@ -2767,7 +2684,7 @@
   /* ── Broker connectivity chip (slice AX) ─────────────────────────
      Ambient navbar chip showing N/M brokers loaded. Green = all
      loaded, amber = partial, red = none, slate = API unreachable.
-     Same pill shape as .chase-chip; click → /admin/health.
+     Click → /admin/health.
      Operator: "ambient broker-status indicator" — IBKR equivalent. */
   .broker-chip {
     display: inline-flex;
@@ -2816,37 +2733,12 @@
   }
   @media (prefers-reduced-motion: reduce) {
     .broker-chip-down { animation: none; }
-    .chase-chip  { animation: none; }
     .persist-chip { animation: none; }
   }
 
-  /* ── Chase chip ──────────────────────────────────────────────────────── */
-  .chase-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.3rem;
-    height: 1.4rem;
-    padding: 0 0.55rem;
-    border-radius: 9999px;
-    font-family: var(--font-numeric);
-    font-size: var(--fs-sm);
-    font-weight: 700;
-    letter-spacing: 0.07em;
-    color: var(--c-action);
-    background: rgba(251, 191, 36, 0.12);
-    border: 1px solid rgba(251, 191, 36, 0.5);
-    cursor: pointer;
-    white-space: nowrap;
-    outline: none;
-    margin-right: 0.3rem;
-    transition: background-color 0.08s, filter 0.08s;
-    animation: algo-mode-dot 2s ease-in-out infinite;
-  }
-  .chase-chip:hover {
-    background: var(--algo-amber-bg-strong);
-    filter: brightness(1.1);
-  }
-  .chase-chip-arrow { opacity: 0.7; }
+  /* Chase chip removed (2026-10-23 relocation) — trigger moved to a
+     long-press/right-click gesture on the per-page Order button
+     (PageHeaderActions.svelte); its indicator dot + CSS now live there. */
 
   /* ── Chase live-status drawer (2026-10-23) ──────────────────────────
      Right-edge slide-in panel wrapping a single persistent ChaseCard
@@ -2950,8 +2842,8 @@
   }
 
   /* ── Persistence bypass chip (slice AK) ───────────────────────────
-     Same chip-shape as .chase-chip but with mode-specific colours so
-     SOFT (amber, recoverable) and HARD (red, includes ticker recycle)
+     Pill-shaped chip with mode-specific colours so SOFT (amber,
+     recoverable) and HARD (red, includes ticker recycle)
      read at a glance. Click flips back to OFF — the operator's
      "I forgot I was in bypass" recovery affordance. */
   .persist-chip {

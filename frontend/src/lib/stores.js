@@ -1106,6 +1106,25 @@ export function closeOrderTicketModal() {
  */
 export const orderModalFocusPing = writable(0);
 
+// ── Chase drawer control ─────────────────────────────────────────────
+// Lets a per-page component (PageHeaderActions, rendered per-route, no
+// direct parent/child relationship to (algo)/+layout.svelte) read "is
+// anything actively chasing" and request the chase drawer to open,
+// without prop-drilling through every page. Mirrors the
+// activityModal/orderTicketModal cross-cutting-store pattern above.
+//
+// chaseActiveCount — mirrors the ONE persistent `<ChaseCard>` instance's
+//   own `activeCount` bindable (mounted unconditionally in
+//   (algo)/+layout.svelte so polling never stops); written by the
+//   layout, read by PageHeaderActions for the Order button's passive
+//   indicator dot.
+// chaseDrawerOpen  — the shared open/close flag for the layout's
+//   `.chd-drawer`; set true by the Order button's long-press/right-click
+//   gesture (PageHeaderActions.svelte), read + reset to false by the
+//   layout (close button, backdrop click, Escape via layerStack).
+export const chaseActiveCount = writable(0);
+export const chaseDrawerOpen  = writable(false);
+
 // ── Chart modal control ──────────────────────────────────────────────
 // Mounted once in (algo)/+layout.svelte (same as ActivityLogModal).
 // `k` keyboard shortcut + PageHeaderActions chart button both call
