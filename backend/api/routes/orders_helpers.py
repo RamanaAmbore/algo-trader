@@ -291,6 +291,24 @@ def _live_chase_config(aggressiveness: str, intent: str | None = None,
 _LIVE_CHASE_CONFIRM_TIMEOUT_S = 15.0
 
 
+class ChaseConfirmTimeout(RuntimeError):
+    """2026-10-23 audit fix (O8) — raised by `_start_live_chase` ONLY on
+    its client-side `asyncio.wait_for` confirm-timeout path, distinct
+    from a genuine broker-raised rejection. `_ch_seed_pre_fill_net_qty`
+    (invalidates the raw positions cache + fetches positions across ALL
+    accounts) runs INSIDE this confirm window before the first
+    depth/placement call — a slow broker response (3+ accounts) can
+    exceed the budget even though the order may still land (and get
+    killed via the abandonment path below), which is NOT a rejection.
+    `orders_place.py:_ticket_handle_live_place_error` checks this
+    specific type to skip `_record_rejection`/`_maybe_send_breaker_alert`
+    for this case, so the circuit breaker doesn't false-trip on a
+    client-side timeout. A plain `RuntimeError` subclass so any
+    `except RuntimeError` / `except Exception` handler elsewhere that
+    doesn't care about the distinction keeps working unchanged.
+    """
+
+
 async def _start_live_chase(account: str, symbol: str, exchange: str,
                             transaction_type: str, quantity: int,
                             aggressiveness: str,
@@ -475,7 +493,7 @@ async def _start_live_chase(account: str, symbol: str, exchange: str,
         # above, and surface a descriptive error instead of a blank
         # TimeoutError.
         _abandoned["v"] = True
-        raise RuntimeError(
+        raise ChaseConfirmTimeout(
             f"chase confirm timed out after {_LIVE_CHASE_CONFIRM_TIMEOUT_S}s "
             f"waiting for the first order_placed event — chase task left "
             f"running; any late placement will be killed"

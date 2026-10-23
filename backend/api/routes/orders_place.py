@@ -689,9 +689,14 @@ def _opp_build_attach_entries(
             # T14 fix — SL leg of a scale-ladder-plus-SL group; carries
             # the full list of TP-rung ids it must be mutually watched
             # against (see _opl_build_group_sibling_map's docstring).
+            # parent_symbol (follow-up fix) — the watcher's position-
+            # confirmation gate (_oco_group_position_is_flat) needs the
+            # symbol to query the real broker position, not just the
+            # account/exchange this branch already carried.
             entry["sibling_ids"]     = _group_tps
             entry["parent_account"]  = str(result.plan.parent_account)
             entry["parent_exchange"] = str(result.plan.parent_exchange)
+            entry["parent_symbol"]   = str(result.plan.parent_symbol)
         if spec.sl_trail_pct is not None and spec.trigger_values:
             _trigger_values = list(spec.trigger_values)
             _is_two_leg = (str(spec.trigger_type) == "two-leg"
@@ -1994,12 +1999,21 @@ async def _ticket_handle_live_place_error(
     from backend.api.algo.actions import diagnose_live_failure
     from backend.api.routes.orders_helpers import (
         _REJECTION_THRESHOLD, _record_rejection, _maybe_send_breaker_alert,
-        _broker_for,
+        _broker_for, ChaseConfirmTimeout,
     )
     from backend.shared.helpers.utils import mask_account
 
     masked_acct = mask_account(account)
     kite_msg = str(e)
+    # 2026-10-23 audit fix (O8) — a ChaseConfirmTimeout is a CLIENT-SIDE
+    # confirm-window timeout (`_start_live_chase`'s `asyncio.wait_for`),
+    # not a genuine broker rejection — the order may have actually
+    # landed and been killed via the abandonment path. Recording it
+    # against the circuit breaker risked a false trip under slow-broker
+    # conditions (e.g. a multi-account pre-fill position fetch). Skip
+    # the breaker bookkeeping for this exception type only; everything
+    # else below (diagnosis, logging, alert, HTTPException) is unchanged.
+    _is_confirm_timeout = isinstance(e, ChaseConfirmTimeout)
     diag_order = {
         "exchange": data.exchange or "NFO",
         "symbol":   sym,
@@ -2023,10 +2037,11 @@ async def _ticket_handle_live_place_error(
     )
     _opl_send_failure_alert(account, sym, data, side, qty, kite_msg)
     _opl_record_manual_failure(account, sym, data, side, qty, kite_msg)
-    _new_count = _record_rejection(bk_key)
-    if _new_count >= _REJECTION_THRESHOLD:
-        _maybe_send_breaker_alert(bk_key, account, sym, side, qty,
-                                   kite_msg[:200])
+    if not _is_confirm_timeout:
+        _new_count = _record_rejection(bk_key)
+        if _new_count >= _REJECTION_THRESHOLD:
+            _maybe_send_breaker_alert(bk_key, account, sym, side, qty,
+                                       kite_msg[:200])
     raise HTTPException(
         status_code=400,
         detail=f"{kite_msg} ({diag})"[:400],
