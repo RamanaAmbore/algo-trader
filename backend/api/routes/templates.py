@@ -110,6 +110,31 @@ def _validate_tp_order_type(value: str | None) -> None:
         )
 
 
+def _validate_wing_premium_pct(value: float | None) -> None:
+    """T19 fix (2026-10-23) — mirrors the EXACT rejection rule
+    `template_attach.py:_parse_template_overrides` already applies at
+    FILL time (`wing_premium_pct is not None and wing_premium_pct <= 0`
+    → `HTTPException(422)`). Before this fix, a template with
+    `wing_premium_pct<=0` saved successfully through CRUD, and every
+    SUBSEQUENT fill against it raised that 422 deep inside the fill
+    path, caught by a generic catch-all and logged at WARNING with no
+    alert and no `template_attach_failed` event — the template
+    silently unarmed forever with no operator signal. Catching it here
+    at save time means a bad value is rejected ONCE, loudly, instead of
+    on every fill thereafter.
+
+    `tp_pct`/`sl_pct` are deliberately NOT validated here: the resolver
+    only SOFT-degrades those (drops to None + a plan note, never
+    raises) — mirroring "exactly the set of fields it rejects" means
+    only `wing_premium_pct`.
+    """
+    if value is not None and value <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail="wing_premium_pct must be > 0",
+        )
+
+
 def _validate_tp_scale_entry(entry, idx: int) -> float:
     """Validate one tp_scales_json entry dict; return its close_pct on success.
 
@@ -296,6 +321,7 @@ class OrderTemplateController(Controller):
             _validate_tp_order_type(data.tp_order_type)
             _validate_tp_scales_json(data.tp_scales_json)
             _validate_sl_trail_pct(data.sl_trail_pct)
+            _validate_wing_premium_pct(data.wing_premium_pct)
             if data.is_default:
                 await _demote_existing_default(s, data.applies_to, exclude_id=None)
             row = OrderTemplate(
@@ -357,6 +383,8 @@ class OrderTemplateController(Controller):
                 _validate_tp_scales_json(data.tp_scales_json)
             if data.sl_trail_pct is not None:
                 _validate_sl_trail_pct(data.sl_trail_pct)
+            if data.wing_premium_pct is not None:
+                _validate_wing_premium_pct(data.wing_premium_pct)
             # One-default-per-scope enforcement. If the operator is
             # flipping is_default on (or moving this row into a new
             # scope while is_default stays on), demote any existing

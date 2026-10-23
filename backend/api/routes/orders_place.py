@@ -978,6 +978,45 @@ async def _opp_flush_pending_persist(parent_row_id: int) -> bool:
     return True
 
 
+async def _opp_handle_fill_path_exception(
+    exc: Exception, parent_row_id: int, parent_symbol: str,
+    parent_account: str, agent_id,
+) -> None:
+    """T19 defense-in-depth fix (2026-10-23) — `_fire_template_attach_
+    on_fill`'s generic except block used to swallow EVERY exception
+    (including a config-validation `HTTPException` raised deep inside
+    `apply_template_to_order` / `_parse_template_overrides`, e.g. a
+    `wing_premium_pct<=0` template saved before the T19 CRUD-time
+    validator existed — `templates.py:_validate_wing_premium_pct`) at
+    WARNING with no alert and no `template_attach_failed` event. A fill
+    against an already-saved bad template silently unarmed forever
+    with no operator signal.
+
+    Fires the real `template_attach_failed` alert specifically for an
+    `HTTPException` — every other exception type keeps its existing
+    silent-WARNING-only behaviour (unchanged scope; this function is
+    additive, not a behaviour change for non-HTTPException failures).
+
+    Safe for every fill-triggered caller (chase terminal, postback,
+    reconcile) — they all route through this ONE function, which is
+    NEVER invoked with `apply_path="preview"` (hardcoded to "live"
+    below), so a bad value typed into a ticket/template PREVIEW still
+    surfaces as a plain 422 to the operator, not an urgent alert.
+    """
+    logger.warning(
+        f"[TPL-ATTACH] _fire_template_attach_on_fill failed "
+        f"for parent #{parent_row_id}: {exc}"
+    )
+    from litestar.exceptions import HTTPException as _LitestarHTTPException
+    if isinstance(exc, _LitestarHTTPException):
+        from backend.api.algo.template_attach import _fire_attach_fail_alert
+        _fire_attach_fail_alert(
+            order_id=parent_row_id, symbol=parent_symbol, account=parent_account,
+            errors=[f"invalid template config: {exc.detail}"],
+            agent_id=agent_id,
+        )
+
+
 async def _fire_template_attach_on_fill(
     *,
     parent_row_id: int,
@@ -1090,12 +1129,14 @@ async def _fire_template_attach_on_fill(
         if parent_row_id in _TPL_ATTACH_PERSIST_PENDING:
             await _opp_flush_pending_persist(parent_row_id)
             return None
+        _row_agent_id = None
         try:
             from backend.api.algo.template_attach import apply_template_to_order
 
             row_info = await _opp_load_row_for_attach(parent_row_id)
             if row_info is None:
                 return None
+            _row_agent_id = row_info.get("agent_id")
 
             result = await apply_template_to_order(
                 template_id=template_id,
@@ -1166,9 +1207,8 @@ async def _fire_template_attach_on_fill(
             return result
 
         except Exception as _e:
-            logger.warning(
-                f"[TPL-ATTACH] _fire_template_attach_on_fill failed "
-                f"for parent #{parent_row_id}: {_e}"
+            await _opp_handle_fill_path_exception(
+                _e, parent_row_id, parent_symbol, parent_account, _row_agent_id,
             )
             return None
 
