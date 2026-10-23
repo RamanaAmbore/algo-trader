@@ -11,7 +11,7 @@
  *   loadPositions (cc=76), loadStrategy (cc=50), candidatePositions (cc=43).
  */
 
-import { todayIST } from '$lib/dateFormat.js';
+import { todayIST, tradingSessionDateIST } from '$lib/dateFormat.js';
 import { buildAcctMatcher, isFOSymbol } from '$lib/data/derivativesMath.js';
 import { buildPositionRowFromBroker, splitClosedReopened, isExpiredHeldContract, expiredLegFrozenPnl, expiryPnlWithRealised } from '$lib/data/expiryPnl.js';
 import { splitPairedLots } from '$lib/data/lotPairSplit.js';
@@ -387,7 +387,17 @@ export function buildCandidatePositions({
     // pipeline has no such exclusion — kept showing 17 legs / real P&L for
     // the same underlying). See buildCleanLegs below for why this row is
     // still excluded from the /strategy-analytics REQUEST payload only.
-    const isUnresolvable = qty !== 0 && (!_inst || (_inst.x && _inst.x < todayIST()));
+    // 2026-10-23 fix (3D): compare against the 08:00 IST trading-session
+    // boundary (tradingSessionDateIST), not the bare midnight calendar
+    // date (todayIST) — matching expiryPnl.js's isExpiredHeldContract
+    // exactly. A bare-midnight compare here reproduced the GOLDM
+    // "flat 0 curve" bug for 8 hours every night after an expiry day: a
+    // leg genuinely still mid-freeze-window (23:31→08:00 IST) was tagged
+    // `_expired: true` hours before the Legs TOTAL row / NavStrip (which
+    // already used the correct boundary) made the same call, excluding it
+    // from the chart's Exp P&L sum and offset calc while those two kept
+    // showing the right mark-to-spot value.
+    const isUnresolvable = qty !== 0 && (!_inst || (_inst.x && _inst.x < tradingSessionDateIST()));
     // 2026-09 audit fix (Defect 2 follow-up): `_expired` above stays the
     // BROAD, cache-resolvability signal — it ONLY gates the
     // /strategy-analytics REQUEST payload exclusion below (buildCleanLegs),
@@ -582,7 +592,13 @@ export function buildCleanLegs(legs, getInstrument) {
         expiry,
       };
     })
-    .filter(l => l.symbol && l.qty && !(l.expiry && l.expiry < todayIST()));
+    // 2026-10-23 fix (3D): same tradingSessionDateIST() boundary swap as
+    // isUnresolvable above — this safety-net filter must not drop a leg
+    // during the 00:00-08:00 IST overnight window following its own
+    // expiry day (the backend's /strategy-analytics T-to-expiry math
+    // floors at 0 for an at-or-past-expiry leg, so including it here is
+    // safe — see pageLoad_sessionBoundary.test.js for the regression).
+    .filter(l => l.symbol && l.qty && !(l.expiry && l.expiry < tradingSessionDateIST()));
 }
 
 /**
