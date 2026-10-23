@@ -331,7 +331,11 @@ async def is_mcx_future_still_current(
     the FUTURE-selection side instead: a contract stays current through
     its own entire expiry day and the whole closed overnight window
     (23:31→08:00 IST), rolling only once the next trading day's 08:00
-    IST open has passed.
+    IST open has passed. `is_live_row_past_freeze_window` now also
+    resolves the real per-contract expiry (via `_mcx_future_real_expiry`,
+    2026-10-23) when its own symbol-text approximation would otherwise
+    drop a still-live MCX base-metal future — see that function's
+    docstring.
 
     MCX-only by design — operator: "virtual root anyway will not app[l]y
     to non-mcx." Callers for other exchanges keep their existing plain
@@ -354,6 +358,68 @@ async def is_mcx_future_still_current(
         return True
     boundary = await next_market_open_ist(expiry, exchange="MCX")
     return now_ist < boundary
+
+
+async def _mcx_future_real_expiry(symbol: str) -> Optional[str]:
+    """Look up the REAL listed expiry (YYYY-MM-DD) for an MCX futures
+    contract from the instruments cache, instead of
+    `parse_tradingsymbol`'s FUT-branch approximation
+    (`_last_thursday(year, month)`).
+
+    2026-10-23 incident: that approximation is correct for CRUDEOIL/
+    GOLDM/SILVER/NATURALGAS (whose real expiry falls EARLIER in the
+    month than, or on, the approximated last-Thursday — erring in the
+    fail-safe direction, keeping a row alive too long rather than
+    dropping it early) but WRONG for base-metal contracts — COPPER/
+    ZINC/LEAD/ALUMINIUM/NICKEL and their mini variants — whose real MCX
+    expiry is commonly the last business day of the month, which can
+    fall on a Friday AFTER the approximated last Thursday. On such a
+    contract's real expiry day, `is_live_row_past_freeze_window`'s
+    symbol-text-only approximation believed the contract had already
+    expired the day before, and dropped a genuinely still-tradeable
+    position from every live-fetch-path consumer (`/api/positions`,
+    account/symbol rollups, NavStrip, the derivatives Legs grid,
+    MarketPulse, the LKG cache) for its entire real expiry day.
+
+    Reuses the exact instruments-cache read already established by
+    `symbol_resolver.list_active_futures` / `kite.py:get_lot_size` — the
+    instruments cache (populated straight from Kite's own per-contract
+    `expiry` field) is the only reliable source for a commodity's real
+    expiry; there is no single calendar rule that fits every MCX
+    commodity (see `derivatives.parse_tradingsymbol`'s own comment on
+    this).
+
+    Returns None (never raises) when the instruments cache is cold or
+    no matching MCX FUT row is found for *symbol* — e.g. Kite has
+    already purged the contract from the daily dump once it's genuinely
+    expired. Callers must fall back to the existing approximation on
+    None, matching this module's fail-safe convention elsewhere
+    (under-protecting one edge case is far safer than corrupting the
+    common no-I/O path on every other poll).
+    """
+    try:
+        from backend.api.cache import get_or_fetch
+        from backend.api.routes.instruments import _fetch_instruments, _TTL_SECONDS
+        resp = await get_or_fetch(
+            "instruments", _fetch_instruments, ttl_seconds=_TTL_SECONDS
+        )
+        items = resp.items if resp else []
+    except Exception as exc:
+        logger.warning(
+            "_mcx_future_real_expiry: instruments cache lookup failed for "
+            "%s — falling back to symbol-text approximation: %s", symbol, exc,
+        )
+        return None
+    sym_u = (symbol or "").upper()
+    for inst in items:
+        if (
+            (inst.e or "").upper() == "MCX"
+            and inst.t == "FUT"
+            and (inst.s or "").upper() == sym_u
+            and inst.x
+        ):
+            return inst.x
+    return None
 
 
 async def is_live_row_past_freeze_window(
@@ -411,6 +477,17 @@ async def is_live_row_past_freeze_window(
     expiry: date = parsed["expiry"]
     if expiry >= now_ist.date():
         return False
+    # Only reached when the (possibly-approximate) expiry already looks
+    # like it's in the past — i.e. only on the branch that can actually
+    # drop a row. Every currently-valid contract keeps the no-I/O fast
+    # path above unchanged. For an MCX future specifically, the
+    # approximation above can be wrong (see `_mcx_future_real_expiry`'s
+    # docstring) — re-check against the instruments cache's real expiry
+    # before trusting the approximate one.
+    if parsed.get("kind") == "fut" and (exchange or "").upper() == "MCX":
+        real_x = await _mcx_future_real_expiry(symbol)
+        if real_x is not None:
+            return not await is_mcx_future_still_current(real_x, now_ist)
     boundary = await next_market_open_ist(expiry, exchange=exchange or "MCX")
     return now_ist >= boundary
 

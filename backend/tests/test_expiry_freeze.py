@@ -313,3 +313,199 @@ def test_live_row_empty_marker_symbol_always_false():
         is_live_row_past_freeze_window(EMPTY_MARKER_SYMBOL, "MCX", now_ist)
     )
     assert result is False
+
+
+# ---------------------------------------------------------------------------
+# MCX base-metal real-expiry fix (2026-10-23, derivatives audit P1):
+# `parse_tradingsymbol`'s FUT branch approximates every MCX future's expiry
+# as the last Thursday of the contract month — correct for CRUDEOIL/GOLDM/
+# SILVER/NATURALGAS but WRONG for base metals (COPPER/ZINC/LEAD/ALUMINIUM/
+# NICKEL), whose real MCX expiry is commonly the last business day of the
+# month — which can fall on a Friday AFTER the approximated last Thursday.
+#
+# Real scenario used throughout: COPPER26OCTFUT.
+#   Approximated expiry (parse_tradingsymbol, last Thursday of Oct 2026):
+#       2026-10-29 (a Thursday)
+#   Real listed expiry (the instruments cache, last business day of Oct):
+#       2026-10-30 (a Friday)
+# ---------------------------------------------------------------------------
+
+_COPPER_SYMBOL = "COPPER26OCTFUT"
+_COPPER_APPROX_EXPIRY = date(2026, 10, 29)   # parse_tradingsymbol's guess
+_COPPER_REAL_EXPIRY = "2026-10-30"           # instruments cache (inst.x)
+
+
+def _patch_instruments_cache(items):
+    """Patch the instruments cache exactly like
+    `symbol_resolver.list_active_futures`'s own tests do — at
+    `backend.api.cache.get_or_fetch`, the call `_mcx_future_real_expiry`
+    makes."""
+    fake_resp = MagicMock()
+    fake_resp.items = items
+
+    async def _fake_gor(*_a, **_kw):
+        return fake_resp
+
+    return patch("backend.api.cache.get_or_fetch", new=AsyncMock(side_effect=_fake_gor))
+
+
+def _make_inst(s, e, t, x):
+    return MagicMock(s=s, e=e, t=t, x=x)
+
+
+def test_mcx_future_real_expiry_cache_hit_returns_real_expiry():
+    """A matching MCX FUT row in the instruments cache returns its real
+    `x` (expiry) field verbatim, not the symbol-text approximation."""
+    from backend.api.algo.expiry_freeze import _mcx_future_real_expiry
+
+    items = [_make_inst(_COPPER_SYMBOL, "MCX", "FUT", _COPPER_REAL_EXPIRY)]
+    with _patch_instruments_cache(items):
+        result = asyncio.run(_mcx_future_real_expiry(_COPPER_SYMBOL))
+    assert result == _COPPER_REAL_EXPIRY
+
+
+def test_mcx_future_real_expiry_is_case_insensitive_and_ignores_other_rows():
+    from backend.api.algo.expiry_freeze import _mcx_future_real_expiry
+
+    items = [
+        _make_inst("CRUDEOIL26OCTFUT", "MCX", "FUT", "2026-10-19"),
+        _make_inst(_COPPER_SYMBOL.lower(), "MCX", "FUT", _COPPER_REAL_EXPIRY),
+        _make_inst(_COPPER_SYMBOL, "NFO", "FUT", "2099-01-01"),  # wrong exchange
+        _make_inst(_COPPER_SYMBOL, "MCX", "CE", "2099-01-01"),   # wrong type
+    ]
+    with _patch_instruments_cache(items):
+        result = asyncio.run(_mcx_future_real_expiry(_COPPER_SYMBOL))
+    assert result == _COPPER_REAL_EXPIRY
+
+
+def test_mcx_future_real_expiry_cache_miss_returns_none():
+    """No matching row — e.g. Kite has already purged an expired
+    contract from the daily dump — returns None so callers fall back to
+    the symbol-text approximation."""
+    from backend.api.algo.expiry_freeze import _mcx_future_real_expiry
+
+    items = [_make_inst("CRUDEOIL26OCTFUT", "MCX", "FUT", "2026-10-19")]
+    with _patch_instruments_cache(items):
+        result = asyncio.run(_mcx_future_real_expiry(_COPPER_SYMBOL))
+    assert result is None
+
+
+def test_mcx_future_real_expiry_cache_error_returns_none_not_raise():
+    from backend.api.algo.expiry_freeze import _mcx_future_real_expiry
+
+    with patch("backend.api.cache.get_or_fetch", new=AsyncMock(side_effect=RuntimeError("cold"))):
+        result = asyncio.run(_mcx_future_real_expiry(_COPPER_SYMBOL))
+    assert result is None
+
+
+def test_live_row_copper_on_its_real_expiry_day_not_past_freeze():
+    """THE regression this cluster fixes. 'now' is 2026-10-30 14:00 IST —
+    COPPER's REAL expiry day (a Friday, after the approximated last-
+    Thursday of 2026-10-29). Pre-fix, `is_live_row_past_freeze_window`
+    only ever consulted the approximate 2026-10-29 expiry: since that
+    date is BEFORE 'now's date (2026-10-30), it incorrectly concluded the
+    contract had already expired the day before, computed a freeze
+    boundary of 2026-10-30 08:00 IST off that wrong date, and classified
+    this still-genuinely-tradeable position as past its freeze window —
+    i.e. returned True (drop the row) on its own real expiry day, with
+    the contract still open for the entire session. Confirmed to fail
+    against the pre-fix code (which never consulted the instruments
+    cache at all). Post-fix: the real listed expiry (2026-10-30) is
+    resolved from the instruments cache, `expiry >= now_ist.date()` is
+    True, and the row must be kept live (False)."""
+    from backend.api.algo.expiry_freeze import is_live_row_past_freeze_window
+
+    now_ist = datetime(2026, 10, 30, 14, 0, tzinfo=_IST)
+    items = [_make_inst(_COPPER_SYMBOL, "MCX", "FUT", _COPPER_REAL_EXPIRY)]
+    with _patch_instruments_cache(items):
+        result = asyncio.run(
+            is_live_row_past_freeze_window(_COPPER_SYMBOL, "MCX", now_ist)
+        )
+    assert result is False, (
+        "COPPER26OCTFUT on its own REAL expiry day (2026-10-30) must stay "
+        "live, not be dropped because the symbol-text approximation "
+        "(last Thursday, 2026-10-29) thinks it already expired"
+    )
+
+
+def test_live_row_copper_after_real_expiry_and_past_boundary_is_dropped():
+    """Negative control / correctness check the other way: once COPPER's
+    REAL expiry (2026-10-30, a Friday) has genuinely passed AND the next
+    market-open 08:00 IST boundary (Monday 2026-11-02, skipping the
+    weekend) has elapsed, the row must still be correctly dropped — the
+    fix must not accidentally make every MCX future immortal."""
+    from backend.api.algo.expiry_freeze import is_live_row_past_freeze_window
+
+    now_ist = datetime(2026, 11, 2, 8, 0, 1, tzinfo=_IST)
+    items = [_make_inst(_COPPER_SYMBOL, "MCX", "FUT", _COPPER_REAL_EXPIRY)]
+    with _patch_instruments_cache(items), _patch_holidays(set()), _patch_no_special_sessions():
+        result = asyncio.run(
+            is_live_row_past_freeze_window(_COPPER_SYMBOL, "MCX", now_ist)
+        )
+    assert result is True
+
+
+def test_live_row_copper_still_within_boundary_after_real_expiry_not_dropped():
+    """Same real-expired contract, but 'now' is still inside the freeze
+    window (Saturday, before Monday's 08:00 open) — must not be dropped
+    yet, mirroring the existing GOLDM weekend-freeze behaviour exactly,
+    just keyed off the REAL expiry instead of the approximation."""
+    from backend.api.algo.expiry_freeze import is_live_row_past_freeze_window
+
+    now_ist = datetime(2026, 10, 31, 12, 0, tzinfo=_IST)  # Saturday
+    items = [_make_inst(_COPPER_SYMBOL, "MCX", "FUT", _COPPER_REAL_EXPIRY)]
+    with _patch_instruments_cache(items), _patch_holidays(set()), _patch_no_special_sessions():
+        result = asyncio.run(
+            is_live_row_past_freeze_window(_COPPER_SYMBOL, "MCX", now_ist)
+        )
+    assert result is False
+
+
+def test_live_row_copper_cache_miss_falls_back_to_approximation():
+    """Documented residual: when the instruments cache has no match at
+    all (e.g. Kite has purged the now-truly-expired contract), the
+    function falls back to the pre-existing symbol-text approximation
+    rather than failing — same fail-safe posture as every other branch
+    in this module. On the approximated boundary (Monday 2026-11-02
+    08:00 IST, derived from the WRONG 2026-10-29 expiry) this still
+    returns True, identical to pre-fix behaviour — the fix only changes
+    outcomes when the real expiry is actually resolvable."""
+    from backend.api.algo.expiry_freeze import is_live_row_past_freeze_window
+
+    now_ist = datetime(2026, 11, 2, 8, 0, 1, tzinfo=_IST)
+    with _patch_instruments_cache([]), _patch_holidays(set()), _patch_no_special_sessions():
+        result = asyncio.run(
+            is_live_row_past_freeze_window(_COPPER_SYMBOL, "MCX", now_ist)
+        )
+    assert result is True
+
+
+def test_live_row_non_mcx_future_does_not_consult_instruments_cache():
+    """A non-MCX future (NFO/CDS) must never trigger the instruments-cache
+    lookup — scope is tight to MCX only, matching
+    `is_mcx_future_still_current`'s own MCX-only design."""
+    from backend.api.algo.expiry_freeze import is_live_row_past_freeze_window
+
+    now_ist = datetime(2026, 7, 1, 10, 0, tzinfo=_IST)
+    with patch("backend.api.cache.get_or_fetch") as mock_gor, \
+         _patch_holidays(set()), _patch_no_special_sessions():
+        asyncio.run(
+            is_live_row_past_freeze_window("USDINR26JUNFUT", "CDS", now_ist)
+        )
+    mock_gor.assert_not_called()
+
+
+def test_live_row_crudeoil_future_unaffected_by_fix_when_approximation_matches():
+    """CRUDEOIL/GOLDM/SILVER/NATURALGAS are explicitly the contracts
+    where the last-Thursday approximation was already correct (or
+    conservatively early). When the instruments cache agrees with the
+    approximation, behaviour is identical to pre-fix — proving the fix
+    doesn't perturb the already-correct contracts."""
+    from backend.api.algo.expiry_freeze import is_live_row_past_freeze_window
+
+    sym = "CRUDEOIL26OCTFUT"
+    now_ist = datetime(2026, 10, 30, 14, 0, tzinfo=_IST)
+    items = [_make_inst(sym, "MCX", "FUT", "2026-10-29")]  # matches approximation
+    with _patch_instruments_cache(items), _patch_holidays(set()), _patch_no_special_sessions():
+        result = asyncio.run(is_live_row_past_freeze_window(sym, "MCX", now_ist))
+    assert result is True

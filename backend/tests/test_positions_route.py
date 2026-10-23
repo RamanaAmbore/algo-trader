@@ -5,6 +5,7 @@ import inspect
 import math
 from datetime import date, datetime, timezone, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import pytest
@@ -233,6 +234,95 @@ def test_fetch_route_calls_ticker_ltp_override():
         "_override_stale_ltp_from_ticker to correct stale broker REST data "
         "at poll time"
     )
+
+
+class TestFilterExpiredLiveRowsMcxBaseMetal:
+    """2026-10-23 derivatives-audit P1: `_filter_expired_live_rows` — the
+    REAL consumer wired into `_fetch()` at the call site documented in
+    the plan (positions.py, immediately after `pd.concat(per_acct)`,
+    before any backfill/patch/hygiene/summary step runs) — must not drop
+    an MCX base-metal future (COPPER/ZINC/LEAD/ALUMINIUM/NICKEL) on its
+    own REAL expiry day just because `parse_tradingsymbol`'s FUT-branch
+    approximation (last Thursday of the month) thinks it already expired
+    the day before.
+
+    This exercises the actual multi-row DataFrame filter function
+    `_fetch()` calls — not just the bare `is_live_row_past_freeze_window`
+    helper in isolation — including its `asyncio.gather` fan-out and its
+    (tradingsymbol, exchange) row-key matching, so a regression in the
+    wiring itself (not only in the underlying predicate) would also be
+    caught here. The account/symbol P&L rollups built later in `_fetch()`
+    (`_build_polars_summary` / `_build_polars_symbol_summary`, which feed
+    NavStrip's P slot and the derivatives Legs grid via the same
+    `/api/positions` response) only ever see whatever this function lets
+    through — a row dropped here can never resurface downstream.
+    """
+
+    @staticmethod
+    def _copper_frame():
+        import pandas as _pd
+        return _pd.DataFrame([
+            {
+                "account": "ZG0790", "tradingsymbol": "COPPER26OCTFUT",
+                "exchange": "MCX", "product": "NRML", "quantity": 1,
+                "average_price": 850.0, "last_price": 860.0, "pnl": 1000.0,
+            },
+        ])
+
+    @pytest.mark.asyncio
+    async def test_copper_row_kept_on_its_real_expiry_day(self):
+        from backend.api.routes.positions import _filter_expired_live_rows
+        from backend.tests.test_expiry_freeze import _make_inst  # reuse fixture builder
+
+        now_ist = datetime(2026, 10, 30, 14, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
+        raw = self._copper_frame()
+        items = [_make_inst("COPPER26OCTFUT", "MCX", "FUT", "2026-10-30")]
+        fake_resp = MagicMock()
+        fake_resp.items = items
+
+        async def _fake_gor(*_a, **_kw):
+            return fake_resp
+
+        with patch("backend.api.cache.get_or_fetch", new=AsyncMock(side_effect=_fake_gor)):
+            filtered = await _filter_expired_live_rows(raw, now_ist)
+
+        assert list(filtered["tradingsymbol"]) == ["COPPER26OCTFUT"], (
+            "COPPER26OCTFUT must survive _filter_expired_live_rows (the "
+            "real _fetch() call site) on its own REAL expiry day — "
+            "confirmed to fail pre-fix, where the row was dropped because "
+            "the symbol-text approximation (last Thursday) believed the "
+            "contract had already expired the day before"
+        )
+
+    @pytest.mark.asyncio
+    async def test_copper_row_dropped_once_genuinely_past_its_real_freeze_window(self):
+        """Negative control at the same call site: once the real expiry
+        plus the next-market-open boundary has genuinely elapsed, the row
+        must still be filtered out — the fix must not make every MCX
+        future immortal at this call site either."""
+        from backend.api.routes.positions import _filter_expired_live_rows
+        from backend.tests.test_expiry_freeze import (
+            _make_inst, _patch_holidays, _patch_no_special_sessions,
+        )
+
+        now_ist = datetime(2026, 11, 2, 8, 0, 1, tzinfo=ZoneInfo("Asia/Kolkata"))
+        raw = self._copper_frame()
+        items = [_make_inst("COPPER26OCTFUT", "MCX", "FUT", "2026-10-30")]
+        fake_resp = MagicMock()
+        fake_resp.items = items
+
+        async def _fake_gor(*_a, **_kw):
+            return fake_resp
+
+        with patch("backend.api.cache.get_or_fetch", new=AsyncMock(side_effect=_fake_gor)), \
+             _patch_holidays(set()), _patch_no_special_sessions():
+            filtered = await _filter_expired_live_rows(raw, now_ist)
+
+        assert filtered.empty, (
+            "Once COPPER26OCTFUT's real expiry + next-market-open boundary "
+            "has genuinely passed, the row must still be dropped at this "
+            "call site"
+        )
 
 
 class TestFetchForceRefreshThreading:
