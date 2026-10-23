@@ -1497,6 +1497,98 @@ def _rco_kill_force_resolve_stale(row, err_msg: str) -> None:
                   f"verify positions/order book manually")
 
 
+# Broker error text that genuinely means "this order no longer exists at
+# the broker" — distinct from e.g. a wrong `variety` parameter (AMO rows
+# use variety='amo', but `_rco_kill_live_mode` always sends 'regular' —
+# a pre-existing, separately-tracked gap, deferred per .claude/PLAN.md).
+# A variety mismatch raises a DIFFERENT kind of broker error than "not
+# found", so this list deliberately does NOT widen to match every
+# failure — the stale force-resolve path below must never fire for an
+# AMO order that's still genuinely resting live just because its cancel
+# call used the wrong variety.
+_RCO_KILL_GONE_HINTS = (
+    "not found", "does not exist", "no such order", "unable to find",
+    "invalid order id", "order id does not exist",
+)
+
+
+def _rco_kill_error_looks_gone(err_msg: str) -> bool:
+    """True when a broker cancel-failure message itself indicates the
+    order genuinely no longer exists — the narrowing condition for the
+    stale-CANCEL_FAILED force-resolve path (see `_rco_kill_force_resolve_stale`
+    and `_RCO_KILL_GONE_HINTS` above)."""
+    msg = (err_msg or "").lower()
+    return any(h in msg for h in _RCO_KILL_GONE_HINTS)
+
+
+async def _rco_kill_resolve_dispatch_race(s, row, row_id: int) -> "tuple[str, object, bool]":
+    """Dispatch the broker-level cancel for *row*; if it fails WHILE
+    chase is still actively running this exact row, re-resolve the
+    row's CURRENT broker_order_id and retry once against the fresh id
+    before giving up — closing the race where the operator's earlier
+    read and this dispatch straddle a chase cancel-and-replace cycle
+    that swapped in a brand-new broker_order_id.
+
+    Returns (err_msg, row_to_use, pending):
+      - `pending=True` means chase is STILL actively resolving this row
+        after the retry also failed — the caller must NOT write any
+        terminal status here. Chase's own loop (already aware of the
+        algo-order-level kill intent `kill_chase` marked earlier) owns
+        finalizing this row; a blind write here could stomp chase's
+        own correct terminal write with a stale derived guess.
+    """
+    from backend.api.algo.chase import is_chase_active, mark_killed
+
+    old_id = str(getattr(row, "broker_order_id", "") or "")
+    err_msg = await _rco_dispatch_kill(row)
+    if not err_msg or not is_chase_active(row_id):
+        return err_msg, row, False
+
+    # `row` is already identity-mapped in session `s` — a plain re-SELECT
+    # by primary key within the SAME session returns the SAME cached
+    # Python object (SQLAlchemy identity map), NOT a fresh read from the
+    # DB. `session.refresh()` is the correct idiom to pick up a change
+    # chase's OWN (different) session may have committed in the
+    # meantime — e.g. its cancel-and-replace writing a new
+    # broker_order_id via `_sync_algo_order_id`.
+    try:
+        await s.refresh(row)
+    except Exception:
+        return err_msg, row, False
+    new_id = str(getattr(row, "broker_order_id", "") or "")
+    if not new_id or new_id == old_id:
+        # Nothing changed — the failure wasn't caused by a
+        # broker_order_id swap, so a blind retry wouldn't help.
+        return err_msg, row, False
+
+    mark_killed(new_id)
+    retry_err = await _rco_dispatch_kill(row)
+    if not retry_err:
+        return "", row, False
+    if is_chase_active(row_id):
+        return retry_err, row, True
+    return retry_err, row, False
+
+
+async def _rco_kill_apply_status_without_stomping(s, row, err_msg: str) -> None:
+    """Re-check the row's CURRENT persisted status before writing a
+    derived CANCELLED/CANCEL_FAILED guess — a concurrent chase terminal
+    write (fire-and-forget, committed via a DIFFERENT session/
+    transaction) may have already resolved this row while this request
+    was dispatching the broker cancel above. Never overwrite an
+    already-final (FILLED/REJECTED) or already-CANCELLED status with a
+    stale derived one."""
+    from sqlalchemy import select as _sql_select3
+    from backend.api.models import AlgoOrder as _AlgoOrder3, ALGO_ORDER_FINAL_STATUSES
+    fresh_status = (await s.execute(
+        _sql_select3(_AlgoOrder3.status).where(_AlgoOrder3.id == row.id)
+    )).scalar_one_or_none()
+    if fresh_status in ALGO_ORDER_FINAL_STATUSES or fresh_status == "CANCELLED":
+        row.status = fresh_status
+        return
+    _rco_apply_kill_status(row, err_msg)
+
+
 
 
 def _rco_parse_preflight_identity(body: dict) -> tuple:
@@ -1939,12 +2031,26 @@ class OrdersController(Controller):
                 # two reads.
                 return _rco_kill_already_terminal_response(row.status)
 
-            err_msg = await _rco_dispatch_kill(row)
-            if err_msg and was_cancel_failed and _rco_kill_predates_current_session(row):
+            err_msg, row, pending = await _rco_kill_resolve_dispatch_race(s, row, _row_id)
+            if pending:
+                # Chase is still actively cancelling its own replacement
+                # order for this row right now — do not write a terminal
+                # status; chase's loop (aware of the kill intent marked
+                # above) owns finalizing it. Writing here could stomp a
+                # correct terminal write chase is about to make.
+                invalidate("orders")
+                return {
+                    "ok": False, "pending": True, "status": "OPEN",
+                    "err": "chase is still cancelling the replacement "
+                           "order — retry shortly",
+                }
+            if (err_msg and was_cancel_failed
+                    and _rco_kill_error_looks_gone(err_msg)
+                    and _rco_kill_predates_current_session(row)):
                 _rco_kill_force_resolve_stale(row, err_msg)
                 err_msg = ""
             else:
-                _rco_apply_kill_status(row, err_msg)
+                await _rco_kill_apply_status_without_stomping(s, row, err_msg)
             await s.commit()
             _final_status = row.status
 

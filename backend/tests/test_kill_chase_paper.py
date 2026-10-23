@@ -64,7 +64,13 @@ async def test_kill_chase_paper_calls_engine_cancel():
 
 @pytest.mark.asyncio
 async def test_kill_chase_paper_engine_not_tracking():
-    """When cancel_paper_order returns False, err is set but result is still ok."""
+    """When cancel_paper_order returns False, err is set and the response
+    is now `ok: false` (2026-10-23 Kill-lifecycle fix, cluster 1A/item 2)
+    — the row is stamped CANCEL_FAILED, and `ok` must reflect that the
+    kill did NOT actually succeed. This test previously pinned `ok: true`
+    with a non-null `err` — that mismatch (a response claiming success
+    while describing a failure) was exactly the bug being fixed; asserting
+    the old value here would just re-encode the bug as a test."""
     from litestar import Request
     from backend.api.routes.orders import OrdersController
 
@@ -89,8 +95,9 @@ async def test_kill_chase_paper_engine_not_tracking():
         ctrl = OrdersController.__new__(OrdersController)
         result = await OrdersController.kill_chase.fn(ctrl, 99, mock_request)
 
-    assert result["ok"] is True
+    assert result["ok"] is False
     assert result["err"] == "paper engine no longer tracking"
+    assert result["status"] == "CANCEL_FAILED"
     mock_eng.cancel_paper_order.assert_called_once_with(mock_row.id)
 
 
