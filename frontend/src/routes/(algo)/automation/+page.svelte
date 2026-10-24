@@ -619,6 +619,18 @@
     return events.filter(e => e.enabled).map(e => e.channel).join(', ');
   }
 
+  /** True when a kind='event' agent's own `events` list is non-empty —
+   *  meaning it's pinned off the shared alert routing tree (manual edit,
+   *  or pre-SEED_VERSION-3 state) instead of resolving channels live via
+   *  alert_routing.py. Scoped to kind='event' only — cycle/threshold
+   *  agents always carry their own `events`, that's how they work, not
+   *  "pinned". See .claude/PLAN.md Step 5 + the routing-tree migration
+   *  docs for context. */
+  function isPinnedEventAgent(/** @type {any} */ agent) {
+    return agent?.kind === 'event' && Array.isArray(agent.events) && agent.events.length > 0;
+  }
+  const PINNED_SUFFIX = ' (pinned — not on routing tree)';
+
   /** Map a channel id → single emoji. Used on the agent row for the
    *  notify-icon strip so the operator scans which agents page Telegram
    *  vs which only log silently. Keep glyphs ascii-light so the row
@@ -785,7 +797,7 @@
   {/if}
 
   <div class="text-[length:var(--fs-sm)] text-[var(--c-muted)] mt-2 mb-1 flex items-center flex-wrap gap-x-2 gap-y-0.5">
-    <span class="text-[var(--c-muted)]">Alert via:</span> <span>{channelSummary(agent.events)}</span>
+    <span class="text-[var(--c-muted)]">Alert via:</span> <span>{channelSummary(agent.events)}{isPinnedEventAgent(agent) ? PINNED_SUFFIX : ''}</span>
     {#if agent.tier && agent.tier !== 'medium'}
       <span class={'tier-badge tier-badge-' + agent.tier} title="Severity tier — drives topic-scoped suppression in run_cycle.">{agent.tier}</span>
     {/if}
@@ -977,7 +989,7 @@
                  before (template rows never get trade-mode/ON-OFF). -->
             <div class="flex items-center justify-end gap-2 pb-2">
               {#if _activeCard === 'agents' || _activeCard === 'alerts'}
-                <span class="agent-row-icons" title={'Notify: ' + (enabledChannels(row.events).join(', ') || 'none')}>
+                <span class="agent-row-icons" title={'Notify: ' + (enabledChannels(row.events).join(', ') || 'none') + (isPinnedEventAgent(row) ? PINNED_SUFFIX : '')}>
                   {#each enabledChannels(row.events) as ch (ch)}
                     <span class="agent-notify-ico" aria-label={ch}>{@html CHANNEL_ICON[ch] || '•'}</span>
                   {/each}
