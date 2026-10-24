@@ -66,16 +66,23 @@ test.describe('Stale-code: chain grid has subtle column dividers', () => {
 });
 
 test.describe('ITM wash spreads into the strike column (operator: "spread the left background color to right which is basically in the money call strike... spread the color in the money put strikes to the left")', () => {
-  test('ITM-call rows tint the strike cell green (same side, same alpha as the CE cell)', () => {
+  // Hue values updated 2026-10-24 — this describe block pre-dates the
+  // 2026-10-24 CE=orange/PE=green hue swap (commit 14e64d68) and still
+  // asserted the earlier green/red hues; not caught at the time since
+  // this file wasn't touched by that commit. Updated here because this
+  // same task's item-2 fix (ATM-shade layering) edits these exact two
+  // rules to `background-color:` (was `background:` shorthand — see
+  // OptionChainTab.svelte's own comment on that change).
+  test('ITM-call rows tint the strike cell orange (same side, same alpha as the CE cell)', () => {
     const src = readFileSync(CHAIN_TAB_PATH, 'utf8');
     const rule = src.match(/\.chain-row-itm-call\s+\.chain-td-strike\s*\{[^}]*\}/)?.[0] ?? '';
-    expect(rule).toMatch(/background:\s*rgba\(74,\s*222,\s*128,\s*0\.05\)/);
+    expect(rule).toMatch(/background-color:\s*rgba\(251,\s*146,\s*60,\s*0\.05\)/);
   });
 
-  test('ITM-put rows tint the strike cell red (same side, same alpha as the PE cell)', () => {
+  test('ITM-put rows tint the strike cell green (same side, same alpha as the PE cell)', () => {
     const src = readFileSync(CHAIN_TAB_PATH, 'utf8');
     const rule = src.match(/\.chain-row-itm-put\s+\.chain-td-strike\s*\{[^}]*\}/)?.[0] ?? '';
-    expect(rule).toMatch(/background:\s*rgba\(248,\s*113,\s*113,\s*0\.05\)/);
+    expect(rule).toMatch(/background-color:\s*rgba\(74,\s*222,\s*128,\s*0\.05\)/);
   });
 
   test('ATM strip keeps its own distinct styling — the spread rules never target .chain-td-strike-atm', () => {

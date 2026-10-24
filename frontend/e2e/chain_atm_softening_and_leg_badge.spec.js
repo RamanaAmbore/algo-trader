@@ -49,11 +49,10 @@ test.describe('Stale-code: ATM row decoration softened', () => {
   // `border-top` would conflict at the shared edge with the row ABOVE's
   // own `border-bottom` (`.chain-row > td`, same width/specificity);
   // box-shadow isn't part of the table border model and never has that
-  // conflict. It also isn't reset by the `@media (min-width: 640px)`
-  // override further down that sets `.chain-row > td { border-bottom:
-  // none }` for desktop — that override only touches `border-bottom`,
-  // so a literal `border-bottom`-based marker here would have silently
-  // disappeared on desktop while still showing on mobile.
+  // conflict. (The desktop-only `.chain-row > td { border-bottom: none }`
+  // override this comment used to also cite was itself removed the same
+  // day, 2026-10-24 — see the divider-reversal describe block below —
+  // so the box-shadow mechanism is now the only reason, not two.)
   test('.chain-row-atm has no literal border-top/border-bottom — box-shadow carries both edges instead', () => {
     const src = readFileSync(CHAIN_TAB_PATH, 'utf8');
     const rule = src.match(/\.chain-row-atm\s*>\s*td\s*\{[^}]*\}/)?.[0] ?? '';
@@ -73,29 +72,82 @@ test.describe('Stale-code: ATM row decoration softened', () => {
   });
 });
 
+test.describe('Stale-code: ATM shade is now actually visible (2026-10-24, "slightly different background shade to differentiate it as at the money")', () => {
+  // Previously `.chain-row-atm > td` set a plain `background:
+  // rgba(251,191,36,0.06)`, which the ITM rules' `background` shorthand
+  // (higher specificity) silently beat on almost every real ATM row —
+  // documented in this file's own prior comment as "mostly theoretical".
+  // Fixed by moving the ATM shade onto `background-image` (a property
+  // the ITM rules no longer touch, see the next describe block) so it
+  // composites instead of losing a specificity fight.
+  test('.chain-row-atm > td paints its shade via background-image, not the background shorthand', () => {
+    const src = readFileSync(CHAIN_TAB_PATH, 'utf8');
+    const rule = src.match(/\.chain-row-atm\s*>\s*td\s*\{[^}]*\}/)?.[0] ?? '';
+    expect(rule).toMatch(/background-image:\s*linear-gradient\(rgba\(255,255,255,0\.05\),\s*rgba\(255,255,255,0\.05\)\)/);
+    expect(rule).not.toMatch(/background:\s*rgba/);
+  });
+
+  // The compound active+atm rule must carry BOTH the pre-existing violet
+  // active tint AND the new white ATM tint as comma-separated layers —
+  // a single `background-image` declaration on the later rule would
+  // otherwise fully replace, not merge with, the ATM rule's own layer.
+  test('.chain-row-active.chain-row-atm > td layers both the violet active tint and the white ATM tint', () => {
+    const src = readFileSync(CHAIN_TAB_PATH, 'utf8');
+    const rule = src.match(/\.chain-row-active\.chain-row-atm\s*>\s*td\s*\{[^}]*\}/)?.[0] ?? '';
+    expect(rule).toMatch(/linear-gradient\(rgba\(167,139,250,0\.14\),\s*rgba\(167,139,250,0\.14\)\)/);
+    expect(rule).toMatch(/linear-gradient\(rgba\(255,255,255,0\.05\),\s*rgba\(255,255,255,0\.05\)\)/);
+  });
+});
+
 test.describe('Stale-code: CE/PE column wash hue swap (2026-10-24, explicit operator request)', () => {
   // Reverses the 2026-09-30 "align ITM tints to CE/PE palette" fix —
   // deliberate. CE header text stays green over an orange CE column;
   // PE header stays red over a green PE column. Headers are untouched;
   // only the per-strike wash hue changes.
+  //
+  // `background:` -> `background-color:` and the OTM-side alpha
+  // 0.015 -> 0.03 were both added later the same day (full-width-wash
+  // fix, see OptionChainTab.svelte's own comment on the six ITM rules)
+  // — updated here in lockstep.
   test('CE-side wash is orange (251,146,60 — app.css --algo-orange), not green', () => {
     const src = readFileSync(CHAIN_TAB_PATH, 'utf8');
-    expect(src).toMatch(/\.chain-row-itm-call \.chain-td-ce\s*\{\s*background:\s*rgba\(251,146,60,0\.05\)/);
-    expect(src).toMatch(/\.chain-row-itm-put\s+\.chain-td-ce\s*\{\s*background:\s*rgba\(251,146,60,0\.015\)/);
-    expect(src).toMatch(/\.chain-row-itm-call \.chain-td-strike\s*\{\s*background:\s*rgba\(251,146,60,0\.05\)/);
+    expect(src).toMatch(/\.chain-row-itm-call \.chain-td-ce\s*\{\s*background-color:\s*rgba\(251,146,60,0\.05\)/);
+    expect(src).toMatch(/\.chain-row-itm-put\s+\.chain-td-ce\s*\{\s*background-color:\s*rgba\(251,146,60,0\.03\)/);
+    expect(src).toMatch(/\.chain-row-itm-call \.chain-td-strike\s*\{\s*background-color:\s*rgba\(251,146,60,0\.05\)/);
   });
 
   test('PE-side wash is green (74,222,128 — app.css --algo-green/--c-long), not red', () => {
     const src = readFileSync(CHAIN_TAB_PATH, 'utf8');
-    expect(src).toMatch(/\.chain-row-itm-put\s+\.chain-td-pe\s*\{\s*background:\s*rgba\(74,222,128,0\.05\)/);
-    expect(src).toMatch(/\.chain-row-itm-call \.chain-td-pe\s*\{\s*background:\s*rgba\(74,222,128,0\.015\)/);
-    expect(src).toMatch(/\.chain-row-itm-put\s+\.chain-td-strike\s*\{\s*background:\s*rgba\(74,222,128,0\.05\)/);
+    expect(src).toMatch(/\.chain-row-itm-put\s+\.chain-td-pe\s*\{\s*background-color:\s*rgba\(74,222,128,0\.05\)/);
+    expect(src).toMatch(/\.chain-row-itm-call \.chain-td-pe\s*\{\s*background-color:\s*rgba\(74,222,128,0\.03\)/);
+    expect(src).toMatch(/\.chain-row-itm-put\s+\.chain-td-strike\s*\{\s*background-color:\s*rgba\(74,222,128,0\.05\)/);
   });
 
   test('no residual red (248,113,113) or old-green-on-CE wash remains on the ITM cell/strike rules', () => {
     const src = readFileSync(CHAIN_TAB_PATH, 'utf8');
     const block = src.match(/\.chain-row-itm-call \.chain-td-ce[\s\S]{0,900}?\.chain-row-itm-put\s+\.chain-td-strike[^\n]*\n/)?.[0] ?? '';
     expect(block).not.toContain('248,113,113');
+  });
+
+  // No bare `background:` shorthand remains on any of the six ITM
+  // rules — that shorthand implicitly resets background-image, which
+  // is exactly what made the ATM shade and the active-row tint "mostly
+  // theoretical" before this fix (see OptionChainTab.svelte's comment).
+  test('all six ITM wash rules use background-color, never the background shorthand', () => {
+    const src = readFileSync(CHAIN_TAB_PATH, 'utf8');
+    const selectors = [
+      /\.chain-row-itm-call \.chain-td-ce\s*\{[^}]*\}/,
+      /\.chain-row-itm-call \.chain-td-pe\s*\{[^}]*\}/,
+      /\.chain-row-itm-put\s+\.chain-td-pe\s*\{[^}]*\}/,
+      /\.chain-row-itm-put\s+\.chain-td-ce\s*\{[^}]*\}/,
+      /\.chain-row-itm-call \.chain-td-strike\s*\{[^}]*\}/,
+      /\.chain-row-itm-put\s+\.chain-td-strike\s*\{[^}]*\}/,
+    ];
+    for (const sel of selectors) {
+      const rule = src.match(sel)?.[0] ?? '';
+      expect(rule).toMatch(/background-color:/);
+      expect(rule).not.toMatch(/background:\s*rgba/);
+    }
   });
 });
 

@@ -2079,13 +2079,46 @@
      token (#fb923c → rgb 251,146,60) — the exact rgb this file's own
      ITM-put wash used PRE-2026-09-30 (see the superseded comment
      above), so no new color is invented. Structure unchanged: the
-     ITM 0.05 / OTM 0.015 per-side mirror (see prior comment block,
-     now describing the mechanism only — not which hue goes where)
-     and the strike-column spread both carry over as-is. */
-  .chain-row-itm-call .chain-td-ce { background: rgba(251,146,60,0.05); }
-  .chain-row-itm-call .chain-td-pe { background: rgba(74,222,128,0.015); }
-  .chain-row-itm-put  .chain-td-pe { background: rgba(74,222,128,0.05); }
-  .chain-row-itm-put  .chain-td-ce { background: rgba(251,146,60,0.015); }
+     ITM-side / OTM-side per-row mirror (see prior comment block, now
+     describing the mechanism only — not which hue goes where) and the
+     strike-column spread both carry over as-is.
+     `background:` -> `background-color:` (2026-10-24, same pass as the
+     OTM-side alpha bump and the ATM-shade fix below) — `background` is
+     shorthand and implicitly resets `background-image` to `none` on
+     every rule that uses it. At this rule's (0,2,0) specificity that
+     silently beat BOTH `.chain-row-atm > td`'s and `.chain-row-active >
+     td`'s own `background-image` layers (0,1,1) on any row that also
+     carries an ITM/OTM class — which is almost every row with a spot
+     (see the ATM rule's own comment, below, for why). `background-color`
+     alone leaves `background-image` unclaimed by these six rules, so
+     the ATM/active overlay layers actually render instead of losing a
+     specificity fight they never needed to be in. Visually identical
+     for these six rules on their own — only the composability changes.
+     OTM-side alpha 0.015 -> 0.03 (2026-10-24, operator: "the current
+     background shades should extend full to the left and right to the
+     container edge") — investigated first for a literal layout gap
+     (table/wrapper padding, margin, scrollbar-gutter reservation) via a
+     live geometry probe against the real rendered component at 375px
+     and 1280px: `.chain-grid-wrap`'s own ancestor chain carries zero
+     padding/margin at every level up through the modal shell, and
+     `overflow-y: auto` reserves a 0px scrollbar gutter (measured via
+     `wrap.offsetWidth - wrap.clientWidth`) — the `<table>` and its `<td>`
+     cells tile exactly to the wrap's own content-box edges; the only
+     1px discrepancy at either edge is the wrap's own intentional 1px
+     border, not an unaccounted gap. There is no structural gap to fix.
+     The real cause: the OTM-side cross-tint at 0.015 is visually
+     imperceptible against the dark grid background, so the colored
+     band — as actually seen — reads as stopping at the strike column
+     instead of continuing to the table's far edge. 0.03 is still half
+     the dominant 0.05 (the ITM/OTM asymmetry that conveys which side is
+     in-the-money is preserved, not erased — equalizing the two would
+     remove that signal entirely, which was considered and rejected),
+     but is now a real, visible color that carries the band the rest of
+     the way to the container edge. */
+  .chain-row-itm-call .chain-td-ce { background-color: rgba(251,146,60,0.05); }
+  .chain-row-itm-call .chain-td-pe { background-color: rgba(74,222,128,0.03); }
+  .chain-row-itm-put  .chain-td-pe { background-color: rgba(74,222,128,0.05); }
+  .chain-row-itm-put  .chain-td-ce { background-color: rgba(251,146,60,0.03); }
   /* Spread the ITM wash into the strike column too (operator: "spread
      the left background color to right which is basically in the money
      call strike... spread the color in the money put strikes to the
@@ -2095,11 +2128,12 @@
      'atm' (not 'itm-call'/'itm-put') for the ATM row, so
      .chain-td-strike-atm's own distinct styling is untouched, per
      "keep the ATM strip as is". Same alpha as the strong (ITM-side)
-     wash above, not the weak OTM-side one, since the strike cell is
+     wash above, not the OTM-side one, since the strike cell is
      shared and must pick one side's intensity. Hue follows the same
-     2026-10-24 swap as the CE/PE cells above. */
-  .chain-row-itm-call .chain-td-strike { background: rgba(251,146,60,0.05); }
-  .chain-row-itm-put  .chain-td-strike { background: rgba(74,222,128,0.05); }
+     2026-10-24 swap as the CE/PE cells above. `background-color:`,
+     same reasoning as the four rules above. */
+  .chain-row-itm-call .chain-td-strike { background-color: rgba(251,146,60,0.05); }
+  .chain-row-itm-put  .chain-td-strike { background-color: rgba(74,222,128,0.05); }
   /* Softened 2026-09-29 — operator: the top+bottom amber border read
      as an "overpowering underline" at 0.55 alpha. Same mechanism,
      gentler weight; still reads clearly as "this is the ATM row"
@@ -2117,23 +2151,32 @@
      resolved by cell position, not by which rule "looks" stronger,
      so the amber line could silently lose that fight in some
      browsers. A `box-shadow` is not part of the table border model
-     and never participates in that conflict. It also survives the
-     `@media (min-width: 640px)` override below that sets
-     `.chain-row > td { border-bottom: none }` for desktop row-divider
-     removal — that rule only touches the `border-bottom` property, so
-     this box-shadow-based marker renders identically on mobile and
-     desktop (the old border-bottom-only bottom edge did NOT: it was
-     being silently reset to `none` on desktop by that same override,
-     same specificity, later in the cascade). Pre-existing, unrelated
-     to this edit: `dir` is 'atm' only when a strike exactly equals
-     spot (practically never), so the ATM row almost always also
-     carries `chain-row-itm-call`/`chain-row-itm-put`, whose per-cell
-     `background` (0,2,0 specificity) outranks this rule's `background`
-     (0,1,1) on the CE/strike/PE cells — the amber wash above is
-     mostly theoretical on a real ATM row; this box-shadow edge is the
-     ATM row's real visible marker. */
+     and never participates in that conflict. Pre-existing: `dir` is
+     'atm' only when a strike exactly equals spot (practically never),
+     so the ATM row almost always also carries `chain-row-itm-call`/
+     `chain-row-itm-put`.
+     ATM shade fixed (2026-10-24, operator: "the current strike with
+     border above and below should have a slightly different background
+     shade to differentiate it as at the money") — this rule used to set
+     a plain `background: rgba(251,191,36,0.06)` (amber), which the
+     file's own prior comment correctly called "mostly theoretical": the
+     six ITM rules above (0,2,0 specificity) always outranked this
+     rule's (0,1,1) `background` on the CE/strike/PE cells of any row
+     that was also ITM — i.e. almost every real ATM row — so the shade
+     essentially never rendered. Two changes fix this together: (1) the
+     ITM rules above now set `background-color:` only, leaving
+     `background-image` unclaimed; (2) this rule now paints its shade as
+     a `background-image` gradient layer instead of competing on
+     `background-color`, so it composites ON TOP of whatever ITM
+     orange/green wash is underneath rather than losing to it. White,
+     not amber — amber over the already-orange CE wash barely reads as
+     a second signal, while a neutral white lift is visible over either
+     hue (and over a bare, non-ITM ATM row too). 0.05 alpha reuses the
+     exact magnitude already used throughout this file's ITM washes, not
+     a new scale. The amber box-shadow top/bottom edges are unchanged —
+     this only adds the fill layer underneath them. */
   .chain-row-atm > td {
-    background: rgba(251,191,36,0.06);
+    background-image: linear-gradient(rgba(255,255,255,0.05), rgba(255,255,255,0.05));
     box-shadow: inset 0 1px 0 rgba(251,191,36,0.18), inset 0 -1px 0 rgba(251,191,36,0.18);
   }
   /* Sticky "active row" — the strike the operator last poked. Distinct
@@ -2142,7 +2185,13 @@
      ITM tint. Applied to either side of the row via -ce / -pe variants
      so the operator sees WHICH leg was last touched, not just which
      strike. Box-shadow inset rather than background so it stacks
-     visually with the ATM background without erasing it. */
+     visually with the ATM background without erasing it.
+     Note (2026-10-24, found while fixing the ATM-shade layering above):
+     before the ITM rules were switched to `background-color:`, this
+     rule's own `background-image` violet tint was ALSO silently losing
+     to the ITM rules' `background` shorthand on any itm-call/itm-put
+     row (same (0,2,0) vs (0,1,1) specificity gap as the ATM rule's own
+     bug) — fixed as a side effect of that change, no edit needed here. */
   .chain-row-active > td {
     box-shadow: inset 0 -1px 0 rgba(167,139,250,0.55);
     background-image: linear-gradient(
@@ -2165,13 +2214,20 @@
        signal, matching the plain `.chain-row-active` rule above) — the
        amber BOTTOM edge is the one casualty of the combo, accepted
        since the top edge + background + violet bottom are still three
-       live signals. */
+       live signals.
+       `background-image` is the same single-property story (2026-10-24,
+       added alongside the ATM-shade fix above) — `.chain-row-atm > td`'s
+       own white ATM tint and `.chain-row-active > td`'s violet tint are
+       each a single-layer `background-image`; without an explicit
+       compound rule, the later (active) rule would fully replace the
+       ATM layer instead of adding to it. Comma-separated multi-layer
+       `background-image` carries both: the violet active tint painted
+       on top, the white ATM tint beneath it — same ordering the
+       box-shadow edges above use (active signal first/strongest). */
     box-shadow: inset 0 1px 0 rgba(251,191,36,0.18), inset 0 -1px 0 rgba(167,139,250,0.55);
-    background-image: linear-gradient(
-      to bottom,
-      rgba(167,139,250,0.14),
-      rgba(167,139,250,0.14)
-    );
+    background-image:
+      linear-gradient(rgba(167,139,250,0.14), rgba(167,139,250,0.14)),
+      linear-gradient(rgba(255,255,255,0.05), rgba(255,255,255,0.05));
   }
   .chain-spot-pill {
     display: inline-flex; align-items: center; gap: 0.3rem;
@@ -2396,22 +2452,33 @@
      chain-grid, chain-row, chain-th and chain-cell rule above) so these
      same-specificity overrides actually win the cascade, unlike the
      earlier (now-removed) copy that sat before those base rules and lost.
-     Row dividers: mobile's own report was the opposite ("mobile chain
-     looks better"), so this drops dividers desktop-only, relying on the
-     ATM highlight + ITM tint for row grouping instead of lines. Text
-     size: matches the mobile-only sizes in the block just below instead
-     of leaving desktop smaller at the --fs-md base. */
+     Text size: matches the mobile-only sizes in the block just below
+     instead of leaving desktop smaller at the --fs-md base.
+     Row dividers REVERSED (2026-10-24, explicit new operator request:
+     "I want subtle horizontal border for each strike") — this block used
+     to zero out the base rule's bottom border here, deliberately
+     stripping the divider on desktop only. That suppression is now
+     removed; the base `.chain-row > td` divider (1px solid white at
+     0.025 alpha, below the ATM/active overrides, unchanged value —
+     already the established subtle-divider convention in this exact
+     file) now applies on every viewport. A literal border, not a
+     box-shadow, is deliberately correct here: the box-shadow workaround
+     elsewhere in this file (the ATM row's own top/bottom marker) exists
+     specifically because THAT marker previously collided with this
+     exact desktop-only suppression and with border-collapse's
+     shared-edge resolution — a per-row divider that nothing else
+     contests for the bottom-border property has no such conflict to
+     dodge. */
   @media (min-width: 640px) {
     .chain-row > td {
-      border-bottom: none;
       /* Operator (2026-09-29): "on desktop the chain rows are very
          close. add gap between them. mobile chain looks better" —
          the base rule above zeroes vertical padding entirely (a
-         density pass for the row-height-halving fix), and removing
-         the border-bottom just above dropped the only remaining row
-         separator, so desktop rows read as touching. Vertical padding
-         restores breathing room without reintroducing the border
-         lines mobile already reported looking worse with. */
+         density pass for the row-height-halving fix), so desktop rows
+         read as touching without this. Vertical padding restores
+         breathing room; the divider itself now also carries over from
+         the base rule (see the reversal note above) so rows read as a
+         real grid on every viewport, not touching bars. */
       padding-top: 0.3rem;
       padding-bottom: 0.3rem;
     }
