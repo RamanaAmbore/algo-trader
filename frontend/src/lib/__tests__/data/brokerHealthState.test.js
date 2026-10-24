@@ -31,6 +31,7 @@ import {
   brokerHealthWorstState,
   toBrokerHealthState,
   brokerChipState,
+  brokerAccountDisplayState,
 } from '$lib/data/brokerHealthState.js';
 
 // ── brokerHealthWorstState — same cases the old replica-based test had,
@@ -138,5 +139,42 @@ describe('brokerChipState', () => {
 
   it('unrecognized worstState + idle=true → idle (idle still takes precedence over an unknown value)', () => {
     expect(brokerChipState('unknown', true)).toBe('idle');
+  });
+});
+
+// ── brokerAccountDisplayState — per-account popup row color/text (dot,
+//    Status badge, account-name) while the ticker is calendar-idle ────────
+
+describe('brokerAccountDisplayState', () => {
+  it('green + idle=true → idle', () => {
+    expect(brokerAccountDisplayState('green', true)).toBe('idle');
+  });
+
+  it('amber + idle=true → idle (expected staleness is not a problem while idle)', () => {
+    expect(brokerAccountDisplayState('amber', true)).toBe('idle');
+  });
+
+  it('red + idle=true → red (idle must never mask a real per-account failure)', () => {
+    expect(brokerAccountDisplayState('red', true)).toBe('red');
+  });
+
+  it('inactive + idle=true → inactive (structural spare-account fact, unrelated to the calendar)', () => {
+    expect(brokerAccountDisplayState('inactive', true)).toBe('inactive');
+  });
+
+  it('green + idle=false → green (unchanged)', () => {
+    expect(brokerAccountDisplayState('green', false)).toBe('green');
+  });
+
+  it('amber + idle=false → amber (unchanged)', () => {
+    expect(brokerAccountDisplayState('amber', false)).toBe('amber');
+  });
+
+  it('red + idle=false → red (unchanged)', () => {
+    expect(brokerAccountDisplayState('red', false)).toBe('red');
+  });
+
+  it('inactive + idle=false → inactive (unchanged)', () => {
+    expect(brokerAccountDisplayState('inactive', false)).toBe('inactive');
   });
 });

@@ -93,3 +93,29 @@ export function brokerChipState(worstState, tickerIdle) {
   // 'amber' and any unrecognized value.
   return 'partial';
 }
+
+/**
+ * Per-account display state for `BrokerHealthBadge`'s popup rows (dot,
+ * Status text badge, account-name color) — the SAME `red > idle > amber >
+ * green` precedence `brokerChipState()` applies at the overall-chip level,
+ * applied per row (2026-10-24).
+ *
+ * `red` and `inactive` are never overridden by `tickerIdle`:
+ *   - `red` is a genuine account failure — idle must never mask it (same
+ *     invariant as the overall chip).
+ *   - `inactive` is a structural "this is a spare account, not currently
+ *     ticking" fact, unrelated to the calendar-gated ticker-connect
+ *     concept — it is not an "OK-ish" state idle is meant to supersede.
+ * `green`/`amber` (the two states that otherwise read as "healthy" or
+ * "healthy enough") become `idle` while the ticker itself is calendar-idle,
+ * since neither is a meaningful signal when nothing was polled today.
+ * @param {string|undefined} state
+ * @param {boolean} tickerIdle
+ * @returns {'red'|'inactive'|'idle'|'amber'|'green'|string}
+ */
+export function brokerAccountDisplayState(state, tickerIdle) {
+  if (state === 'red') return 'red';
+  if (state === 'inactive') return 'inactive';
+  if (tickerIdle) return 'idle';
+  return state;
+}

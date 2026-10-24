@@ -229,6 +229,80 @@ test.describe('broker-chip color + popup broker names', () => {
     await P.locator('.bh-modal').waitFor({ state: 'hidden', timeout: 3000 }).catch(() => {});
   });
 
+  // ── 1h-1j. Per-account idle color coding (2026-10-24) — the dot, the
+  //          "Status" text badge, and the account-name color inside the
+  //          popup must ALL switch to idle (sky token) while
+  //          ticker_idle=true, for an otherwise-green/amber account. No new
+  //          element is added — existing dot/badge/account-name cells
+  //          recolor + retext in place. A genuine red account must never
+  //          be recolored to idle (see brokerAccountDisplayState()). ──────
+
+  test('ticker_idle=true + green accounts → popup dot/Status/account-name recolor to idle, text reads IDLE', async () => {
+    await mockHealthEndpoint(P, 'green', { tickerIdle: true, secondState: 'green' });
+    const chip = await openPage(P);
+    if (!chip) { test.info().annotations.push({ type: 'skip', description: 'No broker chip' }); return; }
+    await chip.click();
+    const modal = P.locator('.bh-modal').first();
+    await modal.waitFor({ state: 'visible', timeout: WAIT_TIMEOUT });
+
+    await expect(modal.locator('.bh-dot-idle').first(), 'at least one idle dot while ticker is idle').toBeVisible();
+    await expect(modal.locator('.bh-dot-green')).toHaveCount(0);
+
+    const statusBadges = modal.locator('.bh-row-state');
+    const count = await statusBadges.count();
+    expect(count, 'at least one Status badge rendered').toBeGreaterThan(0);
+    for (let i = 0; i < count; i++) {
+      await expect(statusBadges.nth(i)).toHaveClass(/bh-row-state-idle/);
+      await expect(statusBadges.nth(i)).toHaveText('IDLE');
+    }
+
+    await expect(modal.locator('.bh-acct-idle').first(), 'account-name color recolors to idle').toBeVisible();
+    await expect(modal.locator('.bh-acct-active')).toHaveCount(0);
+
+    await P.locator('.bh-close').first().click();
+    await P.locator('.bh-modal').waitFor({ state: 'hidden', timeout: 3000 }).catch(() => {});
+  });
+
+  test('ticker_idle=true + one red account → that row stays red (dot + Status + account-name), others go idle', async () => {
+    await mockHealthEndpoint(P, 'amber', { tickerIdle: true, secondState: 'red' });
+    const chip = await openPage(P);
+    if (!chip) { test.info().annotations.push({ type: 'skip', description: 'No broker chip' }); return; }
+    await chip.click({ force: true });
+    const modal = P.locator('.bh-modal').first();
+    await modal.waitFor({ state: 'visible', timeout: WAIT_TIMEOUT });
+
+    // First account (ZG0790) was mocked amber → must read idle, not amber.
+    await expect(modal.locator('.bh-dot-idle').first()).toBeVisible();
+    await expect(modal.locator('.bh-dot-amber')).toHaveCount(0);
+
+    // Second account (DH6847) was mocked red → must stay red, never idle.
+    await expect(modal.locator('.bh-dot-red').first(), 'a genuine red account dot must never be masked by idle').toBeVisible();
+    const redBadge = modal.locator('.bh-row-state-red').first();
+    await expect(redBadge).toBeVisible();
+    await expect(redBadge).toHaveText('RED');
+    await expect(modal.locator('.bh-acct-red').first(), 'a genuine red account name must never recolor to idle').toBeVisible();
+
+    await P.locator('.bh-close').first().click();
+    await P.locator('.bh-modal').waitFor({ state: 'hidden', timeout: 3000 }).catch(() => {});
+  });
+
+  test('ticker_idle=false → popup renders normal green dot/Status/account-name, no idle classes', async () => {
+    await mockHealthEndpoint(P, 'green', { tickerIdle: false, secondState: 'green' });
+    const chip = await openPage(P);
+    if (!chip) { test.info().annotations.push({ type: 'skip', description: 'No broker chip' }); return; }
+    await chip.click();
+    const modal = P.locator('.bh-modal').first();
+    await modal.waitFor({ state: 'visible', timeout: WAIT_TIMEOUT });
+
+    await expect(modal.locator('.bh-dot-idle')).toHaveCount(0);
+    await expect(modal.locator('.bh-row-state-idle')).toHaveCount(0);
+    await expect(modal.locator('.bh-acct-idle')).toHaveCount(0);
+    await expect(modal.locator('.bh-dot-green').first()).toBeVisible();
+
+    await P.locator('.bh-close').first().click();
+    await P.locator('.bh-modal').waitFor({ state: 'hidden', timeout: 3000 }).catch(() => {});
+  });
+
   // ── 3. Stale: popup broker column never shows "unknown" ─────────────────
 
   test('popup broker column shows broker names, never "unknown"', async () => {

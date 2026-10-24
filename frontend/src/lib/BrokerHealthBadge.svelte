@@ -22,6 +22,7 @@
   import { brokerHealthStore, openActivityModal } from '$lib/stores';
   ModuleRegistry.registerModules([AllCommunityModule]);
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
+  import { brokerAccountDisplayState } from '$lib/data/brokerHealthState.js';
   import { acctStyleVars } from '$lib/account';
   import { pushLayer, popLayer } from '$lib/utils/layerStack.js';
 
@@ -74,11 +75,19 @@
   onDestroy(() => _unsubOrder());
 
   // Client-side sort mirrors the backend sort so even a stale store
-  // response renders in the right order.
+  // response renders in the right order. `display_state` (2026-10-24) is
+  // baked into each row here — NOT read live inside the ag-Grid
+  // cellRenderer closures below — because this `$derived` is the thing
+  // that actually re-tracks `_tickerIdle`; a cellRenderer only re-runs
+  // when ag-Grid re-renders a cell (new rowData), so a bare idle-flag
+  // flip with unchanged account rows would otherwise never redraw the
+  // dot/Status/account-name colors. See `brokerAccountDisplayState()`'s
+  // docstring for the red/inactive-never-overridden precedence.
   const accounts = $derived(
     sortAccountsBy(_rawAccounts.map(a => a.account), _orderMap)
       .map(id => _rawAccounts.find(a => a.account === id))
       .filter(Boolean)
+      .map(a => ({ ...a, display_state: brokerAccountDisplayState(a.state, _tickerIdle) }))
   );
 
   function _fmtIso(iso) {
@@ -100,7 +109,7 @@
 
   const _colDefs = [
     {
-      field: 'state', headerName: '', colId: 'dot',
+      field: 'display_state', headerName: '', colId: 'dot',
       width: 24, minWidth: 24, maxWidth: 24,
       cellRenderer: p => {
         const el = document.createElement('span');
@@ -121,8 +130,14 @@
       cellStyle: p => acctStyleVars(p.value),
       cellRenderer: p => {
         const acct = p.data ?? {};
-        const state = acct.state ?? '';
+        // `display_state` (2026-10-24) already folds `ticker_idle` in —
+        // see `brokerAccountDisplayState()`. `red`/`inactive` pass through
+        // unchanged; `green`/`amber` become `idle` while the ticker is
+        // calendar-idle, so the account color/title never claim a
+        // KiteTicker connection that was never attempted today.
+        const state = acct.display_state ?? '';
         const accCls = state === 'red'       ? 'bh-acct-red'
+                     : state === 'idle'      ? 'bh-acct-idle'
                      : state === 'amber'     ? 'bh-acct-amber'
                      : state === 'inactive'  ? 'bh-acct-inactive'
                      : acct.is_active_ticker ? 'bh-acct-active'
@@ -131,6 +146,7 @@
         const title = cbOptIn && acct.circuit_state === 'open'
           ? `${acct.account} — circuit open until ${_fmtIso(acct.circuit_open_until)}`
           : state === 'red' ? `${acct.account} — connection problem (${acct.reason})`
+          : state === 'idle' ? `${acct.account} — idle (ticker not connected today; market closed)`
           : state === 'amber' ? `${acct.account} — stale (${acct.reason})`
           : acct.is_active_ticker ? `${acct.account} — active (KiteTicker)`
           : `${acct.account} — warm spare`;
@@ -160,7 +176,7 @@
       cellClass: 'bh-col-broker',
     },
     {
-      field: 'state', headerName: 'Status', colId: 'stateBadge', width: 64,
+      field: 'display_state', headerName: 'Status', colId: 'stateBadge', width: 64,
       cellRenderer: p => {
         const el = document.createElement('span');
         el.className = `bh-row-state bh-row-state-${p.value ?? 'inactive'}`;
@@ -221,7 +237,7 @@
            broken connection. -->
       <div class="bh-idle-banner">
         <span class="bh-idle-banner-label">Ticker idle — market closed</span>
-        <span class="bh-idle-banner-reason">{_tickerIdleReason || 'market calendar confirms closed today'}. Accounts below may read AMBER (stale) — expected, not a failure.</span>
+        <span class="bh-idle-banner-reason">{_tickerIdleReason || 'market calendar confirms closed today'}. Accounts below read IDLE (not green/amber) — expected, not a failure.</span>
       </div>
     {/if}
     <div class="bh-modal-body">
@@ -345,6 +361,11 @@
   :global(.bh-dot-amber)    { background: var(--c-action); }
   :global(.bh-dot-red)      { background: var(--c-short); }
   :global(.bh-dot-inactive) { background: var(--text-faint); }
+  /* Ticker-idle (2026-10-24) — same sky/info token as the navbar's
+     .broker-chip-idle and this panel's own .bh-idle-banner; never a
+     new color. Only reached via `display_state === 'idle'`
+     (brokerAccountDisplayState), which red/inactive rows never are. */
+  :global(.bh-dot-idle)     { background: var(--algo-sky); }
 
   :global(.bh-row-account) {
     color: var(--algo-slate);
@@ -372,6 +393,10 @@
   :global(.bh-acct-inactive) { color: var(--text-faint) !important; }
   :global(.bh-acct-active)   { color: var(--c-long) !important; font-weight: 700 !important; }
   :global(.bh-acct-spare)    { color: var(--algo-slate); }
+  /* Ticker-idle (2026-10-24) — supersedes the green "active" / amber
+     "stale" text color when `display_state === 'idle'`; same sky token
+     as .bh-dot-idle above. */
+  :global(.bh-acct-idle)     { color: var(--algo-sky) !important; font-weight: 700 !important; }
 
   :global(.bh-circuit-chip) {
     font-size: var(--fs-sm);
@@ -414,6 +439,10 @@
   :global(.bh-row-state-amber)    { color: var(--c-action); background: rgba(251,191,36,0.10); }
   :global(.bh-row-state-red)      { color: var(--c-short); background: var(--c-short-10); }
   :global(.bh-row-state-inactive) { color: var(--text-faint); }
+  /* Ticker-idle (2026-10-24) — the "Status" badge reads IDLE (not
+     GREEN/AMBER) while the ticker is calendar-idle; same sky token as
+     .bh-dot-idle / .bh-acct-idle above. */
+  :global(.bh-row-state-idle)     { color: var(--algo-sky); background: var(--algo-sky-bg); }
 
   :global(.bh-col-reason) {
     color: var(--text-lo);
