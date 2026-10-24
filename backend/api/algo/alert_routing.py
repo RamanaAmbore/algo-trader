@@ -213,11 +213,17 @@ _TIER_DEFAULTS: dict[str, list[dict]] = {
 # (a record matching NO agent's conditions at all) — this is a DIFFERENT,
 # narrower case: an agent's conditions DID match and it DID render, but
 # neither a per-slug override nor a recognised `priority` tier exists for
-# it. Kept as a literal (not imported from event_agents.py, which would
-# create a circular import — this module is imported BY event_agents.py)
-# — `test_event_agents.py` pins byte-for-byte equality between this
-# constant and `UNROUTED_ALERT_AGENT["events"]` so the two can't silently
-# drift apart.
+# it. This is now the SOLE source — `UNROUTED_ALERT_AGENT["events"]`
+# (event_agents.py) is built directly from this constant at import time
+# (`[dict(ch) for ch in CATCH_ALL_CHANNELS]`, a deep copy, never an
+# aliased reference), not a hand-duplicated literal. The import runs in
+# the direction `event_agents.py` → `alert_routing.py` (this module is
+# imported BY event_agents.py, never the reverse), so building it here
+# and reading it there carries no circular-import risk.
+# `test_alert_routing.py` asserts the reference relationship (mutating
+# this constant and confirming `UNROUTED_ALERT_AGENT["events"]` was
+# derived from it) so a future refactor can't silently reintroduce a
+# second, driftable copy.
 # ─────────────────────────────────────────────────────────────────────
 CATCH_ALL_CHANNELS: list[dict] = [
     {"channel": "telegram", "enabled": True, "gate": False},

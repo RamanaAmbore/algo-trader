@@ -142,6 +142,22 @@ class AgentInfo(msgspec.Struct):
     # default (not `| None`) — it's a real tri-state-free boolean, not
     # an "unset means unchanged" field, on this read-only response.
     has_explicit_alert:    bool       = False
+    # 2026-10 routing-tree activation plan (Step 1) — read-only preview
+    # of the channel set `event_agents.py:_dispatch_agent` would
+    # ACTUALLY send this agent's alerts to right now, resolved through
+    # `alert_routing.resolve_channels()`. Populated ONLY for
+    # `kind == 'event'` rows (see `_event_agent_resolved_channels`'s own
+    # docstring for why a cycle/threshold agent must never resolve
+    # this); [] for every other agent, including an event agent whose
+    # own `events` is already explicitly non-empty (that `events` list
+    # IS the resolved channel set in that case — still populated here
+    # too, so the Automation page has one consistent field to read
+    # regardless of whether an agent is tree-driven or pinned). Never
+    # written back by any PUT/PATCH — this field does not exist on
+    # `AgentCreateRequest`/`AgentUpdateRequest`, and `_agent_to_info` is
+    # the ONLY place that computes it, always from the live DB row,
+    # never round-tripped from a client payload.
+    resolved_channels:     list       = msgspec.field(default_factory=list)
 
 
 class AgentCreateRequest(msgspec.Struct):
@@ -602,6 +618,135 @@ def _age_lifespan_expires_at_iso(a: Agent) -> str | None:
     return val.isoformat() if val else None
 
 
+def _event_agent_resolved_channels(a: Agent) -> list[dict]:
+    """Read-only channel-resolution preview for the Automation page —
+    what `event_agents.py:_dispatch_agent` (line ~609) would ACTUALLY
+    dispatch this agent's alerts to right now. Calls
+    `alert_routing.resolve_channels()` with the EXACT same kwargs that
+    dispatch call uses: `name=slug`, `priority=agent.priority`,
+    `agent_events=agent.events` — no `level`/`tags`, since the real
+    dispatch call doesn't pass them either (no current rule consults
+    them; see that function's own docstring).
+
+    Gated strictly to `kind == 'event'` — a cycle/threshold agent has
+    no `priority` set and is never routed through this resolver at all
+    (it's evaluated by `agent_engine.run_cycle()`, a completely
+    different dispatch path). Calling `resolve_channels()` for one
+    would both show a fabricated channel set that has nothing to do
+    with how that agent actually alerts, AND spam
+    `alert_routing._warn_catch_all_once()`'s one-per-process WARNING
+    log on every single page load (a fresh, never-seen `(name,
+    priority)` combination for every cycle agent with no priority).
+
+    Returns a deep copy, never a live reference — `resolve_channels()`
+    can hand back the agent's own `agent.events` list, or a shared
+    reference into `alert_routing._PER_SLUG_OVERRIDES`,
+    `_TIER_DEFAULTS`, or `CATCH_ALL_CHANNELS`. This is a read-only
+    display field; nothing reachable from an HTTP response may be a
+    live handle into one of those module-level tables.
+    """
+    if getattr(a, "kind", None) != "event":
+        return []
+    from backend.api.algo import alert_routing
+    resolved = alert_routing.resolve_channels(
+        name=getattr(a, "slug", None), priority=getattr(a, "priority", None),
+        agent_events=getattr(a, "events", None),
+    )
+    return [dict(ch) for ch in resolved]
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# `agent ai refine` channel-fork guard (2026-10 routing-tree activation
+# plan, Step 2 / council risk 2). `_cmd_ai_refine` genuinely writes
+# `setattr(row, fld, new[fld])` for any field the LLM's response diffs
+# from the stored row — `events` included. For a tree-driven event agent
+# (kind='event', events currently empty — its channels come from
+# alert_routing.py's resolver, not a stored literal), an unrelated
+# refine instruction could have the LLM "helpfully" populate a channel
+# list, silently and permanently forking that agent off the routing
+# tree with no `seed_spec_hash`/`modified_skip` protection catching it
+# (that protection only guards `seed_event_agents()`'s own write path,
+# not this one).
+# ─────────────────────────────────────────────────────────────────────────
+
+_AI_REFINE_WRITABLE_FIELDS: tuple[str, ...] = (
+    "name", "description", "conditions", "events", "actions",
+    "scope", "schedule", "cooldown_minutes", "lifespan_type", "trade_mode",
+)
+
+# Heuristic only, for the UX rejection message — NOT the safety
+# boundary. The real protection is `_ai_refine_writable_fields` below,
+# which excludes `events` unconditionally for a tree-driven agent
+# regardless of whether the operator's prompt happens to mention any
+# of these words.
+_AI_REFINE_CHANNEL_INTENT_KEYWORDS: tuple[str, ...] = (
+    "channel", "telegram", "ntfy", "email", "notify", "notification",
+    "alert via", "send to", "send via", "webhook",
+)
+
+
+def _ai_refine_is_tree_driven(agent) -> bool:
+    """True when `agent` is a `kind='event'` row whose own `events` is
+    currently empty — its channel set comes from
+    `alert_routing.py`'s per-slug/tier resolver (see
+    `_event_agent_resolved_channels` above), not a stored literal.
+    `not agent.events` covers both `None` and `[]` — either means
+    there's nothing stored to protect, and nothing the LLM could
+    diff against except by inventing a new list from scratch."""
+    return getattr(agent, "kind", None) == "event" and not agent.events
+
+
+def _ai_refine_mentions_channel_intent(prompt: str) -> bool:
+    p = prompt.lower()
+    return any(kw in p for kw in _AI_REFINE_CHANNEL_INTENT_KEYWORDS)
+
+
+def _ai_refine_writable_fields(row) -> tuple[str, ...]:
+    """Fields `_cmd_ai_refine`'s diff-apply loop may write back onto
+    `row`. Excludes `events` when `_ai_refine_is_tree_driven(row)` is
+    true — this is the actual safety boundary; the channel-intent
+    keyword check above only decides whether the operator gets an
+    early, specific rejection message instead of a silent no-op diff."""
+    if _ai_refine_is_tree_driven(row):
+        return tuple(f for f in _AI_REFINE_WRITABLE_FIELDS if f != "events")
+    return _AI_REFINE_WRITABLE_FIELDS
+
+
+def _ai_refine_prompt_context(agent, tree_driven: bool) -> dict:
+    """The `current = {...}` dict fed to the LLM as refinement context.
+    For a tree-driven agent, `events` is deliberately omitted (there's
+    nothing meaningful stored there) and replaced with
+    `resolved_channels` — the real, live-dispatched channel set, from
+    `_event_agent_resolved_channels` — labeled read-only so the LLM can
+    still reason about "what channels does this alert on" without
+    being invited to propose a replacement `events` list (which
+    `_ai_refine_writable_fields` would discard anyway, but a prompt
+    that doesn't ask for it in the first place is cleaner than one
+    that silently ignores the answer)."""
+    current = {
+        "name":             agent.name,
+        "description":      agent.description,
+        "conditions":       agent.conditions,
+        "actions":          agent.actions,
+        "scope":            agent.scope,
+        "schedule":         agent.schedule,
+        "cooldown_minutes": agent.cooldown_minutes,
+        "lifespan_type":    agent.lifespan_type,
+        "trade_mode":       agent.trade_mode,
+    }
+    if tree_driven:
+        current["resolved_channels"] = _event_agent_resolved_channels(agent)
+        current["resolved_channels_note"] = (
+            "READ-ONLY — resolved live by the alert routing tree "
+            "(alert_routing.py), not a stored field. Do not propose an "
+            "'events' field; this agent has none and any 'events' value "
+            "in your response will be ignored."
+        )
+    else:
+        current["events"] = agent.events
+    return current
+
+
 def _agent_to_info(a: Agent) -> AgentInfo:
     return AgentInfo(
         id=a.id, slug=a.slug, name=a.name,
@@ -633,6 +778,7 @@ def _agent_to_info(a: Agent) -> AgentInfo:
         given=list(getattr(a, "given", None) or []),
         preamble=list(getattr(a, "preamble", None) or []),
         has_explicit_alert=bool(getattr(a, "has_explicit_alert", False)),
+        resolved_channels=_event_agent_resolved_channels(a),
     )
 
 
@@ -1688,25 +1834,34 @@ class AgentController(Controller):
         version that incorporates the operator's instruction, validates,
         and PATCHes the row in place. Slug + status + trigger_count are
         preserved; only conditions / events / actions / scope / schedule /
-        cooldown / lifespan / trade_mode can change."""
+        cooldown / lifespan / trade_mode can change — EXCEPT `events` for
+        a tree-driven event agent (see `_ai_refine_writable_fields`'s
+        docstring, 2026-10 routing-tree activation plan, Step 2)."""
         async with async_session() as session:
             result = await session.execute(select(Agent).where(Agent.slug == slug))
             agent = result.scalar_one_or_none()
         if not agent:
             return InterpretResponse(output=f"Agent '{slug}' not found", success=False)
-        # Compose a refinement prompt that hands the LLM the current JSON.
-        current = {
-            "name":             agent.name,
-            "description":      agent.description,
-            "conditions":       agent.conditions,
-            "events":           agent.events,
-            "actions":          agent.actions,
-            "scope":            agent.scope,
-            "schedule":         agent.schedule,
-            "cooldown_minutes": agent.cooldown_minutes,
-            "lifespan_type":    agent.lifespan_type,
-            "trade_mode":       agent.trade_mode,
-        }
+        tree_driven = _ai_refine_is_tree_driven(agent)
+        # Reject BEFORE ever calling the LLM — the real protection is
+        # `_ai_refine_writable_fields` excluding `events` from the
+        # write-back loop below regardless of what the LLM proposes,
+        # but a channel-shaped instruction on a tree-driven agent would
+        # otherwise burn an LLM call only to silently no-op, which
+        # looks like a bug to the operator. This keyword check is a UX
+        # nicety, not the safety boundary.
+        if tree_driven and _ai_refine_mentions_channel_intent(prompt):
+            return InterpretResponse(
+                output=(
+                    f"Agent '{slug}' is tree-driven — its channels are resolved by "
+                    f"the alert routing tree (backend/api/algo/alert_routing.py), not "
+                    f"stored on the agent itself. Edit alert_routing.py directly to "
+                    f"change which channels '{slug}' alerts on; `agent ai refine` "
+                    f"cannot change channels for this agent."
+                ),
+                success=False,
+            )
+        current = _ai_refine_prompt_context(agent, tree_driven)
         refinement = (
             f"Refine this existing agent JSON. Apply the operator's instruction "
             f"as a minimal diff — only change what's necessary, preserve everything else.\n\n"
@@ -1728,11 +1883,13 @@ class AgentController(Controller):
             # Stricter PATCH — only setattr fields that genuinely DIFFER
             # from the existing value. Preserves any field the LLM
             # reproduced verbatim and reports the diff so the operator
-            # sees exactly what changed.
+            # sees exactly what changed. `_ai_refine_writable_fields`
+            # re-checks `row.kind`/`row.events` against the freshly
+            # re-read row (not the outer `agent`/`tree_driven` from
+            # before the LLM call) — defends against the row changing
+            # kind/events in the window between the two reads.
             changed: list[str] = []
-            for fld in ("name", "description", "conditions", "events", "actions",
-                        "scope", "schedule", "cooldown_minutes",
-                        "lifespan_type", "trade_mode"):
+            for fld in _ai_refine_writable_fields(row):
                 if fld not in new or new[fld] is None:
                     continue
                 if getattr(row, fld) != new[fld]:

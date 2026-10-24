@@ -1240,15 +1240,26 @@ UNROUTED_ALERT_AGENT = {
     # mode council item 5 exists to prevent.
     "conditions": {"log": {"tag": "agent", "min_level": "WARNING",
                            "where": {"alert_event": "unrouted_alert"}}},
-    "events": [
-        {"channel": "telegram", "enabled": True, "gate": False},
-        {"channel": "ntfy", "enabled": True, "priority": "high", "gate": False},
-    ],
+    # 2026-10 routing-tree plan (Step 4 / Task B) — was a hand-duplicated
+    # literal of `alert_routing.CATCH_ALL_CHANNELS`, kept in sync only by
+    # a test asserting byte-for-byte equality. Now a DEEP copy (fresh
+    # dicts, not just a fresh outer list) built directly from that
+    # constant at import time, so the two can never silently drift
+    # apart again. Deliberately still NOT a live reference and NOT
+    # routed through `alert_routing.resolve_channels()` — this agent's
+    # own `events` must keep dispatching unconditionally regardless of
+    # `priority`/tier plumbing (it has none), and `CATCH_ALL_CHANNELS`
+    # carries `gate: False` on every entry (bypasses capability-enabled
+    # checks) specifically because it is the last-resort backstop; a
+    # future per-slug/tier rule change to `alert_routing.py` must not be
+    # able to accidentally mutate this agent's stored content via a
+    # shared list/dict reference.
+    "events": [dict(ch) for ch in alert_routing.CATCH_ALL_CHANNELS],
     "actions": [{"type": "render", "render": "generic_notice"}],
 }
 
 
-SEED_VERSION = 2
+SEED_VERSION = 3
 
 
 def validate_seed_spec(spec: dict) -> list[str]:
@@ -1474,5 +1485,31 @@ async def seed_event_agents() -> None:
                 sys.stderr.write(
                     f"event_agents: seed '{spec['slug']}' skipped — row was "
                     f"operator-modified since it was last seeded\n"
+                )
+                # 2026-10 routing-tree activation plan (Step 6) — the
+                # stderr line above is kept (an existing test pins it,
+                # and it's still useful on an interactive console), but
+                # a startup-time stderr write is otherwise invisible
+                # once the process is running as a daemon. Also log a
+                # real WARNING through `_EVENTS_LOGGER` (NOT this
+                # module's own skip-listed `_logger` — see that
+                # variable's own comment — `log_store.py`'s
+                # `_SKIP_PREFIXES` would swallow it silently) so a
+                # future bump's silent skip shows up in the Log panel.
+                # Deliberately NOT tagged with a known alert tag (see
+                # `_known_alert_tags()`) and NOT given an `alert_event`
+                # — an auto-skipped seed row is an operational/startup
+                # notice for the operator to review at their own pace,
+                # not something that should page Telegram/ntfy, and an
+                # alert-shaped tag here would also risk this record
+                # itself being classified "unrouted" by
+                # `_looks_alert_shaped()` if no agent's conditions
+                # happen to cover it.
+                _EVENTS_LOGGER.warning(
+                    "event_agents: seed '%s' skipped — row was operator-"
+                    "modified since it was last seeded (seed_version bumped "
+                    "to %s so this is reported once per code version, not "
+                    "once per restart)",
+                    spec["slug"], SEED_VERSION,
                 )
         await s.commit()

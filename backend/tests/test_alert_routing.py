@@ -139,13 +139,36 @@ def test_user_registered_agent_resolves_to_telegram_and_ntfy_high():
     ]
 
 
-def test_unrouted_alert_agent_events_matches_catch_all_channels():
-    """`alert_routing.CATCH_ALL_CHANNELS` is a deliberate, documented
-    duplication of `UNROUTED_ALERT_AGENT["events"]` (can't import from
-    `event_agents.py` without a circular import — see that constant's
-    own comment) — this test is what keeps the two from silently
-    drifting apart."""
+def test_unrouted_alert_agent_events_is_derived_from_catch_all_channels():
+    """2026-10 routing-tree plan (Step 4 / Task B) — `UNROUTED_ALERT_AGENT
+    ["events"]` (event_agents.py) is built directly from
+    `alert_routing.CATCH_ALL_CHANNELS` at import time
+    (`[dict(ch) for ch in CATCH_ALL_CHANNELS]`), not a hand-duplicated
+    literal kept in sync only by a byte-for-byte equality test (the
+    prior version of this test). `event_agents.py` already imports
+    `alert_routing.py` at module scope, so the two modules were
+    re-imported together at interpreter startup, before this test
+    module's own `import` line ran — mutating the live constant here
+    only proves the deep-copy relationship, it does not re-trigger the
+    build."""
+    # Equal in content...
     assert alert_routing.CATCH_ALL_CHANNELS == event_agents.UNROUTED_ALERT_AGENT["events"]
+    # ...but a genuine copy, not an aliased reference — the outer lists
+    # are different objects, and so is every inner dict (a plain
+    # `list(...)` shallow copy would still share the inner dicts; this
+    # guards against that weaker form too).
+    assert alert_routing.CATCH_ALL_CHANNELS is not event_agents.UNROUTED_ALERT_AGENT["events"]
+    for shared, owned in zip(alert_routing.CATCH_ALL_CHANNELS, event_agents.UNROUTED_ALERT_AGENT["events"]):
+        assert shared is not owned
+    # Mutating the live constant must never reach back into the
+    # already-built agent spec — proves this is a one-time copy at
+    # import time, not a live/lazy reference.
+    sentinel = {"channel": "__sentinel__", "enabled": True}
+    alert_routing.CATCH_ALL_CHANNELS.append(sentinel)
+    try:
+        assert sentinel not in event_agents.UNROUTED_ALERT_AGENT["events"]
+    finally:
+        alert_routing.CATCH_ALL_CHANNELS.remove(sentinel)
 
 
 def test_resolve_channels_falls_through_to_catch_all_when_nothing_matches():
