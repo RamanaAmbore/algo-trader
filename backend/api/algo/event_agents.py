@@ -25,6 +25,18 @@ from backend.shared.helpers.ramboq_logger import get_logger
 # look identical to what they did before the Sprint 6 move.
 _EVENTS_LOGGER = get_logger("backend.api.algo.events")
 
+# This module's OWN logger (`backend.api.algo.event_agents`) — used for
+# the per-record dispatch trace (council item 4) and the catch-all
+# "unrouted alertable record" self-alert (council item 5, safety net).
+# Deliberately NOT routed through `_EVENTS_LOGGER` above: this exact
+# module name is one of `log_store.py`'s own `_SKIP_PREFIXES`, so
+# anything logged via `_logger` below is structurally guaranteed to
+# never be captured by `LogStoreHandler` and can therefore never loop
+# back into `dispatch_rows()` — a real guarantee, not a sentinel flag
+# that a future call site could forget to set. See `_emit_unrouted_
+# self_alert()`'s docstring for why that guarantee matters here.
+_logger = get_logger(__name__)
+
 _CACHE_S = 60.0
 _cache: dict = {"at": float("-inf"), "agents": []}
 
@@ -505,6 +517,30 @@ async def _send_channel(ch: dict, out: tuple, agent) -> bool:
         return False
 
 
+def _dispatch_trace(agent, rec: dict, channel_name: "str | None",
+                     resolved: "dict | None", decision: str) -> None:
+    """Per-record/per-channel dispatch trace (council item 4) — a single
+    DEBUG line stating: matched agent/tag -> resolved channel+priority
+    -> whether a code-level gate (the action-required ntfy override, see
+    `_apply_action_required_ntfy_gate`) changed or suppressed it -> the
+    final decision. This is the one place that makes the hidden second
+    gate's effect visible — without it, "what's configured" on an
+    agent's own `events` list and "what actually fired" can silently
+    diverge with no trace anywhere (the UX review's finding). DEBUG-only
+    and routed through this module's own skip-listed logger (see
+    `_logger`'s module-level comment) — it is a diagnostic, never itself
+    alert-shaped, and costs nothing when DEBUG logging is off."""
+    if not _logger.isEnabledFor(10):  # logging.DEBUG, avoided importing `logging` just for this
+        return
+    extra = rec.get("extra") or {}
+    tag = extra.get("alert_event") or (rec.get("tags") or [None])[0]
+    _logger.debug(
+        "dispatch-trace agent=%s tag=%s channel=%s priority=%s decision=%s",
+        getattr(agent, "slug", None), tag, channel_name,
+        (resolved or {}).get("priority"), decision,
+    )
+
+
 async def _dispatch_record_channels(
     agent, rec: dict, out: tuple, channels: list, log_only: bool,
 ) -> int:
@@ -518,12 +554,14 @@ async def _dispatch_record_channels(
     action_required = (rec.get("extra") or {}).get("action_required")
     sent = 0
     for ch in channels:
+        channel_name = ch.get("channel") if isinstance(ch, dict) else None
         # A `_log_only` record is one the branch gate or sim-notify
         # gate would normally have suppressed entirely — 'log' is
         # exempt from both (local log write, no external notification
         # cost), every other channel in the SAME record still must not
         # fire. See dispatch_rows docstring for the full rationale.
         if log_only and (not isinstance(ch, dict) or ch.get("channel") != "log"):
+            _dispatch_trace(agent, rec, channel_name, None, "suppressed_log_only")
             continue
         eff_ch = _channel_with_tracked_priority(ch, rec_priority)
         # 2026-10-23 chase robustness (fix #4) — binary ntfy gate: skips
@@ -531,10 +569,17 @@ async def _dispatch_record_channels(
         # action-required one, leaves every other channel/record type
         # unchanged. See `_apply_action_required_ntfy_gate`'s own
         # docstring.
-        eff_ch = _apply_action_required_ntfy_gate(eff_ch, action_required)
-        if eff_ch is None:
+        gated_ch = _apply_action_required_ntfy_gate(eff_ch, action_required)
+        if gated_ch is None:
+            _dispatch_trace(agent, rec, channel_name, eff_ch, "suppressed_action_required_gate")
             continue
-        if await _send_channel(eff_ch, out, agent):
+        override_applied = gated_ch != eff_ch
+        ok = await _send_channel(gated_ch, out, agent)
+        decision = "sent" if ok else "send_failed"
+        if override_applied:
+            decision = f"{decision}_gate_override_applied"
+        _dispatch_trace(agent, rec, channel_name, gated_ch, decision)
+        if ok:
             sent += 1
     return sent
 
@@ -670,6 +715,81 @@ async def dispatch(records: list[dict], agents: list) -> int:
     return sent
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Catch-all for an unrouted alert-shaped record (council item 5, risk +
+# research safety net) — a record that LOOKS like it should alert
+# (carries a known alert-tag, at WARNING+) but matches zero active event
+# agent's `conditions` used to be silently dropped with no trace at all.
+# Now it gets exactly one WARNING self-alert instead.
+
+_LEVEL_ORDER = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+
+
+def _level_at_least(level: "str | None", floor: str) -> bool:
+    try:
+        return _LEVEL_ORDER.index((level or "INFO").upper()) >= _LEVEL_ORDER.index(floor)
+    except ValueError:
+        return False
+
+
+def _known_alert_tags() -> set[str]:
+    """DSL-token reuse-first: the vocabulary is `LOG_TAG_TOKENS`
+    (`agent_grammar.yaml`'s `log_tags.tags`), the SAME catalog
+    `validate_seed_spec()` already checks a seeded agent's own
+    `conditions` against — never a second hardcoded list that could
+    drift from it."""
+    from backend.api.algo.grammar import LOG_TAG_TOKENS
+    return {t["token"] for t in LOG_TAG_TOKENS}
+
+
+def _looks_alert_shaped(rec: dict) -> bool:
+    """A record that looks like it should have alerted: WARNING+ level,
+    carrying at least one tag from the known alert-tag vocabulary."""
+    if not _level_at_least(rec.get("level"), "WARNING"):
+        return False
+    tags = rec.get("tags") or []
+    return bool(set(tags) & _known_alert_tags())
+
+
+def _record_matches_any_agent(rec: dict, agents: list) -> bool:
+    """True if at least one agent's own `conditions` match this record —
+    independent of channel-level suppression/gating downstream (a
+    record that matched an agent but had every channel filtered out by
+    `_log_only`/the action-required gate is NOT "unrouted"; it was
+    routed, delivery was just suppressed by design — out of scope for
+    this catch-all, which is only about condition matching, per the
+    plan's own wording)."""
+    for agent in agents:
+        try:
+            if evaluate(agent.conditions, Context(log_records=[rec])):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _emit_unrouted_self_alert(rec: dict) -> None:
+    """Log the one WARNING self-alert for an unrouted alert-shaped
+    record. Mirrors the existing "[CRITICAL]-log-once-per-process"
+    pattern already used elsewhere for a structurally-similar "this
+    should never silently vanish" case (see CLAUDE.md's postback-
+    token-absent note).
+
+    Recursion guard: logged via `_logger` (this module's own name),
+    which `log_store.py:_SKIP_PREFIXES` already excludes from
+    `LogStoreHandler` capture entirely — this call can NEVER itself
+    reach `dispatch_rows()`/`_record_matches_any_agent()` again, by
+    construction (the module name it's filtered on), not by a sentinel
+    flag on the record that a future refactor could drop."""
+    extra = rec.get("extra") or {}
+    tags = ",".join(rec.get("tags") or [])
+    _logger.warning(
+        "unrouted alertable record: tag=%s level=%s logger=%s alert_event=%s message=%s",
+        tags, rec.get("level"), rec.get("logger"), extra.get("alert_event"),
+        (rec.get("message") or "")[:200],
+    )
+
+
 async def load_agents() -> list:
     now = time.monotonic()
     if now - _cache["at"] < _CACHE_S:
@@ -733,8 +853,27 @@ async def dispatch_rows(rows: list[dict]) -> None:
         agents = await load_agents()
         if agents and rows:
             await dispatch(rows, agents)
+        _run_unrouted_catch_all(rows, agents)
     except Exception as e:
         sys.stderr.write(f"event_agents: dispatch failed: {e}\n")
+
+
+def _run_unrouted_catch_all(rows: list[dict], agents: list) -> None:
+    """Council item 5 — catch-all for an unrouted alert-shaped record.
+    Extracted from `dispatch_rows` purely to keep that function's
+    cyclomatic complexity within the project's radon gate (same
+    extraction pattern already used for `_dispatch_record_channels`).
+
+    Runs regardless of whether `agents` was non-empty: an empty/failed
+    `load_agents()` result means EVERY alert-shaped row in this batch is
+    correctly flagged unrouted, which is the right signal for a
+    pipeline-wide break (not just one agent's condition being wrong).
+    Condition-matching only — independent of the `_log_only`/action-
+    required channel-level gates, which are legitimate delivery
+    suppression, not "unrouted"."""
+    for r in rows:
+        if _looks_alert_shaped(r) and not _record_matches_any_agent(r, agents):
+            _emit_unrouted_self_alert(r)
 
 
 ERROR_AGENT = {
@@ -892,7 +1031,14 @@ DEPLOY_SYNC_AGENT = {
     "name": "Deploy out of sync",
     "conditions": {"log": {"tag": "deploy", "min_level": "WARNING",
                            "where": {"alert_event": "deploy_out_of_sync"}}},
-    "events": [{"channel": "ntfy", "enabled": True, "priority": "high", "gate": False}],
+    # 2026-10 operator instruction: ntfy removed — a deploy-out-of-sync
+    # notice is a developer/ops concern, not something that should page
+    # a phone. No replacement channel was requested; this stays an empty
+    # `events` list (the agent still fires/renders/logs its condition
+    # match — see `_dispatch_agent` — it simply has no channel to send
+    # to right now). Add a channel here, not a new mechanism, if one is
+    # wanted later.
+    "events": [],
     "actions": [{"type": "render", "render": "deploy_sync"}],
 }
 
@@ -936,64 +1082,75 @@ BREACH_AGENT = {
     "actions": [{"type": "render", "render": "breach"}],
 }
 
-GTT_ASYMMETRIC_AGENT = {
-    "slug": "gtt-asymmetric-alert",
-    "name": "GTT asymmetric",
-    "conditions": {"log": {"tag": "gtt", "min_level": "WARNING",
-                           "where": {"alert_event": "gtt_asymmetric"}}},
-    "events": [
-        {"channel": "telegram", "enabled": True, "gate": False},
-        {"channel": "ntfy", "enabled": True, "priority": "high", "gate": False},
-    ],
-    "actions": [{"type": "render", "render": "generic_notice"}],
-}
+# ─────────────────────────────────────────────────────────────────────
+# Shared table for the `generic_notice` agents (council item 2, 2026-10).
+#
+# These 5 agents already share the identical renderer (`_render_deploy_sync`,
+# registered under the `"generic_notice"` key) and differ only by
+# tag/min_level/alert_event and their own channel list — the ONE place a
+# "collapse" is actually free (see CLAUDE.md's "Net:" conclusion on the
+# 6-agent council review). Per the UX review's explicit instruction, this
+# collapses the MECHANISM, not the identity: each row below still builds
+# its own separately-named, separately-toggleable `Agent` dict (same
+# `slug`/`name` as before, same individual activate/deactivate on the
+# Automation page, same per-row last-fired/count) — only the SOURCE of
+# each dict's `conditions`/`events` moved from a ~15-line literal to one
+# table row + a shared builder. Adding a 6th `generic_notice`-style alert
+# in the future is a table row, not a new dict literal.
+#
+# The resulting `GTT_ASYMMETRIC_AGENT`/`OCO_DOUBLE_FIRE_AGENT`/
+# `TICKER_RECOVERED_AGENT`/`TICKER_DEGRADED_AGENT`/`VISITOR_REPORT_AGENT`
+# module-level dicts below are byte-identical in content to what this
+# file used to spell out as 5 separate literals — confirmed by
+# `test_event_agents.py`'s shared-table-sourcing regression test, which
+# pins the exact dict for every one of them.
+_GENERIC_NOTICE_SPECS: tuple[dict, ...] = (
+    {"slug": "gtt-asymmetric-alert", "name": "GTT asymmetric",
+     "tag": "gtt", "min_level": "WARNING", "alert_event": "gtt_asymmetric",
+     "channels": [
+         {"channel": "telegram", "enabled": True, "gate": False},
+         {"channel": "ntfy", "enabled": True, "priority": "high", "gate": False},
+     ]},
+    {"slug": "oco-double-fire-alert", "name": "OCO double-fire",
+     "tag": "gtt", "min_level": "WARNING", "alert_event": "oco_double_fire",
+     "channels": [
+         {"channel": "telegram", "enabled": True, "gate": False},
+         {"channel": "ntfy", "enabled": True, "priority": "urgent", "gate": False},
+     ]},
+    {"slug": "ticker-recovered-alert", "name": "Ticker recovered",
+     "tag": "broker", "min_level": "INFO", "alert_event": "ticker_recovered",
+     "channels": [
+         {"channel": "telegram", "enabled": True, "gate": False},
+         {"channel": "ntfy", "enabled": True, "priority": "high", "gate": False},
+     ]},
+    {"slug": "ticker-degraded-alert", "name": "Ticker degraded",
+     "tag": "broker", "min_level": "WARNING", "alert_event": "ticker_degraded",
+     "channels": [
+         {"channel": "telegram", "enabled": True, "gate": False},
+         {"channel": "ntfy", "enabled": True, "priority": "urgent", "gate": False},
+     ]},
+    {"slug": "visitor-report-alert", "name": "Visitor report",
+     "tag": "visitor", "min_level": "INFO", "alert_event": "visitor_report",
+     "channels": [{"channel": "telegram_info", "enabled": True, "gate": False}]},
+)
 
-OCO_DOUBLE_FIRE_AGENT = {
-    "slug": "oco-double-fire-alert",
-    "name": "OCO double-fire",
-    "conditions": {"log": {"tag": "gtt", "min_level": "WARNING",
-                           "where": {"alert_event": "oco_double_fire"}}},
-    "events": [
-        {"channel": "telegram", "enabled": True, "gate": False},
-        {"channel": "ntfy", "enabled": True, "priority": "urgent", "gate": False},
-    ],
-    "actions": [{"type": "render", "render": "generic_notice"}],
-}
 
-TICKER_RECOVERED_AGENT = {
-    "slug": "ticker-recovered-alert",
-    "name": "Ticker recovered",
-    "conditions": {"log": {"tag": "broker", "min_level": "INFO",
-                           "where": {"alert_event": "ticker_recovered"}}},
-    "events": [
-        {"channel": "telegram", "enabled": True, "gate": False},
-        {"channel": "ntfy", "enabled": True, "priority": "high", "gate": False},
-    ],
-    "actions": [{"type": "render", "render": "generic_notice"}],
-}
+def _build_generic_notice_agent(spec: dict) -> dict:
+    return {
+        "slug": spec["slug"],
+        "name": spec["name"],
+        "conditions": {"log": {"tag": spec["tag"], "min_level": spec["min_level"],
+                               "where": {"alert_event": spec["alert_event"]}}},
+        "events": spec["channels"],
+        "actions": [{"type": "render", "render": "generic_notice"}],
+    }
 
-TICKER_DEGRADED_AGENT = {
-    "slug": "ticker-degraded-alert",
-    "name": "Ticker degraded",
-    "conditions": {"log": {"tag": "broker", "min_level": "WARNING",
-                           "where": {"alert_event": "ticker_degraded"}}},
-    "events": [
-        {"channel": "telegram", "enabled": True, "gate": False},
-        {"channel": "ntfy", "enabled": True, "priority": "urgent", "gate": False},
-    ],
-    "actions": [{"type": "render", "render": "generic_notice"}],
-}
 
-VISITOR_REPORT_AGENT = {
-    "slug": "visitor-report-alert",
-    "name": "Visitor report",
-    "conditions": {"log": {"tag": "visitor", "min_level": "INFO",
-                           "where": {"alert_event": "visitor_report"}}},
-    "events": [
-        {"channel": "telegram_info", "enabled": True, "gate": False},
-    ],
-    "actions": [{"type": "render", "render": "generic_notice"}],
-}
+GTT_ASYMMETRIC_AGENT = _build_generic_notice_agent(_GENERIC_NOTICE_SPECS[0])
+OCO_DOUBLE_FIRE_AGENT = _build_generic_notice_agent(_GENERIC_NOTICE_SPECS[1])
+TICKER_RECOVERED_AGENT = _build_generic_notice_agent(_GENERIC_NOTICE_SPECS[2])
+TICKER_DEGRADED_AGENT = _build_generic_notice_agent(_GENERIC_NOTICE_SPECS[3])
+VISITOR_REPORT_AGENT = _build_generic_notice_agent(_GENERIC_NOTICE_SPECS[4])
 
 GTT_NOT_ACCEPTED_AGENT = {
     "slug": "gtt-not-accepted-alert",
@@ -1099,17 +1256,65 @@ def event_agent_row_fields(
     }
 
 
+def compute_seed_spec_hash(conditions, events, actions) -> str:
+    """sha256 of the (conditions, events, actions) a seed write is about
+    to put on a row — stored in `Agent.seed_spec_hash` at write time, and
+    recomputed against a row's CURRENT content on the next seed attempt
+    to detect an operator edit in between (see `seed_action()`'s
+    docstring). `sort_keys=True` makes this stable across dict key
+    ordering; `default=str` tolerates any non-JSON-native value the same
+    way `log_store.py:row_for()` already does for `extra`."""
+    import hashlib
+    import json
+    payload = json.dumps(
+        {"conditions": conditions or {}, "events": events or [], "actions": actions or []},
+        sort_keys=True, default=str,
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
 def seed_action(row, current_version: int = SEED_VERSION) -> str:
-    """Decide what seeding does to one agent row: 'insert', 'update', or 'keep'."""
+    """Decide what seeding does to one agent row: 'insert', 'update',
+    'modified_skip', or 'keep'.
+
+    2026-10 fix (council item 3/UX finding): `seed_version` alone does
+    NOT protect an operator's UI edit — `update_agent()` never bumps it,
+    so a row edited via the Automation page stays at whatever version it
+    was last seeded at. The next time `SEED_VERSION` increments for ANY
+    unrelated reason, the old logic saw `row.seed_version < current_version`
+    and unconditionally overwrote the operator's `conditions`/`events`/
+    `actions` back to the hardcoded spec — silently discarding the edit.
+
+    'modified_skip' — `row.seed_version` is behind `current_version`
+    (seeding would normally rewrite this row), but the row's CURRENT
+    `conditions`/`events`/`actions` no longer hash-match
+    `row.seed_spec_hash` (the hash of what seeding last ACTUALLY WROTE
+    here) — the row diverged since that write, i.e. an operator edited
+    it. The caller must skip the content overwrite for this row.
+    `row.seed_spec_hash` is `None` for any row that predates this column
+    or was never seeded — treated as "no write history to compare
+    against", so it falls through to 'update', identical to this
+    function's pre-fix behavior (always update). This is purely
+    additive for legacy/pre-migration data.
+    """
     if row is None:
         return "insert"
-    if int(row.seed_version or 0) < current_version:
-        return "update"
-    return "keep"
+    if int(row.seed_version or 0) >= current_version:
+        return "keep"
+    stored_hash = getattr(row, "seed_spec_hash", None)
+    if stored_hash:
+        current_hash = compute_seed_spec_hash(
+            getattr(row, "conditions", None), getattr(row, "events", None), getattr(row, "actions", None))
+        if current_hash != stored_hash:
+            return "modified_skip"
+    return "update"
 
 
 async def seed_event_agents() -> None:
-    """Insert missing seeded agents. Rewrite an existing row only when the code's seed version is newer."""
+    """Insert missing seeded agents. Rewrite an existing row only when the
+    code's seed version is newer AND the row hasn't been operator-
+    modified since it was last seeded (see `seed_action()`'s docstring
+    for the 'modified_skip' branch)."""
     from backend.api.database import async_session
     from backend.api.models import Agent
     async with async_session() as s:
@@ -1120,9 +1325,10 @@ async def seed_event_agents() -> None:
                 continue
             row = (await s.execute(select(Agent).where(Agent.slug == spec["slug"]))).scalar_one_or_none()
             action = seed_action(row)
+            spec_hash = compute_seed_spec_hash(spec["conditions"], spec["events"], spec["actions"])
             if action == "insert":
                 s.add(Agent(slug=spec["slug"], name=spec["name"], status="active",
-                            seed_version=SEED_VERSION,
+                            seed_version=SEED_VERSION, seed_spec_hash=spec_hash,
                             **event_agent_row_fields(spec["conditions"], spec["events"],
                                                       spec["actions"])))
             elif action == "update":
@@ -1131,4 +1337,18 @@ async def seed_event_agents() -> None:
                 row.actions = spec["actions"]
                 row.kind = "event"
                 row.seed_version = SEED_VERSION
+                row.seed_spec_hash = spec_hash
+            elif action == "modified_skip":
+                # Bump seed_version so this skip is reported once per
+                # code version, not once per restart at the SAME
+                # version — `seed_spec_hash` is deliberately left
+                # untouched (still the hash of the ORIGINAL seed write)
+                # so a FUTURE version bump still correctly detects this
+                # same pre-existing operator edit rather than adopting
+                # the edited content as a new baseline.
+                row.seed_version = SEED_VERSION
+                sys.stderr.write(
+                    f"event_agents: seed '{spec['slug']}' skipped — row was "
+                    f"operator-modified since it was last seeded\n"
+                )
         await s.commit()

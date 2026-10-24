@@ -622,3 +622,398 @@ def test_gtt_not_accepted_agent_is_seeded_and_renders():
     from backend.api.algo import event_agents as ea
     assert ea.GTT_NOT_ACCEPTED_AGENT in ea.SEEDED_AGENTS
     assert ea.validate_seed_spec(ea.GTT_NOT_ACCEPTED_AGENT) == []
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  PLAN Part 1 — generalize the token-driven priority resolver (item 1),
+#  collapse the 5 generic_notice agents onto a shared table (item 2), fix
+#  SEED_VERSION silently overwriting an operator edit (item 3), per-record
+#  dispatch trace (item 4), and the fail-loud unrouted-record catch-all
+#  (item 5). See .claude/PLAN.md Part 1 / docs/specs/ALERT_AGENTS_DESIGN.md.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── Item 1 — generalized token-driven priority resolver ──────────────────
+
+@pytest.mark.asyncio
+async def test_generalized_priority_resolver_applies_to_any_agent_not_just_rich_alert(monkeypatch):
+    """`_rec_tracked_ntfy_priority`/`_channel_with_tracked_priority` are
+    not special-cased to RICH_ALERT_AGENT — ANY agent whose own ntfy
+    channel carries no hardcoded `priority` resolves it from the
+    record's own explicit `priority` token (the `log(priority=...)` DSL
+    param — see `actions.py:emit_log`)."""
+    from backend.api.algo import event_agents
+    sent = []
+    monkeypatch.setitem(event_agents.CHANNELS, "ntfy",
+                        ("ntfy", lambda t, b, tg=None, priority=None: sent.append(priority)))
+    monkeypatch.setattr(event_agents, "_channel_enabled", lambda cap: True)
+    agent = _agent(events=[{"channel": "ntfy", "enabled": True}])  # no hardcoded priority
+    rec = _rec(priority="low")
+    await event_agents.dispatch([rec], [agent])
+    assert sent == ["low"]
+
+
+@pytest.mark.asyncio
+async def test_generalized_priority_resolver_falls_back_to_tier_when_no_explicit_token(monkeypatch):
+    """No explicit `priority` token -> falls back to the agent's own
+    `tier`-derived default, same as RICH_ALERT_AGENT's existing path —
+    zero-regression fallback chain for an agent that opts in to the
+    generalized resolver by omitting a hardcoded priority."""
+    from backend.api.algo import event_agents
+    from backend.shared.helpers.alert_utils import _TIER_TO_NTFY_PRIORITY
+    sent = []
+    monkeypatch.setitem(event_agents.CHANNELS, "ntfy",
+                        ("ntfy", lambda t, b, tg=None, priority=None: sent.append(priority)))
+    monkeypatch.setattr(event_agents, "_channel_enabled", lambda cap: True)
+    agent = SimpleNamespace(
+        slug="t", tier="high", conditions=event_agents.FILL_AGENT["conditions"],
+        events=[{"channel": "ntfy", "enabled": True}], actions=event_agents.FILL_AGENT["actions"],
+    )
+    rec = _rec()  # no priority, no tier token on the record itself
+    await event_agents.dispatch([rec], [agent])
+    assert sent == [_TIER_TO_NTFY_PRIORITY["high"]]
+
+
+@pytest.mark.asyncio
+async def test_generalized_priority_resolver_never_overrides_an_explicit_hardcoded_priority(monkeypatch):
+    """Explicit per-channel priority always wins over a record's token —
+    every currently-hardcoded agent (e.g. CHASE_CANCEL_AGENT's ntfy
+    "urgent") is unaffected if it doesn't opt in to the generalized
+    resolver."""
+    from backend.api.algo import event_agents
+    sent = []
+    monkeypatch.setitem(event_agents.CHANNELS, "ntfy",
+                        ("ntfy", lambda t, b, tg=None, priority=None: sent.append(priority)))
+    monkeypatch.setattr(event_agents, "_channel_enabled", lambda cap: True)
+    agent = _agent(events=[{"channel": "ntfy", "enabled": True, "priority": "urgent"}])
+    rec = _rec(priority="low")
+    await event_agents.dispatch([rec], [agent])
+    assert sent == ["urgent"]
+
+
+# ── Item 2 — 5 generic_notice agents sourced from one shared table ───────
+
+def test_generic_notice_agents_sourced_from_shared_table_byte_identical():
+    """Each of the 5 agents is still a separately-named dict built from
+    `_GENERIC_NOTICE_SPECS` + `_build_generic_notice_agent()` — the
+    collapse is to the MECHANISM, not the identity (council item 2 /
+    UX review). Pins the exact pre-collapse content for every one."""
+    from backend.api.algo import event_agents as ea
+    assert ea.GTT_ASYMMETRIC_AGENT == {
+        "slug": "gtt-asymmetric-alert", "name": "GTT asymmetric",
+        "conditions": {"log": {"tag": "gtt", "min_level": "WARNING",
+                               "where": {"alert_event": "gtt_asymmetric"}}},
+        "events": [
+            {"channel": "telegram", "enabled": True, "gate": False},
+            {"channel": "ntfy", "enabled": True, "priority": "high", "gate": False},
+        ],
+        "actions": [{"type": "render", "render": "generic_notice"}],
+    }
+    assert ea.OCO_DOUBLE_FIRE_AGENT == {
+        "slug": "oco-double-fire-alert", "name": "OCO double-fire",
+        "conditions": {"log": {"tag": "gtt", "min_level": "WARNING",
+                               "where": {"alert_event": "oco_double_fire"}}},
+        "events": [
+            {"channel": "telegram", "enabled": True, "gate": False},
+            {"channel": "ntfy", "enabled": True, "priority": "urgent", "gate": False},
+        ],
+        "actions": [{"type": "render", "render": "generic_notice"}],
+    }
+    assert ea.TICKER_RECOVERED_AGENT == {
+        "slug": "ticker-recovered-alert", "name": "Ticker recovered",
+        "conditions": {"log": {"tag": "broker", "min_level": "INFO",
+                               "where": {"alert_event": "ticker_recovered"}}},
+        "events": [
+            {"channel": "telegram", "enabled": True, "gate": False},
+            {"channel": "ntfy", "enabled": True, "priority": "high", "gate": False},
+        ],
+        "actions": [{"type": "render", "render": "generic_notice"}],
+    }
+    assert ea.TICKER_DEGRADED_AGENT == {
+        "slug": "ticker-degraded-alert", "name": "Ticker degraded",
+        "conditions": {"log": {"tag": "broker", "min_level": "WARNING",
+                               "where": {"alert_event": "ticker_degraded"}}},
+        "events": [
+            {"channel": "telegram", "enabled": True, "gate": False},
+            {"channel": "ntfy", "enabled": True, "priority": "urgent", "gate": False},
+        ],
+        "actions": [{"type": "render", "render": "generic_notice"}],
+    }
+    assert ea.VISITOR_REPORT_AGENT == {
+        "slug": "visitor-report-alert", "name": "Visitor report",
+        "conditions": {"log": {"tag": "visitor", "min_level": "INFO",
+                               "where": {"alert_event": "visitor_report"}}},
+        "events": [{"channel": "telegram_info", "enabled": True, "gate": False}],
+        "actions": [{"type": "render", "render": "generic_notice"}],
+    }
+
+
+def test_generic_notice_agents_are_every_spec_in_the_shared_table():
+    """Every row in `_GENERIC_NOTICE_SPECS` produces a SEEDED_AGENTS
+    entry, and no `generic_notice` agent exists outside the table —
+    guards against a future agent being added as a one-off literal
+    instead of a table row."""
+    from backend.api.algo import event_agents as ea
+    built_slugs = {ea._build_generic_notice_agent(spec)["slug"] for spec in ea._GENERIC_NOTICE_SPECS}
+    generic_notice_slugs = {
+        spec["slug"] for spec in ea.SEEDED_AGENTS
+        if any(isinstance(a, dict) and a.get("render") == "generic_notice" for a in spec.get("actions") or [])
+    }
+    assert built_slugs == generic_notice_slugs == {
+        "gtt-asymmetric-alert", "oco-double-fire-alert", "ticker-recovered-alert",
+        "ticker-degraded-alert", "visitor-report-alert",
+    }
+
+
+# ── Item 3 — SEED_VERSION no longer silently overwrites an operator edit ──
+
+def test_seed_action_updates_when_row_matches_its_last_seed_write():
+    """No operator edit happened — the row's current content still
+    hashes to what seeding last wrote — so a version bump proceeds to
+    update, same as before this fix for an unmodified row."""
+    from backend.api.algo.event_agents import seed_action, compute_seed_spec_hash
+    cond, ev, act = {"log": {"tag": "gtt"}}, [{"channel": "ntfy"}], []
+    row = SimpleNamespace(seed_version=0, seed_spec_hash=compute_seed_spec_hash(cond, ev, act),
+                          conditions=cond, events=ev, actions=act)
+    assert seed_action(row, current_version=1) == "update"
+
+
+def test_seed_action_skips_overwrite_of_an_operator_modified_row():
+    """The row's CURRENT events no longer match what seeding last wrote
+    (`seed_spec_hash`) — an operator edited it via the UI since. A
+    version bump must not silently discard that edit."""
+    from backend.api.algo.event_agents import seed_action, compute_seed_spec_hash
+    cond, act = {"log": {"tag": "gtt"}}, []
+    original_hash = compute_seed_spec_hash(cond, [{"channel": "ntfy"}], act)
+    row = SimpleNamespace(seed_version=0, seed_spec_hash=original_hash,
+                          conditions=cond, events=[{"channel": "telegram"}], actions=act)
+    assert seed_action(row, current_version=1) == "modified_skip"
+
+
+def test_seed_action_still_updates_a_legacy_row_with_no_hash_history():
+    """A row that predates `seed_spec_hash` (or was never seeded) has no
+    write history to compare against — falls through to 'update',
+    identical to this function's pre-fix behavior for legacy data."""
+    from backend.api.algo.event_agents import seed_action
+    row = SimpleNamespace(seed_version=0, conditions={}, events=[], actions=[])
+    assert seed_action(row, current_version=1) == "update"
+    assert not hasattr(row, "seed_spec_hash")
+
+
+def test_compute_seed_spec_hash_is_deterministic_and_key_order_independent():
+    from backend.api.algo.event_agents import compute_seed_spec_hash
+    a = compute_seed_spec_hash({"b": 1, "a": 2}, [{"channel": "ntfy"}], [])
+    b = compute_seed_spec_hash({"a": 2, "b": 1}, [{"channel": "ntfy"}], [])
+    assert a == b
+    assert a == compute_seed_spec_hash({"a": 2, "b": 1}, [{"channel": "ntfy"}], [])
+    assert a != compute_seed_spec_hash({"a": 3, "b": 1}, [{"channel": "ntfy"}], [])
+
+
+@pytest.mark.asyncio
+async def test_seed_event_agents_preserves_operator_edit_and_logs_skip(monkeypatch, capsys):
+    """End-to-end through `seed_event_agents()` itself: an operator-edited
+    row (current content diverges from its stored seed hash) is NOT
+    overwritten when the code's `SEED_VERSION` is bumped, and the skip
+    is reported — but `seed_version` IS bumped so this isn't re-reported
+    on every restart at the same code version."""
+    from backend.api.algo import event_agents as ea
+
+    spec = ea.FILL_AGENT
+    original_hash = ea.compute_seed_spec_hash(spec["conditions"], spec["events"], spec["actions"])
+    edited_events = [{"channel": "email", "enabled": True}]  # operator's edit via the UI
+    row = SimpleNamespace(
+        slug=spec["slug"], name=spec["name"], status="active", kind="event",
+        seed_version=0, seed_spec_hash=original_hash,
+        conditions=spec["conditions"], events=edited_events, actions=spec["actions"],
+    )
+
+    class _FakeResult:
+        def scalar_one_or_none(self):
+            return row
+
+    class _FakeSession:
+        def __init__(self):
+            self.committed = False
+
+        async def execute(self, *_a, **_k):
+            return _FakeResult()
+
+        async def commit(self):
+            self.committed = True
+
+        def add(self, *_a, **_k):
+            raise AssertionError("insert must not be attempted for an existing row")
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    def _session_factory():
+        return _FakeSession()
+
+    monkeypatch.setattr(ea, "SEEDED_AGENTS", (spec,))
+    import backend.api.database as db
+    monkeypatch.setattr(db, "async_session", _session_factory)
+    await ea.seed_event_agents()
+    assert row.events == edited_events, "operator's edit must survive the seed pass"
+    assert row.seed_version == ea.SEED_VERSION, "seed_version still advances so the skip isn't re-reported forever"
+    assert row.seed_spec_hash == original_hash, "hash stays at the ORIGINAL write so a future bump re-detects the same edit"
+    assert "operator-modified" in capsys.readouterr().err
+
+
+# ── Item 4 — per-record dispatch trace ────────────────────────────────────
+
+class _FakeTraceLogger:
+    def __init__(self):
+        self.debug_calls: list[str] = []
+        self.warning_calls: list[str] = []
+
+    def isEnabledFor(self, _level):
+        return True
+
+    def debug(self, msg, *args):
+        self.debug_calls.append(msg % args if args else msg)
+
+    def warning(self, msg, *args):
+        self.warning_calls.append(msg % args if args else msg)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_trace_logs_sent_decision_per_channel(monkeypatch, senders):
+    """One DEBUG trace line per channel: matched agent slug/tag ->
+    resolved channel/priority -> final decision. Does not change what
+    actually gets sent (senders fixture still records the real sends)."""
+    from backend.api.algo import event_agents
+    fake = _FakeTraceLogger()
+    monkeypatch.setattr(event_agents, "_logger", fake)
+    agent = _agent(events=_TG_NTFY_EVENTS)
+    await event_agents.dispatch([_rec()], [agent])
+    assert any("channel=telegram" in c and "decision=sent" in c for c in fake.debug_calls)
+    assert any("channel=ntfy" in c and "decision=sent" in c for c in fake.debug_calls)
+    assert any("agent=t" in c for c in fake.debug_calls)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_trace_logs_action_required_gate_override(monkeypatch):
+    """The hidden second gate (`_apply_action_required_ntfy_gate`) is
+    exactly the kind of "what's configured != what fired" divergence
+    the UX review flagged — the trace must show it was applied."""
+    from backend.api.algo import event_agents
+    import backend.shared.helpers.utils as u
+    monkeypatch.setattr(u, "is_enabled", lambda cap: True)
+    fake = _FakeTraceLogger()
+    monkeypatch.setattr(event_agents, "_logger", fake)
+    agent = _agent(events=[{"channel": "ntfy", "enabled": True}])
+    rec = _rec(action_required=False)  # pure-FYI -> ntfy gate suppresses it entirely
+    sent = await event_agents.dispatch([rec], [agent])
+    assert sent == 0
+    assert any("suppressed_action_required_gate" in c for c in fake.debug_calls)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_trace_logs_log_only_suppression(monkeypatch):
+    """A `_log_only` record (branch/sim gate) suppressing a non-'log'
+    channel is also traced."""
+    from backend.api.algo import event_agents
+    fake = _FakeTraceLogger()
+    monkeypatch.setattr(event_agents, "_logger", fake)
+    agent = _agent(events=[{"channel": "telegram", "enabled": True}])
+    rec = _rec()
+    rec["_log_only"] = True
+    sent = await event_agents.dispatch([rec], [agent])
+    assert sent == 0
+    assert any("suppressed_log_only" in c for c in fake.debug_calls)
+
+
+# ── Item 5 — fail-loud catch-all for an unrouted alert-shaped record ─────
+
+@pytest.mark.asyncio
+async def test_unrouted_alert_shaped_record_emits_one_self_alert(monkeypatch):
+    """A WARNING+ record carrying a known alert tag ('chase') that
+    matches zero active agent's conditions must emit exactly one
+    WARNING self-alert instead of vanishing silently."""
+    from backend.api.algo import event_agents as ea
+    from backend.shared.helpers import utils as u
+    monkeypatch.setattr(u, "config", {"deploy_branch": "main"})
+    fake = _FakeTraceLogger()
+    monkeypatch.setattr(ea, "_logger", fake)
+
+    async def load():
+        # A real agent, but its condition is on a DIFFERENT (still
+        # known/valid) tag, so it legitimately does not match.
+        return [SimpleNamespace(slug="x", conditions={"log": {"tag": "orders", "min_level": "INFO"}},
+                                events=[], actions=[])]
+
+    monkeypatch.setattr(ea, "load_agents", load)
+    rec = {"ts": datetime(2026, 10, 6, 9, 0, tzinfo=timezone.utc), "level": "WARNING",
+           "logger": "backend.api.algo.chase", "message": "boom", "tags": ["chase"], "extra": {}}
+    await ea.dispatch_rows([rec])
+    assert len(fake.warning_calls) == 1
+    assert "unrouted alertable record" in fake.warning_calls[0]
+    assert "tag=chase" in fake.warning_calls[0]
+    assert "level=WARNING" in fake.warning_calls[0]
+
+
+@pytest.mark.asyncio
+async def test_matched_alert_shaped_record_does_not_trigger_the_catch_all(monkeypatch):
+    """A record matching at least one agent's conditions is routed, not
+    unrouted — no self-alert, even if its channels end up suppressed
+    downstream (that's a delivery decision, not a routing failure)."""
+    from backend.api.algo import event_agents as ea
+    from backend.shared.helpers import utils as u
+    monkeypatch.setattr(u, "config", {"deploy_branch": "main"})
+    fake = _FakeTraceLogger()
+    monkeypatch.setattr(ea, "_logger", fake)
+
+    async def load():
+        return [SimpleNamespace(slug="x", conditions={"log": {"tag": "chase", "min_level": "INFO"}},
+                                events=[], actions=[])]
+
+    monkeypatch.setattr(ea, "load_agents", load)
+    rec = {"ts": datetime(2026, 10, 6, 9, 0, tzinfo=timezone.utc), "level": "WARNING",
+           "logger": "backend.api.algo.chase", "message": "boom", "tags": ["chase"], "extra": {}}
+    await ea.dispatch_rows([rec])
+    assert fake.warning_calls == []
+
+
+@pytest.mark.asyncio
+async def test_info_level_record_never_triggers_the_catch_all(monkeypatch):
+    """Below WARNING is never "alert-shaped" at all, matched or not —
+    the catch-all only concerns records that LOOK like they should have
+    alerted."""
+    from backend.api.algo import event_agents as ea
+    from backend.shared.helpers import utils as u
+    monkeypatch.setattr(u, "config", {"deploy_branch": "main"})
+    fake = _FakeTraceLogger()
+    monkeypatch.setattr(ea, "_logger", fake)
+    monkeypatch.setattr(ea, "load_agents", lambda: _async_empty_agents())
+    rec = {"ts": datetime(2026, 10, 6, 9, 0, tzinfo=timezone.utc), "level": "INFO",
+           "logger": "backend.api.algo.chase", "message": "fyi", "tags": ["chase"], "extra": {}}
+    await ea.dispatch_rows([rec])
+    assert fake.warning_calls == []
+
+
+@pytest.mark.asyncio
+async def test_unknown_tag_never_triggers_the_catch_all():
+    """A tag outside the known `LOG_TAG_TOKENS` vocabulary is not
+    "alert-shaped" by this catch-all's definition — only a record
+    carrying a RECOGNISED alert-tag counts."""
+    from backend.api.algo import event_agents as ea
+    rec = {"level": "WARNING", "tags": ["totally-made-up-tag"], "extra": {}}
+    assert ea._looks_alert_shaped(rec) is False
+
+
+def test_recursion_guard_the_self_alert_logger_is_skip_listed():
+    """The catch-all's own logger name must be exactly the module name
+    `log_store.py:_SKIP_PREFIXES` already excludes from capture — this
+    is what structurally prevents the self-alert from ever looping back
+    into dispatch_rows(), independent of any sentinel flag."""
+    from backend.shared.helpers.log_store import _SKIP_PREFIXES
+    from backend.api.algo import event_agents as ea
+    assert ea._logger.name in _SKIP_PREFIXES
+    assert ea._logger.name == "backend.api.algo.event_agents"
+
+
+async def _async_empty_agents():
+    return []

@@ -1182,8 +1182,24 @@ class Agent(Base):
     # 'cycle' agents are evaluated each engine tick; 'event' agents match each new log record.
     kind: Mapped[str]            = mapped_column(String(16), nullable=False, default="cycle", server_default=text("'cycle'"))
     # Version of the seeded definition last written to this row. Seeding only rewrites a
-    # row when the code's version is newer, so operator edits survive restarts.
+    # row when the code's version is newer.
+    #
+    # `seed_version` alone does NOT make operator edits survive restarts, despite the
+    # comment that used to live here — `update_agent()` (routes/agents.py) never bumps
+    # this column, so an operator UI edit to a seeded row leaves it at whatever version
+    # it was last seeded at. The NEXT time `SEED_VERSION` increments for any unrelated
+    # reason, `seed_action()` sees `row.seed_version < current_version` and silently
+    # overwrites the operator's edited `conditions`/`events`/`actions` right back to the
+    # hardcoded spec (2026-10 fix). `seed_spec_hash` closes that gap: it's a sha256 of
+    # the (conditions, events, actions) this code last ACTUALLY WROTE to this row,
+    # recomputed against the row's CURRENT content on the next seed attempt — a mismatch
+    # means the row diverged from what seeding wrote (an operator edit happened since),
+    # and `seed_action()` skips the overwrite instead of discarding it. NULL for every
+    # row seeded before this column existed (and for any non-seeded/operator-authored
+    # row) — `seed_action()` treats NULL as "no history to compare against", i.e. safe to
+    # update, same as today's pre-fix behavior, so this is purely additive for legacy data.
     seed_version: Mapped[int]    = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
+    seed_spec_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     lifespan_type: Mapped[str]   = mapped_column(
         String(16), nullable=False, default="persistent"
     )

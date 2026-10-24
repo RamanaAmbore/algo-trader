@@ -1133,6 +1133,28 @@ async def _migrate_agents_has_explicit_alert(conn) -> None:
     ))
 
 
+async def _migrate_agents_seed_spec_hash(conn) -> None:
+    """Additive migration — `agents.seed_spec_hash` (2026-10 fix for
+    `seed_action()` silently overwriting an operator's UI edit to a
+    seeded `kind='event'` agent on the next `SEED_VERSION` bump — see
+    `Agent.seed_spec_hash`'s own model-column comment for the full
+    mechanism). Nullable, no default — every pre-existing row reads back
+    `NULL`, which `seed_action()` treats as "no seed-write history to
+    compare against" (safe to update, identical to today's pre-fix
+    behavior for legacy data; only rows seeded AFTER this column exists
+    get the new protection). Same pattern as every other migration here:
+    `SET LOCAL lock_timeout` bounds how long this can wait behind any
+    in-flight row lock, plain `ADD COLUMN IF NOT EXISTS` so it's a no-op
+    on an already-migrated DB. No index — only ever compared against a
+    single row's own freshly-read `conditions`/`events`/`actions`,
+    never scanned by WHERE clause."""
+    from sqlalchemy import text
+    await conn.execute(text("SET LOCAL lock_timeout = '5s'"))
+    await conn.execute(text(
+        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS seed_spec_hash VARCHAR(64)"
+    ))
+
+
 async def _migrate_agents_bracket_columns(conn) -> None:
     """Additive migration — `agents.legacy_template_id` +
     `agents.bracket_config` (Sprint E, Agent/Bracket/Template
@@ -1301,6 +1323,7 @@ async def init_db() -> None:
         await _migrate_agents_preamble(conn)
         await _migrate_agents_preamble_alert_cooldown(conn)
         await _migrate_agents_has_explicit_alert(conn)
+        await _migrate_agents_seed_spec_hash(conn)
         await _migrate_drop_position_pairs_table(conn)
         await _migrate_market_special_sessions_source(conn)
     logger.info("Database: tables verified")

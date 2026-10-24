@@ -434,7 +434,17 @@ async def test_mcp_ping_sends_recorded_html_to_telegram_only(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_deploy_sync_sends_title_and_body_at_high_priority(monkeypatch):
+async def test_deploy_sync_no_longer_sends_to_ntfy(monkeypatch):
+    """2026-10 operator instruction: DEPLOY_SYNC_AGENT's ntfy channel was
+    removed outright (a deploy-out-of-sync notice is a dev/ops concern,
+    not something that should page a phone) — no replacement channel
+    was requested. This is one of the explicitly-sanctioned cases where
+    this golden file's expected values change: the operator deliberately
+    changed this agent's behavior, this isn't a regression. Was named
+    `test_deploy_sync_sends_title_and_body_at_high_priority` and asserted
+    a single ntfy send at "high" priority; now asserts the opposite —
+    the record still matches/renders (condition + renderer unchanged),
+    it simply has zero configured channels to send to."""
     from backend.api.algo import event_agents
     import backend.shared.helpers.utils as u
     sent = []
@@ -448,8 +458,10 @@ async def test_deploy_sync_sends_title_and_body_at_high_priority(monkeypatch):
                      "title": "Deploy out of sync — main", "body": "Local HEAD abc12345 != origin/main"}}
     agent = SimpleNamespace(slug="deploy-sync-alert",
                             **{k: event_agents.DEPLOY_SYNC_AGENT[k] for k in ("conditions", "events", "actions")})
-    await event_agents.dispatch([rec], [agent])
-    assert sent == [("Deploy out of sync — main", "Local HEAD abc12345 != origin/main", "high")]
+    assert event_agents.DEPLOY_SYNC_AGENT["events"] == []
+    sent_count = await event_agents.dispatch([rec], [agent])
+    assert sent == []
+    assert sent_count == 0
 
 
 @pytest.mark.asyncio

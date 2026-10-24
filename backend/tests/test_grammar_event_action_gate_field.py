@@ -219,10 +219,16 @@ class TestSeededAgentsGateKeysAreDeclared:
         `alert_utils._alert_route()` dispatcher; 2026-10-23 order-poll
         consolidation added `order-correction-alert`, gated the same way
         as `order-failure-alert` since both are safety-critical and must
-        never be silenced by a dev capability toggle): 14 of the real
+        never be silenced by a dev capability toggle): 13 of the real
         seeded agents carry a channel-level `gate` key. If this count
         changes, the commit's own inventory claim is now wrong — update
-        both in lockstep, don't just bump the number here."""
+        both in lockstep, don't just bump the number here.
+
+        `deploy-sync-alert` dropped out of this set 2026-10 (operator
+        instruction) when its only channel (ntfy, which carried the
+        `gate` key) was removed outright — it now has an empty `events`
+        list, so there is no channel entry left to carry a `gate` key.
+        """
         slugs = {
             agent["slug"]
             for agent in ea.SEEDED_AGENTS
@@ -231,7 +237,7 @@ class TestSeededAgentsGateKeysAreDeclared:
         assert slugs == {
             "order-failure-alert", "order-correction-alert", "template-guard-alert",
             "template-attach-fail-alert",
-            "mcp-ping-alert", "deploy-sync-alert", "agent-alert-rich",
+            "mcp-ping-alert", "agent-alert-rich",
             "market-summary", "gtt-not-accepted-alert",
             "gtt-asymmetric-alert", "oco-double-fire-alert",
             "ticker-recovered-alert", "ticker-degraded-alert", "visitor-report-alert",
