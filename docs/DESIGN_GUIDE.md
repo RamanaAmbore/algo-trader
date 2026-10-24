@@ -6178,6 +6178,70 @@ contract. `/preflight` still accepts `paired_legs` for read-only API callers.
 
 # Part VII — Operations
 
+## 22.32 Agent DSL — unified grammar, saved-agent preamble execution, explicit alerts (2026-10-23)
+
+**What changed.** The Console grammar (`frontend/src/lib/command/grammars/agents.js`) has one
+statement vocabulary. `GIVEN` and the `ALERT` clause keyword are gone. `WHEN … DO …` is the one
+optional, paired conditional wrapper. Everything before `WHEN` is a **preamble** of calls. It runs
+whether or not a condition matches. The compiled agent JSON gained `preamble: list[dict]`. Each entry
+is `{"type":"alert","events":[...]}` or `{"type":<action>,"params":{...}}`. Items 3, 5 and 7 of
+the plan added the `help(<name>)` action, the `log` rename with its `priority` argument, and the
+structural DEBUG exemption. Those are described in CLAUDE.md, "emit_log→log rename".
+
+**Two execution models.** A bare Console statement with no save step runs its calls once,
+synchronously, at submission (unchanged). A saved, polled `Agent` runs its preamble inside
+`run_cycle` via `_cycle_run_preamble()` (`backend/api/algo/agent_engine.py`). Each call type gets
+one of three treatments:
+
+| Treatment | Types | Gate |
+|---|---|---|
+| Every cycle, uncapped | `help`, `log(level="debug")` | None. No DB claim. |
+| Every cycle, windowed | `alert`, `log` at non-debug levels | `Agent.preamble_alert_last_fired_at` vs. `cooldown_minutes`. |
+| Once per activation | `order`, `place_order`, `close_position`, `cancel_order`, `bracket`, any other action | Atomic `UPDATE agents SET preamble_fired_at=… WHERE id=… AND preamble_fired_at IS NULL`. |
+
+The three gates use three independent columns or sets, so one cannot corrupt another. The windowed
+gate is not the ordered-condition cooldown (`_cycle_in_cooldown`), because a preamble-only agent
+never reaches `status='cooldown'`. Activation is a real inactive/paused → active transition in
+`_age_set_status` (`routes/agents.py`). That transition resets `preamble_fired_at` and
+`preamble_alert_last_fired_at`. Re-activating an active or cooldown agent does not reset them.
+
+**Why the once-bucket exists.** Before this change a saved agent with `order(...)` in its preamble
+would have placed a real broker order each cooldown window, indefinitely. The fix is claim-then-fire.
+A DB failure on the claim fails safe. Replay skips the entire preamble, because the replay writer
+records any action type as an order row. Simulator runs use isolated `alert_state` sets, never the
+DB columns.
+
+**Preamble-only guard.** A preamble-only statement compiles its `conditions` to the always-true
+sentinel used by the scheduled market-open agents. `_cycle_agent_is_preamble_only()` returns before
+matches are buffered. Without that guard the sentinel would fire a breach alert every window and burn
+`lifespan_max_fires`. The check requires `isinstance(preamble, list)`. A truthy check misfires on a
+`MagicMock`, which auto-vivifies `.preamble`.
+
+**Explicit alerts (item 0.C).** `has_explicit_alert` is set by the frontend compiler only when a `DO`
+clause contains a real `alert(...)` call. In `run_cycle`, `use_explicit_alert = has_explicit_alert is
+True and bool(agent.events)` skips `_v2_send_rich_alert()`. Delivery then runs through the normal
+`events.dispatch()` path. `_emit_breach_record` (`events.py`) carries the firing agent's `tier` into the
+log extras, which closes the ntfy-priority gap for the new dispatch paths.
+
+**Round-trip safety.** The decompiler renders any populated `events` list as `DO alert(...)`. Without
+a guard, a Console save of a seed-style agent would flip it to explicit mode and silently lose its
+kind/threshold table. `updateConsoleAgent(slug, compiled, raw, hadExplicitAlert)` in
+`frontend/src/lib/command/consoleDispatch.js` is therefore sticky-false. It sends `true` only if the
+loaded row was already `true`. `createConsoleAgent` trusts the fresh compile.
+
+**Known limitations.** The following are deliberate and documented, not defects. Replay skips the
+preamble. `bracket` is inert until a bracket-creation handler exists. Re-firing a one-shot call needs
+deactivate and reactivate. A preamble-only fire does not update `trigger_count`/`last_triggered_at`.
+The preamble is not run through `_age_validate_action_entries`. MCP's status write
+(`_res_flip_agent_status_db`, `routes/lab.py`) bypasses `_age_set_status`, so an MCP re-activation
+does not re-arm the one-shot.
+
+**Tests.** `backend/tests/test_agent_preamble_execution.py` covers the execution split, the P1
+regression, the preamble-only guard, the cooldown, the sim isolation and the struct wiring.
+`frontend/src/lib/__tests__/consoleDispatch.test.js` covers the sticky-false rule.
+
+---
+
 ## 23. How to add a new template field
 
 Templates have grown organically. The current schema is wide (5 mandatory + 7 optional fields). To add a new one:
@@ -6596,6 +6660,15 @@ given underlying. This is a broker-hitting (live) action.
 7. **Verify.** Create a test agent via `/admin/agents`, set action to
    `square_off_underlying`, fire-in-simulator, confirm event logged + (for live
    mode) broker call executed.
+
+8. **Preamble frequency (2026-10-23).** A new action is automatically eligible for a saved
+   agent's preamble, and its frequency is decided by type. The split is spread across two places
+   in `agent_engine.py`. `_PREAMBLE_EVERY_CYCLE_TYPES` (currently `log` and `help`) marks the
+   every-cycle types. `alert` is special-cased first in `_cycle_dispatch_preamble_entry`, and
+   `_cycle_preamble_has_once_entries` hardcodes `("log", "help", "alert")`. Any other type runs
+   at most once per activation. A new diagnostic type must be added to both
+   `_PREAMBLE_EVERY_CYCLE_TYPES` and that hardcoded tuple, together. Only add a type that is
+   purely diagnostic and cannot have a real-money effect. See §22.32.
 
 ---
 

@@ -181,6 +181,38 @@ Breach rules that need hysteresis, cooldown, or schedules stay in
 (`{"log": {...}}`) can be used in cycle conditions, fed by `log_feed`, which
 keeps an in-memory high-water mark.
 
+### 3.8 DEBUG exemption, unified grammar, and explicit-alert mode (2026-10-23)
+
+**DEBUG exemption (invariant).** `event_agents.py:_dispatch_agent` drops any log record whose level
+is `DEBUG` before it evaluates the agent's conditions. This is structural: it applies to every
+`kind='event'` agent, seeded or operator-authored, and no per-agent list is involved. A DEBUG record
+cannot reach a notification channel. `help(<name>)` is the canonical DEBUG-tier producer. It logs at
+DEBUG and is never alert-eligible. A bare `debug(x)` is the same tier. `log(...)` at any other level
+is not exempt, and it can carry a `priority` argument that a matching event agent uses as its
+ntfy priority override.
+
+**Unified grammar framing.** The Console grammar has no `ALERT` clause keyword and no `GIVEN`
+keyword. `alert(...)` is an ordinary call, so an alert channel list is written the same way
+wherever a call is allowed. There is no distinct agent-clause syntax: a statement is a preamble of
+calls, with an optional `WHEN … DO …` pair wrapping the shared vocabulary. The compiler still tags a
+compiled WHEN/DO statement's output as `kind:'agent'`, so that tag is a compiled-shape detail, not a
+separate statement form. The standalone event statement (`ALERT log_tag=…`, which subscribes to the
+log stream) is the only remaining `ALERT`-led form, and it is unchanged.
+
+**Explicit-alert mode (item 0.C).** A cycle agent's `has_explicit_alert` flag is true only when
+its `DO` clause contains a real `alert(...)` call. When the flag is true and `events` is non-empty,
+the breach path in `agent_engine.py` skips `_v2_send_rich_alert()`. Delivery then goes through the
+normal `events.dispatch()` path, with a generic body or the operator's `msg=` text. A preamble
+`alert(...)` does not set the flag. It is an unconditional notice, rate-limited by `cooldown_minutes`.
+
+Round-trip caveat. The decompiler renders any populated `events` list as `DO alert(...)`. Without a
+guard, saving a seed-style agent (`has_explicit_alert=false` with a populated `events`) from the
+Console would silently switch it to explicit mode. `updateConsoleAgent` therefore keeps the flag
+sticky-false: it sends `true` only when the loaded row was already `true`. Consequence: an existing
+seed or form-built agent cannot be converted to explicit mode through the Console. A dedicated
+convert action would be a separate feature. Details are in
+[CLAUDE.md](../../CLAUDE.md), entry "`has_explicit_alert`".
+
 ## 4. What changed, by file
 
 | File | Change |

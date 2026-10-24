@@ -185,7 +185,7 @@ def _describe_action_expiry_auto_close(action_type: str, params: dict) -> str:
 
 def _describe_action_generic(action_type: str, params: dict) -> str:
     # Generic fallback — type(key=val, ...) for anything not special-cased
-    # below (emit_log, set_flag, monitor_order, deactivate_agent,
+    # below (log, help, set_flag, monitor_order, deactivate_agent,
     # send_summary, or any future/custom token), using up to the first 3
     # params verbatim, in whatever order the stored dict carries them.
     if not params:

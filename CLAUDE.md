@@ -385,13 +385,154 @@ databases.
   the exact same list position as the live YAML — the renamed `log` row, and a newly-inserted
   `help` row immediately before it (right after `set_flag`) — so
   `test_system_tokens_byte_for_byte_equal_to_baseline` stays a real, order-sensitive check.
-- Frontend scope note: the `debug(x)` sugar's compile sites in
-  `frontend/src/lib/command/grammars/agents.js` (3 sites emitting `{type: 'emit_log', ...}`) and
-  its decompiler match sites were NOT renamed by this backend-only round — that rename is
-  bundled with the parallel grammar-unification work already touching the same file (items
-  1/2/4 of the same plan). Confirm it lands before relying on `log` end-to-end from a
-  frontend-compiled `debug(x)` call; the backend dispatch table accepts ONLY `"log"` now, not
-  `"emit_log"`, with no alias.
+- Frontend rename status (verified 2026-10-24): the rename has landed in
+  `frontend/src/lib/command/grammars/agents.js`. `debug(x)` and `log(...)` compile to
+  `type: 'log'`, and no `emit_log` token remains in that file. The backend dispatch table accepts
+  ONLY `"log"`, with no alias. Still stale, and not yet updated: test fixtures in
+  `frontend/src/lib/__tests__/consoleDispatch.test.js` (e.g. `DO emit_log()`), which no longer
+  name a valid token, plus `agentsDecompiler.test.js` fixtures and comments in `LogPanel.svelte`
+  (~L355) and `backend/api/algo/events.py` (~L188). Those are follow-up test/comment cleanups.
+
+**Unified agent DSL — one statement vocabulary, `WHEN…DO…` is the only conditional wrapper
+(2026-10-23; commits `e509bcf1`, `dbcf77ec`, `cbfa32e2`, `eeb4b478`)** — The Console grammar in
+[agents.js](frontend/src/lib/command/grammars/agents.js) has one shared statement vocabulary:
+label assignment, `order(...)`, `bracket(...)`, `alert(...)`, `log(...)`, `debug(...)`, `help(...)`,
+and any other real action call. Changes from the old 4-clause `GIVEN/WHEN/ALERT/DO` shape:
+- **`GIVEN` is removed.** A leading `given` is rejected with a specific error
+  ([agents.js:3237](frontend/src/lib/command/grammars/agents.js#L3237)). `given` and `alert` are
+  no longer reserved words ([agents.js:680](frontend/src/lib/command/grammars/agents.js#L680)).
+- **`ALERT` is not a clause keyword.** `alert(...)` is an ordinary call. It compiles through the
+  unchanged `compileAlertClause` machinery, in the preamble or inside `DO`, with identical output.
+  The standalone event statement `ALERT log_tag=... render=...` is unchanged.
+- **`WHEN ... DO ...` is one optional, paired wrapper.** `WHEN` without `DO`, or `DO` without
+  `WHEN`, is a compile error. `DO nop` alone is rejected.
+- **The preamble is everything before `WHEN`.** With no `WHEN`, the whole statement is the
+  preamble. It is self-delimiting by position and accepts the full shared vocabulary. A
+  preamble-only statement is a complete, standalone statement.
+- **Compiled JSON gained `preamble: list[dict]`.** Each entry is `{"type":"alert","events":[...]}`
+  or `{"type":<action>,"params":{...}}`. The key is omitted when empty. Execution semantics are in
+  the preamble entry below.
+- **`help(<name>)`** is a read-only catalog lookup, logged at DEBUG. It is the canonical DEBUG-tier
+  example, never alert-eligible (see the DEBUG exemption entry above). It is available on the
+  Console tab only. The order-scoped CLI mounts reject it through `allowedKinds`.
+- **`log(level=..., priority=..., message=...)`** replaces `emit_log`. `priority` is read by a
+  matching event agent's dispatch as an ntfy priority override
+  ([event_agents.py:593](backend/api/algo/event_agents.py#L593)).
+
+Invariant: there is one vocabulary. Position decides whether a call is gated by a condition
+(preamble vs `DO`). Call type decides how often a saved agent's preamble call runs.
+
+**Saved cycle-agent preamble — per-type execution split; side effects once per activation (2026-10-23;
+commits `4e6df1ec`, `6aaec581`; P1 safety fix)** — Two execution models now coexist. A bare CLI
+statement with no save step runs once, synchronously, at submission (unchanged). A SAVED `Agent`'s
+preamble runs inside `run_cycle` through `_cycle_run_preamble()`
+([agent_engine.py:3659](backend/api/algo/agent_engine.py#L3659)). It is called from
+`_ae_cycle_eval_and_buffer` before the `in_cooldown` short-circuit
+([agent_engine.py:4118](backend/api/algo/agent_engine.py#L4118)). Per type:
+- **`help`, and `log(level="debug")` (`debug(x)`)** run on every cycle, uncapped, through the normal
+  `execute()` path. They make no DB claim.
+- **`alert`, and non-debug `log`** run on every cycle but are windowed by the agent's own
+  `cooldown_minutes`. The gate is `_cycle_preamble_alert_cooldown_ready()`
+  ([agent_engine.py:3423](backend/api/algo/agent_engine.py#L3423)), which claims
+  `Agent.preamble_alert_last_fired_at`. It is a separate mechanism from both the ordered-condition
+  cooldown and the once-per-activation marker. Sharing either would corrupt one of them.
+- **Everything else** (`order`, `place_order`, `close_position`, `cancel_order`, `bracket`, and any
+  other action) fires at most once per activation. An atomic `UPDATE ... WHERE preamble_fired_at IS
+  NULL` claim runs in `_cycle_claim_preamble_activation()`
+  ([agent_engine.py:3518](backend/api/algo/agent_engine.py#L3518)). It is claim-then-fire, so a DB
+  failure on the claim fails safe: nothing fires, and the claim is retried next cycle.
+- **`bracket`** has no handler in `_LIVE_ACTION_HANDLERS` or `_NOOP_ACTION_HANDLERS`. Its entry logs
+  one WARNING per activation and is skipped
+  ([agent_engine.py:3647](backend/api/algo/agent_engine.py#L3647)).
+- **Activation** means a real inactive/paused → active transition in `_age_set_status`
+  ([routes/agents.py:1209-1216](backend/api/routes/agents.py#L1209)). That transition NULLs both
+  `preamble_fired_at` and `preamble_alert_last_fired_at`. Re-clicking Activate on an active or
+  cooldown agent does not re-arm. Editing an active agent's preamble does not re-arm either. The
+  operator must deactivate, then reactivate.
+- **Columns.** `Agent.preamble` (JSONB), `preamble_fired_at`, `preamble_alert_last_fired_at`, and
+  `has_explicit_alert`, in [models.py](backend/api/models.py). Migrations
+  `_migrate_agents_preamble`, `_migrate_agents_preamble_alert_cooldown` and
+  `_migrate_agents_has_explicit_alert` ([database.py:1073](backend/api/database.py#L1073),
+  [:1096](backend/api/database.py#L1096), [:1114](backend/api/database.py#L1114)) run in `init_db()`.
+- **Sim and bypass isolation.** Sim and bypass-schedule runs track the once-bucket and cooldown on
+  `alert_state` (`_sim_preamble_fired`, `_sim_preamble_alert_cooldown`), never on the DB columns.
+  Replay skips the whole preamble. `actions_sim._replay_paper_trade` writes a `mode='replay'` order
+  row for any action type, including `log`/`help`.
+- **P1 this fixes.** Before `4e6df1ec`, a saved agent with `order(...)` in its preamble placed a real
+  broker order on every cooldown window (30 min default), indefinitely. The direct regression test is
+  `test_side_effecting_order_fires_exactly_once_across_multiple_poll_cycles` in
+  [test_agent_preamble_execution.py](backend/tests/test_agent_preamble_execution.py).
+- **Second guard, same change.** A preamble-only statement compiles its `conditions` to the
+  always-true sentinel that scheduled market-open agents use. `_v2_send_rich_alert` fires on every
+  match, so without a guard the agent would emit a spurious breach alert each window and burn
+  `lifespan_max_fires`. `_cycle_agent_is_preamble_only()`
+  ([agent_engine.py:3321](backend/api/algo/agent_engine.py#L3321)) returns before matches are
+  buffered. It type-checks `isinstance(preamble, list)`, not truthiness, because an unconfigured
+  `MagicMock` auto-vivifies `.preamble`.
+- **Known limitations (deliberate):**
+  - Replay skips the entire preamble, not only its side-effecting calls.
+  - `bracket` in a preamble or `DO` is inert until a real bracket-creation handler exists.
+  - Editing an active agent's preamble requires deactivate + reactivate to re-fire one-shot calls.
+  - `preamble_fired_at` is written on a successful claim, but it is not exposed through
+    `AgentInfo`/`_agent_to_info`. A preamble-only fire does not update `trigger_count` or
+    `last_triggered_at`, so `/agents` shows "never fired" after its one-shot order went out.
+  - `_age_validate_action_entries` runs on `actions` only
+    ([routes/agents.py:1005](backend/api/routes/agents.py#L1005),
+    [:1163](backend/api/routes/agents.py#L1163)), never on `preamble`. A raw API or MCP write can
+    store an entry the Console compiler would reject. Execution gates (G1/G2, exchange-open,
+    preflight) still apply, so this is a validation gap, not an execution-safety gap.
+  - MCP's status write `_res_flip_agent_status_db`
+    ([routes/lab.py:1141](backend/api/routes/lab.py#L1141)) bypasses `_age_set_status`. An MCP
+    re-activation does not re-arm the one-shot. The first activation does, since the column starts
+    NULL. This errs toward under-firing.
+
+Invariant: a side-effecting preamble call never fires on a poll cycle. Only a real activation re-arms
+it. Notification-shaped preamble entries are rate-limited by the agent's own cooldown. `help` and
+`debug(x)` are never rate-limited.
+
+**`has_explicit_alert` — a DO-level `alert(...)` replaces the automatic rich alert; sticky-false
+Console round-trip fix (2026-10-23; commits `08bf4340`, `6aaec581`, `b6f56be7`; item 0.C)** —
+- **Set only by a real DO-level call.** The frontend sets `has_explicit_alert: true` only when a
+  `DO` clause compiles to a real `alert(...)` call (`doResult.events.length > 0`,
+  [agents.js:5897](frontend/src/lib/command/grammars/agents.js#L5897)). A preamble-level
+  `alert(...)` does NOT set it. A preamble alert is an unconditional notice, not a
+  breach-notification override.
+- **Engine.** `run_cycle` computes `use_explicit_alert = has_explicit_alert is True and
+  bool(agent.events)` ([agent_engine.py:4657-4660](backend/api/algo/agent_engine.py#L4657)). When
+  true, `_v2_send_rich_alert()` is skipped, and the normal `events.dispatch()` delivers the agent's
+  own events in a generic body. The `bool(agent.events)` guard means a stale `True` with an emptied
+  list falls back to the rich alert, not silence. `is True` is used rather than truthiness for the
+  same `MagicMock` reason as above.
+- **Opt-in.** Every existing row is `false` (server default, backfilled). Pre-existing agents see no
+  behavior change.
+- **Round-trip hazard, fixed in `b6f56be7`.** `decompileAgent` renders any non-empty `events` list as
+  `DO alert(...)`. Seed-shaped agents (every `loss-*` builtin via `_LOSS_AGENT_DEFAULTS`) carry a
+  populated `events` list with `has_explicit_alert=false`. Load-edit-save through Console would have
+  silently and permanently flipped them to explicit-alert mode, dropping the kind/threshold table
+  with no visible text change. `updateConsoleAgent(slug, compiledAgent, rawText, hadExplicitAlert)`
+  ([consoleDispatch.js:550](frontend/src/lib/command/consoleDispatch.js#L550)) is therefore
+  sticky-false: `hadExplicitAlert === true ? !!compiledAgent.has_explicit_alert : false`.
+  `createConsoleAgent` has no existing row to be sticky against, so it trusts the fresh compile.
+  The loaded row's value is threaded through `ConsoleTab`'s edit target, the same load-then-diff
+  pattern `given` and `preamble` use.
+- **Deliberate consequence.** An operator cannot convert an existing seed-style or form-style agent
+  into explicit-alert mode through ordinary Console editing. A dedicated "convert" action is a
+  future feature.
+- **Tier threading (dormant gap, closed).** `_emit_breach_record`
+  ([events.py:425](backend/api/algo/events.py#L425)) carries the firing agent's `tier` into its log
+  extras ([events.py:461](backend/api/algo/events.py#L461)). The ntfy-priority resolution from
+  "Rich-alert ntfy priority" therefore covers the two new dispatch paths, item 0.C and preamble
+  alert/log. Those are the first callers that could reach the gap.
+- **Deploy coupling** (same convention as the multi-commit entries above). `6aaec581` (the engine
+  skips the rich alert) must not ship without `b6f56be7` (sticky-false save). Without it, any Console
+  edit of a seed-style `loss-*` agent silently drops its rich kind/threshold alert. `cbfa32e2` (the
+  backend accepts only the `log` token) needs `e509bcf1`'s frontend rename. All of these are
+  unpushed on `workshop`, so ship the range together.
+- Tests: `test_agent_preamble_execution.py::TestHasExplicitAlertStructWiring`, and
+  `frontend/src/lib/__tests__/consoleDispatch.test.js` (sticky-false cases).
+
+Invariant: a saved agent's breach-alert channel changes only through an explicit `alert(...)` in its
+`DO`. Re-saving a row through Console must never flip `has_explicit_alert` by accident.
 
 **Rich-alert ntfy priority must come from the REAL triggering agent's tier, never hardcoded or from the dispatcher's own (2026-10-16, live operator-reported incident)** —
 `backend/api/algo/event_agents.py:RICH_ALERT_AGENT` is the one dispatcher that delivers
@@ -2322,6 +2463,8 @@ now caches + returns a `stale` flag; `/api/nav/by-account` masks `errors` for no
 | Scale-out ladder OCO pairing | `template_attach.py:_ta_detect_scale_sl_group` + `background.py:_oco_process_group_entry` |
 | MCX real per-contract expiry (live freeze filter) | `expiry_freeze.py:_mcx_future_real_expiry` |
 | generic_notice Telegram/ntfy HTML split | `event_agents.py:_render_deploy_sync` + `alert_utils.py:_html_to_plain` |
+| Agent DSL grammar (compile / decompile) | `frontend/src/lib/command/grammars/agents.js` + `consoleDispatch.js` (`updateConsoleAgent` sticky-false) |
+| Saved-agent preamble execution (every-cycle / once / cooldown) | `backend/api/algo/agent_engine.py:_cycle_run_preamble` |
 
 ---
 

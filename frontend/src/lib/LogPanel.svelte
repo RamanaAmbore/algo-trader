@@ -352,11 +352,11 @@
   // cooldown = warning, action_success / fired = info.
   //
   // Sprint G addendum (`debug(x)` CLI statement) — `debug(x)` compiles to
-  // the existing `emit_log` action with `level="debug"` (backend/api/algo/
-  // actions.py:921-925, zero backend change needed). `execute()`'s
+  // the `log` action (renamed from `emit_log`, Sprint [grammar-unify])
+  // with `level="debug"`. `execute()`'s
   // success path (`_log_action_success`) writes EVERY action's resolved
   // `params` dict verbatim into `AgentEvent.detail` regardless of action
-  // type — so for an emit_log/debug(x) fire specifically, the parsed
+  // type — so for a log/debug(x) fire specifically, the parsed
   // detail's `.level` carries the real level ("debug", or whatever the
   // operator set, incl. a future "critical"). That explicit value is
   // checked FIRST, before falling back to the coarser event_type

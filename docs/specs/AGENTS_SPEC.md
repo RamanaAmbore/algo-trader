@@ -701,23 +701,65 @@ backend footprint; an operator-expression binding gets its own `given[]` entry)
 are unchanged and orthogonal to `preamble` — a label assignment is never itself a
 `preamble` entry.
 
-**Execution semantics — saved-agent preamble vs. CLI one-shot (engine work, tracked
-separately, not yet landed as of this entry)**: for a bare CLI statement (no save
-step), every preamble call executes once, synchronously, at the moment of
-submission — unchanged from today's `order(...)`/`cancel_all_orders(...)` one-shot
-behavior. For a SAVED, polled `Agent` row, the intended design (per the
-grammar-unification plan, item 0) is: `debug`/`help`/`alert` preamble entries run on
-EVERY poll cycle (diagnostic/notification, no real-money risk from repetition);
-`order`/`bracket`/any other side-effecting preamble entry is meant to fire exactly
-ONCE, at agent activation (first save-and-enable, or re-enable after
-pause/disable) — NOT on every cycle, which would otherwise re-place a real broker
-order roughly every cooldown window. **This once-per-activation engine mechanism
-is a separate, tracked piece of backend work and had not landed in
-`agent_engine.py` as of this grammar-unification commit** — confirm against
-`backend/api/algo/agent_engine.py`'s own `_cycle_evaluate_agent` before relying on
-a saved agent's preamble side-effecting call firing only once.
+### Preamble execution semantics (landed 2026-10-23, commit `4e6df1ec`)
 
-### Known gap — autocomplete/hover position classification (not yet updated)
+Two execution models coexist. A bare CLI statement with no save step runs every preamble call
+once, synchronously, at submission (unchanged from the `order(...)` / `cancel_all_orders(...)`
+one-shot behavior). A SAVED, polled `Agent` row runs its preamble on each poll cycle, split by
+call type. The engine is `_cycle_run_preamble()` in
+[agent_engine.py](../../backend/api/algo/agent_engine.py#L3659).
+
+| Preamble entry | Runs | Gate |
+|---|---|---|
+| `help`, `log(level="debug")` (`debug(x)`) | Every poll cycle | None. No DB claim. |
+| `alert(...)`, non-debug `log(...)` | Every poll cycle | Windowed by the agent's own `cooldown_minutes`, via `Agent.preamble_alert_last_fired_at`. |
+| `order`, `place_order`, `close_position`, `cancel_order`, `bracket`, any other action | At most once per activation | Atomic claim on `Agent.preamble_fired_at` (`WHERE ... IS NULL`). |
+
+- **Activation** is a real inactive/paused → active transition in `_age_set_status`
+  ([routes/agents.py](../../backend/api/routes/agents.py#L1209)). It resets both marker columns
+  to NULL. Re-activating an already-active or `cooldown` agent does not re-arm. Editing an active
+  agent's preamble does not re-arm. The operator must deactivate, then reactivate.
+- **`bracket`** has no registered action handler. Its entry logs one WARNING per activation and
+  is skipped (no order, no error).
+- **Replay / backtest** skips the entire preamble, not only side-effecting calls.
+- **Simulator** runs track the once-bucket and cooldown on the isolated `alert_state`, never on
+  the real DB columns.
+- **Claim-then-fire.** A DB failure on the claim fails safe. Nothing fires, and the claim is
+  retried next cycle.
+- **Known limitations:** `preamble_fired_at` is written on a successful claim but is not exposed
+  by the API. A preamble-only fire does not update `trigger_count` or `last_triggered_at`, so
+  `/agents` can show "never fired" after its one-shot order went out. Preamble entries are not validated by `_age_validate_action_entries`, which
+  runs on `actions` only. MCP's direct status write (`routes/lab.py`) bypasses `_age_set_status`,
+  so an MCP re-activation does not re-arm the one-shot.
+
+Full rationale and the P1 incident (a saved `order(...)` in a preamble would have fired every
+cooldown window): [CLAUDE.md](../../CLAUDE.md), entry "Saved cycle-agent preamble".
+
+### Explicit alert mode — `has_explicit_alert`
+
+`has_explicit_alert` is `true` only when a `DO` clause compiles to a real `alert(...)` call. A
+preamble-level `alert(...)` does not set it. When the flag is true and the agent has a non-empty
+`events` list, the engine skips the automatic kind/threshold rich alert and delivers the agent's
+own `events` through the normal dispatch path. Console saves are sticky-false: editing an existing
+agent whose stored flag is false always saves false, so a seed-style agent cannot be converted by
+ordinary editing. The round-trip rule is documented in
+[CLAUDE.md](../../CLAUDE.md), entry "`has_explicit_alert`".
+
+### `log(...)` action (renamed from `emit_log`, 2026-10-23)
+
+`log(level=info|warning|error|critical, priority=low|default|high|urgent, message=...)`, per the
+`log` entry's `params_schema` in `backend/config/grammars/agent_grammar.yaml`. `level=debug` is not in
+that user-facing enum. Only the `debug(x)` sugar emits it. The `priority` argument is optional. When present, a matching event agent uses it as the ntfy priority
+override ahead of the tier-derived default. `debug(x)` compiles to `log(level="debug", ...)` with no
+`priority`. DEBUG-level records are dropped before any event agent's conditions are evaluated, so
+they never reach a notification channel.
+
+### Known gap — autocomplete/hover position classification (status: reworked, unverified)
+
+Commit `eeb4b478` ("full rework of suggestAgentCliAt/describeTokenAt for the unified WHEN/DO
+grammar") reworked the two editor functions named below. Treat the entry as open until the
+suggest/hover test files pass against the reworked code. The `_clauseKindFromTokenPrefix`
+helper name still exists in `agents.js`. The original gap description follows.
 
 The Console CLI editor's own autocomplete (`suggestAgentCliAt`) and hover-description
 (`describeTokenAt`) features still key their internal "which clause is the cursor
@@ -739,6 +781,7 @@ closed by this entry — see `frontend/src/lib/__tests__/agentsSuggest.test.js` 
 
 | Date | Change |
 |---|---|
+| 2026-10-23 | Sprint [grammar-unify] execution + alert (items 0, 0.C): saved cycle-agent `preamble` executes per call type — `help`/`debug` every cycle, `alert`/non-debug `log` every cycle windowed by `cooldown_minutes`, all other calls (`order`, `close_position`, `cancel_order`, `bracket`, …) once per activation (commit `4e6df1ec`; P1 fix). Activation is a real inactive/paused→active transition only. New `has_explicit_alert` flag (a DO-level `alert(...)` replaces the automatic rich alert; commits `08bf4340`, `6aaec581`); Console saves are sticky-false (commit `b6f56be7`). New columns `preamble_fired_at`, `preamble_alert_last_fired_at`, `has_explicit_alert`. |
 | 2026-10-23 | Sprint [grammar-unify] (items 1/2/4) — `WHEN ... DO ...` is now the ONE generic, optional conditional wrapper around any statement; everything outside it (the preamble) runs unconditionally, with no `GIVEN` keyword needed — `GIVEN` is removed from the grammar entirely (it carried no semantic meaning, and the preamble is now self-delimiting by position). `ALERT` is removed as a reserved clause keyword — `alert(...)` is an ordinary call, compiling through the exact same `compileAlertClause` machinery whether it appears in the preamble or inside `DO`. New compiled-JSON key `preamble[]` (per-call compiled entries, omitted when empty). New standalone/preamble/DO-callable `help(<name>)` action — read-only catalog introspection, wired to `POST /api/agents/help` on the Console tab only (never the order-scoped CLI mounts). The standalone top-level `event_stmt` (bare `ALERT log_tag=...`) is unchanged. Known gap: the Console editor's own autocomplete/hover classifier (`_clauseKindFromTokenPrefix`) still assumes the old 4-clause shape — tracked as follow-up, does not affect compile/save correctness. |
 | 2026-10-10 | (uncommitted Sprint 4) — Agent CLI grammar UI + full compiler suite + decompiler. Operators can now author and edit agents via single-line text statements (WHEN condition [ALERT notifies] [DO actions]) in the `/automation` page's CLI tab, alongside the existing Structured (JSON) tab. Supports parameterized metric/scope call syntax (mean_pnl(minutes=30)), keyword-only arguments with aliases, list literals, and parenthesized boolean logic. A bare order(...) statement places a real order without creating an agent. Commits 2a5cd01d, d05fe54a, 3b615b0b with integration into existing agent create/update routes. |
 | 2026-10-09 | 9b7da82f: CLI-grammar effort, Sprint 1 — `_age_validate_action_entries()` closes the same save-time validation gap for the `actions` array that c0f260b9 (below) closed for `conditions`; new `grammar.is_known_action_type()`; new `Agent.cli_source` (nullable, audit-only) column; `expr_eval.py` extended to support string constants and `+` concatenation for `token_ref_ok` action params. |

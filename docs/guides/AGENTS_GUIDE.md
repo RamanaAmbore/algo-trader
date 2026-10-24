@@ -26,7 +26,7 @@ Mental model: condition fires → alert emitted → notifies dispatch → action
 | Tokens (Saved Condition/Notify) | `/automation?tab=tokens` (redirects to the **Agents** card — Tokens have no separate card) | Reusable saved sub-trees (notify channel sets + condition snippets) |
 | Activity | `/activity?tab=agent` | Recent agent fires (real, not sim) |
 | Grammar Catalog | `/admin/tokens` | Live metrics/scopes/operators/channels/actions (Config group, read-only) |
-| CLI (Command Line) | `/automation?tab=console` | Plain-text agent/order authoring (WHEN/ALERT/DO grammar + `order(...)`) — `/console` retired 2026-10, redirects here |
+| CLI (Command Line) | `/automation?tab=console` | Plain-text agent/order authoring (preamble + `WHEN … DO …` grammar, `order(...)`) — `/console` retired 2026-10, redirects here |
 | MCP | `/admin/mcp` | LLM-driven research → draft agents via Claude Code MCP (Explore group) |
 | Simulator | `/admin/execution?mode=sim` | Fabricated price-move workspace for testing agents (Explore group) |
 
@@ -189,15 +189,21 @@ compile ONLY a bare `order(...)` statement (enforced by the
 compiler itself, not a hidden button); bracket/agent/event/token syntax is
 rejected there with a message pointing back to `/automation?tab=console`.
 
-### WHEN/ALERT/DO — Agent statements
+### Agent statements — preamble, then WHEN … DO
 
 ```
-WHEN <condition> [ALERT <channels>] [DO <actions>]
+<preamble calls>* [WHEN <condition> DO <calls>]
 ```
 
-Each clause is independently optional (omit `WHEN` → always true; omit `ALERT` or 
-`DO` → nop). Order is flexible: `DO` can come before `ALERT`. At least one real 
-`ALERT` or `DO` is required (can't be all-nop).
+There is one vocabulary: `alert(...)`, `order(...)`, `bracket(...)`, `log(...)`,
+`debug(...)`, `help(...)`, label assignments, and any other action call. The only conditional
+wrapper is `WHEN … DO …`, which is optional but must be written as a pair. A statement with no
+`WHEN` is a complete statement on its own, so a preamble-only line is valid. `DO nop` is rejected.
+`GIVEN` and the old `ALERT` clause keyword no longer exist. A leading `given` is rejected with a
+message that points at this shape.
+
+Everything before `WHEN` is the **preamble**. It runs whether or not a condition matches. How often
+it runs depends on the call type, described under "How a saved agent runs" below.
 
 **Condition** (`WHEN` clause, examples):
 - `pnl@positions.total <= -50000` — total P&L threshold
@@ -206,62 +212,84 @@ Each clause is independently optional (omit `WHEN` → always true; omit `ALERT`
 - `25000 > avail_margin@funds.any_acct > 0` — between-range sugar
 - `side@positions in ["BUY", "SELL"]` — list membership
 
-**ALERT** (channels):
-- `ALERT telegram` — single channel
-- `ALERT msg="Caution: loss at 5%", telegram, email` — clause-level message + 
-  multiple channels (per-channel `msg=` overrides clause default)
-- `ALERT nop` — skip notification
+**Alerts — `alert(...)`** (channels):
+- `alert(telegram)` — single channel
+- `alert(msg="Caution: loss at 5%", telegram, email)` — message default plus multiple channels
+  (a per-channel `msg=` overrides the default, as in `email(msg="custom")`)
+- An `alert(...)` inside `DO` is a breach-notification override. See "Explicit alerts" below.
+  An `alert(...)` in the preamble is an unconditional notice.
 
-**DO** (actions):
-- `DO order(acct="ZG0790", sym="NIFTY25JULFUT", side="BUY", qty=1)` — 
-  place order using live account data
-- `DO close_position(account=account_id, symbol=symbol)` — close using matched 
-  row values (Sprint 16: `$row` binding)
-- `DO log(message="Market open")` — log only (renamed from `emit_log`; the Python resolver
-  function keeps the old name). `DO log(level=warning, priority=urgent, message="...")` also
-  accepts an optional `priority` (`low`/`default`/`high`/`urgent`) that overrides a matching
-  event agent's own tier-derived ntfy priority
-- `DO help(pnl)` — read-only catalog introspection (description + signature + docstring),
-  logged at DEBUG only — never alert-eligible
-- `DO nop` — no action
+**Actions — `DO` (or preamble) calls**:
+- `order(acct="ZG0790", sym="NIFTY25JULFUT", side="BUY", qty=1)` — place order using live account
+  data
+- `close_position(account=account_id, symbol=symbol)` — close using matched row values (`$row`
+  binding)
+- `log(message="Market open")` — write to the app log. `log(level=warning, priority=urgent,
+  message="...")` also takes an optional `priority` (`low`/`default`/`high`/`urgent`). A matching
+  event agent uses it as the ntfy priority, overriding its own tier-derived default. The DSL word
+  was `emit_log` before 2026-10-23.
+- `help(pnl)` — read-only catalog introspection (description + signature + docstring), logged at
+  DEBUG only. Never alert-eligible. Available on the Console tab only.
+- `debug(x)` — a DEBUG-level log line. It never notifies anyone.
 
-**GIVEN** (bindings, optional):
-- `GIVEN p = pnl@positions.total` — lightweight alias (client-side); can be used anywhere
-- `GIVEN msg_txt = "Loss: " + p + " on " + symbol` — real computed value (server-side); 
-  reusable in `ALERT`'s message and in `DO`'s string-typed params only (not numeric/enum fields like qty or side)
-- Bindings are evaluated once per tick in declaration order and can reference earlier 
-  bindings
+**Label assignments** (replace the old `GIVEN`):
+- `p = pnl@positions.total` — binds a name for later calls in the same statement
+- `msg_txt = "Loss: " + p + " on " + symbol` — a computed value; reusable in `msg=` and in
+  string-typed call parameters (not numeric or enum fields like `qty` or `side`)
+- Bindings are evaluated in order and can reference earlier bindings.
 
 **Recent alert message fixes** — Three operator-visible improvements to alert delivery:
 - Per-account breach alerts now show masked account form (e.g. "Z1####") instead of 
   the real broker account code, fixing a pre-existing information leak.
-- `ALERT msg=` overrides (plain string or GIVEN-computed) now actually render on 
+- `alert(msg=...)` overrides (plain string or label-computed) now actually render on 
   telegram, email, and ntfy channels for live agent fires — previously silently dropped 
   there (log, websocket, and in-app were unaffected).
 - Whole-number values in messages render without a trailing decimal (e.g. "-120000" 
   not "-120000.0").
 
-**Example combining GIVEN, WHEN, ALERT, DO:**
+**Example combining a label, WHEN, alert and DO:**
 ```
-GIVEN p = pnl@positions.total
-      msg_txt = "Loss: " + p
-WHEN p <= -50000
-ALERT msg = msg_txt, telegram
-DO order(acct="ZG0790", sym="NIFTY25JULFUT", side="SELL", qty=1)
+p = pnl@positions.total
+msg_txt = "Loss: " + p
+WHEN p <= -50000 DO alert(msg=msg_txt, telegram), order(acct="ZG0790", sym="NIFTY25JULFUT", side="SELL", qty=1)
 ```
-The `msg_txt` binding computes the message from concatenated live values and is sent 
-in the alert. A GIVEN binding with an operator (string concat, math) can be reused in 
-message strings or string-typed action params; a bare alias (`p = pnl@...`) is lightweight 
-and works anywhere.
+The `msg_txt` label computes the message from concatenated live values and is sent in the alert.
+A label built with an operator (string concat, math) can be reused in message strings or
+string-typed action params. A bare alias (`p = pnl@...`) is lightweight and works anywhere.
 
-**Separators are interchangeable** — `,`, `;`, and a bare newline are all equally valid 
-between GIVEN/ALERT/DO items; use whichever reads best:
+**Preamble example** (no `WHEN` needed for these lines):
 ```
-GIVEN p = pnl@positions.total, q = avail_margin@funds.total
-ALERT msg="Alert"
-       telegram
-       email
+order(acct="ZG0790", sym="NIFTY25JULFUT", side="BUY", lots=2)
+alert(telegram)
+help(pnl)
 ```
+
+### How a saved agent runs
+
+A bare statement typed into the Console and submitted without saving runs its calls once, at
+submission. A saved agent runs on every poll cycle, and each call type behaves differently:
+
+| Preamble call | How often it runs on a saved agent |
+|---|---|
+| `help(...)`, `debug(x)` | Every poll cycle. No notification, no rate limit. |
+| `alert(...)`, `log(...)` at any level other than debug | Every poll cycle, but at most once per the agent's own `cooldown_minutes`. |
+| `order(...)`, `close_position(...)`, `cancel_order(...)`, others | Once per activation. |
+| `bracket(...)` | Never acts. It logs a warning once per activation, because no bracket-creation action exists yet. |
+
+**Activation** means the agent goes from inactive or paused to active. Clicking Activate on an
+agent that is already running does not count. To re-fire a once-per-activation call, deactivate the
+agent, then activate it again. Editing an active agent's preamble does not re-fire it either.
+
+Replay and backtest runs skip the preamble entirely.
+
+**Explicit alerts.** If a `DO` clause contains `alert(...)`, that alert replaces the automatic
+breach alert for that agent. The automatic alert shows the kind and threshold table. The explicit
+alert sends the generic body, or your own `msg=` text. A preamble `alert(...)` never replaces the
+automatic alert. The explicit mode is saved in the agent row as a flag. When you edit an existing
+agent in the Console, that flag is only ever kept or cleared, never turned on. So you cannot switch
+a seed or form-built agent (for example, the built-in `loss-*` agents) to explicit mode by editing
+it in the Console. An agent created in the Console with `alert(...)` in its `DO` clause gets the
+flag. Converting an existing agent is a future feature.
 
 ### Syntax reference
 
@@ -276,7 +304,7 @@ remain valid as aliases if you prefer them, but `and`/`or`/`not` are the recomme
 of `pnl@positions.total <= -50000` — both compile identically.
 
 **Message defaults**: `msg=` applies to every bare channel unless overridden per 
-channel: `ALERT msg="default", telegram, email(msg="custom")`.
+channel: `alert(msg="default", telegram, email(msg="custom"))`.
 
 **Matched-row binding** (Sprint 16): In `DO` actions, bare names resolve to 
 matched scope row columns: `close_position(account=account_id, symbol=symbol)` 
@@ -285,13 +313,14 @@ uses the WHEN scope's own rows.
 **Shorthand kwarg aliases**: `acct` ← `account`, `sym` ← `symbol`, 
 `px` ← `price`, `prod` ← `product`, `var` ← `variety`, `chase` ← `chase_level`.
 
-**Reserved words**: `when`, `alert`, `do`, `nop`, `always`, `in`, `not`, `true`, 
-`false` — cannot be token names.
+**Reserved words**: `when`, `do`, `nop`, `always`, `in`, `not`, `true`, `false` — cannot be token
+names. `alert`, `given`, `debug`, `help` and `result` are not keywords, so they can be called. They
+cannot be used as label names, because a label with one of those names would shadow the call.
 
-**Debug logging**: `debug(x)` logs a GIVEN-bound name or matched row column at debug 
-level, useful for troubleshooting agent logic. Use inside `GIVEN`, `ALERT`, or `DO`. 
-For a pure-alias GIVEN binding like `p = pnl@positions.total`, `debug(p)` logs the 
-metric reference. For an operator-based binding like `msg_txt = "Loss: " + p`, 
+**Debug logging**: `debug(x)` logs a label-bound name or matched row column at debug 
+level, useful for troubleshooting agent logic. Use it anywhere a call is allowed. 
+For a pure-alias label like `p = pnl@positions.total`, `debug(p)` logs the 
+metric reference. For an operator-based label like `msg_txt = "Loss: " + p`, 
 `debug(msg_txt)` logs the computed value at the moment the agent fires. Example: 
 `DO log(message=debug(p))` or just `DO debug(msg)` with no other action. `debug(x)` always
 compiles to `log(level="debug", message=...)` and nothing else — no `priority`, no urgency —
