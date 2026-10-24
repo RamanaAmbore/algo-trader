@@ -11,6 +11,13 @@ Covers:
            being bumped to.
   Step 6 — `seed_action()`'s `modified_skip` branch now ALSO logs a real
            WARNING through `_EVENTS_LOGGER` (not just stderr).
+  Follow-up — `_cmd_ai_refine`'s `trade_mode` guard: a refine must never
+           silently flip an existing agent's `trade_mode`, regardless of
+           what `draft_agent_from_prompt()` (via `_clamp_safety`) returns.
+           The CREATE path (`agent ai create`) keeps forcing paper on a
+           fresh draft, unchanged — see `test_agent_ai_coverage.py::
+           test_clamp_safety_forces_paper` for that existing regression
+           guard; a thin pointer test is also included here for locality.
 
 The catch-all reference fix (Step 4) is covered in
 `test_alert_routing.py::test_unrouted_alert_agent_events_is_derived_from_catch_all_channels`,
@@ -29,8 +36,10 @@ import pytest
 from backend.api.routes.agents import (
     AgentController,
     _agent_to_info,
+    _ai_refine_filtered_warnings,
     _ai_refine_is_tree_driven,
     _ai_refine_mentions_channel_intent,
+    _ai_refine_mentions_trade_mode_intent,
     _ai_refine_writable_fields,
     _event_agent_resolved_channels,
 )
@@ -271,6 +280,248 @@ class TestCmdAiRefineChannelForkGuard:
 
         assert agent.events == [{"channel": "email", "enabled": True}]
         assert "events" in resp.output
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  Follow-up — `_cmd_ai_refine`'s `trade_mode` guard. `_clamp_safety`
+#  (agent_ai.py) unconditionally forces `draft["trade_mode"] = "paper"`
+#  on every `draft_agent_from_prompt()` call. That's correct for the
+#  CREATE path, but `_cmd_ai_refine` reuses the same call to refine an
+#  EXISTING agent — without a guard, any refine (even one about an
+#  unrelated field) would silently flip an already-live agent back to
+#  paper via the diff-apply loop.
+# ═══════════════════════════════════════════════════════════════════════
+
+class TestAiRefineTradeModeGuardHelpers:
+    @pytest.mark.parametrize("prompt", [
+        "switch this to live",
+        "set to live",
+        "go live with this agent",
+        "going live now",
+        "change trade mode to paper",
+        "switch to paper",
+        "put it back in paper mode",
+        "SET TO LIVE please",
+        "switch to paper trading",
+    ])
+    def test_mentions_trade_mode_intent_true(self, prompt):
+        assert _ai_refine_mentions_trade_mode_intent(prompt) is True
+
+    @pytest.mark.parametrize("prompt", [
+        "tighten the loss threshold to 2%",
+        "only fire during market hours",
+        "rename this agent to something clearer",
+        "lower the cooldown to 5 minutes",
+        # Domain near-misses this app's own vocabulary could trigger on
+        # a naive bare-substring "live"/"paper" check (the original,
+        # too-broad implementation) — a word-boundary, mode-context
+        # regex must not flag these.
+        "only for delivery holdings",
+        "use live cash instead of sod cash",
+        "this agent is alive and well, just lower the threshold",
+        # Even the narrower `\bto\s+(live|paper)\b` pattern false-positives
+        # on this app's own "cash"/"price"/"ltp"/"quote" vocabulary unless
+        # explicitly excluded via a negative lookahead.
+        "switch from sod_cash to live cash",
+        "compare against live price, not to live quotes",
+        "switch scope to live ltp",
+    ])
+    def test_mentions_trade_mode_intent_false(self, prompt):
+        assert _ai_refine_mentions_trade_mode_intent(prompt) is False
+
+    def test_writable_fields_never_includes_trade_mode_for_cycle_agent(self):
+        fields = _ai_refine_writable_fields(_make_row(kind="cycle", trade_mode="live"))
+        assert "trade_mode" not in fields
+        assert "conditions" in fields and "cooldown_minutes" in fields
+
+    def test_writable_fields_never_includes_trade_mode_for_tree_driven_event_agent(self):
+        fields = _ai_refine_writable_fields(_make_row(kind="event", events=[], trade_mode="live"))
+        assert "trade_mode" not in fields
+        assert "events" not in fields
+
+    def test_writable_fields_never_includes_trade_mode_for_non_tree_driven_event_agent(self):
+        row = _make_row(kind="event", events=[{"channel": "email", "enabled": True}], trade_mode="live")
+        fields = _ai_refine_writable_fields(row)
+        assert "trade_mode" not in fields
+        assert "events" in fields
+
+    def test_filtered_warnings_strips_the_now_false_paper_mode_claim(self):
+        """Coupled to `_clamp_safety`'s REAL output, not a hand-typed copy
+        of its wording — if that wording is ever reworded, this test (and
+        the filter it exercises) must be updated together, instead of
+        both silently drifting out of sync while staying green."""
+        from backend.api.algo.agent_ai import _clamp_safety
+        real_warnings: list[str] = []
+        _clamp_safety({"trade_mode": "live"}, real_warnings)
+        assert real_warnings, "fixture sanity: _clamp_safety must warn for a non-paper draft"
+
+        warnings = real_warnings + ["Threshold -5000.0 on 'pnl' may fire on every tick."]
+        assert _ai_refine_filtered_warnings(warnings) == [
+            "Threshold -5000.0 on 'pnl' may fire on every tick.",
+        ]
+
+    def test_filtered_warnings_passthrough_when_nothing_to_strip(self):
+        warnings = ["Removed destructive action 'cancel_all_orders'."]
+        assert _ai_refine_filtered_warnings(warnings) == warnings
+
+
+class TestCmdAiRefineTradeModeGuard:
+    @pytest.mark.asyncio
+    async def test_live_cycle_agent_unrelated_refine_leaves_trade_mode_unchanged(self):
+        """The core regression this task fixes: refining a live,
+        real-money `kind='cycle'` agent about something unrelated
+        (cooldown) must never flip `trade_mode` to paper, even though
+        `_clamp_safety` (via the mocked `draft_agent_from_prompt`) always
+        returns `trade_mode: "paper"` in its draft AND its own real
+        warning text claiming the mode changed — mirroring real
+        production behavior byte-for-byte. The response must not repeat
+        that now-false claim (see `_ai_refine_filtered_warnings`): an
+        operator who read "AI agents land in paper mode (was 'live')"
+        and believed it could be misled into flipping a genuinely-still-
+        live agent's P/L chip to paper, which would be the exact
+        opposite of what they wanted."""
+        controller = AgentController.__new__(AgentController)
+        # Non-destructive action type deliberately. `close_position` and
+        # the rest of `_DESTRUCTIVE_ACTIONS` would trigger a SEPARATE,
+        # PRE-EXISTING defect of the same class as the one this commit
+        # fixes, out of scope here (reported separately, not fixed in
+        # this commit per "fix one issue at a time"): `_clamp_safety`
+        # silently strips any destructive action from the draft, and
+        # `_cmd_ai_refine`'s diff loop then WRITES that stripped
+        # (now-empty) `actions` list back onto the real row — e.g.
+        # `agent ai refine loss-pos-total-auto-close "lower the
+        # cooldown"` would silently delete its `chase_close_positions`
+        # safety action, with only a "Removed destructive action" line
+        # (worded as draft advice, not as "this was just deleted from
+        # your live agent") to notice by. `lifespan_type` has an
+        # analogous conditional defect: `_clamp_safety` defaults it to
+        # 'one_shot' when the LLM's draft omits it, and `lifespan_type`
+        # IS in `_AI_REFINE_WRITABLE_FIELDS`, so a persistent agent could
+        # silently become one-shot. Choosing a non-destructive action
+        # here keeps this test isolated to the one question it exists
+        # to answer: did `trade_mode` get written.
+        agent = _make_row(
+            slug="live-nifty-agent", kind="cycle", trade_mode="live",
+            events=[], conditions={"metric": "pnl", "scope": "total", "op": "<", "value": -5000},
+            actions=[{"type": "log", "level": "info"}], cooldown_minutes=30,
+        )
+        session_factory, _session = _mock_session_with_agent(agent)
+
+        # Real `_clamp_safety` output (not a hand-typed copy of its
+        # wording) — a draft whose trade_mode differs from 'paper' always
+        # gets forced to 'paper' plus a warning claiming so.
+        from backend.api.algo.agent_ai import _clamp_safety
+        real_draft = {
+            "conditions": {"metric": "pnl", "scope": "total", "op": "<", "value": -5000},
+            "actions": [{"type": "log", "level": "info"}],
+            "cooldown_minutes": 5,
+            "trade_mode": "live",
+        }
+        real_warnings: list[str] = []
+        _clamp_safety(real_draft, real_warnings)
+        assert real_draft["trade_mode"] == "paper"
+        fake_draft = SimpleNamespace(
+            draft=real_draft, errors=[], warnings=real_warnings,
+            why_summary="tightened cooldown",
+        )
+        with patch("backend.api.routes.agents.async_session", session_factory), \
+             patch("backend.api.algo.agent_ai.draft_agent_from_prompt", return_value=fake_draft):
+            resp = await controller._cmd_ai_refine("live-nifty-agent", "lower the cooldown to 5 minutes")
+
+        assert agent.trade_mode == "live", "trade_mode must never be written by a refine"
+        assert resp.success is True
+        assert "cooldown_minutes" in resp.output
+        assert "trade_mode" not in resp.output.split("Changed:")[1].split("\n")[0]
+        assert "paper mode" not in resp.output, (
+            "the now-false 'AI agents land in paper mode' warning must be "
+            "filtered out of a refine response — trade_mode was never "
+            "actually written"
+        )
+
+    @pytest.mark.asyncio
+    async def test_explicit_trade_mode_instruction_rejected_without_calling_llm(self):
+        controller = AgentController.__new__(AgentController)
+        agent = _make_row(slug="live-nifty-agent", kind="cycle", trade_mode="live", events=[])
+        session_factory, _session = _mock_session_with_agent(agent)
+
+        with patch("backend.api.routes.agents.async_session", session_factory), \
+             patch("backend.api.algo.agent_ai.draft_agent_from_prompt") as fake_draft:
+            resp = await controller._cmd_ai_refine("live-nifty-agent", "switch this to live")
+
+        fake_draft.assert_not_called()
+        assert resp.success is False
+        assert "P/L chip" in resp.output
+        assert agent.trade_mode == "live"
+
+    @pytest.mark.asyncio
+    async def test_explicit_trade_mode_instruction_rejected_for_tree_driven_event_agent_too(self):
+        """The trade_mode keyword check is unconditional — unlike the
+        channel-intent check, it isn't gated on `tree_driven`."""
+        controller = AgentController.__new__(AgentController)
+        agent = _make_row(
+            slug="fill-alert", kind="event", events=[], priority=None, trade_mode="paper",
+        )
+        session_factory, _session = _mock_session_with_agent(agent)
+
+        with patch("backend.api.routes.agents.async_session", session_factory), \
+             patch("backend.api.algo.agent_ai.draft_agent_from_prompt") as fake_draft:
+            resp = await controller._cmd_ai_refine("fill-alert", "set to live")
+
+        fake_draft.assert_not_called()
+        assert resp.success is False
+        assert "P/L chip" in resp.output
+
+
+class TestTradeModeNoteNeverRejectedByValidation:
+    """`_ai_refine_prompt_context` feeds the LLM a `trade_mode_note` key
+    (read-only guidance) instead of the real `trade_mode` value. If an
+    LLM "helpfully" echoes that key back verbatim in its draft JSON, the
+    real validation path it would hit — `_validate_against_registry`,
+    called from `draft_agent_from_prompt` (not re-exercised here; see the
+    method docstring below for exact scope) — must never reject it on
+    that account. Same structural pattern already relied on in
+    production for `resolved_channels_note` (the tree-driven `events`
+    equivalent)."""
+
+    def test_validate_against_registry_ignores_unknown_trade_mode_note_key(self):
+        """Differential, against the REAL `agent_evaluator.validate` (no
+        mock) — proves only that adding `trade_mode_note` produces
+        IDENTICAL errors to the same conditions tree without it, so this
+        fails the moment anyone adds a top-level-key whitelist/rejection
+        to `_validate_against_registry` that doesn't know about this key.
+        Only covers `_validate_against_registry` itself, not the LLM's
+        own `errors` field (parsed separately in `draft_agent_from_prompt`,
+        uncovered by any unit test here) nor the diff-apply loop (already
+        covered elsewhere — `trade_mode_note` isn't in
+        `_AI_REFINE_WRITABLE_FIELDS`, so it's never written regardless)."""
+        from backend.api.algo.agent_ai import _validate_against_registry
+        cond = {"metric": "pnl", "scope": "total", "op": "<", "value": -1000}
+        base_errors: list[str] = []
+        with_note_errors: list[str] = []
+        _validate_against_registry({"conditions": cond}, base_errors)
+        _validate_against_registry(
+            {"conditions": cond,
+             "trade_mode_note": "READ-ONLY — not shown and cannot be changed by this command."},
+            with_note_errors,
+        )
+        assert with_note_errors == base_errors
+
+
+class TestClampSafetyCreatePathUnchanged:
+    """Thin pointer regression guard, co-located with the refine-guard
+    tests above for locality. The full unit coverage of `_clamp_safety`
+    itself lives in `test_agent_ai_coverage.py::test_clamp_safety_forces_paper`
+    — this confirms the module this task was told NOT to touch
+    (`backend/api/algo/agent_ai.py`) still forces paper unconditionally
+    on a fresh create-path draft."""
+
+    def test_clamp_safety_still_forces_paper_on_create(self):
+        from backend.api.algo.agent_ai import _clamp_safety
+        draft = {"trade_mode": "live"}
+        warnings: list[str] = []
+        _clamp_safety(draft, warnings)
+        assert draft["trade_mode"] == "paper"
+        assert any("paper mode" in w for w in warnings)
 
 
 # ═══════════════════════════════════════════════════════════════════════

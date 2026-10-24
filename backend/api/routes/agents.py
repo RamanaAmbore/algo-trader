@@ -703,11 +703,24 @@ def _is_builtin_seeded_event_agent(a: Agent) -> bool:
 # tree with no `seed_spec_hash`/`modified_skip` protection catching it
 # (that protection only guards `seed_event_agents()`'s own write path,
 # not this one).
+#
+# `trade_mode` safety guard (follow-up fix, same session). `_clamp_safety`
+# (agent_ai.py) unconditionally forces `draft["trade_mode"] = "paper"` on
+# every `draft_agent_from_prompt()` call — correct for the CREATE path (a
+# fresh AI draft should land conservatively in paper), but `_cmd_ai_refine`
+# reuses the same `draft_agent_from_prompt()` call to refine an EXISTING
+# agent. Without a guard, ANY refine instruction — even one unrelated to
+# trade mode — would silently flip an already-live `kind='cycle'` trading
+# agent back to paper via the diff-apply loop below. `trade_mode` is
+# therefore excluded from `_AI_REFINE_WRITABLE_FIELDS` unconditionally
+# (unlike `events`, which is only conditionally excluded for tree-driven
+# agents) — a refine must never change it, full stop. The operator's own
+# dedicated P/L chip on /agents is the only way to flip trade mode.
 # ─────────────────────────────────────────────────────────────────────────
 
 _AI_REFINE_WRITABLE_FIELDS: tuple[str, ...] = (
     "name", "description", "conditions", "events", "actions",
-    "scope", "schedule", "cooldown_minutes", "lifespan_type", "trade_mode",
+    "scope", "schedule", "cooldown_minutes", "lifespan_type",
 )
 
 # Heuristic only, for the UX rejection message — NOT the safety
@@ -719,6 +732,49 @@ _AI_REFINE_CHANNEL_INTENT_KEYWORDS: tuple[str, ...] = (
     "channel", "telegram", "ntfy", "email", "notify", "notification",
     "alert via", "send to", "send via", "webhook",
 )
+
+# Same UX-only heuristic as above, for `trade_mode`. The real protection
+# is `trade_mode` being permanently absent from `_AI_REFINE_WRITABLE_FIELDS`
+# — this check only decides whether the operator gets an early, specific
+# rejection message instead of a silent no-op diff.
+#
+# Deliberately NOT a bare substring check on "live"/"paper" — this app's
+# own vocabulary contains "live cash" (vs "sod_cash"), "live price",
+# "live quote", etc., and bare substring matching also false-positives on
+# ordinary English words that happen to CONTAIN "live" (e.g. "delivery",
+# "alive"). A false NEGATIVE here only costs a silent no-op (the real
+# safety boundary — the field exclusion above — still holds); a false
+# POSITIVE blocks a legitimate, unrelated refine with a confusing
+# rejection. Bias narrow: word-boundary, mode-context regexes only.
+_AI_REFINE_TRADE_MODE_INTENT_PATTERNS: tuple[re.Pattern, ...] = tuple(
+    re.compile(p, re.IGNORECASE) for p in (
+        r"\b(trade|trading|paper|live)\s+mode\b",
+        r"\bgo(ing)?\s+live\b",
+        r"\bto\s+(live|paper)\b(?!\s+(cash|price|prices|quote|quotes|ltp|feed|data|ticks?|margin|pnl))",
+        r"\bpaper\s+trad(e|ing)\b",
+    )
+)
+
+
+def _ai_refine_mentions_trade_mode_intent(prompt: str) -> bool:
+    return any(pat.search(prompt) for pat in _AI_REFINE_TRADE_MODE_INTENT_PATTERNS)
+
+
+# `_clamp_safety` (agent_ai.py) always appends "AI agents land in paper
+# mode (was '...'). Flip the P/L chip on /agents to enable live." to
+# `d.warnings` whenever the draft's `trade_mode` isn't already 'paper' —
+# correct and informative for `_cmd_ai_create` (a fresh draft genuinely
+# WILL be saved in paper mode), but for `_cmd_ai_refine` it would be
+# actively misleading: `trade_mode` is never written back by a refine
+# (see `_AI_REFINE_WRITABLE_FIELDS` above), so the row's real trade_mode
+# is untouched regardless of what the LLM's draft echoed. Displaying
+# that warning verbatim on a refine of a LIVE agent would tell the
+# operator the agent is "now in paper mode" when it demonstrably is not.
+_AI_REFINE_SUPPRESSED_WARNING_PREFIX = "AI agents land in paper mode"
+
+
+def _ai_refine_filtered_warnings(warnings: list[str]) -> list[str]:
+    return [w for w in warnings if not w.startswith(_AI_REFINE_SUPPRESSED_WARNING_PREFIX)]
 
 
 def _ai_refine_is_tree_driven(agent) -> bool:
@@ -768,7 +824,17 @@ def _ai_refine_prompt_context(agent, tree_driven: bool) -> dict:
         "schedule":         agent.schedule,
         "cooldown_minutes": agent.cooldown_minutes,
         "lifespan_type":    agent.lifespan_type,
-        "trade_mode":       agent.trade_mode,
+        # Deliberately omitted, not just excluded from write-back: a
+        # refine can never change `trade_mode` (see the comment block
+        # above `_AI_REFINE_WRITABLE_FIELDS`), so showing the LLM the
+        # current live value only invites it to "helpfully" echo or
+        # change it in its response — a value `_ai_refine_writable_fields`
+        # will always discard. Same reasoning as omitting `events` for a
+        # tree-driven agent below.
+        "trade_mode_note": (
+            "READ-ONLY — not shown and cannot be changed by this command. "
+            "Flip the P/L chip on /agents to change trade mode."
+        ),
     }
     if tree_driven:
         current["resolved_channels"] = _event_agent_resolved_channels(agent)
@@ -1871,14 +1937,32 @@ class AgentController(Controller):
         version that incorporates the operator's instruction, validates,
         and PATCHes the row in place. Slug + status + trigger_count are
         preserved; only conditions / events / actions / scope / schedule /
-        cooldown / lifespan / trade_mode can change — EXCEPT `events` for
-        a tree-driven event agent (see `_ai_refine_writable_fields`'s
-        docstring, 2026-10 routing-tree activation plan, Step 2)."""
+        cooldown / lifespan can change — EXCEPT `events` for a tree-driven
+        event agent (see `_ai_refine_writable_fields`'s docstring, 2026-10
+        routing-tree activation plan, Step 2), and `trade_mode`, which a
+        refine can NEVER change for any agent — see the module-level
+        comment block above `_AI_REFINE_WRITABLE_FIELDS`."""
         async with async_session() as session:
             result = await session.execute(select(Agent).where(Agent.slug == slug))
             agent = result.scalar_one_or_none()
         if not agent:
             return InterpretResponse(output=f"Agent '{slug}' not found", success=False)
+        # Reject BEFORE ever calling the LLM — the real protection is
+        # `trade_mode` being permanently absent from
+        # `_AI_REFINE_WRITABLE_FIELDS`, but an instruction that's clearly
+        # about trade mode would otherwise burn an LLM call only to
+        # silently no-op, which looks like a bug to the operator. This
+        # keyword check is a UX nicety, not the safety boundary, and
+        # applies unconditionally (not gated on tree_driven).
+        if _ai_refine_mentions_trade_mode_intent(prompt):
+            return InterpretResponse(
+                output=(
+                    f"`agent ai refine` never changes trade mode, for "
+                    f"either direction, even if asked. Flip the P/L chip "
+                    f"on /agents to switch '{slug}' between live and paper."
+                ),
+                success=False,
+            )
         tree_driven = _ai_refine_is_tree_driven(agent)
         # Reject BEFORE ever calling the LLM — the real protection is
         # `_ai_refine_writable_fields` excluding `events` from the
@@ -1933,7 +2017,8 @@ class AgentController(Controller):
                     setattr(row, fld, new[fld])
                     changed.append(fld)
             await session.commit()
-        warn_block = ("\n  ⚠ ".join(d.warnings)) if d.warnings else "(none)"
+        refine_warnings = _ai_refine_filtered_warnings(d.warnings)
+        warn_block = ("\n  ⚠ ".join(refine_warnings)) if refine_warnings else "(none)"
         diff_block = (", ".join(changed)) if changed else "(no changes — refinement was a no-op)"
         return InterpretResponse(
             output=(f"✓ Agent '{slug}' refined\n"
