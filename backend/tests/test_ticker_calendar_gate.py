@@ -457,6 +457,127 @@ async def test_start_kite_ticker_conn_service_mode_on_open_day():
     assert bg.ticker_connected_today() is True
 
 
+async def test_start_kite_ticker_early_boot_does_not_suppress_0800_restart():
+    """A process boot well before 08:00 IST on a calendar-confirmed-open
+    day connects immediately (unchanged — `_start_kite_ticker` has
+    always run at any time of day), but must NOT seed
+    `_ticker_restart_done_global` — otherwise the later 08:00 fresh-token
+    restart (`_ds_tick_ticker_restart`'s whole original purpose: binding
+    to the token `_task_holiday_refresh` rotates at 05:30) would be
+    silently skipped for the rest of the day."""
+    import backend.api.app as app_mod
+    import backend.api.background as bg
+    import os as _os
+
+    early = datetime(2026, 10, 19, 2, 0, tzinfo=_IST)
+
+    with patch("backend.shared.helpers.utils.is_engine_idle", return_value=False), \
+         patch("backend.api.background._ticker_calendar_verdict", new_callable=AsyncMock, return_value=bg._CAL_OPEN), \
+         patch("backend.shared.helpers.date_time_utils.timestamp_indian", return_value=early), \
+         patch.dict(_os.environ, {"RAMBOQ_USE_CONN_SERVICE": "1"}, clear=False), \
+         patch.object(app_mod, "_start_mmap_reader") as m_start_mmap:
+        await app_mod._start_kite_ticker()
+
+    m_start_mmap.assert_called_once()
+    # Check the state dict directly — `ticker_connected_today()` compares
+    # against the REAL current IST date, not the fixed `early` fixture.
+    assert bg._TICKER_CALENDAR_STATE["connected"] is True  # watchdog may run real checks
+    assert bg._ticker_restart_done_global is None  # but 08:00 restart still fires
+
+    # The 08:00 tick on the same day must still connect — the early boot
+    # must not have silently satisfied it.
+    now_0800 = datetime(2026, 10, 19, 8, 0, tzinfo=_IST)
+    with patch("backend.api.background._ticker_calendar_verdict", new_callable=AsyncMock, return_value=bg._CAL_OPEN), \
+         patch("backend.api.background._snapshot_restart_ticker") as m_restart:
+        await bg._ds_tick_ticker_restart(now_0800, date(2026, 10, 19))
+    m_restart.assert_called_once()
+
+
+async def test_start_kite_ticker_boot_after_0800_seeds_sentinel():
+    """A boot AT or AFTER 08:00 IST is the normal cold-start-catch-up
+    case (item 4) — it DOES seed the sentinel, since this connect IS the
+    day's official restart, not a pre-market early boot."""
+    import backend.api.app as app_mod
+    import backend.api.background as bg
+    import os as _os
+
+    late = datetime(2026, 10, 19, 14, 0, tzinfo=_IST)
+
+    with patch("backend.shared.helpers.utils.is_engine_idle", return_value=False), \
+         patch("backend.api.background._ticker_calendar_verdict", new_callable=AsyncMock, return_value=bg._CAL_OPEN), \
+         patch("backend.shared.helpers.date_time_utils.timestamp_indian", return_value=late), \
+         patch.dict(_os.environ, {"RAMBOQ_USE_CONN_SERVICE": "1"}, clear=False), \
+         patch.object(app_mod, "_start_mmap_reader"):
+        await app_mod._start_kite_ticker()
+
+    assert bg._ticker_restart_done_global == date(2026, 10, 19)
+
+
+# ---------------------------------------------------------------------------
+# _snapshot_restart_ticker — defensive set_loop() (the "frozen LTP" class
+# of regression this change could otherwise reintroduce via a new path).
+# ---------------------------------------------------------------------------
+
+async def test_snapshot_restart_ticker_cutover_mode_sets_loop_defensively():
+    """A process that booted on a confirmed-closed day never calls
+    `set_loop()` via `_start_kite_ticker()`. The FIRST real connect — via
+    the recheck loop's `_snapshot_restart_ticker()` call — must still
+    wire the running loop into the ticker (and its BroadcastBus),
+    otherwise `publish_many()` silently drops every tick forever."""
+    import backend.api.background as bg
+
+    mock_ticker = MagicMock()
+    mock_ticker.check_and_heal = MagicMock(return_value=True)
+
+    with patch("backend.api.background.is_cutover_on", return_value=True), \
+         patch("backend.shared.helpers.utils.is_engine_idle", return_value=False), \
+         patch("backend.brokers.kite_ticker.get_ticker", return_value=mock_ticker):
+        bg._snapshot_restart_ticker()
+
+    mock_ticker.set_loop.assert_called_once()
+    mock_ticker.check_and_heal.assert_called_once()
+
+
+async def test_snapshot_restart_ticker_direct_mode_sets_loop_defensively():
+    import backend.api.background as bg
+
+    mock_ticker = MagicMock()
+    mock_ticker.restart = MagicMock()
+
+    mock_kite = MagicMock()
+    mock_kite.api_key = "key_123"
+    mock_kite.access_token = "token_456"
+    mock_conn = MagicMock()
+    mock_conn.kite = mock_kite
+    mock_connections_instance = MagicMock()
+    mock_connections_instance.conn = {"ACC1": mock_conn}
+
+    with patch("backend.api.background.is_cutover_on", return_value=False), \
+         patch("backend.brokers.kite_ticker.get_ticker", return_value=mock_ticker), \
+         patch("backend.brokers.connections.Connections", return_value=mock_connections_instance):
+        bg._snapshot_restart_ticker()
+
+    mock_ticker.set_loop.assert_called_once()
+    mock_ticker.restart.assert_called_once_with("key_123", "token_456", "ACC1")
+
+
+async def test_snapshot_restart_ticker_set_loop_failure_does_not_block_restart():
+    """A `set_loop()` exception (unexpected adapter shape, etc.) is
+    caught and logged — it must not prevent the restart/heal itself."""
+    import backend.api.background as bg
+
+    mock_ticker = MagicMock()
+    mock_ticker.set_loop = MagicMock(side_effect=RuntimeError("boom"))
+    mock_ticker.check_and_heal = MagicMock(return_value=True)
+
+    with patch("backend.api.background.is_cutover_on", return_value=True), \
+         patch("backend.shared.helpers.utils.is_engine_idle", return_value=False), \
+         patch("backend.brokers.kite_ticker.get_ticker", return_value=mock_ticker):
+        bg._snapshot_restart_ticker()  # must not raise
+
+    mock_ticker.check_and_heal.assert_called_once()
+
+
 async def test_start_kite_ticker_engine_idle_skips_before_calendar_check():
     """The pre-existing dev-idle gate still short-circuits BEFORE the
     calendar check even runs."""

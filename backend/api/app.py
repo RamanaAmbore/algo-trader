@@ -383,11 +383,13 @@ async def _start_kite_ticker() -> None:
             )
             return
 
+        from datetime import time as _dtime
         from backend.shared.helpers.date_time_utils import timestamp_indian
         from backend.api.background import (
             _ticker_calendar_verdict, _ticker_calendar_mark, _CAL_CLOSED,
         )
-        _cal_today = timestamp_indian().date()
+        _cal_now = timestamp_indian()
+        _cal_today = _cal_now.date()
         _cal_verdict = await _ticker_calendar_verdict(_cal_today)
         if _cal_verdict == _CAL_CLOSED:
             _ticker_calendar_mark(
@@ -402,13 +404,22 @@ async def _start_kite_ticker() -> None:
                 "closed today (weekend/holiday, no special session)"
             )
             return
+        # This function runs at EVERY process start, any time of day —
+        # a boot well before 08:00 must NOT suppress the later 08:00
+        # fresh-token restart (`background._ds_tick_ticker_restart`'s own
+        # purpose). Only seed the shared "today is done" sentinel when
+        # this connect itself lands inside the normal [08:00, 23:30)
+        # window; an earlier connect still marks `connected=True` (so the
+        # watchdog runs real checks in the interim) without blocking it.
+        _cal_seed_sentinel = _cal_now.time() >= _dtime(8, 0)
 
         if _os.environ.get("RAMBOQ_USE_CONN_SERVICE", "").strip().lower() in (
             "1", "true", "yes", "on",
         ):
             _start_mmap_reader()
             _ticker_calendar_mark(_cal_today, connected=True, idle=False,
-                                   reason="connected (mmap reader)")
+                                   reason="connected (mmap reader)",
+                                   seed_restart_sentinel=_cal_seed_sentinel)
             return
 
         _use_conn_svc = _os.environ.get(
@@ -430,7 +441,8 @@ async def _start_kite_ticker() -> None:
         import asyncio as _asyncio
         get_ticker().set_loop(_asyncio.get_event_loop())
         get_ticker().start(api_key, access_token, account=_ticker_account)
-        _ticker_calendar_mark(_cal_today, connected=True, idle=False, reason="connected")
+        _ticker_calendar_mark(_cal_today, connected=True, idle=False, reason="connected",
+                               seed_restart_sentinel=_cal_seed_sentinel)
 
     except KeyError:
         logger.warning(

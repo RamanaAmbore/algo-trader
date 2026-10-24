@@ -3095,12 +3095,34 @@ def _snapshot_restart_ticker() -> None:
     ``_task_ticker_watchdog`` supervision (which already calls
     ``check_and_heal()`` every 30s in conn-service mode) — cheap and
     idempotent, so running it here too costs nothing.
+
+    Defensive ``set_loop()`` call (2026-10-24) — the calendar-gated
+    connect (see "Calendar-gated ticker connect" above) can make THIS
+    the very first interaction with the ticker singleton for a process
+    that booted on a confirmed-closed day: ``_start_kite_ticker()``
+    (app.py) — the one call site that normally wires the running loop
+    at startup via ``get_ticker().set_loop(...)`` — is skipped entirely
+    on such a day. Both ``TickerManager.restart()`` and
+    ``MmapTickReader.check_and_heal()``/``start()`` rely on an earlier
+    ``set_loop()`` call to wire ``BroadcastBus._loop``; without it,
+    ``publish_many()`` silently drops every tick forever
+    (``if not self._loop: return``) — the exact "LTP froze while Chg%
+    moved" bug class documented in CLAUDE.md's "Conn-service tick
+    forwarder killed nightly" entry, reachable here via a NEW path.
+    Idempotent on both ticker classes — safe to call every time.
     """
     try:
         from backend.brokers.kite_ticker import get_ticker
         from backend.brokers.connections import Connections
 
         _ticker_obj = get_ticker()
+        try:
+            import asyncio as _asyncio
+            _ticker_obj.set_loop(_asyncio.get_running_loop())
+        except Exception as _loop_exc:
+            logger.warning(
+                "Background: defensive ticker set_loop() failed: %s", _loop_exc,
+            )
         if is_cutover_on():
             from backend.shared.helpers.utils import is_engine_idle
             if is_engine_idle():
@@ -3742,16 +3764,30 @@ _TICKER_CALENDAR_STATE: dict = {
 _ticker_restart_done_global: "date | None" = None
 
 
-def _ticker_calendar_mark(today: date, *, connected: bool, idle: bool, reason: str) -> None:
-    """Record today's ticker-connect verdict. Setting connected=True also
-    seeds `_ticker_restart_done_global` so every other call site sees
-    "today is done" and skips a redundant reconnect."""
+def _ticker_calendar_mark(
+    today: date, *, connected: bool, idle: bool, reason: str,
+    seed_restart_sentinel: bool = True,
+) -> None:
+    """Record today's ticker-connect verdict.
+
+    Setting connected=True normally ALSO seeds `_ticker_restart_done_global`
+    so every other call site sees "today is done" and skips a redundant
+    reconnect — this is correct for every call site except one.
+    `_start_kite_ticker()` (app.py) runs at every process start, any time
+    of day, including well before 08:00. If an early connect there seeded
+    the sentinel unconditionally, the 08:00 fresh-token restart
+    (`_ds_tick_ticker_restart`'s whole original purpose — binding the
+    ticker to the token `_task_holiday_refresh` rotates at 05:30) would
+    be silently skipped for the rest of the day. `seed_restart_sentinel`
+    lets that one caller mark `connected=True` (so the watchdog still
+    runs real checks) WITHOUT blocking the later in-window restart.
+    """
     global _TICKER_CALENDAR_STATE, _ticker_restart_done_global
     _TICKER_CALENDAR_STATE = {
         "date": today, "connected": connected, "idle": idle,
         "reason": reason, "checked_at": _time.time(),
     }
-    if connected:
+    if connected and seed_restart_sentinel:
         _ticker_restart_done_global = today
 
 
@@ -3851,7 +3887,14 @@ async def _ticker_calendar_verdict(today: date) -> str:
         for seg_cfg in segments.values():
             exch = str((seg_cfg or {}).get("holiday_exchange", "NSE")).upper().strip()
             try:
-                holidays = fetch_holidays(exch)
+                # Offloaded to a thread (matches `_watchdog_check_market_open`'s
+                # own `await asyncio.to_thread(fetch_holidays, exch)`) — Tier
+                # 1/2 are in-memory and effectively free, but a cold cache
+                # falls through to a genuinely blocking Tier-3 DB read or
+                # Tier-4 NSE HTTP call, which must never block the event
+                # loop this function can run on every 30s for hours during
+                # the closed-day recheck loop.
+                holidays = await asyncio.to_thread(fetch_holidays, exch)
             except Exception as e:
                 logger.warning("[TICKER-CALENDAR] fetch_holidays(%s) failed: %s", exch, e)
                 any_uncertain = True
