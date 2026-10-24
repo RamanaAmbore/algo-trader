@@ -1846,3 +1846,79 @@ async def test_ticker_watchdog_started_persist_failure_does_not_block_health_che
     mock_segment_open.assert_called_once()
     ticker.reset_unhealthy.assert_called_once()
     mock_try_start.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_ticker_watchdog_boot_then_connected_records_exactly_one_row():
+    """Cross-function handoff: Phase 1's REAL `conn_should_attempt_
+    connect()` (left unmocked here) persists the boot-day row and sets
+    the shared `_last_recorded_date` sentinel on tick 1; once the ticker
+    comes up (simulated by `_try_start_ticker`'s own side effect),
+    `record_daily_verdict_if_needed()` on the VERY NEXT tick must see
+    that sentinel already set and no-op — not double-write the same
+    day. This is the actual handoff between the two writers, not either
+    one in isolation: if `global _last_recorded_date` were ever dropped
+    from `conn_should_attempt_connect`, this test would catch it (tick 2
+    would recompute+persist again, call_count would go to 2)."""
+    from backend.brokers.service.app import _ticker_watchdog
+    from backend.brokers.service.calendar_gate import CAL_OPEN
+
+    started = {"v": False}
+    ticker = _make_started_ticker()
+    ticker.status.side_effect = lambda: {"started": started["v"]}
+
+    def _fake_try_start(*args, **kwargs):
+        started["v"] = True
+        return True
+
+    fixed_now = datetime(2026, 10, 24, 10, 0, 0)
+
+    with patch('backend.brokers.kite_ticker.get_ticker', return_value=ticker), \
+         patch('backend.shared.helpers.date_time_utils.is_any_segment_open',
+               return_value=False), \
+         patch('backend.shared.helpers.date_time_utils.timestamp_indian',
+               return_value=fixed_now), \
+         patch('backend.brokers.service.calendar_gate._conn_calendar_verdict_detail',
+               new_callable=AsyncMock,
+               return_value=(CAL_OPEN, {"resolved_via": "equity"})), \
+         patch('backend.brokers.service.calendar_gate._persist_verdict_row',
+               new_callable=AsyncMock) as mock_persist, \
+         patch('backend.brokers.service.app._try_start_ticker',
+               side_effect=_fake_try_start) as mock_try_start, \
+         patch('asyncio.sleep', new_callable=AsyncMock,
+               side_effect=[None, None, asyncio.CancelledError()]):
+        await _ticker_watchdog()
+
+    # Tick 1: not started → Phase 1's real conn_should_attempt_connect()
+    # writes the boot-day row (no "ticker_already_connected" tag — that
+    # tag is only added by record_daily_verdict_if_needed()) and starts
+    # the ticker. Tick 2: started → record_daily_verdict_if_needed()
+    # sees _last_recorded_date already == today and no-ops.
+    assert mock_persist.call_count == 1
+    assert "ticker_already_connected" not in mock_persist.call_args.args[2]
+    mock_try_start.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_conn_should_attempt_connect_closed_day_log_dedup():
+    """The closed-day INFO log line is deduped on (date, verdict) across
+    repeated calls — but persistence itself is NOT deduped and still
+    upserts every call (only the log line is)."""
+    from backend.brokers.service.calendar_gate import conn_should_attempt_connect, CAL_CLOSED
+
+    d1 = datetime(2026, 10, 24, 9, 0, 0)
+    d2 = datetime(2026, 10, 25, 9, 0, 0)
+
+    with patch('backend.brokers.service.calendar_gate.logger') as mock_logger, \
+         patch('backend.shared.helpers.date_time_utils.timestamp_indian',
+               side_effect=[d1, d1, d2]), \
+         patch('backend.brokers.service.calendar_gate._conn_calendar_verdict_detail',
+               new_callable=AsyncMock, return_value=(CAL_CLOSED, {})), \
+         patch('backend.brokers.service.calendar_gate._persist_verdict_row',
+               new_callable=AsyncMock) as mock_persist:
+        await conn_should_attempt_connect()  # d1 — logs
+        await conn_should_attempt_connect()  # d1 again — suppressed
+        await conn_should_attempt_connect()  # d2 — new key, logs again
+
+    assert mock_logger.info.call_count == 2
+    assert mock_persist.call_count == 3
