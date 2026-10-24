@@ -39,6 +39,7 @@ import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 # ── Project root ────────────────────────────────────────────────────────────
 
@@ -66,34 +67,44 @@ def _now_ist_str() -> str:
 
 # ── Config loading ──────────────────────────────────────────────────────────
 
+# Set (non-None) when config loading/building degraded in a way that produced
+# a connection config the caller should not trust blindly — distinguished at
+# the exit(3) site in _query_max_dates from a genuine post-config connection
+# failure. Never holds secret values, only a short diagnostic reason.
+_CONFIG_DIAGNOSTIC: str | None = None
+
+
 def _load_yaml_simple(path: Path) -> dict[str, Any]:
-    """Minimal YAML key: value parser — no external deps, handles strings,
-    ints, booleans, and quoted strings. Nested keys (with indentation) are
-    treated as flat — sufficient for our secrets structure."""
-    result: dict[str, Any] = {}
+    """Real YAML parser (PyYAML — already a transitive dependency of the main
+    app; see backend/shared/helpers/utils.py's own secrets.yaml loading).
+    Replaces a former hand-rolled line parser that treated a bare '#'
+    anywhere in a line as a comment start, which silently truncated any
+    secret value containing '#' (confirmed live: this previously corrupted
+    db_password and caused every DB connection attempt to fail auth while
+    being misreported as "DB unreachable")."""
+    global _CONFIG_DIAGNOSTIC
     try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return result
-    for line in text.splitlines():
-        # Strip comments
-        line = line.split("#")[0].rstrip()
-        if not line or ":" not in line:
-            continue
-        # Only parse top-level keys (no leading spaces)
-        if line[0] == " " or line[0] == "\t":
-            continue
-        key, _, raw_value = line.partition(":")
-        key = key.strip()
-        value = raw_value.strip().strip('"').strip("'")
-        if not key or not value:
-            continue
-        # Try int conversion
-        try:
-            result[key] = int(value)
-        except ValueError:
-            result[key] = value
-    return result
+        import yaml  # type: ignore[import]
+    except ImportError:
+        _CONFIG_DIAGNOSTIC = (
+            f"PyYAML not importable while loading {path.name} "
+            "(install with: pip install pyyaml)"
+        )
+        return {}
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError as exc:
+        _CONFIG_DIAGNOSTIC = f"could not read {path.name}: {exc}"
+        return {}
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        _CONFIG_DIAGNOSTIC = f"could not parse {path.name} as YAML: {exc}"
+        return {}
+    if not isinstance(data, dict):
+        # Empty file (None) or a non-mapping top level — no usable keys.
+        return {}
+    return data
 
 
 def _build_dsn() -> str:
@@ -102,7 +113,19 @@ def _build_dsn() -> str:
     Priority:
     1. DATABASE_URL environment variable (must use postgresql:// scheme)
     2. Constructed from secrets.yaml + backend_config.yaml
+
+    user/password are percent-encoded (urllib.parse.quote) before being
+    spliced into the DSN string: asyncpg parses this string via
+    urllib.parse.urlparse, where '@', '#', ':', and '/' are all structural
+    URL delimiters — an unencoded password containing any of them (e.g. a
+    literal '#', confirmed present in the real production password) would
+    corrupt the DSN's own netloc/fragment boundaries, not merely fail auth.
+    The main app's SQLAlchemy-based URL builder is unaffected by this because
+    SQLAlchemy's own URL parser is a different, delimiter-tolerant regex —
+    this script talks to asyncpg directly and does not get that protection
+    for free.
     """
+    global _CONFIG_DIAGNOSTIC
     env_url = os.environ.get("DATABASE_URL", "")
     if env_url:
         # Normalise asyncpg URLs so we can use asyncpg directly
@@ -114,15 +137,23 @@ def _build_dsn() -> str:
     secrets = _load_yaml_simple(secrets_path)
     config  = _load_yaml_simple(config_path)
 
-    user     = secrets.get("db_user", "rambo_admin")
-    password = secrets.get("db_password", "")
+    user     = str(secrets.get("db_user", "rambo_admin"))
+    password = str(secrets.get("db_password", ""))
     host     = str(secrets.get("db_host", "localhost"))
     port     = int(secrets.get("db_port", 5432))
+
+    if not password and _CONFIG_DIAGNOSTIC is None:
+        _CONFIG_DIAGNOSTIC = (
+            f"db_password is empty/missing after parsing {secrets_path.name}"
+        )
 
     branch  = str(config.get("deploy_branch", "dev"))
     db_name = "ramboq" if branch == "main" else "ramboq_dev"
 
-    return f"postgresql://{user}:{password}@{host}:{port}/{db_name}"
+    user_enc = quote(user, safe="")
+    password_enc = quote(password, safe="")
+
+    return f"postgresql://{user_enc}:{password_enc}@{host}:{port}/{db_name}"
 
 
 def _redacted_dsn(dsn: str) -> str:
@@ -167,7 +198,29 @@ async def _query_max_dates(dsn: str) -> dict[str, date | None]:
     except Exception as exc:
         # Exit 3 = DB unreachable (local dev / no DB role). TLM treats this
         # as skip rather than P1 so it doesn't fire false alerts off-server.
-        print(f"[error] DB connection failed: {exc}", file=sys.stderr)
+        #
+        # Two distinct failure classes reach this branch and are easy to
+        # conflate: (a) the connection config itself was never built
+        # correctly (missing/malformed secrets.yaml, empty password after
+        # parsing) vs (b) the config looked fine but the DB genuinely
+        # refused or timed out. Only (a) is the "expected, local dev" case
+        # TLM's skip classification was written for. A future regression in
+        # (b) deserves a visibly different message so it isn't assumed to be
+        # the same known-benign case forever. The exit code is unchanged —
+        # only the message is more specific. The exception text itself is
+        # safe to print: asyncpg's own auth-failure message names the
+        # configured user, never the password.
+        if _CONFIG_DIAGNOSTIC is not None:
+            print(
+                f"[error] could not build a valid DB connection config: "
+                f"{_CONFIG_DIAGNOSTIC}",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"[error] DB connection failed (config looked valid): {exc}",
+                file=sys.stderr,
+            )
         sys.exit(3)
 
     try:
