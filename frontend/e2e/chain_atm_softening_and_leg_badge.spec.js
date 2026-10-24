@@ -7,7 +7,10 @@
  * staging logic itself is covered here structurally):
  *
  * 1. ATM row decoration softened — was `rgba(251,191,36,0.55)` top+bottom
- *    borders ("overpowering underline"), now `0.32`.
+ *    borders ("overpowering underline"), now `0.32`. SUPERSEDED 2026-10-24
+ *    (see the describe block below) — the marker is now a box-shadow, not
+ *    a border, and deliberately carries BOTH a top and a bottom edge
+ *    again, reversing the 2026-09-30 "bottom-only" decision.
  * 2. Per-strike lot-detail badge (`.chain-leg-badge`) shows a staged
  *    leg's lot count in the CE cell (left) for calls and the PE cell
  *    (right) for puts — reusing the strike/optType fields stamped onto
@@ -32,22 +35,67 @@ const SYMBOL_PANEL_PATH = path.resolve(
 );
 
 test.describe('Stale-code: ATM row decoration softened', () => {
-  test('.chain-row-atm border alpha reduced from 0.55 to 0.18 (softened twice, 2026-09-29), no stronger value remains', () => {
+  test('.chain-row-atm box-shadow alpha stays at the softened 0.18, no stronger value remains', () => {
     const src = readFileSync(CHAIN_TAB_PATH, 'utf8');
     const rule = src.match(/\.chain-row-atm\s*>\s*td\s*\{[^}]*\}/)?.[0] ?? '';
-    expect(rule).toMatch(/border-bottom:\s*1px solid rgba\(251,191,36,0\.18\)/);
+    expect(rule).toMatch(/box-shadow:\s*inset 0 1px 0 rgba\(251,191,36,0\.18\),\s*inset 0 -1px 0 rgba\(251,191,36,0\.18\)/);
     expect(rule).not.toContain('0.55');
   });
 
-  // 2026-09-30: operator — "at the market strike row background border
-  // should be at the bottom of the row not at the top of the row". The
-  // top border (which duplicated the bottom, reading as an unwanted
-  // line at the top of the ATM row) is removed; only the bottom border
-  // remains as the ATM-row marker.
-  test('.chain-row-atm has no border-top — bottom-only marker per operator', () => {
+  // 2026-10-24 (explicit operator request): a top-AND-bottom marker on
+  // the ATM row, reversing the 2026-09-30 "bottom-only" decision noted
+  // above. Implemented as `box-shadow`, not `border-top`/`border-bottom`
+  // — `.chain-grid` is `border-collapse: collapse`, so a literal
+  // `border-top` would conflict at the shared edge with the row ABOVE's
+  // own `border-bottom` (`.chain-row > td`, same width/specificity);
+  // box-shadow isn't part of the table border model and never has that
+  // conflict. It also isn't reset by the `@media (min-width: 640px)`
+  // override further down that sets `.chain-row > td { border-bottom:
+  // none }` for desktop — that override only touches `border-bottom`,
+  // so a literal `border-bottom`-based marker here would have silently
+  // disappeared on desktop while still showing on mobile.
+  test('.chain-row-atm has no literal border-top/border-bottom — box-shadow carries both edges instead', () => {
     const src = readFileSync(CHAIN_TAB_PATH, 'utf8');
     const rule = src.match(/\.chain-row-atm\s*>\s*td\s*\{[^}]*\}/)?.[0] ?? '';
     expect(rule).not.toMatch(/border-top/);
+    expect(rule).not.toMatch(/border-bottom/);
+  });
+
+  // .chain-row-active > td sets its own `box-shadow` (same 0,1,1
+  // specificity, later in source) which would otherwise fully replace
+  // — not merge with — .chain-row-atm > td's box-shadow when a row is
+  // both ATM and active, silently dropping the amber top edge. The
+  // compound selector must carry both signals explicitly.
+  test('.chain-row-active.chain-row-atm > td keeps the amber top edge alongside the violet active bottom edge', () => {
+    const src = readFileSync(CHAIN_TAB_PATH, 'utf8');
+    const rule = src.match(/\.chain-row-active\.chain-row-atm\s*>\s*td\s*\{[^}]*\}/)?.[0] ?? '';
+    expect(rule).toMatch(/box-shadow:\s*inset 0 1px 0 rgba\(251,191,36,0\.18\),\s*inset 0 -1px 0 rgba\(167,139,250,0\.55\)/);
+  });
+});
+
+test.describe('Stale-code: CE/PE column wash hue swap (2026-10-24, explicit operator request)', () => {
+  // Reverses the 2026-09-30 "align ITM tints to CE/PE palette" fix —
+  // deliberate. CE header text stays green over an orange CE column;
+  // PE header stays red over a green PE column. Headers are untouched;
+  // only the per-strike wash hue changes.
+  test('CE-side wash is orange (251,146,60 — app.css --algo-orange), not green', () => {
+    const src = readFileSync(CHAIN_TAB_PATH, 'utf8');
+    expect(src).toMatch(/\.chain-row-itm-call \.chain-td-ce\s*\{\s*background:\s*rgba\(251,146,60,0\.05\)/);
+    expect(src).toMatch(/\.chain-row-itm-put\s+\.chain-td-ce\s*\{\s*background:\s*rgba\(251,146,60,0\.015\)/);
+    expect(src).toMatch(/\.chain-row-itm-call \.chain-td-strike\s*\{\s*background:\s*rgba\(251,146,60,0\.05\)/);
+  });
+
+  test('PE-side wash is green (74,222,128 — app.css --algo-green/--c-long), not red', () => {
+    const src = readFileSync(CHAIN_TAB_PATH, 'utf8');
+    expect(src).toMatch(/\.chain-row-itm-put\s+\.chain-td-pe\s*\{\s*background:\s*rgba\(74,222,128,0\.05\)/);
+    expect(src).toMatch(/\.chain-row-itm-call \.chain-td-pe\s*\{\s*background:\s*rgba\(74,222,128,0\.015\)/);
+    expect(src).toMatch(/\.chain-row-itm-put\s+\.chain-td-strike\s*\{\s*background:\s*rgba\(74,222,128,0\.05\)/);
+  });
+
+  test('no residual red (248,113,113) or old-green-on-CE wash remains on the ITM cell/strike rules', () => {
+    const src = readFileSync(CHAIN_TAB_PATH, 'utf8');
+    const block = src.match(/\.chain-row-itm-call \.chain-td-ce[\s\S]{0,900}?\.chain-row-itm-put\s+\.chain-td-strike[^\n]*\n/)?.[0] ?? '';
+    expect(block).not.toContain('248,113,113');
   });
 });
 

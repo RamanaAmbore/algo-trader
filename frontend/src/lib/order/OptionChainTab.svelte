@@ -2065,33 +2065,27 @@
      side that gives under a narrow squeeze; .chain-cell-quote (above)
      is the one permitted to shrink. See that rule's own comment. */
   .chain-side-action { display: inline-flex; align-items: center; flex-shrink: 0; }
-  /* Audit fix — align ITM row tints to CE/PE palette. Pre-fix ITM
-     calls were sky-blue (rgba 56,189,248) and ITM puts were orange
-     (rgba 251,146,60), inverting the CE=green / PE=red convention
-     used by the chain headers one row above. Now the ITM tint reads
-     "the call/put on this row is in the money" in the same color
-     family as the header. */
-  /* Very-subtle pass (2026-09-29) — dropped below the -06 token tier
-     (lowest pre-existing c-long/c-short alpha) to a bespoke ~3%
-     wash; operator wants the ITM tint barely-there, not a design-
-     system-standard "soft" fill.
-     Per-side ITM/OTM split (2026-09-30, operator: "ITM and OTM calls
-     can have different background... ITM and OTM puts can have
-     different background... they can mirror calls in opposite
-     direction... very subtle"). `dir` ('itm-call' when strike < spot,
-     'itm-put' when strike > spot) already tells us unambiguously which
-     SIDE is ITM at this strike — the other side is the OTM one. Each
-     side keeps its own established color family (CE=green, matching
-     .chain-th-ce's --c-long; PE=red, matching .chain-th-pe's
-     --c-short) at every strike, but the ITM side of that family washes
-     in stronger (0.05) than the OTM side (0.015) — so as you scan down
-     the strike column, the CE cell's green fades while the PE cell's
-     red strengthens (and vice versa above spot): a genuine mirror,
-     not just "ITM has a tint, OTM has none". */
-  .chain-row-itm-call .chain-td-ce { background: rgba(74,222,128,0.05); }
-  .chain-row-itm-call .chain-td-pe { background: rgba(248,113,113,0.015); }
-  .chain-row-itm-put  .chain-td-pe { background: rgba(248,113,113,0.05); }
-  .chain-row-itm-put  .chain-td-ce { background: rgba(74,222,128,0.015); }
+  /* Audit fix (2026-09-30, superseded below) — align ITM row tints to
+     CE/PE palette: CE=green (matching --c-long), PE=red (matching
+     --c-short), same family as the chain headers one row above. */
+  /* Column-color swap (2026-10-24, explicit operator request) — CE
+     side now washes ORANGE, PE side now washes GREEN, REVERSING the
+     2026-09-30 audit-fix alignment above: the CE header text stays
+     green over an orange column, and the PE header stays red over a
+     green column. Deliberate — headers are left untouched; only the
+     per-strike wash hue changes. Green reuses the same rgb this file
+     already used for CE (74,222,128 — app.css `--algo-green`/
+     `--c-long`). Orange reuses app.css's existing `--algo-orange`
+     token (#fb923c → rgb 251,146,60) — the exact rgb this file's own
+     ITM-put wash used PRE-2026-09-30 (see the superseded comment
+     above), so no new color is invented. Structure unchanged: the
+     ITM 0.05 / OTM 0.015 per-side mirror (see prior comment block,
+     now describing the mechanism only — not which hue goes where)
+     and the strike-column spread both carry over as-is. */
+  .chain-row-itm-call .chain-td-ce { background: rgba(251,146,60,0.05); }
+  .chain-row-itm-call .chain-td-pe { background: rgba(74,222,128,0.015); }
+  .chain-row-itm-put  .chain-td-pe { background: rgba(74,222,128,0.05); }
+  .chain-row-itm-put  .chain-td-ce { background: rgba(251,146,60,0.015); }
   /* Spread the ITM wash into the strike column too (operator: "spread
      the left background color to right which is basically in the money
      call strike... spread the color in the money put strikes to the
@@ -2102,17 +2096,45 @@
      .chain-td-strike-atm's own distinct styling is untouched, per
      "keep the ATM strip as is". Same alpha as the strong (ITM-side)
      wash above, not the weak OTM-side one, since the strike cell is
-     shared and must pick one side's intensity. */
-  .chain-row-itm-call .chain-td-strike { background: rgba(74,222,128,0.05); }
-  .chain-row-itm-put  .chain-td-strike { background: rgba(248,113,113,0.05); }
+     shared and must pick one side's intensity. Hue follows the same
+     2026-10-24 swap as the CE/PE cells above. */
+  .chain-row-itm-call .chain-td-strike { background: rgba(251,146,60,0.05); }
+  .chain-row-itm-put  .chain-td-strike { background: rgba(74,222,128,0.05); }
   /* Softened 2026-09-29 — operator: the top+bottom amber border read
      as an "overpowering underline" at 0.55 alpha. Same mechanism,
      gentler weight; still reads clearly as "this is the ATM row"
      without fighting the row's own content for attention. Softened
-     AGAIN same day ("very very subtle" pass) 0.10->0.06 / 0.32->0.18. */
+     AGAIN same day ("very very subtle" pass) 0.10->0.06 / 0.32->0.18.
+     Top edge added + bottom edge migrated to box-shadow (2026-10-24,
+     explicit operator request for a top-AND-bottom marker on the
+     spot/ATM-nearest row, spanning CE/strike/PE since this selector
+     already targets every `td` in the row). Box-shadow, not
+     `border-top`/`border-bottom`, deliberately: `.chain-grid` is
+     `border-collapse: collapse` (see that rule's own comment above),
+     so a literal `border-top` here would conflict at the shared edge
+     with the row ABOVE's own `border-bottom` (`.chain-row > td`,
+     same 1px width) — same-priority collapsed-border conflicts are
+     resolved by cell position, not by which rule "looks" stronger,
+     so the amber line could silently lose that fight in some
+     browsers. A `box-shadow` is not part of the table border model
+     and never participates in that conflict. It also survives the
+     `@media (min-width: 640px)` override below that sets
+     `.chain-row > td { border-bottom: none }` for desktop row-divider
+     removal — that rule only touches the `border-bottom` property, so
+     this box-shadow-based marker renders identically on mobile and
+     desktop (the old border-bottom-only bottom edge did NOT: it was
+     being silently reset to `none` on desktop by that same override,
+     same specificity, later in the cascade). Pre-existing, unrelated
+     to this edit: `dir` is 'atm' only when a strike exactly equals
+     spot (practically never), so the ATM row almost always also
+     carries `chain-row-itm-call`/`chain-row-itm-put`, whose per-cell
+     `background` (0,2,0 specificity) outranks this rule's `background`
+     (0,1,1) on the CE/strike/PE cells — the amber wash above is
+     mostly theoretical on a real ATM row; this box-shadow edge is the
+     ATM row's real visible marker. */
   .chain-row-atm > td {
     background: rgba(251,191,36,0.06);
-    border-bottom: 1px solid rgba(251,191,36,0.18);
+    box-shadow: inset 0 1px 0 rgba(251,191,36,0.18), inset 0 -1px 0 rgba(251,191,36,0.18);
   }
   /* Sticky "active row" — the strike the operator last poked. Distinct
      violet accent so it never fights the amber ATM stripe (which
@@ -2131,7 +2153,20 @@
   }
   .chain-row-active.chain-row-atm > td {
     /* When the active row is also the ATM row, keep the amber stripe
-       and overlay a softer violet tint so both signals remain visible. */
+       and overlay a softer violet tint so both signals remain visible.
+       `box-shadow` is a single property, not additive across separate
+       rules of equal specificity — `.chain-row-active > td` (above,
+       same 0,1,1 specificity, later in source) would otherwise fully
+       replace `.chain-row-atm > td`'s box-shadow (both edges) with its
+       own (bottom edge only), silently dropping the amber top marker
+       whenever the ATM row is also the active row. This compound
+       selector (0,2,1, declared last) explicitly carries both: amber
+       top edge (the ATM signal) + violet bottom edge (the active
+       signal, matching the plain `.chain-row-active` rule above) — the
+       amber BOTTOM edge is the one casualty of the combo, accepted
+       since the top edge + background + violet bottom are still three
+       live signals. */
+    box-shadow: inset 0 1px 0 rgba(251,191,36,0.18), inset 0 -1px 0 rgba(167,139,250,0.55);
     background-image: linear-gradient(
       to bottom,
       rgba(167,139,250,0.14),
