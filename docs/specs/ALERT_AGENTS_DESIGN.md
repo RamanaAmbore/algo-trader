@@ -124,6 +124,11 @@ Defined as constants in `event_agents.py` and upserted at API startup.
 | `agent-alert-rich` | agent, INFO, rich_alert | rich_alert | telegram, ntfy (dynamic priority), email |
 | `market-summary` | summary, INFO, summary | summary | telegram_info, email |
 
+*Amended 2026-10-24.* The Channels column above is historical. The live channel set for each
+seeded agent is resolved by `alert_routing.py` (§3.15). The table also omits
+`user-registered-alert` (§3.16). `SEEDED_AGENTS` now has 23 entries. `alert_routing.py` has 22
+per-slug rows, and `unrouted-alert-catch-all` is the one entry without one.
+
 Channel entries may set `priority` (ntfy) and `gate` (default true). `gate:
 false` skips the capability flag check, to keep the same behaviour as the
 direct code it replaced.
@@ -251,6 +256,10 @@ share one renderer (`generic_notice`). Their specs now come from `_GENERIC_NOTIC
 - A sixth notice of this kind is one table row.
 - Channel priorities stay static per row (`high` or `urgent`). These are single-event agents, so a
   static priority is correct. Contrast with `agent-alert-rich` (3.11).
+  *Amended 2026-10-24:* "static per row" now refers to the `priority` token on the spec. The
+  per-channel ntfy priority lives in the agent's per-slug row in `alert_routing.py` (§3.15). It is
+  still static per slug. `UNROUTED_ALERT_AGENT` sits outside this table and keeps its own literal
+  `events` list.
 
 ### 3.11 Token-driven ntfy priority for every event agent
 
@@ -258,6 +267,9 @@ Shipped earlier in `cbfa32e2`. The 2026-10 round added regression coverage only,
 code. The resolution order, applied per record and per channel, is:
 
 1. The channel's own `priority` in its `events` entry. This always wins.
+   *Amended 2026-10-24:* "its `events` entry" now means the resolved channel entry from
+   `alert_routing.resolve_channels()` (§3.15). For a seeded agent with no explicit `events`, that
+   is its per-slug row. The rule itself is unchanged.
 2. The record's `extra.priority`, set by `log(priority=...)`.
 3. The record's `extra.tier`, mapped through `_TIER_TO_NTFY_PRIORITY`
    ([alert_utils.py:1281](../../backend/shared/helpers/alert_utils.py#L1281)).
@@ -368,6 +380,160 @@ requested.
   match is visible only in the log feed.
 - Adding a channel later is a one-line change to `events`. No new mechanism is needed.
 - Golden test: `test_alert_golden.py` pins `events == []`.
+- *Amended 2026-10-24.* "`DEPLOY_SYNC_AGENT` now has `events: []`" and the "one-line change to
+  `events`" bullet above now refer to the per-slug row in `alert_routing.py`, not the spec. The spec
+  carries `priority: medium` instead. Adding a channel is a one-line change to that row (§3.15).
+
+### 3.15 Routing tree: channels resolved, not hardcoded (2026-10, `ec19aa1b`)
+
+A seeded event agent no longer carries a channel list in its spec. The spec carries a `priority`
+token instead. [alert_routing.py](../../backend/api/algo/alert_routing.py) resolves the channel
+set. The module follows the Prometheus Alertmanager routing model: specific rules first, a general
+rule behind them, and a mandatory catch-all last.
+
+**Precedence.** `resolve_channels()`
+([alert_routing.py:236](../../backend/api/algo/alert_routing.py#L236)) returns the first match:
+
+1. A `BREACH` record's dynamic `out[4]` channels. These are read per record in `_dispatch_agent`
+   and never reach the table.
+2. `agent.events`, when non-empty. An operator-authored `ALERT ...` statement, or a future operator
+   edit to a seeded row, keeps its explicit channel choice.
+3. A per-slug rule in `_PER_SLUG_OVERRIDES`
+   ([:55](../../backend/api/algo/alert_routing.py#L55)), keyed on the agent's `slug`.
+4. A generic tier rule in `_TIER_DEFAULTS` ([:183](../../backend/api/algo/alert_routing.py#L183)),
+   keyed on `priority`.
+5. `CATCH_ALL_CHANNELS` ([:222](../../backend/api/algo/alert_routing.py#L222)). Logged once per
+   `(name, priority)` pair, so a misconfigured agent does not log on every flush.
+
+`_dispatch_agent` resolves once per agent per dispatch call
+([event_agents.py:609](../../backend/api/algo/event_agents.py#L609)), not per record. BREACH's
+own dynamic channels bypass the table at the per-record line.
+
+**Two catch-alls, two mechanisms.** Do not merge them:
+
+- `CATCH_ALL_CHANNELS` (step 5) covers an agent that matched and rendered, but fits no per-slug rule
+  and no recognised tier. Its shape copies `UNROUTED_ALERT_AGENT`'s channels, and
+  `test_unrouted_alert_agent_events_matches_catch_all_channels` pins the copy.
+- `UNROUTED_ALERT_AGENT` with `_run_unrouted_catch_all()` (§3.13) covers a record that matches no
+  active agent's conditions at all. That mechanism is unchanged. `UNROUTED_ALERT_AGENT` keeps its
+  own literal `events` list and has no `priority`.
+
+**Why a tree, not a function of priority.** A pure priority-to-channels function is wrong for part
+of the seeded set. The table below was audited against the spec values at the time of this
+migration. "Tier default" is what `_TIER_DEFAULTS` would give for that row's `priority`.
+
+| Slug | Spec `priority` | Tier default | Per-slug row | Deviation |
+|---|---|---|---|---|
+| `deploy-sync-alert` | medium | telegram | `[]` | Channel: none at any tier |
+| `cycle-breach-alert` | none | none | `[]` | Channel: dynamic per record (BREACH) |
+| `mcp-ping-alert` | info | telegram_info | telegram, gate off | Channel: ops telegram, not info |
+| `visitor-report-alert` | info | telegram_info | telegram_info, gate off | Gate only |
+| `market-summary` | info | telegram_info | telegram_info + email, gate off | Channel: adds email |
+| `order-failure-alert` | urgent | telegram + ntfy urgent | telegram + ntfy urgent + email, gate off | Channel: adds email; gate on the rest |
+| `agent-alert-rich` | medium | telegram | telegram + ntfy + email, gate off | Channel: adds ntfy and email |
+| `error-alert` | medium | telegram | telegram + ntfy | Channel: adds ntfy |
+| `fill-alert` | medium | telegram | telegram | None (redundant but explicit) |
+| `user-registered-alert` | high | telegram + ntfy high | telegram + ntfy high, gate off | Gate only |
+
+Two kinds of deviation appear. A *channel* deviation adds, removes or swaps a channel relative to
+the tier rule. A *gate* deviation keeps the channel and sets `gate: false`. `_TIER_DEFAULTS` cannot
+express `gate: false`, so every gate deviation needs its own per-slug row. That is the reason the
+per-slug tier exists, not a simplification. The tier defaults serve a future agent with no row.
+No current production agent falls through to them.
+
+**Empty `events` means "use the tree", not "silence".** `if agent_events:` treats `[]` as falsy.
+Clearing a seeded row's channels in the Automation UI therefore reverts it to the per-slug default.
+To stop a seeded agent, deactivate it.
+
+**Inert on existing databases until a `SEED_VERSION` bump.** `seed_event_agents()` rewrites
+`events` only on the `update` branch
+([event_agents.py:1451-1458](../../backend/api/algo/event_agents.py#L1451)). An existing row whose
+stored `events` is non-empty keeps it, so step 2 wins and the tree does not apply. A fresh database
+takes the `insert` branch, which writes `events=[]`
+([:1446-1450](../../backend/api/algo/event_agents.py#L1446)). The tree is live there from first
+boot. `SEED_VERSION` is still 2. This work did not bump it.
+
+**Known gap, deliberately deferred.** `routes/agents.py` still serialises the raw `agent.events`
+(`_agent_to_info`, [agents.py:610](../../backend/api/routes/agents.py#L610); the update path,
+[:1702](../../backend/api/routes/agents.py#L1702)). A migrated seeded row on a fresh database
+therefore shows an empty channel list on its Automation card. Both serialisers must resolve through
+`resolve_channels()` before the `SEED_VERSION` bump ships. The two changes are coupled.
+
+### 3.16 `USER_REGISTERED_AGENT` and the `auth_internal` tag (2026-10, `42156582`, `9c93dfe9`)
+
+A new seeded agent, `user-registered-alert`, sends Telegram and ntfy (high) when a user
+self-registers and awaits approval ([event_agents.py:1203](../../backend/api/algo/event_agents.py#L1203)).
+Its channels are the per-slug row in `alert_routing.py`, both with `gate: false`.
+
+**The bug was missing instrumentation, not routing.** The registration log line in
+[routes/auth.py:884](../../backend/api/routes/auth.py#L884) had always been emitted. It carried
+no `extra={"tags": ..., "alert_event": ...}`, and every other alert-producing log call in the
+codebase does. No event agent could match it, so nothing reached any channel. The fix builds the
+`extra` dict in `_registration_alert_extra()`
+([auth.py:258](../../backend/api/routes/auth.py#L258)). It sets `tags=["auth"]`,
+`alert_event="user_registered"`, and the `title`/`body` for the shared `generic_notice` renderer.
+`username` and `email` are `html.escape()`d, because that renderer treats `body` as HTML.
+
+**Adding `auth` to the tag vocabulary has a side effect.** `log_store.py`'s `tags_for()` adds the
+logger's last dotted name as a tag when a call has no explicit `tags`. Every bare call in
+`routes/auth.py` therefore picks up `auth`. Once `auth` is a catalogued tag
+([agent_grammar.yaml:1451](../../backend/config/grammars/agent_grammar.yaml#L1451)), those calls
+become alert-shaped. None of them carry `alert_event="user_registered"`, so each would fall through
+to `UNROUTED_ALERT_AGENT` and page Telegram and ntfy with no dedup.
+
+The 12 pre-existing calls are tagged `extra=_AUTH_INTERNAL_TAGS`
+([auth.py:215](../../backend/api/routes/auth.py#L215), `{"tags": ["auth_internal"]}`).
+`auth_internal` is deliberately absent from the catalogue. Owner tags are then non-empty, so the
+logger-name fallback is skipped, and the calls are as invisible as they were before `auth` existed.
+Test: `test_auth_internal_tagged_records_never_reach_the_catch_all`
+([test_alert_routing.py:267](../../backend/tests/test_alert_routing.py#L267)).
+
+**Invariant.** An alert must carry explicit `tags` and `alert_event`. A bare call in a module whose
+logger name matches a catalogued tag is alert-shaped by accident. Adding that tag to the catalogue
+changes every such call.
+
+### 3.17 `Agent.priority` (2026-10, `ec19aa1b`)
+
+`agents.priority` is a nullable `String(16)` column with no default
+([models.py:1223](../../backend/api/models.py#L1223)). Valid values are the keys of
+`_TIER_DEFAULTS`, exposed as `KNOWN_PRIORITIES`: `critical`, `urgent`, `high`, `medium`, `info`,
+`low`. `validate_seed_spec()` rejects any other value
+([event_agents.py:1281](../../backend/api/algo/event_agents.py#L1281)). `None` is valid, and the
+resolver treats it as "no tier rule".
+
+- Migration: `_migrate_agents_priority()`
+  ([database.py:1158](../../backend/api/database.py#L1158)), `ADD COLUMN IF NOT EXISTS`, idempotent.
+- Not reused from `tier`. `tier` drives topic suppression and resolves an ntfy priority value for
+  several renderers. Conflating the two would change pinned golden behaviour. `ERROR_AGENT`, for
+  example, must resolve `None`.
+- Excluded from `compute_seed_spec_hash()`
+  ([event_agents.py:1349](../../backend/api/algo/event_agents.py#L1349)). Every row seeded before
+  this column stores a hash computed without `priority`. Hashing it would change that hash for every
+  such row. The next seed attempt would classify all of them as operator-modified (`modified_skip`),
+  though nothing was edited.
+- Written only on the `insert` and `update` branches
+  ([:1450](../../backend/api/algo/event_agents.py#L1450),
+  [:1455](../../backend/api/algo/event_agents.py#L1455)), alongside the content it describes.
+
+**Consequence.** `seed_action()` compares the hash of `conditions`, `events` and `actions` only. A
+`priority`-only edit made in the UI is not seen as an operator edit. If the row's content still
+matches its stored hash, the next `SEED_VERSION` bump's `update` branch rewrites `priority` to the
+spec value.
+
+### 3.18 `log(...)` accepts `name=` and `tags=` (2026-10, `ec19aa1b`)
+
+The `emit_log` resolver ([actions.py:1244](../../backend/api/algo/actions.py#L1244)) takes two
+optional params. They are stored in the record's `extra` as `route_name` and `route_tags`. They are
+not stored as `name` or `tags`, for two reasons. Both were caught before commit.
+
+- `name` is a reserved `logging.LogRecord` attribute. `Logger.makeRecord` raises `KeyError` as soon
+  as `extra` carries it. The call would vanish silently, because the action handler's exception
+  guard swallows the error.
+- `tags` is the structural field the log store and every event agent's `{"log": {"tag": ...}}`
+  leaf match on. Reusing it would change which agents match the record, not only how it is routed.
+
+No routing rule reads `route_name` or `route_tags` yet. `resolve_channels()` resolves per agent, not
+per record. With neither param set, `extra` is byte-identical to before.
 
 ## 4. What changed, by file
 
@@ -389,6 +555,10 @@ requested.
 | `webhook/deploy.sh` | Long children no longer hold the deploy lock |
 | `event_agents.py` (2026-10, `65de9319`, `5db3f7a8`) | `_GENERIC_NOTICE_SPECS` shared table. `compute_seed_spec_hash` and `seed_action` `modified_skip`. Dispatch trace and unrouted catch-all. `DEPLOY_SYNC_AGENT` events cleared |
 | `models.py`, `database.py` (2026-10) | `agents.seed_spec_hash` column and idempotent migration |
+| `alert_routing.py` (2026-10, `ec19aa1b`) | New. Per-slug overrides, tier defaults, catch-all, `resolve_channels()` (§3.15) |
+| `event_agents.py`, `models.py`, `database.py` (2026-10, `ec19aa1b`) | Seeded agents carry `priority` instead of `events`. `Agent.priority` column and migration (§3.17). `USER_REGISTERED_AGENT` (§3.16) |
+| `routes/auth.py` (2026-10, `42156582`) | Registration log line tagged `auth`. The 12 pre-existing bare calls tagged `auth_internal` (§3.16) |
+| `actions.py` (2026-10, `ec19aa1b`) | `emit_log` accepts `name` and `tags`, stored as `route_name` and `route_tags` (§3.18) |
 
 ## 5. Gaps
 
