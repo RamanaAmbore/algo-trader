@@ -211,6 +211,55 @@ def test_agent_model_has_explicit_alert_column_not_null_default_false():
 
 
 # ═══════════════════════════════════════════════════════════════════════
+#       seed_spec_hash — migration + model column (council item 3,
+#       2026-10 alert-infrastructure plan — SEED_VERSION silently
+#       overwriting an operator's UI edit)
+# ═══════════════════════════════════════════════════════════════════════
+
+def test_migrate_agents_seed_spec_hash_statement_shape():
+    conn = _FakeTxConn()
+    asyncio.run(dbmod._migrate_agents_seed_spec_hash(conn))
+    joined = "\n".join(conn.executed)
+    assert "ALTER TABLE agents ADD COLUMN IF NOT EXISTS seed_spec_hash VARCHAR(64)" in joined
+    assert any("lock_timeout" in s for s in conn.executed)
+    assert not any("CONCURRENTLY" in s for s in conn.executed)
+
+
+def test_init_db_calls_seed_spec_hash_migration_after_has_explicit_alert():
+    src = inspect.getsource(dbmod.init_db)
+    lines = src.splitlines()
+    begin_idx = next(
+        i for i, l in enumerate(lines) if "async with engine.begin() as conn:" in l
+    )
+    begin_indent = len(lines[begin_idx]) - len(lines[begin_idx].lstrip())
+
+    def _idx(marker):
+        i = next(j for j, l in enumerate(lines) if marker in l and "async def" not in l)
+        return i, len(lines[i]) - len(lines[i].lstrip())
+
+    explicit_idx, _ = _idx("_migrate_agents_has_explicit_alert(conn)")
+    hash_idx, hash_indent = _idx("_migrate_agents_seed_spec_hash(conn)")
+
+    assert hash_indent > begin_indent, (
+        "_migrate_agents_seed_spec_hash(conn) must run INSIDE the engine.begin() transactional block"
+    )
+    assert hash_idx > explicit_idx, (
+        "_migrate_agents_seed_spec_hash(conn) must run after _migrate_agents_has_explicit_alert(conn)"
+    )
+
+
+def test_agent_model_has_seed_spec_hash_column_nullable_no_default():
+    """Nullable, no DDL-level default (unlike `has_explicit_alert` above)
+    — every pre-existing row reads back `NULL`, which `seed_action()`
+    treats as "no seed-write history to compare against" (safe to
+    update, same as this function's pre-fix behavior for legacy data)."""
+    col = Agent.__table__.columns["seed_spec_hash"]
+    assert col.nullable is True
+    agent = Agent(slug="x", name="x", conditions={}, events=[], actions=[])
+    assert agent.seed_spec_hash is None
+
+
+# ═══════════════════════════════════════════════════════════════════════
 #  4 — request/response struct wiring + persistence
 # ═══════════════════════════════════════════════════════════════════════
 
