@@ -1,139 +1,208 @@
-# Plan: Simplify draft positions to "a real position, with 3 exceptions"
+# Plan: Replace the hand-written parse/lex layer with a Chevrotain-generated parser — single source of truth for the grammar
 
 ## Context
 
-This session built draft positions (hypothetical, no-broker-call legs for what-if payoff/Greeks
-analysis) as a feature carefully *excluded* from every real financial aggregate — a dedicated
-merge function, explicit totals-exclusion guards, a `showDraftInPayoff` toggle, CSV labeling, etc.
-The operator asked to simplify this: a draft should behave like **any other position on every
-surface**, with exactly three differences — (1) it's created via an order using live LTP with no
-margin check, (2) it has no chase/no bracket, (3) it can be "entered as a real position"
-(promoted) but can **never be closed** — only the existing Clear action removes it.
+A documentation-only fix (extracting the agent DSL's EBNF comment into
+`docs/specs/AGENTS_GRAMMAR_EBNF.md`) doesn't solve the real problem: it just
+relocates the SSOT-drift risk from "comment vs. implementation" to "doc file
+vs. implementation" — which is exactly the staleness already found (the
+extracted EBNF still describes the pre-unification grammar). The operator's
+real ask: the **compiler should be driven from the grammar file**, so there
+is only ever one source of truth.
 
-Two research passes (this session, verified directly against the code, not guessed) found the
-risk here is much smaller than it first looked:
+Two investigations grounded this before any design:
 
-- **The close-action danger is already fully mitigated.** Every close-defaulting entry point in
-  the app (`MarketPulse.svelte`'s row-click → `_openTicketFromRow`/`_openTicketFromDraftRow`
-  branch, derivatives' `closePosition()`, `CandidateLegRow`'s `isClosable`) already explicitly
-  checks `source === 'draft'` and routes to the promote-to-real path instead of a close — built
-  earlier this session, confirmed correct by direct trace. Admin cancel-all (cancels broker open
-  orders only), chase/agent-driven closes (read the broker raw-cache directly, never
-  `/api/positions`), and `SymbolContextMenu` (not mounted in MarketPulse) are all structurally
-  incapable of ever acting on a draft. **No new work needed here — this invariant already holds.**
-- **NavStrip was never wired to see drafts at all.** It reads `portfolioStore`/
-  `positionsDayPnlStore`, computed from the raw broker fetch, completely independent of
-  `pulseUnified.js`'s draft-merge logic. So removing MarketPulse's totals-exclusion only affects
-  MarketPulse's own grid-local pinned TOTAL row and its Exp-P&L-by-symbol lookup — **not** the
-  NavStrip headline P value. These were always two separate things, never one risk.
-- **The merge must stay display-layer-only, never baked into the broker-polled cache.** Operator
-  confirmed: a draft can never be "synced with broker positions" or "updated using broker books."
-  `fetchPositions()`/`positionsStore` must stay 100% pure real-broker data, so the existing
-  staleness/degraded-freeze logic keeps working unaware that drafts exist. MarketPulse's existing
-  `mergeDraftRows()` (in `pulseUnified.js`, called from `buildUnified()`) already does this
-  correctly — it reads `payoffDrafts.value` live, at render time, never cached together with the
-  broker response. This pattern is kept, not rewritten.
-- Backend's `/positions` response (`PositionsResponse` — `rows` + independently-server-computed
-  `summary`/`symbol_summary`/`stale_accounts`) is untouched by any of this — the frontend never
-  recomputes `summary`/`symbol_summary` from `rows` either, so there's no consistency gap to fix.
+**What's actually in `agents.js` today (9,438 lines) — a clean 2-phase split
+already exists, just hand-written on both sides:**
+- **Parse/lex layer** (~2,252 lines, 24%): every `parse*`/`lex*` function
+  takes only `(state)`/`(text)` — confirmed via exhaustive grep, **zero**
+  live references to `catalog` anywhere in the parser. Every documented
+  "ambiguous" case (bare `call` with no `@`, `col_ref` vs `scope_ref`,
+  boolean-metric shorthand) is handled by emitting a generic, untyped AST
+  node (`{type:'ref', call}`, `{type:'colref', segments}`) — **not** by
+  grammar-level backtracking or lookahead. The ambiguity is resolved by
+  catalog *data* in a later pass, not by more tokens. This means a formal
+  grammar/parser-generator can represent 100% of this layer with zero
+  special accommodation for "deferred resolution" — it's already shaped
+  exactly like a parser-generator's output would be.
+- **Compile layer** (~34%, 3,243 lines): every `compile*`/`_compile*`/
+  `_resolve*` function takes `catalog` explicitly and does the real
+  `catalog.metrics.get(...)`/`catalog.scopes.get(...)`/etc. resolution —
+  this is genuinely semantic, backend-catalog-dependent logic that **cannot**
+  live in a context-free grammar and must stay hand-written regardless of
+  tooling.
+- **Decompile** (~17%) and **suggest/describe** (~17%, autocomplete/hover)
+  are both built on top of the same AST the parser produces today — they'd
+  need to keep consuming an AST, not be rewritten, as long as the new
+  parser's output AST is shape-compatible with what they already expect.
+- **One real structural wrinkle**: `tp_scales_json=[...]`'s value needs a
+  *second*, separate mini-lexer (`_lexObjScalesTok`) because call-argument
+  values are first split as raw, bracket-unaware substrings by
+  `tokenizeCallStyle`, not run through the main token stream. A
+  parser-generator assuming one unified lexer feeding one parser doesn't
+  accommodate this for free — needs an explicit decision (below).
+- Regression-risk baseline: **725 tests across 5 files, 7,765 lines**
+  (`agentsGrammar.test.js` 419, `agentsDecompiler.test.js` 128,
+  `agentsSuggest.test.js` 86, `describeTokenAt.test.js` 19,
+  `consoleDispatch.test.js` 73).
 
-## Approach
+**Tool choice — Chevrotain, not Peggy or Nearley:**
+- Peggy's ordered-choice model works for this grammar (the deferred-resolution
+  cases aren't real grammatical ambiguity, so a generic-node convention in
+  actions covers them fine) — but it's a convention you impose, not a
+  first-class feature, and Peggy has no built-in parse/semantics separation.
+- Nearley solves genuine structural ambiguity (multiple parses of the same
+  tokens) — this grammar doesn't have that; using it would pay real
+  performance/complexity cost for a capability this grammar doesn't need.
+- **Chevrotain is the architectural match**: it *enforces* a separate
+  parse → CST → visitor pipeline (`validateVisitor()` fails loudly at
+  startup if the visitor drifts from the grammar) — the exact two-phase
+  split this file already has by hand, now enforced by the tool instead of
+  by discipline. Its track record backs the autocomplete/hover half too:
+  Langium (Eclipse's DSL/LSP framework) is built on Chevrotain specifically
+  because this CST/visitor shape supports completion/hover providers
+  cleanly — directly relevant since this grammar also drives
+  `agentsSuggest.test.js`/`describeTokenAt.test.js`.
+- **Honest counter-signal, not ignored**: Metabase went the *opposite*
+  direction (Chevrotain → hand-written) once their need for the generator's
+  error-recovery/autocomplete machinery went away. The lesson: a
+  parser-generator only pays off if you're genuinely using its strengths —
+  here, the autocomplete/hover requirement and the SSOT-drift problem both
+  argue it will.
+- **Realistic estimate: 3–6 weeks of focused work**, not days. Grammar
+  authoring itself is the easy part (3–5 days); the real cost is re-wiring
+  decompile/autocomplete onto the new tree and differential-testing against
+  the hand-written parser across the full suite before trusting a cutover
+  on a real-money-adjacent DSL.
 
-### 1. Remove MarketPulse's totals-exclusion (the only real behavior change)
+## Design — strangler-fig, not a big-bang rewrite
 
-- `frontend/src/lib/data/pulseUnified.js`: delete `accumTotalsRow()`'s early-return on
-  `source === 'draft'` (~line 1112-1118) — a draft's qty/pnl/day_pnl now sums into MarketPulse's
-  own grid-local pinned TOTAL row, like any other row.
-- `frontend/src/lib/MarketPulse.svelte`: delete `_expPnlForRow()`'s draft-null guard (~line 718) —
-  a draft now gets the same Exp P&L/Extrinsic lookup as a real row.
-- Keep everything else exactly as built: `mergeDraftRows()`, `finalizeRows()`'s skip-recompute
-  branch, `sortDraftsLast()`, the ag-Grid `postSortRows` bottom-grouping, `row-draft` CSS styling,
-  the `symRenderer` hiding of ⋯/move buttons for drafts, the CSV `[DRAFT]` export prefix, and —
-  critically — the close-action routing in `handleRowClick` (`_openTicketFromDraftRow` instead of
-  the close-defaulting path). None of these are "exclusion from real aggregates" — they're either
-  display mechanics (sort/style) or the close-safety invariant, and both stay unchanged.
+Industry-standard pattern for this exact shape of migration (Microsoft's
+Strangler Fig architecture pattern): carve out a clean seam, build the
+replacement behind it, run both in parallel on real inputs with zero
+user-visible change, cut over only once proven, delete the old code last.
+Applied here:
 
-### 2. Derivatives page — drop the `showDraftInPayoff` toggle, drafts always count
+### Phase 1 — build the new parser in isolation, zero production risk
 
-- `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`: remove the 4
-  `showDraftInPayoff`-gated exclusions (`candidatesDayPnl` ~2461, `_sumEnabledLegsExpPnl`'s filter
-  ~2709 — wait, verify these are the *draft-source* checks, not the pre-existing `_isLegEnabled`
-  per-row toggle, which stays — ~2790, ~2834) and the toggle UI itself (~5886). The existing
-  per-row enable/disable checkbox (`enabledSymbols`/`_isLegEnabled`) already lets the operator
-  exclude any individual leg — draft or real — from the payoff/Greeks calc; a separate
-  draft-specific toggle is redundant once drafts are "just a position." Keep `closePosition()`'s
-  `source === 'draft'` refusal and `CandidateLegRow`'s `isClosable` guard — those are the
-  close-safety invariant, not the totals toggle, and must not be touched.
-- Leave the existing bottom-grouping (`+page.svelte` ~823) and the `[DRAFT]`-equivalent visual
-  tag (`.cand-draft` dashed border) as-is.
+1. **New file**, e.g. `frontend/src/lib/command/grammars/agentsLexer.js` +
+   `agentsParser.js` (Chevrotain grammars are plain JS — no separate `.g`/
+   `.peg` file format; the JS file(s) *are* the grammar, which is itself
+   the point: one artifact, not a grammar spec plus a hand-written parser
+   claiming to implement it). This becomes the new single source of truth.
+2. **Resolve the `tp_scales_json` wrinkle first, as its own small
+   sub-step**: unify call-argument lexing with the main token stream (let
+   the one lexer handle `[`/`]`/`{`/`}` inside call arguments too) rather
+   than keeping a second embedded mini-lexer — simplifies the end state and
+   removes a wart, at the cost of needing to verify nothing currently
+   depends on the "raw substring" call-arg behavior. Confirm scope via the
+   existing tests for this argument type before changing it.
+3. **CST → AST visitor** producing the *exact* existing AST node shapes
+   (`{type:'leaf', metric, scope, op, value}`, `{type:'ref', call}`,
+   `{type:'colref', segments}`, etc. — the shapes catalogued by the audit
+   above) — so `compile*`/`decompile*`/`suggest*`/`describe*` need **zero**
+   changes, they just start consuming AST from a different producer.
+4. **Differential test harness**: run the FULL existing 725-test corpus
+   through both the old hand-written parser and the new Chevrotain-based
+   one, diff every AST output, triage every mismatch. This is the real
+   proof, not eyeballing the new grammar against the old EBNF.
 
-### 3. Extend the same merge pattern to PerformancePage (new coverage, not a rewrite)
+### Phase 2 — cutover, only once Phase 1's diff is clean
 
-- `PerformancePage.svelte` has no draft awareness today — it calls `fetchPositions()` directly
-  (same shared function `positionsStore` uses) and builds its own rows independently of
-  `pulseUnified.js`.
-- Add the equivalent of `mergeDraftRows()` at PerformancePage's own display-derive step (read
-  `payoffDrafts.value` live, same as MarketPulse does) — reuse the merge logic rather than
-  duplicating it: extract `mergeDraftRows()`'s row-shaping logic from `pulseUnified.js` into a
-  small shared helper (e.g. `frontend/src/lib/data/draftRowMerge.js`) that both `pulseUnified.js`
-  and `PerformancePage.svelte` call, so there's one implementation, not two. Apply it strictly at
-  PerformancePage's own render/derive boundary — never inside `fetchPositions()` or any shared
-  cache, per the "never updated via broker books" invariant in the Context section.
-- PerformancePage's own equivalent of a pinned TOTAL row (if one exists — verify directly before
-  implementing) should include drafts, matching MarketPulse's new behavior from §1. Its own
-  equivalent of a close action (if any) must get the same `source === 'draft'` refusal already
-  proven correct in MarketPulse/derivatives — verify PerformancePage's close-entry-points directly
-  (don't assume none exist) before calling this done.
+5. Switch `agents.js`'s parse entry points to call the new parser instead of
+   the hand-written one. Keep the old hand-written parser functions in the
+   codebase but unreferenced for a burn-in period (easy revert if something
+   surfaces in production use the differential tests didn't catch).
+6. Update `agents.js`'s header comment (currently a pointer to
+   `docs/specs/AGENTS_GRAMMAR_EBNF.md`) to instead point at the new
+   grammar file(s) as the live source of truth. Mark
+   `AGENTS_GRAMMAR_EBNF.md` explicitly as a historical/pre-migration
+   snapshot (or delete it) — don't leave a THIRD stale artifact behind.
 
-### 4. NavStrip — no change, confirmed out of scope
+### Phase 3 — retire the old code, only after a confirmed clean bake
 
-NavStrip (`PositionStrip.svelte`) reads `portfolioStore`/`positionsDayPnlStore`/
-`positionsDerivedStore`, none of which have any path to `payoffDrafts` or the
-`pulseUnified.js`/PerformancePage merge logic. Nothing to do here — explicitly noting this so a
-future reviewer doesn't assume NavStrip needs the same treatment; it structurally can't see drafts
-regardless of what §1-3 do.
+7. Delete the superseded hand-written `parse*`/`lex*` functions once the
+   burn-in period confirms no regressions.
 
-### 5. Self-audit before shipping
+## Explicitly out of scope for this plan
 
-- Re-grep every `source === 'draft'`/`c.source === 'draft'` check across the touched files after
-  the changes above — confirm exactly which ones were removed (totals-exclusion) vs. which were
-  deliberately kept (close-safety, styling, sort order) matches this plan precisely, not more and
-  not less.
-- Confirm `payoffDrafts` is never read inside `fetchPositions()`, `positionsStore`'s own fetch/
-  cache logic, or anything server-side — the merge stays 100% client-side, display-layer-only,
-  everywhere it's applied.
-- Confirm no double-counting: the derivatives page's own `_allDrafts`/`payoffDrafts.value` merge
-  (for its candidatePositions/payoff pipeline) is independent of MarketPulse's/PerformancePage's
-  merge (different consumers, different arrays) — no shared array where both would apply.
+- Rewriting `compile*`/`decompile*`/`suggest*`/`describe*` — they stay
+  hand-written, consuming whichever parser produces AST; this plan never
+  touches them beyond confirming the new parser's output shape matches
+  what they already expect.
+- Any change to the grammar's actual *syntax* (no new keywords, no changed
+  semantics) — this is a pure implementation-swap, not a language change.
 
-### Tests
+## Files
 
-- Update/add vitest coverage in `pulseUnified.test.js` for `accumTotalsRow` now summing draft rows
-  (the test the second agent added this session asserting totals are UNaffected by drafts needs to
-  flip to asserting they ARE now included).
-- New Playwright coverage: a draft row's qty/pnl now appears in MarketPulse's pinned TOTAL row;
-  the derivatives payoff/Greeks always include enabled drafts (no toggle); PerformancePage shows
-  draft rows with the same styling/bottom-grouping as MarketPulse; the close-action refusal still
-  holds on every surface after these changes (regression-guard the existing invariant, don't just
-  assume it survives the totals-inclusion change).
-- Keep the close-routing and promote-to-real Playwright coverage already written/in-progress from
-  earlier this session — unaffected by this change.
+- New: `frontend/src/lib/command/grammars/agentsLexer.js` +
+  `agentsParser.js` (or combined, implementer's call) — the Chevrotain
+  grammar + CST-to-AST visitor.
+- `frontend/src/lib/command/grammars/agents.js` — parse entry points
+  re-point to the new parser (Phase 2); old `parse*`/`lex*` functions
+  deleted (Phase 3); header comment updated.
+- `docs/specs/AGENTS_GRAMMAR_EBNF.md` — marked historical or deleted once
+  the new grammar file is the live source.
+- New differential-test script/harness (Phase 1, not a permanent test file
+  necessarily — implementer's call whether to keep it as ongoing CI
+  coverage or a one-time migration-verification tool).
 
-### Process
+## Agents
 
-- Dispatch one frontend agent for §1+§2 (same files already touched this session — bundle, don't
-  split). Dispatch a second for §3 (PerformancePage, genuinely new file/area). Dispatch playwright
-  agent for test updates after both land.
-- Full gate suite (svelte-check, vitest, Playwright for touched specs) before commit. Push to
-  `dev` only — no `main` push without an explicit "deploy" instruction.
+Given the 3–6 week scope, this should be executed as its own dedicated,
+carefully-sequenced effort — not parallelized against other in-flight work
+the way smaller plans this session have been. Recommended sequencing:
+- **frontend**: Phase 1 steps 1–4 (the new parser + visitor + differential
+  harness) — this is the bulk of the work and should run to a *fully
+  green differential diff* before anything else proceeds.
+- **frontend** (same or second pass): Phase 2 cutover, only after Phase 1's
+  diff is clean — do not parallelize the cutover with Phase 1's own
+  development.
+- **doc**: Phase 2 step 6 (header comment + `AGENTS_GRAMMAR_EBNF.md`
+  disposition).
+
+## Tests
+
+- vitest: yes — the full existing 725-test corpus must pass unchanged after
+  cutover (Phase 2), plus the new differential-harness results from Phase 1
+  as supporting evidence.
+- svelte-check: yes.
+- playwright: the existing agent/order/bracket/alert CLI e2e specs must stay
+  green through cutover.
+
+## Commit message (Phase 1, first commit)
+`feat(grammar): add a Chevrotain-generated parser for the agent DSL, differentially verified against the existing hand-written parser — not yet wired in`
 
 ## Done when
 
-- MarketPulse's and PerformancePage's pinned totals/aggregates include drafts, same as any real
-  position; the `showDraftInPayoff` toggle is gone from the derivatives page.
-- Every close-action entry point (MarketPulse, derivatives, PerformancePage — verified, not
-  assumed) still refuses to act on a draft row; only Clear and the promote-to-real click can
-  remove/convert one.
-- `payoffDrafts` is never read inside any broker-fetch/cache path — confirmed via grep, not
-  assumption.
-- svelte-check clean, vitest green, relevant Playwright specs green, pushed to `dev`.
+**Phase 1:**
+- The new Chevrotain grammar + CST-to-AST visitor exists, producing AST
+  shape-identical to the current hand-written parser for every one of the
+  725 existing tests.
+- A differential test run shows zero AST diffs between old and new parsers
+  across the full existing test corpus.
+
+**Phase 2:**
+- `agents.js` calls the new parser; the full 725-test suite, svelte-check,
+  and the relevant Playwright specs are all green against the new parser
+  with no test changes beyond what's mechanically required.
+- `agents.js`'s header comment and `AGENTS_GRAMMAR_EBNF.md` both correctly
+  point to the new grammar file as the one live source of truth — no
+  third stale artifact left behind.
+
+**Phase 3:**
+- Old hand-written `parse*`/`lex*` functions removed after a confirmed
+  clean burn-in period (length — operator's call, suggest at least one
+  full week of normal Console/CLI usage in dev before deleting).
+
+---
+
+## Operator decision needed before `/impl`
+
+This is a genuinely large (3–6 week), real-money-adjacent undertaking, not
+a quick follow-up. Given the alerts routing-tree work already in flight
+this session, I'd recommend treating this as its own dedicated effort
+rather than something to kick off immediately alongside everything else —
+but that's a scheduling call, not a technical one. Confirm before
+proceeding: start Phase 1 now (isolated, zero production risk either way,
+since nothing is wired in until Phase 2), or queue it for later.
