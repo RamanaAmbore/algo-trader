@@ -4115,3 +4115,72 @@ describe('Sprint [grammar-unify] — help(...) and bracket(...) decompile round-
     expect(r2.agent).toEqual(r1.agent);
   });
 });
+
+// ── log(...) routing kwargs — `name=` / `tags=` (backend commit ec19aa1b) ──
+// The fixture `log` row above predates the routing kwargs. This catalog
+// mirrors the REAL `agent_grammar.yaml` `log` row's params_schema for
+// `priority` / `name` / `tags`, so the generic compiler is exercised against
+// the same schema shape the live catalog serves. No compiler code special-
+// cases these keys: `_compileEmitLogActionParams` → `_compileGenericActionParams`
+// reads `entry.paramsSchema` dynamically.
+describe('log(...) routing kwargs — name= / tags= compile through the generic catalog path', () => {
+  const LOG_ROUTING_CATALOG = buildCatalog(FIXTURE_ROWS.map((r) => (
+    r.grammar_kind === 'action' && r.token === 'log'
+      ? {
+          ...r,
+          params_schema: {
+            ...r.params_schema,
+            priority: { type: 'enum', enum: ['low', 'default', 'high', 'urgent'], required: false },
+            name: { type: 'string', required: false, token_ref_ok: true },
+            tags: { type: 'array', required: false },
+          },
+        }
+      : r
+  )));
+  const compileLog = (text) => compileAgentCliStatement(text, LOG_ROUTING_CATALOG, { lotSizeOf, exchangesOf });
+  const logParams = (r) => r.agent.actions[0].params;
+
+  it('log(level, priority, name, tags, message) compiles name= and a tags= list literal into real params', () => {
+    const r = compileLog('WHEN always DO log(level="warning", priority="high", name="my-source", tags=["a","b"], message="x")');
+    expect(r.ok).toBe(true);
+    expect(logParams(r)).toEqual({
+      level: 'warning', priority: 'high', name: 'my-source', tags: ['a', 'b'], message: 'x',
+    });
+    expect(Array.isArray(logParams(r).tags)).toBe(true);
+  });
+
+  it('a tags= list literal compiles to a real JS array (not a string), including a single item and a comma inside a quoted item', () => {
+    const one = compileLog('WHEN always DO log(message="x", tags=["alpha"])');
+    expect(one.ok).toBe(true);
+    expect(logParams(one).tags).toEqual(['alpha']);
+    const comma = compileLog('WHEN always DO log(message="x", tags=["a,b", "c"])');
+    expect(comma.ok).toBe(true);
+    expect(logParams(comma).tags).toEqual(['a,b', 'c']);
+  });
+
+  it('an empty tags= list compiles to an empty array', () => {
+    const r = compileLog('WHEN always DO log(message="x", tags=[])');
+    expect(r.ok).toBe(true);
+    expect(logParams(r).tags).toEqual([]);
+  });
+
+  it('a malformed tags= list (trailing comma) is a compile error, not a silent string', () => {
+    const r = compileLog('WHEN always DO log(message="x", tags=["a",])');
+    expect(r.ok).toBe(false);
+  });
+
+  it('name= and tags= round-trip through decompile → recompile unchanged', () => {
+    const r1 = compileLog('WHEN always DO log(message="x", name="my-source", tags=["a","b"])');
+    expect(r1.ok).toBe(true);
+    const dec = decompileAgent(r1.agent, LOG_ROUTING_CATALOG);
+    expect(dec.errors).toEqual([]);
+    const r2 = compileLog(dec.text);
+    expect(r2.ok).toBe(true);
+    expect(r2.agent).toEqual(r1.agent);
+  });
+
+  it('against the plain fixture catalog (no routing keys), tags= is rejected as an unknown parameter', () => {
+    const r = compile('WHEN always DO log(message="x", tags=["a"])');
+    expect(r.ok).toBe(false);
+  });
+});

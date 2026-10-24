@@ -709,9 +709,47 @@ function _parseOneArgFromRawSegment(seg, labelToken) {
       : _parseNotifyListArg(bracketText, base + bracketLocalIdx);
     return { key: m[1], value };
   }
+  // Generic bracket-shaped scalar list (`tags=["a","b"]`) for any OTHER key.
+  // The catalog's own `type: array` params (e.g. `log`'s routing `tags`)
+  // are typed by the generic coercer from this `list` ValueNode — the
+  // lex-time split above only special-cased tp_scales_json/notify, so any
+  // other `key=[...]` used to fail as "unexpected token in argument".
+  // Unknown keys still fail at `_mapCallArgsToKeys`, so no key is admitted
+  // that the catalog does not declare.
+  if (m) {
+    const bracketLocalIdx = trimmed.indexOf('[', m[1].length);
+    return { key: m[1], value: _parseScalarListArg(trimmed.slice(bracketLocalIdx), base + bracketLocalIdx) };
+  }
 
   const segTokens = tokenizeCallStyle(trimmed).map(t => ({ ...t, start: t.start + base, end: t.end + base }));
   return _parseArgSegment(segTokens, labelToken);
+}
+
+/** Parse a bracket-shaped scalar list (`["a", 2, NAME]`) into a `list`
+ *  ValueNode whose items are themselves ValueNodes (string/number/name) —
+ *  the same node shape `parseListLiteral` produces for the statement-level
+ *  grammar, so `_coerceValueForSpec`'s generic passthrough maps it to a
+ *  plain JS array. Nested lists/objects/kwargs are rejected. */
+function _parseScalarListArg(bracketText, offset) {
+  const closeIdx = bracketText.lastIndexOf(']');
+  const inner = bracketText.slice(1, closeIdx);
+  const innerBase = offset + 1;
+  const items = [];
+  const toks = tokenizeCallStyle(inner).map(t => ({ ...t, start: t.start + innerBase, end: t.end + innerBase }));
+  let i = 0;
+  if (toks.length === 0) return { type: 'list', value: [], start: offset, end: offset + bracketText.length };
+  while (i < toks.length) {
+    const t = toks[i];
+    if (t.punct || t.kwarg) throw new _ParseError('list item must be a string, number, or bare name', t);
+    items.push(_valueNodeFromCallStyleToken(t));
+    i++;
+    if (i === toks.length) break;
+    const sep = toks[i];
+    if (sep.punct !== ',') throw new _ParseError('expected "," between list items', sep);
+    i++;
+    if (i === toks.length) throw new _ParseError('trailing comma in list literal', sep);
+  }
+  return { type: 'list', value: items, start: offset, end: offset + bracketText.length };
 }
 
 /** Parse the inner text of a call's `(...)` into ArgEntry[]. Splits on
