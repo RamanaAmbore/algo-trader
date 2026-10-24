@@ -32,17 +32,24 @@ const WAIT_TIMEOUT = 30_000;
 /**
  * Build a broker-health API mock response.
  * @param {'green'|'amber'|'red'} state  — applied to all accounts in the mock
+ * @param {{ tickerIdle?: boolean, tickerIdleReason?: string, secondState?: string }} [opts]
+ *   tickerIdle/tickerIdleReason — the 2026-10-24 calendar-gated ticker-connect
+ *   fields on BrokerHealthResponse. secondState lets a test put the SECOND
+ *   account (DH6847) into a different state than the first, for the
+ *   "idle must not mask a real red on another account" case.
  * @returns {object}
  */
-function _mockHealth(state) {
+function _mockHealth(state, opts = {}) {
   const now = new Date().toISOString();
   const ago = new Date(Date.now() - 8 * 60 * 1000).toISOString();
+  const _reason = s => s === 'green' ? 'healthy' : s === 'amber' ? 'stale — 8 min ago' : 'auth invalid';
+  const secondState = opts.secondState ?? 'green';
   const accounts = [
     {
       account: 'ZG0790',
       broker: 'kite',
       state,
-      reason: state === 'green' ? 'healthy' : state === 'amber' ? 'stale — 8 min ago' : 'auth invalid',
+      reason: _reason(state),
       last_good_at: state === 'red' ? null : state === 'amber' ? ago : now,
       last_check_at: now,
       is_active_ticker: true,
@@ -54,9 +61,9 @@ function _mockHealth(state) {
     {
       account: 'DH6847',
       broker: 'dhan',
-      state: 'green',
-      reason: 'healthy',
-      last_good_at: now,
+      state: secondState,
+      reason: _reason(secondState),
+      last_good_at: secondState === 'red' ? null : now,
       last_check_at: now,
       is_active_ticker: false,
       circuit_state: 'closed',
@@ -65,19 +72,28 @@ function _mockHealth(state) {
       circuit_breaker_enabled: false,
     },
   ];
-  return { accounts, groww_entitlement_denied: {}, primary_market_data_account: 'ZG0790' };
+  return {
+    accounts,
+    groww_entitlement_denied: {},
+    primary_market_data_account: 'ZG0790',
+    ticker_idle: !!opts.tickerIdle,
+    ticker_idle_reason: opts.tickerIdleReason ?? (opts.tickerIdle
+      ? 'market calendar confirms closed today — ticker not connected by design'
+      : ''),
+  };
 }
 
 /**
  * Mock /api/admin/broker-health on the page.
  * @param {import('@playwright/test').Page} P
  * @param {'green'|'amber'|'red'} state
+ * @param {{ tickerIdle?: boolean, tickerIdleReason?: string, secondState?: string }} [opts]
  */
-async function mockHealthEndpoint(P, state) {
+async function mockHealthEndpoint(P, state, opts = {}) {
   await P.route('**/api/admin/broker-health', route => route.fulfill({
     status: 200,
     contentType: 'application/json',
-    body: JSON.stringify(_mockHealth(state)),
+    body: JSON.stringify(_mockHealth(state, opts)),
   }));
   // Also mock /api/admin/brokers (connStatus poller) so total>0 and
   // the chip renders.
@@ -148,6 +164,69 @@ test.describe('broker-chip color + popup broker names', () => {
     if (!chip) { test.info().annotations.push({ type: 'skip', description: 'No broker chip' }); return; }
     await expect(chip, 'chip must have broker-chip-down for red state').toHaveClass(/broker-chip-down/);
     await expect(chip, 'chip must NOT have broker-chip-unknown').not.toHaveClass(/broker-chip-unknown/);
+  });
+
+  // ── 1d-1g. ticker_idle (2026-10-24) — calendar-gated ticker-connect
+  //          chip treatment. Precedence: red > idle > amber > green —
+  //          see brokerHealthState.js's brokerChipState() docstring. ──────
+
+  test('ticker_idle=true + all amber → chip is broker-chip-idle, not partial', async () => {
+    await mockHealthEndpoint(P, 'amber', { tickerIdle: true, secondState: 'amber' });
+    const chip = await openPage(P);
+    if (!chip) { test.info().annotations.push({ type: 'skip', description: 'No broker chip' }); return; }
+    await expect(chip, 'idle must win over expected amber staleness').toHaveClass(/broker-chip-idle/);
+    await expect(chip).not.toHaveClass(/broker-chip-partial/);
+    await expect(chip).not.toHaveClass(/broker-chip-unknown/);
+  });
+
+  test('ticker_idle=true + all green → chip is broker-chip-idle', async () => {
+    await mockHealthEndpoint(P, 'green', { tickerIdle: true, secondState: 'green' });
+    const chip = await openPage(P);
+    if (!chip) { test.info().annotations.push({ type: 'skip', description: 'No broker chip' }); return; }
+    await expect(chip).toHaveClass(/broker-chip-idle/);
+  });
+
+  test('ticker_idle=true + one red account → chip stays broker-chip-down (idle never masks a real red)', async () => {
+    await mockHealthEndpoint(P, 'amber', { tickerIdle: true, secondState: 'red' });
+    const chip = await openPage(P);
+    if (!chip) { test.info().annotations.push({ type: 'skip', description: 'No broker chip' }); return; }
+    await expect(chip, 'a genuine red failure must win over the idle flag').toHaveClass(/broker-chip-down/);
+    await expect(chip).not.toHaveClass(/broker-chip-idle/);
+  });
+
+  test('ticker_idle=false + amber → chip stays broker-chip-partial (unaffected)', async () => {
+    await mockHealthEndpoint(P, 'amber', { tickerIdle: false });
+    const chip = await openPage(P);
+    if (!chip) { test.info().annotations.push({ type: 'skip', description: 'No broker chip' }); return; }
+    await expect(chip).toHaveClass(/broker-chip-partial/);
+    await expect(chip).not.toHaveClass(/broker-chip-idle/);
+  });
+
+  test('ticker_idle=true → modal shows the idle banner with the backend reason text', async () => {
+    const reason = 'market calendar confirms closed today — ticker not connected by design';
+    await mockHealthEndpoint(P, 'amber', { tickerIdle: true, secondState: 'amber', tickerIdleReason: reason });
+    const chip = await openPage(P);
+    if (!chip) { test.info().annotations.push({ type: 'skip', description: 'No broker chip' }); return; }
+    await chip.click();
+    const modal = P.locator('.bh-modal').first();
+    await modal.waitFor({ state: 'visible', timeout: WAIT_TIMEOUT });
+    const banner = modal.locator('.bh-idle-banner');
+    await expect(banner, 'idle banner must render inside the modal').toBeVisible();
+    await expect(banner.locator('.bh-idle-banner-reason')).toContainText(reason);
+    await P.locator('.bh-close').first().click();
+    await P.locator('.bh-modal').waitFor({ state: 'hidden', timeout: 3000 }).catch(() => {});
+  });
+
+  test('ticker_idle=false → modal has no idle banner', async () => {
+    await mockHealthEndpoint(P, 'green', { tickerIdle: false });
+    const chip = await openPage(P);
+    if (!chip) { test.info().annotations.push({ type: 'skip', description: 'No broker chip' }); return; }
+    await chip.click();
+    const modal = P.locator('.bh-modal').first();
+    await modal.waitFor({ state: 'visible', timeout: WAIT_TIMEOUT });
+    await expect(modal.locator('.bh-idle-banner')).toHaveCount(0);
+    await P.locator('.bh-close').first().click();
+    await P.locator('.bh-modal').waitFor({ state: 'hidden', timeout: 3000 }).catch(() => {});
   });
 
   // ── 3. Stale: popup broker column never shows "unknown" ─────────────────

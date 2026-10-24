@@ -13,6 +13,7 @@ import { writable, derived, get } from 'svelte/store';
 import { browser } from '$app/environment';
 import { isMarketOpen, isNseOpen, isMcxOpen, fetchMarketStatus } from '$lib/marketHours';
 import { activityStore as _activityStore } from '$lib/data/activityStore.svelte.js';
+import { toBrokerHealthState } from '$lib/data/brokerHealthState.js';
 
 // ---------------------------------------------------------------------------
 // Post-hibernation refiring state
@@ -1351,35 +1352,29 @@ function stopMarketStatusPoller() {
 // instead of maintaining its own _rawAccounts fetch, eliminating duplicate
 // polling and ensuring the chip color stays fresh continuously.
 //
-// Shape: { accounts: BrokerAccountHealth[], worstState: 'green'|'amber'|'red' }
+// Shape: { accounts: BrokerAccountHealth[], worstState: 'green'|'amber'|'red',
+//          tickerIdle: boolean, tickerIdleReason: string }
 //
-// worstState priority: red > amber > green.
+// worstState priority: red > amber > green. Account-derived ONLY — never
+// folds in tickerIdle (see brokerHealthState.js's own docstring for why).
 // Falls through to 'amber' (never grey) when no data loaded yet or all
 // accounts have unknown state.
+//
+// tickerIdle/tickerIdleReason (2026-10-24) — calendar-gated ticker-connect
+// status from `backend.api.background.get_ticker_calendar_status()`,
+// surfaced via `GET /api/admin/broker-health`'s `ticker_idle`/
+// `ticker_idle_reason` fields. See brokerHealthState.js for the full
+// precedence rule the chip uses to combine this with worstState.
 // ---------------------------------------------------------------------------
 
-/** @typedef {{ account: string, broker: string, state: string, reason: string, last_good_at: string|null, last_check_at: string|null, is_active_ticker?: boolean, circuit_state?: string, consecutive_fail_count?: number, circuit_open_until?: string|null, circuit_breaker_enabled?: boolean, poll_priority?: string, auto_downgrade_enabled?: boolean, auto_downgraded_at?: string|null, auto_downgrade_reason?: string|null }} BrokerAccountHealth */
+/** @typedef {import('$lib/data/brokerHealthState.js').BrokerAccountHealth} BrokerAccountHealth */
+/** @typedef {import('$lib/data/brokerHealthState.js').BrokerHealthState} BrokerHealthState */
 
-/**
- * Derive worst state across all accounts.
- * red > amber > green; returns 'amber' for empty (never grey).
- * @param {BrokerAccountHealth[]} accounts
- * @returns {'green'|'amber'|'red'}
- */
-function _brokerHealthWorstState(accounts) {
-  if (!accounts || !accounts.length) return 'green';
-  const active = accounts.filter(a => a.state !== 'inactive');
-  const base = active.length ? active : accounts;
-  if (base.some(a => a.state === 'red'))   return 'red';
-  if (base.some(a => a.state === 'amber')) return 'amber';
-  if (base.every(a => a.state === 'green' || a.state === 'inactive')) return 'green';
-  // all inactive
-  return 'green';
-}
-
-export const brokerHealthStore = writable(/** @type {{ accounts: BrokerAccountHealth[], worstState: 'green'|'amber'|'red' }} */ ({
+export const brokerHealthStore = writable(/** @type {BrokerHealthState} */ ({
   accounts: [],
   worstState: 'green',
+  tickerIdle: false,
+  tickerIdleReason: '',
 }));
 
 let _bhPollerStarted = false;
@@ -1427,8 +1422,7 @@ export function startBrokerHealthPoller() {
     try {
       const { fetchBrokerHealth } = await import('$lib/api');
       const data = await fetchBrokerHealth();
-      const accounts = /** @type {BrokerAccountHealth[]} */ (data?.accounts ?? []);
-      brokerHealthStore.set({ accounts, worstState: _brokerHealthWorstState(accounts) });
+      brokerHealthStore.set(toBrokerHealthState(data));
     } catch {
       // Silently suppress — store keeps prior state so chip stays colored.
     }

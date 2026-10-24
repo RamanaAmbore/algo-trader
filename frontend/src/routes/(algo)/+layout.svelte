@@ -37,6 +37,7 @@
   import { pollOrderFillWatch } from '$lib/data/orderFillPoller.js';
   import { noteAttachObservation } from '$lib/data/templateAttachToast.js';
   import { pushLayer, popLayer } from '$lib/utils/layerStack.js';
+  import { brokerChipState } from '$lib/data/brokerHealthState.js';
 
   const { children } = $props();
 
@@ -1251,16 +1252,17 @@
           {@const _total   = $connStatus.total}
           {@const _ok      = $connStatus.backendOk}
           {@const _worst   = $brokerHealthStore.worstState}
-          {@const _cls     = _worst === 'red'   ? 'broker-chip-down'
-                           : _worst === 'amber' ? 'broker-chip-partial'
-                           : _worst === 'green' ? 'broker-chip-ok'
-                           : 'broker-chip-partial'}
+          {@const _idle    = $brokerHealthStore.tickerIdle}
+          {@const _idleReason = $brokerHealthStore.tickerIdleReason}
+          {@const _chipState = brokerChipState(_worst, _idle)}
+          {@const _cls     = 'broker-chip-' + _chipState}
           {@const _failList = $connStatus.failingAccounts.join(', ')}
           <button class="broker-chip {_cls}"
                   onclick={() => brokerHealthOpen = !brokerHealthOpen}
                   title={!_ok ? 'Broker status: API unreachable. Click for per-account auth detail.'
-                       : _loaded === _total ? `Broker status: ${_loaded} / ${_total} accounts loaded. Click for per-account auth detail.`
-                       : `Broker status: ${_loaded} / ${_total} loaded. Failing: ${_failList}. Click for per-account auth detail.`}>
+                       : _loaded !== _total ? `Broker status: ${_loaded} / ${_total} loaded. Failing: ${_failList}. Click for per-account auth detail.`
+                       : _chipState === 'idle' ? `Ticker idle — ${_idleReason || 'market calendar confirms closed'}. Click for per-account auth detail.`
+                       : `Broker status: ${_loaded} / ${_total} accounts loaded. Click for per-account auth detail.`}>
             <span class="broker-chip-dot" aria-hidden="true"></span>
             {_loaded}/{_total}
           </button>
@@ -1381,13 +1383,14 @@
           {@const _total  = $connStatus.total}
           {@const _ok     = $connStatus.backendOk}
           {@const _worst  = $brokerHealthStore.worstState}
-          {@const _cls    = _worst === 'red'   ? 'broker-chip-down'
-                          : _worst === 'amber' ? 'broker-chip-partial'
-                          : _worst === 'green' ? 'broker-chip-ok'
-                          : 'broker-chip-partial'}
+          {@const _idle   = $brokerHealthStore.tickerIdle}
+          {@const _idleReason = $brokerHealthStore.tickerIdleReason}
+          {@const _chipState = brokerChipState(_worst, _idle)}
+          {@const _cls    = 'broker-chip-' + _chipState}
           <button class="broker-chip {_cls}"
                   onclick={() => brokerHealthOpen = !brokerHealthOpen}
                   title={!_ok ? 'Broker status: API unreachable. Click for per-account auth detail.'
+                       : _chipState === 'idle' ? `Ticker idle — ${_idleReason || 'market calendar confirms closed'}. Click for per-account auth detail.`
                        : `Broker status: ${_loaded} / ${_total} loaded. Click for per-account auth detail.`}>
             <span class="broker-chip-dot" aria-hidden="true"></span>
             {_loaded}/{_total}
@@ -2719,6 +2722,20 @@
     color: var(--c-action);
     background: rgba(251, 191, 36, 0.12);
     border: 1px solid rgba(251, 191, 36, 0.5);
+  }
+  /* Ticker idle (2026-10-24) — market calendar confirms closed, so the
+     KiteTicker WebSocket was never attempted today, by design. Distinct
+     neutral/informational treatment (sky, CLAUDE.md's "info" token) —
+     deliberately NOT green/amber/red, and NOT .broker-chip-unknown
+     (which means "API unreachable", a real failure). No pulse — this is
+     expected, not an alert. brokerChipState() in brokerHealthState.js
+     only returns 'idle' when worstState isn't 'red' — a genuine red
+     account failure always wins the chip color (see that function's
+     own precedence docstring). */
+  .broker-chip-idle {
+    color: var(--algo-sky);
+    background: var(--algo-sky-bg);
+    border: 1px solid var(--algo-sky-border);
   }
   .broker-chip-down {
     color: var(--c-short);

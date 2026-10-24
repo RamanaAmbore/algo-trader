@@ -52,7 +52,19 @@
   // in the layout). No local fetch needed — the store already polls at 30 s
   // continuously so the popup shows current data immediately on open.
   let _rawAccounts = $state(/** @type {Array<{account:string,broker:string,state:string,reason:string,last_good_at:string|null,last_check_at:string|null,is_active_ticker?:boolean,circuit_state?:string,consecutive_fail_count?:number,circuit_open_until?:string|null,circuit_breaker_enabled?:boolean,poll_priority?:string,auto_downgrade_enabled?:boolean,auto_downgraded_at?:string|null,auto_downgrade_reason?:string|null}>} */ ([]));
-  const _unsubHealth = brokerHealthStore.subscribe(v => { _rawAccounts = v.accounts; });
+  // Ticker idle (2026-10-24) — calendar-gated ticker-connect status,
+  // distinct from every per-account `state` above (REST-fetch auth
+  // health). `idle=true` only means "never attempted today, by design
+  // (market calendar confirms closed)" — never render this as a
+  // "Ticker: connected" line in the false case; there is no such
+  // positive signal on this response (see brokerHealthState.js).
+  let _tickerIdle = $state(false);
+  let _tickerIdleReason = $state('');
+  const _unsubHealth = brokerHealthStore.subscribe(v => {
+    _rawAccounts = v.accounts;
+    _tickerIdle = v.tickerIdle;
+    _tickerIdleReason = v.tickerIdleReason;
+  });
   onDestroy(() => _unsubHealth());
 
   // Subscribe to the canonical order map so the chip popup re-sorts
@@ -199,6 +211,19 @@
       <span class="bh-modal-title">Broker Auth Health</span>
       <button class="bh-close" onclick={() => open = false} aria-label="Close">×</button>
     </div>
+    {#if _tickerIdle}
+      <!-- Ticker-idle banner — shown independent of per-account row
+           states (red/amber facts are independent of this one, per
+           operator design: idle never masks a real failure, but a
+           real failure also never hides WHY the ticker itself is
+           idle). Explains the expected-amber side-effect so an
+           operator doesn't mistake market-closed staleness for a
+           broken connection. -->
+      <div class="bh-idle-banner">
+        <span class="bh-idle-banner-label">Ticker idle — market closed</span>
+        <span class="bh-idle-banner-reason">{_tickerIdleReason || 'market calendar confirms closed today'}. Accounts below may read AMBER (stale) — expected, not a failure.</span>
+      </div>
+    {/if}
     <div class="bh-modal-body">
       <div bind:this={_gridEl} class="ag-theme-quartz ag-theme-algo bh-ag-grid"></div>
     </div>
@@ -269,6 +294,32 @@
     flex-shrink: 0;
   }
   .bh-close:hover { background: var(--close-btn-danger-bg-hover); }
+
+  /* ── Ticker-idle banner (2026-10-24) — sits between the header and
+     the scrolling grid body (NOT inside .bh-modal-body) so it never
+     competes with the header for width under a scrollbar gutter, same
+     structural rule as this component's own dismissible-overlay
+     layout invariant. Sky/info tone matches .broker-chip-idle in the
+     navbar layout — same concept, same color. ── */
+  .bh-idle-banner {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    padding: 0.4rem 0.8rem;
+    background: var(--algo-sky-bg-soft);
+    border-bottom: 1px solid var(--algo-sky-border-soft);
+  }
+  .bh-idle-banner-label {
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    color: var(--algo-sky);
+  }
+  .bh-idle-banner-reason {
+    font-size: var(--fs-xs);
+    color: var(--text-lo);
+  }
 
   /* ── Modal body — grid drives height via domLayout:autoHeight;
      max-height caps the body so the modal doesn't exceed the viewport ── */

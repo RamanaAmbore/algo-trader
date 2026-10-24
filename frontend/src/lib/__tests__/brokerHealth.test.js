@@ -1,41 +1,28 @@
 /**
  * brokerHealth.test.js
  *
- * Unit tests for the `_brokerHealthWorstState` logic in stores.js.
+ * Unit tests for `brokerHealthWorstState()`, now the exported helper in
+ * `$lib/data/brokerHealthState.js` (moved out of `stores.js` 2026-10-24
+ * alongside the new `ticker_idle` extension — see
+ * `__tests__/data/brokerHealthState.test.js` for the fuller suite,
+ * including `toBrokerHealthState`/`brokerChipState`).
  *
- * `_brokerHealthWorstState` is not exported, so we replicate its logic
- * inline here (same pattern as computeHoldingsDayPnl in holdingsDayPnlStore.test.js).
- * Any change to stores.js must be mirrored here.
+ * This file used to hand-maintain a local REPLICA of the logic (it lived
+ * unexported in stores.js) — repointed to import the real function so a
+ * regression in the actual precedence logic fails here too, not only in
+ * a parallel copy that can silently drift.
  *
  * Five quality dimensions:
- *   1. SSOT   — local replica mirrors the exact logic in stores.js
+ *   1. SSOT   — imports the real `brokerHealthWorstState`, no local replica
  *   2. Perf   — pure unit, no DOM / network / stores, sub-millisecond
  *   3. Stale  — off-market (all-inactive) case now returns 'green', not 'amber'
- *   4. Reuse  — BrokerAccountHealth shape matches the JSDoc typedef in stores.js
+ *   4. Reuse  — BrokerAccountHealth shape matches the JSDoc typedef in
+ *               brokerHealthState.js
  *   5. UX     — chip colour: green off-market, amber on stale, red on failed account
  */
 
 import { describe, it, expect } from 'vitest';
-
-// ── Local replica of _brokerHealthWorstState from stores.js ──────────────────
-// Keep in sync with stores.js:_brokerHealthWorstState.
-// red > amber > green; inactive accounts are treated as healthy (green).
-// Empty accounts → 'green' (absence of health data is not a problem).
-
-/**
- * @param {{ state: string }[]} accounts
- * @returns {'green'|'amber'|'red'}
- */
-function _brokerHealthWorstState(accounts) {
-  if (!accounts || !accounts.length) return 'green';
-  const active = accounts.filter(a => a.state !== 'inactive');
-  const base = active.length ? active : accounts;
-  if (base.some(a => a.state === 'red'))   return 'red';
-  if (base.some(a => a.state === 'amber')) return 'amber';
-  if (base.every(a => a.state === 'green' || a.state === 'inactive')) return 'green';
-  // all inactive (reached only when base===accounts and every item is inactive)
-  return 'green';
-}
+import { brokerHealthWorstState as _brokerHealthWorstState } from '$lib/data/brokerHealthState.js';
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
