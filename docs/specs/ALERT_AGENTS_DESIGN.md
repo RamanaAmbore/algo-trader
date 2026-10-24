@@ -120,7 +120,7 @@ Defined as constants in `event_agents.py` and upserted at API startup.
 | `template-guard-alert` | orders, INFO, template_guard | template_guard | telegram, ntfy high |
 | `template-attach-fail-alert` | orders, WARNING, template_attach_fail | template_attach_fail | telegram, ntfy urgent |
 | `mcp-ping-alert` | mcp, INFO, mcp_ping | mcp_ping | telegram |
-| `deploy-sync-alert` | deploy, WARNING, deploy_out_of_sync | deploy_sync | ntfy high |
+| `deploy-sync-alert` | deploy, WARNING, deploy_out_of_sync | deploy_sync | none (2026-10, see 3.14; was ntfy high) |
 | `agent-alert-rich` | agent, INFO, rich_alert | rich_alert | telegram, ntfy (dynamic priority), email |
 | `market-summary` | summary, INFO, summary | summary | telegram_info, email |
 
@@ -213,6 +213,162 @@ seed or form-built agent cannot be converted to explicit mode through the Consol
 convert action would be a separate feature. Details are in
 [CLAUDE.md](../../CLAUDE.md), entry "`has_explicit_alert`".
 
+### 3.9 One Agent row per producer tag: the collapse was rejected (2026-10)
+
+Landed on `workshop` in `65de9319` and `5db3f7a8`. The file holds 21 seeded agents
+(`SEEDED_AGENTS`,
+[event_agents.py:1223](../../backend/api/algo/event_agents.py#L1223)). The table in 3.3 is not
+exhaustive.
+
+A 6-agent council reviewed a proposal to collapse the 21 agents into 4 channel-keyed agents, and
+rejected it. Findings, so a revisit starts here:
+
+- **The engine maps one renderer per row.** `_render_key(agent)`
+  ([event_agents.py:383](../../backend/api/algo/event_agents.py#L383)) reads the single `render`
+  action on an Agent row. A channel-keyed row carries ~15 tags, and each tag needs its own renderer
+  because the message text differs. Supporting that means an engine rewrite, not a data change.
+- **Conditions would be duplicated.** Each channel agent would need every tag's condition. One
+  condition change would then mean N edits, which is the drift this design exists to prevent.
+- **Per-event toggle would be lost.** Each of the 21 agents is activated or deactivated on its own
+  on the Automation page. A channel row turns off every event on that channel at once.
+- **No soak time.** The file had just absorbed four production-incident fixes: rich-alert priority,
+  the action-required ntfy gate, the ERROR self-alert gate, and the DEBUG exemption. A structural
+  rewrite on top would make any regression hard to attribute.
+
+The adopted alternative keeps one row per producer tag. Two changes below reduce duplication
+without touching row identity: the shared `generic_notice` table (3.10) and the token-driven
+priority resolver (3.11).
+
+### 3.10 Shared table for the five `generic_notice` agents
+
+`GTT_ASYMMETRIC`, `OCO_DOUBLE_FIRE`, `TICKER_RECOVERED`, `TICKER_DEGRADED`, and `VISITOR_REPORT`
+share one renderer (`generic_notice`). Their specs now come from `_GENERIC_NOTICE_SPECS`
+([event_agents.py:1107](../../backend/api/algo/event_agents.py#L1107)) through
+`_build_generic_notice_agent()` ([:1138](../../backend/api/algo/event_agents.py#L1138)).
+
+- Output is byte-identical to the five former literals. A regression test pins each dict.
+- Identity is unchanged: five slugs, five names, each separately toggleable.
+- A sixth notice of this kind is one table row.
+- Channel priorities stay static per row (`high` or `urgent`). These are single-event agents, so a
+  static priority is correct. Contrast with `agent-alert-rich` (3.11).
+
+### 3.11 Token-driven ntfy priority for every event agent
+
+Shipped earlier in `cbfa32e2`. The 2026-10 round added regression coverage only, and no production
+code. The resolution order, applied per record and per channel, is:
+
+1. The channel's own `priority` in its `events` entry. This always wins.
+2. The record's `extra.priority`, set by `log(priority=...)`.
+3. The record's `extra.tier`, mapped through `_TIER_TO_NTFY_PRIORITY`
+   ([alert_utils.py:1281](../../backend/shared/helpers/alert_utils.py#L1281)).
+4. The dispatching agent's own `tier`, in `_send_channel`
+   ([event_agents.py:501](../../backend/api/algo/event_agents.py#L501)).
+5. Nothing. The kwarg is omitted, and `send_ntfy_alert` applies its clock default.
+
+Steps 2 and 3 are applied by `_rec_tracked_ntfy_priority` and
+`_channel_with_tracked_priority`
+([event_agents.py:638](../../backend/api/algo/event_agents.py#L638)). The action-required gate
+(`_apply_action_required_ntfy_gate`) runs after them. It can still force `urgent` or drop the ntfy
+channel entirely.
+
+Invariant: a generic multiplexer (one that renders other agents' records) never uses its own
+tier for a per-record notification. Coverage: `test_event_agents.py`, and
+`test_notification_header_and_priority.py::TestTierToNtfyPriorityMapping`.
+
+### 3.12 `SEED_VERSION` no longer overwrites an operator edit
+
+Before, a `SEED_VERSION` bump rewrote `conditions`, `events`, and `actions` on every row whose
+`seed_version` was behind, including rows an operator had edited on the Automation page
+(`update_agent()` never bumps `seed_version`). The fix has three parts:
+
+- **Column.** `agents.seed_spec_hash` (`VARCHAR(64)`, nullable, no default) in
+  [models.py](../../backend/api/models.py). Migration `_migrate_agents_seed_spec_hash()` in
+  [database.py](../../backend/api/database.py), idempotent, runs after the `has_explicit_alert`
+  migration.
+- **Hash.** `compute_seed_spec_hash()` returns the sha256 of the canonical JSON of
+  `(conditions, events, actions)`, with sorted keys. Seeding stores the hash of what it actually
+  wrote.
+- **Decision.** `seed_action(row)` returns one of:
+  - `insert`: no row.
+  - `keep`: `seed_version` is at or above `SEED_VERSION`.
+  - `modified_skip`: the version is behind, and the row's current content no longer hashes to
+    `seed_spec_hash`. The content write is skipped. `seed_version` is still bumped, so the skip is
+    logged once per code version, and `seed_spec_hash` keeps the original write's hash so a later
+    bump still detects the same edit.
+  - `update`: content matches the stored hash, or the row has no hash (legacy).
+
+Caveats:
+
+- **One-time legacy overwrite.** Rows seeded before this column have a `NULL` hash. The first
+  `SEED_VERSION` bump after this lands overwrites them once, as before.
+- **Operator-edited rows stay on the old spec.** To pick up a changed code spec for such a row, the
+  operator must revert the edit or delete the row (a missing row yields `insert`). No UI path for
+  this is built.
+
+### 3.13 Dispatch trace and the unrouted-record catch-all
+
+**Dispatch trace.** `_dispatch_trace()`
+([event_agents.py:520](../../backend/api/algo/event_agents.py#L520)) writes one DEBUG line per
+channel per matched record:
+`dispatch-trace agent=<slug> tag=<tag> channel=<name> priority=<p> decision=<d>`.
+
+| Decision | Meaning |
+|---|---|
+| `sent` | Channel delivered |
+| `send_failed` | Sender raised; stderr line also written |
+| `*_gate_override_applied` | Suffix on `sent` or `send_failed`: the action-required gate forced urgent |
+| `suppressed_log_only` | Branch or sim gate; only the `log` channel passes |
+| `suppressed_action_required_gate` | The gate dropped the ntfy channel (`action_required=false`) |
+
+The trace is DEBUG-only, so it costs nothing when DEBUG is off.
+
+**Unrouted-record catch-all.** After dispatch, `_run_unrouted_catch_all()`
+([event_agents.py:861](../../backend/api/algo/event_agents.py#L861)) checks each row. A row that is
+WARNING or higher and carries a tag from `LOG_TAG_TOKENS`, but matches no active event agent's
+conditions, gets one WARNING:
+`unrouted alertable record: tag=… level=… logger=… alert_event=… message=…`.
+
+- **Fixed (commit `01fa2c10`) — this now reaches a real channel.** The first version logged this
+  WARNING through `event_agents.py`'s own module logger, which `log_store._SKIP_PREFIXES`
+  ([log_store.py:27](../../backend/shared/helpers/log_store.py#L27)) excludes from
+  `LogStoreHandler` capture entirely. That gave recursion-safety but meant the self-alert could
+  never reach `log_events`/`dispatch_rows` — stderr/file/console only, never a real Telegram/ntfy
+  push, never visible in the LogPanel. That defeated the entire point of a fail-loud guard. Fixed:
+  `_emit_unrouted_self_alert()` now logs through `_EVENTS_LOGGER`
+  (`"backend.api.algo.events"`, NOT skip-listed — the same logger the pre-existing `log` channel
+  action already uses), tagged `["agent"]` with a reserved `alert_event="unrouted_alert"`. A new
+  seeded agent, `UNROUTED_ALERT_AGENT` (the 14th gated agent, bypasses the dev-capability toggle
+  like the other safety-critical agents), matches that exact shape and delivers to telegram + ntfy
+  at `priority="high"`, reusing the existing `generic_notice` renderer.
+- **Recursion-safety is now a direct, tested condition exclusion, not a logger-name side
+  effect.** `_looks_alert_shaped()` explicitly excludes any record carrying
+  `alert_event == "unrouted_alert"` from being classified as alert-shaped at all — independent of
+  whether `UNROUTED_ALERT_AGENT` is active, deleted, or ever fails to match for some other reason.
+  `test_unrouted_catch_all_self_alert_record_cannot_trigger_a_second_self_alert` feeds the
+  self-alert's own record shape back through `dispatch_rows()` and confirms
+  `_emit_unrouted_self_alert` is never called a second time — the property is tested directly, not
+  inferred from where the log call happens to live.
+- **Companion fix: `SEED_VERSION` bumped 1 → 2.** Needed so an already-seeded `deploy-sync-alert`
+  row (see §3.14's ntfy removal) actually picks up that change via `seed_action()` — without the
+  bump, a row already at `seed_version=1` would read `>= current_version` forever and never update.
+- **Condition matching only.** A record that matched an agent and was then suppressed by the
+  log-only or action-required gate is routed, not unrouted.
+- **Empty agent list.** If `load_agents()` returns nothing or fails, every alert-shaped row in the
+  batch is flagged. That is the intended signal for a pipeline-wide break.
+
+### 3.14 `DEPLOY_SYNC_AGENT` no longer sends to ntfy
+
+Operator instruction, 2026-10: a deploy-out-of-sync notice is a developer concern and should not
+page a phone. `DEPLOY_SYNC_AGENT` now has `events: []`
+([event_agents.py:1029](../../backend/api/algo/event_agents.py#L1029)). No replacement channel was
+requested.
+
+- Its condition is unchanged. It still matches, and its `deploy_sync` renderer still runs.
+- With no channel, the dispatch loop never runs, so no dispatch-trace line is written for it. A
+  match is visible only in the log feed.
+- Adding a channel later is a one-line change to `events`. No new mechanism is needed.
+- Golden test: `test_alert_golden.py` pins `events == []`.
+
 ## 4. What changed, by file
 
 | File | Change |
@@ -231,6 +387,8 @@ convert action would be a separate feature. Details are in
 | `grammar.py` | Tag catalog extended (`agent`, `mcp`, `deploy`, `summary`, plus earlier tags) |
 | `models.py`, `database.py` | `log_events`, `agents.schema_version`, `agents.kind`, `grammar_tokens.source` |
 | `webhook/deploy.sh` | Long children no longer hold the deploy lock |
+| `event_agents.py` (2026-10, `65de9319`, `5db3f7a8`) | `_GENERIC_NOTICE_SPECS` shared table. `compute_seed_spec_hash` and `seed_action` `modified_skip`. Dispatch trace and unrouted catch-all. `DEPLOY_SYNC_AGENT` events cleared |
+| `models.py`, `database.py` (2026-10) | `agents.seed_spec_hash` column and idempotent migration |
 
 ## 5. Gaps
 
