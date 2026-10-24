@@ -359,6 +359,17 @@ async def _start_kite_ticker() -> None:
         falls back to broker.ltp() via TickerManager.get_ltp() → None
         until the ticker eventually connects (e.g. after the first
         background performance tick logs in).
+      - (2026-10-24) The market calendar confirms TODAY is closed
+        (weekend/holiday, no special session) — this is the REAL
+        unconditional-every-startup connect `backend/api/background.py`'s
+        "Calendar-gated ticker connect" design targets: this function
+        runs on EVERY process start/deploy, any time of day, before
+        `_session_guard()`'s own cold-start catch-up even gets a chance
+        to run — gating only the main loop's daily tick (as the original
+        plan draft did) would leave this call site unconditional and
+        defeat "never connect on a confirmed-closed day". Fail-safe: any
+        DB/config uncertainty during the check still connects — see
+        `background._ticker_calendar_verdict()`'s own docstring.
     """
     try:
         import os as _os
@@ -372,10 +383,32 @@ async def _start_kite_ticker() -> None:
             )
             return
 
+        from backend.shared.helpers.date_time_utils import timestamp_indian
+        from backend.api.background import (
+            _ticker_calendar_verdict, _ticker_calendar_mark, _CAL_CLOSED,
+        )
+        _cal_today = timestamp_indian().date()
+        _cal_verdict = await _ticker_calendar_verdict(_cal_today)
+        if _cal_verdict == _CAL_CLOSED:
+            _ticker_calendar_mark(
+                _cal_today, connected=False, idle=True,
+                reason=(
+                    "market calendar confirms closed today — ticker not "
+                    "connected by design"
+                ),
+            )
+            logger.info(
+                "KiteTicker: skipped startup — market calendar confirms "
+                "closed today (weekend/holiday, no special session)"
+            )
+            return
+
         if _os.environ.get("RAMBOQ_USE_CONN_SERVICE", "").strip().lower() in (
             "1", "true", "yes", "on",
         ):
             _start_mmap_reader()
+            _ticker_calendar_mark(_cal_today, connected=True, idle=False,
+                                   reason="connected (mmap reader)")
             return
 
         _use_conn_svc = _os.environ.get(
@@ -397,6 +430,7 @@ async def _start_kite_ticker() -> None:
         import asyncio as _asyncio
         get_ticker().set_loop(_asyncio.get_event_loop())
         get_ticker().start(api_key, access_token, account=_ticker_account)
+        _ticker_calendar_mark(_cal_today, connected=True, idle=False, reason="connected")
 
     except KeyError:
         logger.warning(

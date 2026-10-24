@@ -777,6 +777,17 @@ class BrokerHealthResponse(msgspec.Struct):
     # underlying broker in the PriceBroker chain that `get_market_data_broker()`
     # would pick for a fresh request).  Empty string if not resolvable.
     primary_market_data_account: str = ""
+    # Calendar-gated ticker connect status (2026-10-24) — distinct from
+    # every per-account `state` above, which models REST-fetch auth
+    # health and is deliberately NOT market-gated. `ticker_idle=True`
+    # means "never attempted today, by design" (market calendar confirms
+    # closed) — NOT a failure, and NOT the same as an account's own
+    # `state="inactive"` (which means "no fetch attempt recorded yet",
+    # regardless of why). False/empty when a connection was established
+    # today, or the verdict is stale/not-yet-computed for this process.
+    # Source of truth: `backend.api.background.get_ticker_calendar_status()`.
+    ticker_idle: bool = False
+    ticker_idle_reason: str = ""
 
 
 def _broker_id_to_label(broker_id: str) -> str:
@@ -978,6 +989,19 @@ def _resolve_entitlement_denied() -> dict:
         return {}
 
 
+def _resolve_ticker_calendar_status() -> tuple[bool, str]:
+    """Return (ticker_idle, reason) from the calendar-gated ticker
+    connect decision in background.py. Fails open to (False, "") on any
+    import/lookup error — a health-route failure must never itself look
+    like a fresh market-closed signal."""
+    try:
+        from backend.api.background import get_ticker_calendar_status
+        st = get_ticker_calendar_status()
+        return bool(st.get("idle")), str(st.get("reason") or "")
+    except Exception:
+        return False, ""
+
+
 class BrokerHealthController(Controller):
     """GET /api/admin/broker-health — per-account auth/freshness badge data.
 
@@ -1053,10 +1077,13 @@ class BrokerHealthController(Controller):
             key=lambda a: (_display_order_map.get(a.account, 999), a.account)
         )
 
+        _ticker_idle, _ticker_idle_reason = _resolve_ticker_calendar_status()
         return BrokerHealthResponse(
             accounts=accounts,
             groww_entitlement_denied=_resolve_entitlement_denied(),
             primary_market_data_account=_resolve_primary_mdb_account(),
+            ticker_idle=_ticker_idle,
+            ticker_idle_reason=_ticker_idle_reason,
         )
 
 

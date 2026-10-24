@@ -35,7 +35,9 @@ from backend.api.helpers import exchange_clock
 from backend.api.helpers.exchange_clock import is_trading_day_today, sessions_with_snapshot_time_now
 from backend.api.algo.daily_snapshot import fix_daily_book_prev_close
 from backend.brokers.client import is_cutover_on
-from backend.shared.helpers.date_time_utils import timestamp_indian, is_market_open, timestamp_display
+from backend.shared.helpers.date_time_utils import (
+    timestamp_indian, is_market_open, timestamp_display, is_trading_day,
+)
 from backend.shared.helpers.ramboq_logger import get_logger
 from backend.shared.helpers.settings import get_int
 from backend.shared.helpers.utils import config, get_nearest_time, get_cycle_date
@@ -3366,6 +3368,31 @@ async def _sg_recover_mcx_snapshot(mcx_rows: list, now_t: dtime, today: date) ->
     _snapshot_fired_today["MCX"] = today
 
 
+async def _sg_recover_ticker_connect(now_t: dtime, today: date) -> None:
+    """f. TickerConnect: cold-start catch-up (2026-10-24, Part 2 item 4) —
+    a server starting after 08:00 IST on a calendar-confirmed-open day
+    connects the KiteTicker immediately rather than waiting for the next
+    in-window 30s tick. Backstop only — `_start_kite_ticker()` (app.py,
+    runs earlier in the on_startup chain, any time of day) already
+    performs the same calendar-gated connect using the sparkline
+    broker's own credential-resolution path; this step re-tries via
+    `_snapshot_restart_ticker()`'s DIFFERENT credential path
+    (`Connections().conn`, the first live Kite account found) when that
+    one deferred (e.g. the sparkline account's token wasn't ready yet).
+    `_ticker_restart_done_global` is checked (cheap, no DB) before any
+    of this runs, so a successful `_start_kite_ticker()` connect makes
+    this step an instant no-op.
+    """
+    if not (dtime(8, 0) <= now_t < dtime(23, 30)):
+        return
+    if _ticker_restart_done_global == today:
+        return
+    await _ticker_calendar_decide_and_act(
+        today, _snapshot_restart_ticker,
+        label="SessionGuard cold-start catch-up", throttle=False,
+    )
+
+
 async def _session_guard() -> None:
     """Run at server startup to recover timed events missed during downtime.
 
@@ -3442,6 +3469,12 @@ async def _session_guard() -> None:
         await _sg_recover_mcx_snapshot(mcx_rows, now_t, sess_today)
     except Exception as _exc:
         logger.warning("SessionGuard: McxSnapshot failed — %s", _exc)
+
+    # ── f. TickerConnect ───────────────────────────────────────────────────────
+    try:
+        await _sg_recover_ticker_connect(now_t, today)
+    except Exception as _exc:
+        logger.warning("SessionGuard: TickerConnect failed — %s", _exc)
 
     # ── market-day check ───────────────────────────────────────────────────────
     if not _is_market_day_today():
@@ -3660,20 +3693,255 @@ def _ds_tick_mcx_stop(now: datetime, today: date) -> None:
     _ticker_stop_done_global = stop_date
 
 
-def _ds_tick_ticker_restart(now: datetime, today: date, done_ref: list) -> None:
-    """Restart KiteTicker once per day at 08:00–09:00 IST with fresh token.
+# ---------------------------------------------------------------------------
+# Calendar-gated ticker connect (2026-10-24) — stop connecting to the
+# broker WebSocket at all on a day nothing will trade, while never
+# missing a genuinely open day (including a same-day special session
+# discovered after the 05:30 calendar refresh). Three call sites share
+# this machinery: `_start_kite_ticker()` (app.py, true process startup,
+# any time of day), `_sg_recover_ticker_connect()` (SessionGuard
+# cold-start catch-up), and `_ds_tick_ticker_restart()` (the main loop's
+# own 08:00-23:30 tick, which also serves as the closed-day recheck
+# loop). Fail-safe direction, per explicit operator instruction: any
+# DB/config uncertainty during the check still connects — a wasted
+# connection attempt is far cheaper than missing a real trading day.
+# Only a cleanly-resolved CLOSED verdict (every configured segment
+# confirms closed, no special-session override) skips the connect.
+# ---------------------------------------------------------------------------
 
-    Daily access_token is refreshed by _task_holiday_refresh at 05:30
-    (merged cron). The ticker is restarted here (well after token
-    refresh) so it connects with the new token. Guarded [08:00, 09:00)
-    so a service restart during market hours doesn't loop through this block.
-    done_ref is a mutable [Optional[date]] box.
+_CAL_OPEN = "open"
+_CAL_CLOSED = "closed"
+_CAL_UNKNOWN = "unknown"
+
+# Throttles the closed-day DB recheck (item 5) — each recheck is a real
+# `market_special_sessions` round-trip per configured segment; once
+# today has been confirmed closed, re-verify every 5 min rather than
+# every 30s tick for the rest of the 08:00-23:30 window.
+_TICKER_RECHECK_INTERVAL_S = 300.0
+
+# Shared in-process verdict for TODAY's ticker-connect decision.
+#   date       — the IST calendar date this verdict applies to.
+#   connected  — True once a connect has actually fired today.
+#   idle       — True while today is CONFIRMED closed and nothing has
+#                connected — surfaced by get_ticker_calendar_status()
+#                as the `idle` broker-health state.
+#   reason     — human-readable explanation for the current state.
+#   checked_at — unix ts of the last verdict computation (throttle gate).
+# Read by: ticker_connected_today() (both _task_ticker_watchdog loops —
+# to skip ALL broker/connection-inspection work, not merely to no-op
+# gracefully once it has) and get_ticker_calendar_status()
+# (GET /api/admin/broker-health).
+_TICKER_CALENDAR_STATE: dict = {
+    "date": None, "connected": False, "idle": False, "reason": "", "checked_at": 0.0,
+}
+
+# Module sentinel mirroring `_ticker_stop_done_global` — set to `today`
+# the moment ANY of the three connect call sites above successfully
+# connects, so whichever runs first blocks the other two for the rest
+# of the day.
+_ticker_restart_done_global: "date | None" = None
+
+
+def _ticker_calendar_mark(today: date, *, connected: bool, idle: bool, reason: str) -> None:
+    """Record today's ticker-connect verdict. Setting connected=True also
+    seeds `_ticker_restart_done_global` so every other call site sees
+    "today is done" and skips a redundant reconnect."""
+    global _TICKER_CALENDAR_STATE, _ticker_restart_done_global
+    _TICKER_CALENDAR_STATE = {
+        "date": today, "connected": connected, "idle": idle,
+        "reason": reason, "checked_at": _time.time(),
+    }
+    if connected:
+        _ticker_restart_done_global = today
+
+
+def ticker_connected_today() -> bool:
+    """True once today's calendar-gated ticker connect has actually
+    fired. Used by `_task_ticker_watchdog` (both direct and
+    conn-service-cutover loops) to skip ALL broker/connection-inspection
+    work on a day with no established connection — the point is to do
+    zero broker checks on a closed day, not merely to handle "nothing to
+    heal" gracefully once inspected. False for any stale (not today, IST)
+    or never-computed state, so a fresh process or a day whose verdict
+    hasn't been decided yet defaults to running the real checks — this
+    flag only ever SKIPS watchdog inspection, it never blocks the
+    connect attempt itself."""
+    st = _TICKER_CALENDAR_STATE
+    return st.get("date") == timestamp_indian().date() and bool(st.get("connected"))
+
+
+def get_ticker_calendar_status() -> dict:
+    """Public accessor for `GET /api/admin/broker-health` — returns
+    ``{"idle": bool, "reason": str}`` reflecting TODAY's calendar-gated
+    ticker-connect decision. Stale (not today, IST) or never-computed
+    state reads as not-idle — the per-account REST-fetch health states
+    still carry the real signal in that case."""
+    st = _TICKER_CALENDAR_STATE
+    if st.get("date") != timestamp_indian().date():
+        return {"idle": False, "reason": ""}
+    return {"idle": bool(st.get("idle")), "reason": str(st.get("reason") or "")}
+
+
+async def _ticker_calendar_verdict(today: date) -> str:
+    """Tri-state calendar verdict for "will any configured market
+    segment trade at some point today" — the real-money-relevant gate
+    for whether the KiteTicker WebSocket bothers connecting at all.
+
+    Deliberately NOT `_segment_is_open()` / `is_market_open()`'s own
+    "open right now" question — at the 08:00 decision point neither NSE
+    (09:15) nor MCX (09:00) has opened its window yet, so that check
+    would always read False and the ticker would never connect. This
+    asks a different question: will EITHER segment trade AT ALL today.
+
+    Reads `market_segments` directly (the same YAML block
+    `_segment_is_open()`/`warm_special_sessions_cache()` use) rather than
+    `_get_segments()`'s gate-shaped dicts — `_get_segments()`'s
+    exchange_clock-warm branch sets `holiday_exchange` to the GATE name
+    ("NON-MCX"/"MCX"), not a real exchange code, which would silently
+    mis-key `fetch_holidays()`/`market_special_sessions` for the equity
+    segment.
+
+    Per segment:
+      1. Today in `market.extra_trading_days` (operator override, e.g.
+         Muhurat Diwali / SEBI special Saturday) → OPEN.
+      2. Calendar (weekday + `fetch_holidays(holiday_exchange)`) says a
+         trading day → OPEN. No probe — `is_trading_day()` is called
+         with no `exchange=`/`now=`, so this stays DB/config-only, never
+         a live broker call (this function can run every 30s for hours
+         on a closed day's recheck loop).
+      3. Calendar says closed — a FRESH (no per-IST-date cache; a
+         same-day operator addition must be seen without a restart)
+         `market_special_sessions` row for today on this exchange with a
+         non-zero-width window (`start != end`) means OPEN (a
+         late-announced/ad-hoc session).
+      4. A zero-width override row (the auto-inserted "MCX evening
+         closed" marker) means CLOSED for this segment and blocks the
+         evening-open default below — it must never be treated as an
+         open signal.
+      5. No special-session row at all, `evening_open_on_holidays` is
+         set for this segment (MCX's default), and today is a weekday
+         → OPEN — mirrors `is_market_open()`'s own precedence for this
+         exact case.
+      6. Otherwise this segment is CLOSED.
+
+    Returns `_CAL_OPEN` the moment any segment resolves OPEN (short-
+    circuits — does not consult the remaining segments). Returns
+    `_CAL_UNKNOWN` if any lookup actually consulted raised. Returns
+    `_CAL_CLOSED` only when every segment cleanly resolved closed.
+    `_CAL_UNKNOWN` is treated exactly like `_CAL_OPEN` by every caller
+    (fail-safe-to-connect) — the three-way split exists so logging and
+    `get_ticker_calendar_status()`'s reason text can tell the two apart.
     """
-    if not (dtime(8, 0) <= now.time() < dtime(9, 0)) or done_ref[0] == today:
+    try:
+        from backend.shared.helpers.date_time_utils import _parse_extra_trading_days
+        from backend.brokers.broker_apis import fetch_holidays, _read_special_sessions_async
+
+        extra = _parse_extra_trading_days()
+        if today in extra:
+            return _CAL_OPEN
+
+        segments = config.get("market_segments", {}) or {}
+        if not segments:
+            segments = {
+                "equity":    {"holiday_exchange": "NSE", "evening_open_on_holidays": False},
+                "commodity": {"holiday_exchange": "MCX", "evening_open_on_holidays": True},
+            }
+
+        any_uncertain = False
+        for seg_cfg in segments.values():
+            exch = str((seg_cfg or {}).get("holiday_exchange", "NSE")).upper().strip()
+            try:
+                holidays = fetch_holidays(exch)
+            except Exception as e:
+                logger.warning("[TICKER-CALENDAR] fetch_holidays(%s) failed: %s", exch, e)
+                any_uncertain = True
+                continue
+            if is_trading_day(today, holidays, extra_trading_days=extra):
+                return _CAL_OPEN
+            try:
+                special = await _read_special_sessions_async(exch, today)
+            except Exception as e:
+                logger.warning("[TICKER-CALENDAR] special-sessions(%s) failed: %s", exch, e)
+                any_uncertain = True
+                continue
+            if any(s.get("start") != s.get("end") for s in (special or [])):
+                return _CAL_OPEN
+            if special:
+                # An explicit zero-width (closed) override row exists for
+                # today on this exchange — blocks the evening-open
+                # default below; do not fall through to it.
+                continue
+            evening = bool((seg_cfg or {}).get("evening_open_on_holidays", False))
+            if evening and today.weekday() < 5:
+                return _CAL_OPEN
+        return _CAL_UNKNOWN if any_uncertain else _CAL_CLOSED
+    except Exception as e:
+        logger.warning(
+            "[TICKER-CALENDAR] verdict computation failed — fail-safe to "
+            "CONNECT: %s", e,
+        )
+        return _CAL_UNKNOWN
+
+
+async def _ticker_calendar_decide_and_act(
+    today: date, do_connect, *, label: str, throttle: bool,
+) -> bool:
+    """Shared decision+action body for the SessionGuard cold-start
+    catch-up and the main-loop 08:00-23:30 tick (app.py's
+    `_start_kite_ticker()` has its own inline copy of this logic — see
+    its docstring — since its connect step branches on conn-service vs
+    direct mode with different success semantics).
+
+    Resolves the calendar verdict, calls the no-arg `do_connect()` on
+    OPEN/UNKNOWN (fail-safe), marks the shared idle/connected status
+    either way, and returns True iff it connected.
+    """
+    st = _TICKER_CALENDAR_STATE
+    if throttle and st.get("date") == today and st.get("idle"):
+        if _time.time() - float(st.get("checked_at") or 0.0) < _TICKER_RECHECK_INTERVAL_S:
+            return False
+    verdict = await _ticker_calendar_verdict(today)
+    if verdict == _CAL_CLOSED:
+        _ticker_calendar_mark(
+            today, connected=False, idle=True,
+            reason=(
+                "market calendar confirms closed today — ticker not "
+                "connected by design"
+            ),
+        )
+        return False
+    logger.info(
+        "Background: %s — calendar verdict=%s, connecting KiteTicker",
+        label, verdict,
+    )
+    do_connect()
+    _ticker_calendar_mark(today, connected=True, idle=False, reason="connected")
+    return True
+
+
+async def _ds_tick_ticker_restart(now: datetime, today: date) -> None:
+    """Restart KiteTicker once per trading day, calendar-gated (2026-10-24)
+    instead of connecting unconditionally every day.
+
+    Runs across the full active window [08:00, 23:30) IST — widened from
+    the original [08:00, 09:00) — so a confirmed-closed verdict keeps
+    re-checking `market_special_sessions` for a same-day special session
+    for the rest of the window (the "closed-day recheck loop", item 5).
+    `_ticker_restart_done_global` (seeded by `_start_kite_ticker()` at
+    true process startup or `_sg_recover_ticker_connect()`'s SessionGuard
+    cold-start catch-up, same pattern as `_ticker_stop_done_global`)
+    ensures whichever of the three call sites connects first blocks the
+    others for the rest of the day.
+    """
+    global _ticker_restart_done_global
+    if _ticker_restart_done_global == today:
         return
-    logger.info("Background: 08:00 IST — restarting KiteTicker with fresh token")
-    _snapshot_restart_ticker()
-    done_ref[0] = today
+    if not (dtime(8, 0) <= now.time() < dtime(23, 30)):
+        return
+    if await _ticker_calendar_decide_and_act(
+        today, _snapshot_restart_ticker, label="08:00-23:30 tick", throttle=True,
+    ):
+        _ticker_restart_done_global = today
 
 
 async def _sweep_stale_drafts() -> int:
@@ -3974,15 +4242,15 @@ async def _task_daily_snapshot() -> None:
     # are mid-session) can stamp wrong previous_close values.
 
     # ── ticker lifecycle dedup sentinels ──────────────────────────────
-    # _unsub_nonmcx_done_global and _ticker_stop_done_global are module-scope
-    # so _session_guard can seed them at startup and the loop respects any
-    # already-executed recovery steps.
-    # _prev_close_fix_done and _ticker_restart_done remain local —
-    # they only fire forward (no recovery path needed).
+    # _unsub_nonmcx_done_global, _ticker_stop_done_global, and (2026-10-24)
+    # _ticker_restart_done_global are module-scope so _session_guard /
+    # _start_kite_ticker (app.py) can seed them at startup and the loop
+    # respects any already-executed recovery/connect steps.
+    # _prev_close_fix_done remains local — it only fires forward (no
+    # recovery path needed).
     # Mutable [None] boxes allow helpers to update the sentinel in-place.
     global _unsub_nonmcx_done_global, _ticker_stop_done_global
     _prev_close_fix_done: list = [None]   # mutable box: Optional[date]
-    _ticker_restart_done: list = [None]   # mutable box: Optional[date]
     _draft_sweep_done: list    = [None]   # mutable box: Optional[date] — Item 2, 2026-10-22
     _market_status_done: list = [None]   # mutable box: Optional[date] — Item 3, 2026-10-22
 
@@ -4008,7 +4276,7 @@ async def _task_daily_snapshot() -> None:
         await _ds_tick_prev_close_fix(now, today, _prev_close_fix_done)
         await _ds_tick_nonmcx_unsub(now, today)
         _ds_tick_mcx_stop(now, today)
-        _ds_tick_ticker_restart(now, today, _ticker_restart_done)
+        await _ds_tick_ticker_restart(now, today)
         await _ds_tick_draft_sweep(now, today, _draft_sweep_done)
         await _ds_tick_market_status_report(now, today, _market_status_done)
 
@@ -6650,6 +6918,21 @@ async def _watchdog_cutover_heal_loop(get_ticker, interval_s: float) -> None:
     `None` there is the INTENDED state, not a failure to heal. Without
     this gate, this loop would resurrect a reader the app chose not to
     start, firing a false CRITICAL on every idle dev boot.
+
+    Also skips the heal entirely on a day with no calendar-gated connect
+    established yet (2026-10-24, ``ticker_connected_today()`` — a pure
+    in-process flag read, zero I/O) — "if you don't have a connection,
+    you don't need to test for its health". This is a LOCAL-only
+    decision: the real upstream KiteTicker WebSocket in conn-service mode
+    lives in `conn_service` (`backend/brokers/service/`), a separate
+    process this file does not control and does not gate — the residual
+    risk is that conn_service connects on a day this process's own
+    calendar verdict reads closed (a genuine calendar/DB disagreement,
+    which the fail-safe-to-connect design keeps narrow and bounded to
+    days with no real trading anyway). `ticker_connected_today()` flips
+    True the instant any of the three connect call sites (app.py startup,
+    SessionGuard catch-up, or the main loop's own recheck tick) actually
+    connects, so this loop resumes healing within one `interval_s` cycle.
     """
     from backend.shared.helpers.utils import is_engine_idle
     while True:
@@ -6657,6 +6940,8 @@ async def _watchdog_cutover_heal_loop(get_ticker, interval_s: float) -> None:
             await asyncio.sleep(interval_s)
             if not is_cutover_on():
                 return
+            if not ticker_connected_today():
+                continue
             if is_engine_idle():
                 continue
             get_ticker().check_and_heal()
@@ -6706,6 +6991,23 @@ async def _task_ticker_watchdog(state: dict) -> None:
     while True:
         try:
             await asyncio.sleep(CHECK_INTERVAL_S)
+
+            # Calendar-gated skip (2026-10-24) — the very first, cheapest
+            # step: a pure in-process flag read, zero I/O, zero broker
+            # call. "If you don't have a connection, you don't need to
+            # test for its health" — on a day nothing has connected yet
+            # (calendar-closed, or simply not yet 08:00), this tick does
+            # NO broker/connection-inspection work at all, not even the
+            # deferred-recycle consumption or the market-open probe below
+            # (which can itself trigger a live `probe_market_active` call
+            # via `is_trading_day()` on a calendar-closed day — exactly
+            # the broker-check work this skip exists to eliminate).
+            # `ticker_connected_today()` flips True the instant a connect
+            # actually happens, so this loop resumes real checks within
+            # one 30s cycle of that.
+            if not ticker_connected_today():
+                continue
+
             await _watchdog_deferred_recycle()
 
             from backend.shared.helpers.utils import is_engine_idle

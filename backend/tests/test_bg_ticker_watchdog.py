@@ -94,6 +94,7 @@ async def test_ticker_watchdog_cutover_mode_calls_check_and_heal():
             raise asyncio.CancelledError("test escape")
 
     with patch("backend.api.background.is_cutover_on", return_value=True), \
+         patch("backend.api.background.ticker_connected_today", return_value=True), \
          patch("backend.shared.helpers.utils.is_engine_idle", return_value=False), \
          patch("backend.brokers.kite_ticker.get_ticker", return_value=mock_ticker), \
          patch("asyncio.sleep", side_effect=_cancelling_sleep):
@@ -124,6 +125,7 @@ async def test_ticker_watchdog_cutover_mode_idle_skips_heal():
             raise asyncio.CancelledError("test escape")
 
     with patch("backend.api.background.is_cutover_on", return_value=True), \
+         patch("backend.api.background.ticker_connected_today", return_value=True), \
          patch("backend.shared.helpers.utils.is_engine_idle", return_value=True), \
          patch("backend.brokers.kite_ticker.get_ticker", return_value=mock_ticker), \
          patch("asyncio.sleep", side_effect=_cancelling_sleep):
@@ -155,6 +157,7 @@ async def test_ticker_watchdog_cutover_mode_heals_dead_poll_task():
             raise asyncio.CancelledError("test escape")
 
     with patch("backend.api.background.is_cutover_on", return_value=True), \
+         patch("backend.api.background.ticker_connected_today", return_value=True), \
          patch("backend.shared.helpers.utils.is_engine_idle", return_value=False), \
          patch("backend.brokers.kite_ticker.get_ticker", return_value=reader), \
          patch.object(MmapTickReader, "_poll_loop", new=_never_ending_poll_loop), \
@@ -186,6 +189,7 @@ async def test_ticker_watchdog_cutover_mode_heal_exception_keeps_looping():
             raise asyncio.CancelledError("test escape")
 
     with patch("backend.api.background.is_cutover_on", return_value=True), \
+         patch("backend.api.background.ticker_connected_today", return_value=True), \
          patch("backend.shared.helpers.utils.is_engine_idle", return_value=False), \
          patch("backend.brokers.kite_ticker.get_ticker", return_value=mock_ticker), \
          patch("asyncio.sleep", side_effect=_cancelling_sleep):
@@ -193,6 +197,97 @@ async def test_ticker_watchdog_cutover_mode_heal_exception_keeps_looping():
 
     # Called on both pre-cancellation cycles despite raising each time.
     assert mock_ticker.check_and_heal.call_count >= 2
+
+
+# ── Calendar-gated skip (2026-10-24) — zero broker-check work on a day
+# with no established connection, not merely a graceful no-op after
+# inspecting. ──────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_ticker_watchdog_cutover_mode_no_connection_skips_heal_entirely():
+    """When `ticker_connected_today()` is False (calendar-closed day, or
+    simply not connected yet), the cutover heal loop must NOT call
+    check_and_heal() at all — it is never reached, same as the
+    pre-existing is_engine_idle() skip, extended to the new calendar
+    flag."""
+    from backend.api import background as _bg
+
+    mock_ticker = MagicMock()
+    mock_ticker.check_and_heal = MagicMock(return_value=True)
+
+    sleep_calls = {"n": 0}
+
+    async def _cancelling_sleep(delay):
+        sleep_calls["n"] += 1
+        if sleep_calls["n"] >= 2:
+            raise asyncio.CancelledError("test escape")
+
+    with patch("backend.api.background.is_cutover_on", return_value=True), \
+         patch("backend.api.background.ticker_connected_today", return_value=False), \
+         patch("backend.shared.helpers.utils.is_engine_idle", return_value=False), \
+         patch("backend.brokers.kite_ticker.get_ticker", return_value=mock_ticker), \
+         patch("asyncio.sleep", side_effect=_cancelling_sleep):
+        await _bg._task_ticker_watchdog({})
+
+    mock_ticker.check_and_heal.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_ticker_watchdog_direct_mode_no_connection_skips_all_inspection():
+    """Direct (non-cutover) mode, no connection established today: the
+    tick must do NO broker/connection-inspection work at all — not
+    `_watchdog_deferred_recycle`, not `_watchdog_check_market_open`
+    (which can itself trigger a live broker probe via `is_trading_day()`
+    on a calendar-closed day), and not `_bg_watchdog_one_cycle`. Each is
+    patched to raise if called, proving the tick returns before any of
+    them — not merely that each individually no-ops gracefully."""
+    from backend.api import background as _bg
+
+    sleep_calls = {"n": 0}
+
+    async def _cancelling_sleep(delay):
+        sleep_calls["n"] += 1
+        if sleep_calls["n"] >= 2:
+            raise asyncio.CancelledError("test escape")
+
+    def _must_not_be_called(*a, **k):
+        raise AssertionError("broker/connection-inspection work must not run")
+
+    async def _amust_not_be_called(*a, **k):
+        raise AssertionError("broker/connection-inspection work must not run")
+
+    with patch("backend.api.background.is_cutover_on", return_value=False), \
+         patch("backend.api.background.ticker_connected_today", return_value=False), \
+         patch("backend.api.background._watchdog_deferred_recycle", side_effect=_amust_not_be_called), \
+         patch("backend.api.background._watchdog_check_market_open", side_effect=_amust_not_be_called), \
+         patch("backend.api.background._bg_watchdog_one_cycle", side_effect=_amust_not_be_called), \
+         patch("asyncio.sleep", side_effect=_cancelling_sleep):
+        await _bg._task_ticker_watchdog({})  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_ticker_watchdog_direct_mode_connected_runs_inspection():
+    """Once `ticker_connected_today()` is True, the direct-mode tick
+    proceeds exactly as before — a regression guard for the new gate."""
+    from backend.api import background as _bg
+
+    sleep_calls = {"n": 0}
+
+    async def _cancelling_sleep(delay):
+        sleep_calls["n"] += 1
+        if sleep_calls["n"] >= 2:
+            raise asyncio.CancelledError("test escape")
+
+    with patch("backend.api.background.is_cutover_on", return_value=False), \
+         patch("backend.api.background.ticker_connected_today", return_value=True), \
+         patch("backend.api.background._watchdog_deferred_recycle", new_callable=AsyncMock) as m_recycle, \
+         patch("backend.shared.helpers.utils.is_engine_idle", return_value=False), \
+         patch("backend.api.background._watchdog_check_market_open", new_callable=AsyncMock, return_value=False) as m_open, \
+         patch("asyncio.sleep", side_effect=_cancelling_sleep):
+        await _bg._task_ticker_watchdog({})
+
+    m_recycle.assert_awaited()
+    m_open.assert_awaited()
 
 
 @pytest.mark.asyncio
