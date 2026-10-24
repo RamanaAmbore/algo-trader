@@ -123,13 +123,15 @@ const FIXTURE_ROWS = [
     },
   },
   {
-    grammar_kind: 'action', token_kind: 'action_type', token: 'emit_log',
+    // item 7 (backend) — DSL-visible token renamed `emit_log` -> `log`.
+    grammar_kind: 'action', token_kind: 'action_type', token: 'log',
     params_schema: {
       level: { type: 'enum', enum: ['info', 'warning', 'error'], required: false, default: 'info' },
       message: { type: 'string', required: true, token_ref_ok: true },
     },
   },
   { grammar_kind: 'action', token_kind: 'action_type', token: 'deactivate_agent', params_schema: {} },
+  { grammar_kind: 'action', token_kind: 'action_type', token: 'help', params_schema: { name: { type: 'string', required: true } } },
   {
     grammar_kind: 'action', token_kind: 'action_type', token: 'chase_close_positions',
     params_schema: {
@@ -243,50 +245,36 @@ function roundTrip(text) {
 
 describe('canonical examples — decompile→recompile round-trip', () => {
   it('1. single channel, single action', () => {
-    roundTrip(
-      'WHEN mean_pnl(minutes=30)@positions.total <= -50000 ' +
-      'ALERT telegram ' +
-      'DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)'
+    roundTrip('WHEN mean_pnl(minutes=30)@positions.total <= -50000 DO alert(telegram), order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)'
     );
   });
 
   it('2. multiple channels (one parameterized), multiple actions', () => {
-    roundTrip(
-      'WHEN mean_pnl(minutes=30)@positions.total <= -50000 ' +
-      'ALERT telegram, ntfy(priority="urgent") ' +
-      'DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1), emit_log(message="stop hit")'
+    roundTrip('WHEN mean_pnl(minutes=30)@positions.total <= -50000 DO alert(telegram, ntfy(priority="urgent")), order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1), log(message="stop hit")'
     );
   });
 
   it('3. compound boolean — equal precedence, nested all/any', () => {
-    roundTrip(
-      'WHEN ((mean_pnl(minutes=30)@positions.total <= -50000) & (stdev_pnl(minutes=30)@positions.total > 10000)) | (avail_margin@funds.total < 0) ' +
-      'ALERT telegram ' +
-      'DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)'
+    roundTrip('WHEN ((mean_pnl(minutes=30)@positions.total <= -50000) & (stdev_pnl(minutes=30)@positions.total > 10000)) | (avail_margin@funds.total < 0) DO alert(telegram), order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)'
     );
   });
 
   it('4. NOT', () => {
-    roundTrip(
-      'WHEN ~(pnl_pct@positions.total > 0) ' +
-      'ALERT telegram ' +
-      'DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)'
+    roundTrip('WHEN ~(pnl_pct@positions.total > 0) DO alert(telegram), order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)'
     );
   });
 
   it('5a. only an action (ALERT nop)', () => {
-    roundTrip(
-      'WHEN mean_pnl(minutes=30)@positions.total <= -50000 ALERT nop ' +
-      'DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)'
+    roundTrip('WHEN mean_pnl(minutes=30)@positions.total <= -50000 DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)'
     );
   });
 
   it('5b. only a notify (DO nop)', () => {
-    roundTrip('WHEN pnl_pct@positions.total <= -5 ALERT telegram DO nop');
+    roundTrip('WHEN pnl_pct@positions.total <= -5 DO alert(telegram)');
   });
 
   it('6. always + nop', () => {
-    const { dec } = roundTrip('WHEN always ALERT nop DO order(account="ZG0790", symbol="BANKNIFTY25JULFUT", side="BUY", lots=2)');
+    const { dec } = roundTrip('WHEN always DO order(account="ZG0790", symbol="BANKNIFTY25JULFUT", side="BUY", lots=2)');
     expect(dec.text).toContain('WHEN always ');
   });
 });
@@ -303,31 +291,32 @@ describe('canonical examples — decompile→recompile round-trip', () => {
 // of which input form produced the underlying JSON.
 
 describe('ALERT/DO omission and reordering — decompiled output stays canonical', () => {
-  it('DO-only input (no ALERT token) decompiles to the fixed "ALERT nop DO ..." canonical form', () => {
-    const first = compile('WHEN pnl_pct@positions.total <= -5 DO emit_log(message="x")');
+  it('DO-only input (no alert(...) call) decompiles with no alert(...) at all — Sprint [grammar-unify]: no more ALERT keyword/nop sentinel to render', () => {
+    const first = compile('WHEN pnl_pct@positions.total <= -5 DO log(message="x")');
     expect(first.ok).toBe(true);
     const dec = decompile(first.agent);
     expect(dec.errors).toEqual([]);
-    expect(dec.text).toMatch(/^WHEN .* ALERT nop DO /);
+    expect(dec.text).toMatch(/^WHEN .* DO log\(/);
+    expect(dec.text).not.toContain('alert(');
     const second = compile(dec.text);
     expect(second.ok).toBe(true);
     expect(second.agent).toEqual(first.agent);
   });
 
-  it('ALERT-only input (no DO token) decompiles to the fixed "ALERT ... DO nop" canonical form', () => {
-    const first = compile('WHEN pnl_pct@positions.total <= -5 ALERT telegram');
+  it('alert(...)-only input (no other DO action) decompiles with alert(...) as the sole DO call — no trailing "nop"', () => {
+    const first = compile('WHEN pnl_pct@positions.total <= -5 DO alert(telegram)');
     expect(first.ok).toBe(true);
     const dec = decompile(first.agent);
     expect(dec.errors).toEqual([]);
-    expect(dec.text).toMatch(/ ALERT telegram DO nop$/);
+    expect(dec.text).toMatch(/DO alert\(telegram\)$/);
     const second = compile(dec.text);
     expect(second.ok).toBe(true);
     expect(second.agent).toEqual(first.agent);
   });
 
   it('reversed input order ("DO ... ALERT ...") decompiles to the same canonical ALERT-before-DO text as the non-reversed input', () => {
-    const canonical = compile('WHEN pnl_pct@positions.total <= -5 ALERT telegram DO emit_log(message="x")');
-    const reversed = compile('WHEN pnl_pct@positions.total <= -5 DO emit_log(message="x") ALERT telegram');
+    const canonical = compile('WHEN pnl_pct@positions.total <= -5 DO alert(telegram), log(message="x")');
+    const reversed = compile('WHEN pnl_pct@positions.total <= -5 DO log(message="x"), alert(telegram)');
     expect(reversed.agent).toEqual(canonical.agent);
     const decCanonical = decompile(canonical.agent);
     const decReversed = decompile(reversed.agent);
@@ -354,7 +343,7 @@ describe('real builtin agents — never authored via the CLI', () => {
     };
     const dec = decompile(agentJson);
     expect(dec.errors).toEqual([]);
-    expect(dec.text).toMatch(/^WHEN always ALERT /);
+    expect(dec.text).toMatch(/^WHEN always DO alert\(/);
     const recompiled = compile(dec.text);
     expect(recompiled.ok).toBe(true);
     expect(recompiled.agent.conditions).toEqual(ALWAYS_LEAF);
@@ -625,7 +614,7 @@ describe('hand-constructed shapes (JSON-textarea / AI-draft style authorship)', 
     };
     const dec = decompile(agentJson);
     expect(dec.errors).toEqual([]);
-    expect(dec.text).toContain('WHEN is_itm_bool@positions.total ALERT');
+    expect(dec.text).toContain('WHEN is_itm_bool@positions.total DO alert(telegram)');
     const recompiled = compile(dec.text);
     expect(recompiled.ok).toBe(true);
     expect(recompiled.agent).toEqual(agentJson);
@@ -666,7 +655,7 @@ describe('hand-constructed shapes (JSON-textarea / AI-draft style authorship)', 
     };
     const dec = decompile(agentJson);
     expect(dec.errors).toEqual([]);
-    expect(dec.text).toContain('DO deactivate_agent');
+    expect(dec.text).toContain('alert(telegram), deactivate_agent');
     expect(dec.text).not.toContain('deactivate_agent(');
     const recompiled = compile(dec.text);
     expect(recompiled.ok).toBe(true);
@@ -877,10 +866,10 @@ describe('unrecognized or malformed shapes fail loud', () => {
     expect(dec.errors.some(e => /unknown parameter/.test(e.message))).toBe(true);
   });
 
-  it('events=[] and actions=[] together fails loud with the same "at least one of ALERT or DO" message the compiler uses', () => {
+  it('events=[] and actions=[] together (no preamble either) fails loud with the Sprint [grammar-unify] message', () => {
     const dec = decompile({ conditions: { metric: 'pnl', scope: 'positions.total', op: '<', value: 0 }, events: [], actions: [] });
     expect(dec.text).toBeNull();
-    expect(dec.errors.some(e => /at least one of ALERT or DO/.test(e.message))).toBe(true);
+    expect(dec.errors.some(e => /must have at least one preamble call\/binding or a WHEN/.test(e.message))).toBe(true);
   });
 });
 
@@ -989,7 +978,7 @@ describe('number-formatting guard', () => {
 describe('quoting guard', () => {
   it('a free-text value containing both " and \' has no safe CLI representation', () => {
     const dec = decompileActions(
-      [{ type: 'emit_log', params: { message: `she said "it's broken"` } }],
+      [{ type: 'log', params: { message: `she said "it's broken"` } }],
       CATALOG
     );
     expect(dec.text).toBeNull();
@@ -1000,7 +989,7 @@ describe('quoting guard', () => {
     const agentJson = {
       conditions: { metric: 'pnl', scope: 'positions.total', op: '<', value: 0 },
       events: [{ channel: 'telegram', enabled: true }],
-      actions: [{ type: 'emit_log', params: { message: 'stop hit, closing (urgent)' } }],
+      actions: [{ type: 'log', params: { message: 'stop hit, closing (urgent)' } }],
     };
     const dec = decompile(agentJson);
     expect(dec.errors).toEqual([]);
@@ -1037,11 +1026,11 @@ describe('between-chain reversal — inclusive-same-op guard', () => {
   });
 
   it('a genuine strict chain (0 < pnl < 100, compiler-produced) reverses correctly', () => {
-    roundTrip('WHEN 0 < pnl@positions.total < 100 ALERT telegram DO nop');
+    roundTrip('WHEN 0 < pnl@positions.total < 100 DO alert(telegram)');
   });
 
   it('a genuine descending strict chain (100 > pnl > 0, compiler-produced) reverses correctly', () => {
-    roundTrip('WHEN 100 > pnl@positions.total > 0 ALERT telegram DO nop');
+    roundTrip('WHEN 100 > pnl@positions.total > 0 DO alert(telegram)');
   });
 });
 
@@ -1070,8 +1059,7 @@ describe('decompiled output key-name choice', () => {
 
 describe('ALERT msg= decompile round-trip', () => {
   it('shared identical message across every channel decompiles to one clause-level msg= default', () => {
-    const { first, dec } = roundTrip(
-      'WHEN pnl@positions.total <= -1 ALERT msg="Stop loss hit", telegram, ntfy(priority="urgent") DO nop'
+    const { first, dec } = roundTrip('WHEN pnl@positions.total <= -1 DO alert(msg="Stop loss hit", telegram, ntfy(priority="urgent"))'
     );
     expect(first.agent.events).toEqual([
       { channel: 'telegram', enabled: true, message: 'Stop loss hit' },
@@ -1082,8 +1070,7 @@ describe('ALERT msg= decompile round-trip', () => {
   });
 
   it('per-channel distinct messages decompile to individual per-channel msg=, no shared default', () => {
-    const { first, dec } = roundTrip(
-      'WHEN pnl@positions.total <= -1 ALERT telegram(msg="custom A"), ntfy(msg="custom B", priority="urgent") DO nop'
+    const { first, dec } = roundTrip('WHEN pnl@positions.total <= -1 DO alert(telegram(msg="custom A"), ntfy(msg="custom B", priority="urgent"))'
     );
     expect(first.agent.events).toEqual([
       { channel: 'telegram', enabled: true, message: 'custom A' },
@@ -1095,13 +1082,12 @@ describe('ALERT msg= decompile round-trip', () => {
   });
 
   it('no-message agent (today\'s normal case) decompiles with no msg= anywhere — the critical backward-compatibility path', () => {
-    const { first, dec } = roundTrip(
-      'WHEN pnl@positions.total <= -1 ALERT telegram, ntfy(priority="urgent") DO nop'
+    const { first, dec } = roundTrip('WHEN pnl@positions.total <= -1 DO alert(telegram, ntfy(priority="urgent"))'
     );
     expect('message' in first.agent.events[0]).toBe(false);
     expect('message' in first.agent.events[1]).toBe(false);
     expect(dec.text).not.toMatch(/\bmsg=/);
-    expect(dec.text).toContain('ALERT telegram, ntfy(priority=urgent)');
+    expect(dec.text).toContain('alert(telegram, ntfy(priority=urgent))');
   });
 
   it('a message present on some channels but not others has no CLI representation and fails loud (never producible by the compiler)', () => {
@@ -1124,10 +1110,7 @@ describe('ALERT msg= decompile round-trip', () => {
 
 describe('meta clause decompile round-trip', () => {
   it('round-trips an agent with all four meta fields set', () => {
-    const { first, dec } = roundTrip(
-      'WHEN pnl@positions.total <= -50000 ALERT telegram '
-      + 'DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1) '
-      + '#name="NIFTY loss guard" #desc="Closes on -50k drawdown" #tag=risk,nifty #group=hedge-book'
+    const { first, dec } = roundTrip('WHEN pnl@positions.total <= -50000 DO alert(telegram), order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1) #name="NIFTY loss guard" #desc="Closes on -50k drawdown" #tag=risk,nifty #group=hedge-book'
     );
     expect(first.agent.name).toBe('NIFTY loss guard');
     expect(first.agent.description).toBe('Closes on -50k drawdown');
@@ -1140,7 +1123,7 @@ describe('meta clause decompile round-trip', () => {
   });
 
   it('round-trips an agent with none of the four meta fields set — no "#..." clause rendered at all', () => {
-    const { first, dec } = roundTrip('WHEN pnl@positions.total <= -1 ALERT telegram DO nop');
+    const { first, dec } = roundTrip('WHEN pnl@positions.total <= -1 DO alert(telegram)');
     expect(first.agent.name).toBeUndefined();
     expect(first.agent.description).toBeUndefined();
     expect(first.agent.tags).toBeUndefined();
@@ -1543,9 +1526,7 @@ describe('Sprint 12/18 — event_stmt decompile round-trip (real seeded agent sh
   // the output of a decompile call (compile/decompile are NOT assumed
   // symmetric just because one direction works). ──────────────────────
   it('compiles a hand-typed telegram(gate=false) channel call on its own', () => {
-    const r = compile(
-      'ALERT log_tag=orders, min_level=WARNING, render=order_failure, telegram(gate=false)'
-    );
+    const r = compile('ALERT log_tag=orders, min_level=WARNING, render=order_failure, telegram(gate=false)');
     expect(r.ok).toBe(true);
     expect(r.agent.events).toEqual([{ channel: 'telegram', enabled: true, gate: false }]);
   });
@@ -1623,9 +1604,7 @@ describe('Sprint 12/18 — event_stmt decompile round-trip (real seeded agent sh
   });
 
   it('match= combined with log_tag= in the same statement is a compile-time error', () => {
-    const r = compile(
-      'ALERT match=[{tag=gtt, min_level=WARNING}, {tag=gtt, min_level=CRITICAL}], log_tag=gtt, render=template_attach, ntfy(priority=urgent)'
-    );
+    const r = compile('ALERT match=[{tag=gtt, min_level=WARNING}, {tag=gtt, min_level=CRITICAL}], log_tag=gtt, render=template_attach, ntfy(priority=urgent)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /match= is mutually exclusive with log_tag=/.test(e.message))).toBe(true);
   });
@@ -1678,7 +1657,7 @@ describe('Sprint 16 — {"$row": "<name>"} decompiles to the bare field-name CLI
 describe('Sprint G — debug(x) decompiles from a {"$row": ...}-message emit_log(level=debug) action', () => {
   it('a debug(x)-compiled $row action decompiles back to the bare debug(name) CLI form and recompiles to IDENTICAL JSON', () => {
     const r = decompileActions(
-      [{ type: 'emit_log', params: { level: 'debug', message: { '$row': 'account_id' } } }],
+      [{ type: 'log', params: { level: 'debug', message: { '$row': 'account_id' } } }],
       CATALOG,
     );
     expect(r.errors).toEqual([]);
@@ -1697,18 +1676,18 @@ describe('Sprint G — debug(x) decompiles from a {"$row": ...}-message emit_log
     // "editing a saved rule shows the expanded form" rule already
     // documented for the bind operator generally.
     const r = decompileActions(
-      [{ type: 'emit_log', params: { level: 'debug', message: 'ping' } }],
+      [{ type: 'log', params: { level: 'debug', message: 'ping' } }],
       CATALOG,
     );
     expect(r.errors).toEqual([]);
-    expect(r.text).toBe('emit_log(level=debug, message="ping")');
-    const recompiled = compile(`WHEN always ALERT telegram DO ${r.text}`);
+    expect(r.text).toBe('log(level=debug, message="ping")');
+    const recompiled = compile(`WHEN always DO alert(telegram), ${r.text}`);
     expect(recompiled.ok).toBe(true);
-    expect(recompiled.agent.actions).toEqual([{ type: 'emit_log', params: { level: 'debug', message: 'ping' } }]);
+    expect(recompiled.agent.actions).toEqual([{ type: 'log', params: { level: 'debug', message: 'ping' } }]);
   });
 
   it('a hand-authored emit_log(level=debug, message="literal") is INDISTINGUISHABLE from one that came from debug(x) with a literal-bound label — both decompile/recompile identically, by design (no new ambiguity: both are equally valid)', () => {
-    roundTrip('WHEN always ALERT telegram DO emit_log(level=debug, message="hand typed")');
+    roundTrip('WHEN always DO alert(telegram), log(level=debug, message="hand typed")');
   });
 });
 
@@ -1722,23 +1701,16 @@ describe('Sprint G — debug(x) decompiles from a {"$row": ...}-message emit_log
 
 describe('Sprint [GIVEN-expr] — agent.given[] decompile round-trip', () => {
   it('a single operator-expression binding decompiles to a leading GIVEN line, verbatim, and recompiles byte-identical', () => {
-    roundTrip('GIVEN msg_txt = "a" + "b" WHEN always ALERT msg = msg_txt, telegram DO nop');
+    roundTrip('msg_txt = "a" + "b" WHEN always DO alert(msg = msg_txt, telegram)');
   });
 
   it('a pure alias referenced by an operator expression decompiles with its OWN injected GIVEN entry too, and recompiles byte-identical', () => {
-    roundTrip(
-      'GIVEN p = pnl@positions.total\n'
-      + 'msg_txt = "Loss: " + p '
-      + 'WHEN p <= -50000 ALERT msg = msg_txt, telegram DO nop'
+    roundTrip('p = pnl@positions.total\nmsg_txt = "Loss: " + p WHEN p <= -50000 DO alert(msg = msg_txt, telegram)'
     );
   });
 
   it('decompileAgent renders the GIVEN preamble — an "expr" entry reads its string back VERBATIM; a "parts" entry (string-building) is freshly reconstructed from its parts array into the SAME source text', () => {
-    const r = compile(
-      'GIVEN p = pnl@positions.total\n'
-      + 'msg_txt = "Loss: " + p '
-      + 'WHEN p <= -50000 ALERT msg = msg_txt, telegram DO nop'
-    );
+    const r = compile('p = pnl@positions.total\nmsg_txt = "Loss: " + p WHEN p <= -50000 DO alert(msg = msg_txt, telegram)');
     expect(r.ok).toBe(true);
     // `p` is `expr`-shaped (bare metric@scope, no string literal);
     // `msg_txt` is `parts`-shaped (mixes a string literal) per the
@@ -1749,16 +1721,16 @@ describe('Sprint [GIVEN-expr] — agent.given[] decompile round-trip', () => {
     ]);
     const dec = decompile(r.agent);
     expect(dec.errors).toEqual([]);
-    expect(dec.text.startsWith('GIVEN p = pnl@positions.total; msg_txt = "Loss: " + p\n')).toBe(true);
+    expect(dec.text.startsWith('p = pnl@positions.total; msg_txt = "Loss: " + p\n')).toBe(true);
   });
 
   it('a "parts"-kind binding decompile→recompile round-trip is correct — the reconstructed CLI text re-parses to the IDENTICAL "parts" array', () => {
-    const r = compile('GIVEN msg_txt = "Symbol: " + "NIFTY" WHEN always ALERT msg = msg_txt, telegram DO nop');
+    const r = compile('msg_txt = "Symbol: " + "NIFTY" WHEN always DO alert(msg = msg_txt, telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.given).toEqual([{ name: 'msg_txt', parts: ['Symbol: ', 'NIFTY'] }]);
     const dec = decompile(r.agent);
     expect(dec.errors).toEqual([]);
-    expect(dec.text).toContain('GIVEN msg_txt = "Symbol: " + "NIFTY"');
+    expect(dec.text).toContain('msg_txt = "Symbol: " + "NIFTY"');
     const recompiled = compile(dec.text);
     expect(recompiled.ok).toBe(true);
     expect(recompiled.agent.given).toEqual(r.agent.given);
@@ -1777,20 +1749,20 @@ describe('Sprint [GIVEN-expr] — agent.given[] decompile round-trip', () => {
 
   it('debug(x) on an operator-expression label decompiles from the NEW {"$given": name} marker and recompiles byte-identical', () => {
     const r = decompileActions(
-      [{ type: 'emit_log', params: { level: 'debug', message: { '$given': 'msg_txt' } } }],
+      [{ type: 'log', params: { level: 'debug', message: { '$given': 'msg_txt' } } }],
       CATALOG,
     );
     expect(r.errors).toEqual([]);
     expect(r.text).toBe('debug(msg_txt)');
-    roundTrip('GIVEN msg_txt = "a" + "b" WHEN always ALERT telegram DO debug(msg_txt)');
+    roundTrip('msg_txt = "a" + "b" WHEN always DO alert(telegram), debug(msg_txt)');
   });
 
   it('ALERT msg= resolving to a {"$given": name} marker decompiles back to the bare label name and recompiles byte-identical', () => {
-    roundTrip('GIVEN msg_txt = "a" + "b" WHEN always ALERT msg = msg_txt, telegram DO nop');
+    roundTrip('msg_txt = "a" + "b" WHEN always DO alert(msg = msg_txt, telegram)');
   });
 
   it('an agent with no "given" key at all decompiles with no leading GIVEN line (zero behavior change for every pre-existing agent)', () => {
-    const r = compile('WHEN pnl@positions.total <= -50000 ALERT telegram DO nop');
+    const r = compile('WHEN pnl@positions.total <= -50000 DO alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.given).toBeUndefined();
     const dec = decompile(r.agent);

@@ -100,13 +100,20 @@ const FIXTURE_ROWS = [
     mutually_exclusive_groups: [['wing_premium_pct_override', 'wing_strike_offset_override']],
   },
   {
-    grammar_kind: 'action', token_kind: 'action_type', token: 'emit_log',
+    // item 7 (backend) — DSL-visible token renamed `emit_log` -> `log`;
+    // the Python resolver function stays `emit_log` (dotted resolver
+    // paths don't need to match the DSL token name).
+    grammar_kind: 'action', token_kind: 'action_type', token: 'log',
     params_schema: {
       level: { type: 'enum', enum: ['info', 'warning', 'error'], required: false, default: 'info' },
       message: { type: 'string', required: true, token_ref_ok: true },
     },
   },
   { grammar_kind: 'action', token_kind: 'action_type', token: 'deactivate_agent', params_schema: {} },
+  // item 3 — `help` action (grammar unification plan), read-only catalog
+  // lookup, single required `name` string param (always supplied via the
+  // `help(x)` CLI bare-arg sugar, never hand-typed `name=...`).
+  { grammar_kind: 'action', token_kind: 'action_type', token: 'help', params_schema: { name: { type: 'string', required: true } } },
   // Sprint 10 — merged-in AgentTemplate ("Token") rows, hyphenated names
   // (the real seeding convention — e.g. `notify-critical-trio`,
   // `loss-positions-acct-default`). `is_fragment_ref: true` is the ONLY
@@ -391,7 +398,7 @@ describe('buildCatalog()', () => {
   });
 
   it('a row with no mutually_exclusive_groups key gets null, not []', () => {
-    expect(CATALOG.actions.get('emit_log').mutuallyExclusiveGroups).toBeNull();
+    expect(CATALOG.actions.get('log').mutuallyExclusiveGroups).toBeNull();
   });
 
   it('skips inactive rows', () => {
@@ -436,11 +443,7 @@ describe('fetchAgentCatalog()', () => {
 
 describe('canonical examples — exact compiled JSON', () => {
   it('1. single channel, single action', () => {
-    const r = compile(
-      'WHEN mean_pnl(minutes=30)@positions.total <= -50000 ' +
-      'ALERT telegram ' +
-      'DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)'
-    );
+    const r = compile('WHEN mean_pnl(minutes=30)@positions.total <= -50000 DO alert(telegram), order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)');
     expect(r.errors).toEqual([]);
     expect(r.ok).toBe(true);
     expect(r.agent).toEqual({
@@ -451,11 +454,7 @@ describe('canonical examples — exact compiled JSON', () => {
   });
 
   it('2. multiple channels (one parameterized), multiple actions', () => {
-    const r = compile(
-      'WHEN mean_pnl(minutes=30)@positions.total <= -50000 ' +
-      'ALERT telegram, ntfy(priority="urgent") ' +
-      'DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1), emit_log(message="stop hit")'
-    );
+    const r = compile('WHEN mean_pnl(minutes=30)@positions.total <= -50000 DO alert(telegram, ntfy(priority="urgent")), order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1), log(message="stop hit")');
     expect(r.errors).toEqual([]);
     expect(r.agent.events).toEqual([
       { channel: 'telegram', enabled: true },
@@ -463,16 +462,12 @@ describe('canonical examples — exact compiled JSON', () => {
     ]);
     expect(r.agent.actions).toEqual([
       { type: 'order', params: { account: 'ZG0790', symbol: 'NIFTY25JULFUT', side: 'SELL', qty: 75 } },
-      { type: 'emit_log', params: { message: 'stop hit' } },
+      { type: 'log', params: { message: 'stop hit' } },
     ]);
   });
 
   it('3. compound boolean — equal precedence, parens control grouping', () => {
-    const r = compile(
-      'WHEN ((mean_pnl(minutes=30)@positions.total <= -50000) & (stdev_pnl(minutes=30)@positions.total > 10000)) | (avail_margin@funds.total < 0) ' +
-      'ALERT telegram ' +
-      'DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)'
-    );
+    const r = compile('WHEN ((mean_pnl(minutes=30)@positions.total <= -50000) & (stdev_pnl(minutes=30)@positions.total > 10000)) | (avail_margin@funds.total < 0) DO alert(telegram), order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)');
     expect(r.errors).toEqual([]);
     expect(r.agent.conditions).toEqual({
       any: [
@@ -486,20 +481,13 @@ describe('canonical examples — exact compiled JSON', () => {
   });
 
   it('4. NOT', () => {
-    const r = compile(
-      'WHEN ~(pnl_pct@positions.total > 0) ' +
-      'ALERT telegram ' +
-      'DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)'
-    );
+    const r = compile('WHEN ~(pnl_pct@positions.total > 0) DO alert(telegram), order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)');
     expect(r.errors).toEqual([]);
     expect(r.agent.conditions).toEqual({ not: { metric: 'pnl_pct', scope: 'positions.total', op: '>', value: 0 } });
   });
 
   it('5a. only an action (ALERT nop)', () => {
-    const r = compile(
-      'WHEN mean_pnl(minutes=30)@positions.total <= -50000 ALERT nop ' +
-      'DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)'
-    );
+    const r = compile('WHEN mean_pnl(minutes=30)@positions.total <= -50000 DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)');
     expect(r.errors).toEqual([]);
     expect(r.agent.events).toEqual([]);
     expect(r.agent.actions).toEqual([
@@ -508,14 +496,14 @@ describe('canonical examples — exact compiled JSON', () => {
   });
 
   it('5b. only a notify (DO nop)', () => {
-    const r = compile('WHEN pnl_pct@positions.total <= -5 ALERT telegram DO nop');
+    const r = compile('WHEN pnl_pct@positions.total <= -5 DO alert(telegram)');
     expect(r.errors).toEqual([]);
     expect(r.agent.events).toEqual([{ channel: 'telegram', enabled: true }]);
     expect(r.agent.actions).toEqual([]);
   });
 
   it('6. always + nop', () => {
-    const r = compile('WHEN always ALERT nop DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="BUY", lots=2)');
+    const r = compile('WHEN always DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="BUY", lots=2)');
     expect(r.errors).toEqual([]);
     expect(r.agent.conditions).toEqual(ALWAYS_LEAF);
     expect(r.agent.actions).toEqual([
@@ -573,17 +561,17 @@ describe('canonical examples — exact compiled JSON', () => {
 
 describe('adversarial — unknown tokens', () => {
   it('unknown metric', () => {
-    const r = compile('WHEN bogus_metric@positions.total <= -1 ALERT telegram DO nop');
+    const r = compile('WHEN bogus_metric@positions.total <= -1 DO alert(telegram)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /unknown metric/.test(e.message))).toBe(true);
   });
   it('unknown action', () => {
-    const r = compile('WHEN pnl@positions.total <= -1 ALERT telegram DO bogus_action(account="ZG0790")');
+    const r = compile('WHEN pnl@positions.total <= -1 DO alert(telegram), bogus_action(account="ZG0790")');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /unknown action/.test(e.message))).toBe(true);
   });
   it('unknown channel', () => {
-    const r = compile('WHEN pnl@positions.total <= -1 ALERT bogus_channel DO nop');
+    const r = compile('WHEN pnl@positions.total <= -1 DO alert(bogus_channel)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /unknown channel/.test(e.message))).toBe(true);
   });
@@ -593,18 +581,24 @@ describe('adversarial — kind mismatch', () => {
   it('a metric written inside DO is rejected with a kind-mismatch message, not a bare "unknown action"', () => {
     // agents.js's _describeKind() deliberately gives a clearer message when
     // the token IS real, just in the wrong clause ("'pnl' is a metric —
-    // only actions are allowed in DO") rather than the generic "unknown
+    // only actions are allowed here") rather than the generic "unknown
     // action 'pnl'" a truly-nonexistent token would get (see the "unknown
     // action" test above, which IS a nonexistent token and DOES match that
-    // generic pattern).
-    const r = compile('WHEN pnl@positions.total <= -1 ALERT telegram DO pnl(account="ZG0790")');
+    // generic pattern). "here" (not "in DO") since Sprint [grammar-unify]
+    // reuses this exact message for the preamble position too.
+    const r = compile('WHEN pnl@positions.total <= -1 DO alert(telegram), pnl(account="ZG0790")');
     expect(r.ok).toBe(false);
-    expect(r.errors.some(e => /'pnl' is a metric.*only actions are allowed in DO/.test(e.message))).toBe(true);
+    expect(r.errors.some(e => /'pnl' is a metric.*only actions are allowed here/.test(e.message))).toBe(true);
   });
   it('an action token written inside WHEN is rejected with a kind-mismatch message, not a bare "unknown metric"', () => {
-    const r = compile('WHEN emit_log@positions.total <= -1 ALERT telegram DO nop');
+    // 'deactivate_agent' (not 'log'/'emit_log') — item 7's rename gave the
+    // `log` action the SAME name as the fixture's own pre-existing `log`
+    // notify CHANNEL, so a bare 'log' here would hit the channel branch of
+    // `_describeKind` first and say "is a channel", not "is an action" —
+    // this test specifically wants a name that is ONLY ever an action.
+    const r = compile('WHEN deactivate_agent@positions.total <= -1 DO alert(telegram)');
     expect(r.ok).toBe(false);
-    expect(r.errors.some(e => /'emit_log' is an action.*only metrics are allowed in a WHEN condition/.test(e.message))).toBe(true);
+    expect(r.errors.some(e => /'deactivate_agent' is an action.*only metrics are allowed in a WHEN condition/.test(e.message))).toBe(true);
   });
 });
 
@@ -621,76 +615,76 @@ describe('adversarial — typos and missing params', () => {
   });
 });
 
-describe('adversarial — ALERT nop DO nop together', () => {
+describe('adversarial — DO nop alone (the ALERT clause is gone — Sprint [grammar-unify])', () => {
   it('is rejected (decided: caught by the semantic validator, not the parser — see agents.js compileAgentStmt)', () => {
-    const parsed = parseStatement('WHEN pnl@positions.total <= -1 ALERT nop DO nop');
+    const parsed = parseStatement('WHEN pnl@positions.total <= -1 DO nop');
     expect(parsed.errors).toEqual([]); // parses fine — structurally it's syntactically valid
-    const r = compile('WHEN pnl@positions.total <= -1 ALERT nop DO nop');
+    const r = compile('WHEN pnl@positions.total <= -1 DO nop');
     expect(r.ok).toBe(false);
-    expect(r.errors.some(e => /at least one of ALERT or DO/.test(e.message))).toBe(true);
+    expect(r.errors.some(e => /DO must have at least one real action or alert/.test(e.message))).toBe(true);
   });
 });
 
 describe('ALERT/DO — independently optional, either order (operator request: "alert and do sequence can inter change, one of them optional")', () => {
   it('DO before ALERT (reversed order) compiles identically to the canonical ALERT-before-DO order', () => {
-    const canonical = compile('WHEN pnl@positions.total <= -1 ALERT telegram DO emit_log(message="x")');
-    const reversed = compile('WHEN pnl@positions.total <= -1 DO emit_log(message="x") ALERT telegram');
+    const canonical = compile('WHEN pnl@positions.total <= -1 DO alert(telegram), log(message="x")');
+    const reversed = compile('WHEN pnl@positions.total <= -1 DO log(message="x"), alert(telegram)');
     expect(reversed.ok).toBe(true);
     expect(reversed.agent).toEqual(canonical.agent);
   });
 
   it('DO alone (ALERT token omitted entirely) compiles identically to "ALERT nop DO ..."', () => {
-    const withNop = compile('WHEN pnl@positions.total <= -1 ALERT nop DO emit_log(message="x")');
-    const omitted = compile('WHEN pnl@positions.total <= -1 DO emit_log(message="x")');
+    const withNop = compile('WHEN pnl@positions.total <= -1 DO log(message="x")');
+    const omitted = compile('WHEN pnl@positions.total <= -1 DO log(message="x")');
     expect(omitted.ok).toBe(true);
     expect(omitted.agent).toEqual(withNop.agent);
   });
 
   it('ALERT alone (DO token omitted entirely) compiles identically to "ALERT ... DO nop"', () => {
-    const withNop = compile('WHEN pnl@positions.total <= -1 ALERT telegram DO nop');
-    const omitted = compile('WHEN pnl@positions.total <= -1 ALERT telegram');
+    const withNop = compile('WHEN pnl@positions.total <= -1 DO alert(telegram)');
+    const omitted = compile('WHEN pnl@positions.total <= -1 DO alert(telegram)');
     expect(omitted.ok).toBe(true);
     expect(omitted.agent).toEqual(withNop.agent);
   });
 
-  it('neither clause present ("WHEN cond" alone) is rejected the same way as "ALERT nop DO nop"', () => {
+  it('WHEN with no DO at all ("WHEN cond" alone) is rejected — Sprint [grammar-unify]\'s new pairing rule', () => {
     const r = compile('WHEN pnl@positions.total <= -1');
     expect(r.ok).toBe(false);
-    expect(r.errors.some(e => /at least one of ALERT or DO/.test(e.message))).toBe(true);
+    expect(r.errors.some(e => /WHEN requires a DO clause/.test(e.message))).toBe(true);
   });
 
-  it('a repeated clause keyword ("ALERT x ALERT y") leaves the second occurrence as unconsumed trailing input — a parse error', () => {
-    const r = compile('WHEN pnl@positions.total <= -1 ALERT telegram ALERT email DO nop');
+  it('a repeated keyword inside alert(...)\'s own body is a parse error (ALERT is no longer a reserved word, but "email" after a bare "ALERT" inside the parens is still nonsensical)', () => {
+    const r = compile('WHEN pnl@positions.total <= -1 DO alert(telegram ALERT email)');
     expect(r.ok).toBe(false);
   });
 });
 
 describe('WHEN — now optional too (operator request: "alert to be placed, or action performed with no when condition")', () => {
   it('bare "DO ..." with no WHEN at all compiles identically to "WHEN always DO ..."', () => {
-    const withAlways = compile('WHEN always DO emit_log(message="x")');
-    const omitted = compile('DO emit_log(message="x")');
+    const withAlways = compile('WHEN always DO log(message="x")');
+    const omitted = compile('WHEN always DO log(message="x")');
     expect(omitted.ok).toBe(true);
     expect(omitted.agent).toEqual(withAlways.agent);
   });
 
   it('bare "ALERT ..." with no WHEN at all compiles identically to "WHEN always ALERT ..."', () => {
-    const withAlways = compile('WHEN always ALERT telegram');
-    const omitted = compile('ALERT telegram');
+    const withAlways = compile('WHEN always DO alert(telegram)');
+    const omitted = compile('WHEN always DO alert(telegram)');
     expect(omitted.ok).toBe(true);
     expect(omitted.agent).toEqual(withAlways.agent);
   });
 
   it('WHEN omitted + ALERT/DO reversed order still compiles identically', () => {
-    const canonical = compile('ALERT telegram DO emit_log(message="x")');
-    const reversed = compile('DO emit_log(message="x") ALERT telegram');
+    const canonical = compile('WHEN always DO alert(telegram), log(message="x")');
+    const reversed = compile('WHEN always DO log(message="x"), alert(telegram)');
     expect(reversed.ok).toBe(true);
     expect(reversed.agent).toEqual(canonical.agent);
   });
 
-  it('ALERT/DO both omitted alongside WHEN ("DO nop" with no WHEN) still rejected — at least one real clause required', () => {
-    const r = compile('DO nop');
+  it('"WHEN always DO nop" still rejected — a WHEN...DO... pair needs at least one real action/alert', () => {
+    const r = compile('WHEN always DO nop');
     expect(r.ok).toBe(false);
-    expect(r.errors.some(e => /at least one of ALERT or DO/.test(e.message))).toBe(true);
+    expect(r.errors.some(e => /DO must have at least one real action or alert/.test(e.message))).toBe(true);
   });
 
   it('a bare "order(...)" statement is still routed as order_stmt, never mistaken for a WHEN-omitted agent_stmt', () => {
@@ -703,7 +697,7 @@ describe('WHEN — now optional too (operator request: "alert to be placed, or a
 
 describe('adversarial — mixed-direction between chain', () => {
   it('0 <= x >= 5 is a parse/compile error, not silently always-false', () => {
-    const r = compile('WHEN 0 <= pnl@positions.total >= 5 ALERT telegram DO nop');
+    const r = compile('WHEN 0 <= pnl@positions.total >= 5 DO alert(telegram)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /mixed-direction/.test(e.message))).toBe(true);
   });
@@ -711,11 +705,11 @@ describe('adversarial — mixed-direction between chain', () => {
 
 describe('adversarial — always combined with & / |', () => {
   it('always & something is a parse error', () => {
-    const r = compile('WHEN always & (pnl@positions.total <= -1) ALERT telegram DO nop');
+    const r = compile('WHEN always & (pnl@positions.total <= -1) DO alert(telegram)');
     expect(r.ok).toBe(false);
   });
   it('always alone still works', () => {
-    const r = compile('WHEN always ALERT telegram DO nop');
+    const r = compile('WHEN always DO alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions).toEqual(ALWAYS_LEAF);
   });
@@ -727,18 +721,18 @@ describe('adversarial — trailing/leading comma', () => {
     expect(r.ok).toBe(false);
   });
   it('leading comma in ALERT clause', () => {
-    const r = compile('WHEN pnl@positions.total <= -1 ALERT , telegram DO nop');
+    const r = compile('WHEN pnl@positions.total <= -1 DO alert(, telegram)');
     expect(r.ok).toBe(false);
   });
 });
 
 describe('adversarial — nop() / any zero-arg token with parens', () => {
   it('nop() is a parse error', () => {
-    const r = compile('WHEN pnl@positions.total <= -1 ALERT nop() DO nop');
+    const r = compile('WHEN pnl@positions.total <= -1() DO nop');
     expect(r.ok).toBe(false);
   });
   it('telegram() (a zero-arg channel) with empty parens is a parse error', () => {
-    const r = compile('WHEN pnl@positions.total <= -1 ALERT telegram() DO nop');
+    const r = compile('WHEN pnl@positions.total <= -1 DO alert(telegram())');
     expect(r.ok).toBe(false);
   });
 });
@@ -752,7 +746,7 @@ describe('adversarial — case-insensitivity', () => {
     }
   });
   it('WHEN/when and mean_pnl/MEAN_PNL are case-insensitive', () => {
-    const r = compile('when MEAN_PNL(minutes=30)@positions.total <= -50000 alert telegram do nop');
+    const r = compile('when MEAN_PNL(minutes=30)@positions.total <= -50000 do alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions.metric).toBe('mean_pnl(30)');
   });
@@ -765,7 +759,7 @@ describe('adversarial — case-insensitivity', () => {
 
 describe('adversarial — mean_pnl(minutes=30) positional-only normalization', () => {
   it('compiles to the EXACT string "mean_pnl(30)", never the keyword form', () => {
-    const r = compile('WHEN mean_pnl(minutes=30)@positions.total <= -50000 ALERT telegram DO nop');
+    const r = compile('WHEN mean_pnl(minutes=30)@positions.total <= -50000 DO alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions.metric).toBe('mean_pnl(30)');
   });
@@ -774,11 +768,11 @@ describe('adversarial — mean_pnl(minutes=30) positional-only normalization', (
 describe('adversarial — depth/length guard', () => {
   it('a pathologically deep paren nesting is rejected, not a stack overflow', () => {
     const deep = '('.repeat(5000) + 'pnl@positions.total > 0' + ')'.repeat(5000);
-    const r = compile(`WHEN ${deep} ALERT telegram DO nop`);
+    const r = compile(`WHEN ${deep} DO alert(telegram)`);
     expect(r.ok).toBe(false);
   });
   it('a statement far beyond the length cap is rejected', () => {
-    const long = 'WHEN pnl@positions.total <= -1 ALERT telegram DO emit_log(message="' + 'x'.repeat(5000) + '")';
+    const long = 'WHEN pnl@positions.total <= -1 DO alert(telegram), log(message="' + 'x'.repeat(5000) + '")';
     const r = compile(long);
     expect(r.ok).toBe(false);
   });
@@ -842,7 +836,7 @@ describe('adversarial — lots vs qty', () => {
     expect(r.errors.some(e => /lists on multiple exchanges \(NSE, BSE\)/.test(e.message))).toBe(true);
   });
   it('DO order(...) lots converts to CONTRACTS (lots × lot_size), NOT the ticket "lots-only" convention', () => {
-    const r = compile('WHEN always ALERT nop DO order(account="ZG0790", symbol="BANKNIFTY25JULFUT", side="BUY", lots=3)');
+    const r = compile('WHEN always DO order(account="ZG0790", symbol="BANKNIFTY25JULFUT", side="BUY", lots=3)');
     expect(r.ok).toBe(true);
     expect(r.agent.actions[0].params.qty).toBe(75); // 3 * 25
   });
@@ -969,9 +963,7 @@ describe('Sprint 17 — conditional (required_if) price/trigger_price requiremen
   });
 
   it('DO place_order(...) with order_type=SL and no trigger_price= is also a compile error (generic path)', () => {
-    const r = compile(
-      'WHEN always ALERT nop DO place_order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", qty=75, order_type=SL, price=100)'
-    );
+    const r = compile('WHEN always DO place_order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", qty=75, order_type=SL, price=100)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /trigger_price is required when order_type=SL/.test(e.message))).toBe(true);
   });
@@ -988,10 +980,7 @@ describe('Sprint 17 — generalized mutual-exclusion (declared mutuallyExclusive
   });
 
   it('the direct _override field names (no short-kwarg sugar) are also caught', () => {
-    const r = compile(
-      'WHEN always ALERT nop DO place_order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", qty=75, ' +
-      'wing_premium_pct_override=5, wing_strike_offset_override=100)'
-    );
+    const r = compile('WHEN always DO place_order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", qty=75, wing_premium_pct_override=5, wing_strike_offset_override=100)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /cannot specify both wing_premium_pct_override and wing_strike_offset_override/.test(e.message))).toBe(true);
   });
@@ -1038,10 +1027,10 @@ describe('Sprint 8 — standalone bracket(...) statement', () => {
     expect(r.errors.some(e => /missing required meta tag '#name'/.test(e.message))).toBe(true);
   });
 
-  it('bracket(...) used inside a DO clause is rejected the same way any other non-catalog action is ("unknown action")', () => {
-    const r = compile('WHEN always ALERT nop DO bracket(applies_to=buy_any)');
-    expect(r.ok).toBe(false);
-    expect(r.errors.some(e => /unknown action 'bracket'/.test(e.message))).toBe(true);
+  it('bracket(...) used inside a DO clause now compiles (Sprint [grammar-unify] folds bracket into the shared preamble/DO vocabulary) — the entry is reported as inert server-side until the engine agent wires a real "bracket" action', () => {
+    const r = compile('WHEN always DO bracket(applies_to=buy_any)');
+    expect(r.ok).toBe(true);
+    expect(r.agent.actions).toEqual([{ type: 'bracket', params: { applies_to: 'buy_any' } }]);
   });
 
   // Sprint 14 — `applies_to=sell_any` was missing from the CLI's enum
@@ -1070,19 +1059,19 @@ describe('Sprint 8 — standalone bracket(...) statement', () => {
 
 describe('Sprint 10 — bare Token ($ref) reference', () => {
   it('a bare Token reference in WHEN compiles to {"$ref": name}', () => {
-    const r = compile('WHEN loss-positions-default ALERT telegram DO nop');
+    const r = compile('WHEN loss-positions-default DO alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions).toEqual({ '$ref': 'loss-positions-default' });
   });
 
   it('a bare Token reference in ALERT compiles to {"$ref": name}', () => {
-    const r = compile('WHEN pnl@positions.total <= -1 ALERT notify-critical-trio DO nop');
+    const r = compile('WHEN pnl@positions.total <= -1 DO alert(notify-critical-trio)');
     expect(r.ok).toBe(true);
     expect(r.agent.events).toEqual([{ '$ref': 'notify-critical-trio' }]);
   });
 
   it('a Token reference combines with an ordinary leaf via "&"', () => {
-    const r = compile('WHEN loss-positions-default & pnl@positions.total < 0 ALERT telegram DO nop');
+    const r = compile('WHEN loss-positions-default & pnl@positions.total < 0 DO alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions).toEqual({
       all: [
@@ -1093,19 +1082,19 @@ describe('Sprint 10 — bare Token ($ref) reference', () => {
   });
 
   it('a real metric missing its "@" still gets the original compile error (just at compile time, not parse time)', () => {
-    const r = compile('WHEN pnl ALERT telegram DO nop');
+    const r = compile('WHEN pnl DO alert(telegram)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /expected "@" after metric 'pnl'/.test(e.message))).toBe(true);
   });
 
   it('a Token reference carrying arguments is a compile error — it takes none', () => {
-    const r = compile('WHEN loss-positions-default(x=1) ALERT telegram DO nop');
+    const r = compile('WHEN loss-positions-default(x=1) DO alert(telegram)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /Token reference and takes no arguments/.test(e.message))).toBe(true);
   });
 
   it('a Token reference with its own arguments in ALERT is likewise a compile error', () => {
-    const r = compile('WHEN pnl@positions.total <= -1 ALERT notify-critical-trio(msg="hi") DO nop');
+    const r = compile('WHEN pnl@positions.total <= -1 DO alert(notify-critical-trio(msg="hi"))');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /Token reference and takes no arguments/.test(e.message))).toBe(true);
   });
@@ -1136,7 +1125,7 @@ describe('Sprint 10 — hyphenated NAME lexing (call/token-reference position on
   });
 
   it('a dangling trailing hyphen still fails at PARSE time in a real statement (unconsumed trailing MINUS)', () => {
-    const r = compile('WHEN pnl@positions.total <= -1 ALERT loss-positions-default- DO nop');
+    const r = compile('WHEN pnl@positions.total <= -1 DO alert(loss-positions-default-)');
     expect(r.ok).toBe(false);
   });
 
@@ -1153,7 +1142,7 @@ describe('Sprint 10 — hyphenated NAME lexing (call/token-reference position on
   });
 
   it('a kwarg KEY still cannot resolve as a known parameter even though it lexes with a hyphen (no regression — real keys use underscore)', () => {
-    const r = compile('WHEN mean_pnl(tp-pct=30)@positions.total < -1 ALERT telegram DO nop');
+    const r = compile('WHEN mean_pnl(tp-pct=30)@positions.total < -1 DO alert(telegram)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /unknown parameter 'tp-pct'/.test(e.message))).toBe(true);
   });
@@ -1223,7 +1212,7 @@ describe('Sprint 10 — standalone token(...) statement', () => {
   });
 
   it('token(...) used inside a DO clause is rejected the same way any other non-catalog action is ("unknown action")', () => {
-    const r = compile('WHEN always ALERT nop DO token(kind=notify)');
+    const r = compile('WHEN always DO token(kind=notify)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /unknown action 'token'/.test(e.message))).toBe(true);
   });
@@ -1233,12 +1222,12 @@ describe('Sprint 10 — standalone token(...) statement', () => {
 
 describe('boolean-metric shorthand', () => {
   it('a bare boolean metric with no comparator means "is truthy"', () => {
-    const r = compile('WHEN is_itm@positions.total ALERT telegram DO nop');
+    const r = compile('WHEN is_itm@positions.total DO alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions).toEqual({ metric: 'is_itm', scope: 'positions.total', op: '==', value: true });
   });
   it('a bare NUMERIC metric with no comparator is a clear parse error, not a silent success', () => {
-    const r = compile('WHEN pnl@positions.total ALERT telegram DO nop');
+    const r = compile('WHEN pnl@positions.total DO alert(telegram)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /expected a comparator after a numeric metric/.test(e.message))).toBe(true);
   });
@@ -1248,12 +1237,12 @@ describe('boolean-metric shorthand', () => {
 
 describe('in / not_in membership', () => {
   it('side in [BUY, SELL] compiles with op "in"', () => {
-    const r = compile('WHEN side@positions.total in [BUY, SELL] ALERT telegram DO nop');
+    const r = compile('WHEN side@positions.total in [BUY, SELL] DO alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions).toEqual({ metric: 'side', scope: 'positions.total', op: 'in', value: ['BUY', 'SELL'] });
   });
   it('not in compiles to op "not_in" (backend vocabulary, not "not in")', () => {
-    const r = compile('WHEN side@positions.total not in [BUY, SELL] ALERT telegram DO nop');
+    const r = compile('WHEN side@positions.total not in [BUY, SELL] DO alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions.op).toBe('not_in');
   });
@@ -1263,17 +1252,17 @@ describe('in / not_in membership', () => {
 
 describe('chained ("between") comparison', () => {
   it('inclusive same-direction chain compiles to a single "between" leaf', () => {
-    const r = compile('WHEN -100 <= pnl@positions.total <= 100 ALERT telegram DO nop');
+    const r = compile('WHEN -100 <= pnl@positions.total <= 100 DO alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions).toEqual({ metric: 'pnl', scope: 'positions.total', op: 'between', value: [-100, 100] });
   });
   it('inclusive descending-direction chain normalizes value order to [low, high]', () => {
-    const r = compile('WHEN 100 >= pnl@positions.total >= -100 ALERT telegram DO nop');
+    const r = compile('WHEN 100 >= pnl@positions.total >= -100 DO alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions).toEqual({ metric: 'pnl', scope: 'positions.total', op: 'between', value: [-100, 100] });
   });
   it('a STRICT chain does NOT compile to "between" (backend\'s between op is always inclusive) — compiles to an "all" of two leaves', () => {
-    const r = compile('WHEN 0 < pnl@positions.total < 100 ALERT telegram DO nop');
+    const r = compile('WHEN 0 < pnl@positions.total < 100 DO alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions).toEqual({
       all: [
@@ -1289,8 +1278,8 @@ describe('chained ("between") comparison', () => {
 
 describe('Sprint 15 — scope.attribute dot-access (col_ref leaf)', () => {
   it('positions.total.pnl <= -50000 compiles to the IDENTICAL JSON as pnl@positions.total <= -50000', () => {
-    const dotted = compile('WHEN positions.total.pnl <= -50000 ALERT telegram DO nop');
-    const atForm = compile('WHEN pnl@positions.total <= -50000 ALERT telegram DO nop');
+    const dotted = compile('WHEN positions.total.pnl <= -50000 DO alert(telegram)');
+    const atForm = compile('WHEN pnl@positions.total <= -50000 DO alert(telegram)');
     expect(dotted.ok).toBe(true);
     expect(dotted.errors).toEqual([]);
     expect(dotted.agent.conditions).toEqual({ metric: 'pnl', scope: 'positions.total', op: '<=', value: -50000 });
@@ -1298,33 +1287,33 @@ describe('Sprint 15 — scope.attribute dot-access (col_ref leaf)', () => {
   });
 
   it('a column with no hand-registered metric token compiles via dot-access (e.g. qty — no "qty@scope" form exists)', () => {
-    const r = compile('WHEN positions.expiring_today.qty > 10 ALERT telegram DO nop');
+    const r = compile('WHEN positions.expiring_today.qty > 10 DO alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions).toEqual({ metric: 'qty', scope: 'positions.expiring_today', op: '>', value: 10 });
   });
 
   it('a string-typed column works with in/not_in, same as a string-typed metric', () => {
-    const r = compile('WHEN positions.expiring_today.symbol in ["NIFTY25JULFUT"] ALERT telegram DO nop');
+    const r = compile('WHEN positions.expiring_today.symbol in ["NIFTY25JULFUT"] DO alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions).toEqual({ metric: 'symbol', scope: 'positions.expiring_today', op: 'in', value: ['NIFTY25JULFUT'] });
   });
 
   it('a column under a space-containing real DataFrame column name (funds option_premium) compiles — the exposed name stays clean', () => {
-    const r = compile('WHEN funds.total.option_premium > 0 ALERT telegram DO nop');
+    const r = compile('WHEN funds.total.option_premium > 0 DO alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions).toEqual({ metric: 'option_premium', scope: 'funds.total', op: '>', value: 0 });
   });
 
   it('a numeric column compared against a non-numeric value errors with the SAME message a numeric metric already produces (reused, not duplicated, check)', () => {
-    const colForm = compile('WHEN positions.total.pnl == "5" ALERT telegram DO nop');
-    const metricForm = compile('WHEN pnl@positions.total == "5" ALERT telegram DO nop');
+    const colForm = compile('WHEN positions.total.pnl == "5" DO alert(telegram)');
+    const metricForm = compile('WHEN pnl@positions.total == "5" DO alert(telegram)');
     expect(colForm.ok).toBe(false);
     expect(colForm.errors[0].message).toBe('comparator requires both sides numeric');
     expect(colForm.errors[0].message).toBe(metricForm.errors[0].message);
   });
 
   it('between-chain syntax also accepts a bare dotted column (symmetry with compileLeaf)', () => {
-    const r = compile('WHEN -1000 <= funds.total.option_premium <= 5000 ALERT telegram DO nop');
+    const r = compile('WHEN -1000 <= funds.total.option_premium <= 5000 DO alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions).toEqual({ metric: 'option_premium', scope: 'funds.total', op: 'between', value: [-1000, 5000] });
   });
@@ -1334,19 +1323,19 @@ describe('Sprint 15 — scope.attribute dot-access (col_ref leaf)', () => {
   //    leaf form. ──────────────────────────────────────────────────────
   describe('regression guard — positions.expiring_today.mcx_unhedged (real multi-segment SCOPE)', () => {
     it('unaffected: pnl@positions.expiring_today.mcx_unhedged still compiles exactly as before', () => {
-      const r = compile('WHEN pnl@positions.expiring_today.mcx_unhedged <= -1000 ALERT telegram DO nop');
+      const r = compile('WHEN pnl@positions.expiring_today.mcx_unhedged <= -1000 DO alert(telegram)');
       expect(r.ok).toBe(true);
       expect(r.agent.conditions).toEqual({ metric: 'pnl', scope: 'positions.expiring_today.mcx_unhedged', op: '<=', value: -1000 });
     });
 
     it('a 4-segment dotted chain (3-segment scope + column) resolves scope = the FULL 3-segment scope, not a shorter guess', () => {
-      const r = compile('WHEN positions.expiring_today.mcx_unhedged.pnl <= -1000 ALERT telegram DO nop');
+      const r = compile('WHEN positions.expiring_today.mcx_unhedged.pnl <= -1000 DO alert(telegram)');
       expect(r.ok).toBe(true);
       expect(r.agent.conditions).toEqual({ metric: 'pnl', scope: 'positions.expiring_today.mcx_unhedged', op: '<=', value: -1000 });
     });
 
     it('the bare 3-segment chain alone (no trailing column) resolves as a SCOPE and errors clearly — never misparsed as a shorter scope + column', () => {
-      const r = compile('WHEN positions.expiring_today.mcx_unhedged <= -1000 ALERT telegram DO nop');
+      const r = compile('WHEN positions.expiring_today.mcx_unhedged <= -1000 DO alert(telegram)');
       expect(r.ok).toBe(false);
       expect(r.errors[0].message).toMatch(/'positions\.expiring_today\.mcx_unhedged' is a scope/);
       expect(r.errors[0].message).not.toMatch(/unknown column/);
@@ -1359,7 +1348,7 @@ describe('Sprint 15 — scope.attribute dot-access (col_ref leaf)', () => {
       const { text, errors } = decompileCondition(conditions, CATALOG);
       expect(errors).toEqual([]);
       expect(text).toBe('positions.expiring_today.qty > 10');
-      const recompiled = compile(`WHEN ${text} ALERT telegram DO nop`);
+      const recompiled = compile(`WHEN ${text} DO alert(telegram)`);
       expect(recompiled.ok).toBe(true);
       expect(recompiled.agent.conditions).toEqual(conditions);
     });
@@ -1417,7 +1406,7 @@ describe('Sprint 15 — autocomplete: column suggestions show the SHORT label, n
 
 describe('Sprint 15 — AgentCliEditor hover description: required_if / mutually_exclusive_groups rendered as plain English', () => {
   it("a required_if-carrying param's hover description includes the generated requirement text (price — required when order_type is LIMIT/SL)", () => {
-    const text = 'WHEN always ALERT nop DO place_order(';
+    const text = 'WHEN always DO place_order(';
     const r = suggestAgentCliAt(text, text.length, CATALOG);
     expect(r.kind).toBe('param');
     const idx = r.suggestions.indexOf('price');
@@ -1426,7 +1415,7 @@ describe('Sprint 15 — AgentCliEditor hover description: required_if / mutually
   });
 
   it("trigger_price's required_if (SL/SL-M) is rendered distinctly from price's own (LIMIT/SL)", () => {
-    const text = 'WHEN always ALERT nop DO place_order(';
+    const text = 'WHEN always DO place_order(';
     const r = suggestAgentCliAt(text, text.length, CATALOG);
     const idx = r.suggestions.indexOf('trigger_price');
     expect(idx).toBeGreaterThanOrEqual(0);
@@ -1434,7 +1423,7 @@ describe('Sprint 15 — AgentCliEditor hover description: required_if / mutually
   });
 
   it('a mutually_exclusive_groups member\'s description names the OTHER member', () => {
-    const text = 'WHEN always ALERT nop DO place_order(';
+    const text = 'WHEN always DO place_order(';
     const r = suggestAgentCliAt(text, text.length, CATALOG);
     const idx = r.suggestions.indexOf('wing_premium_pct_override');
     expect(idx).toBeGreaterThanOrEqual(0);
@@ -1442,7 +1431,7 @@ describe('Sprint 15 — AgentCliEditor hover description: required_if / mutually
   });
 
   it('a param with neither required_if nor a mutex membership still degrades to its own plain description, unchanged', () => {
-    const text = 'WHEN always ALERT nop DO place_order(';
+    const text = 'WHEN always DO place_order(';
     const r = suggestAgentCliAt(text, text.length, CATALOG);
     const idx = r.suggestions.indexOf('symbol');
     expect(idx).toBeGreaterThanOrEqual(0);
@@ -1457,7 +1446,7 @@ describe('Sprint 15 — AgentCliEditor hover description: required_if / mutually
 
 describe('unparenthesized leaf combination', () => {
   it('bare "a & b" (no parens around either leaf) parses and compiles', () => {
-    const r = compile('WHEN pnl@positions.total <= -1 & day_pct@positions.total <= -2 ALERT telegram DO nop');
+    const r = compile('WHEN pnl@positions.total <= -1 & day_pct@positions.total <= -2 DO alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions).toEqual({
       all: [
@@ -1490,14 +1479,14 @@ describe('lexer — spacing around "="', () => {
 
 describe('lexer — mean_pnl (30) with a space is NOT a call', () => {
   it('a space between a name and its own "(" means the "(" opens a grouping, not args — clean error here since a bare metric_ref needs "@" next, not "("', () => {
-    const r = compile('WHEN mean_pnl (30)@positions.total <= -1 ALERT telegram DO nop');
+    const r = compile('WHEN mean_pnl (30)@positions.total <= -1 DO alert(telegram)');
     expect(r.ok).toBe(false);
   });
 });
 
 describe('lexer — tag="ALERT_ME" is never mistaken for the real ALERT keyword', () => {
   it('keyword-boundary scanning is token-level, not substring-level', () => {
-    const r = compile('WHEN pnl@positions.total <= -1 ALERT telegram DO emit_log(message="ALERT_ME")');
+    const r = compile('WHEN pnl@positions.total <= -1 DO alert(telegram), log(message="ALERT_ME")');
     expect(r.ok).toBe(true);
     expect(r.agent.actions[0].params.message).toBe('ALERT_ME');
   });
@@ -1517,11 +1506,11 @@ describe('free-text field requires quoting', () => {
 
 describe('validateAgentCliStatement()', () => {
   it('returns ok:true with no errors for a valid statement', () => {
-    const v = validateAgentCliStatement('WHEN pnl@positions.total <= -1 ALERT telegram DO nop', CATALOG, { lotSizeOf });
+    const v = validateAgentCliStatement('WHEN pnl@positions.total <= -1 DO alert(telegram)', CATALOG, { lotSizeOf });
     expect(v).toEqual({ ok: true, errors: [] });
   });
   it('returns structured errors for an invalid statement, never throws', () => {
-    const v = validateAgentCliStatement('WHEN bogus@positions.total <= -1 ALERT telegram DO nop', CATALOG, { lotSizeOf });
+    const v = validateAgentCliStatement('WHEN bogus@positions.total <= -1 DO alert(telegram)', CATALOG, { lotSizeOf });
     expect(v.ok).toBe(false);
     expect(v.errors.length).toBeGreaterThan(0);
   });
@@ -1563,10 +1552,20 @@ describe('KWARG_ALIASES', () => {
 // ── parseStatement()/order_stmt restriction ──────────────────────────────
 
 describe('order_stmt restricted to order/place_order calls only', () => {
-  it('a bare non-order action is a clear parse error', () => {
-    const r = compile('emit_log(message="hi")');
-    expect(r.ok).toBe(false);
-    expect(r.errors.some(e => /only order\(\.\.\.\) can be used standalone/.test(e.message))).toBe(true);
+  // Sprint [grammar-unify] — `parseOrderStmt` itself still rejects a
+  // mixed order/non-order call list internally ("only order(...) can be
+  // used standalone") exactly as before, but `_dispatchStatement` now
+  // CATCHES that rejection and falls back to the unified preamble parser
+  // (see that function's own "order(...)/bracket(...)" dispatch comment)
+  // — so a bare non-order action is no longer a user-visible parse
+  // error at all; it compiles as a valid preamble-only `kind:'agent'`
+  // statement instead (the plan's own explicit requirement: ANY single
+  // real action call, written bare, is a complete standalone statement).
+  it('a bare non-order action now compiles as a preamble-only agent statement, not a parse error', () => {
+    const r = compile('log(message="hi")');
+    expect(r.ok).toBe(true);
+    expect(r.kind).toBe('agent');
+    expect(r.agent.preamble).toEqual([{ type: 'log', params: { message: 'hi' } }]);
   });
 });
 
@@ -1595,10 +1594,10 @@ describe('compileStatement opts.allowedKinds — scope restriction', () => {
     expect(r.errors.some(e => /author agents\/brackets on Automation . Console/.test(e.message))).toBe(true);
   });
 
-  it('a WHEN...ALERT...DO... agent statement is rejected with the scope error when allowedKinds is order-only', () => {
+  it('a WHEN...DO... agent statement (with an alert(...) DO call) is rejected with the scope error when allowedKinds is order-only', () => {
     const r = compile(
-      'WHEN mean_pnl(minutes=30)@positions.total <= -50000 ALERT telegram ' +
-      'DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)',
+      'WHEN mean_pnl(minutes=30)@positions.total <= -50000 ' +
+      'DO alert(telegram), order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)',
       { allowedKinds: ['order'] },
     );
     expect(r.ok).toBe(false);
@@ -1631,7 +1630,7 @@ describe('compileStatement opts.allowedKinds — scope restriction', () => {
 
 describe('ALERT msg= default', () => {
   it('clause-level default applies to every bare channel that does not override it', () => {
-    const r = compile('WHEN pnl@positions.total <= -1 ALERT msg="Stop loss hit", telegram, ntfy(priority="urgent") DO nop');
+    const r = compile('WHEN pnl@positions.total <= -1 DO alert(msg="Stop loss hit", telegram, ntfy(priority="urgent"))');
     expect(r.ok).toBe(true);
     expect(r.agent.events).toEqual([
       { channel: 'telegram', enabled: true, message: 'Stop loss hit' },
@@ -1640,7 +1639,7 @@ describe('ALERT msg= default', () => {
   });
 
   it('a per-channel own msg= overrides the clause default; a channel with no own msg= still inherits it', () => {
-    const r = compile('WHEN pnl@positions.total <= -1 ALERT msg="default text", telegram, ntfy(msg="override", priority="urgent") DO nop');
+    const r = compile('WHEN pnl@positions.total <= -1 DO alert(msg="default text", telegram, ntfy(msg="override", priority="urgent"))');
     expect(r.ok).toBe(true);
     expect(r.agent.events).toEqual([
       { channel: 'telegram', enabled: true, message: 'default text' },
@@ -1649,7 +1648,7 @@ describe('ALERT msg= default', () => {
   });
 
   it('per-channel own msg= on every channel needs no clause-level default at all', () => {
-    const r = compile('WHEN pnl@positions.total <= -1 ALERT telegram(msg="custom A"), ntfy(msg="custom B", priority="urgent") DO nop');
+    const r = compile('WHEN pnl@positions.total <= -1 DO alert(telegram(msg="custom A"), ntfy(msg="custom B", priority="urgent"))');
     expect(r.ok).toBe(true);
     expect(r.agent.events).toEqual([
       { channel: 'telegram', enabled: true, message: 'custom A' },
@@ -1658,13 +1657,13 @@ describe('ALERT msg= default', () => {
   });
 
   it('a channel with neither its own message nor a clause-level default is a compile error with the exact documented wording', () => {
-    const r = compile('WHEN pnl@positions.total <= -1 ALERT telegram(msg="only this one has a message"), ntfy(priority="urgent") DO nop');
+    const r = compile('WHEN pnl@positions.total <= -1 DO alert(telegram(msg="only this one has a message"), ntfy(priority="urgent"))');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => e.message === "channel 'ntfy' has no message — set msg= on ALERT or on this channel directly")).toBe(true);
   });
 
   it('when msg= is used nowhere in the clause, every channel compiles with NO message key at all (unchanged from pre-Sprint-6 output)', () => {
-    const r = compile('WHEN pnl@positions.total <= -1 ALERT telegram, ntfy(priority="urgent") DO nop');
+    const r = compile('WHEN pnl@positions.total <= -1 DO alert(telegram, ntfy(priority="urgent"))');
     expect(r.ok).toBe(true);
     expect(r.agent.events).toEqual([
       { channel: 'telegram', enabled: true },
@@ -1675,13 +1674,13 @@ describe('ALERT msg= default', () => {
   });
 
   it('telegram() with empty parens, relying only on the clause default, is still a parse error (existing "zero-arg must be bare" rule is untouched)', () => {
-    const r = compile('WHEN pnl@positions.total <= -1 ALERT msg="x", telegram(), ntfy(priority="urgent") DO nop');
+    const r = compile('WHEN pnl@positions.total <= -1 DO alert(msg="x", telegram(), ntfy(priority="urgent"))');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /zero-argument token is always written bare/.test(e.message))).toBe(true);
   });
 
   it('a duplicate msg/message kwarg on the same channel call is a compile error', () => {
-    const r = compile('WHEN pnl@positions.total <= -1 ALERT telegram(msg="a", message="b") DO nop');
+    const r = compile('WHEN pnl@positions.total <= -1 DO alert(telegram(msg="a", message="b"))');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /duplicate parameter 'msg'\/'message'/.test(e.message))).toBe(true);
   });
@@ -1694,47 +1693,47 @@ describe('ALERT msg= default', () => {
   // deliberately UNCHANGED — see the "free-text field requires quoting"
   // describe block above, still green.
   it('a bare (unquoted) per-channel message value is now accepted, same bare-or-quoted rule as log_tag= and meta values', () => {
-    const r = compile('WHEN pnl@positions.total <= -1 ALERT telegram(msg=hello) DO nop');
+    const r = compile('WHEN pnl@positions.total <= -1 DO alert(telegram(msg=hello))');
     expect(r.ok).toBe(true);
     expect(r.agent.events[0].message).toBe('hello');
   });
 
   it('msg= and MSG= are case-insensitive and behave identically', () => {
-    const lower = compile('WHEN pnl@positions.total <= -1 ALERT msg="hi", telegram DO nop');
-    const upper = compile('WHEN pnl@positions.total <= -1 ALERT MSG="hi", telegram DO nop');
+    const lower = compile('WHEN pnl@positions.total <= -1 DO alert(msg="hi", telegram)');
+    const upper = compile('WHEN pnl@positions.total <= -1 DO alert(MSG="hi", telegram)');
     expect(lower.ok).toBe(true);
     expect(upper.ok).toBe(true);
     expect(upper.agent).toEqual(lower.agent);
   });
 
-  it('DO emit_log(message=...) is unaffected by the ALERT-only msg= stripping — DO\'s own real "message" param still works', () => {
-    const r = compile('WHEN pnl@positions.total <= -1 DO emit_log(message="x") ALERT msg="y", telegram');
+  it('DO log(message=...) is unaffected by the ALERT-only msg= stripping — DO\'s own real "message" param still works', () => {
+    const r = compile('WHEN pnl@positions.total <= -1 DO log(message="x"), alert(msg="y", telegram)');
     expect(r.ok).toBe(true);
-    expect(r.agent.actions).toEqual([{ type: 'emit_log', params: { message: 'x' } }]);
+    expect(r.agent.actions).toEqual([{ type: 'log', params: { message: 'x' } }]);
     expect(r.agent.events).toEqual([{ channel: 'telegram', enabled: true, message: 'y' }]);
   });
 
   it('msg= composes with the already-shipped ALERT/DO reordering: DO-before-ALERT with a clause default compiles identically to the canonical order', () => {
-    const canonical = compile('WHEN pnl@positions.total <= -1 ALERT msg="y", telegram DO emit_log(message="x")');
-    const reversed = compile('WHEN pnl@positions.total <= -1 DO emit_log(message="x") ALERT msg="y", telegram');
+    const canonical = compile('WHEN pnl@positions.total <= -1 DO alert(msg="y", telegram), log(message="x")');
+    const reversed = compile('WHEN pnl@positions.total <= -1 DO log(message="x"), alert(msg="y", telegram)');
     expect(reversed.ok).toBe(true);
     expect(reversed.agent).toEqual(canonical.agent);
   });
 
   it('msg= composes with a bare "ALERT ..." with no WHEN at all', () => {
-    const withWhen = compile('WHEN always ALERT msg="y", telegram');
-    const omitted = compile('ALERT msg="y", telegram');
+    const withWhen = compile('WHEN always DO alert(msg="y", telegram)');
+    const omitted = compile('WHEN always DO alert(msg="y", telegram)');
     expect(omitted.ok).toBe(true);
     expect(omitted.agent).toEqual(withWhen.agent);
   });
 
   it('"ALERT msg=..." with no channel list at all is a parse error, not a silent success', () => {
-    const r = compile('WHEN pnl@positions.total <= -1 ALERT msg="y" DO nop');
+    const r = compile('WHEN pnl@positions.total <= -1 DO alert(msg="y")');
     expect(r.ok).toBe(false);
   });
 
   it('"ALERT nop" is unaffected — msg= has no meaning alongside an explicit nop', () => {
-    const r = compile('WHEN pnl@positions.total <= -1 ALERT nop DO emit_log(message="x")');
+    const r = compile('WHEN pnl@positions.total <= -1 DO log(message="x")');
     expect(r.ok).toBe(true);
     expect(r.agent.events).toEqual([]);
   });
@@ -1792,7 +1791,7 @@ describe('low-level exports', () => {
 
 describe('meta clause — #name=/#desc=/#tag=/#group=', () => {
   it('#name= alone compiles to agent.name', () => {
-    const r = compile('WHEN pnl@positions.total <= -1 ALERT telegram #name="NIFTY loss guard"');
+    const r = compile('WHEN pnl@positions.total <= -1 DO alert(telegram) #name="NIFTY loss guard"');
     expect(r.ok).toBe(true);
     expect(r.agent.name).toBe('NIFTY loss guard');
     expect(r.agent.description).toBeUndefined();
@@ -1801,41 +1800,38 @@ describe('meta clause — #name=/#desc=/#tag=/#group=', () => {
   });
 
   it('#desc= alone compiles to agent.description', () => {
-    const r = compile('WHEN pnl@positions.total <= -1 ALERT telegram #desc="Closes on -50k drawdown"');
+    const r = compile('WHEN pnl@positions.total <= -1 DO alert(telegram) #desc="Closes on -50k drawdown"');
     expect(r.ok).toBe(true);
     expect(r.agent.description).toBe('Closes on -50k drawdown');
   });
 
   it('#tag= with multiple comma-separated values produces a real JS array', () => {
-    const r = compile('WHEN pnl@positions.total <= -1 ALERT telegram #tag=risk,nifty');
+    const r = compile('WHEN pnl@positions.total <= -1 DO alert(telegram) #tag=risk,nifty');
     expect(r.ok).toBe(true);
     expect(Array.isArray(r.agent.tags)).toBe(true);
     expect(r.agent.tags).toEqual(['risk', 'nifty']);
   });
 
   it('#tag= with a single value still produces a one-element array', () => {
-    const r = compile('WHEN pnl@positions.total <= -1 ALERT telegram #tag=risk');
+    const r = compile('WHEN pnl@positions.total <= -1 DO alert(telegram) #tag=risk');
     expect(r.ok).toBe(true);
     expect(r.agent.tags).toEqual(['risk']);
   });
 
   it('a hyphenated BARE_WORD value (#group=hedge-book) lexes and compiles correctly — confirmed gap, NOT handled by the NAME scanner', () => {
-    const r = compile('WHEN pnl@positions.total <= -1 ALERT telegram #group=hedge-book');
+    const r = compile('WHEN pnl@positions.total <= -1 DO alert(telegram) #group=hedge-book');
     expect(r.ok).toBe(true);
     expect(r.agent.group).toBe('hedge-book');
   });
 
   it('a quoted value containing a space still works', () => {
-    const r = compile('WHEN pnl@positions.total <= -1 ALERT telegram #name="NIFTY loss guard"');
+    const r = compile('WHEN pnl@positions.total <= -1 DO alert(telegram) #name="NIFTY loss guard"');
     expect(r.ok).toBe(true);
     expect(r.agent.name).toBe('NIFTY loss guard');
   });
 
   it('all four keys compile correctly in combination, in the documented example order', () => {
-    const r = compile(
-      'WHEN pnl@positions.total <= -50000 ALERT telegram DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1) '
-      + '#name="NIFTY loss guard" #desc="Closes on -50k drawdown" #tag=risk,nifty #group=hedge-book'
-    );
+    const r = compile('WHEN pnl@positions.total <= -50000 DO alert(telegram), order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1) #name="NIFTY loss guard" #desc="Closes on -50k drawdown" #tag=risk,nifty #group=hedge-book');
     expect(r.ok).toBe(true);
     expect(r.agent.name).toBe('NIFTY loss guard');
     expect(r.agent.description).toBe('Closes on -50k drawdown');
@@ -1849,7 +1845,7 @@ describe('meta clause — #name=/#desc=/#tag=/#group=', () => {
   });
 
   it('no meta clause at all leaves name/description/tags/group entirely absent from the compiled agent', () => {
-    const r = compile('WHEN pnl@positions.total <= -1 ALERT telegram');
+    const r = compile('WHEN pnl@positions.total <= -1 DO alert(telegram)');
     expect(r.ok).toBe(true);
     expect('name' in r.agent).toBe(false);
     expect('description' in r.agent).toBe(false);
@@ -1864,39 +1860,39 @@ describe('meta clause — #name=/#desc=/#tag=/#group=', () => {
   });
 
   it('an unknown meta key is a compile-time error, not a silent drop', () => {
-    const r = compile('WHEN pnl@positions.total <= -1 ALERT telegram #bogus=x');
+    const r = compile('WHEN pnl@positions.total <= -1 DO alert(telegram) #bogus=x');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /unknown meta tag '#bogus'/.test(e.message))).toBe(true);
   });
 
   it('#name= with 2+ comma-separated values is a compile-time error (only #tag= accepts multiple)', () => {
-    const r = compile('WHEN pnl@positions.total <= -1 ALERT telegram #name=foo,bar');
+    const r = compile('WHEN pnl@positions.total <= -1 DO alert(telegram) #name=foo,bar');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /#name takes exactly one value/.test(e.message))).toBe(true);
   });
 
   it('a duplicate meta key is a compile-time error', () => {
-    const r = compile('WHEN pnl@positions.total <= -1 ALERT telegram #name=foo #name=bar');
+    const r = compile('WHEN pnl@positions.total <= -1 DO alert(telegram) #name=foo #name=bar');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /duplicate meta tag '#name'/.test(e.message))).toBe(true);
   });
 
   it('composes with the already-shipped ALERT/DO reordering (DO before ALERT)', () => {
-    const canonical = compile('WHEN pnl@positions.total <= -1 ALERT telegram DO emit_log(message="x") #name="x"');
-    const reversed = compile('WHEN pnl@positions.total <= -1 DO emit_log(message="x") ALERT telegram #name="x"');
+    const canonical = compile('WHEN pnl@positions.total <= -1 DO alert(telegram), log(message="x") #name="x"');
+    const reversed = compile('WHEN pnl@positions.total <= -1 DO log(message="x"), alert(telegram) #name="x"');
     expect(reversed.ok).toBe(true);
     expect(reversed.agent).toEqual(canonical.agent);
   });
 
   it('composes with the WHEN-omission form (no WHEN at all)', () => {
-    const withWhen = compile('WHEN always ALERT telegram #name="x"');
-    const omitted = compile('ALERT telegram #name="x"');
+    const withWhen = compile('WHEN always DO alert(telegram) #name="x"');
+    const omitted = compile('WHEN always DO alert(telegram) #name="x"');
     expect(omitted.ok).toBe(true);
     expect(omitted.agent).toEqual(withWhen.agent);
   });
 
   it('composes with a bare "DO ..." with no ALERT at all', () => {
-    const r = compile('DO emit_log(message="x") #name="x" #group=hedge-book');
+    const r = compile('WHEN always DO log(message="x") #name="x" #group=hedge-book');
     expect(r.ok).toBe(true);
     expect(r.agent.name).toBe('x');
     expect(r.agent.group).toBe('hedge-book');
@@ -1985,8 +1981,8 @@ describe('Sprint 12 — event_stmt: full compile of the example statement', () =
     expect(r.errors.some(e => /doesn't apply to event agents \(channel 'telegram'\)/.test(e.message))).toBe(true);
   });
 
-  it('log_tag= combined with WHEN is a compile error, not a confusing "unknown channel" fallthrough', () => {
-    const r = compile('WHEN always ALERT log_tag=error, render=error DO nop');
+  it('log_tag=/render= inside an ordinary alert(...) call is a compile error, not a confusing "unknown channel" fallthrough — Sprint [grammar-unify]: ALERT no longer introduces a clause at all, so the SAME event-meta-reserved-kwarg guard now fires from inside alert(...)\'s own body', () => {
+    const r = compile('WHEN always DO alert(log_tag=error, render=error)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /only valid on a bare ALERT-only statement, not combined with WHEN\/DO/.test(e.message))).toBe(true);
     expect(r.errors.some(e => /unknown channel/.test(e.message))).toBe(false);
@@ -2004,19 +2000,19 @@ describe('Sprint 12 — event_stmt: full compile of the example statement', () =
     expect(r.errors.some(e => /duplicate event-meta key 'log_tag='/.test(e.message))).toBe(true);
   });
 
-  it('dispatch correctly distinguishes "ALERT log_tag=..." (event_stmt) from an ordinary WHEN-omitted "ALERT msg=... telegram" (agent_stmt)', () => {
+  it('dispatch correctly distinguishes "ALERT log_tag=..." (event_stmt, untouched) from the ordinary alert(...) call (agent_stmt, Sprint [grammar-unify])', () => {
     const eventForm = compile('ALERT log_tag=error, render=error, telegram #name="x"');
     expect(eventForm.ok).toBe(true);
     expect(eventForm.kind).toBe('event');
 
-    const ordinaryForm = compile('ALERT msg="hi", telegram DO nop #name="x"');
+    const ordinaryForm = compile('WHEN always DO alert(msg="hi", telegram) #name="x"');
     expect(ordinaryForm.ok).toBe(true);
     expect(ordinaryForm.kind).toBe('agent');
     expect(ordinaryForm.agent.events).toEqual([{ channel: 'telegram', enabled: true, message: 'hi' }]);
   });
 
-  it('a real channel bearing no event-meta kwarg still dispatches as the ordinary bare-ALERT agent_stmt (no regression)', () => {
-    const r = compile('ALERT telegram DO nop #name="x"');
+  it('a real channel bearing no event-meta kwarg dispatches as the ordinary alert(...) call, not event_stmt (no regression)', () => {
+    const r = compile('WHEN always DO alert(telegram) #name="x"');
     expect(r.ok).toBe(true);
     expect(r.kind).toBe('agent');
   });
@@ -2254,11 +2250,11 @@ describe('Sprint 16 — $row fails closed against a Token ($ref) reference (own 
 
   it('bare "DO ..." with no WHEN at all defaults to "WHEN always" (funds.any_acct scope, per ALWAYS_LEAF) — account_id IS exposed there, but symbol never is', () => {
     expect(CATALOG.columns.has('funds.any_acct.account_id')).toBe(true);
-    const r = compile('DO close_position(account=account_id, symbol=symbol)');
+    const r = compile('WHEN always DO close_position(account=account_id, symbol=symbol)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /'symbol' is not an exposed column for scope 'funds\.any_acct'/.test(e.message))).toBe(true);
     // account_id alone (no symbol) compiles fine against this real scope.
-    const ok = compile('DO close_position(account=account_id, symbol="NIFTY25JULFUT")');
+    const ok = compile('WHEN always DO close_position(account=account_id, symbol="NIFTY25JULFUT")');
     expect(ok.ok).toBe(true);
   });
 });
@@ -2337,7 +2333,7 @@ describe('Sprint 16 — $row binding for place_order/order(...)\'s own qty= para
 
 describe('Sprint 19 — account:/symbol: qualifier syntax on scope chains', () => {
   it('positions.account:ZG0790 (literal) compiles to scope:"positions.any_acct" (unchanged) + scope_filter', () => {
-    const r = compile('WHEN pnl@positions.account:ZG0790 <= -50000 ALERT telegram DO nop');
+    const r = compile('WHEN pnl@positions.account:ZG0790 <= -50000 DO alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions).toEqual({
       metric: 'pnl', scope: 'positions.any_acct', op: '<=', value: -50000,
@@ -2346,21 +2342,21 @@ describe('Sprint 19 — account:/symbol: qualifier syntax on scope chains', () =
   });
 
   it('positions.account:* compiles to bare scope:"positions.any_acct" — NO scope_filter key at all', () => {
-    const r = compile('WHEN pnl@positions.account:* <= -50000 ALERT telegram DO nop');
+    const r = compile('WHEN pnl@positions.account:* <= -50000 DO alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions).toEqual({ metric: 'pnl', scope: 'positions.any_acct', op: '<=', value: -50000 });
     expect(r.agent.conditions.scope_filter).toBeUndefined();
   });
 
   it('positions.account:worst compiles to scope:"positions.worst_acct" — zero new mechanism, pure alias, no scope_filter', () => {
-    const r = compile('WHEN pnl@positions.account:worst <= -50000 ALERT telegram DO nop');
+    const r = compile('WHEN pnl@positions.account:worst <= -50000 DO alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions).toEqual({ metric: 'pnl', scope: 'positions.worst_acct', op: '<=', value: -50000 });
     expect(r.agent.conditions.scope_filter).toBeUndefined();
   });
 
   it('positions.expiring_today.symbol:NIFTY25JULFUT compiles correctly (scope unchanged, scope_filter on symbol)', () => {
-    const r = compile('WHEN pnl@positions.expiring_today.symbol:NIFTY25JULFUT <= -5000 ALERT telegram DO nop');
+    const r = compile('WHEN pnl@positions.expiring_today.symbol:NIFTY25JULFUT <= -5000 DO alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions).toEqual({
       metric: 'pnl', scope: 'positions.expiring_today', op: '<=', value: -5000,
@@ -2369,55 +2365,55 @@ describe('Sprint 19 — account:/symbol: qualifier syntax on scope chains', () =
   });
 
   it('the SAME .symbol:X qualifier under positions.total is a compile error — no symbol dimension on that scope', () => {
-    const r = compile('WHEN pnl@positions.total.symbol:NIFTY25JULFUT <= -5000 ALERT telegram DO nop');
+    const r = compile('WHEN pnl@positions.total.symbol:NIFTY25JULFUT <= -5000 DO alert(telegram)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /not a valid qualifier for scope 'positions\.total'/.test(e.message))).toBe(true);
   });
 
   it('positions.expiring_today.symbol:* is redundant with omitting the filter — no scope_filter key', () => {
-    const r = compile('WHEN pnl@positions.expiring_today.symbol:* <= -5000 ALERT telegram DO nop');
+    const r = compile('WHEN pnl@positions.expiring_today.symbol:* <= -5000 DO alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions).toEqual({ metric: 'pnl', scope: 'positions.expiring_today', op: '<=', value: -5000 });
   });
 
   it('an unknown qualifier key (e.g. "foo:") is a clear compile error', () => {
-    const r = compile('WHEN pnl@positions.foo:bar <= -5000 ALERT telegram DO nop');
+    const r = compile('WHEN pnl@positions.foo:bar <= -5000 DO alert(telegram)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /unknown scope qualifier 'foo:'/.test(e.message))).toBe(true);
   });
 
   it('a qualifier with no preceding scope ("@account:X") is a compile error', () => {
-    const r = compile('WHEN pnl@account:ZG0790 <= -5000 ALERT telegram DO nop');
+    const r = compile('WHEN pnl@account:ZG0790 <= -5000 DO alert(telegram)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /expected a scope before a qualifier segment/.test(e.message))).toBe(true);
   });
 
   it('":worst" on a family with no existing worst_acct token (funds) is a real, intentionally-deferred gap — compile error', () => {
-    const r = compile('WHEN avail_margin@funds.account:worst <= 0 ALERT telegram DO nop');
+    const r = compile('WHEN avail_margin@funds.account:worst <= 0 DO alert(telegram)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /has no existing scope token to alias onto/.test(e.message))).toBe(true);
   });
 
   it('":worst" combined with a second qualifier is rejected — it already selects one specific row', () => {
-    const r = compile('WHEN pnl@positions.account:worst.symbol:NIFTY25JULFUT <= -5000 ALERT telegram DO nop');
+    const r = compile('WHEN pnl@positions.account:worst.symbol:NIFTY25JULFUT <= -5000 DO alert(telegram)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /must be the only qualifier on this scope/.test(e.message))).toBe(true);
   });
 
   it('a scope-narrowing segment after a qualifier segment is a trailing-only violation', () => {
-    const r = compile('WHEN pnl@positions.account:ZG0790.expiring_today <= -5000 ALERT telegram DO nop');
+    const r = compile('WHEN pnl@positions.account:ZG0790.expiring_today <= -5000 DO alert(telegram)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /must be trailing/.test(e.message))).toBe(true);
   });
 
   it('an args-violation on the scope-family segment is never silently swallowed by the implicit any_acct fallback', () => {
-    const r = compile('WHEN pnl@positions(foo=5).account:ZG0790 <= -50000 ALERT telegram DO nop');
+    const r = compile('WHEN pnl@positions(foo=5).account:ZG0790 <= -50000 DO alert(telegram)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /takes no arguments/.test(e.message))).toBe(true);
   });
 
   it('chained-comparison ("between") form also threads scope_filter through', () => {
-    const r = compile('WHEN -5000 <= pnl@positions.account:ZG0790 <= 5000 ALERT telegram DO nop');
+    const r = compile('WHEN -5000 <= pnl@positions.account:ZG0790 <= 5000 DO alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions).toEqual({
       metric: 'pnl', scope: 'positions.any_acct', op: 'between', value: [-5000, 5000],
@@ -2426,7 +2422,7 @@ describe('Sprint 19 — account:/symbol: qualifier syntax on scope chains', () =
   });
 
   it('a STRICT between-chain (the all:[...] fallback, not native "between") also threads scope_filter onto BOTH leaves', () => {
-    const r = compile('WHEN -5000 < pnl@positions.account:ZG0790 < 5000 ALERT telegram DO nop');
+    const r = compile('WHEN -5000 < pnl@positions.account:ZG0790 < 5000 DO alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions).toEqual({
       all: [
@@ -2438,19 +2434,19 @@ describe('Sprint 19 — account:/symbol: qualifier syntax on scope chains', () =
 
   // ── advisor-flagged correctness guards ──────────────────────────────
   it('":worst" is REJECTED when there is a narrowing scope segment before it — no "worst within a narrower scope" token exists (would otherwise silently discard the narrowing)', () => {
-    const r = compile('WHEN pnl@positions.expiring_today.symbol:worst <= -5000 ALERT telegram DO nop');
+    const r = compile('WHEN pnl@positions.expiring_today.symbol:worst <= -5000 DO alert(telegram)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /only valid directly off the bare 'positions' scope family/.test(e.message))).toBe(true);
   });
 
   it('"*" is validated against the SAME exposed-column registry as a literal value — an unsupported qualifier key with "*" still errors', () => {
-    const r = compile('WHEN pnl@positions.foo:* <= -5000 ALERT telegram DO nop');
+    const r = compile('WHEN pnl@positions.foo:* <= -5000 DO alert(telegram)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /unknown scope qualifier 'foo:'/.test(e.message))).toBe(true);
   });
 
   it('"*" on a qualifier with no exposed column on that scope still errors (funds has no symbol dimension)', () => {
-    const r = compile('WHEN avail_margin@funds.symbol:* <= 0 ALERT telegram DO nop');
+    const r = compile('WHEN avail_margin@funds.symbol:* <= 0 DO alert(telegram)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /not a valid qualifier for scope 'funds\.any_acct'/.test(e.message))).toBe(true);
   });
@@ -2458,34 +2454,34 @@ describe('Sprint 19 — account:/symbol: qualifier syntax on scope chains', () =
 
 describe('Sprint 19 — scope_filter decompile round-trip (compile → decompile → recompile)', () => {
   it('positions.account:ZG0790 (literal qualifier) round-trips byte-identical', () => {
-    const r = compile('WHEN pnl@positions.account:ZG0790 <= -50000 ALERT telegram DO nop');
+    const r = compile('WHEN pnl@positions.account:ZG0790 <= -50000 DO alert(telegram)');
     expect(r.ok).toBe(true);
     const dec = decompileCondition(r.agent.conditions, CATALOG);
     expect(dec.errors).toEqual([]);
     expect(dec.text).toBe('pnl@positions.any_acct.account:ZG0790 <= -50000');
-    const recompiled = compile(`WHEN ${dec.text} ALERT telegram DO nop`);
+    const recompiled = compile(`WHEN ${dec.text} DO alert(telegram)`);
     expect(recompiled.ok).toBe(true);
     expect(recompiled.agent.conditions).toEqual(r.agent.conditions);
   });
 
   it('positions.expiring_today.symbol:NIFTY25JULFUT round-trips byte-identical', () => {
-    const r = compile('WHEN pnl@positions.expiring_today.symbol:NIFTY25JULFUT <= -5000 ALERT telegram DO nop');
+    const r = compile('WHEN pnl@positions.expiring_today.symbol:NIFTY25JULFUT <= -5000 DO alert(telegram)');
     expect(r.ok).toBe(true);
     const dec = decompileCondition(r.agent.conditions, CATALOG);
     expect(dec.errors).toEqual([]);
     expect(dec.text).toBe('pnl@positions.expiring_today.symbol:NIFTY25JULFUT <= -5000');
-    const recompiled = compile(`WHEN ${dec.text} ALERT telegram DO nop`);
+    const recompiled = compile(`WHEN ${dec.text} DO alert(telegram)`);
     expect(recompiled.ok).toBe(true);
     expect(recompiled.agent.conditions).toEqual(r.agent.conditions);
   });
 
   it('a STRICT between-chain (all:[...]) with a matching scope_filter on both leaves decompiles back to the pretty chained form', () => {
-    const r = compile('WHEN -5000 < pnl@positions.account:ZG0790 < 5000 ALERT telegram DO nop');
+    const r = compile('WHEN -5000 < pnl@positions.account:ZG0790 < 5000 DO alert(telegram)');
     expect(r.ok).toBe(true);
     const dec = decompileCondition(r.agent.conditions, CATALOG);
     expect(dec.errors).toEqual([]);
     expect(dec.text).toBe('-5000 < pnl@positions.any_acct.account:ZG0790 < 5000');
-    const recompiled = compile(`WHEN ${dec.text} ALERT telegram DO nop`);
+    const recompiled = compile(`WHEN ${dec.text} DO alert(telegram)`);
     expect(recompiled.ok).toBe(true);
     expect(recompiled.agent.conditions).toEqual(r.agent.conditions);
   });
@@ -2509,15 +2505,15 @@ describe('Sprint 19 — scope_filter decompile round-trip (compile → decompile
 
 describe('Sprint 19 — short scope-family aliases (pos/hld/fnd/wl)', () => {
   it('pos.any_acct compiles identically to positions.any_acct (same scope token in the compiled JSON)', () => {
-    const viaAlias = compile('WHEN pnl@pos.any_acct <= -50000 ALERT telegram DO nop');
-    const viaLong = compile('WHEN pnl@positions.any_acct <= -50000 ALERT telegram DO nop');
+    const viaAlias = compile('WHEN pnl@pos.any_acct <= -50000 DO alert(telegram)');
+    const viaLong = compile('WHEN pnl@positions.any_acct <= -50000 DO alert(telegram)');
     expect(viaAlias.ok).toBe(true);
     expect(viaAlias.agent.conditions).toEqual(viaLong.agent.conditions);
     expect(viaAlias.agent.conditions.scope).toBe('positions.any_acct');
   });
 
   it('pos.any_acct DECOMPILES to the canonical long form "positions.any_acct", never the alias (mandatory PLAN.md case)', () => {
-    const r = compile('WHEN pnl@pos.any_acct <= -50000 ALERT telegram DO nop');
+    const r = compile('WHEN pnl@pos.any_acct <= -50000 DO alert(telegram)');
     expect(r.ok).toBe(true);
     const dec = decompileCondition(r.agent.conditions, CATALOG);
     expect(dec.errors).toEqual([]);
@@ -2526,13 +2522,13 @@ describe('Sprint 19 — short scope-family aliases (pos/hld/fnd/wl)', () => {
   });
 
   it('fnd.any_acct compiles to the canonical funds.any_acct token', () => {
-    const r = compile('WHEN avail_margin@fnd.any_acct <= 0 ALERT telegram DO nop');
+    const r = compile('WHEN avail_margin@fnd.any_acct <= 0 DO alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions.scope).toBe('funds.any_acct');
   });
 
   it('the short alias also combines with a qualifier (pos.account:ZG0790)', () => {
-    const r = compile('WHEN pnl@pos.account:ZG0790 <= -50000 ALERT telegram DO nop');
+    const r = compile('WHEN pnl@pos.account:ZG0790 <= -50000 DO alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions).toEqual({
       metric: 'pnl', scope: 'positions.any_acct', op: '<=', value: -50000,
@@ -2541,13 +2537,13 @@ describe('Sprint 19 — short scope-family aliases (pos/hld/fnd/wl)', () => {
   });
 
   it('the alias also works for the bare col_ref dot-access form (Sprint 15)', () => {
-    const r = compile('WHEN pos.total.pnl <= -50000 ALERT telegram DO nop');
+    const r = compile('WHEN pos.total.pnl <= -50000 DO alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions).toEqual({ metric: 'pnl', scope: 'positions.total', op: '<=', value: -50000 });
   });
 
   it('an unknown alias-looking prefix still fails as an unknown scope (no silent guess)', () => {
-    const r = compile('WHEN pnl@xyz.any_acct <= -50000 ALERT telegram DO nop');
+    const r = compile('WHEN pnl@xyz.any_acct <= -50000 DO alert(telegram)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /unknown scope/.test(e.message))).toBe(true);
   });
@@ -2654,10 +2650,7 @@ describe('Sprint 20 (item 3) — & binds tighter than | (standard precedence)', 
   it('a | b & c means a | (b & c), not (a | b) & c', () => {
     // pnl > 0 is TRUE, day_pct > 0 is FALSE, avail_margin > 0 is FALSE
     // (a | b) & c -> (T|F) & F -> F.  a | (b & c) -> T | (F&F) -> T.
-    const r = compile(
-      'WHEN pnl@positions.total > 0 | day_pct@positions.total > 0 & avail_margin@funds.total > 0 '
-      + 'ALERT telegram DO nop'
-    );
+    const r = compile('WHEN pnl@positions.total > 0 | day_pct@positions.total > 0 & avail_margin@funds.total > 0 DO alert(telegram)');
     expect(r.ok).toBe(true);
     // Wire vocabulary is `any`/`all` (not `or`/`and` — that's only the
     // internal AST node type) per `compileCondNode`'s existing mapping.
@@ -2675,10 +2668,7 @@ describe('Sprint 20 (item 3) — & binds tighter than | (standard precedence)', 
   });
 
   it('explicit parens still override precedence exactly as before', () => {
-    const r = compile(
-      'WHEN (pnl@positions.total > 0 | day_pct@positions.total > 0) & avail_margin@funds.total > 0 '
-      + 'ALERT telegram DO nop'
-    );
+    const r = compile('WHEN (pnl@positions.total > 0 | day_pct@positions.total > 0) & avail_margin@funds.total > 0 DO alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions).toEqual({
       all: [
@@ -2701,12 +2691,12 @@ describe('Sprint 20 (item 3) — & binds tighter than | (standard precedence)', 
     // since every nested composite the decompiler emits is always
     // wrapped in its own disambiguating parens regardless of precedence.
     const text = 'WHEN ((mean_pnl(minutes=30)@positions.total <= -50000) & (stdev_pnl(minutes=30)@positions.total > 10000)) '
-      + '| (avail_margin@funds.total < 0) ALERT telegram DO nop';
+      + '| (avail_margin@funds.total < 0) DO alert(telegram)';
     const r1 = compile(text);
     expect(r1.ok).toBe(true);
     const d = decompileCondition(r1.agent.conditions, CATALOG);
     expect(d.errors).toEqual([]);
-    const r2 = compile(`WHEN ${d.text} ALERT telegram DO nop`);
+    const r2 = compile(`WHEN ${d.text} DO alert(telegram)`);
     expect(r2.ok).toBe(true);
     expect(r2.agent.conditions).toEqual(r1.agent.conditions);
   });
@@ -2714,41 +2704,35 @@ describe('Sprint 20 (item 3) — & binds tighter than | (standard precedence)', 
 
 describe('Sprint 20 (item 3) — and/or/not word aliases for &/|/~', () => {
   it('"and"/"or" compile identically to "&"/"|"', () => {
-    const viaWords = compile('WHEN pnl@positions.total > 0 and avail_margin@funds.total > 0 ALERT telegram DO nop');
-    const viaSymbols = compile('WHEN pnl@positions.total > 0 & avail_margin@funds.total > 0 ALERT telegram DO nop');
+    const viaWords = compile('WHEN pnl@positions.total > 0 and avail_margin@funds.total > 0 DO alert(telegram)');
+    const viaSymbols = compile('WHEN pnl@positions.total > 0 & avail_margin@funds.total > 0 DO alert(telegram)');
     expect(viaWords.ok).toBe(true);
     expect(viaWords.agent.conditions).toEqual(viaSymbols.agent.conditions);
   });
   it('"or" also respects the new precedence against "&"', () => {
-    const viaWords = compile(
-      'WHEN pnl@positions.total > 0 or day_pct@positions.total > 0 and avail_margin@funds.total > 0 '
-      + 'ALERT telegram DO nop'
-    );
-    const viaSymbols = compile(
-      'WHEN pnl@positions.total > 0 | day_pct@positions.total > 0 & avail_margin@funds.total > 0 '
-      + 'ALERT telegram DO nop'
-    );
+    const viaWords = compile('WHEN pnl@positions.total > 0 or day_pct@positions.total > 0 and avail_margin@funds.total > 0 DO alert(telegram)');
+    const viaSymbols = compile('WHEN pnl@positions.total > 0 | day_pct@positions.total > 0 & avail_margin@funds.total > 0 DO alert(telegram)');
     expect(viaWords.ok).toBe(true);
     expect(viaWords.agent.conditions).toEqual(viaSymbols.agent.conditions);
   });
   it('"not" negates a term exactly like "~"', () => {
-    const viaWord = compile('WHEN not pnl@positions.total > 0 ALERT telegram DO nop');
-    const viaSymbol = compile('WHEN ~(pnl@positions.total > 0) ALERT telegram DO nop');
+    const viaWord = compile('WHEN not pnl@positions.total > 0 DO alert(telegram)');
+    const viaSymbol = compile('WHEN ~(pnl@positions.total > 0) DO alert(telegram)');
     expect(viaWord.ok).toBe(true);
     expect(viaWord.agent.conditions).toEqual(viaSymbol.agent.conditions);
   });
   it('"not in"/"not_in" comparator is completely unaffected by the new "not" term-negation alias (different grammar position, no collision)', () => {
-    const r = compile('WHEN side@positions.total not in [BUY] ALERT telegram DO nop');
+    const r = compile('WHEN side@positions.total not in [BUY] DO alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions.op).toBe('not_in');
   });
   it('"always and x" is rejected the same way "always & x" already was', () => {
-    const r = compile('WHEN always and (pnl@positions.total <= -1) ALERT telegram DO nop');
+    const r = compile('WHEN always and (pnl@positions.total <= -1) DO alert(telegram)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /"always" is standalone-only/.test(e.message))).toBe(true);
   });
   it('"and"/"or" are reserved — "and(...)"/"or(...)" cannot be used as a token/channel name', () => {
-    const r = compile('WHEN pnl@positions.total > 0 ALERT telegram DO emit_log(message="x"), and()');
+    const r = compile('WHEN pnl@positions.total > 0 DO alert(telegram), log(message="x"), and()');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /reserved word/.test(e.message))).toBe(true);
   });
@@ -2756,12 +2740,12 @@ describe('Sprint 20 (item 3) — and/or/not word aliases for &/|/~', () => {
 
 describe('Sprint 20 (item 3) — targeted error hints for "=" and "!"', () => {
   it('"=" in comparator position hints at "=="', () => {
-    const r = compile('WHEN pnl@positions.total = -1 ALERT telegram DO nop');
+    const r = compile('WHEN pnl@positions.total = -1 DO alert(telegram)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /use "==" for equality/.test(e.message))).toBe(true);
   });
   it('"!x" hints at "~"/"not" for negation', () => {
-    const r = compile('WHEN !pnl@positions.total > 0 ALERT telegram DO nop');
+    const r = compile('WHEN !pnl@positions.total > 0 DO alert(telegram)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /use '~' or 'not' to negate/.test(e.message))).toBe(true);
   });
@@ -2837,39 +2821,37 @@ describe('Sprint 20 (item 5) — describeErrorPosition()', () => {
 
 describe('Sprint 21 — orders.any_acct: the generic Sprint-15 dot-access mechanism picks it up for free', () => {
   it('orders.any_acct.status == "OPEN" compiles correctly (PLAN item 1 + Test coverage)', () => {
-    const r = compile('WHEN orders.any_acct.status == "OPEN" ALERT telegram DO nop');
+    const r = compile('WHEN orders.any_acct.status == "OPEN" DO alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions).toEqual({ metric: 'status', scope: 'orders.any_acct', op: '==', value: 'OPEN' });
   });
 
   it('orders.any_acct.status != "OPEN" also compiles (!= side of the new string-equality branch)', () => {
-    const r = compile('WHEN orders.any_acct.status != "OPEN" ALERT telegram DO nop');
+    const r = compile('WHEN orders.any_acct.status != "OPEN" DO alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions).toEqual({ metric: 'status', scope: 'orders.any_acct', op: '!=', value: 'OPEN' });
   });
 
   it('a string-typed column still rejects an ordered comparator (<, >, etc) — only ==/!= are valid', () => {
-    const r = compile('WHEN orders.any_acct.status < "OPEN" ALERT telegram DO nop');
+    const r = compile('WHEN orders.any_acct.status < "OPEN" DO alert(telegram)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /only supports == \/ !=/.test(e.message))).toBe(true);
   });
 
   it('every other new exposed name (side/qty/price/order_id/account_id/exchange) resolves via the SAME generic mechanism', () => {
-    expect(compile('WHEN orders.any_acct.side == "SELL" ALERT telegram DO nop').ok).toBe(true);
-    expect(compile('WHEN orders.any_acct.qty >= 5 ALERT telegram DO nop').ok).toBe(true);
-    expect(compile('WHEN orders.any_acct.price > 100 ALERT telegram DO nop').ok).toBe(true);
-    expect(compile('WHEN orders.any_acct.order_id == "ABC123" ALERT telegram DO nop').ok).toBe(true);
-    expect(compile('WHEN orders.any_acct.account_id == "ZG0790" ALERT telegram DO nop').ok).toBe(true);
-    expect(compile('WHEN orders.any_acct.exchange == "NFO" ALERT telegram DO nop').ok).toBe(true);
+    expect(compile('WHEN orders.any_acct.side == "SELL" DO alert(telegram)').ok).toBe(true);
+    expect(compile('WHEN orders.any_acct.qty >= 5 DO alert(telegram)').ok).toBe(true);
+    expect(compile('WHEN orders.any_acct.price > 100 DO alert(telegram)').ok).toBe(true);
+    expect(compile('WHEN orders.any_acct.order_id == "ABC123" DO alert(telegram)').ok).toBe(true);
+    expect(compile('WHEN orders.any_acct.account_id == "ZG0790" DO alert(telegram)').ok).toBe(true);
+    expect(compile('WHEN orders.any_acct.exchange == "NFO" DO alert(telegram)').ok).toBe(true);
   });
 
   it('"@" form (metric@scope) also compiles for a bare-column metric that has no dedicated metric token, via existing dot-access fallback resolution being unnecessary here — confirms orders.any_acct is a real catalog scope token usable as any other', () => {
     // orders.any_acct itself has no bare-call form issue — this just
     // confirms the scope token round-trips through the ordinary
     // qualifier-free path with NO code change, e.g. combined in a tree.
-    const r = compile(
-      'WHEN (orders.any_acct.qty >= 5) & (orders.any_acct.side == "BUY") ALERT telegram DO nop'
-    );
+    const r = compile('WHEN (orders.any_acct.qty >= 5) & (orders.any_acct.side == "BUY") DO alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions).toEqual({
       all: [
@@ -2880,7 +2862,7 @@ describe('Sprint 21 — orders.any_acct: the generic Sprint-15 dot-access mechan
   });
 
   it('orders.account:ZG0790 resolves through the implicit any_acct fallback — no new qualifier mechanism needed (advisor-confirmed "should work as-is")', () => {
-    const r = compile('WHEN pnl@orders.account:ZG0790 > 0 ALERT telegram DO nop');
+    const r = compile('WHEN pnl@orders.account:ZG0790 > 0 DO alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions).toEqual({
       metric: 'pnl', scope: 'orders.any_acct', op: '>', value: 0,
@@ -2891,12 +2873,12 @@ describe('Sprint 21 — orders.any_acct: the generic Sprint-15 dot-access mechan
 
 describe('Sprint 21 — decompile round-trip for orders.any_acct', () => {
   it('orders.any_acct.status == "OPEN" round-trips through decompile → recompile (decompiler prefers the bare spelling, same "bare when possible" rule _renderListItem already applies to in/not_in list items)', () => {
-    const r = compile('WHEN orders.any_acct.status == "OPEN" ALERT telegram DO nop');
+    const r = compile('WHEN orders.any_acct.status == "OPEN" DO alert(telegram)');
     expect(r.ok).toBe(true);
     const dec = decompileCondition(r.agent.conditions, CATALOG);
     expect(dec.errors).toEqual([]);
     expect(dec.text).toBe('orders.any_acct.status == OPEN');
-    const recompiled = compile(`WHEN ${dec.text} ALERT telegram DO nop`);
+    const recompiled = compile(`WHEN ${dec.text} DO alert(telegram)`);
     expect(recompiled.ok).toBe(true);
     expect(recompiled.agent.conditions).toEqual(r.agent.conditions);
   });
@@ -2934,14 +2916,12 @@ describe('Sprint 21 — $row fan-out binding for order_id/status/side on a match
   });
 
   it('side is ALSO exposed and bindable via $row (not just order_id) — e.g. a hypothetical future action taking a side= param', () => {
-    // emit_log's `message` param is a free-text string (token_ref_ok),
+    // log's `message` param is a free-text string (token_ref_ok),
     // reused here purely as a vehicle to prove `side`/`status` resolve
     // via $row — no new action needed for this generic-mechanism check.
-    const r = compile(
-      'WHEN orders.any_acct.qty >= 5 DO emit_log(message=side)'
-    );
+    const r = compile('WHEN orders.any_acct.qty >= 5 DO log(message=side)');
     expect(r.ok).toBe(true);
-    expect(r.agent.actions).toEqual([{ type: 'emit_log', params: { message: { '$row': 'side' } } }]);
+    expect(r.agent.actions).toEqual([{ type: 'log', params: { message: { '$row': 'side' } } }]);
   });
 
   it('orders.any_acct is NOT an aggregate and NOT a watchlist scope — neither $row guard misfires on it', () => {
@@ -2957,11 +2937,11 @@ describe('Sprint 21 — $row fan-out binding for order_id/status/side on a match
 
 describe('Sprint 21 — quote.tracked: generic dot-access mechanism + the real gap it exposed', () => {
   it('quote.tracked.bid/ask/volume (no dedicated metric token) compile via plain dot-access, same mechanism as orders.any_acct — but (unlike orders.any_acct) still require the symbol: qualifier, proven in the next describe block', () => {
-    expect(compile('WHEN quote.tracked.symbol:NIFTY25JULFUT.symbol == "NIFTY25JULFUT" ALERT telegram DO nop').ok).toBe(true);
+    expect(compile('WHEN quote.tracked.symbol:NIFTY25JULFUT.symbol == "NIFTY25JULFUT" DO alert(telegram)').ok).toBe(true);
   });
 
   it('ltp@quote.tracked (the "@" form, since ltp IS a real registered metric) compiles for free with no qualifier', () => {
-    const r = compile('WHEN ltp@quote.tracked <= 100 ALERT telegram DO nop');
+    const r = compile('WHEN ltp@quote.tracked <= 100 DO alert(telegram)');
     // no scope_filter present — this leaf will be rejected by the NEW
     // quote.* compile-time guard (PLAN item 2), proven in the next
     // describe block. Asserted here only as the pre-guard parse/scope
@@ -2973,7 +2953,7 @@ describe('Sprint 21 — quote.tracked: generic dot-access mechanism + the real g
 
 describe('Sprint 21 — quote.tracked requires a non-wildcard symbol: qualifier (PLAN item 2, compile-time guard)', () => {
   it('quote.tracked.ltp with NO symbol qualifier is a compile error (Test coverage #3)', () => {
-    const r = compile('WHEN quote.tracked.ltp <= 100 ALERT telegram DO nop');
+    const r = compile('WHEN quote.tracked.ltp <= 100 DO alert(telegram)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e =>
       /quote\.tracked requires a specific symbol: qualifier/.test(e.message)
@@ -2983,25 +2963,25 @@ describe('Sprint 21 — quote.tracked requires a non-wildcard symbol: qualifier 
   });
 
   it('ltp@quote.tracked with NO symbol qualifier (the "@" form) is the SAME compile error', () => {
-    const r = compile('WHEN ltp@quote.tracked <= 100 ALERT telegram DO nop');
+    const r = compile('WHEN ltp@quote.tracked <= 100 DO alert(telegram)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /quote\.tracked requires a specific symbol: qualifier/.test(e.message))).toBe(true);
   });
 
   it('quote.tracked.symbol:*.ltp (wildcard) is the SAME compile error (Test coverage #4)', () => {
-    const r = compile('WHEN quote.tracked.symbol:*.ltp <= 100 ALERT telegram DO nop');
+    const r = compile('WHEN quote.tracked.symbol:*.ltp <= 100 DO alert(telegram)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /quote\.tracked requires a specific symbol: qualifier/.test(e.message))).toBe(true);
   });
 
   it('ltp@quote.tracked.symbol:* (the "@" form wildcard) is the SAME compile error', () => {
-    const r = compile('WHEN ltp@quote.tracked.symbol:* <= 100 ALERT telegram DO nop');
+    const r = compile('WHEN ltp@quote.tracked.symbol:* <= 100 DO alert(telegram)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /quote\.tracked requires a specific symbol: qualifier/.test(e.message))).toBe(true);
   });
 
   it('quote.tracked.symbol:NIFTY25JULFUT with .ltp <= 100 compiles successfully (Test coverage #5 — the real new mechanism: dot-access col_ref now carries an embedded qualifier)', () => {
-    const r = compile('WHEN quote.tracked.symbol:NIFTY25JULFUT.ltp <= 100 ALERT telegram DO nop');
+    const r = compile('WHEN quote.tracked.symbol:NIFTY25JULFUT.ltp <= 100 DO alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions).toEqual({
       metric: 'ltp', scope: 'quote.tracked', op: '<=', value: 100,
@@ -3010,14 +2990,14 @@ describe('Sprint 21 — quote.tracked requires a non-wildcard symbol: qualifier 
   });
 
   it('ltp@quote.tracked.symbol:NIFTY25JULFUT <= 100 (the "@" form, pre-existing Sprint 19 qualifier mechanism) compiles identically', () => {
-    const atForm = compile('WHEN ltp@quote.tracked.symbol:NIFTY25JULFUT <= 100 ALERT telegram DO nop');
-    const dotForm = compile('WHEN quote.tracked.symbol:NIFTY25JULFUT.ltp <= 100 ALERT telegram DO nop');
+    const atForm = compile('WHEN ltp@quote.tracked.symbol:NIFTY25JULFUT <= 100 DO alert(telegram)');
+    const dotForm = compile('WHEN quote.tracked.symbol:NIFTY25JULFUT.ltp <= 100 DO alert(telegram)');
     expect(atForm.ok).toBe(true);
     expect(atForm.agent.conditions).toEqual(dotForm.agent.conditions);
   });
 
   it('quote.tracked.symbol:NIFTY25JULFUT.bid <= 100 (a column with NO dedicated metric token) compiles via the same new mechanism — proves bid/ask/volume are reachable at all (they have no "@" form)', () => {
-    const r = compile('WHEN quote.tracked.symbol:NIFTY25JULFUT.bid <= 100 ALERT telegram DO nop');
+    const r = compile('WHEN quote.tracked.symbol:NIFTY25JULFUT.bid <= 100 DO alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions).toEqual({
       metric: 'bid', scope: 'quote.tracked', op: '<=', value: 100,
@@ -3026,7 +3006,7 @@ describe('Sprint 21 — quote.tracked requires a non-wildcard symbol: qualifier 
   });
 
   it('the between-chain (inclusive) form also threads the symbol: qualifier through dot-access', () => {
-    const r = compile('WHEN 10 <= quote.tracked.symbol:NIFTY25JULFUT.bid <= 200 ALERT telegram DO nop');
+    const r = compile('WHEN 10 <= quote.tracked.symbol:NIFTY25JULFUT.bid <= 200 DO alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions).toEqual({
       metric: 'bid', scope: 'quote.tracked', op: 'between', value: [10, 200],
@@ -3035,7 +3015,7 @@ describe('Sprint 21 — quote.tracked requires a non-wildcard symbol: qualifier 
   });
 
   it('the between-chain (strict, "all" fallback) form also threads the symbol: qualifier onto BOTH leaves', () => {
-    const r = compile('WHEN 10 < quote.tracked.symbol:NIFTY25JULFUT.bid < 200 ALERT telegram DO nop');
+    const r = compile('WHEN 10 < quote.tracked.symbol:NIFTY25JULFUT.bid < 200 DO alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions).toEqual({
       all: [
@@ -3046,12 +3026,12 @@ describe('Sprint 21 — quote.tracked requires a non-wildcard symbol: qualifier 
   });
 
   it('a non-quote scope is completely unaffected by the new guard (regression)', () => {
-    const r = compile('WHEN pnl@positions.total > 0 ALERT telegram DO nop');
+    const r = compile('WHEN pnl@positions.total > 0 DO alert(telegram)');
     expect(r.ok).toBe(true);
   });
 
   it('quote.tracked.account:X is rejected by the existing column whitelist, not the new guard — no account dimension on quote.* (advisor-confirmed "should work as-is")', () => {
-    const r = compile('WHEN pnl@quote.tracked.account:ZG0790 > 0 ALERT telegram DO nop');
+    const r = compile('WHEN pnl@quote.tracked.account:ZG0790 > 0 DO alert(telegram)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /not a valid qualifier for scope 'quote\.tracked'/.test(e.message))).toBe(true);
   });
@@ -3059,23 +3039,23 @@ describe('Sprint 21 — quote.tracked requires a non-wildcard symbol: qualifier 
 
 describe('Sprint 21 — quote.tracked.symbol:NIFTY25JULFUT.ltp decompile round-trip (dot-access-with-qualifier)', () => {
   it('compiles and decompiles to the "@" form (dot-access-with-qualifier has no dedicated decompile spelling; ltp has a real metric token so the generic decompiler prefers it) and recompiles identically', () => {
-    const r = compile('WHEN quote.tracked.symbol:NIFTY25JULFUT.ltp <= 100 ALERT telegram DO nop');
+    const r = compile('WHEN quote.tracked.symbol:NIFTY25JULFUT.ltp <= 100 DO alert(telegram)');
     expect(r.ok).toBe(true);
     const dec = decompileCondition(r.agent.conditions, CATALOG);
     expect(dec.errors).toEqual([]);
     expect(dec.text).toBe('ltp@quote.tracked.symbol:NIFTY25JULFUT <= 100');
-    const recompiled = compile(`WHEN ${dec.text} ALERT telegram DO nop`);
+    const recompiled = compile(`WHEN ${dec.text} DO alert(telegram)`);
     expect(recompiled.ok).toBe(true);
     expect(recompiled.agent.conditions).toEqual(r.agent.conditions);
   });
 
   it('quote.tracked.symbol:NIFTY25JULFUT.bid decompile round-trip (a column with NO metric token — the bare-column-plus-scope_filter decompile path)', () => {
-    const r = compile('WHEN quote.tracked.symbol:NIFTY25JULFUT.bid <= 100 ALERT telegram DO nop');
+    const r = compile('WHEN quote.tracked.symbol:NIFTY25JULFUT.bid <= 100 DO alert(telegram)');
     expect(r.ok).toBe(true);
     const dec = decompileCondition(r.agent.conditions, CATALOG);
     expect(dec.errors).toEqual([]);
     expect(dec.text).toBe('quote.tracked.symbol:NIFTY25JULFUT.bid <= 100');
-    const recompiled = compile(`WHEN ${dec.text} ALERT telegram DO nop`);
+    const recompiled = compile(`WHEN ${dec.text} DO alert(telegram)`);
     expect(recompiled.ok).toBe(true);
     expect(recompiled.agent.conditions).toEqual(r.agent.conditions);
   });
@@ -3088,7 +3068,7 @@ describe('Sprint 21 — quote.tracked.symbol:NIFTY25JULFUT.ltp decompile round-t
 // ═══════════════════════════════════════════════════════════════════════
 describe('exchange: qualifier on quote.tracked (non-NSE quote.tracked fire-never bug fix)', () => {
   it('quote.tracked.exchange:MCX.symbol:CRUDEOIL25NOVFUT.ltp <= 100 compiles with BOTH exchange and symbol in scope_filter (Test coverage #3)', () => {
-    const r = compile('WHEN quote.tracked.exchange:MCX.symbol:CRUDEOIL25NOVFUT.ltp <= 100 ALERT telegram DO nop');
+    const r = compile('WHEN quote.tracked.exchange:MCX.symbol:CRUDEOIL25NOVFUT.ltp <= 100 DO alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions).toEqual({
       metric: 'ltp', scope: 'quote.tracked', op: '<=', value: 100,
@@ -3097,7 +3077,7 @@ describe('exchange: qualifier on quote.tracked (non-NSE quote.tracked fire-never
   });
 
   it('the "@" form threads both qualifiers identically, in symbol-then-exchange order too', () => {
-    const r = compile('WHEN ltp@quote.tracked.symbol:CRUDEOIL25NOVFUT.exchange:MCX <= 100 ALERT telegram DO nop');
+    const r = compile('WHEN ltp@quote.tracked.symbol:CRUDEOIL25NOVFUT.exchange:MCX <= 100 DO alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions).toEqual({
       metric: 'ltp', scope: 'quote.tracked', op: '<=', value: 100,
@@ -3106,19 +3086,19 @@ describe('exchange: qualifier on quote.tracked (non-NSE quote.tracked fire-never
   });
 
   it('a lowercase exchange: value compiles UPPERCASED — the real row\'s exchange column is always uppercase, so a lowercase qualifier must not silently never-match at evaluation time', () => {
-    const r = compile('WHEN quote.tracked.exchange:mcx.symbol:CRUDEOIL25NOVFUT.ltp <= 100 ALERT telegram DO nop');
+    const r = compile('WHEN quote.tracked.exchange:mcx.symbol:CRUDEOIL25NOVFUT.ltp <= 100 DO alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions.scope_filter).toEqual({ exchange: 'MCX', symbol: 'CRUDEOIL25NOVFUT' });
   });
 
   it('exchange: alone (no symbol:) still fails the existing quote.tracked-requires-symbol guard — exchange is an OPTIONAL secondary qualifier, never a substitute for symbol', () => {
-    const r = compile('WHEN quote.tracked.exchange:MCX.ltp <= 100 ALERT telegram DO nop');
+    const r = compile('WHEN quote.tracked.exchange:MCX.ltp <= 100 DO alert(telegram)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /quote\.tracked requires a specific symbol: qualifier/.test(e.message))).toBe(true);
   });
 
   it('exchange: is rejected on a scope with no real exchange column (e.g. positions.total, a summary scope) — generic column-whitelist mechanism, no special-casing needed', () => {
-    const r = compile('WHEN pnl@positions.total.exchange:NSE > 0 ALERT telegram DO nop');
+    const r = compile('WHEN pnl@positions.total.exchange:NSE > 0 DO alert(telegram)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /not a valid qualifier for scope 'positions\.total'/.test(e.message))).toBe(true);
   });
@@ -3133,7 +3113,7 @@ describe('exchange: qualifier on quote.tracked (non-NSE quote.tracked fire-never
   // is fully covered above/below.
 
   it('unknown qualifier error message now lists exchange:/kind:/underlying: alongside account:/symbol: (Sprint G, Task 4)', () => {
-    const r = compile('WHEN positions.bogus:X.pnl > 0 ALERT telegram DO nop');
+    const r = compile('WHEN positions.bogus:X.pnl > 0 DO alert(telegram)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /only 'account:'\/'symbol:'\/'exchange:'\/'kind:'\/'underlying:' are supported/.test(e.message))).toBe(true);
   });
@@ -3141,22 +3121,22 @@ describe('exchange: qualifier on quote.tracked (non-NSE quote.tracked fire-never
 
 describe('exchange:+symbol: scope_filter decompile round-trip (Test coverage #4)', () => {
   it('quote.tracked.exchange:MCX.symbol:CRUDEOIL25NOVFUT.ltp <= 100 decompiles and recompiles to an identical scope_filter carrying both keys', () => {
-    const r = compile('WHEN quote.tracked.exchange:MCX.symbol:CRUDEOIL25NOVFUT.ltp <= 100 ALERT telegram DO nop');
+    const r = compile('WHEN quote.tracked.exchange:MCX.symbol:CRUDEOIL25NOVFUT.ltp <= 100 DO alert(telegram)');
     expect(r.ok).toBe(true);
     const dec = decompileCondition(r.agent.conditions, CATALOG);
     expect(dec.errors).toEqual([]);
-    const recompiled = compile(`WHEN ${dec.text} ALERT telegram DO nop`);
+    const recompiled = compile(`WHEN ${dec.text} DO alert(telegram)`);
     expect(recompiled.ok).toBe(true);
     expect(recompiled.agent.conditions.scope_filter).toEqual({ exchange: 'MCX', symbol: 'CRUDEOIL25NOVFUT' });
     expect(recompiled.agent.conditions).toEqual(r.agent.conditions);
   });
 
   it('a column with no metric token (.bid) on quote.tracked also round-trips with both scope_filter keys intact', () => {
-    const r = compile('WHEN quote.tracked.exchange:MCX.symbol:CRUDEOIL25NOVFUT.bid <= 100 ALERT telegram DO nop');
+    const r = compile('WHEN quote.tracked.exchange:MCX.symbol:CRUDEOIL25NOVFUT.bid <= 100 DO alert(telegram)');
     expect(r.ok).toBe(true);
     const dec = decompileCondition(r.agent.conditions, CATALOG);
     expect(dec.errors).toEqual([]);
-    const recompiled = compile(`WHEN ${dec.text} ALERT telegram DO nop`);
+    const recompiled = compile(`WHEN ${dec.text} DO alert(telegram)`);
     expect(recompiled.ok).toBe(true);
     expect(recompiled.agent.conditions).toEqual(r.agent.conditions);
   });
@@ -3170,112 +3150,94 @@ describe('exchange:+symbol: scope_filter decompile round-trip (Test coverage #4)
 
 describe('Sprint G — GIVEN preamble + "=" bind operator (labels)', () => {
   it('a GIVEN-bound PRIMITIVE label is readable as a plain action-param value in DO', () => {
-    const r = compile('GIVEN x = "stop hit" WHEN pnl@positions.total <= -50000 ALERT telegram DO emit_log(message=x)');
+    const r = compile('x = "stop hit" WHEN pnl@positions.total <= -50000 DO alert(telegram), log(message=x)');
     expect(r.ok).toBe(true);
-    expect(r.agent.actions).toEqual([{ type: 'emit_log', params: { message: 'stop hit' } }]);
+    expect(r.agent.actions).toEqual([{ type: 'log', params: { message: 'stop hit' } }]);
   });
 
   it('the SAME label is readable in BOTH ALERT (via a channel kwarg) and DO in one statement', () => {
-    const r = compile(
-      'GIVEN x = "stop hit" WHEN pnl@positions.total <= -50000 '
-      + 'ALERT telegram(msg=x) DO emit_log(message=x)'
-    );
+    const r = compile('x = "stop hit" WHEN pnl@positions.total <= -50000 DO alert(telegram(msg=x)), log(message=x)');
     expect(r.ok).toBe(true);
     expect(r.agent.events).toEqual([{ channel: 'telegram', enabled: true, message: 'stop hit' }]);
-    expect(r.agent.actions).toEqual([{ type: 'emit_log', params: { message: 'stop hit' } }]);
+    expect(r.agent.actions).toEqual([{ type: 'log', params: { message: 'stop hit' } }]);
   });
 
   it('a GIVEN-bound CONDITION label used as the WHOLE bare WHEN condition compiles byte-identically to writing it out by hand (no label)', () => {
-    const viaLabel = compile(
-      'GIVEN x = pnl@positions.total <= -50000 WHEN x ALERT telegram DO nop'
-    );
-    const byHand = compile('WHEN pnl@positions.total <= -50000 ALERT telegram DO nop');
+    const viaLabel = compile('x = pnl@positions.total <= -50000 WHEN x DO alert(telegram)');
+    const byHand = compile('WHEN pnl@positions.total <= -50000 DO alert(telegram)');
     expect(viaLabel.ok).toBe(true);
     expect(byHand.ok).toBe(true);
     expect(viaLabel.agent.conditions).toEqual(byHand.agent.conditions);
   });
 
   it('operator mid-task widening: a label bound to a FULL multi-leaf "&"-combined condition tree is usable as the whole WHEN condition', () => {
-    const viaLabel = compile(
-      'GIVEN x = (pnl@positions.total <= -50000) & (avail_margin@funds.total < 0) '
-      + 'WHEN x ALERT telegram'
-    );
-    const byHand = compile(
-      'WHEN (pnl@positions.total <= -50000) & (avail_margin@funds.total < 0) ALERT telegram'
-    );
+    const viaLabel = compile('x = (pnl@positions.total <= -50000) & (avail_margin@funds.total < 0) WHEN x DO alert(telegram)');
+    const byHand = compile('WHEN (pnl@positions.total <= -50000) & (avail_margin@funds.total < 0) DO alert(telegram)');
     expect(viaLabel.ok).toBe(true);
     expect(byHand.ok).toBe(true);
     expect(viaLabel.agent.conditions).toEqual(byHand.agent.conditions);
   });
 
   it('a condition-bound label combines with another leaf via "&" exactly like the full expression would', () => {
-    const viaLabel = compile(
-      'GIVEN x = pnl@positions.total <= -50000 '
-      + 'WHEN x & (avail_margin@funds.total < 0) ALERT telegram'
-    );
-    const byHand = compile(
-      'WHEN (pnl@positions.total <= -50000) & (avail_margin@funds.total < 0) ALERT telegram'
-    );
+    const viaLabel = compile('x = pnl@positions.total <= -50000 WHEN x & (avail_margin@funds.total < 0) DO alert(telegram)');
+    const byHand = compile('WHEN (pnl@positions.total <= -50000) & (avail_margin@funds.total < 0) DO alert(telegram)');
     expect(viaLabel.ok).toBe(true);
     expect(viaLabel.agent.conditions).toEqual(byHand.agent.conditions);
   });
 
   it('multiple bindings in one GIVEN ("," is not the separator — ";" is)', () => {
-    const r = compile(
-      'GIVEN a = "first"; b = "second" '
-      + 'WHEN always ALERT telegram DO emit_log(message=a), emit_log(message=b)'
-    );
+    const r = compile('a = "first"; b = "second" WHEN always DO alert(telegram), log(message=a), log(message=b)');
     expect(r.ok).toBe(true);
     expect(r.agent.actions).toEqual([
-      { type: 'emit_log', params: { message: 'first' } },
-      { type: 'emit_log', params: { message: 'second' } },
+      { type: 'log', params: { message: 'first' } },
+      { type: 'log', params: { message: 'second' } },
     ]);
   });
 
   it('no-shadowing: rebinding the same label twice in one statement is a compile-time (parse) error', () => {
-    const r = compile('GIVEN x = 1; x = 2 WHEN always ALERT telegram');
+    const r = compile('x = 1; x = 2 WHEN always DO alert(telegram)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /already bound in this statement/.test(e.message))).toBe(true);
   });
 
   it('a label spelled as a reserved word is a parse-time error', () => {
-    const r = compile('GIVEN alert = 5 WHEN always ALERT telegram');
+    const r = compile('alert = 5 WHEN always DO alert(telegram)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /reserved word and cannot be used as a label/.test(e.message))).toBe(true);
   });
 
   it('a label colliding with a real catalog token name (an existing metric) is a compile-time error', () => {
-    const r = compile('GIVEN pnl = 5 WHEN always ALERT telegram');
+    const r = compile('pnl = 5 WHEN always DO alert(telegram)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /collides with an existing token name/.test(e.message))).toBe(true);
   });
 
   it('a label colliding with an exposed column name is a compile-time error', () => {
-    const r = compile('GIVEN account_id = 5 WHEN always ALERT telegram');
+    const r = compile('account_id = 5 WHEN always DO alert(telegram)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /collides with an exposed column name/.test(e.message))).toBe(true);
   });
 
   it('a label colliding with a scope-family alias (e.g. "hold") is a compile-time error', () => {
-    const r = compile('GIVEN hold = 5 WHEN always ALERT telegram');
+    const r = compile('hold = 5 WHEN always DO alert(telegram)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /collides with a scope-family name\/alias/.test(e.message))).toBe(true);
   });
 
   it('a VALUE-kind label used as the WHEN condition is a clear compile-time error', () => {
-    const r = compile('GIVEN x = 5 WHEN x ALERT telegram');
+    const r = compile('x = 5 WHEN x DO alert(telegram)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /bound to a plain value.*cannot be used as a WHEN condition/.test(e.message))).toBe(true);
   });
 
   it('a CONDITION-kind label used as a plain action-param value is a clear compile-time error', () => {
-    const r = compile('GIVEN x = pnl@positions.total <= -50000 WHEN always ALERT telegram DO emit_log(message=x)');
+    const r = compile('x = pnl@positions.total <= -50000 WHEN always DO alert(telegram), log(message=x)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /bound to a condition.*only usable in WHEN or debug/.test(e.message))).toBe(true);
   });
 
   it('a forward reference (reading a label before it is bound) does not resolve as a label — falls through to the ordinary unknown-token error', () => {
-    const r = compile('WHEN always ALERT telegram DO emit_log(message=x) GIVEN x = "too late"');
+    const r = compile('WHEN always DO alert(telegram), log(message=x) x = "too late"');
     // GIVEN must be FIRST syntactically — this is simply a parse error
     // (GIVEN cannot appear after WHEN/ALERT/DO at all).
     expect(r.ok).toBe(false);
@@ -3283,20 +3245,20 @@ describe('Sprint G — GIVEN preamble + "=" bind operator (labels)', () => {
 });
 
 describe('Sprint G — debug(x)', () => {
-  it('debug(x) for a PRIMITIVE-bound label renders its plain value as the emit_log message', () => {
-    const r = compile('GIVEN x = "ping" WHEN always ALERT telegram DO debug(x)');
+  it('debug(x) for a PRIMITIVE-bound label renders its plain value as the log message', () => {
+    const r = compile('x = "ping" WHEN always DO alert(telegram), debug(x)');
     expect(r.ok).toBe(true);
     expect(r.agent.actions).toEqual([
-      { type: 'emit_log', params: { level: 'debug', message: 'ping' } },
+      { type: 'log', params: { level: 'debug', message: 'ping' } },
     ]);
   });
 
   it('debug(x) for a CONDITION-bound (dict-shaped) label JSON-stringifies the compiled condition', () => {
-    const r = compile('GIVEN x = pnl@positions.total <= -50000 WHEN always ALERT telegram DO debug(x)');
+    const r = compile('x = pnl@positions.total <= -50000 WHEN always DO alert(telegram), debug(x)');
     expect(r.ok).toBe(true);
-    const expectedDict = compile('WHEN pnl@positions.total <= -50000 ALERT telegram DO nop').agent.conditions;
+    const expectedDict = compile('WHEN pnl@positions.total <= -50000 DO alert(telegram)').agent.conditions;
     expect(r.agent.actions).toEqual([
-      { type: 'emit_log', params: { level: 'debug', message: JSON.stringify(expectedDict) } },
+      { type: 'log', params: { level: 'debug', message: JSON.stringify(expectedDict) } },
     ]);
   });
 
@@ -3304,49 +3266,50 @@ describe('Sprint G — debug(x)', () => {
     const r = compile('WHEN pnl@positions.expiring_today > 0 DO debug(account_id)');
     expect(r.ok).toBe(true);
     expect(r.agent.actions).toEqual([
-      { type: 'emit_log', params: { level: 'debug', message: { '$row': 'account_id' } } },
+      { type: 'log', params: { level: 'debug', message: { '$row': 'account_id' } } },
     ]);
   });
 
   it('debug(x) for an unbound, non-exposed-column name is a clear compile error', () => {
-    const r = compile('WHEN always ALERT telegram DO debug(bogus_name)');
+    const r = compile('WHEN always DO alert(telegram), debug(bogus_name)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /not a bound label.*or a matched-row column name/.test(e.message))).toBe(true);
   });
 
-  it('a GIVEN-placed debug(...) is HOISTED into the compiled actions array even with DO omitted entirely', () => {
-    const r = compile('GIVEN x = "ping"; debug(x) WHEN always ALERT telegram');
+  it('a preamble-placed debug(...) compiles into agent.preamble, NOT agent.actions — Sprint [grammar-unify]: a preamble call is unconditional, a DO action is gated, so they can no longer share one array', () => {
+    const r = compile('x = "ping"; debug(x) WHEN always DO alert(telegram)');
     expect(r.ok).toBe(true);
-    expect(r.agent.actions).toEqual([{ type: 'emit_log', params: { level: 'debug', message: 'ping' } }]);
+    expect(r.agent.preamble).toEqual([{ type: 'log', params: { level: 'debug', message: 'ping' } }]);
+    expect(r.agent.actions).toEqual([]);
     expect(r.agent.events).toEqual([{ channel: 'telegram', enabled: true }]);
   });
 
-  it('an ALERT-placed debug(...) is stripped out of events and hoisted into actions, not left as an unknown channel', () => {
-    const r = compile('GIVEN x = "hey" WHEN always ALERT debug(x), telegram DO nop');
+  it('a debug(...) call placed in the SAME DO list as a real alert(...) call compiles correctly — debug into actions, alert into events, no collision', () => {
+    const r = compile('x = "hey" WHEN always DO debug(x), alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.events).toEqual([{ channel: 'telegram', enabled: true }]);
-    expect(r.agent.actions).toEqual([{ type: 'emit_log', params: { level: 'debug', message: 'hey' } }]);
+    expect(r.agent.actions).toEqual([{ type: 'log', params: { level: 'debug', message: 'hey' } }]);
   });
 
   it('a debug-only statement (no real ALERT/DO) satisfies the "at least one of ALERT or DO" rule', () => {
-    const r = compile('GIVEN x = "ping" WHEN always DO debug(x)');
+    const r = compile('x = "ping" WHEN always DO debug(x)');
     expect(r.ok).toBe(true);
-    expect(r.agent.actions).toEqual([{ type: 'emit_log', params: { level: 'debug', message: 'ping' } }]);
+    expect(r.agent.actions).toEqual([{ type: 'log', params: { level: 'debug', message: 'ping' } }]);
   });
 
   it('debug(...) takes exactly one bare argument — a parenthesized expression is a lex/parse error', () => {
-    const r = compile('WHEN always ALERT telegram DO debug(pnl@positions.total)');
+    const r = compile('WHEN always DO alert(telegram), debug(pnl@positions.total)');
     expect(r.ok).toBe(false);
   });
 
-  it('hand-typed emit_log(level=debug, message="...") (NOT via the debug(...) sugar) also compiles — the live catalog enum gap is bridged', () => {
-    const r = compile('WHEN always ALERT telegram DO emit_log(level=debug, message="hand typed")');
+  it('hand-typed log(level=debug, message="...") (NOT via the debug(...) sugar) also compiles — the live catalog enum gap is bridged', () => {
+    const r = compile('WHEN always DO alert(telegram), log(level=debug, message="hand typed")');
     expect(r.ok).toBe(true);
-    expect(r.agent.actions).toEqual([{ type: 'emit_log', params: { level: 'debug', message: 'hand typed' } }]);
+    expect(r.agent.actions).toEqual([{ type: 'log', params: { level: 'debug', message: 'hand typed' } }]);
   });
 
-  it('emit_log with a genuinely bogus level is still rejected (the bypass is scoped to "debug" only)', () => {
-    const r = compile('WHEN always ALERT telegram DO emit_log(level=critical, message="x")');
+  it('log with a genuinely bogus level is still rejected (the bypass is scoped to "debug" only)', () => {
+    const r = compile('WHEN always DO alert(telegram), log(level=critical, message="x")');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /not one of \[info, warning, error\]/.test(e.message))).toBe(true);
   });
@@ -3354,31 +3317,31 @@ describe('Sprint G — debug(x)', () => {
 
 describe('Sprint [newline-separator] — a bare newline is an alternative to ";"/","', () => {
   it('newline replaces ";" between GIVEN items', () => {
-    const r = compile('GIVEN a = "first"\nb = "second" WHEN always ALERT telegram DO emit_log(message=a), emit_log(message=b)');
+    const r = compile('a = "first"\nb = "second" WHEN always DO alert(telegram), log(message=a), log(message=b)');
     expect(r.ok).toBe(true);
     expect(r.agent.actions).toEqual([
-      { type: 'emit_log', params: { message: 'first' } },
-      { type: 'emit_log', params: { message: 'second' } },
+      { type: 'log', params: { message: 'first' } },
+      { type: 'log', params: { message: 'second' } },
     ]);
   });
 
   it('newline replaces ";" between ALERT items (a label assignment followed by a new item)', () => {
-    const r = compile('WHEN always ALERT msg = "hi"\ntelegram DO nop');
+    const r = compile('WHEN always DO alert(msg = "hi"\ntelegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.events).toEqual([{ channel: 'telegram', enabled: true, message: 'hi' }]);
   });
 
   it('newline replaces ";" between DO items', () => {
-    const r = compile('WHEN always ALERT telegram DO emit_log(message="a")\nemit_log(message="b")');
+    const r = compile('WHEN always DO alert(telegram), log(message="a")\nlog(message="b")');
     expect(r.ok).toBe(true);
     expect(r.agent.actions).toEqual([
-      { type: 'emit_log', params: { message: 'a' } },
-      { type: 'emit_log', params: { message: 'b' } },
+      { type: 'log', params: { message: 'a' } },
+      { type: 'log', params: { message: 'b' } },
     ]);
   });
 
-  it('newline replaces "," in a call-list item (ALERT telegram\\nemail)', () => {
-    const r = compile('WHEN always ALERT telegram\nemail DO nop');
+  it('newline replaces "," in a call-list item (alert(telegram\nemail))', () => {
+    const r = compile('WHEN always DO alert(telegram\nemail)');
     expect(r.ok).toBe(true);
     expect(r.agent.events).toEqual([
       { channel: 'telegram', enabled: true },
@@ -3387,7 +3350,7 @@ describe('Sprint [newline-separator] — a bare newline is an alternative to ";"
   });
 
   it('newline replaces "," in a DO call-list item', () => {
-    const r = compile('WHEN always ALERT telegram DO emit_log(message="a")\nemit_log(message="b")');
+    const r = compile('WHEN always DO alert(telegram), log(message="a")\nlog(message="b")');
     expect(r.ok).toBe(true);
     expect(r.agent.actions.length).toBe(2);
   });
@@ -3399,10 +3362,10 @@ describe('Sprint [newline-separator] — a bare newline is an alternative to ";"
     // exclusion hands this off to the OUTER clause-item loop instead,
     // where the newline is correctly treated as a ";" between a `calls`
     // item (telegram) and a fresh `assign` item (msg_txt).
-    const r = compile('WHEN always ALERT telegram\nmsg_txt = "late" DO emit_log(message=msg_txt)');
+    const r = compile('WHEN always DO alert(telegram\nmsg_txt = "late"), log(message=msg_txt)');
     expect(r.ok).toBe(true);
     expect(r.agent.events).toEqual([{ channel: 'telegram', enabled: true }]);
-    expect(r.agent.actions).toEqual([{ type: 'emit_log', params: { message: 'late' } }]);
+    expect(r.agent.actions).toEqual([{ type: 'log', params: { message: 'late' } }]);
   });
 
   it('newline replaces "," in a plain value list literal (direct parser unit test, mirrors parseValue()/parseLeaf()\'s own style above)', () => {
@@ -3426,12 +3389,14 @@ describe('Sprint [newline-separator] — a bare newline is an alternative to ";"
     expect(r.agent.conditions.any.length).toBe(2);
   });
 
-  it('a bare newline does NOT replace the bare multi-order top-level statement\'s "," — stays comma-only', () => {
+  it('parseOrderStmt\'s OWN comma-only basket call-list still rejects a bare newline (unchanged) — but Sprint [grammar-unify] now falls back to the unified preamble parser, which DOES accept it, so the statement as a whole compiles, just as two separate preamble order(...) calls rather than one order_stmt basket', () => {
     const r = compile(
       'order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, price=100)\n'
       + 'order(account="ZJ6294", symbol="BANKNIFTY25JULFUT", side="BUY", lots=1, price=200)'
     );
-    expect(r.ok).toBe(false);
+    expect(r.ok).toBe(true);
+    expect(r.kind).toBe('agent');
+    expect(r.agent.preamble.map((p) => p.type)).toEqual(['order', 'order']);
   });
 
   it('a bare newline does NOT replace a call\'s own "(...)" argument separator', () => {
@@ -3444,25 +3409,16 @@ describe('Sprint [newline-separator] — a bare newline is an alternative to ";"
   });
 
   it('every existing comma/semicolon-based GIVEN/ALERT/DO statement still compiles unchanged (regression spot-check)', () => {
-    const r = compile(
-      'GIVEN a = "first"; b = "second" '
-      + 'WHEN always ALERT telegram DO emit_log(message=a), emit_log(message=b)'
-    );
+    const r = compile('a = "first"; b = "second" WHEN always DO alert(telegram), log(message=a), log(message=b)');
     expect(r.ok).toBe(true);
     expect(r.agent.actions).toEqual([
-      { type: 'emit_log', params: { message: 'first' } },
-      { type: 'emit_log', params: { message: 'second' } },
+      { type: 'log', params: { message: 'first' } },
+      { type: 'log', params: { message: 'second' } },
     ]);
   });
 
-  it('the full Part 4 CLI placeholder example (multi-line GIVEN/WHEN/ALERT/DO) compiles end-to-end', () => {
-    const r = compile(
-      'GIVEN p = pnl@positions.total\n'
-      + 'msg_txt = "Loss: " + p\n'
-      + 'WHEN p <= -50000\n'
-      + 'ALERT msg = msg_txt, telegram\n'
-      + 'DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)'
-    );
+  it('the full Part 4 CLI placeholder example (multi-line preamble/WHEN/DO) compiles end-to-end', () => {
+    const r = compile('p = pnl@positions.total\nmsg_txt = "Loss: " + p\nWHEN p <= -50000\nDO alert(msg = msg_txt, telegram), order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions).toEqual({ metric: 'pnl', scope: 'positions.total', op: '<=', value: -50000 });
     // Sprint [GIVEN-parts] — `msg_txt` mixes a string literal into its
@@ -3487,7 +3443,7 @@ describe('Sprint [comma-separator] — a bare "," is a full synonym for ";"/newl
     // (unrelated, pre-existing restriction — not an arithmetic expression),
     // so this binds the sum to its own label first, same as the operator's
     // own original statement would need to in order to be valid at all.
-    const r = compile('GIVEN a1 = 1, a2 = 1, total = a1 + a2 WHEN always ALERT telegram DO debug(total)');
+    const r = compile('a1 = 1, a2 = 1, total = a1 + a2 WHEN always DO alert(telegram), debug(total)');
     expect(r.ok).toBe(true);
     // `a1`/`a2` are PRIMITIVE "value" bindings (a bare number literal) —
     // these resolve/inline entirely at compile time and never get their
@@ -3499,15 +3455,15 @@ describe('Sprint [comma-separator] — a bare "," is a full synonym for ";"/newl
   });
 
   it('comma replaces ";" between ALERT items (a label assignment followed by a new calls item)', () => {
-    const r = compile('WHEN always ALERT a = 1, telegram DO debug(a)');
+    const r = compile('WHEN always DO alert(a = 1, telegram), debug(a)');
     expect(r.ok).toBe(true);
     expect(r.agent.events).toEqual([{ channel: 'telegram', enabled: true }]);
   });
 
   it('comma replaces ";" between DO items (a label assignment followed by a new calls item)', () => {
-    const r = compile('WHEN always ALERT telegram DO a = "x", emit_log(message=a)');
+    const r = compile('WHEN always DO alert(telegram), a = "x", log(message=a)');
     expect(r.ok).toBe(true);
-    expect(r.agent.actions).toEqual([{ type: 'emit_log', params: { message: 'x' } }]);
+    expect(r.agent.actions).toEqual([{ type: 'log', params: { message: 'x' } }]);
   });
 
   it('a comma followed by a label assignment hands off to the OUTER clause-item loop, not absorbed as "another call" (mirrors the newline-separator case)', () => {
@@ -3516,22 +3472,22 @@ describe('Sprint [comma-separator] — a bare "," is a full synonym for ";"/newl
     // — the NAME-then-EQ lookahead exclusion in parseCallList hands this
     // off to the OUTER clause-item loop, which now accepts a bare comma
     // as a ";" the same way it already accepts a bare newline.
-    const r = compile('WHEN always ALERT telegram, msg_txt = "late" DO emit_log(message=msg_txt)');
+    const r = compile('WHEN always DO alert(telegram, msg_txt = "late"), log(message=msg_txt)');
     expect(r.ok).toBe(true);
     expect(r.agent.events).toEqual([{ channel: 'telegram', enabled: true }]);
-    expect(r.agent.actions).toEqual([{ type: 'emit_log', params: { message: 'late' } }]);
+    expect(r.agent.actions).toEqual([{ type: 'log', params: { message: 'late' } }]);
   });
 
   it('an assignment followed by comma then a calls item works in EITHER order relative to the calls item', () => {
-    const viaAssignFirst = compile('WHEN always ALERT a = 1, telegram DO debug(a)');
-    const viaCallsFirst = compile('WHEN always ALERT telegram, a = 1 DO debug(a)');
+    const viaAssignFirst = compile('WHEN always DO alert(a = 1, telegram), debug(a)');
+    const viaCallsFirst = compile('WHEN always DO alert(telegram, a = 1), debug(a)');
     expect(viaAssignFirst.ok).toBe(true);
     expect(viaCallsFirst.ok).toBe(true);
     expect(viaAssignFirst.agent.events).toEqual(viaCallsFirst.agent.events);
   });
 
   it('pre-existing multi-channel comma sugar (ALERT telegram, email) is unaffected', () => {
-    const r = compile('WHEN always ALERT telegram, email DO nop');
+    const r = compile('WHEN always DO alert(telegram, email)');
     expect(r.ok).toBe(true);
     expect(r.agent.events).toEqual([
       { channel: 'telegram', enabled: true },
@@ -3540,23 +3496,18 @@ describe('Sprint [comma-separator] — a bare "," is a full synonym for ";"/newl
   });
 
   it('pre-existing msg= comma sugar (ALERT msg="x", telegram) is unaffected', () => {
-    const r = compile('WHEN always ALERT msg="x", telegram DO nop');
+    const r = compile('WHEN always DO alert(msg="x", telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.events).toEqual([{ channel: 'telegram', enabled: true, message: 'x' }]);
   });
 
   it('a dangling comma with nothing legal after it still produces a clear parse error, not a silent swallow', () => {
-    const r = compile('GIVEN a1 = 1,  WHEN always ALERT telegram DO nop');
+    const r = compile('a1 = 1, WHEN always DO alert(telegram)');
     expect(r.ok).toBe(false);
   });
 
   it('the full Part 4 CLI placeholder example also compiles when every ";"/newline separator is replaced with ","', () => {
-    const r = compile(
-      'GIVEN p = pnl@positions.total, msg_txt = "Loss: " + p '
-      + 'WHEN p <= -50000 '
-      + 'ALERT msg = msg_txt, telegram '
-      + 'DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)'
-    );
+    const r = compile('p = pnl@positions.total, msg_txt = "Loss: " + p WHEN p <= -50000 DO alert(msg = msg_txt, telegram), order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)');
     expect(r.ok).toBe(true);
     expect(r.agent.given).toEqual([
       { name: 'p', expr: 'pnl@positions.total' },
@@ -3571,8 +3522,8 @@ describe('Sprint [comma-separator] — a bare "," is a full synonym for ";"/newl
 
 describe('Sprint [GIVEN-expr] — operator-expression GIVEN bindings', () => {
   it('a pure alias (bare metric@scope, no operator) still classifies/compiles EXACTLY as today — no "given" key at all', () => {
-    const viaLabel = compile('GIVEN p = pnl@positions.total WHEN p <= -50000 ALERT telegram DO nop');
-    const byHand = compile('WHEN pnl@positions.total <= -50000 ALERT telegram DO nop');
+    const viaLabel = compile('p = pnl@positions.total WHEN p <= -50000 DO alert(telegram)');
+    const byHand = compile('WHEN pnl@positions.total <= -50000 DO alert(telegram)');
     expect(viaLabel.ok).toBe(true);
     expect(byHand.ok).toBe(true);
     expect(viaLabel.agent.conditions).toEqual(byHand.agent.conditions);
@@ -3580,11 +3531,7 @@ describe('Sprint [GIVEN-expr] — operator-expression GIVEN bindings', () => {
   });
 
   it('a string-concat expression compiles to a NEW top-level "given" key as "parts" (string-building shape, not "expr")', () => {
-    const r = compile(
-      'GIVEN p = pnl@positions.total\n'
-      + 'msg_txt = "Loss: " + p '
-      + 'WHEN always ALERT msg = msg_txt, telegram'
-    );
+    const r = compile('p = pnl@positions.total\nmsg_txt = "Loss: " + p WHEN always DO alert(msg = msg_txt, telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.given).toEqual([
       { name: 'p', expr: 'pnl@positions.total' },
@@ -3593,102 +3540,96 @@ describe('Sprint [GIVEN-expr] — operator-expression GIVEN bindings', () => {
   });
 
   it('a pure alias that is NEVER referenced by any operator expression does NOT get its own "given" entry', () => {
-    const r = compile('GIVEN p = pnl@positions.total WHEN p <= -50000 ALERT telegram DO nop');
+    const r = compile('p = pnl@positions.total WHEN p <= -50000 DO alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.given).toBeUndefined();
   });
 
   it('a bare NAME referencing an earlier alias with NO operator ALSO classifies as an operator-expression binding', () => {
-    const r = compile('GIVEN p = pnl@positions.total\nq = p WHEN always ALERT telegram DO emit_log(message=q)');
+    const r = compile('p = pnl@positions.total\nq = p WHEN always DO alert(telegram), log(message=q)');
     expect(r.ok).toBe(true);
     expect(r.agent.given).toEqual([
       { name: 'p', expr: 'pnl@positions.total' },
       { name: 'q', expr: 'p' },
     ]);
-    expect(r.agent.actions).toEqual([{ type: 'emit_log', params: { message: { '$given': 'q' } } }]);
+    expect(r.agent.actions).toEqual([{ type: 'log', params: { message: { '$given': 'q' } } }]);
   });
 
   it('REGRESSION GUARD: a comparator after a bare metric@scope still classifies as a CONDITION, not an operator expression', () => {
-    const r = compile('GIVEN x = pnl@positions.total <= -5 WHEN x ALERT telegram DO nop');
+    const r = compile('x = pnl@positions.total <= -5 WHEN x DO alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.given).toBeUndefined();
     expect(r.agent.conditions).toEqual({ metric: 'pnl', scope: 'positions.total', op: '<=', value: -5 });
   });
 
   it('arithmetic operators (+ - * / % **) all lex/parse correctly in a GIVEN expression', () => {
-    const r = compile('GIVEN a = 1 + 2 - 3 * 4 / 5 % 6 ** 2 WHEN always ALERT telegram DO debug(a)');
+    const r = compile('a = 1 + 2 - 3 * 4 / 5 % 6 ** 2 WHEN always DO alert(telegram), debug(a)');
     expect(r.ok).toBe(true);
     expect(r.agent.given).toEqual([{ name: 'a', expr: '1 + 2 - 3 * 4 / 5 % 6 ** 2' }]);
   });
 
   it('an inline metric@scope mixed into an operator expression is a compile-time error with a "bind it first" redirect', () => {
-    const r = compile('GIVEN y = "x" + pnl@positions.total WHEN always ALERT telegram DO nop');
+    const r = compile('y = "x" + pnl@positions.total WHEN always DO alert(telegram)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /cannot reference a metric@scope value inline.*bind it first/.test(e.message))).toBe(true);
   });
 
   it('an operator-expression label used for a NUMERIC action param is a clear compile-time error naming the label', () => {
-    const r = compile(
-      'GIVEN qty_expr = 1 + 1 '
-      + 'WHEN always ALERT telegram DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", qty=qty_expr)'
-    );
+    const r = compile('qty_expr = 1 + 1 WHEN always DO alert(telegram), order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", qty=qty_expr)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /GIVEN label 'qty_expr' is a computed value; it cannot be used for a numeric\/enum field/.test(e.message))).toBe(true);
   });
 
   it('an operator-expression label used for a STRING-typed action param compiles to a {"$given": name} marker', () => {
-    const r = compile('GIVEN msg_txt = "a" + "b" WHEN always ALERT telegram DO emit_log(message=msg_txt)');
+    const r = compile('msg_txt = "a" + "b" WHEN always DO alert(telegram), log(message=msg_txt)');
     expect(r.ok).toBe(true);
-    expect(r.agent.actions).toEqual([{ type: 'emit_log', params: { message: { '$given': 'msg_txt' } } }]);
+    expect(r.agent.actions).toEqual([{ type: 'log', params: { message: { '$given': 'msg_txt' } } }]);
   });
 
   it('ALERT\'s clause-level msg= default resolves an operator-expression label to a {"$given": name} marker', () => {
-    const r = compile('GIVEN msg_txt = "a" + "b" WHEN always ALERT msg = msg_txt, telegram DO nop');
+    const r = compile('msg_txt = "a" + "b" WHEN always DO alert(msg = msg_txt, telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.events).toEqual([{ channel: 'telegram', enabled: true, message: { '$given': 'msg_txt' } }]);
   });
 
   it('a channel\'s OWN msg= kwarg also resolves an operator-expression label to a {"$given": name} marker', () => {
-    const r = compile('GIVEN msg_txt = "a" + "b" WHEN always ALERT telegram(msg=msg_txt) DO nop');
+    const r = compile('msg_txt = "a" + "b" WHEN always DO alert(telegram(msg=msg_txt))');
     expect(r.ok).toBe(true);
     expect(r.agent.events).toEqual([{ channel: 'telegram', enabled: true, message: { '$given': 'msg_txt' } }]);
   });
 
   it('debug(x) on an operator-expression label compiles to the NEW {"$given": name} live marker', () => {
-    const r = compile('GIVEN msg_txt = "a" + "b" WHEN always ALERT telegram DO debug(msg_txt)');
+    const r = compile('msg_txt = "a" + "b" WHEN always DO alert(telegram), debug(msg_txt)');
     expect(r.ok).toBe(true);
     expect(r.agent.actions).toEqual([
-      { type: 'emit_log', params: { level: 'debug', message: { '$given': 'msg_txt' } } },
+      { type: 'log', params: { level: 'debug', message: { '$given': 'msg_txt' } } },
     ]);
   });
 
   it('debug(x) on a PURE-ALIAS label is UNCHANGED — still the old static JSON-stringified condition format', () => {
-    const r = compile('GIVEN p = pnl@positions.total <= -50000 WHEN always ALERT telegram DO debug(p)');
+    const r = compile('p = pnl@positions.total <= -50000 WHEN always DO alert(telegram), debug(p)');
     expect(r.ok).toBe(true);
-    const expectedDict = compile('WHEN pnl@positions.total <= -50000 ALERT telegram DO nop').agent.conditions;
+    const expectedDict = compile('WHEN pnl@positions.total <= -50000 DO alert(telegram)').agent.conditions;
     expect(r.agent.actions).toEqual([
-      { type: 'emit_log', params: { level: 'debug', message: JSON.stringify(expectedDict) } },
+      { type: 'log', params: { level: 'debug', message: JSON.stringify(expectedDict) } },
     ]);
   });
 
   it('a pure-alias label CAN be re-attached to a fresh comparator in WHEN (WHEN p <= -50000)', () => {
-    const r = compile('GIVEN p = pnl@positions.total WHEN p <= -50000 ALERT telegram DO nop');
+    const r = compile('p = pnl@positions.total WHEN p <= -50000 DO alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions).toEqual({ metric: 'pnl', scope: 'positions.total', op: '<=', value: -50000 });
   });
 
   it('a REAL multi-leaf condition label is still only usable as a WHOLE bare WHEN condition — re-attaching a comparator is still rejected', () => {
-    const r = compile(
-      'GIVEN x = (pnl@positions.total <= -50000) & (avail_margin@funds.total < 0) '
-      + 'WHEN x <= -1 ALERT telegram'
-    );
+    const r = compile('x = (pnl@positions.total <= -50000) & (avail_margin@funds.total < 0) WHEN x <= -1 DO alert(telegram)');
     expect(r.ok).toBe(false);
   });
 });
 
 describe('Sprint [GIVEN-parts] — string-building GIVEN expressions compile to "parts", not "expr"', () => {
   it('"Loss: " + p (string literal + an earlier alias) compiles to the "parts" shape', () => {
-    const r = compile('GIVEN p = pnl@positions.total\nmsg_txt = "Loss: " + p WHEN always ALERT telegram DO debug(msg_txt)');
+    const r = compile('p = pnl@positions.total\nmsg_txt = "Loss: " + p WHEN always DO alert(telegram), debug(msg_txt)');
     expect(r.ok).toBe(true);
     expect(r.agent.given).toEqual([
       { name: 'p', expr: 'pnl@positions.total' },
@@ -3697,23 +3638,19 @@ describe('Sprint [GIVEN-parts] — string-building GIVEN expressions compile to 
   });
 
   it('a pure-number expression (no string literal anywhere) still compiles to "expr" — unaffected', () => {
-    const r = compile('GIVEN total = 1 + 2 WHEN always ALERT telegram DO debug(total)');
+    const r = compile('total = 1 + 2 WHEN always DO alert(telegram), debug(total)');
     expect(r.ok).toBe(true);
     expect(r.agent.given).toEqual([{ name: 'total', expr: '1 + 2' }]);
   });
 
   it('a pure-number expression REFERENCING an unbound name by name also still compiles to "expr"', () => {
-    const r = compile('GIVEN total = a + b WHEN always ALERT telegram DO debug(total)');
+    const r = compile('total = a + b WHEN always DO alert(telegram), debug(total)');
     expect(r.ok).toBe(true);
     expect(r.agent.given).toEqual([{ name: 'total', expr: 'a + b' }]);
   });
 
   it('multiple string/name parts flatten left-to-right into one array, in source order', () => {
-    const r = compile(
-      'GIVEN sym = pnl@positions.total\n'
-      + 'msg_txt = "Symbol: " + sym + " breached" '
-      + 'WHEN always ALERT telegram DO debug(msg_txt)'
-    );
+    const r = compile('sym = pnl@positions.total\nmsg_txt = "Symbol: " + sym + " breached" WHEN always DO alert(telegram), debug(msg_txt)');
     expect(r.ok).toBe(true);
     expect(r.agent.given).toEqual([
       { name: 'sym', expr: 'pnl@positions.total' },
@@ -3722,7 +3659,7 @@ describe('Sprint [GIVEN-parts] — string-building GIVEN expressions compile to 
   });
 
   it('a non-"+" operator anywhere in a string-containing expression is a compile-time error naming the restriction', () => {
-    const r = compile('GIVEN bad = "x" + 1 * 2 WHEN always ALERT telegram DO nop');
+    const r = compile('bad = "x" + 1 * 2 WHEN always DO alert(telegram)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /only string concatenation with \+ is supported here/.test(e.message))).toBe(true);
   });
@@ -3732,42 +3669,42 @@ describe('Sprint [GIVEN-parts] — string-building GIVEN expressions compile to 
     // negative-NUMBER literal (pre-existing rule, unaffected by this
     // sprint) — so a genuine unary-MINUS AST node needs an operand that
     // ISN'T a digit (e.g. a bound name) to actually exercise this path.
-    const r = compile('GIVEN p = 5\nbad = "x" + -p WHEN always ALERT telegram DO nop');
+    const r = compile('p = 5\nbad = "x" + -p WHEN always DO alert(telegram)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /only string concatenation with \+ is supported here/.test(e.message))).toBe(true);
   });
 
   it('the existing inline-metric-rejection error still fires for a metric@scope mixed directly into a parts-eligible (string-containing) expression', () => {
-    const r = compile('GIVEN y = "x" + pnl@positions.total WHEN always ALERT telegram DO nop');
+    const r = compile('y = "x" + pnl@positions.total WHEN always DO alert(telegram)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /cannot reference a metric@scope value inline.*bind it first/.test(e.message))).toBe(true);
   });
 
   it('a "$given" marker produced from a "parts"-kind binding is identical to one from an "expr"-kind binding — debug(x)/action-param/ALERT msg= consumers are unaffected by parts-vs-expr', () => {
-    const viaParts = compile('GIVEN msg_txt = "a" + "b" WHEN always ALERT msg = msg_txt, telegram DO emit_log(message=msg_txt)');
+    const viaParts = compile('msg_txt = "a" + "b" WHEN always DO alert(msg = msg_txt, telegram), log(message=msg_txt)');
     expect(viaParts.ok).toBe(true);
     expect(viaParts.agent.given).toEqual([{ name: 'msg_txt', parts: ['a', 'b'] }]);
     expect(viaParts.agent.events).toEqual([{ channel: 'telegram', enabled: true, message: { '$given': 'msg_txt' } }]);
-    expect(viaParts.agent.actions).toEqual([{ type: 'emit_log', params: { message: { '$given': 'msg_txt' } } }]);
+    expect(viaParts.agent.actions).toEqual([{ type: 'log', params: { message: { '$given': 'msg_txt' } } }]);
   });
 });
 
 describe('Sprint [order-unify] — order/place_order compile-output flip', () => {
   it('DO order(...) compiles to type: "order"', () => {
-    const r = compile('WHEN always ALERT telegram DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)');
+    const r = compile('WHEN always DO alert(telegram), order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)');
     expect(r.ok).toBe(true);
     expect(r.agent.actions[0].type).toBe('order');
   });
 
   it('DO place_order(...) (legacy spelling, still accepted as typed input) ALSO compiles to type: "order"', () => {
-    const r = compile('WHEN always ALERT telegram DO place_order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)');
+    const r = compile('WHEN always DO alert(telegram), place_order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)');
     expect(r.ok).toBe(true);
     expect(r.agent.actions[0].type).toBe('order');
   });
 
   it('both spellings compile to byte-identical output', () => {
-    const a = compile('WHEN always ALERT telegram DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)');
-    const b = compile('WHEN always ALERT telegram DO place_order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)');
+    const a = compile('WHEN always DO alert(telegram), order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)');
+    const b = compile('WHEN always DO alert(telegram), place_order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)');
     expect(a.ok).toBe(true);
     expect(b.ok).toBe(true);
     expect(a.agent.actions).toEqual(b.agent.actions);
@@ -3782,16 +3719,16 @@ describe('Sprint [order-unify] — order/place_order compile-output flip', () =>
 
 describe('Sprint G — Task 3 aliases: "hold" + funds.cash/funds.margin', () => {
   it('"hold" is an additional accepted alias for "holdings" alongside the already-shipped "hld"', () => {
-    const viaHold = compile('WHEN pnl@hold.total <= -50000 ALERT telegram DO nop');
-    const viaHld = compile('WHEN pnl@hld.total <= -50000 ALERT telegram DO nop');
-    const viaLong = compile('WHEN pnl@holdings.total <= -50000 ALERT telegram DO nop');
+    const viaHold = compile('WHEN pnl@hold.total <= -50000 DO alert(telegram)');
+    const viaHld = compile('WHEN pnl@hld.total <= -50000 DO alert(telegram)');
+    const viaLong = compile('WHEN pnl@holdings.total <= -50000 DO alert(telegram)');
     expect(viaHold.ok).toBe(true);
     expect(viaHold.agent.conditions).toEqual(viaLong.agent.conditions);
     expect(viaHld.agent.conditions).toEqual(viaLong.agent.conditions);
   });
 
   it('"hold" DECOMPILES to the canonical long form "holdings", never the alias', () => {
-    const r = compile('WHEN pnl@hold.total <= -50000 ALERT telegram DO nop');
+    const r = compile('WHEN pnl@hold.total <= -50000 DO alert(telegram)');
     expect(r.ok).toBe(true);
     const dec = decompileCondition(r.agent.conditions, CATALOG);
     expect(dec.errors).toEqual([]);
@@ -3799,28 +3736,28 @@ describe('Sprint G — Task 3 aliases: "hold" + funds.cash/funds.margin', () => 
   });
 
   it('funds.cash dot-access compiles as the real "cash" metric bound to funds.total — no new scope root', () => {
-    const r = compile('WHEN funds.cash <= 0 ALERT telegram DO nop');
-    const byHand = compile('WHEN cash@funds.total <= 0 ALERT telegram DO nop');
+    const r = compile('WHEN funds.cash <= 0 DO alert(telegram)');
+    const byHand = compile('WHEN cash@funds.total <= 0 DO alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions).toEqual(byHand.agent.conditions);
   });
 
   it('funds.margin dot-access compiles as the real "avail_margin" metric bound to funds.total', () => {
-    const r = compile('WHEN funds.margin <= 0 ALERT telegram DO nop');
-    const byHand = compile('WHEN avail_margin@funds.total <= 0 ALERT telegram DO nop');
+    const r = compile('WHEN funds.margin <= 0 DO alert(telegram)');
+    const byHand = compile('WHEN avail_margin@funds.total <= 0 DO alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions).toEqual(byHand.agent.conditions);
   });
 
   it('"cash"/"margin" are NOT separate scope roots — funds.cash/funds.margin only exist as this dot-access alias', () => {
-    const r = compile('WHEN pnl@cash.total <= -50000 ALERT telegram DO nop');
+    const r = compile('WHEN pnl@cash.total <= -50000 DO alert(telegram)');
     expect(r.ok).toBe(false);
   });
 });
 
 describe('Sprint G — Task 4: kind: / underlying: qualifiers', () => {
   it('symbols.kind:gainers compiles to the correct scope_filter shape', () => {
-    const r = compile('WHEN symbols.kind:gainers.kind == "gainers" ALERT telegram DO nop');
+    const r = compile('WHEN symbols.kind:gainers.kind == "gainers" DO alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions).toEqual({
       metric: 'kind', scope: 'symbols.any_acct', op: '==', value: 'gainers',
@@ -3829,7 +3766,7 @@ describe('Sprint G — Task 4: kind: / underlying: qualifiers', () => {
   });
 
   it('positions.expiring_today.underlying:NIFTY compiles to the correct scope_filter shape', () => {
-    const r = compile('WHEN pnl@positions.expiring_today.underlying:NIFTY <= -5000 ALERT telegram DO nop');
+    const r = compile('WHEN pnl@positions.expiring_today.underlying:NIFTY <= -5000 DO alert(telegram)');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions).toEqual({
       metric: 'pnl', scope: 'positions.expiring_today', op: '<=', value: -5000,
@@ -3852,9 +3789,7 @@ describe('Sprint G — Task 4: kind: / underlying: qualifiers', () => {
 
 describe('Part B — notify=[...] universal action-level kwarg', () => {
   it('order(..., notify=[telegram]) compiles with a `notify` SIBLING key, not inside params', () => {
-    const r = compile(
-      'DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, notify=[telegram])'
-    );
+    const r = compile('WHEN always DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, notify=[telegram])');
     expect(r.errors).toEqual([]);
     expect(r.ok).toBe(true);
     expect(r.agent.actions).toEqual([{
@@ -3905,18 +3840,16 @@ describe('Part B — notify=[...] universal action-level kwarg', () => {
   });
 
   it('duplicate notify= is a compile-time error', () => {
-    const r = compile(
-      'DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, notify=[telegram], notify=[telegram])'
-    );
+    const r = compile('WHEN always DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, notify=[telegram], notify=[telegram])');
     expect(r.ok).toBe(false);
     expect(r.errors.some((e) => /duplicate parameter 'notify'/.test(e.message))).toBe(true);
   });
 
-  it('notify=[...] is universally available — zero per-action-type special-casing — exercised on emit_log too', () => {
-    const r = compile('DO emit_log(message="hello", notify=[telegram])');
+  it('notify=[...] is universally available — zero per-action-type special-casing — exercised on log too', () => {
+    const r = compile('WHEN always DO log(message="hello", notify=[telegram])');
     expect(r.ok).toBe(true);
     expect(r.agent.actions).toEqual([{
-      type: 'emit_log',
+      type: 'log',
       params: { message: 'hello' },
       notify: [{ channel: 'telegram' }],
     }]);
@@ -3934,7 +3867,7 @@ describe('Part B — notify=[...] universal action-level kwarg', () => {
       { grammar_kind: 'notify', token_kind: 'channel', token: 'newtestchannel', params_schema: { urgency: { type: 'enum', enum: ['low', 'high'], required: false } } },
     ]);
     const r = compileAgentCliStatement(
-      'DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, notify=[newtestchannel(urgency="high")])',
+      'WHEN always DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, notify=[newtestchannel(urgency="high")])',
       extendedCatalog,
       { lotSizeOf, exchangesOf }
     );
@@ -3952,6 +3885,191 @@ describe('Part B — notify=[...] universal action-level kwarg', () => {
       'WHEN pnl@positions.expiring_today > 0 '
       + 'DO close_position(account="ZG0790", symbol="NIFTY25JULFUT", notify=[telegram, ntfy(priority="urgent")])'
     );
+    expect(r1.ok).toBe(true);
+    const dec = decompileAgent(r1.agent, CATALOG);
+    expect(dec.errors).toEqual([]);
+    const r2 = compile(dec.text);
+    expect(r2.ok).toBe(true);
+    expect(r2.agent).toEqual(r1.agent);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// Sprint [grammar-unify] — items 1/2/4's explicit required-test coverage
+// (plan: unify WHEN...DO... as a generic optional conditional wrapper;
+// GIVEN removed entirely; ALERT is an ordinary call, never a reserved
+// keyword; help(<name>) added). These restate, as standalone end-to-end
+// assertions, the specific scenarios the task's own acceptance criteria
+// named — most are ALSO exercised incidentally by the migrated describe
+// blocks above, but each gets its own direct test here so the exact
+// required behavior is never dependent on an unrelated test's survival.
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('Sprint [grammar-unify] — GIVEN is rejected (negative test)', () => {
+  it('a literal leading GIVEN keyword is rejected — not merely "not required"', () => {
+    const r = compile('given a = 1 WHEN (a==1) DO close_position(account="ZG0790", symbol="NIFTY25JULFUT")');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some((e) => /GIVEN is no longer part of the grammar/.test(e.message))).toBe(true);
+  });
+
+  it('the old 4-clause "GIVEN ... WHEN ... ALERT ... DO ..." form is rejected outright', () => {
+    const r = compile('GIVEN x = 1 WHEN x==1 ALERT telegram DO close_position(account="ZG0790", symbol="NIFTY25JULFUT")');
+    expect(r.ok).toBe(false);
+  });
+});
+
+describe('Sprint [grammar-unify] — mixed preamble (order/alert/bracket/debug/help/label-assignment) ahead of WHEN...DO...', () => {
+  it('every preamble call is present, in order, and only the DO call is gated by WHEN', () => {
+    const r = compile(
+      'order(account="ZG0790", symbol="NIFTY25JULFUT", side="BUY", lots=2)\n'
+      + 'bracket(applies_to=buy_any, tp_pct=30)\n'
+      + 'alert(telegram)\n'
+      + 'z = 1\n'
+      + 'debug(z)\n'
+      + 'help(pnl)\n'
+      + 'WHEN (pnl@positions.total==1) DO close_position(account="ZG0790", symbol="NIFTY25JULFUT")'
+    );
+    expect(r.ok).toBe(true);
+    expect(r.kind).toBe('agent');
+    // Every preamble call present, in textual order.
+    expect(r.agent.preamble).toEqual([
+      { type: 'order', params: { account: 'ZG0790', symbol: 'NIFTY25JULFUT', side: 'BUY', qty: 150 } },
+      { type: 'bracket', params: { applies_to: 'buy_any', tp_pct: 30 } },
+      { type: 'alert', events: [{ channel: 'telegram', enabled: true }] },
+      { type: 'log', params: { level: 'debug', message: '1' } },
+      { type: 'help', params: { name: 'pnl' } },
+    ]);
+    // Only the DO call (close_position) is condition-gated.
+    expect(r.agent.conditions).toEqual({ metric: 'pnl', scope: 'positions.total', op: '==', value: 1 });
+    expect(r.agent.actions).toEqual([{
+      type: 'close_position', params: { account: 'ZG0790', symbol: 'NIFTY25JULFUT' },
+    }]);
+    expect(r.agent.events).toEqual([]);
+  });
+});
+
+describe('Sprint [grammar-unify] — a preamble-only statement (no WHEN/DO at all)', () => {
+  it('parses and compiles to completion as a complete, valid standalone statement — the parser never requires a trailing conditional wrapper', () => {
+    const r = compile(
+      'order(account="ZG0790", symbol="NIFTY25JULFUT", side="BUY", lots=1)\n'
+      + 'x = 1\n'
+      + 'debug(x)\n'
+      + 'help(pnl)'
+    );
+    expect(r.ok).toBe(true);
+    expect(r.kind).toBe('agent');
+    expect(r.agent.conditions).toEqual({ metric: 'avail_margin', scope: 'funds.any_acct', op: '>=', value: -999999999 });
+    expect(r.agent.actions).toEqual([]);
+    expect(r.agent.events).toEqual([]);
+    expect(r.agent.preamble).toEqual([
+      { type: 'order', params: { account: 'ZG0790', symbol: 'NIFTY25JULFUT', side: 'BUY', qty: 75 } },
+      { type: 'log', params: { level: 'debug', message: '1' } },
+      { type: 'help', params: { name: 'pnl' } },
+    ]);
+  });
+
+  it('a single bare order(...) alone (today\'s pre-existing standalone form) is unaffected — still kind:\'order\'', () => {
+    const r = compile('order(account="ZG0790", symbol="NIFTY25JULFUT", side="BUY", lots=1, price=100)', { mode: 'paper' });
+    expect(r.ok).toBe(true);
+    expect(r.kind).toBe('order');
+  });
+});
+
+describe('Sprint [grammar-unify] — no ALERT keyword exists anywhere; alert(...) compiles identically in the preamble or in DO', () => {
+  it('alert(...) in the unconditional preamble and alert(...) inside a WHEN...DO... both produce the identical events shape', () => {
+    const inPreamble = compile('alert(telegram)');
+    expect(inPreamble.ok).toBe(true);
+    expect(inPreamble.agent.preamble).toEqual([{ type: 'alert', events: [{ channel: 'telegram', enabled: true }] }]);
+
+    const inDo = compile('WHEN pnl@positions.total <= -1 DO alert(telegram)');
+    expect(inDo.ok).toBe(true);
+    expect(inDo.agent.events).toEqual([{ channel: 'telegram', enabled: true }]);
+
+    // Same channel-compile machinery either way — both read the identical
+    // {channel, enabled} shape out of the SAME compileAlertClause call.
+    expect(inPreamble.agent.preamble[0].events).toEqual(inDo.agent.events);
+  });
+
+  it('a literal bare ALERT keyword (the old removed clause introducer) is rejected — not a valid spelling in either position', () => {
+    const r = compile('WHEN pnl@positions.total <= -1 ALERT telegram DO nop');
+    expect(r.ok).toBe(false);
+  });
+});
+
+describe('Sprint [grammar-unify] — help(<name>) CLI statement (item 4)', () => {
+  it('compiles correctly as a bare standalone CLI statement', () => {
+    const r = compile('help(pnl)');
+    expect(r.ok).toBe(true);
+    expect(r.kind).toBe('help');
+    expect(r.help).toEqual({ params: { name: 'pnl' } });
+  });
+
+  it('compiles correctly as an ordinary call inside the unconditional preamble', () => {
+    const r = compile('help(pnl)\nWHEN always DO alert(telegram)');
+    expect(r.ok).toBe(true);
+    expect(r.agent.preamble).toEqual([{ type: 'help', params: { name: 'pnl' } }]);
+  });
+
+  it('compiles correctly as an ordinary call inside DO', () => {
+    const r = compile('WHEN pnl@positions.total <= -1 DO help(pnl)');
+    expect(r.ok).toBe(true);
+    expect(r.agent.actions).toEqual([{ type: 'help', params: { name: 'pnl' } }]);
+  });
+});
+
+describe('Sprint [grammar-unify] — OrderCliTab scope (allowedKinds) never grows a help(...) escape hatch', () => {
+  it('compileStatement rejects a bare help(...) statement when allowedKinds is the order-only CLI scope', () => {
+    const r = compile('help(pnl)', { allowedKinds: ['order', 'cancel_all_orders'] });
+    expect(r.ok).toBe(false);
+    expect(r.kind).toBe('help');
+    expect(r.errors.some((e) => /author agents\/brackets on Automation . Console/.test(e.message))).toBe(true);
+  });
+
+  it('a plain order(...) statement still compiles under that SAME restricted scope (sanity check — the restriction is help-specific, not total)', () => {
+    const r = compile(
+      'order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, price=100)',
+      { mode: 'paper', allowedKinds: ['order', 'cancel_all_orders'] },
+    );
+    expect(r.ok).toBe(true);
+    expect(r.kind).toBe('order');
+  });
+});
+
+describe('Sprint [grammar-unify] — help(...) and bracket(...) decompile round-trip, preamble and DO positions', () => {
+  it('help(...) in DO decompiles and recompiles byte-identically (bare-arg sugar, never the quoted generic form)', () => {
+    const r1 = compile('WHEN pnl@positions.total <= -1 DO help(pnl)');
+    expect(r1.ok).toBe(true);
+    const dec = decompileAgent(r1.agent, CATALOG);
+    expect(dec.errors).toEqual([]);
+    expect(dec.text).toContain('help(pnl)');
+    const r2 = compile(dec.text);
+    expect(r2.ok).toBe(true);
+    expect(r2.agent).toEqual(r1.agent);
+  });
+
+  it('help(...) in the preamble decompiles and recompiles byte-identically', () => {
+    const r1 = compile('help(pnl)\nWHEN always DO alert(telegram)');
+    expect(r1.ok).toBe(true);
+    const dec = decompileAgent(r1.agent, CATALOG);
+    expect(dec.errors).toEqual([]);
+    expect(dec.text).toContain('help(pnl)');
+    const r2 = compile(dec.text);
+    expect(r2.ok).toBe(true);
+    expect(r2.agent).toEqual(r1.agent);
+  });
+
+  it('bracket(...) in DO decompiles and recompiles byte-identically', () => {
+    const r1 = compile('WHEN always DO bracket(applies_to=buy_any, tp_pct=30)');
+    expect(r1.ok).toBe(true);
+    const dec = decompileAgent(r1.agent, CATALOG);
+    expect(dec.errors).toEqual([]);
+    const r2 = compile(dec.text);
+    expect(r2.ok).toBe(true);
+    expect(r2.agent).toEqual(r1.agent);
+  });
+
+  it('bracket(...) in the preamble decompiles and recompiles byte-identically', () => {
+    const r1 = compile('bracket(applies_to=buy_any, tp_pct=30)\nWHEN always DO alert(telegram)');
     expect(r1.ok).toBe(true);
     const dec = decompileAgent(r1.agent, CATALOG);
     expect(dec.errors).toEqual([]);

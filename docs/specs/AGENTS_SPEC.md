@@ -527,25 +527,63 @@ current value by name every call.
 
 ## 13. Agent CLI Grammar
 
-### Operator-composed text statements (Sprint 4)
+### Operator-composed text statements (Sprint 4, unified Sprint [grammar-unify] 2026-10)
 
-The agent editor's CLI tab enables authoring agents as single-line text statements 
-instead of nested JSON trees. A statement comprises:
+The agent editor's CLI tab enables authoring agents as single-line (or multi-line)
+text statements instead of nested JSON trees. There is ONE shared statement
+vocabulary — label assignment, `order(...)`/`place_order(...)`, `bracket(...)`,
+`alert(...)`, `debug(...)`, `help(...)`, or any other real action call — and exactly
+one thing that distinguishes "runs unconditionally, every cycle" from "runs only on
+a condition match": whether a call sits inside an explicit `WHEN ... DO ...` pair or
+not.
 
 ```
-WHEN <condition> [ALERT <alert_clause>] [DO <do_clause>]
+<preamble: any statement>* [WHEN <condition> DO <calls>]
 ```
 
-or for placing orders directly:
+**Preamble** — everything BEFORE `WHEN` (or, when there is no `WHEN` at all, the
+entire statement) is the preamble: it runs unconditionally, with no introducer
+keyword needed (`GIVEN` is removed from the grammar entirely — it carried no
+semantic meaning even before this sprint, and the preamble is now self-delimiting
+by position). A preamble with no `WHEN ... DO ...` at all is a complete, valid,
+standalone statement on its own — the parser never requires or expects a trailing
+conditional wrapper. Example (every line before `WHEN` is unconditional; only
+`close_position(...)` is gated):
 
 ```
-<order_call> [, <order_call> ...]
+order(account="ZG0790", symbol="NIFTY25JULFUT", side="BUY", lots=2)
+alert(telegram)
+debug(x)
+help(pnl)
+x = 1
+WHEN (x==1) DO close_position(account="ZG0790", symbol="NIFTY25JULFUT")
 ```
 
-Both `ALERT` and `DO` clauses are independently optional — any combination is valid, 
-**except** an agent must have at least one of them (a bare `WHEN` with neither is 
-rejected). Order is flexible: `WHEN ... DO ... ALERT ...` and `WHEN ... ALERT ... DO ...`
-both compile identically.
+**`WHEN ... DO ...`** — a single, paired, optional conditional wrapper. `WHEN` with
+no `DO` is a compile-time error (nothing to gate); `DO` with no `WHEN` is also a
+compile-time error (redundant with writing the call directly in the preamble, which
+additionally gets correct once-per-activation execution semantics for a
+side-effecting call — see the engine design note below). `DO` must contain at least
+one real action or `alert(...)` call — `DO nop` alone is rejected.
+
+**`alert(...)` is an ordinary call, never a reserved keyword** — it compiles through
+the exact same channel-list/`msg=` machinery the old `ALERT` clause always used
+(`compileAlertClause`), reused unchanged under the hood; only the DSL-surface
+keyword is gone. It can appear in the preamble or inside `DO`, with identical
+compiled output either way (`events: [{channel, enabled, ...}]`). The one
+UNCHANGED, separate statement kind is the standalone **event_stmt** — a bare
+`ALERT log_tag=... render=...` statement (no `WHEN`/`DO`, whose first clause is one
+of the reserved event-meta keys) subscribes to the platform's internal log/event
+stream rather than polling a metric; this form is untouched by the unification.
+
+**`order(...)`/`bracket(...)`/`help(...)` as standalone statements** — a single bare
+`order(...)` (or a comma-separated basket of them), a single bare `bracket(...)`, or
+a single bare `help(<name>)` each keep their own pre-existing, unchanged standalone
+compiled shape (`kind: 'order'`/`'bracket'`/`'help'`) when that is the ENTIRE
+statement. The SAME three names are also valid inside a mixed preamble/`DO` list —
+resolved by trying the exclusive standalone parser first and falling back to the
+unified preamble parser only when the standalone form doesn't consume the whole
+statement.
 
 ### Syntax overview
 
@@ -562,9 +600,30 @@ grammar). Argument aliases are provided for brevity:
 **Values**: Numbers, strings (quoted), names, and list literals `[a, b, c]` — the 
 last only in leaf RHS positions, not as function arguments.
 
-**Reserved words**: `when`, `alert`, `do`, `nop`, `always`, `in`, `not`, `true`, `false`.
+**`help(<name>)`** — a read-only catalog lookup, never a broker action: reverse-resolves
+`<name>` (always a bare, unquoted word — the same lexer sugar `debug(x)` uses, not a
+quoted string) to every matching catalog row (a name can be reused across token
+kinds) and logs/returns the description, parameter signature, and docstring for
+each. Valid as a standalone CLI statement, inside the preamble, or inside `DO` — the
+one real action never subject to the live/paper mode gate (it never touches the
+broker). See §14 below for the full action contract.
+
+**Reserved words**: `when`, `do`, `nop`, `always`, `in`, `not`, `true`, `false`. 
+`given`/`alert` are explicitly NOT reserved — `given` has no meaning left to mark at
+all (a literal leading `given` is rejected with a specific, helpful error pointing
+at the preamble's self-delimiting shape); `alert` must be a callable ordinary token
+name (`alert(...)`), which a reserved word can never be. `debug`/`help` are also not
+reserved (same "contextual, not reserved" treatment `msg=` uses).
 
 **Limits**: 4000 characters per statement, 20 maximum nesting depth.
+
+**Migration note (no action required for existing saved rows)**: the old 4-clause
+`GIVEN <bindings/debug> [WHEN <condition>] [ALERT <alert_clause>] [DO <do_clause>]`
+form is no longer valid CLI syntax — a saved `Agent.cli_source` containing the word
+`GIVEN`/a bare `ALERT <channel-list>` clause is inert, display-only text that is
+never re-parsed, so no migration of any existing row is needed. Re-saving an
+existing agent through the Edit flow re-decompiles its live JSON into the new
+syntax automatically.
 
 ### Parameterized metric and scope call syntax
 
@@ -620,6 +679,59 @@ this syntax.
   of a Save button, and submitting places the order immediately via the ticket or 
   basket endpoint (single leg → ticket, multiple legs → basket). LIVE mode orders 
   require confirmation before submission.
+- **Help statement**: A bare `help(<name>)` text shows a "Look up" button on the
+  Console tab (`/automation?tab=console`) only — it is NOT offered on the
+  order-scoped CLI mounts (`/orders`' CLI tab, SymbolPanel's order-ticket CLI tab,
+  both restricted via `compileStatement`'s `allowedKinds` option). Submitting POSTs
+  to `/api/agents/help`, which calls the same `help_lookup` resolver the real
+  `help(...)` DSL action dispatches through — the result renders inline in the
+  Console result area, not just logged, since the operator wants to SEE the answer.
+
+### Compiled JSON shape — `preamble` (new, Sprint [grammar-unify])
+
+A compiled `kind:'agent'` row's JSON gained one new top-level key, `preamble`
+(an array, omitted entirely when empty — same "no stray key" convention `given`
+already follows): one entry per preamble call, in textual order. `debug(...)`
+compiles to `{type:'log', params:{level:'debug', message:...}}`; `help(...)` to
+`{type:'help', params:{name:...}}`; `alert(...)` to `{type:'alert', events:[...]}`
+(the identical `events` shape `DO`'s own `alert(...)` produces); any other real
+action (including `order`/`bracket`) to the ordinary `{type, params}` shape.
+`given`'s own pre-existing semantics (a pure-alias/primitive label has zero
+backend footprint; an operator-expression binding gets its own `given[]` entry)
+are unchanged and orthogonal to `preamble` — a label assignment is never itself a
+`preamble` entry.
+
+**Execution semantics — saved-agent preamble vs. CLI one-shot (engine work, tracked
+separately, not yet landed as of this entry)**: for a bare CLI statement (no save
+step), every preamble call executes once, synchronously, at the moment of
+submission — unchanged from today's `order(...)`/`cancel_all_orders(...)` one-shot
+behavior. For a SAVED, polled `Agent` row, the intended design (per the
+grammar-unification plan, item 0) is: `debug`/`help`/`alert` preamble entries run on
+EVERY poll cycle (diagnostic/notification, no real-money risk from repetition);
+`order`/`bracket`/any other side-effecting preamble entry is meant to fire exactly
+ONCE, at agent activation (first save-and-enable, or re-enable after
+pause/disable) — NOT on every cycle, which would otherwise re-place a real broker
+order roughly every cooldown window. **This once-per-activation engine mechanism
+is a separate, tracked piece of backend work and had not landed in
+`agent_engine.py` as of this grammar-unification commit** — confirm against
+`backend/api/algo/agent_engine.py`'s own `_cycle_evaluate_agent` before relying on
+a saved agent's preamble side-effecting call firing only once.
+
+### Known gap — autocomplete/hover position classification (not yet updated)
+
+The Console CLI editor's own autocomplete (`suggestAgentCliAt`) and hover-description
+(`describeTokenAt`) features still key their internal "which clause is the cursor
+inside" classifier (`_clauseKindFromTokenPrefix`, `agents.js`) off the OLD 4-clause
+model (`given`/`when`/`alert`/`do` as reserved-word markers). Since `given`/`alert`
+are no longer reserved words at the lexer level, this classifier can no longer detect
+either one via its existing mechanism, and a parallel "which position is a channel
+name expected" classifier (keyed off a seen bare `ALERT` marker) has the same
+problem for the new `alert(...)` call shape. Compiling, decompiling, and saving a
+statement are all unaffected (the real parser/compiler have no dependency on this
+classifier) — only the EDITOR'S OWN live suggestions/hover text are stale for
+preamble-position and `alert(...)`-position typing. Tracked as follow-up work, not
+closed by this entry — see `frontend/src/lib/__tests__/agentsSuggest.test.js` and
+`describeTokenAt.test.js` for the specific failing cases this gap covers.
 
 ---
 
@@ -627,6 +739,7 @@ this syntax.
 
 | Date | Change |
 |---|---|
+| 2026-10-23 | Sprint [grammar-unify] (items 1/2/4) — `WHEN ... DO ...` is now the ONE generic, optional conditional wrapper around any statement; everything outside it (the preamble) runs unconditionally, with no `GIVEN` keyword needed — `GIVEN` is removed from the grammar entirely (it carried no semantic meaning, and the preamble is now self-delimiting by position). `ALERT` is removed as a reserved clause keyword — `alert(...)` is an ordinary call, compiling through the exact same `compileAlertClause` machinery whether it appears in the preamble or inside `DO`. New compiled-JSON key `preamble[]` (per-call compiled entries, omitted when empty). New standalone/preamble/DO-callable `help(<name>)` action — read-only catalog introspection, wired to `POST /api/agents/help` on the Console tab only (never the order-scoped CLI mounts). The standalone top-level `event_stmt` (bare `ALERT log_tag=...`) is unchanged. Known gap: the Console editor's own autocomplete/hover classifier (`_clauseKindFromTokenPrefix`) still assumes the old 4-clause shape — tracked as follow-up, does not affect compile/save correctness. |
 | 2026-10-10 | (uncommitted Sprint 4) — Agent CLI grammar UI + full compiler suite + decompiler. Operators can now author and edit agents via single-line text statements (WHEN condition [ALERT notifies] [DO actions]) in the `/automation` page's CLI tab, alongside the existing Structured (JSON) tab. Supports parameterized metric/scope call syntax (mean_pnl(minutes=30)), keyword-only arguments with aliases, list literals, and parenthesized boolean logic. A bare order(...) statement places a real order without creating an agent. Commits 2a5cd01d, d05fe54a, 3b615b0b with integration into existing agent create/update routes. |
 | 2026-10-09 | 9b7da82f: CLI-grammar effort, Sprint 1 — `_age_validate_action_entries()` closes the same save-time validation gap for the `actions` array that c0f260b9 (below) closed for `conditions`; new `grammar.is_known_action_type()`; new `Agent.cli_source` (nullable, audit-only) column; `expr_eval.py` extended to support string constants and `+` concatenation for `token_ref_ok` action params. |
 | 2026-10-09 | c0f260b9: Sprint 3 — `_age_validate_threshold_conditions()` closes the save-time validation gap for threshold/cycle agents (create/update now reject unknown/malformed `metric`/`scope`/`op` tokens with 422, same as the long-standing event-kind path). `_parse_call_token` rejects non-positive call-syntax windows (`mean_pnl(0)`). `_summarise_token()` generalizes `params_schema` surfacing beyond `action_type` to metric/scope/channel/format call-syntax tokens. |

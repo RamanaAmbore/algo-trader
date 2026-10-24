@@ -45,7 +45,8 @@ const FIXTURE_ROWS = [
     },
   },
   {
-    grammar_kind: 'action', token_kind: 'action_type', token: 'emit_log', description: 'Write a log line',
+    // item 7 (backend) — DSL-visible token renamed `emit_log` -> `log`.
+    grammar_kind: 'action', token_kind: 'action_type', token: 'log', description: 'Write a log line',
     params_schema: {
       level: { type: 'enum', enum: ['info', 'warning', 'error'], required: false, default: 'info', description: 'Log severity' },
       message: { type: 'string', required: true, description: 'Log message text' },

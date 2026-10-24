@@ -656,15 +656,28 @@ const _MAX_DEPTH = 20;
 // for '&'/'|'/'~' (see `_isAndTok`/`_isOrTok`/`_isNotTok`) — reserving
 // them prevents `and(...)`/`or(...)` from ever being (mis)parsed as a
 // real metric/channel/action token name.
-// Sprint G — 'given' added (the new optional preamble section keyword,
-// same reserved-word treatment WHEN/ALERT/DO already get). 'debug' is
-// DELIBERATELY NOT reserved — same "contextual, not a reserved word"
-// treatment Sprint 6's `msg=` already uses (see the lexer's NAME-scanning
-// branch below, which special-cases `debug(...)`'s single bare argument
-// without ever marking the token itself reserved) — this lets `parseCall`
-// keep working unchanged for the (today, zero) real catalog tokens that
-// might coincidentally also be named "debug".
-const _RESERVED = new Set(['when', 'alert', 'do', 'nop', 'always', 'in', 'not', 'and', 'or', 'true', 'false', 'given']);
+// Sprint [grammar-unify] — 'given' and 'alert' are BOTH removed from the
+// reserved set (confirmed, final — see the plan's "GIVEN is removed from
+// the grammar completely" / "no ALERT keyword left anywhere"). `GIVEN` had
+// nothing left to mark once the preamble became self-delimiting by
+// position (bounded by WHEN, or end-of-input — see `parseAgentStmt`).
+// `alert` is now an ORDINARY call (`alert(...)`), callable anywhere the
+// shared statement vocabulary is accepted (preamble or DO) — it cannot be
+// a reserved word and also be a valid call name (`parseCall` rejects any
+// reserved-word call name outright). A bare, non-called `alert` token
+// (no parens) is NOT thereby made meaningful again — `_dispatchStatement`
+// still recognizes exactly two such shapes and nothing else: (1) the
+// pre-existing, UNCHANGED standalone `event_stmt` (`ALERT log_tag=...` —
+// see that function's own dispatch comment), and (2) a clear, specific
+// rejection for the old removed clause-keyword spelling (`ALERT telegram
+// DO ...`). 'debug'/'help' are DELIBERATELY NOT reserved — same
+// "contextual, not a reserved word" treatment Sprint 6's `msg=` already
+// uses (see the lexer's NAME-scanning branch below, which special-cases
+// `debug(...)`/`help(...)`'s single bare argument without ever marking
+// the token itself reserved) — this lets `parseCall` keep working
+// unchanged for any real catalog token that might coincidentally share
+// one of these names.
+const _RESERVED = new Set(['when', 'do', 'nop', 'always', 'in', 'not', 'and', 'or', 'true', 'false']);
 export const RESERVED_WORDS = _RESERVED;
 
 // ── event_stmt reserved kwarg names (Sprint 12, +`gate` Sprint 18) — NOT
@@ -1543,7 +1556,25 @@ export function lexAgentStatement(text) {
         const nameRaw = text.slice(start, j);
         i = j;
         const lower = nameRaw.toLowerCase();
-        if (text[i] === '(') {
+        // Sprint [grammar-unify] — `alert` is excluded from the generic
+        // "NAME followed by '(' is a balanced-paren call" branch below,
+        // UNCONDITIONALLY (whether or not a '(' follows) — it always
+        // lexes as a bare keyword-shaped NAME token (`hasCall: false`),
+        // exactly as it always has. A literal '(' immediately after it is
+        // left UNCONSUMED here, falling through to the ordinary top-level
+        // punctuation branch on the lexer's NEXT loop iteration, which
+        // already produces a real LPAREN token (see `_PUNCT_SINGLE`) —
+        // the same token type arithmetic/condition grouping already use.
+        // This is deliberate, not an oversight: `alert(...)`'s own body
+        // is the UNCHANGED `clause_item` list grammar (assignments,
+        // `msg=` sugar, a channel call_list — see `parseItemListClause`),
+        // which is already fully expressible against the MAIN token
+        // stream — reusing it via real LPAREN/RPAREN tokens means
+        // `alert(...)` needs no dedicated sub-lexer at all, and
+        // `compileAlertClause` (the channel/events compiler) is reused
+        // completely unchanged. See `parseCall`'s own `alert`-specific
+        // branch for where `(` ... `)` actually gets consumed.
+        if (text[i] === '(' && lower !== 'alert') {
           // CALL — extract the balanced-paren substring (quote-aware).
           const innerStart = i + 1;
           let pd = 1;
@@ -1578,18 +1609,29 @@ export function lexAgentStatement(text) {
           // (parseCall/CallNode shape) is completely unchanged — only
           // `_compileDebugCall` (compiler) and the parser's label-binding
           // substitution ever look at this specific entry.
+          //
+          // Item 4 — `help(x)` takes the SAME single-bare-argument shape
+          // (a token/function name, no "="), mirrored byte-for-byte from
+          // `debug(x)` above, differing only in the synthetic arg's KEY:
+          // `'name'`, matching the `help` action's own `params_schema`
+          // (`{name: {type: string, required: true}}`) — so the generic
+          // `_compileGenericActionParams` path resolves it with zero
+          // special-casing on the compiler side, unlike `debug(x)` (which
+          // has its own dedicated compiler, `_compileDebugCall`, because
+          // its value resolves against bound LABELS, not a catalog
+          // schema).
           let args;
-          if (lower === 'debug') {
+          if (lower === 'debug' || lower === 'help') {
             const trimmed = innerText.trim();
             const leadWs = innerText.length - innerText.replace(/^\s+/, '').length;
             if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(trimmed)) {
               throw new _ParseError(
-                `debug(...) takes exactly one bare argument — a label or token reference name, e.g. debug(x)`,
+                `${lower}(...) takes exactly one bare argument — a label or token reference name, e.g. ${lower}(x)`,
                 { start: innerStart + leadWs },
               );
             }
             args = [{
-              key: 'x',
+              key: lower === 'debug' ? 'x' : 'name',
               keyStart: innerStart + leadWs,
               value: { type: 'name', value: trimmed, start: innerStart + leadWs, end: innerStart + leadWs + trimmed.length },
             }];
@@ -1651,7 +1693,24 @@ function _checkDepth(depth, tok) {
   if (depth > _MAX_DEPTH) throw new _ParseError(`expression nesting too deep (> ${_MAX_DEPTH})`, tok);
 }
 
-/** `call := NAME | NAME "(" arg_list ")"` */
+/** `call := NAME | NAME "(" arg_list ")" | alert_call`
+ *  `alert_call := "alert" "(" clause_body ")"` — Sprint [grammar-unify].
+ *  `alert` is lexed as a BARE keyword-shaped NAME token unconditionally
+ *  (see `lexAgentStatement`'s own `alert`-exclusion comment), so a literal
+ *  `(` immediately after it reaches HERE as its own real LPAREN token,
+ *  not as part of the NAME. Recognized by name + a following LPAREN
+ *  (never ambiguous — `alert` with no `(` following, or event_stmt's
+ *  bare `alert log_tag=...` form, both dispatch elsewhere entirely, see
+ *  `_dispatchStatement`). The body between the parens is the EXACT SAME
+ *  `clause_item` list grammar the old `ALERT <body>` clause always used
+ *  (`parseItemListClause`, with the `msg=` default sugar enabled) — reused
+ *  byte-for-byte, parsed directly against the MAIN token stream (no
+ *  sub-lexer needed, since LPAREN/RPAREN are already real tokens here).
+ *  Returned as an ordinary `{type:'call', name:'alert', ...}` node (so
+ *  every generic "only X can be used standalone"/call-name check keeps
+ *  working unchanged) with one extra field, `_alertBody`, carrying the
+ *  parsed item list — see `_compileAlertCallAsOrdinaryCall`, the ONE
+ *  place that ever reads it. */
 export function parseCall(state) {
   const tok = _peek(state);
   if (tok.type !== 'NAME') throw new _ParseError('expected a name', tok);
@@ -1659,6 +1718,8 @@ export function parseCall(state) {
   if (tok.hasCall && (!tok.args || tok.args.length === 0)) {
     throw new _ParseError(`"${tok.value}()" is a parse error — a zero-argument token is always written bare`, tok);
   }
+  const isAlertCall = tok.type === 'NAME' && !tok.hasCall && tok.value.toLowerCase() === 'alert'
+    && state.tokens[state.pos + 1] && state.tokens[state.pos + 1].type === 'LPAREN';
   _advance(state);
   // Sprint G — snapshot whatever labels are visible RIGHT HERE (a plain
   // copy of `state.bindings`, cheap — statements bind at most a handful
@@ -1671,6 +1732,17 @@ export function parseCall(state) {
   // pre-Sprint-G call site with no GIVEN/assignment anywhere in the
   // statement — a true no-op, zero behavior change.
   const bindingsAt = state.bindings && state.bindings.size ? new Map(state.bindings) : undefined;
+  if (isAlertCall) {
+    _advance(state); // "("
+    const { items } = parseItemListClause(state, { allowMsgDefault: true, allowNop: true });
+    const close = _peek(state);
+    if (close.type !== 'RPAREN') throw new _ParseError('expected ")" to close alert(...)', close);
+    _advance(state);
+    return {
+      type: 'call', name: 'alert', args: [], hasCall: true,
+      start: tok.start, end: close.end, _bindingsAt: bindingsAt, _alertBody: items,
+    };
+  }
   return { type: 'call', name: tok.value, args: tok.args || [], hasCall: tok.hasCall, start: tok.start, end: tok.end, _bindingsAt: bindingsAt };
 }
 
@@ -2282,10 +2354,20 @@ function _cloneAstNode(node) {
  *  into the full condition grammar, and throw trying to consume `y` as a
  *  comparator. Also reused, unchanged, by the new `parseGivenRhs`
  *  arithmetic-expression attempt below (same "did the RHS end here"
- *  question, same answer). */
+ *  question, same answer).
+ *
+ *  Sprint [grammar-unify] — RPAREN is ALSO a terminator: `alert(...)`'s
+ *  body reuses this SAME item-list grammar nested inside real parens
+ *  (see `parseCall`'s `alert`-specific branch), so an assignment that
+ *  happens to be the LAST item before the closing `)` (e.g. `alert(y =
+ *  2)`, no trailing comma) must recognize `2` as a complete value right
+ *  there, the same way EOF already does for a top-level, unparenthesized
+ *  clause. RPAREN never legally followed a clause-item's RHS before this
+ *  sprint (no clause was ever nested in parens), so this is additive —
+ *  zero behavior change for every pre-existing statement shape. */
 function _isClauseItemTerminator(tok) {
   if (tok.nlBefore) return true;
-  if (tok.type === 'SEMI' || tok.type === 'EOF' || tok.type === 'HASH' || tok.type === 'COMMA') return true;
+  if (tok.type === 'SEMI' || tok.type === 'EOF' || tok.type === 'HASH' || tok.type === 'COMMA' || tok.type === 'RPAREN') return true;
   return tok.type === 'NAME' && !tok.hasCall && (_wordIs(tok, 'when') || _wordIs(tok, 'alert') || _wordIs(tok, 'do'));
 }
 
@@ -2476,9 +2558,17 @@ function parseGivenRhs(state) {
  *  (`_checkLabelCollisions`) — the catalog isn't available yet at parse
  *  time, same "parse permissively, validate at compile time" split this
  *  file always uses. */
+// Sprint [grammar-unify] — 'alert'/'given'/'help' are removed from
+// `_RESERVED` (so they can be used as ordinary call names), but a label
+// spelled one of these three is STILL rejected here, same as `debug`/
+// `result` already are — all five are "contextual, not reserved" words
+// with a real meaning in this grammar that a label sharing the name
+// would silently shadow.
+const _LABEL_RESERVED_WORDS = new Set(['debug', 'result', 'alert', 'given', 'help']);
+
 function _registerBinding(state, labelTok, rhsKind, rhsNode, rhsText) {
   const lower = labelTok.value.toLowerCase();
-  if (_RESERVED.has(lower) || lower === 'debug' || lower === 'result') {
+  if (_RESERVED.has(lower) || _LABEL_RESERVED_WORDS.has(lower)) {
     throw new _ParseError(`'${labelTok.value}' is a reserved word and cannot be used as a label`, labelTok);
   }
   if (!state.bindings) state.bindings = new Map();
@@ -2635,38 +2725,35 @@ function parseItemListClause(state, { allowMsgDefault = false, allowNop = true }
   return { items };
 }
 
-/** Flatten a parsed ALERT/DO item list down to the pre-Sprint-G shape
- *  `{ msgDefault, calls }` plus a NEW `debugCalls` array (every call
- *  named "debug", stripped out — see `compileAgentStmt`'s own hoisting
- *  logic) so `compileAlertClause`/`compileDoClause` never need to know
- *  about GIVEN/assignment items at all. `calls` is `'nop'` only when the
- *  WHOLE item list was the bare `nop` sentinel, OR (new) the item list
- *  turned out to be made ENTIRELY of `assign` items with no real calls at
- *  all (e.g. `ALERT msg = "y"` — "msg" is just an ordinary label now, per
- *  the operator's own revised design — with no channel list at all, this
+/** Flatten a parsed preamble/DO item list down to `{ msgDefault, calls }`
+ *  so `compileAlertClause`/`compileDoClause`/`compilePreambleClause` never
+ *  need to know about assignment items at all. Sprint [grammar-unify] —
+ *  `debug(...)`/`help(...)`/`alert(...)` are NO LONGER hoisted out into a
+ *  separate array: every call (including these) rides along in `calls`,
+ *  in textual order, and is dispatched by name via `_compileSharedCall`,
+ *  the ONE per-call compiler shared by the preamble and DO positions (see
+ *  that function's own header comment). `calls` is `'nop'` only when the
+ *  WHOLE item list was the bare `nop` sentinel, OR (pre-existing) the
+ *  item list turned out to be made ENTIRELY of `assign` items with no
+ *  real calls at all (e.g. `msg = "y"` with no channel list at all — this
  *  is semantically IDENTICAL to `nop`: zero events/actions). Normalizing
  *  both to the SAME `'nop'` sentinel means every downstream consumer
- *  (`compileAlertClause`'s nop-shortcut, `compileAgentStmt`'s "at least
- *  one of ALERT or DO" check) treats them identically, with no separate
- *  "empty array" case to special-case anywhere else. `assign` items
- *  otherwise contribute nothing here — they already did their only job
- *  (populating `state.bindings`) as a side effect of parsing.
- *  @returns {{ msgDefault: any, calls: 'nop' | any[], debugCalls: any[] }} */
+ *  treats them identically, with no separate "empty array" case to
+ *  special-case anywhere else. `assign` items otherwise contribute
+ *  nothing here — they already did their only job (populating
+ *  `state.bindings`) as a side effect of parsing.
+ *  @returns {{ msgDefault: any, calls: 'nop' | any[] }} */
 function _flattenClauseItems(items) {
-  if (items.length === 1 && items[0].type === 'nop') return { msgDefault: null, calls: 'nop', debugCalls: [] };
+  if (items.length === 1 && items[0].type === 'nop') return { msgDefault: null, calls: 'nop' };
   let msgDefault = null;
   /** @type {any[]} */
   const calls = [];
-  const debugCalls = [];
   for (const it of items) {
     if (it.type === 'assign') continue;
     if (it.type === 'msgDefaultCalls') msgDefault = it.msgNode;
-    for (const c of it.calls || []) {
-      if (c.name.toLowerCase() === 'debug') debugCalls.push(c);
-      else calls.push(c);
-    }
+    for (const c of it.calls || []) calls.push(c);
   }
-  return { msgDefault, calls: calls.length ? calls : 'nop', debugCalls };
+  return { msgDefault, calls: calls.length ? calls : 'nop' };
 }
 
 /** `meta_value := STRING | BARE_WORD` — both already resolved to one token
@@ -2711,93 +2798,78 @@ export function parseMetaClause(state) {
   return items;
 }
 
-/** `agent_stmt := "WHEN" condition tail`
- *  `tail := alert_part do_part | do_part alert_part | alert_part | do_part | ε`
+/** `agent_stmt := preamble ["WHEN" condition "DO" calls]`
+ *  `preamble := statement_call*`   -- the implicit, self-delimiting
+ *                                     "given" section (Sprint
+ *                                     [grammar-unify] — see `_RESERVED`'s
+ *                                     own header comment for why `GIVEN`
+ *                                     carries nothing to mark any more)
  *
- *  `ALERT` and `DO` are each independently optional (at most one of each,
- *  never both omitted — that's still a semantic error, checked later, same
- *  as the existing `ALERT nop DO nop` rejection) and may appear in EITHER
- *  order — `WHEN ... ALERT ... DO ...`, `WHEN ... DO ... ALERT ...`,
- *  `WHEN ... DO ...` alone, or `WHEN ... ALERT ...` alone are all valid.
- *  Omitting a clause entirely means the same thing as writing it as `nop`
- *  — both are accepted, `nop` is kept as explicit, backward-compatible
- *  sugar for the same empty state, not replaced by omission. A completely
- *  bare `WHEN condition` (tail = ε) is syntactically valid here; the
- *  "at least one of ALERT or DO" check happens at compile time, same as
- *  it always has — `alertCalls`/`doCalls` default to `'nop'` when their
- *  clause never appeared at all, so the compiler never needs to know
- *  "omitted" from "explicit nop" as a separate case. */
+ *  **Preamble** — bounded purely by POSITION: everything before `WHEN`
+ *  (or, when `WHEN` never appears at all, the ENTIRE remaining input) is
+ *  the preamble — never introduced by a keyword of its own. It accepts
+ *  the FULL shared statement-call vocabulary (label assignment,
+ *  `debug(...)`, `help(...)`, `alert(...)`, `order(...)`/`place_order(...)`,
+ *  `bracket(...)`, or any other real action call) via the exact SAME
+ *  item-list grammar `DO` uses (`parseItemListClause`) — `_compileSharedCall`
+ *  is the ONE per-call compiler shared by both positions, so this parser
+ *  never needs a narrower accept-list for the preamble than for `DO`. A
+ *  bare `nop` preamble item is meaningless (there's nothing to search
+ *  "nop" as a standalone unconditional statement for) — `allowNop:
+ *  false`, same restriction the old `GIVEN` clause always had.
+ *
+ *  **`WHEN ... DO ...`** — stays a single, paired, optional conditional
+ *  wrapper: `ALERT` is no longer a clause keyword at all (`alert(...)` is
+ *  just an ordinary call inside `DO`'s own call list now, exactly like
+ *  `order(...)`/`help(...)` — see `_compileSharedCall`), so the old
+ *  "ALERT/DO, either order, each independently optional" tail loop
+ *  collapses into a single, optional `DO` clause after `WHEN`. Validity
+ *  (checked at COMPILE time, same "parse permissively, validate later"
+ *  split this file always uses — see `compileAgentStmt`): `WHEN` present
+ *  with no `DO` is now an error (nothing to gate), and `DO` present with
+ *  no `WHEN` is ALSO an error (redundant with just writing the call in
+ *  the preamble, which gets the correct once-per-activation execution
+ *  semantics for a side-effecting call — see the plan's item 0). A
+ *  preamble with NEITHER `WHEN` nor `DO` at all is a complete, valid,
+ *  standalone statement on its own (required by this plan — never a
+ *  fragment awaiting a conditional tail). `sawWhen`/`sawDo` are threaded
+ *  through verbatim for that compile-time check. */
 export function parseAgentStmt(state) {
-  // GIVEN — Sprint G's new optional preamble, ALWAYS first (before WHEN/
-  // ALERT/DO, all three still independently optional exactly as before).
-  // Its OWN item list only ever accepts label assignments and `debug(...)`
-  // sugar calls — any other call is a clear parse-time error naming the
-  // offender, rather than a confusing "unknown channel/action" later.
-  const debugCalls = [];
-  if (_wordIs(_peek(state), 'given')) {
-    _advance(state);
+  let preambleCalls = [];
+  const firstTok = _peek(state);
+  if (!_wordIs(firstTok, 'when') && !_wordIs(firstTok, 'do')) {
     const { items } = parseItemListClause(state, { allowMsgDefault: false, allowNop: false });
-    for (const it of items) {
-      if (it.type === 'assign') continue;
-      for (const c of it.calls || []) {
-        if (c.name.toLowerCase() === 'debug') debugCalls.push(c);
-        else throw new _ParseError(`GIVEN only accepts label assignments and debug(...) — '${c.name}' is not valid here`, { start: c.start });
-      }
-    }
+    const flat = _flattenClauseItems(items);
+    preambleCalls = flat.calls === 'nop' ? [] : flat.calls;
   }
-  // WHEN itself is now optional (per operator instruction — an alert/action
-  // should be placeable with no condition at all). Omitting it means the
-  // same thing as writing it as `always` explicitly — both produce the
-  // identical `{ type: 'always' }` AST node, so compileCondition/the rest
-  // of this function never need to know "omitted" from "explicit always".
-  // WHEN only ever READS labels bound above (in GIVEN) — it never writes
-  // one itself (see `parseLeaf`'s bare-ref branch).
-  let condition;
+  // WHEN itself is optional — omitting it means the same thing as writing
+  // it as `always` explicitly (both produce the identical `{type:
+  // 'always'}` AST node). WHEN only ever READS labels bound in the
+  // preamble above — it never writes one itself (see `parseLeaf`'s
+  // bare-ref branch).
+  let condition = { type: 'always' };
+  let sawWhen = false;
   if (_wordIs(_peek(state), 'when')) {
     _advance(state);
     condition = parseCondition(state, 0);
-  } else {
-    condition = { type: 'always' };
+    sawWhen = true;
   }
-  /** @type {'nop' | any[]} */
-  let alertCalls = 'nop';
-  /** @type {any} the clause-level `msg=` default ValueNode, or null — Sprint 6 */
-  let alertMsg = null;
   /** @type {'nop' | any[]} */
   let doCalls = 'nop';
-  let sawAlert = false;
   let sawDo = false;
-  for (let i = 0; i < 2; i++) {
-    const tok = _peek(state);
-    if (!sawAlert && _wordIs(tok, 'alert')) {
-      _advance(state);
-      const { items } = parseItemListClause(state, { allowMsgDefault: true });
-      const flat = _flattenClauseItems(items);
-      alertCalls = flat.calls;
-      alertMsg = flat.msgDefault;
-      debugCalls.push(...flat.debugCalls);
-      sawAlert = true;
-    } else if (!sawDo && _wordIs(tok, 'do')) {
-      _advance(state);
-      const { items } = parseItemListClause(state, { allowMsgDefault: false });
-      const flat = _flattenClauseItems(items);
-      doCalls = flat.calls;
-      debugCalls.push(...flat.debugCalls);
-      sawDo = true;
-    } else {
-      break;
-    }
+  if (_wordIs(_peek(state), 'do')) {
+    _advance(state);
+    const { items } = parseItemListClause(state, { allowMsgDefault: false });
+    doCalls = _flattenClauseItems(items).calls;
+    sawDo = true;
   }
-  // meta_item* — trailing-only, parsed AFTER the tail loop above completes.
+  // meta_item* — trailing-only, parsed AFTER the tail above completes.
   // See `parseMetaClause`'s own docstring for why no pre-pass is needed.
   const meta = parseMetaClause(state);
-  // Sprint G — `bindings` is the ORDERED list of every label bound
-  // anywhere in this statement (GIVEN/ALERT/DO), for `compileAgentStmt`'s
-  // collision check against real catalog names; `debugCalls` is every
-  // `debug(...)` call encountered anywhere (GIVEN/ALERT/DO), in textual
-  // order, HOISTED out of `alertCalls`/`doCalls` so neither compiler needs
-  // to know about it — see `compileAgentStmt`'s own hoisting comment.
-  return { kind: 'agent', condition, alertCalls, alertMsg, doCalls, meta, debugCalls, bindings: state.allBindings || [] };
+  // `bindings` is the ORDERED list of every label bound anywhere in this
+  // statement (preamble or DO), for `compileAgentStmt`'s collision check
+  // against real catalog names.
+  return { kind: 'agent', preambleCalls, condition, doCalls, sawWhen, sawDo, meta, bindings: state.allBindings || [] };
 }
 
 /** `match_value := "[" object_literal ("," object_literal)* "]"` — Sprint
@@ -3008,6 +3080,34 @@ export function parseCancelAllOrdersStmt(state) {
   return { kind: 'cancel_all_orders', call, meta };
 }
 
+/** `help_stmt := call meta_item*` — item 4. A SINGLE `help(<name>)` call,
+ *  restricted to standalone use, EXACTLY mirroring
+ *  `parseCancelAllOrdersStmt`'s own "only X(...) can be used standalone"
+ *  rule/error-message style above, naming "help" instead of
+ *  "cancel_all_orders". Read-only catalog lookup — no live/paper mode
+ *  gate, safe in any mode (unlike `cancel_all_orders`, which is
+ *  live-only). `meta` is parsed (never rejected here) but is a
+ *  compile-time error — see `compileHelpStmt` — a bare lookup has no
+ *  agent/bracket to attach a name/description/tag/group to, same
+ *  convention every other bare-statement compiler already established. */
+export function parseHelpStmt(state) {
+  const call = parseCall(state);
+  if (call.name.toLowerCase() !== 'help') {
+    throw new _ParseError(
+      'only help(...) can be used standalone — wrap other actions in a WHEN ... DO ... agent',
+      { start: call.start },
+    );
+  }
+  if (_peek(state).type === 'COMMA') {
+    throw new _ParseError(
+      'only a single help(...) can be used standalone — wrap other actions in a WHEN ... DO ... agent',
+      _peek(state),
+    );
+  }
+  const meta = parseMetaClause(state);
+  return { kind: 'help', call, meta };
+}
+
 export function parseBracketStmt(state) {
   const call = parseCall(state);
   if (call.name.toLowerCase() !== 'bracket') {
@@ -3086,55 +3186,133 @@ export function parseTokenStmt(state) {
  *  directly for a real compile — `parseStatement` below is still the
  *  real entry point (adds the trailing-EOF check + error normalization). */
 function _dispatchStatement(state) {
-  // WHEN is optional (an agent_stmt may start directly with ALERT or DO —
-  // see parseAgentStmt) — ALERT/DO are reserved words that can never be a
-  // real order/place_order call name, so dispatching on them here is
-  // unambiguous, same as WHEN always was. "bracket"/"token" are likewise
-  // never real metric/scope/channel/action names, so dispatching a
-  // leading `bracket(...)` (Sprint 8) or `token(...)` (Sprint 10) call
-  // straight to its own standalone-statement parser is unambiguous too —
-  // mirrors how WHEN/ALERT/DO dispatch to agent_stmt.
-  //
-  // Sprint 12 — event_stmt dispatch rule, PRECISE: a bare leading `ALERT`
-  // (no `WHEN` before it) routes to `parseEventStmt` specifically when
-  // its FIRST kwarg — before any bare channel name — is one of the five
-  // reserved event-meta keys (`log_tag=`/`min_level=`/`render=`/`where=`/
-  // `gate=`, see `_EVENT_META_KEYS`); this is checked via a 2-token lookahead
-  // (NAME matching one of those keys, immediately followed by a lone
-  // `EQ`) PAST the `ALERT` token itself. An ordinary bare-ALERT agent_stmt
-  // (e.g. `ALERT telegram DO nop`) never matches this lookahead (no real
-  // channel is named one of these five reserved words), so it falls
-  // through to `isAgentStmt` unchanged.
   const first = _peek(state);
-  const firstIsAlert = first.type === 'NAME' && !first.hasCall && _wordIs(first, 'alert');
-  const evSecond = firstIsAlert ? state.tokens[state.pos + 1] : null;
-  const evThird = firstIsAlert ? state.tokens[state.pos + 2] : null;
-  const isEventStmt = firstIsAlert && evSecond && evSecond.type === 'NAME' && !evSecond.hasCall
+
+  // event_stmt dispatch rule, PRECISE and UNCHANGED (Sprint 12): a bare
+  // leading `ALERT` (no parens) routes to `parseEventStmt` specifically
+  // when its FIRST kwarg — before any bare channel name — is one of the
+  // reserved event-meta keys (`log_tag=`/`min_level=`/`render=`/`where=`/
+  // `gate=`/`match=`, see `_EVENT_META_KEYS`); checked via a 2-token
+  // lookahead (NAME matching one of those keys, immediately followed by
+  // a lone `EQ`) PAST the `ALERT` token itself. This is the "standalone
+  // top-level alert CLI statement" the plan explicitly keeps untouched.
+  //
+  // Sprint [grammar-unify] correction — `alert` is now ALWAYS lexed with
+  // `hasCall: false` (see `lexAgentStatement`'s `alert`-exclusion
+  // comment: a literal `(` right after it is deliberately left for the
+  // NEXT lexer iteration to tokenize as a real, standalone LPAREN, so
+  // `parseCall` can consume it against the real token stream — see that
+  // function's own `alert`-specific branch). `first.hasCall` can
+  // therefore NEVER distinguish `alert(...)` (the new ordinary call)
+  // from bare `ALERT` (the old, removed clause keyword / the event_stmt
+  // form) — both always report `hasCall: false` at this point. The
+  // actual test is a 1-token lookahead PAST `alert` itself: an immediate
+  // LPAREN means "ordinary call," full stop, and this whole bare-ALERT
+  // branch (event_stmt lookahead AND the clause-keyword rejection below)
+  // must not fire — it falls through, unhandled, all the way to the
+  // generic `order`/`bracket`-trial-then-`parseAgentStmt` fallback at the
+  // bottom of this function, where `parseCall`'s own `alert`-specific
+  // branch (inside `parseItemListClause`'s per-call parsing) is what
+  // actually consumes it.
+  // A bare `alert` immediately followed by `=` is an attempted LABEL
+  // assignment (`alert = 5`), not any flavor of the clause keyword — it
+  // must fall through to the unified preamble parser so `_registerBinding`
+  // gives its own specific "reserved word and cannot be used as a label"
+  // rejection, not this function's generic clause-keyword message.
+  const nextTok = state.tokens[state.pos + 1];
+  const firstIsBareAlert = first.type === 'NAME' && !first.hasCall && _wordIs(first, 'alert')
+    && !(nextTok && (nextTok.type === 'LPAREN' || nextTok.type === 'EQ'));
+  const evSecond = firstIsBareAlert ? state.tokens[state.pos + 1] : null;
+  const evThird = firstIsBareAlert ? state.tokens[state.pos + 2] : null;
+  const isEventStmt = firstIsBareAlert && evSecond && evSecond.type === 'NAME' && !evSecond.hasCall
     && _EVENT_META_KEYS.has(evSecond.value.toLowerCase()) && evThird && evThird.type === 'EQ';
-  // Sprint G — a leading `GIVEN` also dispatches to `parseAgentStmt`
-  // (GIVEN is agent_stmt-ONLY — `event_stmt`/`order_stmt`/`bracket_stmt`/
-  // `token_stmt` never accept it; writing `GIVEN ...` in front of any of
-  // those falls through to `parseOrderStmt`, which rejects the leading
-  // `GIVEN` call-list item the same way it rejects any non-order(...)
-  // call today).
-  const isAgentStmt = !isEventStmt && first.type === 'NAME' && !first.hasCall
-    && (_wordIs(first, 'when') || _wordIs(first, 'alert') || _wordIs(first, 'do') || _wordIs(first, 'given'));
-  const isBracketStmt = !isEventStmt && !isAgentStmt && first.type === 'NAME' && first.hasCall && _wordIs(first, 'bracket');
-  const isTokenStmt = !isEventStmt && !isAgentStmt && !isBracketStmt && first.type === 'NAME' && first.hasCall && _wordIs(first, 'token');
-  // Sprint [cancel-all-cli] (2026-10) — a leading `cancel_all_orders(...)`
-  // call is likewise never a real metric/scope/channel/action-as-order-leg
-  // name, so it dispatches straight to its own standalone-statement parser,
-  // same as bracket/token above — rather than falling through to
-  // `parseOrderStmt`, which would reject it ("only order(...) can be used
-  // standalone").
-  const isCancelAllOrdersStmt = !isEventStmt && !isAgentStmt && !isBracketStmt && !isTokenStmt
-    && first.type === 'NAME' && first.hasCall && _wordIs(first, 'cancel_all_orders');
-  return isEventStmt ? parseEventStmt(state)
-    : isAgentStmt ? parseAgentStmt(state)
-    : isBracketStmt ? parseBracketStmt(state)
-    : isTokenStmt ? parseTokenStmt(state)
-    : isCancelAllOrdersStmt ? parseCancelAllOrdersStmt(state)
-    : parseOrderStmt(state);
+  if (isEventStmt) return parseEventStmt(state);
+
+  // Sprint [grammar-unify] — GIVEN is removed from the grammar completely
+  // (not kept as optional/backward-compatible syntax, per the plan's
+  // explicit, final decision). A literal leading `given` is a clear,
+  // specific rejection naming the removed keyword, rather than falling
+  // through to a confusing generic "unexpected trailing input"/"unknown
+  // action 'given'" error several tokens later.
+  if (first.type === 'NAME' && !first.hasCall && _wordIs(first, 'given')) {
+    throw new _ParseError(
+      'GIVEN is no longer part of the grammar — write the statement directly, e.g. "a = 1 when (a==1) do close_position(...)"',
+      first,
+    );
+  }
+  // A bare, non-called leading `ALERT` that ISN'T the event_stmt form
+  // above is the OLD agent_stmt clause-keyword spelling (`ALERT telegram
+  // DO nop`) — also removed, also a clear, specific rejection. `alert`
+  // written as an ordinary call (`alert(...)`, `hasCall: true`) is NOT
+  // this case at all — it falls through below, to the unified statement
+  // parser, exactly like `order(...)`/`debug(...)`/`help(...)`.
+  if (firstIsBareAlert) {
+    throw new _ParseError(
+      'ALERT is no longer a reserved clause keyword — call it as an ordinary statement, e.g. alert(telegram)',
+      first,
+    );
+  }
+
+  // `token`/`cancel_all_orders` — leading call names that are never real
+  // metric/scope/channel/action-as-preamble-item names, so they dispatch
+  // straight to their own standalone-statement parser, unambiguously.
+  // Sprint [grammar-unify] amendment: unlike `order`/`bracket` below,
+  // these two are NOT folded into the unified preamble/DO vocabulary (no
+  // existing reuse path — `token`/`cancel_all_orders` each still has
+  // exactly one call-site-free meaning, "a standalone statement of this
+  // exact kind," never "one call among several in a mixed preamble") —
+  // they keep their pre-existing, EXCLUSIVE dispatch, unchanged.
+  if (first.type === 'NAME' && first.hasCall && _wordIs(first, 'token')) return parseTokenStmt(state);
+  if (first.type === 'NAME' && first.hasCall && _wordIs(first, 'cancel_all_orders')) return parseCancelAllOrdersStmt(state);
+
+  // `when`/`do` as a bare leading keyword always goes straight to the
+  // unified statement parser (no preamble at all — see `parseAgentStmt`).
+  if (first.type === 'NAME' && !first.hasCall && (_wordIs(first, 'when') || _wordIs(first, 'do'))) {
+    return parseAgentStmt(state);
+  }
+
+  // `order(...)`/`bracket(...)` — Sprint [grammar-unify]: these TWO ARE
+  // folded into the unified preamble/DO vocabulary (the plan's own worked
+  // example mixes `order(...)`/`bracket(...)` with `alert(...)`/
+  // `debug(...)`/`help(...)`/label-assignment ahead of a `WHEN ... DO
+  // ...` tail). A leading `order(...)`/`bracket(...)` is therefore
+  // AMBIGUOUS between "the whole statement is just this one standalone
+  // order/bracket" (today's pre-existing, unchanged `kind:'order'`/
+  // `kind:'bracket'` standalone forms — `parseOrderStmt`/
+  // `parseBracketStmt`, still reused completely unchanged — do NOT touch
+  // those compilers) and "this is the first item of a longer mixed
+  // preamble." Resolved by TRYING the exclusive standalone parser first
+  // and accepting it ONLY if it consumes the entire remaining input
+  // (reaches EOF); any throw, OR leftover trailing input, backtracks
+  // `state.pos` and falls through to the unified parser instead — which
+  // accepts the identical call vocabulary, so nothing is lost. Safe to
+  // backtrack: neither `parseOrderStmt` nor `parseBracketStmt` ever
+  // registers a binding (`_registerBinding`/`state.bindings` are untouched
+  // by either), so resetting `state.pos` alone is sufficient — there is
+  // no OTHER mutable parse state to undo. A non-`_ParseError` throw is
+  // NEVER swallowed here — only a nested statement's OWN deliberate
+  // `_ParseError` is a legitimate "try the other interpretation" signal;
+  // anything else is a real bug and must propagate.
+  // `help(...)` joins the SAME try-then-fallback treatment (item 4): a
+  // bare `help(<name>)` alone is still the pre-existing, unchanged
+  // `kind:'help'` standalone form (`parseHelpStmt`), but `help(...)` is
+  // ALSO folded into the unified preamble/DO vocabulary (the plan's own
+  // worked example uses it there) — so the same EOF-gated trial applies.
+  const isLeadingOrder = first.type === 'NAME' && first.hasCall && (_wordIs(first, 'order') || _wordIs(first, 'place_order'));
+  const isLeadingBracket = first.type === 'NAME' && first.hasCall && _wordIs(first, 'bracket');
+  const isLeadingHelp = first.type === 'NAME' && first.hasCall && _wordIs(first, 'help');
+  if (isLeadingOrder || isLeadingBracket || isLeadingHelp) {
+    const save = state.pos;
+    try {
+      const ast = isLeadingOrder ? parseOrderStmt(state) : isLeadingBracket ? parseBracketStmt(state) : parseHelpStmt(state);
+      if (_peek(state).type === 'EOF') return ast;
+    } catch (e) {
+      if (!(e instanceof _ParseError)) throw e;
+    }
+    state.pos = save;
+  }
+
+  return parseAgentStmt(state);
 }
 
 /** `statement := agent_stmt | order_stmt | bracket_stmt | token_stmt` —
@@ -4897,69 +5075,229 @@ function _compileNotifyClause(valueNode, catalog, label) {
   return { notify: errors.length ? null : notify, errors };
 }
 
+/** Compile ONE call against the real action catalog (`order`/`place_order`,
+ *  `log` (the renamed `emit_log`), or any other generic action) — the
+ *  pre-[grammar-unify] body of `compileDoClause`'s per-call loop,
+ *  extracted unchanged so `_compileSharedCall` (below) can reuse it from
+ *  BOTH the preamble and DO positions. Returns `{action, errors}` —
+ *  `action` is `null` on any error. Does NOT handle `alert`/`bracket`/
+ *  `debug` — those are intercepted one level up, in `_compileSharedCall`,
+ *  before this function is ever called, since none of the three is a
+ *  real catalog-action lookup. */
+function _compileCatalogActionCall(rawCall, catalog, opts, rowRefCtx) {
+  const { notifyArgs, call } = _splitNotifyArg(rawCall);
+  if (notifyArgs.length > 1) {
+    return { action: null, errors: [_err(`${call.name}: duplicate parameter 'notify'`)] };
+  }
+
+  const errors = [];
+  const rawName = call.name.toLowerCase();
+  // Sprint [order-unify] — BOTH typed spellings (`order`/`place_order`)
+  // resolve to the exact same schema-lookup key for compiling params;
+  // `isOrderAction` (not `lookupName === 'place_order'`) now drives the
+  // branch dispatch below, since the EMITTED `type` is always the new
+  // canonical `'order'` regardless of which spelling was typed or which
+  // catalog row actually matched (tolerant lookup — tries a literal
+  // `order` catalog row first, in case the backend has seeded one,
+  // falling back to the guaranteed-present `place_order` row otherwise).
+  const isOrderAction = rawName === 'order' || rawName === 'place_order';
+  const lookupName = isOrderAction ? 'order' : rawName;
+  const entry = isOrderAction
+    ? (catalog.actions.get('order') || catalog.actions.get('place_order'))
+    : catalog.actions.get(lookupName);
+  if (!entry) {
+    const other = _describeKind(call.name, catalog);
+    errors.push(_err(other
+      ? `'${call.name}' is ${other} — only actions are allowed here`
+      : `unknown action '${call.name}'`));
+    return { action: null, errors };
+  }
+
+  let action = null;
+  if (isOrderAction) {
+    const r = _compileOrderActionParams(call, entry, opts, rowRefCtx);
+    errors.push(...r.errors);
+    // Sprint [order-unify] — `order` is the sole name the compiler ever
+    // EMITS going forward, regardless of which spelling was typed
+    // (`order(...)` or `place_order(...)` both compile identically) —
+    // never `'place_order'`. The backend's Phase-A dispatch tables
+    // accept both strings identically.
+    if (!r.errors.length) action = { type: 'order', params: r.params };
+  } else if (lookupName === 'log') {
+    // item 7 (backend) — the catalog/dispatch token renamed
+    // `emit_log` -> `log`; the Python resolver function itself (and
+    // this helper's own name) stays `emit_log`/`_compileEmitLogActionParams`
+    // (dotted resolver paths don't need to match the DSL token name —
+    // same precedent as `help`/`help_lookup`), only the DSL-visible
+    // token/type string changes.
+    const r = _compileEmitLogActionParams(call, entry, rowRefCtx);
+    errors.push(...r.errors);
+    if (!r.errors.length) action = { type: 'log', params: r.params };
+  } else {
+    const r = _compileGenericActionParams(call, entry, rowRefCtx);
+    errors.push(...r.errors);
+    if (!r.errors.length) action = { type: entry.token, params: r.params };
+  }
+  if (!action) return { action: null, errors };
+
+  if (notifyArgs.length === 1) {
+    const nr = _compileNotifyClause(notifyArgs[0].value, catalog, entry.token);
+    errors.push(...nr.errors);
+    if (nr.errors.length) return { action: null, errors };
+    action = { ...action, notify: nr.notify };
+  }
+  return { action, errors };
+}
+
+/** Compile `alert(...)` written as an ORDINARY call (Sprint
+ *  [grammar-unify]) back into the EXACT SAME `{events, errors}` shape
+ *  `compileAlertClause` always produced for the old `ALERT <body>`
+ *  clause — reusing that function completely unchanged. `call._alertBody`
+ *  (set by `parseCall`'s own `alert`-specific branch) is the parsed item
+ *  list from INSIDE the parens — the identical `clause_item` list shape
+ *  `_flattenClauseItems` already knows how to reduce to `{msgDefault,
+ *  calls}`, so there is nothing new to parse or validate here, only to
+ *  re-plumb. `call._bindingsAt` (not the full statement's binding map) is
+ *  used for `msg=`'s label resolution — same left-to-right "no forward
+ *  reference" visibility rule every other label read in this grammar
+ *  enforces (see `_compileDebugCall`'s identical choice). */
+function _compileAlertCallAsOrdinaryCall(call, catalog) {
+  // A bare `alert` (no parens) reaching here at all means it was used as
+  // an ORDINARY mid-list call with no body (e.g. a second preamble item,
+  // where the dispatch-level bare-ALERT rejection — which only ever
+  // inspects the statement's FIRST token — never had a chance to catch
+  // it). `alert` with no body is never meaningful (there's no clause to
+  // compile), so this is a clear, specific compile error rather than
+  // silently degrading to zero events.
+  if (!call._alertBody) {
+    return { events: null, errors: [_err("alert must be written as a call with a body, e.g. alert(telegram) — bare 'alert' has no meaning here")] };
+  }
+  const flat = _flattenClauseItems(call._alertBody);
+  const errors = [];
+  // Sprint G parity — a bound label referenced as a plain channel-arg
+  // value inside `alert(...)`'s own body (e.g. `x = 5 do alert(ntfy(priority=x))`)
+  // gets the SAME substitution pass every other call list in this
+  // grammar already runs — see `_substituteBoundArgsInCalls`'s own
+  // header comment. Errors from substitution are merged with
+  // `compileAlertClause`'s own below.
+  const substCalls = flat.calls === 'nop' ? 'nop' : _substituteBoundArgsInCalls(flat.calls, errors);
+  const r = compileAlertClause(substCalls, flat.msgDefault, catalog, call._bindingsAt || new Map());
+  return { events: errors.length || r.errors.length ? null : r.events, errors: [...errors, ...r.errors] };
+}
+
+/** The ONE per-call compiler shared by BOTH the preamble and the DO
+ *  position (Sprint [grammar-unify], item 2: "share one parse-a-
+ *  statement-list implementation ... rather than maintaining two
+ *  separate accept-lists" — this is that sharing's compile-time half).
+ *  Dispatches by call name to whichever REUSED compiler already knows
+ *  how to handle it:
+ *    - `alert(...)`  -> `_compileAlertCallAsOrdinaryCall` (produces
+ *      `events`, the SAME field a DO-position `alert(...)` has always
+ *      produced — see `compileAgentStmt`'s own `events` wiring).
+ *    - `bracket(...)` -> `_compileBracketCallFields`, wrapped as an
+ *      ordinary `{type:'bracket', params}` action entry. NOTE: there is
+ *      currently NO `bracket` action registered in the real backend
+ *      action-dispatch tables (`_NOOP_ACTION_HANDLERS`/`_LIVE_ACTION_
+ *      HANDLERS` — see CLAUDE.md's "Agent action-dispatch SSOT" entry) —
+ *      this compiles correctly and gives the engine agent (plan item 0)
+ *      something concrete to dispatch against, but the entry is INERT
+ *      server-side until that wiring lands. Reported, not silently
+ *      worked around.
+ *    - `debug(...)`  -> `_compileDebugCall` (unchanged — already reads
+ *      `call._bindingsAt`, so no position-specific adjustment needed).
+ *    - everything else (`order`/`place_order`/`help`/any other real
+ *      catalog action) -> `_compileCatalogActionCall`.
+ *  Returns exactly one of `{isEvent:true, events}`, `{action}`, or
+ *  `{errors}` (non-empty only on failure — never combined with a
+ *  populated `action`/`events`). */
+function _compileSharedCall(rawCall, catalog, opts, rowRefCtx) {
+  const rawName = rawCall.name.toLowerCase();
+  if (rawName === 'alert') {
+    const r = _compileAlertCallAsOrdinaryCall(rawCall, catalog);
+    return r.errors.length ? { errors: r.errors } : { isEvent: true, events: r.events };
+  }
+  if (rawName === 'bracket') {
+    const r = _compileBracketCallFields(rawCall, catalog);
+    return r.errors.length ? { errors: r.errors } : { action: { type: 'bracket', params: r.fields } };
+  }
+  if (rawName === 'debug') {
+    const r = _compileDebugCall(rawCall, rawCall._bindingsAt, catalog);
+    return r.errors.length ? { errors: r.errors } : { action: r.action };
+  }
+  if (rawName === 'help') {
+    const entry = catalog && catalog.actions ? catalog.actions.get('help') : null;
+    const r = _compileHelpCall(rawCall, entry);
+    return r.errors.length ? { errors: r.errors } : { action: r.action };
+  }
+  const r = _compileCatalogActionCall(rawCall, catalog, opts, rowRefCtx);
+  return r.errors.length ? { errors: r.errors } : { action: r.action };
+}
+
+/** Compile ONE `help(x)` call to `{type:'help', params:{name:'x'}}` —
+ *  item 4. `help(...)`'s sole argument is ALWAYS the lexer's own bare-arg
+ *  sugar (see `lexAgentStatement`'s `debug`/`help`-shared special case —
+ *  there is no "hand-typed `help(name=...)`" alternate spelling at all,
+ *  unlike `emit_log`/`debug(x)`), so `call.args` is GUARANTEED to be
+ *  exactly `[{key:'name', value:{type:'name', value:<bareword>}}]` for
+ *  every call that reaches here — this deliberately bypasses the generic
+ *  `_coerceValueForSpec` schema path (which would reject a bare word for
+ *  a `type:'string'` param, per this grammar's "enum values are bare,
+ *  free-text values are quoted" rule) and takes the bare name's text
+ *  LITERALLY, same reasoning as `_compileDebugCall`'s own dedicated
+ *  compiler for its own bare-arg sugar. */
+function _compileHelpCall(call, entry) {
+  if (!entry) return { action: null, errors: [_err('help: action not found in catalog')] };
+  const arg = (call.args || [])[0];
+  if (!call.args || call.args.length !== 1 || !arg || arg.value.type !== 'name') {
+    return { action: null, errors: [_err('help(...) takes exactly one argument — a token/function name, e.g. help(pnl)')] };
+  }
+  return { action: { type: 'help', params: { name: arg.value.value } }, errors: [] };
+}
+
+/** `do_clause := "nop" | call*` — compiles every call via
+ *  `_compileSharedCall`, splitting the results into `actions` (every
+ *  real action/bracket/debug call) and `events` (every `alert(...)`
+ *  call, in textual order — collapses the old separate ALERT clause's
+ *  own `compileAlertClause` call into this single pass, per item 2:
+ *  "a call whose action is alert still routes through the existing
+ *  compileAlertClause -> events field under the hood"). */
 function compileDoClause(doCalls, catalog, opts, rowRefCtx) {
-  if (doCalls === 'nop') return { actions: [], errors: [] };
+  if (doCalls === 'nop') return { actions: [], events: [], errors: [] };
   const errors = [];
   const actions = [];
+  const events = [];
   for (const rawCall of doCalls) {
-    const { notifyArgs, call } = _splitNotifyArg(rawCall);
-    if (notifyArgs.length > 1) {
-      errors.push(_err(`${call.name}: duplicate parameter 'notify'`));
-      continue;
-    }
-
-    const rawName = call.name.toLowerCase();
-    // Sprint [order-unify] — BOTH typed spellings (`order`/`place_order`)
-    // resolve to the exact same schema-lookup key for compiling params;
-    // `isOrderAction` (not `lookupName === 'place_order'`) now drives the
-    // branch dispatch below, since the EMITTED `type` is always the new
-    // canonical `'order'` regardless of which spelling was typed or which
-    // catalog row actually matched (tolerant lookup — tries a literal
-    // `order` catalog row first, in case the backend has seeded one,
-    // falling back to the guaranteed-present `place_order` row otherwise).
-    const isOrderAction = rawName === 'order' || rawName === 'place_order';
-    const lookupName = isOrderAction ? 'order' : rawName;
-    const entry = isOrderAction
-      ? (catalog.actions.get('order') || catalog.actions.get('place_order'))
-      : catalog.actions.get(lookupName);
-    if (!entry) {
-      const other = _describeKind(call.name, catalog);
-      errors.push(_err(other
-        ? `'${call.name}' is ${other} — only actions are allowed in DO`
-        : `unknown action '${call.name}'`));
-      continue;
-    }
-
-    let action = null;
-    if (isOrderAction) {
-      const r = _compileOrderActionParams(call, entry, opts, rowRefCtx);
-      errors.push(...r.errors);
-      // Sprint [order-unify] — `order` is the sole name the compiler ever
-      // EMITS going forward, regardless of which spelling was typed
-      // (`order(...)` or `place_order(...)` both compile identically) —
-      // never `'place_order'`. The backend's Phase-A dispatch tables
-      // accept both strings identically.
-      if (!r.errors.length) action = { type: 'order', params: r.params };
-    } else if (lookupName === 'emit_log') {
-      const r = _compileEmitLogActionParams(call, entry, rowRefCtx);
-      errors.push(...r.errors);
-      if (!r.errors.length) action = { type: 'emit_log', params: r.params };
-    } else {
-      const r = _compileGenericActionParams(call, entry, rowRefCtx);
-      errors.push(...r.errors);
-      if (!r.errors.length) action = { type: entry.token, params: r.params };
-    }
-    if (!action) continue;
-
-    if (notifyArgs.length === 1) {
-      const nr = _compileNotifyClause(notifyArgs[0].value, catalog, entry.token);
-      errors.push(...nr.errors);
-      if (nr.errors.length) continue;
-      action = { ...action, notify: nr.notify };
-    }
-    actions.push(action);
+    const r = _compileSharedCall(rawCall, catalog, opts, rowRefCtx);
+    if (r.errors) { errors.push(...r.errors); continue; }
+    if (r.isEvent) events.push(...r.events);
+    else actions.push(r.action);
   }
-  return { actions: errors.length ? null : actions, errors };
+  return { actions: errors.length ? null : actions, events: errors.length ? null : events, errors };
+}
+
+/** `preamble := call*` — Sprint [grammar-unify], item 2's "the preamble
+ *  is NOT a restricted subset — it is the full shared grammar." Compiles
+ *  every preamble call via the SAME `_compileSharedCall` DO uses, but
+ *  into a SINGLE flat `preamble` array (not split into `actions`/
+ *  `events`) — a preamble call is UNCONDITIONAL (runs regardless of
+ *  `WHEN`), a semantically different bucket from DO's gated `actions`/
+ *  `events`, so it gets its own compiled field entirely (see
+ *  `compileAgentStmt`). Each entry is tagged with its own `type` (`'alert'`
+ *  carries `events` instead of `params` — every other entry is the
+ *  ordinary `{type, params}` shape `_compileSharedCall`'s action branches
+ *  already produce) so a consumer can tell them apart without
+ *  re-deriving it from the call name. */
+function compilePreambleClause(preambleCalls, catalog, opts, rowRefCtx) {
+  if (!preambleCalls || !preambleCalls.length) return { preamble: [], errors: [] };
+  const errors = [];
+  const preamble = [];
+  for (const rawCall of preambleCalls) {
+    const r = _compileSharedCall(rawCall, catalog, opts, rowRefCtx);
+    if (r.errors) { errors.push(...r.errors); continue; }
+    if (r.isEvent) preamble.push({ type: 'alert', events: r.events });
+    else preamble.push(r.action);
+  }
+  return { preamble: errors.length ? null : preamble, errors };
 }
 
 /** `emit_log(...)` — hand-typed only (the `debug(x)` sugar bypasses this
@@ -5214,7 +5552,7 @@ function _compileDebugCall(call, bindings, catalog) {
     // format this function has always used for those, per the "KNOWN
     // LIMITATION" comment above (nothing about THAT case changed).
     if (bound.rhsKind === 'expr') {
-      return { action: { type: 'emit_log', params: { level: 'debug', message: { '$given': lower } } }, errors };
+      return { action: { type: 'log', params: { level: 'debug', message: { '$given': lower } } }, errors };
     }
     let message;
     if (bound.rhsKind === 'value') {
@@ -5227,10 +5565,10 @@ function _compileDebugCall(call, bindings, catalog) {
       }
       message = JSON.stringify(compiled.conditions);
     }
-    return { action: { type: 'emit_log', params: { level: 'debug', message } }, errors };
+    return { action: { type: 'log', params: { level: 'debug', message } }, errors };
   }
   if (_allExposedColumnNames(catalog).has(lower)) {
-    return { action: { type: 'emit_log', params: { level: 'debug', message: { '$row': lower } } }, errors };
+    return { action: { type: 'log', params: { level: 'debug', message: { '$row': lower } } }, errors };
   }
   errors.push(_err(`debug(${refName}): '${refName}' is not a bound label (GIVEN/ALERT/DO) or a matched-row column name`, { start: call.start }));
   return { action: null, errors };
@@ -5447,6 +5785,14 @@ function _buildGivenEntries(bindings) {
   return { given: entries.length ? entries : null, errors: [] };
 }
 
+/** Compile an `agent_stmt` AST (see `parseAgentStmt`) — Sprint
+ *  [grammar-unify] rewrite. Two independent call-lists now exist instead
+ *  of the old three (`preambleCalls`, always compiled; `doCalls`, only
+ *  gated by `condResult`) — there is no more separate `alertCalls`/
+ *  `alertMsg` pair, `alert(...)` is just one more call name
+ *  `_compileSharedCall` recognizes in EITHER list (item 2's "a call
+ *  whose action is alert still routes through the existing
+ *  compileAlertClause -> events field under the hood"). */
 function compileAgentStmt(ast, catalog, opts) {
   const errors = [];
   // Sprint G — bound-label collisions against real catalog names, checked
@@ -5461,25 +5807,45 @@ function compileAgentStmt(ast, catalog, opts) {
   errors.push(...givenResult.errors);
   const condResult = compileCondition(ast.condition, catalog);
   errors.push(...condResult.errors);
+
+  // Sprint [grammar-unify] — the conditional wrapper is paired as a
+  // UNIT: `WHEN` with no `DO` has nothing to gate (an error, not a
+  // silently-accepted no-op); `DO` with no `WHEN` is now REDUNDANT with
+  // simply writing the call in the preamble, which additionally gets the
+  // correct once-per-activation execution semantics for a side-effecting
+  // call (plan item 0) instead of DO's cooldown-gated-but-repeating
+  // shape — so it's rejected too, steering the operator to the form that
+  // actually does what they want. A preamble-only statement (neither
+  // keyword at all) is NEVER subject to either check.
+  if (ast.sawWhen && !ast.sawDo) {
+    errors.push(_err('WHEN requires a DO clause — write WHEN <condition> DO <calls>'));
+  }
+  if (ast.sawDo && !ast.sawWhen) {
+    errors.push(_err('DO requires a WHEN condition — for an unconditional action, write it directly (no WHEN/DO needed)'));
+  }
+
   // Sprint G — substitute any VALUE-kind bound label referenced as a
-  // plain action/channel arg value BEFORE either clause compiler ever
+  // plain action/channel arg value BEFORE either call-list compiler ever
   // sees these calls (a CONDITION-kind label used this way is a compile
   // error raised by `_substituteBoundArgs` itself). True no-op for every
   // pre-Sprint-G statement (`_bindingsAt` is `undefined` everywhere).
-  const alertCallsSubst = _substituteBoundArgsInCalls(ast.alertCalls, errors);
+  const preambleCallsSubst = _substituteBoundArgsInCalls(ast.preambleCalls, errors);
   const doCallsSubst = _substituteBoundArgsInCalls(ast.doCalls, errors);
-  // Sprint [GIVEN-expr] — the full statement's bound-label map, by lower-
-  // cased label, for `compileAlertClause`'s `msg=` resolution (see that
-  // function's own comment on why the FULL map — not a per-call
-  // `_bindingsAt` snapshot — is safe here).
-  const bindingsMap = new Map((ast.bindings || []).map((b) => [b.label.toLowerCase(), b]));
-  const eventsResult = compileAlertClause(alertCallsSubst, ast.alertMsg, catalog, bindingsMap);
-  errors.push(...eventsResult.errors);
   // Sprint 16 — matched-row ($row) binding context, built from THIS
   // statement's own compiled condition tree (every real leaf's `scope`,
   // see `_collectLeafScopes`) so `compileDoClause` can recognise/validate
   // bare-NAME action-param values against it. See the "Sprint 16" header
-  // comment above `_resolveRowRefOrNull` for the full design.
+  // comment above `_resolveRowRefOrNull` for the full design. A preamble
+  // call runs UNCONDITIONALLY, outside any WHEN match — there is no real
+  // matched row to bind it from at all, so `compilePreambleClause` is
+  // given `rowRefCtx: null` (same convention `compileCancelAllOrdersStmt`
+  // already uses for its own no-WHEN bare statement), NOT this
+  // condition-derived context — passing the condition's context here
+  // would let a bare NAME that happens to match an exposed column
+  // compile to a `$row` marker that silently resolves to nothing at
+  // runtime (the preamble's own execution path has no row to read it
+  // from), rather than the clear compile-time error `_resolveRowRefOrNull`
+  // gives for every OTHER no-row-available case.
   const leafScopes = new Set();
   const scopeState = { hasNegation: false, hasTokenRef: false };
   _collectLeafScopes(condResult.conditions, leafScopes, scopeState);
@@ -5487,42 +5853,36 @@ function compileAgentStmt(ast, catalog, opts) {
     catalog, leafScopes, allExposedNames: _allExposedColumnNames(catalog),
     hasNegation: scopeState.hasNegation, hasTokenRef: scopeState.hasTokenRef,
   };
-  const actionsResult = compileDoClause(doCallsSubst, catalog, opts, rowRefCtx);
-  errors.push(...actionsResult.errors);
-  // Sprint G — every `debug(...)` call hoisted out of GIVEN/ALERT/DO
-  // during parsing compiles to a real `emit_log` action, appended to the
-  // final `actions` array — this is the "needs real compiler logic, not
-  // just a grammar production" piece: a GIVEN-placed `debug(...)` has no
-  // match-gate of its own, so simply landing it in `actions` (which only
-  // ever runs on a real WHEN match, same as every other action) is what
-  // makes it "only fire when the statement's WHEN turns out true."
-  const debugActions = [];
-  for (const dCall of ast.debugCalls || []) {
-    // `dCall._bindingsAt` (not the full `bindingsMap`) — same left-to-
-    // right "no forward reference" visibility rule every other label
-    // read enforces; a `debug(x)` written BEFORE `x` is bound anywhere
-    // else in the statement must not see it.
-    const r = _compileDebugCall(dCall, dCall._bindingsAt, catalog);
-    errors.push(...r.errors);
-    if (!r.errors.length) debugActions.push(r.action);
-  }
+  const preambleResult = compilePreambleClause(preambleCallsSubst, catalog, opts, null);
+  errors.push(...preambleResult.errors);
+  const doResult = compileDoClause(doCallsSubst, catalog, opts, rowRefCtx);
+  errors.push(...doResult.errors);
+
   const metaFields = compileMetaClause(ast.meta, errors);
-  // A debug-only statement (no real ALERT, no real DO, but at least one
-  // `debug(...)`) DOES satisfy "at least one real ALERT/DO" — it compiles
-  // to a genuine, non-empty `actions` array.
-  if (ast.alertCalls === 'nop' && ast.doCalls === 'nop' && debugActions.length === 0) {
-    errors.push(_err('an agent must have at least one of ALERT or DO'));
+  // A `WHEN ... DO ...` pair with nothing real inside DO (e.g. `DO nop`)
+  // is the same degenerate case the old "at least one of ALERT or DO"
+  // check caught — simplified now that ALERT is gone: DO itself must
+  // produce at least one real action or alert. A preamble-only statement
+  // is NEVER subject to this (see the plan's explicit "label-assignment
+  // alone is a complete, valid statement" requirement).
+  if (ast.sawWhen && ast.sawDo && !errors.length
+    && (doResult.actions || []).length === 0 && (doResult.events || []).length === 0) {
+    errors.push(_err('DO must have at least one real action or alert — DO nop by itself does nothing'));
   }
   if (errors.length) return { kind: 'agent', errors, agent: null };
-  const actions = actionsResult.actions ? [...actionsResult.actions, ...debugActions] : debugActions;
   return {
     kind: 'agent', errors: [],
     agent: {
-      conditions: condResult.conditions, events: eventsResult.events, actions,
-      // Sprint [GIVEN-expr] — only spliced in when non-null, so a
-      // statement with no operator-expression GIVEN binding at all
-      // (every pre-existing agent) compiles to byte-identical JSON —
-      // no stray `given: null` key.
+      conditions: condResult.conditions,
+      events: doResult.events || [],
+      actions: doResult.actions || [],
+      // Sprint [grammar-unify] — only spliced in when non-empty, so a
+      // statement with no preamble calls at all (every pre-existing
+      // agent, which never had anything but GIVEN's own label
+      // assignments/debug) compiles to byte-identical JSON — no stray
+      // `preamble: []` key.
+      ...(preambleResult.preamble && preambleResult.preamble.length ? { preamble: preambleResult.preamble } : {}),
+      // Sprint [GIVEN-expr] — only spliced in when non-null, same reason.
       ...(givenResult.given ? { given: givenResult.given } : {}),
       ...metaFields,
     },
@@ -6032,14 +6392,20 @@ const _BRACKET_APPLIES_TO_SPEC = Object.freeze({ type: 'enum', enum: ['buy_any',
  *  `OrderTemplateCreate` has no catalog token of its own; bracket's plain
  *  template-side field names reuse place_order's ticket-side group as the
  *  one shared business rule (see `_compileTpSlWingFields`'s own doc). */
-function compileBracketStmt(ast, catalog, opts = {}) {
+/** Compile a `bracket(...)` call's OWN arguments (tp/sl/wing fields +
+ *  `applies_to=`) to `{fields, errors}` — extracted out of
+ *  `compileBracketStmt` (Sprint [grammar-unify]) so the exact same body
+ *  logic is reusable from `_compileSharedCall` when `bracket(...)`
+ *  appears as one call among several in a preamble/DO list, not just as
+ *  the WHOLE standalone statement. Carries NO meta/`#name=` handling at
+ *  all — that stays `compileBracketStmt`-only (a bracket embedded in a
+ *  preamble/DO list has no meta clause of its own to read; see
+ *  `_compileSharedCall`'s own bracket branch, which reports — rather than
+ *  invents — the fact that no backend `bracket` action exists yet to
+ *  dispatch this entry, a gap for the engine agent to close, not this
+ *  compiler). */
+function _compileBracketCallFields(call, catalog) {
   const errors = [];
-  const call = ast.call;
-  if (!call || call.name.toLowerCase() !== 'bracket') {
-    errors.push(_err('only bracket(...) can be used standalone'));
-    return { errors, template: null };
-  }
-
   const { tpSlWingArgs, call: afterTpSlWing } = _splitTpSlWingArgs(call);
   const appliesToArgs = (afterTpSlWing.args || []).filter(a => a.key && a.key.toLowerCase() === 'applies_to');
   const otherArgs = (afterTpSlWing.args || []).filter(a => !(a.key && a.key.toLowerCase() === 'applies_to'));
@@ -6060,6 +6426,25 @@ function compileBracketStmt(ast, catalog, opts = {}) {
     if (r.error) errors.push(r.error); else applies_to = r.value;
   }
 
+  if (errors.length) return { fields: null, errors };
+  const fields = {
+    ...(applies_to !== undefined ? { applies_to } : {}),
+    ...tpSlWingResult.fields,
+  };
+  return { fields, errors: [] };
+}
+
+function compileBracketStmt(ast, catalog, opts = {}) {
+  const errors = [];
+  const call = ast.call;
+  if (!call || call.name.toLowerCase() !== 'bracket') {
+    errors.push(_err('only bracket(...) can be used standalone'));
+    return { errors, template: null };
+  }
+
+  const bodyResult = _compileBracketCallFields(call, catalog);
+  errors.push(...bodyResult.errors);
+
   const metaFields = compileMetaClause(ast.meta, errors);
   if (!metaFields.name) {
     errors.push(_err("bracket: missing required meta tag '#name' — a saved bracket must have a name"));
@@ -6067,11 +6452,7 @@ function compileBracketStmt(ast, catalog, opts = {}) {
 
   if (errors.length) return { errors, template: null };
 
-  const template = {
-    ...metaFields,
-    ...(applies_to !== undefined ? { applies_to } : {}),
-    ...tpSlWingResult.fields,
-  };
+  const template = { ...metaFields, ...bodyResult.fields };
   return { errors: [], template };
 }
 
@@ -6227,6 +6608,36 @@ function compileCancelAllOrdersStmt(ast, catalog, opts = {}) {
   return { errors: [], cancelAll: { mode: 'live', params } };
 }
 
+/** Compile a standalone `help(<name>)` call to a `{params: {name}}`
+ *  object — item 4, mirrors `compileCancelAllOrdersStmt`'s structure
+ *  exactly, minus the live/paper mode gate (`help` is read-only — a
+ *  catalog lookup, not a broker action — safe in any mode, so no `opts.mode`
+ *  check at all). Reuses `_compileHelpCall`, the SAME dedicated bare-arg
+ *  compiler a `DO help(...)`/preamble `help(...)` call already compiles
+ *  through (see `_compileSharedCall`) — no second schema to drift out of
+ *  sync, and no bare-word-vs-quoted-string rejection either (see that
+ *  function's own header comment for why the generic path doesn't fit
+ *  here). */
+function compileHelpStmt(ast, catalog, opts = {}) {
+  const errors = [];
+  const call = ast.call;
+  if (!call || call.name.toLowerCase() !== 'help') {
+    errors.push(_err('only help(...) can be used standalone'));
+    return { errors, help: null };
+  }
+  if (ast.meta && ast.meta.length) {
+    errors.push(_err('meta tags only apply to agents/brackets, not a bare help statement'));
+  }
+  if (errors.length) return { errors, help: null };
+
+  const entry = catalog && catalog.actions ? catalog.actions.get('help') : null;
+  const r = _compileHelpCall(call, entry);
+  errors.push(...r.errors);
+  if (errors.length) return { errors, help: null };
+
+  return { errors: [], help: { params: r.action.params } };
+}
+
 /** Compile an already-parsed AST (from `parseStatement`) to its JSON
  *  request shape. Returns `{ kind, errors, agent, ticket, basket,
  *  template, fragment }` — non-empty `errors` means every payload field is
@@ -6251,31 +6662,37 @@ export function compileStatement(ast, catalog, opts = {}) {
     return {
       kind: ast.kind,
       errors: [_err('author agents/brackets on Automation → Console')],
-      agent: null, ticket: null, basket: null, template: null, fragment: null, cancelAll: null,
+      agent: null, ticket: null, basket: null, template: null, fragment: null, cancelAll: null, help: null,
     };
   }
   if (ast.kind === 'agent') {
     const r = compileAgentStmt(ast, catalog, opts);
-    return { kind: 'agent', errors: r.errors, agent: r.agent, ticket: null, basket: null, template: null, fragment: null, cancelAll: null };
+    return { kind: 'agent', errors: r.errors, agent: r.agent, ticket: null, basket: null, template: null, fragment: null, cancelAll: null, help: null };
   }
   if (ast.kind === 'event') {
     const r = compileEventStmt(ast, catalog);
-    return { kind: 'event', errors: r.errors, agent: r.agent, ticket: null, basket: null, template: null, fragment: null, cancelAll: null };
+    return { kind: 'event', errors: r.errors, agent: r.agent, ticket: null, basket: null, template: null, fragment: null, cancelAll: null, help: null };
   }
   if (ast.kind === 'bracket') {
     const r = compileBracketStmt(ast, catalog, opts);
-    return { kind: 'bracket', errors: r.errors, agent: null, ticket: null, basket: null, template: r.template, fragment: null, cancelAll: null };
+    return { kind: 'bracket', errors: r.errors, agent: null, ticket: null, basket: null, template: r.template, fragment: null, cancelAll: null, help: null };
   }
   if (ast.kind === 'token') {
     const r = compileTokenStmt(ast, catalog, opts);
-    return { kind: 'token', errors: r.errors, agent: null, ticket: null, basket: null, template: null, fragment: r.fragment, cancelAll: null };
+    return { kind: 'token', errors: r.errors, agent: null, ticket: null, basket: null, template: null, fragment: r.fragment, cancelAll: null, help: null };
   }
   if (ast.kind === 'cancel_all_orders') {
     const r = compileCancelAllOrdersStmt(ast, catalog, opts);
-    return { kind: 'cancel_all_orders', errors: r.errors, agent: null, ticket: null, basket: null, template: null, fragment: null, cancelAll: r.cancelAll };
+    return { kind: 'cancel_all_orders', errors: r.errors, agent: null, ticket: null, basket: null, template: null, fragment: null, cancelAll: r.cancelAll, help: null };
+  }
+  // item 4 — `help(<name>)`, read-only, no mode/scope gate beyond the
+  // generic `allowedKinds` check above (see `compileHelpStmt`'s own doc).
+  if (ast.kind === 'help') {
+    const r = compileHelpStmt(ast, catalog, opts);
+    return { kind: 'help', errors: r.errors, agent: null, ticket: null, basket: null, template: null, fragment: null, cancelAll: null, help: r.help };
   }
   const r = compileOrderStmt(ast, catalog, opts);
-  return { ...r, template: null, fragment: null, cancelAll: null };
+  return { ...r, template: null, fragment: null, cancelAll: null, help: null };
 }
 
 /** One-shot parse + compile — the main entry point for Sprint 4's UI and
@@ -6289,17 +6706,17 @@ export function compileStatement(ast, catalog, opts = {}) {
 export function compileAgentCliStatement(text, catalog, opts = {}) {
   const { ast, errors: parseErrors } = parseStatement(text);
   if (parseErrors.length) {
-    return { ok: false, errors: parseErrors, kind: null, agent: null, ticket: null, basket: null, template: null, fragment: null, cancelAll: null };
+    return { ok: false, errors: parseErrors, kind: null, agent: null, ticket: null, basket: null, template: null, fragment: null, cancelAll: null, help: null };
   }
   const result = compileStatement(ast, catalog, opts);
   if (result.errors && result.errors.length) {
-    return { ok: false, errors: result.errors, kind: result.kind, agent: null, ticket: null, basket: null, template: null, fragment: null, cancelAll: null };
+    return { ok: false, errors: result.errors, kind: result.kind, agent: null, ticket: null, basket: null, template: null, fragment: null, cancelAll: null, help: null };
   }
   return {
     ok: true, errors: [], kind: result.kind,
     agent: result.agent || null, ticket: result.ticket || null, basket: result.basket || null,
     template: result.template || null, fragment: result.fragment || null,
-    cancelAll: result.cancelAll || null,
+    cancelAll: result.cancelAll || null, help: result.help || null,
   };
 }
 
@@ -7215,6 +7632,18 @@ export function decompileActions(actions, catalog, opts = {}) {
       continue;
     }
     const lookupName = act.type.toLowerCase();
+    // Sprint [grammar-unify] — `bracket` is NEVER a real catalog action
+    // (`catalog.actions.get('bracket')` is always `undefined` — see
+    // `_compileSharedCall`'s own bracket branch) — checked BEFORE the
+    // catalog lookup below, which would otherwise fail this entry as
+    // "unknown action" before ever reaching a bracket-specific render
+    // path. No `notify=` support (bracket never compiles one).
+    if (lookupName === 'bracket') {
+      const r = _decompileBracketCallFields(act.params, catalog);
+      if (r.errors.length) { errors.push(...r.errors); continue; }
+      parts.push(r.text);
+      continue;
+    }
     // Sprint [order-unify] — tolerant catalog lookup: `order` is the sole
     // name the compiler ever EMITS going forward (see `compileDoClause`),
     // but stored JSON may still carry the legacy `place_order` (any
@@ -7254,7 +7683,7 @@ export function decompileActions(actions, catalog, opts = {}) {
     // message is the new, genuinely-live `{"$given": name}` marker (an
     // operator-expression GIVEN binding) — byte-for-byte round-trip,
     // same as the pre-existing `$row` case directly below.
-    if (lookupName === 'emit_log' && act.params && act.params.level === 'debug' && _isGivenRefMarker(act.params.message) && notifyArgText == null) {
+    if (lookupName === 'log' && act.params && act.params.level === 'debug' && _isGivenRefMarker(act.params.message) && notifyArgText == null) {
       parts.push(`debug(${act.params.message['$given']})`);
       continue;
     }
@@ -7274,8 +7703,20 @@ export function decompileActions(actions, catalog, opts = {}) {
     // `notify` is present — `debug(x)`'s own grammar takes exactly one
     // bare argument, with no room for a second `notify=` kwarg — falling
     // through to the generic rendering below instead, which supports it.
-    if (lookupName === 'emit_log' && act.params && act.params.level === 'debug' && _isRowRefMarker(act.params.message) && notifyArgText == null) {
+    if (lookupName === 'log' && act.params && act.params.level === 'debug' && _isRowRefMarker(act.params.message) && notifyArgText == null) {
       parts.push(`debug(${act.params.message['$row']})`);
+      continue;
+    }
+    // item 4 — `help(x)`'s sole argument is ALWAYS the lexer's bare-arg
+    // sugar (see `lexAgentStatement`'s own comment) — there is no
+    // "hand-typed help(name=...)" alternate spelling at all. The generic
+    // `_decompileGenericAction` path below would render it as the
+    // schema-typed STRING form, `help(name="pnl")`, which the lexer then
+    // rejects on recompile (its bare-arg sugar requires an unquoted bare
+    // word) — the exact same mismatch `debug(x)`'s own dedicated branches
+    // above exist to avoid. Mirrors `_compileHelpCall`'s shape exactly.
+    if (lookupName === 'help' && act.params && typeof act.params.name === 'string' && notifyArgText == null) {
+      parts.push(`help(${act.params.name})`);
       continue;
     }
     const r = _decompileGenericAction(act.params, entry);
@@ -7413,23 +7854,137 @@ function _decompileGivenPreamble(given) {
     }
   }
   if (errors.length) return { text: null, errors };
-  return { text: `GIVEN ${parts.join('; ')}\n`, errors: [] };
+  // Sprint [grammar-unify] — NO leading `GIVEN ` keyword any more; the
+  // preamble is self-delimiting by position (bounded by `WHEN`, or
+  // end-of-input — see `parseAgentStmt`'s own header comment), so there
+  // is nothing left for the keyword to mark.
+  return { text: `${parts.join('; ')}\n`, errors: [] };
 }
 
-export function decompileAgent({ conditions, events, actions, given = undefined, name = undefined, description = undefined, tags = undefined, group = undefined }, catalog, opts = {}) {
+/** Decompile a preamble/DO-position `bracket(...)` call's OWN fields
+ *  (`{applies_to?, tp_order_type?, ...}` — the SAME shape
+ *  `_compileBracketCallFields` produces) back to its `bracket(...)` call
+ *  text — the mirror of THAT function, not of the full `decompileBracket`
+ *  (which additionally requires `#name=`/meta that a preamble/DO
+ *  bracket call never carries — see `_compileSharedCall`'s own bracket
+ *  branch). A zero-argument result renders bare (`bracket`, no parens),
+ *  matching `parseCall`'s own "a zero-argument token is always written
+ *  bare" rule. */
+function _decompileBracketCallFields(fields, catalog) {
+  const t = fields || {};
+  const errors = [];
+  const argParts = [];
+  if (t.applies_to != null) {
+    if (typeof t.applies_to !== 'string') {
+      errors.push(_err('bracket.applies_to: expected an enum value'));
+    } else {
+      argParts.push(`applies_to=${_isBareable(t.applies_to) ? t.applies_to : _quoteString(t.applies_to).text}`);
+    }
+  }
+  const tpSlWingResult = _decompileTpSlWingFields(t, 'template', 'bracket');
+  errors.push(...tpSlWingResult.errors);
+  argParts.push(...tpSlWingResult.argParts);
+  if (errors.length) return { text: null, errors };
+  return { text: argParts.length ? `bracket(${argParts.join(', ')})` : 'bracket', errors: [] };
+}
+
+/** Decompile `agent.preamble[]` (Sprint [grammar-unify]) back to one CLI
+ *  line PER entry, in textual order — the mirror of `compilePreambleClause`.
+ *  `{type:'alert', events}` reuses `decompileEvents` UNCHANGED (the exact
+ *  same body grammar `alert(...)`'s parens now wrap, see `parseCall`'s
+ *  own `alert`-specific branch) and wraps it as `alert(...)`.
+ *  `{type:'bracket', params}` goes through the dedicated
+ *  `_decompileBracketCallFields` above. Every other entry is the
+ *  ordinary `{type, params}` action shape `decompileActions` already
+ *  renders ONE of — reused by wrapping it in a one-element array (never
+ *  the `'nop'`/empty-array shortcut, since this is always called with a
+ *  REAL single entry). */
+function _decompilePreambleEntries(preamble, catalog, opts) {
+  if (!Array.isArray(preamble) || preamble.length === 0) return { text: '', errors: [] };
+  const errors = [];
+  const lines = [];
+  for (const entry of preamble) {
+    if (!entry || typeof entry !== 'object' || typeof entry.type !== 'string') {
+      errors.push(_err(`unrecognized preamble entry: ${JSON.stringify(entry)}`));
+      continue;
+    }
+    if (entry.type === 'alert') {
+      const r = decompileEvents(entry.events || [], catalog);
+      if (r.errors.length) { errors.push(...r.errors); continue; }
+      lines.push(`alert(${r.text})`);
+      continue;
+    }
+    if (entry.type === 'bracket') {
+      const r = _decompileBracketCallFields(entry.params, catalog);
+      if (r.errors.length) { errors.push(...r.errors); continue; }
+      lines.push(r.text);
+      continue;
+    }
+    const r = decompileActions([entry], catalog, opts);
+    if (r.errors.length) { errors.push(...r.errors); continue; }
+    lines.push(r.text);
+  }
+  if (errors.length) return { text: null, errors };
+  return { text: lines.join('\n'), errors: [] };
+}
+
+/** Decompile a stored `kind='cycle'` agent back to its unified CLI text
+ *  (Sprint [grammar-unify] rewrite of the old `GIVEN ... WHEN ... ALERT
+ *  ... DO ...` four-clause renderer) — the reverse of `compileAgentStmt`.
+ *  Shape: every preamble line first (label-assignment bindings via
+ *  `_decompileGivenPreamble`, then every `agent.preamble[]` call via
+ *  `_decompilePreambleEntries`, each on its own line, textual order
+ *  preserved within each source but NOT interleaved between the two —
+ *  `given`/`preamble` are compiled as two separate fields, so their
+ *  relative order from the ORIGINAL source text is not preserved
+ *  byte-for-byte; this is a KNOWN, accepted decompile-fidelity gap, not a
+ *  correctness bug — re-saving the decompiled text still compiles to the
+ *  identical `conditions`/`events`/`actions`/`given`/`preamble` JSON,
+ *  which is the actual round-trip contract this function's own recompile
+ *  safety net below verifies), THEN — only when there is any real
+ *  conditional content at all (`events`/`actions` not both empty) — a
+ *  single `WHEN <condition> DO <calls>` line, with a DO-position
+ *  `alert(...)` call synthesized from `events` (collapsing the old
+ *  separate ALERT clause back into one DO call list, mirroring item 2's
+ *  compile-side collapse). A preamble-only agent (empty `events/actions`,
+ *  non-empty `preamble`/`given`) renders with NO `WHEN`/`DO` line at
+ *  all — the plan's own "a preamble with no WHEN...DO... at all is a
+ *  complete, valid, standalone statement" requirement, honored on the
+ *  decompile side too. */
+export function decompileAgent({ conditions, events, actions, given = undefined, preamble = undefined, name = undefined, description = undefined, tags = undefined, group = undefined }, catalog, opts = {}) {
   const condResult = decompileCondition(conditions, catalog);
   const eventsResult = decompileEvents(events, catalog);
   const actionsResult = decompileActions(actions, catalog, opts);
   const metaResult = decompileMetaClause({ name, description, tags, group });
   const givenResult = _decompileGivenPreamble(given);
-  const errors = [...condResult.errors, ...eventsResult.errors, ...actionsResult.errors, ...metaResult.errors, ...givenResult.errors];
+  const preambleResult = _decompilePreambleEntries(preamble, catalog, opts);
+  const errors = [
+    ...condResult.errors, ...eventsResult.errors, ...actionsResult.errors,
+    ...metaResult.errors, ...givenResult.errors, ...preambleResult.errors,
+  ];
   const evLen = Array.isArray(events) ? events.length : null;
   const acLen = Array.isArray(actions) ? actions.length : null;
-  if (evLen === 0 && acLen === 0) errors.push(_err('an agent must have at least one of ALERT or DO'));
+  const hasConditional = !(evLen === 0 && acLen === 0);
+  const hasPreambleContent = !!(givenResult.text || preambleResult.text);
+  if (!hasConditional && !hasPreambleContent) {
+    errors.push(_err('an agent must have at least one preamble call/binding or a WHEN ... DO ... clause'));
+  }
   if (errors.length) return { text: null, errors };
 
   const metaSuffix = metaResult.text ? ` ${metaResult.text}` : '';
-  const text = `${givenResult.text}WHEN ${condResult.text} ALERT ${eventsResult.text} DO ${actionsResult.text}${metaSuffix}`;
+  const preambleLines = [];
+  if (givenResult.text) preambleLines.push(givenResult.text.replace(/\n$/, ''));
+  if (preambleResult.text) preambleLines.push(preambleResult.text);
+  const preambleBlock = preambleLines.length ? `${preambleLines.join('\n')}\n` : '';
+  let whenBlock = '';
+  if (hasConditional) {
+    const doParts = [];
+    if (eventsResult.text !== 'nop') doParts.push(`alert(${eventsResult.text})`);
+    if (actionsResult.text !== 'nop') doParts.push(actionsResult.text);
+    const doText = doParts.length ? doParts.join(', ') : 'nop';
+    whenBlock = `WHEN ${condResult.text} DO ${doText}`;
+  }
+  const text = `${preambleBlock}${whenBlock}${metaSuffix}`.replace(/^\n+/, '');
   const roundTrip = compileAgentCliStatement(text, catalog, opts);
   if (!roundTrip.ok) {
     const detail = (roundTrip.errors && roundTrip.errors[0] && roundTrip.errors[0].message) || 'unknown error';
@@ -8112,7 +8667,10 @@ export function lookupAgentCliEntry(name, catalog, clauseKind = null, scopeHint 
 // keyword/connective, is only reachable inside a full WHEN/ALERT/DO
 // agent statement, so it maps to 'agent'.
 const _ACTION_TOKEN_KIND = { order: 'order', place_order: 'order', cancel_all_orders: 'cancel_all_orders', bracket: 'bracket' };
-const _CLAUSE_HEAD_TOKENS = new Set(['GIVEN', 'WHEN', 'ALERT', 'DO', '&', '|', 'always']);
+// Sprint [grammar-unify] — GIVEN and ALERT are removed: GIVEN has nothing
+// left to mark (the preamble is self-delimiting by position), and ALERT
+// is an ordinary call (`alert(...)`) now, never a clause-head keyword.
+const _CLAUSE_HEAD_TOKENS = new Set(['WHEN', 'DO', '&', '|', 'always']);
 
 /** Filters a bare-top-level suggestion list down to tokens the host
  *  editor's `allowedKinds` restriction (Sprint B's order-scoped CLI
@@ -8634,7 +9192,23 @@ function _isComparatorToken(tok) {
 
 /** Which of GIVEN/WHEN/ALERT/DO have already appeared as a real reserved-
  *  word marker anywhere in `real` — used to compute which clause-head
- *  keyword(s) legally remain (Sprint H item 1). */
+ *  keyword(s) legally remain (Sprint H item 1).
+ *
+ *  KNOWN GAP (Sprint [grammar-unify], not yet closed — see CLAUDE.md/the
+ *  handback report for this sprint): `given`/`alert` are no longer
+ *  reserved words at the LEXER level (see `_RESERVED`'s own comment), so
+ *  `t.reserved` is never true for either any more and this function can
+ *  no longer detect them this way. Left UNCHANGED (rather than patched
+ *  here in isolation) because an isolated fix made this file's own test
+ *  suite WORSE, not better — `_clauseKindAt`-style position
+ *  classification elsewhere in this suggestion engine still assumes a
+ *  real GIVEN/ALERT clause exists (bare-name "channel position"
+ *  classification keyed off a seen ALERT marker, GIVEN-item-head-is-
+ *  debug-only restriction, etc.) and needs the SAME rework in lockstep,
+ *  not a partial one. This is real, intentional, documented tech debt,
+ *  not an oversight: the suggestion/autocomplete engine still assumes
+ *  the pre-[grammar-unify] 4-clause shape and needs its own dedicated
+ *  pass. */
 function _seenClauseHeads(real) {
   const seen = new Set();
   for (const t of real) {
@@ -8651,7 +9225,10 @@ function _seenClauseHeads(real) {
  *  alert_part | alert_part | do_part | ε`) directly: GIVEN only at the
  *  very start (`seen` empty); WHEN any time before ALERT/DO have started;
  *  ALERT/DO each independently, as long as that ONE hasn't been used yet
- *  (order between them is free). */
+ *  (order between them is free).
+ *
+ *  KNOWN GAP (Sprint [grammar-unify]) — see `_seenClauseHeads`'s own
+ *  comment; this function's own behavior is left unchanged alongside it. */
 function _clauseHeadKeywords(seen) {
   const out = [];
   if (seen.size === 0) out.push('GIVEN');

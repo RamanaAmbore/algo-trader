@@ -58,9 +58,11 @@ const FIXTURE_ROWS = [
       tag: { type: 'string', required: false },
     },
   },
-  { grammar_kind: 'action', token_kind: 'action_type', token: 'emit_log', params_schema: { message: { type: 'string', required: true, token_ref_ok: true } } },
+  // item 7 (backend) — DSL-visible token renamed `emit_log` -> `log`.
+  { grammar_kind: 'action', token_kind: 'action_type', token: 'log', params_schema: { message: { type: 'string', required: true, token_ref_ok: true } } },
   { grammar_kind: 'action', token_kind: 'action_type', token: 'close_position', params_schema: {} },
   { grammar_kind: 'action', token_kind: 'action_type', token: 'cancel_all_orders', params_schema: {} },
+  { grammar_kind: 'action', token_kind: 'action_type', token: 'help', params_schema: { name: { type: 'string', required: true } } },
 ];
 
 const CATALOG = buildCatalog(FIXTURE_ROWS);
@@ -79,13 +81,13 @@ describe('suggestAgentCliAt() — bare-name position', () => {
   });
 
   it('ALERT clause: suggests channel names only (not metrics/actions)', () => {
-    const r = suggest('WHEN always ALERT tel');
+    const r = suggest('WHEN always DO alert(tel)');
     expect(r.kind).toBe('token');
     expect(r.suggestions).toEqual(['telegram']);
   });
 
   it('DO clause: suggests action names only (not metrics/channels)', () => {
-    const r = suggest('WHEN always ALERT nop DO place_');
+    const r = suggest('WHEN always DO place_');
     expect(r.kind).toBe('token');
     expect(r.suggestions).toContain('place_order');
     expect(r.suggestions).not.toContain('mean_pnl');
@@ -111,13 +113,13 @@ describe('suggestAgentCliAt() — bare-name position', () => {
   });
 
   it('fresh gap right after "ALERT " (no partial yet) still suggests channels', () => {
-    const r = suggest('WHEN always ALERT ');
+    const r = suggest('WHEN always DO alert()');
     expect(r.kind).toBe('token');
     expect(r.suggestions).toContain('telegram');
   });
 
   it('fresh gap right after "DO " (no partial yet) still suggests actions', () => {
-    const r = suggest('WHEN always ALERT nop DO ');
+    const r = suggest('WHEN always DO');
     expect(r.kind).toBe('token');
     expect(r.suggestions).toContain('place_order');
   });
@@ -132,7 +134,7 @@ describe('suggestAgentCliAt() — bare-name position', () => {
 
 describe('suggestAgentCliAt() — call arg-list position', () => {
   it('right after "(" suggests the call\'s own param names', () => {
-    const r = suggest('WHEN always ALERT nop DO place_order(');
+    const r = suggest('WHEN always DO place_order(');
     expect(r.kind).toBe('param');
     expect(r.suggestions).toEqual(expect.arrayContaining(['account', 'symbol', 'exchange', 'side', 'qty']));
   });
@@ -261,7 +263,7 @@ describe('suggestAgentCliAt() — positions that resolve to nothing', () => {
   });
 
   it('cursor outside any recognizable position (unknown bare call name) returns empty', () => {
-    const r = suggest('WHEN always ALERT nop DO totally_unknown_fn(');
+    const r = suggest('WHEN always DO totally_unknown_fn(');
     expect(r.suggestions).toEqual([]);
     expect(r.kind).toBeNull();
   });
@@ -303,7 +305,7 @@ describe('suggestAgentCliAt() — descriptions (Sprint 11)', () => {
   });
 
   it('a channel token-name suggestion (ALERT clause) carries its catalog description', () => {
-    const r = suggest('WHEN always ALERT tel');
+    const r = suggest('WHEN always DO alert(tel)');
     const idx = r.suggestions.indexOf('telegram');
     expect(idx).toBeGreaterThanOrEqual(0);
     expect(r.descriptions[idx]).toBe('Telegram group defined by secrets.telegram_chat_id (fixture).');
@@ -317,7 +319,7 @@ describe('suggestAgentCliAt() — descriptions (Sprint 11)', () => {
   });
 
   it('a param-name suggestion inside an open call carries that param\'s own description', () => {
-    const r = suggest('WHEN always ALERT nop DO place_order(');
+    const r = suggest('WHEN always DO place_order(');
     expect(r.kind).toBe('param');
     const idx = r.suggestions.indexOf('account');
     expect(idx).toBeGreaterThanOrEqual(0);
@@ -325,7 +327,7 @@ describe('suggestAgentCliAt() — descriptions (Sprint 11)', () => {
   });
 
   it('a param-name suggestion with no backend-provided description degrades to an empty string, not a crash', () => {
-    const r = suggest('WHEN always ALERT nop DO place_order(');
+    const r = suggest('WHEN always DO place_order(');
     const idx = r.suggestions.indexOf('symbol'); // fixture's `symbol` param carries no `description` key
     expect(idx).toBeGreaterThanOrEqual(0);
     expect(r.descriptions[idx]).toBe('');
@@ -389,7 +391,7 @@ describe('suggestAgentCliAt() — Sprint H item 1: statement-head keywords', () 
   });
 
   it('after a complete ALERT clause (no DO yet) suggests DO, not ALERT again, and no "&"/"|" (condition already sealed)', () => {
-    const r = suggest('WHEN pnl@positions.total <= -5 ALERT telegram ');
+    const r = suggest('WHEN pnl@positions.total <= -5 DO alert(telegram)');
     expect(r.kind).toBe('keyword');
     expect(r.suggestions).toContain('DO');
     expect(r.suggestions).not.toContain('ALERT');
@@ -457,13 +459,13 @@ describe('suggestAgentCliAt() — Sprint H item 2/3: comparators (incl. in/not i
 
 describe('suggestAgentCliAt() — Sprint H item 4: order(/bracket(/token( param suggestions', () => {
   it('"order(" (the alias, not "place_order") now gets real param suggestions, including lots=/bracket= sugar', () => {
-    const r = suggest('WHEN always ALERT nop DO order(');
+    const r = suggest('WHEN always DO order(');
     expect(r.kind).toBe('param');
     expect(r.suggestions).toEqual(expect.arrayContaining(['account', 'symbol', 'side', 'qty', 'lots', 'bracket', 'tp_pct', 'sl_pct']));
   });
 
   it('"place_order(" gets the SAME augmented param list as "order(" (not just the bare catalog schema)', () => {
-    const r = suggest('WHEN always ALERT nop DO place_order(');
+    const r = suggest('WHEN always DO place_order(');
     expect(r.kind).toBe('param');
     expect(r.suggestions).toEqual(expect.arrayContaining(['lots', 'bracket', 'tp_pct', 'sl_pct', 'wing_premium_pct']));
   });
@@ -501,7 +503,7 @@ describe('suggestAgentCliAt() — Sprint H item 4: order(/bracket(/token( param 
 
 describe('suggestAgentCliAt() — Sprint H item 5: "#" meta-tag suggestions', () => {
   it('a bare trailing "#" (nothing typed yet) suggests all four meta keys', () => {
-    const r = suggest('WHEN always ALERT nop DO nop #');
+    const r = suggest('WHEN always DO nop #');
     expect(r.kind).toBe('meta');
     expect(r.suggestions).toEqual(expect.arrayContaining(['name=', 'desc=', 'tag=', 'group=']));
   });
@@ -515,7 +517,7 @@ describe('suggestAgentCliAt() — Sprint H item 5: "#" meta-tag suggestions', ()
   });
 
   it('an already-used meta key is excluded from the next "#" suggestion', () => {
-    const r = suggest('WHEN always ALERT nop DO nop #name="x" #');
+    const r = suggest('WHEN always DO nop #name="x" #');
     expect(r.suggestions).not.toContain('name=');
     expect(r.suggestions).toEqual(expect.arrayContaining(['desc=', 'tag=', 'group=']));
   });
@@ -547,7 +549,7 @@ describe('suggestAgentCliAt() — Sprint H item 7: GIVEN suggestable, and its ow
   });
 
   it('right after "GIVEN " (fresh item head) suggests ONLY debug — not metrics (GIVEN items are assignments/debug only)', () => {
-    const r = suggest('GIVEN ');
+    const r = suggest('');
     expect(r.suggestions).toEqual(['debug']);
   });
 });
@@ -562,14 +564,14 @@ describe('suggestAgentCliAt() — Sprint [comma-separator]: live-typing matches 
     // that would compile to an INVALID GIVEN item if picked (a bare
     // metric is not a legal top-level GIVEN item). Fixed by widening
     // that same detection to treat COMMA identically to SEMI.
-    const viaComma = suggest('GIVEN a1 = 1, ');
-    const viaSemi = suggest('GIVEN a1 = 1; ');
+    const viaComma = suggest('a1 = 1,');
+    const viaSemi = suggest('a1 = 1;');
     expect(viaComma.suggestions).toEqual(['debug']);
     expect(viaComma.suggestions).toEqual(viaSemi.suggestions);
   });
 
   it('right after a "," ending an ALERT assignment, suggests fresh channel/action candidates (not just more call params)', () => {
-    const r = suggest('WHEN always ALERT a = 1, ');
+    const r = suggest('WHEN always DO alert(a = 1,)');
     expect(r.kind).toBe('token');
     expect(r.suggestions).toEqual(expect.arrayContaining(['telegram']));
   });
@@ -577,17 +579,17 @@ describe('suggestAgentCliAt() — Sprint [comma-separator]: live-typing matches 
 
 describe('suggestAgentCliAt() — Sprint H item 8: bound labels suggested wherever a value/condition is valid', () => {
   it('a CONDITION-kind label is suggested as a whole bare WHEN leaf', () => {
-    const r = suggest('GIVEN x = pnl@positions.total <= -5 WHEN ');
+    const r = suggest('x = pnl@positions.total <= -5 WHEN');
     expect(r.suggestions).toContain('x');
   });
 
   it('a PRIMITIVE(value)-kind label is NOT suggested as a whole bare WHEN leaf (would be a parse error if picked)', () => {
-    const r = suggest('GIVEN x = 5 WHEN ');
+    const r = suggest('x = 5 WHEN');
     expect(r.suggestions).not.toContain('x');
   });
 
   it('right after a label-bind\'s own "=" (given_rhs position), suggests metrics + scope roots', () => {
-    const r = suggest('GIVEN x = ');
+    const r = suggest('x =');
     expect(r.suggestions).toEqual(expect.arrayContaining(['mean_pnl', 'positions', 'funds']));
   });
 
@@ -606,17 +608,17 @@ describe('suggestAgentCliAt() — Sprint H item 8: bound labels suggested wherev
 
 describe('suggestAgentCliAt() — Sprint H item 9: debug(...) suggested in GIVEN/ALERT/DO, and its own arg position', () => {
   it('"debug" is offered as a candidate right after ALERT', () => {
-    const r = suggest('WHEN always ALERT ');
+    const r = suggest('WHEN always DO alert()');
     expect(r.suggestions).toContain('debug');
   });
 
   it('"debug" is offered as a candidate right after DO', () => {
-    const r = suggest('WHEN always ALERT nop DO ');
+    const r = suggest('WHEN always DO');
     expect(r.suggestions).toContain('debug');
   });
 
   it('inside debug(...)\'s own parens, suggests bound labels', () => {
-    const r = suggest('GIVEN x = 5 WHEN always ALERT nop DO debug(');
+    const r = suggest('x = 5 WHEN always DO debug(');
     expect(r.suggestions).toContain('x');
   });
 
