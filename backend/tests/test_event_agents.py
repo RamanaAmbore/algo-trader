@@ -749,15 +749,22 @@ def test_generic_notice_agents_sourced_from_shared_table_byte_identical():
 
 def test_generic_notice_agents_are_every_spec_in_the_shared_table():
     """Every row in `_GENERIC_NOTICE_SPECS` produces a SEEDED_AGENTS
-    entry, and no `generic_notice` agent exists outside the table —
-    guards against a future agent being added as a one-off literal
-    instead of a table row."""
+    entry, and no OTHER TABLE-SOURCED `generic_notice` agent exists
+    outside the table — guards against a future table-style agent being
+    added as a one-off literal instead of a table row.
+
+    `UNROUTED_ALERT_AGENT` (council item 5 fix) is a DELIBERATE,
+    documented exception — it's a single standalone agent that reuses
+    the shared `generic_notice` renderer (it needs no bespoke
+    title/body logic) without belonging to the tag-shaped table above,
+    so it's excluded from this equality by name, not silently allowed
+    to drift the count."""
     from backend.api.algo import event_agents as ea
     built_slugs = {ea._build_generic_notice_agent(spec)["slug"] for spec in ea._GENERIC_NOTICE_SPECS}
     generic_notice_slugs = {
         spec["slug"] for spec in ea.SEEDED_AGENTS
         if any(isinstance(a, dict) and a.get("render") == "generic_notice" for a in spec.get("actions") or [])
-    }
+    } - {ea.UNROUTED_ALERT_AGENT["slug"]}
     assert built_slugs == generic_notice_slugs == {
         "gtt-asymmetric-alert", "oco-double-fire-alert", "ticker-recovered-alert",
         "ticker-degraded-alert", "visitor-report-alert",
@@ -927,32 +934,119 @@ async def test_dispatch_trace_logs_log_only_suppression(monkeypatch):
 
 
 # ── Item 5 — fail-loud catch-all for an unrouted alert-shaped record ─────
+#
+# 2026-10 fix: the first version of this catch-all logged its self-alert
+# via `_logger` (this module's own `log_store.py`-skip-listed logger),
+# which is "recursion-safe" only because it can NEVER be captured by
+# `LogStoreHandler`/`dispatch_rows()` at all — which also means it could
+# NEVER reach a real channel (Telegram/ntfy/email), only stderr. That's
+# exactly the silent-failure mode this item exists to prevent. Fixed:
+# the self-alert now logs through `_EVENTS_LOGGER` (captured normally)
+# tagged with the reserved `alert_event="unrouted_alert"`, which
+# `UNROUTED_ALERT_AGENT` matches and actually sends. Recursion safety is
+# now an explicit exclusion in `_looks_alert_shaped()` for that exact
+# `alert_event`, tested directly below (not inferred from a logger-name
+# side effect).
+
+def _capture_real_channels(monkeypatch):
+    """Patch telegram + ntfy to capture real sends, same pattern every
+    other golden/dispatch test in this suite uses."""
+    import backend.shared.helpers.utils as u
+    sent = {"tg": [], "ntfy": []}
+    monkeypatch.setattr(u, "is_enabled", lambda cap: True)
+    monkeypatch.setitem(event_agents.CHANNELS, "telegram",
+                        ("telegram", lambda t, b, tg=None, **k: sent["tg"].append((t, b, tg))))
+    monkeypatch.setitem(event_agents.CHANNELS, "ntfy",
+                        ("ntfy", lambda t, b, tg=None, priority=None: sent["ntfy"].append((t, b, priority))))
+    return sent
+
 
 @pytest.mark.asyncio
-async def test_unrouted_alert_shaped_record_emits_one_self_alert(monkeypatch):
-    """A WARNING+ record carrying a known alert tag ('chase') that
-    matches zero active agent's conditions must emit exactly one
-    WARNING self-alert instead of vanishing silently."""
+async def test_unrouted_alert_shaped_record_reaches_a_real_channel(monkeypatch):
+    """Two-stage, faithful to the real pipeline: (1) an unrouted record
+    makes `_emit_unrouted_self_alert()` call the REAL `_EVENTS_LOGGER`,
+    captured here via a real `logging.Handler` (not a monkeypatched
+    stand-in) and converted through the REAL `log_store.row_for()` —
+    exactly what `LogStoreHandler` does on the next flush cycle in
+    production. (2) that row is fed back through `dispatch_rows()` with
+    `UNROUTED_ALERT_AGENT` active, confirming it ACTUALLY reaches a real
+    channel — not just a log line. This is the defect the coordinator
+    flagged: the prior version of this test only asserted a log call was
+    made via a module logger that `log_store.py` structurally excludes
+    from capture, which passed even though that call could never reach
+    Telegram/ntfy/email in production."""
+    import logging
+    from backend.api.algo import event_agents as ea
+    from backend.shared.helpers import utils as u
+    from backend.shared.helpers.log_store import row_for
+    monkeypatch.setattr(u, "config", {"deploy_branch": "main"})
+
+    captured_records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            captured_records.append(record)
+
+    handler = _Capture()
+    ea._EVENTS_LOGGER.addHandler(handler)
+    try:
+        async def load_no_match():
+            # A real agent on a DIFFERENT (still known/valid) tag, so it
+            # legitimately does not match the unrouted record below.
+            return [SimpleNamespace(slug="x", conditions={"log": {"tag": "orders", "min_level": "INFO"}},
+                                    events=[], actions=[])]
+
+        monkeypatch.setattr(ea, "load_agents", load_no_match)
+        unrouted_rec = {"ts": datetime(2026, 10, 6, 9, 0, tzinfo=timezone.utc), "level": "WARNING",
+                       "logger": "backend.api.algo.chase", "message": "boom", "tags": ["chase"], "extra": {}}
+        await ea.dispatch_rows([unrouted_rec])
+    finally:
+        ea._EVENTS_LOGGER.removeHandler(handler)
+
+    assert len(captured_records) == 1, "exactly one self-alert log call for the one unrouted record"
+    self_alert_row = row_for(captured_records[0])
+    assert self_alert_row["extra"]["alert_event"] == ea._UNROUTED_ALERT_EVENT
+    assert "agent" in self_alert_row["tags"]
+
+    sent = _capture_real_channels(monkeypatch)
+
+    async def load_with_unrouted_agent():
+        return [SimpleNamespace(slug=ea.UNROUTED_ALERT_AGENT["slug"],
+                                **{k: ea.UNROUTED_ALERT_AGENT[k] for k in ("conditions", "events", "actions")})]
+
+    monkeypatch.setattr(ea, "load_agents", load_with_unrouted_agent)
+    await ea.dispatch_rows([self_alert_row])
+    assert len(sent["tg"]) == 1 and "chase" in sent["tg"][0][2]
+    assert len(sent["ntfy"]) == 1 and sent["ntfy"][0][2] == "high"
+    assert "unrouted alertable record" in sent["ntfy"][0][1]
+
+
+@pytest.mark.asyncio
+async def test_unrouted_catch_all_self_alert_record_cannot_trigger_a_second_self_alert(monkeypatch):
+    """The actual recursion-safety property, tested directly: feeding
+    the self-alert's OWN record shape (tag=agent, alert_event=
+    unrouted_alert) back through `dispatch_rows()` — simulating it
+    having been captured and re-flushed exactly like any other real log
+    row — must never produce a second self-alert, REGARDLESS of whether
+    any agent happens to match it."""
     from backend.api.algo import event_agents as ea
     from backend.shared.helpers import utils as u
     monkeypatch.setattr(u, "config", {"deploy_branch": "main"})
-    fake = _FakeTraceLogger()
-    monkeypatch.setattr(ea, "_logger", fake)
+    sent = _capture_real_channels(monkeypatch)
+    self_alert_calls = []
+    monkeypatch.setattr(ea, "_emit_unrouted_self_alert", lambda rec: self_alert_calls.append(rec))
 
-    async def load():
-        # A real agent, but its condition is on a DIFFERENT (still
-        # known/valid) tag, so it legitimately does not match.
-        return [SimpleNamespace(slug="x", conditions={"log": {"tag": "orders", "min_level": "INFO"}},
-                                events=[], actions=[])]
+    async def load_no_match():
+        return []  # no agent matches -> would be flagged unrouted if not for the guard
 
-    monkeypatch.setattr(ea, "load_agents", load)
-    rec = {"ts": datetime(2026, 10, 6, 9, 0, tzinfo=timezone.utc), "level": "WARNING",
-           "logger": "backend.api.algo.chase", "message": "boom", "tags": ["chase"], "extra": {}}
-    await ea.dispatch_rows([rec])
-    assert len(fake.warning_calls) == 1
-    assert "unrouted alertable record" in fake.warning_calls[0]
-    assert "tag=chase" in fake.warning_calls[0]
-    assert "level=WARNING" in fake.warning_calls[0]
+    monkeypatch.setattr(ea, "load_agents", load_no_match)
+    self_alert_shaped_rec = {
+        "ts": datetime(2026, 10, 6, 9, 0, tzinfo=timezone.utc), "level": "WARNING",
+        "logger": "backend.api.algo.events", "message": "unrouted alertable record: ...",
+        "tags": ["warning", "agent"], "extra": {"alert_event": "unrouted_alert"},
+    }
+    await ea.dispatch_rows([self_alert_shaped_rec])
+    assert self_alert_calls == [], "a record carrying the reserved alert_event must never re-trigger the catch-all"
 
 
 @pytest.mark.asyncio
@@ -963,8 +1057,8 @@ async def test_matched_alert_shaped_record_does_not_trigger_the_catch_all(monkey
     from backend.api.algo import event_agents as ea
     from backend.shared.helpers import utils as u
     monkeypatch.setattr(u, "config", {"deploy_branch": "main"})
-    fake = _FakeTraceLogger()
-    monkeypatch.setattr(ea, "_logger", fake)
+    self_alert_calls = []
+    monkeypatch.setattr(ea, "_emit_unrouted_self_alert", lambda rec: self_alert_calls.append(rec))
 
     async def load():
         return [SimpleNamespace(slug="x", conditions={"log": {"tag": "chase", "min_level": "INFO"}},
@@ -974,7 +1068,7 @@ async def test_matched_alert_shaped_record_does_not_trigger_the_catch_all(monkey
     rec = {"ts": datetime(2026, 10, 6, 9, 0, tzinfo=timezone.utc), "level": "WARNING",
            "logger": "backend.api.algo.chase", "message": "boom", "tags": ["chase"], "extra": {}}
     await ea.dispatch_rows([rec])
-    assert fake.warning_calls == []
+    assert self_alert_calls == []
 
 
 @pytest.mark.asyncio
@@ -985,13 +1079,13 @@ async def test_info_level_record_never_triggers_the_catch_all(monkeypatch):
     from backend.api.algo import event_agents as ea
     from backend.shared.helpers import utils as u
     monkeypatch.setattr(u, "config", {"deploy_branch": "main"})
-    fake = _FakeTraceLogger()
-    monkeypatch.setattr(ea, "_logger", fake)
+    self_alert_calls = []
+    monkeypatch.setattr(ea, "_emit_unrouted_self_alert", lambda rec: self_alert_calls.append(rec))
     monkeypatch.setattr(ea, "load_agents", lambda: _async_empty_agents())
     rec = {"ts": datetime(2026, 10, 6, 9, 0, tzinfo=timezone.utc), "level": "INFO",
            "logger": "backend.api.algo.chase", "message": "fyi", "tags": ["chase"], "extra": {}}
     await ea.dispatch_rows([rec])
-    assert fake.warning_calls == []
+    assert self_alert_calls == []
 
 
 @pytest.mark.asyncio
@@ -1004,15 +1098,33 @@ async def test_unknown_tag_never_triggers_the_catch_all():
     assert ea._looks_alert_shaped(rec) is False
 
 
-def test_recursion_guard_the_self_alert_logger_is_skip_listed():
-    """The catch-all's own logger name must be exactly the module name
-    `log_store.py:_SKIP_PREFIXES` already excludes from capture — this
-    is what structurally prevents the self-alert from ever looping back
-    into dispatch_rows(), independent of any sentinel flag."""
-    from backend.shared.helpers.log_store import _SKIP_PREFIXES
+def test_recursion_guard_is_the_reserved_alert_event_not_logger_exclusion():
+    """The real recursion guard is `_looks_alert_shaped()` explicitly
+    rejecting the reserved `alert_event` — direct unit test, independent
+    of dispatch plumbing or agent matching. This is the property that
+    replaces the old (broken) logger-exclusion guard."""
     from backend.api.algo import event_agents as ea
-    assert ea._logger.name in _SKIP_PREFIXES
-    assert ea._logger.name == "backend.api.algo.event_agents"
+    self_alert_rec = {"level": "WARNING", "tags": ["agent"],
+                      "extra": {"alert_event": ea._UNROUTED_ALERT_EVENT}}
+    assert ea._looks_alert_shaped(self_alert_rec) is False
+    # Sanity: an otherwise-identical record WITHOUT the reserved
+    # alert_event IS alert-shaped — the guard is specific to this one
+    # value, not a blanket exclusion of the "agent" tag.
+    ordinary_rec = {"level": "WARNING", "tags": ["agent"], "extra": {"alert_event": "breach"}}
+    assert ea._looks_alert_shaped(ordinary_rec) is True
+
+
+def test_unrouted_alert_agent_is_seeded_and_uses_the_reserved_event():
+    """`UNROUTED_ALERT_AGENT`'s own condition must match exactly the
+    shape `_emit_unrouted_self_alert()` builds, or the self-alert can
+    log successfully but still never reach a real channel."""
+    from backend.api.algo import event_agents as ea
+    assert ea.UNROUTED_ALERT_AGENT in ea.SEEDED_AGENTS
+    assert ea.validate_seed_spec(ea.UNROUTED_ALERT_AGENT) == []
+    leaf = ea.UNROUTED_ALERT_AGENT["conditions"]["log"]
+    assert leaf["tag"] == "agent"
+    assert leaf["where"]["alert_event"] == ea._UNROUTED_ALERT_EVENT == "unrouted_alert"
+    assert {c["channel"] for c in ea.UNROUTED_ALERT_AGENT["events"]} >= {"telegram", "ntfy"}
 
 
 async def _async_empty_agents():

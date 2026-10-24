@@ -25,16 +25,21 @@ from backend.shared.helpers.ramboq_logger import get_logger
 # look identical to what they did before the Sprint 6 move.
 _EVENTS_LOGGER = get_logger("backend.api.algo.events")
 
-# This module's OWN logger (`backend.api.algo.event_agents`) — used for
-# the per-record dispatch trace (council item 4) and the catch-all
-# "unrouted alertable record" self-alert (council item 5, safety net).
-# Deliberately NOT routed through `_EVENTS_LOGGER` above: this exact
+# This module's OWN logger (`backend.api.algo.event_agents`) — used ONLY
+# for the per-record dispatch trace (council item 4), a pure DEBUG
+# diagnostic that must never itself reach a real channel. This exact
 # module name is one of `log_store.py`'s own `_SKIP_PREFIXES`, so
-# anything logged via `_logger` below is structurally guaranteed to
-# never be captured by `LogStoreHandler` and can therefore never loop
-# back into `dispatch_rows()` — a real guarantee, not a sentinel flag
-# that a future call site could forget to set. See `_emit_unrouted_
-# self_alert()`'s docstring for why that guarantee matters here.
+# anything logged via `_logger` is structurally guaranteed to never be
+# captured by `LogStoreHandler` — correct for a diagnostic, but it is
+# NOT used for the catch-all self-alert (council item 5) below: that
+# alert's whole point is to reach a real operator-visible channel
+# (Telegram/ntfy/email), which a skip-listed logger can never do (2026-10
+# fix — the first version of this code logged the self-alert via
+# `_logger` too, which meant it could never fire a real notification,
+# only ever reach stderr — exactly the "silent" failure mode item 5 was
+# written to prevent). See `_emit_unrouted_self_alert()`'s docstring for
+# where that alert is actually logged, and `_UNROUTED_ALERT_EVENT` for
+# this module's real recursion guard.
 _logger = get_logger(__name__)
 
 _CACHE_S = 60.0
@@ -720,9 +725,27 @@ async def dispatch(records: list[dict], agents: list) -> int:
 # research safety net) — a record that LOOKS like it should alert
 # (carries a known alert-tag, at WARNING+) but matches zero active event
 # agent's `conditions` used to be silently dropped with no trace at all.
-# Now it gets exactly one WARNING self-alert instead.
+# Now it gets exactly one WARNING self-alert instead — and that
+# self-alert must itself reach a real channel (Telegram/ntfy/email), not
+# just a log line, or this is the exact same "silent" failure mode the
+# risk review wrote this requirement to prevent (2026-10 fix: the first
+# version of this code logged the self-alert via `_logger`, this
+# module's own `log_store.py`-skip-listed logger — which made it
+# impossible for the self-alert to ever reach a real channel at all).
 
 _LEVEL_ORDER = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+
+# Reserved `alert_event` value for the self-alert's OWN log record. This,
+# not logger-name exclusion, is the real recursion guard: the self-alert
+# is logged through `_EVENTS_LOGGER` (captured normally by
+# `LogStoreHandler`/`dispatch_rows`, so it CAN match a real agent and
+# reach a real channel — see `UNROUTED_ALERT_AGENT` below) and carries
+# this exact `alert_event`. `_looks_alert_shaped()` explicitly excludes
+# any record carrying it, so the self-alert can never be classified as
+# "unrouted" itself, regardless of whether `UNROUTED_ALERT_AGENT` is
+# active, deleted, or fails to match for some future reason — the guard
+# does not depend on the agent match succeeding.
+_UNROUTED_ALERT_EVENT = "unrouted_alert"
 
 
 def _level_at_least(level: "str | None", floor: str) -> bool:
@@ -744,7 +767,16 @@ def _known_alert_tags() -> set[str]:
 
 def _looks_alert_shaped(rec: dict) -> bool:
     """A record that looks like it should have alerted: WARNING+ level,
-    carrying at least one tag from the known alert-tag vocabulary."""
+    carrying at least one tag from the known alert-tag vocabulary.
+
+    Recursion guard: a record carrying the reserved `alert_event`
+    (`_UNROUTED_ALERT_EVENT`) is NEVER alert-shaped by this function's
+    own definition — this is what stops the self-alert from ever being
+    flagged as itself unrouted, independent of whether it actually
+    matched a real agent downstream."""
+    extra = rec.get("extra") or {}
+    if extra.get("alert_event") == _UNROUTED_ALERT_EVENT:
+        return False
     if not _level_at_least(rec.get("level"), "WARNING"):
         return False
     tags = rec.get("tags") or []
@@ -770,23 +802,31 @@ def _record_matches_any_agent(rec: dict, agents: list) -> bool:
 
 def _emit_unrouted_self_alert(rec: dict) -> None:
     """Log the one WARNING self-alert for an unrouted alert-shaped
-    record. Mirrors the existing "[CRITICAL]-log-once-per-process"
-    pattern already used elsewhere for a structurally-similar "this
-    should never silently vanish" case (see CLAUDE.md's postback-
-    token-absent note).
+    record — through `_EVENTS_LOGGER`, NOT `_logger`, so it is captured
+    by `LogStoreHandler`/`dispatch_rows()` like any other real alert and
+    can actually reach a real channel via `UNROUTED_ALERT_AGENT` below.
+    Tagged `["agent"]` (a known, real alert tag) with the reserved
+    `alert_event=_UNROUTED_ALERT_EVENT` — `UNROUTED_ALERT_AGENT`'s own
+    condition matches exactly that shape. `title`/`body` are pre-built
+    onto `extra` for the shared `generic_notice` renderer (the same
+    renderer `GTT_ASYMMETRIC_AGENT` etc. already use), mirroring how
+    `background.py`'s own `generic_notice` callers build their records.
 
-    Recursion guard: logged via `_logger` (this module's own name),
-    which `log_store.py:_SKIP_PREFIXES` already excludes from
-    `LogStoreHandler` capture entirely — this call can NEVER itself
-    reach `dispatch_rows()`/`_record_matches_any_agent()` again, by
-    construction (the module name it's filtered on), not by a sentinel
-    flag on the record that a future refactor could drop."""
+    Recursion guard: see `_UNROUTED_ALERT_EVENT`'s own comment — this
+    record can never be classified as "unrouted" itself by
+    `_looks_alert_shaped()`, regardless of whether `UNROUTED_ALERT_AGENT`
+    is active or matches."""
     extra = rec.get("extra") or {}
     tags = ",".join(rec.get("tags") or [])
-    _logger.warning(
-        "unrouted alertable record: tag=%s level=%s logger=%s alert_event=%s message=%s",
-        tags, rec.get("level"), rec.get("logger"), extra.get("alert_event"),
-        (rec.get("message") or "")[:200],
+    msg = (
+        f"unrouted alertable record: tag={tags} level={rec.get('level')} "
+        f"logger={rec.get('logger')} alert_event={extra.get('alert_event')} "
+        f"message={(rec.get('message') or '')[:200]}"
+    )
+    _EVENTS_LOGGER.warning(
+        msg,
+        extra={"tags": ["agent"], "alert_event": _UNROUTED_ALERT_EVENT,
+              "title": "Unrouted alertable record", "body": msg},
     )
 
 
@@ -1176,8 +1216,28 @@ FILL_AGENT = {
     "actions": [{"type": "render", "render": "fill"}],
 }
 
+UNROUTED_ALERT_AGENT = {
+    "slug": "unrouted-alert-catch-all",
+    "name": "Unrouted alert catch-all",
+    # Matches exactly the shape `_emit_unrouted_self_alert()` builds —
+    # tag "agent" (a real, known alert tag), the reserved
+    # `alert_event=_UNROUTED_ALERT_EVENT` ("unrouted_alert"). This is the
+    # one place the catch-all's self-alert actually reaches a real
+    # channel — without an active agent matching this condition, the
+    # self-alert would log correctly (captured by LogStoreHandler) but
+    # never fire Telegram/ntfy/email, which is the exact silent-failure
+    # mode council item 5 exists to prevent.
+    "conditions": {"log": {"tag": "agent", "min_level": "WARNING",
+                           "where": {"alert_event": "unrouted_alert"}}},
+    "events": [
+        {"channel": "telegram", "enabled": True, "gate": False},
+        {"channel": "ntfy", "enabled": True, "priority": "high", "gate": False},
+    ],
+    "actions": [{"type": "render", "render": "generic_notice"}],
+}
 
-SEED_VERSION = 1
+
+SEED_VERSION = 2
 
 
 def validate_seed_spec(spec: dict) -> list[str]:
@@ -1226,7 +1286,7 @@ SEEDED_AGENTS = (
     TEMPLATE_GUARD_AGENT, TEMPLATE_ATTACH_FAIL_AGENT, MCP_PING_AGENT, ORDER_CORRECTION_AGENT,
     DEPLOY_SYNC_AGENT, RICH_ALERT_AGENT, SUMMARY_AGENT, BREACH_AGENT,
     GTT_NOT_ACCEPTED_AGENT, GTT_ASYMMETRIC_AGENT, OCO_DOUBLE_FIRE_AGENT,
-    TICKER_RECOVERED_AGENT, TICKER_DEGRADED_AGENT, VISITOR_REPORT_AGENT,
+    TICKER_RECOVERED_AGENT, TICKER_DEGRADED_AGENT, VISITOR_REPORT_AGENT, UNROUTED_ALERT_AGENT,
 )
 
 

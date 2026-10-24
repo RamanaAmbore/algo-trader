@@ -219,10 +219,14 @@ class TestSeededAgentsGateKeysAreDeclared:
         `alert_utils._alert_route()` dispatcher; 2026-10-23 order-poll
         consolidation added `order-correction-alert`, gated the same way
         as `order-failure-alert` since both are safety-critical and must
-        never be silenced by a dev capability toggle): 13 of the real
-        seeded agents carry a channel-level `gate` key. If this count
-        changes, the commit's own inventory claim is now wrong — update
-        both in lockstep, don't just bump the number here.
+        never be silenced by a dev capability toggle; council item 5 of
+        the 2026-10 alert-infrastructure plan added `unrouted-alert-
+        catch-all`, gated the same way since a pipeline-wide-break
+        signal must never be silenced by a dev capability toggle
+        either): 14 of the real seeded agents carry a channel-level
+        `gate` key. If this count changes, the commit's own inventory
+        claim is now wrong — update both in lockstep, don't just bump
+        the number here.
 
         `deploy-sync-alert` dropped out of this set 2026-10 (operator
         instruction) when its only channel (ntfy, which carried the
@@ -236,7 +240,7 @@ class TestSeededAgentsGateKeysAreDeclared:
         }
         assert slugs == {
             "order-failure-alert", "order-correction-alert", "template-guard-alert",
-            "template-attach-fail-alert",
+            "template-attach-fail-alert", "unrouted-alert-catch-all",
             "mcp-ping-alert", "agent-alert-rich",
             "market-summary", "gtt-not-accepted-alert",
             "gtt-asymmetric-alert", "oco-double-fire-alert",
