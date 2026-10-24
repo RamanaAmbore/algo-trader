@@ -825,6 +825,9 @@
 
   <div class="text-[length:var(--fs-sm)] text-[var(--c-muted)] mt-2 mb-1 flex items-center flex-wrap gap-x-2 gap-y-0.5">
     <span class="text-[var(--c-muted)]">Alert via:</span> <span>{channelSummary(effectiveChannels(agent))}{isPinnedEventAgent(agent) ? PINNED_SUFFIX : ''}</span>
+    {#if agent.is_builtin_event}
+      <span class="topic-badge" title="Built-in — one of the 23 code-seeded event agents (event_agents.py); not operator-authored">Built-in</span>
+    {/if}
     {#if agent.tier && agent.tier !== 'medium'}
       <span class={'tier-badge tier-badge-' + agent.tier} title="Severity tier — drives topic-scoped suppression in run_cycle.">{agent.tier}</span>
     {/if}
@@ -1057,7 +1060,7 @@
               {/if}
               <button type="button" onclick={(e) => { e.stopPropagation(); editRow(_activeCard, row); }}
                 class="text-[var(--c-action)] hover:underline">Edit</button>
-              {#if !(row.is_system)}
+              {#if !(row.is_system) && !(row.is_builtin_event)}
                 <button type="button" onclick={(e) => { e.stopPropagation(); deleteRow(_activeCard, row); }}
                   class="text-[var(--c-short)] hover:underline">Delete</button>
               {/if}

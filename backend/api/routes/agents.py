@@ -158,6 +158,16 @@ class AgentInfo(msgspec.Struct):
     # the ONLY place that computes it, always from the live DB row,
     # never round-tripped from a client payload.
     resolved_channels:     list       = msgspec.field(default_factory=list)
+    # 2026-10 — read-only "Built-in" label source for the Automation page.
+    # True only for one of the 23 code-seeded `kind='event'` agents in
+    # `event_agents.SEEDED_AGENTS` (see `_is_builtin_seeded_event_agent`'s
+    # own docstring for why this is NOT `is_system` — that flag is only
+    # ever set for `kind='cycle'` BUILTIN_AGENTS / bracket / template rows;
+    # every seeded event agent has `is_system=False` by construction).
+    # Computed at serialization from slug membership, never a stored
+    # column, never round-tripped from a client payload — same contract
+    # as `resolved_channels` above.
+    is_builtin_event:      bool       = False
 
 
 class AgentCreateRequest(msgspec.Struct):
@@ -655,6 +665,32 @@ def _event_agent_resolved_channels(a: Agent) -> list[dict]:
     return [dict(ch) for ch in resolved]
 
 
+def _is_builtin_seeded_event_agent(a: Agent) -> bool:
+    """True when `a` is one of the 23 code-seeded `kind='event'` agents in
+    `event_agents.SEEDED_AGENTS` — the Automation page's "Built-in" label
+    source.
+
+    Deliberately NOT `Agent.is_system`: confirmed live on dev,
+    `seed_event_agents()`'s insert path never sets that flag, so all 23
+    seeded event-kind rows carry `is_system=False` (the model default).
+    `is_system=True` only ever applies to `kind='cycle'` BUILTIN_AGENTS
+    (via `agent_engine._ae_build_agent_row`) and bracket/template rows
+    mirrored from `OrderTemplate` — a disjoint set from these 23. Reusing
+    `is_system` here would mislabel, and broadening its real meaning would
+    also change `delete_agent`'s delete-gate semantics (out of scope for
+    this display-only label — see that route below).
+
+    Pure slug-membership check against the existing code-level catalog,
+    read-only and computed at serialization time, never a stored column —
+    same contract as `_event_agent_resolved_channels` above. Gated to
+    `kind == 'event'` first, matching that function's own gate.
+    """
+    if getattr(a, "kind", None) != "event":
+        return False
+    from backend.api.algo.event_agents import SEEDED_AGENTS
+    return getattr(a, "slug", None) in {spec["slug"] for spec in SEEDED_AGENTS}
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # `agent ai refine` channel-fork guard (2026-10 routing-tree activation
 # plan, Step 2 / council risk 2). `_cmd_ai_refine` genuinely writes
@@ -779,6 +815,7 @@ def _agent_to_info(a: Agent) -> AgentInfo:
         preamble=list(getattr(a, "preamble", None) or []),
         has_explicit_alert=bool(getattr(a, "has_explicit_alert", False)),
         resolved_channels=_event_agent_resolved_channels(a),
+        is_builtin_event=_is_builtin_seeded_event_agent(a),
     )
 
 
@@ -1379,7 +1416,7 @@ class AgentController(Controller):
             agent = result.scalar_one_or_none()
             if not agent:
                 raise HTTPException(status_code=404, detail=f"Agent '{slug}' not found")
-            if agent.is_system:
+            if agent.is_system or _is_builtin_seeded_event_agent(agent):
                 raise HTTPException(status_code=403, detail="Cannot delete system agent")
             deleted_kind = agent.kind
             await session.delete(agent)
