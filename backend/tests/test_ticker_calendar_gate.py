@@ -23,6 +23,7 @@ Covers:
 """
 from __future__ import annotations
 
+import asyncio
 from datetime import date, datetime, time as dtime
 from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
@@ -620,3 +621,259 @@ def test_broker_health_response_has_ticker_idle_fields_with_defaults():
     resp = BrokerHealthResponse(accounts=[])
     assert resp.ticker_idle is False
     assert resp.ticker_idle_reason == ""
+
+
+# ---------------------------------------------------------------------------
+# _ticker_calendar_refresh_idle_status (2026-10-24 bug fix) — status-only
+# calendar check that can run at any hour, outside the 08:00-23:30 connect
+# window. Fixes: on a confirmed non-trading day (e.g. Saturday), outside
+# that window — or before the first in-window tick after a restart —
+# `_TICKER_CALENDAR_STATE` stayed stale/unset, so `get_ticker_calendar_status()`
+# fell back to "not idle" and the broker-health badge showed its default
+# per-account state instead of idle.
+# ---------------------------------------------------------------------------
+
+async def test_refresh_idle_status_marks_idle_on_closed_verdict_outside_window():
+    """The core fix: a CLOSED verdict at any hour (here, 02:00 IST on a
+    Saturday — well outside the 08:00-23:30 connect window) now marks
+    the shared state idle. Before this fix, nothing computed this
+    outside the window, so `get_ticker_calendar_status()` stayed
+    `{"idle": False}` all day."""
+    import backend.api.background as bg
+
+    saturday = date(2026, 10, 17)
+
+    with patch("backend.api.background._ticker_calendar_verdict", new_callable=AsyncMock, return_value=bg._CAL_CLOSED):
+        await bg._ticker_calendar_refresh_idle_status(saturday)
+
+    assert bg._TICKER_CALENDAR_STATE["idle"] is True
+    assert bg._TICKER_CALENDAR_STATE["date"] == saturday
+    assert bg._TICKER_CALENDAR_STATE["connected"] is False
+    assert "closed" in bg._TICKER_CALENDAR_STATE["reason"]
+
+
+async def test_refresh_idle_status_never_calls_connect_even_when_verdict_is_open():
+    """Structural guarantee: this function has no `do_connect` parameter
+    at all, so it cannot connect anything. Explicitly proves it even
+    when the verdict resolves OPEN — `_snapshot_restart_ticker` (the
+    real connect function used by the two in-window call sites) must
+    never be invoked by this path, and the shared state must be left
+    untouched rather than marked misleadingly."""
+    import backend.api.background as bg
+
+    monday = date(2026, 10, 19)
+
+    with patch("backend.api.background._ticker_calendar_verdict", new_callable=AsyncMock, return_value=bg._CAL_OPEN), \
+         patch("backend.api.background._snapshot_restart_ticker") as m_restart:
+        await bg._ticker_calendar_refresh_idle_status(monday)
+
+    m_restart.assert_not_called()
+    assert bg._TICKER_CALENDAR_STATE["date"] is None  # untouched
+    assert bg._ticker_restart_done_global is None
+
+
+async def test_refresh_idle_status_never_calls_connect_on_unknown_verdict():
+    """Same guarantee for the UNKNOWN (fail-safe) verdict — leaves state
+    untouched, never connects."""
+    import backend.api.background as bg
+
+    monday = date(2026, 10, 19)
+
+    with patch("backend.api.background._ticker_calendar_verdict", new_callable=AsyncMock, return_value=bg._CAL_UNKNOWN), \
+         patch("backend.api.background._snapshot_restart_ticker") as m_restart:
+        await bg._ticker_calendar_refresh_idle_status(monday)
+
+    m_restart.assert_not_called()
+    assert bg._TICKER_CALENDAR_STATE["date"] is None
+
+
+async def test_refresh_idle_status_skips_verdict_when_already_connected_today():
+    """If a real connect call site already marked today as connected,
+    this status-only path must not re-query the calendar at all."""
+    import backend.api.background as bg
+
+    today = date(2026, 10, 19)
+    bg._ticker_calendar_mark(today, connected=True, idle=False, reason="connected")
+
+    with patch(
+        "backend.api.background._ticker_calendar_verdict",
+        new_callable=AsyncMock,
+        side_effect=AssertionError("must not be called — already connected today"),
+    ):
+        await bg._ticker_calendar_refresh_idle_status(today)
+
+
+async def test_refresh_idle_status_throttles_repeat_closed_checks_same_day():
+    """Two closed-day calls within `_TICKER_RECHECK_INTERVAL_S` of each
+    other must only hit the verdict computation once — mirrors
+    `_ticker_calendar_decide_and_act`'s own throttle so an overnight
+    closed window doesn't hammer `market_special_sessions` every 30s
+    for hours."""
+    import backend.api.background as bg
+
+    saturday = date(2026, 10, 17)
+
+    with patch("backend.api.background._ticker_calendar_verdict", new_callable=AsyncMock, return_value=bg._CAL_CLOSED):
+        await bg._ticker_calendar_refresh_idle_status(saturday)
+    assert bg._TICKER_CALENDAR_STATE["idle"] is True
+
+    with patch(
+        "backend.api.background._ticker_calendar_verdict",
+        new_callable=AsyncMock,
+        side_effect=AssertionError("must not re-query within the throttle window"),
+    ):
+        await bg._ticker_calendar_refresh_idle_status(saturday)  # immediately after — within throttle
+
+
+async def test_refresh_idle_status_rechecks_after_throttle_window_elapses():
+    """Once the recheck interval has elapsed, a stale idle mark for the
+    same day IS re-verified (picks up a late special session, matching
+    the in-window recheck loop's own behaviour)."""
+    import backend.api.background as bg
+
+    saturday = date(2026, 10, 17)
+
+    with patch("backend.api.background._ticker_calendar_verdict", new_callable=AsyncMock, return_value=bg._CAL_CLOSED):
+        await bg._ticker_calendar_refresh_idle_status(saturday)
+    assert bg._TICKER_CALENDAR_STATE["idle"] is True
+
+    # Force the throttle window to have elapsed.
+    bg._TICKER_CALENDAR_STATE["checked_at"] = 0.0
+
+    with patch("backend.api.background._ticker_calendar_verdict", new_callable=AsyncMock, return_value=bg._CAL_CLOSED) as m_verdict:
+        await bg._ticker_calendar_refresh_idle_status(saturday)
+    m_verdict.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Wiring into the two ticker-watchdog loop bodies — proves the fix actually
+# reaches both the direct-mode loop and the conn-service/cutover loop (prod
+# and dev both run with RAMBOQ_USE_CONN_SERVICE=1, so the cutover loop is
+# the one that matters most in production).
+# ---------------------------------------------------------------------------
+
+def _make_cancelling_sleep(stop_after: int):
+    calls = {"n": 0}
+
+    async def _sleep(delay):
+        calls["n"] += 1
+        if calls["n"] >= stop_after:
+            raise asyncio.CancelledError("test escape")
+    return _sleep
+
+
+async def test_cutover_loop_marks_idle_on_closed_day_without_connecting():
+    """One real iteration of `_watchdog_cutover_heal_loop` on a
+    confirmed-closed day (e.g. Saturday 02:00 IST) marks the shared
+    state idle via the new status-only path, and never calls
+    check_and_heal() (ticker_connected_today() stays False)."""
+    import backend.api.background as bg
+
+    saturday_0200 = datetime(2026, 10, 17, 2, 0, tzinfo=_IST)
+    mock_ticker = MagicMock()
+    mock_ticker.check_and_heal = MagicMock(return_value=True)
+
+    with patch("backend.api.background.is_cutover_on", return_value=True), \
+         patch("backend.api.background.timestamp_indian", return_value=saturday_0200), \
+         patch("backend.api.background._ticker_calendar_verdict", new_callable=AsyncMock, return_value=bg._CAL_CLOSED), \
+         patch("backend.api.background._snapshot_restart_ticker") as m_restart, \
+         patch("backend.brokers.kite_ticker.get_ticker", return_value=mock_ticker), \
+         patch("asyncio.sleep", side_effect=_make_cancelling_sleep(2)):
+        await bg._task_ticker_watchdog({})
+        # Assert the staleness-filtering public accessor WHILE
+        # `timestamp_indian` is still patched to the fixed Saturday —
+        # `get_ticker_calendar_status()` compares `st["date"]` against
+        # the REAL current IST date, which would make this assertion
+        # spuriously fail once the patch context exits (same trap the
+        # pre-existing tests above comment on).
+        assert bg.get_ticker_calendar_status() == {
+            "idle": True,
+            "reason": bg._TICKER_CALENDAR_CLOSED_REASON,
+        }
+
+    mock_ticker.check_and_heal.assert_not_called()
+    m_restart.assert_not_called()
+    # Check the underlying state dict directly too, outside the patch —
+    # it carries the fixed `saturday_0200` date regardless of the real
+    # clock, unlike the accessor above.
+    assert bg._TICKER_CALENDAR_STATE["idle"] is True
+    assert bg._TICKER_CALENDAR_STATE["date"] == saturday_0200.date()
+
+
+async def test_direct_loop_marks_idle_on_closed_day_without_broker_checks():
+    """Same proof for the non-cutover (direct) watchdog loop body — one
+    real iteration on a confirmed-closed day marks idle via the new
+    status-only path, and the loop's own zero-broker-check invariant on
+    this branch is preserved: `_watchdog_deferred_recycle` and
+    `_watchdog_check_market_open` (both real broker/market probes) are
+    never reached."""
+    import backend.api.background as bg
+
+    saturday_0200 = datetime(2026, 10, 17, 2, 0, tzinfo=_IST)
+
+    with patch("backend.api.background.is_cutover_on", return_value=False), \
+         patch("backend.api.background.timestamp_indian", return_value=saturday_0200), \
+         patch("backend.api.background._ticker_calendar_verdict", new_callable=AsyncMock, return_value=bg._CAL_CLOSED), \
+         patch("backend.api.background._watchdog_deferred_recycle", new_callable=AsyncMock) as m_recycle, \
+         patch("backend.api.background._watchdog_check_market_open", new_callable=AsyncMock) as m_market_open, \
+         patch("asyncio.sleep", side_effect=_make_cancelling_sleep(2)):
+        await bg._task_ticker_watchdog({})
+        assert bg.get_ticker_calendar_status() == {
+            "idle": True,
+            "reason": bg._TICKER_CALENDAR_CLOSED_REASON,
+        }
+
+    m_recycle.assert_not_called()
+    m_market_open.assert_not_called()
+    assert bg._TICKER_CALENDAR_STATE["idle"] is True
+    assert bg._TICKER_CALENDAR_STATE["date"] == saturday_0200.date()
+
+
+async def test_direct_loop_exception_in_status_refresh_does_not_crash_loop():
+    """An exception from the new status-only refresh call must be
+    caught and logged, not propagate and kill the supervised task —
+    matches every other per-cycle guard in this loop."""
+    import backend.api.background as bg
+
+    saturday_0200 = datetime(2026, 10, 17, 2, 0, tzinfo=_IST)
+
+    with patch("backend.api.background.is_cutover_on", return_value=False), \
+         patch("backend.api.background.timestamp_indian", return_value=saturday_0200), \
+         patch(
+             "backend.api.background._ticker_calendar_refresh_idle_status",
+             new_callable=AsyncMock, side_effect=RuntimeError("boom"),
+         ), \
+         patch("asyncio.sleep", side_effect=_make_cancelling_sleep(2)):
+        # Must not raise — the per-iteration try/except around the new
+        # call swallows it, and the loop's own outer except would catch
+        # it anyway even if it didn't.
+        await bg._task_ticker_watchdog({})
+
+
+async def test_0800_connect_tick_still_fires_after_overnight_idle_mark():
+    """Interaction check: after the new status-only path marks today
+    idle overnight (e.g. 02:00), the real 08:00 connect tick on a day
+    that turns out OPEN (a late special session) still connects and
+    seeds the restart sentinel — the overnight idle mark must not
+    permanently suppress the real connect decision once the throttle
+    window has elapsed."""
+    import backend.api.background as bg
+
+    today = date(2026, 10, 17)
+
+    with patch("backend.api.background._ticker_calendar_verdict", new_callable=AsyncMock, return_value=bg._CAL_CLOSED):
+        await bg._ticker_calendar_refresh_idle_status(today)
+    assert bg._TICKER_CALENDAR_STATE["idle"] is True
+
+    # Age the mark past the shared recheck throttle so the 08:00 tick
+    # actually re-queries instead of short-circuiting.
+    bg._TICKER_CALENDAR_STATE["checked_at"] = 0.0
+
+    now_0800 = datetime(2026, 10, 17, 8, 0, tzinfo=_IST)
+    with patch("backend.api.background._ticker_calendar_verdict", new_callable=AsyncMock, return_value=bg._CAL_OPEN), \
+         patch("backend.api.background._snapshot_restart_ticker") as m_restart:
+        await bg._ds_tick_ticker_restart(now_0800, today)
+
+    m_restart.assert_called_once()
+    assert bg._ticker_restart_done_global == today
+    assert bg._TICKER_CALENDAR_STATE["idle"] is False

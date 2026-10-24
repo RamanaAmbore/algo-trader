@@ -3926,6 +3926,16 @@ async def _ticker_calendar_verdict(today: date) -> str:
         return _CAL_UNKNOWN
 
 
+# Shared reason text for a CLOSED verdict — used by both the
+# connect-and-mark path below and the status-only path
+# (`_ticker_calendar_refresh_idle_status`) so the two can never drift
+# into reporting different wording for the same state.
+_TICKER_CALENDAR_CLOSED_REASON = (
+    "market calendar confirms closed today — ticker not "
+    "connected by design"
+)
+
+
 async def _ticker_calendar_decide_and_act(
     today: date, do_connect, *, label: str, throttle: bool,
 ) -> bool:
@@ -3947,10 +3957,7 @@ async def _ticker_calendar_decide_and_act(
     if verdict == _CAL_CLOSED:
         _ticker_calendar_mark(
             today, connected=False, idle=True,
-            reason=(
-                "market calendar confirms closed today — ticker not "
-                "connected by design"
-            ),
+            reason=_TICKER_CALENDAR_CLOSED_REASON,
         )
         return False
     logger.info(
@@ -3960,6 +3967,73 @@ async def _ticker_calendar_decide_and_act(
     do_connect()
     _ticker_calendar_mark(today, connected=True, idle=False, reason="connected")
     return True
+
+
+async def _ticker_calendar_refresh_idle_status(today: date) -> None:
+    """Status-only calendar check (2026-10-24 bug fix) — safe to run at
+    ANY time of day, including outside the 08:00-23:30 connect window.
+
+    Bug this closes: `_TICKER_CALENDAR_STATE` was only ever marked by
+    `_ticker_calendar_decide_and_act()`, and every call site of that
+    function is gated to [08:00, 23:30) IST (or to a successful
+    process-startup connect). Outside that window — e.g. any time on a
+    confirmed-closed non-trading day like a Saturday, or any time
+    before the first in-window tick after a restart — the state dict
+    stayed stale/unset. `get_ticker_calendar_status()`'s own
+    date-mismatch staleness check then silently defaulted to
+    `{"idle": False}`, so `GET /api/admin/broker-health`'s `ticker_idle`
+    field read False and the frontend fell back to its default
+    per-account green/amber/red state instead of showing idle —
+    misleadingly implying connectivity on a day nothing will ever
+    connect.
+
+    Structurally cannot connect anything — unlike
+    `_ticker_calendar_decide_and_act()`, this function takes no
+    `do_connect` callable at all, so "never calls a connect function"
+    holds by construction, not by a runtime branch that could
+    regress. On a CLOSED verdict it marks `_TICKER_CALENDAR_STATE`
+    idle directly. On OPEN/UNKNOWN it leaves state untouched —
+    "trading day, not yet connected" is a legitimately different
+    state from "closed day, deliberately idle", and only the three
+    real connect call sites (`_start_kite_ticker`,
+    `_sg_recover_ticker_connect`, `_ds_tick_ticker_restart`) may mark
+    either of those; conflating them here would show a misleading
+    "idle" badge on a trading day that simply hasn't reached its
+    connect window yet.
+
+    Call this from a background loop that ticks at all hours — the
+    ticker watchdog's two loop bodies (direct and conn-service/cutover)
+    are the only current callers. Do NOT call this from anything
+    already gated to the 08:00-23:30 connect window; that window's own
+    idle-marking already happens via `_ticker_calendar_decide_and_act`.
+    """
+    st = _TICKER_CALENDAR_STATE
+    if st.get("date") == today:
+        # Already decided for today — by this function on an earlier
+        # off-hours tick, or by one of the three real connect call
+        # sites (which mark unconditionally, including a plain
+        # idle=True CLOSED mark). A non-idle mark (connected, or a
+        # same-day OPEN/UNKNOWN verdict already seen) needs no
+        # re-check here — the in-window connect ticks own that. An
+        # idle mark is re-verified, but only after the shared recheck
+        # interval elapses, mirroring `_ticker_calendar_decide_and_act`'s
+        # own throttle so an overnight closed window doesn't hit
+        # `market_special_sessions` every 30s for hours.
+        if not st.get("idle"):
+            return
+        if _time.time() - float(st.get("checked_at") or 0.0) < _TICKER_RECHECK_INTERVAL_S:
+            return
+    verdict = await _ticker_calendar_verdict(today)
+    if verdict != _CAL_CLOSED:
+        # OPEN/UNKNOWN outside the connect window — never mark state
+        # here. The real connect call sites own that decision once
+        # the window opens (or SessionGuard's cold-start catch-up
+        # fires for a restart after 08:00).
+        return
+    _ticker_calendar_mark(
+        today, connected=False, idle=True,
+        reason=_TICKER_CALENDAR_CLOSED_REASON,
+    )
 
 
 async def _ds_tick_ticker_restart(now: datetime, today: date) -> None:
@@ -6984,6 +7058,16 @@ async def _watchdog_cutover_heal_loop(get_ticker, interval_s: float) -> None:
             if not is_cutover_on():
                 return
             if not ticker_connected_today():
+                # Status-only calendar refresh (2026-10-24 bug fix) —
+                # this loop ticks at all hours, unlike the 08:00-23:30
+                # connect ticks, so it's the right place to keep the
+                # broker-health `idle` badge accurate on a confirmed
+                # non-trading day. Never connects anything — see the
+                # function's own docstring.
+                try:
+                    await _ticker_calendar_refresh_idle_status(timestamp_indian().date())
+                except Exception:
+                    logger.exception("ticker watchdog: calendar idle-status refresh failed")
                 continue
             if is_engine_idle():
                 continue
@@ -7049,6 +7133,22 @@ async def _task_ticker_watchdog(state: dict) -> None:
             # actually happens, so this loop resumes real checks within
             # one 30s cycle of that.
             if not ticker_connected_today():
+                # Status-only calendar refresh (2026-10-24 bug fix) —
+                # keeps the broker-health `idle` badge accurate on a
+                # confirmed non-trading day even though this tick
+                # otherwise does zero broker/connection-inspection work
+                # here (see the comment block above). The verdict
+                # lookup itself is DB/config-only (holidays + special
+                # sessions), never a live broker call — see
+                # `_ticker_calendar_verdict()`'s own docstring — so this
+                # does not reintroduce the broker-check work the skip
+                # above exists to eliminate. Never connects anything —
+                # see `_ticker_calendar_refresh_idle_status()`'s own
+                # docstring.
+                try:
+                    await _ticker_calendar_refresh_idle_status(timestamp_indian().date())
+                except Exception:
+                    logger.exception("ticker watchdog: calendar idle-status refresh failed")
                 continue
 
             await _watchdog_deferred_recycle()
