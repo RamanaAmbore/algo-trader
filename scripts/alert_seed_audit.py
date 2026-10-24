@@ -36,13 +36,22 @@ Never calls `seed_event_agents()`, never writes, never commits.
 Usage:
     ./venv/bin/python scripts/alert_seed_audit.py [--target-version N]
 
-DB connection: same convention as scripts/check_stale_snapshots.py —
-reads backend/config/secrets.yaml + backend_config.yaml from the
-CURRENT checkout's working directory (so running this from /opt/ramboq
-talks to `ramboq`; from /opt/ramboq_dev it talks to `ramboq_dev`), or
-DATABASE_URL env var if set. Run as a user that can read secrets.yaml
-(e.g. `sudo -u www-data ./venv/bin/python scripts/alert_seed_audit.py`
-on the server).
+DB connection: reads the REAL `backend.shared.helpers.utils.secrets`/
+`config` YAML-backed dicts (the same ones `backend.api.database._build_url()`
+reads) — NOT scripts/check_stale_snapshots.py's naive line-by-line YAML
+parser. That parser failed auth against this script's real target DB
+during development of this script (confirmed live, both for a first
+draft of this script and for the pre-existing check_stale_snapshots.py
+run the same way), and the exact failure mode was never root-caused
+further than "don't hand-roll YAML parsing" — see this module's own
+`_build_dsn()` comment below for what WAS isolated (a real DSN-breaking
+bug, unescaped special characters in the user/password). Resolves the
+`backend`/`config` directory from `backend.shared.helpers.utils`'s OWN
+file location, not this script's cwd — so running it from /opt/ramboq
+talks to `ramboq`; from /opt/ramboq_dev it talks to `ramboq_dev`. Or set
+DATABASE_URL to override entirely. Run as a user that can read
+secrets.yaml (e.g. `sudo -u www-data ./venv/bin/python
+scripts/alert_seed_audit.py` on the server).
 """
 from __future__ import annotations
 
@@ -63,16 +72,32 @@ if str(ROOT) not in sys.path:
 #
 # Reuses the SAME real YAML-backed `secrets`/`config` module-level dicts
 # `backend.api.database._build_url()` reads — not a hand-rolled parser.
-# This also sidesteps the fragile naive line-parser bug a prior version
-# of this script shared with scripts/check_stale_snapshots.py (a `#`
-# anywhere in a quoted password value was treated as a comment marker,
-# silently truncating it — confirmed live on the server while building
-# this script). `backend.shared.helpers.utils` resolves its own config
-# directory from ITS OWN file location, not the caller's cwd, so this
-# works correctly even when this script is copied to a scratch path
-# outside `scripts/` as long as it still imports the real installed
-# `backend` package for that checkout (i.e. run with that checkout's own
-# venv from that checkout's own directory tree).
+# An early draft of this script used a minimal line-by-line YAML parser
+# (the same pattern scripts/check_stale_snapshots.py already used) and
+# it failed authentication against the real server DB — confirmed live
+# both for that draft AND for check_stale_snapshots.py itself run the
+# same way. The EXACT line-parser defect was never isolated (plausible
+# candidates: a `#` inside the password being read as a comment start,
+# or a quoting edge case) — what matters operationally is that
+# hand-rolled YAML parsing of a real secrets.yaml is not safe to rely
+# on, so this script uses the real loader instead. `backend.shared.
+# helpers.utils` resolves its own config directory from ITS OWN file
+# location, not the caller's cwd, so this works correctly even when
+# this script is copied to a scratch path outside `scripts/` as long as
+# it still imports the real installed `backend` package for that
+# checkout (i.e. run with that checkout's own venv from that checkout's
+# own directory tree).
+#
+# Separately, and DEFINITIVELY confirmed by the traceback this produced
+# live (`ValueError: invalid literal for int() with base 10:
+# '<password-fragment>'`): the real secrets.yaml password contains an
+# unescaped `@` character, which a plain f-string DSN
+# (`postgresql://{user}:{password}@{host}:{port}/{db}`) cannot
+# distinguish from the user/password-vs-host separator — asyncpg's own
+# DSN parser then tried to read a chunk of the password as the port
+# number. `urllib.parse.quote()` on both `user` and `password` below is
+# the actual, confirmed fix for that bug (unrelated to the line-parser
+# question above).
 
 def _build_dsn() -> str:
     env_url = os.environ.get("DATABASE_URL", "")

@@ -220,10 +220,17 @@ _TIER_DEFAULTS: dict[str, list[dict]] = {
 # the direction `event_agents.py` → `alert_routing.py` (this module is
 # imported BY event_agents.py, never the reverse), so building it here
 # and reading it there carries no circular-import risk.
-# `test_alert_routing.py` asserts the reference relationship (mutating
-# this constant and confirming `UNROUTED_ALERT_AGENT["events"]` was
-# derived from it) so a future refactor can't silently reintroduce a
-# second, driftable copy.
+# `test_alert_routing.py` carries two checks, deliberately NOT just one:
+# a value/identity check (equal content, but never the SAME list/dict
+# objects — rules out an aliased reference) and a SEPARATE structural
+# check that reads `event_agents.py`'s own source and confirms the
+# `events` key is actually built via a comprehension over this constant,
+# not a re-typed literal. The value/identity check alone cannot tell a
+# derived copy apart from a hand-written literal that merely happens to
+# match today — a hand-duplicated literal would pass it too, since it
+# was never aliased to this constant either. Only the structural check
+# is a real regression guard against a future refactor silently
+# reintroducing a second, driftable copy.
 # ─────────────────────────────────────────────────────────────────────
 CATCH_ALL_CHANNELS: list[dict] = [
     {"channel": "telegram", "enabled": True, "gate": False},

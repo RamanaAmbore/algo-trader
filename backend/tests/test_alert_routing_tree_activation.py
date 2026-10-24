@@ -375,3 +375,77 @@ class TestModifiedSkipLogsRealWarning:
         # _EVENTS_LOGGER (not the skip-listed module `_logger`).
         assert any("skipped" in r.getMessage() for r in caplog.records)
         assert all(r.name == "backend.api.algo.events" for r in caplog.records)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  End-to-end update branch — behavior-neutral claim, in CI (not just a
+#  one-off live DB audit). A pre-migration row (real pre-migration
+#  `events` literal, real matching hash, seed_version=2 i.e. OLD code's
+#  version) run through the REAL `seed_event_agents()` at the NEW
+#  SEED_VERSION=3 must land exactly where the live-DB audit predicted:
+#  events cleared to [], priority set, and the channel set the routing
+#  tree resolves for the updated row is byte-identical to the frozen
+#  pre-migration oracle (`test_alert_routing.py:_FROZEN_ORACLE`).
+# ═══════════════════════════════════════════════════════════════════════
+
+class TestSeedVersionBumpUpdateBranchEndToEnd:
+    @pytest.mark.asyncio
+    async def test_hash_match_row_updates_and_resolves_to_frozen_oracle(self, monkeypatch):
+        from backend.api.algo import event_agents as ea
+        from backend.api.algo import alert_routing
+
+        spec = ea.FILL_AGENT
+        assert spec.get("priority") == "medium", "fixture sanity: FILL_AGENT's own priority token"
+
+        # Pre-migration shape: the row still carries the OLD literal
+        # `events` this agent used to dispatch on directly, hashed
+        # against that OLD content (what seeding actually wrote the
+        # last time it ran, at SEED_VERSION=2).
+        pre_migration_events = [{"channel": "telegram", "enabled": True}]
+        pre_migration_hash = ea.compute_seed_spec_hash(
+            spec["conditions"], pre_migration_events, spec["actions"])
+        row = SimpleNamespace(
+            slug=spec["slug"], name=spec["name"], status="active", kind="event",
+            seed_version=2, seed_spec_hash=pre_migration_hash,
+            conditions=spec["conditions"], events=pre_migration_events,
+            actions=spec["actions"], priority=None,
+        )
+
+        class _FakeResult:
+            def scalar_one_or_none(self):
+                return row
+
+        class _FakeSession:
+            async def execute(self, *_a, **_k):
+                return _FakeResult()
+
+            async def commit(self):
+                pass
+
+            def add(self, *_a, **_k):
+                raise AssertionError("insert must not be attempted for an existing row")
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(ea, "SEEDED_AGENTS", (spec,))
+        import backend.api.database as db
+        monkeypatch.setattr(db, "async_session", lambda: _FakeSession())
+
+        await ea.seed_event_agents()
+
+        assert row.events == [], "post-migration spec carries no events key -> cleared to []"
+        assert row.priority == "medium"
+        assert row.seed_version == ea.SEED_VERSION == 3
+        new_hash = ea.compute_seed_spec_hash(row.conditions, row.events, row.actions)
+        assert row.seed_spec_hash == new_hash, "hash must reflect the NEW write, not the old one"
+
+        resolved = alert_routing.resolve_channels(
+            name=row.slug, priority=row.priority, agent_events=row.events)
+        assert resolved == pre_migration_events, (
+            "the routing tree must resolve the updated (events=[]) row to the exact "
+            "same channel set the pre-migration literal used to carry directly"
+        )

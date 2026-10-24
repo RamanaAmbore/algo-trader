@@ -139,36 +139,56 @@ def test_user_registered_agent_resolves_to_telegram_and_ntfy_high():
     ]
 
 
-def test_unrouted_alert_agent_events_is_derived_from_catch_all_channels():
-    """2026-10 routing-tree plan (Step 4 / Task B) — `UNROUTED_ALERT_AGENT
-    ["events"]` (event_agents.py) is built directly from
-    `alert_routing.CATCH_ALL_CHANNELS` at import time
-    (`[dict(ch) for ch in CATCH_ALL_CHANNELS]`), not a hand-duplicated
-    literal kept in sync only by a byte-for-byte equality test (the
-    prior version of this test). `event_agents.py` already imports
-    `alert_routing.py` at module scope, so the two modules were
-    re-imported together at interpreter startup, before this test
-    module's own `import` line ran — mutating the live constant here
-    only proves the deep-copy relationship, it does not re-trigger the
-    build."""
-    # Equal in content...
+def test_unrouted_alert_agent_events_value_is_a_copy_not_an_alias():
+    """Value/identity check only — NOT the real regression guard for
+    Step 4 (see the structural test below for that). This proves the
+    two are equal in content and never the SAME list/dict objects, but
+    that alone does not distinguish a genuine derived copy from a
+    hand-written literal that merely happens to match today: a
+    hand-duplicated literal was ALSO never aliased to this constant, so
+    it would pass every assertion in this function too. Kept as a
+    basic sanity check (and because mutating the live constant and
+    confirming the agent spec is unaffected is still a meaningful
+    "not a lazy/live reference" check), not as proof of derivation."""
     assert alert_routing.CATCH_ALL_CHANNELS == event_agents.UNROUTED_ALERT_AGENT["events"]
-    # ...but a genuine copy, not an aliased reference — the outer lists
-    # are different objects, and so is every inner dict (a plain
-    # `list(...)` shallow copy would still share the inner dicts; this
-    # guards against that weaker form too).
     assert alert_routing.CATCH_ALL_CHANNELS is not event_agents.UNROUTED_ALERT_AGENT["events"]
     for shared, owned in zip(alert_routing.CATCH_ALL_CHANNELS, event_agents.UNROUTED_ALERT_AGENT["events"]):
         assert shared is not owned
-    # Mutating the live constant must never reach back into the
-    # already-built agent spec — proves this is a one-time copy at
-    # import time, not a live/lazy reference.
     sentinel = {"channel": "__sentinel__", "enabled": True}
     alert_routing.CATCH_ALL_CHANNELS.append(sentinel)
     try:
         assert sentinel not in event_agents.UNROUTED_ALERT_AGENT["events"]
     finally:
         alert_routing.CATCH_ALL_CHANNELS.remove(sentinel)
+
+
+def test_unrouted_alert_agent_events_is_structurally_built_from_catch_all_channels():
+    """The real Step 4 regression guard. The value/identity test above
+    cannot tell a derived copy apart from a re-typed literal — both
+    would pass it, since a hand-duplicated literal is also never
+    aliased to the constant it was copied from. This test instead reads
+    `event_agents.py`'s own source for the `UNROUTED_ALERT_AGENT` dict
+    literal and asserts its `events` value is actually built via a
+    comprehension over `alert_routing.CATCH_ALL_CHANNELS`, with no
+    re-typed channel-dict literal sitting next to it. Confirmed to FAIL
+    against the pre-fix source (a hand-written `events: [{"channel":
+    "telegram", ...}, {"channel": "ntfy", ...}]` literal, with no
+    `CATCH_ALL_CHANNELS` reference at all)."""
+    import inspect
+
+    src = inspect.getsource(event_agents)
+    start = src.index("UNROUTED_ALERT_AGENT = {")
+    end = src.index("\n}\n", start)
+    block = src[start:end]
+    assert "alert_routing.CATCH_ALL_CHANNELS" in block, (
+        "UNROUTED_ALERT_AGENT must reference the shared constant, not a re-typed literal"
+    )
+    assert "dict(ch) for ch in alert_routing.CATCH_ALL_CHANNELS" in block, (
+        "events must be built via a per-entry copy of CATCH_ALL_CHANNELS, not a bare reference "
+        "(a bare `alert_routing.CATCH_ALL_CHANNELS` assignment would alias the shared list)"
+    )
+    assert '"channel": "telegram"' not in block, "no re-typed channel literal may remain"
+    assert '"channel": "ntfy"' not in block, "no re-typed channel literal may remain"
 
 
 def test_resolve_channels_falls_through_to_catch_all_when_nothing_matches():
