@@ -625,11 +625,38 @@
    *  alert_routing.py. Scoped to kind='event' only — cycle/threshold
    *  agents always carry their own `events`, that's how they work, not
    *  "pinned". See .claude/PLAN.md Step 5 + the routing-tree migration
-   *  docs for context. */
+   *  docs for context.
+   *
+   *  `unrouted-alert-catch-all` is excluded — it deliberately keeps a
+   *  non-empty `events` by design (the condition-level catch-all, never
+   *  tree-routed; see `UNROUTED_ALERT_AGENT` in event_agents.py), so it
+   *  is permanently off-tree ON PURPOSE, not "pinned" by an operator
+   *  edit — the suffix would be misleading for this one slug. */
   function isPinnedEventAgent(/** @type {any} */ agent) {
-    return agent?.kind === 'event' && Array.isArray(agent.events) && agent.events.length > 0;
+    return agent?.kind === 'event' && agent?.slug !== 'unrouted-alert-catch-all'
+      && Array.isArray(agent.events) && agent.events.length > 0;
   }
   const PINNED_SUFFIX = ' (pinned — not on routing tree)';
+
+  /** Channels actually shown for "Alert via:" / the Notify icon-strip.
+   *  A tree-driven `kind='event'` agent (empty own `events`, the normal
+   *  post-SEED_VERSION-3 state for every migrated seeded agent) has no
+   *  meaningful stored channel list — the real dispatch channel set is
+   *  resolved live by `alert_routing.py` and exposed read-only as
+   *  `agent.resolved_channels` (`_event_agent_resolved_channels` in
+   *  routes/agents.py). A pinned event agent (non-empty `events`) and
+   *  every non-event agent (`cycle`, etc. — these always carry their own
+   *  `events`, that's how they work) keep showing their own stored
+   *  `events` unchanged — `resolved_channels` is `[]` for anything that
+   *  isn't `kind='event'`, and `??` only falls back on a missing field,
+   *  never overriding a real stored (possibly empty) list. Display-only;
+   *  `editRow`/`decompileEventAgent` must keep reading raw `events` so a
+   *  no-op Save never writes the resolved value back and silently forks
+   *  the agent off the routing tree (same bug class as the documented
+   *  `has_explicit_alert` sticky-false incident). */
+  function effectiveChannels(/** @type {any} */ agent) {
+    return agent?.kind === 'event' ? (agent.resolved_channels ?? agent.events) : agent?.events;
+  }
 
   /** Map a channel id → single emoji. Used on the agent row for the
    *  notify-icon strip so the operator scans which agents page Telegram
@@ -797,7 +824,7 @@
   {/if}
 
   <div class="text-[length:var(--fs-sm)] text-[var(--c-muted)] mt-2 mb-1 flex items-center flex-wrap gap-x-2 gap-y-0.5">
-    <span class="text-[var(--c-muted)]">Alert via:</span> <span>{channelSummary(agent.events)}{isPinnedEventAgent(agent) ? PINNED_SUFFIX : ''}</span>
+    <span class="text-[var(--c-muted)]">Alert via:</span> <span>{channelSummary(effectiveChannels(agent))}{isPinnedEventAgent(agent) ? PINNED_SUFFIX : ''}</span>
     {#if agent.tier && agent.tier !== 'medium'}
       <span class={'tier-badge tier-badge-' + agent.tier} title="Severity tier — drives topic-scoped suppression in run_cycle.">{agent.tier}</span>
     {/if}
@@ -989,8 +1016,8 @@
                  before (template rows never get trade-mode/ON-OFF). -->
             <div class="flex items-center justify-end gap-2 pb-2">
               {#if _activeCard === 'agents' || _activeCard === 'alerts'}
-                <span class="agent-row-icons" title={'Notify: ' + (enabledChannels(row.events).join(', ') || 'none') + (isPinnedEventAgent(row) ? PINNED_SUFFIX : '')}>
-                  {#each enabledChannels(row.events) as ch (ch)}
+                <span class="agent-row-icons" title={'Notify: ' + (enabledChannels(effectiveChannels(row)).join(', ') || 'none') + (isPinnedEventAgent(row) ? PINNED_SUFFIX : '')}>
+                  {#each enabledChannels(effectiveChannels(row)) as ch (ch)}
                     <span class="agent-notify-ico" aria-label={ch}>{@html CHANNEL_ICON[ch] || '•'}</span>
                   {/each}
                 </span>

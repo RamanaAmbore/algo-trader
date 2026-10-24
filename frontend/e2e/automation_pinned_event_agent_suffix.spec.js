@@ -13,11 +13,18 @@
  *   1. A `kind='event'` row with non-empty `events` (pinned) shows the
  *      " (pinned — not on routing tree)" suffix on both "Alert via:" text
  *      and the icon-strip title.
- *   2. A `kind='event'` row with empty `events` (tree-driven, the normal
- *      post-migration state) shows NO suffix.
- *   3. A `kind='cycle'` row with non-empty `events` (ordinary agent-owned
- *      channel list — not a routing-tree participant at all) also shows
- *      NO suffix — "pinned" only applies to kind='event' rows.
+ *   2. A `kind='event'` row with EMPTY `events` and a non-empty
+ *      `resolved_channels` (the real post-SEED_VERSION-3 shape every
+ *      migrated seeded agent now has) shows the RESOLVED channel list,
+ *      not "none"/empty — and no suffix. This is the regression case for
+ *      the `resolved_channels` display fix (2026-10 routing-tree
+ *      activation): `channelSummary`/`enabledChannels` must read
+ *      `agent.resolved_channels`, not raw (now-empty) `agent.events`.
+ *   3. A `kind='cycle'` row with non-empty `events` AND an empty
+ *      `resolved_channels: []` (exactly what `_event_agent_resolved_channels`
+ *      returns for any non-event-kind agent) still shows its OWN `events`
+ *      — guards against a naive unconditional `resolved_channels ??
+ *      events` swap blanking "Alert via:" for every cycle/threshold agent.
  *
  * /api/agents/ is mocked, same precedent as
  * automation_row_view_no_condition.spec.js.
@@ -44,20 +51,27 @@ const BASE_FIELDS = {
 const PINNED_EVENT_ROW = {
   ...BASE_FIELDS, id: 401, slug: 'pinned-event-e2e', name: 'Pinned Event Agent E2E',
   kind: 'event', events: [{ channel: 'telegram', enabled: true }, { channel: 'ntfy', enabled: true }],
+  resolved_channels: [{ channel: 'telegram', enabled: true }, { channel: 'ntfy', enabled: true }],
 };
 
-// Normal: kind='event' with an empty `events` list — tree-driven, the
-// expected post-migration (SEED_VERSION 3) state for every seeded agent.
+// Normal: kind='event' with an empty `events` list and a non-empty
+// `resolved_channels` — tree-driven, the expected post-SEED_VERSION-3 state
+// for every seeded agent. "Alert via:" / Notify must show the RESOLVED
+// channels (ntfy, telegram), not "none"/empty.
 const TREE_EVENT_ROW = {
   ...BASE_FIELDS, id: 402, slug: 'tree-event-e2e', name: 'Tree Event Agent E2E',
   kind: 'event', events: [],
+  resolved_channels: [{ channel: 'ntfy', enabled: true }, { channel: 'telegram', enabled: true }],
 };
 
 // Ordinary cycle agent with its own (non-empty) events — not a routing-tree
-// participant at all, so "pinned" must never apply to it.
+// participant at all, so "pinned" must never apply to it. `resolved_channels:
+// []` matches what `_event_agent_resolved_channels` really returns for any
+// non-event-kind agent — the display logic must NOT let this empty list
+// override the agent's own real `events`.
 const CYCLE_ROW = {
   ...BASE_FIELDS, id: 403, slug: 'cycle-agent-e2e', name: 'Cycle Agent E2E',
-  kind: 'cycle', events: [{ channel: 'telegram', enabled: true }],
+  kind: 'cycle', events: [{ channel: 'telegram', enabled: true }], resolved_channels: [],
   conditions: { metric: 'pnl', scope: 'positions.total', op: '<=', value: -50000 },
 };
 
@@ -98,18 +112,21 @@ test.describe('Automation — pinned-event-agent "not on routing tree" text suff
     await expect(iconStrip).toHaveAttribute('title', /telegram, ntfy \(pinned — not on routing tree\)/);
   });
 
-  test('tree-driven event agent (empty events) shows NO suffix', async ({ page }) => {
+  test('tree-driven event agent (empty events, non-empty resolved_channels) shows the RESOLVED channels, no suffix', async ({ page }) => {
     const row = await expandRow(page, 'alerts', 'Tree Event Agent E2E');
 
     const alertViaLine = row.locator('span', { hasText: 'Alert via:' }).locator('..');
+    await expect(alertViaLine).toContainText('ntfy, telegram');
     await expect(alertViaLine).not.toContainText('pinned');
 
     const iconStrip = row.locator('.agent-row-icons');
+    await expect(iconStrip).toHaveAttribute('title', /Notify: ntfy, telegram/);
     const title = await iconStrip.getAttribute('title');
     expect(title).not.toContain('pinned');
+    expect(title).not.toContain('none');
   });
 
-  test('ordinary cycle agent with its own events shows NO suffix — "pinned" is scoped to kind=event only', async ({ page }) => {
+  test('ordinary cycle agent with its own events (empty resolved_channels) shows its OWN channels, no suffix — "pinned" and resolved_channels are scoped to kind=event only', async ({ page }) => {
     const row = await expandRow(page, 'agents', 'Cycle Agent E2E');
 
     const alertViaLine = row.locator('span', { hasText: 'Alert via:' }).locator('..');
@@ -118,6 +135,8 @@ test.describe('Automation — pinned-event-agent "not on routing tree" text suff
 
     const iconStrip = row.locator('.agent-row-icons');
     const title = await iconStrip.getAttribute('title');
+    expect(title).toContain('telegram');
     expect(title).not.toContain('pinned');
+    expect(title).not.toContain('none');
   });
 });
