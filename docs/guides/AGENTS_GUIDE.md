@@ -170,7 +170,7 @@ spikes.
 
 ### Action types
 
-`order`, `modify_order`, `cancel_order`, `cancel_all_orders`, `chase_close_positions`, `close_position`, `monitor_order`, `deactivate_agent`, `set_flag`, `emit_log`. See [CLAUDE.md § Action grammar](CLAUDE.md) for parameter schemas. (The internal name `place_order` is also accepted for backward compatibility but `order` is the canonical form going forward.)
+`order`, `modify_order`, `cancel_order`, `cancel_all_orders`, `chase_close_positions`, `close_position`, `monitor_order`, `deactivate_agent`, `set_flag`, `log`, `help`. See [CLAUDE.md § Action grammar](CLAUDE.md) for parameter schemas. (The internal name `place_order` is also accepted for backward compatibility but `order` is the canonical form going forward. `log` was renamed from `emit_log` 2026-10-23 — the Python resolver function keeps the old name, only the DSL token changed; `log` now also accepts an optional `priority` param for ntfy routing. `help(<name>)` is new — read-only catalog introspection, logged at DEBUG only.)
 
 ---
 
@@ -217,7 +217,12 @@ Each clause is independently optional (omit `WHEN` → always true; omit `ALERT`
   place order using live account data
 - `DO close_position(account=account_id, symbol=symbol)` — close using matched 
   row values (Sprint 16: `$row` binding)
-- `DO emit_log(message="Market open")` — log only
+- `DO log(message="Market open")` — log only (renamed from `emit_log`; the Python resolver
+  function keeps the old name). `DO log(level=warning, priority=urgent, message="...")` also
+  accepts an optional `priority` (`low`/`default`/`high`/`urgent`) that overrides a matching
+  event agent's own tier-derived ntfy priority
+- `DO help(pnl)` — read-only catalog introspection (description + signature + docstring),
+  logged at DEBUG only — never alert-eligible
 - `DO nop` — no action
 
 **GIVEN** (bindings, optional):
@@ -288,7 +293,10 @@ level, useful for troubleshooting agent logic. Use inside `GIVEN`, `ALERT`, or `
 For a pure-alias GIVEN binding like `p = pnl@positions.total`, `debug(p)` logs the 
 metric reference. For an operator-based binding like `msg_txt = "Loss: " + p`, 
 `debug(msg_txt)` logs the computed value at the moment the agent fires. Example: 
-`DO emit_log(message=debug(p))` or just `DO debug(msg)` with no other action.
+`DO log(message=debug(p))` or just `DO debug(msg)` with no other action. `debug(x)` always
+compiles to `log(level="debug", message=...)` and nothing else — no `priority`, no urgency —
+and a DEBUG-level record can never reach a real notification channel regardless of any event
+agent's own conditions (structural exemption in `event_agents.py:_dispatch_agent`).
 
 ### Direct order placement
 
@@ -479,7 +487,8 @@ Built-in agents are **force-reseeded on every boot** — your changes to their `
 | `cancel_order` / `modify_order` | Real broker | Sim order book |
 | `monitor_order` | Poll broker every N sec | Poll sim driver |
 | `deactivate_agent` | DB flip to inactive | Same (shared state) |
-| `set_flag` / `emit_log` | Write state | Same (sim_mode tag flows) |
+| `set_flag` / `log` | Write state | Same (sim_mode tag flows) |
+| `help` | Read-only catalog lookup, logged at DEBUG only | Same (no mode gate — read-only) |
 
 The Order log Mode pill (SIM / PAPER / LIVE / SHADOW) visualises the difference.
 

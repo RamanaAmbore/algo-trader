@@ -387,9 +387,9 @@ class TestValidateActionDispatchCatalog:
         import pytest
         with pytest.raises(ActionDispatchDriftError, match="fake_undeclared_noop"):
             validate_action_dispatch_catalog(
-                catalog_tokens={"emit_log"},
+                catalog_tokens={"log"},
                 live_handlers={},
-                noop_handlers={"emit_log": object(), "fake_undeclared_noop": object()},
+                noop_handlers={"log": object(), "fake_undeclared_noop": object()},
                 allowlist={},
             )
 

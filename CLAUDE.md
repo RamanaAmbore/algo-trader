@@ -301,11 +301,16 @@ the cross-account aggregate or causes a false 0.
 via `visibleInterval`). State: green (last_good < 5min), amber (stale), red (last_fail > last_ok). 
 Worst state drives color. Click opens per-account modal.
 
-**Agent action-dispatch SSOT (2026-10-08)** — `_LIVE_ACTION_HANDLERS`/`_NOOP_ACTION_HANDLERS`
+**Agent action-dispatch SSOT (2026-10-08; `emit_log`→`log` rename + `help` added 2026-10-23)** —
+`_LIVE_ACTION_HANDLERS`/`_NOOP_ACTION_HANDLERS`
 in `backend/api/algo/actions.py` are the explicit, sole action-dispatch tables — real broker
 actions route through `_dispatch_live_action()` to `_action_live_*` functions in
-`actions_live.py`; non-broker noops (`monitor_order`/`deactivate_agent`/`set_flag`/`emit_log`/`send_summary`/
-`send_market_status`) route through `_al_run_noop_handler()`. `GrammarRegistry`'s `actions` table
+`actions_live.py`; non-broker noops (`monitor_order`/`deactivate_agent`/`set_flag`/`log`/`help`/`send_summary`/
+`send_market_status`) route through `_al_run_noop_handler()`. The DSL token `log` (dispatch key,
+renamed from `emit_log` 2026-10-23 — see the dedicated entry below) still resolves to the
+Python function `emit_log` (unchanged name — a dispatch table's dotted resolver path doesn't
+have to match its DSL token string). `help` resolves to `help_lookup` (named to avoid
+colliding with the Python builtin). `GrammarRegistry`'s `actions` table
 (`grammar_registry.py`) is catalog metadata only — token name + `params_schema` — and is never
 live-dispatched (`REGISTRY.action()` has zero callers); `routes/grammar.py` only reads
 `len(REGISTRY.actions)` for an admin stats count. The `grammar_tokens` DB rows' own
@@ -322,6 +327,71 @@ string forever; an explicit `null` makes the upsert overwrite it with `None`). `
 degrades gracefully to `fn: None` when `resolver` is falsy, so `REGISTRY.actions` for these 7
 tokens is `{token: {"fn": None, "params_schema": {...}}}` on both fresh and already-seeded
 databases.
+
+**`emit_log`→`log` rename, new `priority` param, `help` action, structural DEBUG exemption
+(2026-10-23, items 3/5/7 of the grammar-unification plan)** — Three linked changes, all in
+`backend/api/algo/actions.py`, `grammar_registry.py`, `event_agents.py`,
+`backend/config/grammars/agent_grammar.yaml`.
+- **Rename.** The DSL token `emit_log` → `log` (operator wants simple/small DSL words).
+  Confirmed via live DB check on both prod (`ramboq`) and dev (`ramboq_dev`): zero existing
+  `Agent` rows referenced `emit_log` in their compiled JSON, so this was a clean rename — no
+  migration script, no backward-compat dispatch alias. `_NOOP_ACTION_HANDLERS`'s dispatch KEY
+  changed from `"emit_log"` to `"log"`; the Python resolver function kept its original name
+  `emit_log` (`_HandlerRef(__name__, "emit_log", True)`), same precedent as `help`/`help_lookup`
+  below — a dotted resolver path never has to match its DSL token string.
+- **New `priority` param on `log`.** `log`'s `params_schema` grew an optional `priority` field
+  (`low`/`default`/`high`/`urgent`, reusing `alert_utils._TIER_TO_NTFY_PRIORITY`'s own
+  vocabulary, not a new one) and its `level` enum grew `critical`. `emit_log()` threads
+  `priority` into the log call's `extra` dict (`extra={"priority": priority}`) ONLY when set —
+  every pre-existing caller with no `priority` param gets the exact same single-positional-arg
+  logger call as before, zero regression. This is the same `extra`-dict threading mechanism
+  `agent_engine.py:_v2_send_rich_alert()` already uses for `tier` (see the "Rich-alert ntfy
+  priority" entry above). `event_agents.py:_rec_tracked_ntfy_priority()` now checks an explicit
+  `rec["extra"]["priority"]` FIRST, before falling back to the pre-existing tier-derived
+  resolution — a hand-typed `log(level=..., priority=..., message=...)` call's explicit
+  priority overrides the matching `kind='event'` agent's own tier default. `debug(x)`'s
+  compiled sugar never sets `priority` — confirmed: it compiles to `log(level="debug",
+  message=...)` and nothing else, one bare argument, no priority/urgency ever.
+- **New `help` action.** Read-only catalog introspection — resolver `help_lookup` (named to
+  avoid colliding with the Python builtin `help`). `GrammarRegistry.find_tokens(name)` (new
+  method) reverse-resolves a token string to every matching `GrammarToken` row — a name can be
+  reused across `token_kind`s (e.g. the real live catalog's own `(notify, channel, log)` token,
+  pre-existing, and the renamed `(action, action_type, log)` token both share the string
+  `"log"`) — every match is returned, never guessed at. For each match, `_help_resolve_callable`
+  dispatches to the right `REGISTRY` accessor by `token_kind` (`.metric()`/`.scope()`/`.op()`/
+  `.channel()`/`.fmt()`/`.template()`/`.action()`), and `_help_reflect` renders the resolved
+  value's `inspect.signature()` and `inspect.getdoc()` — never hiding a missing piece: `None`
+  (a dead/unwired resolver) renders explicit "(signature unavailable)"/"(no docstring)"; a
+  real but non-callable value (e.g. a notify `template` token's body STRING) renders the
+  actual value rather than Python's own misleading `str.__doc__`. Logged at `logger.debug(...)`
+  with **no** `extra={"tags": [...], "alert_event": ...}` at all — belt-and-suspenders on top of
+  the structural exemption below, not the real protection.
+- **Structural DEBUG exemption.** `event_agents.py:_dispatch_agent`'s per-record loop now drops
+  any `rec.get("level") == "DEBUG"` record as the FIRST check, before `agent.conditions` is even
+  evaluated — applies uniformly to every `kind='event'` agent (seeded AND any future
+  operator-authored one), never a hardcoded list. Protects both `help` and bare `debug(x)` from
+  ever reaching a real notification channel regardless of what any event agent's own conditions
+  claim to match. Verified: `debug(x)`'s compiled sugar calls `logger.debug(...)`, which tags
+  `record.levelname == "DEBUG"` (standard Python logging, uppercase) — matches this exemption's
+  string compare exactly, no casing gap. Belt-and-suspenders note: `log_store.py`'s
+  `LogStoreHandler` is already instantiated at `level=logging.INFO`, so a real DEBUG record
+  never reaches `_dispatch_agent`'s `records` list in production today via the normal
+  log→`log_events`→dispatch pipeline — this exemption guards `_dispatch_agent` itself against
+  any future change to that threshold (or a synthetic record built some other way), not the
+  sole protection. Test: `backend/tests/test_help_lookup_action.py::TestDebugExemption` (confirmed
+  to fail against pre-fix code — `sent == 1` instead of `0` — before the exemption line was
+  added).
+- Golden baseline (`backend/tests/golden/agent_grammar_baseline.json`) updated in lockstep at
+  the exact same list position as the live YAML — the renamed `log` row, and a newly-inserted
+  `help` row immediately before it (right after `set_flag`) — so
+  `test_system_tokens_byte_for_byte_equal_to_baseline` stays a real, order-sensitive check.
+- Frontend scope note: the `debug(x)` sugar's compile sites in
+  `frontend/src/lib/command/grammars/agents.js` (3 sites emitting `{type: 'emit_log', ...}`) and
+  its decompiler match sites were NOT renamed by this backend-only round — that rename is
+  bundled with the parallel grammar-unification work already touching the same file (items
+  1/2/4 of the same plan). Confirm it lands before relying on `log` end-to-end from a
+  frontend-compiled `debug(x)` call; the backend dispatch table accepts ONLY `"log"` now, not
+  `"emit_log"`, with no alias.
 
 **Rich-alert ntfy priority must come from the REAL triggering agent's tier, never hardcoded or from the dispatcher's own (2026-10-16, live operator-reported incident)** —
 `backend/api/algo/event_agents.py:RICH_ALERT_AGENT` is the one dispatcher that delivers

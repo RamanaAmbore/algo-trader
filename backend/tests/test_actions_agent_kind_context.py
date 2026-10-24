@@ -28,8 +28,10 @@ Covers:
   3. `emit_log` with no `agent_kind` in context (ctx={} / ctx=None)
      degrades gracefully — no KeyError, `agent_kind` is None.
   4. `emit_log`'s existing `level` param already accepts "debug" cleanly
-     — confirms the Sprint G addendum's `debug(x) -> emit_log(level=
-     "debug")` compilation target needs zero backend change here.
+     — confirms the Sprint G addendum's `debug(x) -> log(level=
+     "debug")` compilation target (DSL action-type renamed `emit_log`
+     -> `log` 2026-10-23 — the Python resolver function itself keeps its
+     original name) needs zero backend change here.
   5. Regression: `execute()`'s existing per-action dispatch loop
      (mode resolution, $row binding, exchange gate, success/failure
      logging) is unaffected — mirrors the shape of existing
@@ -67,7 +69,7 @@ class TestExecuteInjectsAgentKind:
             return {"action": "emit_log", "status": "logged"}
 
         with patch("backend.api.algo.actions.emit_log", new=_capture):
-            await execute(agent, [{"type": "emit_log", "params": {"message": "x"}}], {})
+            await execute(agent, [{"type": "log", "params": {"message": "x"}}], {})
 
         assert captured.get("agent_kind") == "bracket"
 
@@ -82,7 +84,7 @@ class TestExecuteInjectsAgentKind:
                 return {"action": "emit_log", "status": "logged"}
 
             with patch("backend.api.algo.actions.emit_log", new=_capture):
-                await execute(agent, [{"type": "emit_log", "params": {"message": "x"}}], {})
+                await execute(agent, [{"type": "log", "params": {"message": "x"}}], {})
             assert captured.get("agent_kind") == kind
 
     @pytest.mark.asyncio
@@ -98,7 +100,7 @@ class TestExecuteInjectsAgentKind:
             return {"action": "emit_log", "status": "logged"}
 
         with patch("backend.api.algo.actions.emit_log", new=_capture):
-            await execute(agent, [{"type": "emit_log", "params": {"message": "x"}}], {})
+            await execute(agent, [{"type": "log", "params": {"message": "x"}}], {})
         assert captured.get("agent_kind") is None
 
     @pytest.mark.asyncio
@@ -110,8 +112,8 @@ class TestExecuteInjectsAgentKind:
         ctx_a: dict = {}
         ctx_b: dict = {}
         with patch("backend.api.algo.actions.emit_log", new=AsyncMock(return_value={})):
-            await execute(_agent(kind="cycle"), [{"type": "emit_log", "params": {}}], ctx_a)
-            await execute(_agent(kind="bracket"), [{"type": "emit_log", "params": {}}], ctx_b)
+            await execute(_agent(kind="cycle"), [{"type": "log", "params": {}}], ctx_a)
+            await execute(_agent(kind="bracket"), [{"type": "log", "params": {}}], ctx_b)
         assert ctx_a["agent_kind"] == "cycle"
         assert ctx_b["agent_kind"] == "bracket"
 
@@ -203,8 +205,8 @@ class TestExecuteRegression:
         with patch("backend.api.algo.actions.emit_log", new=_track):
             await execute(
                 _agent(), [
-                    {"type": "emit_log", "params": {"message": "first"}},
-                    {"type": "emit_log", "params": {"message": "second"}},
+                    {"type": "log", "params": {"message": "first"}},
+                    {"type": "log", "params": {"message": "second"}},
                 ], {},
             )
         assert calls == ["first", "second"]
@@ -223,6 +225,6 @@ class TestExecuteRegression:
             return {"action": "emit_log", "status": "logged"}
 
         with patch("backend.api.algo.actions.emit_log", new=_capture):
-            await execute(_agent(), [{"type": "emit_log", "params": {}}], {"some_flag": True})
+            await execute(_agent(), [{"type": "log", "params": {}}], {"some_flag": True})
         assert captured["some_flag"] is True
         assert captured["agent_kind"] == "cycle"

@@ -374,7 +374,7 @@ class TestQuoteTrackedRowRefFanout:
     @pytest.mark.asyncio
     async def test_quote_tracked_match_binds_row_for_row_ref_action(self):
         agent = _Agent(id=901, slug="test-quote-tracked-row-bind", actions=[{
-            "type": "emit_log",
+            "type": "log",
             "params": {"message": {"$row": "symbol"}, "level": "info"},
         }])
         matches = [_quote_tracked_match()]

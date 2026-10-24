@@ -18,6 +18,7 @@ Module layout (split from the original 2580-line file):
 
 import asyncio
 import importlib
+import inspect
 import sys
 from typing import Any, NamedTuple
 
@@ -29,7 +30,7 @@ logger = get_logger(__name__)
 
 
 # Broker-hitting actions — the three-way gate (sim / paper / live) only
-# applies to these. Non-broker actions (emit_log, set_flag,
+# applies to these. Non-broker actions (log, set_flag, help,
 # monitor_order, deactivate_agent, send_summary) run uniformly regardless
 # of mode.
 BROKER_ACTIONS = {
@@ -62,7 +63,7 @@ def _resolve_mode(_action_type: str, agent, context: dict) -> str:
                    execution.paper_trading_mode is False AND
                    agent.trade_mode='live'.
       * 'noop'   — non-broker action (no gate); the existing handler
-                   (send_summary, emit_log, …) runs as-is
+                   (send_summary, log, help, …) runs as-is
 
     Precedence:
       sim > replay > (prod-branch check) > shadow >
@@ -242,7 +243,20 @@ _NOOP_ACTION_HANDLERS: dict[str, _HandlerRef] = {
     "monitor_order":    _HandlerRef(__name__, "monitor_order", True),
     "deactivate_agent": _HandlerRef(__name__, "deactivate_agent", True),
     "set_flag":         _HandlerRef(__name__, "set_flag", True),
-    "emit_log":         _HandlerRef(__name__, "emit_log", True),
+    # "log" (renamed from "emit_log" 2026-10-23 — operator wants simple/
+    # small DSL words; zero existing saved Agent rows depended on the old
+    # string, confirmed via live DB check on both prod and dev, so this is
+    # a clean rename with no migration/alias needed). The dispatch KEY
+    # must match the grammar token string exactly — the Python function
+    # itself stays named `emit_log` (dotted resolver paths don't have to
+    # match their DSL token name, same precedent as help/help_lookup
+    # below).
+    "log":              _HandlerRef(__name__, "emit_log", True),
+    # "help" — read-only catalog introspection, logged at DEBUG only (see
+    # `help_lookup`'s own docstring + event_agents.py's structural DEBUG
+    # exemption in `_dispatch_agent`). `help` collides with the Python
+    # builtin, so the resolver function is named `help_lookup`.
+    "help":             _HandlerRef(__name__, "help_lookup", True),
 }
 
 
@@ -1195,11 +1209,11 @@ async def _write_live_order(agent, action_type: str, resolved: dict,
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  Non-broker noop action handlers (monitor_order / deactivate_agent /
-#  set_flag / emit_log)
+#  set_flag / emit_log / help_lookup)
 #
 #  These are genuinely dispatched via _NOOP_ACTION_HANDLERS in
 #  _al_run_noop_handler() above, AND are the registry resolver targets for
-#  these 4 tokens in agent_grammar.yaml (GrammarRegistry.actions[token]["fn"]
+#  these tokens in agent_grammar.yaml (GrammarRegistry.actions[token]["fn"]
 #  resolves to these same functions — harmless duplication, not a competing
 #  path, since nothing calls REGISTRY.action()).
 #  (2026-10-08: the 7 dead broker-action grammar-resolver stubs that used
@@ -1228,8 +1242,26 @@ async def set_flag(ctx, params: dict) -> dict:
 
 
 async def emit_log(ctx, params: dict) -> dict:
-    level   = (params.get("level") or "info").lower()
-    message = params.get("message", "")
+    """Resolver for the DSL `log` action (dispatch key renamed from
+    `emit_log` -> `log` 2026-10-23 — operator wants simple/small DSL
+    words; this Python function keeps its original name, since a
+    resolver's dotted path does not have to match its DSL token name,
+    same precedent as `help`/`help_lookup` below).
+
+    `level` stays mostly informational; the real downstream-routing
+    signal is the new `priority` param — reused by `event_agents.py`'s
+    `_rec_tracked_ntfy_priority()` as an explicit override of a matching
+    event agent's own tier-derived ntfy priority default (same "producer
+    decides what happened, the agent decides who gets told and how"
+    split documented in ALERT_AGENTS_DESIGN.md, and the same `extra`-dict
+    threading mechanism `agent_engine.py:_v2_send_rich_alert()` already
+    uses for `tier` — see CLAUDE.md's "Rich-alert ntfy priority" note).
+    `debug(x)`'s compiled sugar never sets `priority` — it stays purely
+    diagnostic.
+    """
+    level    = (params.get("level") or "info").lower()
+    message  = params.get("message", "")
+    priority = params.get("priority") or None
     # Sprint G, Task 3 — carry the firing agent's kind (injected into
     # `ctx` by `execute()` above) on the log line AND in the returned
     # dict, so a future LogPanel kind-filter has something real to key
@@ -1240,11 +1272,119 @@ async def emit_log(ctx, params: dict) -> dict:
     logline = f"Agent emit_log: {message}"
     if agent_kind:
         logline = f"{logline} [agent_kind={agent_kind}]"
-    getattr(logger, level, logger.info)(logline)
+    log_fn = getattr(logger, level, logger.info)
+    # `extra=` is only passed when there's something real to attach —
+    # every pre-existing caller (no `priority` param) gets the exact
+    # same single-positional-arg call as before, so this stays a true
+    # no-op/zero-regression change for every currently-saved agent.
+    if priority:
+        log_fn(logline, extra={"priority": priority})
+    else:
+        log_fn(logline)
     return {
         "action": "emit_log", "status": "logged", "level": level,
-        "message": message, "agent_kind": agent_kind,
+        "message": message, "agent_kind": agent_kind, "priority": priority,
     }
+
+
+def _help_resolve_callable(token_kind: str, token: str):
+    """Resolve the bound callable/value for a catalog row via the
+    `GrammarRegistry` accessor keyed by its `token_kind`. Returns `None`
+    on any lookup failure or for a `token_kind` with no accessor (e.g. a
+    row this function doesn't know how to reflect) — never raises,
+    matching this registry's existing "unknown token -> None" contract.
+    """
+    from backend.api.algo.grammar_registry import REGISTRY
+    try:
+        if token_kind == "metric":
+            return REGISTRY.metric(token)
+        if token_kind == "scope":
+            return REGISTRY.scope(token)
+        if token_kind == "operator":
+            return REGISTRY.op(token)
+        if token_kind == "channel":
+            return REGISTRY.channel(token)
+        if token_kind == "format":
+            return REGISTRY.fmt(token)
+        if token_kind == "template":
+            return REGISTRY.template(token)
+        if token_kind == "action_type":
+            entry = REGISTRY.action(token)
+            return (entry or {}).get("fn")
+    except Exception as e:
+        logger.debug(f"help_lookup: resolving '{token}' ({token_kind}) raised: {e}")
+        return None
+    return None
+
+
+def _help_reflect(fn: Any) -> tuple[str, str]:
+    """Return (signature_text, docstring_text) for a resolved value,
+    never hiding a missing piece — explicit "(... unavailable)" text
+    instead of silent omission, per explicit operator instruction.
+    `fn` can be `None` (dead/unwired resolver), a non-callable value
+    (e.g. a notify `template` token's template-body string), or a real
+    callable (metric/scope/operator/action/channel/format resolver)."""
+    if fn is None:
+        return "(signature unavailable)", "(no docstring)"
+    if not callable(fn):
+        return (
+            f"(not a function — value: {fn!r})"[:200],
+            "(no docstring — not a callable)",
+        )
+    try:
+        signature_text = str(inspect.signature(fn))
+    except (TypeError, ValueError):
+        signature_text = "(signature unavailable)"
+    doc = inspect.getdoc(fn)
+    docstring_text = doc if doc else "(no docstring)"
+    return signature_text, docstring_text
+
+
+async def help_lookup(ctx, params: dict) -> dict:
+    """Resolver for the DSL `help` action — read-only catalog
+    introspection, logged at DEBUG only (never alert-eligible: no
+    `extra={"tags": [...], "alert_event": ...}` at all, belt-and-
+    suspenders on top of `event_agents.py:_dispatch_agent`'s structural
+    DEBUG exemption, which is the real protection).
+
+    Reverse-resolves `params["name"]` to every matching `GrammarToken`
+    catalog row (a name can be reused across `token_kind`s — e.g. a
+    notify `channel` token and an `action_type` token can share the
+    same string — every match is returned, never guessed at), then for
+    each renders: the catalog `description`, the resolved callable's
+    parameter signature, and its docstring. Any missing piece renders
+    explicit "(... unavailable)" text rather than being silently
+    omitted, per explicit operator instruction.
+    """
+    from backend.api.algo.grammar_registry import REGISTRY
+
+    name = str(params.get("name") or "").strip()
+    if not name:
+        logger.debug("Agent help(): no name provided")
+        return {"action": "help", "status": "logged", "name": name, "matches": []}
+
+    rows = REGISTRY.find_tokens(name)
+    if not rows:
+        logger.debug(f"Agent help({name}): no matching token found in the catalog")
+        return {"action": "help", "status": "logged", "name": name, "matches": []}
+
+    matches: list[dict] = []
+    lines = [f"Agent help({name}): {len(rows)} match(es)"]
+    for row in rows:
+        fn = _help_resolve_callable(row.token_kind, row.token)
+        description = row.description or "(no catalog description)"
+        signature_text, docstring_text = _help_reflect(fn)
+        matches.append({
+            "grammar_kind": row.grammar_kind, "token_kind": row.token_kind,
+            "token": row.token, "description": description,
+            "signature": signature_text, "docstring": docstring_text,
+        })
+        lines.append(
+            f"  [{row.grammar_kind}/{row.token_kind}] {row.token} — "
+            f"{description} | signature: {signature_text} | doc: {docstring_text}"
+        )
+    logger.debug("\n".join(lines))
+    return {"action": "help", "status": "logged", "name": name, "matches": matches}
 
 
 # ═══════════════════════════════════════════════════════════════════════════

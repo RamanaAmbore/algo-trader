@@ -83,7 +83,7 @@ migration coverage.
 Amendment (2026-10, action-dispatch drift validator): a new
 `(action, action_type, send_summary)` token was added to
 `agent_grammar.yaml` right after `emit_log` (and mirrored here at the
-same position, index 96) — `send_summary` already had a fully-wired,
+same position, index 96 at the time) — `send_summary` already had a fully-wired,
 tested dispatch handler in `_NOOP_ACTION_HANDLERS`
 (`actions_live._action_send_summary`) but no catalog row at all, so
 `is_known_action_type()` rejected it and the Lab-chat agent-builder
@@ -175,6 +175,27 @@ active as part of this fix. See
 `backend/tests/test_underlying_loss_divergence_tokens.py` and
 `backend/tests/test_loss_agents.py` for the activation-state assertion
 move.
+
+Amendment (2026-10-23, `emit_log` -> `log` rename + `help` action): the
+`(action, action_type, emit_log)` token was renamed to `(action,
+action_type, log)` in place (same list position, same resolver dotted
+path `backend.api.algo.actions.emit_log` — the Python function itself
+keeps its original name; only the DSL-visible token string changed).
+Confirmed via live DB check on both prod and dev: zero existing saved
+`Agent` rows referenced `emit_log` in their compiled JSON, so this is a
+clean rename with no migration/alias needed. Its `params_schema` grew a
+new optional `priority` field (`low`/`default`/`high`/`urgent`, reusing
+`alert_utils._TIER_TO_NTFY_PRIORITY`'s own vocabulary) and its `level`
+enum grew `critical`. A new `(action, action_type, help)` token was
+inserted immediately BEFORE it (right after `set_flag`, mirrored here
+at the same position) — read-only catalog introspection, resolver
+`backend.api.algo.actions.help_lookup` (named to avoid colliding with
+the `help` builtin), logged at DEBUG only. Both changes are mirrored in
+`agent_grammar_baseline.json` at the exact same list position so
+`test_system_tokens_byte_for_byte_equal_to_baseline` stays a real,
+order-sensitive equality check rather than silently degrading. See
+`backend/tests/test_help_lookup_action.py` and CLAUDE.md's "Agent
+action-dispatch SSOT" note.
 
 Perf: no DB / network calls, pure in-memory comparison.
 Reuse: shares the same SYSTEM_TOKENS / LOG_TAG_TOKENS module attributes

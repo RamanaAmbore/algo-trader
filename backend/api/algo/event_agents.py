@@ -559,6 +559,21 @@ async def _dispatch_agent(agent, records: list[dict]) -> int:
     static_has_log = any(isinstance(e, dict) and e.get("channel") == "log" for e in (agent.events or []))
     sent = 0
     for rec in records:
+        # Structural DEBUG exemption (2026-10-23) — a DEBUG-level record
+        # (the `help` action, bare `debug(x)` sugar, or any future
+        # DEBUG-tier producer) can NEVER reach a real notification
+        # channel, regardless of what any event agent's own `conditions`
+        # claim to match. Checked FIRST, before `conditions` is even
+        # evaluated, so this applies uniformly to every kind='event'
+        # agent — seeded AND any future operator-authored one — never a
+        # hardcoded per-agent list. `LogStoreHandler` (log_store.py) is
+        # instantiated at `level=logging.INFO`, so a real DEBUG record
+        # never reaches this function's `records` list in production
+        # today — this is belt-and-suspenders against a future change to
+        # that threshold (or a synthetic record built some other way),
+        # not the sole protection.
+        if rec.get("level") == "DEBUG":
+            continue
         if not evaluate(agent.conditions, Context(log_records=[rec])):
             continue
         if _error_agent_self_alerted(agent, rec):
@@ -582,8 +597,24 @@ def _rec_tracked_ntfy_priority(rec: dict) -> "str | None":
     override for that record, from the REAL tier rather than the
     dispatching agent's own (RICH_ALERT_AGENT is a generic multiplexer,
     always tier="medium"). Extracted from `_dispatch_agent` to keep it
-    below the complexity gate."""
-    rec_tier = (rec.get("extra") or {}).get("tier")
+    below the complexity gate.
+
+    2026-10-23 (item 7, `log(...)` priority param) — an EXPLICIT
+    `priority` on the record's `extra` (set by a hand-typed
+    `log(level=..., priority=..., message=...)` DSL call, see
+    `actions.py:emit_log`) wins outright and is checked FIRST: it is a
+    more specific, explicit per-call signal than an inferred tier
+    default. Only when no explicit `priority` is present does this fall
+    back to the existing tier-derived resolution — zero regression for
+    every currently-matching event agent. `debug(x)`'s compiled sugar
+    never sets `priority`, so it always falls through to the tier
+    branch (moot anyway once the DEBUG exemption above drops the
+    record before this is ever reached)."""
+    extra = rec.get("extra") or {}
+    explicit_priority = extra.get("priority")
+    if explicit_priority:
+        return explicit_priority
+    rec_tier = extra.get("tier")
     if not rec_tier:
         return None
     from backend.shared.helpers.alert_utils import _TIER_TO_NTFY_PRIORITY

@@ -51,7 +51,7 @@ def test_resolve_mode_noop_non_broker_action():
     mode = _resolve_mode("send_summary", agent, {})
     assert mode == "noop"
 
-    mode = _resolve_mode("emit_log", agent, {})
+    mode = _resolve_mode("log", agent, {})
     assert mode == "noop"
 
     mode = _resolve_mode("monitor_order", agent, {})
@@ -503,7 +503,7 @@ async def test_execute_noop_action():
     agent.id = 1
 
     actions = [
-        {"type": "emit_log", "params": {"message": "test"}}
+        {"type": "log", "params": {"message": "test"}}
     ]
     context = {}
 
@@ -752,7 +752,7 @@ async def test_al_run_noop_handler_emit_log():
     agent = _mk_agent()
     mock = AsyncMock()
     with patch("backend.api.algo.actions.emit_log", new=mock):
-        ok = await _al_run_noop_handler(agent, "emit_log", {"a": 1}, {"c": 2})
+        ok = await _al_run_noop_handler(agent, "log", {"a": 1}, {"c": 2})
     assert ok is True
     mock.assert_called_once_with({"c": 2}, {"a": 1})
 
@@ -809,7 +809,7 @@ async def test_al_run_noop_handler_emit_log_exception_swallowed():
     agent = _mk_agent()
     boom = RuntimeError("emit_log boom")
     with patch("backend.api.algo.actions.emit_log", new=AsyncMock(side_effect=boom)):
-        ok = await _al_run_noop_handler(agent, "emit_log", {}, {})
+        ok = await _al_run_noop_handler(agent, "log", {}, {})
     assert ok is False
 
 
@@ -857,7 +857,7 @@ async def test_execute_emit_log_failure_does_not_trigger_action_failed_audit():
     from backend.api.algo.actions import execute
 
     agent = _mk_agent()
-    actions = [{"type": "emit_log", "params": {"message": "x"}}]
+    actions = [{"type": "log", "params": {"message": "x"}}]
     context = {}
 
     with patch("backend.api.algo.actions._resolve_mode", return_value="noop"), \

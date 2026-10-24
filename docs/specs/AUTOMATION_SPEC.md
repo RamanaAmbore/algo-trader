@@ -220,7 +220,31 @@ Action dispatch refactored from hardcoded if/elif chains to module-level registr
 | `monitor_order` | _NOOP | actions | `monitor_order` | True |
 | `deactivate_agent` | _NOOP | actions | `deactivate_agent` | True |
 | `set_flag` | _NOOP | actions | `set_flag` | True |
-| `emit_log` | _NOOP | actions | `emit_log` | True |
+| `log` | _NOOP | actions | `emit_log` | True |
+| `help` | _NOOP | actions | `help_lookup` | True |
+
+`log` (renamed from `emit_log` 2026-10-23 — operator wants simple/small DSL words; zero
+existing saved `Agent` rows depended on the old string, confirmed via live DB check on both
+prod and dev, so this was a clean rename with no migration/alias needed) writes a message to
+the app log. Its Python resolver function keeps the original name `emit_log` — a dispatch
+table's dotted resolver path doesn't have to match its DSL token string, same precedent as
+`help`/`help_lookup`. `log`'s `params_schema` grew an optional `priority` field
+(`low`/`default`/`high`/`urgent`, reusing `alert_utils._TIER_TO_NTFY_PRIORITY`'s own
+vocabulary) — a hand-typed `log(level=..., priority=..., message=...)` call's explicit
+`priority` overrides the matching `kind='event'` agent's own tier-derived ntfy default
+(`event_agents.py:_rec_tracked_ntfy_priority`); `debug(x)`'s compiled sugar never sets
+`priority`, so it always falls back to the pre-existing tier-derived resolution unchanged.
+
+`help` is new (2026-10-23) — read-only catalog introspection, resolver named `help_lookup` to
+avoid colliding with the Python builtin. Reverse-resolves a token name to every matching
+`GrammarToken` catalog row via `GrammarRegistry.find_tokens()`, then logs (at DEBUG only) each
+match's catalog `description`, resolved parameter signature, and docstring — never silently
+omitting a missing piece (explicit "(... unavailable)" text instead). Logged with no
+`extra={"tags": [...], "alert_event": ...}` at all, and `event_agents.py:_dispatch_agent` now
+drops every DEBUG-level record as the FIRST check in its dispatch loop, before even evaluating
+the matching agent's own `conditions` — a DEBUG-tier record (from `help` or bare `debug(x)`)
+can never reach a real notification channel, regardless of what any event agent's conditions
+claim to match.
 
 Each entry references a handler via `_HandlerRef(module, attr[, swallow_errors])` tuple.
 Dispatch via `_dispatch_live_action(agent, action_type, params, context)` and 

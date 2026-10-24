@@ -1479,9 +1479,23 @@
     {
       "grammar_kind": "action",
       "token_kind": "action_type",
-      "token": "emit_log",
+      "token": "help",
       "value_type": "void",
-      "description": "Write a message to the app log (quiet action for testing agent wiring).",
+      "description": "Look up a token/function/operator's catalog description, parameter signature, and docstring — logged at DEBUG, never alert-eligible.",
+      "resolver": "backend.api.algo.actions.help_lookup",
+      "params_schema": {
+        "name": {
+          "type": "string",
+          "required": true
+        }
+      }
+    },
+    {
+      "grammar_kind": "action",
+      "token_kind": "action_type",
+      "token": "log",
+      "value_type": "void",
+      "description": "Write a message to the app log, with optional alert-routing metadata for any downstream event agent that matches it.",
       "resolver": "backend.api.algo.actions.emit_log",
       "params_schema": {
         "level": {
@@ -1489,7 +1503,8 @@
           "enum": [
             "info",
             "warning",
-            "error"
+            "error",
+            "critical"
           ],
           "default": "info"
         },
@@ -1497,6 +1512,17 @@
           "type": "string",
           "required": true,
           "token_ref_ok": true
+        },
+        "priority": {
+          "type": "enum",
+          "enum": [
+            "low",
+            "default",
+            "high",
+            "urgent"
+          ],
+          "required": false,
+          "description": "ntfy-routing priority for a downstream event agent that matches this record. Reuses the existing ntfy priority vocabulary (alert_utils.py's `_TIER_TO_NTFY_PRIORITY` value set), not a new one."
         }
       }
     },

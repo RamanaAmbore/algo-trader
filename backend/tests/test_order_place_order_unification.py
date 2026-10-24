@@ -244,7 +244,7 @@ class TestMigrateOrderActionTypeRename:
         ])
         await _add_agent(factory, _Agent, slug="multi-action-agent", actions=[
             {"type": "place_order", "params": {"qty": 1}},
-            {"type": "emit_log", "params": {}},
+            {"type": "log", "params": {}},
             {"type": "place_order", "params": {"qty": 2}},
         ])
         await _add_agent(factory, _Agent, slug="already-canonical", actions=[
@@ -262,7 +262,7 @@ class TestMigrateOrderActionTypeRename:
         ]
         assert rows["multi-action-agent"] == [
             {"type": "order", "params": {"qty": 1}},
-            {"type": "emit_log", "params": {}},
+            {"type": "log", "params": {}},
             {"type": "order", "params": {"qty": 2}},
         ]
         # Already-canonical row untouched (no place_order to rewrite).

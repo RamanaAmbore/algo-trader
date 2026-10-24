@@ -308,6 +308,19 @@ class GrammarRegistry:
     def action(self, token: str) -> Optional[dict]:
         return self.actions.get(token)
 
+    def find_tokens(self, name: str) -> list:
+        """Reverse-resolve a token string to its catalog row(s).
+
+        `self.tokens` is keyed by DB id, not token string, so this walks
+        every loaded row filtering on `.token == name`. On-demand
+        diagnostic lookup only (backs the `help` action) — not a hot
+        path, so no reverse index is maintained. A name reused across
+        `token_kind`s (e.g. a notify `channel` and an action `action_type`
+        sharing the same string) returns every match; callers must never
+        guess which single one was meant.
+        """
+        return [r for r in self.tokens.values() if getattr(r, "token", None) == name]
+
     # ── Parameterized function-call tokens (Phase 26 / Sprint 2) ───────────
     def _resolve_call_token(self, token: str, factories: dict, cache: dict) -> Optional[Callable]:
         """Cache-miss fallback for a token the exact-match table didn't
