@@ -63,20 +63,20 @@ describe('describeTokenAt() — clauseKind inference drives bucket precedence', 
     expect(r).toEqual({ name: 'sig', description: 'metric-sig', token: 'sig', kind: 'token' });
   });
 
-  it('GIVEN clause ALSO resolves the metric bucket (same section order as WHEN)', () => {
-    const text = 'GIVEN sig';
+  it('a bare preamble position (no WHEN/DO yet) ALSO resolves the action bucket (same section order as DO)', () => {
+    const text = 'sig';
     const r = describeTokenAt(text, text.indexOf('sig'), CATALOG);
-    expect(r).toEqual({ name: 'sig', description: 'metric-sig', token: 'sig', kind: 'token' });
+    expect(r).toEqual({ name: 'sig', description: 'action-sig', token: 'sig', kind: 'token' });
   });
 
-  it('ALERT clause resolves the channel bucket first', () => {
-    const text = 'ALERT sig';
+  it('ALERT clause (now a plain call, alert(...)) resolves the channel bucket first', () => {
+    const text = 'alert(sig)';
     const r = describeTokenAt(text, text.indexOf('sig'), CATALOG);
     expect(r).toEqual({ name: 'sig', description: 'channel-sig', token: 'sig', kind: 'token' });
   });
 
   it('DO clause resolves the action bucket first', () => {
-    const text = 'DO sig';
+    const text = 'WHEN always DO sig';
     const r = describeTokenAt(text, text.indexOf('sig'), CATALOG);
     expect(r).toEqual({ name: 'sig', description: 'action-sig', token: 'sig', kind: 'token' });
   });
@@ -108,21 +108,21 @@ describe('describeTokenAt() — param-key resolution', () => {
   });
 });
 
-describe('describeTokenAt() — GIVEN-bound label resolution', () => {
+describe('describeTokenAt() — preamble-bound label resolution', () => {
   it('a bound label referenced later describes as the binding, not a catalog miss', () => {
-    const text = 'GIVEN mylbl = pnl@positions.total WHEN mylbl <= -1';
+    const text = 'mylbl = pnl@positions.total WHEN mylbl <= -1';
     const pos = text.lastIndexOf('mylbl') + 1;
     const r = describeTokenAt(text, pos, CATALOG);
     expect(r).toEqual({
       name: 'mylbl',
-      description: 'Bound via GIVEN — mylbl = pnl@positions.total',
+      description: 'Bound label — mylbl = pnl@positions.total',
       token: 'mylbl',
       kind: 'binding',
     });
   });
 
   it('bound-label resolution does not need a catalog at all', () => {
-    const text = 'GIVEN mylbl = 5 WHEN mylbl <= -1';
+    const text = 'mylbl = 5 WHEN mylbl <= -1';
     const pos = text.lastIndexOf('mylbl') + 1;
     const r = describeTokenAt(text, pos, null);
     expect(r && r.kind).toBe('binding');
@@ -133,7 +133,7 @@ describe('describeTokenAt() — GIVEN-bound label resolution', () => {
     // (sliced up to `pos`, i.e. BEFORE the "=" is even reached) has not yet
     // registered it — this is semantically correct: the definition site
     // isn't "a reference to itself".
-    const text = 'GIVEN mylbl = pnl@positions.total WHEN mylbl <= -1';
+    const text = 'mylbl = pnl@positions.total WHEN mylbl <= -1';
     const pos = text.indexOf('mylbl') + 1; // the FIRST (defining) occurrence
     const r = describeTokenAt(text, pos, CATALOG);
     expect(r === null || r.kind !== 'binding').toBe(true);
@@ -174,8 +174,8 @@ describe('describeTokenAt() — two-tier lex fallback', () => {
 
 describe('describeTokenAt() — whitespace/punctuation clicks resolve to null', () => {
   it('a click on a plain whitespace gap returns null', () => {
-    const text = 'WHEN pnl <= -1 ALERT telegram';
-    const r = describeTokenAt(text, text.indexOf(' ALERT'), CATALOG); // the space itself
+    const text = 'WHEN pnl <= -1 DO alert(telegram)';
+    const r = describeTokenAt(text, text.indexOf(' DO'), CATALOG); // the space itself
     expect(r).toBeNull();
   });
 
@@ -188,14 +188,14 @@ describe('describeTokenAt() — whitespace/punctuation clicks resolve to null', 
 
 describe('describeTokenAt() — read-only proof (never mutates text/selection/compile output)', () => {
   it('compileAgentCliStatement output is byte-identical before and after a describeTokenAt call', () => {
-    const text = 'WHEN pnl@positions.total <= -1 ALERT telegram DO emit_log(message="hello")';
+    const text = 'WHEN pnl@positions.total <= -1 DO alert(telegram), log(message="hello")';
     const before = compileAgentCliStatement(text, CATALOG);
 
     // Simulate a burst of clicks across every kind of token in the
     // statement — metric, scope, channel, action, and a param key.
     const positions = [
       text.indexOf('pnl'), text.indexOf('positions.total'), text.indexOf('telegram'),
-      text.indexOf('emit_log'), text.indexOf('message'),
+      text.indexOf('log('), text.indexOf('message'),
     ];
     const textBefore = text;
     for (const pos of positions) {
@@ -209,7 +209,7 @@ describe('describeTokenAt() — read-only proof (never mutates text/selection/co
   });
 
   it('a textarea-shaped before/after selection snapshot is unaffected by describeTokenAt', () => {
-    const value = 'WHEN pnl <= -1 ALERT telegram DO emit_log(message="hi")';
+    const value = 'WHEN pnl <= -1 DO alert(telegram), log(message="hi")';
     const fakeTextarea = { value, selectionStart: value.indexOf('telegram'), selectionEnd: value.indexOf('telegram') + 'telegram'.length };
     const snapshotBefore = { ...fakeTextarea };
 

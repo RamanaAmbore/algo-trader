@@ -8514,27 +8514,34 @@ function _nearestNonSpaceBefore(text, pos) {
   return i >= 0 ? text[i] : '';
 }
 
-/** Determine which clause (when/alert/do/order) `tokens` (a token stream
- *  from lexing some PREFIX of the statement) currently ends in — the last
- *  WHEN/ALERT/DO reserved-word marker seen wins; no WHEN at all means a
- *  bare order_stmt. */
+/** Determine which POSITION `tokens` (a token stream from lexing some
+ *  PREFIX of the statement) currently sits in — the last WHEN/DO
+ *  reserved-word marker seen wins; neither seen at all means the
+ *  implicit, self-delimiting PREAMBLE (Sprint [grammar-unify] — the
+ *  default position, replacing the old GIVEN/bare-order_stmt split:
+ *  there is now exactly ONE "nothing has happened yet" state, and it
+ *  accepts the full shared statement vocabulary, same as DO — see
+ *  `_bareNameCandidates`'s own `'preamble'` branch).
+ *
+ *  A FOURTH value, `'alert'`, exists in this same conceptual slot but is
+ *  NEVER returned by this function — `alert(...)`'s own body now lives
+ *  inside real parens (a nested call), not a bare top-level clause, so
+ *  it's detected by position (the nearest unclosed paren's own call name
+ *  — see `_suggestAgentCliAtImpl`'s/`_describeTokenAtImpl`'s own
+ *  "inside an open alert(...) call" branches) and passed explicitly to
+ *  `_lookupAnyCatalogEntry`/`_bareNameCandidates`/`_candidateTokensForClause`/
+ *  `_descMapForClause`, which all still recognize it exactly as before —
+ *  only the WAY it's produced changed, not what it means once you have
+ *  it. */
 function _clauseKindFromTokenPrefix(tokens) {
   let kind = null;
   for (const t of tokens) {
     if (t.type !== 'NAME' || !t.reserved) continue;
     const w = String(t.value).toLowerCase();
-    // Sprint G — `given` is its OWN recognized kind (not folded into the
-    // `order` fallback below) so autocomplete inside GIVEN's own item
-    // list suggests metrics/scopes (the common RHS shape — a bare value
-    // or a metric@scope condition), not action tokens. Every downstream
-    // consumer below (`_lookupAnyCatalogEntry`/`_candidateTokensForClause`/
-    // `_descMapForClause`) treats `'given'` the same as `'when'`.
     if (w === 'when') kind = 'when';
-    else if (w === 'alert') kind = 'alert';
     else if (w === 'do') kind = 'do';
-    else if (w === 'given') kind = 'given';
   }
-  return kind || 'order';
+  return kind || 'preamble';
 }
 
 // Sprint H (item 4) — the SAME name-alias resolution `compileDoClause`
@@ -8638,8 +8645,8 @@ function _lookupAnyCatalogEntry(name, catalog, clauseKind, scopeHint) {
   let order;
   if (scopeHint) order = ['scopes', 'metrics', 'channels', 'actions'];
   else if (clauseKind === 'alert') order = ['channels', 'metrics', 'scopes', 'actions'];
-  else if (clauseKind === 'do' || clauseKind === 'order') order = ['actions', 'metrics', 'scopes', 'channels'];
-  else order = ['metrics', 'scopes', 'channels', 'actions']; // 'when' / 'given' / unknown
+  else if (clauseKind === 'do' || clauseKind === 'preamble') order = ['actions', 'metrics', 'scopes', 'channels'];
+  else order = ['metrics', 'scopes', 'channels', 'actions']; // 'when' / unknown
   for (const section of order) {
     const m = catalog[section];
     if (m && m.has(key)) return m.get(key);
@@ -8700,11 +8707,19 @@ function _filterTokensByAllowedKinds(tokens, allowedKinds, catalog) {
   });
 }
 
+// Sprint [grammar-unify] — both helpers below are now UNREACHABLE fallbacks
+// in practice: `_bareNameCandidates` handles every real `clauseKind` value
+// ('when'/'alert'/'do'/'preamble') directly, with its own catalog-section
+// choice, 'debug'/'nop' additions, and bound-label/scope-root extras — these
+// two only ever run for a genuinely unrecognized clauseKind (which can't
+// happen via `_clauseKindFromTokenPrefix`'s own `|| 'preamble'` fallback).
+// Kept in sync anyway, in case a future caller passes a clauseKind straight
+// through without going via `_bareNameCandidates`.
 function _candidateTokensForClause(clauseKind, catalog) {
   if (!catalog) return null;
-  if (clauseKind === 'when' || clauseKind === 'given') return [...catalog.metrics.values()].map((e) => e.token);
+  if (clauseKind === 'when') return [...catalog.metrics.values()].map((e) => e.token);
   if (clauseKind === 'alert') return [...catalog.channels.values()].map((e) => e.token);
-  if (clauseKind === 'do' || clauseKind === 'order') return [...catalog.actions.values()].map((e) => e.token);
+  if (clauseKind === 'do' || clauseKind === 'preamble') return [...catalog.actions.values()].map((e) => e.token);
   return null;
 }
 
@@ -8716,9 +8731,9 @@ function _candidateTokensForClause(clauseKind, catalog) {
 function _descMapForClause(clauseKind, catalog) {
   if (!catalog) return null;
   let section;
-  if (clauseKind === 'when' || clauseKind === 'given') section = catalog.metrics;
+  if (clauseKind === 'when') section = catalog.metrics;
   else if (clauseKind === 'alert') section = catalog.channels;
-  else if (clauseKind === 'do' || clauseKind === 'order') section = catalog.actions;
+  else if (clauseKind === 'do' || clauseKind === 'preamble') section = catalog.actions;
   else return null;
   const out = new Map();
   for (const e of section.values()) out.set(e.token, e.description || '');
@@ -9209,32 +9224,39 @@ function _isComparatorToken(tok) {
  *  not an oversight: the suggestion/autocomplete engine still assumes
  *  the pre-[grammar-unify] 4-clause shape and needs its own dedicated
  *  pass. */
+/** Which of WHEN/DO have already appeared as a real reserved-word marker
+ *  anywhere in `real` — used to compute which clause-head keyword(s)
+ *  legally remain (Sprint H item 1; narrowed by Sprint [grammar-unify] —
+ *  GIVEN/ALERT are no longer clause-head keywords at all: GIVEN has
+ *  nothing left to mark (the preamble is self-delimiting by position,
+ *  accepting the full statement vocabulary with no introducer), and
+ *  `alert(...)` is an ordinary call, detected by POSITION (the nearest
+ *  unclosed paren's own name — see `_suggestAgentCliAtImpl`'s "inside an
+ *  open alert(...) call" branch), never by a reserved-word marker here). */
 function _seenClauseHeads(real) {
   const seen = new Set();
   for (const t of real) {
     if (t.type !== 'NAME' || !t.reserved) continue;
     const w = String(t.value).toLowerCase();
-    if (w === 'given' || w === 'when' || w === 'alert' || w === 'do') seen.add(w);
+    if (w === 'when' || w === 'do') seen.add(w);
   }
   return seen;
 }
 
 /** Which clause-head keywords are still legal to type next, given `seen`
  *  (see `_seenClauseHeads`) — mirrors `agent_stmt`'s own formal grammar
- *  (`given_part? when_part? tail`, `tail := alert_part do_part | do_part
- *  alert_part | alert_part | do_part | ε`) directly: GIVEN only at the
- *  very start (`seen` empty); WHEN any time before ALERT/DO have started;
- *  ALERT/DO each independently, as long as that ONE hasn't been used yet
- *  (order between them is free).
- *
- *  KNOWN GAP (Sprint [grammar-unify]) — see `_seenClauseHeads`'s own
- *  comment; this function's own behavior is left unchanged alongside it. */
+ *  (`preamble [WHEN condition DO calls]`) directly. `WHEN` is offered
+ *  until either keyword has been seen (it's the ONLY entry point into
+ *  the conditional wrapper, and once `DO` exists `WHEN` can never be
+ *  added after it — the pair is already sealed either way); `DO` is
+ *  offered ONLY once `WHEN` has been seen and `DO` hasn't yet — `DO`
+ *  with no preceding `WHEN` is now a compile-time error
+ *  (`compileAgentStmt`'s pairing rule), so autocomplete never steers an
+ *  operator into typing it bare. */
 function _clauseHeadKeywords(seen) {
   const out = [];
-  if (seen.size === 0) out.push('GIVEN');
-  if (!seen.has('when') && !seen.has('alert') && !seen.has('do')) out.push('WHEN');
-  if (!seen.has('alert')) out.push('ALERT');
-  if (!seen.has('do')) out.push('DO');
+  if (!seen.has('when') && !seen.has('do')) out.push('WHEN');
+  if (seen.has('when') && !seen.has('do')) out.push('DO');
   return out;
 }
 
@@ -9242,23 +9264,24 @@ function _clauseHeadKeywords(seen) {
  *  candidates legal at the boundary ending at `boundaryPos` (the start of
  *  whatever's about to be freshly typed — a pure gap, or the start of an
  *  in-progress partial word). Empty `effectiveReal` (absolute statement
- *  start) is always a valid boundary with nothing "seen" yet, with no
- *  parse needed (an empty prefix doesn't parse as anything — `order_stmt`
- *  requires at least one real call). Otherwise, real parses `text` up to
- *  `boundaryPos` through the EXACT same dispatcher the real compiler
- *  uses (`_tryParsePrefixStatement`) — only when that prefix is ALREADY a
- *  complete, valid `agent_stmt` on its own (zero errors) is this a real
- *  "a clause just finished" boundary; `&`/`|` are offered ADDITIONALLY
- *  only while still inside an in-progress WHEN condition (seen WHEN, not
- *  yet ALERT/DO — extending the condition is still legal; once a tail
- *  clause has started, the condition is sealed). */
+ *  start) offers `WHEN` directly, with no parse needed (an empty prefix
+ *  doesn't parse as anything, but `WHEN` is always legal to START a
+ *  statement with — the preamble ahead of it is optional). Otherwise,
+ *  real parses `text` up to `boundaryPos` through the EXACT same
+ *  dispatcher the real compiler uses (`_tryParsePrefixStatement`) — only
+ *  when that prefix is ALREADY a complete, valid `agent_stmt` on its own
+ *  (zero errors) is this a real "a clause/preamble item just finished"
+ *  boundary; `&`/`|` are offered ADDITIONALLY only while still inside an
+ *  in-progress WHEN condition (seen WHEN, not yet DO — extending the
+ *  condition is still legal; once DO has started, the condition is
+ *  sealed). */
 function _clauseBoundaryKeywordCandidates(text, boundaryPos, effectiveReal) {
-  if (effectiveReal.length === 0) return _clauseHeadKeywords(new Set());
+  if (effectiveReal.length === 0) return ['WHEN'];
   const parsed = _tryParsePrefixStatement(text, boundaryPos);
   if (!parsed || parsed.errors.length || !parsed.ast || parsed.ast.kind !== 'agent') return [];
   const seen = _seenClauseHeads(effectiveReal);
   const out = _clauseHeadKeywords(seen);
-  if (seen.has('when') && !seen.has('alert') && !seen.has('do')) out.push('&', '|');
+  if (seen.has('when') && !seen.has('do')) out.push('&', '|');
   return out;
 }
 
@@ -9304,9 +9327,11 @@ function _givenRhsCandidates(catalog, text, boundaryPos) {
   return { tokens, descByToken };
 }
 
-/** Sprint H (items 1/6/8/9) — the full bare-name candidate set for a
- *  genuinely fresh metric/channel/action slot, keyed by `clauseKind` (the
- *  LAST WHEN/ALERT/DO/GIVEN marker seen) and `contextTok` (the token
+/** Sprint H (items 1/6/8/9), reworked for Sprint [grammar-unify] — the
+ *  full bare-name candidate set for a genuinely fresh metric/channel/
+ *  action slot, keyed by `clauseKind` (`'preamble'` | `'when'` | `'do'` |
+ *  `'alert'` — see `_clauseKindFromTokenPrefix`'s own doc for what each
+ *  means and how `'alert'` is reached) and `contextTok` (the token
  *  immediately preceding the fresh slot — used to detect clause-specific
  *  "first item of this clause" positions that unlock `nop`/`always`).
  *  Replaces the old direct `_candidateTokensForClause`/`_descMapForClause`
@@ -9315,25 +9340,8 @@ function _givenRhsCandidates(catalog, text, boundaryPos) {
 function _bareNameCandidates(clauseKind, catalog, contextTok, text, boundaryPos) {
   const lastWord = (contextTok && contextTok.type === 'NAME' && contextTok.reserved)
     ? String(contextTok.value).toLowerCase() : null;
-  // Sprint [comma-separator] — a bare "," is now a full synonym for ";"
-  // between clause items (see `parseItemListClause`), so this item-head
-  // detection must recognize it too, not just the literal ";" — without
-  // this, typing `GIVEN a1=1, ` would wrongly offer bare metric names
-  // (not a legal top-level GIVEN item) instead of restricting to `debug`.
-  const lastIsItemSeparator = !!(contextTok && (contextTok.type === 'SEMI' || contextTok.type === 'COMMA'));
 
-  // GIVEN's own item-head position (right after "GIVEN" itself, or after
-  // a ";"/"," separating GIVEN items, with no "=" typed yet) —
-  // `parseAgentStmt` restricts GIVEN's OWN item list to label assignments
-  // and `debug(...)` ONLY ("GIVEN only accepts label assignments and
-  // debug(...)" — a bare metric call is NOT a valid GIVEN item on its
-  // own, only as the RHS of an assignment, which is
-  // `_givenRhsCandidates`'s job, not this one).
-  if (clauseKind === 'given' && (lastWord === 'given' || lastIsItemSeparator)) {
-    return { tokens: ['debug'], descByToken: new Map([['debug', 'Emit a debug log line for a bound label or matched-row column — debug(x).']]) };
-  }
-
-  if (clauseKind === 'when' || clauseKind === 'given') {
+  if (clauseKind === 'when') {
     const base = [...catalog.metrics.values()];
     const tokens = base.map((e) => e.token);
     const descByToken = new Map(base.map((e) => [e.token, e.description || '']));
@@ -9375,15 +9383,42 @@ function _bareNameCandidates(clauseKind, catalog, contextTok, text, boundaryPos)
     const tokens = base.map((e) => e.token);
     const descByToken = new Map(base.map((e) => [e.token, e.description || '']));
     // Sprint H item 9 — debug(...) is a valid call anywhere an
-    // action/channel call is expected inside ALERT/DO (it's hoisted out
-    // and compiled to a real emit_log action regardless of which clause
-    // it was written in — see `_compileDebugCall`).
+    // action/channel call is expected inside DO or alert(...)'s own body
+    // (it's compiled to a real `log` action regardless of which position
+    // it was written in — see `_compileSharedCall`).
     tokens.push('debug');
     descByToken.set('debug', 'Emit a debug log line for a bound label or matched-row column — debug(x).');
-    // "nop" means "this WHOLE clause does nothing" — only legal as the
-    // clause's FIRST (and only) item, i.e. right after the ALERT/DO
-    // keyword itself, never after a ";"/","/connective mid-clause.
-    if (lastWord === clauseKind) { tokens.push('nop'); descByToken.set('nop', 'Do nothing — this clause has no channels/actions.'); }
+    // "nop" means "this WHOLE clause/call body does nothing" — only
+    // legal as the FIRST (and only) item. For `do`, that's right after
+    // the literal DO keyword itself (`lastWord === 'do'`). For `alert`,
+    // there is no leading keyword at all any more (`alert(...)`'s body
+    // lives inside real parens, reached by position — see
+    // `_clauseKindFromTokenPrefix`'s own doc) — a FRESH, otherwise-empty
+    // body is instead detected by `contextTok` being entirely absent
+    // (nothing lexed yet inside this specific open call's own span; see
+    // `_suggestAgentCliAtImpl`'s alert-body branch, which lexes ONLY the
+    // text inside alert's own parens, so an empty/fresh body naturally
+    // produces no tokens at all there).
+    const isClauseStart = lastWord === clauseKind || (clauseKind === 'alert' && !contextTok);
+    if (isClauseStart) { tokens.push('nop'); descByToken.set('nop', 'Do nothing — this clause has no channels/actions.'); }
+    return { tokens, descByToken };
+  }
+
+  if (clauseKind === 'preamble') {
+    // Sprint [grammar-unify] — the preamble is self-delimiting by
+    // position, not introduced by any keyword (GIVEN is gone), and
+    // accepts the FULL shared statement vocabulary — the SAME candidate
+    // set DO already offers (every real catalog action, plus debug(...)),
+    // per the plan's own explicit "no narrower than DO" requirement.
+    // Deliberately NO `nop` here — a bare top-level `nop` is meaningless
+    // for an unconditional preamble item (there's no clause to declare
+    // empty), and the parser's own preamble item-list never accepts it
+    // (`allowNop: false`, see `parseAgentStmt`).
+    const base = [...catalog.actions.values()];
+    const tokens = base.map((e) => e.token);
+    const descByToken = new Map(base.map((e) => [e.token, e.description || '']));
+    tokens.push('debug');
+    descByToken.set('debug', 'Emit a debug log line for a bound label or matched-row column — debug(x).');
     return { tokens, descByToken };
   }
 
@@ -9459,40 +9494,44 @@ function _suggestDebugArg(text, parenPos, pos, catalog) {
   };
 }
 
-function _suggestAgentCliAtImpl(text, cursor, catalog, opts = {}) {
-  if (typeof text !== 'string') return _emptySuggest(0);
-  const n = text.length;
-  const pos = Math.max(0, Math.min(Number(cursor) || 0, n));
+/** Shift a `suggestAgentCliAt`-shaped result's `replaceRange` by `offset`
+ *  — used when a result was computed against a NESTED span (e.g.
+ *  `alert(...)`'s own body, sliced out and treated as its own
+ *  self-contained "text") so the caller's returned offsets are absolute
+ *  in the REAL, outer text again. `kind: null`/`_emptySuggest`-shaped
+ *  results have a `[pos, pos]` range too, so this is safe to apply
+ *  unconditionally — never special-cased per `kind`. */
+function _shiftSuggestResult(result, offset) {
+  if (!result || !Array.isArray(result.replaceRange)) return result;
+  return { ...result, replaceRange: [result.replaceRange[0] + offset, result.replaceRange[1] + offset] };
+}
 
-  // 1. Inside a call's (possibly still-open) argument list?
-  const openCall = _findOpenCallAt(text, pos);
-  if (openCall) {
-    const name = text.slice(openCall.nameStart, openCall.nameEnd);
-    // Sprint H (item 9) — `debug(...)` has no catalog entry at all (its
-    // one bare argument is a label/column reference, never a schema-
-    // declared kwarg) — handled entirely separately, before the ordinary
-    // catalog-entry lookup below would otherwise just miss and degrade
-    // to nothing.
-    if (name.toLowerCase() === 'debug') return _suggestDebugArg(text, openCall.parenPos, pos, catalog);
-    const scopeHint = _nearestNonSpaceBefore(text, openCall.nameStart) === '@'
-      || _nearestNonSpaceBefore(text, openCall.nameStart) === '.';
-    const prefixLex = lexAgentStatement(text.slice(0, openCall.nameStart));
-    const clauseKind = prefixLex.errors.length ? null : _clauseKindFromTokenPrefix(prefixLex.tokens);
-    const entry = _lookupAnyCatalogEntry(name, catalog, clauseKind, scopeHint);
-    if (!entry) return _emptySuggest(pos);
-    return _paramOrEnumSuggestion(text, openCall.parenPos, pos, entry, opts);
-  }
-
-  // 2. Not inside a call — bare metric/channel/action NAME being typed.
-  //    Lex only the text UP TO THE CURSOR so a half-typed later clause
-  //    never blanks out suggestions for the clause actually being edited.
-  const { tokens, errors } = lexAgentStatement(text.slice(0, pos));
+/** Step 2 of `_suggestAgentCliAtImpl` ("not inside an ordinary call —
+ *  bare metric/channel/action NAME being typed"), factored out (Sprint
+ *  [grammar-unify]) so the IDENTICAL logic can also run scoped to a
+ *  NESTED span — specifically `alert(...)`'s own body, which is a
+ *  nested statement-list (channel calls, `debug(...)`, `nop`) living
+ *  inside real parens now, rather than a bare top-level clause — with a
+ *  FORCED clauseKind instead of deriving one from `_clauseKindFromTokenPrefix`.
+ *
+ *  `text`/`pos` are in ONE coordinate space throughout (the caller slices/
+ *  shifts for a nested span — this function never does so itself).
+ *  `forcedClauseKind`, when non-null (always `'alert'` in practice),
+ *  skips `_clauseKindFromTokenPrefix` entirely AND suppresses the
+ *  scope-ref/comparator/given_rhs/clause-boundary-keyword branches —
+ *  none of those make sense inside a nested call's own parens (there's
+ *  no WHEN/DO to start, no comparator to complete, etc.) — falling
+ *  straight through to the clause's own bare-name candidate set. */
+function _suggestBareNamePosition(text, pos, catalog, opts, forcedClauseKind) {
+  const { tokens, errors } = lexAgentStatement(text);
   if (errors.length) {
     // Sprint H (item 5) — the ONE lex failure this file still tries to
     // recover a suggestion from: a trailing, not-yet-complete "#key"
     // meta-tag position (`lexAgentStatement` throws there by necessity —
-    // there's no value yet to lex). Every OTHER lex error still degrades
-    // to empty, unchanged.
+    // there's no value yet to lex). Never reachable for a forced
+    // (nested) span — a `#` meta tag only ever appears trailing the
+    // WHOLE statement, never inside a call's own parens.
+    if (forcedClauseKind) return _emptySuggest(pos);
     return _suggestMetaKey(text, pos) || _emptySuggest(pos);
   }
   if (!tokens.length) return _emptySuggest(pos);
@@ -9501,20 +9540,22 @@ function _suggestAgentCliAtImpl(text, cursor, catalog, opts = {}) {
   const real = tokens[tokens.length - 1].type === 'EOF' ? tokens.slice(0, -1) : tokens;
   const lastTok = real[real.length - 1];
 
-  // "Immediately after @ or ." (scope-ref position) — suggest scope
-  // names (see `_suggestScopeRef`); degrades to empty when the char
-  // isn't actually part of a real scope_ref (e.g. an incomplete decimal
-  // literal's trailing '.').
-  const wordStart = (lastTok && lastTok.type === 'NAME' && !lastTok.hasCall && lastTok.end === pos)
-    ? lastTok.start : pos;
-  if (_nearestNonSpaceBefore(text, wordStart) === '@' || _nearestNonSpaceBefore(text, wordStart) === '.') {
-    // "@"-anchored scope_ref (metric_ref's own `@ scope_ref`) takes
-    // priority — completely unaffected by Sprint 15. Only when there's
-    // genuinely no "@" anywhere before this chain (a BARE dotted
-    // `col_ref` leaf, e.g. typing `positions.` directly) does the new
-    // column/deeper-scope completion (`_suggestBareDottedRef`) apply.
-    if (_scopeRefContextFromTokens(real, pos)) return _suggestScopeRef(real, text, pos, catalog);
-    return _suggestBareDottedRef(real, text, pos, catalog);
+  if (!forcedClauseKind) {
+    // "Immediately after @ or ." (scope-ref position) — suggest scope
+    // names (see `_suggestScopeRef`); degrades to empty when the char
+    // isn't actually part of a real scope_ref (e.g. an incomplete decimal
+    // literal's trailing '.').
+    const wordStart = (lastTok && lastTok.type === 'NAME' && !lastTok.hasCall && lastTok.end === pos)
+      ? lastTok.start : pos;
+    if (_nearestNonSpaceBefore(text, wordStart) === '@' || _nearestNonSpaceBefore(text, wordStart) === '.') {
+      // "@"-anchored scope_ref (metric_ref's own `@ scope_ref`) takes
+      // priority — completely unaffected by Sprint 15. Only when there's
+      // genuinely no "@" anywhere before this chain (a BARE dotted
+      // `col_ref` leaf, e.g. typing `positions.` directly) does the new
+      // column/deeper-scope completion (`_suggestBareDottedRef`) apply.
+      if (_scopeRefContextFromTokens(real, pos)) return _suggestScopeRef(real, text, pos, catalog);
+      return _suggestBareDottedRef(real, text, pos, catalog);
+    }
   }
 
   // Sprint H — `contextTok` is the token immediately preceding whatever
@@ -9535,7 +9576,7 @@ function _suggestAgentCliAtImpl(text, cursor, catalog, opts = {}) {
   // "Do"/"do"/"DO" were always equally affected — the real cause is this
   // early return, independent of case). A completed reserved word is
   // classified exactly like any other still-being-typed partial keyword
-  // (e.g. "ALE" for "ALERT", already handled below via `effectiveReal`/
+  // (e.g. "WH" for "WHEN", already handled below via `effectiveReal`/
   // `contextTok`) instead of being special-cased to empty, so it keeps
   // appearing as the single matched/selectable suggestion until the
   // operator types past it (a space, etc.) or it's genuinely illegal here.
@@ -9545,36 +9586,40 @@ function _suggestAgentCliAtImpl(text, cursor, catalog, opts = {}) {
   const effectiveReal = isGluedPartial ? real.slice(0, -1) : real;
   const contextTok = effectiveReal[effectiveReal.length - 1];
 
-  // (a) Comparator position — right after a COMPLETE metric_ref/col_ref
-  // with no comparator yet (Sprint 20 item 2 / Sprint H item 3).
-  if (_isAfterCompleteScopeChain(effectiveReal)) {
-    const ranked = fuzzyFilter(partial, isGluedPartial ? _COMPARATOR_WORDS : _COMPARATOR_SUGGESTIONS);
-    return { suggestions: ranked, descriptions: ranked.map(() => ''), labels: ranked.map(() => null), replaceRange: [replaceStart, pos], kind: 'comparator', hint: null };
-  }
-  // (b) Right after an already-complete comparator token — a value is
-  // expected next; there's no catalog-driven completion for an arbitrary
-  // number/string/enum/list, so surface a plain hint instead of silently
-  // offering nothing (Sprint H item 3).
-  if (!isGluedPartial && _isComparatorToken(contextTok)) {
-    return { suggestions: [], descriptions: [], labels: [], replaceRange: [pos, pos], kind: 'value-hint', hint: 'Enter a number, string, enum value, or [list] (for in / not in).' };
-  }
-  // (c) Right after a label-bind's own "=" — a `given_rhs` value
-  // position (Sprint H items 6/8), distinct from meta's `#key=` (same
-  // token shape, different grammar entirely — see `_isMetaKeyEq`).
-  if (contextTok && contextTok.type === 'EQ' && !_isMetaKeyEq(effectiveReal)) {
-    const { tokens: rhsTokens, descByToken } = _givenRhsCandidates(catalog, text, replaceStart);
-    const ranked = fuzzyFilter(partial, rhsTokens);
-    const descriptions = ranked.map((t) => descByToken.get(t) || '');
-    return { suggestions: ranked, descriptions, labels: ranked.map(() => null), replaceRange: [replaceStart, pos], kind: 'token', hint: null };
+  if (!forcedClauseKind) {
+    // (a) Comparator position — right after a COMPLETE metric_ref/col_ref
+    // with no comparator yet (Sprint 20 item 2 / Sprint H item 3).
+    if (_isAfterCompleteScopeChain(effectiveReal)) {
+      const ranked = fuzzyFilter(partial, isGluedPartial ? _COMPARATOR_WORDS : _COMPARATOR_SUGGESTIONS);
+      return { suggestions: ranked, descriptions: ranked.map(() => ''), labels: ranked.map(() => null), replaceRange: [replaceStart, pos], kind: 'comparator', hint: null };
+    }
+    // (b) Right after an already-complete comparator token — a value is
+    // expected next; there's no catalog-driven completion for an arbitrary
+    // number/string/enum/list, so surface a plain hint instead of silently
+    // offering nothing (Sprint H item 3).
+    if (!isGluedPartial && _isComparatorToken(contextTok)) {
+      return { suggestions: [], descriptions: [], labels: [], replaceRange: [pos, pos], kind: 'value-hint', hint: 'Enter a number, string, enum value, or [list] (for in / not in).' };
+    }
+    // (c) Right after a label-bind's own "=" — a `given_rhs` value
+    // position (Sprint H items 6/8), distinct from meta's `#key=` (same
+    // token shape, different grammar entirely — see `_isMetaKeyEq`).
+    if (contextTok && contextTok.type === 'EQ' && !_isMetaKeyEq(effectiveReal)) {
+      const { tokens: rhsTokens, descByToken } = _givenRhsCandidates(catalog, text, replaceStart);
+      const ranked = fuzzyFilter(partial, rhsTokens);
+      const descriptions = ranked.map((t) => descByToken.get(t) || '');
+      return { suggestions: ranked, descriptions, labels: ranked.map(() => null), replaceRange: [replaceStart, pos], kind: 'token', hint: null };
+    }
   }
 
-  const clauseKind = _clauseKindFromTokenPrefix(effectiveReal);
+  const clauseKind = forcedClauseKind || _clauseKindFromTokenPrefix(effectiveReal);
 
-  if (!isGluedPartial && !_isFreshNamePosition(contextTok)) {
+  if (!forcedClauseKind && !isGluedPartial && !_isFreshNamePosition(contextTok)) {
     // (d) Not a legal fresh metric/channel/action slot — the only thing
     // that can still apply here is a clause-head keyword or boolean
     // connective (Sprint H items 1/3), via a real speculative parse
-    // rather than a token-pattern heuristic.
+    // rather than a token-pattern heuristic. Never reached for a forced
+    // (nested alert-body) span — WHEN/DO/&/| can never follow anything
+    // inside a call's own parens.
     const kws = _filterTokensByAllowedKinds(_clauseBoundaryKeywordCandidates(text, pos, effectiveReal), opts.allowedKinds, catalog);
     if (!kws.length) return _emptySuggest(pos);
     return { suggestions: kws, descriptions: kws.map(() => ''), labels: kws.map(() => null), replaceRange: [pos, pos], kind: 'keyword', hint: null };
@@ -9584,18 +9629,18 @@ function _suggestAgentCliAtImpl(text, cursor, catalog, opts = {}) {
   // ordinary candidates (now via `_bareNameCandidates`, item 1/6/8/9's
   // extras folded in), PLUS whatever clause-head keyword/connective is
   // ALSO legal right here (item 1/7 — covers both the absolute statement
-  // start and a still-being-typed partial keyword, e.g. "ALE" after a
-  // complete leaf).
+  // start and a still-being-typed partial keyword, e.g. "WH" for "WHEN"
+  // after a complete leaf) — omitted entirely for a forced clauseKind.
   const { tokens: baseCandidates, descByToken } = _bareNameCandidates(clauseKind, catalog, contextTok, text, replaceStart);
-  const headKeywords = _clauseBoundaryKeywordCandidates(text, replaceStart, effectiveReal);
+  const headKeywords = forcedClauseKind ? [] : _clauseBoundaryKeywordCandidates(text, replaceStart, effectiveReal);
   // 2026-10-15 fix (operator: "does the dropdown for orders cli, non
   // order related tokens functions. check it") — confirmed live: the
   // Orders CLI tab's bare-start dropdown suggested the FULL
   // catalog.actions list (modify_order, monitor_order, close_position,
   // chase_close_positions, expiry_auto_close, set_flag, debug, nop) PLUS
-  // GIVEN/WHEN/ALERT/DO, even though this editor's `allowedKinds` ONLY
-  // permits `order`/`cancel_all_orders` bare statements — every one of
-  // those suggestions was guaranteed to fail at compile time with the
+  // every clause-head keyword, even though this editor's `allowedKinds`
+  // ONLY permits `order`/`cancel_all_orders` bare statements — every one
+  // of those suggestions was guaranteed to fail at compile time with the
   // scope-rejection error (already correctly enforced there, just never
   // reflected back into the SUGGESTIONS themselves). Filtered at the
   // single combination point both the clause-boundary keywords (d, above)
@@ -9609,6 +9654,53 @@ function _suggestAgentCliAtImpl(text, cursor, catalog, opts = {}) {
   return { suggestions: ranked, descriptions, labels: ranked.map(() => null), replaceRange: [replaceStart, pos], kind: 'token', hint: null };
 }
 
+function _suggestAgentCliAtImpl(text, cursor, catalog, opts = {}) {
+  if (typeof text !== 'string') return _emptySuggest(0);
+  const n = text.length;
+  const pos = Math.max(0, Math.min(Number(cursor) || 0, n));
+
+  // 1. Inside a call's (possibly still-open) argument list?
+  const openCall = _findOpenCallAt(text, pos);
+  if (openCall) {
+    const name = text.slice(openCall.nameStart, openCall.nameEnd);
+    // Sprint H (item 9) — `debug(...)` has no catalog entry at all (its
+    // one bare argument is a label/column reference, never a schema-
+    // declared kwarg) — handled entirely separately, before the ordinary
+    // catalog-entry lookup below would otherwise just miss and degrade
+    // to nothing.
+    if (name.toLowerCase() === 'debug') return _suggestDebugArg(text, openCall.parenPos, pos, catalog);
+    // Sprint [grammar-unify] — `alert(...)`'s own body is NOT an
+    // ordinary call's key=value arg list; it's a nested statement-list
+    // (channel calls, `debug(...)`, `nop`) — the SAME shape the old bare
+    // `ALERT` clause always had, just living inside real parens now (see
+    // `lexAgentStatement`'s `alert`-exclusion comment and `parseCall`'s
+    // own `alert`-specific branch). `alert` itself has no catalog entry
+    // at all, so the ordinary "look up this call's own params_schema"
+    // path below would otherwise just degrade to empty — recurse into
+    // `_suggestBareNamePosition` instead, scoped to the inner span, with
+    // clauseKind FORCED to `'alert'` (`_bareNameCandidates`'s own
+    // channel+debug+nop set), then shift the result back to absolute
+    // offsets in the real, outer `text`.
+    if (name.toLowerCase() === 'alert') {
+      const innerStart = openCall.parenPos + 1;
+      const result = _suggestBareNamePosition(text.slice(innerStart, pos), pos - innerStart, catalog, opts, 'alert');
+      return _shiftSuggestResult(result, innerStart);
+    }
+    const scopeHint = _nearestNonSpaceBefore(text, openCall.nameStart) === '@'
+      || _nearestNonSpaceBefore(text, openCall.nameStart) === '.';
+    const prefixLex = lexAgentStatement(text.slice(0, openCall.nameStart));
+    const clauseKind = prefixLex.errors.length ? null : _clauseKindFromTokenPrefix(prefixLex.tokens);
+    const entry = _lookupAnyCatalogEntry(name, catalog, clauseKind, scopeHint);
+    if (!entry) return _emptySuggest(pos);
+    return _paramOrEnumSuggestion(text, openCall.parenPos, pos, entry, opts);
+  }
+
+  // 2. Not inside a call — bare metric/channel/action NAME being typed.
+  //    Lex only the text UP TO THE CURSOR so a half-typed later clause
+  //    never blanks out suggestions for the clause actually being edited.
+  return _suggestBareNamePosition(text.slice(0, pos), pos, catalog, opts, null);
+}
+
 /** True when `lastTok` (the last REAL token lexed before the cursor, or
  *  `undefined` at the very start of the text) legally precedes a fresh
  *  metric/channel/action NAME per the grammar — see call site above. */
@@ -9617,15 +9709,16 @@ function _isFreshNamePosition(lastTok) {
   if (lastTok.type === 'NAME' && lastTok.reserved) {
     const w = String(lastTok.value).toLowerCase();
     // Sprint 20 (item 3) — 'and'/'or'/'not' legally precede a fresh
-    // metric/scope name too, same as 'when'/'alert'/'do' already did,
-    // now that they're accepted word aliases for '&'/'|'/'~'.
-    // Sprint H (item 1/7) — 'given' joins the set: a fresh GIVEN item
-    // (a label assignment, or `debug(...)`) legally follows the GIVEN
-    // keyword itself, same shape as when/alert/do.
-    return w === 'when' || w === 'alert' || w === 'do' || w === 'given' || w === 'and' || w === 'or' || w === 'not';
+    // metric/scope name too, same as 'when'/'do' already did, now that
+    // they're accepted word aliases for '&'/'|'/'~'. Sprint [grammar-unify]
+    // — 'given'/'alert' are REMOVED here: neither is reserved any more
+    // (see `_RESERVED`'s own comment), so `lastTok.reserved` is never
+    // true for either — this branch is simply unreachable for them,
+    // regardless of what word list it checks.
+    return w === 'when' || w === 'do' || w === 'and' || w === 'or' || w === 'not';
   }
   // Sprint H — SEMI joins the structural set: `;` separates items within
-  // GIVEN/ALERT/DO's own item list (Sprint G), and a fresh item legally
+  // the preamble/DO's own item list (Sprint G), and a fresh item legally
   // follows it the same way one follows a call-list ",".
   return lastTok.type === 'AMP' || lastTok.type === 'PIPE' || lastTok.type === 'TILDE'
     || lastTok.type === 'LPAREN' || lastTok.type === 'COMMA' || lastTok.type === 'SEMI';
@@ -9720,14 +9813,16 @@ function _scanCallArgsText(text, parenPos) {
   return text.slice(parenPos + 1, end);
 }
 
-/** Render a GIVEN/ALERT/DO label binding (as collected by
+/** Render a preamble/DO label binding (as collected by
  *  `_collectBindingsUpToCursor`) into a `describeTokenAt` result — the
- *  "GIVEN-bound label used elsewhere" case called out as a confirmed
+ *  "preamble-bound label used elsewhere" case called out as a confirmed
  *  coverage gap in the original design (a plain catalog lookup never
- *  checks bindings at all). */
+ *  checks bindings at all). Sprint [grammar-unify]: label assignment is
+ *  no longer gated behind a `GIVEN` keyword — it's an ordinary preamble
+ *  item — so the wording no longer names a specific reserved word. */
 function _describeBinding(binding) {
   const rhs = String(binding.rhsText || '').trim();
-  const description = rhs ? `Bound via GIVEN — ${binding.label} = ${rhs}` : `Bound via GIVEN — ${binding.label}`;
+  const description = rhs ? `Bound label — ${binding.label} = ${rhs}` : `Bound label — ${binding.label}`;
   return { name: binding.label, description, token: binding.label, kind: 'binding' };
 }
 
@@ -9857,13 +9952,31 @@ function _describeTokenAtImpl(text, pos, catalog) {
     if (idx >= 0) {
       const covering = real[idx];
       if (covering.type !== 'NAME') return null; // literal/punctuation — no tooltip
-      const clauseKind = _clauseKindFromTokenPrefix(real.slice(0, idx + 1));
+      let clauseKind = _clauseKindFromTokenPrefix(real.slice(0, idx + 1));
       const nameEnd = covering.start + String(covering.value).length;
       if (covering.hasCall && p > nameEnd) {
         // Inside this (closed) call's own parens — resolve a param key,
         // never a bound-label match on the call's own NAME (that check
         // only applies to a bare reference, handled below).
         return _describeClosedCallArg(covering, text, p, catalog, clauseKind);
+      }
+      // Sprint [grammar-unify] — `covering` is a BARE name (not itself a
+      // call — `alert` is lexed to never set `hasCall`, see
+      // `lexAgentStatement`'s own `alert`-exclusion comment, so a
+      // channel call like `telegram`/`sig` sitting directly inside
+      // `alert(...)`'s real parens reaches HERE, not the branch above).
+      // `_clauseKindFromTokenPrefix` only ever sees WHEN/DO markers, so
+      // it has no way to know we're nested inside alert's own body —
+      // `_findOpenCallAt` (quote-aware, prefix-only — correct regardless
+      // of whether this particular call has since closed) answers that
+      // directly: if the nearest enclosing unclosed-as-of-`p` paren is
+      // immediately preceded by the literal word `alert`, force
+      // clauseKind to `'alert'` so `_lookupAnyCatalogEntry` prioritizes
+      // the channels bucket, same as it always has for a real ALERT
+      // clause.
+      const enclosing = _findOpenCallAt(text, p);
+      if (enclosing && text.slice(enclosing.nameStart, enclosing.nameEnd).toLowerCase() === 'alert') {
+        clauseKind = 'alert';
       }
       const bindings = _collectBindingsUpToCursor(text, p);
       const lower = String(covering.value).toLowerCase();

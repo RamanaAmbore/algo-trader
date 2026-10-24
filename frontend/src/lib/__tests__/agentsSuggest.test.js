@@ -80,8 +80,8 @@ describe('suggestAgentCliAt() — bare-name position', () => {
     expect(r.suggestions).not.toContain('place_order');
   });
 
-  it('ALERT clause: suggests channel names only (not metrics/actions)', () => {
-    const r = suggest('WHEN always DO alert(tel)');
+  it('alert(...) call body: suggests channel names only (not metrics/actions)', () => {
+    const r = suggest('WHEN always DO alert(tel');
     expect(r.kind).toBe('token');
     expect(r.suggestions).toEqual(['telegram']);
   });
@@ -112,14 +112,14 @@ describe('suggestAgentCliAt() — bare-name position', () => {
     expect(r.suggestions).toContain('mean_pnl');
   });
 
-  it('fresh gap right after "ALERT " (no partial yet) still suggests channels', () => {
-    const r = suggest('WHEN always DO alert()');
+  it('fresh gap right after "alert(" (no partial yet) still suggests channels', () => {
+    const r = suggest('WHEN always DO alert(');
     expect(r.kind).toBe('token');
     expect(r.suggestions).toContain('telegram');
   });
 
   it('fresh gap right after "DO " (no partial yet) still suggests actions', () => {
-    const r = suggest('WHEN always DO');
+    const r = suggest('WHEN always DO ');
     expect(r.kind).toBe('token');
     expect(r.suggestions).toContain('place_order');
   });
@@ -140,7 +140,7 @@ describe('suggestAgentCliAt() — call arg-list position', () => {
   });
 
   it('right after "," suggests remaining param names, excluding ones already used', () => {
-    const text = 'WHEN always ALERT nop DO place_order(account="ZG0790", ';
+    const text = 'WHEN always DO place_order(account="ZG0790", ';
     const r = suggest(text);
     expect(r.kind).toBe('param');
     expect(r.suggestions).not.toContain('account');
@@ -149,14 +149,14 @@ describe('suggestAgentCliAt() — call arg-list position', () => {
   });
 
   it('mid-typing a param key filters by fuzzy match', () => {
-    const text = 'WHEN always ALERT nop DO place_order(account="ZG0790", sym';
+    const text = 'WHEN always DO place_order(account="ZG0790", sym';
     const r = suggest(text);
     expect(r.kind).toBe('param');
     expect(r.suggestions).toEqual(['symbol']);
   });
 
   it('inside an already-closed call (cursor moved back in), still suggests unused params', () => {
-    const full = 'WHEN always ALERT nop DO place_order(account="ZG0790", )';
+    const full = 'WHEN always DO place_order(account="ZG0790", )';
     const cursor = full.indexOf(', ') + 2; // right after the comma+space, before ")"
     const r = suggestAgentCliAt(full, cursor, CATALOG);
     expect(r.kind).toBe('param');
@@ -173,21 +173,21 @@ describe('suggestAgentCliAt() — call arg-list position', () => {
 
 describe('suggestAgentCliAt() — enum value position', () => {
   it('right after "<enumParam>=" suggests that param\'s enum values', () => {
-    const text = 'WHEN always ALERT nop DO place_order(account="ZG0790", side=';
+    const text = 'WHEN always DO place_order(account="ZG0790", side=';
     const r = suggest(text);
     expect(r.kind).toBe('enum');
     expect(r.suggestions).toEqual(expect.arrayContaining(['BUY', 'SELL']));
   });
 
   it('mid-typing an enum value filters by fuzzy match', () => {
-    const text = 'WHEN always ALERT nop DO place_order(account="ZG0790", side=SE';
+    const text = 'WHEN always DO place_order(account="ZG0790", side=SE';
     const r = suggest(text);
     expect(r.kind).toBe('enum');
     expect(r.suggestions).toEqual(['SELL']);
   });
 
   it('a non-enum param (e.g. account=) after "=" suggests nothing', () => {
-    const text = 'WHEN always ALERT nop DO place_order(account=';
+    const text = 'WHEN always DO place_order(account=';
     const r = suggest(text);
     expect(r.kind).toBeNull();
     expect(r.suggestions).toEqual([]);
@@ -304,8 +304,8 @@ describe('suggestAgentCliAt() — descriptions (Sprint 11)', () => {
     expect(r.descriptions[idx]).toBe('Average positions P&L over a lookback window (fixture).');
   });
 
-  it('a channel token-name suggestion (ALERT clause) carries its catalog description', () => {
-    const r = suggest('WHEN always DO alert(tel)');
+  it('a channel token-name suggestion (alert(...) call body) carries its catalog description', () => {
+    const r = suggest('WHEN always DO alert(tel');
     const idx = r.suggestions.indexOf('telegram');
     expect(idx).toBeGreaterThanOrEqual(0);
     expect(r.descriptions[idx]).toBe('Telegram group defined by secrets.telegram_chat_id (fixture).');
@@ -334,7 +334,7 @@ describe('suggestAgentCliAt() — descriptions (Sprint 11)', () => {
   });
 
   it('an enum-value suggestion has no per-value description anywhere in the schema — degrades to empty strings, never throws', () => {
-    const text = 'WHEN always ALERT nop DO place_order(account="ZG0790", side=';
+    const text = 'WHEN always DO place_order(account="ZG0790", side=';
     expect(() => suggest(text)).not.toThrow();
     const r = suggest(text);
     expect(r.kind).toBe('enum');
@@ -370,53 +370,56 @@ const CATALOG_WITH_HOLDINGS = buildCatalog([
   { grammar_kind: 'condition', token_kind: 'scope', token: 'holdings.total', params_schema: null, description: 'Holdings TOTAL row (fixture).' },
 ]);
 
-describe('suggestAgentCliAt() — Sprint H item 1: statement-head keywords', () => {
-  it('very start of a statement suggests GIVEN/WHEN/ALERT/DO alongside bare action names', () => {
+describe('suggestAgentCliAt() — Sprint H item 1: statement-head keywords (Sprint [grammar-unify]: GIVEN/ALERT removed, preamble now the full call vocabulary)', () => {
+  it('very start of a statement suggests WHEN alongside bare preamble call names (order/alert/debug/help/...)', () => {
     const r = suggest('');
-    expect(r.suggestions).toEqual(expect.arrayContaining(['GIVEN', 'WHEN', 'ALERT', 'DO']));
+    expect(r.suggestions).toEqual(expect.arrayContaining(['WHEN', 'place_order', 'debug', 'help']));
   });
 
   it('a partially-typed clause-head keyword at the very start is completable', () => {
-    const r = suggest('ALE');
-    expect(r.suggestions).toContain('ALERT');
-    expect(r.replaceRange).toEqual([0, 3]);
+    const r = suggest('WH');
+    expect(r.suggestions).toContain('WHEN');
+    expect(r.replaceRange).toEqual([0, 2]);
   });
 
-  it('after a complete WHEN condition (no ALERT/DO yet) suggests ALERT/DO and "&"/"|", not WHEN/GIVEN again', () => {
+  it('after a complete WHEN condition (no DO yet) suggests DO and "&"/"|", not WHEN again', () => {
     const r = suggest('WHEN pnl@positions.total <= -5 ');
     expect(r.kind).toBe('keyword');
-    expect(r.suggestions).toEqual(expect.arrayContaining(['ALERT', 'DO', '&', '|']));
+    expect(r.suggestions).toEqual(expect.arrayContaining(['DO', '&', '|']));
     expect(r.suggestions).not.toContain('WHEN');
-    expect(r.suggestions).not.toContain('GIVEN');
   });
 
-  it('after a complete ALERT clause (no DO yet) suggests DO, not ALERT again, and no "&"/"|" (condition already sealed)', () => {
-    const r = suggest('WHEN pnl@positions.total <= -5 DO alert(telegram)');
-    expect(r.kind).toBe('keyword');
-    expect(r.suggestions).toContain('DO');
-    expect(r.suggestions).not.toContain('ALERT');
-    expect(r.suggestions).not.toContain('&');
+  it('after a complete WHEN...DO statement, neither WHEN nor DO is ever suggested again', () => {
+    const r = suggest('WHEN pnl@positions.total <= -5 DO alert(telegram) ');
+    expect(r.suggestions).not.toContain('WHEN');
+    expect(r.suggestions).not.toContain('DO');
   });
 
-  it('round-trip: picking "ALERT" after a complete condition, then completing the rest, parses cleanly', () => {
+  it('round-trip: picking "DO" after a complete condition, then completing the rest, parses cleanly', () => {
     const text = 'WHEN pnl@positions.total <= -5 ';
     const r = suggest(text);
-    const picked = text + 'ALERT';
-    const completed = `${picked} telegram DO nop`;
+    const picked = text + 'DO';
+    const completed = `${picked} alert(telegram)`;
     const { errors } = parseStatement(completed);
     expect(errors).toEqual([]);
-    expect(r.suggestions).toContain('ALERT');
+    expect(r.suggestions).toContain('DO');
   });
 
   it('bug fix (2026-10): a fully-typed clause-head keyword still shows itself as the matched suggestion, case-insensitively — it used to collapse to empty the instant the last letter was typed', () => {
-    const base = 'WHEN pnl@positions.total <= -5 ALERT telegram ';
-    // One letter in: both the bare keyword and the unrelated "debug" call
-    // fuzzy-match — this part always worked.
+    const base = 'WHEN pnl@positions.total <= -5 ';
+    // One letter in: the bare "DO" keyword fuzzy-matches alongside any
+    // metric candidate that happens to also contain "d" — this part
+    // always worked.
     expect(suggest(base + 'D').suggestions).toEqual(expect.arrayContaining(['DO']));
-    // Fully typed, any case — this collapsed to [] before the fix.
-    expect(suggest(base + 'Do').suggestions).toEqual(['DO']);
-    expect(suggest(base + 'do').suggestions).toEqual(['DO']);
-    expect(suggest(base + 'DO').suggestions).toEqual(['DO']);
+    // Fully typed, any case — "DO" itself used to collapse out of the
+    // list entirely the instant the last letter matched exactly; assert
+    // containment (not an exact singleton) since a fixture metric name
+    // containing the literal substring "do" (e.g. max_drawdown_pnl) is a
+    // legitimate, unrelated fuzzy co-match in this clauseKind — the bug
+    // this guards against is "DO" vanishing, not "DO" being exclusive.
+    expect(suggest(base + 'Do').suggestions).toContain('DO');
+    expect(suggest(base + 'do').suggestions).toContain('DO');
+    expect(suggest(base + 'DO').suggestions).toContain('DO');
   });
 });
 
@@ -509,7 +512,7 @@ describe('suggestAgentCliAt() — Sprint H item 5: "#" meta-tag suggestions', ()
   });
 
   it('a partially-typed meta key ("#na") filters to the matching key only', () => {
-    const text = 'WHEN always ALERT nop DO nop #na';
+    const text = 'WHEN always DO nop #na';
     const r = suggest(text);
     expect(r.kind).toBe('meta');
     expect(r.suggestions).toEqual(['name=']);
@@ -523,7 +526,7 @@ describe('suggestAgentCliAt() — Sprint H item 5: "#" meta-tag suggestions', ()
   });
 
   it('round-trip: picking "name=" and supplying a value parses cleanly', () => {
-    const text = 'WHEN always ALERT nop DO nop #';
+    const text = 'WHEN always DO nop #';
     const picked = `${text}name="hello"`;
     const { errors } = parseStatement(picked);
     expect(errors).toEqual([]);
@@ -542,36 +545,23 @@ describe('suggestAgentCliAt() — Sprint H item 6: WHEN suggests dot-access scop
   });
 });
 
-describe('suggestAgentCliAt() — Sprint H item 7: GIVEN suggestable, and its own item-head is debug-only', () => {
-  it('GIVEN appears in the statement-head keyword set', () => {
+describe('suggestAgentCliAt() — Sprint [grammar-unify]: preamble item-head offers the FULL call vocabulary (GIVEN removed; the old debug-only restriction is gone — a preamble item is order/bracket/alert/debug/help/label-assignment, identical to DO)', () => {
+  it('right at the very start (fresh preamble item head) suggests the full call vocabulary, not just debug', () => {
     const r = suggest('');
-    expect(r.suggestions).toContain('GIVEN');
+    expect(r.suggestions).toEqual(expect.arrayContaining(['place_order', 'debug', 'help', 'WHEN']));
   });
 
-  it('right after "GIVEN " (fresh item head) suggests ONLY debug — not metrics (GIVEN items are assignments/debug only)', () => {
-    const r = suggest('');
-    expect(r.suggestions).toEqual(['debug']);
+  it('right after a "," ending a label assignment, suggests the same full preamble vocabulary again — identical to ";"', () => {
+    const viaComma = suggest('a1 = 1,');
+    const viaSemi = suggest('a1 = 1;');
+    expect(viaComma.suggestions).toEqual(expect.arrayContaining(['place_order', 'debug', 'help']));
+    expect(viaComma.suggestions).toEqual(viaSemi.suggestions);
   });
 });
 
 describe('suggestAgentCliAt() — Sprint [comma-separator]: live-typing matches the grammar\'s own comma acceptance', () => {
-  it('right after a "," ending a GIVEN assignment, suggests ONLY debug (GIVEN item-head restriction) — identical to ";"/newline, not a bare metric list', () => {
-    // Regression guard for a real bug this comma-separator sprint
-    // introduced and then fixed: `_bareNameCandidates`'s GIVEN item-head
-    // detection originally checked only for a literal SEMI token, so
-    // right after the NEWLY-accepted comma it fell through to the
-    // broader metric/scope-root candidate set — offering suggestions
-    // that would compile to an INVALID GIVEN item if picked (a bare
-    // metric is not a legal top-level GIVEN item). Fixed by widening
-    // that same detection to treat COMMA identically to SEMI.
-    const viaComma = suggest('a1 = 1,');
-    const viaSemi = suggest('a1 = 1;');
-    expect(viaComma.suggestions).toEqual(['debug']);
-    expect(viaComma.suggestions).toEqual(viaSemi.suggestions);
-  });
-
-  it('right after a "," ending an ALERT assignment, suggests fresh channel/action candidates (not just more call params)', () => {
-    const r = suggest('WHEN always DO alert(a = 1,)');
+  it('right after a "," inside an open alert(...) call, suggests fresh channel candidates for the next item', () => {
+    const r = suggest('WHEN always DO alert(email,');
     expect(r.kind).toBe('token');
     expect(r.suggestions).toEqual(expect.arrayContaining(['telegram']));
   });
@@ -579,7 +569,7 @@ describe('suggestAgentCliAt() — Sprint [comma-separator]: live-typing matches 
 
 describe('suggestAgentCliAt() — Sprint H item 8: bound labels suggested wherever a value/condition is valid', () => {
   it('a CONDITION-kind label is suggested as a whole bare WHEN leaf', () => {
-    const r = suggest('x = pnl@positions.total <= -5 WHEN');
+    const r = suggest('x = pnl@positions.total <= -5 WHEN ');
     expect(r.suggestions).toContain('x');
   });
 
@@ -594,26 +584,26 @@ describe('suggestAgentCliAt() — Sprint H item 8: bound labels suggested wherev
   });
 
   it('a PRIMITIVE-kind label is suggested as an ordinary call param value, alongside real enum values', () => {
-    const text = 'GIVEN lvl = HIGH WHEN always ALERT nop DO order(account="Z", symbol="N", side=SELL, chase_level=';
+    const text = 'lvl = HIGH WHEN always DO order(account="Z", symbol="N", side=SELL, chase_level=';
     const r = suggest(text);
     expect(r.suggestions).toEqual(expect.arrayContaining(['LOW', 'MED', 'HIGH', 'lvl']));
   });
 
   it('round-trip: a condition-kind label used as a whole WHEN condition compiles with no errors', () => {
-    const text = 'GIVEN x = pnl@positions.total <= -5 WHEN x ALERT telegram';
+    const text = 'x = pnl@positions.total <= -5 WHEN x DO alert(telegram)';
     const { errors } = parseStatement(text);
     expect(errors).toEqual([]);
   });
 });
 
-describe('suggestAgentCliAt() — Sprint H item 9: debug(...) suggested in GIVEN/ALERT/DO, and its own arg position', () => {
-  it('"debug" is offered as a candidate right after ALERT', () => {
-    const r = suggest('WHEN always DO alert()');
+describe('suggestAgentCliAt() — Sprint H item 9: debug(...) suggested in the preamble/DO, and its own arg position', () => {
+  it('"debug" is offered as a candidate inside an open alert(...) call', () => {
+    const r = suggest('WHEN always DO alert(');
     expect(r.suggestions).toContain('debug');
   });
 
   it('"debug" is offered as a candidate right after DO', () => {
-    const r = suggest('WHEN always DO');
+    const r = suggest('WHEN always DO ');
     expect(r.suggestions).toContain('debug');
   });
 
@@ -623,7 +613,7 @@ describe('suggestAgentCliAt() — Sprint H item 9: debug(...) suggested in GIVEN
   });
 
   it('round-trip: debug(x) on a bound label compiles with no errors', () => {
-    const text = 'GIVEN x = 5 WHEN always ALERT nop DO debug(x)';
+    const text = 'x = 5 WHEN always DO debug(x)';
     const { errors } = parseStatement(text);
     expect(errors).toEqual([]);
   });
@@ -707,12 +697,12 @@ describe('lookupAgentCliEntry()', () => {
 
 describe('isInsideOpenCall()', () => {
   it('true when the cursor sits inside a call\'s still-open argument list', () => {
-    const text = 'WHEN always ALERT nop DO place_order(account="ZG0790", ';
+    const text = 'WHEN always DO place_order(account="ZG0790", ';
     expect(isInsideOpenCall(text, text.length)).toBe(true);
   });
 
   it('false once the call has been closed', () => {
-    const text = 'WHEN always ALERT nop DO place_order(account="ZG0790") ';
+    const text = 'WHEN always DO place_order(account="ZG0790") ';
     expect(isInsideOpenCall(text, text.length)).toBe(false);
   });
 
