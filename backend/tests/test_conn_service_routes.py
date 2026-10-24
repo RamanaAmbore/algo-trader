@@ -16,7 +16,10 @@ Coverage:
 
 from __future__ import annotations
 
+import asyncio
 import time
+from datetime import date, time as dtime
+
 import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
 from litestar.testing import TestClient
@@ -25,6 +28,7 @@ import pandas as pd
 
 # Explicit imports to ensure coverage tracking
 import backend.brokers.service.routes
+import backend.brokers.service.calendar_gate
 
 
 @pytest.fixture
@@ -1153,3 +1157,516 @@ def test_dhan_poll_reset_exception(conn_app):
             data = resp.json()
             assert data.get("ok") is False, "Should return ok=False"
             assert "error" in data
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Calendar-gated connect attempt (2026-10-24) —
+# backend/brokers/service/calendar_gate.py + its wiring into
+# _start_kite_ticker / _ticker_watchdog's Phase 1.
+# ─────────────────────────────────────────────────────────────────────────
+
+_CG_SEGMENTS = {
+    "equity":    {"holiday_exchange": "NSE", "evening_open_on_holidays": False},
+    "commodity": {"holiday_exchange": "MCX", "evening_open_on_holidays": True},
+}
+
+
+# --- _conn_calendar_verdict_detail / conn_calendar_verdict ----------------
+
+@pytest.mark.asyncio
+async def test_conn_calendar_verdict_open_on_weekday_no_holiday():
+    """A normal weekday with no holiday resolves OPEN without ever
+    consulting special sessions (short-circuits)."""
+    from backend.brokers.service.calendar_gate import conn_calendar_verdict, CAL_OPEN
+
+    monday = date(2026, 10, 19)  # confirmed Monday
+    with patch('backend.brokers.service.calendar_gate._segments_config', return_value=_CG_SEGMENTS), \
+         patch('backend.brokers.service.calendar_gate._conn_extra_trading_days',
+               new_callable=AsyncMock, return_value=set()), \
+         patch('backend.brokers.broker_apis._read_market_holidays_async',
+               new_callable=AsyncMock, return_value=set()), \
+         patch(
+             'backend.brokers.broker_apis._read_special_sessions_async',
+             new_callable=AsyncMock,
+             side_effect=AssertionError("must not be called — calendar already says open"),
+         ):
+        verdict = await conn_calendar_verdict(monday)
+    assert verdict == CAL_OPEN
+
+
+@pytest.mark.asyncio
+async def test_conn_calendar_verdict_closed_on_weekend_no_special_session():
+    from backend.brokers.service.calendar_gate import conn_calendar_verdict, CAL_CLOSED
+
+    saturday = date(2026, 10, 17)  # confirmed Saturday
+    with patch('backend.brokers.service.calendar_gate._segments_config', return_value=_CG_SEGMENTS), \
+         patch('backend.brokers.service.calendar_gate._conn_extra_trading_days',
+               new_callable=AsyncMock, return_value=set()), \
+         patch('backend.brokers.broker_apis._read_market_holidays_async',
+               new_callable=AsyncMock, return_value=set()), \
+         patch('backend.brokers.broker_apis._read_special_sessions_async',
+               new_callable=AsyncMock, return_value=[]):
+        verdict = await conn_calendar_verdict(saturday)
+    assert verdict == CAL_CLOSED
+
+
+@pytest.mark.asyncio
+async def test_conn_calendar_verdict_non_zero_width_special_session_opens():
+    """A late-announced, non-zero-width market_special_sessions row for
+    today opens that segment even though the base calendar says
+    closed — the mechanism the closed-day recheck loop relies on."""
+    from backend.brokers.service.calendar_gate import conn_calendar_verdict, CAL_OPEN
+
+    a_holiday = date(2026, 10, 20)  # confirmed Tuesday
+
+    async def _special(exch, today):
+        if exch == "NSE":
+            return [{"date": today, "start": dtime(18, 0), "end": dtime(19, 0)}]
+        return []
+
+    with patch('backend.brokers.service.calendar_gate._segments_config', return_value=_CG_SEGMENTS), \
+         patch('backend.brokers.service.calendar_gate._conn_extra_trading_days',
+               new_callable=AsyncMock, return_value=set()), \
+         patch('backend.brokers.broker_apis._read_market_holidays_async',
+               new_callable=AsyncMock, return_value={a_holiday}), \
+         patch('backend.brokers.broker_apis._read_special_sessions_async', side_effect=_special):
+        verdict = await conn_calendar_verdict(a_holiday)
+    assert verdict == CAL_OPEN
+
+
+@pytest.mark.asyncio
+async def test_conn_calendar_verdict_zero_width_special_session_blocks_evening_open():
+    """A zero-width override row (the auto-inserted 'MCX evening closed'
+    marker) must NOT be read as an open signal and must block the
+    evening_open_on_holidays default too."""
+    from backend.brokers.service.calendar_gate import conn_calendar_verdict, CAL_CLOSED
+
+    a_holiday = date(2026, 10, 20)  # confirmed Tuesday — a weekday, so the
+    # MCX evening-open default would otherwise fire if not blocked.
+
+    async def _special(exch, today):
+        if exch == "MCX":
+            return [{"date": today, "start": dtime(0, 0), "end": dtime(0, 0)}]
+        return []
+
+    with patch('backend.brokers.service.calendar_gate._segments_config', return_value=_CG_SEGMENTS), \
+         patch('backend.brokers.service.calendar_gate._conn_extra_trading_days',
+               new_callable=AsyncMock, return_value=set()), \
+         patch('backend.brokers.broker_apis._read_market_holidays_async',
+               new_callable=AsyncMock, return_value={a_holiday}), \
+         patch('backend.brokers.broker_apis._read_special_sessions_async', side_effect=_special):
+        verdict = await conn_calendar_verdict(a_holiday)
+    assert verdict == CAL_CLOSED
+
+
+@pytest.mark.asyncio
+async def test_conn_calendar_verdict_holiday_read_failure_is_unknown():
+    """A DB error reading market_holidays resolves UNKNOWN, not CLOSED —
+    fail-safe-to-connect direction."""
+    from backend.brokers.service.calendar_gate import conn_calendar_verdict, CAL_UNKNOWN
+
+    saturday = date(2026, 10, 17)
+    with patch('backend.brokers.service.calendar_gate._segments_config', return_value=_CG_SEGMENTS), \
+         patch('backend.brokers.service.calendar_gate._conn_extra_trading_days',
+               new_callable=AsyncMock, return_value=set()), \
+         patch('backend.brokers.broker_apis._read_market_holidays_async',
+               new_callable=AsyncMock, side_effect=Exception("DB down")), \
+         patch('backend.brokers.broker_apis._read_special_sessions_async',
+               new_callable=AsyncMock, return_value=[]):
+        verdict = await conn_calendar_verdict(saturday)
+    assert verdict == CAL_UNKNOWN
+
+
+@pytest.mark.asyncio
+async def test_conn_calendar_verdict_extra_trading_days_db_error_is_unknown():
+    """A DB error reading the `market.extra_trading_days` operator
+    setting resolves UNKNOWN (not an empty-set "no override"), even
+    when every segment itself cleanly resolves closed."""
+    from backend.brokers.service.calendar_gate import conn_calendar_verdict, CAL_UNKNOWN
+
+    saturday = date(2026, 10, 17)
+    with patch('backend.brokers.service.calendar_gate._segments_config', return_value=_CG_SEGMENTS), \
+         patch('backend.brokers.service.calendar_gate._conn_extra_trading_days',
+               new_callable=AsyncMock, return_value=None), \
+         patch('backend.brokers.broker_apis._read_market_holidays_async',
+               new_callable=AsyncMock, return_value=set()), \
+         patch('backend.brokers.broker_apis._read_special_sessions_async',
+               new_callable=AsyncMock, return_value=[]):
+        verdict = await conn_calendar_verdict(saturday)
+    assert verdict == CAL_UNKNOWN
+
+
+@pytest.mark.asyncio
+async def test_conn_calendar_verdict_detail_is_always_json_serialisable():
+    """`_conn_calendar_verdict_detail`'s `detail` dict must round-trip
+    through `json.dumps` in every branch — it is persisted as JSONB and
+    must never carry a raw `datetime.time`/`date` object."""
+    import json
+    from backend.brokers.service.calendar_gate import _conn_calendar_verdict_detail
+
+    saturday = date(2026, 10, 17)
+
+    cases = [
+        # (extra_trading_days, holidays, special_sessions)
+        (set(), set(), []),
+        (None, set(), []),  # extra-trading-days DB error
+    ]
+    for extra, holidays, special in cases:
+        with patch('backend.brokers.service.calendar_gate._segments_config', return_value=_CG_SEGMENTS), \
+             patch('backend.brokers.service.calendar_gate._conn_extra_trading_days',
+                   new_callable=AsyncMock, return_value=extra), \
+             patch('backend.brokers.broker_apis._read_market_holidays_async',
+                   new_callable=AsyncMock, return_value=holidays), \
+             patch('backend.brokers.broker_apis._read_special_sessions_async',
+                   new_callable=AsyncMock, return_value=special):
+            verdict, detail = await _conn_calendar_verdict_detail(saturday)
+        json.dumps(detail)  # must not raise
+
+    # Exception path also produces a JSON-serialisable detail.
+    with patch('backend.brokers.service.calendar_gate._conn_extra_trading_days',
+               new_callable=AsyncMock, side_effect=RuntimeError("boom")):
+        verdict, detail = await _conn_calendar_verdict_detail(saturday)
+    assert verdict == "unknown"
+    json.dumps(detail)
+
+
+# --- _conn_extra_trading_days (direct, unmocked implementation) ---------
+
+@pytest.mark.asyncio
+async def test_conn_extra_trading_days_parses_csv_value():
+    from backend.brokers.service.calendar_gate import _conn_extra_trading_days
+
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = "2026-10-21, 2026-12-25"
+
+    mock_session = AsyncMock()
+    mock_session.execute = AsyncMock(return_value=mock_result)
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+
+    with patch('backend.api.database.async_session', MagicMock(return_value=mock_session)):
+        result = await _conn_extra_trading_days()
+
+    assert result == {date(2026, 10, 21), date(2026, 12, 25)}
+
+
+@pytest.mark.asyncio
+async def test_conn_extra_trading_days_returns_empty_set_when_row_absent():
+    from backend.brokers.service.calendar_gate import _conn_extra_trading_days
+
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = None
+
+    mock_session = AsyncMock()
+    mock_session.execute = AsyncMock(return_value=mock_result)
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+
+    with patch('backend.api.database.async_session', MagicMock(return_value=mock_session)):
+        result = await _conn_extra_trading_days()
+
+    assert result == set()
+
+
+@pytest.mark.asyncio
+async def test_conn_extra_trading_days_returns_none_on_db_error():
+    from backend.brokers.service.calendar_gate import _conn_extra_trading_days
+
+    with patch('backend.api.database.async_session', side_effect=Exception("DB down")):
+        result = await _conn_extra_trading_days()
+
+    assert result is None
+
+
+# --- _persist_verdict_row — single-row-per-day UPSERT --------------------
+
+@pytest.mark.asyncio
+async def test_persist_verdict_row_issues_single_row_upsert_on_date():
+    """The UPSERT statement conflicts on `date` (the table's PK), so a
+    second write for the same calendar day overwrites in place rather
+    than inserting a second row."""
+    from backend.brokers.service.calendar_gate import _persist_verdict_row
+
+    mock_session = AsyncMock()
+    mock_session.execute = AsyncMock()
+    mock_session.commit = AsyncMock()
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+
+    with patch('backend.api.database.async_session', MagicMock(return_value=mock_session)):
+        await _persist_verdict_row(
+            date(2026, 10, 24), "closed", {"segments": {"equity": "closed"}},
+        )
+
+    mock_session.execute.assert_called_once()
+    sql_arg, params_arg = mock_session.execute.call_args.args
+    sql_text = str(sql_arg)
+    assert "ticker_calendar_verdicts" in sql_text
+    assert "ON CONFLICT (date) DO UPDATE" in sql_text
+    assert params_arg["date"] == date(2026, 10, 24)
+    assert params_arg["verdict"] == "closed"
+    mock_session.commit.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_persist_verdict_row_raises_on_db_error():
+    """`_persist_verdict_row` does NOT swallow its own failure — the
+    caller (`conn_should_attempt_connect`) is responsible for that, so
+    it can prove the connect decision survives a persistence failure."""
+    from backend.brokers.service.calendar_gate import _persist_verdict_row
+
+    with patch('backend.api.database.async_session', side_effect=Exception("DB down")):
+        with pytest.raises(Exception):
+            await _persist_verdict_row(date(2026, 10, 24), "open", {})
+
+
+# --- conn_should_attempt_connect ------------------------------------------
+
+@pytest.mark.asyncio
+async def test_conn_should_attempt_connect_true_when_open():
+    from backend.brokers.service.calendar_gate import conn_should_attempt_connect, CAL_OPEN
+
+    with patch('backend.brokers.service.calendar_gate._conn_calendar_verdict_detail',
+               new_callable=AsyncMock, return_value=(CAL_OPEN, {"resolved_via": "equity"})), \
+         patch('backend.brokers.service.calendar_gate._persist_verdict_row',
+               new_callable=AsyncMock) as mock_persist:
+        result = await conn_should_attempt_connect()
+
+    assert result is True
+    mock_persist.assert_called_once()
+    assert mock_persist.call_args.args[1] == CAL_OPEN
+
+
+@pytest.mark.asyncio
+async def test_conn_should_attempt_connect_false_when_closed():
+    from backend.brokers.service.calendar_gate import conn_should_attempt_connect, CAL_CLOSED
+
+    with patch('backend.brokers.service.calendar_gate._conn_calendar_verdict_detail',
+               new_callable=AsyncMock, return_value=(CAL_CLOSED, {"segments": {}})), \
+         patch('backend.brokers.service.calendar_gate._persist_verdict_row',
+               new_callable=AsyncMock) as mock_persist:
+        result = await conn_should_attempt_connect()
+
+    assert result is False
+    mock_persist.assert_called_once()
+    assert mock_persist.call_args.args[1] == CAL_CLOSED
+
+
+@pytest.mark.asyncio
+async def test_conn_should_attempt_connect_true_when_unknown():
+    """A verdict of UNKNOWN (any lookup raised) still attempts to
+    connect — fail-safe-to-connect direction, same as a real DB error
+    reaching `_conn_calendar_verdict_detail` in the test above."""
+    from backend.brokers.service.calendar_gate import conn_should_attempt_connect, CAL_UNKNOWN
+
+    with patch('backend.brokers.service.calendar_gate._conn_calendar_verdict_detail',
+               new_callable=AsyncMock, return_value=(CAL_UNKNOWN, {"error": "boom"})), \
+         patch('backend.brokers.service.calendar_gate._persist_verdict_row',
+               new_callable=AsyncMock):
+        result = await conn_should_attempt_connect()
+
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_conn_should_attempt_connect_persist_failure_never_changes_decision():
+    """A persistence failure (e.g. the table not existing yet on a
+    fresh deploy) must never flip the already-decided connect/skip
+    return value — tested for BOTH the CLOSED and OPEN verdicts."""
+    from backend.brokers.service.calendar_gate import (
+        conn_should_attempt_connect, CAL_OPEN, CAL_CLOSED,
+    )
+
+    for verdict, expected in [(CAL_CLOSED, False), (CAL_OPEN, True)]:
+        with patch('backend.brokers.service.calendar_gate._conn_calendar_verdict_detail',
+                   new_callable=AsyncMock, return_value=(verdict, {})), \
+             patch('backend.brokers.service.calendar_gate._persist_verdict_row',
+                   new_callable=AsyncMock, side_effect=Exception("table missing")):
+            result = await conn_should_attempt_connect()
+        assert result is expected
+
+
+@pytest.mark.asyncio
+async def test_conn_should_attempt_connect_fresh_day_computes_and_writes_one_row():
+    """A fresh day with no existing row: the verdict is computed and a
+    row is written for that date — `_persist_verdict_row` is called
+    exactly once with today's date."""
+    from backend.brokers.service.calendar_gate import conn_should_attempt_connect, CAL_OPEN
+    from datetime import datetime as _dt
+
+    with patch('backend.shared.helpers.date_time_utils.timestamp_indian') as mock_ts, \
+         patch('backend.brokers.service.calendar_gate._conn_calendar_verdict_detail',
+               new_callable=AsyncMock, return_value=(CAL_OPEN, {})), \
+         patch('backend.brokers.service.calendar_gate._persist_verdict_row',
+               new_callable=AsyncMock) as mock_persist:
+        mock_ts.return_value = _dt(2026, 10, 24, 10, 0, 0)
+
+        await conn_should_attempt_connect()
+
+    mock_persist.assert_called_once()
+    assert mock_persist.call_args.args[0] == date(2026, 10, 24)
+
+
+@pytest.mark.asyncio
+async def test_conn_should_attempt_connect_same_day_two_calls_recompute_and_upsert_same_key():
+    """This module's design (documented in `calendar_gate.py`) is
+    "always recompute, always upsert" — NOT "read existing row and
+    skip recomputation" — because `market_special_sessions` carries no
+    cheap staleness signal and a same-day special session must still
+    be picked up. Two calls on the same day each recompute the verdict
+    fresh and each upsert the SAME date key (never a second row)."""
+    from backend.brokers.service.calendar_gate import (
+        conn_should_attempt_connect, CAL_CLOSED, CAL_OPEN,
+    )
+    from datetime import datetime as _dt
+
+    with patch('backend.shared.helpers.date_time_utils.timestamp_indian') as mock_ts, \
+         patch('backend.brokers.service.calendar_gate._conn_calendar_verdict_detail',
+               new_callable=AsyncMock, side_effect=[
+                   (CAL_CLOSED, {"segments": {}}),
+                   (CAL_OPEN, {"resolved_via": "commodity"}),
+               ]) as mock_verdict, \
+         patch('backend.brokers.service.calendar_gate._persist_verdict_row',
+               new_callable=AsyncMock) as mock_persist:
+        mock_ts.return_value = _dt(2026, 10, 24, 9, 0, 0)
+
+        first = await conn_should_attempt_connect()
+        second = await conn_should_attempt_connect()
+
+    assert first is False
+    assert second is True
+    assert mock_verdict.call_count == 2, "each call must recompute fresh, never read a cached row"
+    assert mock_persist.call_count == 2
+    # Same date key both times — upsert, not a second row.
+    assert mock_persist.call_args_list[0].args[0] == date(2026, 10, 24)
+    assert mock_persist.call_args_list[1].args[0] == date(2026, 10, 24)
+    assert mock_persist.call_args_list[0].args[1] == CAL_CLOSED
+    assert mock_persist.call_args_list[1].args[1] == CAL_OPEN
+
+
+# --- app.py wiring: _start_kite_ticker ------------------------------------
+
+@pytest.mark.asyncio
+async def test_start_kite_ticker_skips_connect_when_calendar_closed():
+    """A confirmed-closed day: `_try_start_ticker` must never be
+    called from `_start_kite_ticker`'s inline boot attempt."""
+    from backend.brokers.service.app import _start_kite_ticker
+
+    with patch('backend.brokers.service.calendar_gate.conn_should_attempt_connect',
+               new_callable=AsyncMock, return_value=False), \
+         patch('backend.brokers.service.app._try_start_ticker') as mock_try_start, \
+         patch('backend.brokers.service.app._ticker_watchdog', new_callable=AsyncMock), \
+         patch('backend.brokers.service.app._health_heartbeat', new_callable=AsyncMock), \
+         patch('backend.brokers.service.app._task_prewarm_tokens', new_callable=AsyncMock):
+        app = MagicMock()
+        await _start_kite_ticker(app)
+
+    mock_try_start.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_start_kite_ticker_connects_when_calendar_open():
+    """A confirmed-open (or uncertain) day: behaviour is unchanged from
+    today — `_try_start_ticker` is called exactly once."""
+    from backend.brokers.service.app import _start_kite_ticker
+
+    with patch('backend.brokers.service.calendar_gate.conn_should_attempt_connect',
+               new_callable=AsyncMock, return_value=True), \
+         patch('backend.brokers.service.app._try_start_ticker', return_value=True) as mock_try_start, \
+         patch('backend.brokers.service.app._ticker_watchdog', new_callable=AsyncMock), \
+         patch('backend.brokers.service.app._health_heartbeat', new_callable=AsyncMock), \
+         patch('backend.brokers.service.app._task_prewarm_tokens', new_callable=AsyncMock):
+        app = MagicMock()
+        await _start_kite_ticker(app)
+
+    mock_try_start.assert_called_once()
+
+
+# --- app.py wiring: _ticker_watchdog Phase 1 ------------------------------
+
+def _make_not_started_ticker():
+    ticker = MagicMock()
+    ticker.status.return_value = {"started": False}
+    ticker.is_reactor_dead.return_value = False
+    ticker.mark_supervisor_started = MagicMock()
+    return ticker
+
+
+@pytest.mark.asyncio
+async def test_ticker_watchdog_phase1_never_calls_try_start_when_calendar_closed():
+    """A confirmed-closed day: the watchdog's Phase 1 branch must never
+    call `_try_start_ticker()` at all — not just tolerate a no-op
+    result from it."""
+    from backend.brokers.service.app import _ticker_watchdog
+
+    ticker = _make_not_started_ticker()
+
+    with patch('backend.brokers.kite_ticker.get_ticker', return_value=ticker), \
+         patch('backend.brokers.service.calendar_gate.conn_should_attempt_connect',
+               new_callable=AsyncMock, return_value=False), \
+         patch('backend.brokers.service.app._try_start_ticker') as mock_try_start, \
+         patch('asyncio.sleep', new_callable=AsyncMock,
+               side_effect=[None, asyncio.CancelledError()]):
+        await _ticker_watchdog()
+
+    mock_try_start.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_ticker_watchdog_phase1_calls_try_start_when_calendar_open():
+    """A confirmed-open day: behaviour is unchanged — `_try_start_ticker`
+    is still called from Phase 1."""
+    from backend.brokers.service.app import _ticker_watchdog
+
+    ticker = _make_not_started_ticker()
+
+    with patch('backend.brokers.kite_ticker.get_ticker', return_value=ticker), \
+         patch('backend.brokers.service.calendar_gate.conn_should_attempt_connect',
+               new_callable=AsyncMock, return_value=True), \
+         patch('backend.brokers.service.app._try_start_ticker', return_value=True) as mock_try_start, \
+         patch('asyncio.sleep', new_callable=AsyncMock,
+               side_effect=[None, asyncio.CancelledError()]):
+        await _ticker_watchdog()
+
+    mock_try_start.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_ticker_watchdog_phase1_db_error_verdict_still_attempts_connect():
+    """A DB error while computing the calendar verdict (surfaced here
+    as `conn_should_attempt_connect` itself returning True, its own
+    fail-safe contract) still results in a connect attempt."""
+    from backend.brokers.service.app import _ticker_watchdog
+
+    ticker = _make_not_started_ticker()
+
+    with patch('backend.brokers.kite_ticker.get_ticker', return_value=ticker), \
+         patch('backend.brokers.service.calendar_gate.conn_should_attempt_connect',
+               new_callable=AsyncMock, return_value=True), \
+         patch('backend.brokers.service.app._try_start_ticker', return_value=True) as mock_try_start, \
+         patch('asyncio.sleep', new_callable=AsyncMock,
+               side_effect=[None, asyncio.CancelledError()]):
+        await _ticker_watchdog()
+
+    mock_try_start.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_ticker_watchdog_phase1_same_day_special_session_picked_up_next_tick():
+    """A verdict that flips CLOSED → OPEN between watchdog ticks
+    (simulating a same-day special session appearing) results in a
+    connect attempt on the SECOND tick, having skipped the first."""
+    from backend.brokers.service.app import _ticker_watchdog
+
+    ticker = _make_not_started_ticker()
+
+    with patch('backend.brokers.kite_ticker.get_ticker', return_value=ticker), \
+         patch('backend.brokers.service.calendar_gate.conn_should_attempt_connect',
+               new_callable=AsyncMock, side_effect=[False, True]) as mock_gate, \
+         patch('backend.brokers.service.app._try_start_ticker', return_value=True) as mock_try_start, \
+         patch('asyncio.sleep', new_callable=AsyncMock,
+               side_effect=[None, None, asyncio.CancelledError()]):
+        await _ticker_watchdog()
+
+    assert mock_gate.call_count == 2
+    mock_try_start.assert_called_once()

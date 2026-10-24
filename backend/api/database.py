@@ -107,7 +107,7 @@ async def _migrate_create_tables(conn) -> None:
         GrammarToken, Setting, DailyBook, Watchlist, WatchlistItem, VisitorLog,
         CodeMetricsSnapshot, MarketLifecycleEvent, MarketHoliday,
         MarketSpecialSession, BrokerAccount, PerfSnapshot, AppMessage,
-        ExchangeSchedule,
+        ExchangeSchedule, TickerCalendarVerdict,
     )
     from sqlalchemy import text
     _branch_local_tables = [

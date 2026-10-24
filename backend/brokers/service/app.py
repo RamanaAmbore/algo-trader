@@ -249,10 +249,19 @@ async def _start_kite_ticker(app: Litestar) -> None:
     watchdog was never spawned when boot succeeded — leaving the ticker
     with no failover / no reactor-dead recovery. Now the watchdog
     always runs.
+
+    Calendar-gated (2026-10-24, resource-efficiency only): on a
+    confirmed-closed day (see `calendar_gate.conn_should_attempt_connect`)
+    the inline connect attempt is skipped entirely — the watchdog still
+    spawns below and will re-check every 30s, picking up a same-day
+    special session the moment one appears.
     """
     log = logger
     try:
-        if _try_start_ticker():
+        from backend.brokers.service.calendar_gate import conn_should_attempt_connect
+        if not await conn_should_attempt_connect():
+            pass  # logged inside the helper
+        elif _try_start_ticker():
             log.info("conn_service: KiteTicker initial start succeeded")
         else:
             log.warning(
@@ -506,8 +515,14 @@ async def _ticker_watchdog() -> None:
                 return  # exit watchdog task; SIGTERM triggers uvicorn graceful shutdown
 
             # ── Phase 1: nothing running yet ────────────────────────────
+            # Calendar-gated (2026-10-24, resource-efficiency only): skip
+            # the connect attempt entirely on a confirmed-closed day. The
+            # watchdog keeps ticking at the normal 30s cadence either way,
+            # so a same-day special session is picked up on the very next
+            # iteration — no new timer needed.
             if not ticker.status().get("started"):
-                if _try_start_ticker():
+                from backend.brokers.service.calendar_gate import conn_should_attempt_connect
+                if await conn_should_attempt_connect() and _try_start_ticker():
                     log.info(
                         "ticker_watchdog: ticker started · account=%s",
                         ticker.current_account() or "?",

@@ -2516,6 +2516,61 @@ class MarketSpecialSession(Base):
     )
 
 
+class TickerCalendarVerdict(Base):
+    """One row per calendar day recording conn_service's own KiteTicker
+    connect-attempt calendar verdict (`backend.brokers.service.
+    calendar_gate.conn_should_attempt_connect`, 2026-10-24) — an AUDIT
+    TRAIL, not a cache. That function ALWAYS recomputes the verdict
+    fresh on every call (process startup + every 30s watchdog tick) and
+    upserts this row afterward; it never reads this row back to skip
+    recomputation. `market_special_sessions` — the one input that can
+    change mid-day (an operator adding a same-day special session) —
+    carries no reliable "has this changed since I last looked" signal
+    (its reconciliation path DELETEs stale rows rather than updating
+    them in place), so there is no cheap way to detect staleness
+    without re-querying the same tables the fresh computation already
+    reads. This table exists purely so an operator or a future
+    consumer has one place to read "what did conn_service decide
+    today" — it is deliberately NOT consulted by the connect-decision
+    loop itself.
+
+    Rows land in whichever database conn_service's own branch-local
+    `async_session` engine resolves to. In the real deployment that is
+    always the prod `ramboq` database — conn_service runs from
+    `/opt/ramboq` with `deploy_branch=main` always, regardless of which
+    environment's broker traffic triggered the check. There is no
+    dev-side (`ramboq_dev`) copy of this table's rows.
+
+    Columns
+    -------
+    date        : Calendar date (IST) this verdict applies to. Primary key.
+    verdict     : One of "open" / "closed" / "unknown"
+                  (`calendar_gate.CAL_OPEN` / `CAL_CLOSED` / `CAL_UNKNOWN`).
+    computed_at : UTC timestamp of the most recent write for this date —
+                  every call for the same date overwrites in place, it
+                  never inserts a second row.
+    detail      : Small, JSON-serialisable summary only (per-segment
+                  verdict strings, a couple of booleans) — NEVER raw
+                  `market_special_sessions` rows, whose `start_time`/
+                  `end_time` are `datetime.time` objects and are not
+                  JSON-serialisable. Partial by construction: the
+                  computation short-circuits the instant any segment
+                  resolves OPEN, so `detail['segments']` may not list
+                  every configured segment.
+    """
+    __tablename__ = "ticker_calendar_verdicts"
+
+    date:        Mapped[datetime] = mapped_column(Date, nullable=False, primary_key=True)
+    verdict:     Mapped[str]      = mapped_column(String(10), nullable=False)
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+    detail:      Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+
+
 class AppMessage(Base):
     """Unified operator notification + log record.
 
