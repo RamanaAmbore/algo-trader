@@ -202,7 +202,7 @@ def _error_agent() -> SimpleNamespace:
     from backend.api.algo import event_agents
     d = event_agents.ERROR_AGENT
     return SimpleNamespace(
-        slug=d["slug"], conditions=d["conditions"], events=d["events"], actions=d["actions"],
+        slug=d["slug"], conditions=d["conditions"], events=d.get("events", []), actions=d["actions"],
     )
 
 
@@ -246,11 +246,21 @@ class TestErrorAgentSelfAlertedGate:
         """The gate is scoped to ERROR_AGENT's own slug — any other
         agent matching the same record (hypothetically) must be
         unaffected."""
-        from backend.api.algo import event_agents
+        from backend.api.algo import alert_routing, event_agents
+        # 2026-10 routing-tree plan — `ERROR_AGENT` no longer carries a
+        # literal `events` key; resolve its REAL channel set via
+        # `alert_routing.resolve_channels()` (same call `_dispatch_agent`
+        # itself makes) and assign it explicitly here, so this
+        # differently-slugged test double genuinely mirrors
+        # ERROR_AGENT's own real channels rather than accidentally
+        # falling through to the mandatory catch-all (a coincidentally
+        # same-length but differently-shaped list).
+        error_channels = alert_routing.resolve_channels(
+            name=event_agents.ERROR_AGENT["slug"], priority=event_agents.ERROR_AGENT.get("priority"))
         other = SimpleNamespace(
             slug="some-other-agent",
             conditions=event_agents.ERROR_AGENT["conditions"],
-            events=event_agents.ERROR_AGENT["events"],
+            events=error_channels,
             actions=event_agents.ERROR_AGENT["actions"],
         )
         rec = _error_rec("already-alerted failure 3", self_alerted=True)

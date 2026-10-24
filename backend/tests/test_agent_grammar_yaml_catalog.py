@@ -197,6 +197,27 @@ order-sensitive equality check rather than silently degrading. See
 `backend/tests/test_help_lookup_action.py` and CLAUDE.md's "Agent
 action-dispatch SSOT" note.
 
+Amendment (2026-10, alert-routing-tree plan): the `(action, action_type,
+log)` token's `params_schema` grew two new optional fields, `name`
+(string, `token_ref_ok: true`) and `tags` (array), inserted right after
+the existing `priority` field — same position in both
+`agent_grammar.yaml` and this baseline. Both thread into the log
+record's `extra` dict exactly like `priority` already does (see
+`actions.py:emit_log`'s own docstring); neither is consulted by any
+current `alert_routing.py` rule — forward-looking plumbing for a future
+per-record matcher, not a behavior change for any existing caller. See
+`backend/tests/test_alert_routing.py` and `test_actions_coverage.py`'s
+`test_emit_log_name_and_tags_threaded_into_extra_and_result`.
+
+Amendment (2026-10, user-registration alert): one new `(log, tag, auth)`
+token was added to `agent_grammar.yaml`'s `log_tags.tags` (and mirrored
+here, appended at the end of both `system_tokens_full` and `log_tags`,
+matching `LOG_TAG_TOKENS.extend()`'s own append order) — closes the gap
+where `routes/auth.py`'s new-registration log line had no alert-tag
+vocabulary member to match against, so no event agent could ever see
+it. See `backend/tests/test_event_agents.py`'s `USER_REGISTERED_AGENT`
+coverage and CLAUDE.md's routing-tree plan note.
+
 Perf: no DB / network calls, pure in-memory comparison.
 Reuse: shares the same SYSTEM_TOKENS / LOG_TAG_TOKENS module attributes
 every other grammar test and `seed_grammar_tokens()` read.

@@ -1333,6 +1333,26 @@ system_tokens:
       description: ntfy-routing priority for a downstream event agent that matches
         this record. Reuses the existing ntfy priority vocabulary (alert_utils.py's
         `_TIER_TO_NTFY_PRIORITY` value set), not a new one.
+    name:
+      type: string
+      required: false
+      token_ref_ok: true
+      description: Free-form routing-matcher label for this record (2026-10
+        routing-tree plan), threaded into the log record's `extra["route_name"]`
+        (NOT `extra["name"]` — `name` is a reserved `logging.LogRecord`
+        attribute and would raise) alongside `priority`. No current
+        `alert_routing.py` rule consults it — forward-looking plumbing for a
+        future per-record matcher, not a behavior change.
+    tags:
+      type: array
+      required: false
+      description: Free-form routing-matcher tag list for this record (2026-10
+        routing-tree plan), threaded into the log record's `extra["route_tags"]`
+        (NOT `extra["tags"]` — that key is this codebase's real structural
+        condition-match field, read by `log_store.py:tags_for()`; reusing it
+        here would silently change which agents' conditions match this record)
+        alongside `priority`/`name`. No current `alert_routing.py` rule
+        consults it — forward-looking plumbing, not a behavior change.
 - grammar_kind: action
   token_kind: action_type
   token: send_summary
@@ -1428,3 +1448,6 @@ log_tags:
     description: 'Open and close market summaries (owner: background tasks).'
   - token: visitor
     description: 'Daily visitor/traffic log report (owner: background tasks).'
+  - token: auth
+    description: 'Authentication/account-lifecycle records: new user self-registration
+      pending admin approval (owner: auth routes).'

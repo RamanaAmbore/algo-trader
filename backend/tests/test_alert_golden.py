@@ -55,7 +55,7 @@ def _error_rec(msg, name="backend.x", alert_now=True):
 def error_agent(monkeypatch):
     from backend.api.algo import event_agents
     monkeypatch.setattr(event_agents, "_gate", error_alerts.RepeatGate())
-    return SimpleNamespace(slug="error-alert", **{k: event_agents.ERROR_AGENT[k]
+    return SimpleNamespace(slug="error-alert", **{k: event_agents.ERROR_AGENT.get(k, [])
                                                   for k in ("conditions", "events", "actions")})
 
 
@@ -173,7 +173,7 @@ async def test_fill_delivery_golden_via_event_agent(monkeypatch):
     await fill_notify.notify_fills([row])
     rec = {"ts": _dt.datetime(2026, 10, 6, 4, 45, 30, tzinfo=timezone.utc), "level": "INFO",
            "tags": ["orders"], "extra": records[0]}
-    agent = SimpleNamespace(slug=event_agents.FILL_AGENT["slug"], **{k: event_agents.FILL_AGENT[k] for k in ("conditions", "events", "actions")})
+    agent = SimpleNamespace(slug=event_agents.FILL_AGENT["slug"], **{k: event_agents.FILL_AGENT.get(k, []) for k in ("conditions", "events", "actions")})
     await event_agents.dispatch([rec], [agent])
     # No agent_id on `row` -> no agent_name resolved -> origin defaults to
     # "manual" (2026-10-17 fix, see test_fill_format_golden). Account
@@ -209,7 +209,7 @@ async def test_chase_cancel_golden_text_and_urgent_priority(monkeypatch):
     monkeypatch.setitem(event_agents.CHANNELS, "ntfy",
                         ("ntfy", lambda t, b, tg=None, priority=None: sent.append((t, b, priority))))
     agent = SimpleNamespace(slug="chase-cancel-alert",
-                            **{k: event_agents.CHASE_CANCEL_AGENT[k] for k in ("conditions", "events", "actions")})
+                            **{k: event_agents.CHASE_CANCEL_AGENT.get(k, []) for k in ("conditions", "events", "actions")})
     await event_agents.dispatch([_chase_rec()], [agent])
     # 2026-10 audit fix: the old "after attempt 2/40 filled." wording
     # read like a fraction (attempt N of M attempts) when the
@@ -245,7 +245,7 @@ async def test_partial_gtt_golden_text_and_urgent_priority(monkeypatch):
                      "parent_symbol": "CRUDEOIL26OCTFUT", "planned": 3, "placed": 1,
                      "errors": ["rate limit", "invalid price"]}}
     agent = SimpleNamespace(slug="partial-gtt-alert",
-                            **{k: event_agents.PARTIAL_GTT_AGENT[k] for k in ("conditions", "events", "actions")})
+                            **{k: event_agents.PARTIAL_GTT_AGENT.get(k, []) for k in ("conditions", "events", "actions")})
     await event_agents.dispatch([rec], [agent])
     # 2026-10 audit fix: origin header ("Agent: manual" — no `agent_id`
     # in this record's extra) leads, replacing the old standalone
@@ -284,7 +284,7 @@ async def test_template_attach_golden_text_and_priority(monkeypatch, agent_key, 
            "logger": "backend.api.algo.template_attach", "message": "x", "tags": ["gtt"],
            "extra": {"tags": ["orders", "gtt"], "alert_event": event, **extra}}
     spec = getattr(event_agents, agent_key)
-    agent = SimpleNamespace(slug=spec["slug"], **{k: spec[k] for k in ("conditions", "events", "actions")})
+    agent = SimpleNamespace(slug=spec["slug"], **{k: spec.get(k, []) for k in ("conditions", "events", "actions")})
     await event_agents.dispatch([rec], [agent])
     assert sent == [expected]
 
@@ -313,7 +313,7 @@ async def test_order_failure_golden_text_channels_and_html(monkeypatch):
                      "mode": "live", "source": "ticket", "error": "Insufficient funds <x>",
                      "suppressed_count": 2, "ist_disp": "10:15:30 IST", "branch": "main"}}
     agent = SimpleNamespace(slug="order-failure-alert",
-                            **{k: event_agents.ORDER_FAILURE_AGENT[k] for k in ("conditions", "events", "actions")})
+                            **{k: event_agents.ORDER_FAILURE_AGENT.get(k, []) for k in ("conditions", "events", "actions")})
     await event_agents.dispatch([rec], [agent])
     # 2026-10 fix: every order-failure alert is now prefixed with its
     # origin label (Manual/Manual Bracket/Agent/Agent Bracket) ahead of
@@ -357,7 +357,7 @@ async def test_template_guard_golden_text_and_channels(monkeypatch):
                      "parent_fill_price": 112.5, "parent_account": "ZG0790",
                      "ist_label": "Tue, Oct 06 2026, 14:30 IST"}}
     agent = SimpleNamespace(slug="template-guard-alert",
-                            **{k: event_agents.TEMPLATE_GUARD_AGENT[k] for k in ("conditions", "events", "actions")})
+                            **{k: event_agents.TEMPLATE_GUARD_AGENT.get(k, []) for k in ("conditions", "events", "actions")})
     await event_agents.dispatch([rec], [agent])
     # Account masked (2026-10 audit fix) — ZG0790 -> ZG####.
     # 2026-10 audit fix: origin header ("Agent: manual" — no agent_id in
@@ -399,7 +399,7 @@ async def test_template_attach_fail_golden_text_and_channels(monkeypatch):
                      "symbol": "NIFTY26OCTFUT", "account": "ZG0790",
                      "err_summary": "qty < lot_size; rate limit", "ist_label": "Tue, Oct 06 2026, 14:30 IST"}}
     agent = SimpleNamespace(slug="template-attach-fail-alert",
-                            **{k: event_agents.TEMPLATE_ATTACH_FAIL_AGENT[k] for k in ("conditions", "events", "actions")})
+                            **{k: event_agents.TEMPLATE_ATTACH_FAIL_AGENT.get(k, []) for k in ("conditions", "events", "actions")})
     await event_agents.dispatch([rec], [agent])
     # Account masked (2026-10 audit fix) — ZG0790 -> ZG####.
     # 2026-10 audit fix: origin header ("Agent: manual" — no agent_id in
@@ -428,9 +428,40 @@ async def test_mcp_ping_sends_recorded_html_to_telegram_only(monkeypatch):
            "logger": "backend.api.routes.lab", "message": "MCP ping", "tags": ["info", "mcp"],
            "extra": {"tags": ["mcp"], "alert_event": "mcp_ping", "tg": tg}}
     agent = SimpleNamespace(slug="mcp-ping-alert",
-                            **{k: event_agents.MCP_PING_AGENT[k] for k in ("conditions", "events", "actions")})
+                            **{k: event_agents.MCP_PING_AGENT.get(k, []) for k in ("conditions", "events", "actions")})
     await event_agents.dispatch([rec], [agent])
     assert sent == [tg]
+
+
+@pytest.mark.asyncio
+async def test_user_registered_agent_sends_telegram_and_ntfy_high(monkeypatch):
+    """2026-10 operator-reported gap: new-user self-registration never
+    reached Telegram/ntfy because `routes/auth.py`'s log line carried no
+    alert-tag metadata at all (not a condition-matching failure — there
+    was nothing for any event agent to match against). Confirms the
+    full round trip: the real tagged record `auth.py` now emits ->
+    `USER_REGISTERED_AGENT`'s condition matches -> the shared
+    `generic_notice` renderer -> telegram (HTML) + ntfy (priority
+    'high', not 'urgent' — not time-critical)."""
+    from backend.api.algo import event_agents
+    import backend.shared.helpers.utils as u
+    sent = {"tg": [], "ntfy": []}
+    monkeypatch.setattr(u, "is_enabled", lambda cap: True)
+    monkeypatch.setitem(event_agents.CHANNELS, "telegram",
+                        ("telegram", lambda t, b, tg=None, **k: sent["tg"].append(tg or b)))
+    monkeypatch.setitem(event_agents.CHANNELS, "ntfy",
+                        ("ntfy", lambda t, b, tg=None, priority=None: sent["ntfy"].append((t, b, priority))))
+    body = "newtrader (newtrader@example.com) registered and is pending admin approval."
+    rec = {"ts": _dt.datetime(2026, 10, 6, 9, 0, tzinfo=_dt.timezone.utc), "level": "INFO",
+           "logger": "backend.api.routes.auth", "message": "x", "tags": ["info", "auth"],
+           "extra": {"tags": ["auth"], "alert_event": "user_registered",
+                     "title": "New user registered", "body": body}}
+    agent = SimpleNamespace(slug="user-registered-alert",
+                            **{k: event_agents.USER_REGISTERED_AGENT.get(k, [])
+                               for k in ("conditions", "events", "actions")})
+    await event_agents.dispatch([rec], [agent])
+    assert sent["tg"] == [body]
+    assert sent["ntfy"] == [("New user registered", body, "high")]
 
 
 @pytest.mark.asyncio
@@ -444,8 +475,15 @@ async def test_deploy_sync_no_longer_sends_to_ntfy(monkeypatch):
     `test_deploy_sync_sends_title_and_body_at_high_priority` and asserted
     a single ntfy send at "high" priority; now asserts the opposite —
     the record still matches/renders (condition + renderer unchanged),
-    it simply has zero configured channels to send to."""
-    from backend.api.algo import event_agents
+    it simply has zero configured channels to send to.
+
+    2026-10 routing-tree plan: `DEPLOY_SYNC_AGENT`'s own dict no longer
+    carries an `events` key at all (channel selection moved to
+    `alert_routing.py`'s per-slug override table) — the real invariant
+    is now "the RESOLVED channel list for this agent's slug is empty",
+    checked via the same `alert_routing.resolve_channels()` call
+    `_dispatch_agent` itself makes, not a literal dict key lookup."""
+    from backend.api.algo import alert_routing, event_agents
     import backend.shared.helpers.utils as u
     sent = []
     monkeypatch.setattr(u, "is_enabled", lambda cap: True)
@@ -457,8 +495,11 @@ async def test_deploy_sync_no_longer_sends_to_ntfy(monkeypatch):
            "extra": {"tags": ["deploy"], "alert_event": "deploy_out_of_sync",
                      "title": "Deploy out of sync — main", "body": "Local HEAD abc12345 != origin/main"}}
     agent = SimpleNamespace(slug="deploy-sync-alert",
-                            **{k: event_agents.DEPLOY_SYNC_AGENT[k] for k in ("conditions", "events", "actions")})
-    assert event_agents.DEPLOY_SYNC_AGENT["events"] == []
+                            **{k: event_agents.DEPLOY_SYNC_AGENT.get(k, []) for k in ("conditions", "events", "actions")})
+    assert alert_routing.resolve_channels(
+        name="deploy-sync-alert", priority=event_agents.DEPLOY_SYNC_AGENT.get("priority"),
+        agent_events=event_agents.DEPLOY_SYNC_AGENT.get("events", []),
+    ) == []
     sent_count = await event_agents.dispatch([rec], [agent])
     assert sent == []
     assert sent_count == 0
@@ -498,7 +539,7 @@ async def test_rich_alert_matches_the_pre_migration_dispatch(monkeypatch, name, 
                      "email_table_html": "<table><tr><td>NIFTY</td><td>-1200</td></tr></table>",
                      "subject_detail": "ZG0790 summary", "sim_mode": sim, "mode_tag": mode_tag}}
     agent = SimpleNamespace(slug="agent-alert-rich",
-                            **{k: event_agents.RICH_ALERT_AGENT[k] for k in ("conditions", "events", "actions")})
+                            **{k: event_agents.RICH_ALERT_AGENT.get(k, []) for k in ("conditions", "events", "actions")})
     await event_agents.dispatch([rec], [agent])
     # 2026-10-16 fix — RICH_ALERT_AGENT's ntfy channel no longer
     # hardcodes priority="urgent" (that hardcode forced every single
@@ -550,7 +591,7 @@ async def test_rich_alert_priority_resolved_from_tracked_tier(monkeypatch, tier,
                      "ist_display": "10:15:30 IST", "tg_table": "x", "email_table_html": "x",
                      "subject_detail": "x", "sim_mode": False, "mode_tag": "", "tier": tier}}
     agent = SimpleNamespace(slug="agent-alert-rich", tier="medium",
-                            **{k: event_agents.RICH_ALERT_AGENT[k] for k in ("conditions", "events", "actions")})
+                            **{k: event_agents.RICH_ALERT_AGENT.get(k, []) for k in ("conditions", "events", "actions")})
     await event_agents.dispatch([rec], [agent])
     assert sent["ntfy"][0] == expected_priority, (
         f"tier={tier!r} should resolve ntfy priority to {expected_priority!r}, "
@@ -586,7 +627,7 @@ async def test_summary_matches_the_pre_migration_dispatch(monkeypatch, msg_type,
                      "email_table_html": "<table><tr><td>Holdings</td><td>120000</td></tr></table>",
                      "subject_detail": "Summary — 10:15:30 IST"}}
     spec = event_agents.SUMMARY_AGENT
-    agent = SimpleNamespace(slug=spec["slug"], **{k: spec[k] for k in ("conditions", "events", "actions")})
+    agent = SimpleNamespace(slug=spec["slug"], **{k: spec.get(k, []) for k in ("conditions", "events", "actions")})
     await event_agents.dispatch([rec], [agent])
     assert sent["info"] == [f"<b>{title}</b>\n\n<code>Holdings  ZG####  ₹1,20,000\nPositions  ZG####  -₹300</code>"]
     _, addr, subj, body = sent["mail"][0]
@@ -646,7 +687,7 @@ async def test_breach_dispatch_default_group_golden_round_trip(monkeypatch):
            "logger": "backend.api.algo.events", "message": "x", "tags": ["info", "agent"],
            "extra": extra}
     breach_agent = SimpleNamespace(slug=event_agents.BREACH_AGENT["slug"],
-                                   **{k: event_agents.BREACH_AGENT[k] for k in ("conditions", "events", "actions")})
+                                   **{k: event_agents.BREACH_AGENT.get(k, []) for k in ("conditions", "events", "actions")})
     await event_agents.dispatch([rec], [breach_agent])
 
     expected_body = (
@@ -700,7 +741,7 @@ async def test_breach_dispatch_custom_message_channel_golden_round_trip(monkeypa
 
     assert len(info_calls) == 2
     breach_agent = SimpleNamespace(slug=event_agents.BREACH_AGENT["slug"],
-                                   **{k: event_agents.BREACH_AGENT[k] for k in ("conditions", "events", "actions")})
+                                   **{k: event_agents.BREACH_AGENT.get(k, []) for k in ("conditions", "events", "actions")})
     for extra in info_calls:
         rec = {"ts": _dt.datetime(2026, 10, 6, 9, 0, tzinfo=_dt.timezone.utc), "level": "INFO",
                "logger": "backend.api.algo.events", "message": "x", "tags": ["info", "agent"],

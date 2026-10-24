@@ -377,7 +377,7 @@ class TestFireWingUnprotectedAlertGuard:
                                     "logger": "backend.api.algo.template_attach",
                                     "message": "", "tags": ["gtt"], "extra": extra})
             agent = SimpleNamespace(slug="template-attach-urgent", **{
-                k: event_agents.TEMPLATE_ATTACH_URGENT_AGENT[k]
+                k: event_agents.TEMPLATE_ATTACH_URGENT_AGENT.get(k, [])
                 for k in ("conditions", "events", "actions")})
             asyncio.run(event_agents.dispatch(records, [agent]))
             # priority="urgent" sends 3x for redundancy (see send_ntfy_alert).

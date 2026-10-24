@@ -9,10 +9,23 @@ from backend.api.algo.agent_evaluator import validate
 from backend.api.algo.grammar_registry import REGISTRY
 
 
+# Literal, not read off `event_agents.FILL_AGENT["events"]` — that key no
+# longer exists post-routing-tree-migration (channel selection moved to
+# `alert_routing.py`'s per-slug override table). This generic test
+# double uses slug "t" (not a real seeded slug), so an explicit non-empty
+# `events` list here is what makes `alert_routing.resolve_channels()`
+# return it outright (step 1 of its precedence order) without needing a
+# real per-slug/tier match — exactly the same channel list FILL_AGENT's
+# own dict used to carry directly, kept here only because these generic
+# dispatch-mechanics tests don't care about the exact channel set, only
+# that dispatch has SOMETHING real to iterate.
+_DEFAULT_TEST_EVENTS = [{"channel": "telegram", "enabled": True}]
+
+
 def _agent(events=None, actions=None, conditions=None):
     return SimpleNamespace(
         slug="t", conditions=conditions or event_agents.FILL_AGENT["conditions"],
-        events=events if events is not None else event_agents.FILL_AGENT["events"],
+        events=events if events is not None else _DEFAULT_TEST_EVENTS,
         actions=actions if actions is not None else event_agents.FILL_AGENT["actions"],
     )
 
@@ -117,14 +130,21 @@ def test_fill_agent_condition_validates_against_a_registered_tag(monkeypatch):
 
 
 def test_fill_agent_is_seeded_as_an_event_agent_with_live_only_match():
+    from backend.api.algo import alert_routing
     spec = event_agents.FILL_AGENT
     assert spec["conditions"]["log"]["where"] == {"alert_event": "filled", "mode": "live"}
     # 2026-10-23 chase robustness (fix #4) — a fill is FYI, never
-    # action-required: ntfy removed from FILL_AGENT's own stored channel
-    # list (cosmetic — the real enforcement is the binary
+    # action-required: ntfy removed from FILL_AGENT's own RESOLVED
+    # channel list (cosmetic — the real enforcement is the binary
     # action_required gate in _dispatch_record_channels, which skips
     # ntfy for every fill record regardless of this list's content).
-    assert {c["channel"] for c in spec["events"]} == {"telegram"}
+    #
+    # 2026-10 routing-tree plan — `spec` itself no longer carries an
+    # `events` key; the real channel set now comes from
+    # `alert_routing.resolve_channels()`'s per-slug override table.
+    resolved = alert_routing.resolve_channels(
+        name=spec["slug"], priority=spec.get("priority"), agent_events=spec.get("events", []))
+    assert {c["channel"] for c in resolved} == {"telegram"}
 
 
 @pytest.mark.asyncio
@@ -240,6 +260,21 @@ def test_validation_reports_unknown_tag_renderer_and_channel():
     assert any("unknown log tag 'nope'" in e for e in errs)
     assert any("unknown renderer 'missing'" in e for e in errs)
     assert any("unknown channel" in e for e in errs)
+
+
+def test_validation_reports_unknown_priority():
+    """2026-10 routing-tree plan — a seeded agent's `priority` (the
+    `alert_routing.py` matcher key) must be a recognised tier, or it
+    would silently never match `_TIER_DEFAULTS` and fall straight
+    through to the catch-all with no error reported anywhere."""
+    from backend.api.algo import event_agents as ea
+    bad = {"slug": "x", "conditions": {"log": {"tag": "orders", "min_level": "INFO"}},
+           "actions": [{"type": "render", "render": "fill"}], "priority": "not-a-real-tier"}
+    assert any("unknown priority" in e for e in ea.validate_seed_spec(bad))
+    ok = {**bad, "priority": "high"}
+    assert not any("unknown priority" in e for e in ea.validate_seed_spec(ok))
+    no_priority = {k: v for k, v in bad.items() if k != "priority"}
+    assert not any("unknown priority" in e for e in ea.validate_seed_spec(no_priority))
 
 
 @pytest.mark.asyncio
@@ -696,53 +731,46 @@ def test_generic_notice_agents_sourced_from_shared_table_byte_identical():
     """Each of the 5 agents is still a separately-named dict built from
     `_GENERIC_NOTICE_SPECS` + `_build_generic_notice_agent()` — the
     collapse is to the MECHANISM, not the identity (council item 2 /
-    UX review). Pins the exact pre-collapse content for every one."""
+    UX review). Pins the exact `conditions`/`actions` content for every
+    one, plus the `priority` token each now carries (2026-10
+    routing-tree plan — channel selection moved to
+    `alert_routing.py`'s per-slug override table; see
+    `test_alert_routing_matches_frozen_pre_migration_oracle` for proof
+    the RESOLVED channel list for each of these 5 slugs is unchanged)."""
     from backend.api.algo import event_agents as ea
     assert ea.GTT_ASYMMETRIC_AGENT == {
         "slug": "gtt-asymmetric-alert", "name": "GTT asymmetric",
         "conditions": {"log": {"tag": "gtt", "min_level": "WARNING",
                                "where": {"alert_event": "gtt_asymmetric"}}},
-        "events": [
-            {"channel": "telegram", "enabled": True, "gate": False},
-            {"channel": "ntfy", "enabled": True, "priority": "high", "gate": False},
-        ],
+        "priority": "high",
         "actions": [{"type": "render", "render": "generic_notice"}],
     }
     assert ea.OCO_DOUBLE_FIRE_AGENT == {
         "slug": "oco-double-fire-alert", "name": "OCO double-fire",
         "conditions": {"log": {"tag": "gtt", "min_level": "WARNING",
                                "where": {"alert_event": "oco_double_fire"}}},
-        "events": [
-            {"channel": "telegram", "enabled": True, "gate": False},
-            {"channel": "ntfy", "enabled": True, "priority": "urgent", "gate": False},
-        ],
+        "priority": "urgent",
         "actions": [{"type": "render", "render": "generic_notice"}],
     }
     assert ea.TICKER_RECOVERED_AGENT == {
         "slug": "ticker-recovered-alert", "name": "Ticker recovered",
         "conditions": {"log": {"tag": "broker", "min_level": "INFO",
                                "where": {"alert_event": "ticker_recovered"}}},
-        "events": [
-            {"channel": "telegram", "enabled": True, "gate": False},
-            {"channel": "ntfy", "enabled": True, "priority": "high", "gate": False},
-        ],
+        "priority": "high",
         "actions": [{"type": "render", "render": "generic_notice"}],
     }
     assert ea.TICKER_DEGRADED_AGENT == {
         "slug": "ticker-degraded-alert", "name": "Ticker degraded",
         "conditions": {"log": {"tag": "broker", "min_level": "WARNING",
                                "where": {"alert_event": "ticker_degraded"}}},
-        "events": [
-            {"channel": "telegram", "enabled": True, "gate": False},
-            {"channel": "ntfy", "enabled": True, "priority": "urgent", "gate": False},
-        ],
+        "priority": "urgent",
         "actions": [{"type": "render", "render": "generic_notice"}],
     }
     assert ea.VISITOR_REPORT_AGENT == {
         "slug": "visitor-report-alert", "name": "Visitor report",
         "conditions": {"log": {"tag": "visitor", "min_level": "INFO",
                                "where": {"alert_event": "visitor_report"}}},
-        "events": [{"channel": "telegram_info", "enabled": True, "gate": False}],
+        "priority": "info",
         "actions": [{"type": "render", "render": "generic_notice"}],
     }
 
@@ -753,18 +781,20 @@ def test_generic_notice_agents_are_every_spec_in_the_shared_table():
     outside the table — guards against a future table-style agent being
     added as a one-off literal instead of a table row.
 
-    `UNROUTED_ALERT_AGENT` (council item 5 fix) is a DELIBERATE,
-    documented exception — it's a single standalone agent that reuses
-    the shared `generic_notice` renderer (it needs no bespoke
-    title/body logic) without belonging to the tag-shaped table above,
-    so it's excluded from this equality by name, not silently allowed
-    to drift the count."""
+    `UNROUTED_ALERT_AGENT` (council item 5 fix) and `USER_REGISTERED_AGENT`
+    (2026-10 operator-reported registration-alert gap) are DELIBERATE,
+    documented exceptions — each is a single standalone agent that
+    reuses the shared `generic_notice` renderer (neither needs bespoke
+    title/body logic; both build `title`/`body` directly onto the log
+    record's own `extra` at the producer) without belonging to the
+    tag-shaped table above, so both are excluded from this equality by
+    name, not silently allowed to drift the count."""
     from backend.api.algo import event_agents as ea
     built_slugs = {ea._build_generic_notice_agent(spec)["slug"] for spec in ea._GENERIC_NOTICE_SPECS}
     generic_notice_slugs = {
         spec["slug"] for spec in ea.SEEDED_AGENTS
         if any(isinstance(a, dict) and a.get("render") == "generic_notice" for a in spec.get("actions") or [])
-    } - {ea.UNROUTED_ALERT_AGENT["slug"]}
+    } - {ea.UNROUTED_ALERT_AGENT["slug"], ea.USER_REGISTERED_AGENT["slug"]}
     assert built_slugs == generic_notice_slugs == {
         "gtt-asymmetric-alert", "oco-double-fire-alert", "ticker-recovered-alert",
         "ticker-degraded-alert", "visitor-report-alert",
@@ -825,7 +855,7 @@ async def test_seed_event_agents_preserves_operator_edit_and_logs_skip(monkeypat
     from backend.api.algo import event_agents as ea
 
     spec = ea.FILL_AGENT
-    original_hash = ea.compute_seed_spec_hash(spec["conditions"], spec["events"], spec["actions"])
+    original_hash = ea.compute_seed_spec_hash(spec["conditions"], spec.get("events", []), spec["actions"])
     edited_events = [{"channel": "email", "enabled": True}]  # operator's edit via the UI
     row = SimpleNamespace(
         slug=spec["slug"], name=spec["name"], status="active", kind="event",
@@ -867,6 +897,61 @@ async def test_seed_event_agents_preserves_operator_edit_and_logs_skip(monkeypat
     assert row.seed_version == ea.SEED_VERSION, "seed_version still advances so the skip isn't re-reported forever"
     assert row.seed_spec_hash == original_hash, "hash stays at the ORIGINAL write so a future bump re-detects the same edit"
     assert "operator-modified" in capsys.readouterr().err
+
+
+# ── 2026-10 routing-tree plan — `priority` threaded through seeding ──────
+
+@pytest.mark.asyncio
+async def test_seed_event_agents_insert_writes_priority(monkeypatch):
+    """A brand-new row (no existing match -> 'insert') is constructed
+    with the spec's own `priority` field, the new `Agent.priority`
+    column — same seed pass that writes `conditions`/`events`/`actions`.
+    `events` must also be written as `[]` (via `spec.get("events", [])`,
+    NOT a literal `spec["events"]` KeyError) for a migrated agent whose
+    dict no longer carries that key at all."""
+    from backend.api.algo import event_agents as ea
+
+    spec = ea.FILL_AGENT
+    assert "events" not in spec, "fixture sanity: FILL_AGENT must be post-migration (no 'events' key)"
+    assert spec.get("priority"), "fixture sanity: FILL_AGENT must carry a real priority token"
+    added = []
+
+    class _FakeResult:
+        def scalar_one_or_none(self):
+            return None  # no existing row -> action == "insert"
+
+    class _FakeSession:
+        async def execute(self, *_a, **_k):
+            return _FakeResult()
+
+        async def commit(self):
+            pass
+
+        def add(self, obj):
+            added.append(obj)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(ea, "SEEDED_AGENTS", (spec,))
+    import backend.api.database as db
+    monkeypatch.setattr(db, "async_session", lambda: _FakeSession())
+    await ea.seed_event_agents()
+    # Real `Agent(...)` ORM constructor (not mocked — mocking it breaks
+    # SQLAlchemy's lambda-SQL analysis of `select(Agent).where(...)` a
+    # few lines earlier in `seed_event_agents`, since that analysis
+    # inspects `Agent.slug` as a real mapped class attribute). Just
+    # constructing an instance does no DB I/O; `_FakeSession.add` is a
+    # no-op capture, so nothing is actually persisted.
+    assert len(added) == 1
+    row = added[0]
+    assert row.priority == spec["priority"]
+    assert row.events == []
+    assert row.conditions == spec["conditions"]
+    assert row.actions == spec["actions"]
 
 
 # ── Item 4 — per-record dispatch trace ────────────────────────────────────

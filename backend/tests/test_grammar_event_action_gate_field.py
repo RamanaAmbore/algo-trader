@@ -51,9 +51,33 @@ from types import SimpleNamespace
 
 import pytest
 
-from backend.api.algo import grammar
+from backend.api.algo import alert_routing, grammar
 from backend.api.algo import event_agents as ea
 from backend.api.routes import grammar as g
+
+
+def _resolved_events(agent: dict) -> list:
+    """2026-10 routing-tree plan — a migrated `SEEDED_AGENTS` dict no
+    longer carries its channel list directly on `events`; the real
+    channel set now comes from `alert_routing.resolve_channels()`. Every
+    test below that used to read `agent.get("events")` directly reads
+    THIS instead, so it keeps validating real data instead of silently
+    degrading into a vacuous no-op for the 20 migrated agents.
+
+    `BREACH_AGENT` is deliberately NOT routed through the resolver here
+    (it keeps its own literal `events: []`, read as-is) — its real
+    dispatch channels are 100% dynamic (`out[4]` from `_render_breach`,
+    see `_dispatch_agent`), so it has no STATIC declared channel set to
+    validate against the catalog at all; calling the resolver for it
+    would wrongly invent a catch-all channel list that doesn't reflect
+    its actual behavior. `"events" in agent` is the discriminator: a
+    migrated agent's dict has no such key at all; `BREACH_AGENT`/
+    `UNROUTED_ALERT_AGENT` still declare one explicitly."""
+    if "events" in agent:
+        return agent["events"] or []
+    return alert_routing.resolve_channels(
+        name=agent.get("slug"), priority=agent.get("priority"), agent_events=[],
+    )
 
 
 def _live_channel_token(name: str) -> dict:
@@ -113,7 +137,7 @@ class TestChannelGateFieldSchema:
         decompile fix (the frontend decompiler itself is covered by a
         Vitest round-trip test)."""
         agent = next(a for a in ea.SEEDED_AGENTS if a["slug"] == "market-summary")
-        for ev in agent.get("events") or []:
+        for ev in _resolved_events(agent):
             schema = _channel_params_schema(ev["channel"])
             assert schema, f"channel {ev['channel']!r} has no declared schema at all"
             for key in ev:
@@ -185,7 +209,7 @@ class TestSeededAgentsGateKeysAreDeclared:
     def test_every_channel_level_extra_key_is_declared_or_known_gap(self):
         undeclared: list[str] = []
         for agent in ea.SEEDED_AGENTS:
-            for ev in agent.get("events") or []:
+            for ev in _resolved_events(agent):
                 if not isinstance(ev, dict):
                     continue
                 channel = ev.get("channel")
@@ -222,21 +246,26 @@ class TestSeededAgentsGateKeysAreDeclared:
         never be silenced by a dev capability toggle; council item 5 of
         the 2026-10 alert-infrastructure plan added `unrouted-alert-
         catch-all`, gated the same way since a pipeline-wide-break
-        signal must never be silenced by a dev capability toggle
-        either): 14 of the real seeded agents carry a channel-level
-        `gate` key. If this count changes, the commit's own inventory
-        claim is now wrong — update both in lockstep, don't just bump
-        the number here.
+        signal must never be silenced by a dev capability toggle either;
+        2026-10 operator-reported registration-alert gap added
+        `user-registered-alert`, gated the same `gate: False` way as
+        every other agent added in this same wave): 15 of the real
+        seeded agents carry a channel-level `gate` key (resolved via
+        `alert_routing.resolve_channels()` — see `_resolved_events()`
+        above). If this count changes, the commit's own inventory claim
+        is now wrong — update both in lockstep, don't just bump the
+        number here.
 
         `deploy-sync-alert` dropped out of this set 2026-10 (operator
         instruction) when its only channel (ntfy, which carried the
-        `gate` key) was removed outright — it now has an empty `events`
-        list, so there is no channel entry left to carry a `gate` key.
+        `gate` key) was removed outright — it now has an empty resolved
+        channel list, so there is no channel entry left to carry a
+        `gate` key.
         """
         slugs = {
             agent["slug"]
             for agent in ea.SEEDED_AGENTS
-            if any(isinstance(ev, dict) and "gate" in ev for ev in (agent.get("events") or []))
+            if any(isinstance(ev, dict) and "gate" in ev for ev in _resolved_events(agent))
         }
         assert slugs == {
             "order-failure-alert", "order-correction-alert", "template-guard-alert",
@@ -245,6 +274,7 @@ class TestSeededAgentsGateKeysAreDeclared:
             "market-summary", "gtt-not-accepted-alert",
             "gtt-asymmetric-alert", "oco-double-fire-alert",
             "ticker-recovered-alert", "ticker-degraded-alert", "visitor-report-alert",
+            "user-registered-alert",
         }
 
     def test_inventory_action_level_gate_agent_count(self):

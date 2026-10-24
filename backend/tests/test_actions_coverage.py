@@ -597,6 +597,69 @@ async def test_emit_log_with_level():
     assert result["message"] == "test warning"
 
 
+@pytest.mark.asyncio
+async def test_emit_log_name_and_tags_threaded_into_extra_and_result(caplog):
+    """2026-10 routing-tree plan — `log(name=..., tags=...)` threads both
+    into the log record's `extra` dict under `route_name`/`route_tags`
+    (NOT the raw `name`/`tags` keys), same additive convention as the
+    pre-existing `priority` param, and surfaces them on the returned
+    dict for introspection/testing.
+
+    Deliberately goes through the REAL `logging.Logger.warning` (no
+    monkeypatch on `actions.logger`) — a monkeypatched fake logger would
+    have hidden the real bug this test guards against: `extra={"name":
+    ...}` raises `KeyError: "Attempt to overwrite 'name' in LogRecord"`
+    inside `Logger.makeRecord`, because `name` is a reserved
+    `LogRecord` attribute. That crash is swallowed by the noop-action-
+    handler's own exception guard in production, so a fake logger that
+    never actually calls `makeRecord` would never catch it."""
+    from backend.api.algo import actions
+
+    # `actions.logger` (this codebase's `get_logger()`) sets
+    # `propagate = False` — caplog's handler lives on the ROOT logger by
+    # default, so it never sees records from a non-propagating logger.
+    # Attach caplog's own handler directly to this logger instead of
+    # relying on propagation.
+    actions.logger.addHandler(caplog.handler)
+    actions.logger.setLevel("WARNING")
+    try:
+        result = await actions.emit_log(
+            {}, {"level": "warning", "message": "x", "priority": "high",
+                 "name": "my-routing-name", "tags": ["gtt", "wing"]})
+    finally:
+        actions.logger.removeHandler(caplog.handler)
+    assert len(caplog.records) == 1
+    record = caplog.records[0]
+    assert record.priority == "high"
+    assert record.route_name == "my-routing-name"
+    assert record.route_tags == ["gtt", "wing"]
+    # The real structural `tags` field (condition-matching, read by
+    # `log_store.py:tags_for()`) must NOT be clobbered by this param —
+    # confirms the key really is `route_tags`, not `tags`.
+    assert not hasattr(record, "tags") or record.tags != ["gtt", "wing"]
+    assert result["name"] == "my-routing-name"
+    assert result["tags"] == ["gtt", "wing"]
+
+
+@pytest.mark.asyncio
+async def test_emit_log_without_name_or_tags_is_byte_identical_to_before(monkeypatch):
+    """Zero-regression check: a caller that sets neither `name` nor
+    `tags` (every pre-existing agent) gets the exact single-positional-
+    arg log call it always did — no `extra=` kwarg at all."""
+    from backend.api.algo import actions
+
+    calls = []
+
+    def _fake_info(*a, **kw):
+        calls.append((a, kw))
+
+    monkeypatch.setattr(actions.logger, "info", _fake_info)
+    result = await actions.emit_log({}, {"message": "plain"})
+    assert calls == [(("Agent emit_log: plain",), {})]
+    assert result["name"] is None
+    assert result["tags"] is None
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Phase 3 — registry-driven dispatch (_LIVE_ACTION_HANDLERS / _NOOP_ACTION_HANDLERS)
 #

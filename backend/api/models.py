@@ -1200,6 +1200,27 @@ class Agent(Base):
     # update, same as today's pre-fix behavior, so this is purely additive for legacy data.
     seed_version: Mapped[int]    = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
     seed_spec_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
+    # `priority` — 2026-10 routing-tree plan. A channel-agnostic severity
+    # token ("critical"/"urgent"/"high"/"medium"/"info"/"low" — same
+    # vocabulary as `_TIER_TO_NTFY_PRIORITY`'s keys, but a DISTINCT column
+    # from `tier` above) that `backend/api/algo/alert_routing.py`'s
+    # resolver matches on to pick a channel set, for a `kind='event'`
+    # agent that has NO per-slug override row in that module's routing
+    # table (every one of the 20 seeded agents has an explicit per-slug
+    # override, so this column is a forward-looking fallback — a future
+    # seeded or operator-authored event agent that doesn't get its own
+    # override still resolves to a sane generic channel set via its
+    # `priority`). Deliberately NOT reused from `tier`: `tier` already
+    # drives topic-scoped suppression for threshold/cycle agents and
+    # resolves an ntfy *priority value* for several existing renderers
+    # (`_rec_tracked_ntfy_priority`/`_TIER_TO_NTFY_PRIORITY`) — conflating
+    # the two would silently change already-pinned golden-test behavior
+    # for agents like ERROR_AGENT/RICH_ALERT_AGENT (which carry no `tier`
+    # override and must resolve `None`, never a tier-derived default, for
+    # ntfy priority). Nullable, no default — `None` resolves through the
+    # routing module's own generic-tier fallback ladder, never crashes.
+    priority: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     lifespan_type: Mapped[str]   = mapped_column(
         String(16), nullable=False, default="persistent"
     )

@@ -1155,6 +1155,23 @@ async def _migrate_agents_seed_spec_hash(conn) -> None:
     ))
 
 
+async def _migrate_agents_priority(conn) -> None:
+    """Additive migration — `agents.priority` (2026-10 routing-tree plan,
+    see `Agent.priority`'s own model-column comment for why this is a
+    distinct column from `tier`). Same pattern as every other migration
+    here: `SET LOCAL lock_timeout` bounds how long this can wait behind
+    any in-flight row lock on `agents`, plain `ADD COLUMN IF NOT EXISTS`
+    (nullable VARCHAR(16), no default) so it's a no-op on an
+    already-migrated DB and safe on a fresh one. No index — only ever
+    read per-row by `alert_routing.py`'s resolver, never scanned by
+    WHERE clause."""
+    from sqlalchemy import text
+    await conn.execute(text("SET LOCAL lock_timeout = '5s'"))
+    await conn.execute(text(
+        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS priority VARCHAR(16)"
+    ))
+
+
 async def _migrate_agents_bracket_columns(conn) -> None:
     """Additive migration — `agents.legacy_template_id` +
     `agents.bracket_config` (Sprint E, Agent/Bracket/Template
@@ -1324,6 +1341,7 @@ async def init_db() -> None:
         await _migrate_agents_preamble_alert_cooldown(conn)
         await _migrate_agents_has_explicit_alert(conn)
         await _migrate_agents_seed_spec_hash(conn)
+        await _migrate_agents_priority(conn)
         await _migrate_drop_position_pairs_table(conn)
         await _migrate_market_special_sessions_source(conn)
     logger.info("Database: tables verified")

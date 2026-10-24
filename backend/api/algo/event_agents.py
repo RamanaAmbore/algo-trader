@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 from sqlalchemy import select
 
-from backend.api.algo import fill_notify
+from backend.api.algo import alert_routing, fill_notify
 from backend.api.algo.agent_evaluator import Context, evaluate
 from backend.shared.helpers.error_alerts import RepeatGate, clean_message
 from backend.shared.helpers.ramboq_logger import get_logger
@@ -598,15 +598,27 @@ async def _dispatch_agent(agent, records: list[dict]) -> int:
             sys.stderr.write(f"event_agents: {agent.slug} names unknown renderer '{key}'\n")
         return 0
     gated = _gate_spec(agent)
+    # 2026-10 routing-tree plan — channels for a static (non-BREACH)
+    # agent now come from `alert_routing.resolve_channels()`, not read
+    # directly off `agent.events`. Resolved ONCE per agent per dispatch
+    # call (not per record): no current rule consults a per-record
+    # `level`/`tags` matcher, and BREACH's own dynamic `out[4]` channels
+    # (the only real per-record channel source in this codebase) bypass
+    # this resolution entirely at the per-record line below, same as
+    # before this change.
+    agent_channels = alert_routing.resolve_channels(
+        name=getattr(agent, "slug", None), priority=getattr(agent, "priority", None),
+        agent_events=agent.events,
+    )
     # Cheap backstop against the shared repeat-gate consuming its dedup
     # budget for rows that will end up fully suppressed anyway: a GATED
-    # agent whose own static `events` carries no 'log' channel can never
-    # rescue a `_log_only` row (see dispatch_rows docstring) — its only
-    # possible channels are real notification channels, every one of
-    # which will be dropped below regardless. BREACH_AGENT is the one
+    # agent whose RESOLVED channel list carries no 'log' channel can
+    # never rescue a `_log_only` row (see dispatch_rows docstring) — its
+    # only possible channels are real notification channels, every one
+    # of which will be dropped below regardless. BREACH_AGENT is the one
     # source of a dynamically-added 'log' channel (via out[4]) and is
     # deliberately ungated, so it always reaches render/_gate_passes.
-    static_has_log = any(isinstance(e, dict) and e.get("channel") == "log" for e in (agent.events or []))
+    static_has_log = any(isinstance(e, dict) and e.get("channel") == "log" for e in agent_channels)
     sent = 0
     for rec in records:
         # Structural DEBUG exemption (2026-10-23) — a DEBUG-level record
@@ -635,7 +647,7 @@ async def _dispatch_agent(agent, records: list[dict]) -> int:
         if to_render is None:
             continue
         out = render(to_render)
-        channels = out[4] if len(out) > 4 else (agent.events or [])
+        channels = out[4] if len(out) > 4 else agent_channels
         sent += await _dispatch_record_channels(agent, rec, out, channels, log_only)
     return sent
 
@@ -920,7 +932,11 @@ ERROR_AGENT = {
     "slug": "error-alert",
     "name": "Error alert",
     "conditions": {"log": {"tag": "error", "min_level": "ERROR"}},
-    "events": [{"channel": "telegram", "enabled": True}, {"channel": "ntfy", "enabled": True}],
+    # 2026-10 routing-tree plan — channel selection moved to
+    # `alert_routing.py`'s per-slug override table. See `FILL_AGENT`'s
+    # comment above for the full rationale; every migrated agent below
+    # follows the same pattern without repeating it in full.
+    "priority": "medium",
     "actions": [{"type": "render", "render": "error", "gate": True}],
 }
 
@@ -955,13 +971,12 @@ CHASE_CANCEL_AGENT = {
     "name": "Chase cancel unconfirmed",
     "conditions": {"log": {"tag": "chase", "min_level": "CRITICAL",
                            "where": {"alert_event": "cancel_unconfirmed"}}},
-    "events": [
-        # 2026-10 audit fix: this is one of the most severe alert types
-        # (a possible duplicate live order resting unconfirmed) — ntfy
-        # alone had no Telegram/email backstop. Telegram added.
-        {"channel": "telegram", "enabled": True},
-        {"channel": "ntfy", "enabled": True, "priority": "urgent"},
-    ],
+    # 2026-10 routing-tree plan — channel selection moved to
+    # `alert_routing.py`'s per-slug override table (verbatim-identical
+    # to the telegram+ntfy(urgent) list this dict used to carry
+    # directly; see that table's own comment for the "one of the most
+    # severe alert types" rationale this `priority` token reflects).
+    "priority": "urgent",
     "actions": [{"type": "render", "render": "chase_cancel"}],
 }
 
@@ -970,7 +985,7 @@ PARTIAL_GTT_AGENT = {
     "name": "Partial GTT placement",
     "conditions": {"log": {"tag": "gtt", "min_level": "CRITICAL",
                            "where": {"alert_event": "partial_gtt"}}},
-    "events": [{"channel": "ntfy", "enabled": True, "priority": "urgent"}],
+    "priority": "urgent",
     "actions": [{"type": "render", "render": "partial_gtt"}],
 }
 
@@ -981,13 +996,7 @@ TEMPLATE_ATTACH_URGENT_AGENT = {
         {"log": {"tag": "gtt", "min_level": "WARNING", "where": {"alert_event": "wing_unprotected"}}},
         {"log": {"tag": "gtt", "min_level": "CRITICAL", "where": {"alert_event": "wing_hard_reject"}}},
     ]},
-    "events": [
-        # 2026-10 audit fix: wing_unprotected (an unprotected live SELL
-        # position) is one of the most severe alert types — ntfy alone
-        # had no Telegram/email backstop. Telegram added.
-        {"channel": "telegram", "enabled": True},
-        {"channel": "ntfy", "enabled": True, "priority": "urgent"},
-    ],
+    "priority": "urgent",
     "actions": [{"type": "render", "render": "template_attach"}],
 }
 
@@ -998,7 +1007,7 @@ TEMPLATE_ATTACH_HIGH_AGENT = {
         {"log": {"tag": "gtt", "min_level": "WARNING", "where": {"alert_event": "wing_skip"}}},
         {"log": {"tag": "gtt", "min_level": "WARNING", "where": {"alert_event": "wing_offset_skip"}}},
     ]},
-    "events": [{"channel": "ntfy", "enabled": True, "priority": "high"}],
+    "priority": "high",
     "actions": [{"type": "render", "render": "template_attach"}],
 }
 
@@ -1007,11 +1016,7 @@ ORDER_FAILURE_AGENT = {
     "name": "Order failure",
     "conditions": {"log": {"tag": "orders", "min_level": "WARNING",
                            "where": {"alert_event": "order_failure"}}},
-    "events": [
-        {"channel": "telegram", "enabled": True, "gate": False},
-        {"channel": "ntfy", "enabled": True, "priority": "urgent", "gate": False},
-        {"channel": "email", "enabled": True, "gate": False},
-    ],
+    "priority": "urgent",
     "actions": [{"type": "render", "render": "order_failure"}],
 }
 
@@ -1020,10 +1025,7 @@ ORDER_CORRECTION_AGENT = {
     "name": "Order poll correction",
     "conditions": {"log": {"tag": "orders", "min_level": "WARNING",
                            "where": {"alert_event": "order_correction"}}},
-    "events": [
-        {"channel": "telegram", "enabled": True, "gate": False},
-        {"channel": "ntfy", "enabled": True, "priority": "urgent", "gate": False},
-    ],
+    "priority": "urgent",
     "actions": [{"type": "render", "render": "order_correction"}],
 }
 
@@ -1032,14 +1034,7 @@ TEMPLATE_GUARD_AGENT = {
     "name": "Template guard",
     "conditions": {"log": {"tag": "orders", "min_level": "INFO",
                            "where": {"alert_event": "template_guard"}}},
-    "events": [
-        {"channel": "telegram", "enabled": True, "gate": False},
-        {"channel": "ntfy", "enabled": True, "priority": "high", "gate": False},
-        # 2026-10 audit fix: `template_attach.py:_fire_guard_alert`'s own
-        # docstring already promised an email channel ("durable record
-        # for end-of-day review") that was never actually wired up.
-        {"channel": "email", "enabled": True, "gate": False},
-    ],
+    "priority": "high",
     "actions": [{"type": "render", "render": "template_guard"}],
 }
 
@@ -1048,13 +1043,7 @@ TEMPLATE_ATTACH_FAIL_AGENT = {
     "name": "Template attach failed",
     "conditions": {"log": {"tag": "orders", "min_level": "WARNING",
                            "where": {"alert_event": "template_attach_fail"}}},
-    "events": [
-        {"channel": "telegram", "enabled": True, "gate": False},
-        {"channel": "ntfy", "enabled": True, "priority": "urgent", "gate": False},
-        # 2026-10 audit fix: same missing email backstop as
-        # TEMPLATE_GUARD_AGENT above.
-        {"channel": "email", "enabled": True, "gate": False},
-    ],
+    "priority": "urgent",
     "actions": [{"type": "render", "render": "template_attach_fail"}],
 }
 
@@ -1062,7 +1051,7 @@ MCP_PING_AGENT = {
     "slug": "mcp-ping-alert",
     "name": "MCP audit ping",
     "conditions": {"log": {"tag": "mcp", "min_level": "INFO", "where": {"alert_event": "mcp_ping"}}},
-    "events": [{"channel": "telegram", "enabled": True, "gate": False}],
+    "priority": "info",
     "actions": [{"type": "render", "render": "mcp_ping"}],
 }
 
@@ -1073,12 +1062,13 @@ DEPLOY_SYNC_AGENT = {
                            "where": {"alert_event": "deploy_out_of_sync"}}},
     # 2026-10 operator instruction: ntfy removed — a deploy-out-of-sync
     # notice is a developer/ops concern, not something that should page
-    # a phone. No replacement channel was requested; this stays an empty
-    # `events` list (the agent still fires/renders/logs its condition
-    # match — see `_dispatch_agent` — it simply has no channel to send
-    # to right now). Add a channel here, not a new mechanism, if one is
-    # wanted later.
-    "events": [],
+    # a phone. No replacement channel was requested; the per-slug
+    # override in `alert_routing.py` for this slug is an empty list (the
+    # agent still fires/renders/logs its condition match — see
+    # `_dispatch_agent` — it simply has no channel to send to right
+    # now). Add a channel there, not a new mechanism, if one is wanted
+    # later.
+    "priority": "medium",
     "actions": [{"type": "render", "render": "deploy_sync"}],
 }
 
@@ -1086,20 +1076,18 @@ RICH_ALERT_AGENT = {
     "slug": "agent-alert-rich",
     "name": "Agent alert",
     "conditions": {"log": {"tag": "agent", "min_level": "INFO", "where": {"alert_event": "rich_alert"}}},
-    "events": [
-        {"channel": "telegram", "enabled": True, "gate": False},
-        # 2026-10-16 fix — no hardcoded priority. This agent fans out
-        # EVERY other agent's alerts (it's a generic multiplexer, always
-        # tier="medium" itself), so a hardcoded "urgent" here forced
-        # send_ntfy_alert's 3x-repeat-send behavior onto every single
-        # alert regardless of the real triggering agent's own tier —
-        # live incident: a routine info-tier scheduled notification
-        # (market-open-nse) pushed 3 ntfy alerts. _dispatch_agent below
-        # resolves the real priority from the record's own carried-
-        # through `tier` (see _v2_send_rich_alert's logged extras).
-        {"channel": "ntfy", "enabled": True, "gate": False},
-        {"channel": "email", "enabled": True, "gate": False},
-    ],
+    # 2026-10-16 fix (unchanged by the routing-tree migration) — no
+    # hardcoded ntfy priority. This agent fans out EVERY other agent's
+    # alerts (it's a generic multiplexer, always tier="medium" itself),
+    # so a hardcoded "urgent" here forced send_ntfy_alert's 3x-repeat-send
+    # behavior onto every single alert regardless of the real triggering
+    # agent's own tier — live incident: a routine info-tier scheduled
+    # notification (market-open-nse) pushed 3 ntfy alerts. _dispatch_agent
+    # resolves the real priority from the record's own carried-through
+    # `tier` (see _v2_send_rich_alert's logged extras) — this agent's own
+    # `priority` field below is unrelated (routing-table matcher key
+    # only, never passed to the ntfy send itself).
+    "priority": "medium",
     "actions": [{"type": "render", "render": "rich_alert"}],
 }
 
@@ -1107,10 +1095,7 @@ SUMMARY_AGENT = {
     "slug": "market-summary",
     "name": "Market summary",
     "conditions": {"log": {"tag": "summary", "min_level": "INFO", "where": {"alert_event": "summary"}}},
-    "events": [
-        {"channel": "telegram_info", "enabled": True, "gate": False},
-        {"channel": "email", "enabled": True, "gate": False},
-    ],
+    "priority": "info",
     "actions": [{"type": "render", "render": "summary"}],
 }
 
@@ -1140,38 +1125,30 @@ BREACH_AGENT = {
 #
 # The resulting `GTT_ASYMMETRIC_AGENT`/`OCO_DOUBLE_FIRE_AGENT`/
 # `TICKER_RECOVERED_AGENT`/`TICKER_DEGRADED_AGENT`/`VISITOR_REPORT_AGENT`
-# module-level dicts below are byte-identical in content to what this
-# file used to spell out as 5 separate literals — confirmed by
-# `test_event_agents.py`'s shared-table-sourcing regression test, which
-# pins the exact dict for every one of them.
+# module-level dicts below are byte-identical in `conditions`/`actions`
+# content to what this file used to spell out as 5 separate literals —
+# confirmed by `test_event_agents.py`'s shared-table-sourcing regression
+# test. Channel selection for each (previously this table's own
+# `channels` key, fed straight into the built dict's `events`) moved to
+# `alert_routing.py`'s per-slug override table in the 2026-10
+# routing-tree plan — this table now carries a `priority` token per spec
+# instead, matching every other migrated `SEEDED_AGENTS` entry.
 _GENERIC_NOTICE_SPECS: tuple[dict, ...] = (
     {"slug": "gtt-asymmetric-alert", "name": "GTT asymmetric",
      "tag": "gtt", "min_level": "WARNING", "alert_event": "gtt_asymmetric",
-     "channels": [
-         {"channel": "telegram", "enabled": True, "gate": False},
-         {"channel": "ntfy", "enabled": True, "priority": "high", "gate": False},
-     ]},
+     "priority": "high"},
     {"slug": "oco-double-fire-alert", "name": "OCO double-fire",
      "tag": "gtt", "min_level": "WARNING", "alert_event": "oco_double_fire",
-     "channels": [
-         {"channel": "telegram", "enabled": True, "gate": False},
-         {"channel": "ntfy", "enabled": True, "priority": "urgent", "gate": False},
-     ]},
+     "priority": "urgent"},
     {"slug": "ticker-recovered-alert", "name": "Ticker recovered",
      "tag": "broker", "min_level": "INFO", "alert_event": "ticker_recovered",
-     "channels": [
-         {"channel": "telegram", "enabled": True, "gate": False},
-         {"channel": "ntfy", "enabled": True, "priority": "high", "gate": False},
-     ]},
+     "priority": "high"},
     {"slug": "ticker-degraded-alert", "name": "Ticker degraded",
      "tag": "broker", "min_level": "WARNING", "alert_event": "ticker_degraded",
-     "channels": [
-         {"channel": "telegram", "enabled": True, "gate": False},
-         {"channel": "ntfy", "enabled": True, "priority": "urgent", "gate": False},
-     ]},
+     "priority": "urgent"},
     {"slug": "visitor-report-alert", "name": "Visitor report",
      "tag": "visitor", "min_level": "INFO", "alert_event": "visitor_report",
-     "channels": [{"channel": "telegram_info", "enabled": True, "gate": False}]},
+     "priority": "info"},
 )
 
 
@@ -1181,7 +1158,7 @@ def _build_generic_notice_agent(spec: dict) -> dict:
         "name": spec["name"],
         "conditions": {"log": {"tag": spec["tag"], "min_level": spec["min_level"],
                                "where": {"alert_event": spec["alert_event"]}}},
-        "events": spec["channels"],
+        "priority": spec["priority"],
         "actions": [{"type": "render", "render": "generic_notice"}],
     }
 
@@ -1197,7 +1174,7 @@ GTT_NOT_ACCEPTED_AGENT = {
     "name": "GTT not accepted",
     "conditions": {"log": {"tag": "gtt", "min_level": "ERROR",
                            "where": {"alert_event": "gtt_not_accepted"}}},
-    "events": [{"channel": "ntfy", "enabled": True, "priority": "urgent", "gate": False}],
+    "priority": "urgent",
     "actions": [{"type": "render", "render": "gtt_not_accepted"}],
 }
 
@@ -1212,8 +1189,42 @@ FILL_AGENT = {
     # _dispatch_agent/_apply_action_required_ntfy_gate, which skips ntfy
     # for every fill record regardless of what's already seeded in the
     # `agents` DB table on an existing deployment).
-    "events": [{"channel": "telegram", "enabled": True}],
+    #
+    # 2026-10 routing-tree plan — channel selection moved to
+    # `alert_routing.py`'s per-slug override table (verbatim-identical
+    # to the `events` list this dict used to carry directly). `priority`
+    # is this agent's own severity token, consulted only as a fallback if
+    # the per-slug override were ever removed — see `alert_routing.py`'s
+    # module docstring for the full precedence order.
+    "priority": "medium",
     "actions": [{"type": "render", "render": "fill"}],
+}
+
+USER_REGISTERED_AGENT = {
+    "slug": "user-registered-alert",
+    "name": "User registered",
+    # 2026-10 operator-reported gap: `routes/auth.py`'s self-registration
+    # endpoint already wrote a real log line for every new user
+    # (`logger.info(f"Auth: registered ...")`), but with no
+    # `extra={"tags": ..., "alert_event": ...}` at all — unlike every
+    # other alert-producing log call in this codebase. It's not that
+    # this condition failed to match; there was nothing for ANY event
+    # agent to match against. Fixed at the source in `routes/auth.py`
+    # (now tags `["auth"]`, `alert_event="user_registered"`, and builds
+    # `title`/`body` for the shared `generic_notice` renderer, same
+    # contract every other `generic_notice` caller in `background.py`
+    # already follows). The pre-existing direct `send_email()` call in
+    # `_notify_admins_new_registration()` is unrelated and unchanged —
+    # this is an ADDITIVE Telegram+ntfy channel, not a replacement.
+    "conditions": {"log": {"tag": "auth", "min_level": "INFO",
+                           "where": {"alert_event": "user_registered"}}},
+    # "high", not "urgent" — needs operator attention (approve/reject
+    # the new account) but isn't time-critical the way a live-order
+    # failure is; matches this codebase's existing priority convention
+    # for "needs a look soon, not a 3x-repeat urgent push" alerts (e.g.
+    # `TEMPLATE_ATTACH_HIGH_AGENT`/`GTT_ASYMMETRIC_AGENT`).
+    "priority": "high",
+    "actions": [{"type": "render", "render": "generic_notice"}],
 }
 
 UNROUTED_ALERT_AGENT = {
@@ -1261,6 +1272,15 @@ def validate_seed_spec(spec: dict) -> list[str]:
     for ch in spec.get("events") or []:
         if not isinstance(ch, dict) or ch.get("channel") not in CHANNELS:
             errors.append(f"unknown channel {ch!r}")
+    # 2026-10 routing-tree plan — a seeded agent's `priority` (the
+    # routing-table matcher key, see `alert_routing.py`'s module
+    # docstring) must be a recognised tier, or it would silently never
+    # match `_TIER_DEFAULTS` and fall straight through to the catch-all.
+    # `None`/absent is fine — every one of the 20 migrated agents also
+    # has a per-slug override that's consulted first.
+    priority = spec.get("priority")
+    if priority is not None and priority not in alert_routing.KNOWN_PRIORITIES:
+        errors.append(f"unknown priority '{priority}'")
     return errors
 
 
@@ -1287,6 +1307,7 @@ SEEDED_AGENTS = (
     DEPLOY_SYNC_AGENT, RICH_ALERT_AGENT, SUMMARY_AGENT, BREACH_AGENT,
     GTT_NOT_ACCEPTED_AGENT, GTT_ASYMMETRIC_AGENT, OCO_DOUBLE_FIRE_AGENT,
     TICKER_RECOVERED_AGENT, TICKER_DEGRADED_AGENT, VISITOR_REPORT_AGENT, UNROUTED_ALERT_AGENT,
+    USER_REGISTERED_AGENT,
 )
 
 
@@ -1294,6 +1315,7 @@ def event_agent_row_fields(
     conditions: dict, events: list, actions: list, *,
     scope: str = "per_account", cooldown_minutes: int = 0,
     trade_mode: str = "live", lifespan_type: str = "persistent",
+    priority: "str | None" = None,
 ) -> dict:
     """Shared Agent-row field shape for kind='event' agents — conditions/
     events/actions/kind plus the defaults a log-driven agent needs for
@@ -1301,6 +1323,14 @@ def event_agent_row_fields(
     trade_mode/lifespan_type are meaningless for dispatch — event agents
     bypass agent_engine.run_cycle() entirely — but the Agent model has no
     NULL-able escape hatch for them).
+
+    `priority` (2026-10 routing-tree plan) is the new `Agent.priority`
+    column — the routing-table matcher key `alert_routing.py`'s resolver
+    falls back to when no per-slug override exists for this agent's
+    slug. `None` for an agent that doesn't set one (every migrated
+    seeded agent sets it; a legacy/operator-authored row reads back
+    `None`, which the resolver treats as "no tier default either, fall
+    through to the catch-all" — never a crash).
 
     Reused by `seed_event_agents()` (code-seeded built-in agents, which
     default to active+live+per_account) and the agents API's create/update
@@ -1312,7 +1342,7 @@ def event_agent_row_fields(
     return {
         "conditions": conditions or {}, "events": events or [], "actions": actions or [],
         "kind": "event", "scope": scope, "cooldown_minutes": cooldown_minutes,
-        "trade_mode": trade_mode, "lifespan_type": lifespan_type,
+        "trade_mode": trade_mode, "lifespan_type": lifespan_type, "priority": priority,
     }
 
 
@@ -1323,7 +1353,18 @@ def compute_seed_spec_hash(conditions, events, actions) -> str:
     to detect an operator edit in between (see `seed_action()`'s
     docstring). `sort_keys=True` makes this stable across dict key
     ordering; `default=str` tolerates any non-JSON-native value the same
-    way `log_store.py:row_for()` already does for `extra`."""
+    way `log_store.py:row_for()` already does for `extra`.
+
+    Deliberately does NOT hash `priority` (2026-10 routing-tree plan) —
+    every row already seeded before this plan has a stored hash computed
+    without it; adding `priority` to this function would make that old
+    hash mismatch the moment this ships, misclassifying every existing
+    seeded row as 'modified_skip' (operator-edited) on the very next
+    seed attempt, even though nothing was ever edited. `priority` is
+    written unconditionally alongside `conditions`/`events`/`actions` in
+    `seed_event_agents()`'s own 'update' branch instead — same atomic
+    write, just not part of what this hash protects.
+    """
     import hashlib
     import json
     payload = json.dumps(
@@ -1385,16 +1426,33 @@ async def seed_event_agents() -> None:
                 continue
             row = (await s.execute(select(Agent).where(Agent.slug == spec["slug"]))).scalar_one_or_none()
             action = seed_action(row)
-            spec_hash = compute_seed_spec_hash(spec["conditions"], spec["events"], spec["actions"])
+            # `spec.get("events", [])` — NOT `spec["events"]` — 2026-10
+            # routing-tree plan: every migrated seeded agent's dict no
+            # longer carries an `events` key at all (channel selection
+            # moved to `alert_routing.py`'s per-slug override table), so
+            # a literal `spec["events"]` would raise `KeyError` for every
+            # one of them on every startup. `compute_seed_spec_hash()`
+            # deliberately still hashes an empty `[]` the same way it
+            # always hashed an explicit `events: []` (e.g.
+            # `DEPLOY_SYNC_AGENT`/`BREACH_AGENT` before this plan) — the
+            # hash's own meaning (detect an operator edit to `conditions`/
+            # `events`/`actions` since the last seed write) is unchanged;
+            # this migration does not add `priority` to it (see
+            # `compute_seed_spec_hash()`'s own docstring for why that
+            # would retroactively misclassify every already-seeded row as
+            # operator-modified on the next version bump).
+            spec_events = spec.get("events", [])
+            spec_hash = compute_seed_spec_hash(spec["conditions"], spec_events, spec["actions"])
             if action == "insert":
                 s.add(Agent(slug=spec["slug"], name=spec["name"], status="active",
                             seed_version=SEED_VERSION, seed_spec_hash=spec_hash,
-                            **event_agent_row_fields(spec["conditions"], spec["events"],
-                                                      spec["actions"])))
+                            **event_agent_row_fields(spec["conditions"], spec_events,
+                                                      spec["actions"], priority=spec.get("priority"))))
             elif action == "update":
                 row.conditions = spec["conditions"]
-                row.events = spec["events"]
+                row.events = spec_events
                 row.actions = spec["actions"]
+                row.priority = spec.get("priority")
                 row.kind = "event"
                 row.seed_version = SEED_VERSION
                 row.seed_spec_hash = spec_hash
@@ -1405,7 +1463,13 @@ async def seed_event_agents() -> None:
                 # untouched (still the hash of the ORIGINAL seed write)
                 # so a FUTURE version bump still correctly detects this
                 # same pre-existing operator edit rather than adopting
-                # the edited content as a new baseline.
+                # the edited content as a new baseline. `row.priority` is
+                # likewise NOT touched here (2026-10 routing-tree plan) —
+                # same protection umbrella as `conditions`/`events`/
+                # `actions`: nothing about this row's content is rewritten
+                # on a 'modified_skip' classification, so this new field
+                # needs no separate guard, only the discipline of not
+                # adding a `row.priority = ...` line to this branch.
                 row.seed_version = SEED_VERSION
                 sys.stderr.write(
                     f"event_agents: seed '{spec['slug']}' skipped — row was "

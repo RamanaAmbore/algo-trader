@@ -92,7 +92,7 @@ async def test_ntfy_fires_exactly_once_when_rich_alert_succeeds():
     from types import SimpleNamespace
     from backend.api.algo import event_agents
     rich_agent = SimpleNamespace(slug="agent-alert-rich", **{
-        k: event_agents.RICH_ALERT_AGENT[k] for k in ("conditions", "events", "actions")})
+        k: event_agents.RICH_ALERT_AGENT.get(k, []) for k in ("conditions", "events", "actions")})
     rec = {"ts": now, "level": "INFO", "logger": "backend.api.algo.agent_engine",
            "message": "x", "tags": ["info", "agent"], "extra": records[0]}
     with patch.object(event_agents, "_channel_enabled", lambda cap: True), \

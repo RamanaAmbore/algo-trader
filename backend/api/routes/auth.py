@@ -819,7 +819,22 @@ class AuthController(Controller):
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"Auth: watchlist seed failed for {data.username!r}: {exc}")
 
-        logger.info(f"Auth: registered {data.username!r} email={data.email!r}")
+        # Tagged so `USER_REGISTERED_AGENT` (event_agents.py) can match and
+        # deliver a Telegram+ntfy alert — 2026-10 operator-reported gap:
+        # this log line previously carried no `extra={"tags":...,
+        # "alert_event":...}` at all, so no event agent could ever see
+        # it (not a condition-matching failure — nothing to match). The
+        # pre-existing direct admin email in
+        # `_notify_admins_new_registration()` below is unrelated and
+        # unchanged. `title`/`body` feed the shared `generic_notice`
+        # renderer, same contract every other `generic_notice` caller
+        # (background.py) already follows.
+        logger.info(
+            f"Auth: registered {data.username!r} email={data.email!r}",
+            extra={"tags": ["auth"], "alert_event": "user_registered",
+                   "title": "New user registered",
+                   "body": f"{data.username} ({data.email}) registered and is pending admin approval."},
+        )
 
         # Fire emails off the event loop so SMTP latency doesn't block
         # the response. Each helper swallows its own errors internally.

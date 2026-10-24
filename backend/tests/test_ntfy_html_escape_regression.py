@@ -58,7 +58,7 @@ def _dispatch_captured(agent_key: str, extra: dict) -> dict:
     event_agents._channel_enabled = lambda cap: True
     try:
         spec = getattr(event_agents, agent_key)
-        agent = SimpleNamespace(slug=spec["slug"], **{k: spec[k] for k in ("conditions", "events", "actions")})
+        agent = SimpleNamespace(slug=spec["slug"], **{k: spec.get(k, []) for k in ("conditions", "events", "actions")})
         rec = {"ts": datetime(2026, 10, 6, 9, 0, tzinfo=timezone.utc), "level": "WARNING",
                "logger": "backend.api.algo.template_attach", "message": "x",
                "tags": ["warning", "orders"], "extra": {"tags": ["orders"], **extra}}

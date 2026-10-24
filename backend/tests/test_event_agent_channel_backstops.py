@@ -14,11 +14,22 @@ alert types in the system.
 """
 from __future__ import annotations
 
-from backend.api.algo import event_agents
+from backend.api.algo import alert_routing, event_agents
+
+
+def _resolved(agent_dict: dict) -> list[dict]:
+    """2026-10 routing-tree plan — these 4 agents no longer carry their
+    channel list directly on `events`; the real channel set now comes
+    from `alert_routing.resolve_channels()`'s per-slug override table.
+    Same resolution `_dispatch_agent` itself performs."""
+    return alert_routing.resolve_channels(
+        name=agent_dict["slug"], priority=agent_dict.get("priority"),
+        agent_events=agent_dict.get("events") or [],
+    )
 
 
 def _channels(agent_dict: dict) -> set[str]:
-    return {e.get("channel") for e in agent_dict["events"] if isinstance(e, dict)}
+    return {e.get("channel") for e in _resolved(agent_dict) if isinstance(e, dict)}
 
 
 class TestTemplateEmailBackstop:
@@ -43,7 +54,7 @@ class TestSevereAlertTelegramBackstop:
         assert "telegram" in _channels(event_agents.CHASE_CANCEL_AGENT)
 
     def test_chase_cancel_agent_still_has_ntfy_urgent(self):
-        ntfy = [e for e in event_agents.CHASE_CANCEL_AGENT["events"]
+        ntfy = [e for e in _resolved(event_agents.CHASE_CANCEL_AGENT)
                 if e.get("channel") == "ntfy"]
         assert len(ntfy) == 1 and ntfy[0].get("priority") == "urgent"
 
@@ -52,6 +63,6 @@ class TestSevereAlertTelegramBackstop:
         assert "telegram" in _channels(event_agents.TEMPLATE_ATTACH_URGENT_AGENT)
 
     def test_template_attach_urgent_agent_still_has_ntfy_urgent(self):
-        ntfy = [e for e in event_agents.TEMPLATE_ATTACH_URGENT_AGENT["events"]
+        ntfy = [e for e in _resolved(event_agents.TEMPLATE_ATTACH_URGENT_AGENT)
                 if e.get("channel") == "ntfy"]
         assert len(ntfy) == 1 and ntfy[0].get("priority") == "urgent"
