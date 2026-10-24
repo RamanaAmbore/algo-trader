@@ -14,6 +14,7 @@ so you can sign in immediately and create real users.
 import asyncio
 import base64
 import hashlib
+import html
 import hmac as _hmac
 import os
 import secrets as _stdlib_secrets
@@ -193,6 +194,27 @@ def _dispatch_async(callable_, /, *args, **kwargs) -> None:
     loop.create_task(asyncio.to_thread(callable_, *args, **kwargs))
 
 
+# 2026-10 routing-tree plan — `"auth"` was added to `LOG_TAG_TOKENS` so
+# `USER_REGISTERED_AGENT` can match the new registration log line below
+# (`_registration_alert_extra()`). `log_store.py:tags_for()` auto-tags
+# any log call with NO explicit `extra={"tags": [...]}` using the last
+# dotted component of its logger's name — `backend.api.routes.auth` for
+# every bare call in this module. Before `"auth"` was a known alert
+# tag, every bare WARNING+ call below was invisible to the whole alert
+# pipeline (not alert-shaped). Adding `"auth"` to the vocabulary
+# retroactively made all of them alert-shaped too, and since none of
+# them carry `alert_event="user_registered"`, every one would newly
+# fall through to `UNROUTED_ALERT_AGENT`'s catch-all — paging Telegram
+# + ntfy(high), with no dedup, every time any of them fires.
+# `"auth_internal"` is a deliberately UNREGISTERED tag (never added to
+# `LOG_TAG_TOKENS`) — tagging these calls with it bypasses the
+# logger-name fallback (owner tags now non-empty) without exposing them
+# to the catch-all, restoring their exact pre-"auth"-tag invisibility.
+# See `backend/tests/test_alert_routing.py`'s
+# `test_auth_internal_tagged_records_never_reach_the_catch_all`.
+_AUTH_INTERNAL_TAGS = {"tags": ["auth_internal"]}
+
+
 def _send_verify_email(display_name: str, email: str, token: str) -> None:
     """Fire-and-forget verification email. Uses the existing send_email
     helper which honours the `mail` capability flag — on dev with mail=False
@@ -213,7 +235,7 @@ sign in. You'll get a separate confirmation email once that happens.</p>
 """
     ok, msg = send_email(display_name, email, "RamboQuant: verify your email", body)
     if not ok:
-        logger.warning(f"Auth: verify email send failed for {email!r}: {msg}")
+        logger.warning(f"Auth: verify email send failed for {email!r}: {msg}", extra=_AUTH_INTERNAL_TAGS)
 
 
 def _send_reset_email(display_name: str, email: str, token: str) -> None:
@@ -230,7 +252,34 @@ existing password will continue to work.</p>
 """
     ok, msg = send_email(display_name or email, email, "RamboQuant: password reset", body)
     if not ok:
-        logger.warning(f"Auth: reset email send failed for {email!r}: {msg}")
+        logger.warning(f"Auth: reset email send failed for {email!r}: {msg}", extra=_AUTH_INTERNAL_TAGS)
+
+
+def _registration_alert_extra(username: str, email: str) -> dict:
+    """Single source of truth for the `extra` dict the new-registration
+    log line carries — both the real producer (`register()` below) and
+    `test_alert_golden.py`'s golden test build their record from THIS
+    function, so a typo in `alert_event` (or any other key) can't
+    silently diverge between what actually ships and what the test
+    pins (same pattern `test_fill_delivery_golden_via_event_agent`
+    already uses: capture the real producer's own `extra`, don't
+    hand-build a second copy of it).
+
+    `username`/`email` are both `html.escape()`'d before reaching
+    `body` — the shared `generic_notice` renderer treats `body` as real
+    HTML (sent raw to Telegram's HTML parse mode, and through
+    `_html_to_plain` for ntfy — see `event_agents.py:_render_deploy_sync`),
+    and both fields are user-supplied input at registration time. Same
+    bug class `test_ntfy_html_escape_regression.py` already guards
+    against for other renderers (a literal `<` in an unescaped field
+    can truncate or corrupt the ntfy body)."""
+    safe_username = html.escape(username)
+    safe_email = html.escape(email)
+    return {
+        "tags": ["auth"], "alert_event": "user_registered",
+        "title": "New user registered",
+        "body": f"{safe_username} ({safe_email}) registered and is pending admin approval.",
+    }
 
 
 def _notify_admins_new_registration(user: User) -> None:
@@ -254,9 +303,9 @@ users page</a>.</p>
         try:
             ok, msg = send_email("Admin", addr, f"RamboQuant: new registration — {user.username}", body)
             if not ok:
-                logger.warning(f"Auth: admin notify failed for {addr!r}: {msg}")
+                logger.warning(f"Auth: admin notify failed for {addr!r}: {msg}", extra=_AUTH_INTERNAL_TAGS)
         except Exception as exc:  # noqa: BLE001 — defensive, never block register
-            logger.warning(f"Auth: admin notify exception for {addr!r}: {exc}")
+            logger.warning(f"Auth: admin notify exception for {addr!r}: {exc}", extra=_AUTH_INTERNAL_TAGS)
 
 
 # ---------------------------------------------------------------------------
@@ -447,7 +496,8 @@ async def _auth_nav_live_session_fallback(
     except Exception as _oe:
         logger.warning(
             f"_compute_firm_nav: live-session baseline-diff override "
-            f"failed (falling back to legacy day_change_val sums): {_oe}"
+            f"failed (falling back to legacy day_change_val sums): {_oe}",
+            extra=_AUTH_INTERNAL_TAGS,
         )
     return _auth_nav_pnl_fallback(total_h, total_p, pos_pnl)
 
@@ -495,7 +545,8 @@ async def _auth_nav_closed_hours_fallback(
             logger.warning(
                 "_compute_firm_nav: closed-hours snapshot path returned no "
                 "data (positions and holdings snapshots both unavailable) "
-                "— falling back to legacy live-fetch sums"
+                "— falling back to legacy live-fetch sums",
+                extra=_AUTH_INTERNAL_TAGS,
             )
             return _auth_nav_pnl_fallback(total_h, total_p, pos_pnl)
         _p_total = next(
@@ -523,7 +574,8 @@ async def _auth_nav_closed_hours_fallback(
     except Exception as _se:
         logger.warning(
             f"_compute_firm_nav: closed-hours snapshot path failed "
-            f"(falling back to legacy live-fetch sums): {_se}"
+            f"(falling back to legacy live-fetch sums): {_se}",
+            extra=_AUTH_INTERNAL_TAGS,
         )
         return _auth_nav_pnl_fallback(total_h, total_p, pos_pnl)
 
@@ -626,7 +678,7 @@ async def _compute_firm_nav() -> tuple[float, float, float, str, bool]:
                 df_h, sum_h = await df_h_fut
                 df_p, sum_p = await df_p_fut
         except Exception as _fe:
-            logger.warning(f"_compute_firm_nav: holdings/positions fetch failed: {_fe}")
+            logger.warning(f"_compute_firm_nav: holdings/positions fetch failed: {_fe}", extra=_AUTH_INTERNAL_TAGS)
             import pandas as _pd
             df_h, sum_h, df_p, sum_p = (
                 _pd.DataFrame(), _pd.DataFrame(), _pd.DataFrame(), _pd.DataFrame()
@@ -659,7 +711,7 @@ async def _compute_firm_nav() -> tuple[float, float, float, str, bool]:
                 total_h, total_p, pos_pnl
             )
     except Exception as e:
-        logger.warning(f"_compute_firm_nav: broker fetch failed: {e}")
+        logger.warning(f"_compute_firm_nav: broker fetch failed: {e}", extra=_AUTH_INTERNAL_TAGS)
         outer_failed = True
 
     if outer_failed or nav_understated:
@@ -817,7 +869,7 @@ class AuthController(Controller):
         try:
             await seed_default_watchlists_for_user(new_user_id)
         except Exception as exc:  # noqa: BLE001
-            logger.warning(f"Auth: watchlist seed failed for {data.username!r}: {exc}")
+            logger.warning(f"Auth: watchlist seed failed for {data.username!r}: {exc}", extra=_AUTH_INTERNAL_TAGS)
 
         # Tagged so `USER_REGISTERED_AGENT` (event_agents.py) can match and
         # deliver a Telegram+ntfy alert — 2026-10 operator-reported gap:
@@ -826,14 +878,12 @@ class AuthController(Controller):
         # it (not a condition-matching failure — nothing to match). The
         # pre-existing direct admin email in
         # `_notify_admins_new_registration()` below is unrelated and
-        # unchanged. `title`/`body` feed the shared `generic_notice`
-        # renderer, same contract every other `generic_notice` caller
-        # (background.py) already follows.
+        # unchanged. `extra` built by `_registration_alert_extra()` —
+        # the single source of truth this and the golden test both read
+        # from — see that function's own docstring.
         logger.info(
             f"Auth: registered {data.username!r} email={data.email!r}",
-            extra={"tags": ["auth"], "alert_event": "user_registered",
-                   "title": "New user registered",
-                   "body": f"{data.username} ({data.email}) registered and is pending admin approval."},
+            extra=_registration_alert_extra(data.username, data.email),
         )
 
         # Fire emails off the event loop so SMTP latency doesn't block
@@ -962,7 +1012,8 @@ class AuthController(Controller):
             await session.commit()
             logger.warning(
                 f"IMPERSONATE start: actor={actor_username!r} ({actor_role}) "
-                f"→ target={target.username!r} ({target.role}) event_id={ev.id}"
+                f"→ target={target.username!r} ({target.role}) event_id={ev.id}",
+                extra=_AUTH_INTERNAL_TAGS,
             )
 
             token = _make_token(target, imp_by=actor_username, ttl_seconds=_IMPERSONATE_TTL_SECONDS)
@@ -1000,7 +1051,8 @@ class AuthController(Controller):
             if not actor:
                 raise HTTPException(status_code=404, detail="Original actor not found")
             logger.warning(
-                f"IMPERSONATE end: actor={imp_by!r} ← target={target_username!r}"
+                f"IMPERSONATE end: actor={imp_by!r} ← target={target_username!r}",
+                extra=_AUTH_INTERNAL_TAGS,
             )
             new_token = _make_token(actor)
             return LoginResponse(

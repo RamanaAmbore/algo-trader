@@ -258,3 +258,42 @@ def test_catch_all_warning_logs_at_most_once_per_name_priority_combo(monkeypatch
     finally:
         alert_routing._logger.removeHandler(caplog.handler)
     assert len(caplog.records) == 2
+
+
+# ── Confirmed-incident regression: the new `auth` tag's blast radius ─────
+
+def test_auth_internal_tagged_records_never_reach_the_catch_all():
+    """2026-10 — adding `"auth"` to `LOG_TAG_TOKENS` (so
+    `USER_REGISTERED_AGENT` can match the real registration record) was
+    found, via advisor review, to retroactively expose every OTHER
+    pre-existing bare `logger.warning(...)` call in `routes/auth.py` to
+    `UNROUTED_ALERT_AGENT`'s catch-all — `log_store.py:tags_for()` auto-
+    tags any untagged record with the last dotted component of its
+    logger's name (`"auth"` for this whole module), and `"auth"` is now
+    a known alert tag. `routes/auth.py` insulates those 12 call sites
+    with `extra={"tags": ["auth_internal"]}` (a deliberately
+    UNREGISTERED tag) instead. This test proves the insulation actually
+    works: a WARNING-level record tagged only `"auth_internal"` must
+    never be classified alert-shaped, while the SAME record tagged
+    `"auth"` instead (simulating what would happen WITHOUT the fix) IS
+    alert-shaped — confirming this test would have caught the
+    regression before it shipped."""
+    from backend.api.algo import event_agents as ea
+
+    insulated = {"ts": None, "level": "WARNING", "logger": "backend.api.routes.auth",
+                 "message": "Auth: watchlist seed failed for 'x': boom",
+                 "tags": ["warning", "auth_internal"], "extra": {}}
+    assert ea._looks_alert_shaped(insulated) is False
+
+    # Sanity check the mechanism itself: the SAME shape, but tagged
+    # "auth" instead, IS alert-shaped — proving the test isn't
+    # vacuously passing for some unrelated reason (e.g. a typo'd field
+    # name that would make _looks_alert_shaped always return False).
+    unfixed = {**insulated, "tags": ["warning", "auth"]}
+    assert ea._looks_alert_shaped(unfixed) is True
+
+    # Confirm "auth_internal" was deliberately never registered in the
+    # known-alert-tag vocabulary (that's what makes the insulation
+    # work), while "auth" genuinely is (needed for USER_REGISTERED_AGENT).
+    assert "auth_internal" not in ea._known_alert_tags()
+    assert "auth" in ea._known_alert_tags()

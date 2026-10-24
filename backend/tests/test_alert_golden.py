@@ -442,8 +442,14 @@ async def test_user_registered_agent_sends_telegram_and_ntfy_high(monkeypatch):
     full round trip: the real tagged record `auth.py` now emits ->
     `USER_REGISTERED_AGENT`'s condition matches -> the shared
     `generic_notice` renderer -> telegram (HTML) + ntfy (priority
-    'high', not 'urgent' — not time-critical)."""
+    'high', not 'urgent' — not time-critical).
+
+    Builds `extra` from the REAL producer helper
+    (`routes.auth._registration_alert_extra`), not a hand-typed copy —
+    a typo in the real `alert_event`/`tags` string would make this test
+    fail instead of silently passing against a stale duplicate."""
     from backend.api.algo import event_agents
+    from backend.api.routes.auth import _registration_alert_extra
     import backend.shared.helpers.utils as u
     sent = {"tg": [], "ntfy": []}
     monkeypatch.setattr(u, "is_enabled", lambda cap: True)
@@ -451,17 +457,31 @@ async def test_user_registered_agent_sends_telegram_and_ntfy_high(monkeypatch):
                         ("telegram", lambda t, b, tg=None, **k: sent["tg"].append(tg or b)))
     monkeypatch.setitem(event_agents.CHANNELS, "ntfy",
                         ("ntfy", lambda t, b, tg=None, priority=None: sent["ntfy"].append((t, b, priority))))
+    extra = _registration_alert_extra("newtrader", "newtrader@example.com")
     body = "newtrader (newtrader@example.com) registered and is pending admin approval."
+    assert extra["body"] == body, "fixture sanity: no escaping needed for this plain username/email"
     rec = {"ts": _dt.datetime(2026, 10, 6, 9, 0, tzinfo=_dt.timezone.utc), "level": "INFO",
            "logger": "backend.api.routes.auth", "message": "x", "tags": ["info", "auth"],
-           "extra": {"tags": ["auth"], "alert_event": "user_registered",
-                     "title": "New user registered", "body": body}}
+           "extra": extra}
     agent = SimpleNamespace(slug="user-registered-alert",
                             **{k: event_agents.USER_REGISTERED_AGENT.get(k, [])
                                for k in ("conditions", "events", "actions")})
     await event_agents.dispatch([rec], [agent])
     assert sent["tg"] == [body]
     assert sent["ntfy"] == [("New user registered", body, "high")]
+
+
+def test_registration_alert_extra_escapes_html_in_username_and_email():
+    """2026-10 audit fix (same bug class as
+    `test_ntfy_html_escape_regression.py`): a literal `<`/`>`/`&` in a
+    user-supplied username or email must not reach `generic_notice`'s
+    HTML `body` unescaped — it would either corrupt Telegram's HTML
+    parse mode or get double-escaped/truncated downstream."""
+    from backend.api.routes.auth import _registration_alert_extra
+    extra = _registration_alert_extra("bad<script>", "x@y.com&z")
+    assert "<script>" not in extra["body"]
+    assert "&lt;script&gt;" in extra["body"]
+    assert "x@y.com&amp;z" in extra["body"]
 
 
 @pytest.mark.asyncio
