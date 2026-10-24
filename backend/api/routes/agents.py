@@ -130,6 +130,11 @@ class AgentInfo(msgspec.Struct):
     # Agent.given in backend/api/models.py). [] for every agent that
     # doesn't use GIVEN.
     given:                 list       = msgspec.field(default_factory=list)
+    # Grammar-unification plan (2026-10) — the unconditional preamble
+    # (every statement before `WHEN`, or the whole statement when there
+    # is no `WHEN`). See Agent.preamble in backend/api/models.py for the
+    # shape. [] for every agent with no preamble calls.
+    preamble:              list       = msgspec.field(default_factory=list)
 
 
 class AgentCreateRequest(msgspec.Struct):
@@ -196,6 +201,8 @@ class AgentCreateRequest(msgspec.Struct):
     # RamboQL Part 2 (2026-10) — server-evaluated GIVEN bindings. See
     # AgentInfo.given above for the full shape/rationale.
     given:                  list       = msgspec.field(default_factory=list)
+    # Grammar-unification plan (2026-10) — see AgentInfo.preamble above.
+    preamble:                list      = msgspec.field(default_factory=list)
 
 
 class AgentUpdateRequest(msgspec.Struct):
@@ -239,6 +246,9 @@ class AgentUpdateRequest(msgspec.Struct):
     # RamboQL Part 2 (2026-10) — server-evaluated GIVEN bindings. None =
     # unchanged, same convention as every other optional field here.
     given:                 list | None = None
+    # Grammar-unification plan (2026-10) — None = unchanged, same
+    # convention. See AgentInfo.preamble above.
+    preamble:              list | None = None
 
 
 class AgentEventInfo(msgspec.Struct):
@@ -603,6 +613,7 @@ def _agent_to_info(a: Agent) -> AgentInfo:
         legacy_template_id=getattr(a, "legacy_template_id", None),
         bracket_config=getattr(a, "bracket_config", None),
         given=list(getattr(a, "given", None) or []),
+        preamble=list(getattr(a, "preamble", None) or []),
     )
 
 
@@ -996,6 +1007,7 @@ class AgentController(Controller):
                 cli_source=data.cli_source,
                 group_name=data.group,
                 given=list(data.given or []),
+                preamble=list(data.preamble or []),
             )
             session.add(agent)
             await session.commit()
@@ -1094,7 +1106,7 @@ class AgentController(Controller):
                           'events', 'actions', 'scope', 'schedule',
                           'cooldown_minutes', 'debounce_minutes',
                           'tags', 'blackout_windows', 'tier', 'topic',
-                          'cli_source', 'given'):
+                          'cli_source', 'given', 'preamble'):
                 val = getattr(data, field, None)
                 if val is not None:
                     setattr(agent, field, val)
@@ -1155,6 +1167,27 @@ class AgentController(Controller):
             agent = result.scalar_one_or_none()
             if not agent:
                 raise HTTPException(status_code=404, detail=f"Agent '{slug}' not found")
+            # Grammar-unification plan (2026-10) — a genuine
+            # inactive/paused -> active transition re-arms this agent's
+            # once-per-activation preamble entries (order/close_position/
+            # cancel_order/bracket/...) by resetting `preamble_fired_at`
+            # to NULL, so agent_engine._cycle_claim_preamble_activation()
+            # fires them again on the next poll cycle. Re-clicking
+            # activate on an ALREADY-active agent (status already
+            # "active") must NOT reset this — that would re-fire a real
+            # broker order every time an operator happens to hit
+            # Activate on a row that's already running. The internal
+            # cooldown->active flip (_cycle_persist_untriggered_state)
+            # never calls this function at all, so it can't trigger this
+            # reset either — only the real operator-facing activate
+            # route (and /interpret, which shares this body) can.
+            # "status != active" alone is WRONG here — "cooldown" is a
+            # live, actively-polled state (`_cycle_load_agents` selects
+            # `status.in_(["active", "cooldown"])`), so clicking Activate
+            # on a cooldown agent must not re-arm the one-shot either;
+            # only a genuine inactive/paused -> active transition does.
+            if status == "active" and agent.status not in ("active", "cooldown"):
+                agent.preamble_fired_at = None
             agent.status = status
             await session.commit()
         return {"detail": f"Agent '{slug}' {'activated' if status == 'active' else 'deactivated'}"}

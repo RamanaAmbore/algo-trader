@@ -88,6 +88,8 @@ async def sqlite_env():
         cli_source           = Column(Text, nullable=True)
         group_name           = Column(String(64), nullable=True)
         given                = Column(JSON, nullable=True)
+        preamble             = Column(JSON, nullable=True)
+        preamble_fired_at    = Column(DateTime, nullable=True)
         conditions           = Column(JSON, nullable=False, default=dict)
         events               = Column(JSON, nullable=False, default=list)
         actions              = Column(JSON, nullable=False, default=list)

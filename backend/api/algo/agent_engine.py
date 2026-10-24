@@ -3312,6 +3312,324 @@ def _cycle_evaluate_given_bindings(agent, v2_ctx, context: dict) -> None:
     context.setdefault("given", {})[agent.id] = bindings
 
 
+# Grammar-unification plan, Design item 0 — saved cycle-agent `preamble`
+# execution. See `Agent.preamble` (models.py) for the compiled shape and
+# `_cycle_run_preamble`'s own docstring below for the full split.
+_PREAMBLE_EVERY_CYCLE_TYPES = frozenset({"log", "help"})
+
+
+def _cycle_agent_is_preamble_only(agent) -> bool:
+    """True when this saved agent is a preamble-only statement — one or
+    more calls with NO `WHEN ... DO ...` pair at all (the plan's own
+    canonical worked example: `order(...)` alone, nothing else).
+
+    Why this matters: a preamble-only statement's `conditions` field is
+    NOT a real breach condition — the frontend compiler emits the same
+    always-true sentinel leaf (`avail_margin@funds.any_acct >=
+    -999999999`) the existing `market-open-nse`/`market-preclose-mcx`
+    scheduled agents use purely to drive a `fire_at_time` gate (see
+    `agentsGrammar.test.js`'s "preamble-only statement" fixture). Without
+    this guard, that sentinel would match on EVERY tick, and
+    `_v2_send_rich_alert()` sends its rich alert log record
+    UNCONDITIONALLY on a match — it never checks `agent.events` at all
+    (that check only happens afterward, in `dispatch()`, for the
+    telegram/email/ntfy channels `_v2_send_rich_alert` itself does NOT
+    own) — so a preamble-only agent with no real condition would fire a
+    spurious "breach" alert every cooldown window forever, burn
+    `lifespan_max_fires`, and flip `status` to `cooldown`/back. Confirmed
+    by reading `_v2_send_rich_alert`'s body: it logs
+    `extra={"alert_event": "rich_alert", ...}` on every call with no
+    channel-membership gate.
+
+    Discriminator (backend-only, no new compiled field needed):
+    `preamble` is non-empty AND `actions`/`events` are BOTH empty.
+    Every pre-existing agent (predating this plan) has `preamble` NULL/
+    absent — the compiled field is only spliced in when non-empty (see
+    `compileAgentStmt`) — so this is False for all of them, by
+    construction. A statement with a real `WHEN ... DO ...` pair always
+    produces a non-empty `actions` or `events` — the compiler itself
+    rejects `DO nop` (`DO must have at least one real action or alert`)
+    — so this can never misclassify a genuine conditional agent that
+    also happens to carry preamble calls (preamble + WHEN/DO coexist;
+    only the preamble-ONLY case, no WHEN/DO at all, trips this).
+
+    Type-checked, not just truthy-checked: `agent.preamble` is required
+    to be a genuinely non-empty `list` (the real JSONB column's only two
+    possible decoded shapes are `None` or a `list` — never anything
+    else). A bare truthy check (`bool(getattr(agent, "preamble", None))`)
+    mis-fired on a plain `MagicMock()` test double that never explicitly
+    sets `.preamble` — Python auto-vivifies an unset Mock attribute into
+    a fresh child Mock, which is truthy by default — misclassifying an
+    agent with real `actions=[]`/`events=[]` (both empty, as
+    `test_agent_suppression.py`'s own low-tier test agent has) as
+    preamble-only and silently discarding its real matches. Confirmed
+    via a live regression in that file before this fix."""
+    preamble = getattr(agent, "preamble", None)
+    if not isinstance(preamble, list) or not preamble:
+        return False
+    return not (getattr(agent, "actions", None) or []) \
+        and not (getattr(agent, "events", None) or [])
+
+
+def _cycle_preamble_has_once_entries(preamble: list) -> bool:
+    """True when `preamble` contains at least one entry that belongs to
+    the once-per-activation bucket (anything that isn't `log`/`help`/
+    `alert` — see `_cycle_run_preamble`). Used to skip the atomic DB
+    claim entirely for a preamble made up only of every-cycle entries,
+    the common case for a diagnostic-only preamble."""
+    for entry in preamble or []:
+        if isinstance(entry, dict) and entry.get("type") not in (
+            "log", "help", "alert",
+        ):
+            return True
+    return False
+
+
+class _PreambleAlertAgentView:
+    """Lightweight read-only proxy so a preamble `alert(...)` entry's own
+    `events` list can be dispatched through the EXACT SAME
+    `events.dispatch()` function a matched cycle agent's own `events`
+    field already uses — without mutating the real ORM `Agent` row's
+    `events` column in place (which would mark it dirty for the next
+    commit and risk persisting the preamble's transient events list as
+    the agent's real stored `events`).
+
+    `events` is the preamble entry's own list. `actions` is forced to
+    `[]` so `dispatch()`'s `_describe_actions(agent.actions)` call never
+    describes this agent's real DO-gated actions inside a preamble
+    alert's body. Every other attribute (`id`, `slug`, `name`, `tier`,
+    `topic`, …) delegates to the real agent unchanged — `dispatch()`
+    reads `agent.id` to persist the `agent_events` row under this
+    agent's own real id, which is correct: it genuinely is this agent's
+    alert, just not one tied to a condition match."""
+
+    def __init__(self, agent, events: list):
+        self._agent = agent
+        self.events = events
+        self.actions = []
+
+    def __getattr__(self, name):
+        return getattr(self._agent, name)
+
+
+async def _cycle_claim_preamble_activation(
+    agent, *, alert_state: dict, sim_mode: bool, replay_mode: bool,
+    bypass_schedule: bool, now,
+) -> bool:
+    """Atomically claim this agent's once-per-activation preamble slot.
+
+    Returns True iff THIS call is the one that gets to run the
+    once-per-activation side-effecting preamble entries (order/
+    close_position/cancel_order/bracket/…) for this activation. Returns
+    False when they already fired since the last real activation (or,
+    in sim/replay/bypass_schedule, already fired this isolated run).
+
+    Claim-then-fire, not fire-then-claim: `execute()` swallows per-action
+    exceptions and the exchange-open gate can silently skip a broker
+    call, so "did it actually fire" can't be reliably observed after the
+    fact from this caller. Claiming FIRST means a DB-write failure (or a
+    process crash between claim and fire) fails safe — no fire this
+    cycle, retried next cycle — rather than firing an order and then
+    failing to record that it fired, which would re-fire indefinitely
+    (the exact P1 this item exists to close). The accepted tradeoff: an
+    order whose own broker call is itself skipped by a gate still
+    consumes the one-shot — the operator re-activates the agent to
+    retry, same outcome as any other once-per-activation entry. The
+    conditional `WHERE preamble_fired_at IS NULL` UPDATE also makes two
+    concurrent run_cycle ticks for the same agent race-safe: at most one
+    can see `rowcount > 0`.
+
+    sim/bypass_schedule (the simulator + isolated manual-fire/dry-run
+    paths) never touch the real `preamble_fired_at` DB column — a
+    simulator run must not consume a live agent's real one-shot.
+    Tracked instead on an ISOLATED per-run set on `alert_state`,
+    mirroring the existing `_sim_latch` isolation pattern used elsewhere
+    in this module. `replay_mode` is checked here too, for defense in
+    depth, but `_cycle_run_preamble`'s own top-of-function early return
+    already skips the ENTIRE preamble (not just this claim) whenever
+    `replay_mode` is set — this function's caller never actually reaches
+    here with `replay_mode=True` on the live path; see that function's
+    docstring for why (the replay driver rebuilds `alert_state` fresh
+    every historical tick, so there is no "once per activation" to
+    anchor to, and `actions_sim.py:_replay_paper_trade` has no
+    action-type filter at all).
+    """
+    if sim_mode or replay_mode or bypass_schedule:
+        fired = alert_state.setdefault('_sim_preamble_fired', set())
+        if agent.id in fired:
+            return False
+        fired.add(agent.id)
+        return True
+    # Always the real wall-clock UTC instant, never the caller's `now` —
+    # `now` can be a naive IST scenario timestamp (simulator/replay
+    # ticks), which would corrupt a TIMESTAMPTZ column. This mirrors
+    # `_ae_dispatch_survivor_entry`'s own `last_triggered_at=datetime.
+    # now(timezone.utc)` write, not `now` either.
+    fired_ts = datetime.now(timezone.utc)
+    async with async_session() as session:
+        result = await session.execute(
+            update(Agent)
+            .where(Agent.id == agent.id, Agent.preamble_fired_at.is_(None))
+            .values(preamble_fired_at=fired_ts)
+        )
+        await session.commit()
+    claimed = (result.rowcount or 0) > 0
+    if claimed:
+        # Keep the in-memory row consistent with the DB for the rest of
+        # this tick (e.g. a later re-read of `agent.preamble_fired_at`
+        # within the same process shouldn't see the stale None).
+        agent.preamble_fired_at = fired_ts
+    return claimed
+
+
+async def _cycle_run_preamble(
+    agent, context: dict, now, *, sim_mode: bool, replay_mode: bool = False,
+    bypass_schedule: bool = False, alert_state: dict, broadcast_fn=None,
+) -> None:
+    """Execute a saved cycle agent's `preamble` list (grammar-
+    unification plan, Design item 0).
+
+    Split by statement type:
+      - `log` / `help` — run on EVERY call (every poll cycle this agent
+        is evaluated), dispatched via the EXACT SAME `execute()` path
+        `agent.actions`/DO entries already use (mode resolution, the
+        exchange-open gate, $row/$given resolution, audit logging — all
+        for free, identical to a DO-gated `log`/`help` call).
+      - `alert` — also runs every cycle (a notification call, not a
+        broker action — no real-money risk from repetition). Routed
+        through `events.dispatch()` via `_PreambleAlertAgentView` so it
+        is the IDENTICAL channel-dispatch function a matched agent's own
+        `events` field uses, not a reimplementation.
+      - Everything else (`order`/`place_order`/`close_position`/
+        `cancel_order`, and any other action type) fires AT MOST ONCE
+        per agent activation — gated by
+        `_cycle_claim_preamble_activation()`. This is the direct fix for
+        the audit's confirmed P1 finding (a side-effecting preamble call
+        must never place a real broker order on every poll cycle).
+      - `bracket` specifically: there is no registered action-dispatch
+        handler anywhere (`_LIVE_ACTION_HANDLERS`/`_NOOP_ACTION_HANDLERS`
+        in actions.py) for programmatic bracket creation/attach from an
+        embedded call — confirmed by grep, not assumed. Rather than let
+        it fall through to `execute()` (whose sim-mode branch can return
+        a silent "success" for an unregistered type — see
+        `actions_sim.py:_sim_paper_trade`'s non-order fallthrough — which
+        would violate "never silently do nothing without a trace"), it
+        is special-cased here: an explicit WARNING log, once per
+        activation (not spammed every poll cycle), and otherwise a
+        no-op. Building a real bracket-creation action handler is out of
+        scope for this item — flagged as a follow-up (no CLAUDE.md entry
+        exists for this yet; the doc-sync pass that lands after this
+        item ships owns adding one).
+
+    Never raises — mirrors `_cycle_evaluate_given_bindings`'s "no
+    exception may abort run_cycle for other agents" contract; every
+    per-entry failure is caught, logged, and the loop continues.
+    """
+    preamble = getattr(agent, "preamble", None)
+    # Type-checked, not just falsy-checked — a bare `or []` fallback
+    # isn't enough: a non-list truthy value (e.g. a raw/hand-edited DB
+    # row where `preamble` was written as a scalar instead of a JSON
+    # array) would reach `_cycle_preamble_has_once_entries(preamble)` or
+    # `for entry in preamble:` below and raise, outside the per-entry
+    # try/except this function otherwise guarantees — unlike every
+    # per-entry failure here, that would abort run_cycle's entire
+    # per-agent loop for every agent still queued this tick. See
+    # `_cycle_agent_is_preamble_only`'s docstring for the same guard's
+    # other real-world trigger (an unconfigured MagicMock test double).
+    if not isinstance(preamble, list) or not preamble:
+        return
+    if replay_mode:
+        # Replay rebuilds `alert_state` fresh every historical tick (the
+        # backtest driver's own architecture, not this function's
+        # concern) — there is no "once per activation" to anchor to, and
+        # `actions_sim.py:_replay_paper_trade` has NO action-type filter
+        # at all: it writes a `mode='replay'` AlgoOrder row for ANY
+        # action type, including a diagnostic `log`/`help` call
+        # (`symbol = f"{agent.slug}-{action_type}"` fallback confirms
+        # it was never meant to special-case non-broker types). Without
+        # this guard, every every-cycle preamble entry would pollute
+        # backtest results with a spurious informational order row on
+        # EVERY tick, and the once-per-activation entries would do the
+        # same (their claim resets every tick along with alert_state).
+        # Skip the entire preamble during replay — informational/
+        # backtest-only, must never be a vector for spurious writes or
+        # real notification sends (see the `alert`-specific rationale
+        # this subsumes, below).
+        return
+
+    action_ctx = dict(context)
+    action_ctx["account"] = "TOTAL"
+    action_ctx["sim_mode"] = sim_mode
+
+    can_fire_once = False
+    if _cycle_preamble_has_once_entries(preamble):
+        try:
+            can_fire_once = await _cycle_claim_preamble_activation(
+                agent, alert_state=alert_state, sim_mode=sim_mode,
+                replay_mode=replay_mode, bypass_schedule=bypass_schedule, now=now,
+            )
+        except Exception as e:
+            # Fail safe, not fail loud — run_cycle's per-agent loop has
+            # no surrounding try/except (same contract
+            # _cycle_evaluate_given_bindings documents), so letting this
+            # escape would abort evaluation for every agent still queued
+            # this tick. A DB blip here means the once-per-activation
+            # entries simply don't fire THIS cycle (retried next cycle,
+            # since `preamble_fired_at` was never actually written) —
+            # the every-cycle entries (log/help/alert) below are
+            # unaffected either way.
+            logger.warning(
+                f"Agent [{agent.slug}]: preamble activation claim failed "
+                f"— once-per-activation entries skipped this cycle: {e}"
+            )
+            can_fire_once = False
+
+    for entry in preamble:
+        if not isinstance(entry, dict):
+            continue
+        etype = entry.get("type")
+        try:
+            if etype == "alert":
+                # replay_mode is already handled by the top-of-function
+                # early return above (the whole preamble is skipped in
+                # replay) — nothing replay-specific needed here.
+                events_list = entry.get("events") or []
+                if not events_list:
+                    continue
+                shim = _PreambleAlertAgentView(agent, events_list)
+                eval_result = EvalResult(
+                    triggered=True,
+                    condition_text=f"{getattr(agent, 'name', agent.slug)} — preamble alert",
+                    detail={},
+                )
+                await dispatch(
+                    shim, eval_result, broadcast_fn, sim_mode=sim_mode, context=context,
+                )
+            elif etype in _PREAMBLE_EVERY_CYCLE_TYPES:
+                params = entry.get("params") or {}
+                await execute(agent, [{"type": etype, "params": params}], dict(action_ctx))
+            else:
+                # Once-per-activation bucket — order/place_order/
+                # close_position/cancel_order, bracket, and any other
+                # action type. Fail-safe default: anything not
+                # explicitly log/help/alert is treated as side-effecting
+                # and gated on `can_fire_once`.
+                if not can_fire_once:
+                    continue
+                if etype == "bracket":
+                    logger.warning(
+                        f"Agent [{agent.slug}]: preamble 'bracket' entry "
+                        "has no registered action-dispatch handler "
+                        "(programmatic bracket creation/attach from a "
+                        "preamble call is not implemented) — skipped."
+                    )
+                    continue
+                params = entry.get("params") or {}
+                await execute(agent, [{"type": etype, "params": params}], dict(action_ctx))
+        except Exception as e:
+            logger.error(f"Agent [{agent.slug}]: preamble entry {etype!r} failed — {e}")
+
+
 def _cycle_evaluate_agent(agent, context: dict, cfg: dict, now, alert_state: dict,
                           *, bypass_schedule: bool = False) -> tuple[list, list]:
     """Build a V2Context for the agent and run the condition tree evaluator.
@@ -3620,6 +3938,29 @@ async def _ae_cycle_eval_and_buffer(
     matches, observations = _cycle_evaluate_agent(
         agent, context, cfg, now, alert_state, bypass_schedule=bypass_schedule,
     )
+    # Grammar-unification plan, Design item 0 — preamble execution runs
+    # right after condition evaluation, UNCONDITIONALLY (before the
+    # in_cooldown check below, and regardless of `matches`) — same
+    # "every poll cycle this agent is evaluated" spirit as the recovery
+    # pass immediately below, and the natural place in this function's
+    # control flow given `_cycle_evaluate_agent` itself is a sync `def`
+    # (many existing tests call it directly and expect a sync tuple
+    # return, so it was not converted to async — see
+    # `_cycle_run_preamble`'s own docstring for the per-entry split).
+    await _cycle_run_preamble(
+        agent, context, now, sim_mode=sim_mode, replay_mode=replay_mode,
+        bypass_schedule=bypass_schedule, alert_state=alert_state,
+        broadcast_fn=broadcast_fn,
+    )
+    if _cycle_agent_is_preamble_only(agent):
+        # A preamble-only statement's `conditions` is the always-true
+        # sentinel leaf, not a real breach condition — it must never
+        # drive the normal match/recovery/debounce/buffer-fire/cooldown
+        # machinery (see `_cycle_agent_is_preamble_only`'s own docstring
+        # for the confirmed spurious-rich-alert failure mode this
+        # guards against). The preamble itself already ran above; there
+        # is nothing else for this agent to do this tick.
+        return
     # Recovery pass runs UNCONDITIONALLY, on the RAW evaluator result —
     # before debounce filtering (which can suppress `matches` to [] for
     # reasons unrelated to the underlying condition, e.g. "not sustained

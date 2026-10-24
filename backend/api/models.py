@@ -1066,6 +1066,34 @@ class Agent(Base):
     # exactly like an empty/absent list.
     given: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
 
+    # Unconditional preamble (grammar-unification plan, 2026-10) — a list
+    # of `{"type": "alert", "events": [...]}` or `{"type": <action_type>,
+    # "params": {...}}` dicts, in declaration order, for every statement
+    # the operator wrote BEFORE `WHEN` (or the whole statement, when
+    # there's no `WHEN` at all). Compiled by the frontend's
+    # `compilePreambleClause` — see that function's own docstring for the
+    # exact shape. NULL/empty for every agent predating this feature
+    # (nullable additive `ADD COLUMN`, same convention as `given`/
+    # `cli_source`/`group_name` — no DB-level default). Executed by
+    # `agent_engine._cycle_run_preamble()`: `log`/`help`/`alert` entries
+    # run every poll cycle; every other entry (`order`/`close_position`/
+    # `cancel_order`/`bracket`/etc.) fires at most once per agent
+    # activation, gated by `preamble_fired_at` below.
+    preamble: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+
+    # Once-per-activation marker for `preamble`'s side-effecting entries
+    # (see `agent_engine._cycle_claim_preamble_activation()`). NULL means
+    # "not yet fired since the last real activation" — set to the firing
+    # timestamp the first time a side-effecting preamble entry runs after
+    # activation, via an atomic conditional UPDATE (claim-then-fire, not
+    # fire-then-claim — see that function's own docstring for why).
+    # Reset back to NULL by `routes/agents.py:_age_set_status()` only on
+    # a genuine inactive/paused -> active transition, never on the
+    # internal cooldown->active flip `_cycle_persist_untriggered_state`
+    # performs every tick (that is not a real re-activation).
+    preamble_fired_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+
     # Evaluation config
     scope: Mapped[str]           = mapped_column(String(16), nullable=False, default="per_account")
     schedule: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, default="market_hours")

@@ -1070,6 +1070,29 @@ async def _migrate_agents_given(conn) -> None:
     ))
 
 
+async def _migrate_agents_preamble(conn) -> None:
+    """Additive migration — `agents.preamble` + `agents.preamble_fired_at`
+    (grammar-unification plan, Design item 0/2). Mirrors
+    `_migrate_agents_given`'s exact pattern: runs inside init_db's normal
+    `engine.begin()` transaction, `SET LOCAL lock_timeout` bounds how
+    long this can wait behind any in-flight row lock on `agents`, plain
+    `ADD COLUMN IF NOT EXISTS` (nullable, no default at the DDL level) so
+    it's a no-op on an already-migrated DB and safe on a fresh one. No
+    index on either column — `preamble` is never queried by WHERE
+    clause, only read per-row by `agent_engine._cycle_run_preamble()`;
+    `preamble_fired_at` is only ever compared against a single row's own
+    id in the atomic claim UPDATE (`agent_engine._cycle_claim_preamble_
+    activation()`), never scanned."""
+    from sqlalchemy import text
+    await conn.execute(text("SET LOCAL lock_timeout = '5s'"))
+    await conn.execute(text(
+        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS preamble JSONB"
+    ))
+    await conn.execute(text(
+        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS preamble_fired_at TIMESTAMPTZ"
+    ))
+
+
 async def _migrate_agents_bracket_columns(conn) -> None:
     """Additive migration — `agents.legacy_template_id` +
     `agents.bracket_config` (Sprint E, Agent/Bracket/Template
@@ -1235,6 +1258,7 @@ async def init_db() -> None:
         await _migrate_order_templates_group_and_tags(conn)
         await _migrate_agents_bracket_columns(conn)
         await _migrate_agents_given(conn)
+        await _migrate_agents_preamble(conn)
         await _migrate_drop_position_pairs_table(conn)
         await _migrate_market_special_sessions_source(conn)
     logger.info("Database: tables verified")
