@@ -468,6 +468,25 @@ describe('submitConsoleAgent', () => {
     const payload = createAgent.mock.calls[0][0];
     expect(payload.preamble).toEqual(preamble);
   });
+
+  // Design item 0.C — CREATE has no existing row to be sticky against
+  // (unlike UPDATE, see `updateConsoleAgent`'s `has_explicit_alert`
+  // describe block), so a brand-new agent trusts the fresh compile
+  // unconditionally.
+  it('sends has_explicit_alert: true for a genuinely new DO ... alert(...) ... statement', async () => {
+    createAgent.mockResolvedValue({ detail: 'ok' });
+    await submitConsoleAgent(
+      { name: 'x', conditions: {}, events: [{ channel: 'telegram', enabled: true }], actions: [], has_explicit_alert: true },
+      'WHEN always DO alert(telegram) #name="x"'
+    );
+    expect(createAgent.mock.calls[0][0].has_explicit_alert).toBe(true);
+  });
+
+  it('sends has_explicit_alert: false when the compiled agent has no DO-level alert() call', async () => {
+    createAgent.mockResolvedValue({ detail: 'ok' });
+    await submitConsoleAgent({ name: 'x', conditions: {}, events: [], actions: [] }, 'WHEN always DO nop #name="x"');
+    expect(createAgent.mock.calls[0][0].has_explicit_alert).toBe(false);
+  });
 });
 
 describe('slugifyAgentName', () => {
@@ -579,6 +598,11 @@ describe('updateConsoleAgent', () => {
       // `undefined`), same convention/reasoning as `given` immediately
       // above.
       preamble: [],
+      // Design item 0.C — no `hadExplicitAlert` 4th arg passed here, so
+      // it defaults to `false` (sticky-false-unless-already-true — see
+      // the dedicated `has_explicit_alert` describe block below for the
+      // full danger-scenario coverage).
+      has_explicit_alert: false,
       tags: ['risk'],
       group: 'hedge-book',
       cli_source: 'WHEN ...',
@@ -647,6 +671,68 @@ describe('updateConsoleAgent', () => {
     const r = await updateConsoleAgent('x', { name: 'x', conditions: {}, events: [], actions: [] }, '');
     expect(r.ok).toBe(false);
     expect(r.error).toMatch(/kind cannot be changed/);
+  });
+
+  // Design item 0.C — `has_explicit_alert` sticky-false-unless-already-true.
+  // `decompileAgent` renders ANY non-empty `events` list as `DO alert(...)`
+  // text unconditionally, with no way to tell a real explicit alert() call
+  // apart from a seed/form-default `events` list once rendered as text —
+  // so this field CANNOT be derived from the freshly recompiled text
+  // alone the way `given`/`preamble` are. See `updateConsoleAgent`'s own
+  // `hadExplicitAlert` param doc for the full danger-scenario reasoning.
+  describe('has_explicit_alert — sticky false-unless-already-true', () => {
+    it('THE DANGER SCENARIO: a loss-* seed agent (has_explicit_alert=false, populated events[]) edited and resaved must NOT silently flip to true, even though the decompile->recompile round-trip of its text alone produces a populated events array', async () => {
+      updateAgent.mockResolvedValue({ detail: 'ok' });
+      // Shaped exactly like a real `loss-*` builtin: `has_explicit_alert`
+      // false/absent on the loaded row, but a real, non-empty `events`
+      // list from `_LOSS_AGENT_DEFAULTS` — decompiling THIS agent and
+      // recompiling the decompiled text (unrelated to this function, but
+      // the scenario this test pins) would render `DO alert(telegram)`
+      // and recompile with `has_explicit_alert: true`, even though the
+      // row was never in explicit-alert mode.
+      const compiledAgentAfterUnrelatedEdit = {
+        name: 'loss-funds-negative', description: '',
+        conditions: { metric: 'cash', scope: 'funds.any_acct', op: '<', value: -1 }, // threshold tweak: 0 -> -1
+        events: [{ channel: 'telegram', enabled: true }, { channel: 'ntfy', enabled: true, priority: 'urgent' }],
+        actions: [],
+        has_explicit_alert: true, // what the fresh compile of the decompiled text produces
+      };
+      await updateConsoleAgent('loss-funds-negative', compiledAgentAfterUnrelatedEdit, 'WHEN cash@funds.any_acct < -1 DO alert(telegram, ntfy(priority="urgent"))', false);
+      const payload = updateAgent.mock.calls[0][1];
+      expect(payload.has_explicit_alert).toBe(false);
+      // Sanity: the rest of the payload DID pick up the unrelated edit —
+      // this isn't a "nothing changed" false positive.
+      expect(payload.conditions.value).toBe(-1);
+    });
+
+    it('an agent already in explicit-alert mode stays true when the fresh compile still has a real alert', async () => {
+      updateAgent.mockResolvedValue({ detail: 'ok' });
+      const compiledAgent = {
+        name: 'my-explicit-alert-agent', conditions: {}, events: [{ channel: 'telegram', enabled: true }],
+        actions: [], has_explicit_alert: true,
+      };
+      await updateConsoleAgent('my-explicit-alert-agent', compiledAgent, '', true);
+      expect(updateAgent.mock.calls[0][1].has_explicit_alert).toBe(true);
+    });
+
+    it('an agent already in explicit-alert mode flips to false when the operator removes the alert() call', async () => {
+      updateAgent.mockResolvedValue({ detail: 'ok' });
+      const compiledAgent = {
+        name: 'my-explicit-alert-agent', conditions: {}, events: [],
+        actions: [{ type: 'close_position', params: {} }], // no alert() left in DO
+        // has_explicit_alert absent — compileAgentStmt never splices it
+        // in when doResult.events is empty.
+      };
+      await updateConsoleAgent('my-explicit-alert-agent', compiledAgent, '', true);
+      expect(updateAgent.mock.calls[0][1].has_explicit_alert).toBe(false);
+    });
+
+    it('defaults to false when the caller passes no hadExplicitAlert argument at all (backward-compatible default)', async () => {
+      updateAgent.mockResolvedValue({ detail: 'ok' });
+      const compiledAgent = { name: 'x', conditions: {}, events: [{ channel: 'telegram', enabled: true }], actions: [], has_explicit_alert: true };
+      await updateConsoleAgent('x', compiledAgent, '');
+      expect(updateAgent.mock.calls[0][1].has_explicit_alert).toBe(false);
+    });
   });
 });
 

@@ -61,7 +61,7 @@
   // Edit action (below) can write into it, and so both survive a tab
   // switch away from Console and back. Bound two-way into ConsoleTab.
   let _consoleCliText = $state('');
-  /** @type {{rowKind: 'cycle'|'event'|'template'|'bracket', ref: string|number, label: string} | null} */
+  /** @type {{rowKind: 'cycle'|'event'|'template'|'bracket', ref: string|number, label: string, hadExplicitAlert?: boolean} | null} */
   let _consoleEditTarget = $state(null);
 
   /** Command-history audit trail for LogPanel's Console tab (2026-10-18
@@ -381,7 +381,12 @@
       return;
     }
     _consoleCliText = dec.text;
-    _consoleEditTarget = { rowKind, ref, label: row.name || row.slug };
+    // Design item 0.C — the loaded row's OWN `has_explicit_alert` value,
+    // threaded through so `updateConsoleAgent` can apply the
+    // sticky-false-unless-already-true rule on Save (never derive this
+    // from the freshly recompiled text alone — see that function's own
+    // doc for why).
+    _consoleEditTarget = { rowKind, ref, label: row.name || row.slug, hadExplicitAlert: row.has_explicit_alert === true };
     setActiveTab('console');
   }
 

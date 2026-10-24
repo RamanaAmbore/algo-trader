@@ -396,6 +396,11 @@ export async function submitConsoleAgent(compiledAgent, rawText) {
     // which also executes it — diagnostics every cycle, side-effecting
     // calls once per activation).
     preamble: compiledAgent.preamble || [],
+    // Design item 0.C — unlike UPDATE (see `updateConsoleAgent`'s own
+    // `hadExplicitAlert` doc), CREATE has no existing row to be sticky
+    // against, so a brand-new agent genuinely authored with
+    // `DO ... alert(...) ...` trusts the fresh compile unconditionally.
+    has_explicit_alert: !!compiledAgent.has_explicit_alert,
     tags: compiledAgent.tags || [],
     group: compiledAgent.group || null,
     cli_source: rawText || '',
@@ -516,8 +521,33 @@ export async function submitConsoleToken(compiledFragment, rawText = '') {
  * @param {string} slug — the agent row being edited (unchanged by this call)
  * @param {any} compiledAgent — `compiled.agent` from compileAgentCliStatement
  * @param {string} rawText — the raw (edited) CLI text, stored as cli_source
+ * @param {boolean} hadExplicitAlert — the ORIGINALLY LOADED row's own
+ *  `has_explicit_alert` value (threaded through by the caller — see
+ *  `/automation/+page.svelte`'s `editRow()`, the "load then diff on
+ *  save" flow `given`/`preamble` above also rely on). Deliberately NOT
+ *  derived from `compiledAgent.has_explicit_alert` alone: unlike
+ *  `given`/`preamble`, this field is NOT fully expressible by the CLI
+ *  text on its own — `decompileAgent` renders ANY non-empty `events`
+ *  list as `DO alert(...)` text unconditionally (it has no way to know
+ *  whether the row it decompiled was explicit-alert or seed/form-default
+ *  — both look identical once rendered as text), so a round-trip
+ *  recompile of that text always sets `has_explicit_alert: true`
+ *  regardless of which one it actually was. Design item 0.C — sticky
+ *  false-unless-already-true: an agent NOT already in explicit-alert
+ *  mode (every seed/form-originated `loss-*` builtin, via
+ *  `_LOSS_AGENT_DEFAULTS`) ALWAYS saves `has_explicit_alert: false`, even
+ *  on an unrelated edit that happens to leave a populated `events` list
+ *  in the text — otherwise the FIRST edit of any kind to one of those
+ *  agents would silently and permanently flip it into explicit-alert
+ *  mode, losing the rich kind/threshold/per-account alert table forever
+ *  with no visible text change. An agent ALREADY in explicit-alert mode
+ *  trusts the fresh compile (can go true→false if the operator removes
+ *  the alert() call, or stay true). This intentionally means an operator
+ *  cannot yet convert a seed-style agent into explicit-alert mode
+ *  through ordinary Console editing — a dedicated "convert" action is a
+ *  future, separate feature.
  */
-export async function updateConsoleAgent(slug, compiledAgent, rawText) {
+export async function updateConsoleAgent(slug, compiledAgent, rawText, hadExplicitAlert = false) {
   if (!slug) return { ok: false, error: 'no agent selected for update' };
   if (!compiledAgent) return { ok: false, error: 'nothing compiled to save' };
   const payload = {
@@ -536,6 +566,9 @@ export async function updateConsoleAgent(slug, compiledAgent, rawText) {
     // not `schemas.py`) carries a `preamble` field as of commit
     // `4e6df1ec` (item 0's engine work, which also executes it).
     preamble: compiledAgent.preamble || [],
+    // Design item 0.C — see this function's own `hadExplicitAlert` param
+    // doc above for the full "why" (sticky false-unless-already-true).
+    has_explicit_alert: hadExplicitAlert === true ? !!compiledAgent.has_explicit_alert : false,
     tags: compiledAgent.tags || [],
     group: compiledAgent.group || null,
     cli_source: rawText || '',

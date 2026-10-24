@@ -30,6 +30,17 @@ const CYCLE_ROW = {
   lifespan_type: 'persistent', lifespan_max_fires: null, lifespan_expires_at: null,
   debounce_minutes: 0, tags: [], blackout_windows: [], trade_mode: 'paper', kind: 'cycle',
   tier: 'medium', topic: 'general', group: null, cli_source: null,
+  // has_explicit_alert deliberately absent — shaped exactly like a real
+  // `loss-*` seed builtin (via `_LOSS_AGENT_DEFAULTS`): a populated
+  // `events` list that did NOT come from an authored DO-level alert().
+  has_explicit_alert: false,
+};
+
+// Design item 0.C — a row ALREADY in explicit-alert mode, resaved with
+// its alert() call intact. Same shape as CYCLE_ROW otherwise.
+const EXPLICIT_ALERT_CYCLE_ROW = {
+  ...CYCLE_ROW, id: 104, slug: 'explicit-alert-cycle-e2e', name: 'Explicit Alert Cycle E2E',
+  has_explicit_alert: true,
 };
 
 const EVENT_ROW = {
@@ -114,6 +125,38 @@ test('cycle Agent: Edit decompiles, Save PUTs /api/agents/{slug} — never POSTs
   expect(putCalled.url).toContain('/api/agents/loss-funds-negative-e2e');
   expect(postCalled).toBe(false);
   await expect(page.locator('.console-edit-banner')).toHaveCount(0);
+  // Design item 0.C, THE DANGER SCENARIO (confirmed by the backend+frontend
+  // agents directly in the code) — CYCLE_ROW is shaped exactly like a real
+  // `loss-*` seed builtin: `has_explicit_alert: false` on the loaded row,
+  // but a real, populated `events` list. `decompileAgent` renders that
+  // list as `DO alert(telegram)` text unconditionally (it has no way to
+  // tell "explicit alert() call" apart from "seed/form-default events
+  // list" once rendered as text), so recompiling the decompiled text
+  // alone would produce `has_explicit_alert: true`. Saving this row
+  // UNEDITED must still send `false` — never silently flip a seed agent
+  // into explicit-alert mode on its first resave.
+  expect(putCalled.body.has_explicit_alert).toBe(false);
+});
+
+test('cycle Agent already in explicit-alert mode: resaving with its alert() call intact sends has_explicit_alert: true', async ({ page }) => {
+  await mockAgentsList(page, [EXPLICIT_ALERT_CYCLE_ROW]);
+  let putCalled = /** @type {any} */ (null);
+  await page.route('**/api/agents/explicit-alert-cycle-e2e', async (route) => {
+    if (route.request().method() !== 'PUT') { await route.continue(); return; }
+    putCalled = { url: route.request().url(), body: route.request().postDataJSON() };
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ detail: 'ok' }) });
+  });
+
+  const row = await openCardAndRow(page, 'agents', 'Explicit Alert Cycle E2E');
+  await row.getByRole('button', { name: 'Edit' }).click();
+  await expect(page.locator('.console-edit-banner')).toContainText('Explicit Alert Cycle E2E', { timeout: TIMEOUT });
+
+  const saveBtn = page.locator('.console-agent-cli-btn');
+  await expect(saveBtn).toHaveText('Save', { timeout: TIMEOUT });
+  await saveBtn.click();
+
+  await expect.poll(() => putCalled, { timeout: TIMEOUT }).not.toBeNull();
+  expect(putCalled.body.has_explicit_alert).toBe(true);
 });
 
 test('event Agent (Alert): Edit decompiles, Save PUTs the same slug', async ({ page }) => {

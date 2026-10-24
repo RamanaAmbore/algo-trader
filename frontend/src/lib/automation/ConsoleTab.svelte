@@ -40,7 +40,7 @@
 
   /** @type {{
    *   value: string,
-   *   editTarget?: {rowKind: 'cycle'|'event'|'template'|'bracket', ref: string|number, label: string} | null,
+   *   editTarget?: {rowKind: 'cycle'|'event'|'template'|'bracket', ref: string|number, label: string, hadExplicitAlert?: boolean} | null,
    *   placeholder?: string,
    *   onResult?: (entry: {status: '✓'|'✗', message: string}) => void,
    * }} */
@@ -234,7 +234,9 @@
         toast.error(`Editing ${_ROW_KIND_LABEL[editTarget.rowKind]} — statement no longer compiles as that kind`);
         return;
       }
-      const r = await updateConsoleAgent(/** @type {string} */ (editTarget.ref), result.agent, value);
+      const r = await updateConsoleAgent(
+        /** @type {string} */ (editTarget.ref), result.agent, value, editTarget.hadExplicitAlert === true
+      );
       if (r.ok) {
         _setSubmitStatus(true, `Agent '${r.slug}' updated`);
         toast.success(`Agent updated: ${r.slug}`);
