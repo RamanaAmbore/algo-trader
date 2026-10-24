@@ -48,7 +48,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -133,6 +133,81 @@ def test_agent_model_has_preamble_columns_nullable_default_none():
     agent = Agent(slug="x", name="x", conditions={}, events=[], actions=[])
     assert agent.preamble is None
     assert agent.preamble_fired_at is None
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  3b — Design item 2's preamble_alert_last_fired_at + item 0.C's
+#       has_explicit_alert — migrations + model columns
+# ═══════════════════════════════════════════════════════════════════════
+
+def test_migrate_agents_preamble_alert_cooldown_statement_shape():
+    conn = _FakeTxConn()
+    asyncio.run(dbmod._migrate_agents_preamble_alert_cooldown(conn))
+    joined = "\n".join(conn.executed)
+    assert "ALTER TABLE agents ADD COLUMN IF NOT EXISTS preamble_alert_last_fired_at TIMESTAMPTZ" in joined
+    assert any("lock_timeout" in s for s in conn.executed)
+    assert not any("CONCURRENTLY" in s for s in conn.executed)
+
+
+def test_migrate_agents_has_explicit_alert_statement_shape():
+    conn = _FakeTxConn()
+    asyncio.run(dbmod._migrate_agents_has_explicit_alert(conn))
+    joined = "\n".join(conn.executed)
+    assert (
+        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS has_explicit_alert "
+        "BOOLEAN NOT NULL DEFAULT false" in joined
+    ), "must carry a DDL-level DEFAULT — a bare NOT NULL would fail against an already-populated table"
+    assert any("lock_timeout" in s for s in conn.executed)
+    assert not any("CONCURRENTLY" in s for s in conn.executed)
+
+
+def test_init_db_calls_both_new_migrations_after_preamble_in_order():
+    src = inspect.getsource(dbmod.init_db)
+    lines = src.splitlines()
+    begin_idx = next(
+        i for i, l in enumerate(lines) if "async with engine.begin() as conn:" in l
+    )
+    begin_indent = len(lines[begin_idx]) - len(lines[begin_idx].lstrip())
+
+    def _idx(marker):
+        i = next(j for j, l in enumerate(lines) if marker in l and "async def" not in l)
+        return i, len(lines[i]) - len(lines[i].lstrip())
+
+    preamble_idx, _ = _idx("_migrate_agents_preamble(conn)")
+    cooldown_idx, cooldown_indent = _idx("_migrate_agents_preamble_alert_cooldown(conn)")
+    explicit_idx, explicit_indent = _idx("_migrate_agents_has_explicit_alert(conn)")
+
+    assert cooldown_indent > begin_indent and explicit_indent > begin_indent, (
+        "both new migrations must run INSIDE the engine.begin() transactional block"
+    )
+    assert cooldown_idx > preamble_idx, (
+        "_migrate_agents_preamble_alert_cooldown(conn) must run after _migrate_agents_preamble(conn)"
+    )
+    assert explicit_idx > cooldown_idx, (
+        "_migrate_agents_has_explicit_alert(conn) must run after the cooldown migration"
+    )
+
+
+def test_agent_model_has_preamble_alert_cooldown_column_nullable_default_none():
+    col = Agent.__table__.columns["preamble_alert_last_fired_at"]
+    assert col.nullable is True
+    agent = Agent(slug="x", name="x", conditions={}, events=[], actions=[])
+    assert agent.preamble_alert_last_fired_at is None
+
+
+def test_agent_model_has_explicit_alert_column_not_null_default_false():
+    """`default=False` is a Python-level default SQLAlchemy applies at
+    INSERT/flush time, not at bare `Agent(...)` construction — so a
+    freshly-constructed, never-flushed instance reads back `None` for
+    this attribute (same as every other column with a Python-level
+    `default=` and no explicit value passed). This test checks the
+    column's declared configuration directly instead of a pre-flush
+    instance's attribute value, which would be a false signal either
+    way."""
+    col = Agent.__table__.columns["has_explicit_alert"]
+    assert col.nullable is False
+    assert col.default is not None and col.default.arg is False
+    assert col.server_default is not None
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -245,6 +320,123 @@ class TestRequestResponseStructWiring:
         assert info.preamble == []
 
 
+class TestHasExplicitAlertStructWiring:
+    """Design item 0.C's `has_explicit_alert` field — same round-trip
+    coverage as `preamble` above."""
+
+    def test_agent_info_has_explicit_alert_field_defaults_false(self):
+        from backend.api.routes.agents import AgentInfo
+        info = AgentInfo(
+            id=1, slug="x", name="x", long_name=None, description=None,
+            conditions={}, events=[], actions=[], scope="total",
+            schedule=None, cooldown_minutes=30, fire_at_time=None,
+            status="active", last_triggered_at=None, trigger_count=0,
+            last_error=None, is_system=False,
+        )
+        assert info.has_explicit_alert is False
+
+    def test_agent_create_request_accepts_has_explicit_alert(self):
+        from backend.api.routes.agents import AgentCreateRequest
+        req = AgentCreateRequest(
+            slug="x", name="x", conditions={}, events=[], has_explicit_alert=True,
+        )
+        assert req.has_explicit_alert is True
+
+    def test_agent_create_request_has_explicit_alert_defaults_false(self):
+        from backend.api.routes.agents import AgentCreateRequest
+        req = AgentCreateRequest(slug="x", name="x", conditions={}, events=[])
+        assert req.has_explicit_alert is False
+
+    def test_agent_update_request_accepts_true_and_false_and_none(self):
+        from backend.api.routes.agents import AgentUpdateRequest
+        assert AgentUpdateRequest(has_explicit_alert=True).has_explicit_alert is True
+        assert AgentUpdateRequest(has_explicit_alert=False).has_explicit_alert is False
+        assert AgentUpdateRequest().has_explicit_alert is None, (
+            "None must mean 'leave unchanged' — a bool default of False "
+            "here would silently clear an already-True flag on every "
+            "PUT that doesn't mention it"
+        )
+
+    def test_update_agent_setattr_loop_includes_has_explicit_alert(self):
+        from pathlib import Path
+        src = Path("backend/api/routes/agents.py").read_text()
+        def_idx = src.index("async def update_agent")
+        next_def_idx = src.index("\n    async def ", def_idx + 10)
+        body = src[def_idx:next_def_idx]
+        assert "'has_explicit_alert'" in body or '"has_explicit_alert"' in body
+
+    def test_create_agent_source_persists_has_explicit_alert_onto_agent_row(self):
+        from pathlib import Path
+        src = Path("backend/api/routes/agents.py").read_text()
+        def_idx = src.index("async def create_agent")
+        next_def_idx = src.index("\n    def _age_apply_lifespan_fields", def_idx)
+        body = src[def_idx:next_def_idx]
+        assert "has_explicit_alert=" in body
+
+    def test_agent_to_info_reads_has_explicit_alert_defensively(self):
+        import backend.api.routes.agents as agents_mod
+        src = inspect.getsource(agents_mod._agent_to_info)
+        assert 'getattr(a, "has_explicit_alert"' in src
+
+    def test_agent_to_info_defaults_missing_has_explicit_alert_to_false(self):
+        """A real DB row predating this migration (attribute absent
+        entirely on a plain stand-in) must read back False, not raise."""
+        from backend.api.routes.agents import _agent_to_info
+
+        class _Row:
+            id = 1
+            slug = "x"
+            name = "x"
+            long_name = None
+            description = None
+            conditions = {}
+            events = []
+            actions = []
+            scope = "total"
+            schedule = None
+            cooldown_minutes = 30
+            fire_at_time = None
+            status = "active"
+            last_triggered_at = None
+            trigger_count = 0
+            last_error = None
+            is_system = False
+            given = None
+            preamble = None
+            # has_explicit_alert deliberately absent entirely
+
+        info = _agent_to_info(_Row())
+        assert info.has_explicit_alert is False
+
+    @pytest.mark.asyncio
+    async def test_update_agent_update_can_set_has_explicit_alert_true_and_false(self):
+        """End-to-end through the real route handler — a PUT with
+        has_explicit_alert=True sets it; a later PUT with
+        has_explicit_alert=False clears it; a PUT that omits the field
+        entirely leaves it unchanged."""
+        from backend.api.routes.agents import AgentController, AgentUpdateRequest
+
+        agent = _FakeAgentRow(
+            has_explicit_alert=False, kind="cycle", is_system=False,
+            actions=[], events=[], conditions={},
+        )
+        session_factory, _ = _mock_session(existing=agent)
+        controller = AgentController.__new__(AgentController)
+        update_fn = AgentController.update_agent.fn
+
+        with patch("backend.api.routes.agents.async_session", session_factory):
+            await update_fn(controller, "t-agent", AgentUpdateRequest(has_explicit_alert=True))
+        assert agent.has_explicit_alert is True
+
+        with patch("backend.api.routes.agents.async_session", session_factory):
+            await update_fn(controller, "t-agent", AgentUpdateRequest(has_explicit_alert=False))
+        assert agent.has_explicit_alert is False
+
+        with patch("backend.api.routes.agents.async_session", session_factory):
+            await update_fn(controller, "t-agent", AgentUpdateRequest(name="renamed only"))
+        assert agent.has_explicit_alert is False, "omitted field must stay unchanged"
+
+
 # ═══════════════════════════════════════════════════════════════════════
 #  5 — _age_set_status: activation reset semantics
 # ═══════════════════════════════════════════════════════════════════════
@@ -278,7 +470,8 @@ def _mock_session(existing=None):
 @pytest.mark.asyncio
 async def test_age_set_status_resets_preamble_fired_at_on_real_activation():
     from backend.api.routes.agents import AgentController
-    agent = _FakeAgentRow(status="inactive", preamble_fired_at=datetime(2026, 10, 1, tzinfo=timezone.utc))
+    t = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    agent = _FakeAgentRow(status="inactive", preamble_fired_at=t, preamble_alert_last_fired_at=t)
     session_factory, _ = _mock_session(existing=agent)
     controller = AgentController.__new__(AgentController)
 
@@ -290,13 +483,18 @@ async def test_age_set_status_resets_preamble_fired_at_on_real_activation():
         "a real inactive->active transition must re-arm the once-per-"
         "activation preamble marker"
     )
+    assert agent.preamble_alert_last_fired_at is None, (
+        "the SAME real activation transition must also re-arm the "
+        "alert/log cooldown clock (Design item 2) — a fresh activation "
+        "alerts immediately, not stuck behind a prior activation's cooldown"
+    )
 
 
 @pytest.mark.asyncio
 async def test_age_set_status_does_not_reset_when_already_active():
     from backend.api.routes.agents import AgentController
     fired_at = datetime(2026, 10, 1, tzinfo=timezone.utc)
-    agent = _FakeAgentRow(status="active", preamble_fired_at=fired_at)
+    agent = _FakeAgentRow(status="active", preamble_fired_at=fired_at, preamble_alert_last_fired_at=fired_at)
     session_factory, _ = _mock_session(existing=agent)
     controller = AgentController.__new__(AgentController)
 
@@ -308,13 +506,14 @@ async def test_age_set_status_does_not_reset_when_already_active():
         "re-clicking Activate on an already-active agent must NOT re-arm "
         "the one-shot — that would re-fire a real broker order"
     )
+    assert agent.preamble_alert_last_fired_at == fired_at
 
 
 @pytest.mark.asyncio
 async def test_age_set_status_deactivate_does_not_touch_preamble_fired_at():
     from backend.api.routes.agents import AgentController
     fired_at = datetime(2026, 10, 1, tzinfo=timezone.utc)
-    agent = _FakeAgentRow(status="active", preamble_fired_at=fired_at)
+    agent = _FakeAgentRow(status="active", preamble_fired_at=fired_at, preamble_alert_last_fired_at=fired_at)
     session_factory, _ = _mock_session(existing=agent)
     controller = AgentController.__new__(AgentController)
 
@@ -323,6 +522,7 @@ async def test_age_set_status_deactivate_does_not_touch_preamble_fired_at():
 
     assert agent.status == "inactive"
     assert agent.preamble_fired_at == fired_at
+    assert agent.preamble_alert_last_fired_at == fired_at
 
 
 @pytest.mark.asyncio
@@ -334,7 +534,7 @@ async def test_age_set_status_cooldown_to_active_does_not_reset_preamble_fired_a
     re-fire a real broker order on an agent that was already running."""
     from backend.api.routes.agents import AgentController
     fired_at = datetime(2026, 10, 1, tzinfo=timezone.utc)
-    agent = _FakeAgentRow(status="cooldown", preamble_fired_at=fired_at)
+    agent = _FakeAgentRow(status="cooldown", preamble_fired_at=fired_at, preamble_alert_last_fired_at=fired_at)
     session_factory, _ = _mock_session(existing=agent)
     controller = AgentController.__new__(AgentController)
 
@@ -346,6 +546,7 @@ async def test_age_set_status_cooldown_to_active_does_not_reset_preamble_fired_a
         "cooldown->active must NOT reset preamble_fired_at — cooldown is "
         "a live state, not a real re-activation"
     )
+    assert agent.preamble_alert_last_fired_at == fired_at
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -356,17 +557,20 @@ class _PreambleAgent:
     """Minimal Agent-row stand-in for the engine-level tests — carries
     only what _cycle_run_preamble/_cycle_claim_preamble_activation read."""
     def __init__(self, id=1, slug="pa", name="Preamble Agent", preamble=None,
-                 preamble_fired_at=None, kind="cycle"):
+                 preamble_fired_at=None, kind="cycle", cooldown_minutes=30,
+                 preamble_alert_last_fired_at=None):
         self.id = id
         self.slug = slug
         self.name = name
         self.preamble = preamble or []
         self.preamble_fired_at = preamble_fired_at
+        self.preamble_alert_last_fired_at = preamble_alert_last_fired_at
         self.kind = kind
         self.events = []
         self.actions = []
         self.tier = "medium"
         self.topic = "general"
+        self.cooldown_minutes = cooldown_minutes
 
 
 def _claim_session_factory(state: dict):
@@ -397,28 +601,31 @@ def _claim_session_factory(state: dict):
 
 
 @pytest.mark.asyncio
-async def test_log_help_alert_run_on_every_simulated_poll_cycle():
-    """log/help/alert entries fire on EVERY call — contrast case for the
-    once-per-activation test below. No once-per-activation entry exists
-    in this preamble, so the atomic DB claim must never even be
-    attempted (async_session patched to raise if called at all)."""
+async def test_help_and_debug_log_run_on_every_simulated_poll_cycle_uncapped():
+    """`help`, and `log(level="debug")` (the debug(x) sugar form), fire
+    on EVERY call, completely uncapped — contrast case for both the
+    once-per-activation test below AND the cooldown-gated alert/log
+    test (Design item 2). Neither entry type is ever cooldown-gated
+    (see `_cycle_preamble_entry_is_cooldown_gated`'s docstring: `help`
+    has no notification channel to rate-limit; `debug` is structurally
+    exempt from the whole alert pipeline already), so no once-per-
+    activation OR cooldown DB claim is ever attempted (async_session
+    patched to raise if called at all)."""
     from backend.api.algo import agent_engine
 
     agent = _PreambleAgent(preamble=[
-        {"type": "log", "params": {"message": "tick"}},
+        {"type": "log", "params": {"level": "debug", "message": "tick"}},
         {"type": "help", "params": {"name": "pnl"}},
-        {"type": "alert", "events": [{"channel": "telegram", "enabled": True}]},
     ])
 
     def _session_should_not_be_called():
         raise AssertionError(
-            "a preamble with no once-per-activation entries must never "
-            "attempt the atomic DB claim"
+            "a preamble with only help/debug(x) entries must never "
+            "attempt any DB claim"
         )
 
     with (
         patch.object(agent_engine, "execute", new=AsyncMock()) as execute_mock,
-        patch.object(agent_engine, "dispatch", new=AsyncMock()) as dispatch_mock,
         patch.object(agent_engine, "async_session", side_effect=_session_should_not_be_called),
     ):
         for _ in range(3):
@@ -427,8 +634,231 @@ async def test_log_help_alert_run_on_every_simulated_poll_cycle():
                 sim_mode=False, alert_state={},
             )
 
-    assert execute_mock.await_count == 6, "log + help, 3 cycles => 6 execute() calls"
-    assert dispatch_mock.await_count == 3, "alert fires once per cycle => 3 calls over 3 cycles"
+    assert execute_mock.await_count == 6, "debug-log + help, 3 cycles => 6 execute() calls"
+
+
+@pytest.mark.asyncio
+async def test_preamble_alert_respects_agent_cooldown_minutes():
+    """Design item 2 — preamble `alert(...)` is NOT uncapped: it fires
+    on cycle 1, does NOT fire again on cycle 2 if cycle 2 is within the
+    agent's own `cooldown_minutes` window, and fires again once the
+    window has elapsed. Uses the patchable `_preamble_utcnow()` to
+    simulate elapsed time without a real sleep."""
+    from backend.api.algo import agent_engine
+
+    agent = _PreambleAgent(preamble=[
+        {"type": "alert", "events": [{"channel": "telegram", "enabled": True}]},
+    ])
+    agent.cooldown_minutes = 30
+    t0 = datetime(2026, 10, 24, 10, 0, 0, tzinfo=timezone.utc)
+    claim_state: dict = {}
+
+    def _fake_now():
+        return claim_state["now"]
+
+    def _always_succeeds_session_factory():
+        """Every call that actually REACHES the DB must succeed — the
+        Python pre-check in `_cycle_preamble_alert_cooldown_ready`
+        (reading `agent.preamble_alert_last_fired_at` directly, updated
+        in-memory on each successful claim) is what filters out cycle
+        2 (still inside the window) before the DB is ever touched; by
+        the time cycle 1 or cycle 3 reaches here, eligibility is already
+        confirmed."""
+        session = AsyncMock()
+        res = MagicMock()
+        res.rowcount = 1
+        session.execute = AsyncMock(return_value=res)
+        session.commit = AsyncMock()
+        cm = AsyncMock()
+        cm.__aenter__ = AsyncMock(return_value=session)
+        cm.__aexit__ = AsyncMock(return_value=False)
+        return cm
+
+    with (
+        patch.object(agent_engine, "dispatch", new=AsyncMock()) as dispatch_mock,
+        patch.object(agent_engine, "async_session", side_effect=_always_succeeds_session_factory),
+        patch.object(agent_engine, "_preamble_utcnow", side_effect=_fake_now),
+    ):
+        claim_state["now"] = t0
+        await agent_engine._cycle_run_preamble(
+            agent, {}, t0, sim_mode=False, alert_state={},
+        )
+        assert dispatch_mock.await_count == 1, "cycle 1 (first ever) must fire"
+
+        claim_state["now"] = t0 + timedelta(minutes=5)
+        await agent_engine._cycle_run_preamble(
+            agent, {}, claim_state["now"], sim_mode=False, alert_state={},
+        )
+        assert dispatch_mock.await_count == 1, "cycle 2, still inside the 30-min window, must NOT fire again"
+
+        claim_state["now"] = t0 + timedelta(minutes=31)
+        await agent_engine._cycle_run_preamble(
+            agent, {}, claim_state["now"], sim_mode=False, alert_state={},
+        )
+        assert dispatch_mock.await_count == 2, "cycle 3, past the 30-min window, must fire again"
+
+
+@pytest.mark.asyncio
+async def test_preamble_non_debug_log_respects_agent_cooldown_minutes():
+    """The coordinator's spec explicitly covers `log` too, not just
+    `alert` — a hand-typed `log(level=warning, ...)` entry (no `debug`
+    level) must respect the same windowed cooldown."""
+    from backend.api.algo import agent_engine
+
+    agent = _PreambleAgent(preamble=[
+        {"type": "log", "params": {"level": "warning", "message": "margin tight"}},
+    ])
+    agent.cooldown_minutes = 30
+    t0 = datetime(2026, 10, 24, 10, 0, 0, tzinfo=timezone.utc)
+    claim_state: dict = {}
+
+    def _fake_now():
+        return claim_state["now"]
+
+    def _always_succeeds_session_factory():
+        session = AsyncMock()
+        res = MagicMock()
+        res.rowcount = 1
+        session.execute = AsyncMock(return_value=res)
+        session.commit = AsyncMock()
+        cm = AsyncMock()
+        cm.__aenter__ = AsyncMock(return_value=session)
+        cm.__aexit__ = AsyncMock(return_value=False)
+        return cm
+
+    with (
+        patch.object(agent_engine, "execute", new=AsyncMock()) as execute_mock,
+        patch.object(agent_engine, "async_session", side_effect=_always_succeeds_session_factory),
+        patch.object(agent_engine, "_preamble_utcnow", side_effect=_fake_now),
+    ):
+        claim_state["now"] = t0
+        await agent_engine._cycle_run_preamble(agent, {}, t0, sim_mode=False, alert_state={})
+        assert execute_mock.await_count == 1, "cycle 1 must fire"
+
+        claim_state["now"] = t0 + timedelta(minutes=5)
+        await agent_engine._cycle_run_preamble(agent, {}, claim_state["now"], sim_mode=False, alert_state={})
+        assert execute_mock.await_count == 1, "cycle 2, inside the window, must NOT fire again"
+
+        claim_state["now"] = t0 + timedelta(minutes=31)
+        await agent_engine._cycle_run_preamble(agent, {}, claim_state["now"], sim_mode=False, alert_state={})
+        assert execute_mock.await_count == 2, "cycle 3, past the window, must fire again"
+
+
+@pytest.mark.asyncio
+async def test_cooldown_claim_failure_fails_safe_help_still_runs():
+    """Same fail-safe contract as the once-per-activation claim's own
+    failure test: a DB blip on the alert/log cooldown claim must never
+    raise, the alert must simply be skipped this cycle, and `help`
+    (ungated) in the SAME preamble must still run."""
+    from backend.api.algo import agent_engine
+
+    agent = _PreambleAgent(preamble=[
+        {"type": "alert", "events": [{"channel": "telegram", "enabled": True}]},
+        {"type": "help", "params": {"name": "pnl"}},
+    ])
+
+    def _session_raises():
+        raise RuntimeError("DB blip")
+
+    with (
+        patch.object(agent_engine, "execute", new=AsyncMock()) as execute_mock,
+        patch.object(agent_engine, "dispatch", new=AsyncMock()) as dispatch_mock,
+        patch.object(agent_engine, "async_session", side_effect=_session_raises),
+    ):
+        await agent_engine._cycle_run_preamble(
+            agent, {}, datetime.now(timezone.utc),
+            sim_mode=False, alert_state={},
+        )  # must not raise
+
+    dispatch_mock.assert_not_awaited(), "alert must be skipped, not fired, on a claim failure"
+    assert execute_mock.await_count == 1, "help must still run — it's never cooldown-gated"
+
+
+@pytest.mark.asyncio
+async def test_preamble_alert_cooldown_sim_mode_never_touches_real_db_column():
+    """Sim mode tracks the cooldown window on an isolated alert_state
+    set, never the real `preamble_alert_last_fired_at` DB column —
+    async_session patched to raise if called at all."""
+    from backend.api.algo import agent_engine
+
+    agent = _PreambleAgent(preamble=[
+        {"type": "alert", "events": [{"channel": "telegram", "enabled": True}]},
+    ])
+    alert_state: dict = {}
+
+    def _session_should_not_be_called():
+        raise AssertionError("sim_mode must never touch the real DB column")
+
+    with (
+        patch.object(agent_engine, "dispatch", new=AsyncMock()) as dispatch_mock,
+        patch.object(agent_engine, "async_session", side_effect=_session_should_not_be_called),
+    ):
+        await agent_engine._cycle_run_preamble(
+            agent, {}, datetime.now(timezone.utc),
+            sim_mode=True, alert_state=alert_state,
+        )
+
+    dispatch_mock.assert_awaited_once()
+    assert agent.preamble_alert_last_fired_at is None, "the real column must remain untouched in sim mode"
+    assert agent.id in alert_state.get("_sim_preamble_alert_cooldown", {})
+
+
+@pytest.mark.asyncio
+async def test_bypass_suppression_always_fires_preamble_alert():
+    """bypass_suppression (isolated single-agent "Run in Simulator",
+    and the manual Test Fire path) must fire the alert every call, same
+    exemption `_v2_apply_escalation_gate` already grants."""
+    from backend.api.algo import agent_engine
+
+    agent = _PreambleAgent(preamble=[
+        {"type": "alert", "events": [{"channel": "telegram", "enabled": True}]},
+    ])
+
+    with (
+        patch.object(agent_engine, "dispatch", new=AsyncMock()) as dispatch_mock,
+        patch.object(agent_engine, "async_session", side_effect=lambda: pytest.fail(
+            "bypass_suppression must short-circuit before any DB claim")),
+    ):
+        for _ in range(3):
+            await agent_engine._cycle_run_preamble(
+                agent, {}, datetime.now(timezone.utc),
+                sim_mode=False, alert_state={}, bypass_suppression=True,
+            )
+
+    assert dispatch_mock.await_count == 3, "every call must fire when bypass_suppression=True"
+
+
+@pytest.mark.asyncio
+async def test_preamble_alert_suppressed_in_sim_when_notify_during_run_off():
+    """Defense-in-depth, not a fix for a confirmed real-message leak:
+    telegram/email/ntfy are `_RECORDED_CHANNELS` (events.py) — they
+    never reach dispatch()'s direct-send branch at all; they're queued
+    via `_emit_breach_record` into event_agents.py's own independent
+    `dispatch_rows()` sim-notify gate, which already correctly
+    suppresses a sim-mode breach record downstream regardless of
+    `skip_channels` here. This test locks the SAME belt-and-suspenders
+    pattern `_v2_send_rich_alert` already uses (double-gating, not a
+    single point of truth) — `skip_channels` must reflect
+    `_ae_sim_notify_suppressed(agent, sim_mode)` when a preamble
+    `alert(...)` fires during a sim run."""
+    from backend.api.algo import agent_engine
+
+    agent = _PreambleAgent(preamble=[
+        {"type": "alert", "events": [{"channel": "telegram", "enabled": True}]},
+    ])
+
+    with (
+        patch.object(agent_engine, "dispatch", new=AsyncMock()) as dispatch_mock,
+        patch.object(agent_engine, "_ae_sim_notify_suppressed", return_value=True),
+    ):
+        await agent_engine._cycle_run_preamble(
+            agent, {}, datetime.now(timezone.utc),
+            sim_mode=True, alert_state={},
+        )
+
+    dispatch_mock.assert_awaited_once()
+    _, kwargs = dispatch_mock.call_args
+    assert kwargs.get("skip_channels") == frozenset({"telegram", "email", "ntfy"})
 
 
 @pytest.mark.asyncio
@@ -471,7 +901,7 @@ async def test_mixed_preamble_every_cycle_and_once_entries_are_independent():
     from backend.api.algo import agent_engine
 
     agent = _PreambleAgent(preamble=[
-        {"type": "log", "params": {"message": "checking"}},
+        {"type": "log", "params": {"level": "debug", "message": "checking"}},
         {"type": "close_position", "params": {"account": "ZG0790", "symbol": "NIFTY25JULFUT"}},
     ])
     claim_state: dict = {}
@@ -587,7 +1017,7 @@ async def test_claim_failure_fails_safe_does_not_abort_tick_or_fire_order():
     from backend.api.algo import agent_engine
 
     agent = _PreambleAgent(preamble=[
-        {"type": "log", "params": {"message": "still runs"}},
+        {"type": "log", "params": {"level": "debug", "message": "still runs"}},
         {"type": "order", "params": {"account": "ZG0790", "symbol": "NIFTY25JULFUT"}},
     ])
 
@@ -603,9 +1033,13 @@ async def test_claim_failure_fails_safe_does_not_abort_tick_or_fire_order():
             sim_mode=False, alert_state={},
         )  # must not raise
 
-    # Only the log entry fired (once); the order did not.
+    # Only the debug-log entry fired (once); the order did not. The
+    # debug-log is exempt from both the once-bucket claim AND the
+    # alert/log cooldown claim, so it's unaffected by _session_raises.
     assert execute_mock.await_count == 1
-    assert execute_mock.await_args_list[0].args[1] == [{"type": "log", "params": {"message": "still runs"}}]
+    assert execute_mock.await_args_list[0].args[1] == [
+        {"type": "log", "params": {"level": "debug", "message": "still runs"}}
+    ]
 
 
 @pytest.mark.asyncio
@@ -630,7 +1064,7 @@ async def test_preamble_fires_through_the_real_ae_cycle_eval_and_buffer_call_sit
     from backend.api.algo import agent_engine
 
     agent = _PreambleAgent(preamble=[
-        {"type": "log", "params": {"message": "tick"}},
+        {"type": "log", "params": {"level": "debug", "message": "tick"}},
         {"type": "order", "params": {"account": "ZG0790", "symbol": "NIFTY25JULFUT"}},
     ])
     agent.actions = [{"type": "close_position", "params": {"account": "ZG0790", "symbol": "NIFTY25JULFUT"}}]
@@ -688,7 +1122,7 @@ async def test_preamble_only_agent_never_drives_the_sentinel_condition_to_a_fire
     from backend.api.algo import agent_engine
 
     agent = _PreambleAgent(preamble=[
-        {"type": "log", "params": {"message": "tick"}},
+        {"type": "log", "params": {"level": "debug", "message": "tick"}},
     ])
     agent.actions = []
     agent.events = []
@@ -866,44 +1300,37 @@ async def test_empty_preamble_is_a_true_noop():
 
 
 # ═══════════════════════════════════════════════════════════════════════
-#  7 — producer-log fallback REGRESSION LOCK (item 0.C)
+#  7 — producer-log fallback (item 0.C), now SHIPPED with the
+#      `has_explicit_alert` discriminator
 # ═══════════════════════════════════════════════════════════════════════
 #
-# IMPORTANT — this section intentionally does NOT implement the plan's
-# literal item 0.C check ("if the matched agent's DO clause produced a
-# real `events` entry, skip the automatic _v2_send_rich_alert() call").
+# History: the plan's original literal item 0.C check ("if the matched
+# agent's DO clause produced a real `events` entry, skip the automatic
+# _v2_send_rich_alert() call") was rejected during the first round of
+# this implementation — `agent.events` being non-empty is NOT a safe
+# proxy for "this fire's DO clause contains an explicit alert(...)
+# call": every seeded `loss-*` builtin agent ships with a non-empty
+# `events` list by default (agent_engine.py's `_LOSS_AGENT_DEFAULTS`),
+# completely unrelated to any DO-level alert(...) call, which did not
+# exist as a compilable construct before this plan. "If agent.events:
+# skip the rich alert" would have silently disabled the kind/threshold
+# table and tier-based ntfy priority for EVERY currently-live loss-*
+# agent.
 #
-# Investigation during implementation (per the plan's own instruction to
-# "confirm the exact detection mechanism... against the real compiled-
-# agent shape") found that `agent.events` being non-empty is NOT a safe
-# proxy for "this fire's DO clause contains an explicit alert(...) call":
-#   - Every seeded `loss-*` builtin agent (agent_engine.py's
-#     `_LOSS_AGENT_DEFAULTS`) ships with a non-empty `events` list
-#     (telegram + log, plus ntfy for critical/high-tier slugs) by
-#     default — completely unrelated to any DO-level alert(...) call,
-#     which did not exist as a compilable construct before this plan.
-#   - These are exactly the agents `_v2_send_rich_alert()`/
-#     `RICH_ALERT_AGENT` were built to serve (see CLAUDE.md's "Rich-alert
-#     ntfy priority" and "Alert evaluation and latching" entries).
-#   - "if agent.events: skip the rich alert" would therefore silently
-#     disable the kind/threshold table and tier-based ntfy priority for
-#     EVERY currently-live loss-* agent the moment this ships — the
-#     exact "no currently-saved agent's alerting behavior changes"
-#     regression the plan explicitly guards against, not something it
-#     intends.
-#   - There is no field-level signal in the stored Agent row that
-#     distinguishes "events populated by a DO alert(...) call" from
-#     "events populated by the seed/form-UI default channel list" — both
-#     produce the byte-identical `{channel, enabled, ...}` shape in the
-#     same `events` column. A real fix needs a new, explicit marker
-#     (most naturally frontend-compiler-emitted, e.g. a boolean sibling
-#     field set only when `doResult.events.length > 0`), which is
-#     frontend compiler scope, not backend engine scope, and is left as
-#     an explicitly flagged follow-up rather than guessed at here.
-#
-# This test LOCKS today's behavior unchanged (`_v2_send_rich_alert` is
-# still called for an agent with populated events) so a future literal
-# implementation of the naive heuristic fails this test immediately.
+# The operator resolved this with a dedicated discriminator: a new
+# `Agent.has_explicit_alert` boolean column, set ONLY by the frontend
+# compiler when `doResult.events.length > 0` (a genuine DO-level
+# `alert(...)` call) — `server_default='false'`, so every pre-existing
+# row backfills to False and is completely unaffected. The test
+# directly below (`test_agent_with_populated_events_still_gets_
+# automatic_rich_alert`) is kept UNCHANGED from the first round and
+# still passes: a bare MagicMock agent that never sets
+# `has_explicit_alert` auto-vivifies that attribute to a truthy child
+# Mock, which fails the `is True` check in `_ae_dispatch_survivor_
+# entry` and correctly falls through to the rich alert — this is both
+# the original regression lock AND, now, the MagicMock-trap guard for
+# the new flag (the exact same lesson `_cycle_agent_is_preamble_only`
+# already learned the hard way earlier in this file).
 
 @pytest.mark.asyncio
 async def test_agent_with_populated_events_still_gets_automatic_rich_alert():
@@ -957,3 +1384,199 @@ async def test_agent_with_populated_events_still_gets_automatic_rich_alert():
     dispatch_mock.assert_awaited_once()
     _, kwargs = dispatch_mock.call_args
     assert kwargs.get("skip_channels") == frozenset({"telegram", "email", "ntfy"})
+
+
+def _make_survivor_entry(agent):
+    return {
+        "agent": agent,
+        "matches": [{"metric": "cash", "value": -1000}],
+        "result": MagicMock(condition_text="cash < 0", detail={}),
+        "sim_mode": False,
+        "new_status": "cooldown",
+        "bypass_schedule": False,
+        "debounce_min": 0,
+    }
+
+
+def _patched_db_session_factory():
+    session = AsyncMock()
+    session.execute = AsyncMock()
+    session.commit = AsyncMock()
+    cm = AsyncMock()
+    cm.__aenter__ = AsyncMock(return_value=session)
+    cm.__aexit__ = AsyncMock(return_value=False)
+    return cm
+
+
+@pytest.mark.asyncio
+async def test_has_explicit_alert_true_with_events_skips_rich_alert_uses_dispatch():
+    """The SHIPPED item 0.C path: `has_explicit_alert=True` with a real
+    `events` list skips `_v2_send_rich_alert()` entirely and lets the
+    normal `events.dispatch()` call deliver every channel in
+    `agent.events` — including telegram/email/ntfy, since there's no
+    rich alert to avoid duplicating against (skip_channels must be
+    empty here, not the usual `{telegram, email, ntfy}`)."""
+    from backend.api.algo import agent_engine
+
+    agent = MagicMock()
+    agent.id = 1
+    agent.slug = "custom-alert-agent"
+    agent.name = "custom-alert-agent"
+    agent.events = [{"channel": "telegram", "enabled": True}]
+    agent.actions = []
+    agent.trigger_count = 0
+    agent.has_explicit_alert = True
+
+    entry = _make_survivor_entry(agent)
+
+    with (
+        patch.object(agent_engine, "async_session", side_effect=_patched_db_session_factory),
+        patch.object(agent_engine, "_v2_send_rich_alert", new=AsyncMock(return_value=True)) as rich_mock,
+        patch.object(agent_engine, "dispatch", new=AsyncMock()) as dispatch_mock,
+    ):
+        broadcast_mock = MagicMock()
+        await agent_engine._ae_dispatch_survivor_entry(
+            entry, datetime.now(timezone.utc), {}, broadcast_mock,
+        )
+
+    rich_mock.assert_not_awaited(), "has_explicit_alert=True must skip the automatic rich alert"
+    dispatch_mock.assert_awaited_once()
+    _, kwargs = dispatch_mock.call_args
+    assert kwargs.get("skip_channels") == frozenset(), (
+        "no rich alert ran, so no channel needs to be skipped — dispatch() "
+        "must deliver every channel in agent.events, telegram/email/ntfy included"
+    )
+    # The UI "agent fired" websocket feed must not go dark just because
+    # the explicit path was taken instead of the rich-alert path.
+    assert any(c.args[0] == 'agent_alert' for c in broadcast_mock.call_args_list)
+
+
+@pytest.mark.asyncio
+async def test_has_explicit_alert_true_with_empty_events_falls_back_to_rich_alert():
+    """A stale `has_explicit_alert=True` flag with an emptied-out
+    `events` list must NOT silently send nothing — fall back to the
+    automatic rich alert rather than going dark."""
+    from backend.api.algo import agent_engine
+
+    agent = MagicMock()
+    agent.id = 1
+    agent.slug = "stale-flag-agent"
+    agent.name = "stale-flag-agent"
+    agent.events = []
+    agent.actions = []
+    agent.trigger_count = 0
+    agent.has_explicit_alert = True
+
+    entry = _make_survivor_entry(agent)
+
+    with (
+        patch.object(agent_engine, "async_session", side_effect=_patched_db_session_factory),
+        patch.object(agent_engine, "_v2_send_rich_alert", new=AsyncMock(return_value=True)) as rich_mock,
+        patch.object(agent_engine, "dispatch", new=AsyncMock()) as dispatch_mock,
+    ):
+        await agent_engine._ae_dispatch_survivor_entry(entry, datetime.now(timezone.utc), {}, None)
+
+    rich_mock.assert_awaited_once(), (
+        "has_explicit_alert=True with empty events must fall back to the rich alert"
+    )
+    _, kwargs = dispatch_mock.call_args
+    assert kwargs.get("skip_channels") == frozenset({"telegram", "email", "ntfy"})
+
+
+@pytest.mark.asyncio
+async def test_has_explicit_alert_non_true_truthy_value_falls_back_to_rich_alert():
+    """Belt-and-suspenders for the `is True` check itself: a non-bool
+    truthy value (anything that isn't the literal `True`) must NOT be
+    treated as an explicit-alert opt-in."""
+    from backend.api.algo import agent_engine
+
+    agent = MagicMock()
+    agent.id = 1
+    agent.slug = "weird-flag-agent"
+    agent.name = "weird-flag-agent"
+    agent.events = [{"channel": "telegram", "enabled": True}]
+    agent.actions = []
+    agent.trigger_count = 0
+    agent.has_explicit_alert = "yes"  # truthy, but not `is True`
+
+    entry = _make_survivor_entry(agent)
+
+    with (
+        patch.object(agent_engine, "async_session", side_effect=_patched_db_session_factory),
+        patch.object(agent_engine, "_v2_send_rich_alert", new=AsyncMock(return_value=True)) as rich_mock,
+        patch.object(agent_engine, "dispatch", new=AsyncMock()),
+    ):
+        await agent_engine._ae_dispatch_survivor_entry(entry, datetime.now(timezone.utc), {}, None)
+
+    rich_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_has_explicit_alert_suppressed_in_sim_when_notify_during_run_off():
+    """Defense-in-depth, not a fix for a confirmed real-message leak —
+    see `test_preamble_alert_suppressed_in_sim_when_notify_during_run_off`'s
+    docstring for why `dispatch_rows()`'s own independent sim-notify
+    gate already covers telegram/email/ntfy regardless of
+    `skip_channels`. This locks the SAME belt-and-suspenders pattern
+    `_v2_send_rich_alert` already uses for the explicit-alert path:
+    `skip_channels` must reflect `_ae_sim_notify_suppressed` here too,
+    not just on the automatic rich-alert path."""
+    from backend.api.algo import agent_engine
+
+    agent = MagicMock()
+    agent.id = 1
+    agent.slug = "explicit-alert-sim-agent"
+    agent.name = "explicit-alert-sim-agent"
+    agent.events = [{"channel": "telegram", "enabled": True}]
+    agent.actions = []
+    agent.trigger_count = 0
+    agent.has_explicit_alert = True
+
+    entry = _make_survivor_entry(agent)
+    entry["sim_mode"] = True
+
+    with (
+        patch.object(agent_engine, "async_session", side_effect=_patched_db_session_factory),
+        patch.object(agent_engine, "_v2_send_rich_alert", new=AsyncMock()) as rich_mock,
+        patch.object(agent_engine, "dispatch", new=AsyncMock()) as dispatch_mock,
+        patch.object(agent_engine, "_ae_sim_notify_suppressed", return_value=True),
+    ):
+        await agent_engine._ae_dispatch_survivor_entry(entry, datetime.now(timezone.utc), {}, None)
+
+    rich_mock.assert_not_awaited(), "has_explicit_alert=True must still skip the automatic rich alert"
+    dispatch_mock.assert_awaited_once()
+    _, kwargs = dispatch_mock.call_args
+    assert kwargs.get("skip_channels") == frozenset({"telegram", "email", "ntfy"}), (
+        "notify_during_run=off during a sim run must suppress telegram/email/ntfy "
+        "on the explicit-alert path too, not just the automatic rich-alert path"
+    )
+
+
+def test_emit_breach_record_threads_real_agent_tier_into_log_extra():
+    """`event_agents.py:_rec_tracked_ntfy_priority()` reads `extra['tier']`
+    from ANY record to resolve a channel's ntfy priority when the
+    channel itself sets none — `_v2_send_rich_alert` already carries
+    this for RICH_ALERT_AGENT (see CLAUDE.md's "Rich-alert ntfy
+    priority" fix); `_emit_breach_record` (the BREACH_AGENT hand-off,
+    reached by the NEW item 0.C explicit-alert path and preamble alert
+    entries) did not, which would have silently fallen back to the
+    generic dispatching agent's own tier instead of the REAL firing
+    agent's — the exact bug class that fix closed, on a different
+    rendering path. This locks the fix: the real agent's tier must be
+    present in the log record's extra."""
+    from backend.api.algo import events as events_mod
+
+    agent = MagicMock()
+    agent.slug = "critical-agent"
+    agent.name = "Critical Agent"
+    agent.id = 42
+    agent.tier = "critical"
+
+    with patch.object(events_mod, "logger") as logger_mock:
+        events_mod._emit_breach_record(
+            agent, "", "cash < 0", [{"channel": "ntfy", "enabled": True}],
+            "tg body", "ntfy body", "subject", "<p>body</p>", False,
+        )
+
+    _, kwargs = logger_mock.info.call_args
+    assert kwargs["extra"]["tier"] == "critical"

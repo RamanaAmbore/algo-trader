@@ -90,6 +90,8 @@ async def sqlite_env():
         given                = Column(JSON, nullable=True)
         preamble             = Column(JSON, nullable=True)
         preamble_fired_at    = Column(DateTime, nullable=True)
+        preamble_alert_last_fired_at = Column(DateTime, nullable=True)
+        has_explicit_alert   = Column(Boolean, nullable=False, default=False)
         conditions           = Column(JSON, nullable=False, default=dict)
         events               = Column(JSON, nullable=False, default=list)
         actions              = Column(JSON, nullable=False, default=list)

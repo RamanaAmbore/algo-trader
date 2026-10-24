@@ -431,7 +431,25 @@ def _emit_breach_record(
     event_agents.py's BREACH_AGENT renderer. Shared by the default
     (messageless) group and each per-channel custom-message record so
     both paths produce byte-identical extra shapes (only `channels` /
-    the three body fields differ)."""
+    the three body fields differ).
+
+    `tier` (2026-10-24, grammar-unification Design item 0.C) — the REAL
+    firing agent's own tier, same field `_v2_send_rich_alert()` already
+    carries for RICH_ALERT_AGENT (see CLAUDE.md's "Rich-alert ntfy
+    priority must come from the REAL triggering agent's tier" fix).
+    `event_agents.py:_rec_tracked_ntfy_priority()` reads
+    `extra['tier']` from ANY record, not just RICH_ALERT_AGENT's —
+    before this field existed here, a channel with no explicit
+    `priority` of its own fell back to `_send_channel`'s OWN agent
+    param, which for this path is the generic BREACH_AGENT dispatcher,
+    not the real firing agent. This was effectively dormant for
+    `kind='cycle'` agents before Design item 0.C: `skip_channels`
+    always excluded telegram/email/ntfy for a cycle-agent fire (since
+    `_v2_send_rich_alert`'s own `rich_sent` was unconditionally True
+    whenever it had any rows to render), so this path never actually
+    delivered ntfy for a cycle agent at all. Item 0.C's explicit-alert
+    path (and the preamble `alert`/`log` entries) are the first real
+    callers that can reach here with ntfy NOT skipped."""
     logger.info(
         f"ALERT recorded [{agent.slug}]{branch_tag}: {agent.name}",
         extra={
@@ -440,6 +458,7 @@ def _emit_breach_record(
             "channels": channels, "telegram_body": telegram_body,
             "ntfy_body": ntfy_body, "email_subject": email_subject,
             "email_body": email_body, "sim_mode": bool(sim_mode),
+            "tier": getattr(agent, "tier", None),
         },
     )
 

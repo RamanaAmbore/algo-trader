@@ -1094,6 +1094,45 @@ class Agent(Base):
     preamble_fired_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True)
 
+    # Windowed (repeating) cooldown-last-fired marker for `preamble`'s
+    # `alert`/non-debug `log` entries — see
+    # `agent_engine._cycle_preamble_alert_cooldown_ready()`. Deliberately
+    # a SEPARATE column from `preamble_fired_at` above, not a reuse of
+    # it: `preamble_fired_at` is a permanent "fired once, never again"
+    # marker (order/close_position/etc.); this one is a "fired, then
+    # eligible again after `cooldown_minutes`" repeating window — sharing
+    # one field between those two gating shapes would corrupt one or the
+    # other (a repeating alert write would un-claim the once-per-
+    # activation marker's `IS NULL` check; a one-time order claim would
+    # wrongly seed the alert cooldown's "last fired" clock). NULL means
+    # "never fired" (always eligible). Reset to NULL by
+    # `routes/agents.py:_age_set_status()` on the same real activation
+    # transition that resets `preamble_fired_at`, so a fresh activation
+    # alerts immediately rather than inheriting a stale cooldown clock
+    # from a PRIOR activation's last alert.
+    preamble_alert_last_fired_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+
+    # Grammar-unification plan, Design item 0.C (2026-10) — True only
+    # when the frontend compiler's `compileAgentStmt` produced this
+    # row's `events` from a genuine DO-level `alert(...)` call
+    # (`doResult.events.length > 0`), never from a seed/form-UI default
+    # channel list. Lets `agent_engine._ae_dispatch_survivor_entry` skip
+    # the automatic `_v2_send_rich_alert()` kind/threshold table and let
+    # the operator's own explicit alert config fire instead via the
+    # normal `events.dispatch()` path — safely, because this flag can
+    # only be True for a genuinely new DSL-authored `alert()` call, never
+    # retroactively true for any pre-existing seeded/form-authored agent
+    # (every `loss-*` builtin ships a non-empty `events` list by seed
+    # default, unrelated to any DO `alert(...)` call — see section 7 of
+    # `backend/tests/test_agent_preamble_execution.py` for why a bare
+    # `bool(agent.events)` check was rejected as the discriminator; a
+    # CLAUDE.md entry covering this lands with this item's doc-sync pass).
+    # `server_default='false'` so an `ADD COLUMN ... NOT NULL` migration
+    # on an existing populated table doesn't fail.
+    has_explicit_alert: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default='false')
+
     # Evaluation config
     scope: Mapped[str]           = mapped_column(String(16), nullable=False, default="per_account")
     schedule: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, default="market_hours")

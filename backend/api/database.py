@@ -1093,6 +1093,46 @@ async def _migrate_agents_preamble(conn) -> None:
     ))
 
 
+async def _migrate_agents_preamble_alert_cooldown(conn) -> None:
+    """Additive migration — `agents.preamble_alert_last_fired_at`
+    (grammar-unification plan, Design item 2 — windowed cooldown gate
+    for preamble `alert`/non-debug `log` entries, separate from the
+    once-per-activation `preamble_fired_at` column above — see
+    `Agent.preamble_alert_last_fired_at`'s own model-column comment for
+    why these are two distinct columns rather than one shared field).
+    Same pattern as `_migrate_agents_preamble`: `SET LOCAL lock_timeout`,
+    plain nullable `ADD COLUMN IF NOT EXISTS`, no index (only ever
+    compared against a single row's own id in the windowed claim
+    UPDATE, never scanned)."""
+    from sqlalchemy import text
+    await conn.execute(text("SET LOCAL lock_timeout = '5s'"))
+    await conn.execute(text(
+        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS preamble_alert_last_fired_at TIMESTAMPTZ"
+    ))
+
+
+async def _migrate_agents_has_explicit_alert(conn) -> None:
+    """Additive migration — `agents.has_explicit_alert` (grammar-
+    unification plan, Design item 0.C). Unlike every other migration in
+    this file, this column is `NOT NULL` with no nullable grace period
+    — every pre-existing row must read back `False`, never `NULL`
+    (ambiguous tri-state would defeat the whole point of a boolean
+    discriminator). `DEFAULT false` is required at the DDL level for
+    exactly that reason: a plain `ADD COLUMN ... NOT NULL` with no
+    default would fail outright against an already-populated `agents`
+    table (Postgres has no value to backfill existing rows with
+    otherwise). `SET LOCAL lock_timeout` bounds how long this can wait
+    behind any in-flight row lock, same as every other migration here.
+    No index — never queried by WHERE clause, only read per-row by
+    `agent_engine._ae_dispatch_survivor_entry()`."""
+    from sqlalchemy import text
+    await conn.execute(text("SET LOCAL lock_timeout = '5s'"))
+    await conn.execute(text(
+        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS has_explicit_alert "
+        "BOOLEAN NOT NULL DEFAULT false"
+    ))
+
+
 async def _migrate_agents_bracket_columns(conn) -> None:
     """Additive migration — `agents.legacy_template_id` +
     `agents.bracket_config` (Sprint E, Agent/Bracket/Template
@@ -1259,6 +1299,8 @@ async def init_db() -> None:
         await _migrate_agents_bracket_columns(conn)
         await _migrate_agents_given(conn)
         await _migrate_agents_preamble(conn)
+        await _migrate_agents_preamble_alert_cooldown(conn)
+        await _migrate_agents_has_explicit_alert(conn)
         await _migrate_drop_position_pairs_table(conn)
         await _migrate_market_special_sessions_source(conn)
     logger.info("Database: tables verified")

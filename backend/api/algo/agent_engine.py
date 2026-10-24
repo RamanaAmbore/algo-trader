@@ -13,7 +13,7 @@ import html
 import re
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 
 from backend.api.algo.events import dispatch, log_event, EvalResult
 from backend.api.algo.actions import execute, _is_row_ref_marker
@@ -3385,6 +3385,109 @@ def _cycle_preamble_has_once_entries(preamble: list) -> bool:
     return False
 
 
+def _cycle_preamble_entry_is_cooldown_gated(entry: dict) -> bool:
+    """True for a preamble entry that must respect the windowed alert/
+    log cooldown (Design item 2): `alert`, and `log` entries whose level
+    is NOT `debug`. `help` is never gated (a read-only catalog lookup
+    with no notification channel involved — nothing to rate-limit).
+    `debug(x)` sugar — which always compiles to `log(level="debug",
+    ...)` — is ALSO never gated: Design item 0.B's own rationale for
+    running it every cycle ("dynamic state, re-observed each time") and
+    the structural DEBUG exemption (a DEBUG-level record can never reach
+    a real notification channel regardless) both mean there is no
+    notification-spam risk to rate-limit in the first place."""
+    if not isinstance(entry, dict):
+        return False
+    etype = entry.get("type")
+    if etype == "alert":
+        return True
+    if etype == "log":
+        return (entry.get("params") or {}).get("level") != "debug"
+    return False
+
+
+def _cycle_preamble_has_cooldown_gated_entries(preamble: list) -> bool:
+    """True when `preamble` contains at least one cooldown-gated entry
+    (see `_cycle_preamble_entry_is_cooldown_gated`). Used to skip the
+    cooldown claim entirely for a preamble with none — e.g. one made up
+    only of `help`/`debug(x)` calls."""
+    return any(_cycle_preamble_entry_is_cooldown_gated(e) for e in preamble or [])
+
+
+def _preamble_utcnow() -> "datetime":
+    """Patchable wall-clock read, isolated so tests can simulate elapsed
+    cooldown windows (t0 -> t0+5m -> t0+31m) without a real sleep."""
+    return datetime.now(timezone.utc)
+
+
+async def _cycle_preamble_alert_cooldown_ready(
+    agent, *, alert_state: dict, sim_mode: bool, replay_mode: bool,
+    bypass_schedule: bool, bypass_suppression: bool,
+) -> bool:
+    """Windowed (repeating) cooldown gate for preamble `alert`/non-debug
+    `log` entries (Design item 2) — deliberately a SEPARATE mechanism
+    from `_cycle_claim_preamble_activation`'s ONE-TIME marker, not a
+    reuse of it: that marker means "fired once, never again" (order/
+    close_position/etc.); this gate means "fired, then eligible again
+    after `cooldown_minutes`" — a genuinely different shape. Sharing one
+    column between them would corrupt one or the other (see
+    `Agent.preamble_alert_last_fired_at`'s own model-column comment).
+    It is also NOT a reuse of `_cycle_in_cooldown` (the ordered-
+    condition cooldown gate): that gate returns False outright unless
+    `agent.status == "cooldown"`, which a preamble-only agent (see
+    `_cycle_agent_is_preamble_only`) never reaches — its own condition-
+    fire lifecycle is structurally skipped. Writing to the SHARED
+    `last_triggered_at`/`status` fields from here would also wrongly
+    silence a MIXED agent's real DO-level breach cooldown with an
+    unrelated preamble alert's timing.
+
+    `bypass_suppression` (isolated single-agent "Run in Simulator")
+    always returns True — the operator wants every click to fire, same
+    exemption `_v2_apply_escalation_gate` already grants.
+
+    sim/replay/bypass_schedule track the window on an ISOLATED
+    `alert_state` dict, never the real DB column — same isolation
+    pattern `_cycle_claim_preamble_activation` already uses. (Replay
+    never actually reaches this function — `_cycle_run_preamble`'s own
+    top-of-function early return skips the whole preamble when
+    `replay_mode` is set — included here only for defense in depth.)
+    """
+    if bypass_suppression:
+        return True
+    window_min = getattr(agent, "cooldown_minutes", None) or 30
+    now_ = _preamble_utcnow()
+    if sim_mode or replay_mode or bypass_schedule:
+        store = alert_state.setdefault('_sim_preamble_alert_cooldown', {})
+        last = store.get(agent.id)
+        if last is not None and (now_ - last).total_seconds() / 60 < window_min:
+            return False
+        store[agent.id] = now_
+        return True
+    # Pre-check against the freshly loaded row first — skips the DB
+    # write entirely on a tick that's clearly still inside the window,
+    # same perf-minded pattern as a plain cooldown check elsewhere in
+    # this module.
+    last_fired = getattr(agent, "preamble_alert_last_fired_at", None)
+    if last_fired is not None and (now_ - last_fired).total_seconds() / 60 < window_min:
+        return False
+    cutoff = now_ - timedelta(minutes=window_min)
+    async with async_session() as session:
+        result = await session.execute(
+            update(Agent)
+            .where(
+                Agent.id == agent.id,
+                or_(Agent.preamble_alert_last_fired_at.is_(None),
+                    Agent.preamble_alert_last_fired_at <= cutoff),
+            )
+            .values(preamble_alert_last_fired_at=now_)
+        )
+        await session.commit()
+    claimed = (result.rowcount or 0) > 0
+    if claimed:
+        agent.preamble_alert_last_fired_at = now_
+    return claimed
+
+
 class _PreambleAlertAgentView:
     """Lightweight read-only proxy so a preamble `alert(...)` entry's own
     `events` list can be dispatched through the EXACT SAME
@@ -3482,24 +3585,105 @@ async def _cycle_claim_preamble_activation(
     return claimed
 
 
+async def _cycle_dispatch_preamble_entry(
+    agent, entry: dict, etype: str, *, action_ctx: dict, sim_mode: bool,
+    context: dict, broadcast_fn, can_fire_once: bool, alert_log_ready: bool,
+) -> None:
+    """Dispatch ONE preamble entry — extracted from `_cycle_run_preamble`
+    to keep that function's own cyclomatic complexity under this
+    project's radon gate. The caller already computed `can_fire_once`
+    (once-per-activation claim) and `alert_log_ready` (windowed alert/
+    log cooldown claim) ONCE for the whole preamble; this function only
+    reads those two flags, it never claims anything itself."""
+    if etype == "alert":
+        # replay_mode is already handled by _cycle_run_preamble's own
+        # top-of-function early return (the whole preamble is skipped
+        # in replay) — nothing replay-specific needed here.
+        if not alert_log_ready:
+            return
+        events_list = entry.get("events") or []
+        if not events_list:
+            return
+        shim = _PreambleAlertAgentView(agent, events_list)
+        eval_result = EvalResult(
+            triggered=True,
+            condition_text=f"{getattr(agent, 'name', agent.slug)} — preamble alert",
+            detail={},
+        )
+        # Defense-in-depth, mirroring `_v2_send_rich_alert`'s own
+        # belt-and-suspenders double-gate (see
+        # `_ae_dispatch_survivor_entry`'s identical comment for the full
+        # reasoning): telegram/email/ntfy are `_RECORDED_CHANNELS`
+        # (events.py) — `dispatch_rows()`'s own independent sim-notify
+        # gate (keyed off `_emit_breach_record`'s `sim_mode` field)
+        # already correctly suppresses a sim-mode breach record
+        # downstream, regardless of `skip_channels` here. This is not a
+        # fix for a confirmed leak; it mirrors an existing pattern.
+        skip = (
+            frozenset({'telegram', 'email', 'ntfy'})
+            if _ae_sim_notify_suppressed(agent, sim_mode) else frozenset()
+        )
+        await dispatch(
+            shim, eval_result, broadcast_fn, sim_mode=sim_mode,
+            skip_channels=skip, context=context,
+        )
+        return
+    if etype in _PREAMBLE_EVERY_CYCLE_TYPES:
+        # log/help — `log` is cooldown-gated unless it's the debug(x)
+        # sugar form (level="debug"); `help` is never gated (see
+        # `_cycle_preamble_entry_is_cooldown_gated`'s own docstring).
+        if etype == "log" and _cycle_preamble_entry_is_cooldown_gated(entry) \
+                and not alert_log_ready:
+            return
+        params = entry.get("params") or {}
+        await execute(agent, [{"type": etype, "params": params}], dict(action_ctx))
+        return
+    # Once-per-activation bucket — order/place_order/close_position/
+    # cancel_order, bracket, and any other action type. Fail-safe
+    # default: anything not explicitly log/help/alert is treated as
+    # side-effecting and gated on `can_fire_once`.
+    if not can_fire_once:
+        return
+    if etype == "bracket":
+        logger.warning(
+            f"Agent [{agent.slug}]: preamble 'bracket' entry "
+            "has no registered action-dispatch handler "
+            "(programmatic bracket creation/attach from a "
+            "preamble call is not implemented) — skipped."
+        )
+        return
+    params = entry.get("params") or {}
+    await execute(agent, [{"type": etype, "params": params}], dict(action_ctx))
+
+
 async def _cycle_run_preamble(
     agent, context: dict, now, *, sim_mode: bool, replay_mode: bool = False,
-    bypass_schedule: bool = False, alert_state: dict, broadcast_fn=None,
+    bypass_schedule: bool = False, bypass_suppression: bool = False,
+    alert_state: dict, broadcast_fn=None,
 ) -> None:
     """Execute a saved cycle agent's `preamble` list (grammar-
     unification plan, Design item 0).
 
     Split by statement type:
-      - `log` / `help` — run on EVERY call (every poll cycle this agent
-        is evaluated), dispatched via the EXACT SAME `execute()` path
-        `agent.actions`/DO entries already use (mode resolution, the
-        exchange-open gate, $row/$given resolution, audit logging — all
-        for free, identical to a DO-gated `log`/`help` call).
-      - `alert` — also runs every cycle (a notification call, not a
-        broker action — no real-money risk from repetition). Routed
-        through `events.dispatch()` via `_PreambleAlertAgentView` so it
-        is the IDENTICAL channel-dispatch function a matched agent's own
-        `events` field uses, not a reimplementation.
+      - `help`, and `debug(x)`'s `log(level="debug")` sugar form — run
+        on EVERY call (every poll cycle this agent is evaluated),
+        dispatched via the EXACT SAME `execute()` path `agent.actions`/
+        DO entries already use (mode resolution, the exchange-open
+        gate, $row/$given resolution, audit logging — all for free,
+        identical to a DO-gated call).
+      - `alert`, and a hand-typed `log(...)` whose level is NOT `debug`
+        — ALSO a notification-shaped call, not a broker action, so no
+        real-money risk from repetition — but respects this agent's own
+        `cooldown_minutes` (Design item 2), the SAME value ordered-
+        condition agents already use, via a dedicated windowed claim
+        (`_cycle_preamble_alert_cooldown_ready`) — fires, then
+        suppressed until the window elapses, then eligible again. Not
+        uncapped: see that function's own docstring for why this is a
+        SEPARATE mechanism from both `_cycle_in_cooldown` and the once-
+        per-activation claim below, not a reuse of either. `alert` is
+        routed through `events.dispatch()` via `_PreambleAlertAgentView`
+        so it is the IDENTICAL channel-dispatch function a matched
+        agent's own `events` field uses, not a reimplementation.
       - Everything else (`order`/`place_order`/`close_position`/
         `cancel_order`, and any other action type) fires AT MOST ONCE
         per agent activation — gated by
@@ -3541,20 +3725,19 @@ async def _cycle_run_preamble(
     if replay_mode:
         # Replay rebuilds `alert_state` fresh every historical tick (the
         # backtest driver's own architecture, not this function's
-        # concern) — there is no "once per activation" to anchor to, and
-        # `actions_sim.py:_replay_paper_trade` has NO action-type filter
-        # at all: it writes a `mode='replay'` AlgoOrder row for ANY
-        # action type, including a diagnostic `log`/`help` call
-        # (`symbol = f"{agent.slug}-{action_type}"` fallback confirms
-        # it was never meant to special-case non-broker types). Without
-        # this guard, every every-cycle preamble entry would pollute
-        # backtest results with a spurious informational order row on
-        # EVERY tick, and the once-per-activation entries would do the
-        # same (their claim resets every tick along with alert_state).
-        # Skip the entire preamble during replay — informational/
-        # backtest-only, must never be a vector for spurious writes or
-        # real notification sends (see the `alert`-specific rationale
-        # this subsumes, below).
+        # concern) — there is no "once per activation" (or cooldown
+        # window) to anchor to, and `actions_sim.py:_replay_paper_trade`
+        # has NO action-type filter at all: it writes a `mode='replay'`
+        # AlgoOrder row for ANY action type, including a diagnostic
+        # `log`/`help` call (`symbol = f"{agent.slug}-{action_type}"`
+        # fallback confirms it was never meant to special-case non-
+        # broker types). Without this guard, every every-cycle preamble
+        # entry would pollute backtest results with a spurious
+        # informational order row on EVERY tick, and the once-per-
+        # activation entries would do the same (their claim resets
+        # every tick along with alert_state). Skip the entire preamble
+        # during replay — informational/backtest-only, must never be a
+        # vector for spurious writes or real notification sends.
         return
 
     action_ctx = dict(context)
@@ -3576,56 +3759,41 @@ async def _cycle_run_preamble(
             # this tick. A DB blip here means the once-per-activation
             # entries simply don't fire THIS cycle (retried next cycle,
             # since `preamble_fired_at` was never actually written) —
-            # the every-cycle entries (log/help/alert) below are
-            # unaffected either way.
+            # every-cycle entries are unaffected either way.
             logger.warning(
                 f"Agent [{agent.slug}]: preamble activation claim failed "
                 f"— once-per-activation entries skipped this cycle: {e}"
             )
             can_fire_once = False
 
+    alert_log_ready = False
+    if _cycle_preamble_has_cooldown_gated_entries(preamble):
+        try:
+            alert_log_ready = await _cycle_preamble_alert_cooldown_ready(
+                agent, alert_state=alert_state, sim_mode=sim_mode,
+                replay_mode=replay_mode, bypass_schedule=bypass_schedule,
+                bypass_suppression=bypass_suppression,
+            )
+        except Exception as e:
+            # Same fail-safe contract as the once-per-activation claim
+            # above — a DB blip here means alert/log entries just don't
+            # fire this cycle, never an escaped exception.
+            logger.warning(
+                f"Agent [{agent.slug}]: preamble alert cooldown claim "
+                f"failed — alert/log entries skipped this cycle: {e}"
+            )
+            alert_log_ready = False
+
     for entry in preamble:
         if not isinstance(entry, dict):
             continue
         etype = entry.get("type")
         try:
-            if etype == "alert":
-                # replay_mode is already handled by the top-of-function
-                # early return above (the whole preamble is skipped in
-                # replay) — nothing replay-specific needed here.
-                events_list = entry.get("events") or []
-                if not events_list:
-                    continue
-                shim = _PreambleAlertAgentView(agent, events_list)
-                eval_result = EvalResult(
-                    triggered=True,
-                    condition_text=f"{getattr(agent, 'name', agent.slug)} — preamble alert",
-                    detail={},
-                )
-                await dispatch(
-                    shim, eval_result, broadcast_fn, sim_mode=sim_mode, context=context,
-                )
-            elif etype in _PREAMBLE_EVERY_CYCLE_TYPES:
-                params = entry.get("params") or {}
-                await execute(agent, [{"type": etype, "params": params}], dict(action_ctx))
-            else:
-                # Once-per-activation bucket — order/place_order/
-                # close_position/cancel_order, bracket, and any other
-                # action type. Fail-safe default: anything not
-                # explicitly log/help/alert is treated as side-effecting
-                # and gated on `can_fire_once`.
-                if not can_fire_once:
-                    continue
-                if etype == "bracket":
-                    logger.warning(
-                        f"Agent [{agent.slug}]: preamble 'bracket' entry "
-                        "has no registered action-dispatch handler "
-                        "(programmatic bracket creation/attach from a "
-                        "preamble call is not implemented) — skipped."
-                    )
-                    continue
-                params = entry.get("params") or {}
-                await execute(agent, [{"type": etype, "params": params}], dict(action_ctx))
+            await _cycle_dispatch_preamble_entry(
+                agent, entry, etype, action_ctx=action_ctx, sim_mode=sim_mode,
+                context=context, broadcast_fn=broadcast_fn,
+                can_fire_once=can_fire_once, alert_log_ready=alert_log_ready,
+            )
         except Exception as e:
             logger.error(f"Agent [{agent.slug}]: preamble entry {etype!r} failed — {e}")
 
@@ -3949,8 +4117,8 @@ async def _ae_cycle_eval_and_buffer(
     # `_cycle_run_preamble`'s own docstring for the per-entry split).
     await _cycle_run_preamble(
         agent, context, now, sim_mode=sim_mode, replay_mode=replay_mode,
-        bypass_schedule=bypass_schedule, alert_state=alert_state,
-        broadcast_fn=broadcast_fn,
+        bypass_schedule=bypass_schedule, bypass_suppression=bypass_suppression,
+        alert_state=alert_state, broadcast_fn=broadcast_fn,
     )
     if _cycle_agent_is_preamble_only(agent):
         # A preamble-only statement's `conditions` is the always-true
@@ -4467,10 +4635,36 @@ async def _ae_dispatch_survivor_entry(entry: dict, now, context: dict,
         if broadcast_fn:
             broadcast_fn("agent_state", {"slug": agent.slug, "status": new_status_p})
 
-    rich_sent = await _v2_send_rich_alert(
-        agent, matches_, now, sim_mode=sim_mode_p, context=context,
-        eval_result=result,
+    # Design item 0.C (grammar-unification plan) — a cycle agent whose
+    # compiled DO clause produced a genuine `alert(...)` call
+    # (`has_explicit_alert=True`, set ONLY by the frontend compiler when
+    # `doResult.events.length > 0`) owns its own alert config: skip the
+    # automatic kind/threshold rich-alert table and let the normal
+    # events.dispatch() call below (which already reads `agent.events`)
+    # deliver it instead. `is True` (not a bare truthy check) and the
+    # `agent.events` non-empty requirement are both deliberate: a bare
+    # `getattr(..., False)` truthy check mis-fires on an unconfigured
+    # MagicMock test double (auto-vivifies to a truthy child Mock); the
+    # `agent.events` check guards against a stale True flag with an
+    # emptied-out events list sending nothing at all — fall back to the
+    # rich alert in that case instead. Every currently-saved agent has
+    # `has_explicit_alert=False` (server_default='false', backfilled on
+    # every pre-existing row), so this is a pure backward-compatible
+    # opt-in. See `backend/tests/test_agent_preamble_execution.py`
+    # section 7 for the `_LOSS_AGENT_DEFAULTS` evidence of why a bare
+    # `bool(agent.events)` check was rejected as the discriminator — a
+    # CLAUDE.md entry covering this lands with this item's doc-sync pass.
+    use_explicit_alert = (
+        getattr(agent, "has_explicit_alert", False) is True
+        and bool(agent.events)
     )
+    if use_explicit_alert:
+        rich_sent = False
+    else:
+        rich_sent = await _v2_send_rich_alert(
+            agent, matches_, now, sim_mode=sim_mode_p, context=context,
+            eval_result=result,
+        )
     # Rich alert (telegram+email+ntfy table) runs first via alert_utils._dispatch
     # -> _alert_route, which already routes telegram/email/ntfy per
     # alert_routing.agent_alert in backend_config.yaml. If it succeeded, skip
@@ -4478,11 +4672,38 @@ async def _ae_dispatch_survivor_entry(entry: dict, now, context: dict,
     # there would duplicate every rich-alert fire (confirmed live incident:
     # 4 duplicate ntfy pushes for one MCX pre-close event). log / websocket /
     # inapp always run via dispatch() regardless — they have no rich-path
-    # equivalent.
-    skip = frozenset({'telegram', 'email', 'ntfy'}) if rich_sent else frozenset()
+    # equivalent. The explicit-alert path normally skips nothing here —
+    # there is no rich alert to duplicate against, so every channel in
+    # `agent.events` (including telegram/email/ntfy) fires through the
+    # one normal path.
+    #
+    # Defense-in-depth, not a confirmed leak: telegram/email/ntfy are
+    # `_RECORDED_CHANNELS` (events.py) — they never reach dispatch()'s
+    # own direct-send branch regardless of `skip_channels`; they're
+    # queued via `_emit_breach_record` into event_agents.py's log-tag
+    # pipeline, which has ITS OWN independent sim-notify gate
+    # (`dispatch_rows()`'s `extra["sim_mode"]`/`_sim_notify_allowed()`
+    # check, keyed off `_emit_breach_record`'s own `sim_mode` field —
+    # already correctly suppresses a sim-mode breach record there). This
+    # mirrors `_v2_send_rich_alert`'s own belt-and-suspenders double-gate
+    # (it ALSO checks `_ae_sim_notify_suppressed` even though the same
+    # downstream gate exists) rather than inventing a new pattern — same
+    # reasoning as the preamble `alert` entry's identical skip_channels
+    # computation in `_cycle_dispatch_preamble_entry`.
+    sim_notify_suppressed = use_explicit_alert and _ae_sim_notify_suppressed(agent, sim_mode_p)
+    skip = (
+        frozenset({'telegram', 'email', 'ntfy'})
+        if (rich_sent or sim_notify_suppressed) else frozenset()
+    )
     await dispatch(agent, result, broadcast_fn, sim_mode=sim_mode_p, skip_channels=skip,
                    context=context)
-    if rich_sent and broadcast_fn:
+    # The explicit-alert path still needs the UI "agent fired" websocket
+    # broadcast — dispatch() above only broadcasts a websocket/inapp
+    # event when `agent.events` itself names that channel; this is a
+    # SEPARATE, always-expected live-feed signal the rich-alert path
+    # already provided, which must not go dark just because the operator
+    # chose explicit alert config over the automatic table.
+    if (rich_sent or use_explicit_alert) and broadcast_fn:
         broadcast_fn('agent_alert', {
             'slug': agent.slug,
             'message': result.condition_text,

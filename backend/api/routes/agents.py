@@ -135,6 +135,13 @@ class AgentInfo(msgspec.Struct):
     # is no `WHEN`). See Agent.preamble in backend/api/models.py for the
     # shape. [] for every agent with no preamble calls.
     preamble:              list       = msgspec.field(default_factory=list)
+    # Grammar-unification plan, Design item 0.C (2026-10) — True only
+    # when this row's `events` came from a genuine DO-level
+    # `alert(...)` call, not a seed/form default channel list. See
+    # Agent.has_explicit_alert in backend/api/models.py. Plain `bool`
+    # default (not `| None`) — it's a real tri-state-free boolean, not
+    # an "unset means unchanged" field, on this read-only response.
+    has_explicit_alert:    bool       = False
 
 
 class AgentCreateRequest(msgspec.Struct):
@@ -203,6 +210,11 @@ class AgentCreateRequest(msgspec.Struct):
     given:                  list       = msgspec.field(default_factory=list)
     # Grammar-unification plan (2026-10) — see AgentInfo.preamble above.
     preamble:                list      = msgspec.field(default_factory=list)
+    # Grammar-unification plan, Design item 0.C (2026-10) — see
+    # AgentInfo.has_explicit_alert above. Plain `bool` default on
+    # create, same as AgentInfo — a brand-new row has no prior value to
+    # "leave unchanged", so there's no tri-state need here either.
+    has_explicit_alert:      bool      = False
 
 
 class AgentUpdateRequest(msgspec.Struct):
@@ -249,6 +261,12 @@ class AgentUpdateRequest(msgspec.Struct):
     # Grammar-unification plan (2026-10) — None = unchanged, same
     # convention. See AgentInfo.preamble above.
     preamble:              list | None = None
+    # Grammar-unification plan, Design item 0.C (2026-10) — `bool | None`,
+    # None = unchanged (the tri-state convention every other optional
+    # field here uses), NOT a plain `bool` default — a PUT that omits
+    # this field must never silently reset an already-True flag back to
+    # False. See AgentInfo.has_explicit_alert above.
+    has_explicit_alert:    bool | None = None
 
 
 class AgentEventInfo(msgspec.Struct):
@@ -614,6 +632,7 @@ def _agent_to_info(a: Agent) -> AgentInfo:
         bracket_config=getattr(a, "bracket_config", None),
         given=list(getattr(a, "given", None) or []),
         preamble=list(getattr(a, "preamble", None) or []),
+        has_explicit_alert=bool(getattr(a, "has_explicit_alert", False)),
     )
 
 
@@ -1008,6 +1027,7 @@ class AgentController(Controller):
                 group_name=data.group,
                 given=list(data.given or []),
                 preamble=list(data.preamble or []),
+                has_explicit_alert=bool(data.has_explicit_alert),
             )
             session.add(agent)
             await session.commit()
@@ -1106,7 +1126,7 @@ class AgentController(Controller):
                           'events', 'actions', 'scope', 'schedule',
                           'cooldown_minutes', 'debounce_minutes',
                           'tags', 'blackout_windows', 'tier', 'topic',
-                          'cli_source', 'given', 'preamble'):
+                          'cli_source', 'given', 'preamble', 'has_explicit_alert'):
                 val = getattr(data, field, None)
                 if val is not None:
                     setattr(agent, field, val)
@@ -1188,6 +1208,12 @@ class AgentController(Controller):
             # only a genuine inactive/paused -> active transition does.
             if status == "active" and agent.status not in ("active", "cooldown"):
                 agent.preamble_fired_at = None
+                # Same real-activation transition also re-arms the
+                # alert/log cooldown clock (Design item 2) — a fresh
+                # activation should alert immediately, not inherit a
+                # stale cooldown timestamp from a PRIOR activation's
+                # last preamble alert.
+                agent.preamble_alert_last_fired_at = None
             agent.status = status
             await session.commit()
         return {"detail": f"Agent '{slug}' {'activated' if status == 'active' else 'deactivated'}"}
