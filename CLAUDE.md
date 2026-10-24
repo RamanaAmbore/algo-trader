@@ -1141,6 +1141,26 @@ into the shared strike column: ITM calls spread right toward centre, ITM puts sp
 centre. The Chain-tab basket-leg pill in `SymbolPanel.svelte` moves from the faint rest-state alpha
 (-14) to the existing -22 emphasis tier. No new colour is introduced.
 
+**Chain ITM wash hue swapped — CE is now orange, PE is now green (2026-10-25, commit `14e64d68`,
+explicit operator override of the entry above's predecessor)** — A 2026-09-30 fix had deliberately
+aligned the ITM cell washes to the header colors (CE=green, PE=red). This reverses that: ITM calls
+(`.chain-row-itm-call .chain-td-ce`/`.chain-td-strike`) now wash orange (`--algo-orange`, rgb
+251,146,60); ITM puts (`.chain-row-itm-put .chain-td-pe`/`.chain-td-strike`) now wash green
+(`--algo-green`/`--c-long`, rgb 74,222,128) — both reused, no new tokens. The weak/OTM-side
+cross-tints swap the same way at their existing 0.015 alpha tier. This is a deliberate, confirmed
+reversal of the prior documented decision, not a bug fix — do not "correct" it back without a new
+explicit operator instruction. Same commit added a top edge to the ATM row's marker
+(`frontend/src/lib/order/OptionChainTab.svelte`), migrated from literal `border-top`/`border-bottom`
+to `box-shadow: inset 0 1px 0 …, inset 0 -1px 0 …` — a literal border would conflict with the row
+above's own `border-bottom` under `border-collapse: collapse` (resolved by cell position, not by
+visual strength, so the marker could silently lose in some browsers), and the old bottom-only
+`border-bottom` marker was already being silently erased on desktop by an unrelated `@media
+(min-width: 640px)` rule that strips `.chain-row > td { border-bottom: none }` for row-divider
+removal. `box-shadow` isn't part of the table border model, so neither conflict applies; it renders
+identically on mobile and desktop. `.chain-row-active.chain-row-atm`'s compound rule now carries both
+edges explicitly, since `.chain-row-active`'s own equal-specificity `box-shadow` would otherwise fully
+replace (not merge with) the ATM row's marker when a row is both ATM and active.
+
 **Mobile page header never wraps; footer top-aligns; status pills stay whole (2026-10-23; commits
 `b8e0ae0f`, `7d281276`)** — Three mobile overflow defects, all on the algo shell in
 [`+layout.svelte`](<frontend/src/routes/(algo)/+layout.svelte>).
