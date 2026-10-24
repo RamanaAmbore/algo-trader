@@ -5884,6 +5884,17 @@ function compileAgentStmt(ast, catalog, opts) {
       ...(preambleResult.preamble && preambleResult.preamble.length ? { preamble: preambleResult.preamble } : {}),
       // Sprint [GIVEN-expr] — only spliced in when non-null, same reason.
       ...(givenResult.given ? { given: givenResult.given } : {}),
+      // item 0.C — lets the backend engine distinguish a real DO-level
+      // `alert(...)` call from the old seed/form-UI default `events` list
+      // (every `loss-*` builtin carries a non-empty `events` from
+      // `_LOSS_AGENT_DEFAULTS`, unrelated to any DO alert() call — both
+      // shapes are byte-identical in the `events` column, so the backend
+      // can't tell them apart from `events` alone). `true` only when THIS
+      // compile produced a real alert from DO; absent (never `false`)
+      // otherwise, same "only spliced in when meaningful" convention as
+      // `preamble`/`given` above, so every pre-existing agent with no DO
+      // alert() call compiles byte-identical.
+      ...(doResult.events && doResult.events.length > 0 ? { has_explicit_alert: true } : {}),
       ...metaFields,
     },
   };

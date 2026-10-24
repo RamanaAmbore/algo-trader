@@ -381,6 +381,7 @@ describe('real builtin agents — never authored via the CLI', () => {
       ] },
       events: [{ channel: 'telegram', enabled: true }, { channel: 'log', enabled: true }, { channel: 'ntfy', enabled: true, priority: 'high' }],
       actions: [],
+      has_explicit_alert: true,
     };
     const dec = decompile(agentJson);
     expect(dec.errors).toEqual([]);
@@ -397,6 +398,7 @@ describe('real builtin agents — never authored via the CLI', () => {
       ] },
       events: [{ channel: 'telegram', enabled: true }, { channel: 'log', enabled: true }, { channel: 'ntfy', enabled: true, priority: 'urgent' }],
       actions: [],
+      has_explicit_alert: true,
     };
     const dec = decompile(agentJson);
     expect(dec.errors).toEqual([]);
@@ -413,6 +415,7 @@ describe('real builtin agents — never authored via the CLI', () => {
       ] },
       events: [{ channel: 'telegram', enabled: true }, { channel: 'log', enabled: true }, { channel: 'ntfy', enabled: true, priority: 'high' }],
       actions: [],
+      has_explicit_alert: true,
     };
     const dec = decompile(agentJson);
     expect(dec.errors).toEqual([]);
@@ -434,6 +437,7 @@ describe('real builtin agents — never authored via the CLI', () => {
       ] },
       events: [{ channel: 'telegram', enabled: true }, { channel: 'log', enabled: true }, { channel: 'ntfy', enabled: true, priority: 'urgent' }],
       actions: [],
+      has_explicit_alert: true,
     };
     const dec = decompile(agentJson);
     expect(dec.errors).toEqual([]);
@@ -481,6 +485,7 @@ describe('real builtin agents — never authored via the CLI', () => {
         { channel: 'ntfy', enabled: true },
       ],
       actions: [],
+      has_explicit_alert: true,
     };
     const dec = decompile(agentJson);
     expect(dec.errors).toEqual([]);
@@ -494,6 +499,7 @@ describe('real builtin agents — never authored via the CLI', () => {
       conditions: { metric: 'pnl', scope: 'positions.total', op: '<=', value: -50000 },
       events: [{ channel: 'telegram', enabled: true }, { channel: 'log', enabled: true }, { channel: 'ntfy', enabled: true, priority: 'urgent' }],
       actions: [{ type: 'chase_close_positions', params: { scope: 'total', timeout_minutes: 10, adjust_pct: 0.1 } }],
+      has_explicit_alert: true,
     };
     const dec = decompile(agentJson);
     expect(dec.errors).toEqual([]);
@@ -530,6 +536,7 @@ describe('real builtin agents — never authored via the CLI', () => {
       ] },
       events: [{ channel: 'telegram', enabled: true }, { channel: 'email', enabled: true }, { channel: 'log', enabled: true }, { channel: 'ntfy', enabled: true, priority: 'high' }],
       actions: [],
+      has_explicit_alert: true,
     };
     const dec = decompile(agentJson);
     expect(dec.errors).toEqual([]);
@@ -543,6 +550,7 @@ describe('real builtin agents — never authored via the CLI', () => {
       conditions: { op: '>=', scope: 'positions.expiring_today.mcx_unhedged', metric: 'pnl', value: -999999999 },
       events: [{ channel: 'telegram', enabled: true }, { channel: 'email', enabled: true }, { channel: 'log', enabled: true }, { channel: 'ntfy', enabled: true, priority: 'high' }],
       actions: [],
+      has_explicit_alert: true,
     };
     const dec = decompile(agentJson);
     expect(dec.errors).toEqual([]);
@@ -562,6 +570,7 @@ describe('hand-constructed shapes (JSON-textarea / AI-draft style authorship)', 
       conditions: { metric: 'mean_pnl_30m', scope: 'positions.total', op: '<=', value: -5000 },
       events: [{ channel: 'telegram', enabled: true }],
       actions: [],
+      has_explicit_alert: true,
     };
     const dec = decompile(agentJson);
     expect(dec.errors).toEqual([]);
@@ -576,6 +585,7 @@ describe('hand-constructed shapes (JSON-textarea / AI-draft style authorship)', 
       conditions: { metric: 'pnl', scope: 'positions.total', op: 'between', value: [-100, 100] },
       events: [{ channel: 'telegram', enabled: true }],
       actions: [],
+      has_explicit_alert: true,
     };
     const dec = decompile(agentJson);
     expect(dec.errors).toEqual([]);
@@ -590,6 +600,7 @@ describe('hand-constructed shapes (JSON-textarea / AI-draft style authorship)', 
       conditions: { metric: 'side', scope: 'positions.total', op: 'in', value: ['BUY', 'SELL'] },
       events: [{ channel: 'telegram', enabled: true }],
       actions: [],
+      has_explicit_alert: true,
     };
     const dec = decompile(agentJson);
     expect(dec.errors).toEqual([]);
@@ -611,6 +622,7 @@ describe('hand-constructed shapes (JSON-textarea / AI-draft style authorship)', 
       conditions: { metric: 'is_itm_bool', scope: 'positions.total', op: '==', value: true },
       events: [{ channel: 'telegram', enabled: true }],
       actions: [],
+      has_explicit_alert: true,
     };
     const dec = decompile(agentJson);
     expect(dec.errors).toEqual([]);
@@ -625,6 +637,7 @@ describe('hand-constructed shapes (JSON-textarea / AI-draft style authorship)', 
       conditions: { metric: 'is_itm_bool', scope: 'positions.total', op: '!=', value: false },
       events: [{ channel: 'telegram', enabled: true }],
       actions: [],
+      has_explicit_alert: true,
     };
     const dec = decompile(agentJson);
     expect(dec.errors).toEqual([]);
@@ -638,6 +651,7 @@ describe('hand-constructed shapes (JSON-textarea / AI-draft style authorship)', 
       conditions: { metric: 'pnl', scope: 'positions.total', op: '<=', value: -1000 },
       events: [{ channel: 'telegram', enabled: true }],
       actions: [{ type: 'place_order', params: { account: 'ZG0790', symbol: 'NIFTY25JULFUT', side: 'SELL', qty: 75, order_type: 'SL-M' } }],
+      has_explicit_alert: true,
     };
     const dec = decompile(agentJson);
     expect(dec.errors).toEqual([]);
@@ -652,6 +666,7 @@ describe('hand-constructed shapes (JSON-textarea / AI-draft style authorship)', 
       conditions: { metric: 'pnl', scope: 'positions.total', op: '<=', value: -1000 },
       events: [{ channel: 'telegram', enabled: true }],
       actions: [{ type: 'deactivate_agent', params: {} }],
+      has_explicit_alert: true,
     };
     const dec = decompile(agentJson);
     expect(dec.errors).toEqual([]);
@@ -881,6 +896,7 @@ describe('place_order qty (contracts) → lots reconversion', () => {
       conditions: { metric: 'pnl', scope: 'positions.total', op: '<', value: 0 },
       events: [{ channel: 'telegram', enabled: true }],
       actions: [{ type: 'place_order', params: { account: 'ZG0790', symbol: 'BANKNIFTY25JULFUT', side: 'BUY', qty: 75 } }],
+      has_explicit_alert: true,
     };
     const dec = decompile(agentJson);
     expect(dec.errors).toEqual([]);
@@ -906,6 +922,7 @@ describe('place_order qty (contracts) → lots reconversion', () => {
       conditions: { metric: 'pnl', scope: 'positions.total', op: '<', value: 0 },
       events: [{ channel: 'telegram', enabled: true }],
       actions: [{ type: 'place_order', params: { account: 'ZG0790', symbol: 'NIFTY25JULFUT', side: 'SELL', qty: 'base_lots * 2' } }],
+      has_explicit_alert: true,
     };
     const dec = decompile(agentJson);
     expect(dec.errors).toEqual([]);
@@ -921,6 +938,7 @@ describe('place_order qty (contracts) → lots reconversion', () => {
       conditions: { metric: 'pnl', scope: 'positions.total', op: '<', value: 0 },
       events: [{ channel: 'telegram', enabled: true }],
       actions: [{ type: 'place_order', params: { account: 'ZG0790', symbol: 'UNKNOWN_SYM', side: 'SELL', qty: 75 } }],
+      has_explicit_alert: true,
     };
     const dec = decompile(agentJson);
     expect(dec.errors).toEqual([]);
@@ -936,6 +954,7 @@ describe('place_order qty (contracts) → lots reconversion', () => {
       conditions: { metric: 'pnl', scope: 'positions.total', op: '<', value: 0 },
       events: [{ channel: 'telegram', enabled: true }],
       actions: [{ type: 'place_order', params: { account: 'ZG0790', symbol: 'NIFTY25JULFUT', side: 'SELL', qty: 77 } }],
+      has_explicit_alert: true,
     };
     const dec = decompile(agentJson);
     expect(dec.errors).toEqual([]);
@@ -990,6 +1009,7 @@ describe('quoting guard', () => {
       conditions: { metric: 'pnl', scope: 'positions.total', op: '<', value: 0 },
       events: [{ channel: 'telegram', enabled: true }],
       actions: [{ type: 'log', params: { message: 'stop hit, closing (urgent)' } }],
+      has_explicit_alert: true,
     };
     const dec = decompile(agentJson);
     expect(dec.errors).toEqual([]);
@@ -1042,6 +1062,7 @@ describe('decompiled output key-name choice', () => {
       conditions: { metric: 'pnl', scope: 'positions.total', op: '<', value: 0 },
       events: [{ channel: 'telegram', enabled: true }],
       actions: [{ type: 'place_order', params: { account: 'ZG0790', symbol: 'NIFTY25JULFUT', side: 'SELL', qty: 75, chase_level: 'HIGH' } }],
+      has_explicit_alert: true,
     };
     const dec = decompile(agentJson);
     expect(dec.errors).toEqual([]);

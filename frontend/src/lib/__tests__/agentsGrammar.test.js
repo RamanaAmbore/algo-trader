@@ -450,6 +450,7 @@ describe('canonical examples — exact compiled JSON', () => {
       conditions: { metric: 'mean_pnl(30)', scope: 'positions.total', op: '<=', value: -50000 },
       events: [{ channel: 'telegram', enabled: true }],
       actions: [{ type: 'order', params: { account: 'ZG0790', symbol: 'NIFTY25JULFUT', side: 'SELL', qty: 75 } }],
+      has_explicit_alert: true,
     });
   });
 
@@ -3993,6 +3994,42 @@ describe('Sprint [grammar-unify] — no ALERT keyword exists anywhere; alert(...
   it('a literal bare ALERT keyword (the old removed clause introducer) is rejected — not a valid spelling in either position', () => {
     const r = compile('WHEN pnl@positions.total <= -1 ALERT telegram DO nop');
     expect(r.ok).toBe(false);
+  });
+});
+
+// item 0.C — the backend's `_v2_send_rich_alert()` can't tell a real DO-level
+// `alert(...)` call apart from the old seed/form-UI default `events` list
+// (both produce the byte-identical `events` shape) — so `has_explicit_alert`
+// is spliced in as a bare `true` flag, ONLY when THIS compile's DO clause
+// produced a real alert, confirmed via `doResult.events.length > 0`. Absent
+// (never `false`) otherwise — same "only spliced when meaningful" convention
+// `preamble`/`given` already use, so an agent with no DO alert() still
+// compiles byte-identical to before this field existed.
+describe('Sprint [grammar-unify] item 0.C — has_explicit_alert compiled flag', () => {
+  it('is true when DO contains a real alert(...) call', () => {
+    const r = compile('WHEN pnl@positions.total <= -1 DO alert(telegram)');
+    expect(r.ok).toBe(true);
+    expect(r.agent.has_explicit_alert).toBe(true);
+  });
+
+  it('is absent (not false) when DO has an action but no alert(...) call', () => {
+    const r = compile('WHEN pnl@positions.total <= -1 DO close_position(account="Z", symbol="N")');
+    expect(r.ok).toBe(true);
+    expect(r.agent.events).toEqual([]);
+    expect('has_explicit_alert' in r.agent).toBe(false);
+  });
+
+  it('is absent for a preamble-ONLY alert(...) call — the flag is specifically about a DO-level alert, not "any alert anywhere"', () => {
+    const r = compile('alert(telegram)');
+    expect(r.ok).toBe(true);
+    expect(r.agent.preamble).toEqual([{ type: 'alert', events: [{ channel: 'telegram', enabled: true }] }]);
+    expect('has_explicit_alert' in r.agent).toBe(false);
+  });
+
+  it('is absent for a DO clause with no alert at all and no other action (DO nop is a compile error, so this uses a real action)', () => {
+    const r = compile('WHEN pnl@positions.total <= -1 DO help(pnl)');
+    expect(r.ok).toBe(true);
+    expect('has_explicit_alert' in r.agent).toBe(false);
   });
 });
 

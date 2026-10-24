@@ -390,13 +390,11 @@ export async function submitConsoleAgent(compiledAgent, rawText) {
     given: compiledAgent.given || [],
     // Sprint [grammar-unify] — `preamble` (the unconditional-call array,
     // item 2) is driven ENTIRELY by the CLI text, exactly like `given`
-    // above. KNOWN GAP, reported rather than silently worked around: as
-    // of this sprint, `backend/api/schemas.py`'s `AgentCreateRequest`
-    // has no `preamble` field at all yet (item 0's engine work, a
-    // separate backend agent, lands this). Sent anyway, in good faith,
-    // matching the `given` convention — confirm against the real schema
-    // before relying on it; it may be silently dropped or rejected until
-    // that backend field exists.
+    // above. The backend's `AgentCreateRequest` (in
+    // `backend/api/routes/agents.py`, not `schemas.py`) carries a
+    // `preamble` field as of commit `4e6df1ec` (item 0's engine work,
+    // which also executes it — diagnostics every cycle, side-effecting
+    // calls once per activation).
     preamble: compiledAgent.preamble || [],
     tags: compiledAgent.tags || [],
     group: compiledAgent.group || null,
@@ -533,14 +531,10 @@ export async function updateConsoleAgent(slug, compiledAgent, rawText) {
     // item 2) is driven ENTIRELY by the CLI text, exactly like `given`
     // above (the same reasoning applies verbatim: an `undefined` here on
     // the UPDATE path would mean "leave the OLD preamble[] in place
-    // forever" on the backend's own "absent = unchanged" convention) —
-    // KNOWN GAP, reported rather than silently worked around: as of this
-    // sprint, `backend/api/schemas.py`'s `AgentUpdateRequest` has no
-    // `preamble` field at all yet (item 0's engine work, a separate
-    // backend agent, lands this). Sent anyway, in good faith, matching
-    // the `given` convention — confirm against the real schema before
-    // relying on it; it may be silently dropped or rejected until that
-    // backend field exists.
+    // forever" on the backend's own "absent = unchanged" convention). The
+    // backend's `AgentUpdateRequest` (in `backend/api/routes/agents.py`,
+    // not `schemas.py`) carries a `preamble` field as of commit
+    // `4e6df1ec` (item 0's engine work, which also executes it).
     preamble: compiledAgent.preamble || [],
     tags: compiledAgent.tags || [],
     group: compiledAgent.group || null,
