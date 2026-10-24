@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from datetime import date, time as dtime
+from datetime import date, datetime, time as dtime
 
 import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
@@ -46,6 +46,22 @@ def conn_app():
 
         # Manually set up mock connections in the routes for testing
         yield app
+
+
+@pytest.fixture(autouse=True)
+def _reset_calendar_gate_sentinels():
+    """`calendar_gate.py`'s module-level `_last_recorded_date` /
+    `_last_logged_closed` sentinels are process-run state, not
+    per-request state — reset before and after every test in this file
+    so one test's `conn_should_attempt_connect()` /
+    `record_daily_verdict_if_needed()` call can never leak into
+    another's assertions."""
+    import backend.brokers.service.calendar_gate as _cg
+    _cg._last_recorded_date = None
+    _cg._last_logged_closed = None
+    yield
+    _cg._last_recorded_date = None
+    _cg._last_logged_closed = None
 
 
 def test_health_endpoint_returns_ok(conn_app):
@@ -1592,6 +1608,21 @@ def _make_not_started_ticker():
     return ticker
 
 
+def _make_started_ticker():
+    """A ticker already connected (no restart since boot) — used for
+    the `record_daily_verdict_if_needed` audit-coverage tests below.
+    `supervisor_uptime_seconds` is a real float (not a bare MagicMock)
+    so Phase 2's `< BOOT_GRACE_S` comparison doesn't raise TypeError."""
+    ticker = MagicMock()
+    ticker.status.return_value = {"started": True}
+    ticker.is_reactor_dead.return_value = False
+    ticker.mark_supervisor_started = MagicMock()
+    ticker.reset_unhealthy = MagicMock()
+    ticker.supervisor_uptime_seconds.return_value = 1000.0
+    ticker.current_account.return_value = "ZG0790"
+    return ticker
+
+
 @pytest.mark.asyncio
 async def test_ticker_watchdog_phase1_never_calls_try_start_when_calendar_closed():
     """A confirmed-closed day: the watchdog's Phase 1 branch must never
@@ -1633,22 +1664,42 @@ async def test_ticker_watchdog_phase1_calls_try_start_when_calendar_open():
 
 @pytest.mark.asyncio
 async def test_ticker_watchdog_phase1_db_error_verdict_still_attempts_connect():
-    """A DB error while computing the calendar verdict (surfaced here
-    as `conn_should_attempt_connect` itself returning True, its own
-    fail-safe contract) still results in a connect attempt."""
+    """A GENUINE DB error reading market_holidays while computing the
+    calendar verdict (not a mocked shortcut on the function under test)
+    still results in a connect attempt — `conn_should_attempt_connect`
+    is left UNMOCKED here so its real fail-safe-to-CAL_UNKNOWN path is
+    actually exercised end to end through the watchdog."""
     from backend.brokers.service.app import _ticker_watchdog
+    from backend.brokers.service.calendar_gate import CAL_UNKNOWN
 
     ticker = _make_not_started_ticker()
+    saturday = date(2026, 10, 17)  # confirmed Saturday — so nothing BUT
+    # the DB error pushes the verdict toward "connect"; a weekday would
+    # already resolve OPEN via the calendar and prove nothing about the
+    # error path.
 
     with patch('backend.brokers.kite_ticker.get_ticker', return_value=ticker), \
-         patch('backend.brokers.service.calendar_gate.conn_should_attempt_connect',
-               new_callable=AsyncMock, return_value=True), \
+         patch('backend.shared.helpers.date_time_utils.timestamp_indian',
+               return_value=datetime(2026, 10, 17, 10, 0, 0)), \
+         patch('backend.brokers.service.calendar_gate._segments_config',
+               return_value=_CG_SEGMENTS), \
+         patch('backend.brokers.service.calendar_gate._conn_extra_trading_days',
+               new_callable=AsyncMock, return_value=set()), \
+         patch('backend.brokers.broker_apis._read_market_holidays_async',
+               new_callable=AsyncMock, side_effect=Exception("DB down")) as mock_holidays, \
+         patch('backend.brokers.service.calendar_gate._persist_verdict_row',
+               new_callable=AsyncMock) as mock_persist, \
          patch('backend.brokers.service.app._try_start_ticker', return_value=True) as mock_try_start, \
          patch('asyncio.sleep', new_callable=AsyncMock,
                side_effect=[None, asyncio.CancelledError()]):
         await _ticker_watchdog()
 
     mock_try_start.assert_called_once()
+    # Proves the DB-error path genuinely ran, not a mocked shortcut:
+    assert mock_holidays.await_count >= 1
+    mock_persist.assert_called_once()
+    assert mock_persist.call_args.args[0] == saturday
+    assert mock_persist.call_args.args[1] == CAL_UNKNOWN
 
 
 @pytest.mark.asyncio
@@ -1670,3 +1721,128 @@ async def test_ticker_watchdog_phase1_same_day_special_session_picked_up_next_ti
 
     assert mock_gate.call_count == 2
     mock_try_start.assert_called_once()
+
+
+# --- app.py wiring: _ticker_watchdog audit coverage for an ---------------
+# already-connected ticker (record_daily_verdict_if_needed) --------------
+
+@pytest.mark.asyncio
+async def test_ticker_watchdog_started_records_once_per_day_across_ticks():
+    """Ticker already connected (no restart since boot): two
+    consecutive watchdog ticks on the SAME IST date must persist
+    exactly one `ticker_calendar_verdicts` row, not one per tick, and
+    Phase 1 must never fire (`_try_start_ticker` not called) since the
+    ticker never stops."""
+    from backend.brokers.service.app import _ticker_watchdog
+    from backend.brokers.service.calendar_gate import CAL_OPEN
+
+    ticker = _make_started_ticker()
+    fixed_now = datetime(2026, 10, 24, 10, 0, 0)
+
+    with patch('backend.brokers.kite_ticker.get_ticker', return_value=ticker), \
+         patch('backend.shared.helpers.date_time_utils.is_any_segment_open',
+               return_value=False), \
+         patch('backend.shared.helpers.date_time_utils.timestamp_indian',
+               return_value=fixed_now), \
+         patch('backend.brokers.service.calendar_gate._conn_calendar_verdict_detail',
+               new_callable=AsyncMock,
+               return_value=(CAL_OPEN, {"resolved_via": "equity"})), \
+         patch('backend.brokers.service.calendar_gate._persist_verdict_row',
+               new_callable=AsyncMock) as mock_persist, \
+         patch('backend.brokers.service.app._try_start_ticker') as mock_try_start, \
+         patch('asyncio.sleep', new_callable=AsyncMock,
+               side_effect=[None, None, asyncio.CancelledError()]):
+        await _ticker_watchdog()
+
+    assert mock_persist.call_count == 1
+    assert mock_persist.call_args.args[0] == date(2026, 10, 24)
+    detail_arg = mock_persist.call_args.args[2]
+    assert detail_arg["ticker_already_connected"] is True
+    mock_try_start.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_ticker_watchdog_started_records_new_row_when_date_advances():
+    """Same scenario, but the IST date advances between the two ticks
+    (a midnight rollover while conn_service stays connected throughout):
+    a SECOND persisted row is written for the new date, not a
+    duplicate/skip of the first."""
+    from backend.brokers.service.app import _ticker_watchdog
+    from backend.brokers.service.calendar_gate import CAL_OPEN
+
+    ticker = _make_started_ticker()
+    dates = [
+        datetime(2026, 10, 24, 23, 59, 0),
+        datetime(2026, 10, 25, 0, 1, 0),
+    ]
+    # `timestamp_indian()` is read twice per tick (once inside
+    # `record_daily_verdict_if_needed`, once in Phase 2b) — both call
+    # sites within one tick must see the SAME simulated date. Advance
+    # the index only from the `asyncio.sleep` side effect (once per
+    # loop iteration), never from `timestamp_indian` itself.
+    tick = {"n": 0}
+    sleep_calls = {"n": 0}
+
+    def _fake_timestamp_indian():
+        return dates[tick["n"]]
+
+    async def _fake_sleep(*args, **kwargs):
+        sleep_calls["n"] += 1
+        if sleep_calls["n"] == 1:
+            return  # first tick: tick["n"] stays 0 → dates[0]
+        if sleep_calls["n"] == 2:
+            tick["n"] = 1  # second tick: dates[1]
+            return
+        raise asyncio.CancelledError()  # stop after exactly 2 ticks
+
+    with patch('backend.brokers.kite_ticker.get_ticker', return_value=ticker), \
+         patch('backend.shared.helpers.date_time_utils.is_any_segment_open',
+               return_value=False), \
+         patch('backend.shared.helpers.date_time_utils.timestamp_indian',
+               side_effect=_fake_timestamp_indian), \
+         patch('backend.brokers.service.calendar_gate._conn_calendar_verdict_detail',
+               new_callable=AsyncMock,
+               return_value=(CAL_OPEN, {"resolved_via": "equity"})), \
+         patch('backend.brokers.service.calendar_gate._persist_verdict_row',
+               new_callable=AsyncMock) as mock_persist, \
+         patch('backend.brokers.service.app._try_start_ticker') as mock_try_start, \
+         patch('asyncio.sleep', side_effect=_fake_sleep):
+        await _ticker_watchdog()
+
+    assert mock_persist.call_count == 2
+    assert mock_persist.call_args_list[0].args[0] == date(2026, 10, 24)
+    assert mock_persist.call_args_list[1].args[0] == date(2026, 10, 25)
+    mock_try_start.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_ticker_watchdog_started_persist_failure_does_not_block_health_check():
+    """A persistence failure inside `record_daily_verdict_if_needed`
+    (e.g. the audit table missing) must never stall or skip the
+    watchdog's pre-existing Phase 2b health-check logic on the same
+    tick — the new call's one hard invariant is that it never interacts
+    with the failover/health machinery, including on its own failure."""
+    from backend.brokers.service.app import _ticker_watchdog
+    from backend.brokers.service.calendar_gate import CAL_OPEN
+
+    ticker = _make_started_ticker()
+    fixed_now = datetime(2026, 10, 24, 10, 0, 0)
+
+    with patch('backend.brokers.kite_ticker.get_ticker', return_value=ticker), \
+         patch('backend.shared.helpers.date_time_utils.is_any_segment_open',
+               return_value=False) as mock_segment_open, \
+         patch('backend.shared.helpers.date_time_utils.timestamp_indian',
+               return_value=fixed_now), \
+         patch('backend.brokers.service.calendar_gate._conn_calendar_verdict_detail',
+               new_callable=AsyncMock,
+               return_value=(CAL_OPEN, {"resolved_via": "equity"})), \
+         patch('backend.brokers.service.calendar_gate._persist_verdict_row',
+               new_callable=AsyncMock, side_effect=Exception("table missing")), \
+         patch('backend.brokers.service.app._try_start_ticker') as mock_try_start, \
+         patch('asyncio.sleep', new_callable=AsyncMock,
+               side_effect=[None, asyncio.CancelledError()]):
+        await _ticker_watchdog()
+
+    mock_segment_open.assert_called_once()
+    ticker.reset_unhealthy.assert_called_once()
+    mock_try_start.assert_not_called()

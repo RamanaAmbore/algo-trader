@@ -514,6 +514,18 @@ async def _ticker_watchdog() -> None:
                 os.kill(os.getpid(), signal.SIGTERM)
                 return  # exit watchdog task; SIGTERM triggers uvicorn graceful shutdown
 
+            # ── Daily audit trail for an already-connected ticker ───────
+            # (2026-10-24) Phase 1's conn_should_attempt_connect() below
+            # only runs while the ticker hasn't started yet, so once
+            # connected, the ticker_calendar_verdicts audit trail would
+            # otherwise stop updating entirely across a restart-free
+            # multi-day stretch (e.g. a weekend sitting on an
+            # already-live Friday connection). No-op unless the ticker is
+            # started AND today hasn't been recorded yet this process
+            # run — see calendar_gate.py's own docstring.
+            from backend.brokers.service.calendar_gate import record_daily_verdict_if_needed
+            await record_daily_verdict_if_needed(ticker.status().get("started"))
+
             # ── Phase 1: nothing running yet ────────────────────────────
             # Calendar-gated (2026-10-24, resource-efficiency only): skip
             # the connect attempt entirely on a confirmed-closed day. The

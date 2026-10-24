@@ -80,6 +80,33 @@ is already finalised, and a persistence failure (including the table
 not existing yet — conn_service never runs migrations itself; see
 `TickerCalendarVerdict`'s own docstring on this) is swallowed and
 logged, never allowed to change that decision.
+
+Audit coverage once the ticker is already connected (2026-10-24)
+------------------------------------------------------------------
+`conn_should_attempt_connect()` above is only ever called from two
+places in `app.py`: `_start_kite_ticker()` at process boot, and
+`_ticker_watchdog()`'s Phase 1, which itself only runs while
+`ticker.status().get("started")` is False. Once the ticker is up,
+neither call site runs again until a restart — Twisted's own reconnect
+logic keeps the connection alive for weeks without one. Left alone,
+`ticker_calendar_verdicts` would get a row only for the day
+conn_service last (re)started, with zero rows for every day in between
+on a restart-free multi-day stretch (e.g. a weekend sitting on top of
+an already-live Friday connection) — the opposite of "one row per
+calendar day".
+
+`record_daily_verdict_if_needed(ticker_started)` closes this gap. It is
+wired into `_ticker_watchdog()` unconditionally (every 30s tick,
+regardless of Phase 1's own "not started" gate), and is the ONLY other
+writer of `ticker_calendar_verdicts` besides `conn_should_attempt_
+connect()`. It no-ops instantly while the ticker hasn't started
+(Phase 1 already covers that case) and no-ops once today (IST) has
+already been recorded this process run — by either function, via the
+shared `_last_recorded_date` sentinel below — so a continuously-connected
+ticker still gets exactly one row per day, not one per 30s tick. Rows
+it writes carry `detail["ticker_already_connected"] = True` so a reader
+can tell "closed but not acted on because a prior connection was
+already live" apart from "closed and genuinely never connected".
 """
 
 from __future__ import annotations
@@ -93,6 +120,19 @@ logger = get_logger(__name__)
 CAL_OPEN = "open"
 CAL_CLOSED = "closed"
 CAL_UNKNOWN = "unknown"
+
+# Shared "already recorded today" sentinel — set by both
+# `conn_should_attempt_connect()` and `record_daily_verdict_if_needed()`
+# on a successful persist, read only by the latter (the former always
+# recomputes+upserts unconditionally — see this module's "Audit
+# persistence" docstring section on why that must never change).
+_last_recorded_date: "date | None" = None
+
+# Log-dedup sentinel for the closed-day INFO line in
+# `conn_should_attempt_connect()` — avoids one INFO line per 30s tick
+# (~2,880/day) across a multi-day closed stretch. Persistence itself is
+# unaffected; only the log line is deduped.
+_last_logged_closed: "tuple | None" = None
 
 _DEFAULT_SEGMENTS = {
     "equity":    {"holiday_exchange": "NSE", "evening_open_on_holidays": False},
@@ -300,17 +340,27 @@ async def conn_should_attempt_connect() -> bool:
     never changes the connect/skip decision."""
     from backend.shared.helpers.date_time_utils import timestamp_indian
 
+    global _last_recorded_date, _last_logged_closed
+
     today = timestamp_indian().date()
     verdict, detail = await _conn_calendar_verdict_detail(today)
     should_connect = verdict != CAL_CLOSED
     if not should_connect:
-        logger.info(
-            "conn_service: market calendar confirms closed today (%s) — "
-            "skipping KiteTicker connect attempt", today,
-        )
+        # Dedup on (date, verdict) — same spirit as `_last_recorded_date`
+        # below, but log-only: without this, a multi-day closed stretch
+        # logs this INFO line every 30s tick (~2,880 lines/day).
+        # Persistence itself is unaffected — still upserts every tick.
+        log_key = (today, verdict)
+        if _last_logged_closed != log_key:
+            logger.info(
+                "conn_service: market calendar confirms closed today (%s) — "
+                "skipping KiteTicker connect attempt", today,
+            )
+            _last_logged_closed = log_key
 
     try:
         await _persist_verdict_row(today, verdict, detail)
+        _last_recorded_date = today
     except Exception as e:
         logger.warning(
             "[CONN-TICKER-CALENDAR] verdict persistence failed for %s: %s",
@@ -318,3 +368,53 @@ async def conn_should_attempt_connect() -> bool:
         )
 
     return should_connect
+
+
+async def record_daily_verdict_if_needed(ticker_started: bool) -> None:
+    """Covers the complementary case to `conn_should_attempt_connect()`'s
+    own audit write — see this module's "Audit coverage once the ticker
+    is already connected" docstring section for the full "why". Call
+    once per watchdog tick, unconditionally (regardless of Phase 1's own
+    "not started" gate); `ticker_started` is the SAME
+    `ticker.status().get("started")` value Phase 1 itself reads, so this
+    introduces no new ticker/watchdog state.
+
+    No-ops immediately when `ticker_started` is False — that case is
+    Phase 1's job via `conn_should_attempt_connect()`. No-ops when today
+    (IST) has already been recorded this process run by either this
+    function or `conn_should_attempt_connect()` (shared
+    `_last_recorded_date` sentinel) — the common case on every tick but
+    the first-after-midnight. Never connects, disconnects, or raises;
+    the compute+persist is wrapped in a 5s timeout and any failure
+    (including a timeout) is swallowed and logged, so a hung or slow DB
+    call here can never stall the same 30s tick that also drives the
+    watchdog's Phase 2b/3/4 health-check and failover decisions.
+    """
+    global _last_recorded_date
+
+    if not ticker_started:
+        return
+
+    try:
+        from backend.shared.helpers.date_time_utils import timestamp_indian
+        import asyncio
+
+        today = timestamp_indian().date()
+        if _last_recorded_date == today:
+            return
+
+        async def _compute_and_persist() -> None:
+            verdict, detail = await _conn_calendar_verdict_detail(today)
+            # Copy, never mutate the dict `_conn_calendar_verdict_detail`
+            # returned — callers (including tests) may hold/reuse that
+            # same dict object elsewhere.
+            merged_detail = {**detail, "ticker_already_connected": True}
+            await _persist_verdict_row(today, verdict, merged_detail)
+
+        await asyncio.wait_for(_compute_and_persist(), timeout=5.0)
+        _last_recorded_date = today
+    except Exception as e:
+        logger.warning(
+            "[CONN-TICKER-CALENDAR] daily verdict recording failed for "
+            "already-connected ticker: %s", e,
+        )
