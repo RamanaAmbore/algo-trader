@@ -123,13 +123,18 @@ order(account="ZJ6294", symbol="BANKNIFTY25JULFUT", side="BUY", lots=1)</pre>
 
   <!-- ══════════════════════════ AGENTS ══════════════════════════ -->
   <section class="algo-card cg-section">
-    <h2 class="section-heading">Agents — <code>WHEN ... ALERT ... DO ...</code></h2>
+    <h2 class="section-heading">Agents — <code>WHEN ... DO ...</code></h2>
     <p class="cg-lede">
-      An agent is a standing rule the backend polls continuously. <code>WHEN</code>,
-      <code>ALERT</code>, and <code>DO</code> are each independently optional (omit
-      <code>WHEN</code> to mean "always true"; omit a clause to mean "nop") — but at least
-      one real <code>ALERT</code> or <code>DO</code> is required. Clicking
-      <strong>Create agent</strong> saves it as a standing rule, not a one-off action.
+      An agent is a standing rule the backend polls continuously. <code>WHEN</code> and
+      <code>DO</code> are a single, optional, PAIRED conditional wrapper — write both
+      together, or neither. Anything written WITHOUT this wrapper (an ordinary statement —
+      <code>order(...)</code>, <code>alert(...)</code>, <code>debug(...)</code>,
+      <code>help(...)</code>, a label assignment) runs unconditionally, every cycle; wrapping
+      one or more such calls in <code>WHEN &lt;condition&gt; DO &lt;calls&gt;</code> is what
+      makes them conditional instead. <code>alert(...)</code> is an ordinary call — never a
+      reserved keyword — and can appear either inside <code>DO</code> or in the unconditional
+      part. Clicking <strong>Create agent</strong> saves it as a standing rule, not a one-off
+      action.
     </p>
 
     <div class="cg-example">
@@ -139,13 +144,13 @@ order(account="ZJ6294", symbol="BANKNIFTY25JULFUT", side="BUY", lots=1)</pre>
         −₹50,000, sell to close and tell me on Telegram."
       </p>
       <pre class="cg-code">WHEN mean_pnl(minutes=30)@positions.total &lt;= -50000
-ALERT telegram
-DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)</pre>
+DO alert(telegram), order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)</pre>
       <p class="cg-what">
         <code>mean_pnl(minutes=30)@positions.total</code> is a metric@scope binding — the
         30-minute rolling mean P&amp;L across your <em>total</em> position book. When the
-        condition is true, the backend fires BOTH the ALERT (Telegram push) and the DO
-        (places the real sell order) — this is a genuine auto-close agent, not a dry alert.
+        condition is true, the backend fires BOTH the <code>alert(...)</code> call (Telegram
+        push) and the order (places the real sell order) — this is a genuine auto-close
+        agent, not a dry alert.
       </p>
     </div>
 
@@ -154,9 +159,9 @@ DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)</pre>
         A pure early-warning agent with no automated action — you want to know the moment
         your book is down 5% intraday so YOU can decide, not have the system act for you.
       </p>
-      <pre class="cg-code">WHEN pnl_pct@positions.total &lt;= -5 ALERT telegram DO nop</pre>
+      <pre class="cg-code">WHEN pnl_pct@positions.total &lt;= -5 DO alert(telegram)</pre>
       <p class="cg-what">
-        <code>DO nop</code> (or simply omitting <code>DO</code> entirely) means "notify only,
+        A <code>DO</code> clause containing only <code>alert(...)</code> means "notify only,
         take no action." This is the shape for a watch-and-decide-manually agent — safe to
         run even on accounts you don't want the system auto-trading.
       </p>
@@ -170,7 +175,7 @@ DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)</pre>
         <code>loss-margin-low</code> agent, reconstructed from its own JSON via the grammar's
         decompiler.
       </p>
-      <pre class="cg-code">WHEN 25000 &gt; avail_margin@funds.any_acct &gt; 0 ALERT telegram, log DO nop</pre>
+      <pre class="cg-code">WHEN 25000 &gt; avail_margin@funds.any_acct &gt; 0 DO alert(telegram, log)</pre>
       <p class="cg-what">
         The <code>a &gt; metric@scope &gt; b</code> "between" form is sugar for two chained
         comparisons on the same metric (works written either direction — high-to-low or
@@ -188,27 +193,31 @@ DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)</pre>
     </p>
   </section>
 
-  <!-- ══════════════════════════ GIVEN PREAMBLE ══════════════════════════ -->
+  <!-- ══════════════════════════ PREAMBLE ══════════════════════════ -->
   <section class="algo-card cg-section">
-    <h2 class="section-heading">GIVEN preamble — label assignments</h2>
+    <h2 class="section-heading">Preamble — label assignments and unconditional calls</h2>
     <p class="cg-lede">
-      An optional <code>GIVEN</code> clause can appear before <code>WHEN</code>/<code>ALERT</code>/<code>DO</code>
-      to assign one or more labels (reusable names) to expressions. Once assigned in <code>GIVEN</code>,
-      a label can be read anywhere in <code>WHEN</code>, <code>ALERT</code>, or <code>DO</code> that follows.
-      <code>WHEN</code> itself can only READ labels (never assign them).
+      Anything written BEFORE <code>WHEN</code> (or, with no <code>WHEN</code> at all, the
+      entire statement) is the preamble — it runs unconditionally, with no introducer
+      keyword needed. It accepts the full shared statement vocabulary: label assignments,
+      <code>order(...)</code>, <code>alert(...)</code>, <code>debug(...)</code>,
+      <code>help(...)</code>, or any other real action — exactly the same vocabulary
+      <code>DO</code> accepts. Once assigned in the preamble, a label can be read anywhere
+      in <code>WHEN</code> or <code>DO</code> that follows. <code>WHEN</code> itself can only
+      READ labels (never assign them).
     </p>
 
     <div class="cg-example">
       <p class="cg-why">
         You want to check the same complex condition in both the alert channel AND the action,
-        without retyping it twice — bind it to a label in <code>GIVEN</code>, then reuse the label.
+        without retyping it twice — bind it to a label in the preamble, then reuse the label.
       </p>
-      <pre class="cg-code">GIVEN risky = (pnl@positions.total &lt;= -50000) &amp; (avail_margin@funds.any_acct &lt; 0)
-WHEN risky ALERT telegram DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)</pre>
+      <pre class="cg-code">risky = (pnl@positions.total &lt;= -50000) &amp; (avail_margin@funds.any_acct &lt; 0)
+WHEN risky DO alert(telegram), order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)</pre>
       <p class="cg-what">
-        The label <code>risky</code> is assigned once in <code>GIVEN</code> to a full boolean expression,
-        then referenced by name in <code>WHEN</code>. The backend evaluates the expression once and
-        reuses the result, avoiding redundant polling.
+        The label <code>risky</code> is assigned once in the preamble to a full boolean
+        expression, then referenced by name in <code>WHEN</code>. The backend evaluates the
+        expression once and reuses the result, avoiding redundant polling.
       </p>
     </div>
 
@@ -217,8 +226,8 @@ WHEN risky ALERT telegram DO order(account="ZG0790", symbol="NIFTY25JULFUT", sid
         A label doesn't have to be a condition — it can be any expression, including a metric binding.
         Use this to set up reusable metrics for inspection.
       </p>
-      <pre class="cg-code">GIVEN pnl_now = mean_pnl(minutes=30)@positions.total
-WHEN pnl_now &lt;= -50000 ALERT telegram DO nop</pre>
+      <pre class="cg-code">pnl_now = mean_pnl(minutes=30)@positions.total
+WHEN pnl_now &lt;= -50000 DO alert(telegram)</pre>
       <p class="cg-what">
         <code>pnl_now</code> is a label bound to a live metric. Every time <code>WHEN</code> evaluates,
         it reads the current value of <code>pnl_now</code> and compares it.
@@ -236,18 +245,18 @@ WHEN pnl_now &lt;= -50000 ALERT telegram DO nop</pre>
   <section class="algo-card cg-section">
     <h2 class="section-heading">Debug — <code>debug(x)</code> (inspect label values)</h2>
     <p class="cg-lede">
-      Use <code>debug(x)</code> in a <code>GIVEN</code>, <code>ALERT</code>, or <code>DO</code> clause
-      to inspect a label's or token's resolved value. The value is written to the Agents log at DEBUG level
+      Use <code>debug(x)</code> in the preamble or a <code>DO</code> clause to inspect a
+      label's or token's resolved value. The value is written to the Agents log at DEBUG level
       (hidden by default in LogPanel — toggle the level filter on to see debug logs).
     </p>
 
     <div class="cg-example">
       <p class="cg-why">
-        You've set up a label in <code>GIVEN</code> and want to see its live value without having
+        You've set up a label in the preamble and want to see its live value without having
         to open a separate log viewer.
       </p>
-      <pre class="cg-code">GIVEN pnl_now = pnl@positions.total
-DO debug(pnl_now)</pre>
+      <pre class="cg-code">pnl_now = pnl@positions.total
+debug(pnl_now)</pre>
       <p class="cg-what">
         A label bound to a live metric shows a description of what's being checked (e.g. "pnl across all positions").
         For a label bound to a literal, <code>debug()</code> shows the exact value.
@@ -258,8 +267,8 @@ DO debug(pnl_now)</pre>
       <p class="cg-why">
         Debug a condition label to verify the condition logic is working as expected.
       </p>
-      <pre class="cg-code">GIVEN risky = (pnl@positions.total &lt;= -50000) &amp; (avail_margin@funds.any_acct &lt; 0)
-WHEN risky ALERT telegram DO debug(risky)</pre>
+      <pre class="cg-code">risky = (pnl@positions.total &lt;= -50000) &amp; (avail_margin@funds.any_acct &lt; 0)
+WHEN risky DO debug(risky), alert(telegram)</pre>
       <p class="cg-what">
         When the condition fires, <code>debug(risky)</code> logs the evaluated result to DEBUG level.
       </p>
@@ -362,12 +371,12 @@ WHEN risky ALERT telegram DO debug(risky)</pre>
       <p class="cg-why">
         You always want critical agents to notify via both Telegram and email together —
         save that pairing once under a name instead of typing <code>telegram, email</code>
-        into every agent's ALERT clause.
+        into every agent's <code>alert(...)</code> call.
       </p>
       <pre class="cg-code">token(kind=notify) telegram, email #name="Ops Channels"</pre>
       <p class="cg-what">
         The body after the head call is a plain channel list, compiled the exact same way
-        an ordinary <code>ALERT</code> call-list is.
+        an ordinary <code>alert(...)</code> call's own body is.
       </p>
     </div>
 
@@ -410,7 +419,7 @@ WHEN risky ALERT telegram DO debug(risky)</pre>
       <div><code class="cg-inline">#group=hedge-book</code><span>grouping label</span></div>
     </div>
     <p class="cg-what">
-      Example in context: <code class="cg-inline">WHEN pnl@positions.total &lt;= -1 ALERT telegram #group=hedge-book</code>
+      Example in context: <code class="cg-inline">WHEN pnl@positions.total &lt;= -1 DO alert(telegram) #group=hedge-book</code>
     </p>
   </section>
 
@@ -427,9 +436,9 @@ WHEN risky ALERT telegram DO debug(risky)</pre>
         You want an alert that fires based on market movers — gainers over 5%, losers under −5%,
         or trending symbols from a saved watchlist.
       </p>
-      <pre class="cg-code">WHEN day_change_pct@symbols.kind:gainers &gt; 5 ALERT telegram DO nop
-WHEN day_change_pct@symbols.kind:losers &lt; -5 ALERT telegram DO nop
-WHEN ltp@symbols.kind:watchlist &gt; 1000 ALERT telegram DO nop</pre>
+      <pre class="cg-code">WHEN day_change_pct@symbols.kind:gainers &gt; 5 DO alert(telegram)
+WHEN day_change_pct@symbols.kind:losers &lt; -5 DO alert(telegram)
+WHEN ltp@symbols.kind:watchlist &gt; 1000 DO alert(telegram)</pre>
       <p class="cg-what">
         <code>symbols.*</code> is a scope family for market/instrument data, qualified by a required
         <code>kind:</code> value. Valid kinds are <code>watchlist</code> (symbols from your saved watchlist),
@@ -444,7 +453,7 @@ WHEN ltp@symbols.kind:watchlist &gt; 1000 ALERT telegram DO nop</pre>
         You only want to monitor positions on one specific underlying (e.g. NIFTY), ignoring other
         underlyings in your book.
       </p>
-      <pre class="cg-code">WHEN pnl@positions.expiring_today.underlying:NIFTY &lt;= -10000 ALERT telegram DO nop</pre>
+      <pre class="cg-code">WHEN pnl@positions.expiring_today.underlying:NIFTY &lt;= -10000 DO alert(telegram)</pre>
       <p class="cg-what">
         The <code>underlying:</code> qualifier filters a <code>positions.*</code> scope to one specific
         underlying symbol. This evaluates the metric only for positions whose underlying is NIFTY,
@@ -456,8 +465,8 @@ WHEN ltp@symbols.kind:watchlist &gt; 1000 ALERT telegram DO nop</pre>
       <p class="cg-why">
         A shorthand for <code>holdings</code> — either name works the same way.
       </p>
-      <pre class="cg-code">WHEN pnl@hold.total &lt;= -10000 ALERT telegram DO nop
-WHEN pnl@holdings.total &lt;= -10000 ALERT telegram DO nop</pre>
+      <pre class="cg-code">WHEN pnl@hold.total &lt;= -10000 DO alert(telegram)
+WHEN pnl@holdings.total &lt;= -10000 DO alert(telegram)</pre>
       <p class="cg-what">
         <code>hold</code> is an alias for <code>holdings</code> — pick whichever you prefer. Both
         refer to your equity/equity-derivative holdings (securities held in your demat).
@@ -468,8 +477,8 @@ WHEN pnl@holdings.total &lt;= -10000 ALERT telegram DO nop</pre>
       <p class="cg-why">
         Access a specific funds column directly (cash balance, available margin, etc.).
       </p>
-      <pre class="cg-code">WHEN funds.cash@funds.total &lt; 0 ALERT telegram DO nop
-WHEN funds.margin@funds.any_acct &gt; 100000 ALERT telegram DO nop</pre>
+      <pre class="cg-code">WHEN funds.cash@funds.total &lt; 0 DO alert(telegram)
+WHEN funds.margin@funds.any_acct &gt; 100000 DO alert(telegram)</pre>
       <p class="cg-what">
         <code>funds.cash</code> and <code>funds.margin</code> are column aliases on the
         <code>funds</code> scope, giving direct access to cash balance and available margin.
@@ -489,13 +498,13 @@ WHEN funds.margin@funds.any_acct &gt; 100000 ALERT telegram DO nop</pre>
         <tbody>
           <tr><td><code>metric@scope</code></td><td>Bind a metric to where it's measured, e.g. <code>pnl@positions.total</code></td></tr>
           <tr><td><code>scope.column</code></td><td>Dot-access a scope's own column directly, e.g. <code>positions.total.pnl</code> (no <code>@</code>)</td></tr>
-          <tr><td><code>GIVEN label = expr</code></td><td>Assign a reusable label to any expression in <code>GIVEN</code> preamble; reference the label in <code>WHEN</code>/<code>ALERT</code>/<code>DO</code> that follow</td></tr>
+          <tr><td><code>label = expr</code></td><td>Assign a reusable label to any expression in the preamble (before <code>WHEN</code>, no introducer keyword needed); reference the label in <code>WHEN</code>/<code>DO</code> that follow</td></tr>
           <tr><td><code>debug(label)</code></td><td>Inspect a label's resolved value, writing to Agents log at DEBUG level (hidden by default — toggle filter in LogPanel to see)</td></tr>
           <tr><td><code>&amp;</code> / <code>|</code> / <code>~</code></td><td>AND / OR (equal precedence, left-to-right) / NOT — parens required when combining: <code>(a &amp; b) | c</code></td></tr>
           <tr><td><code>&lt; &lt;= &gt; &gt;= == != in / not in</code></td><td>Comparators. <code>in</code>/<code>not in</code> take a <code>[a, b, c]</code> list literal</td></tr>
           <tr><td><code>a &lt;= metric@scope &lt;= b</code></td><td>Between-range sugar for two chained comparisons on one metric</td></tr>
-          <tr><td><code>always</code></td><td>Sentinel condition that's always true (used to run a DO/ALERT unconditionally)</td></tr>
-          <tr><td><code>nop</code></td><td>Explicit no-op for an ALERT or DO clause (same as omitting the clause)</td></tr>
+          <tr><td><code>always</code></td><td>Sentinel condition that's always true (used to run DO unconditionally)</td></tr>
+          <tr><td><code>nop</code></td><td>Explicit no-op for a DO clause (same as omitting the clause)</td></tr>
           <tr><td><code>symbols.kind:watchlist</code></td><td>Market data scope: symbols from your saved watchlist</td></tr>
           <tr><td><code>symbols.kind:gainers</code></td><td>Market data scope: today's top gaining symbols</td></tr>
           <tr><td><code>symbols.kind:losers</code></td><td>Market data scope: today's top losing symbols</td></tr>

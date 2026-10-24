@@ -877,6 +877,32 @@ class AgentController(Controller):
         errors = v2_validate(cond)
         return {"ok": not errors, "errors": errors, "grammar": "v2"}
 
+    @post("/help", guards=[cap_guard("manage_own_agents")])
+    async def help_lookup_route(self, data: dict) -> dict:
+        """
+        Item 4 (grammar-unification plan) — thin HTTP wrapper for the
+        `help` DSL action's own resolver, `help_lookup` (`actions.py`),
+        the SAME function `_NOOP_ACTION_HANDLERS["help"]` dispatches a
+        real `help(<name>)` agent-action call through — no parallel
+        implementation. Read-only catalog introspection: `help_lookup`
+        never reads its `ctx` argument at all (confirmed by inspection),
+        so this route passes `None` rather than building a real
+        agent-engine context, which this lookup has no use for.
+
+        Request body: `{"name": "<token name>"}`. Response: whatever
+        `help_lookup` returns — `{action, status, name, matches}`, where
+        `matches` is a list of `{grammar_kind, token_kind, token,
+        description, signature, docstring}` (one entry per catalog row
+        sharing that name — a name can be reused across `token_kind`s).
+        Console's own submit path renders this inline rather than only
+        logging it, since an operator typing `help pnl` wants to SEE the
+        answer immediately.
+        """
+        from backend.api.algo.actions import help_lookup
+
+        name = str((data or {}).get("name") or "")
+        return await help_lookup(None, {"name": name})
+
     @get("/renderers")
     async def list_renderers(self) -> list[RendererInfo]:
         """Every renderer key an event agent's `actions: [{"type": "render",

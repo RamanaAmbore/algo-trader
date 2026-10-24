@@ -34,7 +34,7 @@
     submitConsoleAgent, submitConsoleBracket, submitConsoleToken,
     updateConsoleAgent, updateConsoleBracket, updateConsoleToken,
     resolveConsoleOrder, submitResolvedConsoleOrder,
-    submitConsoleCancelAllOrders,
+    submitConsoleCancelAllOrders, submitConsoleHelp,
     classifyConsoleStatement, dispatchConsoleStatement,
   } from '$lib/command/consoleDispatch';
 
@@ -345,6 +345,37 @@
     }
   }
 
+  /** Item 4 (grammar-unification plan) — `help(<name>)` is read-only, no
+   *  mode gate, no save/create semantics at all: the operator typed it
+   *  to SEE the catalog description/signature/docstring immediately, not
+   *  to persist anything. Renders the result into the SAME
+   *  `_cliSubmitStatus` line every other submit path already writes to
+   *  (via `_setSubmitStatus`) rather than only logging it — a plain
+   *  `console.log`/toast-only path would bury the actual answer the
+   *  operator asked for. A multi-match name (reused across token kinds)
+   *  shows the first match's description, with a "(+N more)" suffix —
+   *  the backend-logged DEBUG line (same `help_lookup` call) carries the
+   *  full detail for every match. */
+  async function _submitAgentCliHelp(/** @type {any} */ result) {
+    const r = await submitConsoleHelp(result);
+    if (r.ok) {
+      const matches = r.response?.matches || [];
+      if (!matches.length) {
+        _setSubmitStatus(false, `help: no match for '${result?.help?.params?.name || ''}'`);
+        toast.error('No matching token found');
+        return;
+      }
+      const first = matches[0];
+      const more = matches.length > 1 ? ` (+${matches.length - 1} more)` : '';
+      _setSubmitStatus(true, `${first.token}: ${first.description}${more}`);
+      toast.success(`help(${first.token}) — see result below`);
+    } else {
+      const _err = /** @type {any} */ (r).error;
+      _setSubmitStatus(false, `help failed: ${_err}`);
+      toast.error(`Help failed: ${_short(_err)}`);
+    }
+  }
+
   // Sprint C follow-up (2026-10) — CLI order placement stays inline in
   // this panel, matching agent/bracket/token submission (see
   // `_submitAgentCliOrder` above).
@@ -401,6 +432,7 @@
         if (_agentCliCompiled.kind === 'agent' || _agentCliCompiled.kind === 'event') return _submitAgentCliAgent(_agentCliCompiled);
         if (_agentCliCompiled.kind === 'bracket') return _submitAgentCliBracket(_agentCliCompiled);
         if (_agentCliCompiled.kind === 'token') return _submitAgentCliToken(_agentCliCompiled);
+        if (_agentCliCompiled.kind === 'help') return _submitAgentCliHelp(_agentCliCompiled);
       },
       onUnsupported: () => _notifyUnsupported(),
     });
@@ -506,6 +538,14 @@
             <button type="button" class="btn-primary console-agent-cli-btn"
               onclick={() => _submitAgentCliToken(_agentCliCompiled)}>
               {editTarget && editTarget.rowKind === 'template' ? 'Save' : 'Create token'}
+            </button>
+          {:else if !isDemo && !editTarget && _agentCliCompiled?.ok && _agentCliCompiled.kind === 'help'}
+            <!-- item 4 — read-only lookup, no save/create semantics; never
+                 shown while editing an existing row (help(...) can't be
+                 what any row recompiles as). -->
+            <button type="button" class="btn-primary console-agent-cli-btn"
+              onclick={() => _submitAgentCliHelp(_agentCliCompiled)}>
+              Look up
             </button>
           {:else if !isDemo && !editTarget && _unsupportedHint}
             <!-- No execution path exists for non-agent-family text (see

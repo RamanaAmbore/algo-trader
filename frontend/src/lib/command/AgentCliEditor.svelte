@@ -108,7 +108,7 @@
     value = $bindable(''), catalog = null, lotSizeOf = undefined,
     mode = 'paper', onCompile = undefined, onOrderSubmit = undefined,
     allowedKinds = undefined,
-    placeholder = 'GIVEN p = pnl@positions.total\nmsg_txt = "Loss: " + p\nWHEN p <= -50000\nALERT msg = msg_txt, telegram\nDO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)',
+    placeholder = 'p = pnl@positions.total\nmsg_txt = "Loss: " + p\nWHEN p <= -50000\nDO alert(msg = msg_txt, telegram), order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)',
     info = [], submitStatus = null,
     showCompileErrors = true,
   } = $props();
@@ -399,17 +399,22 @@
   });
 
   // Same reasoning, different trigger (2026-10-15, operator: "given a =
-  // 1+1 is generating error") — `GIVEN a = 1+1` alone always fails with
-  // "an agent must have at least one of ALERT or DO" until a WHEN/ALERT/
-  // DO clause is added, same as `order(...)` always failed with
-  // "expected ')'" until closed. Matched by exact message rather than a
-  // broader "any error while focused" suppression, so a genuinely wrong
-  // statement (e.g. a typo'd metric name) still surfaces immediately —
-  // only this one "more is coming" message is deferred.
-  const _MISSING_ALERT_OR_DO_MSG = 'an agent must have at least one of ALERT or DO';
+  // 1+1 is generating error") — a bare `a = 1+1` alone is NOW a complete,
+  // valid preamble-only statement (Sprint [grammar-unify]) and no longer
+  // hits this at all. What's still "more is coming" under the new
+  // grammar: `WHEN <cond>` typed with no `DO` yet, and `WHEN <cond> DO
+  // nop`/an empty DO typed before its real calls are finished — both
+  // compile-time pairing-rule messages from `compileAgentStmt`, same
+  // "more is coming" shape `order(...)` always had with "expected ')'"
+  // until closed. Matched by exact message rather than a broader "any
+  // error while focused" suppression, so a genuinely wrong statement
+  // (e.g. a typo'd metric name) still surfaces immediately — only these
+  // two "more is coming" messages are deferred.
+  const _WHEN_NEEDS_DO_MSG = 'WHEN requires a DO clause — write WHEN <condition> DO <calls>';
+  const _DO_NEEDS_REAL_CALL_MSG = 'DO must have at least one real action or alert — DO nop by itself does nothing';
   const _suppressMissingAlertOrDo = $derived.by(() => {
     if (!_focused || !compiled || compiled.ok) return false;
-    return compiled.errors?.some((e) => e.message === _MISSING_ALERT_OR_DO_MSG) ?? false;
+    return compiled.errors?.some((e) => e.message === _WHEN_NEEDS_DO_MSG || e.message === _DO_NEEDS_REAL_CALL_MSG) ?? false;
   });
 
   // Sprint [CLI dropdown] — how many characters of the CURRENT partial
@@ -584,7 +589,7 @@
       // they move on without filling it in. Gating action/channel calls
       // on "has at least one REQUIRED param" keeps `telegram`/`email`/
       // `log` bare (matching the worked example,
-      // `ALERT msg = msg_txt, telegram`) while `order(`/`place_order(`
+      // `alert(msg = msg_txt, telegram)`) while `order(`/`place_order(`
       // (account/symbol/side/qty all `required: true`) still auto-opens.
       const key = String(insertedText).toLowerCase();
       const isMetricOrScope = !!(catalog && ((catalog.metrics && catalog.metrics.has(key)) || (catalog.scopes && catalog.scopes.has(key))));

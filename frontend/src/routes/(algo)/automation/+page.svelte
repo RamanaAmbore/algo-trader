@@ -106,8 +106,8 @@
   const _KIND_SEED = {
     order: 'order(account="", symbol="", side="BUY", lots=1)',
     bracket: 'bracket(applies_to=buy_any, tp_pct=30, sl_pct=-20) #name=""',
-    agent: 'WHEN pnl_pct@positions.total <= -5 ALERT telegram DO nop',
-    alert: 'ALERT telegram',
+    agent: 'WHEN pnl_pct@positions.total <= -5 DO alert(telegram)',
+    alert: 'alert(telegram)',
   };
   let _kindHint = $state('order');
   const _consolePlaceholder = $derived(_KIND_SEED[_kindHint] || '');
@@ -119,17 +119,18 @@
   /** Leading-TOKEN detector for the kind-selector sync below — deliberately
    *  reads the raw text's own first word, NOT the compiled statement's own
    *  `kind`. Those two disagree for the "Alert" bucket: a bare
-   *  `ALERT telegram` statement (no WHEN, no event-meta leading kwarg)
-   *  compiles to `kind:'agent'` (compileStatement's own dispatch — see
-   *  agents.js), the SAME compiled kind an ordinary `WHEN...ALERT...DO...`
-   *  statement gets, even though textually it's the "Alert" bucket the
-   *  operator picked. The selector's job is to reflect what the operator
-   *  TYPED, not which JSON shape it happens to compile to. */
+   *  `alert(telegram)` statement (no WHEN/DO at all — a preamble-only
+   *  statement, Sprint [grammar-unify]) compiles to `kind:'agent'`
+   *  (compileStatement's own dispatch — see agents.js), the SAME compiled
+   *  kind an ordinary `WHEN...DO...` statement gets, even though
+   *  textually it's the "Alert" bucket the operator picked. The
+   *  selector's job is to reflect what the operator TYPED, not which
+   *  JSON shape it happens to compile to. */
   function _detectKindHint(/** @type {string} */ text) {
     const t = String(text || '').trimStart();
     if (/^(order|place_order)\s*\(/i.test(t)) return 'order';
     if (/^bracket\s*\(/i.test(t)) return 'bracket';
-    if (/^(when|given|do)\b/i.test(t)) return 'agent';
+    if (/^(when|do)\b/i.test(t)) return 'agent';
     if (/^alert\b/i.test(t)) return 'alert';
     return null;
   }

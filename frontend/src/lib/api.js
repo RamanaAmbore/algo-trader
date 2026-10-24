@@ -593,6 +593,16 @@ export const updateGlobalSwitches = (payload) =>
 export const validateAgentCondition = (condTree) =>
   _post('/agents/validate-condition', condTree, { auth: true });
 
+// item 4 (grammar-unification plan) — thin wrapper for the `help(<name>)`
+// DSL statement's read-only catalog lookup. Calls the SAME `help_lookup`
+// resolver the real `help(...)` agent-action dispatches through (see
+// `backend/api/routes/agents.py:help_lookup_route`'s own doc) — Console's
+// submit path renders the result inline rather than only logging it.
+// Returns { action, status, name, matches: [{grammar_kind, token_kind,
+// token, description, signature, docstring}, ...] }.
+export const lookupHelpToken = (name) =>
+  _post('/agents/help', { name }, { auth: true });
+
 // ── Market simulator control plane (/api/simulator/*) ─────────────────
 // Gated by cap_in_<branch>.simulator in backend_config.yaml. Default:
 // dev on, prod off. Server returns 400 when the flag is off.

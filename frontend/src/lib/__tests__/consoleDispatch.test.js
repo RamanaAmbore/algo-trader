@@ -36,6 +36,7 @@ const updateAgent         = vi.fn();
 const createOrderTemplate = vi.fn();
 const patchOrderTemplate  = vi.fn();
 const reloadOrderTemplates = vi.fn();
+const lookupHelpToken = vi.fn();
 
 vi.mock('$lib/api', () => ({
   placeTicketOrder:    (...a) => placeTicketOrder(...a),
@@ -44,6 +45,7 @@ vi.mock('$lib/api', () => ({
   updateAgent:         (...a) => updateAgent(...a),
   createOrderTemplate: (...a) => createOrderTemplate(...a),
   patchOrderTemplate:  (...a) => patchOrderTemplate(...a),
+  lookupHelpToken:     (...a) => lookupHelpToken(...a),
 }));
 vi.mock('$lib/data/templates', () => ({
   loadOrderTemplates: (...a) => loadOrderTemplates(...a),
@@ -65,6 +67,7 @@ const {
   updateConsoleBracket,
   updateConsoleToken,
   slugifyAgentName,
+  submitConsoleHelp,
 } = await import('$lib/command/consoleDispatch.js');
 
 beforeEach(() => {
@@ -76,6 +79,7 @@ beforeEach(() => {
   createOrderTemplate.mockReset();
   patchOrderTemplate.mockReset();
   reloadOrderTemplates.mockReset();
+  lookupHelpToken.mockReset();
 });
 
 // ── classifyConsoleStatement ─────────────────────────────────────────────
@@ -133,6 +137,17 @@ describe('classifyConsoleStatement', () => {
 
   it('classifies a half-typed order( call as agent-family mid-type', () => {
     expect(classifyConsoleStatement('order(acct=')).toBe('agents');
+  });
+
+  // Sprint [grammar-unify] (item 4) — `debug(...)`/`help(...)` are now
+  // complete, valid, STANDALONE preamble-only statements on their own
+  // (not just DO-clause vocabulary) — without them in `_AGENT_CALL_RE`,
+  // a bare `help(pnl)` typed into Console would misclassify as
+  // 'unsupported' and never reach the real grammar at all.
+  it('routes a bare debug(/help( call to the agent-family grammar', () => {
+    expect(classifyConsoleStatement('help(pnl)')).toBe('agents');
+    expect(classifyConsoleStatement('debug(x)')).toBe('agents');
+    expect(classifyConsoleStatement('help(')).toBe('agents'); // still-being-typed
   });
 
   // The real event_stmt reserved leading kwargs are log_tag=/min_level=/
@@ -430,6 +445,29 @@ describe('submitConsoleAgent', () => {
     const payload = createAgent.mock.calls[0][0];
     expect(payload.given).toEqual(given);
   });
+
+  // Sprint [grammar-unify] — `preamble` must get the SAME "always a real
+  // array, never undefined" treatment `given` already gets above, for
+  // the identical reason (an absent key hits the backend's "None/absent
+  // = unchanged" convention on UPDATE — see `updateConsoleAgent`'s tests
+  // below for the sharper version of this).
+  it('sends preamble: [] (not undefined) when the compiled agent has no preamble calls', async () => {
+    createAgent.mockResolvedValue({ detail: 'ok' });
+    await submitConsoleAgent({ name: 'x', conditions: {}, events: [], actions: [] }, 'WHEN always DO nop #name="x"');
+    const payload = createAgent.mock.calls[0][0];
+    expect(payload.preamble).toEqual([]);
+  });
+
+  it('forwards a non-empty compiled "preamble" array through unchanged, verbatim, in declaration order', async () => {
+    createAgent.mockResolvedValue({ detail: 'ok' });
+    const preamble = [
+      { type: 'order', params: { account: 'ZG0790', symbol: 'NIFTY25JULFUT', side: 'BUY', qty: 75 } },
+      { type: 'alert', events: [{ channel: 'telegram', enabled: true }] },
+    ];
+    await submitConsoleAgent({ name: 'x', conditions: {}, events: [], actions: [], preamble }, '');
+    const payload = createAgent.mock.calls[0][0];
+    expect(payload.preamble).toEqual(preamble);
+  });
 });
 
 describe('slugifyAgentName', () => {
@@ -537,6 +575,10 @@ describe('updateConsoleAgent', () => {
       // convention and leave a STALE given[] in place forever once an
       // operator edits a statement to remove every GIVEN line.
       given: [],
+      // Sprint [grammar-unify] — ALWAYS sent as a real array (never
+      // `undefined`), same convention/reasoning as `given` immediately
+      // above.
+      preamble: [],
       tags: ['risk'],
       group: 'hedge-book',
       cli_source: 'WHEN ...',
@@ -556,6 +598,25 @@ describe('updateConsoleAgent', () => {
     await updateConsoleAgent('x', { name: 'x', conditions: {}, events: [], actions: [], given }, '');
     const sentPayload = updateAgent.mock.calls[0][1];
     expect(sentPayload.given).toEqual(given);
+  });
+
+  // Sprint [grammar-unify] — the sharper version of the `given` reasoning
+  // above: an operator who edits a statement to remove every preamble
+  // call and saves must have the OLD preamble[] actually cleared, not
+  // left stale on the backend's own "absent = unchanged" convention.
+  it('sends preamble: [] (not undefined/omitted) when the compiled agent has no preamble calls at all — required so removing every preamble line on edit actually clears a stale saved preamble', async () => {
+    updateAgent.mockResolvedValue({ detail: 'ok' });
+    await updateConsoleAgent('x', { name: 'x', conditions: {}, events: [], actions: [] }, '');
+    const sentPayload = updateAgent.mock.calls[0][1];
+    expect(sentPayload.preamble).toEqual([]);
+  });
+
+  it('forwards a non-empty compiled "preamble" array through unchanged, verbatim, in declaration order', async () => {
+    updateAgent.mockResolvedValue({ detail: 'ok' });
+    const preamble = [{ type: 'log', params: { level: 'debug', message: 'x' } }, { type: 'help', params: { name: 'pnl' } }];
+    await updateConsoleAgent('x', { name: 'x', conditions: {}, events: [], actions: [], preamble }, '');
+    const sentPayload = updateAgent.mock.calls[0][1];
+    expect(sentPayload.preamble).toEqual(preamble);
   });
 
   it('never sends schedule/tier/trade_mode/lifespan fields — None/absent on the backend means unchanged', async () => {
@@ -647,5 +708,35 @@ describe('updateConsoleToken', () => {
     const r = await updateConsoleToken('my-token', null);
     expect(r.ok).toBe(false);
     expect(updateAgent).not.toHaveBeenCalled();
+  });
+});
+
+// ── submitConsoleHelp (item 4, grammar-unification plan) ────────────────
+
+describe('submitConsoleHelp', () => {
+  it('calls lookupHelpToken with the compiled help params.name and returns the response', async () => {
+    lookupHelpToken.mockResolvedValue({
+      action: 'help', status: 'logged', name: 'pnl',
+      matches: [{ grammar_kind: 'condition', token_kind: 'metric', token: 'pnl', description: 'P&L', signature: '(ctx)', docstring: 'doc' }],
+    });
+    const r = await submitConsoleHelp({ help: { params: { name: 'pnl' } } });
+    expect(r.ok).toBe(true);
+    expect(lookupHelpToken).toHaveBeenCalledWith('pnl');
+    expect(/** @type {any} */ (r).response.matches).toHaveLength(1);
+  });
+
+  it('requires a compiled help result with a name — never calls lookupHelpToken with nothing', async () => {
+    const r1 = await submitConsoleHelp(null);
+    expect(r1.ok).toBe(false);
+    const r2 = await submitConsoleHelp(/** @type {any} */ ({ help: { params: {} } }));
+    expect(r2.ok).toBe(false);
+    expect(lookupHelpToken).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a lookup failure as a structured error, never throws', async () => {
+    lookupHelpToken.mockRejectedValue(new Error('network error'));
+    const r = await submitConsoleHelp({ help: { params: { name: 'pnl' } } });
+    expect(r.ok).toBe(false);
+    expect(/** @type {any} */ (r).error).toMatch(/network error/);
   });
 });

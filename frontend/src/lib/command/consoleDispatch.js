@@ -42,6 +42,7 @@ import {
   placeTicketOrder, placeBasket, cancelAllOrders,
   createAgent, updateAgent,
   createOrderTemplate, patchOrderTemplate,
+  lookupHelpToken,
 } from '$lib/api';
 import { loadOrderTemplates, reloadOrderTemplates } from '$lib/data/templates';
 
@@ -49,21 +50,38 @@ import { loadOrderTemplates, reloadOrderTemplates } from '$lib/data/templates';
 // (a) Classification
 // ─────────────────────────────────────────────────────────────────────────
 
-// WHEN / ALERT / DO / GIVEN are agent_stmt's clause keywords — matching
-// any one of them as the FIRST word is unambiguous because none of them
-// can ever be a bare order/place_order/bracket call name (agents.js's
-// own _RESERVED set).
+// Sprint [grammar-unify] — `GIVEN` is removed from the real GRAMMAR (no
+// longer a clause keyword at all — see agents.js's own `_RESERVED`
+// comment), but it's kept HERE deliberately: a leading `GIVEN` is still
+// unambiguously an ATTEMPT at agent-family syntax, so routing it to
+// 'agents' lets the real compiler give its specific, helpful "GIVEN is
+// no longer part of the grammar" rejection (surfaced via AgentCliEditor's
+// own compile-error block) instead of this classifier's generic
+// "unsupported syntax" hint, which would be a confusing downgrade for
+// exactly the operator who most needs the specific message. `WHEN`/`DO`
+// are the only two real clause-head keywords going forward. A bare
+// `alert` prefix still matches here too (this is a prefix-only
+// `\b`-boundary match, so `alert(telegram)` — the new ordinary call —
+// still matches `/^alert\b/` the same way it always has, coincidentally;
+// this regex was never actually keyed on `alert` being a reserved CLAUSE
+// keyword specifically).
 const _AGENT_HEAD_RE = /^(when|alert|do|given)\b/i;
-// A bare `order(...)`/`place_order(...)`/`bracket(...)`/`token(...)` call —
-// matched on just the "name(" prefix (not a balanced-paren scan) so a
-// STILL-BEING-TYPED statement like `order(acct=` classifies correctly
-// before the operator has finished typing the closing paren. Any of
-// these five names NOT appearing here would classify 'unsupported'
-// instead of 'agents' — which hides AgentCliEditor's own compile-error
-// block (ConsoleTab's `showCompileErrors` gates on `_classify ===
-// 'agents'`) and shows the "unsupported syntax" hint instead, even
-// though the statement is genuinely agent-family and just mid-typed.
-const _AGENT_CALL_RE = /^(order|place_order|bracket|token|cancel_all_orders)\s*\(/i;
+// A bare `order(...)`/`place_order(...)`/`bracket(...)`/`token(...)`/
+// `debug(...)`/`help(...)` call — matched on just the "name(" prefix (not
+// a balanced-paren scan) so a STILL-BEING-TYPED statement like
+// `order(acct=` classifies correctly before the operator has finished
+// typing the closing paren. Sprint [grammar-unify] widened this to
+// `debug`/`help` too — either is now a complete, valid, STANDALONE
+// preamble-only statement on its own (not just DO-clause vocabulary), so
+// omitting them here would misclassify as 'unsupported' and hide
+// AgentCliEditor's own compile-error block (ConsoleTab's
+// `showCompileErrors` gates on `_classify === 'agents'`) — even though
+// the statement is genuinely agent-family and just mid-typed. A bare
+// label assignment (`x = 1`) has no distinguishing head token at all and
+// is NOT covered by either regex — accepted, narrower gap: `onUnsupported`
+// only fires the "unsupported syntax" hint, it never blocks a submit that
+// reaches `compileAgentCliStatement` through some OTHER path.
+const _AGENT_CALL_RE = /^(order|place_order|bracket|token|cancel_all_orders|debug|help)\s*\(/i;
 
 /**
  * Classify a raw CLI statement by its head tokens alone — cheap regex
@@ -291,6 +309,28 @@ export async function submitConsoleCancelAllOrders(compiled) {
   }
 }
 
+/**
+ * Submit a compiled bare `help(<name>)` statement (item 4,
+ * grammar-unification plan) via `POST /api/agents/help` — read-only, no
+ * mode gate, no bracket/template resolution step, same thin-wrapper
+ * shape as `submitConsoleCancelAllOrders` immediately above. An operator
+ * typing `help pnl` wants to SEE the catalog description/signature/
+ * docstring immediately — ConsoleTab renders `response.matches` inline
+ * rather than only logging it (matching the backend route's own doc).
+ * @param {{help:{params:{name:string}}}} compiled
+ * @returns {Promise<{ok:true, response:any} | {ok:false, error:string}>}
+ */
+export async function submitConsoleHelp(compiled) {
+  const params = compiled?.help?.params;
+  if (!params || !params.name) return { ok: false, error: 'nothing to look up' };
+  try {
+    const response = await lookupHelpToken(params.name);
+    return { ok: true, response };
+  } catch (e) {
+    return { ok: false, error: e?.message || 'help lookup failed' };
+  }
+}
+
 /** Slugify an agent `#name=` value into a URL/DB-safe slug — console has
  *  no separate "slug" input field (unlike /automation's full create
  *  form), so the slug is derived from the operator-typed name. Collisions
@@ -348,6 +388,16 @@ export async function submitConsoleAgent(compiledAgent, rawText) {
     // here on CREATE too, for consistency / to never depend on which
     // path a statement happens to go through.
     given: compiledAgent.given || [],
+    // Sprint [grammar-unify] — `preamble` (the unconditional-call array,
+    // item 2) is driven ENTIRELY by the CLI text, exactly like `given`
+    // above. KNOWN GAP, reported rather than silently worked around: as
+    // of this sprint, `backend/api/schemas.py`'s `AgentCreateRequest`
+    // has no `preamble` field at all yet (item 0's engine work, a
+    // separate backend agent, lands this). Sent anyway, in good faith,
+    // matching the `given` convention — confirm against the real schema
+    // before relying on it; it may be silently dropped or rejected until
+    // that backend field exists.
+    preamble: compiledAgent.preamble || [],
     tags: compiledAgent.tags || [],
     group: compiledAgent.group || null,
     cli_source: rawText || '',
@@ -479,6 +529,19 @@ export async function updateConsoleAgent(slug, compiledAgent, rawText) {
     events: compiledAgent.events,
     actions: compiledAgent.actions,
     given: compiledAgent.given || [],
+    // Sprint [grammar-unify] — `preamble` (the unconditional-call array,
+    // item 2) is driven ENTIRELY by the CLI text, exactly like `given`
+    // above (the same reasoning applies verbatim: an `undefined` here on
+    // the UPDATE path would mean "leave the OLD preamble[] in place
+    // forever" on the backend's own "absent = unchanged" convention) —
+    // KNOWN GAP, reported rather than silently worked around: as of this
+    // sprint, `backend/api/schemas.py`'s `AgentUpdateRequest` has no
+    // `preamble` field at all yet (item 0's engine work, a separate
+    // backend agent, lands this). Sent anyway, in good faith, matching
+    // the `given` convention — confirm against the real schema before
+    // relying on it; it may be silently dropped or rejected until that
+    // backend field exists.
+    preamble: compiledAgent.preamble || [],
     tags: compiledAgent.tags || [],
     group: compiledAgent.group || null,
     cli_source: rawText || '',
