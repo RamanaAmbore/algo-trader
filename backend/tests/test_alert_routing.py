@@ -242,6 +242,7 @@ def test_catch_all_warning_logs_at_most_once_per_name_priority_combo(monkeypatch
     agent cannot amplify into a runaway log loop the way BREACH's own
     incident did."""
     monkeypatch.setattr(alert_routing, "_WARNED_COMBOS", set())
+    old_level = alert_routing._logger.level
     alert_routing._logger.addHandler(caplog.handler)
     alert_routing._logger.setLevel("WARNING")
     try:
@@ -250,6 +251,7 @@ def test_catch_all_warning_logs_at_most_once_per_name_priority_combo(monkeypatch
             assert resolved == alert_routing.CATCH_ALL_CHANNELS
     finally:
         alert_routing._logger.removeHandler(caplog.handler)
+        alert_routing._logger.setLevel(old_level)
     assert len(caplog.records) == 1, "must warn exactly once across 5 identical calls"
     # A genuinely DIFFERENT combination still gets its own one-time warning.
     alert_routing._logger.addHandler(caplog.handler)
@@ -272,28 +274,106 @@ def test_auth_internal_tagged_records_never_reach_the_catch_all():
     logger's name (`"auth"` for this whole module), and `"auth"` is now
     a known alert tag. `routes/auth.py` insulates those 12 call sites
     with `extra={"tags": ["auth_internal"]}` (a deliberately
-    UNREGISTERED tag) instead. This test proves the insulation actually
-    works: a WARNING-level record tagged only `"auth_internal"` must
-    never be classified alert-shaped, while the SAME record tagged
-    `"auth"` instead (simulating what would happen WITHOUT the fix) IS
-    alert-shaped — confirming this test would have caught the
-    regression before it shipped."""
+    UNREGISTERED tag) instead.
+
+    Goes through the REAL pipeline end to end — a real
+    `logging.LogRecord` built via `logging.Logger.makeRecord` (exactly
+    how a genuine `logger.warning(...)` call builds one), through the
+    real `log_store.tags_for()` (which derives the logger-name fallback
+    AND exercises `_check_owner_tags()` — a hand-built dict in a prior
+    version of this test never touched either), then `row_for()`'s real
+    `extra` shape, then `_looks_alert_shaped()`. Proves the insulation
+    actually works: the real `_AUTH_INTERNAL_TAGS` extra must never be
+    classified alert-shaped, while the SAME record shape built with
+    `extra={"tags": ["auth"]}` instead (simulating what would happen
+    WITHOUT the fix) IS alert-shaped — confirming this test would have
+    caught the regression before it shipped, not passed vacuously."""
+    import logging
     from backend.api.algo import event_agents as ea
+    from backend.api.routes import auth
+    from backend.shared.helpers import log_store
 
-    insulated = {"ts": None, "level": "WARNING", "logger": "backend.api.routes.auth",
-                 "message": "Auth: watchlist seed failed for 'x': boom",
-                 "tags": ["warning", "auth_internal"], "extra": {}}
-    assert ea._looks_alert_shaped(insulated) is False
+    lg = logging.getLogger("backend.api.routes.auth")
 
-    # Sanity check the mechanism itself: the SAME shape, but tagged
-    # "auth" instead, IS alert-shaped — proving the test isn't
-    # vacuously passing for some unrelated reason (e.g. a typo'd field
-    # name that would make _looks_alert_shaped always return False).
-    unfixed = {**insulated, "tags": ["warning", "auth"]}
-    assert ea._looks_alert_shaped(unfixed) is True
+    def _looks_alert_shaped_for(extra: dict) -> bool:
+        record = lg.makeRecord(
+            lg.name, logging.WARNING, __file__, 0,
+            "Auth: watchlist seed failed for 'x': boom", None, None, extra=extra,
+        )
+        row = log_store.row_for(record)
+        return ea._looks_alert_shaped(row)
+
+    assert _looks_alert_shaped_for(auth._AUTH_INTERNAL_TAGS) is False
+
+    # Sanity check the mechanism itself: the SAME real record shape,
+    # but tagged "auth" instead, IS alert-shaped — proving the test
+    # isn't vacuously passing for some unrelated reason.
+    assert _looks_alert_shaped_for({"tags": ["auth"]}) is True
 
     # Confirm "auth_internal" was deliberately never registered in the
     # known-alert-tag vocabulary (that's what makes the insulation
     # work), while "auth" genuinely is (needed for USER_REGISTERED_AGENT).
     assert "auth_internal" not in ea._known_alert_tags()
     assert "auth" in ea._known_alert_tags()
+
+
+# ── `Agent.priority` column + its migration ───────────────────────────
+
+class _FakeTxConn:
+    def __init__(self):
+        self.executed: list[str] = []
+
+    async def execute(self, stmt, *a, **k):
+        self.executed.append(str(stmt))
+        return None
+
+
+def test_migrate_agents_priority_statement_shape():
+    """Same pattern as every other additive `agents` column migration
+    (`_migrate_agents_seed_spec_hash`/`_migrate_agents_given`/etc. in
+    `test_agent_preamble_execution.py`): plain nullable `ADD COLUMN IF
+    NOT EXISTS`, `lock_timeout` set, no `CONCURRENTLY` (that pattern is
+    reserved for index creation, which runs outside the transaction)."""
+    import asyncio
+    from backend.api import database as dbmod
+    conn = _FakeTxConn()
+    asyncio.run(dbmod._migrate_agents_priority(conn))
+    joined = "\n".join(conn.executed)
+    assert "ALTER TABLE agents ADD COLUMN IF NOT EXISTS priority VARCHAR(16)" in joined
+    assert any("lock_timeout" in s for s in conn.executed)
+    assert not any("CONCURRENTLY" in s for s in conn.executed)
+
+
+def test_init_db_calls_priority_migration_after_seed_spec_hash():
+    import inspect
+    from backend.api import database as dbmod
+    src = inspect.getsource(dbmod.init_db)
+    lines = src.splitlines()
+    begin_idx = next(i for i, l in enumerate(lines) if "async with engine.begin() as conn:" in l)
+    begin_indent = len(lines[begin_idx]) - len(lines[begin_idx].lstrip())
+
+    def _idx(marker):
+        i = next(j for j, l in enumerate(lines) if marker in l and "async def" not in l)
+        return i, len(lines[i]) - len(lines[i].lstrip())
+
+    hash_idx, _ = _idx("_migrate_agents_seed_spec_hash(conn)")
+    priority_idx, priority_indent = _idx("_migrate_agents_priority(conn)")
+
+    assert priority_indent > begin_indent, (
+        "_migrate_agents_priority(conn) must run INSIDE the engine.begin() transactional block"
+    )
+    assert priority_idx > hash_idx, (
+        "_migrate_agents_priority(conn) must run after _migrate_agents_seed_spec_hash(conn)"
+    )
+
+
+def test_agent_priority_column_is_nullable_with_no_server_default():
+    """`Agent.priority` is nullable with no DB-level default — unlike
+    `has_explicit_alert` (which requires `server_default` for a
+    `NOT NULL` column on an already-populated table), a nullable column
+    needs neither; `None` is itself the correct "no override" value the
+    resolver's own fallback chain already handles."""
+    from backend.api.models import Agent
+    col = Agent.__table__.columns["priority"]
+    assert col.nullable is True
+    assert col.server_default is None

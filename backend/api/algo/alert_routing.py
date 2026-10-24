@@ -112,9 +112,11 @@ _PER_SLUG_OVERRIDES: dict[str, list[dict]] = {
     # WARNING each time via this module's own logger — which is NOT
     # skip-listed in `log_store.py`'s `_SKIP_PREFIXES`, so that WARNING
     # gets captured and re-enters the next flush, which resolves BREACH
-    # again, logs again, forever. Confirmed via live trace before this
-    # fix shipped. An explicit `[]` here matches BREACH's real static
-    # shape exactly and short-circuits at step 2 of `resolve_channels()`
+    # again, logs again, forever. Confirmed via code trace, and via a
+    # mutation test (temporarily removing this row and watching the
+    # dedicated regression test fail) before this fix shipped. An
+    # explicit `[]` here matches BREACH's real static shape exactly and
+    # short-circuits at step 2 of `resolve_channels()`
     # before ever reaching the catch-all/logging branch.
     "cycle-breach-alert": [],
     "agent-alert-rich": [

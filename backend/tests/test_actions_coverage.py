@@ -620,6 +620,7 @@ async def test_emit_log_name_and_tags_threaded_into_extra_and_result(caplog):
     # default, so it never sees records from a non-propagating logger.
     # Attach caplog's own handler directly to this logger instead of
     # relying on propagation.
+    old_level = actions.logger.level
     actions.logger.addHandler(caplog.handler)
     actions.logger.setLevel("WARNING")
     try:
@@ -628,6 +629,7 @@ async def test_emit_log_name_and_tags_threaded_into_extra_and_result(caplog):
                  "name": "my-routing-name", "tags": ["gtt", "wing"]})
     finally:
         actions.logger.removeHandler(caplog.handler)
+        actions.logger.setLevel(old_level)
     assert len(caplog.records) == 1
     record = caplog.records[0]
     assert record.priority == "high"
