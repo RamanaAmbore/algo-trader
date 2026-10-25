@@ -400,8 +400,91 @@ def test_ticker_connected_today_false_for_stale_prior_day():
 def test_get_ticker_calendar_status_stale_reads_as_not_idle():
     import backend.api.background as bg
     bg._ticker_calendar_mark(date(2000, 1, 1), connected=False, idle=True, reason="old")
-    status = bg.get_ticker_calendar_status()
+    # Explicit in-window `now=` — the staleness branch is only reached
+    # once the 2026-10-25 clock-window check has already passed.
+    status = bg.get_ticker_calendar_status(now=datetime(2026, 10, 20, 12, 0, tzinfo=_IST))
     assert status == {"idle": False, "reason": ""}
+
+
+# ---------------------------------------------------------------------------
+# get_ticker_calendar_status — clock-window idle (2026-10-25 operator-
+# reported fix). Before this, idle was computed ENTIRELY from the
+# calendar verdict (today confirmed closed) — so a trading day's own
+# pre-08:00 morning, and the post-23:30 overnight stretch AFTER a stale
+# `connected: True` from earlier in that same trading day, both fell
+# through to each account's own REST auth-health state (green) instead
+# of idle, even though nothing is actually connected at either time.
+# Reverses the 2026-10-24 design's narrower stance on purpose — see
+# `get_ticker_calendar_status`'s own docstring.
+# ---------------------------------------------------------------------------
+
+_MONDAY = date(2026, 10, 19)  # a real, ordinary NSE/MCX trading day
+
+
+def test_pre_8am_on_a_trading_day_is_idle_even_when_marked_connected():
+    """The core operator-reported symptom: a stale `connected: True`
+    from an EARLIER trading day (or any pre-existing mark) must never
+    make the badge read "live" before today's 08:00 connect window has
+    even started — regardless of what the calendar verdict is."""
+    import backend.api.background as bg
+    bg._ticker_calendar_mark(_MONDAY, connected=True, idle=False, reason="connected")
+    now = datetime(2026, 10, 19, 7, 59, tzinfo=_IST)
+    assert bg.get_ticker_calendar_status(now=now) == {
+        "idle": True,
+        "reason": "outside the 08:00–23:30 IST connectivity window",
+    }
+
+
+def test_after_mcx_close_same_trading_day_is_idle_despite_stale_connected_mark():
+    """The second half of the same bug: `_ds_tick_mcx_stop` tears down
+    the WebSocket at MCX close+1min but never resets
+    `_TICKER_CALENDAR_STATE` — so without the clock check, a day that
+    WAS genuinely open (and connected earlier) would keep reading
+    `idle: False` all night, implying a live connection that no longer
+    exists."""
+    import backend.api.background as bg
+    bg._ticker_calendar_mark(_MONDAY, connected=True, idle=False, reason="connected")
+    now = datetime(2026, 10, 19, 23, 45, tzinfo=_IST)
+    assert bg.get_ticker_calendar_status(now=now) == {
+        "idle": True,
+        "reason": "outside the 08:00–23:30 IST connectivity window",
+    }
+
+
+def test_inside_connect_window_on_open_day_still_reports_connected_not_idle():
+    """Regression guard: the clock check must only ADD idle windows, never
+    remove the real connected-and-open signal during the actual
+    [08:00, 23:30) connect window."""
+    import backend.api.background as bg
+    bg._ticker_calendar_mark(_MONDAY, connected=True, idle=False, reason="connected")
+    now = datetime(2026, 10, 19, 10, 0, tzinfo=_IST)
+    assert bg.get_ticker_calendar_status(now=now) == {"idle": False, "reason": "connected"}
+
+
+def test_inside_connect_window_on_confirmed_closed_day_still_reports_idle():
+    """Regression guard: the pre-existing calendar-verdict idle path
+    (holiday/weekend, confirmed closed) is unaffected by the new clock
+    check — both agree on idle during the window too."""
+    import backend.api.background as bg
+    saturday = date(2026, 10, 17)
+    bg._ticker_calendar_mark(saturday, connected=False, idle=True, reason="market calendar confirms closed today")
+    now = datetime(2026, 10, 17, 12, 0, tzinfo=_IST)
+    assert bg.get_ticker_calendar_status(now=now) == {
+        "idle": True,
+        "reason": "market calendar confirms closed today",
+    }
+
+
+@pytest.mark.parametrize("now,expect_idle", [
+    (datetime(2026, 10, 19, 7, 59, 59, tzinfo=_IST), True),   # one second before the window opens
+    (datetime(2026, 10, 19, 8, 0, 0, tzinfo=_IST), False),    # window opens, inclusive
+    (datetime(2026, 10, 19, 23, 29, 59, tzinfo=_IST), False), # one second before the window closes
+    (datetime(2026, 10, 19, 23, 30, 0, tzinfo=_IST), True),   # window closes, exclusive
+])
+def test_connect_window_boundary_is_0800_inclusive_2330_exclusive(now, expect_idle):
+    import backend.api.background as bg
+    bg._ticker_calendar_mark(_MONDAY, connected=True, idle=False, reason="connected")
+    assert bg.get_ticker_calendar_status(now=now)["idle"] is expect_idle
 
 
 # ---------------------------------------------------------------------------
@@ -430,17 +513,26 @@ async def test_start_kite_ticker_connects_direct_mode_on_open_day():
     mock_ticker = MagicMock()
     mock_connections = MagicMock()
     mock_connections._brokers = []
+    # Fixed, in-window (10:00 IST) OPEN-day instant — `_start_kite_ticker`
+    # locally re-imports `timestamp_indian` from its true source, so the
+    # source module's attribute is patched (not `backend.api.background`'s
+    # bound reference, which only the 2026-10-25 clock-window check below
+    # reads). Without pinning the time-of-day, this assertion would flip
+    # to `idle: True` whenever the suite happens to run outside
+    # [08:00, 23:30) IST, independent of the real connected state.
+    monday_1000 = datetime(2026, 10, 19, 10, 0, tzinfo=_IST)
 
     with patch("backend.shared.helpers.utils.is_engine_idle", return_value=False), \
+         patch("backend.shared.helpers.date_time_utils.timestamp_indian", return_value=monday_1000), \
+         patch("backend.api.background.timestamp_indian", return_value=monday_1000), \
          patch("backend.api.background._ticker_calendar_verdict", new_callable=AsyncMock, return_value=bg._CAL_OPEN), \
          patch.dict(_os.environ, {"RAMBOQ_USE_CONN_SERVICE": ""}, clear=False), \
          patch("backend.brokers.kite_ticker.get_ticker", return_value=mock_ticker), \
          patch.object(app_mod, "_resolve_creds_local", return_value=("api_key_1", "token_1", "ACC1")):
         await app_mod._start_kite_ticker()
-
-    mock_ticker.start.assert_called_once_with("api_key_1", "token_1", account="ACC1")
-    assert bg.get_ticker_calendar_status()["idle"] is False
-    assert bg.ticker_connected_today() is True
+        mock_ticker.start.assert_called_once_with("api_key_1", "token_1", account="ACC1")
+        assert bg.get_ticker_calendar_status()["idle"] is False
+        assert bg.ticker_connected_today() is True
 
 
 async def test_start_kite_ticker_conn_service_mode_on_open_day():

@@ -3815,14 +3815,54 @@ def ticker_connected_today() -> bool:
     return st.get("date") == timestamp_indian().date() and bool(st.get("connected"))
 
 
-def get_ticker_calendar_status() -> dict:
+def get_ticker_calendar_status(now: "datetime | None" = None) -> dict:
     """Public accessor for `GET /api/admin/broker-health` — returns
-    ``{"idle": bool, "reason": str}`` reflecting TODAY's calendar-gated
-    ticker-connect decision. Stale (not today, IST) or never-computed
-    state reads as not-idle — the per-account REST-fetch health states
-    still carry the real signal in that case."""
+    ``{"idle": bool, "reason": str}``.
+
+    Two independent reasons an operator should see "idle", checked in
+    this order:
+
+    1. **Clock-window (2026-10-25 fix).** Outside [08:00, 23:30) IST, the
+       ticker is never expected to be connected — before today's connect
+       window has started, OR after `_ds_tick_mcx_stop` has torn it down
+       for the night — REGARDLESS of whether today is a trading day.
+       `_TICKER_CALENDAR_STATE` only ever gets WRITTEN inside that same
+       window (or by the CLOSED-day recheck loop, which also only runs
+       inside it); nothing resets `connected`/`idle` back when the window
+       ends, so without this clock check the badge fell through to each
+       account's own REST auth-health state (green, since broker auth is
+       genuinely fine) for the entire pre-8AM and post-market-close
+       stretch of every single day — a real, operator-reported bug, not
+       a cosmetic one, since this flag also underpins "treat the ticker
+       as live right now" everywhere it's read.
+    2. **Calendar verdict (pre-existing).** Inside the window, idle only
+       when today is CONFIRMED closed (`_TICKER_CALENDAR_STATE["idle"]`,
+       set by `_ticker_calendar_decide_and_act`/
+       `_ticker_calendar_refresh_idle_status`) — unchanged.
+
+    Reversing the 2026-10-24 design's own narrower stance (which
+    deliberately did NOT mark idle before a trading day's connect window,
+    reasoning "trading day, not yet connected" was a different state from
+    "closed day, idle") — per explicit operator instruction: a stale
+    `connected=True` reflecting an EARLIER successful connect that has
+    since been torn down is not "connected now", and showing it as if it
+    were is exactly the misleading state this flag exists to prevent.
+
+    `now` is an injectable override (tests only) — production callers
+    always use the default, which reads the real clock."""
+    now = now if now is not None else timestamp_indian()
     st = _TICKER_CALENDAR_STATE
-    if st.get("date") != timestamp_indian().date():
+    same_day = st.get("date") == now.date()
+    if not (dtime(8, 0) <= now.time() < dtime(23, 30)):
+        # Prefer the more specific calendar reason when today's own state
+        # already explains it (e.g. a genuine holiday) — the generic
+        # clock-window text is only the fallback, for the common case
+        # (pre-8AM / post-close on an ordinary trading day) where the
+        # stored reason is stale ("connected") rather than explanatory.
+        if same_day and st.get("idle"):
+            return {"idle": True, "reason": str(st.get("reason") or "")}
+        return {"idle": True, "reason": "outside the 08:00–23:30 IST connectivity window"}
+    if not same_day:
         return {"idle": False, "reason": ""}
     return {"idle": bool(st.get("idle")), "reason": str(st.get("reason") or "")}
 
