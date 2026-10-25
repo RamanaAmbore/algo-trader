@@ -65,13 +65,19 @@ def _seed_grammar_minimal():
     module singleton)."""
     from backend.api.algo import grammar as _grammar
     from backend.api.algo.grammar_tokens.metric_pnl import _metric_pnl
+    from backend.api.algo.grammar_tokens.scope_positions_total import (
+        _scope_positions_total,
+    )
+    from backend.api.algo.grammar_tokens.scope_positions_any_acct import (
+        _scope_positions_any_acct,
+    )
 
     prior_metrics = dict(REGISTRY.metrics)
     prior_scopes = dict(REGISTRY.scopes)
     prior_operators = dict(REGISTRY.operators)
     REGISTRY.metrics["pnl"] = _metric_pnl
-    REGISTRY.scopes["positions.total"] = _grammar._scope_positions_total
-    REGISTRY.scopes["positions.any_acct"] = _grammar._scope_positions_any_acct
+    REGISTRY.scopes["positions.total"] = _scope_positions_total
+    REGISTRY.scopes["positions.any_acct"] = _scope_positions_any_acct
     for k, v in _grammar.OPERATORS.items():
         REGISTRY.operators[k] = v
     yield

@@ -473,37 +473,37 @@ system_tokens:
   token: holdings.total
   value_type: object
   description: The single TOTAL row of the holdings summary.
-  resolver: backend.api.algo.grammar._scope_holdings_total
+  resolver: backend.api.algo.grammar_tokens.scope_holdings_total._scope_holdings_total
 - grammar_kind: condition
   token_kind: scope
   token: holdings.any_acct
   value_type: array
   description: Every non-TOTAL account row of the holdings summary (leaf is OR-combined).
-  resolver: backend.api.algo.grammar._scope_holdings_any_acct
+  resolver: backend.api.algo.grammar_tokens.scope_holdings_any_acct._scope_holdings_any_acct
 - grammar_kind: condition
   token_kind: scope
   token: positions.total
   value_type: object
   description: The single TOTAL row of the positions summary.
-  resolver: backend.api.algo.grammar._scope_positions_total
+  resolver: backend.api.algo.grammar_tokens.scope_positions_total._scope_positions_total
 - grammar_kind: condition
   token_kind: scope
   token: positions.any_acct
   value_type: array
   description: Every non-TOTAL account row of the positions summary (leaf is OR-combined).
-  resolver: backend.api.algo.grammar._scope_positions_any_acct
+  resolver: backend.api.algo.grammar_tokens.scope_positions_any_acct._scope_positions_any_acct
 - grammar_kind: condition
   token_kind: scope
   token: positions.any_underlying
   value_type: array
   description: One row per distinct F&O underlying currently held (grouped from per-symbol position rows; cash-equity/unparseable rows skipped). Leaf is OR-combined per underlying. Pairs with underlying_market_loss / underlying_theoretical_loss / underlying_loss_divergence.
-  resolver: backend.api.algo.grammar._scope_positions_any_underlying
+  resolver: backend.api.algo.grammar_tokens.scope_positions_any_underlying._scope_positions_any_underlying
 - grammar_kind: condition
   token_kind: scope
   token: funds.total
   value_type: object
   description: The single TOTAL row of the funds/margins dataframe.
-  resolver: backend.api.algo.grammar._scope_funds_total
+  resolver: backend.api.algo.grammar_tokens.scope_funds_total._scope_funds_total
 
 # Per-symbol positions expiring today (or already past expiry).
 # Reads from ctx.position_rows (the per-symbol list the engine
@@ -540,7 +540,7 @@ system_tokens:
   token: funds.any_acct
   value_type: array
   description: Every non-TOTAL account row of the funds dataframe (leaf is OR-combined).
-  resolver: backend.api.algo.grammar._scope_funds_any_acct
+  resolver: backend.api.algo.grammar_tokens.scope_funds_any_acct._scope_funds_any_acct
 
 # Worst-case scopes — collapse N per-account agents into 1 by selecting
 # the single biggest-loser row each tick. Pair with the standard day_pct
@@ -551,25 +551,25 @@ system_tokens:
   token: holdings.worst_acct
   value_type: object
   description: The single account row with the most-negative day_pct in holdings.
-  resolver: backend.api.algo.grammar._scope_holdings_worst_acct
+  resolver: backend.api.algo.grammar_tokens.scope_holdings_worst_acct._scope_holdings_worst_acct
 - grammar_kind: condition
   token_kind: scope
   token: holdings.worst_symbol
   value_type: object
   description: The single per-symbol holding row with the most-negative day_pct.
-  resolver: backend.api.algo.grammar._scope_holdings_worst_symbol
+  resolver: backend.api.algo.grammar_tokens.scope_holdings_worst_symbol._scope_holdings_worst_symbol
 - grammar_kind: condition
   token_kind: scope
   token: positions.worst_acct
   value_type: object
   description: The single account row with the most-negative pnl_pct in positions.
-  resolver: backend.api.algo.grammar._scope_positions_worst_acct
+  resolver: backend.api.algo.grammar_tokens.scope_positions_worst_acct._scope_positions_worst_acct
 - grammar_kind: condition
   token_kind: scope
   token: positions.worst_symbol
   value_type: object
   description: The single per-symbol position row with the most-negative pnl.
-  resolver: backend.api.algo.grammar._scope_positions_worst_symbol
+  resolver: backend.api.algo.grammar_tokens.scope_positions_worst_symbol._scope_positions_worst_symbol
 
 # ── Watchlist metric ─────────────────────────────────────────────
 - grammar_kind: condition

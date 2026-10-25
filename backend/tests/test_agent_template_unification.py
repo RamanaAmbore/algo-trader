@@ -176,11 +176,13 @@ async def legacy_fragments_table(sqlite_env):
 def _seed_grammar_minimal():
     """Same minimal grammar seed as test_condition_fragments.py — the
     real DB-driven registry isn't loaded in unit tests."""
-    from backend.api.algo import grammar as _grammar
     from backend.api.algo.grammar_tokens.metric_pnl import _metric_pnl
+    from backend.api.algo.grammar_tokens.scope_positions_total import (
+        _scope_positions_total,
+    )
     from backend.api.algo.grammar_registry import REGISTRY as GRAMMAR_REGISTRY
     GRAMMAR_REGISTRY.metrics["pnl"] = _metric_pnl
-    GRAMMAR_REGISTRY.scopes["positions.total"] = _grammar._scope_positions_total
+    GRAMMAR_REGISTRY.scopes["positions.total"] = _scope_positions_total
     from backend.api.algo.grammar import OPERATORS
     for k, v in OPERATORS.items():
         GRAMMAR_REGISTRY.operators[k] = v

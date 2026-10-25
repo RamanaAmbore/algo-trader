@@ -45,6 +45,9 @@ import pytest
 from backend.api.algo import grammar
 from backend.api.algo.agent_evaluator import Context, evaluate, validate
 from backend.api.algo.grammar_tokens.metric_pnl import _metric_pnl
+from backend.api.algo.grammar_tokens.scope_positions_total import (
+    _scope_positions_total,
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -60,7 +63,7 @@ def _wire_registry(monkeypatch):
     monkeypatch.setattr(REGISTRY, 'scopes', {
         'orders.any_acct': grammar._scope_orders_any_acct,
         'quote.tracked':   grammar._scope_quote_tracked,
-        'positions.total': grammar._scope_positions_total,
+        'positions.total': _scope_positions_total,
     })
     monkeypatch.setattr(REGISTRY, 'operators', {
         '>=': grammar.OPERATORS['>='], '<': grammar.OPERATORS['<'],

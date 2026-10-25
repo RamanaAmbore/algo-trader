@@ -52,6 +52,9 @@ from backend.api.algo.grammar_tokens.scope_positions_expiring_today_nfo import (
 from backend.api.algo.grammar_tokens.scope_positions_expiring_today_mcx_unhedged import (
     _scope_positions_expiring_today_mcx_unhedged,
 )
+from backend.api.algo.grammar_tokens.scope_positions_total import (
+    _scope_positions_total,
+)
 
 
 _NOW_EXPIRY_DAY = datetime(2025, 4, 24, 9, 0, tzinfo=timezone.utc)
@@ -67,7 +70,7 @@ def _wire_registry(monkeypatch):
         'positions.expiring_today':              _scope_positions_expiring_today,
         'positions.expiring_today.nfo':           _scope_positions_expiring_today_nfo,
         'positions.expiring_today.mcx_unhedged':  _scope_positions_expiring_today_mcx_unhedged,
-        'positions.total':                        grammar._scope_positions_total,
+        'positions.total':                        _scope_positions_total,
     })
     monkeypatch.setattr(REGISTRY, 'operators', {
         '<=': grammar.OPERATORS['<='], '>': grammar.OPERATORS['>'],

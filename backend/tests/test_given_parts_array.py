@@ -61,12 +61,15 @@ def _seed_grammar_minimal():
     full `_cycle_evaluate_agent` condition-tree evaluation)."""
     from backend.api.algo import grammar as _grammar
     from backend.api.algo.grammar_tokens.metric_pnl import _metric_pnl
+    from backend.api.algo.grammar_tokens.scope_positions_total import (
+        _scope_positions_total,
+    )
 
     prior_metrics = dict(REGISTRY.metrics)
     prior_scopes = dict(REGISTRY.scopes)
     prior_operators = dict(REGISTRY.operators)
     REGISTRY.metrics["pnl"] = _metric_pnl
-    REGISTRY.scopes["positions.total"] = _grammar._scope_positions_total
+    REGISTRY.scopes["positions.total"] = _scope_positions_total
     for k, v in _grammar.OPERATORS.items():
         REGISTRY.operators[k] = v
     yield

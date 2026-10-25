@@ -50,6 +50,9 @@ from backend.api.algo.grammar_tokens.metric_underlying_theoretical_loss import (
 from backend.api.algo.grammar_tokens.metric_underlying_loss_divergence import (
     _metric_underlying_loss_divergence,
 )
+from backend.api.algo.grammar_tokens.scope_positions_any_underlying import (
+    _scope_positions_any_underlying,
+)
 from backend.api.algo.agent_evaluator import Context, evaluate
 from backend.api.algo.derivatives import black_76
 
@@ -57,40 +60,9 @@ from backend.api.algo.derivatives import black_76
 IST_NOW = datetime(2026, 9, 1, 10, 0, 0)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-#  Scope: positions.any_underlying
-# ═══════════════════════════════════════════════════════════════════════════
-
-class TestScopePositionsAnyUnderlying:
-    def test_groups_rows_by_underlying(self):
-        rows = [
-            {'underlying': 'NIFTY', 'account': 'ACC1', 'pnl': -100.0, 'day_change_val': -50.0},
-            {'underlying': 'NIFTY', 'account': 'ACC2', 'pnl': -200.0, 'day_change_val': -75.0},
-            {'underlying': 'CRUDEOIL', 'account': 'ACC1', 'pnl': 300.0, 'day_change_val': 10.0},
-        ]
-        ctx = Context(position_rows=rows)
-        out = g._scope_positions_any_underlying(ctx)
-        by_u = {r['underlying']: r for r in out}
-        assert set(by_u.keys()) == {'NIFTY', 'CRUDEOIL'}, f"got {by_u.keys()}"
-        assert by_u['NIFTY']['pnl'] == -300.0
-        assert by_u['NIFTY']['day_change_val'] == -125.0
-        assert by_u['NIFTY']['accounts'] == ['ACC1', 'ACC2']
-        assert by_u['CRUDEOIL']['pnl'] == 300.0
-
-    def test_rows_without_underlying_are_skipped(self):
-        """Cash-equity / unparseable rows (no 'underlying') never produce
-        a bucket — same skip rule `_scope_positions_expiring_today` uses."""
-        rows = [
-            {'underlying': None, 'account': 'ACC1', 'pnl': -999.0},
-            {'account': 'ACC1', 'pnl': -999.0},  # key entirely absent
-        ]
-        ctx = Context(position_rows=rows)
-        assert g._scope_positions_any_underlying(ctx) == []
-
-    def test_empty_position_rows_returns_empty(self):
-        assert g._scope_positions_any_underlying(Context(position_rows=[])) == []
-        assert g._scope_positions_any_underlying(Context()) == []
-
+# Resolver-level tests for positions.any_underlying moved to
+# backend/tests/grammar_tokens/test_scope_positions_any_underlying.py
+# (Wave 1, scope batch C of the DSL token-unification plan).
 
 # Resolver-level tests for underlying_market_loss, underlying_theoretical_loss
 # and underlying_loss_divergence (TestMetricUnderlyingMarketLoss,
@@ -380,7 +352,7 @@ class TestFixBCrossRowJoinOnUnderlying:
     @pytest.fixture(autouse=True)
     def _wire_registry(self, monkeypatch):
         from backend.api.algo.grammar_registry import REGISTRY
-        monkeypatch.setitem(REGISTRY.scopes, 'positions.any_underlying', g._scope_positions_any_underlying)
+        monkeypatch.setitem(REGISTRY.scopes, 'positions.any_underlying', _scope_positions_any_underlying)
         monkeypatch.setitem(REGISTRY.metrics, 'underlying_loss_divergence', _metric_underlying_loss_divergence)
         monkeypatch.setitem(REGISTRY.metrics, 'pnl_rate_abs', _metric_pnl_rate_abs)
         monkeypatch.setitem(REGISTRY.metrics, 'pnl_rate_pct', _metric_pnl_rate_pct)
@@ -440,7 +412,7 @@ class TestFixBCrossRowJoinOnUnderlying:
         """Direct re-run of the fix #2 `loss-margin-low` repro through the
         GENERALIZED `_eval_all` — must behave identically to before Fix B
         (account-keyed children still only intersect against each other)."""
-        from backend.api.algo.grammar import _scope_funds_any_acct
+        from backend.api.algo.grammar_tokens.scope_funds_any_acct import _scope_funds_any_acct
         from backend.api.algo.grammar_tokens.metric_avail_margin import _metric_avail_margin
         from backend.api.algo.grammar_registry import REGISTRY
         import pytest as _pytest
@@ -514,7 +486,7 @@ class TestEndToEndWiring:
     @pytest.fixture(autouse=True)
     def _wire_registry(self, monkeypatch):
         from backend.api.algo.grammar_registry import REGISTRY
-        monkeypatch.setitem(REGISTRY.scopes, 'positions.any_underlying', g._scope_positions_any_underlying)
+        monkeypatch.setitem(REGISTRY.scopes, 'positions.any_underlying', _scope_positions_any_underlying)
         monkeypatch.setitem(REGISTRY.metrics, 'underlying_market_loss', _metric_underlying_market_loss)
         monkeypatch.setitem(REGISTRY.metrics, 'underlying_theoretical_loss', _metric_underlying_theoretical_loss)
         monkeypatch.setitem(REGISTRY.metrics, 'underlying_loss_divergence', _metric_underlying_loss_divergence)

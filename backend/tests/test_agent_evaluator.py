@@ -94,12 +94,14 @@ class TestAllJoinsSameAccount:
     @pytest.fixture(autouse=True)
     def _wire_registry(self, monkeypatch):
         from backend.api.algo.grammar_registry import REGISTRY
-        from backend.api.algo.grammar import (
-            _scope_funds_any_acct, _scope_funds_total, _scope_positions_any_acct,
-            OPERATORS,
-        )
+        from backend.api.algo.grammar import OPERATORS
         from backend.api.algo.grammar_tokens.metric_avail_margin import _metric_avail_margin
         from backend.api.algo.grammar_tokens.metric_pnl import _metric_pnl
+        from backend.api.algo.grammar_tokens.scope_funds_any_acct import _scope_funds_any_acct
+        from backend.api.algo.grammar_tokens.scope_funds_total import _scope_funds_total
+        from backend.api.algo.grammar_tokens.scope_positions_any_acct import (
+            _scope_positions_any_acct,
+        )
         monkeypatch.setitem(REGISTRY.metrics, 'avail_margin', _metric_avail_margin)
         monkeypatch.setitem(REGISTRY.metrics, 'pnl', _metric_pnl)
         monkeypatch.setitem(REGISTRY.scopes, 'funds.any_acct', _scope_funds_any_acct)
@@ -262,8 +264,9 @@ class TestValidateCallSyntaxTokens:
     @pytest.fixture(autouse=True)
     def _wire_registry(self, monkeypatch):
         from backend.api.algo.grammar_registry import REGISTRY
-        from backend.api.algo.grammar import _scope_positions_total, OPERATORS
+        from backend.api.algo.grammar import OPERATORS
         from backend.api.algo.grammar_tokens.metric_mean_pnl import _metric_factory_mean_pnl
+        from backend.api.algo.grammar_tokens.scope_positions_total import _scope_positions_total
         monkeypatch.setattr(REGISTRY, 'metric_factories',
                              {'mean_pnl': (_metric_factory_mean_pnl, {'minutes': {'type': 'number'}})})
         monkeypatch.setattr(REGISTRY, 'scopes', {'positions.total': _scope_positions_total})
@@ -315,7 +318,10 @@ class TestExposedColumnFallback:
     @pytest.fixture(autouse=True)
     def _wire_registry(self, monkeypatch):
         from backend.api.algo.grammar_registry import REGISTRY
-        from backend.api.algo.grammar import _scope_positions_worst_symbol, OPERATORS
+        from backend.api.algo.grammar import OPERATORS
+        from backend.api.algo.grammar_tokens.scope_positions_worst_symbol import (
+            _scope_positions_worst_symbol,
+        )
         # Replace the whole dicts (not setitem) so a leftover 'qty'/'pnl'
         # registration from some other test module can't leak in and
         # mask what this test is actually proving.

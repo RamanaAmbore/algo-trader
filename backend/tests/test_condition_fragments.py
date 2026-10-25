@@ -20,11 +20,16 @@ from datetime import datetime, timezone
 
 from backend.api.algo.agent_evaluator import Context, evaluate, validate
 from backend.api.algo.template_registry import REGISTRY
-from backend.api.algo import grammar as _grammar
 from backend.api.algo.grammar_tokens.metric_pnl import _metric_pnl
 from backend.api.algo.grammar_tokens.metric_pnl_pct import _metric_pnl_pct
 from backend.api.algo.grammar_tokens.metric_pnl_rate_abs import _metric_pnl_rate_abs
 from backend.api.algo.grammar_tokens.metric_pnl_rate_pct import _metric_pnl_rate_pct
+from backend.api.algo.grammar_tokens.scope_positions_total import (
+    _scope_positions_total,
+)
+from backend.api.algo.grammar_tokens.scope_positions_any_acct import (
+    _scope_positions_any_acct,
+)
 from backend.api.algo.grammar_registry import REGISTRY as GRAMMAR_REGISTRY
 
 
@@ -38,8 +43,8 @@ def _seed_grammar_minimal():
     GRAMMAR_REGISTRY.metrics["pnl_pct"]      = _metric_pnl_pct
     GRAMMAR_REGISTRY.metrics["pnl_rate_abs"] = _metric_pnl_rate_abs
     GRAMMAR_REGISTRY.metrics["pnl_rate_pct"] = _metric_pnl_rate_pct
-    GRAMMAR_REGISTRY.scopes["positions.total"]     = _grammar._scope_positions_total
-    GRAMMAR_REGISTRY.scopes["positions.any_acct"]  = _grammar._scope_positions_any_acct
+    GRAMMAR_REGISTRY.scopes["positions.total"]     = _scope_positions_total
+    GRAMMAR_REGISTRY.scopes["positions.any_acct"]  = _scope_positions_any_acct
     # Operators are seeded at module import via OPERATORS dict; ensure
     # the common comparators are present in case earlier tests cleared
     # them.

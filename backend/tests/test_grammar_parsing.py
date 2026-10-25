@@ -144,57 +144,12 @@ class TestNtfyChannelCatalogToken:
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestWorstScopeKeyFix:
-    def test_holdings_worst_acct_keys_on_day_change_percentage(self):
-        from backend.api.algo.grammar import _scope_holdings_worst_acct
-        from backend.api.algo.agent_evaluator import Context
-        import pandas as pd
-        df = pd.DataFrame([
-            {'account': 'ACCT1', 'day_change_percentage': -1.0},
-            {'account': 'ACCT2', 'day_change_percentage': -4.5},
-        ])
-        ctx = Context(sum_holdings=df)
-        result = _scope_holdings_worst_acct(ctx)
-        assert len(result) == 1, f"Expected exactly 1 row, got {len(result)} — key fix regressed"
-        assert result[0]['account'] == 'ACCT2', (
-            f"Expected the worst account (ACCT2, -4.5%), got {result[0]['account']}"
-        )
-
-    def test_positions_worst_acct_keys_on_day_change_percentage(self):
-        from backend.api.algo.grammar import _scope_positions_worst_acct
-        from backend.api.algo.agent_evaluator import Context
-        import pandas as pd
-        df = pd.DataFrame([
-            {'account': 'ACCT1', 'day_change_percentage': -0.5},
-            {'account': 'ACCT2', 'day_change_percentage': -3.1},
-        ])
-        ctx = Context(sum_positions=df)
-        result = _scope_positions_worst_acct(ctx)
-        assert len(result) == 1, f"Expected exactly 1 row, got {len(result)} — key fix regressed"
-        assert result[0]['account'] == 'ACCT2'
-
-    def test_positions_worst_symbol_reads_position_rows_not_positions_rows(self):
-        """Was reading ctx.positions_rows (doesn't exist); real field is
-        ctx.position_rows (singular 'position')."""
-        from backend.api.algo.grammar import _scope_positions_worst_symbol
-        from backend.api.algo.agent_evaluator import Context
-        rows = [
-            {'tradingsymbol': 'NIFTY26SEPFUT', 'pnl': -100.0},
-            {'tradingsymbol': 'BANKNIFTY26SEPFUT', 'pnl': -9000.0},
-        ]
-        ctx = Context(position_rows=rows)
-        result = _scope_positions_worst_symbol(ctx)
-        assert len(result) == 1, f"Expected exactly 1 row, got {len(result)}"
-        assert result[0]['tradingsymbol'] == 'BANKNIFTY26SEPFUT', (
-            f"Expected the worst pnl row, got {result[0]['tradingsymbol']}"
-        )
-
-    def test_positions_worst_symbol_falls_back_when_no_rows(self):
-        from backend.api.algo.grammar import _scope_positions_worst_symbol
-        from backend.api.algo.agent_evaluator import Context
-        import pandas as pd
-        df = pd.DataFrame([{'account': 'ACCT1', 'day_change_percentage': -2.0}])
-        ctx = Context(sum_positions=df, position_rows=[])
-        result = _scope_positions_worst_symbol(ctx)
-        assert result == [{'account': 'ACCT1', 'day_change_percentage': -2.0}], (
-            f"Expected fallback to worst_acct row, got {result}"
-        )
+    # test_holdings_worst_acct_keys_on_day_change_percentage moved to
+    # backend/tests/grammar_tokens/test_scope_holdings_worst_acct.py
+    # (Wave 1, scope batch B of the DSL token-unification plan).
+    # test_positions_worst_acct_keys_on_day_change_percentage moved to
+    # backend/tests/grammar_tokens/test_scope_positions_worst_acct.py,
+    # and the two test_positions_worst_symbol_* tests moved to
+    # backend/tests/grammar_tokens/test_scope_positions_worst_symbol.py
+    # (Wave 1, scope batch C).
+    pass

@@ -203,8 +203,9 @@ class TestCycleEvaluateAgentThreadsSegmentFlags:
     @pytest.fixture(autouse=True)
     def _wire_registry(self, monkeypatch):
         from backend.api.algo.grammar_registry import REGISTRY
-        from backend.api.algo.grammar import _scope_funds_total, OPERATORS
+        from backend.api.algo.grammar import OPERATORS
         from backend.api.algo.grammar_tokens.metric_is_mcx_open import _metric_is_mcx_open
+        from backend.api.algo.grammar_tokens.scope_funds_total import _scope_funds_total
         monkeypatch.setitem(REGISTRY.metrics, 'is_mcx_open', _metric_is_mcx_open)
         monkeypatch.setitem(REGISTRY.scopes, 'funds.total', _scope_funds_total)
         monkeypatch.setitem(REGISTRY.operators, '==', OPERATORS['=='])

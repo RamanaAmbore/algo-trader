@@ -52,6 +52,9 @@ from backend.api.algo.grammar_tokens.scope_positions_expiring_today_nfo import (
 from backend.api.algo.grammar_tokens.scope_positions_expiring_today_mcx_unhedged import (
     _scope_positions_expiring_today_mcx_unhedged,
 )
+from backend.api.algo.grammar_tokens.scope_funds_any_acct import (
+    _scope_funds_any_acct,
+)
 
 
 # ─── Fixtures ────────────────────────────────────────────────────────────
@@ -90,7 +93,7 @@ def _wire_registry(monkeypatch):
         'positions.expiring_today': _scope_positions_expiring_today,
         'positions.expiring_today.nfo': _scope_positions_expiring_today_nfo,
         'positions.expiring_today.mcx_unhedged': _scope_positions_expiring_today_mcx_unhedged,
-        'funds.any_acct': grammar._scope_funds_any_acct,
+        'funds.any_acct': _scope_funds_any_acct,
     })
     monkeypatch.setattr(REGISTRY, 'operators', {
         '<=': grammar.OPERATORS['<='], '>': grammar.OPERATORS['>'],

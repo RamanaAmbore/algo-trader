@@ -355,20 +355,11 @@ def _option_moneyness(ctx, row):
 
 
 # ── Scope selectors — "which rows does this leaf evaluate over?" ─────────
-
-def _scope_holdings_total(ctx):
-    df = ctx.sum_holdings
-    if df is None or df.empty:
-        return []
-    mask = df['account'].astype(str) == 'TOTAL'
-    return [r.to_dict() for _, r in df[mask].iterrows()]
-
-def _scope_holdings_any_acct(ctx):
-    df = ctx.sum_holdings
-    if df is None or df.empty:
-        return []
-    mask = df['account'].astype(str) != 'TOTAL'
-    return [r.to_dict() for _, r in df[mask].iterrows()]
+#
+# `_scope_holdings_total` and `_scope_holdings_any_acct` migrated to
+# grammar_tokens/ (Wave 1, scope batch B of the DSL-token unification
+# plan) — see grammar_tokens/scope_holdings_total.py and
+# scope_holdings_any_acct.py.
 
 _PARTIAL_OUTAGE_LOG_INTERVAL_MIN = 15
 _last_partial_outage_log: "dict[str, object]" = {"ts": None, "accounts": None}
@@ -403,46 +394,16 @@ def _log_partial_outage_suppression(accounts: list) -> None:
     )
 
 
-def _scope_positions_total(ctx):
-    df = ctx.sum_positions
-    if df is None or df.empty:
-        return []
-    # Partial-outage guard (2026-09 alerts audit item 5): when
-    # `background._fetch_positions_direct` detected that some (not all)
-    # accounts failed to fetch this tick, `df`'s TOTAL row silently omits
-    # the failed account(s)' contribution — pd.concat just drops what
-    # never arrived. Returning [] here means the evaluator records NO
-    # observation for any positions.total leaf this tick (fix #5's
-    # "absent from observations = untouched, never treated as
-    # recovered" contract), rather than firing/clearing latches off a
-    # P&L total that's silently missing money.
-    accts = (getattr(df, 'attrs', {}) or {}).get('partial_outage')
-    if accts:
-        _log_partial_outage_suppression(accts)
-        return []
-    mask = df['account'].astype(str) == 'TOTAL'
-    return [r.to_dict() for _, r in df[mask].iterrows()]
+# `_scope_positions_total` and `_scope_positions_any_acct` migrated to
+# grammar_tokens/ (Wave 1, scope batch C of the DSL-token unification
+# plan) — see grammar_tokens/scope_positions_total.py and
+# scope_positions_any_acct.py. `_log_partial_outage_suppression` (and
+# its two module-level globals above) stay here — shared helper the
+# moved `_scope_positions_total` imports from this module.
 
-def _scope_positions_any_acct(ctx):
-    df = ctx.sum_positions
-    if df is None or df.empty:
-        return []
-    mask = df['account'].astype(str) != 'TOTAL'
-    return [r.to_dict() for _, r in df[mask].iterrows()]
-
-def _scope_funds_total(ctx):
-    df = ctx.df_margins
-    if df is None or df.empty:
-        return []
-    mask = df['account'].astype(str) == 'TOTAL'
-    return [r.to_dict() for _, r in df[mask].iterrows()]
-
-def _scope_funds_any_acct(ctx):
-    df = ctx.df_margins
-    if df is None or df.empty:
-        return []
-    mask = df['account'].astype(str) != 'TOTAL'
-    return [r.to_dict() for _, r in df[mask].iterrows()]
+# `_scope_funds_total` and `_scope_funds_any_acct` migrated to
+# grammar_tokens/ (Wave 1, scope batch B) — see
+# grammar_tokens/scope_funds_total.py and scope_funds_any_acct.py.
 
 
 # ── Underlying-scoped theoretical-vs-market loss divergence ──────────────
@@ -484,35 +445,8 @@ def _scope_funds_any_acct(ctx):
 #   book's P&L would be if nothing but spot/time had moved since the
 #   baseline" — the real quantity "theoretical loss" means here.
 
-def _scope_positions_any_underlying(ctx):
-    """One row per distinct F&O underlying currently held, grouped from
-    `ctx.position_rows`. Cash-equity / unparseable rows (no `underlying`)
-    are skipped — same skip rule `_scope_positions_expiring_today` already
-    uses for the same reason. Leaf is OR-combined per underlying.
-
-    `accounts` / `pnl` / `day_change_val` are cheap roll-ups useful for
-    alert-message enrichment — the metric resolvers below don't read them
-    off this summary row; they re-walk `ctx.position_rows` themselves for
-    full per-leg detail (qty, strike, expiry, ...) this summary row
-    doesn't carry.
-    """
-    rows = getattr(ctx, 'position_rows', None) or []
-    groups: dict = {}
-    for r in rows:
-        u = r.get('underlying')
-        if not u:
-            continue
-        groups.setdefault(u, []).append(r)
-    out = []
-    for u, group in groups.items():
-        out.append({
-            'underlying': u,
-            'accounts': sorted({r.get('account') for r in group if r.get('account')}),
-            'pnl': sum(float(r.get('pnl', 0) or 0) for r in group),
-            'day_change_val': sum(float(r.get('day_change_val', 0) or 0) for r in group),
-        })
-    return out
-
+# `_scope_positions_any_underlying` migrated to grammar_tokens/ (Wave 1,
+# scope batch C) — see grammar_tokens/scope_positions_any_underlying.py.
 
 # `_metric_underlying_market_loss` migrated to grammar_tokens/ (Wave 1,
 # batch 3).
@@ -655,47 +589,16 @@ def _row_with_min(rows: list, key: str) -> list:
     return [candidates[0][1]]
 
 
-def _scope_holdings_worst_acct(ctx):
-    """Single per-account holdings row with the worst day_change_percentage.
+# `_scope_holdings_worst_acct` and `_scope_holdings_worst_symbol`
+# migrated to grammar_tokens/ (Wave 1, scope batch B) — see
+# grammar_tokens/scope_holdings_worst_acct.py and
+# scope_holdings_worst_symbol.py. `_row_with_min` stays here — shared
+# helper read by both, plus positions.worst_acct/worst_symbol below.
 
-    Fix #11 — was keying on 'day_pct', a column name the holdings summary
-    frame never carries (it carries 'day_change_percentage' — see
-    background._bg_holdings_add_pct), so this scope always returned []."""
-    rows = _scope_holdings_any_acct(ctx)
-    return _row_with_min(rows, 'day_change_percentage')
-
-def _scope_holdings_worst_symbol(ctx):
-    """Single per-symbol holdings row with the worst day_change_percentage.
-    Note: relies on the engine context populating per-symbol detail. When
-    the live pipeline only carries per-account aggregates (current
-    default), this falls back to the same row as worst_acct — operators
-    get an honest drawdown signal either way."""
-    df = getattr(ctx, 'holdings_rows', None)
-    if df is None or (hasattr(df, 'empty') and df.empty):
-        return _scope_holdings_worst_acct(ctx)
-    rows = [r.to_dict() for _, r in df.iterrows()] if hasattr(df, 'iterrows') else list(df)
-    return _row_with_min(rows, 'day_change_percentage')
-
-def _scope_positions_worst_acct(ctx):
-    """Single per-account positions row with the worst day_change_percentage.
-
-    Fix #11 — was keying on 'pnl_pct', a column the positions summary
-    frame never carries at all (only 'day_change_val'/'day_change_percentage'
-    — see background._fetch_positions_direct / _rebuild_positions_summary),
-    so this scope always returned []."""
-    rows = _scope_positions_any_acct(ctx)
-    return _row_with_min(rows, 'day_change_percentage')
-
-def _scope_positions_worst_symbol(ctx):
-    """Single per-symbol positions row with the worst pnl.
-
-    Fix #11 — was reading `ctx.positions_rows`, an attribute that does not
-    exist on Context (the real field is `position_rows`, singular), so
-    this scope always fell through to the worst_acct fallback."""
-    rows = getattr(ctx, 'position_rows', None) or []
-    if not rows:
-        return _scope_positions_worst_acct(ctx)
-    return _row_with_min(rows, 'pnl')
+# `_scope_positions_worst_acct` and `_scope_positions_worst_symbol`
+# migrated to grammar_tokens/ (Wave 1, scope batch C) — see
+# grammar_tokens/scope_positions_worst_acct.py and
+# scope_positions_worst_symbol.py.
 
 
 # ── Watchlist scopes ─────────────────────────────────────────────────────
@@ -1125,26 +1028,26 @@ EXPOSED_COLUMNS: dict[str, dict] = {
 # the YAML `resolver:` string for the same scope token, rather than
 # asserting `hasattr(grammar, fn_name)`).
 EXPOSED_COLUMN_SCOPE_PROVENANCE: dict[str, tuple[str, str]] = {
-    'positions.total':                       ('ctx.sum_positions', 'backend.api.algo.grammar._scope_positions_total'),
-    'positions.any_acct':                     ('ctx.sum_positions', 'backend.api.algo.grammar._scope_positions_any_acct'),
-    'positions.worst_acct':                   ('ctx.sum_positions', 'backend.api.algo.grammar._scope_positions_worst_acct'),
-    'positions.worst_symbol':                 ('ctx.position_rows', 'backend.api.algo.grammar._scope_positions_worst_symbol'),
+    'positions.total':                       ('ctx.sum_positions', 'backend.api.algo.grammar_tokens.scope_positions_total._scope_positions_total'),
+    'positions.any_acct':                     ('ctx.sum_positions', 'backend.api.algo.grammar_tokens.scope_positions_any_acct._scope_positions_any_acct'),
+    'positions.worst_acct':                   ('ctx.sum_positions', 'backend.api.algo.grammar_tokens.scope_positions_worst_acct._scope_positions_worst_acct'),
+    'positions.worst_symbol':                 ('ctx.position_rows', 'backend.api.algo.grammar_tokens.scope_positions_worst_symbol._scope_positions_worst_symbol'),
     'positions.expiring_today':               ('ctx.position_rows', 'backend.api.algo.grammar_tokens.scope_positions_expiring_today._scope_positions_expiring_today'),
     'positions.expiring_today.nfo':           ('ctx.position_rows', 'backend.api.algo.grammar_tokens.scope_positions_expiring_today_nfo._scope_positions_expiring_today_nfo'),
     'positions.expiring_today.mcx_unhedged':  ('ctx.position_rows', 'backend.api.algo.grammar_tokens.scope_positions_expiring_today_mcx_unhedged._scope_positions_expiring_today_mcx_unhedged'),
-    'holdings.total':                         ('ctx.sum_holdings', 'backend.api.algo.grammar._scope_holdings_total'),
-    'holdings.any_acct':                      ('ctx.sum_holdings', 'backend.api.algo.grammar._scope_holdings_any_acct'),
-    'holdings.worst_acct':                    ('ctx.sum_holdings', 'backend.api.algo.grammar._scope_holdings_worst_acct'),
-    'holdings.worst_symbol':                  ('ctx.sum_holdings', 'backend.api.algo.grammar._scope_holdings_worst_symbol'),
-    'funds.total':                            ('ctx.df_margins', 'backend.api.algo.grammar._scope_funds_total'),
-    'funds.any_acct':                         ('ctx.df_margins', 'backend.api.algo.grammar._scope_funds_any_acct'),
+    'holdings.total':                         ('ctx.sum_holdings', 'backend.api.algo.grammar_tokens.scope_holdings_total._scope_holdings_total'),
+    'holdings.any_acct':                      ('ctx.sum_holdings', 'backend.api.algo.grammar_tokens.scope_holdings_any_acct._scope_holdings_any_acct'),
+    'holdings.worst_acct':                    ('ctx.sum_holdings', 'backend.api.algo.grammar_tokens.scope_holdings_worst_acct._scope_holdings_worst_acct'),
+    'holdings.worst_symbol':                  ('ctx.sum_holdings', 'backend.api.algo.grammar_tokens.scope_holdings_worst_symbol._scope_holdings_worst_symbol'),
+    'funds.total':                            ('ctx.df_margins', 'backend.api.algo.grammar_tokens.scope_funds_total._scope_funds_total'),
+    'funds.any_acct':                         ('ctx.df_margins', 'backend.api.algo.grammar_tokens.scope_funds_any_acct._scope_funds_any_acct'),
     'watchlist.all':                          ('ctx.watchlist_rows', 'backend.api.algo.grammar._scope_watchlist_all'),
     'watchlist.default':                      ('ctx.watchlist_rows', 'backend.api.algo.grammar._scope_watchlist_default'),
     'watchlist.markets':                      ('ctx.watchlist_rows', 'backend.api.algo.grammar._scope_watchlist_markets'),
     'orders.any_acct':                        ('ctx.orders_rows', 'backend.api.algo.grammar._scope_orders_any_acct'),
     'quote.tracked':                          ('ctx.quote_rows', 'backend.api.algo.grammar._scope_quote_tracked'),
     'symbols.all':                            ('ctx.symbols_rows', 'backend.api.algo.grammar._scope_symbols_all'),
-    'positions.any_underlying':               ('ctx.position_rows', 'backend.api.algo.grammar._scope_positions_any_underlying'),
+    'positions.any_underlying':               ('ctx.position_rows', 'backend.api.algo.grammar_tokens.scope_positions_any_underlying._scope_positions_any_underlying'),
 }
 
 
