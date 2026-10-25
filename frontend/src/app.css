@@ -2980,7 +2980,18 @@
    cards) — OrderCard.svelte is the only current consumer of "held". */
 .algo-status-card[data-status="held"]      { --st-fg: #c084fc; --st-bg: rgba(192,132,252,0.12); --st-border: rgba(192,132,252,0.38); }
 
-/* Shared status pill — inherits color from parent .algo-status-card[data-status] */
+/* Shared status pill — inherits color from parent .algo-status-card[data-status].
+   min-width (2026-10-24 consistency fix): the pill used to auto-size to its own
+   text, so OPEN/FILLED rendered visibly narrower than CANCELLED/REJECTED/
+   "⚠ KILL FAILED" in the same grid column — a min-width floor (not a rigid
+   fixed width) gives every common status the same footprint while a rare,
+   longer raw broker status (e.g. PUT_ORDER_REQ_RECEIVED) still grows past it
+   rather than clipping — white-space:nowrap above is unchanged, so overflow
+   is never hidden mid-word. text-align:center keeps the label centered in the
+   extra space on short labels. Unaffected at mobile widths: the pill lives in
+   a flex row with its own `flex-shrink: 0`, and the rest of that row's
+   siblings (symbol, account) already carry `min-w-0 truncate` to absorb the
+   difference — see order_card_mobile_pill_overflow.spec.js. */
 .algo-status-pill {
   font-size: 0.55rem;
   font-weight: 600;
@@ -2990,6 +3001,8 @@
   border-radius: 3px;
   white-space: nowrap;
   flex-shrink: 0;
+  min-width: 5.5rem;
+  text-align: center;
   color: var(--st-fg, var(--text-muted));
   background: var(--st-bg, rgba(126,151,184,0.08));
   border: 1px solid var(--st-border, rgba(126,151,184,0.25));
