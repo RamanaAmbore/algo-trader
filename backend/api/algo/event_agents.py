@@ -1769,10 +1769,27 @@ def _build_shared_channel_condition() -> dict:
     `alert_event`, defeating the catch-all's unknown-event test, and
     (b) dropped `FILL_AGENT`'s `mode: "live"` filter, leaking paper/sim
     fills to Telegram."""
-    return {"any": [
+    leaves = [
         {"log": {"tag": "alert", "min_level": entry["min_level"], "where": entry["where"]}}
         for entry in ALERT_EVENT_DISPATCH.values()
-    ]}
+    ]
+    # A FLAT N-ary {"any": [a, b, c, ...]} list is NOT what the frontend's
+    # `a | b | c` parser produces. `parseOrExpr` (agents.js) is a plain
+    # LEFT-TO-RIGHT FOLD: node = a; then node = {left: node, right: b} per
+    # iteration — left-ASSOCIATIVE, so "a | b | c | d" nests as
+    # {"any": [{"any": [{"any": [a, b]}, c]}, d]}, the FIRST leaf deepest,
+    # not outermost. (AGENTS_GRAMMAR_EBNF.md's own "Event agents" comment
+    # describing a right-nested shape is itself imprecise — the real
+    # parser code is authoritative; verified directly against it.)
+    # Opening one of these 3 agents in Console and saving with zero real
+    # changes decompiles-then-recompiles through that exact parser, so
+    # matching its fold here means compute_seed_spec_hash() never
+    # misclassifies an untouched row as operator-modified on the next
+    # SEED_VERSION bump.
+    node = leaves[0]
+    for leaf in leaves[1:]:
+        node = {"any": [node, leaf]}
+    return node
 
 
 _CHANNEL_AGENT_CONDITION: dict = _build_shared_channel_condition()

@@ -34,7 +34,7 @@ const FIXTURE_ROWS = [
   { grammar_kind: 'notify', token_kind: 'channel', token: 'telegram', params_schema: { gate: { type: 'boolean', required: false } } },
   { grammar_kind: 'notify', token_kind: 'channel', token: 'ntfy', params_schema: { priority: { type: 'enum', enum: ['low', 'default', 'high', 'urgent'], required: false }, gate: { type: 'boolean', required: false } } },
   { grammar_kind: 'notify', token_kind: 'channel', token: 'email', params_schema: { gate: { type: 'boolean', required: false } } },
-  { grammar_kind: 'action', token_kind: 'render_action', token: 'render', params_schema: { render: { type: 'freetext', required: true }, gate: { type: 'boolean', required: false } } },
+  { grammar_kind: 'action', token_kind: 'render_action', token: 'render', params_schema: { render: { type: 'freetext', required: true }, gate: { type: 'boolean', required: false }, channel_key: { type: 'freetext', required: false } } },
   {
     grammar_kind: 'condition', token_kind: 'log_filter', token: 'log', value_type: 'void',
     params_schema: {
@@ -50,8 +50,10 @@ function compile(text, opts = {}) {
   return compileAgentCliStatement(text, CATALOG, opts);
 }
 
-describe('Wave 2 — byte-identical compile gate: all 23 real SEEDED_AGENTS shapes', () => {
-  expect(seededAgents.length).toBe(23);
+describe('Wave 2 — byte-identical compile gate: all 10 real SEEDED_AGENTS shapes', () => {
+  // 2026-10-25 alert-channel collapse (commit 7d2b51fc): 23 -> 10 seeded
+  // kind='event' agents. See CLAUDE.md's "Alert-channel collapse" entry.
+  expect(seededAgents.length).toBe(10);
 
   for (const agent of seededAgents) {
     it(`${agent.slug}: decompile -> recompile reproduces the EXACT stored conditions/events/actions`, () => {

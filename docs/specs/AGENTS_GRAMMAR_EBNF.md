@@ -262,10 +262,15 @@ Prose rules (all shipped, Wave 2):
   same thing).
 - **`|` replaces `match=[…]`.** `log(…) | log(…)` is an ordinary `or_expr`, compiling to
   `{"any": [{"log":...}, {"log":...}]}` via the existing generic `and`/`or` combinator — no new
-  compile logic. `a | b | c` compiles to a NESTED binary `any` (`{"any":[a, {"any":[b,c]}]}` or
-  similar left-to-right nesting from `or_expr`'s own left-to-right grouping), not the OLD
-  `match=[...]`'s flat N-ary list — every real seeded agent uses at most 2 entries, so this never
-  diverges from a real stored shape; a hand-authored 3+-filter agent would get a nested shape
+  compile logic. `a | b | c` compiles to a NESTED binary `any`, **left-associative**:
+  `{"any": [{"any": [a, b]}, c]}` — `parseOrExpr` ([agents.js:1635](<../../frontend/src/lib/command/grammars/agents.js#L1635>))
+  is a plain left-to-right fold (`node = a`, then `node = {left: node, right: next}` per
+  iteration), so the FIRST leaf nests deepest, not outermost. (Corrected 2026-10-25 — this entry
+  previously said `{"any":[a, {"any":[b,c]}]}`, the opposite nesting; confirmed wrong against the
+  real parser code during the alert-channel-collapse work, which needed exact byte-for-byte
+  parity for a 16+-leaf `any` built in Python.) Not the OLD
+  `match=[...]`'s flat N-ary list — every real seeded agent before 2026-10-25 used at most 2
+  entries, so this never diverged from a real stored shape; a hand-authored 3+-filter agent would get a nested shape
   instead of a flat one (cosmetically different, functionally equivalent — `_eval_log`'s `any`/
   `all` walk recurses either way).
 - **Mixing a log-condition with a metric or scope leaf in one `WHEN` is a COMPILE-time error**

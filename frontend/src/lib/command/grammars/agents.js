@@ -4635,7 +4635,12 @@ function _compileRenderCall(call, catalog) {
     return { action: null, errors };
   }
   const schema = catalog.renderAction.paramsSchema || {};
-  const provided = _mapCallArgsToKeys(call, ['render', 'gate'], null, errors, 'render(...)');
+  // Allowed keys are schema-driven (every declared key beyond the always-
+  // present 'render'/'gate' pair, e.g. 'channel_key' for the 2026-10-25
+  // alert-channel-collapse sentinel agents) — never a hand-maintained
+  // literal list, so a future YAML-only schema addition needs no JS change.
+  const allowedKeys = Array.from(new Set(['render', 'gate', ...Object.keys(schema)]));
+  const provided = _mapCallArgsToKeys(call, allowedKeys, null, errors, 'render(...)');
   if (errors.length) return { action: null, errors };
   if (!provided.has('render')) {
     errors.push(_err("render(...): missing required 'render='"));
@@ -4656,9 +4661,20 @@ function _compileRenderCall(call, catalog) {
       if (r.error) errors.push(r.error); else gate = r.value;
     }
   }
+  // Every OTHER declared schema key (today, just 'channel_key') round-trips
+  // generically the same way — coerced per its own spec, carried through
+  // onto the compiled action unchanged, with no per-key hardcoding needed.
+  const extras = {};
+  for (const key of Object.keys(schema)) {
+    if (key === 'render' || key === 'gate') continue;
+    if (!provided.has(key)) continue;
+    const r = _coerceValueForSpec(provided.get(key), schema[key], key, 'render(...)');
+    if (r.error) errors.push(r.error); else extras[key] = r.value;
+  }
   if (errors.length) return { action: null, errors };
   const action = { type: 'render', render: renderR.value };
   if (gate !== undefined) action.gate = gate;
+  Object.assign(action, extras);
   return { action, errors: [] };
 }
 

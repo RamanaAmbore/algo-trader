@@ -1523,6 +1523,20 @@ event_actions:
         type: boolean
         required: false
         description: Enable repeat-dedup (RepeatGate) for this renderer's fired records. Defaults to false (no dedup).
+      # 2026-10-25 alert-channel collapse (commit 7d2b51fc) — the 3 generic
+      # channel agents (alert-channel-telegram/-ntfy/-email) carry
+      # render="event_table" (the _CHANNEL_AGENT_RENDER_SENTINEL) plus this
+      # key, read by event_agents._channel_key_for_agent() to decide which
+      # single channel that agent owns. Declared here, the same generic
+      # way `gate` is, so decompileAgent()/validate() accept it instead of
+      # rejecting it as an unexpressible extra key on the render action.
+      channel_key:
+        type: freetext
+        required: false
+        description: Which channel this event-table sentinel render belongs to
+          (e.g. "telegram"/"ntfy"/"email") — only set on the 3 generic
+          alert-channel-* agents, validated server-side against
+          event_agents.CHANNELS, not here.
 
 log_tags:
   source:
