@@ -603,8 +603,44 @@ def _eval_all(children: list, ctx: Context, _visited: set | None) -> list[dict]:
 _LEVEL_NO = {"DEBUG": 10, "INFO": 20, "WARNING": 30, "ERROR": 40, "CRITICAL": 50}
 
 
+# A `where={...}` value is normally a plain scalar, matched by exact
+# equality (unchanged default below). When a value is a dict with
+# exactly one key from this table (e.g. `where={name: {in: [...]}}`,
+# `where={name: {not_in: [...]}}`), that operator is applied instead.
+# Already grammar-parseable today with NO parser change — `agents.js`'s
+# `_objLiteralParseValue()` already accepts a nested object_literal as
+# any object_literal's value (confirmed 2026-10-25) — this is purely a
+# runtime extension local to `_eval_log`'s own `where` matching, per
+# explicit operator instruction: a new log-condition operator belongs in
+# the log token/function itself, not as a general grammar change.
+_WHERE_OPERATORS: dict[str, Callable[[Any, Any], bool]] = {
+    "in": lambda actual, expected: actual in (expected or []),
+    "not_in": lambda actual, expected: actual not in (expected or []),
+}
+
+
+def _where_value_matches(actual: Any, expected: Any) -> bool:
+    """True when `actual` satisfies a single `where={key: expected}` entry.
+
+    A dict `expected` with exactly one `_WHERE_OPERATORS` key applies that
+    operator. Anything else (a plain scalar, or a dict that doesn't match
+    this shape) falls back to the original exact-equality comparison —
+    every existing agent's `where` clause uses plain scalars, so this is
+    byte-for-byte the same behavior for them; never raises on this hot
+    evaluation path, so a malformed operator dict just fails to match
+    rather than crashing agent evaluation."""
+    if isinstance(expected, dict) and len(expected) == 1:
+        ((op_name, op_arg),) = expected.items()
+        op_fn = _WHERE_OPERATORS.get(op_name)
+        if op_fn is not None:
+            return op_fn(actual, op_arg)
+    return actual == expected
+
+
 def _eval_log(leaf: dict, ctx: Context) -> list[dict]:
-    """Match log records by tag, minimum level, and exact extra-field values."""
+    """Match log records by tag, minimum level, and extra-field values —
+    each `where` value is either an exact-equality scalar or a single
+    `_WHERE_OPERATORS` operator dict (`in`/`not_in`), see `_where_value_matches`."""
     spec = leaf.get("log") or {}
     tag = spec.get("tag")
     min_level = _LEVEL_NO.get(str(spec.get("min_level", "INFO")).upper(), 20)
@@ -615,7 +651,7 @@ def _eval_log(leaf: dict, ctx: Context) -> list[dict]:
         if tag not in tags or _LEVEL_NO.get(rec.get("level"), 0) < min_level:
             continue
         extra = rec.get("extra") or {}
-        if any(extra.get(k) != v for k, v in where.items()):
+        if any(not _where_value_matches(extra.get(k), v) for k, v in where.items()):
             continue
         matches.append({
             "metric": "log", "scope": tag, "op": "match", "threshold": spec,

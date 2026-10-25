@@ -36,6 +36,47 @@ def test_where_matches_exact_extra_fields():
     assert [m["value"] for m in out] == [1]
 
 
+def test_where_in_operator_matches_when_value_is_in_list():
+    recs = [_rec(1, ["orders"], alert_event="filled"), _rec(2, ["orders"], alert_event="rejected")]
+    out = ev._eval_log({"log": {"tag": "orders", "where": {"alert_event": {"in": ["filled", "cancelled"]}}}}, _ctx(recs))
+    assert [m["value"] for m in out] == [1]
+
+
+def test_where_not_in_operator_matches_when_value_is_absent_from_list():
+    recs = [_rec(1, ["orders"], alert_event="filled"), _rec(2, ["orders"], alert_event="rejected")]
+    out = ev._eval_log({"log": {"tag": "orders", "where": {"alert_event": {"not_in": ["filled", "cancelled"]}}}}, _ctx(recs))
+    assert [m["value"] for m in out] == [2]
+
+
+def test_where_in_and_not_in_are_logical_inverses_on_same_data():
+    recs = [_rec(i, ["orders"], alert_event=ev_val) for i, ev_val in enumerate(["filled", "rejected", "cancelled"])]
+    allow = ["filled", "cancelled"]
+    in_matches = {m["value"] for m in ev._eval_log({"log": {"tag": "orders", "where": {"alert_event": {"in": allow}}}}, _ctx(recs))}
+    not_in_matches = {m["value"] for m in ev._eval_log({"log": {"tag": "orders", "where": {"alert_event": {"not_in": allow}}}}, _ctx(recs))}
+    assert in_matches | not_in_matches == {0, 1, 2}
+    assert in_matches & not_in_matches == set()
+
+
+def test_where_scalar_values_still_match_by_exact_equality():
+    """Regression: existing agents' plain-scalar `where` values must be byte-for-byte unaffected."""
+    recs = [_rec(1, ["orders"], mode="live"), _rec(2, ["orders"], mode="paper")]
+    out = ev._eval_log({"log": {"tag": "orders", "where": {"mode": "live"}}}, _ctx(recs))
+    assert [m["value"] for m in out] == [1]
+
+
+def test_where_unrecognized_operator_dict_falls_back_to_exact_equality():
+    recs = [_rec(1, ["orders"], alert_event={"bogus_op": ["filled"]})]
+    out = ev._eval_log({"log": {"tag": "orders", "where": {"alert_event": {"bogus_op": ["filled"]}}}}, _ctx(recs))
+    assert [m["value"] for m in out] == [1]
+
+
+def test_where_multi_key_dict_is_not_treated_as_an_operator():
+    """A dict with more than one key is never an operator spec — falls back to equality, which never matches a dict literal."""
+    recs = [_rec(1, ["orders"], alert_event="filled")]
+    out = ev._eval_log({"log": {"tag": "orders", "where": {"alert_event": {"in": ["filled"], "extra": 1}}}}, _ctx(recs))
+    assert out == []
+
+
 def test_match_entry_is_json_serialisable_and_carries_tags():
     out = ev._eval_log({"log": {"tag": "orders"}}, _ctx([_rec(7, ["orders"], account="ZG0790")]))
     assert out[0]["account"] == "ZG0790"
