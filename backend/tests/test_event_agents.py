@@ -7,6 +7,7 @@ import pytest
 from backend.api.algo import event_agents
 from backend.api.algo.agent_evaluator import validate
 from backend.api.algo.grammar_registry import REGISTRY
+from backend.api.algo.grammar_tokens import channel_log as _channel_log_mod
 
 
 # Literal, not read off `event_agents.FILL_AGENT["events"]` — that key no
@@ -356,8 +357,13 @@ async def test_log_only_record_fires_on_non_main_branch(monkeypatch):
     captured = []
     monkeypatch.setattr(u, "is_enabled", lambda cap: True)
     monkeypatch.setattr(cfg_u, "config", {"deploy_branch": "dev"})
+    # `_send_log_channel` (the 'log' channel sender) was relocated to
+    # grammar_tokens/channel_log.py (Wave 1, DSL-token-unification plan,
+    # Part B — channels); it reads its OWN module-level `_EVENTS_LOGGER`
+    # (same real singleton object, but a separate attribute reference
+    # for monkeypatch purposes), not `event_agents`'s.
     monkeypatch.setattr(
-        event_agents, "_EVENTS_LOGGER",
+        _channel_log_mod, "_EVENTS_LOGGER",
         SimpleNamespace(warning=lambda msg, **k: captured.append(msg)),
     )
 
@@ -402,8 +408,13 @@ async def test_mixed_log_and_telegram_record_on_non_main_branch_only_logs(monkey
     captured, sent = [], []
     monkeypatch.setattr(u, "is_enabled", lambda cap: True)
     monkeypatch.setattr(u, "config", {"deploy_branch": "dev"})
+    # `_send_log_channel` (the 'log' channel sender) was relocated to
+    # grammar_tokens/channel_log.py (Wave 1, DSL-token-unification plan,
+    # Part B — channels); it reads its OWN module-level `_EVENTS_LOGGER`
+    # (same real singleton object, but a separate attribute reference
+    # for monkeypatch purposes), not `event_agents`'s.
     monkeypatch.setattr(
-        event_agents, "_EVENTS_LOGGER",
+        _channel_log_mod, "_EVENTS_LOGGER",
         SimpleNamespace(warning=lambda msg, **k: captured.append(msg)),
     )
     monkeypatch.setattr(au, "_send_telegram", lambda msg, **k: sent.append(msg))
@@ -425,8 +436,13 @@ async def test_log_only_record_fires_during_sim_regardless_of_notify_setting(mon
     monkeypatch.setattr(u, "is_enabled", lambda cap: True)
     monkeypatch.setattr(u, "config", {"deploy_branch": "main"})
     monkeypatch.setattr(event_agents, "_sim_notify_allowed", lambda: False)
+    # `_send_log_channel` (the 'log' channel sender) was relocated to
+    # grammar_tokens/channel_log.py (Wave 1, DSL-token-unification plan,
+    # Part B — channels); it reads its OWN module-level `_EVENTS_LOGGER`
+    # (same real singleton object, but a separate attribute reference
+    # for monkeypatch purposes), not `event_agents`'s.
     monkeypatch.setattr(
-        event_agents, "_EVENTS_LOGGER",
+        _channel_log_mod, "_EVENTS_LOGGER",
         SimpleNamespace(warning=lambda msg, **k: captured.append(msg)),
     )
 
@@ -471,8 +487,13 @@ async def test_mixed_log_and_telegram_record_during_sim_only_logs(monkeypatch):
     monkeypatch.setattr(u, "is_enabled", lambda cap: True)
     monkeypatch.setattr(u, "config", {"deploy_branch": "main"})
     monkeypatch.setattr(event_agents, "_sim_notify_allowed", lambda: False)
+    # `_send_log_channel` (the 'log' channel sender) was relocated to
+    # grammar_tokens/channel_log.py (Wave 1, DSL-token-unification plan,
+    # Part B — channels); it reads its OWN module-level `_EVENTS_LOGGER`
+    # (same real singleton object, but a separate attribute reference
+    # for monkeypatch purposes), not `event_agents`'s.
     monkeypatch.setattr(
-        event_agents, "_EVENTS_LOGGER",
+        _channel_log_mod, "_EVENTS_LOGGER",
         SimpleNamespace(warning=lambda msg, **k: captured.append(msg)),
     )
     monkeypatch.setattr(au, "_send_telegram", lambda msg, **k: sent.append(msg))
@@ -545,8 +566,11 @@ async def test_log_channel_entry_logs_via_logger_warning(monkeypatch):
     import backend.shared.helpers.utils as u
     monkeypatch.setattr(u, "is_enabled", lambda cap: True)
     captured = []
+    # See the comment above the other `_EVENTS_LOGGER` patches in this
+    # file — `_send_log_channel` reads grammar_tokens/channel_log.py's
+    # own module-level `_EVENTS_LOGGER`, not `event_agents`'s.
     monkeypatch.setattr(
-        event_agents, "_EVENTS_LOGGER",
+        _channel_log_mod, "_EVENTS_LOGGER",
         SimpleNamespace(warning=lambda msg, **k: captured.append((msg, k.get("extra")))),
     )
     ch = {"channel": "log", "enabled": True, "gate": True,
@@ -576,8 +600,11 @@ async def test_log_channel_falls_back_to_title_and_body_without_prebuilt_line(mo
     import backend.shared.helpers.utils as u
     monkeypatch.setattr(u, "is_enabled", lambda cap: True)
     captured = []
+    # See the comment above the other `_EVENTS_LOGGER` patches in this
+    # file — `_send_log_channel` reads grammar_tokens/channel_log.py's
+    # own module-level `_EVENTS_LOGGER`, not `event_agents`'s.
     monkeypatch.setattr(
-        event_agents, "_EVENTS_LOGGER",
+        _channel_log_mod, "_EVENTS_LOGGER",
         SimpleNamespace(warning=lambda msg, **k: captured.append((msg, k.get("extra")))),
     )
     ch = {"channel": "log", "enabled": True}

@@ -25,7 +25,7 @@ class TestTelegramHtmlEscape:
 
     def test_telegram_html_escapes_ampersand(self):
         """Ampersands in table data are escaped to &amp; for Telegram."""
-        from backend.shared.helpers.alert_utils import _html_table
+        from backend.api.algo.grammar_tokens.format_html_table import _html_table
 
         headers = ["Account", "P&L", "Change"]
         rows = [
@@ -42,7 +42,7 @@ class TestTelegramHtmlEscape:
 
     def test_html_table_builds_valid_markup(self):
         """_html_table returns valid HTML structure."""
-        from backend.shared.helpers.alert_utils import _html_table
+        from backend.api.algo.grammar_tokens.format_html_table import _html_table
 
         headers = ["Symbol", "P&L", "Change"]
         rows = [
@@ -62,7 +62,7 @@ class TestTelegramHtmlEscape:
 
     def test_html_table_includes_total_row_styling(self):
         """TOTAL row gets special styling in HTML table."""
-        from backend.shared.helpers.alert_utils import _html_table
+        from backend.api.algo.grammar_tokens.format_html_table import _html_table
 
         headers = ["Account", "P&L"]
         rows = [
@@ -83,7 +83,7 @@ class TestTelegramHtmlEscape:
 
     def test_html_table_alternates_row_colors(self):
         """HTML table alternates row background colors."""
-        from backend.shared.helpers.alert_utils import _html_table
+        from backend.api.algo.grammar_tokens.format_html_table import _html_table
 
         headers = ["Symbol", "Price"]
         rows = [
@@ -101,7 +101,7 @@ class TestTelegramHtmlEscape:
 
     def test_html_table_escapes_special_html_chars(self):
         """Special HTML characters are properly escaped in table content."""
-        from backend.shared.helpers.alert_utils import _html_table
+        from backend.api.algo.grammar_tokens.format_html_table import _html_table
 
         headers = ["Symbol", "Note"]
         rows = [
@@ -132,7 +132,7 @@ class TestAlertDispatchTelegramPayload:
 
     def test_telegram_message_with_table(self):
         """Telegram messages with embedded tables are formatted correctly."""
-        from backend.shared.helpers.alert_utils import _html_table
+        from backend.api.algo.grammar_tokens.format_html_table import _html_table
 
         headers = ["Position", "P&L", "% Change"]
         rows = [

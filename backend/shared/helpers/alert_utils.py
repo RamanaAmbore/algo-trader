@@ -392,52 +392,14 @@ _EMAIL_GREEN       = "#4ade80"
 _EMAIL_RED         = "#f87171"
 
 
-def _html_table(headers, rows):
-    """Render a list of string-tuple rows as an HTML table for email,
-    styled in the algo dark palette."""
-    th_style = (
-        f"background-color:{_EMAIL_BG};color:{_EMAIL_AMBER};padding:8px 12px;"
-        f"text-align:left;font-family:monospace;font-size:13px;"
-        f"font-weight:700;letter-spacing:0.04em;"
-        f"border-bottom:2px solid {_EMAIL_AMBER};white-space:nowrap"
-    )
-    td_style = (
-        f"padding:6px 12px;font-family:monospace;font-size:13px;"
-        f"background-color:{_EMAIL_PANEL_BG};color:{_EMAIL_TEXT};"
-        f"border-bottom:1px solid {_EMAIL_BORDER};white-space:nowrap"
-    )
-    td_alt_style = td_style.replace(_EMAIL_PANEL_BG, _EMAIL_PANEL_ALT)
-    # TOTAL row — stronger amber tint so the rollup stands out from the
-    # data rows above it. Matches the on-screen TOTAL row stratum.
-    td_total_style = (
-        f"padding:8px 12px;font-family:monospace;font-size:13px;"
-        f"background-color:#3a2c10;color:{_EMAIL_AMBER};font-weight:700;"
-        f"border-top:2px solid {_EMAIL_AMBER};"
-        f"border-bottom:1px solid {_EMAIL_AMBER_SOFT};white-space:nowrap"
-    )
-
-    def _is_total_row(row):
-        # First cell is account / label; flag the rollup row by name.
-        return bool(row) and str(row[0]).strip().upper() in ("TOTAL", "TOTALS", "GRAND TOTAL")
-
-    header_cells = "".join(f"<th style='{th_style}'>{h}</th>" for h in headers)
-    row_html = ""
-    for i, row in enumerate(rows):
-        if _is_total_row(row):
-            bg = td_total_style
-        else:
-            bg = td_alt_style if i % 2 else td_style
-        cells = "".join(f"<td style='{bg}'>{v}</td>" for v in row)
-        row_html += f"<tr>{cells}</tr>"
-
-    return (
-        f"<table style='border-collapse:collapse;width:100%;"
-        f"background-color:{_EMAIL_PANEL_BG};border:1px solid {_EMAIL_BORDER};"
-        f"border-radius:4px;overflow:hidden'>"
-        f"<thead><tr>{header_cells}</tr></thead>"
-        f"<tbody>{row_html}</tbody>"
-        f"</table>"
-    )
+# `_html_table` RELOCATED to backend/api/algo/grammar_tokens/
+# format_html_table.py (Wave 1, DSL-token-unification plan, Part B —
+# formats). Not re-exported at module top here, since that would make
+# this shared-layer module (backend/shared/) depend on backend/api/algo/
+# at IMPORT time — the two real callers below (`_build_summary_email`,
+# `order_failure_messages`) each do a LAZY (function-body) import
+# instead, which only resolves at call time, well after both modules are
+# already loaded.
 
 
 def _branch_banner_html(branch: str) -> str:
@@ -858,6 +820,7 @@ def _build_summary_email(
     f_rows: list[tuple], und_rows: list[dict],
 ) -> str:
     """Assemble the HTML email body for market summaries."""
+    from backend.api.algo.grammar_tokens.format_html_table import _html_table
     h_headers = ("Account", "Cur Val", "P&L", "P&L%", "Day Loss", "Day Loss%")
     p_headers = ("Account", "P&L")
     f_headers = ("Account", "Cash", "Avail Margin", "Used Margin", "Collateral")
@@ -1114,6 +1077,7 @@ def order_failure_messages(
     agent_id: "int | None" = None,
 ) -> tuple[str, str, str]:
     """Telegram body, email subject and email HTML for an order rejection. Pure."""
+    from backend.api.algo.grammar_tokens.format_html_table import _html_table
     origin_label = _classify_order_origin_label(source, agent_id)
     branch      = config.get("deploy_branch", "main")
     mode_tag    = f"[{mode.upper()}]" if mode else ""

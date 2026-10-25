@@ -755,6 +755,7 @@ system_tokens:
   token: telegram
   value_type: enum
   description: Telegram group defined by secrets.telegram_chat_id.
+  resolver: backend.api.algo.grammar_tokens.channel_telegram._send_telegram_html
   params_schema:
     gate:
       type: boolean
@@ -778,6 +779,7 @@ system_tokens:
   token: telegram_info
   value_type: enum
   description: Telegram via the dedicated 'info' key (secrets.telegram_chat_id_info), bypassing the regular 'telegram' capability gate — used by low-noise informational alerts (e.g. market-summary).
+  resolver: backend.api.algo.grammar_tokens.channel_telegram_info._send_telegram_info_html
   params_schema:
     gate:
       type: boolean
@@ -795,6 +797,7 @@ system_tokens:
   token: telegram_deploy
   value_type: enum
   description: Telegram via the dedicated deploy-alerts key (secrets.telegram_bot_token_deploy / telegram_chat_id_deploy), bypassing the regular 'telegram' capability gate — used exclusively by deploy-sync-alert.
+  resolver: backend.api.algo.grammar_tokens.channel_telegram_deploy._send_telegram_deploy_html
   params_schema:
     gate:
       type: boolean
@@ -805,6 +808,7 @@ system_tokens:
   token: email
   value_type: enum
   description: Email to every address in secrets.alert_emails.
+  resolver: backend.api.algo.grammar_tokens.channel_email._send_email_channel
   params_schema:
     gate:
       type: boolean
@@ -819,6 +823,7 @@ system_tokens:
   token: ntfy
   value_type: enum
   description: Push notification via ntfy.sh. Priority sets urgency; defaults to the firing agent's tier when omitted.
+  resolver: backend.api.algo.grammar_tokens.channel_ntfy._send_ntfy
   params_schema:
     priority:
       type: enum
@@ -837,11 +842,13 @@ system_tokens:
   token: websocket
   value_type: enum
   description: Live push to connected /algo dashboard clients.
+  resolver: backend.api.algo.grammar_tokens.channel_websocket._broadcast_websocket
 - grammar_kind: notify
   token_kind: channel
   token: log
   value_type: enum
   description: Write to the app log only — useful for silent testing of new agents.
+  resolver: backend.api.algo.grammar_tokens.channel_log._send_log_channel
 
 # In-app rich popup channel. Distinct from `websocket` (which is the
 # raw live-data feed every algo page subscribes to). `inapp` is
@@ -858,10 +865,20 @@ system_tokens:
   value_type: enum
   description: In-app rich popup + toast for the AgentNotifications bell. Same delivery surface as the
     order-ticket modal.
+  resolver: backend.api.algo.grammar_tokens.channel_inapp._broadcast_inapp
 
 # ════════════════════════════════════════════════════════════════════════
 #  NOTIFY — FORMATS (how the alert body is rendered)
 # ════════════════════════════════════════════════════════════════════════
+# text_narrow / plain_text / json deliberately carry NO resolver (Wave 1,
+# DSL-token-unification plan, Part B — formats, 2026-10 investigation):
+# confirmed via repo-wide grep that none of the three is implemented by
+# ANY standalone function anywhere in the codebase — not inlined, not
+# shared, not ambiguous, genuinely absent. `html_table` is the one real,
+# unambiguous, already-named implementation (`alert_utils._html_table`,
+# relocated below). Per explicit operator instruction, a resolver is
+# wired only when a real function already exists — never invented just
+# to populate the catalog.
 - grammar_kind: notify
   token_kind: format
   token: text_narrow
@@ -872,6 +889,7 @@ system_tokens:
   token: html_table
   value_type: enum
   description: Structured HTML table with per-kind row colour — for email.
+  resolver: backend.api.algo.grammar_tokens.format_html_table._html_table
 - grammar_kind: notify
   token_kind: format
   token: plain_text

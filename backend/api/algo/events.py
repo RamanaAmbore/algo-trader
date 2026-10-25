@@ -594,27 +594,13 @@ def _tags_match(ch: dict, eval_result) -> bool:
     return bool(wanted & matched)
 
 
-def _broadcast_websocket(broadcast_fn, agent, telegram_body, condition_text, sim_mode) -> None:
-    broadcast_fn("agent_alert", {
-        "slug": agent.slug,
-        "message": telegram_body,
-        "condition": condition_text,
-        "sim_mode": sim_mode,
-    })
-
-
-def _broadcast_inapp(broadcast_fn, agent, condition_text, eval_result, ist_display, sim_mode, branch) -> None:
-    broadcast_fn("agent_inapp_notify", {
-        "slug":      agent.slug,
-        "name":      agent.name,
-        "tier":      getattr(agent, "tier", "info"),
-        "topic":     getattr(agent, "topic", None),
-        "condition": condition_text,
-        "detail":    eval_result.detail or {},
-        "when":      ist_display,
-        "sim_mode":  sim_mode,
-        "branch":    branch,
-    })
+# `_broadcast_websocket` / `_broadcast_inapp` RELOCATED to
+# backend/api/algo/grammar_tokens/channel_websocket.py /
+# grammar_tokens/channel_inapp.py (Wave 1, DSL-token-unification plan,
+# Part B — channels). Imported immediately below so `_dispatch_channel`
+# below keeps calling the identical function objects.
+from backend.api.algo.grammar_tokens.channel_websocket import _broadcast_websocket  # noqa: E402
+from backend.api.algo.grammar_tokens.channel_inapp import _broadcast_inapp  # noqa: E402
 
 
 async def _send_ntfy_channel(ch: dict, agent, telegram_body: str, ntfy_body: str | None) -> None:

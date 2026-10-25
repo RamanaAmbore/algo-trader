@@ -61,14 +61,28 @@ def _load_resolved(table: str, allow_bare: bool):
 
 
 def _load_required_resolver(table: str):
+    """Loader for `('notify', 'channel')` / `('notify', 'format')` rows.
+
+    Unlike `_load_resolved` (metrics/scopes), a channel/format row's
+    `params_schema` never means "this resolver is a parameterized
+    factory, call-shaped like `mean_pnl(30)`" — there is no DSL
+    call-expression syntax for a channel or format token. It means
+    "the extra keys this channel's `events: [...]` JSON entry may carry"
+    (e.g. `gate`, `priority` — schema-only, declared so a catalog-driven
+    validator/decompiler recognizes those keys; see the YAML comments
+    on `telegram_info`/`ntfy`). Routing these into the `factories` table
+    (Wave 1, DSL-token-unification plan, Part B — channels/formats, where
+    several channel rows first gained a real `resolver` alongside their
+    pre-existing `params_schema`) would silently make `REGISTRY.channel()`
+    / `.fmt()` return `None` for every one of them — `_parse_call_token`
+    requires an `ast.Call` node, and a bare token string like `"telegram"`
+    is an `ast.Name`, never a call. So a channel/format resolver always
+    goes to the plain table, regardless of `params_schema`.
+    """
     def load(r, tables) -> bool:
         if not r.resolver:
             return False
-        fn = _import_dotted(r.resolver)
-        if r.params_schema:
-            tables['factories'][table][r.token] = (fn, r.params_schema)
-        else:
-            tables[table][r.token] = fn
+        tables[table][r.token] = _import_dotted(r.resolver)
         return True
     return load
 

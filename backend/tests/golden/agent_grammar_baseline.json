@@ -798,6 +798,7 @@
       "token": "telegram",
       "value_type": "enum",
       "description": "Telegram group defined by secrets.telegram_chat_id.",
+      "resolver": "backend.api.algo.grammar_tokens.channel_telegram._send_telegram_html",
       "params_schema": {
         "gate": {
           "type": "boolean",
@@ -812,6 +813,7 @@
       "token": "telegram_info",
       "value_type": "enum",
       "description": "Telegram via the dedicated 'info' key (secrets.telegram_chat_id_info), bypassing the regular 'telegram' capability gate — used by low-noise informational alerts (e.g. market-summary).",
+      "resolver": "backend.api.algo.grammar_tokens.channel_telegram_info._send_telegram_info_html",
       "params_schema": {
         "gate": {
           "type": "boolean",
@@ -826,6 +828,7 @@
       "token": "telegram_deploy",
       "value_type": "enum",
       "description": "Telegram via the dedicated deploy-alerts key (secrets.telegram_bot_token_deploy / telegram_chat_id_deploy), bypassing the regular 'telegram' capability gate — used exclusively by deploy-sync-alert.",
+      "resolver": "backend.api.algo.grammar_tokens.channel_telegram_deploy._send_telegram_deploy_html",
       "params_schema": {
         "gate": {
           "type": "boolean",
@@ -840,6 +843,7 @@
       "token": "email",
       "value_type": "enum",
       "description": "Email to every address in secrets.alert_emails.",
+      "resolver": "backend.api.algo.grammar_tokens.channel_email._send_email_channel",
       "params_schema": {
         "gate": {
           "type": "boolean",
@@ -854,6 +858,7 @@
       "token": "ntfy",
       "value_type": "enum",
       "description": "Push notification via ntfy.sh. Priority sets urgency; defaults to the firing agent's tier when omitted.",
+      "resolver": "backend.api.algo.grammar_tokens.channel_ntfy._send_ntfy",
       "params_schema": {
         "priority": {
           "type": "enum",
@@ -877,21 +882,24 @@
       "token_kind": "channel",
       "token": "websocket",
       "value_type": "enum",
-      "description": "Live push to connected /algo dashboard clients."
+      "description": "Live push to connected /algo dashboard clients.",
+      "resolver": "backend.api.algo.grammar_tokens.channel_websocket._broadcast_websocket"
     },
     {
       "grammar_kind": "notify",
       "token_kind": "channel",
       "token": "log",
       "value_type": "enum",
-      "description": "Write to the app log only — useful for silent testing of new agents."
+      "description": "Write to the app log only — useful for silent testing of new agents.",
+      "resolver": "backend.api.algo.grammar_tokens.channel_log._send_log_channel"
     },
     {
       "grammar_kind": "notify",
       "token_kind": "channel",
       "token": "inapp",
       "value_type": "enum",
-      "description": "In-app rich popup + toast for the AgentNotifications bell. Same delivery surface as the order-ticket modal."
+      "description": "In-app rich popup + toast for the AgentNotifications bell. Same delivery surface as the order-ticket modal.",
+      "resolver": "backend.api.algo.grammar_tokens.channel_inapp._broadcast_inapp"
     },
     {
       "grammar_kind": "notify",
@@ -905,7 +913,8 @@
       "token_kind": "format",
       "token": "html_table",
       "value_type": "enum",
-      "description": "Structured HTML table with per-kind row colour — for email."
+      "description": "Structured HTML table with per-kind row colour — for email.",
+      "resolver": "backend.api.algo.grammar_tokens.format_html_table._html_table"
     },
     {
       "grammar_kind": "notify",

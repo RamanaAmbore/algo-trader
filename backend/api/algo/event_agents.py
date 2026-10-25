@@ -444,21 +444,15 @@ register_renderer("gtt_not_accepted")(_render_gtt_not_accepted)
 register_renderer("order_correction")(_render_order_correction)
 
 
-def _send_ntfy(title: str, body: str, tg: str | None = None, priority: str | None = None) -> None:
-    from backend.shared.helpers import alert_utils
-    alert_utils.send_ntfy_alert(title, body, priority=priority)
-
-
-def _send_telegram_html(title: str, body: str, tg: str | None = None) -> None:
-    """Despite the `_html` suffix (kept for name stability — several
-    tests `patch.object`/`CHANNELS`-swap this function by name), this is
-    now a plain-text send: 2026-10 reversal, no `<b>`/`<code>` wrap and
-    no `html.escape()` — `tg`, when a renderer supplies one, is already
-    plain text (every renderer in this file builds it that way now)."""
-    from backend.shared.helpers import alert_utils
-    alert_utils._send_telegram(tg or f"{title}\n{body}")
-
-
+# `_send_ntfy` / `_send_telegram_html` RELOCATED to
+# backend/api/algo/grammar_tokens/channel_ntfy.py /
+# grammar_tokens/channel_telegram.py (Wave 1, DSL-token-unification plan,
+# Part B — channels). Imported immediately below so `CHANNELS` captures
+# the identical function objects, and so every existing
+# `patch.object(event_agents, "_send_ntfy", ...)` /
+# `event_agents._send_telegram_html` call site is unchanged.
+from backend.api.algo.grammar_tokens.channel_ntfy import _send_ntfy  # noqa: E402
+from backend.api.algo.grammar_tokens.channel_telegram import _send_telegram_html  # noqa: E402
 
 
 def _render_key(agent) -> str | None:
@@ -485,70 +479,18 @@ def resolve_email_recipients(recipients) -> list[str]:
     return []
 
 
-def _send_email_channel(title: str, body: str, tg: str | None = None,
-                        email: tuple | None = None, recipients=None, **_kw) -> None:
-    from backend.shared.helpers.mail_utils import send_email
-    if not email:
-        return
-    subject, html_body = email
-    for addr in resolve_email_recipients(recipients):
-        try:
-            send_email("RamboQuant", addr, subject, html_body)
-        except Exception as e:
-            sys.stderr.write(f"event_agents: email to {addr} failed: {e}\n")
-
-
-def _send_telegram_info_html(title: str, body: str, tg: str | None = None) -> None:
-    """Plain-text send (see `_send_telegram_html`'s docstring for why the
-    `_html` suffix is kept despite no HTML being built here any more)."""
-    from backend.shared.helpers import alert_utils
-    alert_utils._send_telegram_info(tg or f"{title}\n{body}")
-
-
-def _send_telegram_deploy_html(title: str, body: str, tg: str | None = None) -> None:
-    """Deploy-sync-drift alerts (`deploy-sync-alert`) post to a DEDICATED
-    Telegram bot/chat — secrets `telegram_bot_token_deploy`/
-    `telegram_chat_id_deploy`, falling back to the general ops bot/chat
-    when either is absent — the SAME fallback pair `webhook/
-    notify_deploy.py` (the standalone deploy script) already uses for its
-    own, separate deploy-OK/FAIL pings. Operator instruction (2026-10):
-    this agent must reach "the telegram code deployment alerts channel
-    alone" — never the generic `telegram` channel, never ntfy, never
-    email. Plain text, same convention as every other send in this
-    file post-reversal."""
-    from backend.shared.helpers import alert_utils
-    from backend.shared.helpers.utils import secrets
-    token = secrets.get('telegram_bot_token_deploy') or secrets.get('telegram_bot_token', '')
-    chat_id = secrets.get('telegram_chat_id_deploy') or secrets.get('telegram_chat_id', '')
-    alert_utils._send_telegram(tg or f"{title}\n{body}", token=token, chat_id=chat_id)
-
-
-def _send_log_channel(title: str, body: str, tg: str | None = None, *,
-                      log_line: str | None = None, agent_slug: str | None = None,
-                      sim_mode: bool = False, **_kw) -> None:
-    """Plain log write — the 'log' channel's entire delivery IS this
-    logger.warning call. No broadcast_fn, no external service — fully
-    self-contained, same as before this channel moved off
-    events.py's old direct-dispatch `_log_channel`.
-
-    `log_line`/`agent_slug`/`sim_mode` are pre-built by
-    events.py:_classify_recorded_channel onto this channel's own record
-    (the generic `out` render tuple only carries the SHARED telegram/ntfy/
-    email bodies, not a per-channel one) and threaded through by
-    `_send_channel`'s "log" branch below. Falls back to `title — body`
-    when called directly without those (e.g. a future renderer that
-    doesn't pre-build a log line).
-
-    The `extra` dict here is deliberately identical to the old
-    `_log_channel`'s shape — `tags`/`agent_slug`/`sim_mode` only, NEVER
-    `alert_event` — adding `alert_event: "breach"` would make this very
-    write re-match BREACH_AGENT's own log condition on the next flush and
-    loop forever.
-    """
-    _EVENTS_LOGGER.warning(
-        log_line or f"{title} — {body}",
-        extra={"tags": ["agent"], "agent_slug": agent_slug, "sim_mode": bool(sim_mode)},
-    )
+# `_send_email_channel` / `_send_telegram_info_html` /
+# `_send_telegram_deploy_html` / `_send_log_channel` RELOCATED to
+# backend/api/algo/grammar_tokens/channel_email.py / channel_telegram_info.py
+# / channel_telegram_deploy.py / channel_log.py (Wave 1, DSL-token-
+# unification plan, Part B — channels). `channel_email.py` imports
+# `resolve_email_recipients` back from THIS module lazily (inside its own
+# function body) to avoid a circular import, since this import statement
+# runs at `event_agents.py`'s own module-load time.
+from backend.api.algo.grammar_tokens.channel_email import _send_email_channel  # noqa: E402
+from backend.api.algo.grammar_tokens.channel_telegram_info import _send_telegram_info_html  # noqa: E402
+from backend.api.algo.grammar_tokens.channel_telegram_deploy import _send_telegram_deploy_html  # noqa: E402
+from backend.api.algo.grammar_tokens.channel_log import _send_log_channel  # noqa: E402
 
 
 CHANNELS = {
