@@ -12,7 +12,9 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
+// @ts-ignore -- node:fs types are not installed for svelte-check; vitest resolves it at runtime.
 import { readFileSync } from 'node:fs';
+// @ts-ignore -- node:url types are not installed for svelte-check; vitest resolves it at runtime.
 import { fileURLToPath } from 'node:url';
 
 vi.mock('$lib/data/instruments', () => ({
