@@ -9,8 +9,9 @@ silently drops that account's (non-)contribution from the resulting
 `raw`/`summary` totals, so the TOTAL row understates the real P&L as if
 the missing account had simply never existed. Two consumers read this
 distorted TOTAL:
-  1. `grammar._scope_positions_total` — feeds the `loss-positions-total`
-     static day_val leaf straight from `sum_positions`'s TOTAL row.
+  1. `grammar_tokens.scope_positions_total._scope_positions_total` —
+     feeds the `loss-positions-total` static day_val leaf straight
+     from `sum_positions`'s TOTAL row.
   2. `agent_engine._update_pnl_history` — records that TOTAL row into
      `alert_state['pnl_history'][('positions', 'TOTAL')]`, corrupting a
      FUTURE tick's rate-of-change window.

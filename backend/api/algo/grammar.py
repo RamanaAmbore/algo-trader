@@ -288,8 +288,10 @@ def underlying_of_symbol(symbol: str) -> Optional[str]:
     tradingsymbol, or None for a cash-equity / unparseable symbol.
 
     Sprint G, Task 2 — generalizes the per-row underlying derivation the
-    MCX collar detector (`_scope_positions_expiring_today_mcx_unhedged`
-    below) already does inline (`parsed.get('root')`) into a single,
+    MCX collar detector (`grammar_tokens.
+    scope_positions_expiring_today_mcx_unhedged.
+    _scope_positions_expiring_today_mcx_unhedged`) already does inline
+    (`parsed.get('root')`) into a single,
     reusable function, so `background.py`'s position-row builder and any
     future caller share the EXACT same symbol-decomposition logic rather
     than re-implementing it. `_parsed_or_none` already wraps
@@ -366,8 +368,9 @@ _last_partial_outage_log: "dict[str, object]" = {"ts": None, "accounts": None}
 
 
 def _log_partial_outage_suppression(accounts: list) -> None:
-    """Rate-limited warning when `_scope_positions_total` suppresses
-    evaluation due to a partial outage. Without this, a single account
+    """Rate-limited warning when
+    `grammar_tokens.scope_positions_total._scope_positions_total`
+    suppresses evaluation due to a partial outage. Without this, a single account
     stuck failing indefinitely (e.g. an expired Dhan/Groww token) silently
     disables EVERY positions.total loss/ROC alert for as long as it lasts
     — with nothing logged anywhere to surface that degradation. Logs once
@@ -519,7 +522,8 @@ def _underlying_theoretical_loss(ctx, underlying):
     A partial failure on one leg would UNDERSTATE the true theoretical
     loss if silently dropped, so the whole underlying is reported
     unavailable for the tick instead — same "skip this tick entirely"
-    contract `_scope_positions_total`'s partial-outage guard already uses.
+    contract `grammar_tokens.scope_positions_total._scope_positions_total`'s
+    partial-outage guard already uses.
     """
     if not underlying:
         return None
@@ -676,8 +680,10 @@ _COL_ACCOUNT_ID = _col('account', 'Account', 'string')
 
 # Account-level positions summary (ctx.sum_positions). Shared verbatim by
 # positions.total / positions.any_acct / positions.worst_acct — all three
-# select rows from the SAME summary frame (`_scope_positions_total`,
-# `_scope_positions_any_acct`, `_scope_positions_worst_acct` above all read
+# select rows from the SAME summary frame (grammar_tokens.
+# scope_positions_total._scope_positions_total,
+# scope_positions_any_acct._scope_positions_any_acct,
+# scope_positions_worst_acct._scope_positions_worst_acct all read
 # `ctx.sum_positions`), so they carry identical columns.
 _POSITIONS_SUMMARY_COLUMNS = {
     'account_id':     _COL_ACCOUNT_ID,
@@ -698,7 +704,8 @@ _POSITIONS_SUMMARY_COLUMNS = {
 # Account-level holdings summary (ctx.sum_holdings). Shared by
 # holdings.total / holdings.any_acct / holdings.worst_acct AND
 # holdings.worst_symbol — the latter's own resolver
-# (`_scope_holdings_worst_symbol`) falls back to `_scope_holdings_worst_acct`
+# (`grammar_tokens.scope_holdings_worst_symbol._scope_holdings_worst_symbol`)
+# falls back to `grammar_tokens.scope_holdings_worst_acct._scope_holdings_worst_acct`
 # unconditionally today (`ctx.holdings_rows` is read via `getattr` but is
 # never actually populated anywhere in the codebase), so in practice it
 # ALWAYS returns this same summary-row shape, never a per-symbol row.
@@ -747,9 +754,11 @@ _FUNDS_COLUMNS = {
 # produces; cross-broker normalised, so these columns exist for
 # Kite/Dhan/Groww alike). Shared by positions.expiring_today /
 # positions.expiring_today.nfo / positions.expiring_today.mcx_unhedged
-# (all three filter the same `_scope_positions_expiring_today` base list)
+# (all three filter the same `grammar_tokens.scope_positions_expiring_today.
+# _scope_positions_expiring_today` base list)
 # AND positions.worst_symbol, whose own resolver
-# (`_scope_positions_worst_symbol`) reads `ctx.position_rows` directly and
+# (`grammar_tokens.scope_positions_worst_symbol._scope_positions_worst_symbol`)
+# reads `ctx.position_rows` directly and
 # only falls back to the summary-row shape when that list is empty (rare —
 # legacy/sim call sites that never populate it).
 _POSITION_ROW_COLUMNS = {
@@ -906,7 +915,8 @@ _SYMBOLS_COLUMNS = {
 }
 
 # Underlying-grouped positions summary (ctx.position_rows, grouped — see
-# `_scope_positions_any_underlying`). `accounts` is a list, not a scalar —
+# `grammar_tokens.scope_positions_any_underlying._scope_positions_any_underlying`).
+# `accounts` is a list, not a scalar —
 # deliberately not exposed here (EXPOSED_COLUMNS only supports
 # number/string/boolean leaf types; see
 # `test_every_entry_has_a_valid_type_and_from_column`).

@@ -460,7 +460,8 @@ def _fetch_positions_direct() -> tuple[pd.DataFrame, pd.DataFrame]:
     # forward as a `.attrs['partial_outage']` flag on both returned frames
     # (never as a tuple-shape change — other callers depend on the plain
     # (raw, summary) contract) so the agent engine's total-scope leaf
-    # (grammar._scope_positions_total) and _update_pnl_history's TOTAL
+    # (grammar_tokens.scope_positions_total._scope_positions_total) and
+    # _update_pnl_history's TOTAL
     # pnl_history sample can both skip/freeze this tick instead of
     # silently evaluating/recording a P&L total that's missing one
     # account's contribution.

@@ -52,15 +52,16 @@ Amendment (Sprint 21, orders.* + quote.* scope families): two new
 `(condition, scope, ...)` tokens — `orders.any_acct` and `quote.tracked`
 — were added to `agent_grammar.yaml` right after `watchlist.markets`
 (and mirrored here at the same position) — see CLAUDE.md's Sprint 21
-notes / `backend/api/algo/grammar.py`'s `_scope_orders_any_acct` /
-`_scope_quote_tracked`.
+notes / `grammar_tokens.scope_orders_any_acct._scope_orders_any_acct` /
+`grammar_tokens.scope_quote_tracked._scope_quote_tracked` (moved out of
+grammar.py in Wave 1, scope batch D of the DSL token-unification plan).
 
 Amendment (Sprint G, symbols.* scope family): one new
 `(condition, scope, symbols.all)` token was added to `agent_grammar.yaml`
 right after `quote.tracked` (and mirrored here at the same position) —
 unifies watchlist/pinned/gainers/losers behind one scope token + a
 required `scope_filter.kind` qualifier. See
-`backend/api/algo/grammar.py`'s `_scope_symbols_all` and
+`grammar_tokens.scope_symbols_all._scope_symbols_all` and
 `backend/tests/test_symbols_scope_family.py`.
 
 Amendment (2026-10-12, telegram_info channel): one new

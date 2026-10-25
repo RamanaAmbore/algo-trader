@@ -91,18 +91,43 @@ def test_exposed_column_catalog_rows_token_shape_is_scope_dot_exposed_name():
 
 
 def test_exposed_column_catalog_rows_value_type_and_description_provenance():
+    """The provenance text must name the resolver's REAL, current dotted
+    import path — never a bare function name (which would pass even if
+    the function had moved to a different module) and never the old
+    `backend.api.algo.grammar._scope_*` path a Wave 1 scope migration
+    has since relocated out of grammar.py (see EXPOSED_COLUMN_SCOPE_
+    PROVENANCE's own module comment in grammar.py)."""
     rows = {r.token: r for r in g._exposed_column_catalog_rows("condition")}
     row = rows["funds.total.cash"]
     assert row.value_type == "number"
     assert row.label == "Live Cash"
     assert "'avail cash'" in row.description
     assert "ctx.df_margins" in row.description
-    assert "_scope_funds_total" in row.description
+    assert (
+        "backend.api.algo.grammar_tokens.scope_funds_total._scope_funds_total"
+        in row.description
+    )
 
     row2 = rows["watchlist.all.watchlist_name"]
     assert row2.value_type == "string"
     assert "'account'" in row2.description
     assert "ctx.watchlist_rows" in row2.description
+    assert (
+        "backend.api.algo.grammar_tokens.scope_watchlist_all._scope_watchlist_all"
+        in row2.description
+    )
+
+
+def test_no_exposed_column_description_points_at_the_old_grammar_module_path():
+    """Every `_scope_*` resolver this registry describes has moved to
+    grammar_tokens/ (Wave 1 scope batches A-D) — none may still be
+    advertised as living in `backend.api.algo.grammar`."""
+    rows = g._exposed_column_catalog_rows("condition")
+    for row in rows:
+        assert "backend.api.algo.grammar._scope_" not in row.description, (
+            f"{row.token}: description still points at the old "
+            f"grammar.py location: {row.description!r}"
+        )
 
 
 @pytest.mark.parametrize("grammar", [None, "notify", "action", "condition "])

@@ -23,8 +23,9 @@ def _metric_underlying_market_loss(ctx, row):
     pure gap-day move already reflected in day_change_val by the time
     the baseline was captured contributes ~0 here, not a large false
     "divergence" — see the module comment above
-    `_scope_positions_any_underlying` (grammar.py) for the full
-    baseline-reprice design this mirrors.
+    `grammar_tokens.scope_positions_any_underlying.
+    _scope_positions_any_underlying` for the full baseline-reprice
+    design this mirrors.
 
     A leg with no baseline entry yet (first tick, not yet captured by
     `_update_underlying_theo_baseline`) simply does not contribute to

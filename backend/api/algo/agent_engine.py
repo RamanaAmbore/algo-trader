@@ -612,8 +612,9 @@ def _capture_leg_theo_baseline(row: dict, now, spot_prices: dict):
     measure "change since baseline capture" instead of raw day_change_val
     (which is measured from prev_close, a DIFFERENT reference point than
     this baseline's own ltp_base/S_base/sigma_base — see the module
-    comment above `grammar._scope_positions_any_underlying` for why the
-    two sides of the divergence gate must share one reference point)."""
+    comment above `grammar_tokens.scope_positions_any_underlying.
+    _scope_positions_any_underlying` for why the two sides of the
+    divergence gate must share one reference point)."""
     from backend.api.algo.derivatives import parse_tradingsymbol, is_mcx_underlying
     sym = row.get('tradingsymbol') or ''
     try:
@@ -656,7 +657,8 @@ def _ae_sum_positions_partial_outage(sum_positions) -> bool:
     """True when `background._fetch_positions_direct` flagged this tick's
     `sum_positions` frame as missing one or more (not all) accounts'
     contribution — same `attrs['partial_outage']` signal
-    `grammar._scope_positions_total` already guards on. Shared by both
+    `grammar_tokens.scope_positions_total._scope_positions_total`
+    already guards on. Shared by both
     underlying-divergence writer functions below so neither has to poke
     at `.attrs` independently."""
     if sum_positions is None:
@@ -4514,7 +4516,8 @@ def _ae_is_aggregate_match(m: dict) -> bool:
     (None, 'TOTAL')`, which silently misclassified every `quote.tracked`
     match as aggregate — `quote.tracked` rows carry NO account dimension
     at all (market data belongs to no account — see
-    `grammar.py:_scope_quote_tracked`'s own docstring), so `account` is
+    `grammar_tokens.scope_quote_tracked._scope_quote_tracked`'s own
+    docstring), so `account` is
     always None on a real, specific, symbol-filtered match, not because
     the match is an aggregate/TOTAL row.
 
@@ -4529,7 +4532,8 @@ def _ae_is_aggregate_match(m: dict) -> bool:
         `grammar.py`'s SCOPE_REGISTRY).
       - `account == 'TOTAL'` literal — belt-and-suspenders: every real
         `.total`-scope row already carries this sentinel (see
-        `grammar.py:_scope_positions_total` et al.), so this is
+        `grammar_tokens.scope_positions_total._scope_positions_total`
+        et al.), so this is
         redundant with the scope-suffix check above today, but guards
         against a future scope that sets the sentinel without itself
         ending in `.total`.

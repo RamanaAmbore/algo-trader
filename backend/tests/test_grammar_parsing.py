@@ -142,14 +142,8 @@ class TestNtfyChannelCatalogToken:
 # ═══════════════════════════════════════════════════════════════════════════
 #  Fix #11 — worst-case scope key fix (was always returning [])
 # ═══════════════════════════════════════════════════════════════════════════
-
-class TestWorstScopeKeyFix:
-    # test_holdings_worst_acct_keys_on_day_change_percentage moved to
-    # backend/tests/grammar_tokens/test_scope_holdings_worst_acct.py
-    # (Wave 1, scope batch B of the DSL token-unification plan).
-    # test_positions_worst_acct_keys_on_day_change_percentage moved to
-    # backend/tests/grammar_tokens/test_scope_positions_worst_acct.py,
-    # and the two test_positions_worst_symbol_* tests moved to
-    # backend/tests/grammar_tokens/test_scope_positions_worst_symbol.py
-    # (Wave 1, scope batch C).
-    pass
+#
+# Resolver-level tests moved to backend/tests/grammar_tokens/
+# test_scope_holdings_worst_acct.py (Wave 1, scope batch B of the DSL
+# token-unification plan), and test_scope_positions_worst_acct.py /
+# test_scope_positions_worst_symbol.py (Wave 1, scope batch C).
