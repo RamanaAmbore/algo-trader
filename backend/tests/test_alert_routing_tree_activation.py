@@ -530,8 +530,15 @@ class TestClampSafetyCreatePathUnchanged:
 
 class TestSeedVersionBumpTransition:
     def test_seed_version_is_now_3(self):
+        """Historical note (2026-10-25): a second, unrelated bump
+        (3 -> 4, the tag-unification pass — see `event_agents.SEED_VERSION`'s
+        own comment) landed after this 2 -> 3 transition was documented.
+        This test now asserts the CURRENT live value rather than the
+        historical "3" — the mechanism under test (seed_action()'s
+        version-bump behavior) is unaffected by which version number is
+        current."""
         from backend.api.algo.event_agents import SEED_VERSION
-        assert SEED_VERSION == 3
+        assert SEED_VERSION == 4
 
     def test_hash_match_row_from_old_version_updates_at_new_version(self):
         """A row last seeded at the OLD SEED_VERSION=2, whose current
@@ -619,7 +626,11 @@ class TestModifiedSkipLogsRealWarning:
                 ea._EVENTS_LOGGER.removeHandler(caplog.handler)
 
         assert row.events == edited_events, "operator's edit must survive the seed pass"
-        assert row.seed_version == ea.SEED_VERSION == 3
+        # 2026-10-25: SEED_VERSION moved 3 -> 4 (tag-unification pass) —
+        # this test's mechanism (modified_skip still bumps seed_version)
+        # is unaffected; see the historical note on
+        # test_seed_version_is_now_3 above.
+        assert row.seed_version == ea.SEED_VERSION == 4
         # stderr line preserved (an existing sibling test pins this too).
         assert "operator-modified" in capsys.readouterr().err
         # New Step 6 behaviour — a real, visible WARNING through
@@ -690,7 +701,9 @@ class TestSeedVersionBumpUpdateBranchEndToEnd:
 
         assert row.events == [], "post-migration spec carries no events key -> cleared to []"
         assert row.priority == "medium"
-        assert row.seed_version == ea.SEED_VERSION == 3
+        # 2026-10-25: SEED_VERSION moved 3 -> 4 (tag-unification pass) —
+        # see the historical note on test_seed_version_is_now_3 above.
+        assert row.seed_version == ea.SEED_VERSION == 4
         new_hash = ea.compute_seed_spec_hash(row.conditions, row.events, row.actions)
         assert row.seed_spec_hash == new_hash, "hash must reflect the NEW write, not the old one"
 

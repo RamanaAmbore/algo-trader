@@ -175,7 +175,10 @@ async def test_fill_delivery_golden_via_event_agent(monkeypatch):
                           mode="live", engine="live")
     await fill_notify.notify_fills([row])
     rec = {"ts": _dt.datetime(2026, 10, 6, 4, 45, 30, tzinfo=timezone.utc), "level": "INFO",
-           "tags": ["orders"], "extra": records[0]}
+           # 2026-10-25 tag-unification: FILL_AGENT's condition now matches
+           # on "alert" (the real producer tags ["orders", "alert"] — see
+           # `records[0]` captured from the real `notify_fills` call above).
+           "tags": ["orders", "alert"], "extra": records[0]}
     agent = SimpleNamespace(slug=event_agents.FILL_AGENT["slug"], **{k: event_agents.FILL_AGENT.get(k, []) for k in ("conditions", "events", "actions")})
     await event_agents.dispatch([rec], [agent])
     # No agent_id on `row` -> no agent_name resolved -> origin defaults to
@@ -199,9 +202,12 @@ async def test_fill_delivery_golden_via_event_agent(monkeypatch):
 
 def _chase_rec():
     from datetime import timezone as _tz
+    # 2026-10-25 tag-unification: CHASE_CANCEL_AGENT's condition now
+    # matches on "alert" — the real producer (`chase.py`) tags
+    # ["chase", "alert"].
     return {"ts": _dt.datetime(2026, 10, 6, 4, 45, 30, tzinfo=_tz.utc), "level": "CRITICAL",
-            "logger": "backend.api.algo.chase", "message": "Chase NIFTY: ...", "tags": ["chase"],
-            "extra": {"tags": ["chase"], "alert_event": "cancel_unconfirmed", "transaction_type": "BUY",
+            "logger": "backend.api.algo.chase", "message": "Chase NIFTY: ...", "tags": ["chase", "alert"],
+            "extra": {"tags": ["chase", "alert"], "alert_event": "cancel_unconfirmed", "transaction_type": "BUY",
                       "symbol": "NIFTY26OCTFUT", "account": "ZG0790", "order_id": "O1",
                       "attempt": 2, "quantity": 100, "remaining_qty": 60}}
 
@@ -245,9 +251,12 @@ async def test_partial_gtt_golden_text_and_urgent_priority(monkeypatch):
     monkeypatch.setattr(u, "is_enabled", lambda cap: True)
     monkeypatch.setitem(event_agents.CHANNELS, "ntfy",
                         ("ntfy", lambda t, b, tg=None, priority=None: sent.append((t, b, priority))))
+    # 2026-10-25 tag-unification: PARTIAL_GTT_AGENT's condition now
+    # matches on "alert" — the real producer (`orders_place.py`) tags
+    # ["orders", "gtt", "alert"].
     rec = {"ts": _dt.datetime(2026, 10, 6, 4, 45, 30, tzinfo=_tz.utc), "level": "CRITICAL",
-           "logger": "backend.api.routes.orders_place", "message": "PARTIAL GTT", "tags": ["gtt"],
-           "extra": {"tags": ["orders", "gtt"], "alert_event": "partial_gtt", "parent_row_id": 1088,
+           "logger": "backend.api.routes.orders_place", "message": "PARTIAL GTT", "tags": ["gtt", "alert"],
+           "extra": {"tags": ["orders", "gtt", "alert"], "alert_event": "partial_gtt", "parent_row_id": 1088,
                      "parent_symbol": "CRUDEOIL26OCTFUT", "planned": 3, "placed": 1,
                      "errors": ["rate limit", "invalid price"]}}
     agent = SimpleNamespace(slug="partial-gtt-alert",
@@ -289,9 +298,12 @@ async def test_template_attach_golden_text_and_priority(monkeypatch, agent_key, 
     monkeypatch.setattr(u, "is_enabled", lambda cap: True)
     monkeypatch.setitem(event_agents.CHANNELS, "ntfy",
                         ("ntfy", lambda t, b, tg=None, priority=None: sent.append((t, b, priority))))
+    # 2026-10-25 tag-unification: TEMPLATE_ATTACH_URGENT_AGENT/
+    # TEMPLATE_ATTACH_HIGH_AGENT's conditions now match on "alert" — the
+    # real producer (`template_attach.py`) tags ["orders", "gtt", "alert"].
     rec = {"ts": _dt.datetime(2026, 10, 6, 4, 45, 30, tzinfo=_tz.utc), "level": level,
-           "logger": "backend.api.algo.template_attach", "message": "x", "tags": ["gtt"],
-           "extra": {"tags": ["orders", "gtt"], "alert_event": event, **extra}}
+           "logger": "backend.api.algo.template_attach", "message": "x", "tags": ["gtt", "alert"],
+           "extra": {"tags": ["orders", "gtt", "alert"], "alert_event": event, **extra}}
     spec = getattr(event_agents, agent_key)
     agent = SimpleNamespace(slug=spec["slug"], **{k: spec.get(k, []) for k in ("conditions", "events", "actions")})
     await event_agents.dispatch([rec], [agent])
@@ -315,9 +327,12 @@ async def test_order_failure_golden_text_channels_and_html(monkeypatch):
                         ("ntfy", lambda t, b, tg=None, priority=None: sent["ntfy"].append((t, b, priority))))
     monkeypatch.setitem(event_agents.CHANNELS, "email", ("ntfy", event_agents._send_email_channel))
     monkeypatch.setattr(event_agents, "_channel_enabled", lambda cap: True)
+    # 2026-10-25 tag-unification: ORDER_FAILURE_AGENT's condition now
+    # matches on "alert" — the real producer (`alert_utils.py`) tags
+    # ["orders", "alert"].
     rec = {"ts": _dt.datetime(2026, 10, 6, 4, 45, 30, tzinfo=_dt.timezone.utc), "level": "WARNING",
-           "logger": "backend.shared.helpers.alert_utils", "message": "x", "tags": ["orders"],
-           "extra": {"tags": ["orders"], "alert_event": "order_failure", "masked": "ZG####",
+           "logger": "backend.shared.helpers.alert_utils", "message": "x", "tags": ["orders", "alert"],
+           "extra": {"tags": ["orders", "alert"], "alert_event": "order_failure", "masked": "ZG####",
                      "symbol": "NIFTY26OCTFUT", "exchange": "NFO", "side": "BUY", "qty": 75,
                      "mode": "live", "source": "ticket", "error": "Insufficient funds <x>",
                      "suppressed_count": 2, "ist_disp": "10:15:30 IST", "branch": "main"}}
@@ -364,9 +379,12 @@ async def test_template_guard_golden_text_and_channels(monkeypatch):
                         ("telegram", lambda t, b, tg=None, **k: sent["tg"].append(tg)))
     monkeypatch.setitem(event_agents.CHANNELS, "ntfy",
                         ("ntfy", lambda t, b, tg=None, priority=None: sent["ntfy"].append((t, b, priority))))
+    # 2026-10-25 tag-unification: TEMPLATE_GUARD_AGENT's condition now
+    # matches on "alert" — the real producer (`template_attach.py`) tags
+    # ["orders", "alert"].
     rec = {"ts": _dt.datetime(2026, 10, 6, 9, 0, 0, tzinfo=_dt.timezone.utc), "level": "INFO",
-           "logger": "backend.api.algo.template_attach", "message": "x", "tags": ["info", "orders"],
-           "extra": {"tags": ["orders"], "alert_event": "template_guard", "template_slug": "default-bull",
+           "logger": "backend.api.algo.template_attach", "message": "x", "tags": ["info", "orders", "alert"],
+           "extra": {"tags": ["orders", "alert"], "alert_event": "template_guard", "template_slug": "default-bull",
                      "applies_to": "sell_option", "reason": "qty < lot_size", "parent_order_id": 1088,
                      "parent_side": "SELL", "parent_qty": 75, "parent_symbol": "NIFTY26OCTFUT",
                      "parent_fill_price": 112.5, "parent_account": "ZG0790",
@@ -409,9 +427,12 @@ async def test_template_attach_fail_golden_text_and_channels(monkeypatch):
                         ("telegram", lambda t, b, tg=None, **k: sent["tg"].append(tg)))
     monkeypatch.setitem(event_agents.CHANNELS, "ntfy",
                         ("ntfy", lambda t, b, tg=None, priority=None: sent["ntfy"].append((t, b, priority))))
+    # 2026-10-25 tag-unification: TEMPLATE_ATTACH_FAIL_AGENT's condition
+    # now matches on "alert" — the real producer (`template_attach.py`)
+    # tags ["orders", "alert"].
     rec = {"ts": _dt.datetime(2026, 10, 6, 9, 0, 0, tzinfo=_dt.timezone.utc), "level": "WARNING",
-           "logger": "backend.api.algo.template_attach", "message": "x", "tags": ["warning", "orders"],
-           "extra": {"tags": ["orders"], "alert_event": "template_attach_fail", "order_id": 1088,
+           "logger": "backend.api.algo.template_attach", "message": "x", "tags": ["warning", "orders", "alert"],
+           "extra": {"tags": ["orders", "alert"], "alert_event": "template_attach_fail", "order_id": 1088,
                      "symbol": "NIFTY26OCTFUT", "account": "ZG0790",
                      "err_summary": "qty < lot_size; rate limit", "ist_label": "Tue, Oct 06 2026, 14:30 IST"}}
     agent = SimpleNamespace(slug="template-attach-fail-alert",
@@ -443,9 +464,12 @@ async def test_mcp_ping_sends_recorded_html_to_telegram_only(monkeypatch):
     monkeypatch.setitem(event_agents.CHANNELS, "telegram",
                         ("telegram", lambda t, b, tg=None, **k: sent.append(tg)))
     tg = "<b>MCP CANCEL [LIVE]</b> order_id=<code>O1</code>\nacct=ZG####"
+    # 2026-10-25 tag-unification: MCP_PING_AGENT's condition now matches
+    # on "alert" — the real producer (`routes/lab.py`) tags
+    # ["mcp", "alert"].
     rec = {"ts": _dt.datetime(2026, 10, 6, 9, 0, tzinfo=_dt.timezone.utc), "level": "INFO",
-           "logger": "backend.api.routes.lab", "message": "MCP ping", "tags": ["info", "mcp"],
-           "extra": {"tags": ["mcp"], "alert_event": "mcp_ping", "tg": tg}}
+           "logger": "backend.api.routes.lab", "message": "MCP ping", "tags": ["info", "mcp", "alert"],
+           "extra": {"tags": ["mcp", "alert"], "alert_event": "mcp_ping", "tg": tg}}
     agent = SimpleNamespace(slug="mcp-ping-alert",
                             **{k: event_agents.MCP_PING_AGENT.get(k, []) for k in ("conditions", "events", "actions")})
     await event_agents.dispatch([rec], [agent])
@@ -479,8 +503,11 @@ async def test_user_registered_agent_sends_telegram_and_ntfy_high(monkeypatch):
     extra = _registration_alert_extra("newtrader", "newtrader@example.com")
     body = "newtrader (newtrader@example.com) registered and is pending admin approval."
     assert extra["body"] == body, "fixture sanity: no escaping needed for this plain username/email"
+    # 2026-10-25 tag-unification: USER_REGISTERED_AGENT's condition now
+    # matches on "alert" — the real producer (`_registration_alert_extra`,
+    # captured into `extra` above) tags ["auth", "alert"].
     rec = {"ts": _dt.datetime(2026, 10, 6, 9, 0, tzinfo=_dt.timezone.utc), "level": "INFO",
-           "logger": "backend.api.routes.auth", "message": "x", "tags": ["info", "auth"],
+           "logger": "backend.api.routes.auth", "message": "x", "tags": ["info", "auth", "alert"],
            "extra": extra}
     agent = SimpleNamespace(slug="user-registered-alert",
                             **{k: event_agents.USER_REGISTERED_AGENT.get(k, [])
@@ -533,9 +560,12 @@ async def test_deploy_sync_reaches_only_the_dedicated_telegram_deploy_channel(mo
     monkeypatch.setitem(event_agents.CHANNELS, "ntfy",
                         ("ntfy", lambda t, b, tg=None, priority=None: sent["ntfy"].append((t, b, priority))))
     monkeypatch.setattr(event_agents, "_channel_enabled", lambda cap: True)
+    # 2026-10-25 tag-unification: DEPLOY_SYNC_AGENT's condition now
+    # matches on "alert" — the real producer (`background.py`) tags
+    # ["deploy", "alert"].
     rec = {"ts": _dt.datetime(2026, 10, 6, 9, 0, tzinfo=_dt.timezone.utc), "level": "WARNING",
-           "logger": "backend.api.background", "message": "x", "tags": ["warning", "deploy"],
-           "extra": {"tags": ["deploy"], "alert_event": "deploy_out_of_sync",
+           "logger": "backend.api.background", "message": "x", "tags": ["warning", "deploy", "alert"],
+           "extra": {"tags": ["deploy", "alert"], "alert_event": "deploy_out_of_sync",
                      "title": "Deploy out of sync — main", "body": "Local HEAD abc12345 != origin/main"}}
     agent = SimpleNamespace(slug="deploy-sync-alert",
                             **{k: event_agents.DEPLOY_SYNC_AGENT.get(k, []) for k in ("conditions", "events", "actions")})
@@ -673,9 +703,12 @@ async def test_summary_matches_the_pre_migration_dispatch(monkeypatch, msg_type,
     monkeypatch.setitem(event_agents.CHANNELS, "telegram_info",
                         ("telegram_info", lambda t, b, tg=None, **k: sent["info"].append(tg)))
     monkeypatch.setattr(event_agents, "_channel_enabled", lambda cap: True)
+    # 2026-10-25 tag-unification: SUMMARY_AGENT's condition now matches
+    # on "alert" — the real producer (`alert_utils.py`) tags
+    # ["summary", "alert"].
     rec = {"ts": _dt.datetime(2026, 10, 6, 9, 0, tzinfo=_dt.timezone.utc), "level": "INFO",
-           "logger": "backend.shared.helpers.alert_utils", "message": "x", "tags": ["info", "summary"],
-           "extra": {"tags": ["summary"], "alert_event": "summary", "msg_type": msg_type,
+           "logger": "backend.shared.helpers.alert_utils", "message": "x", "tags": ["info", "summary", "alert"],
+           "extra": {"tags": ["summary", "alert"], "alert_event": "summary", "msg_type": msg_type,
                      "ist_display": "10:15:30 IST", "tg_table": "Holdings  ZG####  ₹1,20,000\nPositions  ZG####  -₹300",
                      "email_table_html": "<table><tr><td>Holdings</td><td>120000</td></tr></table>",
                      "subject_detail": "Summary — 10:15:30 IST"}}

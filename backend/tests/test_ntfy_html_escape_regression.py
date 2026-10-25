@@ -61,9 +61,12 @@ def _dispatch_captured(agent_key: str, extra: dict) -> dict:
     try:
         spec = getattr(event_agents, agent_key)
         agent = SimpleNamespace(slug=spec["slug"], **{k: spec.get(k, []) for k in ("conditions", "events", "actions")})
+        # 2026-10-25 tag-unification: TEMPLATE_GUARD_AGENT/
+        # TEMPLATE_ATTACH_FAIL_AGENT's conditions now match on "alert" —
+        # the real producer (`template_attach.py`) tags ["orders", "alert"].
         rec = {"ts": datetime(2026, 10, 6, 9, 0, tzinfo=timezone.utc), "level": "WARNING",
                "logger": "backend.api.algo.template_attach", "message": "x",
-               "tags": ["warning", "orders"], "extra": {"tags": ["orders"], **extra}}
+               "tags": ["warning", "orders", "alert"], "extra": {"tags": ["orders", "alert"], **extra}}
         asyncio.run(event_agents.dispatch([rec], [agent]))
     finally:
         event_agents.CHANNELS.clear()

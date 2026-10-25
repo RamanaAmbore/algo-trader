@@ -30,7 +30,12 @@ def _agent(events=None, actions=None, conditions=None):
     )
 
 
-def _rec(mode="live", tags=("orders",), level="INFO", **extra):
+def _rec(mode="live", tags=("orders", "alert"), level="INFO", **extra):
+    # 2026-10-25 tag-unification: default tags include "alert" so this
+    # generic helper's record still matches `_agent()`'s default
+    # conditions (read live off `event_agents.FILL_AGENT["conditions"]`,
+    # now tag="alert") — these tests are about dispatch mechanics, not
+    # FILL_AGENT's specific config.
     base = dict(order_id=1, account="A", symbol="X", exchange="NSE", transaction_type="BUY",
                 quantity=1, fill_price=10.0, product="CNC", mode=mode, alert_event="filled")
     base.update(extra)
@@ -125,7 +130,10 @@ def test_render_key_reads_the_render_action():
 
 
 def test_fill_agent_condition_validates_against_a_registered_tag(monkeypatch):
-    monkeypatch.setattr(REGISTRY, "log_tags", {"orders": {"table": "log_events"}})
+    # 2026-10-25 tag-unification: FILL_AGENT's condition now matches on
+    # "alert", not "orders" — the registry stub must carry the tag the
+    # condition actually references.
+    monkeypatch.setattr(REGISTRY, "log_tags", {"alert": {"table": "log_events"}})
     assert validate(event_agents.FILL_AGENT["conditions"]) == []
 
 
@@ -738,37 +746,41 @@ def test_generic_notice_agents_sourced_from_shared_table_byte_identical():
     `test_alert_routing_matches_frozen_pre_migration_oracle` for proof
     the RESOLVED channel list for each of these 5 slugs is unchanged)."""
     from backend.api.algo import event_agents as ea
+    # 2026-10-25 tag-unification: condition tag is now the additive
+    # "alert" token for all 5, not the category tag ("gtt"/"broker"/
+    # "visitor") — `where.alert_event` already uniquely discriminates
+    # each one. See `ea.SEED_VERSION`'s own comment for the rationale.
     assert ea.GTT_ASYMMETRIC_AGENT == {
         "slug": "gtt-asymmetric-alert", "name": "GTT asymmetric",
-        "conditions": {"log": {"tag": "gtt", "min_level": "WARNING",
+        "conditions": {"log": {"tag": "alert", "min_level": "WARNING",
                                "where": {"alert_event": "gtt_asymmetric"}}},
         "priority": "high",
         "actions": [{"type": "render", "render": "generic_notice"}],
     }
     assert ea.OCO_DOUBLE_FIRE_AGENT == {
         "slug": "oco-double-fire-alert", "name": "OCO double-fire",
-        "conditions": {"log": {"tag": "gtt", "min_level": "WARNING",
+        "conditions": {"log": {"tag": "alert", "min_level": "WARNING",
                                "where": {"alert_event": "oco_double_fire"}}},
         "priority": "urgent",
         "actions": [{"type": "render", "render": "generic_notice"}],
     }
     assert ea.TICKER_RECOVERED_AGENT == {
         "slug": "ticker-recovered-alert", "name": "Ticker recovered",
-        "conditions": {"log": {"tag": "broker", "min_level": "INFO",
+        "conditions": {"log": {"tag": "alert", "min_level": "INFO",
                                "where": {"alert_event": "ticker_recovered"}}},
         "priority": "high",
         "actions": [{"type": "render", "render": "generic_notice"}],
     }
     assert ea.TICKER_DEGRADED_AGENT == {
         "slug": "ticker-degraded-alert", "name": "Ticker degraded",
-        "conditions": {"log": {"tag": "broker", "min_level": "WARNING",
+        "conditions": {"log": {"tag": "alert", "min_level": "WARNING",
                                "where": {"alert_event": "ticker_degraded"}}},
         "priority": "urgent",
         "actions": [{"type": "render", "render": "generic_notice"}],
     }
     assert ea.VISITOR_REPORT_AGENT == {
         "slug": "visitor-report-alert", "name": "Visitor report",
-        "conditions": {"log": {"tag": "visitor", "min_level": "INFO",
+        "conditions": {"log": {"tag": "alert", "min_level": "INFO",
                                "where": {"alert_event": "visitor_report"}}},
         "priority": "info",
         "actions": [{"type": "render", "render": "generic_notice"}],
@@ -1207,7 +1219,11 @@ def test_unrouted_alert_agent_is_seeded_and_uses_the_reserved_event():
     assert ea.UNROUTED_ALERT_AGENT in ea.SEEDED_AGENTS
     assert ea.validate_seed_spec(ea.UNROUTED_ALERT_AGENT) == []
     leaf = ea.UNROUTED_ALERT_AGENT["conditions"]["log"]
-    assert leaf["tag"] == "agent"
+    # 2026-10-25 tag-unification — condition tag is now the additive
+    # "alert" token, not the category "agent" tag (the self-alert's own
+    # producer still carries "agent" too, additively — see
+    # `_emit_unrouted_self_alert`'s own tags list).
+    assert leaf["tag"] == "alert"
     assert leaf["where"]["alert_event"] == ea._UNROUTED_ALERT_EVENT == "unrouted_alert"
     assert {c["channel"] for c in ea.UNROUTED_ALERT_AGENT["events"]} >= {"telegram", "ntfy"}
 

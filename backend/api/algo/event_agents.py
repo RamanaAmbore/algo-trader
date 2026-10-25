@@ -996,7 +996,12 @@ def _emit_unrouted_self_alert(rec: dict) -> None:
     )
     _EVENTS_LOGGER.warning(
         msg,
-        extra={"tags": ["agent"], "alert_event": _UNROUTED_ALERT_EVENT,
+        # 2026-10-25 tag-unification — "alert" added additively alongside
+        # the pre-existing "agent" tag so `UNROUTED_ALERT_AGENT`'s own
+        # condition (now tag="alert") still matches. See that agent's own
+        # dict comment above for why this one, unlike RICH_ALERT_AGENT/
+        # BREACH_AGENT, is safe to unify.
+        extra={"tags": ["agent", "alert"], "alert_event": _UNROUTED_ALERT_EVENT,
               "title": "Unrouted alertable record", "body": msg},
     )
 
@@ -1156,7 +1161,9 @@ def _error_agent_self_alerted(agent, rec: dict) -> bool:
 CHASE_CANCEL_AGENT = {
     "slug": "chase-cancel-alert",
     "name": "Chase cancel unconfirmed",
-    "conditions": {"log": {"tag": "chase", "min_level": "CRITICAL",
+    # 2026-10-25 tag-unification — see FILL_AGENT's comment above.
+    # Producer (`chase.py`) already tags `["chase", "alert"]`.
+    "conditions": {"log": {"tag": "alert", "min_level": "CRITICAL",
                            "where": {"alert_event": "cancel_unconfirmed"}}},
     # 2026-10 routing-tree plan — channel selection moved to
     # `alert_routing.py`'s per-slug override table (verbatim-identical
@@ -1170,7 +1177,9 @@ CHASE_CANCEL_AGENT = {
 PARTIAL_GTT_AGENT = {
     "slug": "partial-gtt-alert",
     "name": "Partial GTT placement",
-    "conditions": {"log": {"tag": "gtt", "min_level": "CRITICAL",
+    # 2026-10-25 tag-unification — see FILL_AGENT's comment above.
+    # Producer (`orders_place.py`) already tags `["orders", "gtt", "alert"]`.
+    "conditions": {"log": {"tag": "alert", "min_level": "CRITICAL",
                            "where": {"alert_event": "partial_gtt"}}},
     "priority": "urgent",
     "actions": [{"type": "render", "render": "partial_gtt"}],
@@ -1179,9 +1188,12 @@ PARTIAL_GTT_AGENT = {
 TEMPLATE_ATTACH_URGENT_AGENT = {
     "slug": "template-attach-urgent",
     "name": "Template attach urgent",
+    # 2026-10-25 tag-unification — see FILL_AGENT's comment above.
+    # Both producers (`template_attach.py`) already tag
+    # `["orders", "gtt", "alert"]`.
     "conditions": {"any": [
-        {"log": {"tag": "gtt", "min_level": "WARNING", "where": {"alert_event": "wing_unprotected"}}},
-        {"log": {"tag": "gtt", "min_level": "CRITICAL", "where": {"alert_event": "wing_hard_reject"}}},
+        {"log": {"tag": "alert", "min_level": "WARNING", "where": {"alert_event": "wing_unprotected"}}},
+        {"log": {"tag": "alert", "min_level": "CRITICAL", "where": {"alert_event": "wing_hard_reject"}}},
     ]},
     "priority": "urgent",
     "actions": [{"type": "render", "render": "template_attach"}],
@@ -1190,9 +1202,12 @@ TEMPLATE_ATTACH_URGENT_AGENT = {
 TEMPLATE_ATTACH_HIGH_AGENT = {
     "slug": "template-attach-high",
     "name": "Template attach high",
+    # 2026-10-25 tag-unification — see FILL_AGENT's comment above.
+    # Both producers (`template_attach.py`) already tag
+    # `["orders", "gtt", "alert"]`.
     "conditions": {"any": [
-        {"log": {"tag": "gtt", "min_level": "WARNING", "where": {"alert_event": "wing_skip"}}},
-        {"log": {"tag": "gtt", "min_level": "WARNING", "where": {"alert_event": "wing_offset_skip"}}},
+        {"log": {"tag": "alert", "min_level": "WARNING", "where": {"alert_event": "wing_skip"}}},
+        {"log": {"tag": "alert", "min_level": "WARNING", "where": {"alert_event": "wing_offset_skip"}}},
     ]},
     "priority": "high",
     "actions": [{"type": "render", "render": "template_attach"}],
@@ -1201,7 +1216,9 @@ TEMPLATE_ATTACH_HIGH_AGENT = {
 ORDER_FAILURE_AGENT = {
     "slug": "order-failure-alert",
     "name": "Order failure",
-    "conditions": {"log": {"tag": "orders", "min_level": "WARNING",
+    # 2026-10-25 tag-unification — see FILL_AGENT's comment above.
+    # Producer (`alert_utils.py`) already tags `["orders", "alert"]`.
+    "conditions": {"log": {"tag": "alert", "min_level": "WARNING",
                            "where": {"alert_event": "order_failure"}}},
     "priority": "urgent",
     "actions": [{"type": "render", "render": "order_failure"}],
@@ -1210,7 +1227,9 @@ ORDER_FAILURE_AGENT = {
 ORDER_CORRECTION_AGENT = {
     "slug": "order-correction-alert",
     "name": "Order poll correction",
-    "conditions": {"log": {"tag": "orders", "min_level": "WARNING",
+    # 2026-10-25 tag-unification — see FILL_AGENT's comment above.
+    # Producer (`order_poll.py`) already tags `["orders", "alert"]`.
+    "conditions": {"log": {"tag": "alert", "min_level": "WARNING",
                            "where": {"alert_event": "order_correction"}}},
     "priority": "urgent",
     "actions": [{"type": "render", "render": "order_correction"}],
@@ -1219,7 +1238,9 @@ ORDER_CORRECTION_AGENT = {
 TEMPLATE_GUARD_AGENT = {
     "slug": "template-guard-alert",
     "name": "Template guard",
-    "conditions": {"log": {"tag": "orders", "min_level": "INFO",
+    # 2026-10-25 tag-unification — see FILL_AGENT's comment above.
+    # Producer (`template_attach.py`) already tags `["orders", "alert"]`.
+    "conditions": {"log": {"tag": "alert", "min_level": "INFO",
                            "where": {"alert_event": "template_guard"}}},
     "priority": "high",
     "actions": [{"type": "render", "render": "template_guard"}],
@@ -1228,7 +1249,9 @@ TEMPLATE_GUARD_AGENT = {
 TEMPLATE_ATTACH_FAIL_AGENT = {
     "slug": "template-attach-fail-alert",
     "name": "Template attach failed",
-    "conditions": {"log": {"tag": "orders", "min_level": "WARNING",
+    # 2026-10-25 tag-unification — see FILL_AGENT's comment above.
+    # Producer (`template_attach.py`) already tags `["orders", "alert"]`.
+    "conditions": {"log": {"tag": "alert", "min_level": "WARNING",
                            "where": {"alert_event": "template_attach_fail"}}},
     "priority": "urgent",
     "actions": [{"type": "render", "render": "template_attach_fail"}],
@@ -1237,7 +1260,9 @@ TEMPLATE_ATTACH_FAIL_AGENT = {
 MCP_PING_AGENT = {
     "slug": "mcp-ping-alert",
     "name": "MCP audit ping",
-    "conditions": {"log": {"tag": "mcp", "min_level": "INFO", "where": {"alert_event": "mcp_ping"}}},
+    # 2026-10-25 tag-unification — see FILL_AGENT's comment above.
+    # Producer (`routes/lab.py`) already tags `["mcp", "alert"]`.
+    "conditions": {"log": {"tag": "alert", "min_level": "INFO", "where": {"alert_event": "mcp_ping"}}},
     "priority": "info",
     "actions": [{"type": "render", "render": "mcp_ping"}],
 }
@@ -1245,7 +1270,10 @@ MCP_PING_AGENT = {
 DEPLOY_SYNC_AGENT = {
     "slug": "deploy-sync-alert",
     "name": "Deploy out of sync",
-    "conditions": {"log": {"tag": "deploy", "min_level": "WARNING",
+    # 2026-10-25 tag-unification — see FILL_AGENT's comment above.
+    # Producer (`background.py`) now also tags `"alert"` (additive,
+    # alongside its pre-existing "deploy" tag).
+    "conditions": {"log": {"tag": "alert", "min_level": "WARNING",
                            "where": {"alert_event": "deploy_out_of_sync"}}},
     # 2026-10 operator instruction: ntfy removed — a deploy-out-of-sync
     # notice is a developer/ops concern, not something that should page
@@ -1281,7 +1309,10 @@ RICH_ALERT_AGENT = {
 SUMMARY_AGENT = {
     "slug": "market-summary",
     "name": "Market summary",
-    "conditions": {"log": {"tag": "summary", "min_level": "INFO", "where": {"alert_event": "summary"}}},
+    # 2026-10-25 tag-unification — see FILL_AGENT's comment above.
+    # Producer (`alert_utils.py`) now also tags `"alert"` (additive,
+    # alongside its pre-existing "summary" tag).
+    "conditions": {"log": {"tag": "alert", "min_level": "INFO", "where": {"alert_event": "summary"}}},
     "priority": "info",
     "actions": [{"type": "render", "render": "summary"}],
 }
@@ -1340,10 +1371,18 @@ _GENERIC_NOTICE_SPECS: tuple[dict, ...] = (
 
 
 def _build_generic_notice_agent(spec: dict) -> dict:
+    # 2026-10-25 tag-unification — the condition always matches on the
+    # additive "alert" tag now, never `spec["tag"]` (the category tag,
+    # e.g. "gtt"/"broker"/"visitor") — `where.alert_event` already
+    # uniquely discriminates each of these 5 agents, so the category tag
+    # was redundant. `spec["tag"]` is kept in the table purely as
+    # documentation of which category tag each real producer (in
+    # `background.py`) also still carries, additively, alongside "alert".
+    # See FILL_AGENT's comment above for the shared rationale.
     return {
         "slug": spec["slug"],
         "name": spec["name"],
-        "conditions": {"log": {"tag": spec["tag"], "min_level": spec["min_level"],
+        "conditions": {"log": {"tag": "alert", "min_level": spec["min_level"],
                                "where": {"alert_event": spec["alert_event"]}}},
         "priority": spec["priority"],
         "actions": [{"type": "render", "render": "generic_notice"}],
@@ -1359,7 +1398,9 @@ VISITOR_REPORT_AGENT = _build_generic_notice_agent(_GENERIC_NOTICE_SPECS[4])
 GTT_NOT_ACCEPTED_AGENT = {
     "slug": "gtt-not-accepted-alert",
     "name": "GTT not accepted",
-    "conditions": {"log": {"tag": "gtt", "min_level": "ERROR",
+    # 2026-10-25 tag-unification — see FILL_AGENT's comment above.
+    # Producer (`template_attach.py`) already tags `["orders", "gtt", "alert"]`.
+    "conditions": {"log": {"tag": "alert", "min_level": "ERROR",
                            "where": {"alert_event": "gtt_not_accepted"}}},
     "priority": "urgent",
     "actions": [{"type": "render", "render": "gtt_not_accepted"}],
@@ -1368,7 +1409,13 @@ GTT_NOT_ACCEPTED_AGENT = {
 FILL_AGENT = {
     "slug": "fill-alert",
     "name": "Fill alert",
-    "conditions": {"log": {"tag": "orders", "min_level": "INFO",
+    # 2026-10-25 tag-unification: condition tag moved from the category
+    # ("orders") to the additive "alert" tag — `where.alert_event` already
+    # uniquely discriminates this agent's producer (`fill_notify.py`,
+    # tags=["orders", "alert"]), so the category tag was redundant. See
+    # `SEED_VERSION`'s own comment for the full rationale shared by every
+    # agent touched in this pass.
+    "conditions": {"log": {"tag": "alert", "min_level": "INFO",
                            "where": {"alert_event": "filled", "mode": "live"}}},
     # 2026-10-23 chase robustness (fix #4) — a fill is FYI, never
     # action-required; ntfy channel removed from this seed (cosmetic —
@@ -1403,7 +1450,16 @@ USER_REGISTERED_AGENT = {
     # already follows). The pre-existing direct `send_email()` call in
     # `_notify_admins_new_registration()` is unrelated and unchanged —
     # this is an ADDITIVE Telegram+ntfy channel, not a replacement.
-    "conditions": {"log": {"tag": "auth", "min_level": "INFO",
+    # 2026-10-25 tag-unification (NOT in the original brief's own
+    # enumeration — found during fresh verification and included here
+    # under the brief's own stated rule "every agent except the 3
+    # excluded ones"; flagged explicitly in this pass's own report).
+    # `where.alert_event="user_registered"` already uniquely
+    # discriminates this agent, so the "auth" category tag is redundant
+    # the same way it is for every other migrated agent. Producer
+    # (`routes/auth.py:_registration_alert_extra`) now also tags
+    # `"alert"` (additive, alongside its pre-existing "auth" tag).
+    "conditions": {"log": {"tag": "alert", "min_level": "INFO",
                            "where": {"alert_event": "user_registered"}}},
     # "high", not "urgent" — needs operator attention (approve/reject
     # the new account) but isn't time-critical the way a live-order
@@ -1418,14 +1474,28 @@ UNROUTED_ALERT_AGENT = {
     "slug": "unrouted-alert-catch-all",
     "name": "Unrouted alert catch-all",
     # Matches exactly the shape `_emit_unrouted_self_alert()` builds —
-    # tag "agent" (a real, known alert tag), the reserved
-    # `alert_event=_UNROUTED_ALERT_EVENT` ("unrouted_alert"). This is the
+    # tag "alert" (a real, known alert tag; "agent" is still carried
+    # additively too), the reserved `alert_event=_UNROUTED_ALERT_EVENT`
+    # ("unrouted_alert"). This is the
     # one place the catch-all's self-alert actually reaches a real
     # channel — without an active agent matching this condition, the
     # self-alert would log correctly (captured by LogStoreHandler) but
     # never fire Telegram/ntfy/email, which is the exact silent-failure
     # mode council item 5 exists to prevent.
-    "conditions": {"log": {"tag": "agent", "min_level": "WARNING",
+    # 2026-10-25 tag-unification (NOT in the original brief's own
+    # enumeration — found during fresh verification and included here
+    # under the brief's own stated rule "every agent except the 3
+    # excluded ones"; flagged explicitly in this pass's own report).
+    # Unlike RICH_ALERT_AGENT/BREACH_AGENT (also tag="agent", correctly
+    # EXCLUDED from this unification), this agent's own producer
+    # (`_emit_unrouted_self_alert` below) is a log-tag event-agent
+    # producer like every other one in this file — it writes NOTHING to
+    # an AgentEvent DB row, so tagging it "alert" cannot double-count a
+    # cycle-agent firing the way it would for those two. The reserved
+    # `alert_event=_UNROUTED_ALERT_EVENT` guard in `_looks_alert_shaped()`
+    # keys on `alert_event`, not on this tag, so the recursion guard is
+    # unaffected by this change.
+    "conditions": {"log": {"tag": "alert", "min_level": "WARNING",
                            "where": {"alert_event": "unrouted_alert"}}},
     # 2026-10 routing-tree plan (Step 4 / Task B) — was a hand-duplicated
     # literal of `alert_routing.CATCH_ALL_CHANNELS`, kept in sync only by
@@ -1446,7 +1516,18 @@ UNROUTED_ALERT_AGENT = {
 }
 
 
-SEED_VERSION = 3
+SEED_VERSION = 4
+# 2026-10-25 — tag-unification: every `kind='event'` seeded agent except
+# ERROR_AGENT/RICH_ALERT_AGENT/BREACH_AGENT (explicitly excluded — see
+# each one's own dict comment, or the module-level rationale in each
+# migrated agent's own comment above) now matches on the single additive
+# "alert" tag instead of its own category tag ("orders"/"gtt"/"chase"/
+# "mcp"/"deploy"/"summary"/"broker"/"visitor"/"auth"/"agent") — the
+# `where.alert_event` clause already uniquely discriminated every one of
+# these agents, so the category tag in the condition was redundant. This
+# bump rewrites every already-seeded, operator-unmodified row's
+# `conditions` to the new shape (see `seed_action()`'s own docstring for
+# the hash-based `modified_skip` protection an operator-edited row keeps).
 
 
 def validate_seed_spec(spec: dict) -> list[str]:

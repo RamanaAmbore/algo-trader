@@ -373,9 +373,13 @@ class TestFireWingUnprotectedAlertGuard:
             for c in mock_log.warning.call_args_list:
                 extra = c.kwargs.get("extra") or {}
                 if extra.get("alert_event") == "wing_unprotected":
+                    # 2026-10-25 tag-unification: TEMPLATE_ATTACH_URGENT_AGENT's
+                    # condition now matches on "alert" — `extra` here is
+                    # captured from the real producer call above, which
+                    # already tags ["orders", "gtt", "alert"].
                     records.append({"ts": datetime.now(timezone.utc), "level": "WARNING",
                                     "logger": "backend.api.algo.template_attach",
-                                    "message": "", "tags": ["gtt"], "extra": extra})
+                                    "message": "", "tags": ["gtt", "alert"], "extra": extra})
             agent = SimpleNamespace(slug="template-attach-urgent", **{
                 k: event_agents.TEMPLATE_ATTACH_URGENT_AGENT.get(k, [])
                 for k in ("conditions", "events", "actions")})

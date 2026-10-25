@@ -271,7 +271,12 @@ def _registration_alert_extra(username: str, email: str) -> dict:
     Escaping here would show literal `&lt;`/`&amp;` text in the
     notification instead of the real username/email."""
     return {
-        "tags": ["auth"], "alert_event": "user_registered",
+        # "alert" added additively (2026-10-25 tag-unification) so
+        # USER_REGISTERED_AGENT's condition (now tag="alert") matches —
+        # this agent was NOT in the original unification brief's own
+        # enumeration; included under the brief's own stated rule and
+        # flagged explicitly in that pass's report.
+        "tags": ["auth", "alert"], "alert_event": "user_registered",
         "title": "New user registered",
         "body": f"{username} ({email}) registered and is pending admin approval.",
     }

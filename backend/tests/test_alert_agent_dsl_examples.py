@@ -17,14 +17,27 @@ be sent to each channel — mocked here, nothing is really sent.
 Compiled-shape reference, all confirmed directly from `event_agents.py`:
   - `WHEN log(tag="error", min_level="ERROR") DO render(error), ...`
     -> `conditions = {"log": {"tag": "error", "min_level": "ERROR"}}`
-    (this is `ERROR_AGENT`'s own literal `conditions`, byte-for-byte).
+    (this is `ERROR_AGENT`'s own literal `conditions`, byte-for-byte —
+    `ERROR_AGENT` is one of 3 agents deliberately EXCLUDED from the
+    2026-10-25 tag-unification pass below, so this example is still
+    byte-for-byte accurate).
   - A `where={...}` clause narrows the match to log records whose `extra`
-    dict carries those exact key/value pairs (see `ORDER_FAILURE_AGENT`,
-    which conditions on `where: {"alert_event": "order_failure"}`).
+    dict carries those exact key/value pairs — the example below uses
+    `tag="orders"` to illustrate the MECHANISM, but as of the 2026-10-25
+    tag-unification pass `ORDER_FAILURE_AGENT`'s own REAL condition
+    matches on `tag="alert"` instead (its `where: {"alert_event":
+    "order_failure"}` clause already uniquely discriminated it, making
+    the category tag redundant — see `event_agents.SEED_VERSION`'s own
+    comment). This file's hand-built demo agents are intentionally NOT
+    re-pointed at the real agents' current tag — they test the DSL
+    compile MECHANISM (tag/where/`|`-of-filters), independent of which
+    literal tag string any one real agent currently uses.
   - `log(...) | log(...)` (the `event_stmt`-era `match=[...]`'s
-    replacement) compiles to `{"any": [leaf1, leaf2]}` (see
-    `TEMPLATE_ATTACH_URGENT_AGENT`, which ORs a "wing_unprotected" leaf
-    with a "wing_hard_reject" leaf).
+    replacement) compiles to `{"any": [leaf1, leaf2]}` — the example
+    below mirrors `TEMPLATE_ATTACH_URGENT_AGENT`'s shape (OR of a
+    "wing_unprotected" leaf with a "wing_hard_reject" leaf) using
+    `tag="gtt"` for illustration; the REAL agent's tag is also now
+    "alert" post-2026-10-25, same caveat as above.
   - `DO render(error), telegram, ntfy` compiles to
     `actions = [{"type": "render", "render": "error"}]` plus
     `events = [{"channel": "telegram", "enabled": True},
@@ -32,6 +45,9 @@ Compiled-shape reference, all confirmed directly from `event_agents.py`:
 
 These are hand-authored test fixtures, not real seeded agents — they exist
 purely to show how a DSL statement turns into a real, dispatchable alert.
+The real, byte-for-byte seeded-agent shapes (including the 2026-10-25
+tag-unification) are pinned in `test_event_agents.py` and
+`test_event_agent_tag_unification.py`, not here.
 """
 from __future__ import annotations
 
@@ -131,9 +147,13 @@ async def test_dsl_where_clause_narrows_match_to_one_alert_event(sent):
              DO render(error), telegram, ntfy
 
     `where={...}` narrows the match beyond tag+level to specific `extra`
-    key/value pairs — mirrors `ORDER_FAILURE_AGENT`'s real condition shape
+    key/value pairs — mirrors the MECHANISM `ORDER_FAILURE_AGENT` uses
     (`where: {"alert_event": "order_failure"}`), just rendered via the
-    simpler `error` renderer here for a self-contained example.
+    simpler `error` renderer here for a self-contained example. Tag
+    "orders" here is illustrative only — as of the 2026-10-25
+    tag-unification pass, the REAL `ORDER_FAILURE_AGENT` matches on
+    tag="alert" instead (the `where` clause alone already uniquely
+    discriminated it).
 
     Two records are dispatched: one whose `extra.alert_event` matches
     exactly, one tagged/leveled identically but with a DIFFERENT
@@ -171,7 +191,11 @@ async def test_dsl_or_of_filters_fires_on_either_branch(sent):
     `|` between two `log(...)` conditions is the replacement for the old
     `event_stmt` grammar's `match=[...]` OR-of-filters — compiles to
     `{"any": [leaf1, leaf2]}`. Mirrors `TEMPLATE_ATTACH_URGENT_AGENT`'s
-    real condition shape exactly (same two branches, same tags/levels).
+    real condition SHAPE (same two branches, same `alert_event`/levels)
+    — tag="gtt" here is illustrative only; as of the 2026-10-25
+    tag-unification pass the REAL agent matches both branches on
+    tag="alert" instead (its `where.alert_event` already uniquely
+    discriminated each branch).
 
     Two records are dispatched, each matching exactly one OR-branch —
     both must independently fire."""

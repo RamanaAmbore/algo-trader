@@ -942,7 +942,9 @@ def send_summary(sum_holdings, sum_positions, ist_display: str, msg_type: str,
     _DISPATCH_LOGGER.info(
         f"Background: {msg_type} summary recorded",
         extra={
-            "tags": ["summary"], "alert_event": "summary", "msg_type": msg_type,
+            # "alert" added additively (2026-10-25 tag-unification) so
+            # SUMMARY_AGENT's condition (now tag="alert") matches.
+            "tags": ["summary", "alert"], "alert_event": "summary", "msg_type": msg_type,
             "ist_display": ist_display, "tg_table": tg_table,
             "email_table_html": email_html, "subject_detail": subject_detail,
         },

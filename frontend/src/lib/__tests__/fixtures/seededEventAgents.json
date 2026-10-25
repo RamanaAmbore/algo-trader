@@ -4,7 +4,7 @@
     "name": "Fill alert",
     "conditions": {
       "log": {
-        "tag": "orders",
+        "tag": "alert",
         "min_level": "INFO",
         "where": {
           "alert_event": "filled",
@@ -43,7 +43,7 @@
     "name": "Chase cancel unconfirmed",
     "conditions": {
       "log": {
-        "tag": "chase",
+        "tag": "alert",
         "min_level": "CRITICAL",
         "where": {
           "alert_event": "cancel_unconfirmed"
@@ -63,7 +63,7 @@
     "name": "Partial GTT placement",
     "conditions": {
       "log": {
-        "tag": "gtt",
+        "tag": "alert",
         "min_level": "CRITICAL",
         "where": {
           "alert_event": "partial_gtt"
@@ -85,7 +85,7 @@
       "any": [
         {
           "log": {
-            "tag": "gtt",
+            "tag": "alert",
             "min_level": "WARNING",
             "where": {
               "alert_event": "wing_unprotected"
@@ -94,7 +94,7 @@
         },
         {
           "log": {
-            "tag": "gtt",
+            "tag": "alert",
             "min_level": "CRITICAL",
             "where": {
               "alert_event": "wing_hard_reject"
@@ -118,7 +118,7 @@
       "any": [
         {
           "log": {
-            "tag": "gtt",
+            "tag": "alert",
             "min_level": "WARNING",
             "where": {
               "alert_event": "wing_skip"
@@ -127,7 +127,7 @@
         },
         {
           "log": {
-            "tag": "gtt",
+            "tag": "alert",
             "min_level": "WARNING",
             "where": {
               "alert_event": "wing_offset_skip"
@@ -149,7 +149,7 @@
     "name": "Order failure",
     "conditions": {
       "log": {
-        "tag": "orders",
+        "tag": "alert",
         "min_level": "WARNING",
         "where": {
           "alert_event": "order_failure"
@@ -169,7 +169,7 @@
     "name": "Template guard",
     "conditions": {
       "log": {
-        "tag": "orders",
+        "tag": "alert",
         "min_level": "INFO",
         "where": {
           "alert_event": "template_guard"
@@ -189,7 +189,7 @@
     "name": "Template attach failed",
     "conditions": {
       "log": {
-        "tag": "orders",
+        "tag": "alert",
         "min_level": "WARNING",
         "where": {
           "alert_event": "template_attach_fail"
@@ -209,7 +209,7 @@
     "name": "MCP audit ping",
     "conditions": {
       "log": {
-        "tag": "mcp",
+        "tag": "alert",
         "min_level": "INFO",
         "where": {
           "alert_event": "mcp_ping"
@@ -229,7 +229,7 @@
     "name": "Order poll correction",
     "conditions": {
       "log": {
-        "tag": "orders",
+        "tag": "alert",
         "min_level": "WARNING",
         "where": {
           "alert_event": "order_correction"
@@ -249,7 +249,7 @@
     "name": "Deploy out of sync",
     "conditions": {
       "log": {
-        "tag": "deploy",
+        "tag": "alert",
         "min_level": "WARNING",
         "where": {
           "alert_event": "deploy_out_of_sync"
@@ -289,7 +289,7 @@
     "name": "Market summary",
     "conditions": {
       "log": {
-        "tag": "summary",
+        "tag": "alert",
         "min_level": "INFO",
         "where": {
           "alert_event": "summary"
@@ -329,7 +329,7 @@
     "name": "GTT not accepted",
     "conditions": {
       "log": {
-        "tag": "gtt",
+        "tag": "alert",
         "min_level": "ERROR",
         "where": {
           "alert_event": "gtt_not_accepted"
@@ -349,7 +349,7 @@
     "name": "GTT asymmetric",
     "conditions": {
       "log": {
-        "tag": "gtt",
+        "tag": "alert",
         "min_level": "WARNING",
         "where": {
           "alert_event": "gtt_asymmetric"
@@ -369,7 +369,7 @@
     "name": "OCO double-fire",
     "conditions": {
       "log": {
-        "tag": "gtt",
+        "tag": "alert",
         "min_level": "WARNING",
         "where": {
           "alert_event": "oco_double_fire"
@@ -389,7 +389,7 @@
     "name": "Ticker recovered",
     "conditions": {
       "log": {
-        "tag": "broker",
+        "tag": "alert",
         "min_level": "INFO",
         "where": {
           "alert_event": "ticker_recovered"
@@ -409,7 +409,7 @@
     "name": "Ticker degraded",
     "conditions": {
       "log": {
-        "tag": "broker",
+        "tag": "alert",
         "min_level": "WARNING",
         "where": {
           "alert_event": "ticker_degraded"
@@ -429,7 +429,7 @@
     "name": "Visitor report",
     "conditions": {
       "log": {
-        "tag": "visitor",
+        "tag": "alert",
         "min_level": "INFO",
         "where": {
           "alert_event": "visitor_report"
@@ -449,7 +449,7 @@
     "name": "Unrouted alert catch-all",
     "conditions": {
       "log": {
-        "tag": "agent",
+        "tag": "alert",
         "min_level": "WARNING",
         "where": {
           "alert_event": "unrouted_alert"
@@ -481,7 +481,7 @@
     "name": "User registered",
     "conditions": {
       "log": {
-        "tag": "auth",
+        "tag": "alert",
         "min_level": "INFO",
         "where": {
           "alert_event": "user_registered"

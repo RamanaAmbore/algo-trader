@@ -5296,7 +5296,9 @@ async def _send_trail_partial_modify_alert(
         )
         logger.warning(
             "[GTT-ASYMMETRIC] %s", msg,
-            extra={"tags": ["gtt"], "alert_event": "gtt_asymmetric",
+            # "alert" added additively (2026-10-25 tag-unification) so
+            # GTT_ASYMMETRIC_AGENT's condition (now tag="alert") matches.
+            extra={"tags": ["gtt", "alert"], "alert_event": "gtt_asymmetric",
                    "title": "GTT asymmetric", "body": msg},
         )
     except Exception:
@@ -5770,7 +5772,9 @@ async def _oco_handle_settled_pair(
         )
         logger.warning(
             "[OCO-DOUBLE-FIRE] %s", msg,
-            extra={"tags": ["gtt"], "alert_event": "oco_double_fire",
+            # "alert" added additively (2026-10-25 tag-unification) so
+            # OCO_DOUBLE_FIRE_AGENT's condition (now tag="alert") matches.
+            extra={"tags": ["gtt", "alert"], "alert_event": "oco_double_fire",
                    "title": "OCO double-fire", "body": msg},
         )
     except Exception as _alert_err:
@@ -6864,7 +6868,9 @@ async def _watchdog_handle_recovery(ticker: object, status: dict) -> None:
         # would have propagated straight into the ticker watchdog loop.
         logger.info(
             "[TICKER-RECOVERED] %s", msg,
-            extra={"tags": ["broker"], "alert_event": "ticker_recovered",
+            # "alert" added additively (2026-10-25 tag-unification) so
+            # TICKER_RECOVERED_AGENT's condition (now tag="alert") matches.
+            extra={"tags": ["broker", "alert"], "alert_event": "ticker_recovered",
                    "title": "Ticker recovered", "body": msg},
         )
     except Exception as _alert_err:
@@ -6959,7 +6965,9 @@ async def _watchdog_alert_degraded(
         # the ticker watchdog loop.
         logger.warning(
             "[TICKER-DEGRADED] %s", msg,
-            extra={"tags": ["broker"], "alert_event": "ticker_degraded",
+            # "alert" added additively (2026-10-25 tag-unification) so
+            # TICKER_DEGRADED_AGENT's condition (now tag="alert") matches.
+            extra={"tags": ["broker", "alert"], "alert_event": "ticker_degraded",
                    "title": "Ticker degraded", "body": msg},
         )
     except Exception as _alert_err:
@@ -7242,7 +7250,10 @@ async def _task_visitor_log_daily() -> None:
                     msg = f"Visitors{branch_tag}\n{tg_body}"
                     logger.info(
                         "[VISITOR-REPORT] %s", msg,
-                        extra={"tags": ["visitor"], "alert_event": "visitor_report",
+                        # "alert" added additively (2026-10-25 tag-unification)
+                        # so VISITOR_REPORT_AGENT's condition (now
+                        # tag="alert") matches.
+                        extra={"tags": ["visitor", "alert"], "alert_event": "visitor_report",
                                "title": "Visitor report", "body": msg},
                     )
                 except Exception as tg_err:
@@ -8997,7 +9008,10 @@ async def _task_deploy_sync_check() -> None:
                         )
                         logger.warning(
                             f"[DEPLOY-SYNC] {message}",
-                            extra={"tags": ["deploy"], "alert_event": "deploy_out_of_sync",
+                            # "alert" added additively (2026-10-25
+                            # tag-unification) so DEPLOY_SYNC_AGENT's
+                            # condition (now tag="alert") matches.
+                            extra={"tags": ["deploy", "alert"], "alert_event": "deploy_out_of_sync",
                                    "title": f"Deploy out of sync — {branch}", "body": message},
                         )
         except asyncio.CancelledError:
