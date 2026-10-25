@@ -401,7 +401,7 @@
       "value_type": "number",
       "units": "min",
       "description": "Minutes since the first market segment opened today.",
-      "resolver": "backend.api.algo.grammar._metric_minutes_since_open"
+      "resolver": "backend.api.algo.grammar_tokens.metric_minutes_since_open._metric_minutes_since_open"
     },
     {
       "grammar_kind": "condition",
@@ -410,7 +410,7 @@
       "value_type": "number",
       "units": "min",
       "description": "Minutes until the nearest market segment close.",
-      "resolver": "backend.api.algo.grammar._metric_minutes_until_close"
+      "resolver": "backend.api.algo.grammar_tokens.metric_minutes_until_close._metric_minutes_until_close"
     },
     {
       "grammar_kind": "condition",
@@ -419,7 +419,7 @@
       "value_type": "number",
       "units": "binary",
       "description": "1.0 when MCX's own trading session is currently open, 0.0 otherwise.",
-      "resolver": "backend.api.algo.grammar._metric_is_mcx_open"
+      "resolver": "backend.api.algo.grammar_tokens.metric_is_mcx_open._metric_is_mcx_open"
     },
     {
       "grammar_kind": "condition",
@@ -428,7 +428,7 @@
       "value_type": "number",
       "units": "binary",
       "description": "1.0 when NSE's own trading session is currently open, 0.0 otherwise.",
-      "resolver": "backend.api.algo.grammar._metric_is_nse_open"
+      "resolver": "backend.api.algo.grammar_tokens.metric_is_nse_open._metric_is_nse_open"
     },
     {
       "grammar_kind": "condition",
@@ -437,7 +437,7 @@
       "value_type": "number",
       "units": "min",
       "description": "Minutes since MCX's own session opened today. None while MCX is closed.",
-      "resolver": "backend.api.algo.grammar._metric_minutes_since_mcx_open"
+      "resolver": "backend.api.algo.grammar_tokens.metric_minutes_since_mcx_open._metric_minutes_since_mcx_open"
     },
     {
       "grammar_kind": "condition",
@@ -446,7 +446,7 @@
       "value_type": "number",
       "units": "min",
       "description": "Minutes since NSE's own session opened today. None while NSE is closed.",
-      "resolver": "backend.api.algo.grammar._metric_minutes_since_nse_open"
+      "resolver": "backend.api.algo.grammar_tokens.metric_minutes_since_nse_open._metric_minutes_since_nse_open"
     },
     {
       "grammar_kind": "condition",
@@ -455,7 +455,7 @@
       "value_type": "number",
       "units": "min",
       "description": "Minutes until MCX's own session closes today. None while MCX is closed.",
-      "resolver": "backend.api.algo.grammar._metric_minutes_until_mcx_close"
+      "resolver": "backend.api.algo.grammar_tokens.metric_minutes_until_mcx_close._metric_minutes_until_mcx_close"
     },
     {
       "grammar_kind": "condition",
@@ -464,7 +464,7 @@
       "value_type": "number",
       "units": "min",
       "description": "Minutes until NSE's own session closes today. None while NSE is closed.",
-      "resolver": "backend.api.algo.grammar._metric_minutes_until_nse_close"
+      "resolver": "backend.api.algo.grammar_tokens.metric_minutes_until_nse_close._metric_minutes_until_nse_close"
     },
     {
       "grammar_kind": "condition",
@@ -473,7 +473,7 @@
       "value_type": "number",
       "units": "min",
       "description": "Minutes until MCX's own session opens today. 0 once open; None after today's close or on a no-session day.",
-      "resolver": "backend.api.algo.grammar._metric_minutes_until_mcx_open"
+      "resolver": "backend.api.algo.grammar_tokens.metric_minutes_until_mcx_open._metric_minutes_until_mcx_open"
     },
     {
       "grammar_kind": "condition",
@@ -482,7 +482,7 @@
       "value_type": "number",
       "units": "min",
       "description": "Minutes until NSE's own session opens today. 0 once open; None after today's close or on a no-session day.",
-      "resolver": "backend.api.algo.grammar._metric_minutes_until_nse_open"
+      "resolver": "backend.api.algo.grammar_tokens.metric_minutes_until_nse_open._metric_minutes_until_nse_open"
     },
     {
       "grammar_kind": "condition",
@@ -491,7 +491,7 @@
       "value_type": "number",
       "units": "binary",
       "description": "1.0 once today's holiday_refresh_time (default 05:30 IST) clock boundary has passed, 0.0 before it.",
-      "resolver": "backend.api.algo.grammar._metric_is_past_holiday_refresh"
+      "resolver": "backend.api.algo.grammar_tokens.metric_is_past_holiday_refresh._metric_is_past_holiday_refresh"
     },
     {
       "grammar_kind": "condition",
@@ -500,7 +500,7 @@
       "value_type": "number",
       "units": "binary",
       "description": "1.0 from today's 08:00 IST window boundary through the rest of the session (including the 23:31-23:59 IST tail, before the overnight window actually closes); 0.0 only during 00:00-07:59 IST.",
-      "resolver": "backend.api.algo.grammar._metric_is_past_window_open"
+      "resolver": "backend.api.algo.grammar_tokens.metric_is_past_window_open._metric_is_past_window_open"
     },
     {
       "grammar_kind": "condition",
@@ -788,7 +788,7 @@
         "where": {
           "type": "object",
           "required": false,
-          "description": "Optional exact-match filter against the log record's own `extra` fields, e.g. where={alert_event=\"cancel_unconfirmed\"}."
+          "description": "Optional filter against the log record's own `extra` fields. A plain scalar value is an exact-equality match, e.g. where={alert_event=\"cancel_unconfirmed\"}. A single-key object value applies that operator instead — where={alert_event={in=[\"filled\", \"cancelled\"]}} or where={alert_event={not_in=[...]}} — implemented in `_eval_log` itself, no grammar/parser change needed since a nested object literal was already a valid where-value."
         }
       }
     },

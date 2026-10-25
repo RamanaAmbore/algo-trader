@@ -18,7 +18,17 @@ if the engine never actually threads the data through:
      module-level `config` dict (loaded once at process start, no
      separate caching layer — see `backend/shared/helpers/utils.py`),
      not a stale literal.
-  2. Resolver-level true/false/missing tests on a hand-built `Context`.
+  2. Resolver-level true/false/missing tests on a hand-built `Context`
+     — moved to backend/tests/grammar_tokens/test_metric_is_mcx_open.py,
+     test_metric_is_nse_open.py, test_metric_minutes_since_mcx_open.py,
+     test_metric_minutes_since_nse_open.py,
+     test_metric_minutes_until_mcx_close.py,
+     test_metric_minutes_until_nse_close.py,
+     test_metric_minutes_until_mcx_open.py,
+     test_metric_minutes_until_nse_open.py,
+     test_metric_is_past_holiday_refresh.py,
+     test_metric_is_past_window_open.py (Wave 1, batch 4 of the DSL
+     token-unification plan).
   3. A `run_cycle` wiring test proving `context["segment_flags"]` is
      actually populated from `_build_context()`'s output — the gap this
      whole feature closes.
@@ -131,160 +141,14 @@ def test_nse_segment_mirrors_mcx_boundary_shape_at_its_own_09_15():
 
 
 # ---------------------------------------------------------------------------
-# Layer 2 — resolver-level true/false/missing tests on a hand-built
-# Context (no DB, no agent_engine involved — isolates grammar.py's
-# resolver logic from the wiring that populates ctx.segment_flags).
+# Layer 2 — resolver-level tests moved to backend/tests/grammar_tokens/
+# test_metric_is_mcx_open.py, test_metric_is_nse_open.py,
+# test_metric_minutes_since_mcx_open.py, test_metric_minutes_since_nse_open.py,
+# test_metric_minutes_until_mcx_close.py, test_metric_minutes_until_nse_close.py,
+# test_metric_minutes_until_mcx_open.py, test_metric_minutes_until_nse_open.py,
+# test_metric_is_past_holiday_refresh.py, test_metric_is_past_window_open.py
+# (Wave 1, batch 4 of the DSL token-unification plan).
 # ---------------------------------------------------------------------------
-
-def _ctx(segment_flags: dict | None = None, now=None):
-    from backend.api.algo.agent_evaluator import Context
-    return Context(segment_flags=segment_flags or {}, now=now)
-
-
-class TestIsOpenTokens:
-    def test_is_mcx_open_true(self):
-        from backend.api.algo.grammar import _metric_is_mcx_open
-        assert _metric_is_mcx_open(_ctx({"mcx_open": True}), {}) == 1.0
-
-    def test_is_mcx_open_false(self):
-        from backend.api.algo.grammar import _metric_is_mcx_open
-        assert _metric_is_mcx_open(_ctx({"mcx_open": False}), {}) == 0.0
-
-    def test_is_mcx_open_missing_is_none(self):
-        from backend.api.algo.grammar import _metric_is_mcx_open
-        assert _metric_is_mcx_open(_ctx({}), {}) is None
-
-    def test_is_nse_open_true(self):
-        from backend.api.algo.grammar import _metric_is_nse_open
-        assert _metric_is_nse_open(_ctx({"nse_open": True}), {}) == 1.0
-
-    def test_is_nse_open_false(self):
-        from backend.api.algo.grammar import _metric_is_nse_open
-        assert _metric_is_nse_open(_ctx({"nse_open": False}), {}) == 0.0
-
-
-class TestMinutesSinceOpenGating:
-    """These resolvers must gate on the open flag rather than trusting
-    the raw `minutes_since_*_open` field, which `_ae_segment_flags`
-    coerces to 0 while closed (a diagnostic convention for its other
-    callers) — ungated, that 0 would read as "just opened" all night."""
-
-    def test_minutes_since_mcx_open_when_open(self):
-        from backend.api.algo.grammar import _metric_minutes_since_mcx_open
-        ctx = _ctx({"mcx_open": True, "minutes_since_mcx_open": 42})
-        assert _metric_minutes_since_mcx_open(ctx, {}) == 42
-
-    def test_minutes_since_mcx_open_when_closed_is_none_not_zero(self):
-        from backend.api.algo.grammar import _metric_minutes_since_mcx_open
-        ctx = _ctx({"mcx_open": False, "minutes_since_mcx_open": 0})
-        assert _metric_minutes_since_mcx_open(ctx, {}) is None
-
-    def test_minutes_since_nse_open_when_open(self):
-        from backend.api.algo.grammar import _metric_minutes_since_nse_open
-        ctx = _ctx({"nse_open": True, "minutes_since_nse_open": 5})
-        assert _metric_minutes_since_nse_open(ctx, {}) == 5
-
-
-class TestMinutesUntilCloseGating:
-    def test_minutes_until_mcx_close_when_open(self):
-        from backend.api.algo.grammar import _metric_minutes_until_mcx_close
-        ctx = _ctx({"mcx_open": True, "minutes_until_mcx_close": 120})
-        assert _metric_minutes_until_mcx_close(ctx, {}) == 120
-
-    def test_minutes_until_mcx_close_when_closed_is_none(self):
-        from backend.api.algo.grammar import _metric_minutes_until_mcx_close
-        ctx = _ctx({"mcx_open": False, "minutes_until_mcx_close": None})
-        assert _metric_minutes_until_mcx_close(ctx, {}) is None
-
-    def test_minutes_until_nse_close_when_open(self):
-        from backend.api.algo.grammar import _metric_minutes_until_nse_close
-        ctx = _ctx({"nse_open": True, "minutes_until_nse_close": 15})
-        assert _metric_minutes_until_nse_close(ctx, {}) == 15
-
-
-class TestMinutesUntilOpen:
-    def test_minutes_until_mcx_open_passthrough(self):
-        from backend.api.algo.grammar import _metric_minutes_until_mcx_open
-        ctx = _ctx({"minutes_until_mcx_open": 10})
-        assert _metric_minutes_until_mcx_open(ctx, {}) == 10
-
-    def test_minutes_until_mcx_open_zero_when_already_open(self):
-        from backend.api.algo.grammar import _metric_minutes_until_mcx_open
-        ctx = _ctx({"minutes_until_mcx_open": 0})
-        assert _metric_minutes_until_mcx_open(ctx, {}) == 0
-
-    def test_minutes_until_nse_open_none_when_no_session_today(self):
-        from backend.api.algo.grammar import _metric_minutes_until_nse_open
-        ctx = _ctx({"minutes_until_nse_open": None})
-        assert _metric_minutes_until_nse_open(ctx, {}) is None
-
-
-class TestIsPastHolidayRefresh:
-    def test_before_boundary_is_false(self):
-        from backend.api.algo.grammar import _metric_is_past_holiday_refresh
-        ctx = _ctx(now=_at(5, 29))
-        assert _metric_is_past_holiday_refresh(ctx, {}) == 0.0
-
-    def test_after_boundary_is_true(self):
-        from backend.api.algo.grammar import _metric_is_past_holiday_refresh
-        ctx = _ctx(now=_at(5, 31))
-        assert _metric_is_past_holiday_refresh(ctx, {}) == 1.0
-
-    def test_at_exact_boundary_is_true(self):
-        from backend.api.algo.grammar import _metric_is_past_holiday_refresh
-        ctx = _ctx(now=_at(5, 30))
-        assert _metric_is_past_holiday_refresh(ctx, {}) == 1.0
-
-    def test_reads_configured_time_not_a_hardcoded_0530(self):
-        """`holiday_refresh_time` is operator-tunable — the resolver must
-        read it live, not hardcode 05:30."""
-        from backend.api.algo.grammar import _metric_is_past_holiday_refresh
-        from backend.shared.helpers.utils import config as _cfg
-        with patch.dict(_cfg, {"holiday_refresh_time": "06:00"}):
-            ctx = _ctx(now=_at(5, 45))
-            assert _metric_is_past_holiday_refresh(ctx, {}) == 0.0
-            ctx2 = _ctx(now=_at(6, 1))
-            assert _metric_is_past_holiday_refresh(ctx2, {}) == 1.0
-
-    def test_missing_now_is_none(self):
-        from backend.api.algo.grammar import _metric_is_past_holiday_refresh
-        assert _metric_is_past_holiday_refresh(_ctx(now=None), {}) is None
-
-
-class TestIsPastWindowOpen:
-    def test_before_0800_is_false(self):
-        from backend.api.algo.grammar import _metric_is_past_window_open
-        ctx = _ctx(now=_at(7, 59))
-        assert _metric_is_past_window_open(ctx, {}) == 0.0
-
-    def test_at_and_after_0800_is_true(self):
-        from backend.api.algo.grammar import _metric_is_past_window_open
-        ctx = _ctx(now=_at(8, 0))
-        assert _metric_is_past_window_open(ctx, {}) == 1.0
-
-    def test_late_evening_same_session_is_still_true(self):
-        """23:50 IST is still TODAY's session (the closed overnight
-        window doesn't start until 23:31) — must read True, proving the
-        resolver uses the session-date convention rather than a bare
-        `now.time() >= 08:00` check that would coincidentally also pass
-        here but for the wrong reason."""
-        from backend.api.algo.grammar import _metric_is_past_window_open
-        ctx = _ctx(now=_at(23, 50))
-        assert _metric_is_past_window_open(ctx, {}) == 1.0
-
-    def test_after_midnight_before_next_0800_is_false(self):
-        """00:30 IST the NEXT calendar day — still inside the closed
-        overnight window, must read False. A bare `date()` compare
-        against "today" would wrongly flip this True at midnight."""
-        from backend.api.algo.grammar import _metric_is_past_window_open
-        next_day = datetime(_PLAIN_WEEKDAY.year, _PLAIN_WEEKDAY.month,
-                             _PLAIN_WEEKDAY.day + 1, 0, 30, tzinfo=IST)
-        ctx = _ctx(now=next_day)
-        assert _metric_is_past_window_open(ctx, {}) == 0.0
-
-    def test_missing_now_is_none(self):
-        from backend.api.algo.grammar import _metric_is_past_window_open
-        assert _metric_is_past_window_open(_ctx(now=None), {}) is None
 
 
 # ---------------------------------------------------------------------------
@@ -339,9 +203,8 @@ class TestCycleEvaluateAgentThreadsSegmentFlags:
     @pytest.fixture(autouse=True)
     def _wire_registry(self, monkeypatch):
         from backend.api.algo.grammar_registry import REGISTRY
-        from backend.api.algo.grammar import (
-            _metric_is_mcx_open, _scope_funds_total, OPERATORS,
-        )
+        from backend.api.algo.grammar import _scope_funds_total, OPERATORS
+        from backend.api.algo.grammar_tokens.metric_is_mcx_open import _metric_is_mcx_open
         monkeypatch.setitem(REGISTRY.metrics, 'is_mcx_open', _metric_is_mcx_open)
         monkeypatch.setitem(REGISTRY.scopes, 'funds.total', _scope_funds_total)
         monkeypatch.setitem(REGISTRY.operators, '==', OPERATORS['=='])
