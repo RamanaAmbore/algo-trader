@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from backend.shared.helpers.utils import secrets, ramboq_config, is_enabled
@@ -55,6 +55,14 @@ class AgentDraft:
     warnings: list[str]        # operator-visible safety notes
     why_summary: str           # one-line LLM summary of what this agent does
     prompt: str = ""           # original NL prompt — preserved for audit + UI
+    # Additive side-channel from `_clamp_safety` — which fields the clamp
+    # itself mutated and how (e.g. {"stripped_actions": [...],
+    # "lifespan_type_defaulted": True}). The CREATE path
+    # (`_cmd_ai_create`) ignores this entirely; it exists so
+    # `_cmd_ai_refine` (backend/api/routes/agents.py) can tell "the LLM's
+    # own draft already had this value" apart from "the safety clamp
+    # changed it after the fact" — see `_clamp_safety`'s docstring.
+    clamp_effects: dict[str, Any] = field(default_factory=dict)
 
 
 def _summarise_token(token, kind: str) -> str:
@@ -240,8 +248,25 @@ def _strip_fences(s: str) -> str:
     return s.strip()
 
 
-def _clamp_safety(draft: dict, warnings: list[str]) -> None:
-    """In-place: force AI agents to inactive + paper + reasonable defaults."""
+def _clamp_safety(
+    draft: dict, warnings: list[str], clamp_effects: dict[str, Any] | None = None,
+) -> None:
+    """In-place: force AI agents to inactive + paper + reasonable defaults.
+
+    `clamp_effects` is an optional, additive side-channel: when passed a
+    dict, this function records exactly which fields it mutated and how
+    (`stripped_actions`: list of destructive action types removed from
+    the LLM's own draft; `lifespan_type_defaulted`: True when the LLM's
+    draft omitted `lifespan_type` and this function supplied the
+    `one_shot` default). The CREATE path (`draft_agent_from_prompt`,
+    below) does not pass this argument — `None` (the default) means this
+    is purely a no-op write target, so CREATE-path behavior and output
+    stay byte-for-byte unchanged. It exists for `_cmd_ai_refine`
+    (backend/api/routes/agents.py) to distinguish "the LLM's own draft
+    already proposed this value" from "the safety clamp changed it after
+    the fact" when deciding what's safe to write back onto an EXISTING
+    agent row.
+    """
     # Always inactive on save — operator must explicitly activate.
     draft.setdefault("status", "inactive")
     # Always paper — operator flips to live via the per-row P/L chip.
@@ -254,6 +279,8 @@ def _clamp_safety(draft: dict, warnings: list[str]) -> None:
     # Default lifespan to one_shot — least-surprise for AI-generated rules.
     if not draft.get("lifespan_type"):
         draft["lifespan_type"] = "one_shot"
+        if clamp_effects is not None:
+            clamp_effects["lifespan_type_defaulted"] = True
     # Strip any destructive actions the LLM may have proposed.
     actions = draft.get("actions") or []
     safe_actions = []
@@ -263,6 +290,8 @@ def _clamp_safety(draft: dict, warnings: list[str]) -> None:
                 f"Removed destructive action '{a.get('type')}' — re-add manually "
                 "if intended."
             )
+            if clamp_effects is not None:
+                clamp_effects.setdefault("stripped_actions", []).append(a.get("type"))
             continue
         safe_actions.append(a)
     draft["actions"] = safe_actions
@@ -381,12 +410,13 @@ def draft_agent_from_prompt(prompt: str) -> AgentDraft:
     if not isinstance(draft, dict):
         return AgentDraft({}, ["LLM 'draft' field is not a dict"], [], why, prompt)
 
-    _clamp_safety(draft, warnings)
+    clamp_effects: dict[str, Any] = {}
+    _clamp_safety(draft, warnings, clamp_effects)
     _scan_thresholds(draft, warnings)
     _validate_against_registry(draft, errors)
     _enrich_unknown_token_errors(errors, raw_tokens)
 
     return AgentDraft(
         draft=draft, errors=errors, warnings=warnings,
-        why_summary=why, prompt=prompt,
+        why_summary=why, prompt=prompt, clamp_effects=clamp_effects,
     )

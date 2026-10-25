@@ -849,6 +849,126 @@ def _ai_refine_prompt_context(agent, tree_driven: bool) -> dict:
     return current
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# `agent ai refine` destructive-action / lifespan-downgrade guard (follow-up
+# to the `trade_mode` fix above, same session). `_clamp_safety` (agent_ai.py)
+# strips any destructive action from the draft it's handed, and defaults a
+# missing `lifespan_type` to `one_shot` — both correct for the CREATE path
+# (`_cmd_ai_create`: a fresh draft should never silently carry a destructive
+# action the LLM invented, and should land conservatively one-shot). For
+# `_cmd_ai_refine`, reusing the same call without a guard meant an UNRELATED
+# refine instruction (e.g. "lower the cooldown") on an agent that already
+# has an approved destructive action (`chase_close_positions`, etc.) could
+# silently strip it via the diff-apply loop below, because the clamp always
+# removes it from the LLM's draft regardless of why the draft was asked for
+# — and a persistent agent's `lifespan_type` could get silently reset to
+# `one_shot` the same way if the LLM's draft happened to omit it.
+#
+# `AgentDraft.clamp_effects` (additive side-channel, agent_ai.py) is what
+# makes this distinguishable: it reports exactly which fields the clamp
+# itself changed, as opposed to what the LLM's own draft already proposed.
+# `d` here may be a hand-built test double (`SimpleNamespace`) that predates
+# `clamp_effects` and doesn't set it — `getattr(..., {})` degrades that case
+# to "no clamp effects known", which is the conservative default: nothing
+# extra gets excluded, matching behavior before this fix existed. Real
+# production calls always go through `draft_agent_from_prompt`, which
+# always populates `clamp_effects`.
+# ─────────────────────────────────────────────────────────────────────────
+
+# Heuristic only — NOT the full safety boundary by itself. It's consulted
+# only once a stronger, structural signal already fired (the clamp stripped
+# a destructive action type that the row's CURRENT `actions` already
+# contains — see `_ai_refine_actions_safe_to_write` below); this keyword
+# check then decides whether the operator's instruction plausibly asked for
+# that, in which case the normal write proceeds. Deliberately narrower than
+# a bare "action"/"remove" substring match (which would false-positive on
+# ordinary phrasing like "take action" or "remove the cooldown") — biased
+# toward NOT recognising intent, since a false negative here only costs a
+# safe, explicit-edit-required no-op, while a false positive would let a
+# live destructive action get silently deleted.
+_AI_REFINE_ACTION_INTENT_KEYWORDS: tuple[str, ...] = (
+    "action", "actions", "close position", "close the position",
+    "close positions", "cancel order", "cancel orders", "cancel all",
+    "remove action", "add action", "delete action", "chase_close",
+    "chase close",
+)
+
+
+def _ai_refine_mentions_action_intent(prompt: str) -> bool:
+    p = prompt.lower()
+    return any(kw in p for kw in _AI_REFINE_ACTION_INTENT_KEYWORDS)
+
+
+def _ai_refine_actions_safe_to_write(
+    prompt: str, row_actions: list | None, clamp_effects: dict,
+) -> tuple[bool, str | None]:
+    """Decide whether `_cmd_ai_refine`'s diff-apply loop may write the
+    LLM's (clamp-already-filtered) `actions` list back onto the row.
+
+    Returns `(True, None)` when it's safe to proceed with the normal
+    diff-write — either the clamp stripped nothing, or it only stripped a
+    NEWLY-LLM-proposed destructive action the row never had (the original,
+    correct safety behavior: a refine must never let a destructive action
+    sneak in that the operator never approved — unchanged by this fix).
+
+    Returns `(False, <warning>)` when the clamp stripped a destructive
+    action type the row's CURRENT `actions` already contains, and the
+    operator's instruction doesn't look like it's actually about actions —
+    i.e. this refine would have silently deleted an already-approved
+    destructive action as a side effect of something unrelated. The caller
+    must exclude `"actions"` from this refine's write-back in that case.
+    """
+    stripped = clamp_effects.get("stripped_actions") or []
+    if not stripped:
+        return True, None
+    current_types = {
+        a.get("type") for a in (row_actions or []) if isinstance(a, dict)
+    }
+    overlapping = [t for t in stripped if t in current_types]
+    if not overlapping:
+        return True, None
+    if _ai_refine_mentions_action_intent(prompt):
+        return True, None
+    action_type = overlapping[0]
+    return False, (
+        f"This refine would have removed '{action_type}' from the agent's "
+        f"actions — left unchanged. Edit actions explicitly if you intend "
+        f"to remove it."
+    )
+
+
+def _ai_refine_lifespan_safe_to_write(
+    row_lifespan_type: str | None, clamp_effects: dict,
+) -> tuple[bool, str | None]:
+    """Decide whether `_cmd_ai_refine`'s diff-apply loop may write
+    `lifespan_type` back onto the row.
+
+    `_clamp_safety` only defaults `lifespan_type` to `one_shot` when the
+    LLM's own draft omitted it — `clamp_effects['lifespan_type_defaulted']`
+    is the signal for that. When the clamp didn't inject anything (the
+    LLM's draft explicitly carried its own `lifespan_type`, whatever the
+    operator's instruction actually asked for), the normal write proceeds
+    unconditionally — that's a genuine LLM-produced value, not a clamp
+    artifact, and the existing diff check (`getattr(row, fld) != new[fld]`)
+    already no-ops when it happens to match the current value anyway.
+
+    When the clamp DID inject the default, honoring it is only safe if the
+    row's own current `lifespan_type` was already unset/`one_shot` — an
+    unrelated refine must never downgrade an explicitly persistent agent
+    to one-shot as a side effect of the LLM's draft simply omitting the
+    field.
+    """
+    if not clamp_effects.get("lifespan_type_defaulted"):
+        return True, None
+    if row_lifespan_type in (None, "", "one_shot"):
+        return True, None
+    return False, (
+        "This refine would have reset lifespan_type to 'one_shot' — left "
+        "unchanged to preserve this agent's persistent lifespan. Edit "
+        "lifespan_type explicitly if you intend to change it."
+    )
+
+
 def _agent_to_info(a: Agent) -> AgentInfo:
     return AgentInfo(
         id=a.id, slug=a.slug, name=a.name,
@@ -1939,9 +2059,14 @@ class AgentController(Controller):
         preserved; only conditions / events / actions / scope / schedule /
         cooldown / lifespan can change — EXCEPT `events` for a tree-driven
         event agent (see `_ai_refine_writable_fields`'s docstring, 2026-10
-        routing-tree activation plan, Step 2), and `trade_mode`, which a
-        refine can NEVER change for any agent — see the module-level
-        comment block above `_AI_REFINE_WRITABLE_FIELDS`."""
+        routing-tree activation plan, Step 2), `trade_mode`, which a
+        refine can NEVER change for any agent (module-level comment block
+        above `_AI_REFINE_WRITABLE_FIELDS`), and — per-refine, only when
+        the safety clamp's own effect isn't actually what the instruction
+        asked for — `actions` (when it would silently remove an
+        already-approved destructive action) or `lifespan_type` (when it
+        would silently downgrade a persistent agent to one_shot); see the
+        comment block above `_ai_refine_actions_safe_to_write`."""
         async with async_session() as session:
             result = await session.execute(select(Agent).where(Agent.slug == slug))
             agent = result.scalar_one_or_none()
@@ -1996,6 +2121,14 @@ class AgentController(Controller):
                 output="Refine failed:\n  " + "\n  ".join(d.errors), success=False,
             )
         new = d.draft
+        # Additive side-channel from `_clamp_safety` (agent_ai.py) — see
+        # the comment block above `_ai_refine_actions_safe_to_write` for
+        # why `getattr` with a `{}` default (a hand-built test double
+        # predating `clamp_effects` degrades to "nothing known", the
+        # conservative no-extra-exclusion default; real calls always
+        # populate it).
+        clamp_effects = getattr(d, "clamp_effects", None) or {}
+        extra_warnings: list[str] = []
         async with async_session() as session:
             result = await session.execute(select(Agent).where(Agent.slug == slug))
             row = result.scalar_one_or_none()
@@ -2009,15 +2142,38 @@ class AgentController(Controller):
             # re-read row (not the outer `agent`/`tree_driven` from
             # before the LLM call) — defends against the row changing
             # kind/events in the window between the two reads.
+            writable = list(_ai_refine_writable_fields(row))
+            # Destructive-action / lifespan-downgrade guard (see the
+            # comment block above `_ai_refine_actions_safe_to_write`): an
+            # unrelated refine instruction must never silently remove an
+            # already-approved destructive action or reset lifespan_type
+            # to one_shot as a side effect of `_clamp_safety`'s own
+            # CREATE-path defaults. Each check is only consulted when its
+            # field is still writable in the first place (e.g. `events`
+            # already excluded for a tree-driven agent).
+            if "actions" in writable:
+                actions_ok, actions_warn = _ai_refine_actions_safe_to_write(
+                    prompt, row.actions, clamp_effects,
+                )
+                if not actions_ok:
+                    writable.remove("actions")
+                    extra_warnings.append(actions_warn)
+            if "lifespan_type" in writable:
+                lifespan_ok, lifespan_warn = _ai_refine_lifespan_safe_to_write(
+                    row.lifespan_type, clamp_effects,
+                )
+                if not lifespan_ok:
+                    writable.remove("lifespan_type")
+                    extra_warnings.append(lifespan_warn)
             changed: list[str] = []
-            for fld in _ai_refine_writable_fields(row):
+            for fld in writable:
                 if fld not in new or new[fld] is None:
                     continue
                 if getattr(row, fld) != new[fld]:
                     setattr(row, fld, new[fld])
                     changed.append(fld)
             await session.commit()
-        refine_warnings = _ai_refine_filtered_warnings(d.warnings)
+        refine_warnings = _ai_refine_filtered_warnings(d.warnings) + extra_warnings
         warn_block = ("\n  ⚠ ".join(refine_warnings)) if refine_warnings else "(none)"
         diff_block = (", ".join(changed)) if changed else "(no changes — refinement was a no-op)"
         return InterpretResponse(
