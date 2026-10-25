@@ -117,8 +117,9 @@ async def test_dsl_single_tag_alert_dispatches_to_telegram_and_ntfy(sent):
         ("RamboQuant error",
          f"Agent: manual\nbackend.api.routes.orders\norder placement failed: insufficient margin\n{_FIXED_TS}"),
     ]
+    # 2026-10 plain-text reversal: no `<b>`/`<code>` tags.
     assert sent["tg"] == [
-        f"Agent: manual\n<b>RamboQuant error</b>\n<code>backend.api.routes.orders</code>\n"
+        f"Agent: manual\nRamboQuant error\nbackend.api.routes.orders\n"
         f"order placement failed: insufficient margin\n{_FIXED_TS}",
     ]
 

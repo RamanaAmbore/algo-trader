@@ -64,6 +64,85 @@ def test_non_ntfy_channel_always_passes_through():
     assert ea._apply_action_required_ntfy_gate(ch, None) == ch
 
 
+# ── 2026-10 forced-email gate (operator requirement #5: "action-required
+#    alerts go to both ntfy and email") ──────────────────────────────────
+
+def test_email_gate_appends_entry_when_action_required_true_and_no_email_present():
+    channels = [{"channel": "ntfy", "enabled": True, "priority": "urgent"}]
+    out = ea._apply_action_required_email_gate(channels, True)
+    assert out == [
+        {"channel": "ntfy", "enabled": True, "priority": "urgent"},
+        {"channel": "email", "enabled": True, "gate": False},
+    ]
+    # Original list is untouched (a new list is returned).
+    assert channels == [{"channel": "ntfy", "enabled": True, "priority": "urgent"}]
+
+
+def test_email_gate_never_duplicates_an_existing_email_entry():
+    """`order-failure-alert`'s own static per-slug list already carries
+    an email entry — the gate must leave it alone, not add a second."""
+    channels = [
+        {"channel": "telegram", "enabled": True, "gate": False},
+        {"channel": "email", "enabled": True, "gate": False},
+    ]
+    out = ea._apply_action_required_email_gate(channels, True)
+    assert out == channels
+    assert sum(1 for c in out if c.get("channel") == "email") == 1
+
+
+def test_email_gate_is_a_noop_for_false_and_none():
+    channels = [{"channel": "ntfy", "enabled": True}]
+    assert ea._apply_action_required_email_gate(channels, False) == channels
+    assert ea._apply_action_required_email_gate(channels, None) == channels
+    # No email entry was ever added for a pure-FYI or untagged record.
+    assert all(c.get("channel") != "email" for c in ea._apply_action_required_email_gate(channels, False))
+    assert all(c.get("channel") != "email" for c in ea._apply_action_required_email_gate(channels, None))
+
+
+def test_email_gate_never_touches_other_channels():
+    channels = [
+        {"channel": "telegram", "enabled": True},
+        {"channel": "telegram_info", "enabled": True},
+        {"channel": "log", "enabled": True},
+    ]
+    out = ea._apply_action_required_email_gate(channels, True)
+    assert out[:3] == channels
+    assert out[3] == {"channel": "email", "enabled": True, "gate": False}
+
+
+@pytest.mark.asyncio
+async def test_chase_cancel_and_order_correction_actually_reach_email_via_send_channel():
+    """Integration: `_render_chase_cancel`/`_render_order_correction`
+    (the two real renderers this gate exists for) return bare 2-tuples
+    with no structured email payload — `_send_channel`'s own default
+    `<pre>`-wrapped fallback must still deliver a real email body, not
+    a `None` that `_send_email_channel` silently no-ops on."""
+    from unittest.mock import AsyncMock as _AsyncMock
+    import backend.shared.helpers.utils as u
+
+    sent_email = []
+    with patch.object(u, "is_enabled", lambda cap: True), \
+         patch.dict(ea.CHANNELS, {"email": ("mail", lambda t, b, tg=None, **k: sent_email.append((t, b, k.get("email"))))}):
+        out = ("Order corrected: NIFTY #1", "AlgoOrder #1 corrected OPEN -> FILLED")
+        agent = MagicMock(slug="order-correction-alert", tier="urgent")
+        channels = ea._apply_action_required_email_gate(
+            [{"channel": "ntfy", "enabled": True}], True,
+        )
+        email_ch = next(c for c in channels if c["channel"] == "email")
+        ok = await ea._send_channel(email_ch, out, agent)
+    assert ok
+    assert len(sent_email) == 1
+    title, body, email_payload = sent_email[0]
+    assert title == "Order corrected: NIFTY #1"
+    assert email_payload is not None, "a default (subject, html_body) pair must be synthesized"
+    subject, html_body = email_payload
+    assert "Order corrected: NIFTY #1" in subject
+    assert "AlgoOrder #1 corrected OPEN -&gt; FILLED" in html_body, (
+        "body is html.escape()'d (the '>' in 'OPEN -> FILLED' becomes '&gt;') before being wrapped in <pre>"
+    )
+    assert "<pre" in html_body
+
+
 # ── Integration: _dispatch_agent actually skips/forces via the record ──
 
 @pytest.mark.asyncio
@@ -108,10 +187,18 @@ async def test_dispatch_agent_forces_urgent_ntfy_for_action_required_record():
          patch.object(ea, "_send_channel", new=AsyncMock(return_value=True)) as mock_send:
         sent = await ea._dispatch_agent(agent, [rec])
 
-    assert sent == 1
-    sent_ch = mock_send.call_args_list[0].args[0]
-    assert sent_ch["channel"] == "ntfy"
-    assert sent_ch["priority"] == "urgent"
+    # 2026-10 forced-email gate: an action-required record with no
+    # `email` entry already present gets one synthesized
+    # (`_apply_action_required_email_gate`) ALONGSIDE the forced-urgent
+    # ntfy entry — "action-required alerts go to both ntfy and email"
+    # (operator requirement #5). `sent == 1` (ntfy only) was this test's
+    # value before that gate existed.
+    assert sent == 2
+    sent_channels = [c.args[0] for c in mock_send.call_args_list]
+    ntfy_ch = next(c for c in sent_channels if c["channel"] == "ntfy")
+    assert ntfy_ch["priority"] == "urgent"
+    email_ch = next(c for c in sent_channels if c["channel"] == "email")
+    assert email_ch["enabled"] is True
 
 
 # ── Source-side flags ────────────────────────────────────────────────────

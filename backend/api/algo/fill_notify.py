@@ -98,7 +98,7 @@ async def notify_fills(rows: list) -> None:
             logger.info(
                 "order filled",
                 extra={
-                    "tags": ["orders"],
+                    "tags": ["orders", "alert"],
                     "alert_event": "filled",
                     "mode": str(getattr(row, "mode", "")),
                     "order_id": row.id,

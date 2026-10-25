@@ -215,7 +215,23 @@ _MSG_TYPES = {
 }
 
 
-def _send_telegram(message: str, parse_mode: str = "HTML"):
+def _send_telegram(
+    message: str, parse_mode: "str | None" = None, *,
+    token: "str | None" = None, chat_id: "str | None" = None,
+):
+    """Plain-text Telegram send (2026-10 reversal — no HTML parse mode
+    anywhere in the pipeline; every caller already builds a tag-free
+    message). `parse_mode` is kept as a parameter (default `None`, so
+    no `parse_mode` key is sent at all) only so a future caller can
+    still opt back in explicitly; nothing in this codebase does.
+
+    `token`/`chat_id` let a caller post to a DIFFERENT bot/chat than the
+    default ops channel (secrets `telegram_bot_token`/`telegram_chat_id`)
+    — e.g. the dedicated deploy-alerts channel
+    (`telegram_bot_token_deploy`/`telegram_chat_id_deploy`, see
+    `event_agents.py:_send_telegram_deploy_html`). Omitted (the default),
+    this is byte-identical to the pre-existing single-channel behavior.
+    """
     import logging
     _log = logging.getLogger('backend.api.background')
     if pytest_alert_transport_blocked():
@@ -238,8 +254,8 @@ def _send_telegram(message: str, parse_mode: str = "HTML"):
     if not is_enabled('telegram'):
         _log.info("Telegram skipped — disabled for this environment")
         return
-    token = secrets.get('telegram_bot_token', '')
-    chat_id = secrets.get('telegram_chat_id', '')
+    token = token or secrets.get('telegram_bot_token', '')
+    chat_id = chat_id or secrets.get('telegram_chat_id', '')
     if not token or not chat_id:
         logger.warning("Telegram not configured — skipping")
         return
@@ -286,7 +302,7 @@ def _send_telegram_info(message: str):
         url = f"https://api.telegram.org/bot{token}/sendMessage"
         resp = requests.post(
             url,
-            json={"chat_id": chat_id, "text": message, "parse_mode": "HTML"},
+            json={"chat_id": chat_id, "text": message},
             timeout=10,
         )
         if resp.ok:
@@ -477,12 +493,15 @@ def _send_email_to_recipients(subject: str, html_body: str, log_prefix: str) -> 
 
 
 def _build_tg_warning_block(sim_mode: bool, branch: str) -> str:
-    """Build the Telegram warning block for simulator and non-main-branch runs."""
+    """Build the Telegram warning block for simulator and non-main-branch
+    runs. Plain text (2026-10 reversal) — the literal emoji character
+    replaces the old `&#128680;` HTML numeric entity (meaningless once
+    nothing requests `parse_mode: HTML`), and the `<b>` wraps are dropped."""
     lines = []
     if sim_mode:
-        lines.append("&#128680; <b>SIMULATOR RUN</b> — fabricated market data")
+        lines.append("🚨 SIMULATOR RUN — fabricated market data")
     if branch != 'main':
-        lines.append(f"⚠ <b>Branch: {branch}</b>")
+        lines.append(f"⚠ Branch: {branch}")
     return ("\n" + "\n".join(lines)) if lines else ''
 
 
@@ -654,10 +673,15 @@ def dispatch_payload(msg_type: str, ist_display: str, tg_table: str, email_table
     # that origin always appears first. Only ever populated when a real
     # agent identity pair is known (see `agent_line` above); summaries
     # and other agent-less dispatches are unaffected.
-    agent_line_tg = f"{html.escape(agent_line)}\n" if agent_line else ''
+    #
+    # 2026-10 plain-text reversal — no `<b>`/`<code>` tags and no
+    # `html.escape()` anywhere: `_send_telegram()` no longer requests
+    # `parse_mode: HTML`, so escaping here would show literal `&lt;`/
+    # `&amp;` text instead of protecting markup that no longer exists.
+    agent_line_tg = f"{agent_line}\n" if agent_line else ''
     telegram_msg = (
-        f"{agent_line_tg}<b>{tg_prefix_full}{branch_tag} {mode_pfx}— {ist_display}</b>{warning_block}\n\n"
-        f"<code>{html.escape(tg_table)}</code>"
+        f"{agent_line_tg}{tg_prefix_full}{branch_tag} {mode_pfx}— {ist_display}{warning_block}\n\n"
+        f"{tg_table}"
     )
     event_key = 'market_open' if msg_type == 'open' else (
                 'market_close' if msg_type == 'close' else 'agent_alert')
@@ -1079,14 +1103,12 @@ def order_failure_messages(
     from backend.shared.helpers.utils import mask_account_in_text
     error = mask_account_in_text(error) or error
     error_short = error[:160].strip()
-    # Raw broker rejection text can contain a literal '<' (e.g. guard
-    # comparison text like "qty < lot_size") with no matching '>' before
-    # this message's own closing </code> tag — _html_to_plain's tag-strip
-    # regex (`<[^>]+>`) would then eat everything in between, silently
-    # deleting real alert text on the ntfy path. Escape BEFORE embedding,
-    # matching the one call site (_dispatch's tg_table) that already does
-    # this correctly (2026-09-27 council audit, Bug 2).
-    error_short_html = html.escape(error_short)
+    # 2026-10 plain-text reversal: `tg_body` below is now plain text, so
+    # a raw '<' (e.g. guard comparison text like "qty < lot_size")
+    # displays literally and safely — no HTML tag/entity to protect it
+    # from, and no `_html_to_plain` runs on it downstream any more
+    # (that tag-strip regex is exactly what used to require escaping
+    # here in the first place).
 
     # No agent NAME reaches this call site (callers only carry the bare
     # `agent_id` int off an AlgoOrder row — resolving the name would need
@@ -1105,10 +1127,10 @@ def order_failure_messages(
 
     tg_body = (
         f"{header_line}\n"
-        f"<b>&#10060; Order rejected</b>  [{origin_label}]  {mode_tag}{sup_note}\n"
+        f"❌ Order rejected  [{origin_label}]  {mode_tag}{sup_note}\n"
         f"{masked}  {side}  {qty}  {symbol}  ({exchange})\n"
         f"source: {source}\n"
-        f"<code>{error_short_html}</code>"
+        f"{error_short}"
     )
 
     rows_html = _html_table(
@@ -1155,6 +1177,17 @@ def _send_order_failure_messages(
     pipeline — `event_agents.py:_render_order_failure` reads it back out
     of the replayed record's `extra` dict and passes it straight through
     to `order_failure_messages()` for the Manual/Agent/Bracket label.
+
+    KNOWN GAP (found during the 2026-10 alert-format audit, out of scope
+    to fix here): this module's own logger name
+    (`backend.shared.helpers.alert_utils`) is one of `log_store.py`'s
+    `_SKIP_PREFIXES` — `LogStoreHandler.emit()` drops a record from this
+    logger BEFORE `tags_for()`/`row_for()` ever run, so this call (and
+    `send_summary()`'s, below) never reaches `log_events` in production.
+    The `"alert"` tag added here is correct and forward-compatible, but
+    it cannot make ORDER_FAILURE_AGENT's trigger visible in the Alerts
+    tab until that structural gap is fixed separately — see the
+    final-report note in commit history for this change.
     """
     sup_note = f"  (+{suppressed_count} suppressed)" if suppressed_count else ""
     origin_label = _classify_order_origin_label(source, agent_id)
@@ -1162,7 +1195,7 @@ def _send_order_failure_messages(
         f"order-failure recorded: [{origin_label}] {masked} {side} {qty} {symbol} "
         f"mode={mode} source={source}{sup_note}",
         extra={
-            "tags": ["orders"], "alert_event": "order_failure", "masked": masked,
+            "tags": ["orders", "alert"], "alert_event": "order_failure", "masked": masked,
             "symbol": symbol, "exchange": exchange, "side": side, "qty": qty,
             "mode": mode, "source": source, "error": error,
             "suppressed_count": suppressed_count, "ist_disp": ist_disp,

@@ -396,15 +396,17 @@ def _public_base_url() -> str:
 
 
 def _audit_link_html(request_id: str) -> str:
-    """HTML fragment for Telegram (parse_mode=HTML) — clickable
-    request_id that opens the Lab page Audit tab pre-filtered to
-    THIS exact row. Operator on their phone gets a one-tap forensic
-    drill-down."""
+    """Plain-text request_id plus a bare URL to the Lab page Audit tab
+    pre-filtered to THIS exact row (2026-10 plain-text reversal — the
+    name is kept despite no HTML being built here any more, since
+    several tests `patch.object(lab, "_audit_link_html", ...)` by this
+    exact name). Telegram auto-links a bare URL in plain text, so the
+    operator still gets a one-tap forensic drill-down with no markup."""
     rid = (request_id or "").strip()
     if not rid:
         return ""
     href = f"{_public_base_url()}/admin/mcp?audit_request={rid}"
-    return f'<a href="{href}">{rid}</a>'
+    return f"{rid} {href}"
 
 # ── Phase-3 per-call confirm-token store ──────────────────────────────
 # In-process dict — keyed by token, valued by {user_id, purpose_hash,
@@ -972,9 +974,9 @@ async def _res_cancel_live(
     try:
         from backend.shared.helpers.utils import mask_account
         _mcp_ping(
-            f"<b>MCP CANCEL [LIVE]</b> order_id=<code>{res.order_id}</code>\n"
+            f"MCP CANCEL [LIVE] order_id={res.order_id}\n"
             f"acct={mask_account(acct) if acct else acct}\n"
-            f"<i>request_id={_audit_link_html(request_id)} · user_id={user_id or '-'}</i>"
+            f"request_id={_audit_link_html(request_id)} · user_id={user_id or '-'}"
         )
     except Exception as e:
         logger.warning(f"MCP cancel_order Telegram ping failed: {e}")
@@ -1020,9 +1022,9 @@ async def _res_cancel_paper(
     try:
         from backend.shared.helpers.utils import mask_account
         _mcp_ping(
-            f"<b>MCP CANCEL [PAPER]</b> AlgoOrder.id=<code>{algo_order_id}</code>\n"
+            f"MCP CANCEL [PAPER] AlgoOrder.id={algo_order_id}\n"
             f"acct={mask_account(acct) if acct else acct}\n"
-            f"<i>request_id={_audit_link_html(request_id)} · user_id={user_id or '-'}</i>"
+            f"request_id={_audit_link_html(request_id)} · user_id={user_id or '-'}"
         )
     except Exception as e:
         logger.warning(f"MCP cancel_order (paper) Telegram ping failed: {e}")
@@ -1092,10 +1094,10 @@ def _res_place_telegram_ping(
         # convention every other correctly-masked alert path already uses.
         masked_acct = mask_account(acct) if acct else acct
         tg_msg = (
-            f"<b>MCP {mode_pill}</b> {side} {qty} {sym}{price_chunk}\n"
-            f"acct={masked_acct} · order_id=<code>{res.order_id}</code> · "
+            f"MCP {mode_pill} {side} {qty} {sym}{price_chunk}\n"
+            f"acct={masked_acct} · order_id={res.order_id} · "
             f"status={res.status}\n"
-            f"<i>request_id={_audit_link_html(request_id)} · user_id={user_id or '-'}</i>"
+            f"request_id={_audit_link_html(request_id)} · user_id={user_id or '-'}"
         )
         _mcp_ping(tg_msg)
     except Exception as e:
@@ -1115,9 +1117,18 @@ def _res_agent_action_labels(action: str) -> tuple[str, str]:
 def _mcp_ping(tg_html: str) -> None:
     """Record an MCP audit ping. The event agent sends it to Telegram.
 
-    Appends the dual-tz timestamp once here — the single chokepoint all
-    6 MCP ping call sites funnel through — rather than at each call site
-    individually. No agent concept exists for MCP tool calls.
+    Prepends the origin header (2026-10 audit fix — MCP pings had no
+    origin line at all) and appends the dual-tz timestamp once here —
+    the single chokepoint all 6 MCP ping call sites funnel through —
+    rather than at each call site individually. No agent concept exists
+    for MCP tool calls, so `format_notification_header(None, None, ...)`
+    resolves to the "manual" origin via `resolve_origin()`'s own
+    documented fallback for a bare `agent_id=None`/`agent_name=None`
+    pair — there is no better answer for "who triggered this MCP call".
+
+    2026-10 plain-text reversal — `tg_html` (despite the parameter name,
+    kept for call-site stability) is now plain text: no `<i>` wrap around
+    the timestamp line.
 
     `tg_html` must already have any `acct=` account code masked
     (`mask_account`) by its caller before reaching here — this function
@@ -1127,8 +1138,10 @@ def _mcp_ping(tg_html: str) -> None:
     notification-masking audit; `_mcp_ping` itself stays a thin
     pass-through."""
     from backend.shared.helpers.date_time_utils import timestamp_display
-    tg_html = f"{tg_html}\n<i>{timestamp_display()}</i>"
-    logger.info("MCP ping", extra={"tags": ["mcp"], "alert_event": "mcp_ping", "tg": tg_html})
+    from backend.shared.helpers.alert_utils import format_notification_header
+    origin_line = format_notification_header(None, None).splitlines()[0]
+    tg_html = f"{origin_line}\n{tg_html}\n{timestamp_display()}"
+    logger.info("MCP ping", extra={"tags": ["mcp", "alert"], "alert_event": "mcp_ping", "tg": tg_html})
 
 
 def _res_agent_status_telegram_ping(
@@ -1141,8 +1154,8 @@ def _res_agent_status_telegram_ping(
     method's CC count."""
     try:
                 _mcp_ping(
-            f"<b>MCP {verb}</b> agent=<code>{slug}</code> → status={new_status}\n"
-            f"<i>request_id={_audit_link_html(request_id)} · user_id={user_id or '-'}</i>"
+            f"MCP {verb} agent={slug} → status={new_status}\n"
+            f"request_id={_audit_link_html(request_id)} · user_id={user_id or '-'}"
         )
     except Exception as e:
         logger.warning(f"MCP {action}_agent Telegram ping failed: {e}")
@@ -1219,9 +1232,9 @@ async def _mcp_modify_paper(
     try:
         from backend.shared.helpers.utils import mask_account
         _mcp_ping(
-            f"<b>MCP MODIFY [PAPER]</b> AlgoOrder.id=<code>{algo_order_id}</code>\n"
+            f"MCP MODIFY [PAPER] AlgoOrder.id={algo_order_id}\n"
             f"acct={mask_account(acct) if acct else acct} · {chunks}\n"
-            f"<i>request_id={_audit_link_html(request_id)} · user_id={user_id or '-'}</i>"
+            f"request_id={_audit_link_html(request_id)} · user_id={user_id or '-'}"
         )
     except Exception as e:
         logger.warning(f"MCP modify_order (paper) Telegram ping failed: {e}")
@@ -1270,9 +1283,9 @@ async def _mcp_modify_live(
     try:
         from backend.shared.helpers.utils import mask_account
         _mcp_ping(
-            f"<b>MCP MODIFY [LIVE]</b> order_id=<code>{res.order_id}</code>\n"
+            f"MCP MODIFY [LIVE] order_id={res.order_id}\n"
             f"acct={mask_account(acct) if acct else acct} · {chunks}\n"
-            f"<i>request_id={_audit_link_html(request_id)} · user_id={user_id or '-'}</i>"
+            f"request_id={_audit_link_html(request_id)} · user_id={user_id or '-'}"
         )
     except Exception as e:
         logger.warning(f"MCP modify_order Telegram ping failed: {e}")

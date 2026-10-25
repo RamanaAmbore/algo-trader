@@ -778,6 +778,23 @@ system_tokens:
       type: boolean
       required: false
       description: Structural no-op (capability is None for this channel) — declared only so a stored 'gate' key decompiles.
+# 2026-10 channel-routing fix — dedicated deploy-alerts Telegram
+# bot/chat (secrets.telegram_bot_token_deploy / telegram_chat_id_deploy,
+# falling back to the general telegram bot/chat when absent — same
+# fallback pair webhook/notify_deploy.py's own, separate deploy-OK/FAIL
+# pings use). Added so deploy-sync-alert's own 'deploy-sync-alert'
+# channel entry (which carries a 'gate' key) resolves against a
+# declared schema, same convention as telegram_info above.
+- grammar_kind: notify
+  token_kind: channel
+  token: telegram_deploy
+  value_type: enum
+  description: Telegram via the dedicated deploy-alerts key (secrets.telegram_bot_token_deploy / telegram_chat_id_deploy), bypassing the regular 'telegram' capability gate — used exclusively by deploy-sync-alert.
+  params_schema:
+    gate:
+      type: boolean
+      required: false
+      description: Structural no-op (capability is None for this channel) — declared only so a stored 'gate' key decompiles.
 - grammar_kind: notify
   token_kind: channel
   token: email
@@ -1514,3 +1531,7 @@ log_tags:
   - token: auth
     description: 'Authentication/account-lifecycle records: new user self-registration
       pending admin approval (owner: auth routes).'
+  - token: alert
+    description: 'Alert-worthy log line, additive to every other tag — surfaces the
+      record in /admin/alerts/history alongside real AgentEvent rows (owner: alert
+      producers across orders/chase/template-attach/mcp).'

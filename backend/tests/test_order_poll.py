@@ -208,7 +208,9 @@ class TestReconcileRowAndFollowup:
         assert subscribe_calls == [[("NIFTY24APR25000CE", "NFO")]]
         mock_log.warning.assert_called_once()
         extra = mock_log.warning.call_args.kwargs["extra"]
-        assert extra["tags"] == ["orders"]
+        # "alert" (2026-10) — additive tag surfacing this record in
+        # /admin/alerts/history alongside real AgentEvent rows.
+        assert extra["tags"] == ["orders", "alert"]
         assert extra["alert_event"] == "order_correction"
         assert extra["action_required"] is True
         assert extra["algo_order_id"] == r.id

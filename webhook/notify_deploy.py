@@ -68,15 +68,21 @@ def main():
     layers = args.layers
     layers_line = f"\nLayers: {layers}" if layers else ""
 
+    # 2026-10 plain-text + channel-routing reversal: no HTML tags
+    # anywhere (Telegram sends no `parse_mode` now) and no ntfy send at
+    # all — deploy/code-deployment alerts never go to ntfy or email
+    # (operator requirement #4). Telegram-only, via the dedicated
+    # deploy bot/chat below. `event_label`/`detail_line` are kept
+    # unchanged — the AppMessage record below still uses them.
     if status == "ok":
         event_label = f"Deploy OK{branch_tag}{type_suffix}"
         detail_line = f"{branch} → {commit}{layers_line}"
-        tg_body = (f"<b>Deploy OK{branch_tag}{type_suffix}</b> · <code>{commit}</code>"
+        tg_body = (f"Deploy OK{branch_tag}{type_suffix} · {commit}"
                    + (f"\nLayers: {layers}" if layers else ""))
     else:
         event_label = f"⚠ DEPLOY FAILED{branch_tag}"
         detail_line = f"{branch} → {commit}" + (f" — {reason}" if reason else "") + layers_line
-        tg_body = (f"<b>⚠ DEPLOY FAILED{branch_tag}</b> · <code>{commit}</code>"
+        tg_body = (f"⚠ DEPLOY FAILED{branch_tag} · {commit}"
                    + (f"\n{reason}" if reason else "")
                    + (f"\nLayers: {layers}" if layers else ""))
 
@@ -87,7 +93,7 @@ def main():
         try:
             resp = requests.post(
                 f"https://api.telegram.org/bot{tg_token}/sendMessage",
-                json={"chat_id": tg_chat_id, "text": tg_body, "parse_mode": "HTML"},
+                json={"chat_id": tg_chat_id, "text": tg_body},
                 timeout=10,
             )
             if resp.ok:
@@ -96,27 +102,6 @@ def main():
                 errors.append(f"telegram: {resp.status_code} {resp.text[:120]}")
         except Exception as e:
             errors.append(f"telegram: {e}")
-
-    # ntfy
-    ntfy_topic = sec.get("ntfy_topic")
-    if ntfy_topic:
-        ntfy_url = sec.get("ntfy_url", "https://ntfy.sh")
-        ntfy_token = sec.get("ntfy_token")
-        try:
-            import urllib.request as _urlreq
-            _ntfy_headers = {"Title": event_label, "Tags": "rocket", "Priority": "default", "Content-Type": "text/plain"}
-            if ntfy_token:
-                _ntfy_headers["Authorization"] = f"Bearer {ntfy_token}"
-            req = _urlreq.Request(
-                f"{ntfy_url.rstrip('/')}/{ntfy_topic}",
-                data=detail_line.encode(),
-                headers=_ntfy_headers,
-                method="POST",
-            )
-            _urlreq.urlopen(req, timeout=5)
-            print("notify_deploy: ntfy sent")
-        except Exception as e:
-            errors.append(f"ntfy: {e}")
 
     # Email path retired. Deploy noise was cluttering the inbox; the
     # Telegram ping above carries the same information and lands

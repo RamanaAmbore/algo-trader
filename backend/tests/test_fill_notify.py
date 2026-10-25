@@ -30,7 +30,9 @@ async def test_live_fill_is_logged_once_with_tags_and_fields(logged):
     msg, kw = logged[0]
     assert msg == "order filled"
     extra = kw["extra"]
-    assert extra["tags"] == ["orders"]
+    # "alert" (2026-10) — additive tag surfacing this record in
+    # /admin/alerts/history alongside real AgentEvent rows.
+    assert extra["tags"] == ["orders", "alert"]
     assert extra["alert_event"] == "filled"
     assert extra["mode"] == "live"
     assert extra["order_id"] == 101

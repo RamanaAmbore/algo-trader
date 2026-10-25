@@ -125,39 +125,57 @@ def _render_partial_gtt(rec: dict) -> tuple[str, str]:
 
 
 def _render_template_attach(rec: dict) -> tuple[str, str]:
-    """Template exit attach outcome — unprotected position, wing skip/reject."""
+    """Template exit attach outcome — unprotected position, wing skip/reject.
+
+    2026-10 audit fix: leads with `format_notification_header()` (origin
+    + dual-tz timestamp) — this renderer previously had NO origin line at
+    all, and appended a bare trailing timestamp instead; both are now
+    fixed, matching every other order-scoped renderer in this file.
+    `agent_id` is read from `x.get('agent_id')`, now populated for all
+    four branches (see the `template_attach.py` call sites: wing_hard_reject
+    threads `parent_agent_id` through the wing-scan helper chain;
+    wing_unprotected reads `result.plan.parent_agent_id`)."""
     from backend.shared.helpers.date_time_utils import timestamp_display
     from backend.shared.helpers.utils import mask_account_in_text
+    from backend.shared.helpers.alert_utils import format_notification_header
     x = rec.get("extra") or {}
     ev = x.get("alert_event")
     ts = timestamp_display()
+    header = format_notification_header(None, x.get('agent_id'), ist_display=ts)
     # 2026-10 notification-masking audit: `reason` is free-caller text that
     # can embed a raw broker account code — scrub as defense-in-depth,
     # matching `order_failure_messages()`'s existing pattern.
     reason = mask_account_in_text(str(x.get('reason'))) if x.get('reason') is not None else x.get('reason')
     if ev == "wing_unprotected":
         return ("Unprotected SELL position",
+                f"{header}\n"
                 f"GTTs placed (ids: {x['gtt_ids_text']}) but wing failed: {reason} | "
-                f"order #{x['parent_order_id']} {x['symbol']} {x['exchange']}\n{ts}")
+                f"order #{x['parent_order_id']} {x['symbol']} {x['exchange']}")
     if ev == "wing_hard_reject":
         return ("Wing scan hard-rejected",
-                f"{reason} | {x['symbol']} {x['exchange']} target ₹{x['target_premium']:.2f}\n{ts}")
+                f"{header}\n{reason} | {x['symbol']} {x['exchange']} target ₹{x['target_premium']:.2f}")
     if ev == "wing_skip":
         return ("Wing attach skipped",
-                f"{reason} | order #{x['parent_order_id']} {x['symbol']} {x['exchange']}\n{ts}")
+                f"{header}\n{reason} | order #{x['parent_order_id']} {x['symbol']} {x['exchange']}")
     if ev == "wing_offset_skip":
         return ("Wing offset attach skipped",
-                f"{reason} | order #{x['parent_order_id']} {x['symbol']} {x['exchange']}\n{ts}")
+                f"{header}\n{reason} | order #{x['parent_order_id']} {x['symbol']} {x['exchange']}")
     # Fallback dumps the whole `extra` dict raw — may embed an `account`
     # key or an account-shaped code inside a nested value; scrub the
     # stringified dump too.
-    return "Template attach", f"{mask_account_in_text(f'{x}')}\n{ts}"
+    return "Template attach", f"{header}\n{mask_account_in_text(f'{x}')}"
 
 
 def _render_order_failure(rec: dict) -> tuple:
-    """A live order was rejected or failed to place."""
+    """A live order was rejected or failed to place.
+
+    2026-10 plain-text reversal: `order_failure_messages()` now builds a
+    tag-free `tg_body`, so it is used directly for BOTH the ntfy and
+    telegram slots — `_html_to_plain` is no longer called here. Running
+    it on already-plain text would wrongly strip any literal `<...>` the
+    raw broker error text happens to contain (e.g. "Insufficient funds
+    <x>" from a broker's own rejection message)."""
     from backend.shared.helpers.alert_utils import order_failure_messages
-    from backend.shared.helpers.alert_utils import _html_to_plain
     x = rec.get("extra") or {}
     tg_body, subject, email_body = order_failure_messages(
         masked=x["masked"], symbol=x["symbol"], exchange=x["exchange"], side=x["side"],
@@ -165,7 +183,7 @@ def _render_order_failure(rec: dict) -> tuple:
         suppressed_count=x["suppressed_count"], ist_disp=x["ist_disp"],
         agent_id=x.get("agent_id"),
     )
-    return f"Order Rejected: {x['symbol']} {x['side']}", _html_to_plain(tg_body), tg_body, (subject, email_body)
+    return f"Order Rejected: {x['symbol']} {x['side']}", tg_body, tg_body, (subject, email_body)
 
 
 def _render_template_guard(rec: dict) -> tuple:
@@ -176,17 +194,28 @@ def _render_template_guard(rec: dict) -> tuple:
     `template_attach.py:_fire_guard_alert`'s own docstring promise
     ("Email lands in the alert inbox — durable record for end-of-day
     review"), which previously had no renderer support for it at all.
+
+    2026-10 plain-text reversal: `template_guard_message()` now returns
+    plain text (no `<b>`/`<code>`), used directly for ntfy/telegram with
+    no `_html_to_plain` pass. The email body can no longer reuse `tg`
+    verbatim inside `<html><body>` — a bare `\\n` doesn't break a line in
+    HTML, and a raw `<` in `reason` (e.g. "qty < lot_size") would corrupt
+    the markup — so it wraps the ESCAPED plain text in `<pre>`, preserving
+    both the line breaks and content.
     """
     from backend.api.algo.template_attach import template_guard_message
-    from backend.shared.helpers.alert_utils import _html_to_plain
     x = rec.get("extra") or {}
     keys = ("template_slug", "applies_to", "reason", "parent_order_id", "parent_side", "parent_qty",
             "parent_symbol", "parent_fill_price", "parent_account", "ist_label", "agent_id")
     tg = template_guard_message(**{k: x.get(k) for k in keys})
     title = "Template guard fired"
     email_subject = f"RamboQuant {title}: {x.get('parent_symbol') or ''}"
-    email_body = f"<html><body style='font-family:sans-serif'>{tg}</body></html>"
-    return title, _html_to_plain(tg), tg, (email_subject, email_body)
+    email_body = (
+        "<html><body style='font-family:sans-serif'>"
+        f"<pre style='white-space:pre-wrap;font-family:monospace'>{html.escape(tg)}</pre>"
+        "</body></html>"
+    )
+    return title, tg, tg, (email_subject, email_body)
 
 
 def _render_attach_fail(rec: dict) -> tuple:
@@ -194,9 +223,13 @@ def _render_attach_fail(rec: dict) -> tuple:
 
     4th element (email subject, body) added 2026-10 audit fix — see
     `_render_template_guard`'s docstring for the rationale (same
-    "durable record" promise, same prior gap)."""
+    "durable record" promise, same prior gap).
+
+    2026-10 plain-text reversal — same shape as `_render_template_guard`:
+    `template_attach_fail_message()` returns plain text, used directly
+    for ntfy/telegram, and the email body wraps the escaped plain text
+    in `<pre>` instead of reusing the old `<code>`-tagged HTML string."""
     from backend.api.algo.template_attach import template_attach_fail_message
-    from backend.shared.helpers.alert_utils import _html_to_plain
     x = rec.get("extra") or {}
     tg = template_attach_fail_message(order_id=x.get("order_id"), symbol=x.get("symbol"),
                                       account=x.get("account"), err_summary=x.get("err_summary") or "",
@@ -204,8 +237,12 @@ def _render_attach_fail(rec: dict) -> tuple:
                                       placed_untracked_ids=x.get("placed_untracked_ids"))
     title = "Template attach failed"
     email_subject = f"RamboQuant {title}: {x.get('symbol') or ''}"
-    email_body = f"<html><body style='font-family:sans-serif'>{tg}</body></html>"
-    return title, _html_to_plain(tg), tg, (email_subject, email_body)
+    email_body = (
+        "<html><body style='font-family:sans-serif'>"
+        f"<pre style='white-space:pre-wrap;font-family:monospace'>{html.escape(tg)}</pre>"
+        "</body></html>"
+    )
+    return title, tg, tg, (email_subject, email_body)
 
 
 def _render_order_correction(rec: dict) -> tuple[str, str]:
@@ -241,10 +278,16 @@ def _render_order_correction(rec: dict) -> tuple[str, str]:
 
 
 def _render_mcp_ping(rec: dict) -> tuple[str, str, str]:
-    """An MCP tool call performed an audited action (place/cancel/modify/...)."""
-    from backend.shared.helpers.alert_utils import _html_to_plain
+    """An MCP tool call performed an audited action (place/cancel/modify/...).
+
+    2026-10 plain-text reversal: `extra["tg"]` is now plain text, built
+    once (origin header + body) at the single `lab.py:_mcp_ping()`
+    chokepoint every MCP-ping call site funnels through — no
+    `_html_to_plain` pass here, since there is no longer any markup to
+    decode and a raw `<`/`>` in the body (unlikely, but not impossible)
+    would otherwise be silently stripped."""
     tg = (rec.get("extra") or {}).get("tg") or ""
-    return "MCP", _html_to_plain(tg), tg
+    return "MCP", tg, tg
 
 
 def _render_deploy_sync(rec: dict) -> tuple[str, str, str]:
@@ -275,43 +318,49 @@ def _render_deploy_sync(rec: dict) -> tuple[str, str, str]:
     of bold. ntfy (which reads `body` directly, never `tg`) would show
     the same raw tags verbatim for any future generic_notice caller that
     embeds HTML, even though no current call site triggers it on that
-    channel. Fixed the same way every other HTML-capable renderer in
-    this file already does it (`_render_rich_alert`, `_render_summary`,
-    `_render_mcp_ping`): treat `extra["body"]` as the HTML-safe source
-    of truth, return `_html_to_plain(body)` as the plain slot (`ntfy`,
-    and `_send_telegram_info_html`'s own escape-fallback when the
-    content has no tags to begin with) and the raw `body` as `tg`
-    (Telegram's real HTML-rendering slot) — a plain-text body with no
-    tags is unchanged by `_html_to_plain`, so the 4 other, currently
-    tag-free call sites (gtt_asymmetric, oco_double_fire,
-    ticker_recovered, ticker_degraded) and DEPLOY_SYNC_AGENT's own
-    plain-text body are byte-identical post-fix.
+    channel.
+
+    2026-10 plain-text reversal (supersedes the `_html_to_plain` fix
+    described above) — every real producer (gtt_asymmetric,
+    oco_double_fire, ticker_recovered, ticker_degraded,
+    deploy_out_of_sync, visitor_report, user_registered, the unrouted
+    catch-all) now builds `extra["body"]` as plain text; visitor_report's
+    `<b>Visitors...</b>` wrap and `routes/auth.py`'s `html.escape()`'d
+    username/email were the last two HTML-shaped producers and are fixed
+    at the source. `body` is used directly for both slots — no
+    `_html_to_plain` pass, since running that tag-stripping regex over
+    text that is genuinely plain (not just "no tags today") risks
+    deleting a literal `<`/`>` in real data.
     """
-    from backend.shared.helpers.alert_utils import _html_to_plain
     x = rec.get("extra") or {}
     title = x.get("title") or "Deploy out of sync"
     body = x.get("body") or ""
-    return title, _html_to_plain(body), body
+    return title, body, body
 
 
 def _render_rich_alert(rec: dict) -> tuple:
-    """A threshold ('cycle') agent fired — full rich alert table."""
-    from backend.shared.helpers.alert_utils import dispatch_payload, _html_to_plain
+    """A threshold ('cycle') agent fired — full rich alert table.
+
+    2026-10 plain-text reversal: `dispatch_payload()`'s `telegram_msg` is
+    now plain text, used directly for both slots — no `_html_to_plain`.
+    """
+    from backend.shared.helpers.alert_utils import dispatch_payload
     x = rec.get("extra") or {}
     p = dispatch_payload("alert", x["ist_display"], x["tg_table"], x["email_table_html"],
                          x["subject_detail"], sim_mode=bool(x.get("sim_mode")),
                          mode_tag=x.get("mode_tag") or "",
                          agent_name=x.get("agent_name"), agent_id=x.get("agent_id"))
-    return p["title"], _html_to_plain(p["telegram_msg"]), p["telegram_msg"], (p["email_subject"], p["email_html"])
+    return p["title"], p["telegram_msg"], p["telegram_msg"], (p["email_subject"], p["email_html"])
 
 
 def _render_summary(rec: dict) -> tuple:
-    """Open/close market performance summary."""
-    from backend.shared.helpers.alert_utils import dispatch_payload, _html_to_plain
+    """Open/close market performance summary. Plain text (2026-10
+    reversal) — see `_render_rich_alert`'s docstring."""
+    from backend.shared.helpers.alert_utils import dispatch_payload
     x = rec.get("extra") or {}
     p = dispatch_payload(x["msg_type"], x["ist_display"], x["tg_table"], x["email_table_html"],
                          x["subject_detail"], sim_mode=False, mode_tag="")
-    return p["title"], _html_to_plain(p["telegram_msg"]), p["telegram_msg"], (p["email_subject"], p["email_html"])
+    return p["title"], p["telegram_msg"], p["telegram_msg"], (p["email_subject"], p["email_html"])
 
 
 def _render_breach(rec: dict) -> tuple:
@@ -360,9 +409,14 @@ def _render_error(rec: dict) -> tuple[str, str, str]:
     suffix = f" (+{repeats} repeats)" if repeats else ""
     ts = timestamp_display()
     origin_line = format_notification_header(None, x.get("agent_id"), ist_display=ts).splitlines()[0]
-    tg = (f"{html.escape(origin_line)}\n<b>RamboQuant error</b>\n<code>{html.escape(name)}</code>\n"
-          f"{html.escape(msg)}{html.escape(suffix)}\n{html.escape(ts)}")
-    return "RamboQuant error", f"{origin_line}\n{name}\n{msg}{suffix}\n{ts}", tg
+    # ntfy already shows "RamboQuant error" as its separate Title header
+    # (passed through below), so its body omits the redundant line — same
+    # shape as before this fix. Telegram has no separate title mechanism,
+    # so its body keeps that line, now as plain text (2026-10 reversal —
+    # no `<b>`/`<code>` tags, no `html.escape()`).
+    ntfy_body = f"{origin_line}\n{name}\n{msg}{suffix}\n{ts}"
+    tg_body = f"{origin_line}\nRamboQuant error\n{name}\n{msg}{suffix}\n{ts}"
+    return "RamboQuant error", ntfy_body, tg_body
 
 
 def register_renderer(name: str):
@@ -396,8 +450,13 @@ def _send_ntfy(title: str, body: str, tg: str | None = None, priority: str | Non
 
 
 def _send_telegram_html(title: str, body: str, tg: str | None = None) -> None:
+    """Despite the `_html` suffix (kept for name stability — several
+    tests `patch.object`/`CHANNELS`-swap this function by name), this is
+    now a plain-text send: 2026-10 reversal, no `<b>`/`<code>` wrap and
+    no `html.escape()` — `tg`, when a renderer supplies one, is already
+    plain text (every renderer in this file builds it that way now)."""
     from backend.shared.helpers import alert_utils
-    alert_utils._send_telegram(tg or f"<b>{html.escape(title)}</b>\n{html.escape(body)}")
+    alert_utils._send_telegram(tg or f"{title}\n{body}")
 
 
 
@@ -440,8 +499,28 @@ def _send_email_channel(title: str, body: str, tg: str | None = None,
 
 
 def _send_telegram_info_html(title: str, body: str, tg: str | None = None) -> None:
+    """Plain-text send (see `_send_telegram_html`'s docstring for why the
+    `_html` suffix is kept despite no HTML being built here any more)."""
     from backend.shared.helpers import alert_utils
-    alert_utils._send_telegram_info(tg or f"<b>{html.escape(title)}</b>\n{html.escape(body)}")
+    alert_utils._send_telegram_info(tg or f"{title}\n{body}")
+
+
+def _send_telegram_deploy_html(title: str, body: str, tg: str | None = None) -> None:
+    """Deploy-sync-drift alerts (`deploy-sync-alert`) post to a DEDICATED
+    Telegram bot/chat — secrets `telegram_bot_token_deploy`/
+    `telegram_chat_id_deploy`, falling back to the general ops bot/chat
+    when either is absent — the SAME fallback pair `webhook/
+    notify_deploy.py` (the standalone deploy script) already uses for its
+    own, separate deploy-OK/FAIL pings. Operator instruction (2026-10):
+    this agent must reach "the telegram code deployment alerts channel
+    alone" — never the generic `telegram` channel, never ntfy, never
+    email. Plain text, same convention as every other send in this
+    file post-reversal."""
+    from backend.shared.helpers import alert_utils
+    from backend.shared.helpers.utils import secrets
+    token = secrets.get('telegram_bot_token_deploy') or secrets.get('telegram_bot_token', '')
+    chat_id = secrets.get('telegram_chat_id_deploy') or secrets.get('telegram_chat_id', '')
+    alert_utils._send_telegram(tg or f"{title}\n{body}", token=token, chat_id=chat_id)
 
 
 def _send_log_channel(title: str, body: str, tg: str | None = None, *,
@@ -476,6 +555,12 @@ CHANNELS = {
     "ntfy": ("ntfy", _send_ntfy),
     "telegram": ("telegram", _send_telegram_html),
     "telegram_info": (None, _send_telegram_info_html),
+    # Dedicated deploy-alerts Telegram bot/chat — see
+    # `_send_telegram_deploy_html`'s own docstring. No separate
+    # capability gate (`None`, matching `telegram_info`'s own entry) —
+    # `_send_telegram()` itself already gates on the `telegram`
+    # capability internally.
+    "telegram_deploy": (None, _send_telegram_deploy_html),
     "email": ("mail", _send_email_channel),
     "log": (None, _send_log_channel),
 }
@@ -525,7 +610,22 @@ async def _send_channel(ch: dict, out: tuple, agent) -> bool:
         priority = _TIER_TO_NTFY_PRIORITY.get(getattr(agent, "tier", None))
     kwargs = {"priority": priority} if priority else {}
     if ch.get("channel") == "email":
-        kwargs["email"] = out[3] if len(out) > 3 else None
+        # A renderer that never built a structured (subject, html_body)
+        # pair (`len(out) <= 3` — e.g. `_render_chase_cancel`/
+        # `_render_order_correction`, both bare 2-tuples) still needs a
+        # real email body when routed to this channel — most commonly
+        # via `_apply_action_required_email_gate` synthesizing an entry
+        # for an agent whose renderer never anticipated email. Falls
+        # back to the plain `body` wrapped in `<pre>` so it's readable
+        # and a raw `<`/`>` in the text can't corrupt the markup.
+        email_payload = out[3] if len(out) > 3 else None
+        if not email_payload:
+            email_payload = (
+                f"RamboQuant {title}",
+                f"<html><body><pre style='white-space:pre-wrap;font-family:monospace'>"
+                f"{html.escape(body)}</pre></body></html>",
+            )
+        kwargs["email"] = email_payload
         kwargs["recipients"] = ch.get("recipients")
     if ch.get("channel") == "log":
         kwargs["log_line"] = ch.get("log_line")
@@ -571,9 +671,18 @@ async def _dispatch_record_channels(
     10-23) purely to keep that function's cyclomatic complexity within
     the project's radon gate — no behavior change beyond the binary
     ntfy action-required gate itself.
+
+    2026-10 forced-email gate: `_apply_action_required_email_gate` runs
+    once against the whole `channels` list (not per-channel like the
+    ntfy gate below, since it may need to APPEND a new entry) so an
+    action-required record always reaches email even when the
+    dispatching agent's own resolved channel list never listed one.
+    `log_only` filtering in the loop below still applies to the
+    synthesized entry exactly like any other channel.
     """
     rec_priority = _rec_tracked_ntfy_priority(rec)
     action_required = (rec.get("extra") or {}).get("action_required")
+    channels = _apply_action_required_email_gate(channels, action_required)
     sent = 0
     for ch in channels:
         channel_name = ch.get("channel") if isinstance(ch, dict) else None
@@ -740,6 +849,39 @@ def _apply_action_required_ntfy_gate(ch: dict, action_required: "bool | None") -
     if action_required is True:
         return {**ch, "priority": "urgent"}
     return ch
+
+
+def _apply_action_required_email_gate(channels: list, action_required: "bool | None") -> list:
+    """2026-10 forced-email gate, mirroring
+    `_apply_action_required_ntfy_gate` above — "Action-required alerts
+    go to both ntfy (already gated) and email" (operator requirement
+    #5). Operates on the whole CHANNEL LIST (not one channel dict at a
+    time, like the ntfy gate) because it may need to APPEND a new entry
+    rather than mutate an existing one.
+
+      - `action_required is True` and no `email` entry already present
+        -> appends one (`enabled: True, gate: False` — same
+        always-fires convention `order-failure-alert`'s own static
+        email entry already uses, since the whole point of this gate is
+        an action-required alert must not be silently skipped by a
+        capability toggle).
+      - `action_required is True` and an `email` entry already exists
+        (e.g. `order-failure-alert`'s static per-slug list) -> the list
+        is returned unchanged; this gate never duplicates an entry.
+      - `False` or `None` (absent, the default for every record type not
+        yet tagged) -> the list is returned unchanged, same conservative
+        default as the ntfy gate (a pure-FYI or untagged record must
+        never GAIN a channel it didn't already have).
+
+    `_send_channel`'s own email branch supplies a default `<pre>`-wrapped
+    plain-text body for a renderer (`_render_chase_cancel`,
+    `_render_order_correction`) that never built a structured
+    `(subject, html_body)` 4th tuple element — see its own comment."""
+    if action_required is not True:
+        return channels
+    if any(isinstance(c, dict) and c.get("channel") == "email" for c in channels):
+        return channels
+    return [*channels, {"channel": "email", "enabled": True, "gate": False}]
 
 
 async def dispatch(records: list[dict], agents: list) -> int:

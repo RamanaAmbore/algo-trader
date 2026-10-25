@@ -98,6 +98,63 @@ class TestSendTelegramGuard:
 
             mock_requests.post.assert_called_once()
 
+    @pytest.mark.alert_transport
+    def test_no_parse_mode_sent_by_default(self):
+        """2026-10 plain-text reversal: `_send_telegram()` no longer
+        requests `parse_mode: HTML` (or any parse mode) unless a caller
+        explicitly passes one — no caller in this codebase does any
+        more."""
+        mock_resp = MagicMock(ok=True)
+        with patch("backend.shared.helpers.alert_utils.secrets", _FAKE_TG_SECRETS), \
+             patch("backend.shared.helpers.alert_utils.is_enabled", return_value=True), \
+             patch("backend.shared.helpers.alert_utils.requests") as mock_requests:
+            mock_requests.post.return_value = mock_resp
+
+            from backend.shared.helpers.alert_utils import _send_telegram
+            _send_telegram("plain text message")
+
+            payload = mock_requests.post.call_args.kwargs["json"]
+            assert payload == {"chat_id": "chat-456", "text": "plain text message"}
+            assert "parse_mode" not in payload
+
+    @pytest.mark.alert_transport
+    def test_token_and_chat_id_override_the_default_secrets(self):
+        """`token`/`chat_id` kwargs let a caller post to a DIFFERENT
+        bot/chat than the default ops channel — the dedicated
+        deploy-alerts channel (`event_agents.py:
+        _send_telegram_deploy_html`) is the one real caller today."""
+        mock_resp = MagicMock(ok=True)
+        with patch("backend.shared.helpers.alert_utils.secrets", _FAKE_TG_SECRETS), \
+             patch("backend.shared.helpers.alert_utils.is_enabled", return_value=True), \
+             patch("backend.shared.helpers.alert_utils.requests") as mock_requests:
+            mock_requests.post.return_value = mock_resp
+
+            from backend.shared.helpers.alert_utils import _send_telegram
+            _send_telegram("deploy message", token="deploy-tok", chat_id="deploy-chat")
+
+            url = mock_requests.post.call_args.args[0]
+            payload = mock_requests.post.call_args.kwargs["json"]
+            assert "deploy-tok" in url
+            assert payload["chat_id"] == "deploy-chat"
+
+    @pytest.mark.alert_transport
+    def test_token_and_chat_id_fall_back_to_default_secrets_when_omitted(self):
+        """Omitting `token`/`chat_id` is byte-identical to the
+        pre-existing single-channel behavior."""
+        mock_resp = MagicMock(ok=True)
+        with patch("backend.shared.helpers.alert_utils.secrets", _FAKE_TG_SECRETS), \
+             patch("backend.shared.helpers.alert_utils.is_enabled", return_value=True), \
+             patch("backend.shared.helpers.alert_utils.requests") as mock_requests:
+            mock_requests.post.return_value = mock_resp
+
+            from backend.shared.helpers.alert_utils import _send_telegram
+            _send_telegram("default channel message")
+
+            url = mock_requests.post.call_args.args[0]
+            payload = mock_requests.post.call_args.kwargs["json"]
+            assert "tok-123" in url
+            assert payload["chat_id"] == "chat-456"
+
 
 # ---------------------------------------------------------------------------
 # _send_telegram_info

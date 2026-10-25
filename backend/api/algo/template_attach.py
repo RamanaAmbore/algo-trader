@@ -224,37 +224,32 @@ _OPT_SYM_RE = re.compile(
 def template_guard_message(*, template_slug, applies_to, reason, parent_order_id, parent_side,
                            parent_qty, parent_symbol, parent_fill_price, parent_account, ist_label,
                            agent_id: "int | None" = None) -> str:
-    """Telegram-HTML body of the template guard alert. Pure; shared by the sender and the renderer."""
-    import html as _html
+    """Plain-text body of the template guard alert (2026-10 reversal —
+    no HTML tags/escaping; Telegram and ntfy are both plain text now).
+    Pure; shared by the sender and the renderer."""
     from backend.shared.helpers.utils import mask_account
     from backend.shared.helpers.alert_utils import format_notification_header
-    reason_html        = _html.escape(str(reason))
-    applies_to_html    = _html.escape(str(applies_to))
-    template_slug_html = _html.escape(str(template_slug))
     # Account masked (2026-10 audit fix) — matches the masking convention
     # every other correctly-masked alert path already uses.
     masked_account = mask_account(parent_account) if parent_account else parent_account
     # 2026-10 audit fix: origin header leads every alert — this order is
     # always order-scoped (`AlgoOrder.agent_id`), so `agent_id` resolves
     # to "manual" for a human-placed order, the real agent name otherwise.
-    origin_header = _html.escape(
-        format_notification_header(None, agent_id, ist_display=ist_label).splitlines()[0]
-    )
+    origin_header = format_notification_header(None, agent_id, ist_display=ist_label).splitlines()[0]
 
     tg_msg = (
         f"{origin_header}\n"
-        f"<b>⚠ Template guard fired — {ist_label}</b>\n\n"
-        f"<code>"
+        f"⚠ Template guard fired — {ist_label}\n\n"
         f"order #{parent_order_id}\n"
         f"{parent_side} {parent_qty} {parent_symbol}\n"
         f"@ ₹{parent_fill_price:.2f}  ({masked_account})\n\n"
-        f"template:    {template_slug_html}\n"
-        f"applies_to:  {applies_to_html}\n"
-        f"reason:      {reason_html}\n\n"
+        f"template:    {template_slug}\n"
+        f"applies_to:  {applies_to}\n"
+        f"reason:      {reason}\n\n"
         f"Parent order FILLED. Exits NOT attached.\n"
         f"Arm exits manually if needed.\n\n"
         f"Fix: at /admin/templates, change this template's "
-        f"'applies_to' to 'both' or 'buy_option'.</code>"
+        f"'applies_to' to 'both' or 'buy_option'."
     )
     return tg_msg
 
@@ -308,14 +303,14 @@ def _fire_guard_alert(*, template_slug: str, applies_to: str,
     # str() first — these are typed `str` in the signature but a caller
     # can pass None in practice (e.g. `template.get("slug")` on a DB row
     # with slug=NULL is `None`, not the dict-default "?" — .get()'s
-    # default only applies when the KEY is absent). html.escape(None)
-    # raises AttributeError on this fire-and-forget alert path
-    # (documented "never blocks the fill pipeline"); str(None) == "None"
-    # matches the pre-fix f-string rendering exactly.
+    # default only applies when the KEY is absent). `template_guard_message()`
+    # f-string-interpolates `template_slug` directly (no more
+    # `html.escape()`, 2026-10 plain-text reversal), so a `None` slug
+    # renders as the literal text "None" with no risk of a crash.
     logger.info(
         f"guard alert dispatched: {summary}",
         extra={
-            "tags": ["orders"], "alert_event": "template_guard",
+            "tags": ["orders", "alert"], "alert_event": "template_guard",
             "template_slug": template_slug, "applies_to": applies_to, "reason": reason,
             "parent_order_id": parent_order_id, "parent_side": parent_side,
             "parent_qty": parent_qty, "parent_symbol": parent_symbol,
@@ -394,25 +389,32 @@ def _fire_wing_unprotected_alert(
     parent_symbol: str,
     parent_exchange: str,
 ) -> None:
-    """(#28B) Fire urgent ntfy when GTTs placed but wing failed post-fill."""
+    """(#28B) Fire urgent ntfy when GTTs placed but wing failed post-fill.
+
+    `agent_id` reads off `result.plan.parent_agent_id` — the plan is
+    always resolved (and `parent_agent_id` already stamped onto it, see
+    `_apply_template_to_order_impl`) by the time a caller reaches this
+    point, so no new parameter is needed to thread origin through."""
     msg = (
         f"GTTs placed (ids: {result.gtt_ids}) but wing failed: "
         f"{wing_skipped_reason} | order #{parent_order_id} "
         f"{parent_symbol} {parent_exchange}"
     )
+    agent_id = getattr(result.plan, "parent_agent_id", None) if result.plan else None
     logger.warning(
         "[WING-UNPROTECTED] %s", msg,
-        extra={"tags": ["orders", "gtt"], "alert_event": "wing_unprotected",
+        extra={"tags": ["orders", "gtt", "alert"], "alert_event": "wing_unprotected",
                "gtt_ids_text": str(result.gtt_ids), "reason": str(wing_skipped_reason),
                "parent_order_id": parent_order_id, "symbol": parent_symbol,
-               "exchange": parent_exchange},
+               "exchange": parent_exchange, "agent_id": agent_id},
     )
 
 
 def template_attach_fail_message(*, order_id, symbol, account, err_summary, ist_label,
                                   agent_id: "int | None" = None,
                                   placed_untracked_ids: "list | None" = None) -> str:
-    """Telegram-HTML body of the template attach failure alert. Pure; shared by sender and renderer.
+    """Plain-text body of the template attach failure alert (2026-10
+    reversal — no HTML tags/escaping). Pure; shared by sender and renderer.
 
     `placed_untracked_ids` (T16 fix, 2026-10-23) — set ONLY when the
     exits genuinely placed at the broker (GTT ids / wing order id) but
@@ -421,31 +423,25 @@ def template_attach_fail_message(*, order_id, symbol, account, err_summary, ist_
     ("Exits NOT attached. Arm exits manually if needed.") is actively
     WRONG and dangerous in that case — live exits already exist at the
     broker; an operator who follows that instruction and arms a SECOND
-    set of exits can over-close or flip the position. Left at its
-    default (None) the rendered text is byte-identical to before this
-    param existed — required for `test_alert_golden.py`'s existing
-    golden-text assertion.
+    set of exits can over-close or flip the position.
     """
-    import html as _html
     from backend.shared.helpers.utils import mask_account, mask_account_in_text
     from backend.shared.helpers.alert_utils import format_notification_header
-    # Escape before embedding: err_summary is raw broker/guard text and may hold a literal '<'.
-    # 2026-10 notification-masking audit: err_summary is free-caller text
-    # (e.g. a broker-resolution failure) that can embed a raw account code
-    # — scrub as defense-in-depth, matching `order_failure_messages()`'s
-    # existing pattern. Mask before escape so the regex sees plain text.
-    err_summary_html = _html.escape(mask_account_in_text(err_summary) or err_summary)
+    # 2026-10-23 notification-masking audit: err_summary is free-caller
+    # text (e.g. a broker-resolution failure) that can embed a raw
+    # account code — scrub as defense-in-depth, matching
+    # `order_failure_messages()`'s existing pattern. No HTML-escaping
+    # needed any more — plain text displays a literal '<' safely.
+    err_summary_plain = mask_account_in_text(err_summary) or err_summary
     # Account masked (2026-10 audit fix) — matches the masking convention
     # every other correctly-masked alert path already uses.
     masked_account = mask_account(account) if account else account
     # 2026-10 audit fix: origin header leads every alert.
-    origin_header = _html.escape(
-        format_notification_header(None, agent_id, ist_display=ist_label).splitlines()[0]
-    )
+    origin_header = format_notification_header(None, agent_id, ist_display=ist_label).splitlines()[0]
     if placed_untracked_ids:
-        _ids_html = _html.escape(", ".join(str(i) for i in placed_untracked_ids))
+        ids_plain = ", ".join(str(i) for i in placed_untracked_ids)
         footer = (
-            f"Exits PLACED at broker (ids {_ids_html}) but NOT recorded — "
+            f"Exits PLACED at broker (ids {ids_plain}) but NOT recorded — "
             f"OCO/trailing/cancel-on-close won't track them.\n"
             f"Do NOT arm manually; reconcile the broker GTT book."
         )
@@ -456,13 +452,12 @@ def template_attach_fail_message(*, order_id, symbol, account, err_summary, ist_
         )
     return (
         f"{origin_header}\n"
-        f"<b>⚠ Template attach failed — {ist_label}</b>\n\n"
-        f"<code>"
+        f"⚠ Template attach failed — {ist_label}\n\n"
         f"order #{order_id}\n"
         f"symbol:   {symbol}\n"
         f"account:  {masked_account}\n\n"
-        f"errors:   {err_summary_html}\n\n"
-        f"{footer}</code>"
+        f"errors:   {err_summary_plain}\n\n"
+        f"{footer}"
     )
 
 
@@ -513,7 +508,7 @@ def _fire_attach_fail_alert(
         "attach fail alert dispatched: order #%s %s %s errors=[%s]",
         order_id, symbol, account, err_summary,
         extra={
-            "tags": ["orders"], "alert_event": "template_attach_fail",
+            "tags": ["orders", "alert"], "alert_event": "template_attach_fail",
             "order_id": order_id, "symbol": symbol, "account": account,
             "err_summary": err_summary, "ist_label": ist_label, "agent_id": agent_id,
             "placed_untracked_ids": placed_untracked_ids,
@@ -795,6 +790,7 @@ async def _pick_wing_by_premium(
     parent_exchange:  str,
     parent_fill_price: float,
     wing_premium_pct: float,
+    parent_agent_id:  "int | None" = None,
 ) -> tuple[Optional[str], Optional[float], str]:
     """Scan the option chain and pick a wing strike whose premium is
     closest to `parent_fill_price × wing_premium_pct / 100`, subject
@@ -894,9 +890,10 @@ async def _pick_wing_by_premium(
         logger.critical(
             "[WING-HARD-REJECT] %s (parent=%s, exch=%s)",
             _hr_reason, parent_symbol, parent_exchange,
-            extra={"tags": ["orders", "gtt"], "alert_event": "wing_hard_reject",
+            extra={"tags": ["orders", "gtt", "alert"], "alert_event": "wing_hard_reject",
                    "reason": str(_hr_reason), "symbol": parent_symbol,
-                   "exchange": parent_exchange, "target_premium": float(target_premium)},
+                   "exchange": parent_exchange, "target_premium": float(target_premium),
+                   "agent_id": parent_agent_id},
         )
         return None, None, f"wing_premium_pct hard-reject: {_hr_reason}"
 
@@ -2086,7 +2083,7 @@ def _ta_live_place_one_gtt(
                 )
                 logger.error(
                     "GTT %s for %s not accepted: %s", spec.label, plan.parent_symbol, _gtt_reason,
-                    extra={"tags": ["orders", "gtt"], "alert_event": "gtt_not_accepted",
+                    extra={"tags": ["orders", "gtt", "alert"], "alert_event": "gtt_not_accepted",
                            "symbol": plan.parent_symbol, "label": spec.label,
                            "gtt_id": str(gtt_id), "reason": _gtt_reason,
                            "agent_id": plan.parent_agent_id},
@@ -2105,7 +2102,7 @@ def _ta_live_place_one_gtt(
                 logger.error(
                     "GTT %s for %s not accepted: %s (cancelled)", spec.label,
                     plan.parent_symbol, _gtt_reason,
-                    extra={"tags": ["orders", "gtt"], "alert_event": "gtt_not_accepted",
+                    extra={"tags": ["orders", "gtt", "alert"], "alert_event": "gtt_not_accepted",
                            "symbol": plan.parent_symbol, "label": spec.label,
                            "gtt_id": str(gtt_id), "reason": _gtt_reason,
                            "agent_id": plan.parent_agent_id},
@@ -3039,6 +3036,7 @@ async def _maybe_scan_wing_by_premium(
     parent_exchange:   str,
     parent_fill_price: float,
     parent_order_id:   Optional[int] = None,
+    parent_agent_id:   "int | None" = None,
 ) -> tuple[dict, Optional[str], Optional[str]]:
     """Phase 1B — when the template's wing mode is premium% AND the
     operator has not supplied an explicit wing_strike_offset, run the
@@ -3066,6 +3064,7 @@ async def _maybe_scan_wing_by_premium(
             parent_exchange=parent_exchange,
             parent_fill_price=parent_fill_price,
             wing_premium_pct=wing_pct,
+            parent_agent_id=parent_agent_id,
         )
     except Exception as e:
         wsym, wltp, reason = None, None, f"wing_premium_pct scan errored: {e}"
@@ -3082,9 +3081,9 @@ async def _maybe_scan_wing_by_premium(
     logger.warning(
         "[WING-SKIP] wing scan returned no candidate for order #%s %s: %s",
         parent_order_id, parent_symbol, reason,
-        extra={"tags": ["orders", "gtt"], "alert_event": "wing_skip", "reason": str(reason),
+        extra={"tags": ["orders", "gtt", "alert"], "alert_event": "wing_skip", "reason": str(reason),
                "parent_order_id": parent_order_id, "symbol": parent_symbol,
-               "exchange": parent_exchange},
+               "exchange": parent_exchange, "agent_id": parent_agent_id},
     )
 
     return overrides, reason, reason
@@ -3126,6 +3125,7 @@ async def _maybe_fetch_wing_quote_for_offset(
     parent_symbol:     str,
     parent_exchange:   str,
     parent_order_id:   Optional[int] = None,
+    parent_agent_id:   "int | None" = None,
 ) -> tuple[dict, Optional[str], Optional[str]]:
     """BUY-parent LIMIT offset leg, manual `wing_strike_offset` path.
 
@@ -3171,9 +3171,9 @@ async def _maybe_fetch_wing_quote_for_offset(
     logger.warning(
         "[WING-OFFSET-SKIP] order #%s %s: %s",
         parent_order_id, parent_symbol, reason,
-        extra={"tags": ["orders", "gtt"], "alert_event": "wing_offset_skip", "reason": str(reason),
+        extra={"tags": ["orders", "gtt", "alert"], "alert_event": "wing_offset_skip", "reason": str(reason),
                "parent_order_id": parent_order_id, "symbol": parent_symbol,
-               "exchange": parent_exchange},
+               "exchange": parent_exchange, "agent_id": parent_agent_id},
     )
     return overrides, reason, reason
 
@@ -3232,6 +3232,7 @@ async def _resolve_wing_pricing(
     parent_exchange:   str,
     parent_fill_price: float,
     parent_order_id:   Optional[int] = None,
+    parent_agent_id:   "int | None" = None,
 ) -> tuple[dict, Optional[str], Optional[str]]:
     """Resolve any live wing/offset pricing needed before `resolve_template_plan`
     runs — the wing_premium_pct chain scan (either direction) followed by
@@ -3245,11 +3246,12 @@ async def _resolve_wing_pricing(
     overrides, wing_scan_note, wing_skipped_reason = await _maybe_scan_wing_by_premium(
         template, overrides, parent_side, parent_symbol,
         parent_exchange, parent_fill_price,
-        parent_order_id=parent_order_id,
+        parent_order_id=parent_order_id, parent_agent_id=parent_agent_id,
     )
     overrides, offset_note, offset_skip = await _maybe_fetch_wing_quote_for_offset(
         template, overrides, parent_side, parent_symbol,
         parent_exchange, parent_order_id=parent_order_id,
+        parent_agent_id=parent_agent_id,
     )
     return overrides, (wing_scan_note or offset_note), (wing_skipped_reason or offset_skip)
 
@@ -3493,7 +3495,7 @@ async def _apply_template_to_order_impl(
     overrides, wing_scan_note, wing_skipped_reason = await _resolve_wing_pricing(
         template, overrides, parent_side, parent_symbol,
         parent_exchange, parent_fill_price,
-        parent_order_id=parent_order_id,
+        parent_order_id=parent_order_id, parent_agent_id=parent_agent_id,
     )
 
     plan = resolve_template_plan(

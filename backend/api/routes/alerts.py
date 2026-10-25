@@ -4,6 +4,17 @@ Alert history endpoint.
 GET /api/admin/alerts/history — recent agent_events with agent name and
                                 structured summary, newest-first.
 
+Also merges in `LogEvent` rows tagged `"alert"` (2026-10) — the
+`kind='event'` log-tag agent pipeline (`event_agents.py`'s
+`dispatch()`/`_dispatch_agent`) delivers Telegram/ntfy/email directly
+and writes NOTHING to any DB table, so before this merge those alerts
+(order-failure, fill, chase-cancel, partial-gtt, template-attach,
+gtt-not-accepted, order-correction, mcp-ping) were invisible in this
+endpoint and the Alerts tab that reads it. `rich_alert`/`breach` log
+records are deliberately NOT tagged `"alert"` — both already have a
+real originating cycle-agent firing recorded as an `AgentEvent` row, so
+tagging them here would double the same firing in the merged response.
+
 Admin-only. No demo access.
 """
 
@@ -18,13 +29,25 @@ from sqlalchemy import select
 
 from backend.api.auth_guard import admin_guard
 from backend.api.database import async_session
-from backend.api.models import Agent, AgentEvent
+from backend.api.models import Agent, AgentEvent, LogEvent
 from backend.shared.helpers.date_time_utils import format_dual_tz
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
 
 _VALID_EVENT_TYPES = {"triggered", "action_success", "action_failed", "cooldown"}
+
+# `event_type` literal for a LogEvent-sourced row — distinguishes it
+# from the four real AgentEvent lifecycle values above; never matched
+# against `_VALID_EVENT_TYPES` since the LogEvent branch is skipped
+# whenever an `event_type` filter is active (see `alert_history`).
+_LOG_ALERT_EVENT_TYPE = "log_alert"
+
+# `AlertEvent.agent_id` is a non-optional int (the AgentEvent FK) — a
+# LogEvent-sourced row has no real Agent row to point at, so this
+# reserved sentinel (0, never a real autoincrement id) fills the field
+# rather than lying about an agent that doesn't exist.
+_LOG_ALERT_AGENT_ID_SENTINEL = 0
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +155,62 @@ def _build_history_stmt(
 
 
 # ---------------------------------------------------------------------------
+# LogEvent ("alert"-tagged) merge — the log-tag event-agent pipeline
+# ---------------------------------------------------------------------------
+
+def _build_log_alert_stmt(effective_limit: int, since_dt: Optional[datetime]):
+    """Select statement for `LogEvent` rows tagged `"alert"`.
+
+    `sim_mode` is NOT filtered in SQL — it lives inside the JSONB
+    `extra` column (`extra->>'sim_mode'`), not a dedicated column the
+    way `AgentEvent.sim_mode` is, so it is checked in Python after
+    fetch (see `alert_history`). Same `since_dt`/`effective_limit`
+    bounds as the AgentEvent query above, independently applied —
+    both lists are merged and re-truncated to `effective_limit` after
+    sorting by their real timestamps."""
+    stmt = (
+        select(LogEvent)
+        .where(LogEvent.tags.overlap(["alert"]))
+        .order_by(LogEvent.ts.desc())
+        .limit(effective_limit)
+    )
+    if since_dt is not None:
+        stmt = stmt.where(LogEvent.ts >= since_dt)
+    return stmt
+
+
+def _log_event_agent_label(logger_name: Optional[str]) -> str:
+    """Best-effort `agent_name` for a LogEvent-sourced row — there is no
+    real Agent row behind a log-tag alert, so this is the last dotted
+    segment of the producing logger's name (e.g. "chase" for
+    `backend.api.algo.chase`), matching `log_store.py:tags_for()`'s own
+    logger-name fallback convention. Falls back to the literal "system"
+    when even that's empty (defensive; every real logger name is
+    non-empty in practice)."""
+    name = (logger_name or "").rsplit(".", 1)[-1]
+    return name or "system"
+
+
+def _log_event_to_alert(event: LogEvent) -> AlertEvent:
+    """Map one `LogEvent` row into the same `AlertEvent` struct the
+    AgentEvent query returns, so `LogPanel.svelte`'s Alerts tab needs no
+    frontend change at all — it already consumes whatever AlertEvent-
+    shaped rows this endpoint returns, by field name."""
+    extra = event.extra or {}
+    return AlertEvent(
+        id=-event.id,
+        agent_id=_LOG_ALERT_AGENT_ID_SENTINEL,
+        agent_name=_log_event_agent_label(event.logger),
+        event_type=_LOG_ALERT_EVENT_TYPE,
+        triggered_at=format_dual_tz(event.ts),
+        conditions_summary=_truncate(event.message, 200),
+        channels_sent=[],
+        sim_mode=bool(extra.get("sim_mode", False)),
+        detail=_truncate(event.message),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Controller
 # ---------------------------------------------------------------------------
 
@@ -165,6 +244,12 @@ class AlertsController(Controller):
                            (omit for all types).
           sim_mode       — False (default) returns live events;
                            True returns simulator events.
+
+        Also merges in `LogEvent` rows tagged `"alert"` (2026-10) — see
+        the module docstring. Skipped entirely when `agent_id`,
+        `agent_slug`, or `event_type` is set: a LogEvent-sourced row has
+        no real Agent FK to filter by, and an agent-scoped or
+        event_type-scoped view must not fill with unrelated rows.
         """
         if event_type and event_type not in _VALID_EVENT_TYPES:
             raise HTTPException(
@@ -192,9 +277,12 @@ class AlertsController(Controller):
             logger.error(f"AlertsController.alert_history DB error: {exc}")
             raise HTTPException(status_code=500, detail="Failed to query alert history")
 
-        result: list[AlertEvent] = []
+        # (real_ts, AlertEvent) pairs — sorted/truncated by the REAL
+        # underlying timestamp below, never the already dual-tz-formatted
+        # `triggered_at` display string.
+        items: list[tuple[datetime, AlertEvent]] = []
         for event, agent in rows:
-            result.append(AlertEvent(
+            items.append((event.timestamp, AlertEvent(
                 id=event.id,
                 agent_id=event.agent_id,
                 agent_name=agent.name,
@@ -204,5 +292,25 @@ class AlertsController(Controller):
                 channels_sent=_channels_from_detail(event),
                 sim_mode=event.sim_mode,
                 detail=_truncate(event.detail),
-            ))
-        return result
+            )))
+
+        if agent_id is None and agent_slug is None and event_type is None:
+            try:
+                async with async_session() as session:
+                    log_stmt = _build_log_alert_stmt(effective_limit, since_dt)
+                    log_rows = (await session.execute(log_stmt)).scalars().all()
+            except Exception as exc:
+                logger.error(f"AlertsController.alert_history LogEvent query failed: {exc}")
+                log_rows = []
+            for log_event in log_rows:
+                extra = log_event.extra or {}
+                # `sim_mode` lives in JSONB `extra`, not a dedicated
+                # column — absent means False (CLAUDE.md missing-vs-zero
+                # convention: a producer that never set it is a live
+                # record, not an unknown one).
+                if bool(extra.get("sim_mode", False)) != sim_mode:
+                    continue
+                items.append((log_event.ts, _log_event_to_alert(log_event)))
+
+        items.sort(key=lambda pair: pair[0], reverse=True)
+        return [alert for _, alert in items[:effective_limit]]

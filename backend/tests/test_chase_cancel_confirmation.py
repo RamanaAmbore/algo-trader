@@ -181,7 +181,9 @@ class TestCancelAndCaptureAbortsOnUnconfirmed:
         assert "not confirmed" in early.detail.lower() or "unconfirmed" in early.detail.lower()
         mock_log.critical.assert_called_once()
         extra = mock_log.critical.call_args.kwargs["extra"]
-        assert extra["tags"] == ["chase"]
+        # "alert" (2026-10) — additive tag surfacing this record in
+        # /admin/alerts/history alongside real AgentEvent rows.
+        assert extra["tags"] == ["chase", "alert"]
         assert extra["alert_event"] == "cancel_unconfirmed"
 
     @pytest.mark.asyncio

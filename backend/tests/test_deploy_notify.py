@@ -107,13 +107,16 @@ class TestCapGating:
         mock_ntfy.assert_not_called()
         mock_tg.assert_not_called()
 
-    def test_main_branch_fires_ntfy_and_telegram(self):
-        """main branch fires both ntfy and Telegram."""
+    def test_main_branch_fires_telegram_only_never_ntfy(self):
+        """main branch fires Telegram only. 2026-10 operator requirement
+        #4 (deploy/code-deployment alerts never go to ntfy or email):
+        the ntfy send was removed from `notify_deploy.py` entirely —
+        was `test_main_branch_fires_ntfy_and_telegram`, asserting the
+        opposite; this is an explicitly-sanctioned behavior change, not
+        a regression."""
         cfg = {"deploy_branch": "main", "cap_in_dev": {"notify_on_deploy": False}}
         mock_ntfy, mock_tg = _run_main(cfg, branch="main")
-        mock_ntfy.assert_called_once()
-        req = mock_ntfy.call_args[0][0]
-        assert "ntfy.sh" in req.full_url
+        mock_ntfy.assert_not_called()
         mock_tg.assert_called_once()
 
     def test_fail_status_fires_even_when_cap_disabled(self):
@@ -129,39 +132,42 @@ class TestCapGating:
 # ---------------------------------------------------------------------------
 
 class TestPayload:
-    """ntfy notification content."""
+    """Telegram notification content — 2026-10 reversal moved every one
+    of these assertions off the (now-removed) ntfy payload onto the
+    Telegram `requests.post(json=...)` payload, which is the only
+    channel `notify_deploy.py` sends to any more. No `parse_mode` key
+    is sent either (plain text)."""
 
     def test_branch_tag_in_dev_message(self):
-        """Main branch ntfy title has no [main] tag (branch tag only for non-main)."""
+        """Main branch Telegram text has no [main] tag (branch tag only for non-main)."""
         cfg = {"deploy_branch": "main"}
-        mock_ntfy, _ = _run_main(cfg, branch="main")
-        req = mock_ntfy.call_args[0][0]
-        title = req.get_header("Title")
-        assert "[main]" not in title, f"Expected no [main] tag in ntfy title: {title!r}"
+        _, mock_tg = _run_main(cfg, branch="main")
+        payload = mock_tg.call_args[1]["json"]
+        assert "[main]" not in payload["text"], f"Expected no [main] tag in Telegram text: {payload['text']!r}"
+        assert "parse_mode" not in payload
 
     def test_commit_hash_in_message(self):
-        """Commit hash appears in ntfy body (prod branch)."""
+        """Commit hash appears in the Telegram text (prod branch)."""
         cfg = {"deploy_branch": "main"}
-        mock_ntfy, _ = _run_main(cfg, branch="main", commit="deadbeef")
-        req = mock_ntfy.call_args[0][0]
-        body = req.data.decode()
-        assert "deadbeef" in body, f"Expected commit hash in ntfy body: {body!r}"
+        _, mock_tg = _run_main(cfg, branch="main", commit="deadbeef")
+        payload = mock_tg.call_args[1]["json"]
+        assert "deadbeef" in payload["text"], f"Expected commit hash in Telegram text: {payload['text']!r}"
 
     def test_fe_only_suffix_for_fe_deploy(self):
-        """FE-only deploy appends 'FE-only' in the ntfy title (prod)."""
+        """FE-only deploy appends 'FE-only' in the Telegram text (prod)."""
         cfg = {"deploy_branch": "main"}
-        mock_ntfy, _ = _run_main(cfg, branch="main", deploy_type="fe-only")
-        req = mock_ntfy.call_args[0][0]
-        title = req.get_header("Title")
-        assert "FE-only" in title, f"Expected FE-only label in ntfy title: {title!r}"
+        _, mock_tg = _run_main(cfg, branch="main", deploy_type="fe-only")
+        payload = mock_tg.call_args[1]["json"]
+        assert "FE-only" in payload["text"], f"Expected FE-only label in Telegram text: {payload['text']!r}"
 
-    def test_layers_in_ntfy_body(self):
-        """Layers string appears in the ntfy notification body."""
+    def test_ntfy_never_called_even_when_configured(self):
+        """2026-10 operator requirement #4 — deploy alerts never reach
+        ntfy, even when `ntfy_topic` is present in secrets (the ntfy
+        send block was removed from `notify_deploy.py` entirely, not
+        just gated)."""
         cfg = {"deploy_branch": "main"}
         mock_ntfy, _ = _run_main(cfg, branch="main", layers="Backend API · Broker Layer")
-        req = mock_ntfy.call_args[0][0]
-        body = req.data.decode()
-        assert "Broker Layer" in body, f"Expected layers in ntfy body: {body!r}"
+        mock_ntfy.assert_not_called()
 
     def test_layers_in_telegram_body(self):
         """Layers string appears in the Telegram message."""

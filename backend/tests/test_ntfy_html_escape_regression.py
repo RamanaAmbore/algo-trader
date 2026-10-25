@@ -2,24 +2,26 @@
 Regression tests for the ntfy HTML-tag-stripping fix (commit 27010bd9)
 unescaped-input follow-up (2026-09-27 council audit, Bug 2).
 
-`_html_to_plain()` (backend/shared/helpers/alert_utils.py) is only safe for
-strings where dynamic content was run through `html.escape()` BEFORE being
-embedded — `_HTML_TAG_RE` (`<[^>]+>`) matches from any literal '<' in
-UNescaped dynamic content through to the NEXT '>' anywhere later in the
-string, silently deleting everything in between (including real alert
-text). Three call sites fed `_alert_route()` raw, unescaped dynamic
-content:
+SUPERSEDED by the 2026-10 plain-text reversal: Telegram and ntfy are both
+plain text now (no `parse_mode`, no HTML tags built anywhere in this
+pipeline), so there is no more HTML to escape and `_html_to_plain()` is no
+longer called on any of the three strings this file exercises. The
+original bug class (an unescaped literal '<' being mistaken for an HTML
+tag boundary, silently deleting everything up to the next '>') cannot
+recur once nothing builds HTML in the first place.
+
+These tests now assert the INVERSE of their original intent: a literal
+'<' with no matching '>' (this codebase's own guard comparison text, e.g.
+"qty < lot_size") must survive UNCHANGED — displayed verbatim, not
+escaped to `&lt;` — on BOTH Telegram and ntfy, since both are the same
+plain string. Kept in this file (not deleted) because it's still the
+right regression home for "a literal '<' in dynamic content must never
+truncate or corrupt the message" — only the specific mechanism changed.
 
   1. template_attach.py `_fire_guard_alert` — reason / applies_to /
      template_slug
   2. template_attach.py `_fire_attach_fail_alert` — err_summary
   3. alert_utils.py `_send_order_failure_messages` — error_short
-
-Each is exercised here with a literal '<' with no matching '>' before the
-message's own closing `</code>` tag (this codebase's own guard comparison
-text, e.g. "qty < lot_size", is exactly this shape) and asserts the FULL
-message — including text AFTER the '<' — survives to the ntfy payload,
-while Telegram correctly receives the HTML-escaped (`&lt;`) form.
 """
 
 from __future__ import annotations
@@ -82,24 +84,31 @@ class TestTemplateGuardAlertEscaping:
         extra.update(over)
         return _dispatch_captured("TEMPLATE_GUARD_AGENT", extra)
 
-    def test_literal_lt_in_reason_does_not_truncate_ntfy_message(self):
+    def test_literal_lt_in_reason_survives_unescaped_on_both_channels(self):
         reason = "qty < lot_size — Arm exits manually if needed. Fix: rebalance the parent order."
         sent = self._guard(reason=reason)
-        assert "qty &lt; lot_size" in sent["tg"]
+        # 2026-10 plain-text reversal: Telegram and ntfy carry the SAME
+        # unescaped plain text now — no more `&lt;` on the Telegram slot.
+        tg_body = sent["tg"]
+        assert "qty < lot_size" in tg_body
+        assert "&lt;" not in tg_body
         ntfy_body = sent["ntfy"]
         assert "qty < lot_size" in ntfy_body
         assert "Arm exits manually if needed" in ntfy_body, (
-            "text after the unescaped '<' must survive — this is exactly "
-            "the text the regex would have deleted pre-fix"
+            "text after the literal '<' must survive — this is exactly "
+            "the text a tag-stripping regex would have deleted"
         )
         assert "Fix: rebalance the parent order." in ntfy_body
         assert "<code>" not in ntfy_body and "</code>" not in ntfy_body
+        assert "<code>" not in tg_body and "</code>" not in tg_body
 
     def test_literal_lt_in_applies_to_and_template_slug_preserved(self):
         sent = self._guard(template_slug="tmpl<1", applies_to="buy<sell")
         assert "tmpl<1" in sent["ntfy"]
         assert "buy<sell" in sent["ntfy"]
         assert "Arm exits manually if needed." in sent["ntfy"]
+        assert "tmpl<1" in sent["tg"]
+        assert "buy<sell" in sent["tg"]
 
     def test_none_template_slug_does_not_crash(self):
         """`template.get("slug")` is `None` when a DB row has slug=NULL — the
@@ -109,15 +118,18 @@ class TestTemplateGuardAlertEscaping:
 
 
 class TestTemplateAttachFailAlertEscaping:
-    def test_literal_lt_in_err_summary_does_not_truncate_ntfy_message(self):
+    def test_literal_lt_in_err_summary_survives_unescaped_on_both_channels(self):
         err = "G1 guard: qty < lot_size — Arm exits manually if needed."
         sent = _dispatch_captured("TEMPLATE_ATTACH_FAIL_AGENT", {
             "alert_event": "template_attach_fail", "order_id": 456, "symbol": "NIFTY24SEPFUT",
             "account": "ZG0790", "err_summary": err, "ist_label": _IST_LABEL})
-        assert "qty &lt; lot_size" in sent["tg"]
+        # 2026-10 plain-text reversal — no `&lt;` on either channel.
+        assert "qty < lot_size" in sent["tg"]
+        assert "&lt;" not in sent["tg"]
         assert "qty < lot_size" in sent["ntfy"]
         assert "Arm exits manually if needed." in sent["ntfy"]
         assert "<code>" not in sent["ntfy"]
+        assert "<code>" not in sent["tg"]
 
     def test_error_short_still_truncated_to_160_chars_before_escaping(self):
         """Regression guard — the 160-char truncation contract (pre-existing)
@@ -138,14 +150,17 @@ class TestTemplateAttachFailAlertEscaping:
 
 
 class TestDispatchStillCorrectRegression:
-    """The one already-correct call site (_dispatch's tg_table) must be
-    unaffected by this fix — regression guard mirroring the existing
-    TestAlertRouteNtfyPlainText suite."""
+    """`dispatch_payload()`'s `tg_table` slot — 2026-10 plain-text
+    reversal: it no longer HTML-escapes `tg_table` at all (there is no
+    more `<code>` tag to protect), so a literal '<' in condition text
+    (e.g. "pnl < -5000") now survives verbatim rather than becoming
+    `&lt;`."""
 
-    def test_dispatch_alert_still_escapes_correctly(self):
+    def test_dispatch_alert_is_plain_text_no_escaping(self):
         from backend.shared.helpers.alert_utils import dispatch_payload
         tg_table = "COND: pnl < -5000\nACCT   SYMBOL   PNL\nacct1  NIFTY    -5230.50"
         with patch('backend.shared.helpers.alert_utils.config', {'deploy_branch': 'main'}):
             payload = dispatch_payload('alert', '14:22 IST', tg_table, '<html>email</html>', 'Loss threshold hit')
-        assert "pnl &lt; -5000" in payload["telegram_msg"]
+        assert "pnl < -5000" in payload["telegram_msg"]
+        assert "&lt;" not in payload["telegram_msg"]
         assert "-5230.50" in payload["telegram_msg"]

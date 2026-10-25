@@ -1,13 +1,19 @@
 """
-Unit tests: notify_deploy.py ntfy block sends Authorization: Bearer header
-when ntfy_token is present in secrets, and omits it when absent.
+2026-10 operator requirement #4 (deploy/code-deployment alerts never go
+to ntfy or email): the ntfy send block was REMOVED from
+`webhook/notify_deploy.py` entirely, not just gated. This file used to
+assert the ntfy Authorization-header/URL contract; it now asserts the
+inverse — `urllib.request.urlopen` (the ntfy transport) is never called
+at all, even when `ntfy_topic`/`ntfy_token` are fully configured in
+secrets. Kept as its own file (not deleted) since it's still the right
+regression home for "does notify_deploy.py ever talk to ntfy" — only the
+expected answer flipped.
 """
 import importlib.util
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -61,42 +67,33 @@ def _run_with_ntfy(secrets_override: dict, *, branch: str = "main", status: str 
 
 
 class TestNtfyDeployToken:
-    def test_token_sent_when_configured(self):
-        """ntfy_token present → Authorization: Bearer header in deploy notification."""
+    def test_ntfy_never_called_even_with_token_configured(self):
+        """ntfy_topic + ntfy_token both present → urlopen (ntfy's
+        transport) is still never called — the whole block is gone."""
         mock_urlopen = _run_with_ntfy({
             "ntfy_topic": "ramboq_alerts",
             "ntfy_token": "my-secret-token",
         })
-        mock_urlopen.assert_called()
-        req = mock_urlopen.call_args[0][0]
-        auth = req.headers.get("Authorization")
-        assert auth == "Bearer my-secret-token", f"Expected Bearer header, got {auth!r}"
+        mock_urlopen.assert_not_called()
 
-    def test_token_omitted_when_absent(self):
-        """ntfy_token absent → no Authorization header."""
+    def test_ntfy_never_called_without_token(self):
         mock_urlopen = _run_with_ntfy({
             "ntfy_topic": "ramboq_alerts",
             # ntfy_token not set
         })
-        mock_urlopen.assert_called()
-        req = mock_urlopen.call_args[0][0]
-        auth = req.headers.get("Authorization")
-        assert auth is None, f"Expected no Authorization header, got {auth!r}"
+        mock_urlopen.assert_not_called()
 
     def test_no_ntfy_call_when_no_topic(self):
-        """ntfy_topic absent → urllib.request.urlopen not called for ntfy."""
+        """ntfy_topic absent → urllib.request.urlopen not called either."""
         mock_urlopen = _run_with_ntfy({
             "ntfy_token": "some-token",
             # ntfy_topic not set
         })
         mock_urlopen.assert_not_called()
 
-    def test_ntfy_url_in_request(self):
-        """ntfy request goes to {ntfy_url}/{ntfy_topic}."""
+    def test_ntfy_never_called_regardless_of_ntfy_url(self):
         mock_urlopen = _run_with_ntfy({
             "ntfy_topic": "ramboq_alerts",
             "ntfy_url": "https://ntfy.sh",
         })
-        mock_urlopen.assert_called()
-        req = mock_urlopen.call_args[0][0]
-        assert "ntfy.sh/ramboq_alerts" in req.full_url, f"Unexpected URL: {req.full_url}"
+        mock_urlopen.assert_not_called()

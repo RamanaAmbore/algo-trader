@@ -823,6 +823,20 @@
     {
       "grammar_kind": "notify",
       "token_kind": "channel",
+      "token": "telegram_deploy",
+      "value_type": "enum",
+      "description": "Telegram via the dedicated deploy-alerts key (secrets.telegram_bot_token_deploy / telegram_chat_id_deploy), bypassing the regular 'telegram' capability gate — used exclusively by deploy-sync-alert.",
+      "params_schema": {
+        "gate": {
+          "type": "boolean",
+          "required": false,
+          "description": "Structural no-op (capability is None for this channel) — declared only so a stored 'gate' key decompiles."
+        }
+      }
+    },
+    {
+      "grammar_kind": "notify",
+      "token_kind": "channel",
       "token": "email",
       "value_type": "enum",
       "description": "Email to every address in secrets.alert_emails.",
@@ -1735,6 +1749,18 @@
         "column": "tags",
         "match": "contains"
       }
+    },
+    {
+      "grammar_kind": "log",
+      "token_kind": "tag",
+      "token": "alert",
+      "value_type": "string",
+      "description": "Alert-worthy log line, additive to every other tag — surfaces the record in /admin/alerts/history alongside real AgentEvent rows (owner: alert producers across orders/chase/template-attach/mcp).",
+      "source": {
+        "table": "log_events",
+        "column": "tags",
+        "match": "contains"
+      }
     }
   ],
   "log_tags": [
@@ -1864,6 +1890,18 @@
       "token": "auth",
       "value_type": "string",
       "description": "Authentication/account-lifecycle records: new user self-registration pending admin approval (owner: auth routes).",
+      "source": {
+        "table": "log_events",
+        "column": "tags",
+        "match": "contains"
+      }
+    },
+    {
+      "grammar_kind": "log",
+      "token_kind": "tag",
+      "token": "alert",
+      "value_type": "string",
+      "description": "Alert-worthy log line, additive to every other tag — surfaces the record in /admin/alerts/history alongside real AgentEvent rows (owner: alert producers across orders/chase/template-attach/mcp).",
       "source": {
         "table": "log_events",
         "column": "tags",

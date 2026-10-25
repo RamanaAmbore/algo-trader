@@ -8,6 +8,14 @@ see `.claude/PLAN.md`'s history for the full record), proves the
 mandatory catch-all fires for an unmatched combination, and proves a
 per-slug override always wins over a matching generic tier rule for the
 same agent.
+
+2026-10 channel-routing fix (operator requirement #3 + correction):
+four entries below are intentionally amended past the frozen
+pre-migration shapes, each noted at its own entry — `partial-gtt-alert`
+and `template-attach-high` gained a plain `telegram` channel (both were
+ntfy-only); `deploy-sync-alert` moved from zero channels to the
+dedicated `telegram_deploy` channel alone (never the generic `telegram`,
+never ntfy, never email — operator correction).
 """
 import pytest
 
@@ -17,7 +25,9 @@ from backend.api.algo import alert_routing, event_agents
 # Frozen pre-migration oracle — exact `events` list every one of these
 # 20 agents carried BEFORE channel selection moved to `alert_routing.py`.
 # Do NOT regenerate this from the post-migration code; it is the one
-# independent ground truth this test exists to protect.
+# independent ground truth this test exists to protect. The four
+# 2026-10 channel-routing amendments (see module docstring) are each
+# marked at their own entry below.
 _FROZEN_ORACLE: dict[str, list[dict]] = {
     "fill-alert": [{"channel": "telegram", "enabled": True}],
     "error-alert": [{"channel": "telegram", "enabled": True}, {"channel": "ntfy", "enabled": True}],
@@ -25,12 +35,22 @@ _FROZEN_ORACLE: dict[str, list[dict]] = {
         {"channel": "telegram", "enabled": True},
         {"channel": "ntfy", "enabled": True, "priority": "urgent"},
     ],
-    "partial-gtt-alert": [{"channel": "ntfy", "enabled": True, "priority": "urgent"}],
+    # 2026-10 channel-routing fix — gained `telegram` (was ntfy-only);
+    # operator requirement #3, "every alert goes to Telegram".
+    "partial-gtt-alert": [
+        {"channel": "telegram", "enabled": True},
+        {"channel": "ntfy", "enabled": True, "priority": "urgent"},
+    ],
     "template-attach-urgent": [
         {"channel": "telegram", "enabled": True},
         {"channel": "ntfy", "enabled": True, "priority": "urgent"},
     ],
-    "template-attach-high": [{"channel": "ntfy", "enabled": True, "priority": "high"}],
+    # 2026-10 channel-routing fix — gained `telegram` (was ntfy-only);
+    # same rationale as partial-gtt-alert above.
+    "template-attach-high": [
+        {"channel": "telegram", "enabled": True},
+        {"channel": "ntfy", "enabled": True, "priority": "high"},
+    ],
     "order-failure-alert": [
         {"channel": "telegram", "enabled": True, "gate": False},
         {"channel": "ntfy", "enabled": True, "gate": False, "priority": "urgent"},
@@ -51,7 +71,13 @@ _FROZEN_ORACLE: dict[str, list[dict]] = {
         {"channel": "telegram", "enabled": True, "gate": False},
         {"channel": "ntfy", "enabled": True, "gate": False, "priority": "urgent"},
     ],
-    "deploy-sync-alert": [],
+    # 2026-10 channel-routing fix (operator correction) — moved from
+    # zero channels to the DEDICATED `telegram_deploy` channel alone.
+    # Explicitly NOT the generic `telegram` channel, NOT ntfy, NOT
+    # email — "the telegram code deployment alerts channel alone".
+    "deploy-sync-alert": [
+        {"channel": "telegram_deploy", "enabled": True, "gate": False},
+    ],
     "agent-alert-rich": [
         {"channel": "telegram", "enabled": True, "gate": False},
         {"channel": "ntfy", "enabled": True, "gate": False},
@@ -420,3 +446,24 @@ def test_agent_priority_column_is_nullable_with_no_server_default():
     col = Agent.__table__.columns["priority"]
     assert col.nullable is True
     assert col.server_default is None
+
+
+# ── 2026-10 Done-when regression guard: no seeded agent may resolve to
+#    an empty channel list any more ───────────────────────────────────
+
+def test_no_seeded_event_agent_resolves_to_an_empty_channel_list():
+    """Plan 'Done when': every event agent resolves at least one real
+    channel. `BREACH_AGENT` is the sole, documented exception — its
+    real channels are 100% dynamic (`out[4]` from `_render_breach`,
+    read directly by `_dispatch_agent` before this table is ever
+    consulted for that record); its own static `[]` override exists
+    only to short-circuit the catch-all-warning log loop (see that
+    override's own comment), never to leave it genuinely unrouted."""
+    for spec in event_agents.SEEDED_AGENTS:
+        if spec["slug"] == event_agents.BREACH_AGENT["slug"]:
+            continue
+        resolved = alert_routing.resolve_channels(
+            name=spec["slug"], priority=spec.get("priority"),
+            agent_events=spec.get("events", []),
+        )
+        assert resolved != [], f"{spec['slug']!r} resolved to an empty channel list"

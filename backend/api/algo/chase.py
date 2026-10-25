@@ -2766,7 +2766,7 @@ async def _ch_build_cancel_unconfirmed_abort(
     logger.critical(
         "Chase %s: %s", symbol, result.detail,
         extra={
-            "tags": ["chase"], "alert_event": "cancel_unconfirmed",
+            "tags": ["chase", "alert"], "alert_event": "cancel_unconfirmed",
             # 2026-10-23 fix #4 — binary ntfy gate: this is an
             # action-required outcome (operator must manually verify the
             # broker's order book), so it forces urgent ntfy regardless

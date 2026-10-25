@@ -198,6 +198,30 @@ class TestVisitorReportAlert:
         assert '"alert_event": "visitor_report"' in src
         assert '"title": "Visitor report"' in src
 
+    def test_uses_plain_text_summary_not_the_html_builder(self):
+        """2026-10 plain-text reversal: `summary_for_telegram()` builds
+        real HTML (`<b>` labels, entity-escaped values) — correct while
+        Telegram used `parse_mode=HTML`, but with no parse mode any more
+        it would show literal tags/entities. Must use the pre-existing
+        plain-text sibling `_summary_text()` instead (previously
+        documented as only a "telegram fallback when the HTML build
+        fails" — now the primary path here)."""
+        src = inspect.getsource(bg._task_visitor_log_daily)
+        assert "import _summary_text" in src
+        assert "_summary_text(report_path)" in src
+        assert "import summary_for_telegram" not in src
+
+    def test_msg_body_never_contains_the_old_html_wrap(self):
+        """Direct regression check on the rendered message, not just the
+        source text — confirms the real call produces a tag-free body."""
+        from unittest.mock import patch
+
+        with patch("backend.scripts.visitor_report._summary_text", return_value="Visitors\nday: ok"):
+            from backend.scripts.visitor_report import _summary_text
+            tg_body = _summary_text(None)  # path arg unused by the mock
+        msg = f"Visitors\n{tg_body}"
+        assert "<b>" not in msg and "</b>" not in msg
+
 
 class TestNewEventAgentsAreSeedable:
     """The 5 new agents must validate cleanly against the seed-spec

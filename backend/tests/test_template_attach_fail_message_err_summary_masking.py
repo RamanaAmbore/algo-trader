@@ -23,10 +23,12 @@ def test_err_summary_account_masked():
 
 
 def test_existing_no_account_case_unaffected():
-    """Regression guard — the pre-existing golden-text case
-    (no account embedded in err_summary) stays byte-identical."""
+    """Regression guard — the pre-existing no-account case still renders
+    the error text, now plain (2026-10 plain-text reversal — no more
+    HTML-escaping, so "qty < lot_size" is no longer "qty &lt; lot_size")."""
     msg = template_attach_fail_message(
         order_id=1088, symbol="NIFTY26OCTFUT", account="ZG0790",
         err_summary="qty < lot_size", ist_label="Tue, Oct 06 2026, 14:30 IST",
     )
-    assert "qty &lt; lot_size" in msg
+    assert "qty < lot_size" in msg
+    assert "&lt;" not in msg

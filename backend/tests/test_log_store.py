@@ -174,6 +174,36 @@ def test_known_owner_tag_is_not_reported(monkeypatch, capsys):
     assert capsys.readouterr().err == ""
 
 
+def test_alert_tag_registered_in_real_catalog_no_warning(monkeypatch, capsys):
+    """2026-10 Stream A — `"alert"` was added to `agent_grammar.yaml`'s
+    `log_tags` catalog so an alert-worthy log line can carry it without
+    tripping `_check_owner_tags()`'s unknown-tag warning.
+
+    Loads the REAL catalog (`grammar.LOG_TAG_TOKENS`, YAML-sourced — see
+    `backend/api/algo/grammar.py`), not a hand-built dict — a bare
+    `REGISTRY.log_tags = {}` would make `_check_owner_tags()` return
+    early and this test would pass vacuously regardless of whether
+    `"alert"` was ever actually registered."""
+    from backend.api.algo.grammar import LOG_TAG_TOKENS
+    from backend.api.algo.grammar_registry import REGISTRY
+    assert any(t["token"] == "alert" for t in LOG_TAG_TOKENS), (
+        "'alert' must be present in the real YAML-sourced log_tags catalog"
+    )
+    monkeypatch.setattr(REGISTRY, "log_tags", {t["token"]: {} for t in LOG_TAG_TOKENS})
+    monkeypatch.setattr(log_store, "_warned_tags", set())
+    log_store.tags_for(_rec(tags=["alert"]))
+    assert capsys.readouterr().err == ""
+
+
+def test_alert_tag_dedupes_against_an_existing_owner_tag():
+    """`tags_for()` only ever extends+dedupes — adding `"alert"` to an
+    owner tag list that already carries it must not produce a
+    duplicate entry."""
+    out = log_store.tags_for(_rec(tags=["orders", "alert", "alert"]))
+    assert out.count("alert") == 1
+    assert out == ["info", "orders", "alert"]
+
+
 @pytest.mark.asyncio
 async def test_emit_wakes_the_writer_on_the_loop():
     import asyncio

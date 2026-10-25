@@ -214,7 +214,7 @@ async def _opo_postprocess(
             algo_order_id, prior_status or "?", new_status, source,
             masked, static_symbol, static_exchange,
             extra={
-                "tags": ["orders"], "alert_event": "order_correction",
+                "tags": ["orders", "alert"], "alert_event": "order_correction",
                 "action_required": True,
                 "algo_order_id": algo_order_id,
                 "prior_status": prior_status or "?",

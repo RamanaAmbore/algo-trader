@@ -258,9 +258,12 @@ class TestSeededAgentsGateKeysAreDeclared:
 
         `deploy-sync-alert` dropped out of this set 2026-10 (operator
         instruction) when its only channel (ntfy, which carried the
-        `gate` key) was removed outright — it now has an empty resolved
-        channel list, so there is no channel entry left to carry a
-        `gate` key.
+        `gate` key) was removed outright, leaving an empty resolved
+        channel list — then rejoined the set the SAME cycle (operator
+        correction) when it was given its own dedicated
+        `telegram_deploy` channel (`gate: False`, same convention as
+        every other agent in this set), via `alert_routing.py`'s
+        per-slug override.
         """
         slugs = {
             agent["slug"]
@@ -274,7 +277,7 @@ class TestSeededAgentsGateKeysAreDeclared:
             "market-summary", "gtt-not-accepted-alert",
             "gtt-asymmetric-alert", "oco-double-fire-alert",
             "ticker-recovered-alert", "ticker-degraded-alert", "visitor-report-alert",
-            "user-registered-alert",
+            "user-registered-alert", "deploy-sync-alert",
         }
 
     def test_inventory_action_level_gate_agent_count(self):

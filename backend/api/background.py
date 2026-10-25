@@ -7229,9 +7229,17 @@ async def _task_visitor_log_daily() -> None:
                     # (VISITOR_REPORT_AGENT, "telegram_info" channel —
                     # same dedicated RamboQuant-alerts channel the old
                     # `telegram: info` routing config used).
-                    from backend.scripts.visitor_report import summary_for_telegram
-                    tg_body = summary_for_telegram(report_path)
-                    msg = f"<b>Visitors{branch_tag}</b>\n{tg_body}"
+                    # 2026-10 plain-text reversal: `summary_for_telegram()`
+                    # builds real HTML (<b> labels, &amp;/&lt;/&gt;
+                    # entity-escaped values) — that was fine while
+                    # Telegram used parse_mode=HTML, but with no parse
+                    # mode it would show the literal tags/entities.
+                    # `_summary_text()` is the pre-existing plain-text
+                    # sibling (previously only "telegram fallback when
+                    # the HTML build fails" — now the primary path here).
+                    from backend.scripts.visitor_report import _summary_text
+                    tg_body = _summary_text(report_path)
+                    msg = f"Visitors{branch_tag}\n{tg_body}"
                     logger.info(
                         "[VISITOR-REPORT] %s", msg,
                         extra={"tags": ["visitor"], "alert_event": "visitor_report",

@@ -64,14 +64,21 @@ _PER_SLUG_OVERRIDES: dict[str, list[dict]] = {
         {"channel": "telegram", "enabled": True},
         {"channel": "ntfy", "enabled": True, "priority": "urgent"},
     ],
+    # 2026-10 channel-routing fix — "every alert goes to Telegram, with
+    # no exceptions" (operator requirement #3): this agent used to be
+    # ntfy-only. Telegram added; ntfy kept as-is.
     "partial-gtt-alert": [
+        {"channel": "telegram", "enabled": True},
         {"channel": "ntfy", "enabled": True, "priority": "urgent"},
     ],
     "template-attach-urgent": [
         {"channel": "telegram", "enabled": True},
         {"channel": "ntfy", "enabled": True, "priority": "urgent"},
     ],
+    # 2026-10 channel-routing fix — same as partial-gtt-alert above;
+    # this agent used to be ntfy-only.
     "template-attach-high": [
+        {"channel": "telegram", "enabled": True},
         {"channel": "ntfy", "enabled": True, "priority": "high"},
     ],
     "order-failure-alert": [
@@ -96,10 +103,20 @@ _PER_SLUG_OVERRIDES: dict[str, list[dict]] = {
         {"channel": "telegram", "enabled": True, "gate": False},
         {"channel": "ntfy", "enabled": True, "gate": False, "priority": "urgent"},
     ],
-    # 2026-10 operator instruction (pre-existing, unchanged by this
-    # migration): ntfy removed outright, no replacement channel — a
-    # deploy-out-of-sync notice is a dev/ops concern, not a phone page.
-    "deploy-sync-alert": [],
+    # 2026-10 channel-routing fix — operator correction: deploy-sync
+    # alerts reach "the telegram code deployment alerts channel alone"
+    # — a DEDICATED Telegram bot/chat (`telegram_bot_token_deploy`/
+    # `telegram_chat_id_deploy`, falling back to the general ops
+    # bot/chat when absent — same fallback pair the standalone
+    # `webhook/notify_deploy.py` script already uses for its own,
+    # separate deploy-OK/FAIL pings), via the `telegram_deploy` channel
+    # (`event_agents.py:_send_telegram_deploy_html`). Explicitly NOT the
+    # generic `telegram` channel, NOT ntfy, NOT email — a deploy-sync
+    # notice is a dev/ops concern, not a phone page, and must not share
+    # the operator's main ops Telegram feed either.
+    "deploy-sync-alert": [
+        {"channel": "telegram_deploy", "enabled": True, "gate": False},
+    ],
     # CRITICAL — do not delete this row. `BREACH_AGENT`'s real channels
     # are 100% dynamic (`out[4]` from `_render_breach`, read directly by
     # `_dispatch_agent` BEFORE this table is ever consulted for that

@@ -14,7 +14,6 @@ so you can sign in immediately and create real users.
 import asyncio
 import base64
 import hashlib
-import html
 import hmac as _hmac
 import os
 import secrets as _stdlib_secrets
@@ -265,20 +264,16 @@ def _registration_alert_extra(username: str, email: str) -> dict:
     already uses: capture the real producer's own `extra`, don't
     hand-build a second copy of it).
 
-    `username`/`email` are both `html.escape()`'d before reaching
-    `body` — the shared `generic_notice` renderer treats `body` as real
-    HTML (sent raw to Telegram's HTML parse mode, and through
-    `_html_to_plain` for ntfy — see `event_agents.py:_render_deploy_sync`),
-    and both fields are user-supplied input at registration time. Same
-    bug class `test_ntfy_html_escape_regression.py` already guards
-    against for other renderers (a literal `<` in an unescaped field
-    can truncate or corrupt the ntfy body)."""
-    safe_username = html.escape(username)
-    safe_email = html.escape(email)
+    2026-10 plain-text reversal: `username`/`email` are used verbatim,
+    no `html.escape()` — the shared `generic_notice` renderer now treats
+    `body` as plain text for both Telegram and ntfy (no parse mode, no
+    `_html_to_plain` pass — see `event_agents.py:_render_deploy_sync`).
+    Escaping here would show literal `&lt;`/`&amp;` text in the
+    notification instead of the real username/email."""
     return {
         "tags": ["auth"], "alert_event": "user_registered",
         "title": "New user registered",
-        "body": f"{safe_username} ({safe_email}) registered and is pending admin approval.",
+        "body": f"{username} ({email}) registered and is pending admin approval.",
     }
 
 
