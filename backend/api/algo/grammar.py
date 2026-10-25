@@ -335,89 +335,12 @@ def _option_moneyness(ctx, row):
 # shared helper read by both is_itm and is_ntm.
 
 
-def _scope_positions_expiring_today(ctx):
-    """Per-symbol position rows where the symbol parses to an F&O
-    contract expiring TODAY (or already past expiry — days_to_expiry
-    floors at 0). Cash-equity rows skip (no parseable expiry).
-
-    Reads from ctx.position_rows — the raw per-symbol list the engine
-    fetched. sum_positions is the per-account aggregate and carries
-    no per-symbol expiry, so it's the wrong shape for this filter.
-
-    Why ≤ 1.5 day floor rather than === 0: an option that "expires
-    today" at the engine's 09:00 tick has ~6.5 hours of life left;
-    days_to_expiry yields ~0.27. The 1.5 ceiling also catches "T-1
-    intraday warning" if a future operator preference wants that —
-    keeping a single scope rather than a wider scope-token set.
-    """
-    rows_src = getattr(ctx, 'position_rows', None) or []
-    out = []
-    for r in rows_src:
-        sym = r.get('tradingsymbol') or ''
-        parsed = _parsed_or_none(sym)
-        if not parsed or not parsed.get('expiry'):
-            continue
-        try:
-            from backend.api.algo.derivatives import days_to_expiry
-            close_time = (23, 30) if (r.get('exchange') or '').upper() == 'MCX' else (15, 30)
-            d = float(days_to_expiry(parsed['expiry'], ref=ctx.now, close_time=close_time))
-        except Exception:
-            continue
-        if d <= 1.5:
-            out.append(r)
-    return out
-
-
-def _scope_positions_expiring_today_nfo(ctx):
-    """Subset of positions.expiring_today restricted to NFO (equity
-    F&O). Used by the equity-only auto-close agent which fires at
-    T-30min before the 15:30 IST equity close. Kite's `exchange`
-    field is the source of truth — NSE for cash equity, NFO for
-    equity F&O contracts. Returns NFO rows only.
-    """
-    rows = _scope_positions_expiring_today(ctx)
-    return [r for r in rows if (r.get('exchange') or '').upper() == 'NFO']
-
-
-def _scope_positions_expiring_today_mcx_unhedged(ctx):
-    """Subset of positions.expiring_today restricted to MCX
-    contracts whose CE/PE net qty across the underlying does NOT
-    balance — i.e. unhedged legs that will face cash settlement.
-
-    Mirrors the legacy ExpiryEngine grouping: group MCX expiring
-    rows by `(underlying, expiry)`; if the sum of CE quantities +
-    sum of PE quantities is 0, the pair is perfectly hedged and the
-    broker nets them against each other (no close needed). Anything
-    else is unhedged and returned.
-
-    Why "underlying + expiry": a long-CE-short-PE collar on the
-    same strike + expiry is the typical hedge structure; the net
-    qty test catches both single-strike hedges and asymmetric
-    multi-strike combos (e.g. long 2 CE, short 2 PE → net 0).
-    """
-    rows = _scope_positions_expiring_today(ctx)
-    mcx = [r for r in rows if (r.get('exchange') or '').upper() == 'MCX']
-    if not mcx:
-        return []
-    groups: dict = {}
-    for r in mcx:
-        parsed = _parsed_or_none(r.get('tradingsymbol') or '')
-        if not parsed:
-            continue
-        key = f"{parsed.get('root', '')}_{parsed.get('expiry', '')}"
-        groups.setdefault(key, []).append((r, parsed))
-    out = []
-    for entries in groups.values():
-        ce_qty = sum(int(r.get('quantity', 0) or 0)
-                     for r, p in entries if p.get('opt_type') == 'CE')
-        pe_qty = sum(int(r.get('quantity', 0) or 0)
-                     for r, p in entries if p.get('opt_type') == 'PE')
-        if ce_qty + pe_qty == 0:
-            # Perfectly hedged group — broker nets settlement; skip.
-            continue
-        for r, _p in entries:
-            out.append(r)
-    return out
+# `_scope_positions_expiring_today`, `_scope_positions_expiring_today_nfo`,
+# `_scope_positions_expiring_today_mcx_unhedged` migrated to
+# grammar_tokens/ (Wave 1, scope batch A of the DSL-token unification
+# plan) — see grammar_tokens/scope_positions_expiring_today.py and its two
+# siblings. `_parsed_or_none` stays here — shared helper imported by all
+# three (and several metric resolvers already migrated).
 
 
 # Time metrics (minutes_since_open, minutes_until_close) and the 10
@@ -1185,32 +1108,43 @@ EXPOSED_COLUMNS: dict[str, dict] = {
     'positions.any_underlying':               _POSITIONS_ANY_UNDERLYING_COLUMNS,
 }
 
-# scope token -> (ctx attribute the resolver reads, resolver function name
-# in this module). Catalog-projection provenance ONLY (routes/grammar.py's
+# scope token -> (ctx attribute the resolver reads, resolver's FULL dotted
+# import path). Catalog-projection provenance ONLY (routes/grammar.py's
 # `_merge_exposed_column_rows` uses this to write each column row's
 # `description`) — kept separate from EXPOSED_COLUMNS itself since it is
 # one fact per SCOPE, not per column.
+#
+# The second tuple element is a full dotted path (identical in shape to
+# the YAML catalog's own `resolver:` string for the same scope token),
+# NOT a bare function name — the Wave 1 DSL-token-unification migration
+# relocates `_scope_*` resolvers out of this module into
+# `grammar_tokens/scope_*.py` one at a time, and a bare name would have
+# falsely implied every resolver still lives in `backend.api.algo.grammar`
+# (see `test_every_scope_has_provenance_metadata`, which resolves this
+# path via `grammar_registry._import_dotted` and cross-checks it against
+# the YAML `resolver:` string for the same scope token, rather than
+# asserting `hasattr(grammar, fn_name)`).
 EXPOSED_COLUMN_SCOPE_PROVENANCE: dict[str, tuple[str, str]] = {
-    'positions.total':                       ('ctx.sum_positions', '_scope_positions_total'),
-    'positions.any_acct':                     ('ctx.sum_positions', '_scope_positions_any_acct'),
-    'positions.worst_acct':                   ('ctx.sum_positions', '_scope_positions_worst_acct'),
-    'positions.worst_symbol':                 ('ctx.position_rows', '_scope_positions_worst_symbol'),
-    'positions.expiring_today':               ('ctx.position_rows', '_scope_positions_expiring_today'),
-    'positions.expiring_today.nfo':           ('ctx.position_rows', '_scope_positions_expiring_today_nfo'),
-    'positions.expiring_today.mcx_unhedged':  ('ctx.position_rows', '_scope_positions_expiring_today_mcx_unhedged'),
-    'holdings.total':                         ('ctx.sum_holdings', '_scope_holdings_total'),
-    'holdings.any_acct':                      ('ctx.sum_holdings', '_scope_holdings_any_acct'),
-    'holdings.worst_acct':                    ('ctx.sum_holdings', '_scope_holdings_worst_acct'),
-    'holdings.worst_symbol':                  ('ctx.sum_holdings', '_scope_holdings_worst_symbol'),
-    'funds.total':                            ('ctx.df_margins', '_scope_funds_total'),
-    'funds.any_acct':                         ('ctx.df_margins', '_scope_funds_any_acct'),
-    'watchlist.all':                          ('ctx.watchlist_rows', '_scope_watchlist_all'),
-    'watchlist.default':                      ('ctx.watchlist_rows', '_scope_watchlist_default'),
-    'watchlist.markets':                      ('ctx.watchlist_rows', '_scope_watchlist_markets'),
-    'orders.any_acct':                        ('ctx.orders_rows', '_scope_orders_any_acct'),
-    'quote.tracked':                          ('ctx.quote_rows', '_scope_quote_tracked'),
-    'symbols.all':                            ('ctx.symbols_rows', '_scope_symbols_all'),
-    'positions.any_underlying':               ('ctx.position_rows', '_scope_positions_any_underlying'),
+    'positions.total':                       ('ctx.sum_positions', 'backend.api.algo.grammar._scope_positions_total'),
+    'positions.any_acct':                     ('ctx.sum_positions', 'backend.api.algo.grammar._scope_positions_any_acct'),
+    'positions.worst_acct':                   ('ctx.sum_positions', 'backend.api.algo.grammar._scope_positions_worst_acct'),
+    'positions.worst_symbol':                 ('ctx.position_rows', 'backend.api.algo.grammar._scope_positions_worst_symbol'),
+    'positions.expiring_today':               ('ctx.position_rows', 'backend.api.algo.grammar_tokens.scope_positions_expiring_today._scope_positions_expiring_today'),
+    'positions.expiring_today.nfo':           ('ctx.position_rows', 'backend.api.algo.grammar_tokens.scope_positions_expiring_today_nfo._scope_positions_expiring_today_nfo'),
+    'positions.expiring_today.mcx_unhedged':  ('ctx.position_rows', 'backend.api.algo.grammar_tokens.scope_positions_expiring_today_mcx_unhedged._scope_positions_expiring_today_mcx_unhedged'),
+    'holdings.total':                         ('ctx.sum_holdings', 'backend.api.algo.grammar._scope_holdings_total'),
+    'holdings.any_acct':                      ('ctx.sum_holdings', 'backend.api.algo.grammar._scope_holdings_any_acct'),
+    'holdings.worst_acct':                    ('ctx.sum_holdings', 'backend.api.algo.grammar._scope_holdings_worst_acct'),
+    'holdings.worst_symbol':                  ('ctx.sum_holdings', 'backend.api.algo.grammar._scope_holdings_worst_symbol'),
+    'funds.total':                            ('ctx.df_margins', 'backend.api.algo.grammar._scope_funds_total'),
+    'funds.any_acct':                         ('ctx.df_margins', 'backend.api.algo.grammar._scope_funds_any_acct'),
+    'watchlist.all':                          ('ctx.watchlist_rows', 'backend.api.algo.grammar._scope_watchlist_all'),
+    'watchlist.default':                      ('ctx.watchlist_rows', 'backend.api.algo.grammar._scope_watchlist_default'),
+    'watchlist.markets':                      ('ctx.watchlist_rows', 'backend.api.algo.grammar._scope_watchlist_markets'),
+    'orders.any_acct':                        ('ctx.orders_rows', 'backend.api.algo.grammar._scope_orders_any_acct'),
+    'quote.tracked':                          ('ctx.quote_rows', 'backend.api.algo.grammar._scope_quote_tracked'),
+    'symbols.all':                            ('ctx.symbols_rows', 'backend.api.algo.grammar._scope_symbols_all'),
+    'positions.any_underlying':               ('ctx.position_rows', 'backend.api.algo.grammar._scope_positions_any_underlying'),
 }
 
 

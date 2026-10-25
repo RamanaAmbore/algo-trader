@@ -3,7 +3,8 @@ Sprint G backend — `underlying:` qualifier on `positions.*` scopes
 (filter, not a group-by aggregation).
 
 Generalizes the per-row underlying derivation the MCX collar detector
-(`grammar._scope_positions_expiring_today_mcx_unhedged`) already does
+(`grammar_tokens.scope_positions_expiring_today_mcx_unhedged.
+_scope_positions_expiring_today_mcx_unhedged`) already does
 inline (`parse_tradingsymbol(...)['root']`) into a reusable
 `grammar.underlying_of_symbol()` helper, and wires a real `underlying`
 column onto every position row built in `background.py`
@@ -42,6 +43,15 @@ import pytest
 from backend.api.algo import grammar
 from backend.api.algo.agent_evaluator import Context, evaluate, validate
 from backend.api.algo.grammar_tokens.metric_pnl import _metric_pnl
+from backend.api.algo.grammar_tokens.scope_positions_expiring_today import (
+    _scope_positions_expiring_today,
+)
+from backend.api.algo.grammar_tokens.scope_positions_expiring_today_nfo import (
+    _scope_positions_expiring_today_nfo,
+)
+from backend.api.algo.grammar_tokens.scope_positions_expiring_today_mcx_unhedged import (
+    _scope_positions_expiring_today_mcx_unhedged,
+)
 
 
 _NOW_EXPIRY_DAY = datetime(2025, 4, 24, 9, 0, tzinfo=timezone.utc)
@@ -54,9 +64,9 @@ def _wire_registry(monkeypatch):
         'pnl': _metric_pnl,
     })
     monkeypatch.setattr(REGISTRY, 'scopes', {
-        'positions.expiring_today':              grammar._scope_positions_expiring_today,
-        'positions.expiring_today.nfo':           grammar._scope_positions_expiring_today_nfo,
-        'positions.expiring_today.mcx_unhedged':  grammar._scope_positions_expiring_today_mcx_unhedged,
+        'positions.expiring_today':              _scope_positions_expiring_today,
+        'positions.expiring_today.nfo':           _scope_positions_expiring_today_nfo,
+        'positions.expiring_today.mcx_unhedged':  _scope_positions_expiring_today_mcx_unhedged,
         'positions.total':                        grammar._scope_positions_total,
     })
     monkeypatch.setattr(REGISTRY, 'operators', {

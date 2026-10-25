@@ -514,7 +514,7 @@ system_tokens:
   value_type: array
   description: Per-symbol position rows where the F&O contract is expiring today (≤ 1.5 days). Leaf is
     OR-combined.
-  resolver: backend.api.algo.grammar._scope_positions_expiring_today
+  resolver: backend.api.algo.grammar_tokens.scope_positions_expiring_today._scope_positions_expiring_today
 
 # Segment-specific expiry scopes — see the equity / commodity
 # auto-close agents in agent_engine.py for the operator-facing
@@ -526,7 +526,7 @@ system_tokens:
   token: positions.expiring_today.nfo
   value_type: array
   description: Per-symbol position rows expiring today on NFO (equity F&O). Leaf is OR-combined.
-  resolver: backend.api.algo.grammar._scope_positions_expiring_today_nfo
+  resolver: backend.api.algo.grammar_tokens.scope_positions_expiring_today_nfo._scope_positions_expiring_today_nfo
 - grammar_kind: condition
   token_kind: scope
   token: positions.expiring_today.mcx_unhedged
@@ -534,7 +534,7 @@ system_tokens:
   description: Per-symbol position rows expiring today on MCX where CE/PE net qty does NOT balance — i.e.
     unhedged. Hedged pairs (net = 0) are skipped because broker settles them against each other. Leaf
     is OR-combined.
-  resolver: backend.api.algo.grammar._scope_positions_expiring_today_mcx_unhedged
+  resolver: backend.api.algo.grammar_tokens.scope_positions_expiring_today_mcx_unhedged._scope_positions_expiring_today_mcx_unhedged
 - grammar_kind: condition
   token_kind: scope
   token: funds.any_acct

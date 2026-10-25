@@ -210,7 +210,7 @@ def _exposed_column_catalog_rows(grammar: str | None) -> list[GrammarTokenOut]:
     idx = 0
     for scope_token in sorted(EXPOSED_COLUMNS.keys()):
         columns = EXPOSED_COLUMNS[scope_token]
-        ctx_attr, fn_name = EXPOSED_COLUMN_SCOPE_PROVENANCE[scope_token]
+        ctx_attr, resolver_path = EXPOSED_COLUMN_SCOPE_PROVENANCE[scope_token]
         for exposed_name in sorted(columns.keys()):
             entry = columns[exposed_name]
             rows.append(GrammarTokenOut(
@@ -222,7 +222,7 @@ def _exposed_column_catalog_rows(grammar: str | None) -> list[GrammarTokenOut]:
                 description=(
                     f"{entry['label']}. Sourced from DataFrame column "
                     f"'{entry['from_column']}' on {ctx_attr}, populated by "
-                    f"backend.api.algo.grammar.{fn_name}."
+                    f"{resolver_path}."
                 ),
                 label=entry["label"],
                 is_system=True,

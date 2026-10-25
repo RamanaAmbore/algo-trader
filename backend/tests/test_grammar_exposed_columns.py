@@ -201,11 +201,32 @@ def test_registry_covers_every_real_scope_token():
 def test_every_scope_has_provenance_metadata():
     """EXPOSED_COLUMN_SCOPE_PROVENANCE must cover exactly the same scopes
     as EXPOSED_COLUMNS — routes/grammar.py's catalog projection depends on
-    both dicts sharing the same key set."""
+    both dicts sharing the same key set.
+
+    The second tuple element is a full dotted import path (not a bare
+    function name — see the Wave 1 migration note on
+    EXPOSED_COLUMN_SCOPE_PROVENANCE's own module comment), so this test
+    resolves it the same way GrammarRegistry.reload() resolves a real
+    `resolver:` string, and cross-checks it against the YAML catalog's
+    own resolver path for that scope token — the two must never drift
+    apart as `_scope_*` resolvers move between modules."""
+    from backend.api.algo.grammar_registry import _import_dotted
+
     assert set(g.EXPOSED_COLUMN_SCOPE_PROVENANCE.keys()) == set(g.EXPOSED_COLUMNS.keys())
-    for scope_token, (ctx_attr, fn_name) in g.EXPOSED_COLUMN_SCOPE_PROVENANCE.items():
+    yaml_resolvers = {
+        t['token']: t.get('resolver')
+        for t in g.SYSTEM_TOKENS
+        if t.get('grammar_kind') == 'condition' and t.get('token_kind') == 'scope'
+    }
+    for scope_token, (ctx_attr, resolver_path) in g.EXPOSED_COLUMN_SCOPE_PROVENANCE.items():
         assert ctx_attr.startswith('ctx.'), scope_token
-        assert hasattr(g, fn_name), f"{scope_token}: resolver fn {fn_name} not found in grammar module"
+        fn = _import_dotted(resolver_path)
+        assert callable(fn), f"{scope_token}: resolver path {resolver_path} did not resolve to a callable"
+        assert resolver_path == yaml_resolvers.get(scope_token), (
+            f"{scope_token}: EXPOSED_COLUMN_SCOPE_PROVENANCE resolver path "
+            f"{resolver_path!r} disagrees with agent_grammar.yaml's own "
+            f"resolver {yaml_resolvers.get(scope_token)!r} for this scope token"
+        )
 
 
 # ── (e) exposed_name never shadows a child-scope segment ──────────────────

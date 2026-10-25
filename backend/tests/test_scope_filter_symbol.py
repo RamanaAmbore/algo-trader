@@ -43,6 +43,15 @@ from backend.api.algo import grammar
 from backend.api.algo.agent_evaluator import Context, evaluate, validate
 from backend.api.algo.grammar_tokens.metric_pnl import _metric_pnl
 from backend.api.algo.grammar_tokens.metric_avail_margin import _metric_avail_margin
+from backend.api.algo.grammar_tokens.scope_positions_expiring_today import (
+    _scope_positions_expiring_today,
+)
+from backend.api.algo.grammar_tokens.scope_positions_expiring_today_nfo import (
+    _scope_positions_expiring_today_nfo,
+)
+from backend.api.algo.grammar_tokens.scope_positions_expiring_today_mcx_unhedged import (
+    _scope_positions_expiring_today_mcx_unhedged,
+)
 
 
 # ─── Fixtures ────────────────────────────────────────────────────────────
@@ -78,9 +87,9 @@ def _wire_registry(monkeypatch):
         'pnl': _metric_pnl, 'avail_margin': _metric_avail_margin,
     })
     monkeypatch.setattr(REGISTRY, 'scopes', {
-        'positions.expiring_today': grammar._scope_positions_expiring_today,
-        'positions.expiring_today.nfo': grammar._scope_positions_expiring_today_nfo,
-        'positions.expiring_today.mcx_unhedged': grammar._scope_positions_expiring_today_mcx_unhedged,
+        'positions.expiring_today': _scope_positions_expiring_today,
+        'positions.expiring_today.nfo': _scope_positions_expiring_today_nfo,
+        'positions.expiring_today.mcx_unhedged': _scope_positions_expiring_today_mcx_unhedged,
         'funds.any_acct': grammar._scope_funds_any_acct,
     })
     monkeypatch.setattr(REGISTRY, 'operators', {
