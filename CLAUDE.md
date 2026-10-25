@@ -750,6 +750,41 @@ must split plain and HTML slots. It must never hand a tagged body to an escape-f
 - `log(name=..., tags=...)` stores `extra["route_name"]`/`extra["route_tags"]`, not `name`/`tags` ([actions.py:1290](backend/api/algo/actions.py#L1290)). `name` is a reserved `LogRecord` attribute, and `tags` is the structural condition-match key.
 - *Amended 2026-10-25 (commit `17a1c85a`) — `deploy-sync-alert` is no longer `[]`.* It routes to the dedicated `telegram_deploy` channel only ([alert_routing.py:117-119](backend/api/algo/alert_routing.py#L117)). See the "Alert message format" entry below. `partial-gtt-alert` and `template-attach-high` gained `telegram` in the same commit.
 - Invariant: channel selection lives in `alert_routing.py`, never in a detector agent's spec. Specific rules run before generic ones, and a record that resolves to nothing reaches the catch-all rather than being dropped. An alert must carry explicit `tags` and `alert_event`, so it is never alert-shaped by logger name.
+- *Amended 2026-10-25 (commits `7d2b51fc`, `291ae960`) — Alert-channel collapse: 23 seeded event
+  agents down to 10. This revisits and partially reverses a 2026-10 6-agent council rejection of a
+  flatter version of this same idea (`docs/specs/ALERT_AGENTS_DESIGN.md` §3.9, now marked "PARTIALLY
+  REVERSED, see §3.22"). 16 of the 23 `kind='event'` seeded agents (chase-cancel, partial-gtt,
+  template-attach ×2, order-failure, order-correction, template-guard, template-attach-fail,
+  mcp-ping, gtt-asymmetric, oco-double-fire, ticker-recovered, ticker-degraded, gtt-not-accepted,
+  fill, user-registered) are retired from `SEEDED_AGENTS` — deactivated via
+  `_retire_collapsed_event_agents()`, never deleted — and replaced by 3 generic channel agents
+  (`alert-channel-telegram`/`-ntfy`/`-email`) plus `event_agents.ALERT_EVENT_DISPATCH`, a table
+  **derived, never retyped**, from those 16 specs' own `conditions`/`actions` and
+  `alert_routing._PER_SLUG_OVERRIDES` rows. Two of the original rejection's four objections
+  (one-renderer-per-row, condition duplication) are answered structurally by this derived table;
+  the third (per-event Automation-page toggle loss) is an accepted, documented tradeoff — no
+  `kind='event'` agent has ever had per-type `trigger_count`/`last_triggered_at` observability to
+  lose on top of it (those columns are written only by the cycle-agent path in `agent_engine.py`);
+  the fourth (no soak time) no longer applies given the stable period since those four fixes
+  landed. `alert_event` survives unchanged in every dispatched record's `extra` dict, so Alerts-tab
+  / log-history filtering by type is unaffected even though the Automation page's per-agent toggle
+  granularity is not. 7 agents stay dedicated and byte-identical to before: `agent-alert-rich`
+  (breach multiplexer), `cycle-breach-alert` (breach render path), `unrouted-alert-catch-all`
+  (deliberately bypasses `resolve_channels()` as a last-resort safety net), `deploy-sync-alert` and
+  `market-summary` (dedicated `telegram_deploy`/`telegram_info` channels, not generic), `error-alert`
+  (a blanket tag-only catch-all with no `alert_event` and its own repeat-gate), and
+  `visitor-report-alert` (also dedicated `telegram_info`, found during implementation — it does not
+  fit the collapse the way the other 4 `generic_notice` agents do). `SEED_VERSION` 4→5; pre-flight
+  (`scripts/alert_seed_audit.py` run against prod and dev live) confirmed all 23 pre-collapse rows
+  were hash-clean — zero `modified_skip` risk — before this shipped. `_dispatch_agent()` branches to
+  a new `_dispatch_channel_agent()` for any agent whose render action names the internal sentinel
+  `"event_table"` and carries a `channel_key`; it sends only that one channel via a new
+  `only_channel` param on `_dispatch_record_channels()`, applied AFTER the forced-email
+  action-required gate, so a forced email never duplicates across the 3 channel agents for one
+  record and never drops to zero either. Full design: `docs/specs/ALERT_AGENTS_DESIGN.md` §3.22.
+  Landed on `workshop` only as of this entry — not yet merged to `dev`/`main`, no deploy attempted.
+  Invariant: a channel agent never sends a channel absent from its matched event's own verbatim
+  list, and `ALERT_EVENT_DISPATCH` is read, never hand-retyped, from the retired specs' own data.
 
 **Alert message format — plain text everywhere, origin line first, dedicated deploy channel, forced email for action-required, Alerts tab merges `alert`-tagged log rows (2026-10-25; commit `17a1c85a`; test-only follow-up `368c98a8`)** — Three standardisation changes and one surface change, all in the alert pipeline.
 - **Plain text, no HTML in Telegram or ntfy.** `alert_utils._send_telegram()` ([alert_utils.py:218](backend/shared/helpers/alert_utils.py#L218)) sends no `parse_mode` unless a caller passes one explicitly, and nothing does (payload at [:264-266](backend/shared/helpers/alert_utils.py#L264)). `_send_telegram_info()` ([:276](backend/shared/helpers/alert_utils.py#L276)) never sets one. `dispatch_payload()` builds `telegram_msg` without `<b>`/`<code>` and without `html.escape()` ([:682-685](backend/shared/helpers/alert_utils.py#L682)). The event-path senders `_send_telegram_html` ([event_agents.py:452](backend/api/algo/event_agents.py#L452)) and `_send_telegram_info_html` ([:501](backend/api/algo/event_agents.py#L501)) are now bare pass-throughs. Their `_html` suffix is kept for name stability only. `_html_to_plain()` ([alert_utils.py:319](backend/shared/helpers/alert_utils.py#L319)) has no production caller left. Email keeps its HTML body (`_email_message`).
