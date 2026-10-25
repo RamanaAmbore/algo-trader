@@ -160,10 +160,17 @@
     <span class="ot-depth-label">Ask qty</span>
     {#each buyRows as b, i (i)}
       {@const a = sellRows[i]}
-      <span class="ot-depth-cell ot-depth-bid-qty">{b ? qtyFmt(b.quantity) : '—'}</span>
-      <span class="ot-depth-cell ot-depth-bid">{b ? priceFmt(b.price) : '—'}</span>
-      <span class="ot-depth-cell ot-depth-ask">{a ? priceFmt(a.price) : '—'}</span>
-      <span class="ot-depth-cell ot-depth-ask-qty">{a ? qtyFmt(a.quantity) : '—'}</span>
+      {@const isLastRow = i === buyRows.length - 1}
+      <!-- Per-row divider + wash — reuses Chain's own literal row
+           decoration directly on each cell (no extra background
+           elements, no explicit grid placement needed — see the CSS
+           on .ot-depth-cell for the exact Chain alpha values reused).
+           Last row's divider is dropped, mirroring Chain's own
+           `.chain-row:last-child > td { border-bottom: 0 }`. -->
+      <span class="ot-depth-cell ot-depth-bid-qty" class:ot-depth-cell-last-row={isLastRow}>{b ? qtyFmt(b.quantity) : '—'}</span>
+      <span class="ot-depth-cell ot-depth-bid" class:ot-depth-cell-last-row={isLastRow}>{b ? priceFmt(b.price) : '—'}</span>
+      <span class="ot-depth-cell ot-depth-ask" class:ot-depth-cell-last-row={isLastRow}>{a ? priceFmt(a.price) : '—'}</span>
+      <span class="ot-depth-cell ot-depth-ask-qty" class:ot-depth-cell-last-row={isLastRow}>{a ? qtyFmt(a.quantity) : '—'}</span>
     {/each}
   </div>
   <!-- Additional-info strip (2026-09-30, operator: "use your judgement
@@ -537,9 +544,32 @@
       #1d2a44;
     border-bottom: 1px solid var(--algo-amber-border-soft);
   }
+  /* Row divider + wash (operator: "apply background and border
+     decoration of chain to order ticket depth" — simplified per
+     follow-up operator instruction to "just subtle border and
+     background," no per-side ITM/OTM-style color mapping, and kept
+     "in sync with chain" by reusing Chain's own literal alpha values
+     verbatim (OptionChainTab.svelte) rather than picking new numbers
+     that merely look similarly faint:
+       - border-bottom 0.025 white = Chain's exact row-divider alpha
+         (`.chain-row > td` border-bottom, its own "very very subtle"
+         pass).
+       - background-color 0.03 white = Chain's exact weaker/cross-tint
+         wash alpha tier (the OTM-side cells in `.chain-row-itm-*`).
+         Neutral white here, not orange/green, since this ladder has
+         no ITM/OTM-style two-sided signal to hang a color mapping on;
+         see `.ot-depth-diag` below for the "different" row, which
+         reuses Chain's OTHER literal tier (0.05, its ATM-row shade). */
   .ot-depth-cell {
     text-align: right;
     color: var(--algo-slate);
+    border-bottom: 1px solid rgba(255,255,255,0.025);
+    background-color: rgba(255,255,255,0.03);
+  }
+  /* No divider under the final depth row — mirrors Chain's own
+     `.chain-row:last-child > td { border-bottom: 0 }`. */
+  .ot-depth-cell-last-row {
+    border-bottom: none;
   }
   .ot-depth-bid     { color: var(--algo-green, var(--c-long)); border-right: 1px solid rgba(255,255,255,0.03); padding-right: 0.3rem; }
   .ot-depth-bid-qty { color: var(--algo-green, var(--c-long)); opacity: 0.7; }
@@ -610,9 +640,20 @@
     gap: 0.7rem;
     flex-wrap: wrap;
     margin-top: 0.35rem;
-    padding-top: 0.25rem;
+    padding: 0.2rem 0.5rem 0.25rem;
     border-top: 1px solid rgba(251,191,36,0.40);
     font-size: var(--fs-sm);
+    /* This is "the last row" of the ladder (the one carrying the
+       "Buy levels"/"Sell levels"/"Volume (raw)" text) — operator asked
+       for it to carry a different background than the 5 bid/ask rows
+       above (.ot-depth-cell, 0.03 white). Reuses Chain's OTHER literal
+       subtlety tier verbatim: 0.05 white, the same alpha Chain uses for
+       its ATM row's own "this row is different" shade
+       (`.chain-row-atm > td` background-image, OptionChainTab.svelte) —
+       not a new value picked by eye. border-radius matches the other
+       small background chips in this file (e.g. `.chain-spot-pill`). */
+    background-color: rgba(255,255,255,0.05);
+    border-radius: 3px;
   }
   .ot-depth-diag-item {
     display: inline-flex;
