@@ -92,7 +92,8 @@ class TestScopePositionsTotalPartialOutageGuard:
         exercised end-to-end without a DB session — same pattern as
         test_agent_evaluator.py."""
         from backend.api.algo.grammar_registry import REGISTRY
-        from backend.api.algo.grammar import _metric_day_val, _scope_positions_total, OPERATORS
+        from backend.api.algo.grammar import _scope_positions_total, OPERATORS
+        from backend.api.algo.grammar_tokens.metric_day_val import _metric_day_val
 
         monkeypatch.setitem(REGISTRY.metrics, 'day_val', _metric_day_val)
         monkeypatch.setitem(REGISTRY.scopes, 'positions.total', _scope_positions_total)

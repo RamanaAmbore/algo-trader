@@ -633,9 +633,8 @@ class TestFixBCrossRowJoinOnUnderlying:
         """Direct re-run of the fix #2 `loss-margin-low` repro through the
         GENERALIZED `_eval_all` — must behave identically to before Fix B
         (account-keyed children still only intersect against each other)."""
-        from backend.api.algo.grammar import (
-            _metric_avail_margin, _scope_funds_any_acct,
-        )
+        from backend.api.algo.grammar import _scope_funds_any_acct
+        from backend.api.algo.grammar_tokens.metric_avail_margin import _metric_avail_margin
         from backend.api.algo.grammar_registry import REGISTRY
         import pytest as _pytest
         mp = _pytest.MonkeyPatch()

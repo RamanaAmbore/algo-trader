@@ -41,6 +41,8 @@ import pytest
 
 from backend.api.algo import grammar
 from backend.api.algo.agent_evaluator import Context, evaluate, validate
+from backend.api.algo.grammar_tokens.metric_pnl import _metric_pnl
+from backend.api.algo.grammar_tokens.metric_avail_margin import _metric_avail_margin
 
 
 # ─── Fixtures ────────────────────────────────────────────────────────────
@@ -73,7 +75,7 @@ def _wire_registry(monkeypatch):
     test_agent_evaluator.py's TestExposedColumnFallback / TestAllJoins."""
     from backend.api.algo.grammar_registry import REGISTRY
     monkeypatch.setattr(REGISTRY, 'metrics', {
-        'pnl': grammar._metric_pnl, 'avail_margin': grammar._metric_avail_margin,
+        'pnl': _metric_pnl, 'avail_margin': _metric_avail_margin,
     })
     monkeypatch.setattr(REGISTRY, 'scopes', {
         'positions.expiring_today': grammar._scope_positions_expiring_today,

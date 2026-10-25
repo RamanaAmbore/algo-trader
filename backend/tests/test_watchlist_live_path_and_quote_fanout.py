@@ -55,6 +55,7 @@ from backend.api.algo.agent_engine import (
 )
 from backend.api.algo.actions import resolve_row_ref_params
 from backend.api.algo import grammar
+from backend.api.algo.grammar_tokens.metric_ltp import _metric_ltp
 
 
 def _now():
@@ -214,7 +215,7 @@ def _wire_registry_for_watchlist_scopes(monkeypatch):
     deterministic regardless of pytest execution order / whether an
     earlier test in the session already triggered a real reload()."""
     from backend.api.algo.grammar_registry import REGISTRY
-    monkeypatch.setattr(REGISTRY, 'metrics', {'ltp': grammar._metric_ltp})
+    monkeypatch.setattr(REGISTRY, 'metrics', {'ltp': _metric_ltp})
     monkeypatch.setattr(REGISTRY, 'scopes', {
         'watchlist.default': grammar._scope_watchlist_default,
         'watchlist.all':     grammar._scope_watchlist_all,

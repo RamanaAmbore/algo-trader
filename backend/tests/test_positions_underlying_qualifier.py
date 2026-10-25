@@ -41,6 +41,7 @@ import pytest
 
 from backend.api.algo import grammar
 from backend.api.algo.agent_evaluator import Context, evaluate, validate
+from backend.api.algo.grammar_tokens.metric_pnl import _metric_pnl
 
 
 _NOW_EXPIRY_DAY = datetime(2025, 4, 24, 9, 0, tzinfo=timezone.utc)
@@ -50,7 +51,7 @@ _NOW_EXPIRY_DAY = datetime(2025, 4, 24, 9, 0, tzinfo=timezone.utc)
 def _wire_registry(monkeypatch):
     from backend.api.algo.grammar_registry import REGISTRY
     monkeypatch.setattr(REGISTRY, 'metrics', {
-        'pnl': grammar._metric_pnl,
+        'pnl': _metric_pnl,
     })
     monkeypatch.setattr(REGISTRY, 'scopes', {
         'positions.expiring_today':              grammar._scope_positions_expiring_today,

@@ -400,7 +400,7 @@ def _apply_positions_margin_pct(
     (send_summary's `_summary_positions_rows` only reads `pnl`), but
     leaving it untouched avoids ever having to prove a negative for a
     future caller. NaN where margin data is unavailable for an account;
-    `grammar._metric_day_pct` and this module's `_update_pnl_history`
+    `grammar_tokens.metric_day_pct._metric_day_pct` and this module's `_update_pnl_history`
     both treat NaN as "skip" rather than falling back to notional.
     """
     if summary is None or summary.empty or 'account' not in summary.columns:

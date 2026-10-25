@@ -86,7 +86,7 @@ Amendment (2026-10, action-dispatch drift validator): a new
 same position, index 96 at the time) — `send_summary` already had a fully-wired,
 tested dispatch handler in `_NOOP_ACTION_HANDLERS`
 (`actions_live._action_send_summary`) but no catalog row at all, so
-`is_known_action_type()` rejected it and the Lab-chat agent-builder
+`is_known_action_type()` rejected it and the MCP-chat agent-builder
 could never offer it. Caught by the new
 `validate_action_dispatch_catalog()` check (`grammar_registry.py`) added
 the same round, which cross-references the catalog against both
@@ -372,6 +372,35 @@ class TestAgentGrammarYamlCatalogEquivalence:
             assert callable(fn), f"resolver {resolver} is not callable"
             checked += 1
         assert checked > 0
+
+    def test_condition_metric_scope_factories_actually_callable(self):
+        """A params_schema row under (condition, metric/scope) is a
+        FACTORY — GrammarRegistry routes it to the factories table and
+        later CALLS it with the literal call's positional args (see
+        GrammarRegistry._parse_call_token). Importability alone (the
+        test above) doesn't prove the factory itself still produces a
+        real (ctx, row) -> value callable — this does, by actually
+        invoking each one with a representative positive int arg (every
+        current params_schema is a window-in-minutes)."""
+        import importlib
+
+        checked = 0
+        for tok in grammar.SYSTEM_TOKENS:
+            if tok.get("grammar_kind") != "condition" or tok.get("token_kind") not in ("metric", "scope"):
+                continue
+            resolver = tok.get("resolver")
+            params_schema = tok.get("params_schema")
+            if not resolver or not params_schema:
+                continue
+            module_path, _, attr = resolver.rpartition(".")
+            mod = importlib.import_module(module_path)
+            factory = getattr(mod, attr)
+            bound = factory(30)
+            assert callable(bound), (
+                f"factory {resolver}(30) must return a callable, got {bound!r}"
+            )
+            checked += 1
+        assert checked > 0, "expected at least one condition metric/scope factory token"
 
     def test_no_non_yaml_serializable_values_in_catalog(self):
         """Every value in SYSTEM_TOKENS must be a plain YAML-safe type

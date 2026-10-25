@@ -64,11 +64,12 @@ def _seed_grammar_minimal():
     uses. Restores whatever was there before (defensive — REGISTRY is a
     module singleton)."""
     from backend.api.algo import grammar as _grammar
+    from backend.api.algo.grammar_tokens.metric_pnl import _metric_pnl
 
     prior_metrics = dict(REGISTRY.metrics)
     prior_scopes = dict(REGISTRY.scopes)
     prior_operators = dict(REGISTRY.operators)
-    REGISTRY.metrics["pnl"] = _grammar._metric_pnl
+    REGISTRY.metrics["pnl"] = _metric_pnl
     REGISTRY.scopes["positions.total"] = _grammar._scope_positions_total
     REGISTRY.scopes["positions.any_acct"] = _grammar._scope_positions_any_acct
     for k, v in _grammar.OPERATORS.items():

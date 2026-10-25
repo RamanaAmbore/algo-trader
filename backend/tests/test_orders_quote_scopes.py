@@ -44,6 +44,7 @@ import pytest
 
 from backend.api.algo import grammar
 from backend.api.algo.agent_evaluator import Context, evaluate, validate
+from backend.api.algo.grammar_tokens.metric_pnl import _metric_pnl
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -54,7 +55,7 @@ from backend.api.algo.agent_evaluator import Context, evaluate, validate
 def _wire_registry(monkeypatch):
     from backend.api.algo.grammar_registry import REGISTRY
     monkeypatch.setattr(REGISTRY, 'metrics', {
-        'pnl': grammar._metric_pnl,
+        'pnl': _metric_pnl,
     })
     monkeypatch.setattr(REGISTRY, 'scopes', {
         'orders.any_acct': grammar._scope_orders_any_acct,

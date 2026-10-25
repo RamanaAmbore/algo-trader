@@ -30,14 +30,24 @@ def test_operators_values_are_callable():
 
 
 def test_metric_pnl_resolver_exists():
-    assert "_metric_pnl" in _SRC, "_metric_pnl resolver function must exist in grammar.py"
+    """`_metric_pnl` migrated to grammar_tokens/metric_pnl.py (Wave 1,
+    batch 1) — resolver function bodies now live under the per-token
+    package, not inline in grammar.py's own source text."""
+    from backend.api.algo.grammar_tokens.metric_pnl import _metric_pnl
+    assert callable(_metric_pnl), "_metric_pnl resolver function must exist and be callable"
 
 
 def test_metric_functions_take_ctx_and_row():
-    """All metric resolver functions must take (ctx, row) arguments."""
+    """All metric resolver functions under grammar_tokens/ must take
+    (ctx, row) arguments. Retargeted (Wave 1) from a grammar.py source
+    scan — metric resolver bodies now live under the per-token package."""
     import re
-    # Find metric function definitions
-    metric_defs = re.findall(r"def (_metric_\w+)\s*\(ctx,\s*row\)", _SRC)
+    from pathlib import Path
+    pkg_dir = Path("backend/api/algo/grammar_tokens")
+    combined_src = "\n".join(
+        p.read_text() for p in sorted(pkg_dir.glob("metric_*.py"))
+    )
+    metric_defs = re.findall(r"def (_metric_\w+)\s*\(ctx,\s*row\)", combined_src)
     assert len(metric_defs) >= 3, (
         f"At least 3 _metric_* functions with (ctx, row) signature expected, "
         f"found: {metric_defs}"
@@ -68,80 +78,22 @@ def test_window_metric_functions_exist():
 # ═══════════════════════════════════════════════════════════════════════════
 #  Fix #3 — missing-vs-zero convention for raw-broker-column funds metrics
 # ═══════════════════════════════════════════════════════════════════════════
-
-class TestMissingVsZeroConvention:
-    """A genuinely-absent/None/NaN broker column must resolve to None
-    (leaf skipped), never a coerced 0.0 — the operator's explicit ask:
-    "if margin or cash of 0 should not generate alerts [when the 0 is
-    actually missing data]". A TRUE reported 0 must still pass through
-    (real zero balances must still be able to alert)."""
-
-    def test_avail_margin_none_when_column_absent(self):
-        from backend.api.algo.grammar import _metric_avail_margin
-        row = {'account': 'DH1234'}  # 'net' column never present
-        assert _metric_avail_margin(None, row) is None, (
-            "Missing 'net' column must resolve to None, not 0"
-        )
-
-    def test_avail_margin_true_zero_passes_through(self):
-        from backend.api.algo.grammar import _metric_avail_margin
-        row = {'account': 'ZD1234', 'net': 0.0}
-        assert _metric_avail_margin(None, row) == 0.0, (
-            "A REAL reported 0 must pass through unchanged, not be treated as missing"
-        )
-
-    def test_avail_margin_none_when_nan(self):
-        import math
-        from backend.api.algo.grammar import _metric_avail_margin
-        row = {'account': 'GR1234', 'net': float('nan')}
-        assert _metric_avail_margin(None, row) is None, (
-            "NaN (pandas representation of a None from json_normalize) must resolve to None"
-        )
-
-    def test_used_margin_none_when_missing(self):
-        from backend.api.algo.grammar import _metric_used_margin
-        assert _metric_used_margin(None, {}) is None
-
-    def test_collateral_none_when_missing(self):
-        from backend.api.algo.grammar import _metric_collateral
-        assert _metric_collateral(None, {}) is None
-
-    def test_avail_margin_negative_real_value_passes_through(self):
-        """Prod repro guard: a genuinely negative margin must still fire —
-        only MISSING data is suppressed, not real risk events."""
-        from backend.api.algo.grammar import _metric_avail_margin
-        row = {'account': 'ZD1234', 'net': -1500.0}
-        assert _metric_avail_margin(None, row) == -1500.0
+#
+# Resolver-level tests for avail_margin / used_margin / collateral moved to
+# backend/tests/grammar_tokens/test_metric_avail_margin.py,
+# test_metric_used_margin.py, test_metric_collateral.py (Wave 1, batch 1).
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  Fix #4 — live cash metric (was reading start-of-day opening_balance)
 # ═══════════════════════════════════════════════════════════════════════════
+#
+# Resolver-level tests for cash / sod_cash moved to
+# backend/tests/grammar_tokens/test_metric_cash.py, test_metric_sod_cash.py
+# (Wave 1, batch 1). The catalog-registration test below stays here — it
+# asserts on SYSTEM_TOKENS, not on either resolver function directly.
 
 class TestLiveCashMetric:
-    def test_cash_reads_avail_cash_not_opening_balance(self):
-        """cash must move intraday — reads 'avail cash' (live), NOT
-        'avail opening_balance' (frozen SOD figure the old resolver read)."""
-        from backend.api.algo.grammar import _metric_cash
-        row = {'avail cash': -500.0, 'avail opening_balance': 200000.0}
-        result = _metric_cash(None, row)
-        assert result == -500.0, (
-            f"Expected live 'avail cash' (-500.0), got {result} — "
-            f"cash<0 must be able to fire on a real intraday drop even "
-            f"when the SOD opening balance was healthy"
-        )
-
-    def test_cash_none_when_missing(self):
-        from backend.api.algo.grammar import _metric_cash
-        assert _metric_cash(None, {}) is None
-
-    def test_sod_cash_reads_opening_balance(self):
-        """sod_cash (new token) preserves the OLD `cash` behaviour for
-        agents that specifically want the start-of-day baseline."""
-        from backend.api.algo.grammar import _metric_sod_cash
-        row = {'avail cash': -500.0, 'avail opening_balance': 200000.0}
-        assert _metric_sod_cash(None, row) == 200000.0
-
     def test_sod_cash_token_registered(self):
         from backend.api.algo.grammar import SYSTEM_TOKENS
         tokens = {(t['grammar_kind'], t['token_kind'], t['token']) for t in SYSTEM_TOKENS}
@@ -177,32 +129,9 @@ class TestNtfyChannelCatalogToken:
 # ═══════════════════════════════════════════════════════════════════════════
 #  Fix #10 — day_pct metric prefers margin-based column over notional
 # ═══════════════════════════════════════════════════════════════════════════
-
-class TestDayPctMarginDenominator:
-    def test_prefers_margin_column_when_present(self):
-        from backend.api.algo.grammar import _metric_day_pct
-        row = {'day_change_percentage': -500.0, 'day_change_pct_margin': -5.2}
-        result = _metric_day_pct(None, row)
-        assert result == -5.2, (
-            f"Expected the margin-based figure (-5.2), not the notional "
-            f"figure (-500.0) that produced the worked-example blowup, got {result}"
-        )
-
-    def test_none_when_margin_unavailable_no_notional_fallback(self):
-        """When the margin column exists but is NaN (margin data
-        unavailable for that account this tick), the leaf must skip —
-        NEVER silently fall back to the broken notional figure."""
-        import math
-        from backend.api.algo.grammar import _metric_day_pct
-        row = {'day_change_percentage': -500.0, 'day_change_pct_margin': float('nan')}
-        assert _metric_day_pct(None, row) is None
-
-    def test_holdings_row_without_margin_column_uses_notional(self):
-        """Holdings rows never carry day_change_pct_margin — they keep
-        the standard opening-value-denominator day_change_percentage."""
-        from backend.api.algo.grammar import _metric_day_pct
-        row = {'day_change_percentage': -3.2}
-        assert _metric_day_pct(None, row) == -3.2
+#
+# Resolver-level tests moved to
+# backend/tests/grammar_tokens/test_metric_day_pct.py (Wave 1, batch 1).
 
 
 # ═══════════════════════════════════════════════════════════════════════════

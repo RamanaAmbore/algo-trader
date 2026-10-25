@@ -35,7 +35,6 @@ import pandas as pd
 import pytest
 
 from backend.api.algo.agent_evaluator import Context
-from backend.api.algo.grammar import _metric_day_pct
 
 
 class TestDefect10NotionalVsMarginDayPct:
@@ -49,48 +48,13 @@ class TestDefect10NotionalVsMarginDayPct:
     Worked example: -25k realized + one small open leg.
     Pre-fix: day_pct = -25k / 1k_notional = -2500% (absurd)
     Post-fix: day_pct = -25k / 100k_margin = -25% (reasonable)
+
+    Resolver-level tests (`_metric_day_pct` itself) moved to
+    backend/tests/grammar_tokens/test_metric_day_pct.py (Wave 1, batch 1
+    of the DSL token-unification plan). The worked-example documentation
+    test below doesn't call the resolver directly — it reproduces the
+    pre/post-fix arithmetic inline — so it stays here.
     """
-
-    def test_metric_day_pct_uses_margin_when_available(self):
-        """Positions now carry day_change_pct_margin (margin-based) column.
-
-        Post-fix: _metric_day_pct prefers day_change_pct_margin when present,
-        falling back to day_change_percentage for holdings.
-        """
-
-        # Positions row with margin-based percentage
-        row_positions = {
-            'account': 'A',
-            'day_change_pct_margin': -25.0,  # -25% of margin (post-fix column)
-            'day_change_percentage': -2500.0,  # -2500% notional (old bug value)
-        }
-
-        ctx = Context()
-
-        # Post-fix: should use day_change_pct_margin
-        val = _metric_day_pct(ctx, row_positions)
-
-        assert val == -25.0, (
-            "Post-fix: day_pct should use margin-based percentage when available"
-        )
-
-    def test_metric_day_pct_falls_back_for_holdings(self):
-        """Holdings don't have day_change_pct_margin; use day_change_percentage."""
-
-        # Holdings row (no margin-based column)
-        row_holdings = {
-            'account': 'A',
-            'day_change_percentage': 5.0,  # Standard holdings percentage
-        }
-
-        ctx = Context()
-
-        # Post-fix: should use day_change_percentage for holdings
-        val = _metric_day_pct(ctx, row_holdings)
-
-        assert val == 5.0, (
-            "Post-fix: day_pct should fall back to day_change_percentage for holdings"
-        )
 
     def test_mostly_closed_book_notional_blowup_pre_fix(self):
         """Document pre-fix absurd percentage scenario."""

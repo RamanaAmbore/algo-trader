@@ -95,10 +95,11 @@ class TestAllJoinsSameAccount:
     def _wire_registry(self, monkeypatch):
         from backend.api.algo.grammar_registry import REGISTRY
         from backend.api.algo.grammar import (
-            _metric_avail_margin, _metric_pnl,
             _scope_funds_any_acct, _scope_funds_total, _scope_positions_any_acct,
             OPERATORS,
         )
+        from backend.api.algo.grammar_tokens.metric_avail_margin import _metric_avail_margin
+        from backend.api.algo.grammar_tokens.metric_pnl import _metric_pnl
         monkeypatch.setitem(REGISTRY.metrics, 'avail_margin', _metric_avail_margin)
         monkeypatch.setitem(REGISTRY.metrics, 'pnl', _metric_pnl)
         monkeypatch.setitem(REGISTRY.scopes, 'funds.any_acct', _scope_funds_any_acct)

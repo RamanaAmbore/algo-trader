@@ -60,11 +60,12 @@ def _seed_grammar_minimal():
     real comparison operators (needed for TestFullChainThroughRichAlert's
     full `_cycle_evaluate_agent` condition-tree evaluation)."""
     from backend.api.algo import grammar as _grammar
+    from backend.api.algo.grammar_tokens.metric_pnl import _metric_pnl
 
     prior_metrics = dict(REGISTRY.metrics)
     prior_scopes = dict(REGISTRY.scopes)
     prior_operators = dict(REGISTRY.operators)
-    REGISTRY.metrics["pnl"] = _grammar._metric_pnl
+    REGISTRY.metrics["pnl"] = _metric_pnl
     REGISTRY.scopes["positions.total"] = _grammar._scope_positions_total
     for k, v in _grammar.OPERATORS.items():
         REGISTRY.operators[k] = v

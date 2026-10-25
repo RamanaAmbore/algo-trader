@@ -7,7 +7,7 @@
       "value_type": "number",
       "units": "₹",
       "description": "Positions mark-to-market P&L in ₹ for the selected scope.",
-      "resolver": "backend.api.algo.grammar._metric_pnl"
+      "resolver": "backend.api.algo.grammar_tokens.metric_pnl._metric_pnl"
     },
     {
       "grammar_kind": "condition",
@@ -16,7 +16,7 @@
       "value_type": "number",
       "units": "%",
       "description": "Positions P&L as percent of used margin. Undefined when no open positions.",
-      "resolver": "backend.api.algo.grammar._metric_pnl_pct"
+      "resolver": "backend.api.algo.grammar_tokens.metric_pnl_pct._metric_pnl_pct"
     },
     {
       "grammar_kind": "condition",
@@ -25,7 +25,7 @@
       "value_type": "number",
       "units": "₹",
       "description": "Holdings day-change value in ₹ for the selected scope.",
-      "resolver": "backend.api.algo.grammar._metric_day_val"
+      "resolver": "backend.api.algo.grammar_tokens.metric_day_val._metric_day_val"
     },
     {
       "grammar_kind": "condition",
@@ -34,7 +34,7 @@
       "value_type": "number",
       "units": "%",
       "description": "Holdings day-change percentage for the selected scope.",
-      "resolver": "backend.api.algo.grammar._metric_day_pct"
+      "resolver": "backend.api.algo.grammar_tokens.metric_day_pct._metric_day_pct"
     },
     {
       "grammar_kind": "condition",
@@ -43,7 +43,7 @@
       "value_type": "number",
       "units": "₹",
       "description": "Holdings invested value (cost basis).",
-      "resolver": "backend.api.algo.grammar._metric_inv_val"
+      "resolver": "backend.api.algo.grammar_tokens.metric_inv_val._metric_inv_val"
     },
     {
       "grammar_kind": "condition",
@@ -52,7 +52,7 @@
       "value_type": "number",
       "units": "₹",
       "description": "Holdings current market value.",
-      "resolver": "backend.api.algo.grammar._metric_cur_val"
+      "resolver": "backend.api.algo.grammar_tokens.metric_cur_val._metric_cur_val"
     },
     {
       "grammar_kind": "condition",
@@ -61,7 +61,7 @@
       "value_type": "number",
       "units": "₹",
       "description": "Live available cash on the funds row (moves intraday). None when the broker does not report this field for the account.",
-      "resolver": "backend.api.algo.grammar._metric_cash"
+      "resolver": "backend.api.algo.grammar_tokens.metric_cash._metric_cash"
     },
     {
       "grammar_kind": "condition",
@@ -70,7 +70,7 @@
       "value_type": "number",
       "units": "₹",
       "description": "Start-of-day cash (opening balance) — does not move intraday. None when the broker does not report this field for the account.",
-      "resolver": "backend.api.algo.grammar._metric_sod_cash"
+      "resolver": "backend.api.algo.grammar_tokens.metric_sod_cash._metric_sod_cash"
     },
     {
       "grammar_kind": "condition",
@@ -79,7 +79,7 @@
       "value_type": "number",
       "units": "₹",
       "description": "Net available margin.",
-      "resolver": "backend.api.algo.grammar._metric_avail_margin"
+      "resolver": "backend.api.algo.grammar_tokens.metric_avail_margin._metric_avail_margin"
     },
     {
       "grammar_kind": "condition",
@@ -88,7 +88,7 @@
       "value_type": "number",
       "units": "₹",
       "description": "Utilised margin (positions denominator for pnl_pct).",
-      "resolver": "backend.api.algo.grammar._metric_used_margin"
+      "resolver": "backend.api.algo.grammar_tokens.metric_used_margin._metric_used_margin"
     },
     {
       "grammar_kind": "condition",
@@ -97,7 +97,7 @@
       "value_type": "number",
       "units": "₹",
       "description": "Collateral component of margin.",
-      "resolver": "backend.api.algo.grammar._metric_collateral"
+      "resolver": "backend.api.algo.grammar_tokens.metric_collateral._metric_collateral"
     },
     {
       "grammar_kind": "condition",
@@ -648,7 +648,7 @@
       "value_type": "number",
       "units": "₹",
       "description": "Last-traded price of a watchlist row (or any row with a last_price column).",
-      "resolver": "backend.api.algo.grammar._metric_ltp"
+      "resolver": "backend.api.algo.grammar_tokens.metric_ltp._metric_ltp"
     },
     {
       "grammar_kind": "condition",
