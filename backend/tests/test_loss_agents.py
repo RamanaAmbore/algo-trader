@@ -460,7 +460,7 @@ class TestLossAgentsConsistency:
         loss-positions-underlying-divergence shipped inactive on
         2026-10-22 pending a fix to a reference-point mismatch between its
         two gate sides (underlying_market_loss vs underlying_theoretical_
-        loss — see grammar.py's `_metric_underlying_market_loss`
+        loss — see grammar_tokens/metric_underlying_market_loss.py's `_metric_underlying_market_loss`
         docstring); fixed and activated the same day, so it is now in the
         active group below alongside loss-positions-total/loss-funds-
         negative."""

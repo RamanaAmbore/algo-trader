@@ -366,7 +366,7 @@
       "value_type": "number",
       "units": "days",
       "description": "Days until this position's option/future expires (parses tradingsymbol). None for cash equity.",
-      "resolver": "backend.api.algo.grammar._metric_days_until_expiry"
+      "resolver": "backend.api.algo.grammar_tokens.metric_days_until_expiry._metric_days_until_expiry"
     },
     {
       "grammar_kind": "condition",
@@ -375,7 +375,7 @@
       "value_type": "number",
       "units": "",
       "description": "Returns 1.0 when an option is in-the-money at current spot, 0.0 otherwise. Needs ctx.spot_prices.",
-      "resolver": "backend.api.algo.grammar._metric_is_itm"
+      "resolver": "backend.api.algo.grammar_tokens.metric_is_itm._metric_is_itm"
     },
     {
       "grammar_kind": "condition",
@@ -384,7 +384,7 @@
       "value_type": "number",
       "units": "",
       "description": "Returns 1.0 when an option is within ±1.5%% of spot (near-the-money), 0.0 otherwise. Needs ctx.spot_prices.",
-      "resolver": "backend.api.algo.grammar._metric_is_ntm"
+      "resolver": "backend.api.algo.grammar_tokens.metric_is_ntm._metric_is_ntm"
     },
     {
       "grammar_kind": "condition",
@@ -392,7 +392,7 @@
       "token": "is_future",
       "description": "Returns 1.0 for futures contracts, 0.0 for options, None for equity.",
       "units": "binary",
-      "resolver": "backend.api.algo.grammar._metric_is_future"
+      "resolver": "backend.api.algo.grammar_tokens.metric_is_future._metric_is_future"
     },
     {
       "grammar_kind": "condition",
@@ -509,7 +509,7 @@
       "value_type": "number",
       "units": "₹",
       "description": "Sum of (day_change_val now − day_change_val at theoretical-baseline capture) across every currently-held leg of this underlying that has a baseline — the underlying's day_change_val change SINCE the theoretical baseline was captured, not its raw day P&L, so this metric shares the same reference point as underlying_theoretical_loss. A leg with no baseline yet does not contribute; None when no leg of this underlying has a baseline. Pairs with underlying_theoretical_loss / underlying_loss_divergence below under the positions.any_underlying scope.",
-      "resolver": "backend.api.algo.grammar._metric_underlying_market_loss"
+      "resolver": "backend.api.algo.grammar_tokens.metric_underlying_market_loss._metric_underlying_market_loss"
     },
     {
       "grammar_kind": "condition",
@@ -518,7 +518,7 @@
       "value_type": "number",
       "units": "₹",
       "description": "Baseline-reprice theoretical P&L for every currently-held leg of this underlying — implied vol calibrated ONCE this session and held fixed; only spot and time-to-expiry move tick to tick. None until a frozen baseline exists for every leg and a live spot price is available.",
-      "resolver": "backend.api.algo.grammar._metric_underlying_theoretical_loss"
+      "resolver": "backend.api.algo.grammar_tokens.metric_underlying_theoretical_loss._metric_underlying_theoretical_loss"
     },
     {
       "grammar_kind": "condition",
@@ -527,7 +527,7 @@
       "value_type": "number",
       "units": "₹",
       "description": "abs(underlying_theoretical_loss − underlying_market_loss) for this underlying — how far today's real market loss has diverged from what the frozen-vol Greeks/IV-implied move would predict. None when either side is unavailable (never a false 0 divergence).",
-      "resolver": "backend.api.algo.grammar._metric_underlying_loss_divergence"
+      "resolver": "backend.api.algo.grammar_tokens.metric_underlying_loss_divergence._metric_underlying_loss_divergence"
     },
     {
       "grammar_kind": "condition",

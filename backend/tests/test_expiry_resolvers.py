@@ -2,10 +2,15 @@
 Item 1 / Phase 25 — expiry-aware grammar resolver tests.
 
 Covers:
-  _metric_days_until_expiry — parses tradingsymbol, returns days as float
-  _metric_is_itm            — 1.0 ITM / 0.0 OTM, None when spot missing
-  _metric_is_ntm            — 1.0 within ±1.5% / 0.0 otherwise
   _scope_positions_expiring_today — filters per-symbol rows
+  Segment-specific scopes, seeded-agent shape, and end-to-end condition
+  evaluation against a real GOLDM/NIFTY book.
+
+Resolver-level tests for _metric_days_until_expiry, _metric_is_itm, and
+_metric_is_ntm moved to backend/tests/grammar_tokens/
+test_metric_days_until_expiry.py, test_metric_is_itm.py,
+test_metric_is_ntm.py (Wave 1, batch 3 of the DSL token-unification
+plan).
 """
 
 from __future__ import annotations
@@ -25,98 +30,6 @@ def _ctx(*, position_rows=None, spot_prices=None, now=None) -> Context:
         spot_prices=spot_prices or {},
         now=now or datetime.now(timezone.utc),
     )
-
-
-# ── days_until_expiry ──────────────────────────────────────────────
-
-def test_days_until_expiry_parses_monthly_option():
-    # NIFTY 25-APR-22000 CE (monthly) — expiry = last Thursday of April
-    # 2025 = 24th April 2025.
-    row = {"tradingsymbol": "NIFTY25APR22000CE", "exchange": "NFO"}
-    ctx = _ctx(now=datetime(2025, 4, 24, 9, 0, tzinfo=timezone.utc))  # ~14:30 IST
-    d = grammar._metric_days_until_expiry(ctx, row)
-    assert d is not None
-    # 24 Apr 2025 expiry at 15:30 IST; ref 09:00 UTC = 14:30 IST → ~1 hour to expiry
-    assert 0 < d < 0.2
-
-
-def test_days_until_expiry_floors_after_expiry():
-    row = {"tradingsymbol": "NIFTY25APR22000CE", "exchange": "NFO"}
-    ctx = _ctx(now=datetime(2025, 5, 1, 12, 0, tzinfo=timezone.utc))
-    d = grammar._metric_days_until_expiry(ctx, row)
-    assert d == 0.0
-
-
-def test_days_until_expiry_none_for_equity():
-    row = {"tradingsymbol": "RELIANCE", "exchange": "NSE"}
-    assert grammar._metric_days_until_expiry(_ctx(), row) is None
-
-
-def test_days_until_expiry_mcx_uses_2330_close():
-    # CRUDEOILM expiry — MCX trades till 23:30 so an option expiring
-    # today has more time-to-expiry than an NFO option at the same
-    # wall-clock time. MCX commodity monthlies expire on the last
-    # FRIDAY of the contract month (per MCX rule revision), not the
-    # equity 'last Thursday' convention.
-    row = {"tradingsymbol": "CRUDEOILM25MAY5500CE", "exchange": "MCX"}
-    # 30 May 2025 — last Friday of May 2025. At 12:00 UTC = 17:30 IST,
-    # 6 hours to the 23:30 IST MCX close → days_to_expiry ≈ 0.25.
-    ctx = _ctx(now=datetime(2025, 5, 30, 12, 0, tzinfo=timezone.utc))
-    d = grammar._metric_days_until_expiry(ctx, row)
-    assert d is not None and 0.2 < d < 0.3
-
-
-# ── is_itm ──────────────────────────────────────────────────────────
-
-def test_is_itm_call_above_strike():
-    row = {"tradingsymbol": "NIFTY25APR22000CE", "exchange": "NFO"}
-    ctx = _ctx(spot_prices={"NIFTY": 22150.0})
-    assert grammar._metric_is_itm(ctx, row) == 1.0
-
-
-def test_is_itm_call_below_strike():
-    row = {"tradingsymbol": "NIFTY25APR22000CE", "exchange": "NFO"}
-    ctx = _ctx(spot_prices={"NIFTY": 21800.0})
-    assert grammar._metric_is_itm(ctx, row) == 0.0
-
-
-def test_is_itm_put_below_strike():
-    row = {"tradingsymbol": "NIFTY25APR22000PE", "exchange": "NFO"}
-    ctx = _ctx(spot_prices={"NIFTY": 21800.0})
-    assert grammar._metric_is_itm(ctx, row) == 1.0
-
-
-def test_is_itm_put_above_strike():
-    row = {"tradingsymbol": "NIFTY25APR22000PE", "exchange": "NFO"}
-    ctx = _ctx(spot_prices={"NIFTY": 22150.0})
-    assert grammar._metric_is_itm(ctx, row) == 0.0
-
-
-def test_is_itm_none_without_spot():
-    row = {"tradingsymbol": "NIFTY25APR22000CE"}
-    assert grammar._metric_is_itm(_ctx(), row) is None  # spot_prices empty
-
-
-def test_is_itm_none_for_future():
-    row = {"tradingsymbol": "NIFTY25APRFUT"}
-    ctx = _ctx(spot_prices={"NIFTY": 22000.0})
-    assert grammar._metric_is_itm(ctx, row) is None  # futures have no strike
-
-
-# ── is_ntm ──────────────────────────────────────────────────────────
-
-def test_is_ntm_within_band():
-    # Spot 22000, strike 22050 → 0.227% away → NTM
-    row = {"tradingsymbol": "NIFTY25APR22050CE", "exchange": "NFO"}
-    ctx = _ctx(spot_prices={"NIFTY": 22000.0})
-    assert grammar._metric_is_ntm(ctx, row) == 1.0
-
-
-def test_is_ntm_outside_band():
-    # Spot 22000, strike 22500 → 2.27% away → outside ±1.5%
-    row = {"tradingsymbol": "NIFTY25APR22500CE", "exchange": "NFO"}
-    ctx = _ctx(spot_prices={"NIFTY": 22000.0})
-    assert grammar._metric_is_ntm(ctx, row) == 0.0
 
 
 # ── positions.expiring_today scope ─────────────────────────────────

@@ -303,20 +303,7 @@ def underlying_of_symbol(symbol: str) -> Optional[str]:
     return parsed.get('root') or None
 
 
-def _metric_days_until_expiry(ctx, row):
-    """Days until this position's option/future expires. None for
-    cash equity holdings (non-parseable tradingsymbol)."""
-    sym = row.get('tradingsymbol') or ''
-    parsed = _parsed_or_none(sym)
-    if not parsed or not parsed.get('expiry'):
-        return None
-    try:
-        from backend.api.algo.derivatives import days_to_expiry
-        # MCX commodity options trade until 23:30; everything else 15:30.
-        close_time = (23, 30) if (row.get('exchange') or '').upper() == 'MCX' else (15, 30)
-        return float(days_to_expiry(parsed['expiry'], ref=ctx.now, close_time=close_time))
-    except Exception:
-        return None
+# `_metric_days_until_expiry` migrated to grammar_tokens/ (Wave 1, batch 3).
 
 
 def _option_moneyness(ctx, row):
@@ -343,38 +330,9 @@ def _option_moneyness(ctx, row):
     return (None, None)
 
 
-def _metric_is_itm(ctx, row):
-    """1.0 when the option is in-the-money at current spot, 0.0
-    otherwise. None when row isn't an option or spot is unavailable."""
-    kind, intrinsic = _option_moneyness(ctx, row)
-    if kind is None:
-        return None
-    return 1.0 if intrinsic > 0 else 0.0
-
-
-def _metric_is_ntm(ctx, row):
-    """1.0 when the option is within ±1.5% of spot (near-the-money),
-    0.0 otherwise. The 1.5% threshold matches the legacy ExpiryEngine
-    default. None when row isn't an option or spot is unavailable."""
-    kind, intrinsic = _option_moneyness(ctx, row)
-    if kind is None:
-        return None
-    return 1.0 if abs(intrinsic) <= 0.015 else 0.0
-
-
-def _metric_is_future(ctx, row):
-    """1.0 when the position is a futures contract (kind == 'fut'),
-    0.0 when it is an option, None for equity or unrecognised symbols."""
-    sym = row.get('tradingsymbol') or ''
-    parsed = _parsed_or_none(sym)
-    if not parsed:
-        return None
-    kind = parsed.get('kind')
-    if kind == 'fut':
-        return 1.0
-    if kind == 'opt':
-        return 0.0
-    return None
+# `_metric_is_itm`, `_metric_is_ntm`, `_metric_is_future` migrated to
+# grammar_tokens/ (Wave 1, batch 3). `_option_moneyness` stays here —
+# shared helper read by both is_itm and is_ntm.
 
 
 def _scope_positions_expiring_today(ctx):
@@ -741,58 +699,8 @@ def _scope_positions_any_underlying(ctx):
     return out
 
 
-def _metric_underlying_market_loss(ctx, row):
-    """Σ (day_change_val NOW − day_change_val AT BASELINE CAPTURE) across
-    every currently-held leg of this underlying that has a theoretical
-    baseline entry — i.e. the underlying's day_change_val change SINCE
-    `_update_underlying_theo_baseline()` (agent_engine.py) froze that
-    leg's reprice baseline this session.
-
-    Why not raw `day_change_val` (the pre-2026-10-22 behaviour): that
-    column is measured from **prev_close** (the standard day-change
-    baseline, reset at the 08:00 IST session boundary), a DIFFERENT
-    reference point than `_underlying_theoretical_loss`'s own baseline
-    (each leg's LTP/spot/IV frozen the first tick seen THIS session —
-    which can be well after 08:00 on a process restart, or can
-    legitimately differ from prev_close on any overnight gap). Diffing
-    against the SAME reference point the theoretical side uses means a
-    pure gap-day move already reflected in day_change_val by the time
-    the baseline was captured contributes ~0 here, not a large false
-    "divergence" — see the module comment above
-    `_scope_positions_any_underlying` for the full baseline-reprice
-    design this mirrors.
-
-    A leg with no baseline entry yet (first tick, not yet captured by
-    `_update_underlying_theo_baseline`) simply does not contribute to
-    this sum — same missing-data skip `_underlying_theoretical_loss`
-    applies to an un-baselined leg, just scoped per-leg here rather than
-    all-or-nothing for the whole underlying, since a leg's raw
-    day_change_val carries no theoretical-reprice dependency the way an
-    option/future reprice does.
-
-    Returns None (missing-vs-zero convention — never a false 0) when the
-    row carries no `underlying` at all (wrong scope), OR when NOT A
-    SINGLE leg of this underlying has a baseline yet."""
-    underlying = row.get('underlying')
-    if not underlying:
-        return None
-    rows = getattr(ctx, 'position_rows', None) or []
-    baseline = ((getattr(ctx, 'alert_state', None) or {}).get('underlying_theo_baseline') or {})
-    total = 0.0
-    any_baselined = False
-    for r in rows:
-        if r.get('underlying') != underlying:
-            continue
-        b = baseline.get(r.get('tradingsymbol') or '')
-        if b is None:
-            continue
-        any_baselined = True
-        dcv_now = float(r.get('day_change_val', 0) or 0)
-        dcv_base = float(b.get('dcv_base', 0) or 0)
-        total += dcv_now - dcv_base
-    if not any_baselined:
-        return None
-    return total
+# `_metric_underlying_market_loss` migrated to grammar_tokens/ (Wave 1,
+# batch 3).
 
 
 def _theo_reprice_fut_leg(b: dict, S_now: float) -> "float | None":
@@ -890,25 +798,10 @@ def _underlying_theoretical_loss(ctx, underlying):
     return total
 
 
-def _metric_underlying_theoretical_loss(ctx, row):
-    """Baseline-reprice theoretical P&L for this underlying — see
-    `_underlying_theoretical_loss`'s module-level docstring above for the
-    full formula and missing-data rules."""
-    return _underlying_theoretical_loss(ctx, row.get('underlying'))
-
-
-def _metric_underlying_loss_divergence(ctx, row):
-    """abs(theoretical − market) day loss for this underlying. None when
-    either side is unavailable — never a false 0 divergence that could
-    silently fail to gate a downstream rate-of-change leaf closed."""
-    underlying = row.get('underlying')
-    theo = _underlying_theoretical_loss(ctx, underlying)
-    if theo is None:
-        return None
-    market = _metric_underlying_market_loss(ctx, row)
-    if market is None:
-        return None
-    return abs(theo - market)
+# `_metric_underlying_theoretical_loss` and `_metric_underlying_loss_
+# divergence` migrated to grammar_tokens/ (Wave 1, batch 3).
+# `_underlying_theoretical_loss` (and its `_theo_reprice_*` helpers
+# above) stay here — shared, used by both migrated metrics.
 
 
 # ── "Worst case" scope selectors — collapse N per-account agents to 1 ─────

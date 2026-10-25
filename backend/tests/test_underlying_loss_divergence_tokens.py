@@ -41,6 +41,15 @@ from backend.api.algo import agent_engine as ae
 from backend.api.algo import grammar as g
 from backend.api.algo.grammar_tokens.metric_pnl_rate_abs import _metric_pnl_rate_abs
 from backend.api.algo.grammar_tokens.metric_pnl_rate_pct import _metric_pnl_rate_pct
+from backend.api.algo.grammar_tokens.metric_underlying_market_loss import (
+    _metric_underlying_market_loss,
+)
+from backend.api.algo.grammar_tokens.metric_underlying_theoretical_loss import (
+    _metric_underlying_theoretical_loss,
+)
+from backend.api.algo.grammar_tokens.metric_underlying_loss_divergence import (
+    _metric_underlying_loss_divergence,
+)
 from backend.api.algo.agent_evaluator import Context, evaluate
 from backend.api.algo.derivatives import black_76
 
@@ -83,228 +92,24 @@ class TestScopePositionsAnyUnderlying:
         assert g._scope_positions_any_underlying(Context()) == []
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-#  Metric: underlying_market_loss
-# ═══════════════════════════════════════════════════════════════════════════
-
-class TestMetricUnderlyingMarketLoss:
-    """2026-10-22 reference-point fix: this metric now sums
-    (day_change_val now − dcv_base) per BASELINED leg, not raw
-    day_change_val — see `_metric_underlying_market_loss`'s own
-    docstring for the full rationale (shares the theoretical side's
-    reference point, so a pure gap-day move doesn't read as a false
-    divergence)."""
-
-    def test_sums_baseline_relative_delta_across_legs_of_one_underlying(self):
-        rows = [
-            {'underlying': 'NIFTY', 'tradingsymbol': 'LEG_A', 'day_change_val': -50.0},
-            {'underlying': 'NIFTY', 'tradingsymbol': 'LEG_B', 'day_change_val': -75.0},
-            {'underlying': 'CRUDEOIL', 'tradingsymbol': 'LEG_C', 'day_change_val': 10.0},
-        ]
-        alert_state = {'underlying_theo_baseline': {
-            'LEG_A': _fut_baseline(100.0, 1, dcv_base=-10.0),
-            'LEG_B': _fut_baseline(100.0, 1, dcv_base=-25.0),
-            'LEG_C': _fut_baseline(100.0, 1, dcv_base=0.0),
-        }}
-        ctx = Context(position_rows=rows, alert_state=alert_state)
-        val = g._metric_underlying_market_loss(ctx, {'underlying': 'NIFTY'})
-        # (-50 - (-10)) + (-75 - (-25)) = -40 + -50 = -90
-        assert val == pytest.approx(-90.0), f"expected -90.0, got {val}"
-
-    def test_missing_underlying_on_row_is_none(self):
-        ctx = Context(position_rows=[{'underlying': 'NIFTY', 'day_change_val': -50.0}])
-        assert g._metric_underlying_market_loss(ctx, {}) is None
-
-    def test_leg_without_baseline_does_not_contribute(self):
-        """A leg not yet baselined is skipped entirely (not coerced to a
-        0 delta) — but a sibling leg of the SAME underlying that IS
-        baselined still contributes its own delta."""
-        rows = [
-            {'underlying': 'NIFTY', 'tradingsymbol': 'BASELINED', 'day_change_val': -50.0},
-            {'underlying': 'NIFTY', 'tradingsymbol': 'NOT_YET_BASELINED', 'day_change_val': -999999.0},
-        ]
-        alert_state = {'underlying_theo_baseline': {
-            'BASELINED': _fut_baseline(100.0, 1, dcv_base=-10.0),
-        }}
-        ctx = Context(position_rows=rows, alert_state=alert_state)
-        val = g._metric_underlying_market_loss(ctx, {'underlying': 'NIFTY'})
-        assert val == pytest.approx(-40.0), (
-            f"expected -40.0 (only the BASELINED leg's delta), got {val} — "
-            f"the un-baselined leg's -999999.0 must not leak in"
-        )
-
-    def test_no_legs_baselined_yet_is_none(self):
-        """Missing-vs-zero convention: if NOT A SINGLE leg of this
-        underlying has a baseline yet, the metric reports None, never a
-        false 0 (which would silently look like 'no loss')."""
-        rows = [{'underlying': 'NIFTY', 'tradingsymbol': 'SYM', 'day_change_val': -50.0}]
-        ctx = Context(position_rows=rows, alert_state={})
-        assert g._metric_underlying_market_loss(ctx, {'underlying': 'NIFTY'}) is None
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-#  Metric: underlying_theoretical_loss (+ underlying_loss_divergence)
-# ═══════════════════════════════════════════════════════════════════════════
+# Resolver-level tests for underlying_market_loss, underlying_theoretical_loss
+# and underlying_loss_divergence (TestMetricUnderlyingMarketLoss,
+# TestMetricUnderlyingTheoreticalLossAndDivergence, and the single most
+# important regression test in this module —
+# TestMarketLossGapDayReferencePointFix) moved to
+# backend/tests/grammar_tokens/test_metric_underlying_market_loss.py,
+# test_metric_underlying_theoretical_loss.py, and
+# test_metric_underlying_loss_divergence.py (Wave 1, batch 3 of the DSL
+# token-unification plan). `_fut_baseline` stays here — it is a shared
+# fixture helper used throughout the REST of this file (TestBaselineWriter,
+# TestFixALatchKeyPerUnderlying, TestEndToEndWiring, ...), not specific to
+# the three moved classes — duplicated (not imported) into each of the
+# three new files above.
 
 def _fut_baseline(S_base, qty, is_mcx=False, dcv_base=0.0):
     return {'kind': 'fut', 'ltp_base': S_base, 'S_base': S_base,
             'is_mcx': is_mcx, 'qty': qty, 'dcv_base': dcv_base}
 
-
-class TestMetricUnderlyingTheoreticalLossAndDivergence:
-    def test_future_leg_linear_reprice(self):
-        """theoretical_loss(underlying) = qty * (S_now - S_base) for a
-        futures leg — no option Greeks repricing."""
-        rows = [{'underlying': 'CRUDEOIL', 'tradingsymbol': 'CRUDEOIL26OCTFUT',
-                 'quantity': 10, 'day_change_val': 0.0}]
-        alert_state = {'underlying_theo_baseline': {
-            'CRUDEOIL26OCTFUT': _fut_baseline(S_base=6000.0, qty=10, is_mcx=True),
-        }}
-        ctx = Context(position_rows=rows, spot_prices={'CRUDEOIL': 6050.0},
-                      alert_state=alert_state, now=IST_NOW)
-        theo = g._metric_underlying_theoretical_loss(ctx, {'underlying': 'CRUDEOIL'})
-        assert theo == pytest.approx(10 * (6050.0 - 6000.0)), f"got {theo}"
-
-    def test_option_leg_bs_reprice_matches_black_76_formula(self):
-        """A frozen-σ option leg reprices via the SAME black_76 primitive
-        the metric uses internally — not a reimplementation."""
-        from backend.api.algo.derivatives import days_to_expiry
-
-        S_base, K, sigma_base = 5550.0, 5500.0, 0.22
-        expiry = date(2026, 10, 30)  # real parse_tradingsymbol('CRUDEOIL26OCT5500CE') output
-        # T_now the metric itself will compute at IST_NOW — reused here so
-        # the fixture's own ltp_base is built at the EXACT same T as the
-        # metric will reprice against (not an approximate hand-picked DTE).
-        T_now = days_to_expiry(expiry, ref=IST_NOW, close_time=(23, 30)) / 365.0
-        ltp_base = black_76(S_base, K, T_now, 0.07, sigma_base, 'CE')
-        rows = [{'underlying': 'CRUDEOIL', 'tradingsymbol': 'CRUDEOIL26OCT5500CE',
-                 'quantity': 5, 'day_change_val': 0.0}]
-        alert_state = {'underlying_theo_baseline': {
-            'CRUDEOIL26OCT5500CE': {
-                'kind': 'opt', 'ltp_base': ltp_base, 'S_base': S_base,
-                'sigma_base': sigma_base, 'K': K, 'opt_type': 'CE',
-                'expiry': expiry, 'is_mcx': True, 'qty': 5,
-            },
-        }}
-        # Spot unchanged from baseline, same `now` as baseline capture —
-        # reprice must reproduce ltp_base exactly (zero theoretical move).
-        ctx = Context(position_rows=rows, spot_prices={'CRUDEOIL': S_base},
-                      alert_state=alert_state, now=IST_NOW)
-        theo = g._metric_underlying_theoretical_loss(ctx, {'underlying': 'CRUDEOIL'})
-        assert theo == pytest.approx(0.0, abs=1e-6), f"expected ~0 at baseline spot, got {theo}"
-
-        # Spot moves up — theoretical P&L must track the BS/Black-76
-        # reprice, not a linear delta-only approximation.
-        ctx2 = Context(position_rows=rows, spot_prices={'CRUDEOIL': S_base + 100.0},
-                       alert_state=alert_state, now=IST_NOW)
-        theo2 = g._metric_underlying_theoretical_loss(ctx2, {'underlying': 'CRUDEOIL'})
-        expected_price = black_76(S_base + 100.0, K, T_now, 0.07, sigma_base, 'CE')
-        assert theo2 == pytest.approx(5 * (expected_price - ltp_base)), f"got {theo2}"
-
-    def test_missing_spot_price_is_none(self):
-        rows = [{'underlying': 'CRUDEOIL', 'tradingsymbol': 'SYM', 'quantity': 1}]
-        alert_state = {'underlying_theo_baseline': {'SYM': _fut_baseline(100.0, 1)}}
-        ctx = Context(position_rows=rows, spot_prices={}, alert_state=alert_state, now=IST_NOW)
-        assert g._metric_underlying_theoretical_loss(ctx, {'underlying': 'CRUDEOIL'}) is None
-
-    def test_missing_baseline_for_one_leg_makes_whole_underlying_none(self):
-        """A partial sum would UNDERSTATE theoretical loss — the whole
-        underlying must report unavailable, not silently drop the leg."""
-        rows = [
-            {'underlying': 'NIFTY', 'tradingsymbol': 'LEG_A', 'quantity': 1},
-            {'underlying': 'NIFTY', 'tradingsymbol': 'LEG_B', 'quantity': 1},
-        ]
-        alert_state = {'underlying_theo_baseline': {'LEG_A': _fut_baseline(100.0, 1)}}
-        ctx = Context(position_rows=rows, spot_prices={'NIFTY': 100.0},
-                      alert_state=alert_state, now=IST_NOW)
-        assert g._metric_underlying_theoretical_loss(ctx, {'underlying': 'NIFTY'}) is None
-
-    def test_no_position_rows_for_underlying_is_none(self):
-        ctx = Context(position_rows=[], spot_prices={'NIFTY': 100.0}, now=IST_NOW)
-        assert g._metric_underlying_theoretical_loss(ctx, {'underlying': 'NIFTY'}) is None
-
-    def test_divergence_is_abs_diff_of_theo_and_market(self):
-        rows = [{'underlying': 'CRUDEOIL', 'tradingsymbol': 'SYM', 'quantity': 10,
-                 'day_change_val': -150000.0}]
-        alert_state = {'underlying_theo_baseline': {'SYM': _fut_baseline(100.0, 10)}}
-        ctx = Context(position_rows=rows, spot_prices={'CRUDEOIL': 100.0},
-                      alert_state=alert_state, now=IST_NOW)
-        div = g._metric_underlying_loss_divergence(ctx, {'underlying': 'CRUDEOIL'})
-        # theoretical == 0 (spot unchanged from baseline); market == -150000
-        assert div == pytest.approx(150000.0), f"got {div}"
-
-    def test_divergence_is_none_when_theoretical_unavailable(self):
-        rows = [{'underlying': 'CRUDEOIL', 'tradingsymbol': 'SYM', 'quantity': 10,
-                 'day_change_val': -150000.0}]
-        ctx = Context(position_rows=rows, spot_prices={}, alert_state={}, now=IST_NOW)
-        assert g._metric_underlying_loss_divergence(ctx, {'underlying': 'CRUDEOIL'}) is None
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-#  2026-10-22 reference-point fix — the actual bug this fix closes.
-#
-#  Before this fix, `underlying_market_loss` summed RAW day_change_val
-#  (measured from prev_close), while `underlying_theoretical_loss`
-#  measures "change since the theoretical baseline was captured" (which
-#  can be well after prev_close's own 08:00 IST reset, e.g. a process
-#  restart mid-session, or any overnight gap). A pure gap-day move
-#  already reflected in day_change_val by the time the theo baseline was
-#  captured would then read as a large FALSE divergence with zero real
-#  volatility surprise, holding the gate open all session for the wrong
-#  reason — flagged by the implementing agent before activating
-#  loss-positions-underlying-divergence. This is the single most
-#  important test in this file: it reproduces the exact bug and proves
-#  the fix closes it.
-# ═══════════════════════════════════════════════════════════════════════════
-
-class TestMarketLossGapDayReferencePointFix:
-    def test_gap_day_already_priced_in_by_baseline_time_shows_small_not_large_divergence(self):
-        underlying = 'CRUDEOIL'
-        sym = 'CRUDEOILGAPFUT'
-        qty = 10
-        S_base = 6000.0
-        # A huge overnight gap (prev_close -> the LTP at the moment the
-        # theo baseline was captured this session) has ALREADY shown up
-        # as day_change_val by baseline-capture time.
-        dcv_base = -90000.0
-        baseline = {'kind': 'fut', 'ltp_base': S_base, 'S_base': S_base,
-                    'is_mcx': True, 'qty': qty, 'dcv_base': dcv_base}
-
-        # Only a SMALL real move has happened since baseline capture:
-        # spot drifts 6000 -> 5980 (-20 per unit, -200 for qty=10). The
-        # broker's own raw day_change_val (always measured from
-        # prev_close, never from the baseline) tracks the pre-existing
-        # gap PLUS this small incremental move.
-        S_now = 5980.0
-        dcv_now = -90200.0  # -90000 (gap, already baked into dcv_base) + -200 (real move)
-
-        rows = [{'underlying': underlying, 'tradingsymbol': sym, 'quantity': qty,
-                 'day_change_val': dcv_now}]
-        alert_state = {'underlying_theo_baseline': {sym: baseline}}
-        ctx = Context(position_rows=rows, spot_prices={underlying: S_now},
-                      alert_state=alert_state, now=IST_NOW)
-
-        market = g._metric_underlying_market_loss(ctx, {'underlying': underlying})
-        theo = g._metric_underlying_theoretical_loss(ctx, {'underlying': underlying})
-        divergence = g._metric_underlying_loss_divergence(ctx, {'underlying': underlying})
-
-        # The OLD (pre-fix) raw-day_change_val semantics would have
-        # reported market == dcv_now == -90200.0, and divergence ==
-        # 90000.0 — a huge false reading entirely attributable to the
-        # overnight gap, not to any real post-baseline volatility.
-        assert market == pytest.approx(-200.0), (
-            f"expected the baseline-relative delta (-200.0, the REAL "
-            f"post-baseline move only), got {market} — the pre-fix bug "
-            f"would have reported {dcv_now} (the raw, gap-inflated value)"
-        )
-        assert theo == pytest.approx(qty * (S_now - S_base)), f"got {theo}"
-        assert divergence == pytest.approx(0.0, abs=1e-6), (
-            f"expected ~0 divergence (both sides now measure the SAME "
-            f"small real post-baseline move) — got {divergence}; the "
-            f"pre-fix bug would have reported a false divergence of "
-            f"{abs(dcv_now - theo) if theo is not None else '?'} purely "
-            f"from the overnight gap"
-        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -576,7 +381,7 @@ class TestFixBCrossRowJoinOnUnderlying:
     def _wire_registry(self, monkeypatch):
         from backend.api.algo.grammar_registry import REGISTRY
         monkeypatch.setitem(REGISTRY.scopes, 'positions.any_underlying', g._scope_positions_any_underlying)
-        monkeypatch.setitem(REGISTRY.metrics, 'underlying_loss_divergence', g._metric_underlying_loss_divergence)
+        monkeypatch.setitem(REGISTRY.metrics, 'underlying_loss_divergence', _metric_underlying_loss_divergence)
         monkeypatch.setitem(REGISTRY.metrics, 'pnl_rate_abs', _metric_pnl_rate_abs)
         monkeypatch.setitem(REGISTRY.metrics, 'pnl_rate_pct', _metric_pnl_rate_pct)
         monkeypatch.setitem(REGISTRY.operators, '>', g.OPERATORS['>'])
@@ -710,9 +515,9 @@ class TestEndToEndWiring:
     def _wire_registry(self, monkeypatch):
         from backend.api.algo.grammar_registry import REGISTRY
         monkeypatch.setitem(REGISTRY.scopes, 'positions.any_underlying', g._scope_positions_any_underlying)
-        monkeypatch.setitem(REGISTRY.metrics, 'underlying_market_loss', g._metric_underlying_market_loss)
-        monkeypatch.setitem(REGISTRY.metrics, 'underlying_theoretical_loss', g._metric_underlying_theoretical_loss)
-        monkeypatch.setitem(REGISTRY.metrics, 'underlying_loss_divergence', g._metric_underlying_loss_divergence)
+        monkeypatch.setitem(REGISTRY.metrics, 'underlying_market_loss', _metric_underlying_market_loss)
+        monkeypatch.setitem(REGISTRY.metrics, 'underlying_theoretical_loss', _metric_underlying_theoretical_loss)
+        monkeypatch.setitem(REGISTRY.metrics, 'underlying_loss_divergence', _metric_underlying_loss_divergence)
         monkeypatch.setitem(REGISTRY.metrics, 'pnl_rate_abs', _metric_pnl_rate_abs)
         monkeypatch.setitem(REGISTRY.metrics, 'pnl_rate_pct', _metric_pnl_rate_pct)
         monkeypatch.setitem(REGISTRY.operators, '>', g.OPERATORS['>'])

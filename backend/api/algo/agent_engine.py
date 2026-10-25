@@ -565,7 +565,7 @@ def _capture_opt_leg_baseline(parsed: dict, S_base: float, ltp_base: float,
     `dcv_base` is the leg's own `day_change_val` at the same moment the
     rest of the baseline is captured — see `_capture_leg_theo_baseline`'s
     docstring for why this is needed (shared reference point for
-    `grammar._metric_underlying_market_loss`)."""
+    `grammar_tokens.metric_underlying_market_loss._metric_underlying_market_loss`)."""
     from backend.api.algo.derivatives import (
         implied_vol, implied_vol_76, black_scholes, black_76,
         days_to_expiry, DEFAULT_RISK_FREE,
@@ -608,7 +608,7 @@ def _capture_leg_theo_baseline(row: dict, now, spot_prices: dict):
     non-flat F&O leg.
 
     Also captures `dcv_base` — the leg's own `day_change_val` at this
-    SAME moment — so `grammar._metric_underlying_market_loss` can later
+    SAME moment — so `grammar_tokens.metric_underlying_market_loss._metric_underlying_market_loss` can later
     measure "change since baseline capture" instead of raw day_change_val
     (which is measured from prev_close, a DIFFERENT reference point than
     this baseline's own ltp_base/S_base/sigma_base — see the module
@@ -1779,7 +1779,7 @@ _LOSS_AGENTS = [
     #
     # Shipped INACTIVE at first (2026-10-22) pending a fix to the
     # reference-point mismatch between this agent's two gate sides — see
-    # grammar.py's `_metric_underlying_market_loss` docstring. Fixed and
+    # grammar_tokens/metric_underlying_market_loss.py's `_metric_underlying_market_loss` docstring. Fixed and
     # activated the same day; status now defaults to "active" via
     # `_LOSS_AGENT_DEFAULTS` like every other non-destructive loss agent.
     dict(slug="loss-positions-underlying-divergence",
