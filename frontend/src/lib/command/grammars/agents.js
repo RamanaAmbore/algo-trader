@@ -9,12 +9,13 @@
 // already accept, plus an exhaustive semantic validator.
 //
 // Full EBNF + AST shape + known catalog gaps: docs/specs/AGENTS_GRAMMAR_EBNF.md
-// (extracted 2026-10-25 from this exact comment block — keep both in sync when
-// the grammar changes; that file is now the persistent source of truth, not
-// the ephemeral .claude/PLAN.md this used to point at). As of extraction the
-// EBNF itself was already stale relative to this file's real, current grammar
-// (predates the GIVEN-removal/preamble/ALERT-is-an-ordinary-call unification)
-// — see that file's own "KNOWN STALE" banner before trusting it.
+// (keep both in sync when the grammar changes; that file is the persistent
+// source of truth, not the ephemeral .claude/PLAN.md this used to point at).
+// Rewritten 2026-10-24 to describe the shipped preamble/WHEN-DO grammar. Its
+// STATUS section marks the event-agent `WHEN log(...) DO render(...)` shape as
+// target-only until Wave 2 lands. `_EVENT_META_KEYS` / `parseEventStmt` remain
+// live until then. Its reserved_word production is drift-guarded against
+// `RESERVED_WORDS` by __tests__/agentsGrammarEbnfDrift.test.js.
 import { fetchGrammarTokens } from '$lib/api';
 import { getInstrument, listExchangesForSymbol } from '$lib/data/instruments';
 import { tokenizeCallStyle, fuzzyFilter } from '$lib/command/engine.js';

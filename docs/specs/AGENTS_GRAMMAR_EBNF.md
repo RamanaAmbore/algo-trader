@@ -1,681 +1,454 @@
 # Agents CLI Grammar — EBNF
 
-Extracted 2026-10-25 from the header comment of
-[`frontend/src/lib/command/grammars/agents.js`](../../frontend/src/lib/command/grammars/agents.js)
-(lines 1–635 at extraction time), which was itself described as mirroring an
-"authoritative copy" that had only ever lived in the ephemeral `.claude/PLAN.md`
-file — overwritten and archived (`.claude/PLAN.done*.md`) every time a new plan
-started, with no single persistent source of truth. This file is now that
-source of truth. **Keep it in sync with `agents.js` going forward** — when the
-grammar changes, update both the implementation and this file in the same
-commit, the same way any other `docs/specs/*.md` is expected to track its
-implementation.
+Source of truth for the agent CLI grammar implemented in
+[`frontend/src/lib/command/grammars/agents.js`](../../frontend/src/lib/command/grammars/agents.js).
+When the grammar changes, update the implementation and this file in the same commit.
+The prose companion is [AGENTS_SPEC.md §13](AGENTS_SPEC.md) (preamble execution, compiled
+`preamble` JSON, operator semantics). A drift-guard test checks the reserved-word production
+below against the code: `frontend/src/lib/__tests__/agentsGrammarEbnfDrift.test.js`.
 
-## ⚠️ KNOWN STALE AS OF EXTRACTION — do not treat as current without checking
+## ⚠️ STATUS — read first
 
-This EBNF was last meaningfully updated before the 2026-10-24/25
-grammar-unification work (commits `e509bcf1`, `dbcf77ec`, and the related
-`GIVEN`-removal / preamble / `help` / `log`-rename sprint documented in
-`CLAUDE.md`). Specifically known wrong or missing below:
+This document was rewritten 2026-10-24 to describe two layers at once.
 
-- **`agent_stmt`/`tail`/`alert_part` describe `ALERT` as a reserved clause
-  keyword living *inside* `agent_stmt`** (`tail := alert_part do_part | ...`,
-  `alert_part := "ALERT" alert_clause`). This is no longer how the grammar
-  works — `GIVEN` is removed entirely, `ALERT` is no longer a reserved clause
-  keyword anywhere, `WHEN...DO...` is the one generic optional conditional
-  wrapper, and anything before `WHEN` (or the whole statement, if there's no
-  `WHEN`) is an unconditional preamble accepting the full statement vocabulary
-  (`order`/`bracket`/`alert`/`log`/`help`/`debug`/label-assignment). See
-  `docs/specs/AGENTS_SPEC.md` for the current, correct grammar description in
-  prose; this EBNF has not yet been brought up to date to match it.
-- **No `help` statement/action production** — added after this comment was
-  last updated.
-- **`event_kw`'s `log(...)` action and its `priority=`/`name=`/`tags=`
-  parameters are not described here** — this EBNF still only shows the
-  standalone `ALERT log_tag=...` statement form, not the `log(...)` action
-  used inside a preamble or `DO`.
-- **`GIVEN` is not mentioned anywhere in this file at all** (it predates the
-  keyword's introduction *and* its later removal), so there's nothing to
-  strike — but a reader relying on this file alone would not know `agent_stmt`
-  itself has been restructured around a preamble instead of `when_part? tail`.
+- **Current (shipped).** Everything in this file is shipped **except** the event-agent shape
+  marked `[target]`. The shipped grammar has no `GIVEN` keyword, no `ALERT` clause keyword, and
+  one conditional wrapper, `WHEN … DO …`. Everything before `WHEN` (or the whole statement, if
+  there is no `WHEN`) is an unconditional preamble. `alert`, `log`, `help`, `debug`, `order`,
+  `bracket`, and label assignment are all ordinary items anywhere in the preamble or `DO`.
+- **Target (NOT YET SHIPPED — Wave 2).** An event (`kind='event'`) agent is written as an ordinary
+  `WHEN log(tag=…, min_level=…, where={…}) DO render(…)` statement. Its condition is a
+  catalog-resolved bare call, and `|` replaces the old `match=[…]` list. The standalone
+  `ALERT log_tag=… render=…` statement (`event_stmt`) is still live in `agents.js`
+  (`_EVENT_META_KEYS` at line 84, `parseEventStmt`, `compileEventStmt`). Its productions and every
+  semantic rule they carry are kept in
+  [Appendix A](#appendix-a--retiring-event_stmt-live-until-wave-2),
+  so Wave 2's byte-identical compile gate has a written reference. Delete Appendix A when Wave 2
+  ships.
 
-A follow-up pass should rewrite the EBNF below to match current reality
-rather than patch it incrementally — the structural change (preamble-first,
-no `GIVEN`, no `ALERT`-as-clause) touches enough of the top-level productions
-that incremental edits would likely leave it inconsistent again.
+Wave 2 is the plan in `.claude/PLAN.md` (dissolve `event_stmt` into ordinary `WHEN … DO …`).
+`[target]` tags mark every rule that depends on it.
 
 ---
 
+## Grammar
+
 ```ebnf
-statement      := agent_stmt | event_stmt | order_stmt | bracket_stmt
-                 | token_stmt
+(* ── Top level ───────────────────────────────────────────────────────────── *)
+statement      := order_stmt | bracket_stmt | help_stmt | cancel_all_orders_stmt
+                 | token_stmt | agent_stmt
+                                                (* Dispatch order (`_dispatchStatement`): a leading
+                                                   order/place_order, bracket, or help call is
+                                                   tried FIRST as its exclusive standalone
+                                                   statement and accepted only if it consumes the
+                                                   whole input.
+                                                   Otherwise the parse backtracks and falls through
+                                                   to agent_stmt, which accepts the same call
+                                                   vocabulary. token and cancel_all_orders have no
+                                                   such fallback — they are standalone-only.
+                                                   Event agents are agent_stmt too [target]. *)
+
+(* ── Agent statement (shipped, except the event form noted below) ─────────── *)
+agent_stmt     := preamble? ("WHEN" condition "DO" do_clause)? meta_item*
+                                                (* WHEN and DO are one paired, optional wrapper.
+                                                   WHEN without DO is a compile-time error.
+                                                   DO without WHEN is a compile-time error.
+                                                   A preamble with neither is a complete standalone
+                                                   statement. DO nop alone is rejected. At least
+                                                   one real call is required somewhere in the
+                                                   statement. meta_item* is trailing-only. *)
+preamble       := item_list                    (* Bounded by POSITION: everything before WHEN, or
+                                                   the entire input if WHEN never appears. No
+                                                   introducer keyword. A bare "nop" is rejected
+                                                   here (allowNop=false). *)
+do_clause      := "nop" | item_list           (* "nop" excludes every other item. *)
+item_list      := item (("," | ";" | NEWLINE) item)*
+                                                (* Separators: literal "," or ";", or a bare
+                                                   newline before a token that starts a new
+                                                   item. All three are equivalent. *)
+item           := NAME "=" rhs | call_list     (* NAME "=" is a label assignment. It populates
+                                                   state.bindings and emits no compiled entry. See
+                                                   LABEL RULES below. *)
+rhs            := value | arith_expr           (* arith_expr is the operator-expression RHS
+                                                   (parseGivenRhs). Its grammar is not restated
+                                                   here. See Known gaps. *)
+call_list      := call ("," call)*
+
+(* ── Standalone statements (each accepted ONLY as the whole statement) ─────── *)
+order_stmt     := order_call ("," order_call)* meta_item*
+                                                (* order / place_order only. Trailing meta_item is
+                                                   parsed but is a COMPILE-time error. *)
+bracket_stmt   := bracket_call meta_item*      (* Exactly ONE bracket(...) call. No basket form.
+                                                   #name= is effectively required. *)
+help_stmt      := help_call meta_item*         (* Exactly ONE help(<name>) call. Read-only.
+                                                   Meta is a COMPILE-time error. *)
+cancel_all_orders_stmt := cancel_all_orders_call meta_item*
+                                                (* Exactly ONE cancel_all_orders(...) call. No
+                                                   comma. Meta is a COMPILE-time error. *)
+token_stmt     := token_head (condition_body | call_list) meta_item*
+                                                (* token(...) only. head := token(kind=condition)
+                                                   names a condition fragment, and its body is one
+                                                   condition. head := token(kind=notify) is
+                                                   followed by a channel call_list with NO comma
+                                                   between head and body. kind=notify is the only
+                                                   action kind supported on the notify path.
+                                                   #name= is required. #tag= and #group= are
+                                                   rejected. *)
+token_head     := call                         (* call.name must be "token". *)
+condition_body := condition
+
+(* ── Built-in call shapes inside items (not new productions, shape notes) ─── *)
+alert_call     := "alert" "(" ("nop" | item_list) ")"
+                                                (* Ordinary call. Compiles through the same
+                                                   channel-list machinery the old ALERT clause
+                                                   used.
+                                                   Allowed anywhere an item is allowed. Inside
+                                                   alert(...) ONLY, a leading msg= sugar is
+                                                   accepted: `msg=value, channel, …`. *)
+order_call     := call                         (* name is order or place_order. *)
+bracket_call   := call                         (* name is bracket. *)
+help_call      := NAME "(" bare_word ")"       (* help(<name>). <name> is one bare word, same
+                                                   lexer sugar debug(x) uses. Never quoted. *)
+debug_call     := NAME "(" bare_word ")"       (* debug(x). Compiles to a log call with level
+                                                   debug and message x. Same single-bare-word
+                                                   sugar as help. *)
+cancel_all_orders_call := call                 (* name is cancel_all_orders. *)
+
+(* ── Metadata (trailing only) ────────────────────────────────────────────── *)
+meta_item      := "#" NAME "=" meta_value ("," meta_value)*
+                                                (* Trailing only. NAME is one of
+                                                   name/desc/tag/group. An unknown key is a
+                                                   COMPILE-time error, not a
+                                                   parse error. *)
+meta_value     := STRING | BARE_WORD
+BARE_WORD      := (* an unquoted run of 1+ characters containing NONE of: whitespace, ",", "#",
+                     "=", or a quote character. DELIBERATELY WIDER than NAME's word-char class:
+                     "hedge-book" lexes as one BARE_WORD. Scanned by a dedicated "#" branch in
+                     lexAgentStatement. *)
+
+(* ── Condition tree (shipped) ────────────────────────────────────────────── *)
+condition      := "always" | or_expr
+or_expr        := term (("&" | "|") term)*     (* equal precedence, left-to-right.
+                                                   a & b | c groups as (a & b) | c. *)
+term           := "~" primary | primary
+primary        := "(" or_expr ")" | leaf
+leaf           := metric_ref comparator value
+                 | col_ref comparator value
+                 | value comparator (metric_ref | col_ref) comparator value   (* between *)
+                 | call                        (* A BARE call with no "@" following. Parsed
+                                                   permissively here and resolved at COMPILE
+                                                   time against the catalog. If the name resolves
+                                                   to an isFragmentRef entry, it compiles to
+                                                   {"$ref": name}. A real metric missing its "@"
+                                                   gets "expected '@' after metric" at compile
+                                                   time. [target] A log-condition is ALSO a bare
+                                                   call — see prose below. *)
+metric_ref     := call "@" scope_ref
+scope_ref      := scope_seg ("." scope_seg)*   (* scope_seg := call | qualifier_seg. A
+                                                   qualifier_seg is trailing only. Short scope
+                                                   aliases (pos/hld/fnd/wl) apply to the FIRST
+                                                   call segment only. *)
+scope_seg      := call | qualifier_seg
+qualifier_seg  := NAME ":" qualifier_value    (* account:value / symbol:value. Compiles to a
+                                                   leaf-level scope_filter dict, never folded into
+                                                   the scope string. "*" and "worst" are reserved
+                                                   values that alias onto the existing
+                                                   <family>.any_acct / .worst_acct / .worst_symbol
+                                                   scope tokens. *)
+qualifier_value := "*" | NAME | STRING
+col_ref        := call ("." call)+             (* A bare dotted chain with NO "@", e.g.
+                                                   positions.total.pnl. Syntactically the same as
+                                                   scope_ref, but semantically distinct. Which
+                                                   trailing segment is the scope and which is the
+                                                   column is decided at COMPILE time
+                                                   (_resolveDotAccess): try the whole chain as a
+                                                   known scope first, then fall back to "last
+                                                   segment is a column on the scope so far". *)
+comparator     := "<" | "<=" | ">" | ">=" | "==" | "!=" | "in" | "not in"
+
+(* ── Values and calls ────────────────────────────────────────────────────── *)
+value          := NUMBER | STRING | NAME | list_literal
+list_literal   := "[" value ("," value)* "]"
+call           := NAME | NAME "(" arg_list ")"
+                                                (* A NAME in call position may contain internal
+                                                   hyphens, mid-word only, so a seeded Token name
+                                                   like notify-critical-trio lexes as ONE token.
+                                                   This does NOT widen NAME elsewhere. Kwarg keys
+                                                   are scanned by a separate tokenizer
+                                                   (tokenizeCallStyle, engine.js). *)
+arg_list       := kw_arg ("," kw_arg)*         (* EVERY argument is keyword, including the
+                                                   first. No positional form exists. *)
+kw_arg         := NAME "=" value
+                                                (* [target] Wave 2 needs `where={…}` as a
+                                                   log-condition argument. That requires widening
+                                                   this production's value to include
+                                                   object_literal, scoped to condition calls.
+                                                   Not yet written. See Known gaps. *)
+
+(* ── Object literals and the tp_scales_json exception ────────────────────── *)
+object_literal := "{" obj_kwarg ("," obj_kwarg)* "}"
+obj_kwarg      := NAME "=" value | NAME "=" object_literal
+                                                (* NOT a general value. Reached only from
+                                                   tp_scales_json (below), and from the retiring
+                                                   event where=/match= (Appendix A). Reuses "=" as
+                                                   the key/value separator. *)
+tp_scales_json_value := "[" object_literal ("," object_literal)* "]"
+                                                (* The ONLY legal value for a call argument named
+                                                   tp_scales_json (case-insensitive), on order(...)
+                                                   or bracket(...). Parsed by a dedicated
+                                                   mini-lexer (_parseTpScalesJsonArg), not
+                                                   tokenizeCallStyle. *)
+
+(* ── Reserved words ──────────────────────────────────────────────────────── *)
+(* Drift-guarded: frontend/src/lib/__tests__/agentsGrammarEbnfDrift.test.js asserts this set is
+   exactly agents.js's RESERVED_WORDS (_RESERVED). Add a word here in the same commit that adds
+   it to _RESERVED, and vice versa. Quoted words only, one per alternative. *)
+reserved_word  := "when" | "do" | "nop" | "always" | "in" | "not" | "and" | "or"
+                 | "true" | "false"
+                                                (* NOT reserved: "given" (removed; a leading
+                                                   given is a specific error), "alert" (an
+                                                   ordinary call), "debug", "help", and "msg"
+                                                   (contextual only, as NAME "=" inside
+                                                   alert(...)). *)
+
+(* ── Label rules (a separate set from reserved_word) ──────────────────────── *)
+label_reserved := "debug" | "result" | "alert" | "given" | "help"
+                                                (* _LABEL_RESERVED_WORDS. A label may NOT be
+                                                   bound to any reserved_word OR label_reserved
+                                                   word. Not drift-guarded: the set is not
+                                                   exported. *)
+```
+
+### Event agents — target shape `[target]`
+
+An event (`kind='event'`) agent is an ordinary `agent_stmt` whose condition is a log-condition
+call and whose action is a `render(...)` call:
+
+```
+WHEN log(tag=error, min_level=WARNING) DO render(render=error, gate=true)
+WHEN log(tag=orders, min_level=ERROR, where={channel="telegram"}) | log(tag=risk) DO render(...)
+```
+
+Prose rules for the target shape:
+
+- **A log-condition is a catalog-resolved bare call.** `log(…)` in condition position has NO
+  new production. It is the existing `leaf := … | call` alternative. Compile-time resolution
+  finds the condition-kind `log` catalog row, the same way any other bare-call token reference
+  resolves. The `log` name is resolved by POSITION: in a condition it means the log-stream
+  filter, in an action (preamble or `DO`) it means the app-log action (see §Actions). Both rows
+  share the name, the same way `help` reuses a name across token kinds.
+- **`|` replaces `match=[…]`.** `log(…) | log(…)` is an ordinary `or_expr`. The OR-of-filters the
+  retiring `match=` list encoded is the grammar's own `|` operator. No new production.
+- **Mixing a log-condition with a metric or scope leaf in one `WHEN` is a COMPILE-time error.**
+  The two use different dispatch loops and cannot coexist in one agent.
+- **`&` between log-condition leaves is UNDEFINED.** Wave 2 must decide. Open question, not
+  documented as behavior.
+- **`min_level` is uppercased; defaults to `INFO`.** `tag`, `render`, and every value inside
+  `where={…}` are byte-exact. They are never case-normalized, because `where` matches log
+  `extra` fields by exact string equality server-side. See Appendix A for the full rule set.
+- **`msg=` is rejected** on a log-condition or `render(...)`. `render(...)` owns the message.
+- **`kind='event'` is set** when the condition resolves to a log-condition. The compiled
+  `conditions` and `actions` JSON must be byte-identical to the retiring `event_stmt`'s compiled
+  output for the same agent. `compute_seed_spec_hash()` hashes these fields.
+- **`render(…)` is an `event_actions` entry, not a grammar token, today.** The render key and its
+  `gate` sibling are declared under `event_actions.render` in
+  [agent_grammar.yaml](../../backend/config/grammars/agent_grammar.yaml) (`gate` boolean, default
+  false). Wave 2 must add a catalog row, or expose the `event_actions` entry through the generic
+  call path. The argument spelling (`render(render=…, gate=…)`) is an assumption until then.
+
+### Actions (ordinary call, shipped)
+
+- **`log(level=…, message=…, priority=…, name=…, tags=…)`** — the app-log action, valid in the
+  preamble or `DO`. Params per
+  [agent_grammar.yaml](../../backend/config/grammars/agent_grammar.yaml) (`log` token,
+  `action_type` kind):
+  - `level` — enum, default `info`. The YAML enum lists `info`, `warning`, `error`, `critical`.
+    `debug(x)` compiles to level `debug`, which the YAML enum does not list. See Known gaps.
+  - `message` — required string.
+  - `priority` — optional enum `low|default|high|urgent`. Routing hint only: a matching event
+    agent's ntfy priority override.
+  - `name` — optional, threaded to the log record as `extra["route_name"]`. NOT `extra["name"]`,
+    which is a reserved `LogRecord` attribute.
+  - `tags` — optional list, threaded to `extra["route_tags"]`. NOT `extra["tags"]`, which is the
+    structural condition-match key (`log_store.tags_for()`).
+- **`help(name)`** — read-only catalog lookup. Logged at DEBUG, never alert-eligible. Available on
+  the Console tab only. Rejected on order-scoped CLI mounts (`allowedKinds`). Resolved by
+  `help_lookup` in [actions.py](../../backend/api/algo/actions.py).
+- **`alert(…)`** — see the call-shape note above. Compiles to `{type:'alert', events:[…]}`.
+
+---
+
+## Prose — how the pieces combine
+
+- **Preamble vs `DO`.** Both use the same `item_list` and the same per-call compiler
+  (`_compileSharedCall`). The position alone decides whether a call is gated by a condition.
+  Execution semantics (every-cycle, once-per-activation, cooldown-windowed) are in
+  [AGENTS_SPEC.md §13](AGENTS_SPEC.md) and in CLAUDE.md, "Saved cycle-agent preamble".
+- **Label assignment** binds a NAME for later reads in the same statement. A label is never a
+  compiled entry. Bindings are visible only to calls and conditions written AFTER the binding
+  (`parseCall` snapshots `state.bindings` per call). A label may not be a reserved word or a
+  `label_reserved` word.
+- **Standalone statements do not mix.** `order`/`bracket`/`help` are standalone ONLY when they
+  are the entire input. `token` and `cancel_all_orders` are standalone-only, with no preamble
+  fallback. Anything else containing those names in a mixed list goes through `agent_stmt`.
+- **`alert` with no parentheses** is no longer a clause keyword. A bare `ALERT` followed by an
+  event-meta key (`ALERT log_tag=…`) still parses as the legacy event statement (retiring,
+  Appendix A). A bare `ALERT` followed by anything else (`ALERT telegram DO …`) is a specific
+  parse error naming the removed clause keyword. A bare `alert = …` is a label-reservation error.
+- **Compiled JSON `preamble`.** The preamble compiles to a top-level `preamble` array on
+  `kind:'agent'` rows (omitted when empty). Shape and execution are in AGENTS_SPEC §13.
+
+---
+
+## AST shape
+
+Internal, for the decompiler and live preview. NOT the compiled JSON. See the `compile*()`
+functions in `agents.js` for that.
+
+```
+Statement := AgentAst
+           | OrderAst | BracketAst | HelpAst | CancelAllOrdersAst | TokenAst
+           | EventAst                        (* legacy, retiring — Appendix A *)
+
+AgentAst  := { kind:'agent',
+               preambleCalls: CallNode[],     (* assign items are NOT here — they populate
+                                                 `bindings`. Empty when there is no preamble. *)
+               condition: Condition,          (* { type:'always' } when no WHEN *)
+               doCalls: 'nop' | CallNode[],
+               sawWhen: boolean, sawDo: boolean,   (* for the compile-time pairing check *)
+               meta: MetaItem[],
+               bindings: Binding[] }          (* every label bound anywhere in the statement *)
+               (* [target] For event agents, condition is a log-condition leaf, and the compiler
+                  sets kind='event' on the compiled agent. The AST shape itself does not change. *)
+
+OrderAst  := { kind:'order', calls: CallNode[], meta: MetaItem[] }
+BracketAst:= { kind:'bracket', call: CallNode, meta: MetaItem[] }
+HelpAst   := { kind:'help', call: CallNode, meta: MetaItem[] }
+CancelAllOrdersAst := { kind:'cancel_all_orders', call: CallNode, meta: MetaItem[] }
+TokenAst  := { kind:'token', head: CallNode, bodyCalls: CallNode[], meta }
+           | { kind:'token', head: CallNode, condition: Condition, meta }
+               (* second form is head kind=condition *)
+
+Binding   := { label: string, rhsKind: 'value' | 'expr', rhsNode: ValueNode | ArithNode,
+               rhsText: string }              (* rhsText is the verbatim RHS source slice *)
+
+EventAst  := { kind:'event', eventMeta, msgNode, calls: CallNode[] | 'nop', meta, start }
+               (* LEGACY — retiring with event_stmt. eventMeta is { log_tag?, min_level?,
+                  render?, where?, gate?, match? }. msgNode is captured only so
+                  compileEventStmt can reject a stray msg=. Appendix A. *)
+
+MetaItem  := { key: string, values: MetaValueNode[], start }
+MetaValueNode := { type:'string' | 'bareword', value: string }
+
+Condition := { type:'always' }
+           | { type:'and' | 'or', left: Condition, right: Condition }
+           | { type:'not', term: Condition }
+           | { type:'leaf', metric: CallNode, scope: ScopeNode, op: string | null,
+               value: ValueNode | null }
+           | { type:'between', value1, op1, metric, scope, op2, value2 }
+           | { type:'ref', call: CallNode }  (* bare call, resolved at compile time *)
+           | { type:'colref', segments: CallNode[], op, value }
+           (* [target] a log-condition is a { type:'ref' } whose call resolves to the
+              condition-kind `log` row. Wave 2 may add a dedicated node type. Not decided. *)
+
+CallNode  := { type:'call', name: string, args: ArgEntry[], hasCall: boolean, start, end,
+               _bindingsAt?: Map }            (* snapshot of labels visible at this call *)
+ArgEntry  := { key: string, value: ValueNode } (* key is never null *)
+ScopeNode := { type:'scope', segments: (CallNode | QualifierNode)[] }
+QualifierNode := { type:'qualifier', key: string,
+                   value: { type:'star' } | { type:'name' | 'string', value }, start, end }
+ValueNode := { type:'number' | 'string' | 'name', value }
+           | { type:'list', value: ValueNode[] }
+           | { type:'object', value: { [key: string]: ValueNode } }
+               (* object ONLY inside a list that is a tp_scales_json value. Appendix A
+                  also uses it for where=/match=. Never a general value. *)
+```
+
+---
+
+## Known gaps between this design and the live backend catalog
+
+Documented here rather than silently "fixed". Implement the mechanism generically; these are
+catalog-content facts, not grammar bugs unless marked.
+
+- `always`'s sentinel scope is `funds.any_acct` (confirmed against the real `market-open-nse`
+  builtin agent in `agent_engine.py`), not `funds.total`.
+- The boolean-metric shorthand is keyed off `value_type === 'boolean'`, but no live metric is
+  typed `'boolean'`. `is_itm`/`is_ntm` are `'number'`, and `is_future` has no `value_type`. Tests
+  use a fixture catalog that declares a real boolean metric.
+- `ntfy` (used in the design doc's example) does not exist in the live `notify`/`channel`
+  catalog. Implemented generically. Tests use a fixture.
+- `side` (used in an operator-table example, `side in [BUY, SELL]`) is not a real condition or
+  metric token. `in`/`not in` are generic. Tests use a fixture metric.
+- **Resolved** (record of why the design changed): `params_schema` is stored as Postgres JSONB,
+  which does not guarantee key order. Every argument is therefore keyword (`arg_list` above), so
+  binding is by name only. `paramKeys` order is cosmetic.
+- **[target] `render(…)` is not a grammar catalog row.** It is `event_actions.render` in
+  `agent_grammar.yaml`. Wave 2 must expose it through the generic call path.
+- **[target] `where={…}` is not a `value`.** `kw_arg := NAME "=" value` does not accept
+  `object_literal`. Wave 2 must widen it for condition calls only. Do not widen `value` globally.
+- **[target] `&` between log-condition leaves is undefined.** `|` is the documented OR. Wave 2
+  decides whether `&` is rejected or defined.
+- **[open] The `log` action `level` enum omits `debug`.** `agent_grammar.yaml`'s enum lists
+  `info`, `warning`, `error`, `critical`. `debug(x)` compiles to level `debug`. Verify whether the
+  enum is validated at compile time, and reconcile the YAML or the sugar.
+- **[open] `rhs := arith_expr`** (the operator-expression form) is not restated in this file. Its
+  grammar lives in `parseGivenRhs`'s own comments in `agents.js`.
+
+---
+
+## Appendix A — Retiring `event_stmt` (live until Wave 2)
+
+**Delete this appendix when Wave 2 ships.** These productions are still the real parser for the
+standalone `ALERT log_tag=… render=…` statement. Wave 2's byte-identical compile gate compares
+against this behavior, so the rules below are the reference.
+
+```ebnf
 event_stmt     := "ALERT" event_meta call_list meta_item*
-                                                (* Sprint 12 — a bare
-                                                    ALERT-only statement
-                                                    for notification
-                                                    (`kind='event'`)
-                                                    agents — their
-                                                    "condition" is a
-                                                    log-stream
-                                                    subscription filter
-                                                    (tag/min_level/
-                                                    optional where),
-                                                    never a polled
-                                                    metric condition,
-                                                    and their action is
-                                                    always exactly one
-                                                    render hook, never a
-                                                    trading action — so
-                                                    this gets its own
-                                                    statement shape
-                                                    instead of being
-                                                    forced through
-                                                    agent_stmt's WHEN/
-                                                    DO. Dispatched from
-                                                    `parseStatement`
-                                                    (see its own
-                                                    dispatch comment)
-                                                    specifically when a
-                                                    bare leading ALERT
-                                                    (no WHEN before it)
-                                                    is immediately
-                                                    followed by one of
-                                                    event_meta's four
-                                                    reserved keys —
-                                                    never for an
-                                                    ordinary bare-ALERT
-                                                    agent_stmt (e.g.
-                                                    `ALERT telegram DO
-                                                    nop`). *)
-event_meta     := event_kw*                     (* log_tag=/min_level=/
-                                                    render=/where=/
-                                                    gate= — ANY ORDER,
-                                                    each at
-                                                    most once; a
-                                                    duplicate key is a
-                                                    PARSE-time error
-                                                    (not deferred to
-                                                    compile time, per
-                                                    the operator's
-                                                    explicit
-                                                    instruction). *)
+                                                (* Dispatched when a bare leading ALERT (no parens)
+                                                   is immediately followed by one of the six
+                                                   event-meta keys, then "=". Checked by a 2-token
+                                                   lookahead past ALERT. Never for an ordinary
+                                                   bare-ALERT agent, e.g. ALERT telegram DO nop. *)
+event_meta     := event_kw*                    (* Keys in ANY order, each at most once. A duplicate
+                                                   is a PARSE-time error. *)
 event_kw       := ("log_tag" "=" value ",")
                  | ("min_level" "=" value ",")
                  | ("render" "=" value ",")
                  | ("where" "=" object_literal ",")
-                 | ("gate" "=" value ",")         (* Sprint 18 —
-                                                    boolean, enables
-                                                    repeat-dedup
-                                                    (RepeatGate) on
-                                                    this render
-                                                    action's fired
-                                                    records; compiles
-                                                    onto the single
-                                                    actions[0] entry
-                                                    as a sibling key
-                                                    of `type`/
-                                                    `render`, e.g.
-                                                    {"type":"render",
-                                                    "render":"error",
-                                                    "gate":true} —
-                                                    OMITTED entirely
-                                                    (not written as
-                                                    false) when not
-                                                    typed, matching
-                                                    every other
-                                                    seeded agent's
-                                                    real shape.
-                                                    Validated against
-                                                    `catalog.
-                                                    renderAction`'s
-                                                    own params_schema
-                                                    (backend's
-                                                    `event_actions.
-                                                    render.
-                                                    params_schema`),
-                                                    not hardcoded. *)
-                                                (* `log_tag`/`render`
-                                                    are REQUIRED
-                                                    (compile-time error
-                                                    if either missing).
-                                                    `min_level` is
-                                                    OPTIONAL, defaults
-                                                    to `"INFO"`
-                                                    (confirmed against
-                                                    event_agents.py:
-                                                    validate_seed_spec's
-                                                    own default) and is
-                                                    the ONE value here
-                                                    that DOES get
-                                                    case-normalized (to
-                                                    UPPERCASE, matching
-                                                    the DEBUG/INFO/
-                                                    WARNING/ERROR/
-                                                    CRITICAL enum) —
-                                                    `log_tag`, `render`,
-                                                    and every value
-                                                    inside `where={...}`
-                                                    are preserved
-                                                    EXACTLY as typed,
-                                                    bypassing this
-                                                    grammar's normal
-                                                    enum-casing
-                                                    normalization
-                                                    entirely (`where`
-                                                    matches real
-                                                    log-record `extra`
-                                                    fields by exact
-                                                    string equality
-                                                    server-side — re-
-                                                    casing it would
-                                                    silently break
-                                                    matches). `where`
-                                                    is OPTIONAL. `msg=`
-                                                    is explicitly
-                                                    rejected anywhere
-                                                    in an event_stmt
-                                                    (clause-level
-                                                    default OR a
-                                                    per-channel own
-                                                    kwarg) — `render=`
-                                                    owns the message
-                                                    for an event agent,
-                                                    not `msg=`.
-                                                    Combining any of
-                                                    these five reserved
-                                                    keys with WHEN/DO
-                                                    is a compile-time
-                                                    error (see
-                                                    `parseAlertClauseBody`/
-                                                    `parseEventStmt`'s
-                                                    own comments). *)
-                 | ("match" "=" match_value ",")  (* Sprint 18 follow-up
-                                                    — a list-of-objects
-                                                    alternative to the
-                                                    `log_tag=`/
-                                                    `min_level=`/
-                                                    `where=` triple,
-                                                    MUTUALLY EXCLUSIVE
-                                                    with all three
-                                                    (compile-time error
-                                                    if combined — see
-                                                    `compileEventStmt`).
-                                                    Compiles to
-                                                    {"any": [{"log":
-                                                    {...}}, {"log":
-                                                    {...}}]} — each list
-                                                    entry has the SAME
-                                                    `tag`/`min_level`/
-                                                    `where` sub-keys the
-                                                    simple form has
-                                                    (spelled `tag=`, not
-                                                    `log_tag=`, since
-                                                    there is no reserved-
-                                                    word collision risk
-                                                    inside an object
-                                                    literal). *)
+                 | ("gate" "=" value ",")
+                 | ("match" "=" match_value ",")
 match_value    := "[" object_literal ("," object_literal)* "]"
-                                                (* Sprint 18 follow-up —
-                                                    reuses
-                                                    `parseObjectLiteral`
-                                                    directly against the
-                                                    main token stream,
-                                                    same mechanism
-                                                    `where=` already
-                                                    uses (see
-                                                    `parseMatchValue`'s
-                                                    own comment for why
-                                                    this needs no
-                                                    dedicated mini-lexer
-                                                    the way
-                                                    `tp_scales_json_value`
-                                                    does). *)
-token_stmt     := call call_list meta_item*     (* Sprint 10 — `token(...)`
-                                                    only, restricted to
-                                                    standalone use,
-                                                    EXACTLY mirroring
-                                                    bracket_stmt's own
-                                                    "only bracket(...)
-                                                    can be used
-                                                    standalone" rule/
-                                                    error-message style,
-                                                    naming "token"
-                                                    instead. The HEAD
-                                                    call (`token(kind=
-                                                    notify|condition)`)
-                                                    is immediately
-                                                    followed by its BODY
-                                                    call_list (no comma
-                                                    between the head and
-                                                    the first body call
-                                                    — commas only join
-                                                    the body's own
-                                                    elements — e.g.
-                                                    `token(kind=notify)
-                                                    telegram, email,
-                                                    log`). `kind=notify`
-                                                    is the only
-                                                    supported value this
-                                                    sprint; the body is
-                                                    a plain channel
-                                                    call_list, compiled
-                                                    via the EXACT SAME
-                                                    path ALERT's own
-                                                    call_list already
-                                                    uses. `#name=` is
-                                                    required (compile-
-                                                    time error if
-                                                    absent) since
-                                                    `AgentTemplate.name`
-                                                    is a required
-                                                    field; `#tag=`/
-                                                    `#group=` are
-                                                    rejected — no such
-                                                    columns exist on
-                                                    `AgentTemplate`. *)
-bracket_stmt   := call meta_item*               (* `bracket(...)` only —
-                                                    restricted to
-                                                    standalone use,
-                                                    EXACTLY mirroring
-                                                    order_stmt's own
-                                                    "only order(...) can
-                                                    be used standalone"
-                                                    rule/error-message
-                                                    style, just naming
-                                                    "bracket" instead of
-                                                    "order" — a single
-                                                    call, no call_list
-                                                    (order_stmt allows
-                                                    2+ calls for a
-                                                    basket; a bracket
-                                                    save is always
-                                                    exactly one preset).
-                                                    `#name=` is
-                                                    effectively required
-                                                    (compile-time error
-                                                    if absent) since
-                                                    OrderTemplateCreate.
-                                                    name is a required
-                                                    field. Sprint 8. *)
-agent_stmt     := when_part? tail meta_item*  (* WHEN, ALERT, and DO are
-                                                 each independently
-                                                 optional and may appear
-                                                 in any order; omitting
-                                                 WHEN means `always`;
-                                                 omitting a clause means
-                                                 the same as writing it
-                                                 as "nop"; at least one
-                                                 real ALERT or DO is
-                                                 still required — all-
-                                                 omitted/all-nop is a
-                                                 compile-time error.
-                                                 meta_item* is TRAILING
-                                                 ONLY — after `tail`
-                                                 finishes parsing, never
-                                                 interspersed with
-                                                 WHEN/ALERT/DO. Sprint 7.
-                                                 *** SEE "KNOWN STALE"
-                                                 BANNER ABOVE — this
-                                                 production predates the
-                                                 GIVEN-removal/preamble/
-                                                 ALERT-is-no-longer-a-
-                                                 clause unification and
-                                                 is no longer accurate. ***)
-when_part      := "WHEN" condition
-tail           := alert_part do_part | do_part alert_part
-                 | alert_part | do_part | ε
-alert_part     := "ALERT" alert_clause
-do_part        := "DO" do_clause
-alert_clause   := "nop" | (("msg" "=" value ",")? call_list)
-                                                (* "msg" is NOT a
-                                                   reserved word — it
-                                                   is recognized
-                                                   CONTEXTUALLY, only
-                                                   as NAME "=" in the
-                                                   leading position of
-                                                   a non-"nop" ALERT
-                                                   clause, before any
-                                                   channel. Sprint 6. *)
-do_clause      := "nop" | call_list
-call_list      := call ("," call)*
-order_stmt     := call ("," call)* meta_item*  (* order/place_order only;
-                                                   a bare order_stmt
-                                                   carrying any meta_item
-                                                   is parsed fine but a
-                                                   COMPILE-time error —
-                                                   meta tags only apply
-                                                   to agents/brackets.
-                                                   Sprint 7. *)
-meta_item      := "#" NAME "=" meta_value ("," meta_value)*
-                                                (* trailing-only — see
-                                                   agent_stmt/order_stmt
-                                                   above. NAME is one of
-                                                   the four recognized
-                                                   keys (name/desc/tag/
-                                                   group) — an unknown
-                                                   key is a compile-time
-                                                   error, not a parse
-                                                   error (same
-                                                   parse-permissively/
-                                                   validate-at-compile
-                                                   split every other
-                                                   production in this
-                                                   grammar follows).
-                                                   Sprint 7. *)
-meta_value     := STRING | BARE_WORD           (* Sprint 7 *)
-BARE_WORD      := (* an unquoted run of 1+ characters containing NONE
-                     of: whitespace, ",", "#", "=", or a quote
-                     character — quotes are required only once one of
-                     those appears in the value. DELIBERATELY WIDER
-                     than NAME's word-char class (letters/digits/
-                     underscore only) — e.g. "hedge-book" lexes as one
-                     BARE_WORD token (the hyphen is allowed) but would
-                     NOT lex as a single NAME token elsewhere in this
-                     grammar. Scanned by a dedicated branch in
-                     `lexAgentStatement` triggered by "#", not reused
-                     from the NAME/word-char scanner. Sprint 7. *)
-condition      := "always" | or_expr
-or_expr        := term (("&" | "|") term)*     (* equal precedence, L-to-R *)
-term           := "~" primary | primary
-primary        := "(" or_expr ")" | leaf
-leaf           := metric_ref comparator value
-                 | col_ref comparator value                       (* Sprint 15 *)
-                 | value comparator (metric_ref | col_ref) comparator value   (* between *)
-                 | call                           (* Sprint 10 — a BARE
-                                                       call with no "@"
-                                                       following is
-                                                       syntactically a
-                                                       Token ($ref)
-                                                       reference — a
-                                                       real metric
-                                                       ALWAYS requires
-                                                       "@ scope_ref", so
-                                                       this is parsed
-                                                       permissively here
-                                                       and resolved at
-                                                       COMPILE time
-                                                       against the
-                                                       catalog (same
-                                                       split every other
-                                                       semantic check in
-                                                       this grammar
-                                                       follows): a name
-                                                       resolving to a
-                                                       catalog entry
-                                                       with
-                                                       `isFragmentRef`
-                                                       compiles to
-                                                       `{"$ref": name}`;
-                                                       a real metric
-                                                       missing its "@"
-                                                       still gets the
-                                                       original "expected
-                                                       '@' after metric"
-                                                       error, just at
-                                                       compile time
-                                                       instead of parse
-                                                       time. *)
-metric_ref     := call "@" scope_ref
-scope_ref      := scope_seg ("." scope_seg)*
-scope_seg      := call | qualifier_seg     (* Sprint 19 — a qualifier_seg
-                     is trailing-only (never followed by a plain `call`
-                     segment); short scope-family aliases (`pos`/`hld`/
-                     `fnd`/`wl`, SCOPE_FAMILY_ALIASES) apply to
-                     scope_ref's FIRST `call` segment only. *)
-qualifier_seg  := NAME ":" qualifier_value (* Sprint 19 — `account:value`/
-                     `symbol:value` appended to a scope chain, e.g.
-                     `positions.account:ZG0790`. Compiles to a leaf-level
-                     `scope_filter` dict (sibling of metric/scope/op/
-                     value — the REAL, already-shipped backend shape,
-                     commit 1a904a12), never folded into the `scope`
-                     string. `*`/`worst` are RESERVED values with NO
-                     `scope_filter` — pure aliases onto the EXISTING
-                     `<family>.any_acct`/`<family>.worst_acct`/
-                     `<family>.worst_symbol` scope tokens (zero new
-                     backend mechanism). See `_resolveScopeRefFull`'s
-                     own comment for the full resolution algorithm. *)
-qualifier_value := "*" | NAME | STRING     (* "*" = wildcard (no filter);
-                     a bare NAME of `worst` (case-insensitive) is the
-                     "computed worst" sentinel; any other NAME/STRING is
-                     a literal filter value. *)
-col_ref        := call ("." call)+        (* Sprint 15 — `leaf`'s OTHER
-                     alternative, with NO "@": a bare dotted chain,
-                     e.g. `positions.total.pnl`. Syntactically
-                     IDENTICAL to `scope_ref` (both are just
-                     `call ("." call)*`), but semantically distinct —
-                     `scope_ref` only ever appears after "@"; `col_ref`
-                     only ever appears as a leaf's LHS with no "@" at
-                     all. Disambiguation of which trailing segment(s)
-                     are the scope vs. the column happens at COMPILE
-                     time (`_resolveDotAccess`): try the WHOLE chain
-                     against known scope names first (this is what
-                     keeps `positions.expiring_today.mcx_unhedged`
-                     resolving as a SCOPE, not a column, when it's
-                     used standalone with no trailing column segment),
-                     falling back to "last segment is a column (or an
-                     existing bare zero-arg metric) on the scope
-                     resolved so far" only when the full chain isn't
-                     itself a known scope. *)
-comparator     := "<" | "<=" | ">" | ">=" | "==" | "!=" | "in" | "not in"
-value          := NUMBER | STRING | NAME | list_literal
-list_literal   := "[" value ("," value)* "]"
-call           := NAME | NAME "(" arg_list ")"   (* a NAME in CALL/TOKEN-
-                                                     REFERENCE position
-                                                     (this production,
-                                                     and the bare
-                                                     metric/scope/
-                                                     channel/action name
-                                                     case generally) may
-                                                     contain internal
-                                                     hyphens, mid-word
-                                                     only — Sprint 10,
-                                                     see lexAgentStatement's
-                                                     NAME-scanning branch
-                                                     — so a real seeded
-                                                     Token name like
-                                                     `notify-critical-
-                                                     trio` lexes as ONE
-                                                     token. Does NOT
-                                                     widen NAME
-                                                     elsewhere (kwarg
-                                                     KEYS are scanned by
-                                                     a wholly separate
-                                                     tokenizer,
-                                                     `tokenizeCallStyle`
-                                                     in engine.js, never
-                                                     touched here). *)
-arg_list       := kw_arg ("," kw_arg)*          (* EVERY arg is keyword —
-                                                     including the first;
-                                                     no positional form
-                                                     exists in this
-                                                     grammar at all *)
-kw_arg         := NAME "=" value
-object_literal := "{" obj_kwarg ("," obj_kwarg)* "}"   (* Sprint 8 — a
-                                                     genuinely NEW value
-                                                     shape. GENERALIZED
-                                                     in Sprint 12 off its
-                                                     original STRICT
-                                                     scoping to the
-                                                     tp_scales_json_value
-                                                     production below —
-                                                     `event_stmt`'s
-                                                     `where=` (Sprint 12)
-                                                     is a SECOND call
-                                                     site reusing this
-                                                     EXACT SAME
-                                                     production/parser
-                                                     function
-                                                     (`parseObjectLiteral`)
-                                                     directly against the
-                                                     MAIN statement token
-                                                     stream (once "{"/"}"
-                                                     are lexed there too
-                                                     — see `_PUNCT_SINGLE`)
-                                                     rather than
-                                                     `tp_scales_json`'s
-                                                     own raw-substring
-                                                     mini-lexer. Sprint
-                                                     18 follow-up adds a
-                                                     THIRD call site —
-                                                     each entry of
-                                                     `match=[...]`'s own
-                                                     list (see
-                                                     `match_value` below)
-                                                     — and widens
-                                                     `obj_kwarg`'s own
-                                                     `value` to also
-                                                     accept a NESTED
-                                                     object_literal (a
-                                                     match entry's own
-                                                     `where={...}`),
-                                                     scoped to that one
-                                                     case only. Still
-                                                     NOT a general
-                                                     addition to the
-                                                     top-level `value`
-                                                     production anywhere
-                                                     else in this
-                                                     grammar. Reuses
-                                                     "=" as the key/value
-                                                     separator — this
-                                                     grammar's one and
-                                                     only keyword-
-                                                     assignment operator
-                                                     everywhere else — a
-                                                     deliberate decision
-                                                     NOT to introduce a
-                                                     second ":" operator
-                                                     just for this one
-                                                     nested case. *)
-obj_kwarg      := NAME "=" value
-tp_scales_json_value := "[" object_literal ("," object_literal)* "]"
-                                                 (* Sprint 8 — the ONLY
-                                                    legal value shape
-                                                    for a call argument
-                                                    named `tp_scales_json`
-                                                    (case-insensitive),
-                                                    on EITHER order(...)
-                                                    or bracket(...).
-                                                    Parsed by a
-                                                    dedicated mini
-                                                    lexer/parser (see
-                                                    `_parseTpScalesJsonArg`
-                                                    below) — NOT routed
-                                                    through
-                                                    tokenizeCallStyle,
-                                                    which has no
-                                                    "["/"]"/"{"/"}"
-                                                    awareness at all. *)
 ```
 
-## AST shape
+Semantic rules these productions carry (all must survive into Wave 2):
 
-(Internal, documented for the decompiler / live-preview — NOT the compiled
-JSON; see `compile*()` functions in `agents.js` for that.)
+- **Required.** `log_tag` and `render` are required. A missing one is a COMPILE-time error.
+  `min_level` is optional and defaults to `"INFO"`, confirmed against
+  `event_agents.validate_seed_spec`'s default.
+- **Case.** `min_level` is the ONLY value uppercased (to match the DEBUG/INFO/WARNING/ERROR/
+  CRITICAL enum). `log_tag`, `render`, and every value inside `where={…}` are preserved exactly as
+  typed. Re-casing `where` would silently break server-side exact-string matching.
+- **`where`.** Optional. Keys are real log-record `extra` fields. The object literal is parsed
+  directly against the main token stream by `parseObjectLiteral`. `tp_scales_json` cannot share
+  that path, because its values sit inside a call's parentheses and need their own mini-lexer.
+- **`gate`.** Boolean. Enables repeat-dedup (RepeatGate) on the single render action. Compiles to
+  a sibling key of `type`/`render` on `actions[0]`, e.g. `{"type":"render","render":"error",
+  "gate":true}`. OMITTED entirely (never written as `false`) when not typed. Validated against
+  the backend's `event_actions.render.params_schema`. A channel's own `gate=` kwarg is a separate,
+  unrelated per-channel param.
+- **`match`.** A list of object literals, mutually exclusive with `log_tag`/`min_level`/`where`.
+  Compiles to `{"any": [{"log": {…}}, {"log": {…}}]}`. Each entry uses `tag=` (not `log_tag=`)
+  plus the same `min_level`/`where` sub-keys.
+- **`msg=`** is rejected anywhere in an event statement, as a clause-level default or as a
+  per-channel kwarg. `render=` owns the message for an event agent.
+- **Combining with WHEN/DO** is a parse-time error in both positions: before the channel list,
+  and after it. The error message names all six keys.
+- **Channel list.** After the event meta, the channel list accepts bare `nop` (empty `events`),
+  the same as ordinary `DO`. The compiled `events` is then `[]`.
+- **Compiled shape.** Compiles to a `kind:'event'` agent. Channels compile through the same
+  `compileAlertClause` path ALERT's call_list uses.
 
-```
-Statement  := { kind:'agent', condition, alertCalls, alertMsg, doCalls, meta }
-            | { kind:'event', eventMeta, msgNode, calls: CallNode[], meta }
-               (* Sprint 12 — `eventMeta` is `{ log_tag?, min_level?,
-                  render?, where? }`, each a ValueNode (object for
-                  `where`); `msgNode` is the optional clause-level
-                  `msg=` default CAPTURED only so `compileEventStmt`
-                  can reject it with a clear message (mirrors
-                  `alertMsg` above, but always an error here, never
-                  accepted); `calls` is the channel call_list,
-                  compiled via the same `compileAlertClause` path
-                  ALERT's own call_list uses. *)
-            | { kind:'order', calls: CallNode[], meta }
-            | { kind:'bracket', call: CallNode, meta }   (* Sprint 8 —
-               exactly ONE call (never a list, unlike 'order') *)
-            | { kind:'token', head: CallNode, bodyCalls: CallNode[], meta }
-               (* Sprint 10 — `head` is the `token(kind=...)` call;
-                  `bodyCalls` is the channel call_list compiled via the
-                  same path ALERT's own call_list uses. *)
-alertMsg   := ValueNode | null   (* the optional clause-level `msg=`
-               default — ALWAYS null when alertCalls is 'nop' or when
-               no ALERT clause was written at all; DO has no equivalent
-               field. Sprint 6. *)
-meta       := MetaItem[]         (* [] when no trailing `#...` clause was
-               written at all. Produced by `parseMetaClause` — a
-               GENERIC, reusable helper (also usable by a future
-               bracket_stmt). For `kind:'order'`, a non-empty `meta` is
-               parsed fine but is a COMPILE-time error, not a parse
-               error. Sprint 7. *)
-MetaItem   := { key: string, values: MetaValueNode[], start }
-MetaValueNode := { type:'string'|'bareword', value: string }
-Condition  := { type:'always' }
-            | { type:'and'|'or', left: Condition, right: Condition }
-            | { type:'not', term: Condition }
-            | { type:'leaf', metric: CallNode, scope: ScopeNode,
-                op: string|null, value: ValueNode|null }
-            | { type:'between', value1: ValueNode, op1: string,
-                metric: CallNode, scope: ScopeNode, op2: string,
-                value2: ValueNode }
-            | { type:'ref', call: CallNode }   (* Sprint 10 — a bare
-                call with no "@" following; resolved at COMPILE time —
-                see the `leaf` EBNF production's own comment above. *)
-            | { type:'colref', segments: CallNode[], op: string|null,
-                value: ValueNode|null }   (* Sprint 15 — a bare dotted
-                chain with NO "@" at all, e.g. `positions.total.pnl`.
-                Parsed identically to `scope_ref`'s own "." call)*
-                shape, but which segments are the SCOPE and which
-                trailing segment is a COLUMN (or an existing bare
-                zero-arg metric bound to that scope) is a COMPILE-time
-                decision — see `_resolveDotAccess`'s "longest known-
-                scope-chain match first" rule. Distinct from `leaf`
-                (which always has an explicit "@") so the two can
-                never be confused structurally. *)
-CallNode   := { type:'call', name: string, args: ArgEntry[],
-                hasCall: boolean, start, end }
-ArgEntry   := { key: string, value: ValueNode }   (* key is NEVER null —
-                every argument is keyword-only, including the first *)
-ScopeNode  := { type:'scope', segments: (CallNode|QualifierNode)[] }
-               (* Sprint 19 — a segment may now be a QualifierNode
-                  (`account:value`/`symbol:value`), always trailing. *)
-QualifierNode := { type:'qualifier', key: string,
-                    value: { type:'star' } | { type:'name'|'string', value },
-                    start, end }
-ValueNode  := { type:'number'|'string'|'name', value }
-            | { type:'list', value: ValueNode[] }
-            | { type:'object', value: { [key: string]: ValueNode } }
-               (* Sprint 8 — object_literal; ONLY ever appears as an
-                  item inside a 'list' ValueNode that is itself the
-                  value of a `tp_scales_json=` argument — never
-                  produced anywhere else in this grammar. *)
-```
-
-## Known gaps between this design and the live backend catalog
-
-(Documented here rather than silently "fixed" — implement the mechanism
-generically per the design doc; these are catalog-content facts, not
-grammar bugs.)
-
-- `always`'s sentinel scope is `funds.any_acct` (confirmed against the real
-  `market-open-nse` builtin agent in `agent_engine.py`), not `funds.total` as
-  one earlier draft guessed.
-- The boolean-metric shorthand is keyed off `value_type === 'boolean'`
-  exactly as specified, but no metric in the live catalog is actually typed
-  `'boolean'` today — `is_itm`/`is_ntm` are `value_type: 'number'` and
-  `is_future` has no `value_type` at all. The mechanism is correct and
-  future-proof; it simply has nothing to fire against yet. Tests exercise it
-  via a fixture catalog that declares a real boolean metric.
-- `ntfy` (used in the design doc's own canonical example 2) does not exist
-  in the live `notify`/`channel` catalog. Implemented generically; tests use
-  a fixture catalog that adds it.
-- `side` (used in the design doc's own operator-table example, `side in
-  [BUY, SELL]`) is not a real condition/metric token in the live catalog.
-  `in`/`not_in` are implemented generically against any metric; tests use a
-  fixture metric for this.
-- **Resolved** (kept as a record of why the design changed): `params_schema`
-  is stored as Postgres JSONB (`backend/api/models.py: GrammarToken.
-  params_schema`), which does not guarantee object key order survives a
-  round-trip through the DB. The original design read `paramKeys[0]` as "the
-  positional-or-keyword slot," which would have silently depended on that
-  unguaranteed order in production even though every test (JS object
-  literals do preserve order) would have passed regardless. The fix: remove
-  positional arguments from the grammar entirely — every argument is always
-  keyword (`arg_list := kw_arg ("," kw_arg)*` above), so `_mapCallArgsToKeys`
-  only ever looks up a key by name, never by position. `paramKeys`'s array
-  order is now used only for cosmetic/display purposes (if at all), never
-  for binding correctness — no backend change was needed.
+Retired reserved-kwarg set: `_EVENT_META_KEYS = {log_tag, min_level, render, where, gate, match}`
+at [agents.js:84](../../frontend/src/lib/command/grammars/agents.js#L84). It is NOT in
+`_RESERVED`, so the drift guard does not check it. Wave 2 removes it entirely.
