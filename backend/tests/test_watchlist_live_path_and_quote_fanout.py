@@ -56,6 +56,9 @@ from backend.api.algo.agent_engine import (
 from backend.api.algo.actions import resolve_row_ref_params
 from backend.api.algo import grammar
 from backend.api.algo.grammar_tokens.metric_ltp import _metric_ltp
+from backend.api.algo.grammar_tokens.scope_watchlist_all import _scope_watchlist_all
+from backend.api.algo.grammar_tokens.scope_watchlist_default import _scope_watchlist_default
+from backend.api.algo.grammar_tokens.scope_watchlist_markets import _scope_watchlist_markets
 
 
 def _now():
@@ -217,9 +220,9 @@ def _wire_registry_for_watchlist_scopes(monkeypatch):
     from backend.api.algo.grammar_registry import REGISTRY
     monkeypatch.setattr(REGISTRY, 'metrics', {'ltp': _metric_ltp})
     monkeypatch.setattr(REGISTRY, 'scopes', {
-        'watchlist.default': grammar._scope_watchlist_default,
-        'watchlist.all':     grammar._scope_watchlist_all,
-        'watchlist.markets': grammar._scope_watchlist_markets,
+        'watchlist.default': _scope_watchlist_default,
+        'watchlist.all':     _scope_watchlist_all,
+        'watchlist.markets': _scope_watchlist_markets,
     })
     monkeypatch.setattr(REGISTRY, 'operators', {'>=': grammar.OPERATORS['>=']})
     monkeypatch.setattr(REGISTRY, 'metric_factories', {})

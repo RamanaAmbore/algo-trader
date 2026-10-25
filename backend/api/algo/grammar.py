@@ -601,82 +601,14 @@ def _row_with_min(rows: list, key: str) -> list:
 # scope_positions_worst_symbol.py.
 
 
-# ── Watchlist scopes ─────────────────────────────────────────────────────
-# Each scope returns rows from ctx.watchlist_rows. The `account` slot on
-# each row carries the watchlist NAME so we filter by list name.
+# `_scope_watchlist_all`, `_scope_watchlist_default`,
+# `_scope_watchlist_markets`, `_scope_orders_any_acct`,
+# `_scope_quote_tracked`, `_scope_symbols_all` migrated to
+# grammar_tokens/ (Wave 1, scope batch D of the DSL-token unification
+# plan) — see grammar_tokens/scope_watchlist_all.py and its five
+# siblings.
 
-def _scope_watchlist_all(ctx):
-    """Every row across every watchlist the user owns."""
-    return list(getattr(ctx, 'watchlist_rows', []) or [])
-
-def _scope_watchlist_default(ctx):
-    """Rows in the user's 'Default' watchlist."""
-    rows = getattr(ctx, 'watchlist_rows', []) or []
-    return [r for r in rows if str(r.get('account', '')) == 'Default']
-
-def _scope_watchlist_markets(ctx):
-    """Rows in the auto-seeded 'Markets' watchlist (indices + commodities)."""
-    rows = getattr(ctx, 'watchlist_rows', []) or []
-    return [r for r in rows if str(r.get('account', '')) == 'Markets']
-
-
-# ── Watchlist-specific metrics ───────────────────────────────────────────
 # `_metric_ltp` migrated to grammar_tokens/metric_ltp.py (Wave 1, batch 1).
-
-
-# ── Orders scope (Sprint 21) ─────────────────────────────────────────────
-# Reads ctx.orders_rows — currently OPEN/active `AlgoOrder` rows (mode=
-# 'live', status not in ALGO_ORDER_TERMINAL_STATUSES), refreshed once per
-# `_task_performance` cycle by `background._perf_fetch_orders_rows`. NOT a
-# live broker call — same cadence/cost profile as positions/holdings/funds.
-# Account-rooted (same `account:` qualifier mechanism as positions/
-# holdings/funds), never `exchange:`/`symbol:` — those are instrument-
-# rooted qualifiers, reserved for `quote.*` below.
-#
-# No `orders.total` aggregate — unlike P&L, there is no single meaningful
-# scalar to sum across open orders of mixed BUY/SELL direction and
-# instrument, so this scope family only ever has a per-row variant.
-
-def _scope_orders_any_acct(ctx):
-    """Every currently open/active order, across every account."""
-    return list(getattr(ctx, 'orders_rows', []) or [])
-
-
-# ── Quote scope (Sprint 21) ───────────────────────────────────────────────
-# Reads ctx.quote_rows — pre-tracked ad-hoc market-data rows (symbol +
-# exchange + ltp/bid/ask/volume) for every symbol referenced by at least
-# one active agent's `quote.*` leaf, refreshed once per `_task_performance`
-# cycle by `background._perf_build_quote_rows` (reuses `routes/quote.py`'s
-# `_fetch_ltp` directly — never a live per-condition broker round-trip).
-# Instrument-rooted (qualified by `symbol:` — REQUIRED, see
-# `agent_evaluator.validate()`'s quote.* guard — with `exchange:` as an
-# OPTIONAL secondary qualifier for a symbol ambiguous across exchanges);
-# never `account:` — market data belongs to no account. Mirrors
-# `watchlist.*`'s existing per-row-only pattern exactly — no aggregate.
-
-def _scope_quote_tracked(ctx):
-    """Every pre-tracked ad-hoc market-data row."""
-    return list(getattr(ctx, 'quote_rows', []) or [])
-
-
-# ── Symbols scope (Sprint G) ──────────────────────────────────────────────
-# Reads ctx.symbols_rows — one dict per row, UNIONING four previously
-# separate concepts (watchlist / pinned / gainers / losers) behind a single
-# `kind` qualifier, per the operator's "symbols.* groups" design. Populated
-# once per `_task_performance` cycle by `background._perf_build_symbols_rows`
-# (gated on whether any active agent actually references `symbols.*`, same
-# cost profile as `watchlist.*`/`quote.*` — never a live per-condition
-# broker round-trip). Instrument-rooted like `watchlist.*`/`quote.*` — no
-# account dimension. REQUIRES a non-wildcard `scope_filter.kind` (enforced
-# in `agent_evaluator.validate()`, mirroring the existing `quote.*`
-# required-symbol guard) since the four kinds carry materially different
-# row populations and mixing them unfiltered under one OR-combined leaf
-# would be meaningless.
-def _scope_symbols_all(ctx):
-    """Every row across every `symbols.*` kind (watchlist/pinned/gainers/
-    losers) — always narrowed by a `scope_filter.kind` qualifier in
-    practice; see module-level note above."""
-    return list(getattr(ctx, 'symbols_rows', []) or [])
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1041,12 +973,12 @@ EXPOSED_COLUMN_SCOPE_PROVENANCE: dict[str, tuple[str, str]] = {
     'holdings.worst_symbol':                  ('ctx.sum_holdings', 'backend.api.algo.grammar_tokens.scope_holdings_worst_symbol._scope_holdings_worst_symbol'),
     'funds.total':                            ('ctx.df_margins', 'backend.api.algo.grammar_tokens.scope_funds_total._scope_funds_total'),
     'funds.any_acct':                         ('ctx.df_margins', 'backend.api.algo.grammar_tokens.scope_funds_any_acct._scope_funds_any_acct'),
-    'watchlist.all':                          ('ctx.watchlist_rows', 'backend.api.algo.grammar._scope_watchlist_all'),
-    'watchlist.default':                      ('ctx.watchlist_rows', 'backend.api.algo.grammar._scope_watchlist_default'),
-    'watchlist.markets':                      ('ctx.watchlist_rows', 'backend.api.algo.grammar._scope_watchlist_markets'),
-    'orders.any_acct':                        ('ctx.orders_rows', 'backend.api.algo.grammar._scope_orders_any_acct'),
-    'quote.tracked':                          ('ctx.quote_rows', 'backend.api.algo.grammar._scope_quote_tracked'),
-    'symbols.all':                            ('ctx.symbols_rows', 'backend.api.algo.grammar._scope_symbols_all'),
+    'watchlist.all':                          ('ctx.watchlist_rows', 'backend.api.algo.grammar_tokens.scope_watchlist_all._scope_watchlist_all'),
+    'watchlist.default':                      ('ctx.watchlist_rows', 'backend.api.algo.grammar_tokens.scope_watchlist_default._scope_watchlist_default'),
+    'watchlist.markets':                      ('ctx.watchlist_rows', 'backend.api.algo.grammar_tokens.scope_watchlist_markets._scope_watchlist_markets'),
+    'orders.any_acct':                        ('ctx.orders_rows', 'backend.api.algo.grammar_tokens.scope_orders_any_acct._scope_orders_any_acct'),
+    'quote.tracked':                          ('ctx.quote_rows', 'backend.api.algo.grammar_tokens.scope_quote_tracked._scope_quote_tracked'),
+    'symbols.all':                            ('ctx.symbols_rows', 'backend.api.algo.grammar_tokens.scope_symbols_all._scope_symbols_all'),
     'positions.any_underlying':               ('ctx.position_rows', 'backend.api.algo.grammar_tokens.scope_positions_any_underlying._scope_positions_any_underlying'),
 }
 

@@ -50,6 +50,12 @@ from backend.api.algo.grammar_tokens.metric_pnl import _metric_pnl
 from backend.api.algo.grammar_tokens.scope_positions_total import (
     _scope_positions_total,
 )
+from backend.api.algo.grammar_tokens.scope_symbols_all import (
+    _scope_symbols_all,
+)
+from backend.api.algo.grammar_tokens.scope_quote_tracked import (
+    _scope_quote_tracked,
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -63,9 +69,9 @@ def _wire_registry(monkeypatch):
         'pnl': _metric_pnl,
     })
     monkeypatch.setattr(REGISTRY, 'scopes', {
-        'symbols.all':     grammar._scope_symbols_all,
+        'symbols.all':     _scope_symbols_all,
         'positions.total': _scope_positions_total,
-        'quote.tracked':   grammar._scope_quote_tracked,
+        'quote.tracked':   _scope_quote_tracked,
     })
     monkeypatch.setattr(REGISTRY, 'operators', {
         '>=': grammar.OPERATORS['>='], '<': grammar.OPERATORS['<'],

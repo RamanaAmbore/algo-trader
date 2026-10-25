@@ -656,7 +656,7 @@
       "token": "watchlist.all",
       "value_type": "array",
       "description": "Every row across every watchlist the operator owns (leaf is OR-combined per row).",
-      "resolver": "backend.api.algo.grammar._scope_watchlist_all"
+      "resolver": "backend.api.algo.grammar_tokens.scope_watchlist_all._scope_watchlist_all"
     },
     {
       "grammar_kind": "condition",
@@ -664,7 +664,7 @@
       "token": "watchlist.default",
       "value_type": "array",
       "description": "Rows in the operator's Default watchlist.",
-      "resolver": "backend.api.algo.grammar._scope_watchlist_default"
+      "resolver": "backend.api.algo.grammar_tokens.scope_watchlist_default._scope_watchlist_default"
     },
     {
       "grammar_kind": "condition",
@@ -672,7 +672,7 @@
       "token": "watchlist.markets",
       "value_type": "array",
       "description": "Rows in the auto-seeded Markets watchlist (indices + MCX commodities).",
-      "resolver": "backend.api.algo.grammar._scope_watchlist_markets"
+      "resolver": "backend.api.algo.grammar_tokens.scope_watchlist_markets._scope_watchlist_markets"
     },
     {
       "grammar_kind": "condition",
@@ -680,7 +680,7 @@
       "token": "orders.any_acct",
       "value_type": "array",
       "description": "Every currently open/active order (mode=live, not yet filled/cancelled/rejected), across every account. Leaf is OR-combined per row.",
-      "resolver": "backend.api.algo.grammar._scope_orders_any_acct"
+      "resolver": "backend.api.algo.grammar_tokens.scope_orders_any_acct._scope_orders_any_acct"
     },
     {
       "grammar_kind": "condition",
@@ -688,7 +688,7 @@
       "token": "quote.tracked",
       "value_type": "array",
       "description": "Pre-tracked ad-hoc market-data row(s) for symbols referenced by at least one active agent's quote.* condition leaf (via scope_filter.symbol), refreshed once per performance cycle — not a live per-condition broker fetch. REQUIRES a non-wildcard scope_filter.symbol. Leaf is OR-combined per row.",
-      "resolver": "backend.api.algo.grammar._scope_quote_tracked"
+      "resolver": "backend.api.algo.grammar_tokens.scope_quote_tracked._scope_quote_tracked"
     },
     {
       "grammar_kind": "condition",
@@ -696,7 +696,7 @@
       "token": "symbols.all",
       "value_type": "array",
       "description": "Every row across the unified symbols.* kinds (watchlist/pinned/gainers/losers), refreshed once per performance cycle. REQUIRES a non-wildcard scope_filter.kind (one of watchlist/pinned/gainers/losers) to disambiguate which kind's rows a leaf evaluates over. Leaf is OR-combined per row.",
-      "resolver": "backend.api.algo.grammar._scope_symbols_all"
+      "resolver": "backend.api.algo.grammar_tokens.scope_symbols_all._scope_symbols_all"
     },
     {
       "grammar_kind": "condition",
