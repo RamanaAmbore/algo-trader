@@ -1320,7 +1320,7 @@ system_tokens:
   token: monitor_order
   value_type: void
   description: Poll an order until it fills or times out, then trigger on_fill / on_timeout actions.
-  resolver: backend.api.algo.actions.monitor_order
+  resolver: backend.api.algo.grammar_tokens.action_monitor_order.monitor_order
   params_schema:
     account:
       type: string
@@ -1344,14 +1344,14 @@ system_tokens:
   token: deactivate_agent
   value_type: void
   description: Pause the agent that fired — useful for one-shot safety rules.
-  resolver: backend.api.algo.actions.deactivate_agent
+  resolver: backend.api.algo.grammar_tokens.action_deactivate_agent.deactivate_agent
   params_schema: {}
 - grammar_kind: action
   token_kind: action_type
   token: set_flag
   value_type: void
   description: Set a named runtime flag that other agents can read via the condition grammar.
-  resolver: backend.api.algo.actions.set_flag
+  resolver: backend.api.algo.grammar_tokens.action_set_flag.set_flag
   params_schema:
     name:
       type: string
@@ -1366,7 +1366,7 @@ system_tokens:
   value_type: void
   description: Look up a token/function/operator's catalog description, parameter
     signature, and docstring — logged at DEBUG, never alert-eligible.
-  resolver: backend.api.algo.actions.help_lookup
+  resolver: backend.api.algo.grammar_tokens.action_help.help_lookup
   params_schema:
     name:
       type: string
@@ -1377,7 +1377,7 @@ system_tokens:
   value_type: void
   description: Write a message to the app log, with optional alert-routing metadata
     for any downstream event agent that matches it.
-  resolver: backend.api.algo.actions.emit_log
+  resolver: backend.api.algo.grammar_tokens.action_log.emit_log
   params_schema:
     level:
       type: enum
