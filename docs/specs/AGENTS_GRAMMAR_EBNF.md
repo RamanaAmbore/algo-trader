@@ -285,8 +285,21 @@ Prose rules (all shipped, Wave 2):
   real, non-empty channel list (most seeded rows carry `events: []` since the 2026-10
   routing-tree plan moved channel selection to `alert_routing.py`).
 - **`min_level` is uppercased; defaults to `INFO`.** `tag` and every value inside `where={…}`
-  are byte-exact. They are never case-normalized, because `where` matches log `extra` fields by
-  exact string equality server-side.
+  are byte-exact. They are never case-normalized.
+- **A `where={…}` field value is either a literal (exact-match) or a single-key operator dict
+  (`in`/`not_in`).** No new production — this is purely a runtime semantic rule inside
+  `agent_evaluator._eval_log`'s `where` matching (`_where_value_matches`), layered on the
+  already-generic `object_literal`-as-value syntax (`kw_arg`'s widening, see "Known gaps"
+  below) — a nested `object_literal` as an `obj_kwarg`'s own value was already syntactically
+  legal before this rule existed. `where={alert_event="filled"}` is unchanged exact-equality.
+  `where={alert_event={in=["filled","cancelled"]}}` / `{not_in=[...]}` apply that operator to
+  the named `extra` field instead — `actual in (expected or [])` / `actual not in (expected or
+  [])`, the same semantics as the unrelated leaf-level `comparator`'s `in`/`not in` (above), but
+  a SEPARATE mechanism: this one matches one `where=` field inside a `log(...)` condition against
+  a list, not a metric's resolved value against a scope row. A dict value with any other shape
+  (not exactly one recognized operator key) falls back to exact equality against the whole dict —
+  never raises. Every pre-existing `where=` value is a plain scalar, so this is additive with zero
+  behavior change for any agent saved before this rule shipped.
 - **`msg=`/`message=` is rejected** on a log-condition kwarg, a `render(...)` kwarg (both via the
   same generic unknown-key rejection above), AND on an `alert(...)` clause used inside an event
   agent's `DO` (checked by scanning the ALREADY-compiled `events` array for a `message` key,
@@ -451,6 +464,9 @@ catalog-content facts, not grammar bugs unless marked.
   own `where=` alone. See `kw_arg`'s own production comment above for why the generic fix was
   chosen over a narrow one.
 - **Resolved (Wave 2) — `&`/`~` with a log-condition are rejected.** See "Event agents" above.
+- **Resolved — `where={…}` field values support `in`/`not_in`.** No grammar change (the generic
+  `object_literal`-as-value widening above already permitted the nested shape). Semantics only,
+  in `agent_evaluator._eval_log`/`_where_value_matches`. See "Event agents" above.
 - **[open] The `log` action `level` enum omits `debug`.** `agent_grammar.yaml`'s enum lists
   `info`, `warning`, `error`, `critical`. `debug(x)` compiles to level `debug`. Verify whether the
   enum is validated at compile time, and reconcile the YAML or the sugar.
