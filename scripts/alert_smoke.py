@@ -55,16 +55,34 @@ def main() -> int:
     for spec in ea.SEEDED_AGENTS:
         problems = ea.validate_seed_spec(spec)
         render_key = next((a["render"] for a in spec["actions"] if a.get("type") == "render"), None)
-        sample = SAMPLES.get(render_key)
-        if sample is None:
-            problems.append(f"no smoke sample for renderer '{render_key}'")
+        if render_key == ea._CHANNEL_AGENT_RENDER_SENTINEL:
+            # 2026-10-25 alert-channel collapse — one of the 3 generic
+            # channel agents (alert-channel-telegram/ntfy/email). Its
+            # real per-record renderer is picked at dispatch time from
+            # `ALERT_EVENT_DISPATCH`, never a single static sample — so
+            # smoke-check every entry's own renderer instead.
+            for alert_event, entry in ea.ALERT_EVENT_DISPATCH.items():
+                sub_sample = SAMPLES.get(entry["render"])
+                if sub_sample is None:
+                    problems.append(f"no smoke sample for '{alert_event}' renderer '{entry['render']}'")
+                    continue
+                try:
+                    out = ea.RENDERS[entry["render"]](_record(dict(sub_sample)))
+                    if not (out[0] and out[1]):
+                        problems.append(f"'{alert_event}' renderer returned an empty title or body")
+                except Exception as e:  # noqa: BLE001
+                    problems.append(f"'{alert_event}' renderer raised {type(e).__name__}: {e}")
         else:
-            try:
-                out = ea.RENDERS[render_key](_record(dict(sample)))
-                if not (out[0] and out[1]):
-                    problems.append("renderer returned an empty title or body")
-            except Exception as e:  # noqa: BLE001
-                problems.append(f"renderer raised {type(e).__name__}: {e}")
+            sample = SAMPLES.get(render_key)
+            if sample is None:
+                problems.append(f"no smoke sample for renderer '{render_key}'")
+            else:
+                try:
+                    out = ea.RENDERS[render_key](_record(dict(sample)))
+                    if not (out[0] and out[1]):
+                        problems.append("renderer returned an empty title or body")
+                except Exception as e:  # noqa: BLE001
+                    problems.append(f"renderer raised {type(e).__name__}: {e}")
         status = "OK" if not problems else "FAIL"
         print(f"{status:4} {spec['slug']}" + ("" if not problems else f"  ({'; '.join(problems)})"))
         failures += bool(problems)
