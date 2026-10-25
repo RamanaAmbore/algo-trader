@@ -160,14 +160,22 @@ test.describe('Part A.1 — .algo-icon-btn live regression (pixel-identical to p
     borderRadius: '3px',
   };
 
-  test('RefreshButton (.rf-btn) on /pulse header renders unchanged box + slate default', async ({ page }) => {
+  test('RefreshButton (.rf-btn) on /pulse header renders unchanged box + market-closed sky colour', async ({ page }) => {
+    // Box-model values are unaffected by the 2026-10-24 market-closed
+    // colour-consistency fix (RefreshButton.svelte `.rf-mkt-closed`
+    // repointed from slate to --algo-sky, unifying with
+    // BrokerHealthBadge's ticker-idle colour) — only background/border
+    // changed, captured below. This assertion assumes the real market is
+    // closed at test-run time (true whenever `.rf-mkt-closed` is the
+    // applied bucket); see market_closed_color_consistency.spec.js for a
+    // version that mocks the market-status endpoint explicitly.
     await loginAsAdmin(page);
     await page.goto('/pulse', { waitUntil: 'domcontentloaded' });
     await page.locator('.page-header .rf-btn').first().waitFor({ state: 'visible', timeout: 30000 });
     const s = await page.locator('.page-header .rf-btn').first().evaluate(boxStyle);
     expect(s).toMatchObject(EXPECTED_BOX);
-    expect(s.background).toBe('rgba(126, 151, 184, 0.14)');
-    expect(s.border).toBe('1px solid rgba(126, 151, 184, 0.55)');
+    expect(s.background).toBe('rgba(125, 211, 252, 0.12)');
+    expect(s.border).toBe('1px solid rgba(125, 211, 252, 0.55)');
   });
 
   test('GridSearchButton (.grid-search-btn) on /pulse Positions renders unchanged box + cyan default', async ({ page }) => {

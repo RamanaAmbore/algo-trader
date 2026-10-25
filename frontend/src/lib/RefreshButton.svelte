@@ -545,10 +545,15 @@
     transition: background 0.12s, color 0.12s, border-color 0.12s;
     flex-shrink: 0;
     overflow: visible;
-    /* Defaults overridden by .rf-mkt-* below.
-       Matches .rf-mkt-closed (slate) so any unclassified state
-       degrades to the "inactive / no signal" tone rather than
-       flashing emerald (the market-open colour). */
+    /* Defaults overridden by .rf-mkt-* below. Pre-mount/unclassified
+       fallback only — `_mktClass` always resolves to one of the three
+       `.rf-mkt-*` buckets from first render, so this rule is rarely if
+       ever visible. Deliberately kept neutral slate (NOT sky — see
+       `.rf-mkt-closed` below, 2026-10-24) rather than re-pointed to
+       either: an unclassified state shouldn't claim either signal
+       before the real bucket is known, so it stays the generic
+       "inactive / no signal" tone instead of tracking whichever
+       `.rf-mkt-*` colour happens to be adjacent in the cascade. */
     background: rgba(126, 151, 184, 0.14);
     border: 1px solid rgba(126, 151, 184, 0.55);
     color: #94a3b8;
@@ -584,19 +589,26 @@
     outline: 2px solid rgba(251, 191, 36, 0.65);
     outline-offset: 1px;
   }
-  /* Market closed — slate, the canonical "inactive / no signal" tone. */
+  /* Market closed — sky, unified with the broker-idle colour (2026-10-24
+     consistency fix). Was slate (rgba(126,151,184,...)/#94a3b8) — the
+     operator flagged that this button's "market closed" tone didn't
+     match BrokerHealthBadge's ticker-idle banner/dot/text or the navbar
+     .broker-chip-idle, which all use --algo-sky. Every "market is
+     closed" signal in the app now shares the same --algo-sky-* tokens;
+     see the matching AlgoTimestamp.svelte `.ats-mkt-closed` change
+     shipped in the same commit. */
   .rf-mkt-closed {
-    background: rgba(126, 151, 184, 0.14);
-    border-color: rgba(126, 151, 184, 0.55);
-    color: #94a3b8;
+    background: var(--algo-sky-bg);
+    border-color: var(--algo-sky-border);
+    color: var(--algo-sky);
   }
   .rf-mkt-closed:hover:not(:disabled) {
-    background: rgba(126, 151, 184, 0.26);
-    border-color: rgba(126, 151, 184, 0.85);
-    color: var(--algo-slate);
+    background: var(--algo-sky-bg-strong);
+    border-color: var(--algo-sky-border);
+    color: var(--algo-sky-text);
   }
   .rf-mkt-closed:focus-visible {
-    outline: 2px solid rgba(126, 151, 184, 0.65);
+    outline: 2px solid var(--algo-sky-border);
     outline-offset: 1px;
   }
   .rf-btn:disabled {

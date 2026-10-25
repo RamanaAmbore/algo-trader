@@ -180,7 +180,13 @@ test.describe('AlgoTimestamp market-status badge — source', () => {
     expect(openIdx).toBeGreaterThan(-1);
     const block = src.slice(openIdx, eqOnlyEndIdx);
     expect(block).toContain('var(--algo-green-text)');
-    expect(block).toContain('var(--algo-dim)');
+    // 2026-10-24 consistency fix: closed bucket uses --algo-sky (was
+    // --algo-dim/slate), unified with BrokerHealthBadge's ticker-idle
+    // colour and RefreshButton's .rf-mkt-closed. See
+    // market_closed_color_consistency.spec.js for the cross-surface
+    // parity guard.
+    expect(block).toContain('var(--algo-sky)');
+    expect(block).not.toContain('var(--algo-dim)');
     expect(block).toContain('var(--c-action)');
     expect(block).toContain('var(--algo-market-eq-only-text)');
     expect(block).not.toMatch(/#[0-9a-fA-F]{3,6}/);
@@ -288,13 +294,18 @@ test.describe('AlgoTimestamp market-status badge — bucket matrix (pulse only, 
     expect(eqOnlyColor).not.toBe('rgba(0, 0, 0, 0)');
   });
 
-  test('both closed -> pill reads "M", ats-mkt-closed (slate)', async ({ page }) => {
+  test('both closed -> pill reads "M", ats-mkt-closed (sky — unified 2026-10-24 with broker-idle)', async ({ page }) => {
     await _mockStatus(page, { nse_open: false, mcx_open: false });
     await loginAsAdmin(page);
     await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded', timeout: 30_000 });
     const pill = page.locator('[data-testid="algo-ts-market-badge-any"]').first();
     await expect(pill).toHaveClass(/ats-mkt-closed/, { timeout: 10_000 });
     await expect(pill).toHaveText('M');
+    // Was slate (#94a3b8); now --algo-sky (#7dd3fc = rgb(125, 211, 252)),
+    // matching RefreshButton's .rf-mkt-closed and BrokerHealthBadge's
+    // ticker-idle colour.
+    const color = await pill.evaluate((el) => getComputedStyle(el).color);
+    expect(color).toBe('rgb(125, 211, 252)');
   });
 });
 

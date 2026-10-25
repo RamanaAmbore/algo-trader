@@ -76,7 +76,7 @@
     _mktBucket === 'both'   ? '#4ade80'
     : _mktBucket === 'mcx'  ? '#fbbf24'
     : _mktBucket === 'eq'   ? '#a78bfa'
-    :                         '#94a3b8'
+    :                         'var(--algo-sky)'
   );
   /** @type {HTMLSpanElement | undefined} */
   let _mktPillEl = $state();
@@ -253,13 +253,17 @@
      colour alone carries the open/closed signal (title attr carries the
      full sentence for a11y + hover). Palette: open = the app's canonical
      green (same tokens the removed SymbolPanel pills used); closed =
-     the same muted/slate tokens RefreshButton's `.rf-mkt-closed` already
-     resolves to byte-for-byte (`--algo-muted-bg`/`--algo-muted-border` ==
-     rgba(126,151,184,…), `--algo-dim` == #94a3b8); MCX-only = the same
-     amber tokens RefreshButton's `.rf-mkt-mcx` already uses
-     (`--c-action-14`/`--algo-amber-border`/`--c-action`); Eq-only = the
-     new `--algo-market-eq-only-*` token (see app.css) for the one bucket
-     RefreshButton's scheme can't distinguish. */
+     sky (`--algo-sky`), unified 2026-10-24 with RefreshButton's
+     `.rf-mkt-closed` AND the broker-idle colour (BrokerHealthBadge's
+     ticker-idle banner/dot/text, the navbar `.broker-chip-idle`) — was
+     slate (`--algo-dim`/#94a3b8) before this fix, the operator-flagged
+     mismatch; MCX-only = the same amber tokens RefreshButton's
+     `.rf-mkt-mcx` already uses (`--c-action-14`/`--algo-amber-border`/
+     `--c-action`); Eq-only = the `--algo-market-eq-only-*` token (see
+     app.css) for the one bucket RefreshButton's scheme can't
+     distinguish. `_mktAccent` (script block above) mirrors this same
+     closed→sky change for the InfoHint popup's title colour + left
+     border. */
   .ats-mkt-badge {
     display: inline-flex;
     align-items: center;
@@ -279,7 +283,7 @@
     cursor: pointer;
   }
   .ats-mkt-open   { color: var(--algo-green-text); }
-  .ats-mkt-closed { color: var(--algo-dim); }
+  .ats-mkt-closed { color: var(--algo-sky); }
   .ats-mkt-mcx-only { color: var(--c-action); }
   .ats-mkt-eq-only  { color: var(--algo-market-eq-only-text); }
   @media (max-width: 640px) {
