@@ -55,7 +55,7 @@ class TestMarketHoursGate:
         m = _reload_alert_utils()
         with (
             patch("backend.api.helpers.snapshot_gate._any_segment_open", return_value=False),
-            patch.object(m, "logger") as mock_tg,
+            patch.object(m, "_DISPATCH_LOGGER") as mock_tg,
             patch.object(m, "_SMTP_EXECUTOR") as mock_smtp,
         ):
             m.send_order_failure_alert(
@@ -76,7 +76,7 @@ class TestMarketHoursGate:
         m = _reload_alert_utils()
         with (
             patch("backend.api.helpers.snapshot_gate._any_segment_open", return_value=True),
-            patch.object(m, "logger") as mock_tg,
+            patch.object(m, "_DISPATCH_LOGGER") as mock_tg,
             patch.object(m, "_SMTP_EXECUTOR"),
             patch.object(m, "get_alert_recipients", return_value=[]),
         ):
@@ -100,7 +100,7 @@ class TestMarketHoursGate:
                 "backend.api.helpers.snapshot_gate._any_segment_open",
                 side_effect=ImportError("module not found"),
             ),
-            patch.object(m, "logger") as mock_tg,
+            patch.object(m, "_DISPATCH_LOGGER") as mock_tg,
             patch.object(m, "_SMTP_EXECUTOR"),
             patch.object(m, "get_alert_recipients", return_value=[]),
         ):
@@ -136,7 +136,7 @@ class TestRedisCooldown:
         with (
             patch("backend.api.helpers.snapshot_gate._any_segment_open", return_value=True),
             patch.object(m, "_get_redis", return_value=fake_redis),
-            patch.object(m, "logger") as mock_tg,
+            patch.object(m, "_DISPATCH_LOGGER") as mock_tg,
             patch.object(m, "_SMTP_EXECUTOR"),
             patch.object(m, "get_alert_recipients", return_value=[]),
         ):
@@ -196,7 +196,7 @@ class TestRedisCooldown:
         with (
             patch("backend.api.helpers.snapshot_gate._any_segment_open", return_value=True),
             patch.object(m, "_get_redis", return_value=None),  # Redis unavailable
-            patch.object(m, "logger") as mock_tg,
+            patch.object(m, "_DISPATCH_LOGGER") as mock_tg,
             patch.object(m, "_SMTP_EXECUTOR"),
             patch.object(m, "get_alert_recipients", return_value=[]),
         ):
@@ -226,7 +226,7 @@ class TestRedisCooldown:
         with (
             patch("backend.api.helpers.snapshot_gate._any_segment_open", return_value=True),
             patch.object(m, "_get_redis", return_value=fake_redis),
-            patch.object(m, "logger") as mock_tg,
+            patch.object(m, "_DISPATCH_LOGGER") as mock_tg,
             patch.object(m, "_SMTP_EXECUTOR"),
             patch.object(m, "get_alert_recipients", return_value=[]),
         ):

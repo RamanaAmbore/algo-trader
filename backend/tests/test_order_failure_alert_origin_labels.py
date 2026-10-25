@@ -149,7 +149,7 @@ class TestSendOrderFailureAlertThreadsAgentId:
             captured["msg"] = msg
             captured["extra"] = extra
 
-        with patch.object(alert_utils, "logger") as mock_logger, \
+        with patch.object(alert_utils, "_DISPATCH_LOGGER") as mock_logger, \
              patch("backend.api.helpers.snapshot_gate._any_segment_open", return_value=True), \
              patch.object(alert_utils, "_redis_cooldown_check", return_value=(False, 0, True)):
             mock_logger.warning.side_effect = _fake_warning
@@ -171,7 +171,7 @@ class TestSendOrderFailureAlertThreadsAgentId:
             captured["msg"] = msg
             captured["extra"] = extra
 
-        with patch.object(alert_utils, "logger") as mock_logger, \
+        with patch.object(alert_utils, "_DISPATCH_LOGGER") as mock_logger, \
              patch("backend.api.helpers.snapshot_gate._any_segment_open", return_value=True), \
              patch.object(alert_utils, "_redis_cooldown_check", return_value=(False, 0, True)):
             mock_logger.warning.side_effect = _fake_warning

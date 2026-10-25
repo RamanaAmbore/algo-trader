@@ -88,6 +88,53 @@ def test_skipped_loggers_never_reach_the_queue(name):
     assert h.drain(10) == []
 
 
+def test_order_failure_and_summary_records_reach_the_queue():
+    """Regression for a real production incident (2026-10-25): both
+    `alert_utils._send_order_failure_messages()` and `alert_utils.send_summary()`
+    used to log through `alert_utils.logger` (name
+    `backend.shared.helpers.alert_utils`) — a `_SKIP_PREFIXES` entry — so
+    their records were silently dropped in `LogStoreHandler.emit()` before
+    ever reaching the dispatch pipeline. Confirmed via git history
+    (commit 54860caa, 2026-10-06) that order-failure and summary alerts
+    had ZERO channel delivery for ~19 days as a result. Both now log
+    through `alert_utils._DISPATCH_LOGGER` (name `backend.api.algo.events`,
+    the same convention `event_agents.py`'s own `_EVENTS_LOGGER` already
+    uses) — this attaches a real `LogStoreHandler` to that actual logger
+    and confirms a record genuinely propagates through and is NOT skipped,
+    exercising the real logging call, not a mocked one."""
+    import pandas as pd
+    from unittest.mock import patch
+    from backend.shared.helpers import alert_utils
+
+    h = log_store.LogStoreHandler()
+    dispatch_logger = logging.getLogger("backend.api.algo.events")
+    dispatch_logger.addHandler(h)
+    dispatch_logger.setLevel(logging.INFO)
+    try:
+        with patch("backend.api.helpers.snapshot_gate._any_segment_open", return_value=True), \
+             patch.object(alert_utils, "_redis_cooldown_check", return_value=(False, 0, True)):
+            alert_utils.send_order_failure_alert(
+                account="ZG0790", symbol="NIFTY25JULFUT", exchange="NFO",
+                side="BUY", qty=50, mode="live", source="chase", error="boom",
+            )
+        alert_utils.send_summary(
+            pd.DataFrame(), pd.DataFrame(), "26-Oct-26 10:00", "open", label="Equity",
+        )
+    finally:
+        dispatch_logger.removeHandler(h)
+
+    rows = h.drain(10)
+    events = {r["extra"].get("alert_event") for r in rows}
+    assert "order_failure" in events, (
+        "order-failure record never reached the queue — the fix regressed"
+    )
+    assert "summary" in events, (
+        "summary record never reached the queue — the fix regressed"
+    )
+    for r in rows:
+        assert r["logger"] == "backend.api.algo.events"
+
+
 def test_full_queue_drops_and_never_raises():
     h = log_store.LogStoreHandler()
     for _ in range(log_store._QUEUE_MAX):

@@ -90,6 +90,30 @@ def _get_redis() -> "None | _redis_t.Redis":
 
 logger = get_logger(__name__)
 
+# Dedicated logger for records meant to flow into the log_store ->
+# event_agents dispatch pipeline (ORDER_FAILURE_AGENT, the summary agent).
+# `logger` above (name `backend.shared.helpers.alert_utils`) is one of
+# `log_store.py`'s `_SKIP_PREFIXES` -- LogStoreHandler.emit() drops any
+# record from that name unconditionally, before tags/dispatch are ever
+# considered. That skip-list entry exists to stop this module's OWN
+# internal diagnostics (Redis/Telegram/email send status, all the plain
+# logger.* calls elsewhere in this file) from re-entering the alert
+# pipeline -- it was never meant to also swallow a record whose entire
+# purpose IS to trigger dispatch. `_send_order_failure_messages()` and
+# `send_summary()` are the only two call sites in this module that build
+# a dispatch-shaped record (`extra={"tags": [...], "alert_event": ...}`);
+# both now log through this logger instead. Reuses the exact same
+# non-skip-listed logger name event_agents.py's own `_EVENTS_LOGGER`
+# already uses for the identical purpose (self-logged records meant to
+# flow back into the pipeline) -- one convention, not a new one.
+# Confirmed via git history: order-failure and summary alerts have had
+# ZERO channel delivery since 2026-10-06 (commit 54860caa added this
+# skip-list entry), because `_send_order_failure_messages`/`send_summary`
+# were migrated off direct `_send_telegram()`/`send_email()` calls to
+# this log-and-dispatch model back on 2026-07-23 (commit 5f0a6d5c) --
+# the two changes, three months apart, silently combined into this gap.
+_DISPATCH_LOGGER = get_logger("backend.api.algo.events")
+
 # Bounded SMTP thread pool — caps concurrent outbound connections to
 # Hostinger's SMTP relay (30s timeout each). Four workers handle normal
 # burst (14 agents × 3 recipients) without spawning an unbounded number
@@ -915,7 +939,7 @@ def send_summary(sum_holdings, sum_positions, ist_display: str, msg_type: str,
             f"{warning_lines[0]}</p>" + email_html
         )
 
-    logger.info(
+    _DISPATCH_LOGGER.info(
         f"Background: {msg_type} summary recorded",
         extra={
             "tags": ["summary"], "alert_event": "summary", "msg_type": msg_type,
@@ -1178,20 +1202,21 @@ def _send_order_failure_messages(
     of the replayed record's `extra` dict and passes it straight through
     to `order_failure_messages()` for the Manual/Agent/Bracket label.
 
-    KNOWN GAP (found during the 2026-10 alert-format audit, out of scope
-    to fix here): this module's own logger name
-    (`backend.shared.helpers.alert_utils`) is one of `log_store.py`'s
-    `_SKIP_PREFIXES` — `LogStoreHandler.emit()` drops a record from this
-    logger BEFORE `tags_for()`/`row_for()` ever run, so this call (and
-    `send_summary()`'s, below) never reaches `log_events` in production.
-    The `"alert"` tag added here is correct and forward-compatible, but
-    it cannot make ORDER_FAILURE_AGENT's trigger visible in the Alerts
-    tab until that structural gap is fixed separately — see the
-    final-report note in commit history for this change.
+    2026-10-25 fix: this used to log through this module's own `logger`
+    (name `backend.shared.helpers.alert_utils`, one of `log_store.py`'s
+    `_SKIP_PREFIXES`) — `LogStoreHandler.emit()` drops any record from
+    that name unconditionally, before tags/dispatch are ever considered.
+    That meant this call (and `send_summary()`'s, below) never reached
+    `log_events`, so ORDER_FAILURE_AGENT's condition could never match
+    and NOTHING was ever sent to any channel for an order failure —
+    confirmed via git history to have been silently broken since
+    2026-10-06 (commit 54860caa). Now logs through `_DISPATCH_LOGGER`
+    instead (see its module-level comment) so the record actually
+    reaches the dispatch pipeline.
     """
     sup_note = f"  (+{suppressed_count} suppressed)" if suppressed_count else ""
     origin_label = _classify_order_origin_label(source, agent_id)
-    logger.warning(
+    _DISPATCH_LOGGER.warning(
         f"order-failure recorded: [{origin_label}] {masked} {side} {qty} {symbol} "
         f"mode={mode} source={source}{sup_note}",
         extra={

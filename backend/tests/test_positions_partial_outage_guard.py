@@ -439,7 +439,7 @@ class TestSendSummaryWarnsOnPartialOutage:
         import backend.shared.helpers.alert_utils as au
         from unittest.mock import patch as _patch
 
-        with _patch.object(au, "logger") as _mock_log:
+        with _patch.object(au, "_DISPATCH_LOGGER") as _mock_log:
             send_summary(
                 pd.DataFrame(), _partial_outage_summary(), "26-Sep-26 10:00",
                 "open", label="Equity",
@@ -461,7 +461,7 @@ class TestSendSummaryWarnsOnPartialOutage:
             captured['tg_table'] = tg_table
             captured['email_html'] = email_html
 
-        with _patch.object(au, "logger") as _mock_log:
+        with _patch.object(au, "_DISPATCH_LOGGER") as _mock_log:
             send_summary(
                 pd.DataFrame(), _clean_summary(), "26-Sep-26 10:00",
                 "open", label="Equity",

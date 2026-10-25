@@ -229,7 +229,7 @@ async def test_notify_fills_logs_action_required_false():
 def test_send_order_failure_messages_logs_action_required_true():
     from backend.shared.helpers.alert_utils import _send_order_failure_messages
 
-    with patch("backend.shared.helpers.alert_utils.logger") as mock_logger:
+    with patch("backend.shared.helpers.alert_utils._DISPATCH_LOGGER") as mock_logger:
         _send_order_failure_messages(
             masked="ZG****0", symbol="NIFTY25JULFUT", exchange="NFO",
             side="BUY", qty=50, mode="live", source="chase",
