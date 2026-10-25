@@ -17,13 +17,33 @@ this module:
 
 Public:
   draft_agent_from_prompt(prompt: str) -> AgentDraft
+  draft_token_from_prompt(prompt: str, ...) -> TokenDraft
+
+Wave 3 of the "Unify DSL token registration" plan (see
+`backend/api/routes/lab.py:McpController.draft_token`, the one HTTP
+entry point for `draft_token_from_prompt` below) adds a second,
+structurally similar pipeline: operator describes a desired grammar
+token (metric / scope / notify-channel / action), the LLM drafts a
+candidate `(resolver .py source, test .py source, params_schema,
+description)` bundle, and this module statically validates it
+(ast.parse, signature shape, a dangerous-import/call scan) WITHOUT EVER
+executing a single line of the drafted code. The result is returned as
+plain JSON for the operator to review — see `TokenDraft`'s own
+docstring for the full safety boundary. Writing the reviewed files,
+running the test, and deploying is a human/Claude-Code step, same as
+Wave 1's own migration of every system resolver into
+`backend/api/algo/grammar_tokens/`. Registering the deployed resolver
+live is the EXISTING Wave 2 endpoint (`POST /api/admin/grammar/tokens`)
+— this module never calls it and never writes to disk.
 """
 from __future__ import annotations
 
+import ast
 import json
 import logging
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from backend.shared.helpers.utils import secrets, ramboq_config, is_enabled
@@ -420,3 +440,544 @@ def draft_agent_from_prompt(prompt: str) -> AgentDraft:
         draft=draft, errors=errors, warnings=warnings,
         why_summary=why, prompt=prompt, clamp_effects=clamp_effects,
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Wave 3 — AI-drafted grammar TOKEN (metric / scope / channel / action)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Deliberately NOT a general "write any token kind" pipeline. Only the four
+# kinds below are file-based resolvers with a uniform-enough call signature
+# to statically check: condition/metric, condition/scope, notify/channel,
+# action/action_type. `condition/operator` resolvers live in code
+# (`grammar.py:OPERATORS`), never file-based. `notify/format` signatures
+# vary per formatter (see `format_html_table.py`'s `(headers, rows)` vs. a
+# hypothetical plain-text formatter) — no single signature contract to
+# validate against yet. `template`/`log_tag` tokens carry no resolver at
+# all (`template_body` / pure catalog metadata). Widening this set is a
+# future decision, not an oversight.
+_TOKEN_KIND_PREFIX: dict[tuple[str, str], str] = {
+    ("condition", "metric"):  "metric",
+    ("condition", "scope"):   "scope",
+    ("notify",    "channel"): "channel",
+    ("action",    "action_type"): "action",
+}
+
+# Lowercase identifier, optionally dot-segmented (e.g. "funds.total") —
+# matches the real naming convention already used under grammar_tokens/
+# (scope_funds_total.py backs the "funds.total" token).
+_TOKEN_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$")
+
+# A resolver for these four kinds must stay read-only / notification-only.
+# Any of these imports is flagged as a WARNING (not a hard error — the
+# human reviewer decides), never auto-rejected, because the real safety
+# boundary is "nothing here is ever executed by this process" (see
+# `TokenDraft`'s docstring) — the scan exists to make the reviewer's job
+# easier, not to replace the review.
+_DANGEROUS_IMPORT_PREFIXES = (
+    "backend.brokers", "backend.api.algo.actions_live", "subprocess", "os",
+    "socket", "requests", "httpx", "urllib",
+)
+_DANGEROUS_CALL_NAMES = {"exec", "eval", "compile", "__import__", "open"}
+
+
+@dataclass
+class TokenDraft:
+    """Result of `draft_token_from_prompt`.
+
+    SAFETY BOUNDARY (read before touching the route that calls this):
+    this module NEVER writes a file, NEVER imports/execs the drafted
+    `resolver_source`/`test_source`, and NEVER calls the Wave 2
+    registration endpoint. `draft` is plain JSON-safe data (strings,
+    dicts, lists, None) — a reviewable DIFF, not a live artifact. A
+    human (operator reviewing the /admin/mcp page, or a Claude Code
+    session) is the only thing that ever turns this into real files,
+    and only the normal `/impl`→`/ddev`→`/dprod` deploy pipeline is the
+    only thing that ever makes a drafted resolver importable. Only
+    *after* that deploy does Wave 2's `POST /api/admin/grammar/tokens`
+    (already existing, already validates `resolver` dotted-path
+    importability — see `routes/grammar.py:_validate_resolver_importable`)
+    make it live.
+
+    `draft` fields when present (absent/`None` on an early hard
+    failure — see `errors`):
+      grammar_kind, token_kind, token, description, params_schema
+      resolver_source, resolver_function_name, resolver_module_path,
+      resolver_file_path, test_source, test_file_path
+    """
+    draft: dict[str, Any]
+    errors: list[str]
+    warnings: list[str]
+    why_summary: str
+    prompt: str = ""
+
+
+def _td_catalog_snapshot() -> dict[str, list[str]]:
+    """One-line summaries of every ACTIVE token in the four AI-draftable
+    kinds — reuses `_summarise_token` so the LLM sees value_type / units /
+    enum_values / params_schema exactly like `_grammar_snapshot` does for
+    agent drafting. Deliberately a sibling function, not a change to
+    `_grammar_snapshot` itself — that function's shape is depended on by
+    `draft_agent_from_prompt` and its existing tests."""
+    from backend.api.algo.grammar_registry import REGISTRY
+    snap: dict[str, list[str]] = {"metric": [], "scope": [], "channel": [], "action_type": []}
+    for token in REGISTRY.tokens.values():
+        if not token.is_active:
+            continue
+        if (token.grammar_kind, token.token_kind) in _TOKEN_KIND_PREFIX:
+            snap[token.token_kind].append(_summarise_token(token, token.token_kind))
+    for k in snap:
+        snap[k].sort()
+    return snap
+
+
+_TOKEN_DRAFT_SYSTEM_PROMPT = """\
+You are a strict JSON generator that drafts ONE new RamboQuant DSL grammar
+token — a metric, scope, notify-channel, or action resolver — from an
+operator's natural-language request. Your output is reviewed by a human
+before any file is written or any code runs; nothing you produce executes
+automatically.
+
+Token kinds you may propose (grammar_kind/token_kind), each with its exact
+Python call signature and a real example already deployed in this codebase:
+
+  condition/metric  — computes a number from one position/account row.
+    def _metric_cash(ctx, row):
+        return _num_or_none(row.get('avail cash'))
+
+  condition/scope  — selects a list of rows from the evaluation context.
+    def _scope_funds_total(ctx):
+        df = ctx.df_margins
+        if df is None or df.empty:
+            return []
+        mask = df['account'].astype(str) == 'TOTAL'
+        return [r.to_dict() for _, r in df[mask].iterrows()]
+
+  notify/channel  — sends one notification. Signature exactly
+  (title, body, tg=None, priority=None) -> None.
+    def _send_ntfy(title, body, tg=None, priority=None):
+        from backend.shared.helpers import alert_utils
+        alert_utils.send_ntfy_alert(title, body, priority=priority)
+
+  action/action_type  — an async DO-action. Must be declared with
+  'async def', signature (ctx, params: dict) -> dict.
+    async def my_action(ctx, params: dict) -> dict:
+        ...
+        return {"action": "my_action", "status": "done"}
+
+Hard rules:
+- Do NOT import backend.brokers, backend.api.algo.actions_live, subprocess,
+  os, socket, requests, httpx, or urllib. A metric/scope/channel resolver
+  must be read-only; an action resolver must stay inside the existing
+  actions machinery. Broker order placement/cancellation already exists as
+  reviewed action tokens — never reinvent it here.
+- Do NOT call exec, eval, compile, __import__, or open.
+- Do NOT propose a (grammar_kind, token_kind, token) triple that already
+  exists — the operator request message lists every existing token name.
+- The module source must contain exactly ONE top-level function (a module
+  docstring and a function docstring are fine; a leading import of a real,
+  safe helper is fine).
+- token must be a lowercase identifier, optionally dot-segmented
+  (e.g. "mean_drawdown_30d" or "funds.total").
+- Write a real pytest test module that imports the function directly and
+  asserts on its return value for at least one concrete input.
+
+Return ONE JSON object with this exact shape (no markdown fences):
+{
+  "draft": {
+    "grammar_kind": "condition" | "notify" | "action",
+    "token_kind": "metric" | "scope" | "channel" | "action_type",
+    "token": "<lowercase_snake_or.dotted_name>",
+    "description": "<one-line description>",
+    "params_schema": <schema object, or null if the token takes no params>,
+    "resolver_source": "<complete python module source>",
+    "test_source": "<complete pytest module source>"
+  },
+  "why_summary": "<one sentence describing what this token computes/does>",
+  "errors": []
+}
+
+If the operator's request can't be expressed as one of the four kinds
+above, set "errors" and leave "draft" minimal.
+"""
+
+
+def _td_build_prompt(
+    user_prompt: str, snapshot: dict[str, list[str]],
+    existing_names: set[tuple[str, str, str]],
+) -> str:
+    def _block(items: list[str]) -> str:
+        return "\n".join(f"  - {it}" for it in items) if items else "  (none)"
+    existing_block = "\n".join(
+        f"  - {gk}/{tk}/{tok}" for (gk, tk, tok) in sorted(existing_names)
+    ) or "  (none)"
+    return (
+        f"Operator request: {user_prompt.strip()}\n\n"
+        f"Existing tokens — do NOT propose any of these (grammar_kind/"
+        f"token_kind/token) triples again:\n{existing_block}\n\n"
+        f"Existing metrics:\n{_block(snapshot['metric'])}\n"
+        f"\nExisting scopes:\n{_block(snapshot['scope'])}\n"
+        f"\nExisting channels:\n{_block(snapshot['channel'])}\n"
+        f"\nExisting actions:\n{_block(snapshot['action_type'])}\n"
+    )
+
+
+def _td_call_gemini(user_msg: str) -> tuple[str, str | None]:
+    """Same provider/call pattern `draft_agent_from_prompt` uses (local
+    `google.genai` import, same model config key, same thinking-budget
+    setting) — a dedicated helper (not a shared one) because a drafted
+    resolver + test module is much larger than an agent condition tree,
+    so this call uses a higher `max_output_tokens` and asks for a JSON
+    mime type explicitly. Returns (raw_text, error) — error is None on a
+    genuine (possibly empty) response, so an empty response is still
+    distinguishable from a call failure by the caller."""
+    try:
+        from google import genai
+        from google.genai import types
+    except ImportError:
+        return "", "google-genai package not installed"
+    try:
+        client = genai.Client(api_key=secrets["gemini_api_key"])
+        response = client.models.generate_content(
+            model=ramboq_config.get("genai_model", "gemini-2.5-flash"),
+            contents=user_msg,
+            config=types.GenerateContentConfig(
+                system_instruction=_TOKEN_DRAFT_SYSTEM_PROMPT,
+                temperature=0.2,
+                max_output_tokens=8192,
+                response_mime_type="application/json",
+                thinking_config=types.ThinkingConfig(
+                    thinking_budget=get_int("genai.thinking_budget", 512),
+                ),
+            ),
+        )
+        return (response.text or "").strip(), None
+    except Exception as e:
+        logger.warning(f"Gemini call failed in agent_ai (draft_token): {e}")
+        return "", f"LLM unavailable: {e}"
+
+
+def _td_validate_identity(
+    raw_draft: dict, existing_names: set[tuple[str, str, str]],
+) -> tuple[str, str, str, list[str]]:
+    """Validate the LLM's proposed (grammar_kind, token_kind, token)
+    against the whitelist + name regex + the caller-supplied existing-name
+    set (case-insensitive — `buildCatalog()` lowercases, last-write-wins).
+    Returns (grammar_kind, token_kind, token, errors) — the three strings
+    are returned even when invalid/empty so the draft can still echo back
+    what the LLM proposed."""
+    errors: list[str] = []
+    gk = str(raw_draft.get("grammar_kind") or "").strip()
+    tk = str(raw_draft.get("token_kind") or "").strip()
+    tok = str(raw_draft.get("token") or "").strip()
+    if (gk, tk) not in _TOKEN_KIND_PREFIX:
+        allowed = ", ".join(f"{a}/{b}" for a, b in _TOKEN_KIND_PREFIX)
+        errors.append(
+            f"unsupported grammar_kind/token_kind '{gk}/{tk}' — AI "
+            f"drafting only supports: {allowed}"
+        )
+        return gk, tk, tok, errors
+    if not tok or not _TOKEN_NAME_RE.match(tok):
+        errors.append(
+            f"token name '{tok}' is not a valid lowercase identifier "
+            "(optionally dot-segmented, e.g. 'funds.total')"
+        )
+    elif (gk, tk, tok.lower()) in existing_names:
+        errors.append(f"token '{tok}' already exists for {gk}/{tk}")
+    return gk, tk, tok, errors
+
+
+def _td_derive_paths(gk: str, tk: str, tok: str) -> tuple[str, str, str, str]:
+    """Derive the module path / file path / test file path on the SERVER,
+    from the whitelisted prefix + the verified token name — never from
+    anything the LLM claims about where its own code should live. This is
+    the critical safety boundary: a drafted resolver's eventual dotted
+    path is a pure function of (grammar_kind, token_kind, token), so the
+    LLM cannot point a 'metric' at an already-existing, already-reviewed
+    function elsewhere in the codebase (e.g. a broker-order action) by
+    simply naming it in a `resolver` field — this module never reads or
+    trusts such a field."""
+    prefix = _TOKEN_KIND_PREFIX[(gk, tk)]
+    safe = tok.replace(".", "_")
+    module_name = f"{prefix}_{safe}"
+    module_path = f"backend.api.algo.grammar_tokens.{module_name}"
+    file_path = f"backend/api/algo/grammar_tokens/{module_name}.py"
+    test_file_path = f"backend/tests/grammar_tokens/test_{module_name}.py"
+    return module_name, module_path, file_path, test_file_path
+
+
+def _td_scan_dangerous_usage(label: str, tree: ast.AST) -> list[str]:
+    """AST walk (not regex — regex misses `import x as y` aliasing and
+    `import backend.brokers as b`) for imports/calls a read-only or
+    notification-only resolver should not need. Returns WARNINGS, never
+    errors — the human reviewer decides; see `TokenDraft`'s docstring for
+    why a warning here is not the real safety boundary."""
+    warnings: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if any(alias.name == p or alias.name.startswith(p + ".")
+                       for p in _DANGEROUS_IMPORT_PREFIXES):
+                    warnings.append(
+                        f"{label} imports '{alias.name}' — review before "
+                        "deploying; this token kind must stay read-only"
+                    )
+        elif isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            if any(mod == p or mod.startswith(p + ".") for p in _DANGEROUS_IMPORT_PREFIXES):
+                warnings.append(
+                    f"{label} imports from '{mod}' — review before "
+                    "deploying; this token kind must stay read-only"
+                )
+        elif isinstance(node, ast.Call):
+            fn = node.func
+            name = fn.id if isinstance(fn, ast.Name) else getattr(fn, "attr", None)
+            if name in _DANGEROUS_CALL_NAMES:
+                warnings.append(f"{label} calls '{name}(...)' — review before deploying")
+    return warnings
+
+
+def _td_validate_python_module(
+    label: str, source: Any, *, require_single_function: bool = True,
+) -> tuple[list[str], list[str], ast.AST | None]:
+    """ast.parse `source` (never executed). Hard error on empty/non-str
+    or a syntax error.
+
+    `require_single_function=True` (the resolver's own convention — one
+    file, one function, matching every real file under
+    `grammar_tokens/`) additionally errors on anything other than
+    exactly one top-level function def. `False` (used for `test_source`
+    — a real pytest module legitimately defines several `test_*`
+    functions, exactly like every existing file under
+    `backend/tests/grammar_tokens/`) only requires at least one.
+
+    Returns (errors, warnings, first_function_def_node_or_None) — for
+    `test_source` the returned node is informational only; no caller
+    reads it today.
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+    if not isinstance(source, str) or not source.strip():
+        errors.append(f"{label} is empty")
+        return errors, warnings, None
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError) as e:
+        errors.append(f"{label} does not parse: {type(e).__name__}: {e}")
+        return errors, warnings, None
+    top_level_fns = [
+        n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    if require_single_function:
+        fn_node = top_level_fns[0] if len(top_level_fns) == 1 else None
+        if len(top_level_fns) != 1:
+            errors.append(
+                f"{label} must define exactly one top-level function, "
+                f"found {len(top_level_fns)}"
+            )
+    else:
+        fn_node = top_level_fns[0] if top_level_fns else None
+        if not top_level_fns:
+            errors.append(f"{label} must define at least one top-level function")
+    warnings.extend(_td_scan_dangerous_usage(label, tree))
+    return errors, warnings, fn_node
+
+
+def _td_validate_signature(tk: str, fn_node: ast.AST) -> list[str]:
+    """Signature shape per token_kind, matching the real examples in
+    `_TOKEN_DRAFT_SYSTEM_PROMPT` — a well-formedness check for the human
+    reviewer, not a safety boundary (see module docstring)."""
+    args = [a.arg for a in fn_node.args.args]
+    errors: list[str] = []
+    if tk == "metric" and len(args) < 2:
+        errors.append(f"metric resolver must take (ctx, row) — found ({', '.join(args)})")
+    elif tk == "scope" and len(args) < 1:
+        errors.append(f"scope resolver must take (ctx) — found ({', '.join(args)})")
+    elif tk == "channel" and len(args) < 2:
+        errors.append(f"channel resolver must take (title, body, ...) — found ({', '.join(args)})")
+    elif tk == "action_type":
+        if not isinstance(fn_node, ast.AsyncFunctionDef):
+            errors.append("action resolver must be declared 'async def'")
+        if len(args) < 2:
+            errors.append(f"action resolver must take (ctx, params) — found ({', '.join(args)})")
+    return errors
+
+
+def _td_validate_params_schema(schema: Any) -> list[str]:
+    """Loose shape sanity check only — real validation happens when a
+    human actually wires the schema into the deployed token."""
+    if schema is None:
+        return []
+    if not isinstance(schema, dict):
+        return [f"params_schema must be a JSON object, got {type(schema).__name__}"]
+    if "properties" in schema and not isinstance(schema.get("properties"), dict):
+        return ["params_schema.properties must be an object"]
+    return []
+
+
+def _td_build_validated_draft(
+    raw_draft: dict, existing_names: set[tuple[str, str, str]],
+) -> tuple[dict[str, Any], list[str], list[str]]:
+    """Orchestrates the static-validation pipeline above into one draft
+    dict + errors + warnings. Never imports/execs `resolver_source` or
+    `test_source` — every check here is `ast`-based or a plain string/dict
+    shape check."""
+    errors: list[str] = []
+    warnings: list[str] = []
+    gk, tk, tok, id_errors = _td_validate_identity(raw_draft, existing_names)
+    errors.extend(id_errors)
+
+    draft: dict[str, Any] = {
+        "grammar_kind": gk, "token_kind": tk, "token": tok,
+        "description": str(raw_draft.get("description") or "").strip(),
+        "params_schema": raw_draft.get("params_schema"),
+        "resolver_source": raw_draft.get("resolver_source"),
+        "test_source": raw_draft.get("test_source"),
+    }
+
+    if id_errors:
+        # Identity is broken — paths can't be safely derived. Stop here;
+        # the draft above still echoes what the LLM proposed for review.
+        return draft, errors, warnings
+
+    module_name, module_path, file_path, test_file_path = _td_derive_paths(gk, tk, tok)
+    draft["resolver_module_path"] = module_path
+    draft["resolver_file_path"] = file_path
+    draft["test_file_path"] = test_file_path
+
+    r_errors, r_warnings, fn_node = _td_validate_python_module(
+        "resolver_source", draft["resolver_source"],
+    )
+    errors.extend(r_errors)
+    warnings.extend(r_warnings)
+    draft["resolver_function_name"] = fn_node.name if fn_node is not None else None
+    if fn_node is not None:
+        errors.extend(_td_validate_signature(tk, fn_node))
+
+    t_errors, t_warnings, _ = _td_validate_python_module(
+        "test_source", draft["test_source"], require_single_function=False,
+    )
+    errors.extend(t_errors)
+    warnings.extend(t_warnings)
+
+    errors.extend(_td_validate_params_schema(draft["params_schema"]))
+
+    repo_root = Path(__file__).resolve().parents[3]
+    if (repo_root / file_path).exists():
+        warnings.append(
+            f"a file already exists at {file_path} — check for a naming "
+            "collision before writing"
+        )
+
+    return draft, errors, warnings
+
+
+def _td_precheck_hint(
+    grammar_kind: str | None, token_kind: str | None, token: str | None,
+    existing_names: set[tuple[str, str, str]],
+) -> list[str]:
+    """When the operator supplies all three identity hints, run the
+    cheap collision/unsupported-kind check BEFORE the LLM is ever
+    called — same ordering precedent Wave 2's registration endpoint
+    already uses (duplicate check before import validation). Returns
+    errors; empty means proceed to the LLM call."""
+    if not (grammar_kind and token_kind and token):
+        return []
+    if (grammar_kind, token_kind) not in _TOKEN_KIND_PREFIX:
+        allowed = ", ".join(f"{a}/{b}" for a, b in _TOKEN_KIND_PREFIX)
+        return [
+            f"unsupported grammar_kind/token_kind '{grammar_kind}/{token_kind}' "
+            f"— AI drafting only supports: {allowed}"
+        ]
+    hint_key = (grammar_kind, token_kind, token.strip().lower())
+    if hint_key in existing_names:
+        return [f"token '{token}' already exists for {grammar_kind}/{token_kind}"]
+    return []
+
+
+def draft_token_from_prompt(
+    prompt: str,
+    *,
+    grammar_kind: str | None = None,
+    token_kind: str | None = None,
+    token: str | None = None,
+    existing_names: set[tuple[str, str, str]] | None = None,
+) -> TokenDraft:
+    """
+    Convert a natural-language prompt into a validated DSL-token draft.
+
+    `grammar_kind`/`token_kind`/`token` are OPTIONAL operator-supplied
+    hints. When all three are given: (1) a collision/unsupported-kind
+    check runs BEFORE the LLM is ever called — the cheap check always
+    runs first, same ordering Wave 2's registration endpoint already
+    uses; (2) once the LLM responds, these three values OVERRIDE
+    whatever identity the LLM proposed, so an explicit operator-chosen
+    name can never drift.
+
+    `existing_names` is the caller-supplied set of every
+    `(grammar_kind, token_kind, token.lower())` triple already in the
+    `grammar_tokens` table — ACTIVE AND INACTIVE (Wave 2's own DB
+    uniqueness constraint has no `is_active` filter, so neither does
+    this check). This module does no DB I/O itself — the route handler
+    queries it, same separation `draft_agent_from_prompt`/
+    `routes/agents.py:_cmd_ai_create` already use (this module drafts;
+    the route persists).
+
+    Returns TokenDraft with:
+      - draft     : {} on an early hard failure (empty prompt, GenAI
+                    disabled, LLM unavailable/empty/invalid JSON, a
+                    pre-LLM collision/unsupported-kind hint rejection,
+                    or a non-dict LLM 'draft' field) — otherwise always
+                    populated, even when `errors` is non-empty, so the
+                    operator can see exactly what the LLM proposed.
+      - errors    : non-empty means do not write/deploy this draft.
+      - warnings  : operator-visible review notes (e.g. a dangerous
+                    import) — proceed with care, not a hard block.
+      - why_summary: one-line LLM summary.
+    """
+    prompt = (prompt or "").strip()
+    if not prompt:
+        return TokenDraft({}, ["Empty prompt"], [], "", "")
+
+    if not is_enabled("genai"):
+        return TokenDraft(
+            {}, ["GenAI is disabled in this environment — enable in backend_config.yaml"],
+            [], "", prompt,
+        )
+
+    existing_names = existing_names or set()
+    hinted = bool(grammar_kind and token_kind and token)
+    precheck_errors = _td_precheck_hint(grammar_kind, token_kind, token, existing_names)
+    if precheck_errors:
+        return TokenDraft({}, precheck_errors, [], "", prompt)
+
+    snapshot = _td_catalog_snapshot()
+    user_msg = _td_build_prompt(prompt, snapshot, existing_names)
+    raw, err = _td_call_gemini(user_msg)
+    if err:
+        return TokenDraft({}, [err], [], "", prompt)
+    if not raw:
+        return TokenDraft({}, ["LLM returned empty response"], [], "", prompt)
+
+    try:
+        parsed = json.loads(_strip_fences(raw))
+    except json.JSONDecodeError as e:
+        logger.warning(f"AI token draft JSON parse failed: {e}; raw[:200]={raw[:200]!r}")
+        return TokenDraft({}, [f"LLM produced invalid JSON: {e}"], [], "", prompt)
+
+    raw_draft = parsed.get("draft") or {}
+    why = parsed.get("why_summary") or ""
+    errors = list(parsed.get("errors") or [])
+
+    if not isinstance(raw_draft, dict):
+        return TokenDraft({}, ["LLM 'draft' field is not a dict"], [], why, prompt)
+
+    if hinted:
+        raw_draft["grammar_kind"] = grammar_kind
+        raw_draft["token_kind"] = token_kind
+        raw_draft["token"] = token
+
+    draft, draft_errors, warnings = _td_build_validated_draft(raw_draft, existing_names)
+    errors.extend(draft_errors)
+
+    return TokenDraft(draft=draft, errors=errors, warnings=warnings, why_summary=why, prompt=prompt)

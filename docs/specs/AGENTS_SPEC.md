@@ -382,6 +382,95 @@ already sufficient provenance: `seed_grammar_tokens()`'s own existing-rows query
 filters on `is_system == True`, so a custom token is structurally never read,
 updated, or deleted by a bulk YAML reseed.
 
+### AI-drafted grammar tokens (Wave 3, /admin/mcp authoring flow)
+
+`POST /api/mcp/draft-token` (`backend/api/routes/lab.py:McpController.draft_token`,
+guarded by the same `manage_grammar_tokens` capability Wave 2's own CRUD endpoints
+require) drafts a candidate `(resolver .py source, test .py source, params_schema,
+description)` bundle for a NEW metric, scope, notify-channel, or action token from
+an operator's natural-language prompt. The drafting logic is
+`backend/api/algo/agent_ai.py:draft_token_from_prompt` — the token-drafting sibling
+of `draft_agent_from_prompt` (the agent-drafting pipeline above it in that file),
+reusing the same `google.genai` call pattern and the same "draft-only, caller
+persists" split (this module does no DB I/O; the route queries
+`_td_existing_token_names()` and passes it in).
+
+**Hard safety boundary — read before extending this surface**: this endpoint and
+`draft_token_from_prompt` NEVER write a file, NEVER import or execute the drafted
+`resolver_source`/`test_source`, and NEVER call the Wave 2 registration endpoint.
+The response is plain JSON — a reviewable diff, not a live artifact. A human
+(operator reviewing `/admin/mcp`, or a Claude Code session) writes the two files,
+runs the new test, and takes it through the normal `/impl`→`/ddev`→`/dprod` deploy
+pipeline; only AFTER that deploy does the EXISTING Wave 2 endpoint
+(`POST /api/admin/grammar/tokens`, which already validates `resolver` dotted-path
+importability) register it live. The AI-sourced path and the hand-written path
+converge on the exact same two steps — there is no separate "AI tokens" mechanism.
+
+**Request** (`TokenDraftRequest`): `prompt: str`, plus OPTIONAL identity hints
+`grammar_kind` / `token_kind` / `token`. When all three hints are given, a cheap
+collision/unsupported-kind check runs BEFORE any LLM call (same ordering
+precedent as Wave 2's duplicate-check-before-import-validation), and the hints
+OVERRIDE whatever identity the LLM itself proposes in its response — an operator-
+chosen name can never drift from what the LLM returns.
+
+**Response** (`TokenDraftOut`, always HTTP 200 — `errors` carries the failure
+signal, never an HTTP error status, so the UI can always render what was
+proposed): `draft: dict`, `errors: list[str]`, `warnings: list[str]`,
+`why_summary: str`. `draft` is `{}` only on an early hard failure (empty prompt,
+GenAI disabled, LLM unavailable/empty/invalid-JSON, a pre-LLM hint
+rejection, or a non-dict LLM `draft` field). Otherwise `draft` is always
+populated — even when `errors` is non-empty — with:
+`grammar_kind`, `token_kind`, `token`, `description`, `params_schema`,
+`resolver_source`, `resolver_function_name`, `resolver_module_path`,
+`resolver_file_path`, `test_source`, `test_file_path`.
+
+**Whitelisted token kinds** — deliberately only the four with a uniform-enough,
+statically-checkable call signature: `condition/metric` (`(ctx, row)`),
+`condition/scope` (`(ctx)`), `notify/channel` (`(title, body, tg=None,
+priority=None)`), `action/action_type` (`async def fn(ctx, params: dict)`).
+`condition/operator` resolvers live in code (`grammar.py:OPERATORS`), never
+file-based. `notify/format` signatures vary per formatter with no single
+contract to validate against yet. `template`/`log_tag` tokens carry no resolver
+at all. Widening this set is a future decision.
+
+**Resolver module/file path is derived server-side, never trusted from the
+LLM** — `_td_derive_paths(grammar_kind, token_kind, token)` computes
+`backend.api.algo.grammar_tokens.{prefix}_{token.replace('.', '_')}` from the
+whitelist prefix map + the server-verified token name. A drafted resolver's
+eventual dotted path is a pure function of its own verified identity — the LLM
+cannot point a "metric" at an already-importable, already-reviewed function
+elsewhere in the codebase (e.g. a broker-order action in `actions_live.py`) by
+naming it in a `resolver` field, because this module never reads or trusts such
+a field in the first place.
+
+**Static validation, never execution** — `resolver_source` and `test_source` are
+each `ast.parse()`d (a syntax error is a hard `errors` entry, never a silent pass
+and never a raised exception — the draft is still returned so the operator sees
+what the LLM proposed). The resolver module must define exactly one top-level
+function (matching the real one-file-one-function convention under
+`grammar_tokens/`); the test module must define at least one (a real pytest
+module legitimately has several `test_*` functions, unlike a resolver). The
+function's signature is checked against the kind's documented shape (e.g. a
+metric resolver with fewer than two parameters, or an action resolver not
+declared `async def`, is a hard error). An AST walk flags — as a WARNING, never a
+hard error, since the human reviewer decides — an import of
+`backend.brokers`/`backend.api.algo.actions_live`/`subprocess`/`os`/`socket`/
+`requests`/`httpx`/`urllib`, or a call to `exec`/`eval`/`compile`/`__import__`/
+`open`. `params_schema` gets a loose JSON-object shape check only.
+
+**Collision check covers active AND inactive rows** — `_td_existing_token_names()`
+queries every `(grammar_kind, token_kind, token)` triple in `grammar_tokens`
+regardless of `is_active`, matching Wave 2's own `create_token` uniqueness
+pre-flight (which has no `is_active` filter either). The comparison is
+case-insensitive, matching `buildCatalog()`'s own lowercase/last-write-wins
+convention.
+
+Tests: `backend/tests/test_agent_token_draft.py` (the drafting/validation
+pipeline), `backend/tests/test_mcp_draft_token_route.py` (the route contract —
+guard present, `existing_names`/hints threaded through, `asyncio.to_thread`
+offload so a slow Gemini call never blocks the event loop this process also
+uses for chase/postback handling).
+
 ### Condition parsing
 
 v2 grammar evaluator (`agent_evaluator.py`) consumes JSON condition trees and
@@ -809,6 +898,7 @@ closed by this entry — see `frontend/src/lib/__tests__/agentsSuggest.test.js` 
 
 | Date | Change |
 |---|---|
+| 2026-10-25 | Wave 3 (unify-DSL-token-registration plan) — `POST /api/mcp/draft-token` + `agent_ai.draft_token_from_prompt` draft a candidate metric/scope/channel/action token from an operator prompt as plain reviewable JSON. Never writes a file, never imports/execs the drafted code, never calls Wave 2's registration endpoint — static-only validation (`ast.parse`, one-function/signature/dangerous-import-or-call checks). Resolver module/file path is derived server-side from the whitelisted kind + verified token name, never trusted from the LLM. Collision check covers active and inactive rows, case-insensitive. See §9 "AI-drafted grammar tokens". |
 | 2026-10-24 | Wave 2 (grammar-unification) — the standalone `event_stmt` (`ALERT log_tag=... render=...`) dissolves into an ordinary `agent_stmt`: a `log(tag=..., min_level=..., where={...})` condition sets `kind='event'` (`compileAgentStmt`'s `isEventKind`); `|` replaces `match=[...]`; `DO` carries exactly one `render(render=..., gate=...)` call, optionally alongside `alert(...)` channels. `parseEventStmt`/`compileEventStmt`/`decompileEventAgent`/`_EVENT_META_KEYS` are retired — `decompileAgent` now handles both kinds. New real catalog row `(condition, log_filter, log)`; `event_actions.render.params_schema` gained a required `render` field. See [AGENTS_GRAMMAR_EBNF.md](AGENTS_GRAMMAR_EBNF.md). |
 | 2026-10-23 | Sprint [grammar-unify] execution + alert (items 0, 0.C): saved cycle-agent `preamble` executes per call type — `help`/`debug` every cycle, `alert`/non-debug `log` every cycle windowed by `cooldown_minutes`, all other calls (`order`, `close_position`, `cancel_order`, `bracket`, …) once per activation (commit `4e6df1ec`; P1 fix). Activation is a real inactive/paused→active transition only. New `has_explicit_alert` flag (a DO-level `alert(...)` replaces the automatic rich alert; commits `08bf4340`, `6aaec581`); Console saves are sticky-false (commit `b6f56be7`). New columns `preamble_fired_at`, `preamble_alert_last_fired_at`, `has_explicit_alert`. |
 | 2026-10-23 | Sprint [grammar-unify] (items 1/2/4) — `WHEN ... DO ...` is now the ONE generic, optional conditional wrapper around any statement; everything outside it (the preamble) runs unconditionally, with no `GIVEN` keyword needed — `GIVEN` is removed from the grammar entirely (it carried no semantic meaning, and the preamble is now self-delimiting by position). `ALERT` is removed as a reserved clause keyword — `alert(...)` is an ordinary call, compiling through the exact same `compileAlertClause` machinery whether it appears in the preamble or inside `DO`. New compiled-JSON key `preamble[]` (per-call compiled entries, omitted when empty). New standalone/preamble/DO-callable `help(<name>)` action — read-only catalog introspection, wired to `POST /api/agents/help` on the Console tab only (never the order-scoped CLI mounts). The standalone top-level `event_stmt` (bare `ALERT log_tag=...`) is unchanged. Known gap: the Console editor's own autocomplete/hover classifier (`_clauseKindFromTokenPrefix`) still assumes the old 4-clause shape — tracked as follow-up, does not affect compile/save correctness. |

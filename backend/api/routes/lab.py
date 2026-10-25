@@ -16,6 +16,7 @@ free of any LLM-provider dependency.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import secrets as _secrets
 import time
@@ -31,7 +32,7 @@ from sqlalchemy import select, delete as sa_delete
 from backend.api.rbac import cap_guard
 from backend.api.algo.lab_chat import run_lab_chat
 from backend.api.database import async_session
-from backend.api.models import Agent, McpAudit, ResearchThread
+from backend.api.models import Agent, GrammarToken, McpAudit, ResearchThread
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
@@ -193,6 +194,32 @@ class ChatRequest(msgspec.Struct):
 class ChatResponse(msgspec.Struct):
     reply: str
     duration_ms: int
+
+
+class TokenDraftRequest(msgspec.Struct):
+    """Draft a new DSL grammar token (metric / scope / notify-channel /
+    action) from an operator prompt — Wave 3 of the "Unify DSL token
+    registration" plan. `grammar_kind`/`token_kind`/`token` are OPTIONAL
+    identity hints: when all three are given, a cheap collision/
+    unsupported-kind check runs BEFORE any LLM call, and the LLM's own
+    identity proposal is overridden by these hints afterward (see
+    `agent_ai.draft_token_from_prompt`'s docstring)."""
+    prompt:       str
+    grammar_kind: str | None = None
+    token_kind:   str | None = None
+    token:        str | None = None
+
+
+class TokenDraftOut(msgspec.Struct):
+    """Mirrors `agent_ai.TokenDraft` field-for-field. `draft` is plain
+    JSON (never executed, never written to disk by this endpoint — see
+    the safety-boundary docstring on `TokenDraft` / `draft_token`
+    below). Always HTTP 200 — `errors` carries the failure signal so the
+    operator sees exactly what the LLM proposed even when it's rejected."""
+    draft:        dict
+    errors:       list[str]
+    warnings:     list[str]
+    why_summary:  str
 
 
 class PlaceOrderRequest(msgspec.Struct):
@@ -1192,6 +1219,21 @@ async def _res_apply_agent_update_db(slug: str, filtered: dict) -> str:
         return agent.status
 
 
+async def _td_existing_token_names() -> set[tuple[str, str, str]]:
+    """Every `(grammar_kind, token_kind, token.lower())` triple already
+    in `grammar_tokens` — ACTIVE AND INACTIVE, matching Wave 2's own
+    `create_token` uniqueness pre-flight (`routes/grammar.py`), which
+    has no `is_active` filter either. `agent_ai.draft_token_from_prompt`
+    does no DB I/O itself (mirrors `draft_agent_from_prompt`'s
+    draft-only/caller-persists split) — this is the one place that
+    query lives, for the one route that needs it."""
+    async with async_session() as s:
+        rows = (await s.execute(
+            select(GrammarToken.grammar_kind, GrammarToken.token_kind, GrammarToken.token)
+        )).all()
+    return {(gk, tk, (tok or "").lower()) for gk, tk, tok in rows}
+
+
 async def _mcp_modify_paper(
     oid: str,
     qty: int,
@@ -1928,6 +1970,47 @@ class McpController(Controller):
         return AgentStatusResponse(
             agent_slug=slug, status=current_status,
             detail=f"agent {slug!r} updated: {changed_list}",
+        )
+
+    @post("/draft-token", status_code=200, guards=[cap_guard("manage_grammar_tokens")])
+    async def draft_token(self, data: TokenDraftRequest) -> TokenDraftOut:
+        """Wave 3 of the "Unify DSL token registration" plan — draft a
+        candidate grammar token (metric / scope / notify-channel /
+        action) from an operator prompt, as a reviewable diff.
+
+        SAFETY: this endpoint never writes a file, never imports/execs
+        the drafted `resolver_source`/`test_source`, and never calls
+        the Wave 2 registration endpoint (`POST /api/admin/grammar/
+        tokens`). It returns plain JSON. A human reviews the draft,
+        writes the two files, runs the new test, and takes it through
+        the normal deploy pipeline; only AFTER that deploy does Wave 2
+        register it live. See `agent_ai.TokenDraft`'s docstring for the
+        full boundary.
+
+        Gated on `manage_grammar_tokens` — the same capability Wave 2's
+        own token-mutation endpoints require, since this is the
+        precursor step to registering a token through them.
+
+        The LLM call is synchronous (same as `draft_agent_from_prompt`,
+        called directly from `_cmd_ai_create` in `routes/agents.py`);
+        run in a worker thread here so a slow Gemini round-trip never
+        blocks the event loop this process also uses for chase and
+        postback handling.
+        """
+        from backend.api.algo.agent_ai import draft_token_from_prompt
+
+        existing = await _td_existing_token_names()
+        result = await asyncio.to_thread(
+            draft_token_from_prompt,
+            data.prompt,
+            grammar_kind=data.grammar_kind,
+            token_kind=data.token_kind,
+            token=data.token,
+            existing_names=existing,
+        )
+        return TokenDraftOut(
+            draft=result.draft, errors=result.errors,
+            warnings=result.warnings, why_summary=result.why_summary,
         )
 
 
