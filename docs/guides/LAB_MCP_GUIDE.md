@@ -426,10 +426,11 @@ one-tap drill-down to the exact audit row.
 Agents are the platform's rules-layer. Every alert, every
 auto-close, every loss-cut is an agent row in the `agents` table.
 
-For an extensive operator walkthrough — anatomy of an agent,
-condition tree authoring, the four-stage validation ladder
-(validate → dry-run → simulator → activate), and copy-paste
-patterns — see **[AGENTS_GUIDE.md](AGENTS_GUIDE.md)**.
+For agent DSL syntax (conditions, operators, statements), see the in-app
+Trader Guide at `/automation/guide`. For the four-stage validation ladder
+(validate → dry-run → simulator → activate), runtime rules and the built-in
+agents to study, see **[AGENTS_GUIDE.md](AGENTS_GUIDE.md)**. For anatomy of an
+agent row and tokens, see [ADMIN_GUIDE.md](ADMIN_GUIDE.md).
 
 ### Built-in agents (ship with the codebase)
 

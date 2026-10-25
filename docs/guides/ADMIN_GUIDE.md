@@ -2223,7 +2223,8 @@ open the drill-in modal, which shows:
 
 ## Deep dives
 
-- [AGENTS_GUIDE.md](AGENTS_GUIDE.md) — agent authoring + validation ladder
+- [AGENTS_GUIDE.md](AGENTS_GUIDE.md) — agent testing ladder, runtime rules, built-in agent list
+  (DSL syntax lives in the in-app Trader Guide at `/automation/guide`)
 - [SIMULATOR_GUIDE.md](SIMULATOR_GUIDE.md) — scenarios, Run-in-Simulator, market-state presets
 - [LAB_MCP_GUIDE.md](LAB_MCP_GUIDE.md) — Claude Code MCP, 25 tools, audit trail
 

@@ -321,7 +321,8 @@ session on NSE holidays. See [ADMIN_GUIDE](ADMIN_GUIDE.md#mcx-evening-session-on
 
 ## See also
 
-- [AGENTS_GUIDE.md](AGENTS_GUIDE.md) — agent authoring + testing ladder
+- [AGENTS_GUIDE.md](AGENTS_GUIDE.md) — agent testing ladder and built-in agents
+  (DSL syntax lives in the in-app Trader Guide at `/automation/guide`)
 - [ADMIN_GUIDE.md](ADMIN_GUIDE.md) — exact button labels, API endpoints, scenario YAML
 - [USER_GUIDE.md](USER_GUIDE.md) — concepts in plain English
 - [LAB_MCP_GUIDE.md](LAB_MCP_GUIDE.md) — LLM-driven agent authoring + sim from Claude Code

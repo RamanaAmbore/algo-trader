@@ -1240,7 +1240,8 @@ once (~3 minutes of one-time setup) then come back to the
 
 ## Where to learn more
 
-- **[AGENTS_GUIDE.md](AGENTS_GUIDE.md)** — extensive walkthrough for authoring + testing agents. The four-stage validation ladder (validate → dry-run → simulator → activate), every metric / scope / op, fragments, lifespan, and copy-paste patterns.
+- **Trader Guide** (the button on the Console tab of `/automation`, and on the order-ticket CLI tab) — the plain-language reference for writing agents and orders: every condition, operator, and alert or action statement, with examples. Its source of truth is the in-app page itself.
+- **[AGENTS_GUIDE.md](AGENTS_GUIDE.md)** — short companion for testing agents: the four-stage validation ladder (validate → dry-run → simulator → activate), the rules that decide when an agent re-fires, and the built-in agents to study.
 - **[SIMULATOR_GUIDE.md](SIMULATOR_GUIDE.md)** — hands-on Sandbox workflow (`/admin/execution`, renamed from "Lab"). Scenarios, Run-in-Simulator, custom positions, iteration mode, market-state presets, troubleshooting.
 - **[LAB_MCP_GUIDE.md](LAB_MCP_GUIDE.md)** — chat-driven research, agent drafting, and the per-call confirm-token gate. Covers GenAI usage, Claude Code setup, and the 26 MCP tools.
 - **[ADMIN_GUIDE.md](ADMIN_GUIDE.md)** — exact button labels, JSON conditions, API endpoints. The operations reference.

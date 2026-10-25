@@ -6957,7 +6957,8 @@ If you can't tick every box, hold the commit. The cost of pausing is low; the co
 |---|---|
 | How the operator uses the platform end-to-end | `USER_GUIDE.md` |
 | Day-to-day operations + troubleshooting | `ADMIN_GUIDE.md` |
-| Agent authoring + testing | `AGENTS_GUIDE.md` |
+| Agent DSL syntax | In-app Trader Guide at `/automation/guide` (`frontend/src/routes/(algo)/automation/guide/+page.svelte`) |
+| Agent testing ladder, runtime rules, built-in agents | `AGENTS_GUIDE.md` (pointer stub) |
 | Simulator scenarios + Run-in-Simulator | `SIMULATOR_GUIDE.md` |
 | Lab + MCP-driven research workflow | `LAB_MCP_GUIDE.md` |
 | Operator's-eye-view of every page | `CLAUDE.md` (large, but indexed) |

@@ -307,6 +307,49 @@ WHEN risky DO debug(risky), alert(telegram)</pre>
         of the old <code>match=[...]</code> list.
       </p>
     </div>
+
+    <p class="cg-lede">
+      <code>log(...)</code> also accepts an optional <code>where={'{'}...{'}'}</code> kwarg,
+      filtering on the log record's own extra fields (e.g. <code>alert_event</code>) in
+      addition to <code>tag=</code>/<code>min_level=</code>.
+    </p>
+
+    <div class="cg-example">
+      <p class="cg-why">
+        "Alert me — on Telegram AND ntfy — only for this specific chase-cancel-unconfirmed
+        event, not every CRITICAL alert-tagged log line." This is the live shape of the
+        platform's real built-in <code>chase-cancel-alert</code> agent.
+      </p>
+      <pre class="cg-code">WHEN log(tag=alert, min_level=CRITICAL, where={'{'}alert_event="cancel_unconfirmed"{'}'}) DO alert(telegram, ntfy), render(render=chase_cancel)</pre>
+      <p class="cg-what">
+        A plain scalar value in <code>where={'{'}...{'}'}</code> (here, the string
+        <code>"cancel_unconfirmed"</code>) is an exact-equality match against that one extra
+        field. The record must still pass <code>tag=</code>/<code>min_level=</code> first —
+        <code>where</code> narrows further, it doesn't replace them.
+      </p>
+    </div>
+
+    <p class="cg-lede">
+      A <code>where={'{'}...{'}'}</code> value can also be a single-key object applying
+      <code>in</code>/<code>not_in</code> instead of exact equality — useful when several
+      related event values should all match one condition, instead of chaining several
+      <code>log(...)</code> leaves with <code>|</code>.
+    </p>
+
+    <div class="cg-example">
+      <p class="cg-why">
+        You want one condition to match either a fill OR a cancellation event — not just one
+        specific value, and not every alert-tagged line either.
+      </p>
+      <pre class="cg-code">WHEN log(tag=alert, where={'{'}alert_event={'{'}in=["filled", "cancelled"]{'}'}{'}'}) DO alert(telegram)
+WHEN log(tag=alert, where={'{'}alert_event={'{'}not_in=["filled", "cancelled"]{'}'}{'}'}) DO alert(telegram)</pre>
+      <p class="cg-what">
+        <code>in</code> matches when the field's value is ANY of the listed values;
+        <code>not_in</code> matches when it's NONE of them — the same keywords as the leaf
+        comparator in the Quick Reference table below, applied one level deeper, to a single
+        <code>where=</code> field's own value.
+      </p>
+    </div>
   </section>
 
   <!-- ══════════════════════════ BRACKETS ══════════════════════════ -->
@@ -503,6 +546,7 @@ WHEN funds.margin@funds.any_acct &gt; 100000 DO alert(telegram)</pre>
           <tr><td><code>debug(label)</code></td><td>Inspect a label's resolved value, writing to Agents log at DEBUG level (hidden by default — toggle filter in LogPanel to see)</td></tr>
           <tr><td><code>&amp;</code> / <code>|</code> / <code>~</code></td><td>AND / OR (equal precedence, left-to-right) / NOT — parens required when combining: <code>(a &amp; b) | c</code></td></tr>
           <tr><td><code>&lt; &lt;= &gt; &gt;= == != in / not in</code></td><td>Comparators. <code>in</code>/<code>not in</code> take a <code>[a, b, c]</code> list literal</td></tr>
+          <tr><td><code>where={'{'}field=value{'}'}</code></td><td>Optional kwarg on a <code>log(...)</code> condition, filtering its extra fields. A plain value is exact-equality; <code>where={'{'}field={'{'}in=[...]{'}'}{'}'}</code> / <code>{'{'}not_in=[...]{'}'}</code> matches any/none of a list instead</td></tr>
           <tr><td><code>a &lt;= metric@scope &lt;= b</code></td><td>Between-range sugar for two chained comparisons on one metric</td></tr>
           <tr><td><code>always</code></td><td>Sentinel condition that's always true (used to run DO unconditionally)</td></tr>
           <tr><td><code>nop</code></td><td>Explicit no-op for a DO clause (same as omitting the clause)</td></tr>
