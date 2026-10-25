@@ -453,11 +453,24 @@ takes the `insert` branch, which writes `events=[]`
 ([:1446-1450](../../backend/api/algo/event_agents.py#L1446)). The tree is live there from first
 boot. `SEED_VERSION` is still 2. This work did not bump it.
 
+*Amended 2026-10-24 (`f8cae116`).* `SEED_VERSION` is now 3
+([event_agents.py:1307](../../backend/api/algo/event_agents.py#L1307)). The tree is live on existing
+databases as well as fresh ones, so the paragraph above no longer describes current behaviour. The
+`update` branch rewrites each seeded row's `events` to the spec's empty list, and step 2 no longer
+wins for any seeded agent. The pre-bump audit, [scripts/alert_seed_audit.py](../../scripts/alert_seed_audit.py),
+found all 23 `kind='event'` rows hash-clean on prod and dev, so no row was at `modified_skip` risk.
+The script is read-only and is the check to re-run before any later bump. See §3.19.
+
 **Known gap, deliberately deferred.** `routes/agents.py` still serialises the raw `agent.events`
 (`_agent_to_info`, [agents.py:610](../../backend/api/routes/agents.py#L610); the update path,
 [:1702](../../backend/api/routes/agents.py#L1702)). A migrated seeded row on a fresh database
 therefore shows an empty channel list on its Automation card. Both serialisers must resolve through
 `resolve_channels()` before the `SEED_VERSION` bump ships. The two changes are coupled.
+
+*Amended 2026-10-24 (`f8cae116`, `e840ca0d`).* The display half of this gap is closed, additively.
+`AgentInfo.resolved_channels` carries the resolved set on every event-agent response, and the
+Automation page reads it. Raw `events` is still serialised unchanged. See §3.19 for why it is not
+overwritten.
 
 ### 3.16 `USER_REGISTERED_AGENT` and the `auth_internal` tag (2026-10, `42156582`, `9c93dfe9`)
 
@@ -535,6 +548,87 @@ not stored as `name` or `tags`, for two reasons. Both were caught before commit.
 No routing rule reads `route_name` or `route_tags` yet. `resolve_channels()` resolves per agent, not
 per record. With neither param set, `extra` is byte-identical to before.
 
+### 3.19 Routing tree activated: `SEED_VERSION` 3 and the display field (2026-10-24, `f8cae116`, `e840ca0d`)
+
+Sections 3.15 and 3.16 describe the tree as inert on existing databases. This section records the
+activation.
+
+- **Bump.** `SEED_VERSION` goes 2 → 3
+  ([event_agents.py:1307](../../backend/api/algo/event_agents.py#L1307)). A seed pass at 3 takes the
+  `update` branch for each seeded row. The branch writes the spec's `events` (empty) and `priority`,
+  and the tree resolves the channels from then on.
+- **Pre-flight.** [scripts/alert_seed_audit.py](../../scripts/alert_seed_audit.py) is a read-only audit
+  of every `kind='event'` row. It calls the real `seed_action(..., current_version=3)` and
+  `compute_seed_spec_hash()`, and compares the channel set dispatched today with the set a reseed would
+  produce. It never writes or commits. All 23 rows were hash-clean on both prod and dev, so none
+  would be `modified_skip`.
+- **`AgentInfo.resolved_channels`** ([routes/agents.py:160](../../backend/api/routes/agents.py#L160)).
+  Computed in `_agent_to_info` by `_event_agent_resolved_channels()`
+  ([agents.py:631](../../backend/api/routes/agents.py#L631)). It calls `alert_routing.resolve_channels()`
+  with the same arguments `_dispatch_agent` uses, and returns a deep copy. It is gated to
+  `kind == 'event'`. Cycle agents get `[]`, and their resolver is never called, so no spurious
+  catch-all WARNING is logged on each page load.
+- **Why additive.** `events` is never overwritten by the display path. The Automation page's Edit
+  button decompiles from `agent.events`. If the resolved set were written into `events`, an innocent
+  no-op Save would store it and move the agent off the tree permanently. That is the same failure
+  class as the `has_explicit_alert` sticky-false incident in the CLAUDE.md routing entry. The page reads
+  `resolved_channels` for event agents only
+  ([automation/+page.svelte:658](../../frontend/src/routes/(algo)/automation/+page.svelte#L658)).
+- **`AgentInfo.is_builtin_event`** ([agents.py:170](../../backend/api/routes/agents.py#L170)). Drives the
+  "Built-in" badge and hides the Delete control
+  ([automation/+page.svelte:828](../../frontend/src/routes/(algo)/automation/+page.svelte#L828),
+  [:1063](../../frontend/src/routes/(algo)/automation/+page.svelte#L1063)). It is `True` only for the 23
+  `SEEDED_AGENTS` slugs, computed by `_is_builtin_seeded_event_agent()`. It is not `Agent.is_system`,
+  because the seed insert path never sets that flag on event rows.
+- **Delete protection.** `delete_agent()` ([agents.py:1599](../../backend/api/routes/agents.py#L1599))
+  refuses a seeded event agent with the same 403 `is_system` gets. A deleted seeded row would be
+  re-inserted by `seed_event_agents()` on the next restart, with its alert dark in the meantime.
+- **`UNROUTED_ALERT_AGENT["events"]`** ([event_agents.py:1302](../../backend/api/algo/event_agents.py#L1302))
+  is now built as `[dict(ch) for ch in alert_routing.CATCH_ALL_CHANNELS]`. This is a per-entry copy, not
+  an alias. It replaces the hand-typed literal, so the two cannot drift. The agent still does not route
+  through `resolve_channels()`. `CATCH_ALL_CHANNELS` carries `gate: False` and tier defaults do not, and
+  this agent must dispatch regardless of `priority`. It has no `priority` field.
+
+**Invariant.** The display path never writes `events`. Delete is refused for every seeded event agent.
+A seeded agent's channels come from the tree once `SEED_VERSION` is 3.
+
+### 3.20 `agent ai refine` safety guards (2026-10-24, `d1fd197c`, `b17ada22`)
+
+`b17ada22` is the destructive-action-stripping / `lifespan_type` write-back guard
+(`AgentDraft.clamp_effects`, `_ai_refine_actions_safe_to_write`,
+`_ai_refine_lifespan_safe_to_write`) — a separate commit from `d1fd197c`'s `trade_mode`
+exclusion, landed the same day.
+
+`_cmd_ai_refine` ([routes/agents.py:2053](../../backend/api/routes/agents.py#L2053)) reuses
+`draft_agent_from_prompt()`. That call runs `_clamp_safety`
+([agent_ai.py:251](../../backend/api/algo/agent_ai.py#L251)), which is correct for the CREATE path.
+On a refine it could silently change fields the operator never asked about. Four guards now apply.
+
+- **`trade_mode` is never writable.** It is absent from `_AI_REFINE_WRITABLE_FIELDS`
+  ([agents.py:721](../../backend/api/routes/agents.py#L721)). The clamp forces `paper` on every draft,
+  and without this a refine on an unrelated instruction flipped a live agent to paper. An instruction
+  that names a mode switch is rejected before the LLM call. The keyword check is only a UX message. The
+  real boundary is the field exclusion.
+- **Tree-driven `events` is never writable.** `_ai_refine_writable_fields()` removes `events` when
+  `_ai_refine_is_tree_driven()` is true. The prompt context shows `resolved_channels` read-only instead.
+- **Destructive actions are not stripped as a side effect.** `_clamp_safety` records what it removed in
+  `AgentDraft.clamp_effects` ([agent_ai.py:65](../../backend/api/algo/agent_ai.py#L65)), as
+  `stripped_actions`. `_ai_refine_actions_safe_to_write()`
+  ([agents.py:902](../../backend/api/routes/agents.py#L902)) drops `actions` from the write-back when the
+  clamp removed a destructive type the row already has. The exception is an instruction that mentions
+  actions. A refine that proposes a new destructive action is still stripped, as before.
+- **`lifespan_type` is not downgraded as a side effect.** When the clamp defaulted `lifespan_type` to
+  `one_shot` (`clamp_effects['lifespan_type_defaulted']`),
+  `_ai_refine_lifespan_safe_to_write()` ([agents.py:940](../../backend/api/routes/agents.py#L940)) drops
+  the field if the row is not already `one_shot` or unset.
+
+A missing `clamp_effects` (a hand-built test double) degrades to "nothing known", so nothing extra is
+excluded. Real calls always populate it.
+
+**Invariant.** A refine's write-back never removes a destructive action, downgrades lifespan, or changes
+trade mode unless the instruction names that field. The keyword checks only decide whether the operator
+sees a specific message. The field exclusions and clamp-effect checks are the safety boundary.
+
 ## 4. What changed, by file
 
 | File | Change |
@@ -559,6 +653,11 @@ per record. With neither param set, `extra` is byte-identical to before.
 | `event_agents.py`, `models.py`, `database.py` (2026-10, `ec19aa1b`) | Seeded agents carry `priority` instead of `events`. `Agent.priority` column and migration (§3.17). `USER_REGISTERED_AGENT` (§3.16) |
 | `routes/auth.py` (2026-10, `42156582`) | Registration log line tagged `auth`. The 12 pre-existing bare calls tagged `auth_internal` (§3.16) |
 | `actions.py` (2026-10, `ec19aa1b`) | `emit_log` accepts `name` and `tags`, stored as `route_name` and `route_tags` (§3.18) |
+| `event_agents.py` (2026-10-24, `f8cae116`) | `SEED_VERSION` 2 → 3, so the routing tree is live on existing databases (§3.19). `UNROUTED_ALERT_AGENT["events"]` derived from `CATCH_ALL_CHANNELS` |
+| `routes/agents.py` (2026-10-24, `f8cae116`, `d1fd197c`, `b17ada22`) | `AgentInfo.resolved_channels` and `is_builtin_event` (§3.19). Seeded event agents refused on delete. `_cmd_ai_refine` write-back guards (§3.20) |
+| `agent_ai.py` (2026-10-24, `f8cae116`, `b17ada22`) | `AgentDraft.clamp_effects` side-channel, written by `_clamp_safety` (§3.20) |
+| `automation/+page.svelte` (2026-10-24, `e840ca0d`) | Reads `resolved_channels` for event agents. "Built-in" badge from `is_builtin_event` (§3.19) |
+| `scripts/alert_seed_audit.py` (2026-10-24) | New. Read-only pre-bump audit of `kind='event'` rows (§3.19) |
 
 ## 5. Gaps
 

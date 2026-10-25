@@ -262,6 +262,53 @@ through `_segment_is_open()` (see the "Market open/close determination" entry un
 
 **Account masking**: `mask_account(s) → str` (digits → #). Used in all alerts + summaries.
 
+**Account-masking campaign — central log filter, producer fixes, numeric Dhan client_id
+(2026-10-24; commits `fbb9b785`, `d67266f2`, `f04437cc`)** — A broad audit found raw broker
+account codes reaching logs and notifications despite the `mask_account()` convention. Three parts.
+- **Central log filter (`fbb9b785`).** `_AccountMaskFilter`
+  ([log_store.py:59](backend/shared/helpers/log_store.py#L59)) is attached to the same
+  `QueueHandler` as `OriginFilter`, inside `get_logger()`
+  ([ramboq_logger.py:112](backend/shared/helpers/ramboq_logger.py#L112)). It is NOT in the later
+  per-handler loop. That loop runs on the `QueueListener` thread, after `prepare()` has already
+  baked the message, and it misses `log_store_handler`. Placing the filter at enqueue time means
+  console, file, error-file and `log_events` (and so the alert pipeline) all get masked text. The
+  filter also masks `exc_text`, because an exception's own text (e.g. `KeyError: 'ZG0790'`) would
+  otherwise bypass message-only masking.
+- **CRITICAL alerts now match `ERROR_AGENT`.** `tags_for()`
+  ([log_store.py:136](backend/shared/helpers/log_store.py#L136)) stamps `"error"` on every CRITICAL
+  record. `ERROR_AGENT` requires that literal tag, so a bare `logger.critical(...)` never alerted
+  before. The stored agent condition was deliberately left alone. Editing it would need a
+  `SEED_VERSION` bump, and the `in` operator does not fit `_eval_log()`'s matching shape. A
+  CRITICAL record that carries `alert_event` is skipped by `_error_agent_self_alerted()`
+  ([event_agents.py](backend/api/algo/event_agents.py)), so dedicated CRITICAL agents do not
+  double-fire.
+- **Producer fixes (`d67266f2`).** The market-open/close summary tables in `alert_utils.py`
+  (`_build_funds_rows`, `_summary_holdings_rows`, `_summary_positions_rows`,
+  `_partial_outage_warning_lines`) used to send raw account codes in every Telegram and email row.
+  They now mask before building content. Four MCP ping sites in `routes/lab.py` (cancel-live,
+  cancel-paper, modify-paper, modify-live) now mask, not only the place-ping. The
+  `template_attach.py` broker-resolution catch and the three `event_agents.py` renderers
+  (`_render_partial_gtt`, `_render_template_attach`, `_render_gtt_not_accepted`) scrub free text with
+  `mask_account_in_text()`. `connections.py` logs Dhan token-response status and keys only, never the
+  body. Exception text in `chase.py` is masked at source.
+  - **Double-mask guard.** `mask_account()` is NOT idempotent. Re-masking `Z1####` yields `Z#####`.
+    The `actions_live.py` re-raise sites are therefore left unmasked on purpose, because `chase.py`
+    already masked the value upstream. Do not add a second mask at those sites.
+- **Numeric Dhan `client_id` (`f04437cc`).** Dhan's numeric `client_id` is a different value from
+  the internal `DH3747`-style code. It was never in the registry and fell through to the
+  digit-stripping fallback, which yields all `#`. `register_accounts()`
+  ([utils.py:243](backend/shared/helpers/utils.py#L243)) now takes `client_ids` and ALIASES each
+  one to its account's already-computed mask. It does not derive a new mask from the numeric
+  digits, because both real Dhan ids share their first two characters and would collide. The
+  mapping is threaded through `connections.py`, `brokers/service/schemas.py` and
+  `brokers/service/routes.py`. `_pb_redact_payload_for_log()` in `orders.py` masks the value
+  instead of dropping the key.
+  - **Deploy coupling.** This touches `backend/brokers/`, so it takes effect only after a PROD deploy
+    that sets `CONN_TOUCHED` (see the Things to Avoid note on `ramboq_conn`).
+- Invariant: a raw broker account identifier, alphanumeric or numeric, never reaches a log file,
+  `log_events`, Telegram, ntfy or email unmasked. Tests: `test_log_store.py` (filter and
+  `tags_for`), `test_dhan_numeric_account_mask_2026_10_24.py`.
+
 **Singleton Connections** — thread-safe startup init. On `RAMBOQ_USE_CONN_SERVICE=1` populates 
 registry with RemoteBroker stubs.
 
@@ -300,6 +347,43 @@ the cross-account aggregate or causes a false 0.
 **Broker auth health badge** — `BrokerHealthBadge.svelte` (admin/designated navbar, polls 30s 
 via `visibleInterval`). State: green (last_good < 5min), amber (stale), red (last_fail > last_ok). 
 Worst state drives color. Click opens per-account modal.
+
+**Ticker idle badge on non-trading days — status-only refresh (2026-10-24; commits `0410c7e3`,
+`a252883c`)** — The calendar-gated idle state lives in `_TICKER_CALENDAR_STATE`
+([background.py:3764](backend/api/background.py#L3764)). Its only writers were the connect paths,
+and all of them run inside 08:00–23:30 IST. Outside that window, or after a restart until the next
+in-window tick, the state stayed unset. `get_ticker_calendar_status()` then reported not-idle, and
+the badge showed green on a confirmed closed day. Fix: `_ticker_calendar_refresh_idle_status(today)`
+([background.py:3980](backend/api/background.py#L3980)) is a status-only helper that can run at any
+hour. It takes no `do_connect` parameter, so it cannot connect by construction. It is hooked into
+the ticker-watchdog loop, which already runs at all hours. On an OPEN or UNKNOWN verdict it leaves
+state alone. "Trading day, not yet connected" must never show as idle.
+- **Frontend.** The per-account circles and status text in the popup now respect idle too, not just
+  the top-level banner. `brokerAccountDisplayState(state, tickerIdle)`
+  ([brokerHealthState.js:116](frontend/src/lib/data/brokerHealthState.js#L116)) keeps the
+  red > idle > amber > green precedence, so a genuinely failed account is never masked as idle.
+- Tests: `backend/tests/test_ticker_calendar_gate.py` (status-only block),
+  `frontend/src/lib/__tests__/data/brokerHealthState.test.js`.
+- Invariant: a closed-day idle state comes from the calendar at any hour. A connected or failed
+  account is never displayed as idle.
+
+**Snapshot freshness checker — `check_stale_snapshots.py` config and DSN (2026-10-24; commit
+`b753b0c8`)** — The "never blank during closed hours" check
+([scripts/check_stale_snapshots.py](scripts/check_stale_snapshots.py)) appeared to skip on every
+real server. Three defects, all fixed.
+- **YAML parsing.** A hand-rolled `_load_yaml_simple` treated `#` as a comment even mid-value. A DB
+  password containing `#` was truncated, so auth failed and the script's exit code 3 ("DB
+  unreachable, expected on local dev") hid a real on-server bug. Replaced with `yaml.safe_load()`.
+- **DSN construction.** `_build_dsn()` spliced the raw password into a `postgresql://` URL. `#` then
+  starts a URL fragment, which truncated the DSN a second, independent way. `user` and `password` are
+  now `urllib.parse.quote(..., safe="")`.
+- **Nav surface column.** The `_SURFACES` nav query used a nonexistent `date` column. It now uses
+  `NavDaily.as_of_date`. Before this, the check reported `MISSING — column "date" does not exist`.
+- Both YAML and DSN fixes were live-verified on prod and dev. Each server file was restored byte-exact
+  afterward, confirmed by md5sum.
+- Tests: `backend/tests/test_check_stale_snapshots_yaml.py`.
+- Invariant: a freshness check must never classify a config-parse or DSN-construction defect as the
+  expected "DB unreachable" exit.
 
 **Agent action-dispatch SSOT (2026-10-08; `emit_log`→`log` rename + `help` added 2026-10-23)** —
 `_LIVE_ACTION_HANDLERS`/`_NOOP_ACTION_HANDLERS`
@@ -651,8 +735,10 @@ must never hand a tagged body to an escape-fallback path.
 **Alert channels resolved by a routing tree, not hardcoded per agent; `USER_REGISTERED_AGENT` added (2026-10-24; commits `ec19aa1b`, `42156582`, `9c93dfe9`)** — Seeded event agents (`SEEDED_AGENTS`, [event_agents.py:1303](backend/api/algo/event_agents.py#L1303)) no longer carry a hardcoded `events` channel list. Each carries a `priority` token instead. [alert_routing.py](backend/api/algo/alert_routing.py) resolves the channel set in `resolve_channels()` ([:236](backend/api/algo/alert_routing.py#L236)), first match wins: (1) a `BREACH` record's dynamic `out[4]` channels, read per record; (2) `agent.events` if non-empty ([event_agents.py:609](backend/api/algo/event_agents.py#L609)); (3) a per-slug rule in `_PER_SLUG_OVERRIDES` ([:55](backend/api/algo/alert_routing.py#L55)); (4) a tier rule in `_TIER_DEFAULTS` ([:183](backend/api/algo/alert_routing.py#L183)) keyed on `priority`; (5) `CATCH_ALL_CHANNELS` ([:222](backend/api/algo/alert_routing.py#L222)), logged once per `(name, priority)`. Step 5 is the narrow catch-all for an agent that matched but fits no rule. It is not the condition-level `UNROUTED_ALERT_AGENT` path (§3.13 of ALERT_AGENTS_DESIGN.md).
 - Per-slug rows are required, not incidental. The tier table has no `gate: False`. Several agents also deviate from priority in their channel set: `deploy-sync-alert` is `[]` at every tier, `market-summary` and `order-failure-alert` add email, and `agent-alert-rich` adds ntfy and email. This is the Alertmanager shape: specific rules first, general last.
 - Empty `events` means "use the tree", not "silence". `if agent_events:` treats `[]` as falsy, so clearing a seeded row's channels in the UI reverts it to the per-slug default. Deactivate the agent to stop it.
-- Existing databases keep their stored `events` until a `SEED_VERSION` bump rewrites them ([event_agents.py:1451-1458](backend/api/algo/event_agents.py#L1451)), so step 2 wins and the tree does not apply to them. A fresh database inserts `events=[]` ([:1446-1450](backend/api/algo/event_agents.py#L1446)), so the tree is live there from first boot. Known gap, deferred: `routes/agents.py` still serialises raw `agent.events` ([`_agent_to_info`, :610](backend/api/routes/agents.py#L610); update path, [:1702](backend/api/routes/agents.py#L1702)), so a migrated card on a fresh DB shows no channels. Both serialisers must resolve through `resolve_channels()` before the `SEED_VERSION` bump ships.
+- Existing databases keep their stored `events` until a `SEED_VERSION` bump rewrites them ([event_agents.py:1451-1458](backend/api/algo/event_agents.py#L1451)), so step 2 wins and the tree does not apply to them. A fresh database inserts `events=[]` ([:1446-1450](backend/api/algo/event_agents.py#L1446)), so the tree is live there from first boot. Known gap, deferred: `routes/agents.py` still serialises raw `agent.events` ([`_agent_to_info`, :610](backend/api/routes/agents.py#L610); update path, [:1702](backend/api/routes/agents.py#L1702)), so a migrated card on a fresh DB shows no channels. Both serialisers must resolve through `resolve_channels()` before the `SEED_VERSION` bump ships. *(Display half closed 2026-10-24 — see the amendment below.)*
 - `USER_REGISTERED_AGENT` ([event_agents.py:1203](backend/api/algo/event_agents.py#L1203)) fixed missing instrumentation, not routing. The registration log line in [routes/auth.py:884](backend/api/routes/auth.py#L884) carried no `tags`/`alert_event`, so nothing could match it. `_registration_alert_extra()` ([auth.py:258](backend/api/routes/auth.py#L258)) supplies them. Adding `auth` to the catalogue would have made the 12 bare `routes/auth.py` calls alert-shaped via `tags_for()`'s logger-name fallback, sending them to the catch-all. Those 12 carry `_AUTH_INTERNAL_TAGS` ([auth.py:215](backend/api/routes/auth.py#L215)), an uncatalogued tag that stops the fallback.
+- *Amended 2026-10-24 — routing tree ACTIVATED: `SEED_VERSION` 2→3 (commits `f8cae116`, `be0e14d0`, `e840ca0d`, `d1fd197c`).* [event_agents.py:1307](backend/api/algo/event_agents.py#L1307) bumps `SEED_VERSION` to 3, so the `update` branch now rewrites the 23 seeded `kind='event'` rows' `events` to `[]` on existing databases too, and the tree applies everywhere. Pre-flight: all 23 rows were hash-clean on prod and dev (zero `modified_skip` risk), checked by the new read-only [scripts/alert_seed_audit.py](scripts/alert_seed_audit.py). `AgentInfo.resolved_channels` ([routes/agents.py:160](backend/api/routes/agents.py#L160)) is computed by `_event_agent_resolved_channels()` ([agents.py:631](backend/api/routes/agents.py#L631)) via `alert_routing.resolve_channels()`, gated to `kind == 'event'`. It is ADDITIVE: `events` is never overwritten by the display path, because the Automation Edit button decompiles off `agent.events`, and overloading it would fork a no-op-saved agent off the tree (the `has_explicit_alert` sticky-false class). [automation/+page.svelte](<frontend/src/routes/(algo)/automation/+page.svelte>) reads `resolved_channels` for Alert via / Notify. `AgentInfo.is_builtin_event` ([agents.py:170](backend/api/routes/agents.py#L170)) drives the "Built-in" badge; `delete_agent()` ([agents.py:1599](backend/api/routes/agents.py#L1599)) refuses any seeded event agent with the same 403 as `is_system`, since a deleted seeded row would reappear on restart with its alert dark. `UNROUTED_ALERT_AGENT["events"]` ([event_agents.py:1302](backend/api/algo/event_agents.py#L1302)) is now a per-entry deep copy of `CATCH_ALL_CHANNELS`, not a hand-typed literal; it still bypasses `resolve_channels()` because `CATCH_ALL_CHANNELS` carries `gate: False`. Invariant: the display path never writes `events`, and a seeded event agent cannot be deleted.
+- *Amended 2026-10-24 — `agent ai refine` write-back guards.* `_cmd_ai_refine` ([routes/agents.py:2053](backend/api/routes/agents.py#L2053)) reuses the CREATE-path `draft_agent_from_prompt()` → `_clamp_safety` ([agent_ai.py:251](backend/api/algo/agent_ai.py#L251)), which silently forced `paper`, stripped destructive actions and defaulted `lifespan_type` to `one_shot`. Four guards now apply: `trade_mode` is absent from `_AI_REFINE_WRITABLE_FIELDS` ([agents.py:721](backend/api/routes/agents.py#L721)) (commit `d1fd197c`), and a mode-switch instruction is rejected before the LLM call; tree-driven `events` stays excluded; `_clamp_safety` now records its mutations in `AgentDraft.clamp_effects` ([agent_ai.py:65](backend/api/algo/agent_ai.py#L65)), and `_ai_refine_actions_safe_to_write()` ([agents.py:902](backend/api/routes/agents.py#L902)) drops `actions` when the clamp stripped a destructive type the row already has, unless the instruction is about actions; `_ai_refine_lifespan_safe_to_write()` ([agents.py:940](backend/api/routes/agents.py#L940)) keeps a non-`one_shot` row's `lifespan_type` when only the clamp's default would have changed it. Invariant: a refine never removes a destructive action, downgrades lifespan, or flips trade mode unless the instruction names that field; the keyword checks only pick the message, the field and clamp-effect checks are the boundary.
 - `Agent.priority` ([models.py:1223](backend/api/models.py#L1223)) is a nullable column with its own idempotent migration (`_migrate_agents_priority`, [database.py:1158](backend/api/database.py#L1158)). It is deliberately excluded from `compute_seed_spec_hash()` ([event_agents.py:1349](backend/api/algo/event_agents.py#L1349)). Hashing it would reclassify every already-seeded row, whose stored hash predates the column, as operator-modified.
 - `log(name=..., tags=...)` stores `extra["route_name"]`/`extra["route_tags"]`, not `name`/`tags` ([actions.py:1290](backend/api/algo/actions.py#L1290)). `name` is a reserved `LogRecord` attribute, and `tags` is the structural condition-match key.
 - Invariant: channel selection lives in `alert_routing.py`, never in a detector agent's spec. Specific rules run before generic ones, and a record that resolves to nothing reaches the catch-all rather than being dropped. An alert must carry explicit `tags` and `alert_event`, so it is never alert-shaped by logger name.
@@ -2467,6 +2553,10 @@ now caches + returns a `stale` flag; `/api/nav/by-account` masks `errors` for no
 | NAV breakdown | `frontend/src/lib/data/nav.js` + `backend/api/algo/nav.py:compute_firm_nav` |
 | LTP-override scaffold | `backend/api/helpers/ltp_patch.py` |
 | Mask account in text | `backend/shared/helpers/utils.py:mask_account_in_text` |
+| Mask account in log records (all handlers + `log_events`) | `backend/shared/helpers/log_store.py:_AccountMaskFilter` (wired in `ramboq_logger.py:get_logger`) |
+| Account mask registry incl. numeric Dhan client_id | `backend/shared/helpers/utils.py:register_accounts(accounts, client_ids=)` |
+| Snapshot freshness check config / DSN | `scripts/check_stale_snapshots.py` (`yaml.safe_load`, `_build_dsn` quoting) |
+| Ticker idle state on non-trading days | `backend/api/background.py:_ticker_calendar_refresh_idle_status` + `frontend/src/lib/data/brokerHealthState.js:brokerAccountDisplayState` |
 | Postback fan-out | `backend/api/routes/orders.py:_postback_broadcast_fanout` |
 | Ticket placement | `backend/api/routes/orders_place.py:ticket_order_handler` |
 | Basket order | `backend/api/routes/orders_basket.py` |
