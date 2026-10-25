@@ -480,6 +480,44 @@ _DANGEROUS_IMPORT_PREFIXES = (
 )
 _DANGEROUS_CALL_NAMES = {"exec", "eval", "compile", "__import__", "open"}
 
+# Wave 2's registration endpoint (`POST /api/admin/grammar/tokens`) makes a
+# deployed resolver LIVE for exactly two of the four whitelisted kinds —
+# metric and scope dispatch through `GrammarRegistry.metric()`/`.scope()`,
+# confirmed by Wave 2's own reload-parity test. `notify/channel` dispatch
+# (for the `kind='event'` agent pipeline that actually sends notifications)
+# runs through `event_agents.py`'s hardcoded `CHANNELS` dict, not
+# `REGISTRY.channel()` — that method has zero real callers anywhere in
+# this codebase today. `action/action_type` dispatch runs through
+# `actions.py`'s explicit `_LIVE_ACTION_HANDLERS`/`_NOOP_ACTION_HANDLERS`
+# tables, and `is_known_action_type()` (the gate that decides whether an
+# agent's `DO` clause may reference an action type at all) reads the
+# CODE-level `SYSTEM_TOKENS` catalog, not this DB row — `REGISTRY.action()`
+# also has zero real callers. A channel/action draft is still useful to
+# generate (the human reviewer adds the extra wiring during the same
+# deploy that creates the file), but it is NOT a drop-in like metric/scope
+# — flagged here as a fixed, kind-level warning rather than silently
+# implying parity the plan's own "converge on the same two steps" framing
+# doesn't actually hold for these two kinds yet.
+_TOKEN_KIND_EXTRA_WIRING_WARNING: dict[tuple[str, str], str] = {
+    ("notify", "channel"): (
+        "channel tokens are not live-dispatched through the grammar_tokens "
+        "catalog today — event_agents.py's CHANNELS dict is the real "
+        "dispatch table. Deploying this resolver also needs a new "
+        "CHANNELS[...] entry (and an alert_routing.py rule if an agent "
+        "should route to it by name) — registering it via "
+        "POST /api/admin/grammar/tokens alone will not make it reachable."
+    ),
+    ("action", "action_type"): (
+        "action tokens are not live-dispatched through the grammar_tokens "
+        "catalog today — actions.py's _LIVE_ACTION_HANDLERS/"
+        "_NOOP_ACTION_HANDLERS tables are the real dispatch, and "
+        "is_known_action_type() reads the code-level SYSTEM_TOKENS "
+        "catalog, not this DB row. Deploying this resolver also needs a "
+        "dispatch-table entry and a matching agent_grammar.yaml row "
+        "before an agent's DO clause can reference it."
+    ),
+}
+
 
 @dataclass
 class TokenDraft:
@@ -815,6 +853,29 @@ def _td_validate_params_schema(schema: Any) -> list[str]:
     return []
 
 
+def _td_check_test_imports_resolver(test_source: str, module_path: str, fn_name: str) -> list[str]:
+    """Warn (never error — `test_source` may legitimately be malformed in
+    other ways already caught above, and this is a well-formedness nudge
+    only) when `test_source` has no `from <module_path> import <fn_name>`
+    (or `<fn_name>` among multiple imported names). The hint-identity
+    override rewrites `token` (and so `module_path`/`fn_name`) but cannot
+    rewrite whatever import line the LLM already wrote inside
+    `test_source` — without this check, a drifted import would pass with
+    `errors=[]` and only fail once a human actually runs the test."""
+    try:
+        tree = ast.parse(test_source)
+    except (SyntaxError, ValueError):
+        return []  # already reported by _td_validate_python_module
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == module_path:
+            if any(alias.name == fn_name for alias in node.names):
+                return []
+    return [
+        f"test_source does not appear to import '{fn_name}' from "
+        f"'{module_path}' — verify the test actually exercises this resolver"
+    ]
+
+
 def _td_build_validated_draft(
     raw_draft: dict, existing_names: set[tuple[str, str, str]],
 ) -> tuple[dict[str, Any], list[str], list[str]]:
@@ -845,12 +906,26 @@ def _td_build_validated_draft(
     draft["resolver_file_path"] = file_path
     draft["test_file_path"] = test_file_path
 
+    extra_wiring = _TOKEN_KIND_EXTRA_WIRING_WARNING.get((gk, tk))
+    if extra_wiring:
+        warnings.append(extra_wiring)
+
     r_errors, r_warnings, fn_node = _td_validate_python_module(
         "resolver_source", draft["resolver_source"],
     )
     errors.extend(r_errors)
     warnings.extend(r_warnings)
-    draft["resolver_function_name"] = fn_node.name if fn_node is not None else None
+    fn_name = fn_node.name if fn_node is not None else None
+    draft["resolver_function_name"] = fn_name
+    # `resolver` is the exact dotted path a human would POST to Wave 2's
+    # `POST /api/admin/grammar/tokens` once this file is deployed — a
+    # pure function of the server-derived module path + the function
+    # name actually found in `resolver_source` by AST, never anything
+    # the LLM's own JSON response claims (see `_td_derive_paths`'s
+    # docstring for why that distinction is the safety boundary). `None`
+    # when `resolver_source` didn't parse to exactly one function, same
+    # as `resolver_function_name` above.
+    draft["resolver"] = f"{module_path}.{fn_name}" if fn_name else None
     if fn_node is not None:
         errors.extend(_td_validate_signature(tk, fn_node))
 
@@ -859,6 +934,8 @@ def _td_build_validated_draft(
     )
     errors.extend(t_errors)
     warnings.extend(t_warnings)
+    if fn_name and isinstance(draft["test_source"], str):
+        warnings.extend(_td_check_test_imports_resolver(draft["test_source"], module_path, fn_name))
 
     errors.extend(_td_validate_params_schema(draft["params_schema"]))
 
@@ -907,12 +984,13 @@ def draft_token_from_prompt(
     Convert a natural-language prompt into a validated DSL-token draft.
 
     `grammar_kind`/`token_kind`/`token` are OPTIONAL operator-supplied
-    hints. When all three are given: (1) a collision/unsupported-kind
-    check runs BEFORE the LLM is ever called — the cheap check always
-    runs first, same ordering Wave 2's registration endpoint already
-    uses; (2) once the LLM responds, these three values OVERRIDE
-    whatever identity the LLM proposed, so an explicit operator-chosen
-    name can never drift.
+    hints, ALL-OR-NONE: unless all three are given, they are ignored
+    entirely — no precheck, no override, exactly as if omitted. When
+    all three ARE given: (1) a collision/unsupported-kind check runs
+    BEFORE the LLM is ever called — the cheap check always runs first,
+    same ordering Wave 2's registration endpoint already uses; (2) once
+    the LLM responds, these three values OVERRIDE whatever identity the
+    LLM proposed, so an explicit operator-chosen name can never drift.
 
     `existing_names` is the caller-supplied set of every
     `(grammar_kind, token_kind, token.lower())` triple already in the

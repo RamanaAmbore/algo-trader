@@ -422,9 +422,21 @@ rejection, or a non-dict LLM `draft` field). Otherwise `draft` is always
 populated — even when `errors` is non-empty — with:
 `grammar_kind`, `token_kind`, `token`, `description`, `params_schema`,
 `resolver_source`, `resolver_function_name`, `resolver_module_path`,
-`resolver_file_path`, `test_source`, `test_file_path`.
+`resolver_file_path`, `resolver` (the exact dotted path a human would POST to
+Wave 2's `create_token` once the file is deployed — `{resolver_module_path}.
+{resolver_function_name}`, or `None` when `resolver_source` didn't parse to
+exactly one function), `test_source`, `test_file_path`. `GrammarTokenCreate`
+has no `forbid_unknown_fields` — a human can POST the `draft` dict to Wave 2's
+endpoint largely verbatim; the extra `resolver_*`/`test_*` keys are simply
+ignored by that schema.
 
-**Whitelisted token kinds** — deliberately only the four with a uniform-enough,
+**Hints are all-or-none** — `grammar_kind`/`token_kind`/`token` are ignored
+entirely unless all three are given (no precheck, no identity override). A
+partial set (e.g. only `grammar_kind` + `token_kind`) is treated exactly as if
+no hints were supplied.
+
+**Whitelisted token kinds — and which ones actually go live after Wave 2's
+registration endpoint** — deliberately only four kinds with a uniform-enough,
 statically-checkable call signature: `condition/metric` (`(ctx, row)`),
 `condition/scope` (`(ctx)`), `notify/channel` (`(title, body, tg=None,
 priority=None)`), `action/action_type` (`async def fn(ctx, params: dict)`).
@@ -432,6 +444,23 @@ priority=None)`), `action/action_type` (`async def fn(ctx, params: dict)`).
 file-based. `notify/format` signatures vary per formatter with no single
 contract to validate against yet. `template`/`log_tag` tokens carry no resolver
 at all. Widening this set is a future decision.
+
+Of these four, only `metric` and `scope` genuinely converge on Wave 2's "write
+files → deploy → register" promise — they dispatch live through
+`GrammarRegistry.metric()`/`.scope()`, confirmed by Wave 2's own reload-parity
+test. `channel` and `action_type` do NOT: real notification dispatch for the
+`kind='event'` agent pipeline runs through `event_agents.py`'s hardcoded
+`CHANNELS` dict, and real action dispatch runs through `actions.py`'s explicit
+`_LIVE_ACTION_HANDLERS`/`_NOOP_ACTION_HANDLERS` tables — `is_known_action_type()`
+(the gate deciding whether an agent's `DO` clause may reference an action type)
+reads the code-level `SYSTEM_TOKENS` catalog, not the DB row. `REGISTRY.channel()`
+and `REGISTRY.action()` both have zero real callers anywhere in the backend
+today. A channel/action draft is still generated — the extra wiring is a normal
+part of the same human-reviewed deploy that creates the file — but
+`draft_token_from_prompt` appends a FIXED, kind-level warning
+(`_TOKEN_KIND_EXTRA_WIRING_WARNING`) naming exactly what else is needed, so the
+`/admin/mcp` UI never implies these two kinds are a drop-in the way metric/scope
+are.
 
 **Resolver module/file path is derived server-side, never trusted from the
 LLM** — `_td_derive_paths(grammar_kind, token_kind, token)` computes
@@ -456,7 +485,12 @@ declared `async def`, is a hard error). An AST walk flags — as a WARNING, neve
 hard error, since the human reviewer decides — an import of
 `backend.brokers`/`backend.api.algo.actions_live`/`subprocess`/`os`/`socket`/
 `requests`/`httpx`/`urllib`, or a call to `exec`/`eval`/`compile`/`__import__`/
-`open`. `params_schema` gets a loose JSON-object shape check only.
+`open`. `params_schema` gets a loose JSON-object shape check only. A separate
+WARNING-only check (`_td_check_test_imports_resolver`) flags a `test_source`
+that does not import the resolved function name from the resolved module path
+— catches the one case the hinted-identity override can't fix itself: the
+LLM's own `test_source` import line was written against its ORIGINAL proposed
+name, before an operator hint renamed the token.
 
 **Collision check covers active AND inactive rows** — `_td_existing_token_names()`
 queries every `(grammar_kind, token_kind, token)` triple in `grammar_tokens`
@@ -898,6 +932,7 @@ closed by this entry — see `frontend/src/lib/__tests__/agentsSuggest.test.js` 
 
 | Date | Change |
 |---|---|
+| 2026-10-25 | Wave 3 follow-up — `draft_token_from_prompt` gained a server-derived `draft['resolver']` field (the exact dotted path Wave 2's `create_token` expects, never trusted from the LLM), a fixed per-kind "extra wiring needed" warning for `channel`/`action_type` drafts (only `metric`/`scope` actually dispatch live after Wave 2's registration endpoint — `REGISTRY.channel()`/`.action()` have zero real callers), and a warning when `test_source` doesn't import the resolved function/module (catches drift after a hinted rename). See §9 "AI-drafted grammar tokens". |
 | 2026-10-25 | Wave 3 (unify-DSL-token-registration plan) — `POST /api/mcp/draft-token` + `agent_ai.draft_token_from_prompt` draft a candidate metric/scope/channel/action token from an operator prompt as plain reviewable JSON. Never writes a file, never imports/execs the drafted code, never calls Wave 2's registration endpoint — static-only validation (`ast.parse`, one-function/signature/dangerous-import-or-call checks). Resolver module/file path is derived server-side from the whitelisted kind + verified token name, never trusted from the LLM. Collision check covers active and inactive rows, case-insensitive. See §9 "AI-drafted grammar tokens". |
 | 2026-10-24 | Wave 2 (grammar-unification) — the standalone `event_stmt` (`ALERT log_tag=... render=...`) dissolves into an ordinary `agent_stmt`: a `log(tag=..., min_level=..., where={...})` condition sets `kind='event'` (`compileAgentStmt`'s `isEventKind`); `|` replaces `match=[...]`; `DO` carries exactly one `render(render=..., gate=...)` call, optionally alongside `alert(...)` channels. `parseEventStmt`/`compileEventStmt`/`decompileEventAgent`/`_EVENT_META_KEYS` are retired — `decompileAgent` now handles both kinds. New real catalog row `(condition, log_filter, log)`; `event_actions.render.params_schema` gained a required `render` field. See [AGENTS_GRAMMAR_EBNF.md](AGENTS_GRAMMAR_EBNF.md). |
 | 2026-10-23 | Sprint [grammar-unify] execution + alert (items 0, 0.C): saved cycle-agent `preamble` executes per call type — `help`/`debug` every cycle, `alert`/non-debug `log` every cycle windowed by `cooldown_minutes`, all other calls (`order`, `close_position`, `cancel_order`, `bracket`, …) once per activation (commit `4e6df1ec`; P1 fix). Activation is a real inactive/paused→active transition only. New `has_explicit_alert` flag (a DO-level `alert(...)` replaces the automatic rich alert; commits `08bf4340`, `6aaec581`); Console saves are sticky-false (commit `b6f56be7`). New columns `preamble_fired_at`, `preamble_alert_last_fired_at`, `has_explicit_alert`. |
