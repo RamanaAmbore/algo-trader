@@ -129,6 +129,11 @@ seeded agent is resolved by `alert_routing.py` (§3.15). The table also omits
 `user-registered-alert` (§3.16). `SEEDED_AGENTS` now has 23 entries. `alert_routing.py` has 22
 per-slug rows, and `unrouted-alert-catch-all` is the one entry without one.
 
+*Amended 2026-10-25 (commit `17a1c85a`).* The `deploy-sync-alert` row in the table above
+(`none`) is superseded. It routes to the dedicated `telegram_deploy` channel (§3.4, §3.14).
+`partial-gtt-alert` and `template-attach-high` now also list `telegram`. `gtt-not-accepted-alert`
+remains ntfy-only in `alert_routing.py`. See §3.21.
+
 Channel entries may set `priority` (ntfy) and `gate` (default true). `gate:
 false` skips the capability flag check, to keep the same behaviour as the
 direct code it replaced.
@@ -158,8 +163,13 @@ are generic multiplexers).
 |---|---|---|
 | `telegram` | `alert_utils._send_telegram` (ops) | `telegram` unless `gate: false` |
 | `telegram_info` | `alert_utils._send_telegram_info` | none (gate off) |
+| `telegram_deploy` | `event_agents._send_telegram_deploy_html` (dedicated deploy bot/chat) | none (gate off) |
 | `ntfy` | `alert_utils.send_ntfy_alert` with priority | `ntfy` unless `gate: false` |
 | `email` | `mail_utils.send_email` to `get_alert_recipients()` | none (gate off) |
+
+All three Telegram senders send plain text, with no `parse_mode` (§3.21). `telegram_deploy` takes
+secrets `telegram_bot_token_deploy` / `telegram_chat_id_deploy`. When either is absent, it falls
+back to `telegram_bot_token` / `telegram_chat_id`.
 
 ### 3.5 Repeat gate
 
@@ -386,6 +396,15 @@ requested.
 - *Amended 2026-10-24.* "`DEPLOY_SYNC_AGENT` now has `events: []`" and the "one-line change to
   `events`" bullet above now refer to the per-slug row in `alert_routing.py`, not the spec. The spec
   carries `priority: medium` instead. Adding a channel is a one-line change to that row (§3.15).
+- *Amended 2026-10-25 (commit `17a1c85a`).* The "no channel" decision above is reversed. Operator
+  correction: deploy-sync notices reach "the telegram code deployment alerts channel alone". The
+  `deploy-sync-alert` row in `alert_routing.py` now lists exactly one entry,
+  `{"channel": "telegram_deploy", "enabled": True, "gate": False}`
+  ([alert_routing.py:117-119](../../backend/api/algo/alert_routing.py#L117)). It is never the generic
+  `telegram`, ntfy or email. The `telegram_deploy` sender is
+  `event_agents._send_telegram_deploy_html`. `webhook/notify_deploy.py` follows the same rule: it
+  sends Telegram only, through the same dedicated credential pair with the same fallback, and no
+  ntfy or email.
 
 ### 3.15 Routing tree: channels resolved, not hardcoded (2026-10, `ec19aa1b`)
 
@@ -632,6 +651,77 @@ excluded. Real calls always populate it.
 trade mode unless the instruction names that field. The keyword checks only decide whether the operator
 sees a specific message. The field exclusions and clamp-effect checks are the safety boundary.
 
+### 3.21 Message format, forced email, and the Alerts-tab merge (2026-10-25, `17a1c85a`)
+
+Four changes that sit on top of §3.2–§3.20. Each one is in code now. Tests pin the output:
+`test_alert_golden.py`, `test_alert_routing.py`, `test_ntfy_action_required_gate.py` and
+`test_telegram_alert_routing.py`.
+
+**Plain text.** Telegram and ntfy carry no markup.
+
+- `alert_utils._send_telegram()` and `_send_telegram_info()` send no `parse_mode`. Nothing in the
+  codebase passes one.
+- `dispatch_payload()` builds `telegram_msg` without `<b>`/`<code>` and without `html.escape()`.
+- The event-path senders `_send_telegram_html` and `_send_telegram_info_html` are pass-throughs.
+  Their `_html` suffix is kept for name stability.
+- `alert_utils._html_to_plain()` has no production caller left.
+- Email is unchanged and still HTML.
+- `webhook/notify_deploy.py` sends plain text to Telegram only. Its ntfy send is removed, and the
+  email path stays retired.
+
+**Origin line first.** `format_notification_header()` emits `Agent: {origin}` as line 1, then the
+dual-tz timestamp. Renderers that build their own text lead with it. That covers chase-cancel,
+partial-GTT, template-attach, order-correction, gtt-not-accepted and error. Order-failure gets its
+header from `order_failure_messages()`. MCP pings get theirs at `lab.py`'s single chokepoint.
+
+Two cases do not follow the rule:
+
+- *Agent-less summaries, by design.* `dispatch_payload()` adds the agent line only when both
+  `agent_name` and `agent_id` are present. Open and close summaries therefore lead with the title
+  line, not an origin line.
+- *`generic_notice` producers, a known gap.* `_render_deploy_sync` passes `extra["body"]` through
+  unchanged. The producers build bare messages with no `Agent:` line. These are the five
+  `background.py` sites (gtt-asymmetric, oco-double-fire, ticker-recovered, ticker-degraded and
+  visitor-report), plus deploy-sync. The visitor-report body is now the plain-text
+  `visitor_report._summary_text()`, not the HTML builder.
+
+**`telegram_deploy` and the per-slug rows.** `CHANNELS["telegram_deploy"]` is the dedicated
+deploy-alerts bot and chat. Only `deploy-sync-alert` names it, through its per-slug row in
+`alert_routing.py`. `partial-gtt-alert` and `template-attach-high` gained `telegram`.
+`gtt-not-accepted-alert` did not, and remains ntfy-only.
+
+**Forced email for action-required records.** `_apply_action_required_email_gate()` mirrors
+the ntfy gate in §3.11. When `extra["action_required"] is True` and the channel list has no
+`email` entry, it appends `{"channel": "email", "enabled": True, "gate": False}`. The gate runs
+once per record, before the per-channel ntfy gate. It never duplicates an existing `email` entry.
+`False` or absent leaves the list unchanged.
+
+**Alerts tab merges `alert`-tagged log rows.** `GET /api/admin/alerts/history` also returns
+`LogEvent` rows whose tags include `alert`. They are sorted by real timestamp alongside
+`AgentEvent` rows.
+
+- The merge runs only when no `agent_id`, `agent_slug` or `event_type` filter is set. A
+  LogEvent-sourced row has no real `Agent` FK to filter on.
+- Each merged row gets `id = -event.id` and `agent_id = 0`. The `0` is a sentinel, never a real
+  autoincrement id. The negated id keeps merged rows out of the positive `AgentEvent` id space.
+  The code states the negation, not the reason.
+- `rich_alert` and `breach` are not `alert`-tagged. Their firings already exist as `AgentEvent`
+  rows, and tagging them would double each one.
+
+**Fixed same day, commit `492fd988` (G16) — this was zero channel delivery, not just an Alerts-tab
+gap.** `alert_utils` is in `log_store._SKIP_PREFIXES`. `LogStoreHandler.emit()` drops any record
+whose logger name starts with that prefix, before it is queued, unconditionally. The order-failure
+record (`_send_order_failure_messages()`) and the market-summary record (`send_summary()`, tag
+`summary`) both logged through `alert_utils.py`'s own module `logger` — so neither ever reached
+`log_events`, `dispatch_rows()` only ever receiving what `handler.drain()` returns. Confirmed via
+git history: zero Telegram/ntfy/email delivery for order failures and summaries for ~19 days, since
+`_SKIP_PREFIXES` gained this entry on 2026-10-06 (`54860caa`), three months after `5f0a6d5c`
+(2026-07-23) had already migrated both functions onto this log-and-dispatch model. Fix: both now
+log through a new `_DISPATCH_LOGGER` (name `backend.api.algo.events`, the same non-skip-listed name
+`event_agents.py`'s own `_EVENTS_LOGGER` already uses) instead of the skip-listed `logger`. The
+skip-list itself is unchanged. A real-logger regression test confirms the record now survives
+`emit()`. See G16 in §5.
+
 ## 4. What changed, by file
 
 | File | Change |
@@ -661,6 +751,8 @@ sees a specific message. The field exclusions and clamp-effect checks are the sa
 | `agent_ai.py` (2026-10-24, `f8cae116`, `b17ada22`) | `AgentDraft.clamp_effects` side-channel, written by `_clamp_safety` (§3.20) |
 | `automation/+page.svelte` (2026-10-24, `e840ca0d`) | Reads `resolved_channels` for event agents. "Built-in" badge from `is_builtin_event` (§3.19) |
 | `scripts/alert_seed_audit.py` (2026-10-24) | New. Read-only pre-bump audit of `kind='event'` rows (§3.19) |
+| `alert_utils.py`, `event_agents.py`, `alert_routing.py`, `webhook/notify_deploy.py`, `routes/alerts.py` (2026-10-25, `17a1c85a`) | Plain-text Telegram and ntfy. `telegram_deploy` channel. Forced email gate. `alert`-tagged `LogEvent` merge into the Alerts tab (§3.21). Only the commit message names the file list. The working tree was checked, not the full stat |
+| `alert_utils.py` (2026-10-25, `492fd988`) | `_DISPATCH_LOGGER` replaces the skip-listed `logger` in `_send_order_failure_messages`/`send_summary` — fixes G16, zero delivery since 2026-10-06 |
 
 ## 5. Gaps
 
@@ -744,6 +836,17 @@ existing inline JSON editor.
 Delivery has been confirmed only on prod for real events that have happened.
 Fix: a scripted check that writes a test record on dev with channels stubbed
 and asserts the rendered output.
+
+**G16 (H). `alert_utils` records were dropped before the log pipeline. [FIXED, commit `492fd988`,
+same day]** `alert_utils` is in `log_store._SKIP_PREFIXES`, so `LogStoreHandler.emit()` dropped its
+records before they were queued. Order-failure (`_send_order_failure_messages`) and market-summary
+(`send_summary`) records never reached `log_events`, so `ORDER_FAILURE_AGENT` and the summary agent
+could never match them — zero delivery to any channel, confirmed via git history to have been
+broken since 2026-10-06 (`54860caa`), ~19 days. Fix: both now log through a new `_DISPATCH_LOGGER`
+(name `backend.api.algo.events`, the same logger name `event_agents.py`'s own `_EVENTS_LOGGER`
+already uses for this purpose) instead of the skip-listed `logger`. A regression test feeds each
+record through a real `LogStoreHandler.emit()` (not a mock) and asserts it is queued. Found and
+fixed 2026-10-25, in §3.21.
 
 ## 6. Extension to order automation (design, not built)
 
