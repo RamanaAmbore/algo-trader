@@ -119,28 +119,28 @@ system_tokens:
   value_type: number
   units: ₹/min
   description: Positions P&L rate of change in ₹ per minute over the last window.
-  resolver: backend.api.algo.grammar._metric_pnl_rate_abs
+  resolver: backend.api.algo.grammar_tokens.metric_pnl_rate_abs._metric_pnl_rate_abs
 - grammar_kind: condition
   token_kind: metric
   token: pnl_rate_pct
   value_type: number
   units: '%/min'
   description: Positions P&L rate of change in percent per minute over the last window.
-  resolver: backend.api.algo.grammar._metric_pnl_rate_pct
+  resolver: backend.api.algo.grammar_tokens.metric_pnl_rate_pct._metric_pnl_rate_pct
 - grammar_kind: condition
   token_kind: metric
   token: day_rate_abs
   value_type: number
   units: ₹/min
   description: Holdings day-change rate of change in ₹ per minute over the last window.
-  resolver: backend.api.algo.grammar._metric_day_rate_abs
+  resolver: backend.api.algo.grammar_tokens.metric_day_rate_abs._metric_day_rate_abs
 - grammar_kind: condition
   token_kind: metric
   token: day_rate_pct
   value_type: number
   units: '%/min'
   description: Holdings day-change rate of change in percent per minute over the last window.
-  resolver: backend.api.algo.grammar._metric_day_rate_pct
+  resolver: backend.api.algo.grammar_tokens.metric_day_rate_pct._metric_day_rate_pct
 
 # Phase 24 — Rolling-window statistical metrics. Read the same pnl_history
 # buckets the rate metrics use; aggregate the whole slice instead of just
@@ -154,56 +154,56 @@ system_tokens:
   value_type: number
   units: ₹
   description: Average positions P&L over the last 30 minutes.
-  resolver: backend.api.algo.grammar._metric_mean_pnl_30m
+  resolver: backend.api.algo.grammar_tokens.metric_mean_pnl._metric_mean_pnl_30m
 - grammar_kind: condition
   token_kind: metric
   token: mean_pnl_1h
   value_type: number
   units: ₹
   description: Average positions P&L over the last hour.
-  resolver: backend.api.algo.grammar._metric_mean_pnl_1h
+  resolver: backend.api.algo.grammar_tokens.metric_mean_pnl._metric_mean_pnl_1h
 - grammar_kind: condition
   token_kind: metric
   token: mean_day_30m
   value_type: number
   units: ₹
   description: Average holdings day-change value over the last 30 minutes.
-  resolver: backend.api.algo.grammar._metric_mean_day_30m
+  resolver: backend.api.algo.grammar_tokens.metric_mean_day._metric_mean_day_30m
 - grammar_kind: condition
   token_kind: metric
   token: mean_day_1h
   value_type: number
   units: ₹
   description: Average holdings day-change value over the last hour.
-  resolver: backend.api.algo.grammar._metric_mean_day_1h
+  resolver: backend.api.algo.grammar_tokens.metric_mean_day._metric_mean_day_1h
 - grammar_kind: condition
   token_kind: metric
   token: max_drawdown_pnl_30m
   value_type: number
   units: ₹
   description: Worst peak-to-trough drop in positions P&L over the last 30 minutes (always ≤ 0).
-  resolver: backend.api.algo.grammar._metric_max_drawdown_pnl_30m
+  resolver: backend.api.algo.grammar_tokens.metric_max_drawdown_pnl._metric_max_drawdown_pnl_30m
 - grammar_kind: condition
   token_kind: metric
   token: max_drawdown_pnl_1h
   value_type: number
   units: ₹
   description: Worst peak-to-trough drop in positions P&L over the last hour (always ≤ 0).
-  resolver: backend.api.algo.grammar._metric_max_drawdown_pnl_1h
+  resolver: backend.api.algo.grammar_tokens.metric_max_drawdown_pnl._metric_max_drawdown_pnl_1h
 - grammar_kind: condition
   token_kind: metric
   token: max_drawdown_pnl_4h
   value_type: number
   units: ₹
   description: Worst peak-to-trough drop in positions P&L over the last 4 hours (always ≤ 0).
-  resolver: backend.api.algo.grammar._metric_max_drawdown_pnl_4h
+  resolver: backend.api.algo.grammar_tokens.metric_max_drawdown_pnl._metric_max_drawdown_pnl_4h
 - grammar_kind: condition
   token_kind: metric
   token: max_drawdown_day_1h
   value_type: number
   units: ₹
   description: Worst peak-to-trough drop in holdings day-change over the last hour (always ≤ 0).
-  resolver: backend.api.algo.grammar._metric_max_drawdown_day_1h
+  resolver: backend.api.algo.grammar_tokens.metric_max_drawdown_day._metric_max_drawdown_day_1h
 - grammar_kind: condition
   token_kind: metric
   token: max_drawdown_pnl_pct_30m
@@ -211,42 +211,42 @@ system_tokens:
   units: '%'
   description: Worst peak-to-trough drop in positions P&L percentage over the last 30 minutes (always
     ≤ 0).
-  resolver: backend.api.algo.grammar._metric_max_drawdown_pnl_pct_30m
+  resolver: backend.api.algo.grammar_tokens.metric_max_drawdown_pnl_pct._metric_max_drawdown_pnl_pct_30m
 - grammar_kind: condition
   token_kind: metric
   token: max_drawdown_pnl_pct_1h
   value_type: number
   units: '%'
   description: Worst peak-to-trough drop in positions P&L percentage over the last hour (always ≤ 0).
-  resolver: backend.api.algo.grammar._metric_max_drawdown_pnl_pct_1h
+  resolver: backend.api.algo.grammar_tokens.metric_max_drawdown_pnl_pct._metric_max_drawdown_pnl_pct_1h
 - grammar_kind: condition
   token_kind: metric
   token: stdev_pnl_30m
   value_type: number
   units: ₹
   description: Standard deviation of positions P&L over the last 30 minutes (volatility proxy).
-  resolver: backend.api.algo.grammar._metric_stdev_pnl_30m
+  resolver: backend.api.algo.grammar_tokens.metric_stdev_pnl._metric_stdev_pnl_30m
 - grammar_kind: condition
   token_kind: metric
   token: stdev_pnl_1h
   value_type: number
   units: ₹
   description: Standard deviation of positions P&L over the last hour.
-  resolver: backend.api.algo.grammar._metric_stdev_pnl_1h
+  resolver: backend.api.algo.grammar_tokens.metric_stdev_pnl._metric_stdev_pnl_1h
 - grammar_kind: condition
   token_kind: metric
   token: range_pnl_30m
   value_type: number
   units: ₹
   description: max(P&L) − min(P&L) over the last 30 minutes (swing magnitude).
-  resolver: backend.api.algo.grammar._metric_range_pnl_30m
+  resolver: backend.api.algo.grammar_tokens.metric_range_pnl._metric_range_pnl_30m
 - grammar_kind: condition
   token_kind: metric
   token: range_pnl_1h
   value_type: number
   units: ₹
   description: max(P&L) − min(P&L) over the last hour.
-  resolver: backend.api.algo.grammar._metric_range_pnl_1h
+  resolver: backend.api.algo.grammar_tokens.metric_range_pnl._metric_range_pnl_1h
 
 # Phase 26 (Sprint 2) — parameterized function-call base tokens. Each one
 # is a FACTORY: GrammarRegistry calls it (via the call-shape token the
@@ -261,7 +261,7 @@ system_tokens:
   value_type: number
   units: ₹
   description: Average positions P&L over the last N minutes. Call syntax, e.g. mean_pnl(30).
-  resolver: backend.api.algo.grammar._metric_factory_mean_pnl
+  resolver: backend.api.algo.grammar_tokens.metric_mean_pnl._metric_factory_mean_pnl
   params_schema:
     minutes: {type: number}
 - grammar_kind: condition
@@ -270,7 +270,7 @@ system_tokens:
   value_type: number
   units: ₹
   description: Average holdings day-change value over the last N minutes. Call syntax, e.g. mean_day(30).
-  resolver: backend.api.algo.grammar._metric_factory_mean_day
+  resolver: backend.api.algo.grammar_tokens.metric_mean_day._metric_factory_mean_day
   params_schema:
     minutes: {type: number}
 - grammar_kind: condition
@@ -279,7 +279,7 @@ system_tokens:
   value_type: number
   units: ₹
   description: Worst peak-to-trough drop in positions P&L over the last N minutes (always ≤ 0). Call syntax, e.g. max_drawdown_pnl(30).
-  resolver: backend.api.algo.grammar._metric_factory_max_drawdown_pnl
+  resolver: backend.api.algo.grammar_tokens.metric_max_drawdown_pnl._metric_factory_max_drawdown_pnl
   params_schema:
     minutes: {type: number}
 - grammar_kind: condition
@@ -288,7 +288,7 @@ system_tokens:
   value_type: number
   units: ₹
   description: Worst peak-to-trough drop in holdings day-change over the last N minutes (always ≤ 0). Call syntax, e.g. max_drawdown_day(60).
-  resolver: backend.api.algo.grammar._metric_factory_max_drawdown_day
+  resolver: backend.api.algo.grammar_tokens.metric_max_drawdown_day._metric_factory_max_drawdown_day
   params_schema:
     minutes: {type: number}
 - grammar_kind: condition
@@ -297,7 +297,7 @@ system_tokens:
   value_type: number
   units: '%'
   description: Worst peak-to-trough drop in positions P&L percentage over the last N minutes (always ≤ 0). Call syntax, e.g. max_drawdown_pnl_pct(30).
-  resolver: backend.api.algo.grammar._metric_factory_max_drawdown_pnl_pct
+  resolver: backend.api.algo.grammar_tokens.metric_max_drawdown_pnl_pct._metric_factory_max_drawdown_pnl_pct
   params_schema:
     minutes: {type: number}
 - grammar_kind: condition
@@ -306,7 +306,7 @@ system_tokens:
   value_type: number
   units: ₹
   description: Standard deviation of positions P&L over the last N minutes (volatility proxy). Call syntax, e.g. stdev_pnl(30).
-  resolver: backend.api.algo.grammar._metric_factory_stdev_pnl
+  resolver: backend.api.algo.grammar_tokens.metric_stdev_pnl._metric_factory_stdev_pnl
   params_schema:
     minutes: {type: number}
 - grammar_kind: condition
@@ -315,7 +315,7 @@ system_tokens:
   value_type: number
   units: ₹
   description: max(P&L) − min(P&L) over the last N minutes (swing magnitude). Call syntax, e.g. range_pnl(30).
-  resolver: backend.api.algo.grammar._metric_factory_range_pnl
+  resolver: backend.api.algo.grammar_tokens.metric_range_pnl._metric_factory_range_pnl
   params_schema:
     minutes: {type: number}
 

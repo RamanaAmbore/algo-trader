@@ -262,9 +262,8 @@ class TestValidateCallSyntaxTokens:
     @pytest.fixture(autouse=True)
     def _wire_registry(self, monkeypatch):
         from backend.api.algo.grammar_registry import REGISTRY
-        from backend.api.algo.grammar import (
-            _metric_factory_mean_pnl, _scope_positions_total, OPERATORS,
-        )
+        from backend.api.algo.grammar import _scope_positions_total, OPERATORS
+        from backend.api.algo.grammar_tokens.metric_mean_pnl import _metric_factory_mean_pnl
         monkeypatch.setattr(REGISTRY, 'metric_factories',
                              {'mean_pnl': (_metric_factory_mean_pnl, {'minutes': {'type': 'number'}})})
         monkeypatch.setattr(REGISTRY, 'scopes', {'positions.total': _scope_positions_total})

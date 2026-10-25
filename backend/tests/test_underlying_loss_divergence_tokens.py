@@ -39,6 +39,8 @@ import pytest
 
 from backend.api.algo import agent_engine as ae
 from backend.api.algo import grammar as g
+from backend.api.algo.grammar_tokens.metric_pnl_rate_abs import _metric_pnl_rate_abs
+from backend.api.algo.grammar_tokens.metric_pnl_rate_pct import _metric_pnl_rate_pct
 from backend.api.algo.agent_evaluator import Context, evaluate
 from backend.api.algo.derivatives import black_76
 
@@ -575,8 +577,8 @@ class TestFixBCrossRowJoinOnUnderlying:
         from backend.api.algo.grammar_registry import REGISTRY
         monkeypatch.setitem(REGISTRY.scopes, 'positions.any_underlying', g._scope_positions_any_underlying)
         monkeypatch.setitem(REGISTRY.metrics, 'underlying_loss_divergence', g._metric_underlying_loss_divergence)
-        monkeypatch.setitem(REGISTRY.metrics, 'pnl_rate_abs', g._metric_pnl_rate_abs)
-        monkeypatch.setitem(REGISTRY.metrics, 'pnl_rate_pct', g._metric_pnl_rate_pct)
+        monkeypatch.setitem(REGISTRY.metrics, 'pnl_rate_abs', _metric_pnl_rate_abs)
+        monkeypatch.setitem(REGISTRY.metrics, 'pnl_rate_pct', _metric_pnl_rate_pct)
         monkeypatch.setitem(REGISTRY.operators, '>', g.OPERATORS['>'])
         monkeypatch.setitem(REGISTRY.operators, '<=', g.OPERATORS['<='])
 
@@ -711,8 +713,8 @@ class TestEndToEndWiring:
         monkeypatch.setitem(REGISTRY.metrics, 'underlying_market_loss', g._metric_underlying_market_loss)
         monkeypatch.setitem(REGISTRY.metrics, 'underlying_theoretical_loss', g._metric_underlying_theoretical_loss)
         monkeypatch.setitem(REGISTRY.metrics, 'underlying_loss_divergence', g._metric_underlying_loss_divergence)
-        monkeypatch.setitem(REGISTRY.metrics, 'pnl_rate_abs', g._metric_pnl_rate_abs)
-        monkeypatch.setitem(REGISTRY.metrics, 'pnl_rate_pct', g._metric_pnl_rate_pct)
+        monkeypatch.setitem(REGISTRY.metrics, 'pnl_rate_abs', _metric_pnl_rate_abs)
+        monkeypatch.setitem(REGISTRY.metrics, 'pnl_rate_pct', _metric_pnl_rate_pct)
         monkeypatch.setitem(REGISTRY.operators, '>', g.OPERATORS['>'])
         monkeypatch.setitem(REGISTRY.operators, '<=', g.OPERATORS['<='])
 

@@ -189,12 +189,12 @@ def _factory_token_rows():
     return [
         _make_fake_grammar_token(
             1, "condition", "metric", "mean_pnl",
-            resolver="backend.api.algo.grammar._metric_factory_mean_pnl",
+            resolver="backend.api.algo.grammar_tokens.metric_mean_pnl._metric_factory_mean_pnl",
             params_schema={"minutes": {"type": "number"}},
         ),
         _make_fake_grammar_token(
             2, "condition", "metric", "mean_pnl_30m",
-            resolver="backend.api.algo.grammar._metric_mean_pnl_30m",
+            resolver="backend.api.algo.grammar_tokens.metric_mean_pnl._metric_mean_pnl_30m",
         ),
     ]
 

@@ -70,9 +70,14 @@ def test_no_hardcoded_month_strings():
 
 
 def test_window_metric_functions_exist():
-    """Window metrics (30m, 1h) must exist for rolling-average conditions."""
-    assert "_metric_mean_pnl_30m" in _SRC, "_metric_mean_pnl_30m must exist"
-    assert "_metric_mean_pnl_1h" in _SRC, "_metric_mean_pnl_1h must exist"
+    """Window metrics (30m, 1h) must exist for rolling-average conditions.
+    Retargeted (Wave 1, batch 2) — these fixed-window bindings migrated
+    to grammar_tokens/metric_mean_pnl.py, alongside their factory."""
+    from backend.api.algo.grammar_tokens.metric_mean_pnl import (
+        _metric_mean_pnl_30m, _metric_mean_pnl_1h,
+    )
+    assert callable(_metric_mean_pnl_30m), "_metric_mean_pnl_30m must exist"
+    assert callable(_metric_mean_pnl_1h), "_metric_mean_pnl_1h must exist"
 
 
 # ═══════════════════════════════════════════════════════════════════════════

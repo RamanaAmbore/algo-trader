@@ -23,6 +23,8 @@ from backend.api.algo.template_registry import REGISTRY
 from backend.api.algo import grammar as _grammar
 from backend.api.algo.grammar_tokens.metric_pnl import _metric_pnl
 from backend.api.algo.grammar_tokens.metric_pnl_pct import _metric_pnl_pct
+from backend.api.algo.grammar_tokens.metric_pnl_rate_abs import _metric_pnl_rate_abs
+from backend.api.algo.grammar_tokens.metric_pnl_rate_pct import _metric_pnl_rate_pct
 from backend.api.algo.grammar_registry import REGISTRY as GRAMMAR_REGISTRY
 
 
@@ -34,8 +36,8 @@ def _seed_grammar_minimal():
     actually fires a leaf would short-circuit to []."""
     GRAMMAR_REGISTRY.metrics["pnl"]          = _metric_pnl
     GRAMMAR_REGISTRY.metrics["pnl_pct"]      = _metric_pnl_pct
-    GRAMMAR_REGISTRY.metrics["pnl_rate_abs"] = _grammar._metric_pnl_rate_abs
-    GRAMMAR_REGISTRY.metrics["pnl_rate_pct"] = _grammar._metric_pnl_rate_pct
+    GRAMMAR_REGISTRY.metrics["pnl_rate_abs"] = _metric_pnl_rate_abs
+    GRAMMAR_REGISTRY.metrics["pnl_rate_pct"] = _metric_pnl_rate_pct
     GRAMMAR_REGISTRY.scopes["positions.total"]     = _grammar._scope_positions_total
     GRAMMAR_REGISTRY.scopes["positions.any_acct"]  = _grammar._scope_positions_any_acct
     # Operators are seeded at module import via OPERATORS dict; ensure

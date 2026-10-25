@@ -226,22 +226,9 @@ def _pnl_rate_key(row):
             return ('positions_underlying', underlying)
     return ('positions', account)
 
-def _metric_pnl_rate_abs(ctx, row):
-    return ctx.rate_abs(_pnl_rate_key(row))
-
-def _metric_pnl_rate_pct(ctx, row):
-    """See `_update_underlying_pnl_history`'s docstring — the pct slot is
-    deliberately recorded as None for the `positions_underlying`
-    namespace (no per-underlying margin denominator exists), so this
-    always returns None for `positions.any_underlying` rows. Use
-    `pnl_rate_abs` for underlying-scoped rate conditions."""
-    return ctx.rate_pct(_pnl_rate_key(row))
-
-def _metric_day_rate_abs(ctx, row):
-    return ctx.rate_abs(('holdings', row.get('account')))
-
-def _metric_day_rate_pct(ctx, row):
-    return ctx.rate_pct(('holdings', row.get('account')))
+# pnl_rate_abs, pnl_rate_pct, day_rate_abs, day_rate_pct migrated to
+# grammar_tokens/ (Wave 1, batch 2). `_pnl_rate_key` stays here — shared
+# helper read by both pnl_rate_abs and pnl_rate_pct.
 
 
 # Phase 24 — Rolling-window statistical metrics. Same pnl_history bucket
@@ -253,53 +240,23 @@ def _w_key_pos(row):  return ('positions', row.get('account'))
 def _w_key_hold(row): return ('holdings',  row.get('account'))
 
 # Phase 26 (Sprint 2) — parameterized function-call tokens, e.g.
-# `mean_pnl(30)`. Each factory below is the resolver bound to the BASE
-# token name (registered in agent_grammar.yaml with a `params_schema`);
-# GrammarRegistry calls it once per distinct literal call-string (cached
-# forever after) and gets back the (ctx, row) -> value callable a metric
-# resolver normally is. The pre-existing fixed-window tokens below are
-# kept forever, unchanged, as one-line bindings to the same factories —
-# no deprecation, no migration, zero behavior change for existing agents.
-
-def _metric_factory_mean_pnl(minutes):
-    return lambda ctx, row: ctx.window_mean(_w_key_pos(row), minutes)
-
-def _metric_factory_mean_day(minutes):
-    return lambda ctx, row: ctx.window_mean(_w_key_hold(row), minutes)
-
-def _metric_factory_max_drawdown_pnl(minutes):
-    return lambda ctx, row: ctx.window_drawdown(_w_key_pos(row), minutes)
-
-def _metric_factory_max_drawdown_day(minutes):
-    return lambda ctx, row: ctx.window_drawdown(_w_key_hold(row), minutes)
-
-def _metric_factory_max_drawdown_pnl_pct(minutes):
-    return lambda ctx, row: ctx.window_drawdown(_w_key_pos(row), minutes, field_idx=2)
-
-def _metric_factory_stdev_pnl(minutes):
-    return lambda ctx, row: ctx.window_stdev(_w_key_pos(row), minutes)
-
-def _metric_factory_range_pnl(minutes):
-    return lambda ctx, row: ctx.window_range(_w_key_pos(row), minutes)
-
-_metric_mean_pnl_30m  = _metric_factory_mean_pnl(30)
-_metric_mean_pnl_1h   = _metric_factory_mean_pnl(60)
-_metric_mean_day_30m  = _metric_factory_mean_day(30)
-_metric_mean_day_1h   = _metric_factory_mean_day(60)
-
-_metric_max_drawdown_pnl_30m = _metric_factory_max_drawdown_pnl(30)
-_metric_max_drawdown_pnl_1h  = _metric_factory_max_drawdown_pnl(60)
-_metric_max_drawdown_pnl_4h  = _metric_factory_max_drawdown_pnl(240)
-_metric_max_drawdown_day_1h  = _metric_factory_max_drawdown_day(60)
-
-_metric_max_drawdown_pnl_pct_30m = _metric_factory_max_drawdown_pnl_pct(30)
-_metric_max_drawdown_pnl_pct_1h  = _metric_factory_max_drawdown_pnl_pct(60)
-
-_metric_stdev_pnl_30m = _metric_factory_stdev_pnl(30)
-_metric_stdev_pnl_1h  = _metric_factory_stdev_pnl(60)
-
-_metric_range_pnl_30m = _metric_factory_range_pnl(30)
-_metric_range_pnl_1h  = _metric_factory_range_pnl(60)
+# `mean_pnl(30)`. Each factory is the resolver bound to the BASE token
+# name (registered in agent_grammar.yaml with a `params_schema`);
+# GrammarRegistry calls it once per distinct literal call-string
+# (cached forever after) and gets back the (ctx, row) -> value
+# callable a metric resolver normally is. The pre-existing fixed-window
+# tokens are kept forever, unchanged, as one-line bindings to the same
+# factories — no deprecation, no migration, zero behavior change for
+# existing agents.
+#
+# All 7 factories (mean_pnl, mean_day, max_drawdown_pnl,
+# max_drawdown_day, max_drawdown_pnl_pct, stdev_pnl, range_pnl) AND
+# their fixed-window bindings migrated to grammar_tokens/ (Wave 1,
+# batch 2) — one file per factory, e.g. grammar_tokens/metric_mean_pnl.py
+# holds `_metric_factory_mean_pnl` + `_metric_mean_pnl_30m` +
+# `_metric_mean_pnl_1h`. The bindings moved WITH their factory (not kept
+# here importing the factory back) to keep the grammar.py <->
+# grammar_tokens/ import direction strictly one-way.
 
 
 # ── Expiry-aware metrics + scopes (Item 1 / Phase 25) ────────────────

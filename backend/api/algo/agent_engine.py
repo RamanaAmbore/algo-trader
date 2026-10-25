@@ -739,9 +739,10 @@ def _update_underlying_pnl_history(alert_state: dict, now, position_rows,
     """Sibling to `_update_pnl_history` — appends a per-underlying P&L
     sample to its OWN namespaced bucket, `('positions_underlying',
     <underlying>)`, so `pnl_rate_abs`/`pnl_rate_pct` can be evaluated
-    under the `positions.any_underlying` scope (grammar.py's
-    `_metric_pnl_rate_abs`/`_metric_pnl_rate_pct` key off this namespace
-    when a row carries `underlying` and no real `account`).
+    under the `positions.any_underlying` scope
+    (grammar_tokens.metric_pnl_rate_abs/metric_pnl_rate_pct's resolvers
+    key off this namespace when a row carries `underlying` and no real
+    `account`).
 
     Deliberately a SEPARATE section name from `'positions'` (the existing
     per-account/TOTAL bucket) — NOT reused — since an account id could in
