@@ -109,10 +109,18 @@ _FROZEN_ORACLE: dict[str, list[dict]] = {
 
 
 def _spec_by_slug(slug: str) -> dict:
-    for spec in event_agents.SEEDED_AGENTS:
+    # 2026-10-25 alert-channel collapse: 16 of these slugs' own specs
+    # are retired from SEEDED_AGENTS (no longer standalone Agent rows)
+    # but remain byte-identical module-level dicts
+    # (`event_agents._COLLAPSED_DETECTOR_SPECS`), feeding
+    # `ALERT_EVENT_DISPATCH`. This test is about `resolve_channels()`'s
+    # per-slug table, which still carries every one of their rows
+    # unchanged — unaffected by whether the slug still seeds a
+    # standalone row — so the search pool is widened to both.
+    for spec in event_agents.SEEDED_AGENTS + event_agents._COLLAPSED_DETECTOR_SPECS:
         if spec["slug"] == slug:
             return spec
-    raise AssertionError(f"no SEEDED_AGENTS entry for slug {slug!r}")
+    raise AssertionError(f"no known spec for slug {slug!r}")
 
 
 @pytest.mark.parametrize("slug", sorted(_FROZEN_ORACLE))
@@ -139,12 +147,22 @@ def test_frozen_oracle_covers_every_migrated_agent_exactly():
     (added NET-NEW alongside this plan, not migrated from a pre-existing
     `events` literal — it has no pre-migration oracle entry to pin; see
     `test_user_registered_agent_resolves_to_telegram_and_ntfy_high`
-    below for its own direct coverage)."""
+    below for its own direct coverage).
+
+    2026-10-25 alert-channel collapse: the comparison pool widens to
+    `SEEDED_AGENTS + _COLLAPSED_DETECTOR_SPECS`, since 16 of these 20
+    oracle slugs now live only in the latter (see `_spec_by_slug`'s own
+    comment above). The 3 new generic channel agents are excluded for
+    the same reason `USER_REGISTERED_AGENT` already was — net-new, no
+    pre-migration oracle entry to pin."""
+    all_specs = event_agents.SEEDED_AGENTS + event_agents._COLLAPSED_DETECTOR_SPECS
     migrated_slugs = {
-        spec["slug"] for spec in event_agents.SEEDED_AGENTS
+        spec["slug"] for spec in all_specs
         if spec["slug"] not in (
             event_agents.BREACH_AGENT["slug"], event_agents.UNROUTED_ALERT_AGENT["slug"],
             event_agents.USER_REGISTERED_AGENT["slug"],
+            event_agents.TELEGRAM_CHANNEL_AGENT["slug"], event_agents.NTFY_CHANNEL_AGENT["slug"],
+            event_agents.EMAIL_CHANNEL_AGENT["slug"],
         )
     }
     assert migrated_slugs == set(_FROZEN_ORACLE)

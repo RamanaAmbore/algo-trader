@@ -231,15 +231,23 @@ seed or form-built agent cannot be converted to explicit mode through the Consol
 convert action would be a separate feature. Details are in
 [CLAUDE.md](../../CLAUDE.md), entry "`has_explicit_alert`".
 
-### 3.9 One Agent row per producer tag: the collapse was rejected (2026-10)
+### 3.9 One Agent row per producer tag: the collapse was rejected (2026-10) — PARTIALLY REVERSED, see §3.22
 
-Landed on `workshop` in `65de9319` and `5db3f7a8`. The file holds 21 seeded agents
-(`SEEDED_AGENTS`,
-[event_agents.py:1223](../../backend/api/algo/event_agents.py#L1223)). The table in 3.3 is not
-exhaustive.
+**2026-10-25 update — this decision was revisited and the collapse shipped, in a narrower form than
+the original rejected proposal.** §3.22 is the current design. The findings below are kept as
+history: two of the four objections (renderer-per-row, condition duplication) are answered by
+§3.22's own mechanism (a lookup table keyed by `alert_event`, read from the retired agents'
+own `conditions`/`actions`/channel rows, never retyped). The third (per-event toggle loss on the
+Automation page) is NOT answered — it is an accepted, documented tradeoff (§3.22). The fourth (no
+soak time) no longer applies; the file has had a stable period since those four fixes landed.
+
+Landed on `workshop` in `65de9319` and `5db3f7a8`. The file held 21, then (after further additions)
+23 seeded agents (`SEEDED_AGENTS`,
+[event_agents.py:1223](../../backend/api/algo/event_agents.py#L1223)) before the §3.22 collapse. The
+table in 3.3 is not exhaustive.
 
 A 6-agent council reviewed a proposal to collapse the 21 agents into 4 channel-keyed agents, and
-rejected it. Findings, so a revisit starts here:
+rejected it at the time. Findings, so a revisit starts here:
 
 - **The engine maps one renderer per row.** `_render_key(agent)`
   ([event_agents.py:383](../../backend/api/algo/event_agents.py#L383)) reads the single `render`
@@ -722,6 +730,135 @@ log through a new `_DISPATCH_LOGGER` (name `backend.api.algo.events`, the same n
 skip-list itself is unchanged. A real-logger regression test confirms the record now survives
 `emit()`. See G16 in §5.
 
+### 3.22 Alert-channel collapse: 23 seeded event agents down to 10 (2026-10-25)
+
+Revisits §3.9. 16 of the 23 `kind='event'` seeded agents are retired from `SEEDED_AGENTS` and
+replaced by 3 generic channel agents (`TELEGRAM_CHANNEL_AGENT`/`NTFY_CHANNEL_AGENT`/
+`EMAIL_CHANNEL_AGENT`) plus a new lookup table, `event_agents.ALERT_EVENT_DISPATCH`. The result is
+10 real seeded agents, down from 23.
+
+**Why this is narrower than the proposal §3.9 rejected.** The original 2026-10 proposal collapsed
+all agents (including the rich-alert multiplexer, the cycle-breach dispatcher, and the condition-
+match catch-all) into 4 channel-keyed rows with a flat, shared condition. This version does three
+things differently: it answers §3.9's renderer-per-row and condition-duplication objections
+structurally rather than papering over them; it excludes 7 agents whose own mechanism does not fit
+a per-`alert_event` table; and it derives every field of the new table from existing data, so there
+is nothing hand-retyped to drift.
+
+**The 16 collapsed agents.** `CHASE_CANCEL_AGENT`, `PARTIAL_GTT_AGENT`,
+`TEMPLATE_ATTACH_URGENT_AGENT` (2 events: `wing_unprotected`, `wing_hard_reject`),
+`TEMPLATE_ATTACH_HIGH_AGENT` (2 events: `wing_skip`, `wing_offset_skip`), `ORDER_FAILURE_AGENT`,
+`ORDER_CORRECTION_AGENT`, `TEMPLATE_GUARD_AGENT`, `TEMPLATE_ATTACH_FAIL_AGENT`, `MCP_PING_AGENT`,
+`GTT_ASYMMETRIC_AGENT`, `OCO_DOUBLE_FIRE_AGENT`, `TICKER_RECOVERED_AGENT`, `TICKER_DEGRADED_AGENT`,
+`GTT_NOT_ACCEPTED_AGENT`, `FILL_AGENT`, `USER_REGISTERED_AGENT` — 16 specs, 18 `alert_event` keys.
+Their dicts are **kept, byte-identical**, as `event_agents._COLLAPSED_DETECTOR_SPECS`
+([event_agents.py](../../backend/api/algo/event_agents.py)) — still read by
+`test_event_agent_tag_unification.py`'s existing per-agent condition pins, and now also the source
+data `ALERT_EVENT_DISPATCH` is built from. They are removed from `SEEDED_AGENTS` and their DB rows
+are deactivated (not deleted) on the next `seed_event_agents()` run.
+
+**The 7 agents that stay dedicated, and why each doesn't fit the table:**
+
+| Slug | Reason |
+|---|---|
+| `error-alert` | Blanket catch-all keyed on `tag="error"` with **no** `alert_event` at all — matches any ERROR+/CRITICAL log codebase-wide. Carries the repeat-gate (`actions[0]['gate']=True`) and `_error_agent_self_alerted` keys on its literal slug. None of this fits a per-event table. |
+| `visitor-report-alert` | Its real channel is `telegram_info` only — a dedicated channel none of the 3 generic agents cover, same reason the next two stay dedicated. Not in the original brief's own enumeration of the 18 — found and corrected during implementation review. |
+| `deploy-sync-alert` | Dedicated `telegram_deploy` channel, never generic telegram/ntfy/email (§3.14, §3.21). |
+| `market-summary` | Dedicated `telegram_info` + email, never generic. |
+| `agent-alert-rich` | Fires from the cycle-agent engine, not a log-tag producer event; already writes a real `AgentEvent` row; resolves ntfy priority from a per-record tracked tier (§3.11), not a static table entry. |
+| `cycle-breach-alert` | Same cycle-agent-engine class as above; 100% dynamic per-record channels (`out[4]`). |
+| `unrouted-alert-catch-all` | The condition-match catch-all safety net itself (§3.13) — must keep dispatching unconditionally, independent of this table. |
+
+**`ALERT_EVENT_DISPATCH` is derived, never retyped.** `_build_alert_event_dispatch_table()`
+([event_agents.py](../../backend/api/algo/event_agents.py)) reads, for each of the 16 collapsed
+specs: its render key from `actions[0]['render']`; its `(alert_event, min_level, where)` leaves from
+its own `conditions`; and its channel list from `alert_routing._PER_SLUG_OVERRIDES[spec['slug']]` —
+the exact verbatim list that spec's own (now-retired) standalone Agent row used to resolve to. This
+is the structural answer to §3.9's "conditions/channels would be duplicated" objection: there is
+nothing here to retype, because nothing here is typed at all.
+
+**The 3 channel agents share one generated condition.** `_build_shared_channel_condition()` builds
+`{"any": [...]}`, one `{"log": {"tag": "alert", "min_level": ..., "where": ...}}` leaf per
+`ALERT_EVENT_DISPATCH` entry — reproducing exactly the per-event `min_level`/`where` match semantics
+each collapsed spec enforced on its own. A bare `{"tag": "alert", "min_level": "INFO"}` condition
+was considered and rejected during implementation review: it would have matched every alert-tagged
+record regardless of `alert_event` (defeating the unrouted-catch-all's unknown-event test), and
+dropped `FILL_AGENT`'s `mode: "live"` filter (leaking paper/sim fills to Telegram).
+
+**Dispatch mechanics.** `_dispatch_agent()` branches to `_dispatch_channel_agent()`
+([event_agents.py](../../backend/api/algo/event_agents.py)) for any agent whose render action names
+the internal sentinel `event_table` (never a real registered renderer) and carries a `channel_key`
+(`"telegram"`/`"ntfy"`/`"email"`). For each matched record, it looks up `extra["alert_event"]` in
+`ALERT_EVENT_DISPATCH`, calls the real renderer, and sends only the ONE channel entry naming
+`channel_key` from that event's verbatim channel list — via `_dispatch_record_channels()`'s new
+`only_channel` parameter, applied AFTER the forced-email gate (§3.21) runs against the full list, so
+an action-required record (e.g. `cancel_unconfirmed`) still gets exactly one forced email, from
+whichever of the 3 channel agents evaluates it, never zero and never duplicated. Firing all 3
+channel agents against the same record therefore reproduces exactly the set of real sends that
+record's former single dedicated agent used to make, split across 3 agent objects instead of 1.
+`_dispatch_agent` never calls `alert_routing.resolve_channels()` for one of the 3 channel-agent
+slugs — real dispatch for them is 100% table-driven, never routing-tree-driven.
+
+**Display-only per-slug rows.** `alert_routing._PER_SLUG_OVERRIDES` gained 3 new rows
+(`alert-channel-telegram`/`-ntfy`/`-email`, each a single matching channel entry, no `gate` key —
+there is no real gate semantic to declare, since real dispatch never reaches this table for these
+slugs). These exist purely so two read-only callers — `routes/agents.py`'s
+`_event_agent_resolved_channels()` (the Automation page's channel chips, §3.19) and
+`scripts/alert_seed_audit.py` — get a sensible single-channel answer instead of falling through to
+`CATCH_ALL_CHANNELS` and logging a spurious WARNING. The 16 retired slugs' own per-slug rows are
+**kept unchanged** in this same table — they are what `ALERT_EVENT_DISPATCH` reads from, and they
+also let a retired (now-inactive) agent's historical channel set still display correctly on the
+Automation page.
+
+**Retirement, not deletion.** `_RETIRED_SLUGS` is the frozenset of the 16 collapsed specs' own
+slugs. `_retire_collapsed_event_agents()`, called from `seed_event_agents()` right before its final
+commit, deactivates (`status = 'inactive'`) any currently-active row whose slug is in that set — the
+pre-existing insert/update loop only ever touches a slug present in `SEEDED_AGENTS`, so a slug simply
+removed from that tuple would otherwise be left `active` forever and double-deliver alongside the
+new channel agents. A fresh database (rows never inserted) makes this a no-op. The row (and its
+history) stays reversible; nothing is deleted.
+
+**`SEED_VERSION` 4 -> 5.** Pre-flight: [scripts/alert_seed_audit.py](../../scripts/alert_seed_audit.py)
+was run against both prod and dev on 2026-10-25, immediately before this change shipped. All 23
+pre-collapse `kind='event'` rows were hash-clean on both (zero `modified_skip` risk) — no row's
+`conditions`/`events`/`actions` had ever diverged from what seeding last wrote, so the deactivation
+pass cannot silently discard an operator edit.
+
+**Observability tradeoff, accepted and documented.** Per-event activate/deactivate on the Automation
+page is lost for the 16 collapsed events — they share one on/off switch per channel now, not one
+each. This is NOT offset by any pre-existing per-type fire count: `trigger_count`/`last_triggered_at`
+are written only by `agent_engine.py`'s cycle-agent path ([agent_engine.py:4061](../../backend/api/algo/agent_engine.py#L4061),
+[:4631](../../backend/api/algo/agent_engine.py#L4631)); no `kind='event'` agent, collapsed or not,
+has ever had per-type trigger-count observability. `extra['alert_event']` on the dispatched/logged
+record is unchanged and still carries the specific type, so the Alerts tab / log history (§3.21)
+still supports per-type filtering even though the Automation page's per-agent row count collapses to
+per-channel.
+
+**What did NOT change.** Every renderer function (`_render_chase_cancel`, `_render_order_failure`,
+`_render_fill`, etc.) is untouched. The repeat-gate, the action-required ntfy/email gates, the
+per-channel priority resolution order (§3.11), the DEBUG exemption, and the unrouted-record catch-
+all (§3.13) are all untouched — `_dispatch_channel_agent()` reuses `_dispatch_record_channels()`
+unchanged except for the new, backward-compatible `only_channel` parameter.
+
+**Tests.** `backend/tests/test_alert_channel_collapse.py` — for every one of the 18 `alert_event`
+keys, proves the exact same channel set fires at the exact same priority via the exact same
+renderer (reusing `test_alert_golden.py`'s own pinned `rec` fixtures and expected literals verbatim
+where they exist), proves the 3 excluded + dedicated agents are byte-identical to before, proves an
+unknown `alert_event` and a known-event-below-its-min_level both still fall through to the unrouted
+catch-all, proves a paper-mode fill still never sends, and proves the retirement pass. Existing
+tests that asserted the pre-collapse 23-agent shape (`test_alert_routing.py`,
+`test_alert_routing_tree_activation.py`, `test_event_agent_tag_unification.py`,
+`test_background_alert_route_migration.py`, `test_agent_builtin_event_label.py`,
+`test_seeded_event_agents_frontend_fixture.py`, `test_grammar_event_action_gate_field.py`) were
+updated to read from the wider `SEEDED_AGENTS | _COLLAPSED_DETECTOR_SPECS` pool where their own
+intent (pinning `resolve_channels()`'s per-slug table, or a spec's own `conditions`) is unaffected by
+which pool a slug's row lives in, and to the new counts/slug sets where it is.
+
+**Invariant.** `ALERT_EVENT_DISPATCH` is read, never retyped, from the 16 retired specs' own
+`conditions`/`actions` and from `alert_routing._PER_SLUG_OVERRIDES`. A channel agent never sends a
+channel absent from its matched event's own verbatim channel list, and never sends the same forced
+email twice for one record.
+
 ## 4. What changed, by file
 
 | File | Change |
@@ -753,6 +890,8 @@ skip-list itself is unchanged. A real-logger regression test confirms the record
 | `scripts/alert_seed_audit.py` (2026-10-24) | New. Read-only pre-bump audit of `kind='event'` rows (§3.19) |
 | `alert_utils.py`, `event_agents.py`, `alert_routing.py`, `webhook/notify_deploy.py`, `routes/alerts.py` (2026-10-25, `17a1c85a`) | Plain-text Telegram and ntfy. `telegram_deploy` channel. Forced email gate. `alert`-tagged `LogEvent` merge into the Alerts tab (§3.21). Only the commit message names the file list. The working tree was checked, not the full stat |
 | `alert_utils.py` (2026-10-25, `492fd988`) | `_DISPATCH_LOGGER` replaces the skip-listed `logger` in `_send_order_failure_messages`/`send_summary` — fixes G16, zero delivery since 2026-10-06 |
+| `event_agents.py`, `alert_routing.py` (2026-10-25, alert-channel collapse) | 16 seeded agents retired from `SEEDED_AGENTS`, kept as `_COLLAPSED_DETECTOR_SPECS`; 3 new generic channel agents; `ALERT_EVENT_DISPATCH` table; `SEED_VERSION` 4 -> 5; `_retire_collapsed_event_agents()`; `alert_routing._PER_SLUG_OVERRIDES` gains 3 display-only rows (§3.22) |
+| `backend/tests/test_alert_channel_collapse.py` (2026-10-25) | New. Before/after delivery-identical golden gate for all 18 collapsed `alert_event` keys (§3.22) |
 
 ## 5. Gaps
 

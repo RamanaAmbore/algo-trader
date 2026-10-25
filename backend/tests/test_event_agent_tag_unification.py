@@ -322,17 +322,54 @@ def test_breach_agent_condition_is_byte_identical_to_before_this_pass():
     }
 
 
-def test_all_23_seeded_agents_accounted_for():
-    """Every SEEDED_AGENTS slug is either unified (tested above),
-    explicitly excluded (tested above), or named here as net-new/
-    special-case — guards against a future agent silently falling
-    outside this file's coverage."""
+def test_all_23_pre_collapse_specs_still_accounted_for():
+    """2026-10-25 alert-channel collapse (see
+    `event_agents.SEED_VERSION`'s own comment): 16 of the original 23
+    tag-unified specs this file's `_CASES` table covers are no longer
+    standalone `SEEDED_AGENTS` members — their dicts are KEPT,
+    byte-identical, as plain detector data
+    (`event_agents._COLLAPSED_DETECTOR_SPECS`), feeding
+    `ALERT_EVENT_DISPATCH`. Every `_CASES`/`_CASES`-adjacent assertion
+    above still runs unchanged against those dicts' own `conditions` —
+    this test only re-anchors the "every spec accounted for" guard to
+    the WIDER pool (`SEEDED_AGENTS | _COLLAPSED_DETECTOR_SPECS`) instead
+    of `SEEDED_AGENTS` alone, so a future agent still can't silently
+    fall outside this file's coverage from either side of the
+    collapse."""
     excluded = {ea.ERROR_AGENT["slug"], ea.RICH_ALERT_AGENT["slug"], ea.BREACH_AGENT["slug"]}
     unified_tested = {p.values[0]["slug"] for p in _CASES} | {
         ea.FILL_AGENT["slug"], ea.USER_REGISTERED_AGENT["slug"], ea.UNROUTED_ALERT_AGENT["slug"],
     }
-    all_slugs = {spec["slug"] for spec in ea.SEEDED_AGENTS}
-    assert all_slugs == excluded | unified_tested, (
-        f"uncovered slugs: {all_slugs - excluded - unified_tested}; "
-        f"stale coverage entries: {(excluded | unified_tested) - all_slugs}"
+    # The 3 new generic channel agents are net-new (2026-10-25 collapse)
+    # and out of scope for this 23-spec, pre-collapse coverage check —
+    # see test_seeded_agents_is_exactly_the_post_collapse_10 below for
+    # their own coverage.
+    channel_agent_slugs = {
+        ea.TELEGRAM_CHANNEL_AGENT["slug"], ea.NTFY_CHANNEL_AGENT["slug"], ea.EMAIL_CHANNEL_AGENT["slug"],
+    }
+    all_pre_collapse_slugs = {
+        spec["slug"] for spec in ea.SEEDED_AGENTS + ea._COLLAPSED_DETECTOR_SPECS
+    } - channel_agent_slugs
+    assert all_pre_collapse_slugs == excluded | unified_tested, (
+        f"uncovered slugs: {all_pre_collapse_slugs - excluded - unified_tested}; "
+        f"stale coverage entries: {(excluded | unified_tested) - all_pre_collapse_slugs}"
     )
+
+
+def test_seeded_agents_is_exactly_the_post_collapse_10():
+    """The real, live `SEEDED_AGENTS` tuple after the collapse: the 7
+    kept-dedicated specs (ERROR_AGENT/DEPLOY_SYNC_AGENT/RICH_ALERT_AGENT/
+    SUMMARY_AGENT/BREACH_AGENT/VISITOR_REPORT_AGENT/UNROUTED_ALERT_AGENT)
+    plus the 3 new generic channel agents. None of the 16 collapsed
+    specs appear."""
+    expected = {
+        ea.ERROR_AGENT["slug"], ea.DEPLOY_SYNC_AGENT["slug"], ea.RICH_ALERT_AGENT["slug"],
+        ea.SUMMARY_AGENT["slug"], ea.BREACH_AGENT["slug"], ea.VISITOR_REPORT_AGENT["slug"],
+        ea.UNROUTED_ALERT_AGENT["slug"], ea.TELEGRAM_CHANNEL_AGENT["slug"],
+        ea.NTFY_CHANNEL_AGENT["slug"], ea.EMAIL_CHANNEL_AGENT["slug"],
+    }
+    actual = {spec["slug"] for spec in ea.SEEDED_AGENTS}
+    assert actual == expected
+    assert len(ea.SEEDED_AGENTS) == 10
+    for spec in ea._COLLAPSED_DETECTOR_SPECS:
+        assert spec["slug"] not in actual, f"{spec['slug']} must be retired from SEEDED_AGENTS"

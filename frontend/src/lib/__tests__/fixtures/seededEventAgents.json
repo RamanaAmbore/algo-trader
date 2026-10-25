@@ -1,26 +1,5 @@
 [
   {
-    "slug": "fill-alert",
-    "name": "Fill alert",
-    "conditions": {
-      "log": {
-        "tag": "alert",
-        "min_level": "INFO",
-        "where": {
-          "alert_event": "filled",
-          "mode": "live"
-        }
-      }
-    },
-    "events": [],
-    "actions": [
-      {
-        "type": "render",
-        "render": "fill"
-      }
-    ]
-  },
-  {
     "slug": "error-alert",
     "name": "Error alert",
     "conditions": {
@@ -35,212 +14,6 @@
         "type": "render",
         "render": "error",
         "gate": true
-      }
-    ]
-  },
-  {
-    "slug": "chase-cancel-alert",
-    "name": "Chase cancel unconfirmed",
-    "conditions": {
-      "log": {
-        "tag": "alert",
-        "min_level": "CRITICAL",
-        "where": {
-          "alert_event": "cancel_unconfirmed"
-        }
-      }
-    },
-    "events": [],
-    "actions": [
-      {
-        "type": "render",
-        "render": "chase_cancel"
-      }
-    ]
-  },
-  {
-    "slug": "partial-gtt-alert",
-    "name": "Partial GTT placement",
-    "conditions": {
-      "log": {
-        "tag": "alert",
-        "min_level": "CRITICAL",
-        "where": {
-          "alert_event": "partial_gtt"
-        }
-      }
-    },
-    "events": [],
-    "actions": [
-      {
-        "type": "render",
-        "render": "partial_gtt"
-      }
-    ]
-  },
-  {
-    "slug": "template-attach-urgent",
-    "name": "Template attach urgent",
-    "conditions": {
-      "any": [
-        {
-          "log": {
-            "tag": "alert",
-            "min_level": "WARNING",
-            "where": {
-              "alert_event": "wing_unprotected"
-            }
-          }
-        },
-        {
-          "log": {
-            "tag": "alert",
-            "min_level": "CRITICAL",
-            "where": {
-              "alert_event": "wing_hard_reject"
-            }
-          }
-        }
-      ]
-    },
-    "events": [],
-    "actions": [
-      {
-        "type": "render",
-        "render": "template_attach"
-      }
-    ]
-  },
-  {
-    "slug": "template-attach-high",
-    "name": "Template attach high",
-    "conditions": {
-      "any": [
-        {
-          "log": {
-            "tag": "alert",
-            "min_level": "WARNING",
-            "where": {
-              "alert_event": "wing_skip"
-            }
-          }
-        },
-        {
-          "log": {
-            "tag": "alert",
-            "min_level": "WARNING",
-            "where": {
-              "alert_event": "wing_offset_skip"
-            }
-          }
-        }
-      ]
-    },
-    "events": [],
-    "actions": [
-      {
-        "type": "render",
-        "render": "template_attach"
-      }
-    ]
-  },
-  {
-    "slug": "order-failure-alert",
-    "name": "Order failure",
-    "conditions": {
-      "log": {
-        "tag": "alert",
-        "min_level": "WARNING",
-        "where": {
-          "alert_event": "order_failure"
-        }
-      }
-    },
-    "events": [],
-    "actions": [
-      {
-        "type": "render",
-        "render": "order_failure"
-      }
-    ]
-  },
-  {
-    "slug": "template-guard-alert",
-    "name": "Template guard",
-    "conditions": {
-      "log": {
-        "tag": "alert",
-        "min_level": "INFO",
-        "where": {
-          "alert_event": "template_guard"
-        }
-      }
-    },
-    "events": [],
-    "actions": [
-      {
-        "type": "render",
-        "render": "template_guard"
-      }
-    ]
-  },
-  {
-    "slug": "template-attach-fail-alert",
-    "name": "Template attach failed",
-    "conditions": {
-      "log": {
-        "tag": "alert",
-        "min_level": "WARNING",
-        "where": {
-          "alert_event": "template_attach_fail"
-        }
-      }
-    },
-    "events": [],
-    "actions": [
-      {
-        "type": "render",
-        "render": "template_attach_fail"
-      }
-    ]
-  },
-  {
-    "slug": "mcp-ping-alert",
-    "name": "MCP audit ping",
-    "conditions": {
-      "log": {
-        "tag": "alert",
-        "min_level": "INFO",
-        "where": {
-          "alert_event": "mcp_ping"
-        }
-      }
-    },
-    "events": [],
-    "actions": [
-      {
-        "type": "render",
-        "render": "mcp_ping"
-      }
-    ]
-  },
-  {
-    "slug": "order-correction-alert",
-    "name": "Order poll correction",
-    "conditions": {
-      "log": {
-        "tag": "alert",
-        "min_level": "WARNING",
-        "where": {
-          "alert_event": "order_correction"
-        }
-      }
-    },
-    "events": [],
-    "actions": [
-      {
-        "type": "render",
-        "render": "order_correction"
       }
     ]
   },
@@ -325,106 +98,6 @@
     ]
   },
   {
-    "slug": "gtt-not-accepted-alert",
-    "name": "GTT not accepted",
-    "conditions": {
-      "log": {
-        "tag": "alert",
-        "min_level": "ERROR",
-        "where": {
-          "alert_event": "gtt_not_accepted"
-        }
-      }
-    },
-    "events": [],
-    "actions": [
-      {
-        "type": "render",
-        "render": "gtt_not_accepted"
-      }
-    ]
-  },
-  {
-    "slug": "gtt-asymmetric-alert",
-    "name": "GTT asymmetric",
-    "conditions": {
-      "log": {
-        "tag": "alert",
-        "min_level": "WARNING",
-        "where": {
-          "alert_event": "gtt_asymmetric"
-        }
-      }
-    },
-    "events": [],
-    "actions": [
-      {
-        "type": "render",
-        "render": "generic_notice"
-      }
-    ]
-  },
-  {
-    "slug": "oco-double-fire-alert",
-    "name": "OCO double-fire",
-    "conditions": {
-      "log": {
-        "tag": "alert",
-        "min_level": "WARNING",
-        "where": {
-          "alert_event": "oco_double_fire"
-        }
-      }
-    },
-    "events": [],
-    "actions": [
-      {
-        "type": "render",
-        "render": "generic_notice"
-      }
-    ]
-  },
-  {
-    "slug": "ticker-recovered-alert",
-    "name": "Ticker recovered",
-    "conditions": {
-      "log": {
-        "tag": "alert",
-        "min_level": "INFO",
-        "where": {
-          "alert_event": "ticker_recovered"
-        }
-      }
-    },
-    "events": [],
-    "actions": [
-      {
-        "type": "render",
-        "render": "generic_notice"
-      }
-    ]
-  },
-  {
-    "slug": "ticker-degraded-alert",
-    "name": "Ticker degraded",
-    "conditions": {
-      "log": {
-        "tag": "alert",
-        "min_level": "WARNING",
-        "where": {
-          "alert_event": "ticker_degraded"
-        }
-      }
-    },
-    "events": [],
-    "actions": [
-      {
-        "type": "render",
-        "render": "generic_notice"
-      }
-    ]
-  },
-  {
     "slug": "visitor-report-alert",
     "name": "Visitor report",
     "conditions": {
@@ -477,22 +150,539 @@
     ]
   },
   {
-    "slug": "user-registered-alert",
-    "name": "User registered",
+    "slug": "alert-channel-telegram",
+    "name": "Alert channel: Telegram",
     "conditions": {
-      "log": {
-        "tag": "alert",
-        "min_level": "INFO",
-        "where": {
-          "alert_event": "user_registered"
+      "any": [
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "CRITICAL",
+            "where": {
+              "alert_event": "cancel_unconfirmed"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "CRITICAL",
+            "where": {
+              "alert_event": "partial_gtt"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "WARNING",
+            "where": {
+              "alert_event": "wing_unprotected"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "CRITICAL",
+            "where": {
+              "alert_event": "wing_hard_reject"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "WARNING",
+            "where": {
+              "alert_event": "wing_skip"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "WARNING",
+            "where": {
+              "alert_event": "wing_offset_skip"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "WARNING",
+            "where": {
+              "alert_event": "order_failure"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "WARNING",
+            "where": {
+              "alert_event": "order_correction"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "INFO",
+            "where": {
+              "alert_event": "template_guard"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "WARNING",
+            "where": {
+              "alert_event": "template_attach_fail"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "INFO",
+            "where": {
+              "alert_event": "mcp_ping"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "WARNING",
+            "where": {
+              "alert_event": "gtt_asymmetric"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "WARNING",
+            "where": {
+              "alert_event": "oco_double_fire"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "INFO",
+            "where": {
+              "alert_event": "ticker_recovered"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "WARNING",
+            "where": {
+              "alert_event": "ticker_degraded"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "ERROR",
+            "where": {
+              "alert_event": "gtt_not_accepted"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "INFO",
+            "where": {
+              "alert_event": "filled",
+              "mode": "live"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "INFO",
+            "where": {
+              "alert_event": "user_registered"
+            }
+          }
         }
-      }
+      ]
     },
     "events": [],
     "actions": [
       {
         "type": "render",
-        "render": "generic_notice"
+        "render": "event_table",
+        "channel_key": "telegram"
+      }
+    ]
+  },
+  {
+    "slug": "alert-channel-ntfy",
+    "name": "Alert channel: ntfy",
+    "conditions": {
+      "any": [
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "CRITICAL",
+            "where": {
+              "alert_event": "cancel_unconfirmed"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "CRITICAL",
+            "where": {
+              "alert_event": "partial_gtt"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "WARNING",
+            "where": {
+              "alert_event": "wing_unprotected"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "CRITICAL",
+            "where": {
+              "alert_event": "wing_hard_reject"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "WARNING",
+            "where": {
+              "alert_event": "wing_skip"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "WARNING",
+            "where": {
+              "alert_event": "wing_offset_skip"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "WARNING",
+            "where": {
+              "alert_event": "order_failure"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "WARNING",
+            "where": {
+              "alert_event": "order_correction"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "INFO",
+            "where": {
+              "alert_event": "template_guard"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "WARNING",
+            "where": {
+              "alert_event": "template_attach_fail"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "INFO",
+            "where": {
+              "alert_event": "mcp_ping"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "WARNING",
+            "where": {
+              "alert_event": "gtt_asymmetric"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "WARNING",
+            "where": {
+              "alert_event": "oco_double_fire"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "INFO",
+            "where": {
+              "alert_event": "ticker_recovered"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "WARNING",
+            "where": {
+              "alert_event": "ticker_degraded"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "ERROR",
+            "where": {
+              "alert_event": "gtt_not_accepted"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "INFO",
+            "where": {
+              "alert_event": "filled",
+              "mode": "live"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "INFO",
+            "where": {
+              "alert_event": "user_registered"
+            }
+          }
+        }
+      ]
+    },
+    "events": [],
+    "actions": [
+      {
+        "type": "render",
+        "render": "event_table",
+        "channel_key": "ntfy"
+      }
+    ]
+  },
+  {
+    "slug": "alert-channel-email",
+    "name": "Alert channel: Email",
+    "conditions": {
+      "any": [
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "CRITICAL",
+            "where": {
+              "alert_event": "cancel_unconfirmed"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "CRITICAL",
+            "where": {
+              "alert_event": "partial_gtt"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "WARNING",
+            "where": {
+              "alert_event": "wing_unprotected"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "CRITICAL",
+            "where": {
+              "alert_event": "wing_hard_reject"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "WARNING",
+            "where": {
+              "alert_event": "wing_skip"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "WARNING",
+            "where": {
+              "alert_event": "wing_offset_skip"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "WARNING",
+            "where": {
+              "alert_event": "order_failure"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "WARNING",
+            "where": {
+              "alert_event": "order_correction"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "INFO",
+            "where": {
+              "alert_event": "template_guard"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "WARNING",
+            "where": {
+              "alert_event": "template_attach_fail"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "INFO",
+            "where": {
+              "alert_event": "mcp_ping"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "WARNING",
+            "where": {
+              "alert_event": "gtt_asymmetric"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "WARNING",
+            "where": {
+              "alert_event": "oco_double_fire"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "INFO",
+            "where": {
+              "alert_event": "ticker_recovered"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "WARNING",
+            "where": {
+              "alert_event": "ticker_degraded"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "ERROR",
+            "where": {
+              "alert_event": "gtt_not_accepted"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "INFO",
+            "where": {
+              "alert_event": "filled",
+              "mode": "live"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "alert",
+            "min_level": "INFO",
+            "where": {
+              "alert_event": "user_registered"
+            }
+          }
+        }
+      ]
+    },
+    "events": [],
+    "actions": [
+      {
+        "type": "render",
+        "render": "event_table",
+        "channel_key": "email"
       }
     ]
   }

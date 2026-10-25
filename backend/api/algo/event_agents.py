@@ -607,12 +607,27 @@ def _dispatch_trace(agent, rec: dict, channel_name: "str | None",
 
 async def _dispatch_record_channels(
     agent, rec: dict, out: tuple, channels: list, log_only: bool,
+    only_channel: "str | None" = None,
 ) -> int:
     """Send one rendered record to every channel in its (static or
     per-record) channel list. Extracted from `_dispatch_agent` (2026-
     10-23) purely to keep that function's cyclomatic complexity within
     the project's radon gate — no behavior change beyond the binary
     ntfy action-required gate itself.
+
+    `only_channel` (2026-10-25 alert-channel collapse) — set by
+    `_dispatch_channel_agent()` for one of the 3 generic channel agents.
+    The full per-event channel list (verbatim from the former dedicated
+    agent's own per-slug row) is passed in, the forced-email gate runs
+    against the FULL list first (so an action-required record still
+    gets its email entry appended exactly once, from whichever of the 3
+    channel agents evaluates it — see that gate's own docstring), and
+    only THEN is the list narrowed to the one channel this agent owns.
+    Narrowing before the gate would either lose chase-cancel-alert's
+    forced email (filtered out before the gate could append it) or risk
+    double-appending if each channel agent's own copy of the list
+    already carried a stale email entry. `None` (every other agent) is
+    a no-op passthrough — unchanged behavior.
 
     2026-10 forced-email gate: `_apply_action_required_email_gate` runs
     once against the whole `channels` list (not per-channel like the
@@ -625,6 +640,8 @@ async def _dispatch_record_channels(
     rec_priority = _rec_tracked_ntfy_priority(rec)
     action_required = (rec.get("extra") or {}).get("action_required")
     channels = _apply_action_required_email_gate(channels, action_required)
+    if only_channel is not None:
+        channels = [c for c in channels if isinstance(c, dict) and c.get("channel") == only_channel]
     sent = 0
     for ch in channels:
         channel_name = ch.get("channel") if isinstance(ch, dict) else None
@@ -658,6 +675,16 @@ async def _dispatch_record_channels(
 
 
 async def _dispatch_agent(agent, records: list[dict]) -> int:
+    # 2026-10-25 alert-channel collapse — one of the 3 generic channel
+    # agents (TELEGRAM_CHANNEL_AGENT/NTFY_CHANNEL_AGENT/EMAIL_CHANNEL_AGENT)
+    # dispatches through a completely different path: it has no single
+    # static renderer, and must never call `alert_routing.resolve_channels()`
+    # (its slug has no real per-slug meaning for live dispatch — see
+    # `ALERT_EVENT_DISPATCH`'s own docstring). Checked first and returns
+    # immediately so neither of those two things below ever runs for it.
+    channel_key = _channel_key_for_agent(agent)
+    if channel_key is not None:
+        return await _dispatch_channel_agent(agent, records, channel_key)
     key = _render_key(agent)
     render = RENDERS.get(key)
     if render is None:
@@ -717,6 +744,84 @@ async def _dispatch_agent(agent, records: list[dict]) -> int:
         out = render(to_render)
         channels = out[4] if len(out) > 4 else agent_channels
         sent += await _dispatch_record_channels(agent, rec, out, channels, log_only)
+    return sent
+
+
+_CHANNEL_AGENT_RENDER_SENTINEL = "event_table"
+
+
+def _channel_key_for_agent(agent) -> "str | None":
+    """Non-`None` only for one of the 3 generic channel agents built by
+    `_channel_agent_spec()` below. Mirrors `_render_key()`'s own
+    action-scan shape, but reads the extra `channel_key` field those 3
+    specs' render action carries instead of `render` itself — a channel
+    agent's `render` is always the sentinel string, never a real
+    renderer name, so `_render_key()`/`RENDERS.get(...)` must never be
+    reached for it (see `_dispatch_agent`'s branch, and the sentinel's
+    own no-op registration below)."""
+    for action in agent.actions or []:
+        if (isinstance(action, dict) and action.get("type") == "render"
+                and action.get("render") == _CHANNEL_AGENT_RENDER_SENTINEL):
+            return action.get("channel_key")
+    return None
+
+
+def _render_event_table_sentinel(rec: dict) -> tuple[str, str]:
+    """Never actually invoked. `_dispatch_agent` branches to
+    `_dispatch_channel_agent()` for a channel agent BEFORE it ever calls
+    `RENDERS.get(_render_key(agent))` — registered here purely so
+    `validate_seed_spec()`'s "unknown renderer" check doesn't reject the
+    3 channel-agent specs, whose real per-record renderer is picked at
+    dispatch time from `ALERT_EVENT_DISPATCH`, not from a static
+    `actions[0]['render']` value."""
+    return ("", "")
+
+
+register_renderer(_CHANNEL_AGENT_RENDER_SENTINEL)(_render_event_table_sentinel)
+
+
+async def _dispatch_channel_agent(agent, records: list[dict], channel_key: str) -> int:
+    """Dispatch path for one of the 3 generic channel agents
+    (`TELEGRAM_CHANNEL_AGENT`/`NTFY_CHANNEL_AGENT`/`EMAIL_CHANNEL_AGENT`,
+    2026-10-25 alert-channel collapse). `agent.conditions` is the single
+    OR of every collapsed detector spec's own `(alert_event, min_level,
+    where)` leaf (`_CHANNEL_AGENT_CONDITION`) — a record that matches it
+    is looked up in `ALERT_EVENT_DISPATCH` by its own `alert_event` to
+    find which (now-retired) dedicated agent's renderer and verbatim
+    channel list applies, and only the ONE channel entry naming
+    `channel_key` from that list is actually sent (via
+    `_dispatch_record_channels`'s `only_channel` filter). Firing all 3
+    channel agents against the same record therefore reproduces exactly
+    the set of real sends that record's former single dedicated agent
+    used to make — split across 3 agent objects instead of 1, never
+    duplicated and never dropped, since each channel-agent only ever
+    claims the one channel it owns.
+
+    Mirrors `_dispatch_agent`'s own per-record loop (DEBUG exemption,
+    condition match, `_log_only` suppression) but deliberately omits two
+    things that don't apply to any of the 16 collapsed specs: the
+    repeat-gate (`_gate_spec`/`_gate_passes` — none of them set
+    `actions[0]['gate']`) and `_error_agent_self_alerted` (keyed on
+    `ERROR_AGENT`'s own slug, never this agent's)."""
+    sent = 0
+    for rec in records:
+        if rec.get("level") == "DEBUG":
+            continue
+        if not evaluate(agent.conditions, Context(log_records=[rec])):
+            continue
+        log_only = bool(rec.get("_log_only"))
+        if log_only:
+            continue
+        extra = rec.get("extra") or {}
+        entry = ALERT_EVENT_DISPATCH.get(extra.get("alert_event"))
+        if entry is None:
+            continue
+        render = RENDERS.get(entry["render"])
+        if render is None:
+            continue
+        out = render(rec)
+        channels = [dict(c) for c in entry["channels"]]
+        sent += await _dispatch_record_channels(agent, rec, out, channels, log_only, only_channel=channel_key)
     return sent
 
 
@@ -1458,7 +1563,7 @@ UNROUTED_ALERT_AGENT = {
 }
 
 
-SEED_VERSION = 4
+SEED_VERSION = 5
 # 2026-10-25 — tag-unification: every `kind='event'` seeded agent except
 # ERROR_AGENT/RICH_ALERT_AGENT/BREACH_AGENT (explicitly excluded — see
 # each one's own dict comment, or the module-level rationale in each
@@ -1470,6 +1575,19 @@ SEED_VERSION = 4
 # bump rewrites every already-seeded, operator-unmodified row's
 # `conditions` to the new shape (see `seed_action()`'s own docstring for
 # the hash-based `modified_skip` protection an operator-edited row keeps).
+#
+# 2026-10-25 — alert-channel collapse (SEED_VERSION 4 -> 5): 16 of the
+# previous 23 `SEEDED_AGENTS` entries are retired in favor of 3 generic
+# channel agents + `ALERT_EVENT_DISPATCH` — see the block comment
+# immediately above `_COLLAPSED_DETECTOR_SPECS`. This bump both (a)
+# inserts the 3 new channel-agent rows and (b) drives
+# `_retire_collapsed_event_agents()`'s deactivation pass for the 16
+# retired slugs — see `seed_event_agents()`'s own call site. Pre-flight
+# (`scripts/alert_seed_audit.py`, run 2026-10-25 against prod AND dev):
+# all 23 pre-collapse `kind='event'` rows were hash-clean on both
+# (zero `modified_skip` risk), so no row's `conditions`/`events`/
+# `actions` had ever diverged from what seeding last wrote — the
+# deactivation pass below cannot silently discard an operator edit.
 
 
 def validate_seed_spec(spec: dict) -> list[str]:
@@ -1521,15 +1639,184 @@ def _log_leaves(cond) -> list[dict]:
         out.extend(_log_leaves(cond["not"]))
     return out
 
-SEEDED_AGENTS = (
-    FILL_AGENT, ERROR_AGENT, CHASE_CANCEL_AGENT, PARTIAL_GTT_AGENT,
-    TEMPLATE_ATTACH_URGENT_AGENT, TEMPLATE_ATTACH_HIGH_AGENT, ORDER_FAILURE_AGENT,
-    TEMPLATE_GUARD_AGENT, TEMPLATE_ATTACH_FAIL_AGENT, MCP_PING_AGENT, ORDER_CORRECTION_AGENT,
-    DEPLOY_SYNC_AGENT, RICH_ALERT_AGENT, SUMMARY_AGENT, BREACH_AGENT,
-    GTT_NOT_ACCEPTED_AGENT, GTT_ASYMMETRIC_AGENT, OCO_DOUBLE_FIRE_AGENT,
-    TICKER_RECOVERED_AGENT, TICKER_DEGRADED_AGENT, VISITOR_REPORT_AGENT, UNROUTED_ALERT_AGENT,
-    USER_REGISTERED_AGENT,
+
+# ─────────────────────────────────────────────────────────────────────
+# 2026-10-25 alert-channel collapse (council revisit of the 2026-10
+# "collapse rejected" decision, see docs/specs/ALERT_AGENTS_DESIGN.md
+# §3.9/§3.22) — 16 of the 23 detector specs above (CHASE_CANCEL_AGENT,
+# PARTIAL_GTT_AGENT, TEMPLATE_ATTACH_URGENT_AGENT,
+# TEMPLATE_ATTACH_HIGH_AGENT, ORDER_FAILURE_AGENT, ORDER_CORRECTION_AGENT,
+# TEMPLATE_GUARD_AGENT, TEMPLATE_ATTACH_FAIL_AGENT, MCP_PING_AGENT,
+# GTT_ASYMMETRIC_AGENT, OCO_DOUBLE_FIRE_AGENT, TICKER_RECOVERED_AGENT,
+# TICKER_DEGRADED_AGENT, GTT_NOT_ACCEPTED_AGENT, FILL_AGENT,
+# USER_REGISTERED_AGENT) no longer get their own standalone seeded Agent
+# row — their dicts are KEPT, byte-identical, as plain detector data
+# (still read by `test_event_agent_tag_unification.py`'s existing
+# per-agent condition pins, and by `_build_alert_event_dispatch_table()`
+# below), but are removed from `SEEDED_AGENTS` and retired on the next
+# reseed (`_RETIRED_SLUGS`, below `SEEDED_AGENTS`).
+#
+# 7 specs are deliberately NOT collapsed, each for a structural reason
+# that does not apply to the 16 above:
+#   - ERROR_AGENT: a blanket catch-all keyed on `tag="error"` with NO
+#     `alert_event` at all (matches ANY ERROR+/CRITICAL log codebase-
+#     wide), carries the repeat-gate (`actions[0]['gate']=True`), and
+#     `_error_agent_self_alerted` keys on its literal slug. None of
+#     this fits a per-`alert_event` dispatch table.
+#   - VISITOR_REPORT_AGENT: its real channel is `telegram_info` only
+#     (see `alert_routing._PER_SLUG_OVERRIDES["visitor-report-alert"]`)
+#     — a dedicated channel none of the 3 generic channel agents below
+#     cover, same reason DEPLOY_SYNC_AGENT/SUMMARY_AGENT stay dedicated.
+#   - DEPLOY_SYNC_AGENT / SUMMARY_AGENT: dedicated channels
+#     (`telegram_deploy` / `telegram_info` + email), not generic
+#     telegram/ntfy/email.
+#   - RICH_ALERT_AGENT / BREACH_AGENT: fire from the cycle-agent engine
+#     pipeline (not a log-tag producer event), already write a real
+#     `AgentEvent` row, and (RICH_ALERT_AGENT) resolve ntfy priority
+#     from a per-record tracked tier rather than a static table entry.
+#   - UNROUTED_ALERT_AGENT: the condition-match catch-all safety net
+#     itself — must keep dispatching unconditionally regardless of the
+#     routing tree, exactly as before.
+#
+# The result: 3 new generic channel agents (`TELEGRAM_CHANNEL_AGENT`/
+# `NTFY_CHANNEL_AGENT`/`EMAIL_CHANNEL_AGENT`) + the 7 kept-dedicated
+# specs = 10 real seeded agents, down from 23. Per-event toggle on the
+# Automation page is lost for the 16 collapsed events — they share one
+# activate/deactivate switch per channel now, not one each. This is a
+# known, accepted tradeoff (there is no live reader of `trigger_count`/
+# `last_triggered_at` for ANY `kind='event'` agent today — only
+# `agent_engine.py`'s cycle-agent path writes those columns — so no
+# per-type fire-count observability is lost on top of the toggle).
+# `extra['alert_event']` on the dispatched/logged record is UNCHANGED
+# and still carries the specific type, so the Alerts tab / log history
+# still supports per-type filtering even though the Automation page's
+# per-agent row count collapses to per-channel.
+# ─────────────────────────────────────────────────────────────────────
+
+_COLLAPSED_DETECTOR_SPECS: tuple[dict, ...] = (
+    CHASE_CANCEL_AGENT, PARTIAL_GTT_AGENT, TEMPLATE_ATTACH_URGENT_AGENT,
+    TEMPLATE_ATTACH_HIGH_AGENT, ORDER_FAILURE_AGENT, ORDER_CORRECTION_AGENT,
+    TEMPLATE_GUARD_AGENT, TEMPLATE_ATTACH_FAIL_AGENT, MCP_PING_AGENT,
+    GTT_ASYMMETRIC_AGENT, OCO_DOUBLE_FIRE_AGENT, TICKER_RECOVERED_AGENT,
+    TICKER_DEGRADED_AGENT, GTT_NOT_ACCEPTED_AGENT, FILL_AGENT, USER_REGISTERED_AGENT,
 )
+
+
+def _alert_event_leaves(spec: dict) -> list[dict]:
+    """Every `{alert_event, min_level, where}` leaf a collapsed detector
+    spec's own `conditions` matches on — one leaf for a bare
+    `{"log": {...}}` condition, one PER BRANCH for the two 2-event specs
+    (`TEMPLATE_ATTACH_URGENT_AGENT`: wing_unprotected/wing_hard_reject;
+    `TEMPLATE_ATTACH_HIGH_AGENT`: wing_skip/wing_offset_skip) — each
+    branch keeps its OWN `min_level`, exactly reproducing what matching
+    against that spec's `conditions` directly would have required."""
+    out: list[dict] = []
+    for leaf in _log_leaves(spec["conditions"]):
+        where = leaf.get("where") or {}
+        alert_event = where.get("alert_event")
+        if alert_event is None:
+            continue
+        out.append({"alert_event": alert_event, "min_level": leaf.get("min_level", "INFO"), "where": where})
+    return out
+
+
+def _build_alert_event_dispatch_table() -> dict[str, dict]:
+    """`alert_event` -> `{min_level, where, render, channels}`.
+
+    Every field is READ, never retyped, from the collapsed spec's own
+    `conditions`/`actions` and from `alert_routing._PER_SLUG_OVERRIDES
+    [spec['slug']]` — the exact verbatim channel list that spec's own
+    (now-retired) standalone Agent row used to resolve to. This is the
+    one place §3.9's "conditions/channels would be duplicated" objection
+    is actually answered: there is nothing here to retype, because
+    nothing here is typed at all — it's derived.
+
+    `TEMPLATE_ATTACH_URGENT_AGENT`/`TEMPLATE_ATTACH_HIGH_AGENT` each
+    contribute 2 table entries (one per `alert_event`), sharing that
+    one spec's single channel list — exactly matching the brief's own
+    "two entries per pair, same channel/render data" instruction.
+    """
+    table: dict[str, dict] = {}
+    for spec in _COLLAPSED_DETECTOR_SPECS:
+        render = _render_key(SimpleNamespace(actions=spec["actions"]))
+        channels = alert_routing._PER_SLUG_OVERRIDES.get(spec["slug"], [])
+        for leaf in _alert_event_leaves(spec):
+            table[leaf["alert_event"]] = {
+                "min_level": leaf["min_level"], "where": leaf["where"],
+                "render": render, "channels": channels, "source_slug": spec["slug"],
+            }
+    return table
+
+
+# Public — read by `_dispatch_channel_agent()` above and by
+# `test_alert_event_channel_collapse.py`. 18 entries (16 specs, 2 of
+# which contribute 2 `alert_event` keys each).
+ALERT_EVENT_DISPATCH: dict[str, dict] = _build_alert_event_dispatch_table()
+
+
+def _build_shared_channel_condition() -> dict:
+    """The single `{"any": [...]}` condition all 3 generic channel
+    agents share — one `{"log": {"tag": "alert", "min_level": ...,
+    "where": ...}}` leaf per `ALERT_EVENT_DISPATCH` entry, reproducing
+    EXACTLY the per-event min_level/where match semantics each
+    collapsed spec's own condition enforced on its own. This is what
+    keeps an unknown/future `alert_event`, or a known one logged BELOW
+    its required `min_level`, from matching — both fall through to
+    `UNROUTED_ALERT_AGENT`'s catch-all exactly as they did before this
+    collapse, instead of the bare `{"tag":"alert","min_level":"INFO"}`
+    shape (rejected on review — see this plan's own report) which would
+    have (a) matched every alert-tagged record regardless of
+    `alert_event`, defeating the catch-all's unknown-event test, and
+    (b) dropped `FILL_AGENT`'s `mode: "live"` filter, leaking paper/sim
+    fills to Telegram."""
+    return {"any": [
+        {"log": {"tag": "alert", "min_level": entry["min_level"], "where": entry["where"]}}
+        for entry in ALERT_EVENT_DISPATCH.values()
+    ]}
+
+
+_CHANNEL_AGENT_CONDITION: dict = _build_shared_channel_condition()
+
+
+def _channel_agent_spec(slug: str, name: str, channel_key: str) -> dict:
+    """One of the 3 generic channel agents. `priority` is deliberately
+    `None` — `alert_routing._PER_SLUG_OVERRIDES` carries a dedicated
+    (display-only) row for each of these 3 slugs, consulted before any
+    tier default, and the real dispatch path (`_dispatch_channel_agent`)
+    never calls `alert_routing.resolve_channels()` for these slugs at
+    all (see that function's own docstring)."""
+    return {
+        "slug": slug, "name": name,
+        "conditions": _CHANNEL_AGENT_CONDITION,
+        "priority": None,
+        "actions": [{"type": "render", "render": _CHANNEL_AGENT_RENDER_SENTINEL, "channel_key": channel_key}],
+    }
+
+
+TELEGRAM_CHANNEL_AGENT = _channel_agent_spec("alert-channel-telegram", "Alert channel: Telegram", "telegram")
+NTFY_CHANNEL_AGENT = _channel_agent_spec("alert-channel-ntfy", "Alert channel: ntfy", "ntfy")
+EMAIL_CHANNEL_AGENT = _channel_agent_spec("alert-channel-email", "Alert channel: Email", "email")
+
+
+SEEDED_AGENTS = (
+    ERROR_AGENT, DEPLOY_SYNC_AGENT, RICH_ALERT_AGENT, SUMMARY_AGENT, BREACH_AGENT,
+    VISITOR_REPORT_AGENT, UNROUTED_ALERT_AGENT,
+    TELEGRAM_CHANNEL_AGENT, NTFY_CHANNEL_AGENT, EMAIL_CHANNEL_AGENT,
+)
+
+# The 16 collapsed specs' own slugs — deactivated (never deleted) by
+# `_retire_collapsed_event_agents()` on the next `seed_event_agents()`
+# run. `seed_event_agents()`'s own insert/update loop only ever touches
+# a slug present in `SEEDED_AGENTS` — a slug removed from that tuple is
+# otherwise just left alone forever, so without this an already-seeded
+# 'active' row for one of these 16 slugs would keep loading in
+# `load_agents()` (which filters on `status == 'active'`, not on
+# `SEEDED_AGENTS` membership) and double-deliver every one of its
+# alert_events alongside the new generic channel agents. Deactivated,
+# not deleted: the row (and its `AgentEvent`/audit history, if any) stays
+# reversible, and `alert_routing._PER_SLUG_OVERRIDES` still resolves its
+# historical channel set correctly for display on the Automation page.
+_RETIRED_SLUGS: frozenset[str] = frozenset(spec["slug"] for spec in _COLLAPSED_DETECTOR_SPECS)
 
 
 def event_agent_row_fields(
@@ -1722,4 +2009,26 @@ async def seed_event_agents() -> None:
                     "once per restart)",
                     spec["slug"], SEED_VERSION,
                 )
+        await _retire_collapsed_event_agents(s)
         await s.commit()
+
+
+async def _retire_collapsed_event_agents(s) -> None:
+    """2026-10-25 alert-channel collapse — deactivates (never deletes)
+    any currently-active `kind='event'` row whose slug is one of the 16
+    retired `_RETIRED_SLUGS`. `seed_event_agents()`'s own insert/update
+    loop above only ever touches a slug present in `SEEDED_AGENTS` — a
+    slug simply removed from that tuple is otherwise never touched
+    again, so an already-seeded 'active' row for one of these 16 slugs
+    would keep loading in `load_agents()` (filters on `status ==
+    'active'`, independent of `SEEDED_AGENTS` membership) and
+    double-deliver every one of its alert_events alongside the new
+    generic channel agents. A fresh database (where these rows were
+    never inserted) makes this a no-op — 0 rows matched. Idempotent:
+    re-running against an already-inactive row is a no-op write."""
+    from backend.api.models import Agent
+    rows = (await s.execute(
+        select(Agent).where(Agent.slug.in_(_RETIRED_SLUGS), Agent.status == "active")
+    )).scalars().all()
+    for row in rows:
+        row.status = "inactive"

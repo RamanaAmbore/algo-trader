@@ -183,7 +183,15 @@ class TestRenderActionGateFieldSchema:
 # ── structural regression guard over the real seeded agents ────────────
 
 _CHANNEL_ENTRY_RESERVED_KEYS = {"channel", "enabled", "message"}
-_RENDER_ACTION_RESERVED_KEYS = {"type", "render"}
+# `channel_key` (2026-10-25 alert-channel collapse) is reserved, not a
+# declared optional modifier like `gate` — it only ever appears on the
+# render action of the 3 generic channel agents
+# (TELEGRAM_CHANNEL_AGENT/NTFY_CHANNEL_AGENT/EMAIL_CHANNEL_AGENT), whose
+# `render` value is always the internal sentinel `event_table` (never a
+# real decompilable renderer name). It identifies which ONE of exactly
+# 3 built-in agents this is — structurally fixed, not an operator-
+# editable extra parameter the way `gate`/`priority` are.
+_RENDER_ACTION_RESERVED_KEYS = {"type", "render", "channel_key"}
 
 # Known, deferred gaps — Sprint 18 PLAN item 2 scopes these out
 # explicitly. If one of these channels/keys gets a real catalog
@@ -264,6 +272,22 @@ class TestSeededAgentsGateKeysAreDeclared:
         `telegram_deploy` channel (`gate: False`, same convention as
         every other agent in this set), via `alert_routing.py`'s
         per-slug override.
+
+        2026-10-25 alert-channel collapse: 11 of the 16 slugs this set
+        used to name (`order-failure-alert`, `order-correction-alert`,
+        `template-guard-alert`, `template-attach-fail-alert`,
+        `mcp-ping-alert`, `gtt-not-accepted-alert`, `gtt-asymmetric-
+        alert`, `oco-double-fire-alert`, `ticker-recovered-alert`,
+        `ticker-degraded-alert`, `user-registered-alert`) are retired
+        from `SEEDED_AGENTS` — their `gate` keys still exist, verbatim,
+        inside `event_agents.ALERT_EVENT_DISPATCH`'s channel lists (see
+        `test_alert_channel_collapse.py`), just no longer enumerable
+        via this test's `SEEDED_AGENTS`-only sweep. The 3 new generic
+        channel agents' own per-slug display rows
+        (`alert_routing._PER_SLUG_OVERRIDES["alert-channel-*"]`)
+        deliberately carry no `gate` key at all — real dispatch for
+        them never calls `resolve_channels()`, so there is no gate
+        semantic to declare.
         """
         slugs = {
             agent["slug"]
@@ -271,13 +295,8 @@ class TestSeededAgentsGateKeysAreDeclared:
             if any(isinstance(ev, dict) and "gate" in ev for ev in _resolved_events(agent))
         }
         assert slugs == {
-            "order-failure-alert", "order-correction-alert", "template-guard-alert",
-            "template-attach-fail-alert", "unrouted-alert-catch-all",
-            "mcp-ping-alert", "agent-alert-rich",
-            "market-summary", "gtt-not-accepted-alert",
-            "gtt-asymmetric-alert", "oco-double-fire-alert",
-            "ticker-recovered-alert", "ticker-degraded-alert", "visitor-report-alert",
-            "user-registered-alert", "deploy-sync-alert",
+            "unrouted-alert-catch-all", "agent-alert-rich", "market-summary",
+            "visitor-report-alert", "deploy-sync-alert",
         }
 
     def test_inventory_action_level_gate_agent_count(self):

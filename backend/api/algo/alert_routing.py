@@ -183,6 +183,25 @@ _PER_SLUG_OVERRIDES: dict[str, list[dict]] = {
         {"channel": "telegram", "enabled": True, "gate": False},
         {"channel": "ntfy", "enabled": True, "gate": False, "priority": "high"},
     ],
+    # 2026-10-25 alert-channel collapse — these 3 slugs
+    # (`event_agents.TELEGRAM_CHANNEL_AGENT`/`NTFY_CHANNEL_AGENT`/
+    # `EMAIL_CHANNEL_AGENT`) are the generic channel agents the 16
+    # collapsed per-event detectors above now dispatch through. Real
+    # dispatch NEVER calls `resolve_channels()` for one of these three
+    # slugs at all — `_dispatch_agent` branches to
+    # `_dispatch_channel_agent()` before this table is ever consulted,
+    # and that function reads each matched record's channel list from
+    # `event_agents.ALERT_EVENT_DISPATCH` (itself built FROM this same
+    # table's rows above, keyed by the original per-event slug) instead.
+    # These 3 rows exist purely so two READ-ONLY, DISPLAY-ONLY callers —
+    # `routes/agents.py:_event_agent_resolved_channels()` (the
+    # Automation page's channel chips) and `scripts/alert_seed_audit.py`
+    # — get a sensible single-channel answer for these 3 slugs instead
+    # of falling through to `CATCH_ALL_CHANNELS` and logging a spurious
+    # WARNING on every page load / audit run.
+    "alert-channel-telegram": [{"channel": "telegram", "enabled": True}],
+    "alert-channel-ntfy": [{"channel": "ntfy", "enabled": True}],
+    "alert-channel-email": [{"channel": "email", "enabled": True}],
 }
 
 

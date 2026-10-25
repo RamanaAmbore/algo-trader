@@ -536,9 +536,10 @@ class TestSeedVersionBumpTransition:
         This test now asserts the CURRENT live value rather than the
         historical "3" — the mechanism under test (seed_action()'s
         version-bump behavior) is unaffected by which version number is
-        current."""
+        current. 2026-10-25: bumped again, 4 -> 5, for the alert-channel
+        collapse (see event_agents.SEED_VERSION's own comment)."""
         from backend.api.algo.event_agents import SEED_VERSION
-        assert SEED_VERSION == 4
+        assert SEED_VERSION == 5
 
     def test_hash_match_row_from_old_version_updates_at_new_version(self):
         """A row last seeded at the OLD SEED_VERSION=2, whose current
@@ -594,9 +595,21 @@ class TestModifiedSkipLogsRealWarning:
             conditions=spec["conditions"], events=edited_events, actions=spec["actions"],
         )
 
+        class _FakeScalars:
+            def all(self):
+                return []
+
         class _FakeResult:
             def scalar_one_or_none(self):
                 return row
+
+            def scalars(self):
+                # 2026-10-25 alert-channel collapse — `seed_event_agents()`
+                # now also runs `_retire_collapsed_event_agents()` via a
+                # second `.scalars().all()` query; empty here since this
+                # fixture's one synthetic row isn't one of the 16 retired
+                # slugs.
+                return _FakeScalars()
 
         class _FakeSession:
             async def execute(self, *_a, **_k):
@@ -626,11 +639,11 @@ class TestModifiedSkipLogsRealWarning:
                 ea._EVENTS_LOGGER.removeHandler(caplog.handler)
 
         assert row.events == edited_events, "operator's edit must survive the seed pass"
-        # 2026-10-25: SEED_VERSION moved 3 -> 4 (tag-unification pass) —
-        # this test's mechanism (modified_skip still bumps seed_version)
-        # is unaffected; see the historical note on
-        # test_seed_version_is_now_3 above.
-        assert row.seed_version == ea.SEED_VERSION == 4
+        # 2026-10-25: SEED_VERSION moved 3 -> 4 -> 5 (tag-unification,
+        # then alert-channel-collapse) — this test's mechanism
+        # (modified_skip still bumps seed_version) is unaffected; see
+        # the historical note on test_seed_version_is_now_3 above.
+        assert row.seed_version == ea.SEED_VERSION == 5
         # stderr line preserved (an existing sibling test pins this too).
         assert "operator-modified" in capsys.readouterr().err
         # New Step 6 behaviour — a real, visible WARNING through
@@ -673,9 +686,18 @@ class TestSeedVersionBumpUpdateBranchEndToEnd:
             actions=spec["actions"], priority=None,
         )
 
+        class _FakeScalars:
+            def all(self):
+                return []
+
         class _FakeResult:
             def scalar_one_or_none(self):
                 return row
+
+            def scalars(self):
+                # 2026-10-25 alert-channel collapse — see the sibling
+                # fixture above for why this is needed.
+                return _FakeScalars()
 
         class _FakeSession:
             async def execute(self, *_a, **_k):
@@ -701,9 +723,10 @@ class TestSeedVersionBumpUpdateBranchEndToEnd:
 
         assert row.events == [], "post-migration spec carries no events key -> cleared to []"
         assert row.priority == "medium"
-        # 2026-10-25: SEED_VERSION moved 3 -> 4 (tag-unification pass) —
+        # 2026-10-25: SEED_VERSION moved 3 -> 4 -> 5 (tag-unification,
+        # then alert-channel-collapse) —
         # see the historical note on test_seed_version_is_now_3 above.
-        assert row.seed_version == ea.SEED_VERSION == 4
+        assert row.seed_version == ea.SEED_VERSION == 5
         new_hash = ea.compute_seed_spec_hash(row.conditions, row.events, row.actions)
         assert row.seed_spec_hash == new_hash, "hash must reflect the NEW write, not the old one"
 

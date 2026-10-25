@@ -226,7 +226,15 @@ class TestVisitorReportAlert:
 class TestNewEventAgentsAreSeedable:
     """The 5 new agents must validate cleanly against the seed-spec
     checker (unknown log tag / unknown renderer / unknown channel would
-    silently skip seeding — see event_agents.validate_seed_spec)."""
+    silently skip seeding — see event_agents.validate_seed_spec).
+
+    2026-10-25 alert-channel collapse: 4 of these 5
+    (gtt-asymmetric-alert/oco-double-fire-alert/ticker-recovered-alert/
+    ticker-degraded-alert) are no longer standalone `SEEDED_AGENTS`
+    members — their dicts are kept, byte-identical, in
+    `event_agents._COLLAPSED_DETECTOR_SPECS` instead, feeding
+    `ALERT_EVENT_DISPATCH`. `visitor-report-alert` is the one that
+    stays dedicated (its own channel is `telegram_info`, not generic)."""
 
     @pytest.mark.parametrize("slug", [
         "gtt-asymmetric-alert", "oco-double-fire-alert",
@@ -236,6 +244,6 @@ class TestNewEventAgentsAreSeedable:
     def test_agent_validates_and_is_seeded(self, slug):
         from backend.api.algo import event_agents
 
-        specs = {s["slug"]: s for s in event_agents.SEEDED_AGENTS}
-        assert slug in specs, f"{slug} must be registered in SEEDED_AGENTS"
+        specs = {s["slug"]: s for s in event_agents.SEEDED_AGENTS + event_agents._COLLAPSED_DETECTOR_SPECS}
+        assert slug in specs, f"{slug} must be registered in SEEDED_AGENTS or _COLLAPSED_DETECTOR_SPECS"
         assert event_agents.validate_seed_spec(specs[slug]) == []

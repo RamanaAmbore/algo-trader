@@ -75,12 +75,15 @@ _SEEDED_SLUGS = [spec["slug"] for spec in SEEDED_AGENTS]
 
 
 class TestIsBuiltinSeededEventAgent:
-    def test_exactly_23_seeded_slugs(self):
+    def test_exactly_10_seeded_slugs(self):
         # Pins the count the operator explicitly asked about — a future
         # addition/removal from SEEDED_AGENTS should be a deliberate,
-        # visible change to this test, not a silent drift.
-        assert len(_SEEDED_SLUGS) == 23
-        assert len(set(_SEEDED_SLUGS)) == 23  # no duplicate slugs
+        # visible change to this test, not a silent drift. 2026-10-25:
+        # 23 -> 10 — the alert-channel collapse retires 16 per-event
+        # detector agents into 3 generic channel agents (see
+        # event_agents.SEED_VERSION's own comment).
+        assert len(_SEEDED_SLUGS) == 10
+        assert len(set(_SEEDED_SLUGS)) == 10  # no duplicate slugs
 
     @pytest.mark.parametrize("slug", _SEEDED_SLUGS)
     def test_true_for_every_seeded_event_agent_slug(self, slug):

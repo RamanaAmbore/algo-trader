@@ -251,7 +251,15 @@ def test_seed_action_updates_only_older_seed_versions():
 def test_seeded_agent_list_covers_every_constant():
     from backend.api.algo import event_agents as ea
     assert len(ea.SEEDED_AGENTS) == len({spec["slug"] for spec in ea.SEEDED_AGENTS})
-    assert ea.FILL_AGENT in ea.SEEDED_AGENTS and ea.SUMMARY_AGENT in ea.SEEDED_AGENTS
+    # 2026-10-25 alert-channel collapse: FILL_AGENT's own dict is KEPT,
+    # byte-identical, as plain detector data (it feeds
+    # `ALERT_EVENT_DISPATCH`) but is no longer a standalone seeded Agent
+    # row. SUMMARY_AGENT stays dedicated (its own channel is
+    # `telegram_info` + email, not generic). TELEGRAM_CHANNEL_AGENT is
+    # one of the 3 new generic channel agents.
+    assert ea.FILL_AGENT not in ea.SEEDED_AGENTS
+    assert ea.SUMMARY_AGENT in ea.SEEDED_AGENTS
+    assert ea.TELEGRAM_CHANNEL_AGENT in ea.SEEDED_AGENTS
 
 
 def test_every_seeded_agent_passes_validation():
@@ -689,9 +697,16 @@ def test_gtt_acceptance_reports_a_failed_read():
 
 
 def test_gtt_not_accepted_agent_is_seeded_and_renders():
+    """2026-10-25 alert-channel collapse: GTT_NOT_ACCEPTED_AGENT's own
+    dict is retired from SEEDED_AGENTS (no longer a standalone Agent
+    row), but its render/channel contract survives verbatim inside
+    ALERT_EVENT_DISPATCH, keyed by its own alert_event."""
     from backend.api.algo import event_agents as ea
-    assert ea.GTT_NOT_ACCEPTED_AGENT in ea.SEEDED_AGENTS
+    assert ea.GTT_NOT_ACCEPTED_AGENT not in ea.SEEDED_AGENTS
     assert ea.validate_seed_spec(ea.GTT_NOT_ACCEPTED_AGENT) == []
+    entry = ea.ALERT_EVENT_DISPATCH["gtt_not_accepted"]
+    assert entry["render"] == "gtt_not_accepted"
+    assert entry["source_slug"] == "gtt-not-accepted-alert"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -830,14 +845,31 @@ def test_generic_notice_agents_are_every_spec_in_the_shared_table():
     name, not silently allowed to drift the count."""
     from backend.api.algo import event_agents as ea
     built_slugs = {ea._build_generic_notice_agent(spec)["slug"] for spec in ea._GENERIC_NOTICE_SPECS}
-    generic_notice_slugs = {
-        spec["slug"] for spec in ea.SEEDED_AGENTS
-        if any(isinstance(a, dict) and a.get("render") == "generic_notice" for a in spec.get("actions") or [])
-    } - {ea.UNROUTED_ALERT_AGENT["slug"], ea.USER_REGISTERED_AGENT["slug"]}
-    assert built_slugs == generic_notice_slugs == {
+    assert built_slugs == {
         "gtt-asymmetric-alert", "oco-double-fire-alert", "ticker-recovered-alert",
         "ticker-degraded-alert", "visitor-report-alert",
     }
+    # 2026-10-25 alert-channel collapse: 4 of these 5 built specs
+    # (gtt_asymmetric/oco_double_fire/ticker_recovered/ticker_degraded)
+    # are no longer standalone SEEDED_AGENTS entries — their
+    # render/channel contract moved into ALERT_EVENT_DISPATCH instead.
+    # VISITOR_REPORT_AGENT is the one deliberate exception that stays a
+    # standalone seeded agent (dedicated telegram_info channel). The
+    # `USER_REGISTERED_AGENT` exclusion below is now a no-op (it too is
+    # collapsed and no longer in SEEDED_AGENTS at all) — kept for
+    # documentation continuity with the historical exclusion rule.
+    standalone_generic_notice_slugs = {
+        spec["slug"] for spec in ea.SEEDED_AGENTS
+        if any(isinstance(a, dict) and a.get("render") == "generic_notice" for a in spec.get("actions") or [])
+    } - {ea.UNROUTED_ALERT_AGENT["slug"], ea.USER_REGISTERED_AGENT["slug"]}
+    assert standalone_generic_notice_slugs == {"visitor-report-alert"}
+    for alert_event, source_slug in [
+        ("gtt_asymmetric", "gtt-asymmetric-alert"), ("oco_double_fire", "oco-double-fire-alert"),
+        ("ticker_recovered", "ticker-recovered-alert"), ("ticker_degraded", "ticker-degraded-alert"),
+    ]:
+        entry = ea.ALERT_EVENT_DISPATCH[alert_event]
+        assert entry["render"] == "generic_notice"
+        assert entry["source_slug"] == source_slug
 
 
 # ── Item 3 — SEED_VERSION no longer silently overwrites an operator edit ──
@@ -902,9 +934,21 @@ async def test_seed_event_agents_preserves_operator_edit_and_logs_skip(monkeypat
         conditions=spec["conditions"], events=edited_events, actions=spec["actions"],
     )
 
+    class _FakeScalars:
+        def all(self):
+            return []
+
     class _FakeResult:
         def scalar_one_or_none(self):
             return row
+
+        def scalars(self):
+            # 2026-10-25 alert-channel collapse: `seed_event_agents()`
+            # now also runs `_retire_collapsed_event_agents()`, a second
+            # query (`Agent.slug.in_(_RETIRED_SLUGS)`) via
+            # `.scalars().all()` — unrelated to this test's own
+            # single-row fixture, so an empty result here is correct.
+            return _FakeScalars()
 
     class _FakeSession:
         def __init__(self):
@@ -955,9 +999,19 @@ async def test_seed_event_agents_insert_writes_priority(monkeypatch):
     assert spec.get("priority"), "fixture sanity: FILL_AGENT must carry a real priority token"
     added = []
 
+    class _FakeScalars:
+        def all(self):
+            return []
+
     class _FakeResult:
         def scalar_one_or_none(self):
             return None  # no existing row -> action == "insert"
+
+        def scalars(self):
+            # 2026-10-25 alert-channel collapse — see the sibling fixture
+            # above for why `_retire_collapsed_event_agents()`'s own
+            # query needs this.
+            return _FakeScalars()
 
     class _FakeSession:
         async def execute(self, *_a, **_k):
