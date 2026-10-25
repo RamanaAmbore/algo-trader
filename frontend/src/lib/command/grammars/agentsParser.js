@@ -170,7 +170,29 @@ class AgentsCstParser extends CstParser {
       $.OR([
         {
           GATE: () => isWord($.LA(1), 'always'),
-          ALT: () => $.CONSUME(NAME),
+          ALT: () => {
+            const alwaysTok = $.CONSUME(NAME);
+            // "always" is standalone-only — it can never be combined with
+            // `&`/`and`/`|`/`or`. Checked right here (not deferred to a
+            // later leftover-input check) to mirror `parseCondition`'s own
+            // immediate rejection in agents.js — same root cause, same
+            // input shape, just surfaced at a different point otherwise.
+            // Wrapped in `$.ACTION` because this is arbitrary side-
+            // effecting logic (an `if` + a `throw`, not a plain CONSUME/
+            // SUBRULE call) inside a RULE body — `performSelfAnalysis`
+            // also runs this same function once, during Chevrotain's own
+            // grammar-recording pass, where `$.LA` returns non-matching
+            // placeholder tokens; `$.ACTION` is Chevrotain's own documented
+            // mechanism for skipping a callback during that recording
+            // pass, rather than relying on the placeholder happening not
+            // to match `AMP`/`PIPE`/'and'/'or'.
+            $.ACTION(() => {
+              if (tokenMatcher($.LA(1), AMP) || isWord($.LA(1), 'and')
+                || tokenMatcher($.LA(1), PIPE) || isWord($.LA(1), 'or')) {
+                throw new _NewParseError('"always" is standalone-only — it cannot be combined with & or |', pos(alwaysTok));
+              }
+            });
+          },
         },
         { ALT: () => $.SUBRULE($.orExpr) },
       ]);
@@ -466,6 +488,35 @@ const BaseVisitor = parserInstance.getBaseCstVisitorConstructor();
 
 function pos(tok) { return { start: tok.startOffset, end: tok.endOffset + 1 }; }
 
+/** Recursively shift every numeric `start`/`end`/`keyStart` field found
+ *  anywhere in a plain AST-node tree by `delta` — the exact same
+ *  mechanism agents.js's own `_shiftPositions` helper uses (there, always
+ *  adding a positive `baseStart` to re-anchor a sub-lexed, locally-
+ *  relative tree onto the full statement's absolute offsets; here, a
+ *  negative `delta` to go the OTHER way — see the `call()` visitor's own
+ *  comment on why ordinary call-args need this). Unconditional, recursive,
+ *  no special-casing for a nested `{type:'call', ...}` node (e.g. a
+ *  `notify=[...]` channel call) — its OWN `start`/`end` needs the SAME
+ *  shift as any other arg (verified algebraically against
+ *  `_parseNotifyListArg`'s own `baseStart` math: a channel call's
+ *  position reduces to "offset from the enclosing call's own paren",
+ *  same formula as any other arg), and so do ITS nested args, PROVIDED
+ *  they were already pre-corrected onto the same absolute coordinate
+ *  space first — see `argEntry`'s own `notify`-specific pre-shift, which
+ *  is what makes that provision hold. */
+function _shiftPositions(node, delta) {
+  if (Array.isArray(node)) return node.map((n) => _shiftPositions(n, delta));
+  if (node && typeof node === 'object') {
+    const out = {};
+    for (const [k, v] of Object.entries(node)) {
+      if ((k === 'start' || k === 'end' || k === 'keyStart') && typeof v === 'number') out[k] = v + delta;
+      else out[k] = _shiftPositions(v, delta);
+    }
+    return out;
+  }
+  return node;
+}
+
 class AgentsVisitor extends BaseVisitor {
   constructor() { super(); this.validateVisitor(); }
 
@@ -533,6 +584,14 @@ class AgentsVisitor extends BaseVisitor {
     let args = [];
     let _alertBody = undefined;
     const lname = lc(nameTok);
+    // Reserved-word check runs BEFORE the zero-argument-call check, same
+    // order as `parseCall` in agents.js (NAME check, reserved check, THEN
+    // zero-arg-call check) — e.g. `and()` must report "reserved word", not
+    // "zero-argument token is always written bare". Same two checks,
+    // same precedence.
+    if (RESERVED.has(lc(nameTok))) {
+      throw new _NewParseError(`"${nameTok.image}" is a reserved word and cannot be used as a token name`, pos(nameTok));
+    }
     if (hasCall) {
       if (lname === 'alert') {
         _alertBody = this.visit(ctx.itemList[0]).items;
@@ -545,13 +604,30 @@ class AgentsVisitor extends BaseVisitor {
         }];
       } else if (ctx.argList) {
         args = this.visit(ctx.argList[0]);
+        // agents.js's ordinary (non-alert/debug/help) call-arg path
+        // re-lexes a call's OWN "(...)" inner text as its own standalone
+        // substring (`_parseArgListFromInnerText`/`tokenizeCallStyle` in
+        // engine.js — see agentsLexer.js's header comment on why this
+        // unified grammar reads the WHOLE statement as one token stream
+        // instead), so every arg's `keyStart`/`value.start`/`value.end`
+        // comes out relative to THIS call's own "(" + 1, never absolute
+        // to the full statement. Chevrotain's single unified token
+        // stream has no such sub-lex boundary, so its own positions are
+        // absolute by construction — shifted back here to match, the
+        // same mechanism agents.js's own `_shiftPositions` uses, just in
+        // the opposite direction (absolute → this-call-relative instead
+        // of sub-lex-relative → absolute). This also reaches a nested
+        // `notify=[...]` channel call's own position AND its args —
+        // the latter only lands correctly because `argEntry`'s own
+        // notify-specific pre-shift already moved them onto the same
+        // absolute coordinate space before this runs (see that
+        // pre-shift's own comment, and `_shiftPositions`'s docstring).
+        const anchor = ctx.LPAREN[0].startOffset + 1;
+        args = _shiftPositions(args, -anchor);
       }
       if (!_alertBody && args.length === 0 && !ctx.argList) {
         throw new _NewParseError(`"${nameTok.image}()" is a parse error — a zero-argument token is always written bare`, pos(nameTok));
       }
-    }
-    if (RESERVED.has(lc(nameTok))) {
-      throw new _NewParseError(`"${nameTok.image}" is a reserved word and cannot be used as a token name`, pos(nameTok));
     }
     const endTok = ctx.RPAREN ? ctx.RPAREN[0] : nameTok;
     const node = { type: 'call', name: nameTok.image, args, hasCall, start: nameTok.startOffset, end: endTok.endOffset + 1 };
@@ -564,9 +640,69 @@ class AgentsVisitor extends BaseVisitor {
   }
 
   argEntry(ctx) {
-    const key = ctx.NAME[0].image;
-    const opts = key.toLowerCase() === 'notify' ? { asCalls: true } : undefined;
-    return { key, keyStart: ctx.NAME[0].startOffset, value: this.visit(ctx.value[0], opts) };
+    const nameTok = ctx.NAME[0];
+    const key = nameTok.image;
+    const isNotify = key.toLowerCase() === 'notify';
+    const opts = isNotify ? { asCalls: true } : undefined;
+    const valueCst = ctx.value[0];
+    const value = this.visit(valueCst, opts);
+    if (isNotify && value.type === 'list' && valueCst.children.listLiteral) {
+      // agents.js's `notify=[...]` value is a SEPARATE re-lex of the
+      // bracket's own raw text (`_parseNotifyListArg`), whose own
+      // "absolute" reconstruction is `_shiftPositions(tokens, baseStart)`
+      // — a single flat add of `baseStart` applied to every start/end/
+      // keyStart found anywhere in that re-lexed tree, INCLUDING each
+      // channel call's own nested args (which were themselves already
+      // computed relative to THAT call's own "(" during the re-lex, same
+      // convention as any other nested call — see the `call()` visitor's
+      // own comment). `baseStart` there is itself only relative to the
+      // OUTER call's own "(" (the SAME "ordinary call-arg positions are
+      // relative, not absolute" quirk this file corrects everywhere
+      // else) — equal to the absolute offset of notify's own "["" minus
+      // the outer call's own anchor. Reproduced here in two steps: (1)
+      // pre-shift each channel call's OWN args by the "["'s ABSOLUTE
+      // offset, landing them on the same absolute coordinate space as
+      // everything else in this call's `args`; (2) the single outer
+      // `-anchor` shift in `call()` then reaches them too, same as every
+      // other arg — no special-casing needed there. Each call's OWN
+      // start/end is untouched here; it is already correct, reached only
+      // by step 2 (see `call()`'s own comment).
+      const lbracketTok = valueCst.children.listLiteral[0].children.LBRACKET[0];
+      value.value = value.value.map((item) => (item && item.type === 'call' && item.args && item.args.length
+        ? { ...item, args: _shiftPositions(item.args, lbracketTok.startOffset) }
+        : item));
+    }
+    // agents.js's ordinary call-arg value (`_valueNodeFromCallStyleToken`,
+    // reached via `_parseArgSegment`/`tokenizeCallStyle` — NOT the
+    // standalone `parseValue` production `leaf`'s between-chain/
+    // `assignItem` use, which carries no start/end at all) DOES carry a
+    // `start`/`end` for a scalar NUMBER/STRING/NAME arg value — but
+    // `tokenizeCallStyle` treats a NO-WHITESPACE `key=value` as ONE fused
+    // "kwarg" token, so `start` there is the KEY's own start (the whole
+    // fused span), not the value's — `end` is always the value's own true
+    // end either way (it's the last thing in the fused span, or, for a
+    // spaced `key = value`/glued `key =value`, the value token's own end
+    // directly). Replicated here exactly, conditioned on whether this
+    // particular argEntry's own source text is actually fused (no gap
+    // between NAME/EQ/value) or not — added HERE, scoped to this one call
+    // site, instead of on `value()` itself (which would wrongly add
+    // start/end to every OTHER caller too, e.g. `leaf`'s between-chain).
+    const scalarTok = (valueCst.children.NUMBER && valueCst.children.NUMBER[0])
+      || (valueCst.children.STRING && valueCst.children.STRING[0])
+      || (valueCst.children.NAME && valueCst.children.NAME[0]);
+    if (scalarTok && (value.type === 'number' || value.type === 'string' || value.type === 'name')) {
+      const eqTok = ctx.EQ[0];
+      const isFused = eqTok.startOffset === nameTok.endOffset + 1 && scalarTok.startOffset === eqTok.endOffset + 1;
+      value.start = isFused ? nameTok.startOffset : scalarTok.startOffset;
+      value.end = scalarTok.endOffset + 1;
+      // `keyStart` itself is also scoped to the scalar case: agents.js's
+      // bracket-shaped (`[...]`) and brace-shaped (`{...}`) arg-value
+      // branches (`tp_scales_json`/`notify`/a generic list/object arg)
+      // each return a plain `{key, value}` ArgEntry with NO `keyStart` at
+      // all — only `_parseArgSegment`'s plain-scalar branches set it.
+      return { key, keyStart: nameTok.startOffset, value };
+    }
+    return { key, value };
   }
 
   scopeRef(ctx) {
@@ -858,7 +994,16 @@ function _lexCore(text) {
   const result = AgentsLexer.tokenize(text);
   if (result.errors.length) {
     const e = result.errors[0];
-    throw new _NewParseError(`unexpected character '${text[e.offset]}'`, { start: e.offset });
+    const ch = text[e.offset];
+    // Mirrors agents.js's own lexer special-case (Sprint 20 item 3): a
+    // bare `!` (not part of `!=`, which the NE token already handles) is
+    // the SAME rejected input in both lexers — the hand-written one just
+    // throws a targeted hint instead of the generic "unexpected
+    // character" message. Genuinely the same failure, same input shape.
+    if (ch === '!') {
+      throw new _NewParseError(`unexpected '!' — use '~' or 'not' to negate, '!=' for not-equal`, { start: e.offset });
+    }
+    throw new _NewParseError(`unexpected character '${ch}'`, { start: e.offset });
   }
   return result.tokens;
 }
@@ -915,13 +1060,13 @@ export function parseStatementNew(text) {
     }
 
     if (first === 'token' && second && tokenMatcher(second, LPAREN)) {
-      return _finish(() => _runTokenStmt(tokens), metaText);
+      return _finish(() => _runTokenStmt(tokens), metaText, metaStart);
     }
     if (first === 'cancel_all_orders' && second && tokenMatcher(second, LPAREN)) {
-      return _finish(() => _run('cancelAllOrdersStmt', tokens), metaText);
+      return _finish(() => _run('cancelAllOrdersStmt', tokens), metaText, metaStart);
     }
     if (first === 'when' || first === 'do') {
-      return _finish(() => _run('agentStmt', tokens), metaText);
+      return _finish(() => _run('agentStmt', tokens), metaText, metaStart);
     }
 
     const isLeadingOrder = (first === 'order' || first === 'place_order') && second && tokenMatcher(second, LPAREN);
@@ -931,17 +1076,175 @@ export function parseStatementNew(text) {
       try {
         const ruleName = isLeadingOrder ? 'orderStmt' : isLeadingBracket ? 'bracketStmt' : 'helpStmt';
         const { ast, leftover } = _tryRun(ruleName, tokens);
-        if (leftover === 0) return _finish(() => ({ ast }), metaText);
+        if (leftover === 0) return _finish(() => ({ ast }), metaText, metaStart);
       } catch (e) {
         if (!(e instanceof _NewParseError)) throw e;
       }
     }
 
-    return _finish(() => _run('agentStmt', tokens), metaText);
+    return _finish(() => _run('agentStmt', tokens), metaText, metaStart);
   } catch (e) {
     if (e instanceof _NewParseError) return { ast: null, errors: [{ message: e.message, position: e.position }] };
     throw e;
   }
+}
+
+/** Scan `tokens` backward from `idx` (the erroring token's own index) for
+ *  the nearest UNMATCHED `(` — the call whose own closing `)` the parser
+ *  was trying to consume when it hit `idx` — and return the NAME that
+ *  opened it (lowercased), or `null` if there is no enclosing call (e.g.
+ *  a top-level mismatch). Pure token-position bookkeeping, independent of
+ *  which grammar RULE happened to be active — used to recover "which
+ *  call(...) were we inside" for error-message parity with agents.js's
+ *  own call-name-specific messages (`alert(...)`/`debug(...)`/`help(...)`),
+ *  without hardcoding the corpus strings that happen to exercise it. */
+function _enclosingUnmatchedCallName(tokens, idx) {
+  let depth = 0;
+  for (let i = idx - 1; i >= 0; i--) {
+    const t = tokens[i];
+    if (tokenMatcher(t, RPAREN)) { depth++; continue; }
+    if (tokenMatcher(t, LPAREN)) {
+      if (depth === 0) {
+        const prev = tokens[i - 1];
+        return prev && tokenMatcher(prev, NAME) ? lc(prev) : null;
+      }
+      depth--;
+    }
+  }
+  return null;
+}
+
+/** Scan `tokens` backward from `idx` for the nearest enclosing bracket-like
+ *  group (`(`/`[`/`{`, any depth of nesting) that is itself immediately
+ *  preceded by `NAME "="` — i.e. the `key=` of the call-argument whose
+ *  VALUE `idx` sits inside — and return that key (lowercased), or `null`.
+ *  Walks OUTWARD through every nesting level (not just the innermost
+ *  bracket) since a value like `tp_scales_json=[{...}]` nests a `{...}`
+ *  inside the `[...]` that actually carries the `key=`. */
+function _enclosingArgKey(tokens, idx) {
+  let depth = 0;
+  for (let i = idx - 1; i >= 0; i--) {
+    const t = tokens[i];
+    if (tokenMatcher(t, RPAREN) || tokenMatcher(t, RBRACKET) || tokenMatcher(t, RBRACE)) { depth++; continue; }
+    if (tokenMatcher(t, LPAREN) || tokenMatcher(t, LBRACKET) || tokenMatcher(t, LBRACE)) {
+      if (depth === 0) {
+        const eq = tokens[i - 1];
+        const key = tokens[i - 2];
+        if (eq && tokenMatcher(eq, EQ) && key && tokenMatcher(key, NAME)) return lc(key);
+        continue; // this bracket isn't it — keep walking outward
+      }
+      depth--;
+    }
+  }
+  return null;
+}
+
+/** Translate a raw Chevrotain parse error into agents.js's own wording,
+ *  ONLY for the specific, structurally-recognized shapes below — each one
+ *  independently confirmed (via the differential harness) to be the SAME
+ *  underlying rejection agents.js's hand-written parser already reports,
+ *  just phrased in Chevrotain's generic grammar-table vocabulary. Returns
+ *  the raw `err.message` unchanged for every other shape — this function
+ *  only NARROWS the gap, it never invents a new rejection or loosens one.
+ *  Position is deliberately NOT reconciled here: the differential
+ *  harness's rejected-vs-rejected bucket compares `message` only. */
+function _prettifyChevrotainError(err, tokens) {
+  const msg = err.message;
+  const tok = err.token;
+  const idx = tok ? tokens.indexOf(tok) : -1;
+
+  // NoViableAlt. The alternative-sequence LISTS Chevrotain prints here
+  // are NOT all NAME-led (e.g. `token(kind=condition)` lists TILDE,
+  // LPAREN, NUMBER, STRING, LBRACE, LBRACKET too — every shape `leaf`'s
+  // own OR can start with). What's actually common across every corpus
+  // instance of this shape is the FOUND token: always EOF or a plain
+  // punctuation token (COMMA), never a real NAME — i.e. nothing that
+  // could start ANY of leaf's alternatives, including a between-chain's
+  // literal-value branch. Mirrors `parseCall`'s own generic check in
+  // agents.js (`tok.type !== 'NAME'`), gated the same way here so a
+  // NoViableAlt whose found token IS a NAME (a real ambiguity, not an
+  // exhausted/punctuation-blocked input) is never mapped to this.
+  if (/^Expecting: one of these possible Token sequences:/.test(msg) && tok && !tokenMatcher(tok, NAME)) {
+    return 'expected a name';
+  }
+
+  if (/^Redundant input, expecting EOF but found: /.test(msg)) {
+    const isLastRealToken = idx >= 0 && idx === tokens.length - 1;
+    const lowerImg = tok ? lc(tok) : '';
+    if (isLastRealToken && (lowerImg === 'when' || lowerImg === 'do')) {
+      // The statement ends exactly where WHEN/DO's own sub-production
+      // (a condition / a clause-item list) was required to continue —
+      // Chevrotain's GATE-based OPTION for WHEN/DO didn't commit with
+      // zero tokens left to feed it, so the automatic "not all input
+      // parsed" check reports WHEN/DO itself as redundant instead of the
+      // EOF-truncated NoViableAlt shape above. Same root cause as that
+      // branch — a NAME was required and the statement simply ran out.
+      return 'expected a name';
+    }
+    // Otherwise: a syntactically complete (sub)parse was followed by
+    // genuine extra input Chevrotain's grammar has no production for —
+    // the same "leftover tokens after a complete parse" rejection
+    // agents.js's own top-level dispatch throws generically.
+    return 'unexpected trailing input';
+  }
+
+  const mismatch = /^Expecting token of type --> (\w+) <-- but found/.exec(msg);
+  if (mismatch && idx >= 0) {
+    const expected = mismatch[1];
+    if (expected === 'RPAREN') {
+      const callName = _enclosingUnmatchedCallName(tokens, idx);
+      if (callName === 'alert') return 'expected ")" to close alert(...)';
+      if (callName === 'debug' || callName === 'help') {
+        // Mirrors agents.js's own lex-time check: debug(...)/help(...)
+        // take exactly one bare argument — any extra content before the
+        // closing ")" (a second token, an "@"-ref, anything) is this same
+        // rejection, regardless of what the extra content actually is.
+        return `${callName}(...) takes exactly one bare argument — a label or token reference name, e.g. ${callName}(x)`;
+      }
+    }
+    if (expected === 'NAME') {
+      const stack = err.context && err.context.ruleStack;
+      if (stack && stack[stack.length - 1] === 'argEntry') {
+        // A comma (the MANY_SEP separator) was already consumed and a
+        // fresh argEntry was required to follow it but didn't — a
+        // trailing or doubled comma in an ordinary arg_list (ruleStack
+        // ends in 'argEntry' only once MANY_SEP has already committed to
+        // a repetition via a consumed separator). A LEADING comma is a
+        // DIFFERENT shape not covered here — MANY_SEP's own first-
+        // iteration lookahead just declines to enter at all when the
+        // very first token isn't NAME, so the error surfaces as the
+        // outer call's unmet RPAREN expectation instead (ruleStack ends
+        // in 'call'), which this function does not special-case.
+        // Same message agents.js's `_parseArgSegment` reports for an
+        // empty comma-split segment either way, so a leading comma is a
+        // documented remaining message-parity gap, not a position gap.
+        return 'empty argument (trailing/leading/double comma)';
+      }
+    }
+    if (expected === 'EQ' && tokenMatcher(tok, COLON)) {
+      const stack = err.context && err.context.ruleStack;
+      if (stack && stack[stack.length - 1] === 'objField') {
+        // agents.js's SEPARATE tp_scales_json mini-lexer (`_lexObjScalesTok`)
+        // has no COLON token at all, so `{at_pct:30}` fails at LEX time
+        // with its own "unexpected character ':'" message — this unified
+        // grammar's objField instead gets as far as expecting the field's
+        // "=" and finds COLON, a PARSE-time mismatch. Different pipeline
+        // stage (a deliberate, documented unification — see
+        // agentsLexer.js's header comment), but the SAME rule either way:
+        // object-literal fields are "name=value", never "name:value".
+        // Scoped to tp_scales_json specifically (not every object literal)
+        // by checking the enclosing arg's own key, matching the ONLY
+        // object-literal call-site this parser's covered grammar reaches
+        // (`where=`'s event_stmt object literal is a documented, separate
+        // NOT-COVERED gap).
+        if (_enclosingArgKey(tokens, idx) === 'tp_scales_json') {
+          return "unexpected character ':' in tp_scales_json value";
+        }
+      }
+    }
+  }
+
+  return msg;
 }
 
 function _run(ruleName, tokens) {
@@ -949,7 +1252,7 @@ function _run(ruleName, tokens) {
   const cst = parserInstance[ruleName]();
   if (parserInstance.errors.length) {
     const err = parserInstance.errors[0];
-    throw new _NewParseError(err.message, err.token ? pos(err.token) : null);
+    throw new _NewParseError(_prettifyChevrotainError(err, tokens), err.token ? pos(err.token) : null);
   }
   const leftover = parserInstance.input.length - parserInstance.currIdx - 1;
   const ast = visitor.visit(cst);
@@ -985,8 +1288,15 @@ function _runTokenStmt(tokens) {
   return { ast };
 }
 
-function _finish(runFn, metaText) {
+function _finish(runFn, metaText, metaStart) {
   const { ast } = runFn();
-  const meta = metaText ? scanMetaClause(metaText) : [];
+  // `scanMetaClause` scans `metaText` on its own, locally-zeroed
+  // coordinate space (it's a plain substring, same as every other
+  // sub-lexed fragment in this file) — shifted by `metaStart` (the
+  // absolute offset where the meta region begins in the full statement)
+  // to match agents.js's own `parseMetaClause`, which reads its HASH
+  // token straight off the ONE unified, genuinely-absolute token stream
+  // and never needs a shift at all.
+  const meta = metaText ? _shiftPositions(scanMetaClause(metaText), metaStart) : [];
   return { ast: { ...ast, meta }, errors: [] };
 }

@@ -121,7 +121,13 @@ export function lexAgentStatementNew(text) {
   const result = AgentsLexer.tokenize(text);
   if (result.errors.length) {
     const e = result.errors[0];
-    return { tokens: [], errors: [{ message: `unexpected character '${text[e.offset]}'`, position: e.offset }] };
+    const ch = text[e.offset];
+    // Mirrors agents.js's own lexer special-case (Sprint 20 item 3) and
+    // agentsParser.js's `_lexCore` — see that function's comment.
+    if (ch === '!') {
+      return { tokens: [], errors: [{ message: `unexpected '!' — use '~' or 'not' to negate, '!=' for not-equal`, position: e.offset }] };
+    }
+    return { tokens: [], errors: [{ message: `unexpected character '${ch}'`, position: e.offset }] };
   }
   return { tokens: result.tokens, errors: [] };
 }
