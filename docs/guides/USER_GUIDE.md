@@ -1225,13 +1225,13 @@ Highlights:
   (place_order, cancel_order, modify_order, activate_agent,
   deactivate_agent, update_agent).
 - **Per-call confirm-token gate** — every write requires a
-  60-second, single-use, purpose-bound token you mint on the Lab
-  page. The LLM cannot mint, replay, or redirect a token.
+  60-second, single-use, purpose-bound token you mint on the MCP
+  page (`/admin/mcp`). The LLM cannot mint, replay, or redirect a token.
 - **Telegram deep-links** — every successful gated write fires a
   Telegram message with a `request_id` link that opens the Audit
   tab pre-filtered to that exact row.
 
-If you've never used the Lab, work through
+If you've never used the MCP page, work through
 [LAB_MCP_GUIDE.md section 3](LAB_MCP_GUIDE.md#3-one-time-setup-3-minutes)
 once (~3 minutes of one-time setup) then come back to the
 **Daily Workflow** section.
@@ -1241,7 +1241,7 @@ once (~3 minutes of one-time setup) then come back to the
 ## Where to learn more
 
 - **[AGENTS_GUIDE.md](AGENTS_GUIDE.md)** — extensive walkthrough for authoring + testing agents. The four-stage validation ladder (validate → dry-run → simulator → activate), every metric / scope / op, fragments, lifespan, and copy-paste patterns.
-- **[SIMULATOR_GUIDE.md](SIMULATOR_GUIDE.md)** — hands-on Lab workflow. Scenarios, Run-in-Simulator, custom positions, iteration mode, market-state presets, troubleshooting.
+- **[SIMULATOR_GUIDE.md](SIMULATOR_GUIDE.md)** — hands-on Sandbox workflow (`/admin/execution`, renamed from "Lab"). Scenarios, Run-in-Simulator, custom positions, iteration mode, market-state presets, troubleshooting.
 - **[LAB_MCP_GUIDE.md](LAB_MCP_GUIDE.md)** — chat-driven research, agent drafting, and the per-call confirm-token gate. Covers GenAI usage, Claude Code setup, and the 26 MCP tools.
 - **[ADMIN_GUIDE.md](ADMIN_GUIDE.md)** — exact button labels, JSON conditions, API endpoints. The operations reference.
 - **[CLAUDE.md](CLAUDE.md)** — architectural notes for engineers + AI assistants. Covers the code structure, data flow, and design decisions.

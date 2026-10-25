@@ -1,7 +1,7 @@
 <script>
   // MultiPriceChart — overlay N price series on one SVG with a shared
   // x-axis (timestamps) and a normalized y-axis (% change from each
-  // series' first captured tick). Built for the Lab simulator's
+  // series' first captured tick). Built for the Sandbox simulator's
   // per-leg view: a long-call at ₹50 and a short-strangle wing at
   // ₹2,000 would otherwise need separate charts because their raw
   // y-scales differ by 40×. Normalizing each series to its t=0 value
@@ -29,7 +29,7 @@
           scrubbedTs = null } = $props();
 
   // ── Chart-refresh pulse ───────────────────────────────────────────
-  // Fires whenever normSeries gains new data so the Lab operator
+  // Fires whenever normSeries gains new data so the operator
   // gets a subtle cyan flash confirming a new tick batch landed.
   const _pulse = createChartRefreshPulse();
 

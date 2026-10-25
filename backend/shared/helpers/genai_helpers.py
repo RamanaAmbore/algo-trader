@@ -8,7 +8,7 @@ Low-volume Gemini Flash helpers — stays inside the free tier (250 RPD,
 Both helpers are deterministic-fallback safe: when `is_enabled('genai')`
 is False, when the SDK is missing, when Gemini returns empty/None, or
 when ANY exception fires, we return a sane stub instead of raising.
-That keeps the Lab page and news feed working even if Google's quota
+That keeps the MCP page and news feed working even if Google's quota
 flips us off mid-day.
 """
 

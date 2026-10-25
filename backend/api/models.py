@@ -2077,7 +2077,7 @@ class McpAudit(Base):
     """One row per MCP-initiated mutating call (Phase 3 place_order etc.).
     Captures who called what, with what args (redacted of any token
     material), and what happened. Read-only forensic trail — the
-    Lab page's Audit tab will surface this in Phase 3+.
+    MCP page's Audit tab will surface this in Phase 3+.
 
     Args are stored as JSONB so we can index into them for forensic
     queries (e.g. "every place_order in the last 24h for ZG0790")

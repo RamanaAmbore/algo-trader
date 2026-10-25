@@ -260,7 +260,7 @@ test('chart grid consistency: EquityCurve .eq-svg has .chart-grid-line elements'
 
   await assertChartGridCssVars(page, '/admin/strategies (EquityCurve)');
 
-  // EquityCurve is inside the Lab/sim strategy view. Check if it renders.
+  // EquityCurve is inside the Sandbox/sim strategy view. Check if it renders.
   const eqSvg = page.locator('.eq-svg').first();
   const eqCount = await eqSvg.count();
   if (!eqCount) return;

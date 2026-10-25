@@ -387,7 +387,7 @@ test.describe('Part A.3 — MultiPriceChart adopts .algo-chart-frame (structural
 });
 
 test.describe('Part A.3 — MultiPriceChart live regression (best-effort, graceful skip)', () => {
-  // `.mpc-shell` only mounts inside the Lab simulator's "Leg premiums"
+  // `.mpc-shell` only mounts inside the Sandbox simulator's "Leg premiums"
   // section once a scenario run has at least one live position (see
   // SimulatorPanel.svelte `{#if positions.length}`). Spinning up a real
   // run against a possibly-empty live broker book is out of scope for

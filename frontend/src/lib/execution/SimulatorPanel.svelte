@@ -94,7 +94,8 @@
   let _iterCardOpen   = $state(false);
   let _customPosOpen  = $state(false);
   // Replay scrubber — one shared "scrubbedTs" drives all charts on
-  // the Lab page. Null = follow live (default); a timestamp string =
+  // the Sandbox page (/admin/execution, formerly "Lab"). Null = follow
+  // live (default); a timestamp string =
   // pin every chart's anchor line to that historical moment.
   /** @type {string | null} */
   let _scrubbedTs = $state(null);

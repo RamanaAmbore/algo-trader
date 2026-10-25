@@ -6,7 +6,7 @@
 //       cooldown_minutes on an inactive agent.
 //   17: empty-state CTAs present on Drafts + Threads tabs.
 //   18: /api/mcp/audit?request_id=… filters to one row; the
-//       Lab page's deep-link query param flips to Audit tab + pre-fills.
+//       MCP page's deep-link query param flips to Audit tab + pre-fills.
 
 import { test, expect } from '@playwright/test';
 

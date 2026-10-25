@@ -548,7 +548,7 @@ async def save_research_thread(
     transcript: list | None = None,
 ) -> dict:
     """Persist the current research session to the RamboQuant DB so the
-    Lab page (/admin/research) can show it later. Call this once you've
+    MCP page (/admin/mcp) can show it later. Call this once you've
     synthesized a thesis the operator wants to keep.
 
     Args:
@@ -578,7 +578,7 @@ async def get_research_thread(thread_id: int) -> dict:
     "remind me what I thought about RELIANCE last week".
 
     Args:
-        thread_id: The thread row id (visible in the Lab page sidebar).
+        thread_id: The thread row id (visible in the MCP page sidebar).
     """
     return await _get(f"/api/research/threads/{int(thread_id)}")
 
@@ -701,7 +701,7 @@ async def place_order(
     template_slug: str | None = None,
 ) -> dict:
     """Place an order via the operator's broker pipeline. REQUIRES a
-    valid confirm_token minted by the operator from the Lab page
+    valid confirm_token minted by the operator from the MCP page
     (`POST /api/mcp/confirm-token`); you cannot generate one
     yourself.
 
@@ -726,7 +726,7 @@ async def place_order(
     architecture.
 
     Args:
-        confirm_token:        16-byte hex token from the Lab page.
+        confirm_token:        16-byte hex token from the MCP page.
         account:              Broker account code (e.g. ZG0790).
         tradingsymbol:        Kite tradingsymbol (e.g. NIFTY25APRFUT).
         side:                 BUY or SELL.
@@ -801,7 +801,7 @@ async def cancel_order(
                                  endpoint or the LogPanel Order tab).
 
     Args:
-        confirm_token: 32-char hex token from Lab page.
+        confirm_token: 32-char hex token from the MCP page.
         account:       Broker account code (e.g. ZG0790).
         order_id:      Broker order_id (live) OR AlgoOrder.id (paper).
         mode:          live (default) or paper. Must match the token's
@@ -846,7 +846,7 @@ async def modify_order(
                                  chase tick uses the new values
 
     Args:
-        confirm_token: 32-char hex token from Lab page (kind='modify').
+        confirm_token: 32-char hex token from the MCP page (kind='modify').
         account:       Broker account code.
         order_id:      Broker order_id (live) OR AlgoOrder.id (paper).
         quantity:      New quantity (0 = unchanged).
@@ -886,7 +886,7 @@ async def get_audit_recent(
 
     Each row carries the redacted args, the result_status
     (ok / denied / error), the result_summary, and the request_id —
-    same data the Lab page's Audit tab shows. Token material is
+    same data the MCP page's Audit tab shows. Token material is
     NEVER returned, even via this tool.
 
     Useful pattern after a place_order call:

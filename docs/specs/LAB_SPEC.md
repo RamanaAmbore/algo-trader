@@ -1,6 +1,6 @@
-# Lab Page and MCP Server Specification
+# MCP Page and Server Specification
 
-Single source of truth for the research lab interface (`/admin/mcp`) and the
+Single source of truth for the research interface (`/admin/mcp`, renamed from "Lab") and the
 MCP (Model Context Protocol) server that powers Claude Code-driven market research.
 Operators chat with Claude, leverage 25 read/write/gated tools, and promote research
 threads into draft trading agents.
@@ -15,7 +15,7 @@ threads into draft trading agents.
 
 ## Contents
 
-1. [Lab Page UI](#1-lab-page-ui)
+1. [MCP Page UI](#1-mcp-page-ui)
 2. [MCP Server Architecture](#2-mcp-server-architecture)
 3. [Tool Categories](#3-tool-categories)
 4. [Confirm-Token Gate](#4-confirm-token-gate)
@@ -26,7 +26,7 @@ threads into draft trading agents.
 
 ---
 
-## 1. Lab Page UI
+## 1. MCP Page UI
 
 **`/admin/mcp`** — MCP (Model Context Protocol) research interface with four tabs.
 
@@ -137,8 +137,8 @@ requests, MCP server responds with results. No webhook callbacks; request-respon
 3. Token returned in error response (HTTP 202 Pending Confirmation)
    - `{"confirm_token": "abc123...", "expires_at": "2026-07-11T10:15:60Z", "purpose": "place_order"}`
 4. Claude Code displays token to operator + waits for consent
-5. Operator clicks "Confirm" button in the Lab page modal
-6. Lab sends confirm token back to backend (POST /api/mcp/confirm-token)
+5. Operator clicks "Confirm" button in the MCP page modal
+6. The MCP page sends confirm token back to backend (POST /api/mcp/confirm-token)
 7. Backend validates:
    - Token not expired (within 60s)
    - Purpose hash matches (tool_name + user_id)
@@ -288,9 +288,9 @@ Operators can query audit to see what Claude Code did + which tools confirmed vs
 
 ### Frontend — covered
 
-- `research_page_verify.spec.js` — Lab page rendering and basic workflow
+- `research_page_verify.spec.js` — MCP page rendering and basic workflow
 - `research_promote_verify.spec.js` — Promote thread to agent flow
-- `research_place_order_verify.spec.js` — Place order from lab research
+- `research_place_order_verify.spec.js` — Place order from MCP-page research
 
 ### Frontend — gaps
 

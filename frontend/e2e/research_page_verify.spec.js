@@ -1,4 +1,4 @@
-// Verify the new /admin/mcp Lab page lands, all three tabs work,
+// Verify the /admin/mcp page lands, all three tabs work,
 // and the MCP-bootstrap snippet on the Settings tab carries the
 // expected shape. Also probes the API contract:
 //   GET  /api/research/threads (admin) → 200

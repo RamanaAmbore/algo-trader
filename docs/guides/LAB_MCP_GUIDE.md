@@ -76,7 +76,7 @@ when:
 |---|---|---|
 | **Thread auto-title** | `POST /api/research/threads` with `title=""` | Falls back to first-sentence-of-thesis stub. |
 | **News sentiment** | `GET /api/news/?sentiment=true` (the MCP `get_recent_news` tool always passes this) | Falls back to a keyword-regex stub (bull/bear/neutral). |
-| **Market summary** | The existing `/api/market` endpoint (predates the Lab) | Falls back to the static YAML report. |
+| **Market summary** | The existing `/api/market` endpoint (predates the MCP page) | Falls back to the static YAML report. |
 
 All three helpers go through the same `is_enabled('genai')` gate:
 
@@ -199,8 +199,8 @@ You're wired up.
 ## 4. The daily workflow — 7 steps
 
 The full LLM-driven trading loop. The first four steps are entirely
-in Claude Code; the last three involve the Lab page in your
-browser.
+in Claude Code; the last three involve the MCP page (`/admin/mcp`) in
+your browser.
 
 ### 4.1 Research
 
@@ -725,7 +725,7 @@ Edit `loss-positions-total-default` once → every consumer updates.
 | `update_agent` returns 403 with the same error | Proposed-changes JSON differs from mint payload by even one byte | Copy the JSON from the LLM into the mint widget verbatim; pass it back in the tool call byte-for-byte. |
 | Order placed but Audit shows `result_status=error` | Underlying ticket pipeline rejected (basket margin, bad symbol, etc.) | Check the `result_summary` column — broker's exact error is there. |
 | Telegram pings stopped | `notifications.telegram_enabled=false` in `/admin/settings`, bot token rotated, or `is_enabled('telegram')` is False on this branch | Check `/admin/settings`. Telegram bot token + chat_id live in server-side `secrets.yaml`. |
-| Lab page shows "No threads yet" but you DID save one | Backend running an older build, or `RAMBOQ_BASE` mismatch | `get_server_info()` returns the base URL the MCP server is talking to. Confirm it matches the Lab page URL. |
+| MCP page shows "No threads yet" but you DID save one | Backend running an older build, or `RAMBOQ_BASE` mismatch | `get_server_info()` returns the base URL the MCP server is talking to. Confirm it matches the MCP page URL (`/admin/mcp`). |
 | `get_economic_snapshot` shows everything as stale | Hand-maintained `macros:` block needs an update | SSH the server, edit `backend/config/backend_config.yaml::macros:`, restart. Deploy preserves the edit. |
 | Tool auto-titled my thread to something generic like "PWAUTO research" | Genai is disabled (`cap_in_dev.genai: false` on dev) | The deterministic stub is firing. Either flip the cap on, or pass an explicit `title=` when saving. |
 
@@ -740,7 +740,7 @@ Edit `loss-positions-total-default` once → every consumer updates.
 | Confirm-token logic | [backend/api/routes/lab.py](backend/api/routes/lab.py) — `_purpose_hash_*` / `_mint_token` / `_consume_token` / `_audit_link_html` |
 | Audit model | [backend/api/models.py](backend/api/models.py) — `McpAudit` |
 | Audit retention task | [backend/api/background.py](backend/api/background.py) — `_task_mcp_audit_cleanup` (03:15 IST daily) |
-| Lab page UI | [frontend/src/routes/(algo)/admin/mcp/+page.svelte](frontend/src/routes/(algo)/admin/mcp/+page.svelte) |
+| MCP page UI | [frontend/src/routes/(algo)/admin/mcp/+page.svelte](frontend/src/routes/(algo)/admin/mcp/+page.svelte) |
 | Gemini Flash helpers | [backend/shared/helpers/genai_helpers.py](backend/shared/helpers/genai_helpers.py) — `auto_title`, `sentiment_scores`; deterministic stubs when `is_enabled('genai')` is False |
 | Agent engine | [backend/api/algo/agent_engine.py](backend/api/algo/agent_engine.py) — `BUILTIN_AGENTS`, `run_cycle()`, `seed_agents()` |
 | Agent evaluator | [backend/api/algo/agent_evaluator.py](backend/api/algo/agent_evaluator.py) — `evaluate()`, `validate()` |

@@ -5,7 +5,7 @@ paths are legacy aliases over the same handlers.
 
 A research thread captures one MCP-driven session ("Research RELIANCE")
 with its transcript, the synthesized thesis, and (after promotion) the
-draft Agent it produced. Read by the Lab page; written by the MCP server
+draft Agent it produced. Read by the MCP page; written by the MCP server
 (via the operator's JWT) as the chat unfolds.
 
 No GenAI is invoked from this route — it just persists what the operator's
@@ -396,7 +396,7 @@ def _public_base_url() -> str:
 
 
 def _audit_link_html(request_id: str) -> str:
-    """Plain-text request_id plus a bare URL to the Lab page Audit tab
+    """Plain-text request_id plus a bare URL to the MCP page Audit tab
     pre-filtered to THIS exact row (2026-10 plain-text reversal — the
     name is kept despite no HTML being built here any more, since
     several tests `patch.object(lab, "_audit_link_html", ...)` by this
@@ -1521,7 +1521,7 @@ class McpController(Controller):
         request_id: str | None = None,
         limit:      int = 200,
     ) -> list[AuditRow]:
-        """Forensic trail for the Lab page's Audit tab. Returns
+        """Forensic trail for the MCP page's Audit tab. Returns
         mcp_audit rows in reverse-chronological order. Args are
         already redacted (token material is never persisted), so
         every admin can see this without leaking authorisation state.
@@ -1558,7 +1558,7 @@ class McpController(Controller):
     async def mint_confirm_token(self, data: MintTokenRequest, request: Request) -> MintTokenResponse:
         """Operator-only — mint a single-use 60s token that authorises
         ONE specific MCP place_order call. The LLM cannot call this
-        endpoint via MCP (no MCP tool wraps it); only the Lab page UI
+        endpoint via MCP (no MCP tool wraps it); only the MCP page UI
         does. The operator copies the returned token + pastes into
         Claude Code, which then passes it to place_order along with
         the IDENTICAL order details. The purpose hash binds the token

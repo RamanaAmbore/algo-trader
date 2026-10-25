@@ -1,6 +1,7 @@
 <script>
   // EquityCurve — cumulative P&L over time as one SVG line. Built
-  // for the Lab simulator: an "equity curve" view that answers
+  // for the Sandbox simulator (/admin/execution, formerly "Lab"): an
+  // "equity curve" view that answers
   // "did this strategy make money over the run?" without needing
   // a separate analytics page. Industry-standard chart on any
   // backtest / forward-test tool (AlgoTest, QuantConnect, NinjaTrader,

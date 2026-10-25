@@ -221,7 +221,7 @@ market updates, multi-broker trading.
 - Derivatives analytics (multi-leg payoff, σ, EV, R:R)
 - Proxy hedges (β regression)
 - Multi-broker (Kite / Dhan / Groww), IPv6 binding, basket orders
-- MCP server + Lab page (chat-driven research)
+- MCP server + MCP page (`/admin/mcp`, chat-driven research — renamed from "Lab")
 
 ---
 

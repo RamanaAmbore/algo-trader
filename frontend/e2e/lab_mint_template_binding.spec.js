@@ -1,5 +1,5 @@
 /**
- * Test the template-slug binding on the Lab mint form (commit ac4d08c9).
+ * Test the template-slug binding on the MCP page's mint form (commit ac4d08c9).
  *
  * Verifies that:
  * 1. The "Exit bracket" input is visible when mint kind='place'

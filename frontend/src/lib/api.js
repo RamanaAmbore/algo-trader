@@ -1341,7 +1341,7 @@ export async function fetchAgentPnL(params = {}) {
   return _get(`/admin/pnl/by-agent?${p}`, { auth: true });
 }
 
-// ── Research threads (Lab page) ──────────────────────────────────────
+// ── Research threads (MCP page) ──────────────────────────────────────
 /** GET /api/research/threads — list summaries. */
 export const fetchResearchThreads = (symbol = null, limit = 100) => {
   const p = new URLSearchParams();

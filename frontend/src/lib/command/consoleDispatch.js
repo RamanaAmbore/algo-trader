@@ -17,7 +17,7 @@
 // ── `bracket="slug"` resolution — KNOWN GAP, do not silently "fix" ─────
 // The one existing server-side resolver for this exact reference shape
 // (`backend/api/algo/template_attach.py:load_template_for_slug_or_id`,
-// used by the Lab/MCP `place_order` tool) matches ONLY on
+// used by the MCP `place_order` tool) matches ONLY on
 // `Agent.slug` (Sprint E, Agent/Bracket/Template unification phase —
 // previously `OrderTemplate.slug` directly; see that function's own
 // doc) — exact string equality, never on `name`. This module mirrors
@@ -35,7 +35,7 @@
 // "Unknown bracket" error rather than guessing. Widening this to also
 // match on `name` would diverge from the canonical resolver and risks
 // silently picking the wrong row when name and slug disagree. This is
-// a pre-existing, shared limitation (the Lab/MCP path has the identical
+// a pre-existing, shared limitation (the MCP path has the identical
 // gap) — flagged here, not patched here.
 
 import {

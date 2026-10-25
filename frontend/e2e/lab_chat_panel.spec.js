@@ -1,12 +1,12 @@
 /**
- * Lab chat panel — request box above the Lab tabs, calling POST /api/research/chat.
+ * MCP chat panel — request box above the MCP page's tabs, calling POST /api/research/chat.
  *
  * The panel is gated by the `use_research_chat` capability (designated only).
  * The endpoint is mocked with page.route, so these tests exercise the UI only.
  *
  * Login selection:
  * - Default login (PLAYWRIGHT_USER, admin in local/dev setups): must NOT see
- *   the panel. Skips with a reason if the login cannot reach the Lab page.
+ *   the panel. Skips with a reason if the login cannot reach the MCP page.
  * - Designated login (PLAYWRIGHT_DESIGNATED_USER + PLAYWRIGHT_DESIGNATED_PASS):
  *   must see the panel. Every functional test below runs as this login and
  *   skips with a reason when those env vars are not set.
@@ -33,7 +33,7 @@ const NO_DESIGNATED_REASON =
 
 /**
  * Open /admin/mcp and wait for either the chat box or the access-denied panel.
- * Returns true when the Lab page content is reachable for this login.
+ * Returns true when the MCP page content is reachable for this login.
  */
 async function openLab(page) {
   await page.goto(`${BASE}/admin/mcp`, { waitUntil: 'networkidle' });

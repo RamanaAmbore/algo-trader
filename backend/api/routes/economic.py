@@ -1,5 +1,5 @@
 """
-`/api/economic/snapshot` — India macro snapshot for the Lab page +
+`/api/economic/snapshot` — India macro snapshot for the MCP page +
 MCP get_economic_snapshot tool.
 
 Static reference data: repo rate, CPI, IIP, GDP growth, INR/USD.

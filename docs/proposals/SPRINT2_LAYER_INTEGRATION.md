@@ -23,7 +23,7 @@ missing from the `AlgoOrderInfo` API response shape. Can ship immediately,
 in parallel with Sprint 1: the timeline-drawer field-mismatch fix, the
 broker/algo dedup fix (which also fixes `ChaseCard`'s dead dedup for
 free), the paper-kill-mislabeled-as-MCP fix, the `logs.py` `sim_mode`
-hardcode fix, and the Lab page's stale Safety card fix. Lowest risk,
+hardcode fix, and the MCP page's stale Safety card fix. Lowest risk,
 highest immediate value, no new functionality.
 
 **Added to Sprint 2a (operator-reported, found and fixed independently
@@ -145,7 +145,7 @@ part of 2a regardless. The rest (source-to-AlgoOrder threading,
   AlgoOrders already write `algo_order_events` too. Worth fixing while
   touching this code, even though it's not strictly part of the
   integration.
-- **The Lab page's own Safety card is stale and actively misleading**:
+- **The MCP page's own Safety card is stale and actively misleading**:
   it states "No order placement from MCP yet... Phase 3 will match"
   (`admin/research/+page.svelte:838,842`), but MCP already has
   token-gated `place_order`/`cancel_order`/`modify_order` tools wired up

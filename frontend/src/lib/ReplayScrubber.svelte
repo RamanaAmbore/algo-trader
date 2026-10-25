@@ -4,7 +4,7 @@
   // Tester / QuantConnect Lean Live Log both let you drag a playhead
   // back through any captured moment to inspect the state at that
   // timestamp. Our equivalent: the slider drives a shared scrubbedTs
-  // prop on every chart in the Lab card; each chart renders a vertical
+  // prop on every chart in the Sandbox card; each chart renders a vertical
   // anchor line + per-series value at that moment.
   //
   // Two modes:

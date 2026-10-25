@@ -1,9 +1,9 @@
 /**
  * postResearchChat.test.js — Vitest unit tests for `postResearchChat` in api.js.
  *
- * Covers the Lab chat contract: POST /api/research/chat with {message}, the
+ * Covers the MCP page's chat contract: POST /api/research/chat with {message}, the
  * 200 reply shape, and a 503 whose `detail` must reach the caller intact
- * (the Lab panel shows it as-is in a neutral info style).
+ * (the MCP panel shows it as-is in a neutral info style).
  *
  * Same fetch-mock + $lib/stores mock pattern as apiAbortError.test.js.
  */

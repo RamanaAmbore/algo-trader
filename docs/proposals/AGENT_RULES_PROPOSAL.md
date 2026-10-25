@@ -374,7 +374,7 @@ Every value in a rule takes one of four forms. Global switches and platform sett
 - Saves the draft only. No activation.
 - Tests: draft validity, no write other than the draft, read-only grounding, replay result matches the dry run for the same bars, version recorded on each firing.
 
-### S7: Draft review, activation, and rule list in the Lab UI
+### S7: Draft review, activation, and rule list in the MCP page UI
 - Show the draft with its dry-run result, replay result, and validation errors.
 - Activate only with a confirm token, using the existing token flow.
 - Rule list with pause, resume, and bulk edit.
