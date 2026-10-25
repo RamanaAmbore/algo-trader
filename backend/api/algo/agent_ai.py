@@ -486,18 +486,20 @@ _DANGEROUS_CALL_NAMES = {"exec", "eval", "compile", "__import__", "open"}
 # confirmed by Wave 2's own reload-parity test. `notify/channel` dispatch
 # (for the `kind='event'` agent pipeline that actually sends notifications)
 # runs through `event_agents.py`'s hardcoded `CHANNELS` dict, not
-# `REGISTRY.channel()` — that method has zero real callers anywhere in
-# this codebase today. `action/action_type` dispatch runs through
-# `actions.py`'s explicit `_LIVE_ACTION_HANDLERS`/`_NOOP_ACTION_HANDLERS`
-# tables, and `is_known_action_type()` (the gate that decides whether an
-# agent's `DO` clause may reference an action type at all) reads the
-# CODE-level `SYSTEM_TOKENS` catalog, not this DB row — `REGISTRY.action()`
-# also has zero real callers. A channel/action draft is still useful to
-# generate (the human reviewer adds the extra wiring during the same
-# deploy that creates the file), but it is NOT a drop-in like metric/scope
-# — flagged here as a fixed, kind-level warning rather than silently
-# implying parity the plan's own "converge on the same two steps" framing
-# doesn't actually hold for these two kinds yet.
+# `REGISTRY.channel()` — the only real caller of that method anywhere in
+# this codebase is `grammar_tokens/action_help.py`'s `help_lookup`, which
+# is READ-ONLY reflection (the `help(<name>)` action), never a dispatch
+# path. `action/action_type` dispatch runs through `actions.py`'s explicit
+# `_LIVE_ACTION_HANDLERS`/`_NOOP_ACTION_HANDLERS` tables, and
+# `is_known_action_type()` (the gate that decides whether an agent's `DO`
+# clause may reference an action type at all) reads the CODE-level
+# `SYSTEM_TOKENS` catalog, not this DB row — `REGISTRY.action()` has the
+# same sole read-only `help_lookup` caller. A channel/action draft is
+# still useful to generate (the human reviewer adds the extra wiring
+# during the same deploy that creates the file), but it is NOT a drop-in
+# like metric/scope — flagged here as a fixed, kind-level warning rather
+# than silently implying parity the plan's own "converge on the same two
+# steps" framing doesn't actually hold for these two kinds yet.
 _TOKEN_KIND_EXTRA_WIRING_WARNING: dict[tuple[str, str], str] = {
     ("notify", "channel"): (
         "channel tokens are not live-dispatched through the grammar_tokens "
@@ -888,17 +890,28 @@ def _td_build_validated_draft(
     gk, tk, tok, id_errors = _td_validate_identity(raw_draft, existing_names)
     errors.extend(id_errors)
 
+    # Fixed 12-key shape on EVERY non-`{}` return — including the
+    # identity-error early-return below — so a caller (the /admin/mcp
+    # UI) never has to branch on which keys happen to be present. The
+    # five derived keys default to `None` here and are overwritten below
+    # only when they could be safely computed.
     draft: dict[str, Any] = {
         "grammar_kind": gk, "token_kind": tk, "token": tok,
         "description": str(raw_draft.get("description") or "").strip(),
         "params_schema": raw_draft.get("params_schema"),
         "resolver_source": raw_draft.get("resolver_source"),
+        "resolver_function_name": None,
+        "resolver_module_path": None,
+        "resolver_file_path": None,
+        "resolver": None,
         "test_source": raw_draft.get("test_source"),
+        "test_file_path": None,
     }
 
     if id_errors:
         # Identity is broken — paths can't be safely derived. Stop here;
-        # the draft above still echoes what the LLM proposed for review.
+        # the draft above still echoes what the LLM proposed for review,
+        # with every derived key present (as None), never missing.
         return draft, errors, warnings
 
     module_name, module_path, file_path, test_file_path = _td_derive_paths(gk, tk, tok)
@@ -1043,9 +1056,20 @@ def draft_token_from_prompt(
         logger.warning(f"AI token draft JSON parse failed: {e}; raw[:200]={raw[:200]!r}")
         return TokenDraft({}, [f"LLM produced invalid JSON: {e}"], [], "", prompt)
 
+    # The LLM is instructed to return a JSON OBJECT, but nothing stops a
+    # top-level array/string/number from parsing cleanly as valid JSON —
+    # `parsed.get(...)` below would raise AttributeError on any of those,
+    # turning a bad LLM response into an unhandled 500 instead of a
+    # reported error. Guard before touching `parsed` at all.
+    if not isinstance(parsed, dict):
+        return TokenDraft({}, ["LLM response is not a JSON object"], [], "", prompt)
+
     raw_draft = parsed.get("draft") or {}
-    why = parsed.get("why_summary") or ""
-    errors = list(parsed.get("errors") or [])
+    why = str(parsed.get("why_summary") or "")
+    raw_errors = parsed.get("errors")
+    errors = [str(e) for e in raw_errors] if isinstance(raw_errors, list) else (
+        [str(raw_errors)] if raw_errors else []
+    )
 
     if not isinstance(raw_draft, dict):
         return TokenDraft({}, ["LLM 'draft' field is not a dict"], [], why, prompt)

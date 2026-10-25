@@ -453,9 +453,11 @@ test. `channel` and `action_type` do NOT: real notification dispatch for the
 `CHANNELS` dict, and real action dispatch runs through `actions.py`'s explicit
 `_LIVE_ACTION_HANDLERS`/`_NOOP_ACTION_HANDLERS` tables — `is_known_action_type()`
 (the gate deciding whether an agent's `DO` clause may reference an action type)
-reads the code-level `SYSTEM_TOKENS` catalog, not the DB row. `REGISTRY.channel()`
-and `REGISTRY.action()` both have zero real callers anywhere in the backend
-today. A channel/action draft is still generated — the extra wiring is a normal
+reads the code-level `SYSTEM_TOKENS` catalog, not the DB row. The only real
+caller of `REGISTRY.channel()`/`.action()` anywhere in the backend is
+`grammar_tokens/action_help.py`'s `help_lookup` — read-only reflection for the
+`help(<name>)` action, never a dispatch path. A channel/action draft is still
+generated — the extra wiring is a normal
 part of the same human-reviewed deploy that creates the file — but
 `draft_token_from_prompt` appends a FIXED, kind-level warning
 (`_TOKEN_KIND_EXTRA_WIRING_WARNING`) naming exactly what else is needed, so the
@@ -932,7 +934,7 @@ closed by this entry — see `frontend/src/lib/__tests__/agentsSuggest.test.js` 
 
 | Date | Change |
 |---|---|
-| 2026-10-25 | Wave 3 follow-up — `draft_token_from_prompt` gained a server-derived `draft['resolver']` field (the exact dotted path Wave 2's `create_token` expects, never trusted from the LLM), a fixed per-kind "extra wiring needed" warning for `channel`/`action_type` drafts (only `metric`/`scope` actually dispatch live after Wave 2's registration endpoint — `REGISTRY.channel()`/`.action()` have zero real callers), and a warning when `test_source` doesn't import the resolved function/module (catches drift after a hinted rename). See §9 "AI-drafted grammar tokens". |
+| 2026-10-25 | Wave 3 follow-up — `draft_token_from_prompt` gained a server-derived `draft['resolver']` field (the exact dotted path Wave 2's `create_token` expects, never trusted from the LLM), a fixed per-kind "extra wiring needed" warning for `channel`/`action_type` drafts (only `metric`/`scope` actually dispatch live after Wave 2's registration endpoint — `REGISTRY.channel()`/`.action()`'s only real caller is `help_lookup`'s read-only reflection), a warning when `test_source` doesn't import the resolved function/module (catches drift after a hinted rename), a stable 12-key `draft` shape on every non-`{}` response (including identity-error drafts), and a hard guard against a non-dict top-level LLM JSON response. See §9 "AI-drafted grammar tokens". |
 | 2026-10-25 | Wave 3 (unify-DSL-token-registration plan) — `POST /api/mcp/draft-token` + `agent_ai.draft_token_from_prompt` draft a candidate metric/scope/channel/action token from an operator prompt as plain reviewable JSON. Never writes a file, never imports/execs the drafted code, never calls Wave 2's registration endpoint — static-only validation (`ast.parse`, one-function/signature/dangerous-import-or-call checks). Resolver module/file path is derived server-side from the whitelisted kind + verified token name, never trusted from the LLM. Collision check covers active and inactive rows, case-insensitive. See §9 "AI-drafted grammar tokens". |
 | 2026-10-24 | Wave 2 (grammar-unification) — the standalone `event_stmt` (`ALERT log_tag=... render=...`) dissolves into an ordinary `agent_stmt`: a `log(tag=..., min_level=..., where={...})` condition sets `kind='event'` (`compileAgentStmt`'s `isEventKind`); `|` replaces `match=[...]`; `DO` carries exactly one `render(render=..., gate=...)` call, optionally alongside `alert(...)` channels. `parseEventStmt`/`compileEventStmt`/`decompileEventAgent`/`_EVENT_META_KEYS` are retired — `decompileAgent` now handles both kinds. New real catalog row `(condition, log_filter, log)`; `event_actions.render.params_schema` gained a required `render` field. See [AGENTS_GRAMMAR_EBNF.md](AGENTS_GRAMMAR_EBNF.md). |
 | 2026-10-23 | Sprint [grammar-unify] execution + alert (items 0, 0.C): saved cycle-agent `preamble` executes per call type — `help`/`debug` every cycle, `alert`/non-debug `log` every cycle windowed by `cooldown_minutes`, all other calls (`order`, `close_position`, `cancel_order`, `bracket`, …) once per activation (commit `4e6df1ec`; P1 fix). Activation is a real inactive/paused→active transition only. New `has_explicit_alert` flag (a DO-level `alert(...)` replaces the automatic rich alert; commits `08bf4340`, `6aaec581`); Console saves are sticky-false (commit `b6f56be7`). New columns `preamble_fired_at`, `preamble_alert_last_fired_at`, `has_explicit_alert`. |

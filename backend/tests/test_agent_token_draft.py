@@ -189,6 +189,16 @@ def test_llm_invalid_json():
     assert any("invalid json" in e.lower() for e in result.errors)
 
 
+def test_llm_response_not_a_json_object():
+    """A top-level JSON array/string/number parses cleanly but has no
+    `.get()` — must be reported as an error, never raise."""
+    with patch.object(m, "is_enabled", return_value=True), \
+         patch.object(m, "_td_call_gemini", return_value=("[1, 2, 3]", None)):
+        result = m.draft_token_from_prompt("a new metric")
+    assert result.draft == {}
+    assert any("not a json object" in e.lower() for e in result.errors)
+
+
 def test_llm_draft_field_not_a_dict():
     with patch.object(m, "is_enabled", return_value=True), \
          _mock_llm({"draft": "nope", "why_summary": "", "errors": []}):
@@ -544,6 +554,43 @@ def test_partial_hint_is_ignored_entirely():
         )
     assert result.errors == []
     assert result.draft["token"] == "mean_drawdown_30d"  # LLM's own name, not overridden
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Stable draft key-set — the UI never has to branch on which keys exist
+# ═══════════════════════════════════════════════════════════════════════════
+
+_EXPECTED_DRAFT_KEYS = {
+    "grammar_kind", "token_kind", "token", "description", "params_schema",
+    "resolver_source", "resolver_function_name", "resolver_module_path",
+    "resolver_file_path", "resolver", "test_source", "test_file_path",
+}
+
+
+def test_clean_draft_has_exactly_the_documented_keys():
+    with patch.object(m, "is_enabled", return_value=True), _mock_llm(_CLEAN_LLM_RESPONSE):
+        result = m.draft_token_from_prompt("add a metric for 30-day drawdown")
+    assert set(result.draft) == _EXPECTED_DRAFT_KEYS
+
+
+def test_identity_error_draft_has_the_same_key_set_as_a_clean_draft():
+    """An unsupported-kind/bad-name identity failure returns early, but
+    must carry the exact same 12 keys (unresolved ones as None) — never
+    a shorter dict the UI would have to special-case."""
+    bad = {
+        "draft": {
+            "grammar_kind": "condition", "token_kind": "operator", "token": "between",
+            "description": "x", "params_schema": None,
+            "resolver_source": "x", "test_source": "x",
+        },
+        "why_summary": "x", "errors": [],
+    }
+    with patch.object(m, "is_enabled", return_value=True), _mock_llm(bad):
+        result = m.draft_token_from_prompt("a new comparison operator")
+    assert result.errors != []
+    assert set(result.draft) == _EXPECTED_DRAFT_KEYS
+    assert result.draft["resolver"] is None
+    assert result.draft["resolver_module_path"] is None
 
 
 # ═══════════════════════════════════════════════════════════════════════════
