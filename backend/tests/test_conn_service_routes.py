@@ -115,6 +115,7 @@ def test_accounts_endpoint_returns_loaded_accounts(conn_app):
                 "ZG0790": "zerodha_kite",
                 "DH6847": "dhan",
             }
+            mock_conn._client_id_map = {"DH6847": "1100012345"}
             mock_conns.return_value = mock_conn
 
             resp = client.get("/internal/accounts")
@@ -128,6 +129,14 @@ def test_accounts_endpoint_returns_loaded_accounts(conn_app):
             for acc in accounts:
                 assert "account" in acc, "each account must have 'account' key"
                 assert "broker_id" in acc, "each account must have 'broker_id' key"
+
+            # 2026-10-24: client_id is threaded through for accounts that
+            # have one, and absent (None) for those that don't.
+            by_account = {acc["account"]: acc for acc in accounts}
+            assert by_account["DH6847"].get("client_id") == "1100012345", (
+                f"got {by_account['DH6847'].get('client_id')!r}"
+            )
+            assert by_account["ZG0790"].get("client_id") is None
 
 
 def test_rebuild_endpoint_rebuilds_connections(conn_app):
@@ -901,6 +910,7 @@ def test_account_list_shows_broker_types(conn_app):
                 "DH6847": "dhan",
                 "GRW123": "groww",
             }
+            mock_conns_instance._client_id_map = {}
             mock_conns.return_value = mock_conns_instance
 
             resp = client.get("/internal/accounts")

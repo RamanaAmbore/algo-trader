@@ -15,9 +15,17 @@ can never match. Three sites needed explicit, numeric-safe handling:
   2. `orders.py` — the Dhan and Groww postback routes both logged the
      FULL raw payload dict (`{body!r}`), which can't be regex-masked
      reliably once the account id is embedded inside a dumped dict.
-     Both now route through `_pb_redact_payload_for_log()`, which drops
-     the `dhanClientId` key before logging (`body` itself, used by the
-     real parsers downstream, is untouched).
+     Both now route through `_pb_redact_payload_for_log()`.
+
+Amended 2026-10-24 (same day, follow-up fix): `_pb_redact_payload_for_log()`
+originally redacted `dhanClientId` to the literal string "<redacted>".
+Now that `register_accounts()` aliases each account's raw numeric
+`client_id` to that account's own already-computed mask (see
+`backend/tests/broker/test_dhan_client_id_mask_alias.py`), the function
+masks the value in place via `mask_account()` instead — a genuinely
+useful, distinguishable string (e.g. `D1####`) rather than an opaque
+placeholder, while never leaking the raw digits. `body` itself, used by
+the real parsers downstream, remains untouched either way.
 
 Deliberately NOT masked: `orders.py:_rco_parse_dhan_postback_body`'s own
 `account` extraction (~line 1211) — that raw value feeds real DB/account
@@ -130,6 +138,28 @@ class TestRedactPayloadForLog:
         # Other fields pass through unchanged.
         assert out["orderId"] == "O1"
         assert out["orderStatus"] == "TRADED"
+
+    def test_masks_in_place_using_the_registered_client_id_alias(self):
+        """2026-10-24 follow-up: once `register_accounts()` has aliased
+        this client_id to its paired account's mask, the redacted value
+        must be that SAME useful mask — not a placeholder, and not an
+        independently-derived (and potentially colliding) mask."""
+        from backend.shared.helpers import utils as utils_mod
+        from backend.shared.helpers.utils import mask_account, register_accounts
+        from backend.api.routes.orders import _pb_redact_payload_for_log
+
+        saved = dict(utils_mod._REGISTRY)
+        try:
+            register_accounts(["DH3747", "DH6847"], {"DH3747": _RAW_DHAN_ID})
+            expected = mask_account("DH3747")
+            body = {"dhanClientId": _RAW_DHAN_ID, "orderId": "O1"}
+            out = _pb_redact_payload_for_log(body)
+            assert out["dhanClientId"] == expected, (
+                f"expected the aliased mask {expected!r}, got {out['dhanClientId']!r}"
+            )
+            assert _RAW_DHAN_ID not in repr(out)
+        finally:
+            utils_mod._REGISTRY = saved
 
     def test_does_not_mutate_the_original_body(self):
         """The real parsers downstream (`_rco_parse_dhan_postback_body`)

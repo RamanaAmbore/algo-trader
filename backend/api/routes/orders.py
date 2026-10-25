@@ -1213,15 +1213,29 @@ def _pb_redact_payload_for_log(body: dict) -> dict:
     can't catch inside a dumped dict's `repr()` — that filter's regex
     only matches `[A-Z]{2}[A-Z0-9]{4,8}`-shaped codes, and `mask_account()`
     itself is a scalar-string mask, not a find-and-replace-inside-a-blob
-    tool. Dropping the key before the payload is logged is the one
-    reliable fix for this shape. Groww's payload carries no account
+    tool.
+
+    2026-10-24, amended same day: now that `register_accounts()` aliases
+    each account's raw numeric `client_id` to that account's own
+    already-computed mask (`backend/shared/helpers/utils.py`), masking
+    this value in place produces a genuinely useful, distinguishable
+    string (e.g. `D1####`) instead of the useless all-`#` the scalar
+    fallback would have produced — so this masks in place rather than
+    redacting the key outright, keeping the payload dump structurally
+    complete. `mask_account()` falls back to the scalar (all-digits-
+    masked) mask on its own if the alias hasn't been registered yet
+    (e.g. before the first `Connections.rebuild_from_db()` call), so
+    this is safe either way. Groww's payload carries no account
     identifier at all (per this route's own docstring) — a no-op for it
     today, kept generic so a future same-shaped Groww field is covered
     too.
     """
     if not isinstance(body, dict):
         return body
-    return {k: ("<redacted>" if k in _PB_RAW_PAYLOAD_SENSITIVE_KEYS else v) for k, v in body.items()}
+    return {
+        k: (mask_account(str(v)) if k in _PB_RAW_PAYLOAD_SENSITIVE_KEYS and v is not None else v)
+        for k, v in body.items()
+    }
 
 
 def _rco_parse_dhan_postback_body(body: dict) -> "tuple[str, str, str, str, str, object, object, str, str]":

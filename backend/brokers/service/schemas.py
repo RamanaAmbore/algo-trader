@@ -43,11 +43,25 @@ class InternalHealthResp(msgspec.Struct):
 
 
 class InternalAccountRow(msgspec.Struct):
-    """One entry in the /internal/accounts list."""
+    """One entry in the /internal/accounts list.
+
+    ``client_id`` (2026-10-24) — the broker-native numeric/alphanumeric
+    account identifier (e.g. Dhan's `client_id`), when one is on record
+    for this account. Declared LAST with a default so an older,
+    not-yet-redeployed conn_service (this struct is decoded from a live
+    HTTP response, not re-imported) simply omits the field — the main
+    API's alias-registration treats that exactly like "no client_id",
+    the same no-op it is today. See CLAUDE.md's `validate_gtt_exchange`
+    deploy-coupling note for the general hazard this mirrors. Never
+    logged or returned whole anywhere downstream — every consumer of
+    this list pulls ``account``/``broker_id`` by key, never dumps the
+    row.
+    """
 
     account: str
     conn_cls: str
     broker_id: str
+    client_id: str | None = None
 
 
 class InternalAccountsResp(msgspec.Struct):

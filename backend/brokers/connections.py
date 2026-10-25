@@ -1703,6 +1703,11 @@ class Connections(SingletonBase):
         self._hist_enabled_map: dict[str, bool] = {
             account: True for account in accts.keys()
         }
+        # Numeric/alphanumeric broker client_id per account (e.g. Dhan's
+        # `client_id`), for mask-registry aliasing — see register_accounts().
+        # secrets.yaml doesn't carry this field, so the YAML seed starts
+        # empty; rebuild_from_db() populates it from BrokerAccount rows.
+        self._client_id_map: dict[str, str] = {}
 
     def _build_conn_map(self, rows, dhan_deferred: set,
                         effective_ips: dict | None = None) -> dict:
@@ -1795,14 +1800,16 @@ class Connections(SingletonBase):
 
         new_broker_id_map, new_priority_map, new_hist_enabled_map = \
             self._build_row_lookup_maps(rows, new_conn)
+        new_client_id_map = self._build_client_id_map(rows, new_conn)
 
         with Connections._init_lock:
             self.conn = new_conn
             self._broker_id_map     = new_broker_id_map
             self._priority_map      = new_priority_map
             self._hist_enabled_map  = new_hist_enabled_map
+            self._client_id_map     = new_client_id_map
 
-        self._refresh_mask_registry(new_conn)
+        self._refresh_mask_registry(new_conn, new_client_id_map)
         self._refresh_dhan_priority_caches(rows, new_conn)
         logger.info(f"Connections: rebuilt from DB · accounts={sorted(new_conn.keys())}")
 
@@ -1833,11 +1840,23 @@ class Connections(SingletonBase):
             for r in rows
             if r.get("account")
         }
+        # Mirror conn_service's `client_id` field (2026-10-24) so this
+        # process's registry can alias raw Dhan-style client ids the same
+        # way the direct (non-cutover) path does. `r.get("client_id")` is
+        # None both when the account genuinely has no client_id (Kite) AND
+        # when conn_service hasn't been redeployed yet with the field —
+        # either way this degrades to the pre-existing no-alias behavior,
+        # never an error. See InternalAccountRow's own docstring.
+        self._client_id_map = {
+            r["account"]: r["client_id"]
+            for r in rows
+            if r.get("account") and r.get("client_id")
+        }
         # Mirror to register_accounts so mask_account() / utils
         # functions that key on the live account list still resolve.
         try:
             from backend.shared.helpers.utils import register_accounts
-            register_accounts(list(self._broker_id_map.keys()))
+            register_accounts(list(self._broker_id_map.keys()), self._client_id_map)
         except Exception:
             pass
 
@@ -2091,15 +2110,35 @@ class Connections(SingletonBase):
         return new_broker_id_map, new_priority_map, new_hist_enabled_map
 
     @staticmethod
-    def _refresh_mask_registry(new_conn: dict) -> None:
+    def _build_client_id_map(rows, new_conn: dict) -> dict[str, str]:
+        """Account → raw broker client_id (e.g. Dhan's numeric client_id),
+        sourced from `BrokerAccount.client_id`. Used to alias the raw
+        client_id into the mask registry (register_accounts) and
+        exposed via conn_service's /internal/accounts so the cutover-mode
+        main API can do the same aliasing without its own DB session.
+        Empty for accounts with no client_id on record (e.g. Kite)."""
+        return {
+            r.account: r.client_id
+            for r in rows
+            if r.account in new_conn and getattr(r, "client_id", None)
+        }
+
+    @staticmethod
+    def _refresh_mask_registry(new_conn: dict, client_id_map: dict | None = None) -> None:
         """Refresh the masked-account registry so every downstream
         surface (funds.py, holdings.py, telegram alerts, audit log)
         sees the new ordinal-per-broker masking scheme. Operator:
         "update the dhan accounts as d1#### and d2#### …"
+
+        ``client_id_map`` (2026-10-24) — {account: raw_client_id}, used to
+        alias each account's raw broker client_id (e.g. Dhan's numeric
+        client_id) to that account's own already-computed mask, so it's
+        distinguishable in logs instead of falling through to the
+        all-digits-masked scalar fallback. See register_accounts().
         """
         try:
             from backend.shared.helpers.utils import register_accounts
-            register_accounts(new_conn.keys())
+            register_accounts(new_conn.keys(), client_id_map)
         except Exception as e:
             # Mask registry refresh isn't load-critical — fall back to
             # the scalar mask. Log and continue.

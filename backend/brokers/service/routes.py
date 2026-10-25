@@ -208,14 +208,26 @@ class InternalBrokerController(Controller):
 
         Shape:
           {accounts: [
-              {account, conn_cls, broker_id},
+              {account, conn_cls, broker_id, client_id},
               ...
           ]}
+
+        ``client_id`` (2026-10-24) — sourced from `Connections._client_id_map`
+        (populated by `rebuild_from_db()` from `BrokerAccount.client_id`),
+        so the main API's cutover-mode registry can alias each broker's
+        raw numeric client id to the same mask as its account code. `None`
+        when the account has no client_id on record (e.g. Kite).
         """
         from backend.brokers.connections import Connections
 
         c = Connections()
         id_map = getattr(c, "_broker_id_map", {}) or {}
+        client_id_map = getattr(c, "_client_id_map", {}) or {}
+        if not isinstance(client_id_map, dict):
+            # Defends against an exotic Connections stand-in (e.g. a test
+            # double) whose unmocked attribute access doesn't yield a
+            # real dict — never let that reach the msgspec Struct below.
+            client_id_map = {}
         rows: list[InternalAccountRow] = []
         for acct, conn in c.conn.items():
             conn_cls = type(conn).__name__
@@ -224,6 +236,7 @@ class InternalBrokerController(Controller):
                 account=acct,
                 conn_cls=conn_cls,
                 broker_id=broker_id,
+                client_id=client_id_map.get(acct),
             ))
         return InternalAccountsResp(accounts=rows)
 

@@ -240,7 +240,7 @@ _MASK_RE = re.compile(r'\d')
 _REGISTRY: dict[str, str] = {}
 
 
-def register_accounts(accounts) -> None:
+def register_accounts(accounts, client_ids: "dict[str, str] | None" = None) -> None:
     """Rebuild the mask registry from the current account list.
 
     Called from `Connections.rebuild_from_db()` whenever the broker
@@ -267,6 +267,23 @@ def register_accounts(accounts) -> None:
 
     Operator: 'for the masked accounts, only the last 4 chars should
     be masked. for dhan the first 2 chars should show as D1 and D2'.
+
+    ``client_ids`` (2026-10-24) — optional {account_code: raw_client_id}
+    mapping (e.g. Dhan's numeric `client_id`, distinct from the internal
+    account code). For every account that has one, the registry gets an
+    ALIAS entry reusing that account's own already-computed mask —
+    `_REGISTRY[client_id] = _REGISTRY[account_code]` — rather than
+    deriving an independent mask from the client_id's own characters.
+    Deriving independently would collide for the real Dhan pair too:
+    both real Dhan client_ids are the same length and share the same
+    first 2 characters. Aliasing means any log line showing e.g.
+    `D1####` unambiguously means the same real account whether it came
+    from the internal code or the raw numeric id.
+
+    A falsy/blank client_id is skipped. An alias is only ever added for
+    an account that made it into `new_map` above, and never overwrites
+    an existing key (defends against the near-impossible case of a
+    client_id string colliding with a real account code).
     """
     global _REGISTRY
     # First pass: bucket by FIRST-2-CHAR prefix to detect collisions.
@@ -288,6 +305,15 @@ def register_accounts(accounts) -> None:
             broker_letter = prefix2[0]
             for i, a in enumerate(accts, 1):
                 new_map[a] = f"{broker_letter}{i}####"
+
+    for acct, cid in (client_ids or {}).items():
+        if not cid or acct not in new_map:
+            continue
+        cid = str(cid).strip()
+        if not cid or cid in new_map:
+            continue
+        new_map[cid] = new_map[acct]
+
     _REGISTRY = new_map
 
 
