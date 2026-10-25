@@ -570,11 +570,15 @@ one real action or `alert(...)` call — `DO nop` alone is rejected.
 the exact same channel-list/`msg=` machinery the old `ALERT` clause always used
 (`compileAlertClause`), reused unchanged under the hood; only the DSL-surface
 keyword is gone. It can appear in the preamble or inside `DO`, with identical
-compiled output either way (`events: [{channel, enabled, ...}]`). The one
-UNCHANGED, separate statement kind is the standalone **event_stmt** — a bare
-`ALERT log_tag=... render=...` statement (no `WHEN`/`DO`, whose first clause is one
-of the reserved event-meta keys) subscribes to the platform's internal log/event
-stream rather than polling a metric; this form is untouched by the unification.
+compiled output either way (`events: [{channel, enabled, ...}]`). An event
+(`kind='event'`) agent — subscribing to the platform's internal log/event stream
+rather than polling a metric — is now an ORDINARY `agent_stmt` too (Wave 2,
+2026-10-24): the condition is a `log(tag=..., min_level=..., where={...})` call
+(`|` combines multiple filters, replacing the old `match=[...]` list) and `DO`
+contains exactly one `render(render=..., gate=...)` call, optionally alongside
+`alert(...)` channels. The old standalone `ALERT log_tag=... render=...` statement
+(`event_stmt`) is retired — see
+[AGENTS_GRAMMAR_EBNF.md](AGENTS_GRAMMAR_EBNF.md) for the full grammar.
 
 **`order(...)`/`bracket(...)`/`help(...)` as standalone statements** — a single bare
 `order(...)` (or a comma-separated basket of them), a single bare `bracket(...)`, or
@@ -781,6 +785,7 @@ closed by this entry — see `frontend/src/lib/__tests__/agentsSuggest.test.js` 
 
 | Date | Change |
 |---|---|
+| 2026-10-24 | Wave 2 (grammar-unification) — the standalone `event_stmt` (`ALERT log_tag=... render=...`) dissolves into an ordinary `agent_stmt`: a `log(tag=..., min_level=..., where={...})` condition sets `kind='event'` (`compileAgentStmt`'s `isEventKind`); `|` replaces `match=[...]`; `DO` carries exactly one `render(render=..., gate=...)` call, optionally alongside `alert(...)` channels. `parseEventStmt`/`compileEventStmt`/`decompileEventAgent`/`_EVENT_META_KEYS` are retired — `decompileAgent` now handles both kinds. New real catalog row `(condition, log_filter, log)`; `event_actions.render.params_schema` gained a required `render` field. See [AGENTS_GRAMMAR_EBNF.md](AGENTS_GRAMMAR_EBNF.md). |
 | 2026-10-23 | Sprint [grammar-unify] execution + alert (items 0, 0.C): saved cycle-agent `preamble` executes per call type — `help`/`debug` every cycle, `alert`/non-debug `log` every cycle windowed by `cooldown_minutes`, all other calls (`order`, `close_position`, `cancel_order`, `bracket`, …) once per activation (commit `4e6df1ec`; P1 fix). Activation is a real inactive/paused→active transition only. New `has_explicit_alert` flag (a DO-level `alert(...)` replaces the automatic rich alert; commits `08bf4340`, `6aaec581`); Console saves are sticky-false (commit `b6f56be7`). New columns `preamble_fired_at`, `preamble_alert_last_fired_at`, `has_explicit_alert`. |
 | 2026-10-23 | Sprint [grammar-unify] (items 1/2/4) — `WHEN ... DO ...` is now the ONE generic, optional conditional wrapper around any statement; everything outside it (the preamble) runs unconditionally, with no `GIVEN` keyword needed — `GIVEN` is removed from the grammar entirely (it carried no semantic meaning, and the preamble is now self-delimiting by position). `ALERT` is removed as a reserved clause keyword — `alert(...)` is an ordinary call, compiling through the exact same `compileAlertClause` machinery whether it appears in the preamble or inside `DO`. New compiled-JSON key `preamble[]` (per-call compiled entries, omitted when empty). New standalone/preamble/DO-callable `help(<name>)` action — read-only catalog introspection, wired to `POST /api/agents/help` on the Console tab only (never the order-scoped CLI mounts). The standalone top-level `event_stmt` (bare `ALERT log_tag=...`) is unchanged. Known gap: the Console editor's own autocomplete/hover classifier (`_clauseKindFromTokenPrefix`) still assumes the old 4-clause shape — tracked as follow-up, does not affect compile/save correctness. |
 | 2026-10-10 | (uncommitted Sprint 4) — Agent CLI grammar UI + full compiler suite + decompiler. Operators can now author and edit agents via single-line text statements (WHEN condition [ALERT notifies] [DO actions]) in the `/automation` page's CLI tab, alongside the existing Structured (JSON) tab. Supports parameterized metric/scope call syntax (mean_pnl(minutes=30)), keyword-only arguments with aliases, list literals, and parenthesized boolean logic. A bare order(...) statement places a real order without creating an agent. Commits 2a5cd01d, d05fe54a, 3b615b0b with integration into existing agent create/update routes. |

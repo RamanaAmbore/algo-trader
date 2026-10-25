@@ -1,0 +1,499 @@
+[
+  {
+    "slug": "fill-alert",
+    "name": "Fill alert",
+    "conditions": {
+      "log": {
+        "tag": "orders",
+        "min_level": "INFO",
+        "where": {
+          "alert_event": "filled",
+          "mode": "live"
+        }
+      }
+    },
+    "events": [],
+    "actions": [
+      {
+        "type": "render",
+        "render": "fill"
+      }
+    ]
+  },
+  {
+    "slug": "error-alert",
+    "name": "Error alert",
+    "conditions": {
+      "log": {
+        "tag": "error",
+        "min_level": "ERROR"
+      }
+    },
+    "events": [],
+    "actions": [
+      {
+        "type": "render",
+        "render": "error",
+        "gate": true
+      }
+    ]
+  },
+  {
+    "slug": "chase-cancel-alert",
+    "name": "Chase cancel unconfirmed",
+    "conditions": {
+      "log": {
+        "tag": "chase",
+        "min_level": "CRITICAL",
+        "where": {
+          "alert_event": "cancel_unconfirmed"
+        }
+      }
+    },
+    "events": [],
+    "actions": [
+      {
+        "type": "render",
+        "render": "chase_cancel"
+      }
+    ]
+  },
+  {
+    "slug": "partial-gtt-alert",
+    "name": "Partial GTT placement",
+    "conditions": {
+      "log": {
+        "tag": "gtt",
+        "min_level": "CRITICAL",
+        "where": {
+          "alert_event": "partial_gtt"
+        }
+      }
+    },
+    "events": [],
+    "actions": [
+      {
+        "type": "render",
+        "render": "partial_gtt"
+      }
+    ]
+  },
+  {
+    "slug": "template-attach-urgent",
+    "name": "Template attach urgent",
+    "conditions": {
+      "any": [
+        {
+          "log": {
+            "tag": "gtt",
+            "min_level": "WARNING",
+            "where": {
+              "alert_event": "wing_unprotected"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "gtt",
+            "min_level": "CRITICAL",
+            "where": {
+              "alert_event": "wing_hard_reject"
+            }
+          }
+        }
+      ]
+    },
+    "events": [],
+    "actions": [
+      {
+        "type": "render",
+        "render": "template_attach"
+      }
+    ]
+  },
+  {
+    "slug": "template-attach-high",
+    "name": "Template attach high",
+    "conditions": {
+      "any": [
+        {
+          "log": {
+            "tag": "gtt",
+            "min_level": "WARNING",
+            "where": {
+              "alert_event": "wing_skip"
+            }
+          }
+        },
+        {
+          "log": {
+            "tag": "gtt",
+            "min_level": "WARNING",
+            "where": {
+              "alert_event": "wing_offset_skip"
+            }
+          }
+        }
+      ]
+    },
+    "events": [],
+    "actions": [
+      {
+        "type": "render",
+        "render": "template_attach"
+      }
+    ]
+  },
+  {
+    "slug": "order-failure-alert",
+    "name": "Order failure",
+    "conditions": {
+      "log": {
+        "tag": "orders",
+        "min_level": "WARNING",
+        "where": {
+          "alert_event": "order_failure"
+        }
+      }
+    },
+    "events": [],
+    "actions": [
+      {
+        "type": "render",
+        "render": "order_failure"
+      }
+    ]
+  },
+  {
+    "slug": "template-guard-alert",
+    "name": "Template guard",
+    "conditions": {
+      "log": {
+        "tag": "orders",
+        "min_level": "INFO",
+        "where": {
+          "alert_event": "template_guard"
+        }
+      }
+    },
+    "events": [],
+    "actions": [
+      {
+        "type": "render",
+        "render": "template_guard"
+      }
+    ]
+  },
+  {
+    "slug": "template-attach-fail-alert",
+    "name": "Template attach failed",
+    "conditions": {
+      "log": {
+        "tag": "orders",
+        "min_level": "WARNING",
+        "where": {
+          "alert_event": "template_attach_fail"
+        }
+      }
+    },
+    "events": [],
+    "actions": [
+      {
+        "type": "render",
+        "render": "template_attach_fail"
+      }
+    ]
+  },
+  {
+    "slug": "mcp-ping-alert",
+    "name": "MCP audit ping",
+    "conditions": {
+      "log": {
+        "tag": "mcp",
+        "min_level": "INFO",
+        "where": {
+          "alert_event": "mcp_ping"
+        }
+      }
+    },
+    "events": [],
+    "actions": [
+      {
+        "type": "render",
+        "render": "mcp_ping"
+      }
+    ]
+  },
+  {
+    "slug": "order-correction-alert",
+    "name": "Order poll correction",
+    "conditions": {
+      "log": {
+        "tag": "orders",
+        "min_level": "WARNING",
+        "where": {
+          "alert_event": "order_correction"
+        }
+      }
+    },
+    "events": [],
+    "actions": [
+      {
+        "type": "render",
+        "render": "order_correction"
+      }
+    ]
+  },
+  {
+    "slug": "deploy-sync-alert",
+    "name": "Deploy out of sync",
+    "conditions": {
+      "log": {
+        "tag": "deploy",
+        "min_level": "WARNING",
+        "where": {
+          "alert_event": "deploy_out_of_sync"
+        }
+      }
+    },
+    "events": [],
+    "actions": [
+      {
+        "type": "render",
+        "render": "deploy_sync"
+      }
+    ]
+  },
+  {
+    "slug": "agent-alert-rich",
+    "name": "Agent alert",
+    "conditions": {
+      "log": {
+        "tag": "agent",
+        "min_level": "INFO",
+        "where": {
+          "alert_event": "rich_alert"
+        }
+      }
+    },
+    "events": [],
+    "actions": [
+      {
+        "type": "render",
+        "render": "rich_alert"
+      }
+    ]
+  },
+  {
+    "slug": "market-summary",
+    "name": "Market summary",
+    "conditions": {
+      "log": {
+        "tag": "summary",
+        "min_level": "INFO",
+        "where": {
+          "alert_event": "summary"
+        }
+      }
+    },
+    "events": [],
+    "actions": [
+      {
+        "type": "render",
+        "render": "summary"
+      }
+    ]
+  },
+  {
+    "slug": "cycle-breach-alert",
+    "name": "Cycle breach",
+    "conditions": {
+      "log": {
+        "tag": "agent",
+        "min_level": "INFO",
+        "where": {
+          "alert_event": "breach"
+        }
+      }
+    },
+    "events": [],
+    "actions": [
+      {
+        "type": "render",
+        "render": "breach"
+      }
+    ]
+  },
+  {
+    "slug": "gtt-not-accepted-alert",
+    "name": "GTT not accepted",
+    "conditions": {
+      "log": {
+        "tag": "gtt",
+        "min_level": "ERROR",
+        "where": {
+          "alert_event": "gtt_not_accepted"
+        }
+      }
+    },
+    "events": [],
+    "actions": [
+      {
+        "type": "render",
+        "render": "gtt_not_accepted"
+      }
+    ]
+  },
+  {
+    "slug": "gtt-asymmetric-alert",
+    "name": "GTT asymmetric",
+    "conditions": {
+      "log": {
+        "tag": "gtt",
+        "min_level": "WARNING",
+        "where": {
+          "alert_event": "gtt_asymmetric"
+        }
+      }
+    },
+    "events": [],
+    "actions": [
+      {
+        "type": "render",
+        "render": "generic_notice"
+      }
+    ]
+  },
+  {
+    "slug": "oco-double-fire-alert",
+    "name": "OCO double-fire",
+    "conditions": {
+      "log": {
+        "tag": "gtt",
+        "min_level": "WARNING",
+        "where": {
+          "alert_event": "oco_double_fire"
+        }
+      }
+    },
+    "events": [],
+    "actions": [
+      {
+        "type": "render",
+        "render": "generic_notice"
+      }
+    ]
+  },
+  {
+    "slug": "ticker-recovered-alert",
+    "name": "Ticker recovered",
+    "conditions": {
+      "log": {
+        "tag": "broker",
+        "min_level": "INFO",
+        "where": {
+          "alert_event": "ticker_recovered"
+        }
+      }
+    },
+    "events": [],
+    "actions": [
+      {
+        "type": "render",
+        "render": "generic_notice"
+      }
+    ]
+  },
+  {
+    "slug": "ticker-degraded-alert",
+    "name": "Ticker degraded",
+    "conditions": {
+      "log": {
+        "tag": "broker",
+        "min_level": "WARNING",
+        "where": {
+          "alert_event": "ticker_degraded"
+        }
+      }
+    },
+    "events": [],
+    "actions": [
+      {
+        "type": "render",
+        "render": "generic_notice"
+      }
+    ]
+  },
+  {
+    "slug": "visitor-report-alert",
+    "name": "Visitor report",
+    "conditions": {
+      "log": {
+        "tag": "visitor",
+        "min_level": "INFO",
+        "where": {
+          "alert_event": "visitor_report"
+        }
+      }
+    },
+    "events": [],
+    "actions": [
+      {
+        "type": "render",
+        "render": "generic_notice"
+      }
+    ]
+  },
+  {
+    "slug": "unrouted-alert-catch-all",
+    "name": "Unrouted alert catch-all",
+    "conditions": {
+      "log": {
+        "tag": "agent",
+        "min_level": "WARNING",
+        "where": {
+          "alert_event": "unrouted_alert"
+        }
+      }
+    },
+    "events": [
+      {
+        "channel": "telegram",
+        "enabled": true,
+        "gate": false
+      },
+      {
+        "channel": "ntfy",
+        "enabled": true,
+        "priority": "high",
+        "gate": false
+      }
+    ],
+    "actions": [
+      {
+        "type": "render",
+        "render": "generic_notice"
+      }
+    ]
+  },
+  {
+    "slug": "user-registered-alert",
+    "name": "User registered",
+    "conditions": {
+      "log": {
+        "tag": "auth",
+        "min_level": "INFO",
+        "where": {
+          "alert_event": "user_registered"
+        }
+      }
+    },
+    "events": [],
+    "actions": [
+      {
+        "type": "render",
+        "render": "generic_notice"
+      }
+    ]
+  }
+]

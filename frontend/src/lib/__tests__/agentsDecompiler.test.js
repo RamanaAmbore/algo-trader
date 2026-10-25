@@ -32,7 +32,7 @@ vi.mock('$lib/api', () => ({ fetchGrammarTokens: vi.fn() }));
 const {
   buildCatalog, compileAgentCliStatement, decompileCondition, decompileEvents,
   decompileActions, decompileAgent, decompileMetaClause, decompileBracket,
-  decompileEventAgent, decompileToken, ALWAYS_LEAF,
+  decompileToken, ALWAYS_LEAF,
 } = await import('$lib/command/grammars/agents.js');
 
 // ── Fixture catalog ──────────────────────────────────────────────────────
@@ -169,7 +169,19 @@ const FIXTURE_ROWS = [
   // bucket / `catalog.actions`).
   {
     grammar_kind: 'action', token_kind: 'render_action', token: 'render',
-    params_schema: { gate: { type: 'boolean', required: false } },
+    // Wave 2 — `render` itself is now a declared, required param too.
+    params_schema: { render: { type: 'freetext', required: true }, gate: { type: 'boolean', required: false } },
+  },
+  // Wave 2 (grammar-unification) — the real `(condition, log_filter, log)`
+  // catalog row, mirrored with the exact same params_schema shape as
+  // `agent_grammar.yaml`.
+  {
+    grammar_kind: 'condition', token_kind: 'log_filter', token: 'log', value_type: 'void',
+    params_schema: {
+      tag: { type: 'freetext', required: true },
+      min_level: { type: 'enum', enum: ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], default: 'INFO' },
+      where: { type: 'object', required: false },
+    },
   },
   {
     grammar_kind: 'condition', token_kind: 'column', token: 'positions.expiring_today.account_id', value_type: 'string',
@@ -1396,38 +1408,38 @@ describe('Sprint C — decompileToken() round-trip (notify-kind Token)', () => {
   });
 });
 
-// ── Sprint 12 — event_stmt decompiler (decompileEventAgent) ────────────────
-// +Sprint 18 — channel-level and render-action-level `gate`, empty
-// `events: []`, round-tripped against the REAL seeded shapes in
+// ── Wave 2 (grammar-unification) — event-agent decompile round-trip, now
+// via the GENERIC `decompileAgent` (the dedicated `decompileEventAgent` is
+// retired — `decompileCondition`/`decompileActions` handle a log leaf /
+// render action generically, same as any ordinary leaf/action). Round-
+// tripped against the REAL seeded shapes in
 // backend/api/algo/event_agents.py:SEEDED_AGENTS.
 //
 // `ERROR_AGENT`'s REAL `conditions`/`events`/`actions` are reused here
-// VERBATIM (including its real `actions[0].gate: true` — Sprint 18 made
-// this expressible via the new `gate=` event_meta kwarg, resolved
-// against `catalog.renderAction`'s own params_schema):
+// VERBATIM (including its real `actions[0].gate: true`):
 //   conditions: {"log": {"tag": "error", "min_level": "ERROR"}}
 //   events:     [{"channel": "telegram", "enabled": true},
 //                {"channel": "ntfy", "enabled": true}]
 //   actions:    [{"type": "render", "render": "error", "gate": true}]
-describe('Sprint 12/18 — event_stmt decompile round-trip (real seeded agent shapes)', () => {
+describe('Wave 2 — event-agent decompile round-trip (real seeded agent shapes)', () => {
   const ERROR_AGENT_LIKE = {
     conditions: { log: { tag: 'error', min_level: 'ERROR' } },
     events: [
       { channel: 'telegram', enabled: true },
       { channel: 'ntfy', enabled: true },
     ],
-    actions: [{ type: 'render', render: 'error', gate: true }], // real ERROR_AGENT shape, gate now expressible (Sprint 18)
+    actions: [{ type: 'render', render: 'error', gate: true }], // real ERROR_AGENT shape
     name: 'Error alert',
   };
 
   function decompileEvent(agentJson, opts = {}) {
-    return decompileEventAgent(agentJson, CATALOG, { lotSizeOf, ...opts });
+    return decompileAgent(agentJson, CATALOG, { lotSizeOf, ...opts });
   }
 
-  it('decompiles to the expected ALERT log_tag=... CLI text, including the action-level gate=true', () => {
+  it('decompiles to the expected WHEN log(...) DO alert(...), render(...) CLI text, including the action-level gate=true', () => {
     const dec = decompileEvent(ERROR_AGENT_LIKE);
     expect(dec.errors).toEqual([]);
-    expect(dec.text).toBe('ALERT log_tag=error, min_level=ERROR, render=error, gate=true, telegram, ntfy #name="Error alert"');
+    expect(dec.text).toBe('WHEN log(tag=error, min_level=ERROR) DO alert(telegram, ntfy), render(render=error, gate=true) #name="Error alert"');
   });
 
   it('recompiles back to the IDENTICAL conditions/events/actions JSON (round-trip), gate:true included', () => {
@@ -1438,6 +1450,7 @@ describe('Sprint 12/18 — event_stmt decompile round-trip (real seeded agent sh
     expect(recompiled.agent.events).toEqual(ERROR_AGENT_LIKE.events);
     expect(recompiled.agent.actions).toEqual(ERROR_AGENT_LIKE.actions);
     expect(recompiled.agent.name).toBe(ERROR_AGENT_LIKE.name);
+    expect(recompiled.agent.kind).toBe('event');
   });
 
   it('min_level absent on the stored row defaults to "INFO" on decompile (matches the compiler default)', () => {
@@ -1477,13 +1490,14 @@ describe('Sprint 12/18 — event_stmt decompile round-trip (real seeded agent sh
     expect(dec.errors.some(e => /not expressible by this syntax yet/.test(e.message))).toBe(true);
   });
 
-  it('fails loud on a malformed conditions shape (missing "log"/"any")', () => {
-    const dec = decompileEvent({ conditions: { all: [] }, events: [], actions: [] });
+  it('fails loud on a malformed conditions shape (an unrecognized leaf)', () => {
+    const dec = decompileEvent({
+      conditions: { bogus: 1 },
+      events: [],
+      actions: [{ type: 'render', render: 'error' }],
+    });
     expect(dec.text).toBeNull();
-    // Sprint 18 follow-up — the message now also mentions the `{"any":
-    // [...]}` (match=) alternative; match on the stable leading substring
-    // rather than the old exact-to-"shape" wording.
-    expect(dec.errors.some(e => /'conditions' must be a \{"log": \{\.\.\.\}\}/.test(e.message))).toBe(true);
+    expect(dec.errors.some(e => /unrecognized condition shape/.test(e.message))).toBe(true);
   });
 
   // Closed 2026-10-12 — real `market-summary` SEEDED_AGENTS shape
@@ -1505,7 +1519,7 @@ describe('Sprint 12/18 — event_stmt decompile round-trip (real seeded agent sh
     };
     const dec = decompileEvent(agentJson);
     expect(dec.errors).toEqual([]);
-    expect(dec.text).toContain('telegram_info(gate=false)');
+    expect(dec.text).toContain('alert(telegram_info(gate=false))');
     const recompiled = compile(dec.text);
     expect(recompiled.ok).toBe(true);
     expect(recompiled.agent.conditions).toEqual(agentJson.conditions);
@@ -1547,16 +1561,17 @@ describe('Sprint 12/18 — event_stmt decompile round-trip (real seeded agent sh
   // the output of a decompile call (compile/decompile are NOT assumed
   // symmetric just because one direction works). ──────────────────────
   it('compiles a hand-typed telegram(gate=false) channel call on its own', () => {
-    const r = compile('ALERT log_tag=orders, min_level=WARNING, render=order_failure, telegram(gate=false)');
+    const r = compile('WHEN log(tag=orders, min_level=WARNING) DO alert(telegram(gate=false)), render(render=order_failure)');
     expect(r.ok).toBe(true);
     expect(r.agent.events).toEqual([{ channel: 'telegram', enabled: true, gate: false }]);
   });
 
   // ── real seeded BREACH_AGENT shape — `events: []` (confirmed
   // intentional: this agent supplies channels dynamically at render
-  // time). Sprint 18 made this expressible via `nop` in the channel
-  // list position. ──────────────────────────────────────────────────
-  it('real cycle-breach-alert shape: empty events:[] decompiles via a bare "nop" channel list', () => {
+  // time). `decompileAgent`'s DO-building logic omits the alert(...) call
+  // entirely when `events` is empty (`eventsResult.text === 'nop'`), so
+  // DO is just the bare render(...) call — no "nop" text anywhere. ─────
+  it('real cycle-breach-alert shape: empty events:[] decompiles to a DO with no alert(...) call at all', () => {
     const agentJson = {
       conditions: { log: { tag: 'agent', min_level: 'INFO', where: { alert_event: 'breach' } } },
       events: [],
@@ -1565,7 +1580,8 @@ describe('Sprint 12/18 — event_stmt decompile round-trip (real seeded agent sh
     };
     const dec = decompileEvent(agentJson);
     expect(dec.errors).toEqual([]);
-    expect(dec.text).toMatch(/,\s*nop(\s|$)/);
+    expect(dec.text).not.toContain('alert(');
+    expect(dec.text).toContain('DO render(render=breach)');
     const recompiled = compile(dec.text);
     expect(recompiled.ok).toBe(true);
     expect(recompiled.agent.conditions).toEqual(agentJson.conditions);
@@ -1573,14 +1589,12 @@ describe('Sprint 12/18 — event_stmt decompile round-trip (real seeded agent sh
     expect(recompiled.agent.actions).toEqual(agentJson.actions);
   });
 
-  // ── Sprint 18 follow-up (`match=[...]`) — the two real seeded agents
-  // that originally motivated this syntax, `template-attach-urgent`/
+  // ── Wave 2 — the two real seeded agents that originally motivated the
+  // retired `match=[...]` syntax, `template-attach-urgent`/
   // `template-attach-high` (backend/api/algo/event_agents.py:
   // SEEDED_AGENTS — `conditions`/`events`/`actions` reused VERBATIM
-  // below), now round-trip (previously confirmed blocked — see the
-  // removed test this replaces — since `event_stmt` had no syntax for
-  // a second, independently-thresholded log leaf). ───────────────────
-  it('real template-attach-urgent shape: any:[{log},{log}] decompiles to match=[...] and round-trips', () => {
+  // below), now decompile to `log(...) | log(...)` and round-trip. ────
+  it('real template-attach-urgent shape: any:[{log},{log}] decompiles to log(...) | log(...) and round-trips', () => {
     const agentJson = {
       conditions: { any: [
         { log: { tag: 'gtt', min_level: 'WARNING', where: { alert_event: 'wing_unprotected' } } },
@@ -1592,11 +1606,9 @@ describe('Sprint 12/18 — event_stmt decompile round-trip (real seeded agent sh
     };
     const dec = decompileEvent(agentJson);
     expect(dec.errors).toEqual([]);
-    expect(dec.text).toBe(
-      'ALERT match=[{tag=gtt, min_level=WARNING, where={alert_event=wing_unprotected}}, '
-      + '{tag=gtt, min_level=CRITICAL, where={alert_event=wing_hard_reject}}], '
-      + 'render=template_attach, ntfy(priority=urgent) #name="Template attach urgent"'
-    );
+    expect(dec.text).toContain('log(tag=gtt, min_level=WARNING, where={alert_event=wing_unprotected})');
+    expect(dec.text).toContain('log(tag=gtt, min_level=CRITICAL, where={alert_event=wing_hard_reject})');
+    expect(dec.text).toContain(' | ');
     const recompiled = compile(dec.text);
     expect(recompiled.ok).toBe(true);
     expect(recompiled.agent.conditions).toEqual(agentJson.conditions);
@@ -1605,7 +1617,7 @@ describe('Sprint 12/18 — event_stmt decompile round-trip (real seeded agent sh
     expect(recompiled.agent.name).toBe(agentJson.name);
   });
 
-  it('real template-attach-high shape: any:[{log},{log}] (same min_level both entries) decompiles to match=[...] and round-trips', () => {
+  it('real template-attach-high shape: any:[{log},{log}] (same min_level both entries) decompiles to log(...) | log(...) and round-trips', () => {
     const agentJson = {
       conditions: { any: [
         { log: { tag: 'gtt', min_level: 'WARNING', where: { alert_event: 'wing_skip' } } },
@@ -1622,18 +1634,6 @@ describe('Sprint 12/18 — event_stmt decompile round-trip (real seeded agent sh
     expect(recompiled.agent.conditions).toEqual(agentJson.conditions);
     expect(recompiled.agent.events).toEqual(agentJson.events);
     expect(recompiled.agent.actions).toEqual(agentJson.actions);
-  });
-
-  it('match= combined with log_tag= in the same statement is a compile-time error', () => {
-    const r = compile('ALERT match=[{tag=gtt, min_level=WARNING}, {tag=gtt, min_level=CRITICAL}], log_tag=gtt, render=template_attach, ntfy(priority=urgent)');
-    expect(r.ok).toBe(false);
-    expect(r.errors.some(e => /match= is mutually exclusive with log_tag=/.test(e.message))).toBe(true);
-  });
-
-  it('match= requires at least one entry', () => {
-    const r = compile('ALERT match=[], render=x, telegram');
-    expect(r.ok).toBe(false);
-    expect(r.errors.some(e => /match= requires at least one/.test(e.message))).toBe(true);
   });
 });
 

@@ -9,25 +9,23 @@ below against the code: `frontend/src/lib/__tests__/agentsGrammarEbnfDrift.test.
 
 ## ⚠️ STATUS — read first
 
-This document was rewritten 2026-10-24 to describe two layers at once.
+This document describes the grammar as shipped (Wave 2, 2026-10-24 — the plan at
+`.claude/PLAN.md`). The grammar has no `GIVEN` keyword, no `ALERT` clause keyword, and one
+conditional wrapper, `WHEN … DO …`. Everything before `WHEN` (or the whole statement, if there
+is no `WHEN`) is an unconditional preamble. `alert`, `log`, `help`, `debug`, `render`, `order`,
+`bracket`, and label assignment are all ordinary items anywhere in the preamble or `DO`.
 
-- **Current (shipped).** Everything in this file is shipped **except** the event-agent shape
-  marked `[target]`. The shipped grammar has no `GIVEN` keyword, no `ALERT` clause keyword, and
-  one conditional wrapper, `WHEN … DO …`. Everything before `WHEN` (or the whole statement, if
-  there is no `WHEN`) is an unconditional preamble. `alert`, `log`, `help`, `debug`, `order`,
-  `bracket`, and label assignment are all ordinary items anywhere in the preamble or `DO`.
-- **Target (NOT YET SHIPPED — Wave 2).** An event (`kind='event'`) agent is written as an ordinary
-  `WHEN log(tag=…, min_level=…, where={…}) DO render(…)` statement. Its condition is a
-  catalog-resolved bare call, and `|` replaces the old `match=[…]` list. The standalone
-  `ALERT log_tag=… render=…` statement (`event_stmt`) is still live in `agents.js`
-  (`_EVENT_META_KEYS` at line 84, `parseEventStmt`, `compileEventStmt`). Its productions and every
-  semantic rule they carry are kept in
-  [Appendix A](#appendix-a--retiring-event_stmt-live-until-wave-2),
-  so Wave 2's byte-identical compile gate has a written reference. Delete Appendix A when Wave 2
-  ships.
-
-Wave 2 is the plan in `.claude/PLAN.md` (dissolve `event_stmt` into ordinary `WHEN … DO …`).
-`[target]` tags mark every rule that depends on it.
+An event (`kind='event'`) agent is an ORDINARY `agent_stmt` whose condition is a
+`log(tag=…, min_level=…, where={…})` call and whose `DO` carries exactly one
+`render(render=…, gate=…)` call — see [Event agents](#event-agents) below. The old standalone
+`ALERT log_tag=… render=…` statement (`event_stmt`, `_EVENT_META_KEYS`, `parseEventStmt`,
+`compileEventStmt`, `decompileEventAgent`) is RETIRED — deleted from `agents.js`, not merely
+superseded. There is no corpus of operator-authored `kind='event'` agents to migrate (confirmed
+zero rows, same precedent as the `emit_log`→`log` rename); the 23 real `SEEDED_AGENTS`
+(`backend/api/algo/event_agents.py`) are Python dicts written directly to the DB by the backend
+seeder — never compiled through this CLI grammar — and this file's own byte-identical compile
+gate (`agentsGrammar.test.js`) confirms the new syntax reproduces their exact `conditions`/
+`events`/`actions` shapes for Edit/Save round-tripping.
 
 ---
 
@@ -46,9 +44,9 @@ statement      := order_stmt | bracket_stmt | help_stmt | cancel_all_orders_stmt
                                                    to agent_stmt, which accepts the same call
                                                    vocabulary. token and cancel_all_orders have no
                                                    such fallback — they are standalone-only.
-                                                   Event agents are agent_stmt too [target]. *)
+                                                   Event agents are agent_stmt too. *)
 
-(* ── Agent statement (shipped, except the event form noted below) ─────────── *)
+(* ── Agent statement (shipped) ───────────────────────────────────────────── *)
 agent_stmt     := preamble? ("WHEN" condition "DO" do_clause)? meta_item*
                                                 (* WHEN and DO are one paired, optional wrapper.
                                                    WHEN without DO is a compile-time error.
@@ -141,8 +139,8 @@ leaf           := metric_ref comparator value
                                                    to an isFragmentRef entry, it compiles to
                                                    {"$ref": name}. A real metric missing its "@"
                                                    gets "expected '@' after metric" at compile
-                                                   time. [target] A log-condition is ALSO a bare
-                                                   call — see prose below. *)
+                                                   time. A log-condition (`log(tag=…, ...)`) is
+                                                   ALSO a bare call — see prose below. *)
 metric_ref     := call "@" scope_ref
 scope_ref      := scope_seg ("." scope_seg)*   (* scope_seg := call | qualifier_seg. A
                                                    qualifier_seg is trailing only. Short scope
@@ -178,20 +176,28 @@ call           := NAME | NAME "(" arg_list ")"
                                                    (tokenizeCallStyle, engine.js). *)
 arg_list       := kw_arg ("," kw_arg)*         (* EVERY argument is keyword, including the
                                                    first. No positional form exists. *)
-kw_arg         := NAME "=" value
-                                                (* [target] Wave 2 needs `where={…}` as a
-                                                   log-condition argument. That requires widening
-                                                   this production's value to include
-                                                   object_literal, scoped to condition calls.
-                                                   Not yet written. See Known gaps. *)
+kw_arg         := NAME "=" value | NAME "=" object_literal
+                                                (* Widened (Wave 2) to accept object_literal as a
+                                                   CALL ARGUMENT value — GENERICALLY, for any call,
+                                                   not scoped to `log(...)`'s own `where=` alone
+                                                   (`_OBJECT_LITERAL_ARG_RE` in agents.js). An
+                                                   object-literal RHS (`key={...}`) is lexically
+                                                   unambiguous — no other value production starts
+                                                   with "{" — so the wider fix carries no new
+                                                   ambiguity. `_coerceValueForSpec` still rejects an
+                                                   object value for any param whose schema does NOT
+                                                   declare `type: 'object'`, so only `log(...)`'s
+                                                   `where=` (and tp_scales_json's own per-entry
+                                                   fields, parsed via a separate mini-lexer, below)
+                                                   actually accept one today. *)
 
 (* ── Object literals and the tp_scales_json exception ────────────────────── *)
 object_literal := "{" obj_kwarg ("," obj_kwarg)* "}"
 obj_kwarg      := NAME "=" value | NAME "=" object_literal
-                                                (* NOT a general value. Reached only from
-                                                   tp_scales_json (below), and from the retiring
-                                                   event where=/match= (Appendix A). Reuses "=" as
-                                                   the key/value separator. *)
+                                                (* Reached from tp_scales_json (below, via its own
+                                                   mini-lexer) and from kw_arg's object_literal
+                                                   alternative above (via the main token stream).
+                                                   Reuses "=" as the key/value separator. *)
 tp_scales_json_value := "[" object_literal ("," object_literal)* "]"
                                                 (* The ONLY legal value for a call argument named
                                                    tp_scales_json (case-insensitive), on order(...)
@@ -206,10 +212,11 @@ tp_scales_json_value := "[" object_literal ("," object_literal)* "]"
 reserved_word  := "when" | "do" | "nop" | "always" | "in" | "not" | "and" | "or"
                  | "true" | "false"
                                                 (* NOT reserved: "given" (removed; a leading
-                                                   given is a specific error), "alert" (an
-                                                   ordinary call), "debug", "help", and "msg"
-                                                   (contextual only, as NAME "=" inside
-                                                   alert(...)). *)
+                                                   given is a specific error), "alert"/"log"/
+                                                   "render" (ordinary calls, "log"/"render"
+                                                   position-resolved — condition vs. action), "debug",
+                                                   "help", and "msg" (contextual only, as NAME "="
+                                                   inside alert(...)). *)
 
 (* ── Label rules (a separate set from reserved_word) ──────────────────────── *)
 label_reserved := "debug" | "result" | "alert" | "given" | "help"
@@ -219,42 +226,93 @@ label_reserved := "debug" | "result" | "alert" | "given" | "help"
                                                    exported. *)
 ```
 
-### Event agents — target shape `[target]`
+### Event agents
 
 An event (`kind='event'`) agent is an ordinary `agent_stmt` whose condition is a log-condition
-call and whose action is a `render(...)` call:
+call and whose `DO` carries exactly one `render(...)` call (optionally alongside `alert(...)`
+channels — see below):
 
 ```
 WHEN log(tag=error, min_level=WARNING) DO render(render=error, gate=true)
-WHEN log(tag=orders, min_level=ERROR, where={channel="telegram"}) | log(tag=risk) DO render(...)
+WHEN log(tag=orders, min_level=ERROR, where={channel="telegram"}) | log(tag=risk) DO render(render=x)
+WHEN log(tag=agent, min_level=WARNING, where={alert_event="unrouted_alert"})
+  DO alert(telegram(gate=false), ntfy(priority=high, gate=false)), render(render=generic_notice)
 ```
 
-Prose rules for the target shape:
+Prose rules (all shipped, Wave 2):
 
 - **A log-condition is a catalog-resolved bare call.** `log(…)` in condition position has NO
-  new production. It is the existing `leaf := … | call` alternative. Compile-time resolution
-  finds the condition-kind `log` catalog row, the same way any other bare-call token reference
-  resolves. The `log` name is resolved by POSITION: in a condition it means the log-stream
-  filter, in an action (preamble or `DO`) it means the app-log action (see §Actions). Both rows
-  share the name, the same way `help` reuses a name across token kinds.
-- **`|` replaces `match=[…]`.** `log(…) | log(…)` is an ordinary `or_expr`. The OR-of-filters the
-  retiring `match=` list encoded is the grammar's own `|` operator. No new production.
-- **Mixing a log-condition with a metric or scope leaf in one `WHEN` is a COMPILE-time error.**
-  The two use different dispatch loops and cannot coexist in one agent.
-- **`&` between log-condition leaves is UNDEFINED.** Wave 2 must decide. Open question, not
-  documented as behavior.
-- **`min_level` is uppercased; defaults to `INFO`.** `tag`, `render`, and every value inside
-  `where={…}` are byte-exact. They are never case-normalized, because `where` matches log
-  `extra` fields by exact string equality server-side. See Appendix A for the full rule set.
-- **`msg=` is rejected** on a log-condition or `render(...)`. `render(...)` owns the message.
-- **`kind='event'` is set** when the condition resolves to a log-condition. The compiled
-  `conditions` and `actions` JSON must be byte-identical to the retiring `event_stmt`'s compiled
-  output for the same agent. `compute_seed_spec_hash()` hashes these fields.
-- **`render(…)` is an `event_actions` entry, not a grammar token, today.** The render key and its
-  `gate` sibling are declared under `event_actions.render` in
-  [agent_grammar.yaml](../../backend/config/grammars/agent_grammar.yaml) (`gate` boolean, default
-  false). Wave 2 must add a catalog row, or expose the `event_actions` entry through the generic
-  call path. The argument spelling (`render(render=…, gate=…)`) is an assumption until then.
+  new production. It is the existing `leaf := … | call` alternative, dispatched in `compileRef`.
+  Compile-time resolution finds the condition-kind `(condition, log_filter, log)` catalog row —
+  a REAL, YAML-sourced row (`agent_grammar.yaml`, right after `between`), loaded through the
+  exact same `SYSTEM_TOKENS`/`seed_grammar_tokens()`/`GET /tokens?grammar=condition` pipeline
+  every metric/scope/operator row already uses — resolved by NAME, before the ordinary metric
+  lookup, via `catalog.logConditions` (a dedicated bucket in `buildCatalog()`, never
+  `catalog.metrics`). The `log` name is resolved by POSITION: in a condition it means this
+  log-stream filter (`_compileLogConditionCall`), in an action (preamble or `DO`) it means the
+  app-log action (see §Actions, `_compileCatalogActionCall`'s `lookupName === 'log'` branch).
+  Both rows share the name, the same way `help` reuses a name across `token_kind`s. No
+  `GrammarRegistry` loader exists for `(condition, log_filter)` — `_eval_leaf` dispatches
+  `"log" in leaf` straight to `agent_evaluator._eval_log`, bypassing the registry entirely.
+- **`log(...)`'s three kwargs** (`tag=`, required; `min_level=`, optional; `where=`, optional)
+  are validated via `_mapCallArgsToKeys` (unknown-key/duplicate rejection — this is also how
+  `render=`/`gate=`/`match=`/`msg=`/`log_tag=` are ALL rejected as "unknown parameter" with zero
+  extra code) plus `OBJECT_LITERAL_SCHEMAS.match` (Sprint 18's pre-existing 3-key schema,
+  unrenamed but repurposed — a `match=` entry and a bare `log(...)` condition always meant the
+  same thing).
+- **`|` replaces `match=[…]`.** `log(…) | log(…)` is an ordinary `or_expr`, compiling to
+  `{"any": [{"log":...}, {"log":...}]}` via the existing generic `and`/`or` combinator — no new
+  compile logic. `a | b | c` compiles to a NESTED binary `any` (`{"any":[a, {"any":[b,c]}]}` or
+  similar left-to-right nesting from `or_expr`'s own left-to-right grouping), not the OLD
+  `match=[...]`'s flat N-ary list — every real seeded agent uses at most 2 entries, so this never
+  diverges from a real stored shape; a hand-authored 3+-filter agent would get a nested shape
+  instead of a flat one (cosmetically different, functionally equivalent — `_eval_log`'s `any`/
+  `all` walk recurses either way).
+- **Mixing a log-condition with a metric or scope leaf in one `WHEN` is a COMPILE-time error**
+  (`_conditionsHasLogLeaf`/`_conditionsHasOrdinaryLeaf`, checked in `compileAgentStmt`). The two
+  use different dispatch loops (`_eval_log` vs. `_eval_leaf`'s metric/scope branch) and cannot
+  coexist in one agent.
+- **`&` and `~` with a log-condition are REJECTED.** Decided (Wave 2, resolving the prior open
+  question): two different tag filters can never both match the SAME log record, so `&` has no
+  sensible runtime meaning; negating a log-match leaf is undefined the same way. Both are a
+  compile-time error (`_isPureLogConditionTree`) — `|` is the only documented combinator for
+  multiple log filters.
+- **A preamble or a bound label is REJECTED** when the condition is a log-condition. Every call
+  belongs in `DO` for an event agent.
+- **`DO` for an event agent must contain exactly one `render(...)` call**, optionally alongside
+  `alert(...)` channels — no other action type. `alert(...)`'s channels compile to `events`
+  (unchanged `compileAlertClause` path) for the rare already-stored row that still carries a
+  real, non-empty channel list (most seeded rows carry `events: []` since the 2026-10
+  routing-tree plan moved channel selection to `alert_routing.py`).
+- **`min_level` is uppercased; defaults to `INFO`.** `tag` and every value inside `where={…}`
+  are byte-exact. They are never case-normalized, because `where` matches log `extra` fields by
+  exact string equality server-side.
+- **`msg=`/`message=` is rejected** on a log-condition kwarg, a `render(...)` kwarg (both via the
+  same generic unknown-key rejection above), AND on an `alert(...)` clause used inside an event
+  agent's `DO` (checked by scanning the ALREADY-compiled `events` array for a `message` key,
+  rather than re-walking the raw AST — `message` can only appear there when `msg=` was used
+  somewhere in the clause). `render(...)` owns the message for an event agent.
+- **`kind='event'` is set** when the condition resolves to a log-condition
+  (`compileAgentStmt`'s `isEventKind`) — on BOTH the outer `{kind, errors, agent}` wrapper
+  `compileStatement` returns (read by `AgentCliEditor.svelte`'s decompiler-selection and
+  `allowedKinds` gating) AND the inner `agent.kind` field (read by
+  `consoleDispatch.js:submitConsoleAgent`, which decides the real DB row's `kind` column). The
+  compiled `conditions`/`events`/`actions` JSON is byte-identical to what the retired
+  `event_stmt` compiler produced for the same shape, for every one of the 23 real
+  `SEEDED_AGENTS` — `compute_seed_spec_hash()` hashes these three fields.
+  `has_explicit_alert` is NEVER set for an event agent (that flag's rich-alert-skip semantics
+  belong to `kind='agent'`/cycle dispatch only, which event agents bypass entirely).
+- **`render(…)` is a dedicated-compiler call** (`_compileRenderCall`, dispatched by name in
+  `_compileSharedCall` alongside `alert`/`bracket`/`debug`/`help` — NOT the generic
+  `_compileCatalogActionCall`, whose `{type, params}` output shape doesn't fit: `render`'s own
+  value is a TOP-LEVEL SIBLING key of `type`, never nested under `params`). Both `render=`
+  (required, free text) and `gate=` (optional boolean) are validated against ONE schema,
+  `catalog.renderAction.paramsSchema` — Sprint 18's synthetic `render_action` row
+  (`routes/grammar.py:_render_action_catalog_rows`, sourced from `event_actions.render.
+  params_schema` in `agent_grammar.yaml`), amended to declare `render` itself as a required
+  `freetext` param, not just `gate`. Still deliberately NOT a real `action_type` catalog row —
+  merging it in would make `is_known_action_type("render")` true and let an ordinary
+  (non-event) cycle agent's `DO` accept a `render` action it has no handler for.
 
 ### Actions (ordinary call, shipped)
 
@@ -291,9 +349,8 @@ Prose rules for the target shape:
 - **Standalone statements do not mix.** `order`/`bracket`/`help` are standalone ONLY when they
   are the entire input. `token` and `cancel_all_orders` are standalone-only, with no preamble
   fallback. Anything else containing those names in a mixed list goes through `agent_stmt`.
-- **`alert` with no parentheses** is no longer a clause keyword. A bare `ALERT` followed by an
-  event-meta key (`ALERT log_tag=…`) still parses as the legacy event statement (retiring,
-  Appendix A). A bare `ALERT` followed by anything else (`ALERT telegram DO …`) is a specific
+- **`alert` with no parentheses** is no longer a clause keyword. Any bare, non-called leading
+  `ALERT` (e.g. `ALERT telegram DO …`, or the retired `ALERT log_tag=…` spelling) is a specific
   parse error naming the removed clause keyword. A bare `alert = …` is a label-reservation error.
 - **Compiled JSON `preamble`.** The preamble compiles to a top-level `preamble` array on
   `kind:'agent'` rows (omitted when empty). Shape and execution are in AGENTS_SPEC §13.
@@ -308,7 +365,9 @@ functions in `agents.js` for that.
 ```
 Statement := AgentAst
            | OrderAst | BracketAst | HelpAst | CancelAllOrdersAst | TokenAst
-           | EventAst                        (* legacy, retiring — Appendix A *)
+               (* EventAst (the old event_stmt AST node) is retired — an event agent is an
+                  AgentAst whose condition resolves to a log-condition leaf. There is no
+                  separate parsed shape for it. *)
 
 AgentAst  := { kind:'agent',
                preambleCalls: CallNode[],     (* assign items are NOT here — they populate
@@ -318,8 +377,11 @@ AgentAst  := { kind:'agent',
                sawWhen: boolean, sawDo: boolean,   (* for the compile-time pairing check *)
                meta: MetaItem[],
                bindings: Binding[] }          (* every label bound anywhere in the statement *)
-               (* [target] For event agents, condition is a log-condition leaf, and the compiler
-                  sets kind='event' on the compiled agent. The AST shape itself does not change. *)
+               (* For an event agent, condition is a log-condition leaf (`{type:'ref'}`
+                  resolving to the condition-kind `log` row), and `compileAgentStmt` sets
+                  `kind:'event'` on BOTH the outer compile-result wrapper and the inner
+                  compiled agent object — see "Event agents" above. The AST shape itself does
+                  not change; no dedicated node type was added. *)
 
 OrderAst  := { kind:'order', calls: CallNode[], meta: MetaItem[] }
 BracketAst:= { kind:'bracket', call: CallNode, meta: MetaItem[] }
@@ -332,11 +394,6 @@ TokenAst  := { kind:'token', head: CallNode, bodyCalls: CallNode[], meta }
 Binding   := { label: string, rhsKind: 'value' | 'expr', rhsNode: ValueNode | ArithNode,
                rhsText: string }              (* rhsText is the verbatim RHS source slice *)
 
-EventAst  := { kind:'event', eventMeta, msgNode, calls: CallNode[] | 'nop', meta, start }
-               (* LEGACY — retiring with event_stmt. eventMeta is { log_tag?, min_level?,
-                  render?, where?, gate?, match? }. msgNode is captured only so
-                  compileEventStmt can reject a stray msg=. Appendix A. *)
-
 MetaItem  := { key: string, values: MetaValueNode[], start }
 MetaValueNode := { type:'string' | 'bareword', value: string }
 
@@ -346,10 +403,11 @@ Condition := { type:'always' }
            | { type:'leaf', metric: CallNode, scope: ScopeNode, op: string | null,
                value: ValueNode | null }
            | { type:'between', value1, op1, metric, scope, op2, value2 }
-           | { type:'ref', call: CallNode }  (* bare call, resolved at compile time *)
+           | { type:'ref', call: CallNode }  (* bare call, resolved at compile time — a
+                                                 log-condition is this shape, resolving to the
+                                                 condition-kind `log` row; no dedicated node
+                                                 type was added for it. *)
            | { type:'colref', segments: CallNode[], op, value }
-           (* [target] a log-condition is a { type:'ref' } whose call resolves to the
-              condition-kind `log` row. Wave 2 may add a dedicated node type. Not decided. *)
 
 CallNode  := { type:'call', name: string, args: ArgEntry[], hasCall: boolean, start, end,
                _bindingsAt?: Map }            (* snapshot of labels visible at this call *)
@@ -360,8 +418,9 @@ QualifierNode := { type:'qualifier', key: string,
 ValueNode := { type:'number' | 'string' | 'name', value }
            | { type:'list', value: ValueNode[] }
            | { type:'object', value: { [key: string]: ValueNode } }
-               (* object ONLY inside a list that is a tp_scales_json value. Appendix A
-                  also uses it for where=/match=. Never a general value. *)
+               (* Inside a list that is a tp_scales_json value, OR (Wave 2) as an ordinary
+                  call-argument value via kw_arg's object_literal alternative — e.g. a
+                  log(...) condition's `where=`. Never elsewhere. *)
 ```
 
 ---
@@ -383,72 +442,26 @@ catalog-content facts, not grammar bugs unless marked.
 - **Resolved** (record of why the design changed): `params_schema` is stored as Postgres JSONB,
   which does not guarantee key order. Every argument is therefore keyword (`arg_list` above), so
   binding is by name only. `paramKeys` order is cosmetic.
-- **[target] `render(…)` is not a grammar catalog row.** It is `event_actions.render` in
-  `agent_grammar.yaml`. Wave 2 must expose it through the generic call path.
-- **[target] `where={…}` is not a `value`.** `kw_arg := NAME "=" value` does not accept
-  `object_literal`. Wave 2 must widen it for condition calls only. Do not widen `value` globally.
-- **[target] `&` between log-condition leaves is undefined.** `|` is the documented OR. Wave 2
-  decides whether `&` is rejected or defined.
+- **Resolved (Wave 2) — `render(…)` is now exposed through the generic call path.** It is
+  dispatched by name in `_compileSharedCall` (`_compileRenderCall`), reading
+  `catalog.renderAction.paramsSchema` (amended to declare `render` itself, not just `gate`) —
+  see "Event agents" above. It is still deliberately NOT a real `action_type` catalog row.
+- **Resolved (Wave 2) — `where={…}` is now a `value`.** `kw_arg`'s value production was widened
+  GENERICALLY (any call argument, any key) to accept `object_literal` — not scoped to `log(...)`'s
+  own `where=` alone. See `kw_arg`'s own production comment above for why the generic fix was
+  chosen over a narrow one.
+- **Resolved (Wave 2) — `&`/`~` with a log-condition are rejected.** See "Event agents" above.
 - **[open] The `log` action `level` enum omits `debug`.** `agent_grammar.yaml`'s enum lists
   `info`, `warning`, `error`, `critical`. `debug(x)` compiles to level `debug`. Verify whether the
   enum is validated at compile time, and reconcile the YAML or the sugar.
 - **[open] `rhs := arith_expr`** (the operator-expression form) is not restated in this file. Its
   grammar lives in `parseGivenRhs`'s own comments in `agents.js`.
-
----
-
-## Appendix A — Retiring `event_stmt` (live until Wave 2)
-
-**Delete this appendix when Wave 2 ships.** These productions are still the real parser for the
-standalone `ALERT log_tag=… render=…` statement. Wave 2's byte-identical compile gate compares
-against this behavior, so the rules below are the reference.
-
-```ebnf
-event_stmt     := "ALERT" event_meta call_list meta_item*
-                                                (* Dispatched when a bare leading ALERT (no parens)
-                                                   is immediately followed by one of the six
-                                                   event-meta keys, then "=". Checked by a 2-token
-                                                   lookahead past ALERT. Never for an ordinary
-                                                   bare-ALERT agent, e.g. ALERT telegram DO nop. *)
-event_meta     := event_kw*                    (* Keys in ANY order, each at most once. A duplicate
-                                                   is a PARSE-time error. *)
-event_kw       := ("log_tag" "=" value ",")
-                 | ("min_level" "=" value ",")
-                 | ("render" "=" value ",")
-                 | ("where" "=" object_literal ",")
-                 | ("gate" "=" value ",")
-                 | ("match" "=" match_value ",")
-match_value    := "[" object_literal ("," object_literal)* "]"
-```
-
-Semantic rules these productions carry (all must survive into Wave 2):
-
-- **Required.** `log_tag` and `render` are required. A missing one is a COMPILE-time error.
-  `min_level` is optional and defaults to `"INFO"`, confirmed against
-  `event_agents.validate_seed_spec`'s default.
-- **Case.** `min_level` is the ONLY value uppercased (to match the DEBUG/INFO/WARNING/ERROR/
-  CRITICAL enum). `log_tag`, `render`, and every value inside `where={…}` are preserved exactly as
-  typed. Re-casing `where` would silently break server-side exact-string matching.
-- **`where`.** Optional. Keys are real log-record `extra` fields. The object literal is parsed
-  directly against the main token stream by `parseObjectLiteral`. `tp_scales_json` cannot share
-  that path, because its values sit inside a call's parentheses and need their own mini-lexer.
-- **`gate`.** Boolean. Enables repeat-dedup (RepeatGate) on the single render action. Compiles to
-  a sibling key of `type`/`render` on `actions[0]`, e.g. `{"type":"render","render":"error",
-  "gate":true}`. OMITTED entirely (never written as `false`) when not typed. Validated against
-  the backend's `event_actions.render.params_schema`. A channel's own `gate=` kwarg is a separate,
-  unrelated per-channel param.
-- **`match`.** A list of object literals, mutually exclusive with `log_tag`/`min_level`/`where`.
-  Compiles to `{"any": [{"log": {…}}, {"log": {…}}]}`. Each entry uses `tag=` (not `log_tag=`)
-  plus the same `min_level`/`where` sub-keys.
-- **`msg=`** is rejected anywhere in an event statement, as a clause-level default or as a
-  per-channel kwarg. `render=` owns the message for an event agent.
-- **Combining with WHEN/DO** is a parse-time error in both positions: before the channel list,
-  and after it. The error message names all six keys.
-- **Channel list.** After the event meta, the channel list accepts bare `nop` (empty `events`),
-  the same as ordinary `DO`. The compiled `events` is then `[]`.
-- **Compiled shape.** Compiles to a `kind:'event'` agent. Channels compile through the same
-  `compileAlertClause` path ALERT's call_list uses.
-
-Retired reserved-kwarg set: `_EVENT_META_KEYS = {log_tag, min_level, render, where, gate, match}`
-at [agents.js:84](../../frontend/src/lib/command/grammars/agents.js#L84). It is NOT in
-`_RESERVED`, so the drift guard does not check it. Wave 2 removes it entirely.
+- **[open, Wave 3] Chevrotain (`agentsLexer.js`/`agentsParser.js`) still throws a fixed
+  `"event_stmt is not implemented"` error for any text matching the OLD `ALERT log_tag=...`
+  shape — it was never updated to recognize the new `log(...)`/`render(...)` calls as anything
+  special, because `WHEN`/`DO`/a bare `call` were already implemented and AST-equal there before
+  Wave 2 (the point of this redesign was to SHRINK Chevrotain's gap, not grow it — no new corpus
+  capture is needed for the new syntax). The differential harness's `KNOWN_GAP_TEXTS`/
+  `isEventStmtGap` ratchet (`agentsChevrotainDiff.test.js`) still catches every OLD-syntax corpus
+  string as a known gap regardless of which side rejects it or why; re-capturing the corpus
+  against the new grammar (dropping the now-invalid old-syntax strings) is Wave 3 scope.

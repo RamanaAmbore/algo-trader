@@ -150,14 +150,15 @@ describe('classifyConsoleStatement', () => {
     expect(classifyConsoleStatement('help(')).toBe('agents'); // still-being-typed
   });
 
-  // The real event_stmt reserved leading kwargs are log_tag=/min_level=/
-  // render=/where=/gate=/match= (agents.js `_EVENT_META_KEYS`) — NOT
-  // `tag=`. This still classifies 'agents' either way (classify routes
-  // ANY bare leading ALERT to 'agents'; the agent-vs-event disambiguation
-  // happens downstream inside compileAgentCliStatement, untouched by this
-  // function) — asserted here with the REAL spelling so this test can't
-  // silently drift from the actual grammar.
-  it('routes a bare ALERT with event-meta kwargs (log_tag=) to the agent-family grammar', () => {
+  // Wave 2 (grammar-unification, 2026-10-24) retired the standalone
+  // `event_stmt` (`ALERT log_tag=...`, `_EVENT_META_KEYS`) entirely — a
+  // bare, non-called leading `ALERT` is now always a specific
+  // "removed clause keyword" compile error. This classifier is purely
+  // textual (`_AGENT_HEAD_RE` matches ANY bare leading `alert`), so the
+  // text still classifies 'agents' regardless — it just won't compile
+  // downstream. Asserted here with the OLD (now-invalid) spelling
+  // specifically to prove the classifier doesn't care either way.
+  it('routes a bare ALERT (even the now-retired event-meta spelling) to the agent-family grammar, classification-only', () => {
     expect(classifyConsoleStatement('ALERT log_tag=error, render=error, telegram')).toBe('agents');
   });
 
@@ -393,10 +394,14 @@ describe('submitConsoleAgent', () => {
     expect(r.error).toMatch(/already exists/);
   });
 
-  // Sprint 12 — `compileEventStmt` (agents.js) stamps `kind: 'event'`
-  // directly on the compiled agent object for a notification (event_stmt)
-  // agent; submitConsoleAgent's payload `kind` must follow that, not the
-  // old hardcoded 'threshold' literal.
+  // Wave 2 (grammar-unification) — `compileAgentStmt` (agents.js) stamps
+  // `kind: 'event'` directly on the compiled agent object when the
+  // condition is a `log(...)` leaf (the same field the retiring
+  // `compileEventStmt` used to stamp for the old standalone `event_stmt`);
+  // submitConsoleAgent's payload `kind` must follow that, not the old
+  // hardcoded 'threshold' literal. `rawText` here is only ever stored
+  // verbatim as `cli_source` audit text, never recompiled by this
+  // function — its exact spelling doesn't affect this test.
   it("a kind:'event' compiled agent submits with kind:'event' on the payload", async () => {
     createAgent.mockResolvedValue({ detail: 'ok' });
     const eventAgent = {
@@ -406,7 +411,7 @@ describe('submitConsoleAgent', () => {
       events: [{ channel: 'telegram', enabled: true }],
       actions: [{ type: 'render', render: 'error' }],
     };
-    const r = await submitConsoleAgent(eventAgent, 'ALERT log_tag=error, min_level=ERROR, render=error, telegram #name="Error alert"');
+    const r = await submitConsoleAgent(eventAgent, 'WHEN log(tag=error, min_level=ERROR) DO alert(telegram), render(render=error) #name="Error alert"');
     expect(r.ok).toBe(true);
     expect(createAgent).toHaveBeenCalledTimes(1);
     const payload = createAgent.mock.calls[0][0];

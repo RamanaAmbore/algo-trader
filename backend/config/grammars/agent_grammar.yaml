@@ -677,6 +677,53 @@ system_tokens:
   token: between
   value_type: boolean
   description: Range test, inclusive. RHS is a [min, max] literal.
+# 2026-10-24 (grammar-unification Wave 2) — the kind='event' agent
+# CONDITION, dissolved off the old standalone `event_stmt` (`ALERT
+# log_tag=...`) into an ordinary bare-call leaf: `log(tag=..., min_level=...,
+# where={...})`. Position-resolved, same name as the `(action, action_type,
+# log)` token below (the renamed `emit_log`) — in a WHEN condition, `log`
+# means this log-stream filter; in an action (preamble/DO) it means the
+# app-log action. `token_kind: log_filter` (never `metric`) so it lands in
+# its own frontend catalog bucket (`buildCatalog()`'s `logConditions` map),
+# never the ordinary metric table — a real metric is always used via
+# `metric@scope`, this is a bare call with its own kwarg vocabulary. No
+# `GrammarRegistry` loader exists for `(condition, log_filter)` — `_eval_leaf`
+# dispatches `"log" in leaf` directly to `agent_evaluator._eval_log`,
+# bypassing the registry entirely (confirmed: REGISTRY.metric()/scope()/op()
+# are never consulted for a log leaf). The `resolver` path below is
+# documentation only (and `help_lookup`'s own `_help_resolve_callable`
+# special case), not a live dispatch pointer. See docs/specs/
+# AGENTS_GRAMMAR_EBNF.md "Event agents" section and CLAUDE.md's "Unified
+# agent DSL" entry.
+- grammar_kind: condition
+  token_kind: log_filter
+  token: log
+  value_type: void
+  description: Match log records by tag, minimum level, and exact extra-field
+    values — the kind='event' agent CONDITION. Compiles to a log-filter leaf
+    carrying tag/min_level/where. See the action-kind `log` token for the
+    position-resolved app-log ACTION meaning of this same name.
+  resolver: backend.api.algo.agent_evaluator._eval_log
+  params_schema:
+    tag:
+      type: freetext
+      required: true
+      description: Log tag to match (e.g. "error", "orders", "gtt") — bare
+        or quoted, preserved exactly as typed, never case-normalized.
+    min_level:
+      type: enum
+      enum:
+      - DEBUG
+      - INFO
+      - WARNING
+      - ERROR
+      - CRITICAL
+      default: INFO
+    where:
+      type: object
+      required: false
+      description: Optional exact-match filter against the log record's own
+        `extra` fields, e.g. where={alert_event="cancel_unconfirmed"}.
 
 # ════════════════════════════════════════════════════════════════════════
 #  NOTIFY — CHANNELS (how the alert is delivered)
@@ -1407,6 +1454,22 @@ system_tokens:
 event_actions:
   render:
     params_schema:
+      # 2026-10-24 (grammar-unification Wave 2) — `render` itself (the
+      # renderer-key value, e.g. "error"/"chase_cancel"/"template_attach")
+      # is now a declared, required param here, so `render(...)`'s
+      # dedicated frontend compiler (`_compileRenderCall`, agents.js) can
+      # validate it against this ONE schema the same generic way it
+      # already validates `gate`, instead of hand-rolling a separate
+      # required-ness check. Free text, never case-normalized (same
+      # `freetext` semantics as the condition-kind `log` token's own
+      # `tag=` above) — validated server-side against `event_agents.
+      # RENDERS`, not against this catalog (see this section's own
+      # header comment).
+      render:
+        type: freetext
+        required: true
+        description: The renderer key (validated against event_agents.RENDERS
+          server-side, not here).
       # `gate` here (action-level) defaults to FALSE and means something
       # unrelated to a notify-channel's own `gate` key above — same name,
       # confirmed-distinct meaning from the real seeded shapes

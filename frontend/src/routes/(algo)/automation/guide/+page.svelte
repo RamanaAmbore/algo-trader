@@ -285,12 +285,11 @@ WHEN risky DO debug(risky), alert(telegram)</pre>
   <section class="algo-card cg-section">
     <h2 class="section-heading">Event agents — notifications on log activity</h2>
     <p class="cg-lede">
-      A bare <code>ALERT</code> statement with NO <code>WHEN</code>/<code>DO</code> — and
-      whose first clause is one of the four reserved keys below — is a different animal
-      from an ordinary agent: instead of polling a metric, it subscribes to the
-      platform's own internal log/event stream and fires whenever a matching line is
-      written. Use this for "notify me the instant the system itself reports a problem,"
-      not "notify me when a number crosses a threshold."
+      An event agent is an ordinary <code>WHEN ... DO ...</code> statement whose condition is
+      a <code>log(...)</code> call instead of a metric/scope leaf — instead of polling a
+      number, it subscribes to the platform's own internal log/event stream and fires
+      whenever a matching line is written. Use this for "notify me the instant the system
+      itself reports a problem," not "notify me when a number crosses a threshold."
     </p>
 
     <div class="cg-example">
@@ -298,12 +297,14 @@ WHEN risky DO debug(risky), alert(telegram)</pre>
         "I want to know immediately — on Telegram AND email AND the in-app log, not just
         one channel — the instant anything in the system logs an ERROR tagged 'error'."
       </p>
-      <pre class="cg-code">ALERT log_tag=error, min_level=ERROR, render=error, telegram, email, log #name="Error alert"</pre>
+      <pre class="cg-code">WHEN log(tag=error, min_level=ERROR) DO alert(telegram, email, log), render(render=error) #name="Error alert"</pre>
       <p class="cg-what">
-        <code>log_tag=</code> and <code>render=</code> are both required; <code>min_level=</code>
-        is optional (defaults to <code>INFO</code>). There's no condition to poll at all — the
-        "condition" IS the log stream itself, filtered by tag + level. <code>render=</code>
-        picks which message template formats the alert text.
+        <code>tag=</code> is required; <code>min_level=</code> is optional (defaults to
+        <code>INFO</code>). There's no ordinary metric to poll at all — the condition IS the
+        log stream itself, filtered by tag + level. <code>render(render=...)</code> — the
+        agent's sole action — picks which message template formats the alert text; combine
+        two filters with <code>|</code> (e.g. <code>log(tag=a) | log(tag=b)</code>) in place
+        of the old <code>match=[...]</code> list.
       </p>
     </div>
   </section>

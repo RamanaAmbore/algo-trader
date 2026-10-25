@@ -21,6 +21,52 @@ test.use({ projects: ['chromium-desktop'] });
 
 const TIMEOUT = 20_000;
 
+// Wave 2 (grammar-unification, 2026-10-24) — the condition-kind `(condition,
+// log_filter, log)` catalog row and `render`'s own required `render` schema
+// field are new. Same splice-in pattern `automation_console_unified_grammar.
+// spec.js`'s `help` row already uses: fetch the REAL response, add the row
+// only if a live (not-yet-redeployed) backend's catalog doesn't already have
+// it — a no-op once the real deploy ships this. */
+const LOG_CONDITION_ROW = {
+  id: 999101,
+  grammar_kind: 'condition',
+  token_kind: 'log_filter',
+  token: 'log',
+  value_type: 'void',
+  units: null,
+  description: 'Match log records by tag, minimum level, and exact extra-field values.',
+  resolver: 'backend.api.algo.agent_evaluator._eval_log',
+  params_schema: {
+    tag: { type: 'freetext', required: true },
+    min_level: { type: 'enum', enum: ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], default: 'INFO' },
+    where: { type: 'object', required: false },
+  },
+};
+
+async function mockLogAndRenderCatalogRows(/** @type {import('@playwright/test').Page} */ page) {
+  await page.route((url) => new URL(url).pathname === '/api/admin/grammar/tokens', async (route) => {
+    const response = await route.fetch();
+    const rows = await response.json();
+    const grammar = new URL(route.request().url()).searchParams.get('grammar');
+    if (grammar === 'condition' && !rows.some((r) => r.token === 'log' && r.token_kind === 'log_filter')) {
+      rows.push(LOG_CONDITION_ROW);
+    }
+    if (grammar === 'action') {
+      const renderRow = rows.find((r) => r.token === 'render' && r.token_kind === 'render_action');
+      if (renderRow && !(renderRow.params_schema || {}).render) {
+        renderRow.params_schema = { ...renderRow.params_schema, render: { type: 'freetext', required: true } };
+      } else if (!renderRow) {
+        rows.push({
+          id: 999102, grammar_kind: 'action', token_kind: 'render_action', token: 'render',
+          description: "kind='event' agent render-action optional params (e.g. gate).",
+          params_schema: { render: { type: 'freetext', required: true }, gate: { type: 'boolean', required: false } },
+        });
+      }
+    }
+    await route.fulfill({ response, json: rows });
+  });
+}
+
 const CYCLE_ROW = {
   id: 101, slug: 'loss-funds-negative-e2e', name: 'Loss Funds Negative E2E', long_name: null,
   description: '', conditions: { metric: 'pnl', scope: 'positions.total', op: '<=', value: -50000 },
@@ -159,7 +205,15 @@ test('cycle Agent already in explicit-alert mode: resaving with its alert() call
   expect(putCalled.body.has_explicit_alert).toBe(true);
 });
 
-test('event Agent (Alert): Edit decompiles, Save PUTs the same slug', async ({ page }) => {
+test('event Agent (Alert): Edit decompiles to WHEN log(...) DO ... render(...), Save PUTs the same slug', async ({ page }) => {
+  // Wave 2 (grammar-unification, 2026-10-24) — a `kind='event'` row now
+  // decompiles via the generic `decompileAgent` to the new
+  // `WHEN log(tag=..., min_level=...) DO ..., render(render=...)` syntax
+  // (the dedicated `decompileEventAgent`, which emitted the old
+  // `ALERT log_tag=... render=...` text, is retired). Confirms the real
+  // Automation Edit path for a seeded event agent round-trips through the
+  // new grammar end-to-end (compile → decompile → recompile → Save).
+  await mockLogAndRenderCatalogRows(page);
   await mockAgentsList(page, [EVENT_ROW]);
   let putCalled = /** @type {any} */ (null);
   await page.route('**/api/agents/error-alert-e2e', async (route) => {
@@ -174,7 +228,10 @@ test('event Agent (Alert): Edit decompiles, Save PUTs the same slug', async ({ p
   await expect(page.locator('.console-edit-banner')).toContainText('Error Alert E2E', { timeout: TIMEOUT });
   const cliTextarea = page.locator('.agent-cli-textarea');
   const value = await cliTextarea.inputValue();
-  expect(value).toContain('log_tag=error');
+  expect(value).toMatch(/^WHEN log\(tag=error, min_level=ERROR\)/);
+  expect(value).toContain('render(render=error)');
+  expect(value).not.toContain('log_tag=');
+  expect(value).not.toContain('ALERT ');
 
   const saveBtn = page.locator('.console-agent-cli-btn');
   await expect(saveBtn).toHaveText('Save', { timeout: TIMEOUT });
@@ -182,6 +239,11 @@ test('event Agent (Alert): Edit decompiles, Save PUTs the same slug', async ({ p
 
   await expect.poll(() => putCalled, { timeout: TIMEOUT }).not.toBeNull();
   expect(putCalled.url).toContain('/api/agents/error-alert-e2e');
+  // The real round-trip proof: the row's own conditions/events/actions
+  // survive the decompile->recompile->Save cycle unchanged.
+  expect(putCalled.body.conditions).toEqual(EVENT_ROW.conditions);
+  expect(putCalled.body.events).toEqual(EVENT_ROW.events);
+  expect(putCalled.body.actions).toEqual(EVENT_ROW.actions);
 });
 
 test('Template (Token): Edit decompiles, Save PUTs /api/agents/{slug} — never the retired fragments route', async ({ page }) => {

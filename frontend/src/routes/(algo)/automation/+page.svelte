@@ -26,7 +26,7 @@
     filterAgentRowsByCard,
   } from '$lib/data/automationKinds.js';
   import {
-    fetchAgentCatalog, decompileAgent, decompileEventAgent,
+    fetchAgentCatalog, decompileAgent,
     decompileBracket, decompileToken, lookupAgentCliEntry,
   } from '$lib/command/grammars/agents.js';
   import { pushLayer, popLayer } from '$lib/utils/layerStack.js';
@@ -362,9 +362,11 @@
       } else if (cardId === 'agents' || cardId === 'alerts') {
         rowKind = row.kind === 'event' ? 'event' : 'cycle';
         ref = row.slug;
-        dec = rowKind === 'event'
-          ? decompileEventAgent(row, catalog)
-          : decompileAgent(row, catalog);
+        // Wave 2 (grammar-unification) — `decompileAgent` now handles a
+        // `log` condition leaf and a `render` action generically (an
+        // event-kind row is an ordinary `agent_stmt` syntax-wise); the
+        // dedicated `decompileEventAgent` is retired.
+        dec = decompileAgent(row, catalog);
       } else {
         return;
       }
@@ -650,8 +652,9 @@
    *  `events` unchanged — `resolved_channels` is `[]` for anything that
    *  isn't `kind='event'`, and `??` only falls back on a missing field,
    *  never overriding a real stored (possibly empty) list. Display-only;
-   *  `editRow`/`decompileEventAgent` must keep reading raw `events` so a
-   *  no-op Save never writes the resolved value back and silently forks
+   *  `editRow`/`decompileAgent` must keep reading raw `events` (passed
+   *  straight through from the stored row, never `resolved_channels`) so
+   *  a no-op Save never writes the resolved value back and silently forks
    *  the agent off the routing tree (same bug class as the documented
    *  `has_explicit_alert` sticky-false incident). */
   function effectiveChannels(/** @type {any} */ agent) {

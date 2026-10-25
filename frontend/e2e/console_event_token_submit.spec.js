@@ -13,10 +13,12 @@
  * Submit. This spec drives the real page end-to-end to close that gap.
  *
  * Covers (Sprint 14 "Done when" criteria):
- *   1. Typing a complete `ALERT log_tag=..., render=..., telegram
- *      #name="..."` statement into the real AgentCliEditor textarea on
- *      /console shows a "Create agent" submit button; clicking it creates
- *      a real `kind:'event'` Agent row (verified via GET /api/agents/).
+ *   1. Typing a complete `WHEN log(tag=..., min_level=...) DO
+ *      render(render=...)` statement (Wave 2, 2026-10-24 — replaces the
+ *      retired `ALERT log_tag=..., render=..., telegram #name="..."`
+ *      form) into the real AgentCliEditor textarea on /console shows a
+ *      "Create agent" submit button; clicking it creates a real
+ *      `kind:'event'` Agent row (verified via GET /api/agents/).
  *   2. Typing a complete `token(kind=notify) telegram #name="..."`
  *      statement shows a "Create token" submit button; clicking it
  *      creates a real `kind:'template'` Agent row (verified via GET
@@ -112,12 +114,12 @@ test.describe('console — event-agent and Token submission (Sprint 14 audit gap
     } catch {}
   });
 
-  test('typing an ALERT (event-agent) statement shows "Create agent" and submits a real event-kind Agent row', async ({ page }) => {
+  test('typing a WHEN log(...) DO render(...) (event-agent) statement shows "Create agent" and submits a real event-kind Agent row', async ({ page }) => {
     const uniqueName = `ZZZ Console E2E Event ${Date.now()}`;
-    // log_tag must be a REAL catalog tag (backend validates against
+    // tag= must be a REAL catalog tag (backend validates against
     // `LOG_TAG_TOKENS` — see event_agents.py:validate_seed_spec) — 'error'
     // is a real built-in tag, same as the seeded ERROR_AGENT.
-    const statement = `ALERT log_tag=error, min_level=ERROR, render=error, telegram #name="${uniqueName}"`;
+    const statement = `WHEN log(tag=error, min_level=ERROR) DO alert(telegram), render(render=error) #name="${uniqueName}"`;
 
     const cliTextarea = page.locator('.agent-cli-textarea');
     await expect(cliTextarea).toBeVisible({ timeout: 10000 });

@@ -86,7 +86,7 @@
   import { tick } from 'svelte';
   import {
     compileAgentCliStatement, suggestAgentCliAt, describeErrorPosition,
-    decompileAgent, decompileEventAgent, decompileBracket, decompileToken,
+    decompileAgent, decompileBracket, decompileToken,
     lookupAgentCliEntry, isInsideOpenCall, describeTokenAt, lexAgentStatement,
   } from '$lib/command/grammars/agents.js';
   import { pushLayer, popLayer } from '$lib/utils/layerStack.js';
@@ -762,12 +762,14 @@
   const canonicalLines = $derived.by(() => {
     if (!compiled?.ok || !catalog) return null;
     try {
-      if (compiled.kind === 'agent') {
+      // Wave 2 (grammar-unification) — a log(...)-conditioned agent now
+      // compiles to `compiled.kind === 'event'` via the SAME
+      // `compileAgentStmt` path ordinary agents use (see that function's
+      // `isEventKind`), so `decompileAgent` (which now handles a `log`
+      // condition leaf and a `render` action generically) is the single
+      // decompiler for both kinds — `decompileEventAgent` is retired.
+      if (compiled.kind === 'agent' || compiled.kind === 'event') {
         const r = decompileAgent(compiled.agent, catalog, { lotSizeOf });
-        return r.text ? [r.text] : null;
-      }
-      if (compiled.kind === 'event') {
-        const r = decompileEventAgent(compiled.agent, catalog, { lotSizeOf });
         return r.text ? [r.text] : null;
       }
       if (compiled.kind === 'bracket') {

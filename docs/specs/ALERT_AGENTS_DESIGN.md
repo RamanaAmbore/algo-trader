@@ -199,10 +199,13 @@ ntfy priority override.
 **Unified grammar framing.** The Console grammar has no `ALERT` clause keyword and no `GIVEN`
 keyword. `alert(...)` is an ordinary call, so an alert channel list is written the same way
 wherever a call is allowed. There is no distinct agent-clause syntax: a statement is a preamble of
-calls, with an optional `WHEN … DO …` pair wrapping the shared vocabulary. The compiler still tags a
-compiled WHEN/DO statement's output as `kind:'agent'`, so that tag is a compiled-shape detail, not a
-separate statement form. The standalone event statement (`ALERT log_tag=…`, which subscribes to the
-log stream) is the only remaining `ALERT`-led form, and it is unchanged.
+calls, with an optional `WHEN … DO …` pair wrapping the shared vocabulary. The compiler tags a
+compiled WHEN/DO statement's output `kind:'agent'` or `kind:'event'` — purely a compiled-shape
+detail, decided by whether the condition is a `log(...)` leaf (`compileAgentStmt`'s `isEventKind`),
+never a separate parsed statement form. The old standalone `ALERT log_tag=…` event statement
+(`event_stmt`) is retired (Wave 2, 2026-10-24): a log-stream subscription is now written
+`WHEN log(tag=…, min_level=…, where={…}) DO render(render=…)`, with `|` combining multiple filters
+in place of the old `match=[…]` list. See `docs/specs/AGENTS_GRAMMAR_EBNF.md`.
 
 **Explicit-alert mode (item 0.C).** A cycle agent's `has_explicit_alert` flag is true only when
 its `DO` clause contains a real `alert(...)` call. When the flag is true and `events` is non-empty,

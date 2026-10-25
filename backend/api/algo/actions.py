@@ -1347,6 +1347,17 @@ def _help_resolve_callable(token_kind: str, token: str):
         if token_kind == "action_type":
             entry = REGISTRY.action(token)
             return (entry or {}).get("fn")
+        if token_kind == "log_filter":
+            # 2026-10-24 (grammar-unification Wave 2) — the kind='event'
+            # agent CONDITION token (`log(tag=..., min_level=..., where=
+            # {...})`). No `GrammarRegistry` loader exists for this
+            # `token_kind` (`_eval_leaf` dispatches `"log" in leaf`
+            # straight to `agent_evaluator._eval_log`, never through the
+            # registry), so this is resolved by direct import rather than
+            # a REGISTRY accessor — the one `token_kind` branch here that
+            # doesn't go through `REGISTRY`.
+            from backend.api.algo.agent_evaluator import _eval_log
+            return _eval_log
     except Exception as e:
         logger.debug(f"help_lookup: resolving '{token}' ({token_kind}) raised: {e}")
         return None

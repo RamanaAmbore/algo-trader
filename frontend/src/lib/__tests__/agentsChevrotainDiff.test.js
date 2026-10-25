@@ -145,6 +145,20 @@ const KNOWN_GAP_TEXTS = new Set([
   'p = pnl@positions.total; msg_txt = "Loss: " + p\nWHEN pnl@positions.total <= -50000 DO alert(msg=msg_txt, telegram)',
   'x = 5 ',
   'x = 5 WHEN always DO debug(x)',
+  // ── Wave 2 (grammar-unification, 2026-10-24) — retiring `_EVENT_META_KEYS`
+  //    removed `parseOneClauseItem`'s dedicated "'log_tag='/'render='/...
+  //    is only valid on a bare ALERT-only statement, not combined with
+  //    WHEN/DO" rejection (agents.js). `log_tag=error`/`render=error` inside
+  //    this `alert(...)` body now parse as two ORDINARY label assignments
+  //    (zero channel calls) — same as any other coincidentally-named label
+  //    — so the hand-written parser now ACCEPTS this text (it still fails
+  //    to COMPILE: "DO must have at least one real action or alert", but
+  //    `parseStatement` only runs the PARSE phase). Chevrotain's parser
+  //    still mirrors the OLD rejection (`agentsParser.js`'s own "Mirrors
+  //    parseOneClauseItem's own leading check" comment — Wave 3 scope, not
+  //    touched by this plan) and still REJECTS it. A real, understood,
+  //    one-sided divergence — not a silent regression. ──────────────────
+  'WHEN always DO alert(log_tag=error, render=error)',
 ]);
 
 /** The ONE classifier that isn't a frozen exact-string lookup — a precise

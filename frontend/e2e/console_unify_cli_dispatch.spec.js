@@ -14,10 +14,13 @@
  *   3. Typing `WHEN`/`GIVEN`-led text NEVER reaches `/api/admin/exec` or
  *      `/api/orders/ticket` — regression guard for the dispatch rule's
  *      own first-token peek.
- *   4. The Sprint 12 bare-ALERT disambiguation (ordinary agent vs.
- *      event_stmt) survives unchanged — a bare `ALERT log_tag=...`
- *      statement shows the agent-family "Create agent" button, never
- *      the (now-removed) legacy fallback button.
+ *   4. Wave 2 (grammar-unification, 2026-10-24) — the old standalone
+ *      `event_stmt` (bare `ALERT log_tag=...`) is retired; that text is
+ *      still classified as agent-family (textual, not a real parse) so it
+ *      shows the compile-error UI, never the generic "unsupported syntax"
+ *      hint or the (separately, already-removed) legacy fallback button.
+ *      The new `WHEN log(...) DO render(...)` event-agent syntax shows the
+ *      agent-family "Create agent" button.
  *   5. Operator-requested UI refinements (2026-10-11 follow-up):
  *      - a "CLI" label sits directly above the textbox, immediately
  *        followed by the Guide button on the SAME row — not the tab's
@@ -174,9 +177,58 @@ test.describe('Console — single CLI box', () => {
     expect(execHit).toBe(false);
   });
 
-  test('bare ALERT with event-meta kwargs still shows "Create agent", never the unsupported hint', async ({ page }) => {
+  // Wave 2 (grammar-unification, 2026-10-24) — the OLD standalone
+  // `event_stmt` (bare `ALERT log_tag=...`) is retired: a bare, non-called
+  // leading `ALERT` is now a specific parse error ("ALERT is no longer a
+  // reserved clause keyword"). `classifyConsoleStatement`'s classifier is
+  // purely textual (`_AGENT_HEAD_RE` matches the leading `alert`/`when`/
+  // `do`/`given` word, not a real parse), so this text STILL classifies as
+  // agent-family — showing the compile-error UI, never the generic
+  // "unsupported syntax" hint, even though it will not compile.
+  test('bare ALERT (retired clause-keyword spelling) still classifies as agent-family text, never the unsupported hint', async ({ page }) => {
     const cli = page.locator('.agent-cli-textarea');
     await cli.fill('ALERT log_tag=error, min_level=ERROR, render=error, telegram #name="ZZZ Dispatch Check"');
+    await page.waitForTimeout(500);
+
+    await expect(page.locator('.console-unsupported-hint')).toHaveCount(0);
+    await expect(page.locator('.console-fallback-btn')).toHaveCount(0);
+  });
+
+  test('WHEN log(...) DO render(...) (the new event-agent syntax) shows "Create agent"', async ({ page }) => {
+    // Splice in the `log`/`render` catalog rows if the live backend this
+    // spec runs against hasn't been redeployed with Wave 2's new catalog
+    // row yet — same pattern automation_console_unified_grammar.spec.js's
+    // `help` row already uses; a no-op once the real deploy ships it.
+    await page.route((url) => new URL(url).pathname === '/api/admin/grammar/tokens', async (route) => {
+      const response = await route.fetch();
+      const rows = await response.json();
+      const grammar = new URL(route.request().url()).searchParams.get('grammar');
+      if (grammar === 'condition' && !rows.some((r) => r.token === 'log' && r.token_kind === 'log_filter')) {
+        rows.push({
+          id: 999103, grammar_kind: 'condition', token_kind: 'log_filter', token: 'log', value_type: 'void',
+          params_schema: {
+            tag: { type: 'freetext', required: true },
+            min_level: { type: 'enum', enum: ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], default: 'INFO' },
+            where: { type: 'object', required: false },
+          },
+        });
+      }
+      if (grammar === 'action') {
+        const renderRow = rows.find((r) => r.token === 'render' && r.token_kind === 'render_action');
+        if (renderRow && !(renderRow.params_schema || {}).render) {
+          renderRow.params_schema = { ...renderRow.params_schema, render: { type: 'freetext', required: true } };
+        } else if (!renderRow) {
+          rows.push({
+            id: 999104, grammar_kind: 'action', token_kind: 'render_action', token: 'render',
+            params_schema: { render: { type: 'freetext', required: true }, gate: { type: 'boolean', required: false } },
+          });
+        }
+      }
+      await route.fulfill({ response, json: rows });
+    });
+
+    const cli = page.locator('.agent-cli-textarea');
+    await cli.fill('WHEN log(tag=error, min_level=ERROR) DO render(render=error) #name="ZZZ Dispatch Check"');
     await page.waitForTimeout(500);
 
     await expect(page.locator('.console-agent-cli-btn', { hasText: 'Create agent' })).toBeVisible({ timeout: TIMEOUT });

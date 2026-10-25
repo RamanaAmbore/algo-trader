@@ -218,6 +218,22 @@ vocabulary member to match against, so no event agent could ever see
 it. See `backend/tests/test_event_agents.py`'s `USER_REGISTERED_AGENT`
 coverage and CLAUDE.md's routing-tree plan note.
 
+Amendment (2026-10-24, grammar-unification Wave 2): a new `(condition,
+log_filter, log)` token was added to `agent_grammar.yaml` right after
+`between` (and mirrored here at the same position, index 85, pushing
+`telegram` and everything after it down by one) — the kind='event' agent
+CONDITION, dissolved off the old standalone `event_stmt` (`ALERT
+log_tag=...`) into an ordinary bare-call leaf: `log(tag=..., min_level=...,
+where={...})`. `token_kind: log_filter` (never `metric`) keeps it out of
+the frontend's ordinary metric table; no `GrammarRegistry` loader exists
+for it (`_eval_leaf` dispatches `"log" in leaf` directly to
+`agent_evaluator._eval_log`, bypassing the registry). Separately,
+`event_actions.render.params_schema` (NOT part of `SYSTEM_TOKENS`, so no
+baseline change) gained a required `render` field alongside the existing
+`gate`, so `render(render=..., gate=...)`'s own dedicated frontend
+compiler can validate both against one schema. See CLAUDE.md's "Unified
+agent DSL" entry and `docs/specs/AGENTS_GRAMMAR_EBNF.md`.
+
 Perf: no DB / network calls, pure in-memory comparison.
 Reuse: shares the same SYSTEM_TOKENS / LOG_TAG_TOKENS module attributes
 every other grammar test and `seed_grammar_tokens()` read.

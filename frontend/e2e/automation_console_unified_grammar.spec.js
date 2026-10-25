@@ -30,6 +30,14 @@
  *     the catalog GET to append the `help` action row, and mocks the
  *     `/api/agents/help` lookup. Remove both mocks after /ddev deploys
  *     workshop to dev so test 4 runs fully end-to-end.
+ *   - Wave 2 (grammar-unification, same day) retired the old standalone
+ *     `ALERT log_tag=...` event_stmt in favor of an ordinary
+ *     `WHEN log(...) DO render(...)` statement — the new `(condition,
+ *     log_filter, log)` catalog row and `render`'s own required `render`
+ *     schema field are ALSO not yet in dev's grammar_tokens. Test 1's
+ *     bare-ALERT-event case uses `mockLogAndRenderCatalogRows()` (same
+ *     splice-in pattern as `help`'s own mock) — remove after the same
+ *     /ddev deploy.
  *   - Desktop only (CLI authoring is not a mobile-first surface).
  */
 
@@ -41,7 +49,9 @@ const TIMEOUT = 20_000;
 const ORDER_RELIANCE = 'order(account="ZG0790", symbol="RELIANCE", exchange="NSE", side="SELL", qty=1, price=100)';
 const CLOSE_INFY = 'close_position(account="ZG0790", symbol="INFY")';
 const BRACKET = 'bracket(applies_to=buy_any, tp_pct=30, sl_pct=-20) #name="Console Unified Bracket"';
-const ALERT_EVENT = 'ALERT log_tag=error, min_level=ERROR, render=error, telegram #name="ZZZ Unified Grammar"';
+// Wave 2 (grammar-unification, 2026-10-24) — replaces the retired
+// `ALERT log_tag=..., render=..., telegram #name="..."` event_stmt form.
+const ALERT_EVENT = 'WHEN log(tag=error, min_level=ERROR) DO alert(telegram), render(render=error) #name="ZZZ Unified Grammar"';
 
 // Mirror of the `help` action row seeded in backend/config/grammars/agent_grammar.yaml.
 // Appended to the catalog GET only while dev's grammar_tokens lacks it.
@@ -100,6 +110,42 @@ async function gotoConsole(page) {
   await page.locator('textarea.agent-cli-textarea').waitFor({ timeout: TIMEOUT });
 }
 
+/** Wave 2 (grammar-unification, 2026-10-24) — splice in the `log`
+ *  condition row and `render`'s own required `render` param if the
+ *  backend this spec runs against hasn't been redeployed with Wave 2's
+ *  new catalog row yet. Same pattern test 4's `help` row mock above
+ *  uses; a no-op once the real deploy ships it. Remove after /ddev
+ *  deploys workshop to dev, same as the `help` mock's own removal note. */
+async function mockLogAndRenderCatalogRows(page) {
+  await page.route((url) => new URL(url).pathname === '/api/admin/grammar/tokens', async (route) => {
+    const response = await route.fetch();
+    const rows = await response.json();
+    const grammar = new URL(route.request().url()).searchParams.get('grammar');
+    if (grammar === 'condition' && !rows.some((r) => r.token === 'log' && r.token_kind === 'log_filter')) {
+      rows.push({
+        id: 999201, grammar_kind: 'condition', token_kind: 'log_filter', token: 'log', value_type: 'void',
+        params_schema: {
+          tag: { type: 'freetext', required: true },
+          min_level: { type: 'enum', enum: ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], default: 'INFO' },
+          where: { type: 'object', required: false },
+        },
+      });
+    }
+    if (grammar === 'action') {
+      const renderRow = rows.find((r) => r.token === 'render' && r.token_kind === 'render_action');
+      if (renderRow && !(renderRow.params_schema || {}).render) {
+        renderRow.params_schema = { ...renderRow.params_schema, render: { type: 'freetext', required: true } };
+      } else if (!renderRow) {
+        rows.push({
+          id: 999202, grammar_kind: 'action', token_kind: 'render_action', token: 'render',
+          params_schema: { render: { type: 'freetext', required: true }, gate: { type: 'boolean', required: false } },
+        });
+      }
+    }
+    await route.fulfill({ response, json: rows });
+  });
+}
+
 test.describe('Console — unified grammar CLI (bare statements, preamble, help, GIVEN)', () => {
   test.skip(({ viewport }) => viewport.width !== 1400, 'desktop-only CLI surface (chromium-desktop 1400px)');
 
@@ -144,7 +190,8 @@ test.describe('Console — unified grammar CLI (bare statements, preamble, help,
     expect(templates[0].body.name).toBe('Console Unified Bracket');
   });
 
-  test('bare ALERT event statement compiles to an event agent and creates exactly once', async ({ page }) => {
+  test('bare WHEN log(...) DO render(...) event statement compiles to an event agent and creates exactly once', async ({ page }) => {
+    await mockLogAndRenderCatalogRows(page);
     const agents = await recordPosts(page, '/api/agents/', { slug: 'zzz-unified-grammar', id: 601 });
     await gotoConsole(page);
 

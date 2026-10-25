@@ -65,10 +65,12 @@ const FIXTURE_ROWS = [
   // fixture-only `ntfy` (used in the design doc's own canonical example 2,
   // but absent from the live catalog today — see "Known gaps")
   { grammar_kind: 'notify', token_kind: 'channel', token: 'ntfy', params_schema: { priority: { type: 'enum', enum: ['low', 'default', 'urgent'], required: false }, gate: { type: 'boolean', required: false } } },
-  // Sprint 18 — the synthetic `render_action` row (backend's
-  // `routes/grammar.py:_render_action_catalog_rows`), declaring the
-  // kind='event' agent render action's own optional `gate` sibling key.
-  { grammar_kind: 'action', token_kind: 'render_action', token: 'render', params_schema: { gate: { type: 'boolean', required: false } } },
+  // Sprint 18 (amended Wave 2 — `render` itself is now a declared,
+  // required param too, so `render(render=..., gate=...)`'s dedicated
+  // compiler validates both against this one schema) — the synthetic
+  // `render_action` row (backend's `routes/grammar.py:_render_action_catalog_rows`),
+  // declaring the kind='event' agent render action's own params.
+  { grammar_kind: 'action', token_kind: 'render_action', token: 'render', params_schema: { render: { type: 'freetext', required: true }, gate: { type: 'boolean', required: false } } },
   // actions — place_order mirrors the REAL agent_grammar.yaml schema,
   // preserving its real declared key order (account first).
   {
@@ -356,6 +358,18 @@ const FIXTURE_ROWS = [
     grammar_kind: 'condition', token_kind: 'column', token: 'positions.expiring_today.underlying', value_type: 'string',
     label: 'Underlying',
     description: "Underlying. Sourced from DataFrame column 'underlying' on ctx.position_rows, populated by backend.api.algo.grammar._scope_positions_expiring_today.",
+  },
+  // Wave 2 (grammar-unification) — the real `(condition, log_filter, log)`
+  // catalog row (agent_grammar.yaml), mirrored here with the exact same
+  // params_schema shape. Appended at the END, same convention as every
+  // earlier addition above.
+  {
+    grammar_kind: 'condition', token_kind: 'log_filter', token: 'log', value_type: 'void',
+    params_schema: {
+      tag: { type: 'freetext', required: true },
+      min_level: { type: 'enum', enum: ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], default: 'INFO' },
+      where: { type: 'object', required: false },
+    },
   },
 ];
 
@@ -919,7 +933,7 @@ describe('Sprint 17 — tp_scales_json per-key object-literal typing', () => {
 
 describe('Sprint 17 — where= stays untyped/passthrough (no fixed schema)', () => {
   it('where={some_key="value"} still compiles untyped — no per-key schema regression', () => {
-    const r = compile('ALERT log_tag=error, render=error, where={some_key="value"}, telegram #name="x"');
+    const r = compile('WHEN log(tag=error, where={some_key="value"}) DO alert(telegram), render(render=error) #name="x"');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions.log.where).toEqual({ some_key: 'value' });
   });
@@ -1903,9 +1917,9 @@ describe('meta clause — #name=/#desc=/#tag=/#group=', () => {
 // ── Sprint 12 — event_stmt: ALERT-only statement for notification
 //    (kind='event') agents ────────────────────────────────────────────────
 
-describe('Sprint 12 — event_stmt: full compile of the example statement', () => {
+describe('Wave 2 — log(...) condition / render(...) action: full compile of the example statement', () => {
   it('compiles the example statement to the exact JSON shape', () => {
-    const r = compile('ALERT log_tag=error, min_level=ERROR, render=error, telegram, email, log #name="Error alert"');
+    const r = compile('WHEN log(tag=error, min_level=ERROR) DO alert(telegram, email, log), render(render=error) #name="Error alert"');
     expect(r.ok).toBe(true);
     expect(r.kind).toBe('event');
     expect(r.agent).toEqual({
@@ -1921,88 +1935,99 @@ describe('Sprint 12 — event_stmt: full compile of the example statement', () =
     });
   });
 
-  it('log_tag= missing is a compile error', () => {
-    const r = compile('ALERT render=error, telegram #name="x"');
+  it('tag= missing is a compile error', () => {
+    const r = compile('WHEN log(min_level=ERROR) DO render(render=error) #name="x"');
     expect(r.ok).toBe(false);
-    expect(r.errors.some(e => /missing required 'log_tag='/.test(e.message))).toBe(true);
+    expect(r.errors.some(e => /missing required 'tag='/.test(e.message))).toBe(true);
   });
 
   it('render= missing is a compile error', () => {
-    const r = compile('ALERT log_tag=error, telegram #name="x"');
+    const r = compile('WHEN log(tag=error) DO render(gate=true) #name="x"');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /missing required 'render='/.test(e.message))).toBe(true);
   });
 
   it('min_level= omitted defaults to "INFO"', () => {
-    const r = compile('ALERT log_tag=error, render=error, telegram #name="x"');
+    const r = compile('WHEN log(tag=error) DO render(render=error) #name="x"');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions.log.min_level).toBe('INFO');
   });
 
   it('min_level=error (lowercase input) compiles to "ERROR" (the one field that IS case-normalized)', () => {
-    const r = compile('ALERT log_tag=error, min_level=error, render=error, telegram #name="x"');
+    const r = compile('WHEN log(tag=error, min_level=error) DO render(render=error) #name="x"');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions.log.min_level).toBe('ERROR');
   });
 
-  it('log_tag= and render= are preserved EXACTLY as typed — never case-normalized', () => {
-    const r = compile('ALERT log_tag=Chase, render=ChaseCancel, telegram #name="x"');
+  it('tag= and render= are preserved EXACTLY as typed — never case-normalized', () => {
+    const r = compile('WHEN log(tag=Chase) DO render(render=ChaseCancel) #name="x"');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions.log.tag).toBe('Chase');
     expect(r.agent.actions).toEqual([{ type: 'render', render: 'ChaseCancel' }]);
   });
 
   it('where={alert_event=cancel_unconfirmed} compiles with the value preserved as the literal string, NOT re-cased', () => {
-    const r = compile('ALERT log_tag=chase, min_level=CRITICAL, render=chase_cancel, where={alert_event=cancel_unconfirmed}, ntfy #name="x"');
+    const r = compile('WHEN log(tag=chase, min_level=CRITICAL, where={alert_event=cancel_unconfirmed}) DO alert(ntfy), render(render=chase_cancel) #name="x"');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions.log.where).toEqual({ alert_event: 'cancel_unconfirmed' });
   });
 
   it('where= is omitted entirely from conditions.log when not supplied (never an empty {})', () => {
-    const r = compile('ALERT log_tag=error, render=error, telegram #name="x"');
+    const r = compile('WHEN log(tag=error) DO render(render=error) #name="x"');
     expect(r.ok).toBe(true);
     expect('where' in r.agent.conditions.log).toBe(false);
   });
 
-  it('a channel with its own param still compiles via the exact same ALERT call_list path (e.g. ntfy(priority=urgent))', () => {
-    const r = compile('ALERT log_tag=error, render=error, ntfy(priority=urgent) #name="x"');
+  it('a channel with its own param still compiles via the exact same alert(...) call_list path (e.g. ntfy(priority=urgent))', () => {
+    const r = compile('WHEN log(tag=error) DO alert(ntfy(priority=urgent)), render(render=error) #name="x"');
     expect(r.ok).toBe(true);
     expect(r.agent.events).toEqual([{ channel: 'ntfy', enabled: true, priority: 'urgent' }]);
   });
 
-  it('msg= combined with log_tag= is a compile error naming both keys', () => {
-    const r = compile('ALERT log_tag=error, render=error, msg="hi", telegram #name="x"');
+  it('msg= on log(...) is a compile error (unknown parameter — msg= is not one of log(...)\'s three keys)', () => {
+    const r = compile('WHEN log(tag=error, msg="hi") DO render(render=error) #name="x"');
     expect(r.ok).toBe(false);
-    expect(r.errors.some(e => /msg=.*doesn't apply to event agents.*log_tag=/.test(e.message))).toBe(true);
+    expect(r.errors.some(e => /unknown parameter 'msg' for log/.test(e.message))).toBe(true);
   });
 
-  it('a per-channel own msg= is rejected the same way, naming the channel', () => {
-    const r = compile('ALERT log_tag=error, render=error, telegram(msg="hi") #name="x"');
+  it('msg= on render(...) is a compile error (unknown parameter — render(...) owns no message)', () => {
+    const r = compile('WHEN log(tag=error) DO render(render=error, msg="hi") #name="x"');
     expect(r.ok).toBe(false);
-    expect(r.errors.some(e => /doesn't apply to event agents \(channel 'telegram'\)/.test(e.message))).toBe(true);
+    expect(r.errors.some(e => /unknown parameter 'msg' for render/.test(e.message))).toBe(true);
   });
 
-  it('log_tag=/render= inside an ordinary alert(...) call is a compile error, not a confusing "unknown channel" fallthrough — Sprint [grammar-unify]: ALERT no longer introduces a clause at all, so the SAME event-meta-reserved-kwarg guard now fires from inside alert(...)\'s own body', () => {
-    const r = compile('WHEN always DO alert(log_tag=error, render=error)');
+  it("a per-channel own msg= inside an event agent's DO is rejected — render(...) owns the message", () => {
+    const r = compile('WHEN log(tag=error) DO alert(telegram(msg="hi")), render(render=error) #name="x"');
     expect(r.ok).toBe(false);
-    expect(r.errors.some(e => /only valid on a bare ALERT-only statement, not combined with WHEN\/DO/.test(e.message))).toBe(true);
-    expect(r.errors.some(e => /unknown channel/.test(e.message))).toBe(false);
+    expect(r.errors.some(e => /render\(\.\.\.\) owns the message/.test(e.message))).toBe(true);
   });
 
-  it('log_tag= combined with a trailing DO is a compile error', () => {
+  it('log_tag=/render= (the old reserved spelling) inside log(...) is a compile error — unknown parameter, not a special "combined with WHEN/DO" message anymore', () => {
+    const r = compile('WHEN log(log_tag=error) DO render(render=error)');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /unknown parameter 'log_tag' for log/.test(e.message))).toBe(true);
+  });
+
+  it('a bare leading ALERT (the fully-retired clause-keyword spelling) is a specific parse error', () => {
     const r = compile('ALERT log_tag=error, render=error, telegram DO nop #name="x"');
     expect(r.ok).toBe(false);
-    expect(r.errors.some(e => /only valid on a bare ALERT-only statement, not combined with WHEN\/DO/.test(e.message))).toBe(true);
+    expect(r.errors.some(e => /ALERT is no longer a reserved clause keyword/.test(e.message))).toBe(true);
   });
 
-  it('a duplicate event-meta key is a PARSE-time error (not deferred to compile time)', () => {
-    const r = compile('ALERT log_tag=error, log_tag=chase, render=error, telegram #name="x"');
+  it('a DO with more than one render(...) call is a compile error', () => {
+    const r = compile('WHEN log(tag=error) DO render(render=error), render(render=other) #name="x"');
     expect(r.ok).toBe(false);
-    expect(r.errors.some(e => /duplicate event-meta key 'log_tag='/.test(e.message))).toBe(true);
+    expect(r.errors.some(e => /exactly one render\(\.\.\.\) call/.test(e.message))).toBe(true);
   });
 
-  it('dispatch correctly distinguishes "ALERT log_tag=..." (event_stmt, untouched) from the ordinary alert(...) call (agent_stmt, Sprint [grammar-unify])', () => {
-    const eventForm = compile('ALERT log_tag=error, render=error, telegram #name="x"');
+  it('a DO with an action other than render(...)/alert(...) is a compile error', () => {
+    const r = compile('WHEN log(tag=error) DO help(pnl), render(render=error) #name="x"');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /exactly one render\(\.\.\.\) call/.test(e.message))).toBe(true);
+  });
+
+  it('dispatch correctly distinguishes a log(...)-conditioned agent (kind="event") from an ordinary alert(...) agent (kind="agent")', () => {
+    const eventForm = compile('WHEN log(tag=error) DO render(render=error) #name="x"');
     expect(eventForm.ok).toBe(true);
     expect(eventForm.kind).toBe('event');
 
@@ -2012,7 +2037,7 @@ describe('Sprint 12 — event_stmt: full compile of the example statement', () =
     expect(ordinaryForm.agent.events).toEqual([{ channel: 'telegram', enabled: true, message: 'hi' }]);
   });
 
-  it('a real channel bearing no event-meta kwarg dispatches as the ordinary alert(...) call, not event_stmt (no regression)', () => {
+  it('a real channel bearing an ordinary metric condition dispatches as kind="agent" (no regression)', () => {
     const r = compile('WHEN always DO alert(telegram) #name="x"');
     expect(r.ok).toBe(true);
     expect(r.kind).toBe('agent');
@@ -2022,40 +2047,40 @@ describe('Sprint 12 — event_stmt: full compile of the example statement', () =
 // ── Sprint 18 — event_stmt: render-action `gate=`, channel `gate=`,
 //    and a bare `nop` channel list (empty events). ─────────────────────
 
-describe('Sprint 18 — event_stmt: render-action gate= and empty-events nop', () => {
+describe('Wave 2 — render(...) action: gate= and empty-events (no alert(...) call)', () => {
   it('gate=true on the render action compiles onto actions[0] as a sibling of type/render', () => {
-    const r = compile('ALERT log_tag=error, render=error, gate=true, telegram #name="x"');
+    const r = compile('WHEN log(tag=error) DO alert(telegram), render(render=error, gate=true) #name="x"');
     expect(r.ok).toBe(true);
     expect(r.agent.actions).toEqual([{ type: 'render', render: 'error', gate: true }]);
   });
 
   it('gate= omitted entirely compiles actions[0] with NO gate key at all (never defaulted to false)', () => {
-    const r = compile('ALERT log_tag=error, render=error, telegram #name="x"');
+    const r = compile('WHEN log(tag=error) DO alert(telegram), render(render=error) #name="x"');
     expect(r.ok).toBe(true);
     expect(r.agent.actions).toEqual([{ type: 'render', render: 'error' }]);
     expect('gate' in r.agent.actions[0]).toBe(false);
   });
 
-  it('gate= accepts any order relative to the other event-meta kwargs', () => {
-    const r = compile('ALERT gate=false, render=x, log_tag=y, telegram #name="x"');
+  it('gate= accepts either order relative to render=', () => {
+    const r = compile('WHEN log(tag=y) DO render(gate=false, render=x) #name="x"');
     expect(r.ok).toBe(true);
     expect(r.agent.actions).toEqual([{ type: 'render', render: 'x', gate: false }]);
   });
 
   it('gate= must be a boolean — a string value is a compile error', () => {
-    const r = compile('ALERT log_tag=error, render=error, gate="yes", telegram #name="x"');
+    const r = compile('WHEN log(tag=error) DO render(render=error, gate="yes") #name="x"');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /gate.*expected true or false/.test(e.message))).toBe(true);
   });
 
-  it('a duplicate gate= key is a PARSE-time error, same as the other four event-meta keys', () => {
-    const r = compile('ALERT log_tag=error, render=error, gate=true, gate=false, telegram #name="x"');
+  it('a duplicate gate= key is a compile-time error (unknown-parameter path handles duplicates too)', () => {
+    const r = compile('WHEN log(tag=error) DO render(render=error, gate=true, gate=false) #name="x"');
     expect(r.ok).toBe(false);
-    expect(r.errors.some(e => /duplicate event-meta key 'gate='/.test(e.message))).toBe(true);
+    expect(r.errors.some(e => /duplicate parameter 'gate'/.test(e.message))).toBe(true);
   });
 
   it('a channel\'s own gate=false kwarg compiles via the ordinary per-channel params path (unrelated to the action-level gate=)', () => {
-    const r = compile('ALERT log_tag=orders, render=order_failure, telegram(gate=false), email(gate=false) #name="x"');
+    const r = compile('WHEN log(tag=orders) DO alert(telegram(gate=false), email(gate=false)), render(render=order_failure) #name="x"');
     expect(r.ok).toBe(true);
     expect(r.agent.events).toEqual([
       { channel: 'telegram', enabled: true, gate: false },
@@ -2064,17 +2089,17 @@ describe('Sprint 18 — event_stmt: render-action gate= and empty-events nop', (
     expect(r.agent.actions).toEqual([{ type: 'render', render: 'order_failure' }]);
   });
 
-  it('a bare "nop" channel list compiles to an empty events array (real cycle-breach-alert shape)', () => {
-    const r = compile('ALERT log_tag=agent, render=breach, nop #name="Cycle breach"');
+  it('a DO with no alert(...) call compiles to an empty events array (real cycle-breach-alert shape)', () => {
+    const r = compile('WHEN log(tag=agent) DO render(render=breach) #name="Cycle breach"');
     expect(r.ok).toBe(true);
     expect(r.agent.events).toEqual([]);
     expect(r.agent.actions).toEqual([{ type: 'render', render: 'breach' }]);
   });
 
-  it('"nop" combined with a trailing DO is still a compile error (same guard as a real channel list)', () => {
-    const r = compile('ALERT log_tag=error, render=error, nop DO nop #name="x"');
+  it('DO nop on a log(...)-conditioned WHEN is still a compile error (same guard as any other WHEN/DO)', () => {
+    const r = compile('WHEN log(tag=error) DO nop #name="x"');
     expect(r.ok).toBe(false);
-    expect(r.errors.some(e => /only valid on a bare ALERT-only statement, not combined with WHEN\/DO/.test(e.message))).toBe(true);
+    expect(r.errors.some(e => /DO must have at least one real action or alert/.test(e.message))).toBe(true);
   });
 });
 
@@ -2550,11 +2575,11 @@ describe('Sprint 19 — short scope-family aliases (pos/hld/fnd/wl)', () => {
   });
 });
 
-describe('Sprint 18 follow-up — match=[...] event-meta syntax', () => {
+describe('Wave 2 — log(...) | log(...): OR of multiple log filters (replaces match=[...])', () => {
   it('compiles to the exact {"any": [{"log": {...}}, {"log": {...}}]} shape', () => {
     const r = compile(
-      'ALERT match=[{tag=orders, min_level=WARNING, where={alert_event="cancel_unconfirmed"}}, '
-      + '{tag=gtt, min_level=WARNING}], render=template_attach, telegram, email'
+      'WHEN log(tag=orders, min_level=WARNING, where={alert_event="cancel_unconfirmed"}) | log(tag=gtt, min_level=WARNING) '
+      + 'DO alert(telegram, email), render(render=template_attach)'
     );
     expect(r.ok).toBe(true);
     expect(r.agent.conditions).toEqual({
@@ -2570,42 +2595,42 @@ describe('Sprint 18 follow-up — match=[...] event-meta syntax', () => {
     expect(r.agent.actions).toEqual([{ type: 'render', render: 'template_attach' }]);
   });
 
-  it('a match= entry missing min_level defaults to INFO, same default the simple form uses', () => {
-    const r = compile('ALERT match=[{tag=a}, {tag=b}], render=x, telegram');
+  it('a log(...) entry missing min_level defaults to INFO, same default the single-filter form uses', () => {
+    const r = compile('WHEN log(tag=a) | log(tag=b) DO render(render=x)');
     expect(r.ok).toBe(true);
     expect(r.agent.conditions).toEqual({
       any: [{ log: { tag: 'a', min_level: 'INFO' } }, { log: { tag: 'b', min_level: 'INFO' } }],
     });
   });
 
-  it('match= used together with log_tag= in the same statement is a compile error', () => {
-    const r = compile('ALERT match=[{tag=a}, {tag=b}], log_tag=x, render=y, telegram');
+  it('mixing a log(...) condition with an ordinary metric/scope leaf in the same WHEN is a compile error', () => {
+    const r = compile('WHEN log(tag=a) & (pnl@positions.total <= -50000) DO render(render=y)');
     expect(r.ok).toBe(false);
-    expect(r.errors.some(e => /match= is mutually exclusive with log_tag=/.test(e.message))).toBe(true);
+    expect(r.errors.some(e => /cannot be mixed with a metric\/scope condition/.test(e.message))).toBe(true);
   });
 
-  it('match= used together with where= in the same statement is a compile error, naming where=', () => {
-    const r = compile('ALERT match=[{tag=a}, {tag=b}], where={x=1}, render=y, telegram');
+  it("'&' between two log(...) conditions is a compile error — '|' is the only supported combinator", () => {
+    const r = compile('WHEN log(tag=a) & log(tag=b) DO render(render=y)');
     expect(r.ok).toBe(false);
-    expect(r.errors.some(e => /match= is mutually exclusive with where=/.test(e.message))).toBe(true);
+    expect(r.errors.some(e => /'&'\/'~' with a log\(\.\.\.\) condition is not supported/.test(e.message))).toBe(true);
   });
 
-  it('an empty match=[] is a compile error', () => {
-    const r = compile('ALERT match=[], render=x, telegram');
+  it("'~' (negation) on a log(...) condition is a compile error", () => {
+    const r = compile('WHEN ~log(tag=a) DO render(render=y)');
     expect(r.ok).toBe(false);
-    expect(r.errors.some(e => /match= requires at least one/.test(e.message))).toBe(true);
+    expect(r.errors.some(e => /'&'\/'~' with a log\(\.\.\.\) condition is not supported/.test(e.message))).toBe(true);
   });
 
-  it('a match= entry missing tag= is a compile error naming the entry index', () => {
-    const r = compile('ALERT match=[{min_level=WARNING}, {tag=b}], render=x, telegram');
+  it('a log(...) entry missing tag= is a compile error', () => {
+    const r = compile('WHEN log(min_level=WARNING) | log(tag=b) DO render(render=x)');
     expect(r.ok).toBe(false);
-    expect(r.errors.some(e => /match\[0\]: missing required 'tag='/.test(e.message))).toBe(true);
+    expect(r.errors.some(e => /missing required 'tag='/.test(e.message))).toBe(true);
   });
 
-  it('an unknown key inside a match= entry is a compile error', () => {
-    const r = compile('ALERT match=[{tag=a, bogus=1}, {tag=b}], render=x, telegram');
+  it('an unknown key inside a log(...) call is a compile error', () => {
+    const r = compile('WHEN log(tag=a, bogus=1) | log(tag=b) DO render(render=x)');
     expect(r.ok).toBe(false);
-    expect(r.errors.some(e => /unknown key 'bogus'/.test(e.message))).toBe(true);
+    expect(r.errors.some(e => /unknown parameter 'bogus' for log/.test(e.message))).toBe(true);
   });
 });
 
@@ -3384,11 +3409,12 @@ describe('Sprint [newline-separator] — a bare newline is an alternative to ";"
     expect(() => parseListLiteral(state)).toThrow(/trailing comma in list literal/);
   });
 
-  it('newline replaces "," inside match=[...] (list of object literals)', () => {
-    const r = compile('ALERT match=[{tag=orders, min_level=WARNING}\n{tag=risk, min_level=ERROR}], render=x, telegram');
-    expect(r.ok).toBe(true);
-    expect(r.agent.conditions.any.length).toBe(2);
-  });
+  // Wave 2 — the retired `match=[...]` list-of-object-literals production
+  // (and its own newline-as-separator support) no longer exists in any
+  // form: multiple log filters are now combined via the condition
+  // grammar's own `|` operator (`log(tag=a) | log(tag=b)`), which has no
+  // "list of entries" shape to separate by newline at all. No replacement
+  // test — the feature this exercised is gone, not moved.
 
   it('parseOrderStmt\'s OWN comma-only basket call-list still rejects a bare newline (unchanged) — but Sprint [grammar-unify] now falls back to the unified preamble parser, which DOES accept it, so the statement as a whole compiles, just as two separate preamble order(...) calls rather than one order_stmt basket', () => {
     const r = compile(
