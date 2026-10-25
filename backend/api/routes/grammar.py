@@ -318,6 +318,35 @@ async def _reload_registry():
         logger.error(f"Grammar registry reload failed: {e}")
 
 
+def _validate_resolver_importable(resolver: str | None) -> None:
+    """Reject a resolver dotted-path that doesn't actually import.
+
+    Wave 2 of the "Unify DSL token registration" plan — the critical
+    safety boundary that was missing. Before this, `create_token` and
+    `patch_token` accepted any `resolver` string with zero validation.
+    `GrammarRegistry.reload()`'s per-row loader (`grammar_registry.py`)
+    treats an import failure as a SKIP (WARNING + counted in `skipped`),
+    not a hard error — so a typo'd or nonexistent resolver path would
+    successfully create/update with a 200/201, and the token would
+    silently never dispatch. Reject here, before the DB write, instead.
+
+    `resolver=None`/empty is always valid and short-circuits immediately
+    — plenty of real token kinds legitimately carry no resolver
+    (templates, the documented `resolver: null` dead-stub convention,
+    format/channel tokens with no backing implementation).
+    """
+    if not resolver:
+        return
+    from backend.api.algo.grammar_registry import _import_dotted
+    try:
+        _import_dotted(resolver)
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"resolver '{resolver}' does not import: {type(e).__name__}: {e}",
+        )
+
+
 def _apply_custom_token_patch(row: GrammarToken, data) -> None:
     """Copy all patchable fields from `data` onto a non-system token row.
 
@@ -425,6 +454,7 @@ class GrammarTokenController(Controller):
                     detail=f"token '{data.token}' already exists for "
                            f"{data.grammar_kind}/{data.token_kind}",
                 )
+            _validate_resolver_importable(data.resolver)
             row = GrammarToken(
                 grammar_kind=data.grammar_kind, token_kind=data.token_kind,
                 token=data.token,
@@ -462,6 +492,7 @@ class GrammarTokenController(Controller):
                     row.is_active = data.is_active
                 # Any other field on a system token is a no-op by design.
             else:
+                _validate_resolver_importable(data.resolver)
                 _apply_custom_token_patch(row, data)
 
             await s.commit()

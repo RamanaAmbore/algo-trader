@@ -358,6 +358,30 @@ with 200/201.
 re-parses all custom tokens and rebuilds the evaluator state tree. Called after
 editing a custom token to apply changes to live evaluations.
 
+### Resolver-import validation (Wave 2, custom-token CRUD safety boundary)
+
+`POST /api/admin/grammar/tokens` (`create_token`) and `PATCH /tokens/{id}`
+(`patch_token`, non-system rows only) validate a non-empty `resolver` string by
+actually importing it (`backend/api/routes/grammar.py:_validate_resolver_importable`,
+delegating to `grammar_registry._import_dotted`) BEFORE the DB write. A resolver
+that fails to import — nonexistent module, nonexistent attribute, or a malformed
+dotted path — is rejected with `400` and the row is never created/mutated.
+
+This closes a gap that previously let an unimportable resolver be saved
+successfully: `GrammarRegistry.reload()`'s per-row loader treats an import
+failure as a silent skip (WARNING + counted in `skipped`), not a hard error, so
+the token would exist in the catalog but never actually dispatch. `resolver=None`
+/ empty is always accepted — many real token kinds legitimately carry no resolver
+(templates, the documented `resolver: null` dead-stub convention, several
+format/channel tokens with no backing implementation). System tokens
+(`is_system=True`) are unaffected — `patch_token` restricts them to `is_active`
+toggles only and never reaches this validation path.
+
+No new DB column was added for this — a custom token's `is_system=False` flag is
+already sufficient provenance: `seed_grammar_tokens()`'s own existing-rows query
+filters on `is_system == True`, so a custom token is structurally never read,
+updated, or deleted by a bulk YAML reseed.
+
 ### Condition parsing
 
 v2 grammar evaluator (`agent_evaluator.py`) consumes JSON condition trees and
