@@ -203,14 +203,21 @@ def get_broker(account: str) -> Broker:
         from backend.brokers.client.remote_broker import RemoteBroker
         return RemoteBroker(account, broker_id=_broker_id_for(account))
 
+    # 2026-10 notification-masking audit: both messages below are caught
+    # upstream (e.g. `template_attach.py`'s `apply_plan`) and can reach an
+    # alert renderer via `result.errors` — mask the account at the point
+    # of raising, not only where it's caught, so no future caller can
+    # forget to scrub it.
+    from backend.shared.helpers.utils import mask_account
+    masked_account = mask_account(account) if account else account
     conn = Connections().conn.get(account)
     if conn is None:
-        raise KeyError(f"No broker client configured for account {account!r}")
+        raise KeyError(f"No broker client configured for account {masked_account!r}")
     broker_id = _broker_id_for(account)
     adapter_cls = _ADAPTERS.get(broker_id)
     if adapter_cls is None:
         raise ValueError(
-            f"Account {account!r} is tagged broker={broker_id!r} but no "
+            f"Account {masked_account!r} is tagged broker={broker_id!r} but no "
             f"adapter is registered. Add it under "
             f"backend/brokers/{broker_id}.py and register in "
             f"_ADAPTERS in this file."

@@ -107,14 +107,19 @@ def _render_partial_gtt(rec: dict) -> tuple[str, str]:
     """Only some of a parent order's planned GTTs were placed."""
     from backend.shared.helpers.date_time_utils import timestamp_display
     from backend.shared.helpers.alert_utils import format_notification_header
+    from backend.shared.helpers.utils import mask_account_in_text
     x = rec.get("extra") or {}
     # 2026-10 audit fix: origin header leads every alert.
     origin_header = format_notification_header(None, x.get('agent_id'), ist_display=timestamp_display())
+    # 2026-10 notification-masking audit: `errors` can carry a raw account
+    # code (e.g. a broker-resolution KeyError text) — scrub as
+    # defense-in-depth, matching `order_failure_messages()`'s pattern.
+    errors_text = mask_account_in_text('; '.join(x.get('errors') or [])) or ""
     body = (
         f"{origin_header}\n"
         f"parent #{x.get('parent_row_id')} {x.get('parent_symbol')}: "
         f"{x.get('placed')}/{x.get('planned')} GTTs placed. "
-        f"Errors: {'; '.join(x.get('errors') or [])}"
+        f"Errors: {errors_text}"
     )
     return "Partial GTT placement", body
 
@@ -122,23 +127,31 @@ def _render_partial_gtt(rec: dict) -> tuple[str, str]:
 def _render_template_attach(rec: dict) -> tuple[str, str]:
     """Template exit attach outcome — unprotected position, wing skip/reject."""
     from backend.shared.helpers.date_time_utils import timestamp_display
+    from backend.shared.helpers.utils import mask_account_in_text
     x = rec.get("extra") or {}
     ev = x.get("alert_event")
     ts = timestamp_display()
+    # 2026-10 notification-masking audit: `reason` is free-caller text that
+    # can embed a raw broker account code — scrub as defense-in-depth,
+    # matching `order_failure_messages()`'s existing pattern.
+    reason = mask_account_in_text(str(x.get('reason'))) if x.get('reason') is not None else x.get('reason')
     if ev == "wing_unprotected":
         return ("Unprotected SELL position",
-                f"GTTs placed (ids: {x['gtt_ids_text']}) but wing failed: {x['reason']} | "
+                f"GTTs placed (ids: {x['gtt_ids_text']}) but wing failed: {reason} | "
                 f"order #{x['parent_order_id']} {x['symbol']} {x['exchange']}\n{ts}")
     if ev == "wing_hard_reject":
         return ("Wing scan hard-rejected",
-                f"{x['reason']} | {x['symbol']} {x['exchange']} target ₹{x['target_premium']:.2f}\n{ts}")
+                f"{reason} | {x['symbol']} {x['exchange']} target ₹{x['target_premium']:.2f}\n{ts}")
     if ev == "wing_skip":
         return ("Wing attach skipped",
-                f"{x['reason']} | order #{x['parent_order_id']} {x['symbol']} {x['exchange']}\n{ts}")
+                f"{reason} | order #{x['parent_order_id']} {x['symbol']} {x['exchange']}\n{ts}")
     if ev == "wing_offset_skip":
         return ("Wing offset attach skipped",
-                f"{x['reason']} | order #{x['parent_order_id']} {x['symbol']} {x['exchange']}\n{ts}")
-    return "Template attach", f"{x}\n{ts}"
+                f"{reason} | order #{x['parent_order_id']} {x['symbol']} {x['exchange']}\n{ts}")
+    # Fallback dumps the whole `extra` dict raw — may embed an `account`
+    # key or an account-shaped code inside a nested value; scrub the
+    # stringified dump too.
+    return "Template attach", f"{mask_account_in_text(f'{x}')}\n{ts}"
 
 
 def _render_order_failure(rec: dict) -> tuple:
@@ -312,12 +325,16 @@ def _render_gtt_not_accepted(rec: dict) -> tuple[str, str]:
     """A placed GTT was not accepted by the broker (status mismatch)."""
     from backend.shared.helpers.date_time_utils import timestamp_display
     from backend.shared.helpers.alert_utils import format_notification_header
+    from backend.shared.helpers.utils import mask_account_in_text
     x = rec.get("extra") or {}
     # 2026-10 audit fix: origin header leads every alert.
     origin_header = format_notification_header(None, x.get('agent_id'), ist_display=timestamp_display())
+    # 2026-10 notification-masking audit: `reason` is free-caller text that
+    # can embed a raw broker account code — scrub as defense-in-depth.
+    reason = mask_account_in_text(str(x.get('reason'))) if x.get('reason') is not None else x.get('reason')
     return ("GTT not accepted at broker",
             f"{origin_header}\n"
-            f"{x.get('symbol')} {x.get('label')} GTT {x.get('gtt_id')}: {x.get('reason')}")
+            f"{x.get('symbol')} {x.get('label')} GTT {x.get('gtt_id')}: {reason}")
 
 
 def _render_error(rec: dict) -> tuple[str, str, str]:

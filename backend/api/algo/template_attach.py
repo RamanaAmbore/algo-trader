@@ -427,10 +427,14 @@ def template_attach_fail_message(*, order_id, symbol, account, err_summary, ist_
     golden-text assertion.
     """
     import html as _html
-    from backend.shared.helpers.utils import mask_account
+    from backend.shared.helpers.utils import mask_account, mask_account_in_text
     from backend.shared.helpers.alert_utils import format_notification_header
     # Escape before embedding: err_summary is raw broker/guard text and may hold a literal '<'.
-    err_summary_html = _html.escape(err_summary)
+    # 2026-10 notification-masking audit: err_summary is free-caller text
+    # (e.g. a broker-resolution failure) that can embed a raw account code
+    # — scrub as defense-in-depth, matching `order_failure_messages()`'s
+    # existing pattern. Mask before escape so the regex sees plain text.
+    err_summary_html = _html.escape(mask_account_in_text(err_summary) or err_summary)
     # Account masked (2026-10 audit fix) — matches the masking convention
     # every other correctly-masked alert path already uses.
     masked_account = mask_account(account) if account else account
@@ -2969,9 +2973,21 @@ async def _route_apply_path(
             from backend.brokers.registry import get_broker
             broker = get_broker(parent_account)
         except Exception as e:
+            # 2026-10 notification-masking audit: this string lands in
+            # `result.errors`, read unmasked by `event_agents.py`'s
+            # `_render_partial_gtt` (now fixed to also scrub defensively).
+            # Mask the two sources separately: `parent_account` is known
+            # raw, so use the scalar mask; `str(e)` may already be masked
+            # (registry.py masks its own raised messages) OR may come back
+            # unmasked from conn_service in cutover mode (prod/dev share a
+            # process that only picks up new backend/brokers/ code on a
+            # prod deploy) — use the text-scrub form, which is a no-op on
+            # an already-masked code, so it's safe either way.
+            from backend.shared.helpers.utils import mask_account, mask_account_in_text
             result = AttachResult(plan=plan)
             result.errors.append(
-                f"could not resolve broker for {parent_account!r}: {e}"
+                f"could not resolve broker for {mask_account(parent_account)!r}: "
+                f"{mask_account_in_text(str(e))}"
             )
             return result
         return await asyncio.to_thread(

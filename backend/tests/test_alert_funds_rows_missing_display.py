@@ -18,6 +18,7 @@ import math
 import pandas as pd
 
 from backend.shared.helpers.alert_utils import _build_funds_rows, _fmt_inr_or_missing
+from backend.shared.helpers.utils import mask_account
 
 
 class TestFmtInrOrMissing:
@@ -49,7 +50,15 @@ class TestBuildFundsRowsMissingFields:
         rows = _build_funds_rows(df)
         assert len(rows) == 1
         account, cash, avail_net, used, collat = rows[0]
-        assert account == "GR87DF"
+        # 2026-10 notification-masking audit: _build_funds_rows now masks
+        # the account before it reaches the Telegram/email summary table
+        # (this feeds send_summary directly). Compute the expected masked
+        # form at runtime rather than hardcoding a literal — the
+        # module-global mask registry's exact output for a given raw code
+        # depends on whether `register_accounts` has run earlier in the
+        # suite.
+        assert account == mask_account("GR87DF")
+        assert "GR87DF" not in account
         assert cash == "—", f"missing cash must render '—', got {cash!r}"
         assert collat == "—", f"missing collateral must render '—', got {collat!r}"
         assert avail_net == "₹75K"

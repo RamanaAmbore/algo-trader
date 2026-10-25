@@ -960,12 +960,15 @@ class DhanConnection:
         }
         try:
             response = session.post(url, params=params, timeout=30)
-            logger.debug(
-                "[DHAN-LOGIN] %r: status=%s body=%.200s",
-                self.account, response.status_code,
-                response.text if response.content else '',
-            )
             resp = response.json() if response.content else {}
+            # 2026-10 notification/credentials audit: the response body
+            # can carry the start of a real access token — log only
+            # status + top-level key names, never the body itself.
+            logger.debug(
+                "[DHAN-LOGIN] %r: status=%s keys=%s",
+                self.account, response.status_code,
+                sorted(resp.keys()) if isinstance(resp, dict) else type(resp).__name__,
+            )
         except Exception as e:
             raise RuntimeError(
                 f"Dhan generate_token HTTP call failed: {e}"
@@ -1024,9 +1027,12 @@ class DhanConnection:
             )
             return None
         if not isinstance(resp, dict):
+            # 2026-10 notification/credentials audit: never log the raw
+            # body — it can carry token material. Type name is enough to
+            # diagnose a shape mismatch.
             logger.warning(
                 f"Dhan renew_token returned non-dict for {self.account!r}: "
-                f"type={type(resp).__name__} body={str(resp)[:200]}"
+                f"type={type(resp).__name__}"
             )
             return None
         data = resp.get("data") if isinstance(resp.get("data"), dict) else resp
@@ -1041,9 +1047,13 @@ class DhanConnection:
         # Renewal endpoint reached us but didn't return a token —
         # surface what it actually said. Common cases: 401 (token
         # already expired), 404 (endpoint changed), {"error": "..."}.
+        # 2026-10 notification/credentials audit: log only the response's
+        # top-level key names, never the body — a 401/404 error payload is
+        # unlikely to carry a token, but this keeps the rule uniform
+        # across all three Dhan token-response log sites in this class.
         logger.warning(
             f"Dhan renew_token no accessToken for {self.account!r}: "
-            f"status={response.status_code} body={str(resp)[:200]}"
+            f"status={response.status_code} keys={sorted(resp.keys())}"
         )
         return None
 

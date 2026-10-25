@@ -705,12 +705,18 @@ def _fmt_inr_or_missing(v) -> str:
 
 
 def _build_funds_rows(df_margins):
-    """Build (Account, Cash, Avail Margin, Used Margin, Collateral) rows from df_margins."""
+    """Build (Account, Cash, Avail Margin, Used Margin, Collateral) rows from df_margins.
+
+    Account codes are masked here (`mask_account`) — this feeds
+    `send_summary`'s Telegram/email tables directly, a real
+    notification-facing surface, not just a log line. `mask_account`
+    leaves the literal "TOTAL" aggregate row unchanged."""
+    from backend.shared.helpers.utils import mask_account
     rows = []
     if df_margins is None or df_margins.empty:
         return rows
     for _, row in df_margins.iterrows():
-        account   = str(row.get('account', ''))
+        account   = mask_account(str(row.get('account', '')))
         cash      = row.get('avail opening_balance')
         avail_net = row.get('net')
         used      = row.get('util debits')
@@ -725,10 +731,15 @@ def _build_funds_rows(df_margins):
 # ---------------------------------------------------------------------------
 
 def _summary_holdings_rows(sum_holdings) -> list[tuple]:
-    """Build (Account, Cur Val, P&L, P&L%, Day Loss, Day Loss%) rows."""
+    """Build (Account, Cur Val, P&L, P&L%, Day Loss, Day Loss%) rows.
+
+    Account codes are masked (`mask_account`) — this feeds the market
+    open/close summary's Telegram/email tables, a real notification
+    surface."""
+    from backend.shared.helpers.utils import mask_account
     rows = []
     for _, row in sum_holdings.iterrows():
-        account = str(row.get('account', ''))
+        account = mask_account(str(row.get('account', '')))
         cur_val = float(row.get('cur_val', 0) or 0)
         pnl     = float(row.get('pnl', 0) or 0)
         pnl_pct = float(row.get('pnl_percentage', 0) or 0)
@@ -742,10 +753,14 @@ def _summary_holdings_rows(sum_holdings) -> list[tuple]:
 
 
 def _summary_positions_rows(sum_positions) -> list[tuple]:
-    """Build (Account, P&L) rows from the positions summary dataframe."""
+    """Build (Account, P&L) rows from the positions summary dataframe.
+
+    Account codes are masked (`mask_account`) — same notification-facing
+    reasoning as `_summary_holdings_rows` above."""
+    from backend.shared.helpers.utils import mask_account
     rows = []
     for _, row in sum_positions.iterrows():
-        account = str(row.get('account', ''))
+        account = mask_account(str(row.get('account', '')))
         pnl     = float(row.get('pnl', 0) or 0)
         rows.append((account, _fmt_inr(pnl)))
     return rows
@@ -834,10 +849,11 @@ def _partial_outage_warning_lines(sum_positions) -> "list[str] | None":
     `.copy()` / `groupby()` / `pd.concat()` unchanged, so no extra
     plumbing is needed at the open/close-summary call sites; this reads
     it directly off the frame already being passed in."""
+    from backend.shared.helpers.utils import mask_account
     accts = (getattr(sum_positions, 'attrs', {}) or {}).get('partial_outage')
     if not accts:
         return None
-    joined = ", ".join(str(a) for a in accts)
+    joined = ", ".join(mask_account(str(a)) for a in accts)
     return [
         f"⚠ PARTIAL OUTAGE — account(s) {joined} unavailable this cycle; "
         f"positions TOTAL may be UNDERSTATED",

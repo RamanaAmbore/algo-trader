@@ -662,8 +662,14 @@ async def _action_place_order(agent, context: dict, params: dict):
         await _on_algo_order_write_failure(
             _shim, "place_order", account, symbol, exchange, side, qty, price,
         )
+        # 2026-10 notification-masking audit — this RuntimeError can
+        # surface through `_al_action_failed_audit`'s `logger.error(...)`
+        # (masked in the log pipeline by the centralized filter) but also
+        # through `write_audit_event`'s summary text, which is not a
+        # logger call; mask the account at the source either way.
+        from backend.shared.helpers.utils import mask_account
         raise RuntimeError(
-            f"place_order: AlgoOrder pre-persist failed for {account} "
+            f"place_order: AlgoOrder pre-persist failed for {mask_account(account)} "
             f"{exchange}/{symbol} {side} {qty} — refusing to place an "
             f"untracked live order"
         )
@@ -997,8 +1003,11 @@ async def _action_live_close_position(agent, context: dict, params: dict):
         await _on_algo_order_write_failure(
             agent, "close_position", account, symbol, exchange, side, qty, price,
         )
+        # 2026-10 notification-masking audit — same source-side mask as
+        # the sibling site in `_action_live_place_order` above.
+        from backend.shared.helpers.utils import mask_account
         raise RuntimeError(
-            f"close_position: AlgoOrder pre-persist failed for {account} "
+            f"close_position: AlgoOrder pre-persist failed for {mask_account(account)} "
             f"{exchange}/{symbol} {side} {qty} — refusing to place an "
             f"untracked live order"
         )

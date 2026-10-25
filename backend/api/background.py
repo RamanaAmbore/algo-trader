@@ -189,10 +189,18 @@ def _fetch_special_sessions_safe(exchange: str) -> list:
 
 def _fetch_margins_direct() -> pd.DataFrame:
     """
-    Returns pandas DataFrame with REAL (unmasked) account codes. Feeds the
-    agent engine + Telegram/email dispatch — both of which go to the owner,
-    so masking is unnecessary here. Public `/api/funds` re-applies masking
-    on its own output for the marketing site.
+    Returns pandas DataFrame with REAL (unmasked) account codes — the agent
+    engine's own condition evaluation needs the real codes to match against
+    per-account thresholds. "Masking is unnecessary because it only reaches
+    the owner" is NOT the policy and was wrong: account codes are masked at
+    the render boundary regardless of audience (CLAUDE.md "Account masking"
+    / "mask_account(s)... Used in all alerts + summaries"). The actual
+    masking point for this frame's data is downstream, in the summary-table
+    builders (`alert_utils._build_funds_rows` et al.) that format this
+    DataFrame for Telegram/email — those mask each account code before it
+    reaches a notification. Public `/api/funds` re-applies masking on its
+    own output for the marketing site, a separate consumer of the same raw
+    data.
     """
     from backend.brokers import broker_apis
     df = pd.concat(broker_apis.fetch_margins(), ignore_index=True)

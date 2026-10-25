@@ -2749,13 +2749,19 @@ async def _ch_build_cancel_unconfirmed_abort(
     recorded) is wrong. (3) marks this algo_order_id for the one-shot
     backstop reconcile.
     """
+    # 2026-10 notification-masking audit — `result.detail` reaches
+    # `actions_live.py`'s re-raised RuntimeError and the CRITICAL log
+    # line below verbatim; mask the account here at the source, same
+    # pattern as `_ch_abort_ambiguous_place_timeout`'s `_masked_acct`.
+    from backend.shared.helpers.utils import mask_account
+    _masked_acct = mask_account(account)
     result.status = ChaseStatus.FAILED
     result.order_id = current_order_id or ""
     result.detail = (
         f"Chase ABORTED — cancel not confirmed for order {current_order_id} "
         f"after attempt {attempt}. It may still be resting live at the "
         f"broker; no replacement order was placed to avoid a possible "
-        f"duplicate. Manually check {account}'s order book for {symbol}."
+        f"duplicate. Manually check {_masked_acct}'s order book for {symbol}."
     )
     logger.critical(
         "Chase %s: %s", symbol, result.detail,
@@ -2948,11 +2954,16 @@ async def _ch_post_replace_kill_check(
         # closed at the `kill_chase` HTTP response layer. Write
         # CANCEL_FAILED (non-final — a late fill still applies) and
         # mark for the item-8b backstop reconcile instead.
+        # 2026-10 notification-masking audit — same source-side mask as
+        # `_ch_build_cancel_unconfirmed_abort` above; `result.detail` can
+        # reach a plain RuntimeError re-raise unmasked otherwise.
+        from backend.shared.helpers.utils import mask_account
+        _masked_acct = mask_account(account)
         result.status = ChaseStatus.FAILED
         result.detail = (
             f"Kill requested but broker cancel for {current_order_id} could "
             f"not be confirmed — it may still be resting live. Manually "
-            f"check {account}'s order book for {symbol}."
+            f"check {_masked_acct}'s order book for {symbol}."
         )
         emit("chase_cancel_unconfirmed", {
             "order_id": current_order_id, "attempt": attempt,

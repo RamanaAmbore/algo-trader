@@ -970,9 +970,10 @@ async def _res_cancel_live(
     logger.info(f"MCP cancel_order (live) OK: user={user_id} order_id={res.order_id} acct={acct}")
 
     try:
-                _mcp_ping(
+        from backend.shared.helpers.utils import mask_account
+        _mcp_ping(
             f"<b>MCP CANCEL [LIVE]</b> order_id=<code>{res.order_id}</code>\n"
-            f"acct={acct}\n"
+            f"acct={mask_account(acct) if acct else acct}\n"
             f"<i>request_id={_audit_link_html(request_id)} · user_id={user_id or '-'}</i>"
         )
     except Exception as e:
@@ -1017,9 +1018,10 @@ async def _res_cancel_paper(
     await audit_fn("ok", f"paper order_id={algo_order_id} CANCELLED")
     logger.info(f"MCP cancel_order (paper) OK: user={user_id} id={algo_order_id} acct={acct}")
     try:
-                _mcp_ping(
+        from backend.shared.helpers.utils import mask_account
+        _mcp_ping(
             f"<b>MCP CANCEL [PAPER]</b> AlgoOrder.id=<code>{algo_order_id}</code>\n"
-            f"acct={acct}\n"
+            f"acct={mask_account(acct) if acct else acct}\n"
             f"<i>request_id={_audit_link_html(request_id)} · user_id={user_id or '-'}</i>"
         )
     except Exception as e:
@@ -1115,7 +1117,15 @@ def _mcp_ping(tg_html: str) -> None:
 
     Appends the dual-tz timestamp once here — the single chokepoint all
     6 MCP ping call sites funnel through — rather than at each call site
-    individually. No agent concept exists for MCP tool calls."""
+    individually. No agent concept exists for MCP tool calls.
+
+    `tg_html` must already have any `acct=` account code masked
+    (`mask_account`) by its caller before reaching here — this function
+    does not scrub the body itself. All 6 call sites (place, cancel live,
+    cancel paper, modify paper, modify live, agent activate/deactivate —
+    the last carries no account) mask at the call site as of the 2026-10
+    notification-masking audit; `_mcp_ping` itself stays a thin
+    pass-through."""
     from backend.shared.helpers.date_time_utils import timestamp_display
     tg_html = f"{tg_html}\n<i>{timestamp_display()}</i>"
     logger.info("MCP ping", extra={"tags": ["mcp"], "alert_event": "mcp_ping", "tg": tg_html})
@@ -1207,9 +1217,10 @@ async def _mcp_modify_paper(
     await audit_fn("ok", f"paper order_id={algo_order_id} modified")
     logger.info(f"MCP modify_order (paper) OK: user={user_id} id={algo_order_id} acct={acct}")
     try:
-                _mcp_ping(
+        from backend.shared.helpers.utils import mask_account
+        _mcp_ping(
             f"<b>MCP MODIFY [PAPER]</b> AlgoOrder.id=<code>{algo_order_id}</code>\n"
-            f"acct={acct} · {chunks}\n"
+            f"acct={mask_account(acct) if acct else acct} · {chunks}\n"
             f"<i>request_id={_audit_link_html(request_id)} · user_id={user_id or '-'}</i>"
         )
     except Exception as e:
@@ -1257,9 +1268,10 @@ async def _mcp_modify_live(
     await audit_fn("ok", f"order_id={res.order_id}")
     logger.info(f"MCP modify_order (live) OK: user={user_id} order_id={res.order_id} acct={acct}")
     try:
-                _mcp_ping(
+        from backend.shared.helpers.utils import mask_account
+        _mcp_ping(
             f"<b>MCP MODIFY [LIVE]</b> order_id=<code>{res.order_id}</code>\n"
-            f"acct={acct} · {chunks}\n"
+            f"acct={mask_account(acct) if acct else acct} · {chunks}\n"
             f"<i>request_id={_audit_link_html(request_id)} · user_id={user_id or '-'}</i>"
         )
     except Exception as e:
