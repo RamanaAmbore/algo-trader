@@ -249,3 +249,38 @@ class TestBuildDsnEncoding:
         )
         dsn = mod._build_dsn()
         assert dsn == "postgresql://u:p@h:5432/d"
+
+
+class TestNavSurfaceDateColumn:
+    """`nav_daily`'s real date column is `as_of_date` (see `NavDaily` in
+    `backend/api/models.py`, unique on `as_of_date`), not `date` — `_SURFACES`
+    previously hardcoded `"date"` for every surface including nav, so the
+    generated query was `SELECT MAX(date) FROM nav_daily`, which fails with
+    `column "date" does not exist` (confirmed live on both prod and dev once
+    the YAML-parser bug above stopped masking it). This test guards the fix
+    by asserting the generated SQL for the nav surface references the real
+    column, not by connecting to a real database."""
+
+    def test_nav_surface_entry_uses_as_of_date_column(self):
+        nav_entries = [s for s in mod._SURFACES if s[0] == "nav"]
+        assert len(nav_entries) == 1
+        label, table, where, date_col = nav_entries[0]
+        assert table == "nav_daily"
+        assert date_col == "as_of_date"
+        assert date_col != "date"
+
+    def test_nav_surface_generated_sql_references_as_of_date(self):
+        label, table, where, date_col = next(
+            s for s in mod._SURFACES if s[0] == "nav"
+        )
+        clause = f" WHERE {where}" if where else ""
+        sql = f"SELECT MAX({date_col}) FROM {table}{clause}"
+        assert sql == "SELECT MAX(as_of_date) FROM nav_daily"
+        assert "MAX(date)" not in sql
+
+    def test_dry_run_prints_as_of_date_for_nav(self, capsys, monkeypatch):
+        monkeypatch.delenv("DATABASE_URL", raising=False)
+        rc = mod.main(["--dry-run"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "[nav]  SELECT MAX(as_of_date) FROM nav_daily" in out

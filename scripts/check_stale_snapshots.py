@@ -169,7 +169,7 @@ def _redacted_dsn(dsn: str) -> str:
 _SURFACES: list[tuple[str, str, str, str]] = [
     ("positions", "daily_book", "kind = 'positions'", "date"),
     ("holdings",  "daily_book", "kind = 'holdings'",  "date"),
-    ("nav",       "nav_daily",  "",                    "date"),
+    ("nav",       "nav_daily",  "",                    "as_of_date"),
     ("sparkline", "daily_book", "kind = 'sparkline'",  "date"),
 ]
 
