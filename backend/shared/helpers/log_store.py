@@ -55,6 +55,58 @@ class OriginFilter(logging.Filter):
             record.origin = origin
         return True
 
+
+class _AccountMaskFilter(logging.Filter):
+    """Mask every broker-account code embedded in a record's message, in
+    the calling thread, before the record is enqueued.
+
+    Wired onto the SAME `QueueHandler` as `OriginFilter` (see
+    `ramboq_logger.py:get_logger()`), NOT the later per-handler
+    (console/file/error) filter loop — that loop runs on the
+    `QueueListener` thread, by which point `QueueHandler.prepare()` has
+    already baked `record.getMessage()` into the final formatted string
+    for every handler EXCEPT this one's own target, `LogStoreHandler`
+    (`HANDLER`), which also listens on that same queue. Running here
+    instead means every downstream handler — console, file, error-file,
+    and `log_store` (the handler that feeds `log_events` and the whole
+    `event_agents.py` alert-dispatch pipeline) — all receive the
+    already-masked text.
+
+    Import of `mask_account_in_text` is deliberately deferred to inside
+    `filter()` (same convention as this module's other lazy imports,
+    e.g. `_default_session_factory()`): `utils.py` imports
+    `date_time_utils.py`, which imports `ramboq_logger.py`, which imports
+    THIS module at its own top — a module-level import here would be a
+    circular import.
+
+    Also masks a baked-in exception traceback (`record.exc_text`)
+    *before* `QueueHandler.prepare()`'s own `Formatter.format()` call
+    appends it to `record.msg` — otherwise an account code embedded in
+    an exception's own text (e.g. `KeyError: 'ZG0790'`) would bypass the
+    message-only mask entirely, since `format()` only computes
+    `exc_text` when it finds none already set, and happens strictly
+    after this filter runs.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        # The lazy import is INSIDE the try too — a logging filter must
+        # never raise into the caller's `logger.x(...)` call for any
+        # reason, including an import failure (e.g. a test that patches
+        # `builtins.__import__` broadly to simulate a missing package
+        # import elsewhere can incidentally break this filter's own
+        # import of `utils.py` too).
+        try:
+            from backend.shared.helpers.utils import mask_account_in_text
+            record.msg = mask_account_in_text(record.getMessage())
+            record.args = ()
+            if record.exc_info and not record.exc_text:
+                record.exc_text = mask_account_in_text(
+                    logging.Formatter().formatException(record.exc_info)
+                )
+        except Exception:
+            pass
+        return True
+
 _loop: asyncio.AbstractEventLoop | None = None
 _wake: asyncio.Event | None = None
 _warned_tags: set[str] = set()
@@ -82,9 +134,30 @@ def _wake_writer() -> None:
 
 
 def tags_for(record: logging.LogRecord) -> list[str]:
-    """Level plus the owner's tags. A record without owner tags is tagged with its logger's last name."""
+    """Level plus the owner's tags. A record without owner tags is tagged with its logger's last name.
+
+    2026-10-24 fix: a CRITICAL record is also tagged `"error"`. Before
+    this, `ERROR_AGENT`'s catch-all condition (`tag="error",
+    min_level="ERROR"`) required the literal tag `"error"` to be
+    present — but this function only ever stamped `"critical"` (the
+    record's own level name) for a `logger.critical(...)` call, so a
+    bare CRITICAL record never matched and silently never alerted,
+    regardless of how severe it was. CRITICAL > ERROR numerically
+    (`_LEVEL_NO`), so the existing `min_level="ERROR"` floor was already
+    correct — only the tag was missing. Fixing it here (rather than
+    editing `ERROR_AGENT`'s stored `conditions` dict) means every
+    already-seeded `Agent` row in prod/dev — whose `conditions` JSON
+    predates this fix and is otherwise untouched — gets the corrected
+    behavior with no `SEED_VERSION` bump and no DB migration; see
+    `event_agents.py:_error_agent_self_alerted` for the companion guard
+    against this now also double-firing a CRITICAL record that already
+    has its own dedicated, `alert_event`-gated agent (chase's
+    `cancel_unconfirmed`, the GTT wing `wing_hard_reject`/`partial_gtt`
+    agents)."""
     owner = getattr(record, "tags", None)
     tags = [record.levelname.lower()]
+    if record.levelname == "CRITICAL":
+        tags.append("error")
     if owner:
         owner = [str(t) for t in owner]
         _check_owner_tags(owner)

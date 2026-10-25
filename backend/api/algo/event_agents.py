@@ -931,6 +931,14 @@ def _run_unrouted_catch_all(rows: list[dict], agents: list) -> None:
 ERROR_AGENT = {
     "slug": "error-alert",
     "name": "Error alert",
+    # tag="error" also matches a CRITICAL record as of 2026-10-24 — see
+    # `log_store.py:tags_for()`'s own docstring. This condition dict is
+    # deliberately left UNCHANGED (no `{"any": [...]}` tag="critical"
+    # leaf added here): the fix lives entirely in how `tags_for()` tags
+    # a record, so every already-seeded `Agent` row in prod/dev (whose
+    # stored `conditions` JSON predates this fix) gets the corrected
+    # behavior for free, with no `SEED_VERSION` bump and no DB
+    # migration required.
     "conditions": {"log": {"tag": "error", "min_level": "ERROR"}},
     # 2026-10 routing-tree plan — channel selection moved to
     # `alert_routing.py`'s per-slug override table. See `FILL_AGENT`'s
@@ -960,10 +968,30 @@ def _error_agent_self_alerted(agent, rec: dict) -> bool:
     to condition on `tag="error"`/ERROR level is unaffected, and an
     ERROR record with no `self_alerted` flag dispatches exactly as
     before.
+
+    2026-10-24 — `tags_for()` now also stamps `"error"` on a CRITICAL
+    record, so ERROR_AGENT's unchanged catch-all condition also matches
+    every bare `logger.critical(...)` call (previously tagged
+    `"critical"` only, so it never matched at all and silently never
+    alerted). Several CRITICAL call sites already have their OWN
+    dedicated, `alert_event`-gated agent (chase's `cancel_unconfirmed`,
+    the GTT wing `wing_hard_reject`/`partial_gtt` agents) — every one of
+    those tags its record with an `alert_event` extra, which a truly
+    bare, unrouted CRITICAL record never carries. So a CRITICAL record
+    that carries `alert_event` is treated the same as an explicit
+    `self_alerted` flag here: it is presumed already routed to its own
+    agent, and is skipped for ERROR_AGENT specifically. A bare CRITICAL
+    record with neither flag falls through to ERROR_AGENT exactly like
+    a bare ERROR record always has.
     """
     if getattr(agent, "slug", None) != ERROR_AGENT["slug"]:
         return False
-    return bool((rec.get("extra") or {}).get("self_alerted"))
+    extra = rec.get("extra") or {}
+    if bool(extra.get("self_alerted")):
+        return True
+    if rec.get("level") == "CRITICAL" and extra.get("alert_event"):
+        return True
+    return False
 
 
 CHASE_CANCEL_AGENT = {

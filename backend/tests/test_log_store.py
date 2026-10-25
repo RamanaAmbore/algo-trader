@@ -307,3 +307,120 @@ def test_insert_strips_bulk_bodies(monkeypatch):
     rec = _rec(tags=["agent"], alert_event="breach", telegram_body="x")
     asyncio.run(log_store.insert_rows([log_store.row_for(rec)], lambda: _Sess()))
     assert all("_bulk" not in r for r in captured["rows"])
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 2026-10-24 — _AccountMaskFilter: centralized Tier-B account-mask fix
+# ─────────────────────────────────────────────────────────────────────────
+
+def test_account_mask_filter_masks_raw_account_in_message():
+    """Directly proves the filter transforms `record.msg` — not just
+    console/file output. This is the invariant `_AccountMaskFilter` is
+    wired to guarantee reaches `log_store_handler` too (see its own
+    docstring and `ramboq_logger.py:get_logger()`'s wiring)."""
+    rec = logging.LogRecord(
+        "backend.api.routes.orders", logging.INFO, __file__, 1,
+        "order placed for account %s", ("ZG0790",), None,
+    )
+    assert log_store._AccountMaskFilter().filter(rec) is True
+    assert "ZG0790" not in rec.getMessage()
+    assert rec.args == ()
+
+
+def test_account_mask_filter_is_noop_when_no_account_shaped_text():
+    rec = logging.LogRecord(
+        "backend.api.routes.orders", logging.INFO, __file__, 1,
+        "price updated to %s", (100.5,), None,
+    )
+    log_store._AccountMaskFilter().filter(rec)
+    assert rec.getMessage() == "price updated to 100.5"
+
+
+def test_account_mask_filter_masks_exception_text_before_it_is_baked_into_msg():
+    """A `KeyError: 'ZG0790'` (or similar) embedded in an exception's own
+    text must not bypass the mask by riding along in `exc_text`, which
+    `QueueHandler.prepare()`'s own `Formatter.format()` call appends to
+    `record.msg` AFTER this filter runs. The filter must pre-populate
+    `record.exc_text` itself so `format()` never recomputes it raw."""
+    try:
+        raise KeyError("ZG0790")
+    except KeyError:
+        import sys
+        exc_info = sys.exc_info()
+    rec = logging.LogRecord(
+        "backend.api.routes.orders", logging.ERROR, __file__, 1,
+        "lookup failed", None, exc_info,
+    )
+    log_store._AccountMaskFilter().filter(rec)
+    assert "ZG0790" not in rec.exc_text
+
+
+def test_account_mask_filter_never_raises_on_bad_args():
+    """Matches `_PlainTextFilter`'s own fail-safe shape — a malformed
+    %-format must not raise into the caller's `logger.info(...)` call."""
+    rec = logging.LogRecord(
+        "backend.api.routes.orders", logging.INFO, __file__, 1,
+        "missing arg %s %s", ("only-one",), None,
+    )
+    assert log_store._AccountMaskFilter().filter(rec) is True
+
+
+def test_account_mask_filter_is_wired_onto_the_queue_handler():
+    """Confirms the wiring location, not just the filter in isolation —
+    a filter-only unit test doesn't prove `get_logger()` actually
+    attaches it."""
+    from logging.handlers import QueueHandler
+    from backend.shared.helpers.ramboq_logger import get_logger, _account_mask_filter
+
+    logger = get_logger("test.account_mask_wiring." + __name__)
+    qh = next(h for h in logger.handlers if isinstance(h, QueueHandler))
+    assert _account_mask_filter in qh.filters
+
+
+def test_account_mask_filter_reaches_log_store_row_message():
+    """End-to-end through the exact wiring: the QueueHandler's own
+    filters (origin + account-mask), then `QueueHandler.prepare()` (the
+    step that bakes the formatted message `log_store_handler.emit()`
+    ultimately sees via the queue), then `row_for()` — the function that
+    builds the row written to `log_events`. Proves the masked text is
+    what reaches the DB-backed log store, not just console/file output."""
+    from logging.handlers import QueueHandler
+    from backend.shared.helpers.ramboq_logger import get_logger, log_queue
+
+    logger = get_logger("test.account_mask_e2e." + __name__)
+    qh = next(h for h in logger.handlers if isinstance(h, QueueHandler))
+    rec = logging.LogRecord(
+        logger.name, logging.INFO, __file__, 1,
+        "fill for account %s on order %s", ("ZG0790", "O123"), None,
+    )
+    # `Handler.filter()` (Python 3.12+) returns the (possibly replaced)
+    # record itself on success, a false value on veto — not a bare bool.
+    assert qh.filter(rec)  # runs OriginFilter + _AccountMaskFilter
+    prepared = qh.prepare(rec)
+    row = log_store.row_for(prepared)
+    assert "ZG0790" not in row["message"]
+    assert "O123" in row["message"]
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 2026-10-24 — tags_for(): CRITICAL also tagged "error" (ERROR_AGENT gap)
+# ─────────────────────────────────────────────────────────────────────────
+
+def test_tags_for_critical_record_is_also_tagged_error():
+    assert log_store.tags_for(_rec(level=logging.CRITICAL)) == ["critical", "error", "orders"]
+
+
+def test_tags_for_critical_record_with_owner_tags_keeps_error_before_owner_tags():
+    out = log_store.tags_for(_rec(level=logging.CRITICAL, tags=["chase"]))
+    assert out == ["critical", "error", "chase"]
+
+
+def test_tags_for_error_record_is_unaffected():
+    """Only CRITICAL gains the extra tag — an ordinary ERROR record's
+    tags are unchanged (it was already tagged "error" via its own level
+    name)."""
+    assert log_store.tags_for(_rec(level=logging.ERROR)) == ["error", "orders"]
+
+
+def test_tags_for_warning_record_is_unaffected():
+    assert log_store.tags_for(_rec(level=logging.WARNING)) == ["warning", "orders"]

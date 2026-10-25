@@ -304,20 +304,29 @@ async def _sync_algo_order_rows(
             )
             if _fallback is not None:
                 # M2(b): CRITICAL so the race condition is surfaced in logs.
+                # 2026-10-24: `account` is masked here because Dhan's raw
+                # `dhanClientId` is purely numeric — the shape the
+                # centralized `_AccountMaskFilter` regex can't catch (it
+                # only matches `[A-Z]{2}[A-Z0-9]{4,8}`-shaped codes). This
+                # is the un-masked value passed around for DB routing
+                # elsewhere; only this log call needs the explicit mask.
                 logger.critical(
                     "[%s-POSTBACK] fuzzy-matched broker_order_id=%s to "
                     "AlgoOrder #%s via account/symbol/side (race: "
                     "postback arrived before seed). acct=%s sym=%s",
-                    broker_id.upper(), order_id, _fallback.id, account, symbol,
+                    broker_id.upper(), order_id, _fallback.id, mask_account(account), symbol,
                 )
                 _rows = [_fallback]
 
         # M2(c): create an orphan row so the postback is never silently dropped.
         if not _rows:
+            # 2026-10-24: masked for the same reason as the fuzzy-match
+            # CRITICAL log above — Dhan's `dhanClientId` is numeric-only
+            # and the centralized account-mask filter can't catch it.
             logger.warning(
                 "[%s-POSTBACK] no AlgoOrder match for broker_order_id=%s "
                 "(acct=%s sym=%s txn=%s) — creating orphan row.",
-                broker_id.upper(), order_id, account, symbol, txn,
+                broker_id.upper(), order_id, mask_account(account), symbol, txn,
             )
             await _create_postback_orphan_row(
                 _s, broker_id=broker_id, order_id=order_id,

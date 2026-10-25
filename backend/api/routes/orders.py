@@ -1198,6 +1198,32 @@ async def _preview_template_meta(result, data, sym: str, exch: str) -> "tuple[bo
     return wing_feasible, gtt_errors
 
 
+_PB_RAW_PAYLOAD_SENSITIVE_KEYS = ("dhanClientId",)
+
+
+def _pb_redact_payload_for_log(body: dict) -> dict:
+    """Shallow-copy a raw broker postback payload with sensitive id
+    fields redacted, for logging only — `body` itself is returned
+    untouched to every real caller (`_rco_parse_dhan_postback_body`,
+    `_groww_parse_payload`), which need the raw value for account
+    routing.
+
+    2026-10-24 Dhan-numeric-id gap: Dhan's `dhanClientId` is purely
+    numeric, a shape the centralized `_AccountMaskFilter` (log_store.py)
+    can't catch inside a dumped dict's `repr()` — that filter's regex
+    only matches `[A-Z]{2}[A-Z0-9]{4,8}`-shaped codes, and `mask_account()`
+    itself is a scalar-string mask, not a find-and-replace-inside-a-blob
+    tool. Dropping the key before the payload is logged is the one
+    reliable fix for this shape. Groww's payload carries no account
+    identifier at all (per this route's own docstring) — a no-op for it
+    today, kept generic so a future same-shaped Groww field is covered
+    too.
+    """
+    if not isinstance(body, dict):
+        return body
+    return {k: ("<redacted>" if k in _PB_RAW_PAYLOAD_SENSITIVE_KEYS else v) for k, v in body.items()}
+
+
 def _rco_parse_dhan_postback_body(body: dict) -> "tuple[str, str, str, str, str, object, object, str, str]":
     """Extract canonical (order_id, account, kite_status, kite_symbol, txn,
     qty, price, kite_exchange, status_message) from a Dhan postback payload.
@@ -2836,7 +2862,7 @@ class OrdersController(Controller):
         except Exception as e:
             logger.warning(f"dhan postback non-JSON body: {e}")
             return {"status": "ok"}
-        logger.info(f"dhan postback raw payload: {body!r}")
+        logger.info(f"dhan postback raw payload: {_pb_redact_payload_for_log(body)!r}")
 
         order_id, account, kite_status, kite_symbol, txn, qty, price, kite_exchange, status_msg = (
             _rco_parse_dhan_postback_body(body)
@@ -2914,7 +2940,7 @@ class OrdersController(Controller):
         except Exception as e:
             logger.warning(f"groww postback non-JSON body: {e}")
             return {"status": "ok"}
-        logger.info(f"groww postback raw payload: {body!r}")
+        logger.info(f"groww postback raw payload: {_pb_redact_payload_for_log(body)!r}")
 
         order_id, status, symbol, txn, qty, price = _groww_parse_payload(body)
 

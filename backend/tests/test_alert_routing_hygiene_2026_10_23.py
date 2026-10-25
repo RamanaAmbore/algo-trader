@@ -278,6 +278,108 @@ class TestErrorAgentSelfAlertedGate:
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# 2026-10-24 — CRITICAL-alert tag mismatch fix
+#
+# `log_store.py:tags_for()` auto-tagged every record with its own level
+# name lowercased — a bare `logger.critical(...)` was tagged "critical",
+# never "error", so ERROR_AGENT's condition (`tag="error",
+# min_level="ERROR"`) never matched a CRITICAL record at all, regardless
+# of severity. Fixed by having `tags_for()` also stamp "error" on a
+# CRITICAL record (see that function's own docstring for why the fix
+# lives there rather than in ERROR_AGENT's stored `conditions` dict —
+# no SEED_VERSION bump needed). `_error_agent_self_alerted` was extended
+# so a CRITICAL record that already carries its own `alert_event`
+# (routed to a dedicated agent — chase's `cancel_unconfirmed`, the GTT
+# wing `wing_hard_reject`/`partial_gtt` agents) doesn't ALSO double-fire
+# through this generic catch-all.
+# ─────────────────────────────────────────────────────────────────────────
+
+def _critical_rec(message: str = "something very bad", **extra) -> dict:
+    """Builds the rec dict the way the real pipeline actually would —
+    tags computed via the real `tags_for()` against a real
+    `logging.LogRecord`, not a hand-typed list — so a regression in
+    `tags_for()` breaks this test too, not just a hardcoded fixture."""
+    import logging as _logging
+    from backend.shared.helpers import log_store as _log_store
+
+    extra.setdefault("alert_now", True)
+    raw = _logging.LogRecord(
+        "backend.api.algo.chase", _logging.CRITICAL, __file__, 1, message, None, None,
+    )
+    if "tags" in extra:
+        raw.tags = extra["tags"]
+    tags = _log_store.tags_for(raw)
+    return {"id": 2, "level": "CRITICAL", "tags": tags, "logger": raw.name,
+            "message": message, "extra": extra}
+
+
+class TestCriticalAlertReachesErrorAgent:
+    async def test_bare_critical_record_now_reaches_error_agent(self, error_senders):
+        """Regression guard — pre-fix, a bare `logger.critical(...)` with
+        no other alert metadata never matched ERROR_AGENT's condition at
+        all (tagged "critical", not "error") and silently never alerted.
+        Confirmed to fail against pre-fix `tags_for()` (which omits the
+        "error" tag for a CRITICAL record): the resulting tags list would
+        be `["critical", "chase"]`, missing the "error" tag ERROR_AGENT's
+        condition requires, so `dispatch` would return 0."""
+        from backend.api.algo import event_agents
+        rec = _critical_rec("ticker died hard", tags=["chase"])
+        assert "error" in rec["tags"], "tags_for() must stamp a CRITICAL record with 'error'"
+        sent = await event_agents.dispatch([rec], [_error_agent()])
+        assert sent == 2
+        assert len(error_senders["tg"]) == 1
+        assert len(error_senders["ntfy"]) == 1
+
+    async def test_critical_record_with_alert_event_does_not_double_fire_via_error_agent(
+        self, error_senders,
+    ):
+        """A CRITICAL record already routed to its own dedicated agent
+        (carries `alert_event`) must not ALSO fire through ERROR_AGENT's
+        generic catch-all — same double-alert class as O9's
+        `self_alerted` guard above, extended to cover this newly-widened
+        match set."""
+        from backend.api.algo import event_agents
+        rec = _critical_rec("chase cancel not confirmed", tags=["chase"],
+                             alert_event="cancel_unconfirmed")
+        sent = await event_agents.dispatch([rec], [_error_agent()])
+        assert sent == 0
+        assert error_senders == {"ntfy": [], "tg": []}
+
+    def test_error_agent_self_alerted_helper_covers_critical_with_alert_event(self):
+        from backend.api.algo.event_agents import _error_agent_self_alerted, ERROR_AGENT
+        agent = SimpleNamespace(slug=ERROR_AGENT["slug"])
+        assert _error_agent_self_alerted(
+            agent, {"level": "CRITICAL", "extra": {"alert_event": "cancel_unconfirmed"}},
+        ) is True
+        # A bare CRITICAL record with no alert_event is NOT presumed
+        # already-routed — it must fall through to ERROR_AGENT.
+        assert _error_agent_self_alerted(agent, {"level": "CRITICAL", "extra": {}}) is False
+        # An ERROR-level record with alert_event is unaffected — the
+        # extended guard is scoped to CRITICAL only, matching the actual
+        # dedicated-agent pattern (every CRITICAL-tagged dedicated agent
+        # uses an `alert_event` where-filter; ERROR-level ones already
+        # had the pre-existing explicit `self_alerted` convention).
+        assert _error_agent_self_alerted(
+            agent, {"level": "ERROR", "extra": {"alert_event": "order_failure"}},
+        ) is False
+
+    def test_tags_for_regression_guard_without_the_fix(self):
+        """Explicitly demonstrates the pre-fix tag shape would never
+        have matched — proves this test suite would catch a regression
+        if the "error" stamp were ever removed from `tags_for()`."""
+        import logging as _logging
+        from backend.shared.helpers import log_store as _log_store
+
+        rec = _logging.LogRecord(
+            "backend.api.algo.chase", _logging.CRITICAL, __file__, 1, "x", None, None,
+        )
+        pre_fix_tags = ["critical", "chase"]  # what tags_for() used to return
+        real_tags = _log_store.tags_for(rec)
+        assert "error" not in pre_fix_tags
+        assert "error" in real_tags
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # O9 — specific call-site fixes: downgrade / self_alerted tagging
 # ─────────────────────────────────────────────────────────────────────────
 

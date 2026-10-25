@@ -21,7 +21,7 @@ from pathlib import Path
 
 import yaml
 
-from backend.shared.helpers.log_store import HANDLER as log_store_handler, OriginFilter
+from backend.shared.helpers.log_store import HANDLER as log_store_handler, OriginFilter, _AccountMaskFilter
 from backend.shared.helpers.text_clean import to_plain
 
 # Load configuration from YAML file (resolve relative to repo root)
@@ -101,6 +101,15 @@ queue_listener.start()
 
 
 _origin_filter = OriginFilter()
+# 2026-10-24 — centralized Tier-B account-mask fix. Wired onto the same
+# QueueHandler as `_origin_filter`, on the calling thread, BEFORE the
+# record is enqueued — see `_AccountMaskFilter`'s own docstring
+# (log_store.py) for why this must NOT be added to the `_plain_text_filter`
+# loop below (console_handler/log_file_handler/error_file_handler): that
+# loop runs later, on the QueueListener thread, and misses
+# `log_store_handler` entirely — the handler that feeds `log_events` and
+# the whole `event_agents.py` alert-dispatch pipeline.
+_account_mask_filter = _AccountMaskFilter()
 
 
 def get_logger(name="app_logger"):
@@ -135,6 +144,7 @@ def get_logger(name="app_logger"):
         logger.setLevel(logging.DEBUG)  # Capture everything, handlers filter levels
         queue_handler = QueueHandler(log_queue)
         queue_handler.addFilter(_origin_filter)
+        queue_handler.addFilter(_account_mask_filter)
         logger.addHandler(queue_handler)
         # Suppress propagation to ancestor handlers — otherwise records
         # would be emitted twice (once via our queue, once via whichever
