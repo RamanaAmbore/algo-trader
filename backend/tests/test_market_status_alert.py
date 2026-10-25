@@ -63,7 +63,7 @@ class TestMarketStatusForSegment:
         with patch("backend.brokers.broker_apis.fetch_holidays",
                    side_effect=_fake_holidays_factory({"NSE"})), \
              patch("backend.brokers.broker_apis.fetch_special_sessions_async", new=AsyncMock(return_value=[])), \
-             patch("backend.api.algo.actions_live._holiday_reason", AsyncMock(return_value="Diwali")):
+             patch("backend.api.algo.grammar_tokens.action_send_market_status._holiday_reason", AsyncMock(return_value="Diwali")):
             eq = await _market_status_for_segment("equity", now)
         assert eq["open"] is False
         assert eq["reason"] == "Diwali"
@@ -75,7 +75,7 @@ class TestMarketStatusForSegment:
         with patch("backend.brokers.broker_apis.fetch_holidays",
                    side_effect=_fake_holidays_factory({"NSE"})), \
              patch("backend.brokers.broker_apis.fetch_special_sessions_async", new=AsyncMock(return_value=[])), \
-             patch("backend.api.algo.actions_live._holiday_reason", AsyncMock(return_value=None)):
+             patch("backend.api.algo.grammar_tokens.action_send_market_status._holiday_reason", AsyncMock(return_value=None)):
             eq = await _market_status_for_segment("equity", now)
         assert eq["open"] is False
         assert eq["reason"] == "Holiday"
@@ -191,7 +191,7 @@ class TestActionLiveSendMarketStatus:
              patch("backend.brokers.broker_apis.fetch_holidays",
                    side_effect=_fake_holidays_factory({"NSE"})), \
              patch("backend.brokers.broker_apis.fetch_special_sessions_async", new=AsyncMock(return_value=[])), \
-             patch("backend.api.algo.actions_live._holiday_reason", AsyncMock(return_value="Diwali")), \
+             patch("backend.api.algo.grammar_tokens.action_send_market_status._holiday_reason", AsyncMock(return_value="Diwali")), \
              patch("backend.shared.helpers.alert_utils._send_telegram") as mock_tg, \
              patch("backend.shared.helpers.alert_utils.send_ntfy_alert") as mock_ntfy:
             await _action_live_send_market_status({}, {})

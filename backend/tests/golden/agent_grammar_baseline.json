@@ -1588,7 +1588,7 @@
       "token": "send_summary",
       "value_type": "void",
       "description": "Send a portfolio summary (holdings/positions/margins) via the configured alert channels, per market segment.",
-      "resolver": "backend.api.algo.actions_live._action_send_summary",
+      "resolver": "backend.api.algo.grammar_tokens.action_send_summary._action_send_summary",
       "params_schema": {
         "segments": {
           "type": "array",
@@ -1615,7 +1615,7 @@
       "token": "send_market_status",
       "value_type": "void",
       "description": "Send the NSE/MCX market open-or-closed status report (hours when open, holiday/weekend reason when closed) via the configured alert channels — Telegram always (open or closed), ntfy only when at least one segment is open today.",
-      "resolver": "backend.api.algo.actions_live._action_live_send_market_status",
+      "resolver": "backend.api.algo.grammar_tokens.action_send_market_status._action_live_send_market_status",
       "params_schema": {}
     },
     {
