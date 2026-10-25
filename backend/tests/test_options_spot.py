@@ -12,6 +12,7 @@ These tests mock the instruments cache so no broker or DB is needed.
 a fixed LTP so the full async chain completes without network calls.
 """
 
+import asyncio
 import pytest
 from datetime import date
 from unittest.mock import MagicMock, patch, AsyncMock
@@ -445,3 +446,81 @@ async def test_option_symbol_takes_priority_over_expiry_hint():
         f"Expected {sym_a} (option_symbol priority), got {anchor!r}"
     assert abs(spot - 5750.0) < 0.01, \
         f"Expected A LTP 5750, got {spot}"
+
+
+@pytest.mark.asyncio
+async def test_option_symbol_priority_not_overridden_by_transient_4a_timeout():
+    """A transient failure fetching the PRICE of the option_symbol-priority
+    contract must never silently substitute a DIFFERENT contract chosen via
+    expiry_hint instead.
+
+    Root-caused 2026-10-25 from an intermittent failure of
+    `test_option_symbol_takes_priority_over_expiry_hint` that only reproduced
+    under real system load (never in an isolated tight loop) — confirmed via
+    a forced 4a timeout, which flipped the resolved anchor from the
+    option_symbol month to the expiry_hint month. `_commodity_spot_4b`
+    (the walk-forward fallback) starts from `expiry_hint` and constructs a
+    DIFFERENT symbol outright, ignoring the already-resolved `resolved_sym` —
+    correct when no contract could be resolved at all, wrong when
+    option_symbol HAD already resolved one and only its price quote failed.
+
+    This test forces exactly that: `lookup_future_for_option` resolves A
+    correctly, but the 4a `asyncio.wait_for` for A's quote is forced to raise
+    `asyncio.TimeoutError` (not a mocked broker failure — a real timeout
+    exception, via the exact mechanism that caused the live flake). B's own
+    quote (ltp_map has it) must never be reached."""
+    yy_a, mon_a, exp_a = _future_month(2)
+    yy_b, mon_b, exp_b = _future_month(5)
+    sym_a  = f"CRUDEOIL{yy_a}{mon_a}FUT"
+    sym_b  = f"CRUDEOIL{yy_b}{mon_b}FUT"
+    inst_a = _inst(sym_a, "CRUDEOIL", exp_a)
+    inst_b = _inst(sym_b, "CRUDEOIL", exp_b)
+    items = [inst_a, inst_b]
+
+    ltp_map = {
+        f"MCX:{sym_a}": 5750.0,
+        f"MCX:{sym_b}": 5900.0,
+    }
+
+    from backend.api.routes import options_helpers as oh
+    opt_symbol = f"CRUDEOIL{yy_a}{mon_a}5800CE"
+
+    real_wait_for = asyncio.wait_for
+    call_count = {"n": 0}
+
+    async def _fake_wait_for(coro, timeout):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            coro.close()
+            raise asyncio.TimeoutError()
+        return await real_wait_for(coro, timeout)
+
+    with _patch_no_sim(), \
+         _patch_instruments(items), \
+         _patch_broker_quote(ltp_map), \
+         patch("backend.api.routes.options_helpers.asyncio.wait_for",
+               side_effect=_fake_wait_for):
+        price, src, prev_close, resolved_sym, anchor = await oh._resolve_commodity_spot(
+            "CRUDEOIL", date.fromisoformat(exp_b), opt_symbol,
+            broker=MagicMock(quote=MagicMock(side_effect=lambda keys: {
+                k: {"last_price": ltp_map.get(k, 0.0),
+                    "ohlc": {"close": ltp_map.get(k, 0.0) * 0.99}}
+                for k in keys
+            })),
+            spot_cache_put=MagicMock(),
+            ltp_from_quote=lambda q: (
+                (q.get("last_price"), "futures") if q.get("last_price") else (None, "none")
+            ),
+            prev_close_from_quote=lambda q: (q.get("ohlc") or {}).get("close"),
+        )
+
+    # The 4a timeout must be real and must have actually fired.
+    assert call_count["n"] >= 1
+    # Price fetch failed for A — price is None, NOT B's 5900.0.
+    assert price is None, f"Expected no price (4a failed), got {price}"
+    # resolved_sym must stay A (option_symbol priority), never silently
+    # replaced by B (expiry_hint) due to the price-fetch failure.
+    assert resolved_sym == sym_a, \
+        f"Expected resolved_sym to stay {sym_a!r} (option_symbol priority) " \
+        f"even though its price quote failed, got {resolved_sym!r}"
+    assert anchor == sym_a, f"Expected anchor {sym_a!r}, got {anchor!r}"

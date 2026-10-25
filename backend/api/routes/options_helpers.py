@@ -202,10 +202,13 @@ async def _resolve_commodity_spot(
     Returns ``(price_or_None, source, prev_close, resolved_sym, anchor)``.
     """
     resolved_sym: Optional[str] = None
+    resolved_via_option_symbol = False
 
     # 4a. Instruments-cache lookup.
     if option_symbol:
         resolved_sym = await lookup_future_for_option(option_symbol)
+        if resolved_sym:
+            resolved_via_option_symbol = True
     if not resolved_sym and expiry_hint is not None:
         resolved_sym = await lookup_mcx_future_for_expiry(underlying, expiry_hint)
     if not resolved_sym:
@@ -219,8 +222,22 @@ async def _resolve_commodity_spot(
         if hit is not None:
             return hit  # type: ignore[return-value]
 
-    # 4b. Walk-forward.
-    if expiry_hint is not None:
+    # 4b. Walk-forward — skipped when option_symbol already resolved a
+    # specific contract (resolved_via_option_symbol). This fallback starts
+    # from expiry_hint and constructs/quotes a DIFFERENT symbol outright,
+    # ignoring resolved_sym entirely — correct when no contract could be
+    # resolved at all, but wrong when resolved_sym WAS correctly resolved via
+    # option_symbol and only its 4a price quote failed (e.g. a transient
+    # broker/thread-pool timeout). Before this guard, a transient 4a failure
+    # for the option_symbol-priority contract silently substituted whichever
+    # DIFFERENT contract expiry_hint pointed to — reproduced live via a forced
+    # 4a timeout (anchor flipped from the option_symbol month to the
+    # expiry_hint month) — confirmed 2026-10-25, root-caused from an
+    # intermittent test failure under system load, not a logic bug in the
+    # resolver's priority rule itself. A 4a failure for this case now falls
+    # straight through to the caller's `_spot_last_resort` (DB/cache/operator
+    # fallback) instead of guessing a different month.
+    if expiry_hint is not None and not resolved_via_option_symbol:
         hit = await _commodity_spot_4b(
             underlying, resolved_sym, expiry_hint, broker, spot_cache_put,
             ltp_from_quote, prev_close_from_quote,
