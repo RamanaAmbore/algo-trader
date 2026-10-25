@@ -1373,6 +1373,32 @@ export const postResearchChat = (message) => {
     .finally(() => clearTimeout(timer));
 };
 
+/** POST /api/mcp/draft-token — Wave 3 of the DSL token-unification plan.
+ *  Confirmed against the landed route (`McpController.draft_token`,
+ *  backend/api/routes/lab.py, gated on `manage_grammar_tokens`) and
+ *  `agent_ai.draft_token_from_prompt`/`TokenDraft`. Drafts a candidate
+ *  grammar-token bundle (resolver source + test source + params_schema +
+ *  description) from a natural-language prompt. READ-ONLY: the response
+ *  is a reviewable draft only — this endpoint never writes a file, never
+ *  imports/execs the drafted source, and never calls the Wave 2
+ *  registration endpoint (POST /api/admin/grammar/tokens). Body
+ *  `{prompt}` (the route also accepts optional grammar_kind/token_kind/
+ *  token identity-override hints, not sent by this page); response
+ *  `{draft: {grammar_kind, token_kind, token, description, params_schema,
+ *  resolver_source, resolver_function_name, resolver_module_path,
+ *  resolver_file_path, test_source, test_file_path} | null,
+ *  errors: string[], warnings: string[], why_summary: string}` — draft
+ *  is null only on an early hard failure (see errors). Always HTTP 200;
+ *  errors carries the failure signal. Same 120s AbortController pattern
+ *  as postResearchChat — this is an LLM round-trip and the default 15s
+ *  _post timeout would swallow it as null. */
+export const draftTokenFromPrompt = (prompt) => {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 120_000);
+  return _post('/mcp/draft-token', { prompt }, { auth: true, signal: ac.signal })
+    .finally(() => clearTimeout(timer));
+};
+
 /** GET /api/mcp/audit — forensic trail of MCP-initiated mutations. */
 export const fetchResearchAudit = (filters = {}) => {
   const p = new URLSearchParams();

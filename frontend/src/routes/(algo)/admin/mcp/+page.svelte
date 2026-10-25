@@ -25,6 +25,7 @@
     fetchResearchThreads, fetchResearchThread,
     deleteResearchThread, fetchResearchDrafts,
     mintConfirmToken, fetchResearchAudit, postResearchChat,
+    draftTokenFromPrompt,
   } from '$lib/api';
   import { toast } from '$lib/data/toastStore.svelte.js';
   import InfoHint from '$lib/InfoHint.svelte';
@@ -44,7 +45,7 @@
   let error       = $state('');
   let loading     = $state(true);
   let teardown;
-  let activeTab   = $state(/** @type {'research'|'drafts'|'audit'|'settings'} */ ('research'));
+  let activeTab   = $state(/** @type {'research'|'drafts'|'audit'|'author'|'settings'} */ ('research'));
 
   /** ConfirmModal binding — used for destructive actions (delete thread). */
   /** @type {{ ask: (opts: any) => Promise<boolean> } | null} */
@@ -177,6 +178,15 @@
   $effect(() => { _role = $userRole; });
   const _canView = $derived(hasCap('view_research', _caps, _role));
   const _canChat = $derived(hasCap('use_research_chat', _caps, _role));
+  /** Wave 3 — Author tab (/admin/mcp "Author a token"). Gated on the
+   *  dedicated manage_grammar_tokens cap (designated-only, see rbac.js) —
+   *  deliberately narrower than view_research (which admits demo) since
+   *  this surface deals with resolver/test source text, even though the
+   *  flow itself is strictly read-only/no-op on the backend (see the
+   *  unified-DSL-token plan's hard safety boundary: draft → human review
+   *  → Claude Code writes files → deploy → separate Wave-2 registration
+   *  call; nothing on this page ever calls that registration endpoint). */
+  const _canAuthorTokens = $derived(hasCap('manage_grammar_tokens', _caps, _role));
   let _loadedOnce = false;
   $effect(() => {
     if (_canView && !_loadedOnce) {
@@ -234,6 +244,65 @@
     } finally {
       chatPending = false;
     }
+  }
+
+  // ── Author tab — draft a new DSL token from a prompt (Wave 3) ───────
+  // Hard safety boundary: this is a READ-ONLY draft request. The response
+  // is rendered as reviewable text only — resolver_source/test_source are
+  // interpolated as plain text (never {@html}, since this is LLM output),
+  // and "Copy bundle" below does nothing but write to the clipboard. No
+  // control on this tab ever calls the Wave-2 registration endpoint
+  // (POST /api/admin/grammar/tokens) or /admin/grammar/reload — those are
+  // for an ALREADY-DEPLOYED resolver file, not an unreviewed draft.
+  let authorPrompt  = $state('');
+  let authorPending = $state(false);
+  let authorError   = $state('');   // transport/network failure, distinct from authorResult.errors
+  let authorInfo    = $state(false); // 503 = Claude not configured → neutral style, mirrors chatInfo
+  /** @type {{draft: any|null, errors?: string[], warnings?: string[], why_summary?: string}|null} */
+  let authorResult  = $state(null);
+
+  async function authorDraftToken() {
+    const prompt = authorPrompt.trim();
+    if (!prompt || authorPending) return;
+    authorPending = true;
+    authorError = '';
+    authorInfo = false;
+    try {
+      authorResult = await draftTokenFromPrompt(prompt);
+    } catch (/** @type {any} */ e) {
+      authorResult = null;
+      if (e?.name === 'AbortError') {
+        authorError = 'Timed out waiting for Claude.';
+      } else {
+        authorError = e?.detail || e?.message || 'Request failed.';
+      }
+      authorInfo = e?.status === 503;
+    } finally {
+      authorPending = false;
+    }
+  }
+
+  /** "Copy bundle" — the only approve-adjacent affordance on this tab.
+   *  Copies the draft's own fields to the clipboard, verbatim, for the
+   *  operator to hand to a human/Claude Code review session. Does NOT
+   *  call any backend write — see the boundary note above. */
+  async function copyTokenBundle() {
+    const d = authorResult?.draft;
+    if (!d) return;
+    const text = [
+      `# ${d.grammar_kind || '?'} / ${d.token_kind || '?'} / ${d.token || '?'}`,
+      `# ${d.description || ''}`,
+      '',
+      '# params_schema',
+      JSON.stringify(d.params_schema ?? {}, null, 2),
+      '',
+      '# resolver_source',
+      d.resolver_source || '',
+      '',
+      '# test_source',
+      d.test_source || '',
+    ].join('\n');
+    await copy(text, 'Token draft bundle');
   }
 
   // ── Helpers ────────────────────────────────────────────────────────
@@ -528,6 +597,7 @@
       { id: 'research', label: 'Research', badge: threads.length || undefined },
       { id: 'drafts',   label: 'Drafts',   badge: drafts.length  || undefined },
       { id: 'audit',    label: 'Audit' },
+      ...(_canAuthorTokens ? [{ id: 'author', label: 'Author' }] : []),
       { id: 'settings', label: 'Settings' },
     ]}
     bind:value={activeTab}
@@ -746,6 +816,92 @@
           {/each}
         </tbody>
       </table>
+    {/if}
+  </div>
+{:else if activeTab === 'author' && _canAuthorTokens}
+  <!-- ── Author tab — Wave 3 of the unified-DSL-token plan ──────────
+       Draft-only. See the hard safety boundary comment on
+       authorDraftToken()/copyTokenBundle() above: nothing here writes a
+       file, deploys, or calls the Wave-2 registration endpoint. -->
+  <div class="lab-author">
+    <article class="lab-card author-boundary-card">
+      <h2>Author a new DSL token (draft only)</h2>
+      <p>
+        Describe the token you want — a metric, scope, operator, channel,
+        action, format, or template — in plain English. Claude drafts a
+        candidate resolver + test, shown below as <b>read-only text</b>.
+        Nothing on this page writes a file, deploys, or registers the
+        token — a human reviews the draft, a Claude Code session writes
+        the files and runs the test, it goes through the normal
+        <code>/impl</code>→<code>/ddev</code>→<code>/dprod</code> pipeline,
+        and only after that deploy does the existing
+        <code>POST /api/admin/grammar/tokens</code> + reload step make
+        it live.
+      </p>
+      <textarea class="lab-chat-input author-prompt-input"
+                bind:value={authorPrompt}
+                maxlength="2000"
+                rows="3"
+                placeholder="e.g. a metric token 'vix_level' that resolves India VIX from the macro snapshot"
+                disabled={authorPending}></textarea>
+      <div class="lab-chat-actions">
+        <button class="copy-btn author-draft-btn" type="button"
+                onclick={authorDraftToken}
+                disabled={authorPending || authorPrompt.trim() === ''}>Draft token</button>
+        {#if authorPending}
+          <span class="lab-chat-thinking" data-testid="author-loading">Drafting…</span>
+        {/if}
+      </div>
+      {#if authorError}
+        <div class="lab-chat-msg" class:lab-chat-info={authorInfo} class:lab-chat-error={!authorInfo} role="alert">{authorError}</div>
+      {/if}
+    </article>
+
+    {#if authorResult}
+      {#if authorResult.errors?.length}
+        <article class="lab-card author-errors" role="alert" data-testid="author-errors">
+          <h2>Draft failed</h2>
+          <ul class="author-issue-list author-issue-list-error">
+            {#each authorResult.errors as err, i (i)}<li>{err}</li>{/each}
+          </ul>
+        </article>
+      {/if}
+      {#if authorResult.warnings?.length}
+        <article class="lab-card author-warnings" data-testid="author-warnings">
+          <h2>Warnings</h2>
+          <ul class="author-issue-list author-issue-list-warn">
+            {#each authorResult.warnings as w, i (i)}<li>{w}</li>{/each}
+          </ul>
+        </article>
+      {/if}
+      {#if authorResult.draft && !authorResult.errors?.length}
+        <article class="lab-card author-draft" data-testid="author-draft">
+          <h2>Draft — review only</h2>
+          <div class="author-draft-meta">
+            <span class="author-meta-row"><span>Kind</span> <code>{authorResult.draft.grammar_kind}</code> / <code>{authorResult.draft.token_kind}</code></span>
+            <span class="author-meta-row"><span>Token</span> <code>{authorResult.draft.token}</code></span>
+          </div>
+          {#if authorResult.draft.description}
+            <p class="author-desc">{authorResult.draft.description}</p>
+          {/if}
+          {#if authorResult.why_summary}
+            <p class="author-why"><b>Why:</b> {authorResult.why_summary}</p>
+          {/if}
+          <div class="thr-section-label">PARAMS_SCHEMA</div>
+          <pre class="code-block author-src" data-testid="author-params-schema">{JSON.stringify(authorResult.draft.params_schema ?? {}, null, 2)}</pre>
+          <div class="thr-section-label">RESOLVER_SOURCE</div>
+          <pre class="code-block author-src" data-testid="author-resolver-source">{authorResult.draft.resolver_source || '(none)'}</pre>
+          <div class="thr-section-label">TEST_SOURCE</div>
+          <pre class="code-block author-src" data-testid="author-test-source">{authorResult.draft.test_source || '(none)'}</pre>
+          <button class="copy-btn" type="button" onclick={copyTokenBundle}>Copy bundle</button>
+          <p class="author-approve-hint">
+            Copying marks this reviewed on your side only — it does not
+            register the token. Hand the bundle to a Claude Code / human
+            review session to write the files, test, deploy, then
+            register it live.
+          </p>
+        </article>
+      {/if}
     {/if}
   </div>
 {:else}
@@ -1719,6 +1875,71 @@
     line-height: 1.5;
   }
   .safety-list li { margin-bottom: 0.25rem; }
+
+  /* ── Author tab (Wave 3) ─────────────────────────────────────────
+     Reuses .lab-card / .code-block / .copy-btn / .lab-chat-input /
+     .lab-chat-msg / .lab-chat-thinking / .thr-section-label from the
+     panels above — only the pieces with no existing analog get a new
+     class here. */
+  .lab-author {
+    display: flex;
+    flex-direction: column;
+    gap: 0.7rem;
+    margin-top: 0.6rem;
+  }
+  .author-prompt-input { margin-top: 0.3rem; }
+  .author-draft-btn { margin-top: 0; }
+  .author-issue-list {
+    margin: 0; padding: 0 0 0 1.2rem;
+    font-size: var(--fs-lg);
+    line-height: 1.5;
+  }
+  .author-issue-list li { margin-bottom: 0.25rem; }
+  .author-issue-list-error { color: var(--c-short); }
+  .author-issue-list-warn  { color: var(--c-action); }
+  .author-errors {
+    background: var(--algo-red-bg);
+    border-color: rgba(248, 113, 113, 0.32);
+  }
+  .author-errors h2 { color: var(--c-short); }
+  .author-warnings {
+    background: var(--algo-amber-bg);
+    border-color: var(--algo-amber-border-soft);
+  }
+  .author-warnings h2 { color: var(--c-action); }
+  .author-draft-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.6rem 1rem;
+    margin-bottom: 0.5rem;
+  }
+  .author-meta-row {
+    font-size: var(--fs-md);
+    color: var(--algo-muted);
+  }
+  .author-meta-row span:first-child {
+    font-family: var(--font-numeric);
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    margin-right: 0.3rem;
+  }
+  .author-desc, .author-why {
+    margin: 0 0 0.6rem;
+    color: var(--algo-slate);
+    font-size: var(--fs-lg);
+    line-height: 1.5;
+  }
+  /* Resolver/test source is verbatim LLM output — no markdown render,
+     no @html. Scrolls horizontally on narrow/mobile viewports instead
+     of wrapping or overflowing the card, matching .code-block's own
+     overflow-x: auto; margin-bottom separates stacked source blocks. */
+  .author-src { margin-bottom: 0.6rem; }
+  .author-approve-hint {
+    margin: 0.5rem 0 0;
+    color: var(--algo-muted);
+    font-size: var(--fs-sm);
+    line-height: 1.4;
+  }
 
   /* .copy-toast removed — migrated to canonical toast system (slice AO). */
 
