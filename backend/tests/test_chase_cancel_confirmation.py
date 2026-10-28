@@ -104,6 +104,52 @@ class TestCancelConfirmedDetection:
         assert cancel_confirmed is False
 
     @pytest.mark.asyncio
+    async def test_unconfirmed_cancel_warning_does_not_use_bare_chase_tag(self, caplog):
+        """2026-10-28 operator-reported noise: the routine 'cancel NOT
+        confirmed' WARNING fires on every cancel-and-replace attempt
+        while the broker merely lags on confirming — not a real problem
+        on its own. A bare logger.warning() with no explicit tags falls
+        through tags_for()'s logger-name fallback to "chase", which is
+        ALSO a real, catalogued alert tag (this module's own deliberate
+        CRITICAL alerts legitimately use it) — so this routine WARNING
+        was accidentally classified as alert-shaped and paged every real
+        channel via the no-cooldown UNROUTED_ALERT_AGENT catch-all on
+        every single occurrence. Must carry the deliberately-uncatalogued
+        `chase_internal` tag instead (same precedent as routes/auth.py's
+        `_AUTH_INTERNAL_TAGS`), replacing the fallback tag so it never
+        reaches `_looks_alert_shaped()`'s known-alert-tag vocabulary."""
+        from backend.api.algo import chase
+        from backend.api.algo.chase import _ch_capture_late_fill, ChaseConfig
+        from backend.api.algo.event_agents import _looks_alert_shaped
+        cfg = ChaseConfig(exchange="NFO")
+
+        async def _fake_run(fn, *args):
+            return {"status": "CANCEL PENDING", "filled_quantity": 40, "average_price": 100.0}
+
+        with patch.object(chase.logger, "warning") as m_warn, \
+             patch("backend.api.algo.chase._run", side_effect=_fake_run), \
+             patch("backend.api.algo.chase._record_partial_fill", new_callable=AsyncMock):
+            await _ch_capture_late_fill(
+                account="ACC1", order_id="O1", cfg=cfg, symbol="NIFTY24DECFUT",
+                quantity=100, cumulative_filled=40, current_order_filled=40,
+                algo_order_id=None,
+            )
+
+        matching = [c for c in m_warn.call_args_list if "cancel NOT confirmed" in c.args[0]]
+        assert len(matching) == 1
+        assert matching[0].kwargs.get("extra") == {"tags": ["chase_internal"]}
+
+        # End-to-end proof, not just a tag-string assertion: the real
+        # record this logger call actually produces must NOT read as
+        # alert-shaped, so it can never reach UNROUTED_ALERT_AGENT.
+        rec = {
+            "level": "WARNING",
+            "tags": ["warning", "chase_internal"],
+            "extra": {},
+        }
+        assert _looks_alert_shaped(rec) is False
+
+    @pytest.mark.asyncio
     async def test_status_read_failure_fails_safe_not_confirmed(self):
         """A broker error on the status read itself must NOT be treated
         as confirmed -- fail-safe (assume it might still be resting)."""

@@ -2624,12 +2624,35 @@ async def _ch_capture_late_fill(
         order_status_str = str((status or {}).get("status", "")).upper()
         cancel_confirmed = order_status_str in _CH_CONFIRMED_GONE_STATUSES
         if not cancel_confirmed:
+            # 2026-10-28 operator-reported noise: this is routine, expected-
+            # to-recur telemetry — it fires on EVERY cancel-and-replace
+            # attempt while the broker's own cancel confirmation merely
+            # lags a poll cycle or two (e.g. 'CANCEL PENDING'), not a real
+            # problem on its own. A bare logger.warning(...) with no
+            # explicit tags falls through tags_for()'s logger-name
+            # fallback to `record.name.rsplit(".", 1)[-1]` == "chase" —
+            # which happens to ALSO be a real, catalogued alert tag (this
+            # module's own deliberate CRITICAL alerts legitimately use
+            # it), so this routine WARNING was accidentally classified as
+            # alert-shaped by `_looks_alert_shaped()`, matched no real
+            # agent, and paged every real channel via the no-cooldown
+            # UNROUTED_ALERT_AGENT catch-all on every single occurrence.
+            # `chase_internal` is a deliberately UNCATALOGUED tag (same
+            # precedent as routes/auth.py's `_AUTH_INTERNAL_TAGS`) — it
+            # replaces, not adds to, the fallback tag, so this record no
+            # longer matches the known-alert-tag vocabulary and stays a
+            # log-only WARNING. The genuinely alert-worthy version of
+            # this condition — chase actually GIVING UP with the cancel
+            # still unconfirmed — is a separate, already-alerting path
+            # (`_ch_cancel_and_capture`'s CRITICAL + urgent ntfy, and
+            # `_ch_exhaust_max_attempts`/`_ch_abort_stuck`'s own alerts).
             logger.warning(
                 "Chase %s: cancel NOT confirmed for order %s — broker "
                 "status is %r (not one of %s). Order may still be "
                 "resting live.",
                 symbol, order_id, order_status_str or "<unreadable>",
                 sorted(_CH_CONFIRMED_GONE_STATUSES),
+                extra={"tags": ["chase_internal"]},
             )
         if filled_qty > current_order_filled:
             delta = filled_qty - current_order_filled
