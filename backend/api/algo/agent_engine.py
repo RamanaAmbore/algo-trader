@@ -2158,10 +2158,22 @@ _INFO_AGENTS = [
     {
         "slug": "market-preclose-mcx",
         "name": "MCX pre-close",
-        "long_name": "when:fire_at=23:00   alert:info/tg+ntfy(default)+log   do:notify-only",
+        "long_name": "when:fire_at=23:00   alert:info/tg+ntfy(default)+email+log   do:notify-only",
         "description": "Fires 30 minutes before MCX close (23:00 IST) on trading days.",
         "fire_at_time": "23:00",
         "conditions": {"op": ">=", "scope": "funds.any_acct", "metric": "avail_margin", "value": -999999999},
+        # 2026-10-28 operator instruction: MCX pre-close is an important
+        # event and must reach every channel, not just the shared
+        # market-open-nse/market-preclose-mcx default (telegram+ntfy+log).
+        # Own explicit `events` override (not the shared _INFO_AGENT_DEFAULTS
+        # dict below, which only fills keys via setdefault) so market-open-nse
+        # is deliberately left untouched — operator named MCX pre-close only.
+        "events": [
+            {"channel": "telegram", "enabled": True},
+            {"channel": "log",      "enabled": True},
+            {"channel": "ntfy",     "enabled": True, "priority": "default"},
+            {"channel": "email",    "enabled": True},
+        ],
     },
 ]
 

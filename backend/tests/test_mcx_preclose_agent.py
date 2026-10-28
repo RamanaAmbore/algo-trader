@@ -55,6 +55,32 @@ class TestMCXPrecloseAgentConfig:
         agent = next((a for a in BUILTIN_AGENTS if a.get('slug') == 'market-close-mcx'), None)
         assert agent is None, "market-close-mcx should not exist in BUILTIN_AGENTS (retired)"
 
+    def test_market_preclose_mcx_reaches_every_channel(self):
+        """2026-10-28 operator instruction: MCX pre-close is an important
+        event and must reach every channel (telegram, ntfy, email, log) —
+        not just the shared _INFO_AGENT_DEFAULTS set (telegram+ntfy+log,
+        no email)."""
+        from backend.api.algo.agent_engine import BUILTIN_AGENTS
+
+        agent = next((a for a in BUILTIN_AGENTS if a.get('slug') == 'market-preclose-mcx'), None)
+        assert agent is not None
+        channels = {e["channel"] for e in agent.get('events', [])}
+        assert channels == {"telegram", "log", "ntfy", "email"}, \
+            f"Expected all 4 channels, got {channels}"
+
+    def test_market_open_nse_unchanged_no_email(self):
+        """Scope discipline: the operator named MCX pre-close specifically,
+        not its NSE-open sibling — market-open-nse must keep using the
+        shared _INFO_AGENT_DEFAULTS (telegram+ntfy+log, no email),
+        unaffected by market-preclose-mcx's own explicit override."""
+        from backend.api.algo.agent_engine import BUILTIN_AGENTS
+
+        agent = next((a for a in BUILTIN_AGENTS if a.get('slug') == 'market-open-nse'), None)
+        assert agent is not None
+        channels = {e["channel"] for e in agent.get('events', [])}
+        assert channels == {"telegram", "log", "ntfy"}, \
+            f"market-open-nse should be unaffected, got {channels}"
+
     def test_market_preclose_mcx_is_info_tier(self):
         """market-preclose-mcx should be info tier (notification only, low priority)."""
         from backend.api.algo.agent_engine import BUILTIN_AGENTS
