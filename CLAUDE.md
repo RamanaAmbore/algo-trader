@@ -366,6 +366,12 @@ state alone. "Trading day, not yet connected" must never show as idle.
   `frontend/src/lib/__tests__/data/brokerHealthState.test.js`.
 - Invariant: a closed-day idle state comes from the calendar at any hour. A connected or failed
   account is never displayed as idle.
+- *Amended 2026-10-28 — explicit clear at 23:31.* `_snapshot_stop_ticker()`
+  ([background.py:3315](backend/api/background.py#L3315)) now marks `_TICKER_CALENDAR_STATE` as
+  `connected=False, idle=True` in a `finally` ([:3363](backend/api/background.py#L3363)) at the
+  23:31 stop. It no longer waits for the midnight date rollover. Before this, the connected flag
+  stayed set for about 29 minutes after the real stop, and `ticker_connected_today()` reported a
+  connection that no longer existed. Invariant: a stopped ticker is never reported as connected.
 
 **Snapshot freshness checker — `check_stale_snapshots.py` config and DSN (2026-10-24; commit
 `b753b0c8`)** — The "never blank during closed hours" check
@@ -1185,6 +1191,66 @@ calls the upsert only when the fetch result `is not None`.
   date is unverified.
 
 **Conn-service tick forwarder killed nightly, never revived — LTP froze while Chg% moved (2026-10-19, commit 7bf11fac)** — In conn-service mode (`RAMBOQ_USE_CONN_SERVICE=1`, the prod/dev config), the 23:31 IST `_snapshot_stop_ticker()` ([`background.py:2972`](backend/api/background.py#L2972)) called a real `.stop()` on the API process's local `MmapTickReader`, cancelling `_poll_task` — the task that tails the shared-memory tick buffer and republishes ticks to the `/api/quotes/stream` SSE stream. The method's own docstring claimed no such effect existed in this mode. The 08:00 `_snapshot_restart_ticker()` ([`background.py:3002`](backend/api/background.py#L3002)) checked for a nonexistent `.restart()` method and never revived it. Broker-side ticks kept landing in the buffer, so the outage was invisible server-side: LTP froze on every symbol with no flash (flash is tick-driven), while Chg% kept moving (computed from the independent periodic positions poll). Deploys had been masking it by restarting the process; logs show it recurring most nights since 2026-09-19. Fix: the three `hasattr()` sites now branch on the canonical `is_cutover_on()` ([`client/__init__.py:32`](backend/brokers/client/__init__.py#L32)). In conn-service mode stop and unsub are true no-ops; restart calls `check_and_heal()`. `MmapTickReader.check_and_heal()` ([`mmap_ticker.py:160`](backend/brokers/mmap_ticker.py#L160)) restarts a dead or done poll task, logs `[MMAP-WATCHDOG]` once per dead→alive transition, and escalates with a second critical line on 3+ heals within 10 minutes. `start()` and `ensure_started()` ([`mmap_ticker.py:133`](backend/brokers/mmap_ticker.py#L133), [`:156`](backend/brokers/mmap_ticker.py#L156)) now restart a done-but-non-None task; previously only `None` was restartable. `_task_ticker_watchdog` ([`background.py:5698`](backend/api/background.py#L5698)) calls `check_and_heal()` every 30s in this mode, replacing a 300s no-op sleep. Frontend: `lastLiveTickAt` ([`quoteStream.js:54`](frontend/src/lib/data/quoteStream.js#L54)) is set only by real SSE tick and snapshot events — deliberately not `symbolTickCount`, which background polls also advance and which would have masked this failure. `tickStaleness.svelte.js` (75s threshold, [line 52](frontend/src/lib/data/tickStaleness.svelte.js#L52)) drives an amber `TICKS STALE@HH:MM` badge ([`RefreshButton.svelte:485`](frontend/src/lib/RefreshButton.svelte#L485)) plus one toast per staleness episode. Invariant: a local forwarder stopped by a scheduled job must have a restart path that calls a method which actually exists, and any freshness indicator must key off delivered ticks, never poll activity.
+
+**Closed-window broker calls gated; nightly upstream WebSocket disconnect/reconnect in conn_service
+(2026-10-28; one coordinated change, four parts)** — Four background loops made real broker calls
+all night with no closed-window gate: `_task_order_poll`
+([order_poll.py:278](backend/api/algo/order_poll.py#L278), 5 min), `_task_trail_stop`
+([background.py:5909](backend/api/background.py#L5909), 30s), `_task_oco_pair_watcher`
+([background.py:6446](backend/api/background.py#L6446), 5–15s) and `_task_funds_offhours`
+([background.py:8046](backend/api/background.py#L8046), 30 min). The fix has four parts.
+- **Closed-hours gate.** `_resolve_market_status_today()`
+  ([background.py:311](backend/api/background.py#L311)) resolves each segment once per IST day into
+  `_MARKET_STATUS_CACHE` ([:207](backend/api/background.py#L207)), keyed by
+  `_MARKET_STATUS_CACHE_DATE`. It runs from `_hr_run_once()`
+  ([:5196](backend/api/background.py#L5196)) right after `warm_special_sessions_cache()`, and lazily
+  on the first call each day, so a process that starts after 05:30 still resolves.
+  `task_markers.market_status_resolved_date` is a log-dedup marker only, not the gate. Each loop
+  calls `is_any_segment_open_cached()` ([:418](backend/api/background.py#L418)) before its broker
+  call: `_task_trail_stop` ([:5956](backend/api/background.py#L5956)),
+  `_task_oco_pair_watcher` ([:6510](backend/api/background.py#L6510)), and `_task_order_poll`
+  ([order_poll.py:314](backend/api/algo/order_poll.py#L314)), which runs after `is_engine_idle()`.
+  The check FAILS OPEN. A cold or stale cache returns True, so a missed resolve costs one extra
+  poll, never a missed stop. `is_segment_open_cached()` ([:369](backend/api/background.py#L369)) is
+  the per-segment or per-exchange variant of the same check.
+- **Funds reversal.** `_task_funds_offhours` ([background.py:8046](backend/api/background.py#L8046))
+  no longer polls broker in the closed window. This reverses the earlier "poll because closed"
+  design. Funds now freeze at the last value fetched before 23:31, which is the "Staleness
+  indicator freeze rule" applied to funds. Nothing regressed: the overnight refresh fed a cache that
+  the closed-hours route never read while closed.
+- **Idle state at 23:31.** `_snapshot_stop_ticker()`
+  ([background.py:3315](backend/api/background.py#L3315)) calls `_ticker_calendar_mark(...,
+  connected=False, idle=True, reason="ticker stopped for the night at 23:31 IST")` in a `finally`
+  ([:3363](backend/api/background.py#L3363)), in both conn-service and direct modes. See the
+  amendment under "Ticker idle badge on non-trading days".
+- **Conn-service WebSocket cycle.** The upstream KiteTicker inside conn_service's own process is
+  disconnected at 23:31 IST and reconnected at 08:00 IST. `_task_daily_ticker_cycle()`
+  ([service/app.py:907](backend/brokers/service/app.py#L907)) is spawned from `_start_kite_ticker()`
+  ([:293](backend/brokers/service/app.py#L293)), next to `_ticker_watchdog()`. It reuses the token
+  that `_task_prewarm_tokens()` minted in the 05:45–05:59 window. The 08:00 action
+  `_restart_ticker_for_new_day()` ([:817](backend/brokers/service/app.py#L817)) reattaches the tick
+  buffer and calls `ticker.restart()`. The quiet window is a pure clock function,
+  `_ticker_quiet_window_now()` ([:786](backend/brokers/service/app.py#L786)), with no stored marker,
+  so a mid-window process restart cannot leave it stuck. Phase 1 ([:557](backend/brokers/service/app.py#L557))
+  and the inline boot connect ([:262](backend/brokers/service/app.py#L262)) both honour it.
+  `conn_should_attempt_connect()` is a day-level gate only, and would otherwise reconnect right
+  after the 23:31 disconnect.
+- **The plan's first assumption was unsafe.** The plan called `get_ticker().stop()` and
+  `.restart()`. `stop()` calls Twisted's process-wide `reactor.stop()`, which sets `_reactor_dead`.
+  `restart()` then returned at its own `_reactor_dead` guard, so it could never reconnect. Shipping
+  the literal plan would have crash-looped conn_service every night: reactor dead, SIGTERM,
+  systemd restart, forced Dhan/Groww re-logins, and two CRITICAL alerts. What shipped is
+  `TickerManager.disconnect_keep_reactor()` ([kite_ticker.py:758](backend/brokers/kite_ticker.py#L758)).
+  It runs the same `stop_retry()` / `close()` / drain / state reset as `stop()`, but never touches
+  the reactor. It keeps `_tick_map`, `_subscribed`, the token and symbol maps and
+  `_virtual_root_aliases`, because this is a same-account daily cycle, not a failover. `restart()`
+  ([kite_ticker.py:832](backend/brokers/kite_ticker.py#L832)) now calls it. `start()` hands its
+  connect to `reactor.callFromThread()` when the reactor is already running.
+- This is separate from the local `MmapTickReader` forwarder stop/restart described in "Conn-service
+  tick forwarder killed nightly, never revived" above. That path is unchanged.
+- Invariant: a closed-window broker call is skipped by a cached clock-plus-calendar check that
+  fails open. A scheduled nightly action never calls `reactor.stop()`. The quiet window is computed
+  from the clock, never stored.
 
 **Expiry-day position freeze — snapshots persist until next market open** (2026-09,
 commits 4fa0d711 + fd07dda3) — Once a F&O contract's expiry date passes, its final
@@ -2621,6 +2687,8 @@ now caches + returns a `stale` flag; `/api/nav/by-account` masks `errors` for no
 | Account mask registry incl. numeric Dhan client_id | `backend/shared/helpers/utils.py:register_accounts(accounts, client_ids=)` |
 | Snapshot freshness check config / DSN | `scripts/check_stale_snapshots.py` (`yaml.safe_load`, `_build_dsn` quoting) |
 | Ticker idle state on non-trading days | `backend/api/background.py:_ticker_calendar_refresh_idle_status` + `frontend/src/lib/data/brokerHealthState.js:brokerAccountDisplayState` |
+| Closed-hours broker-call gating (trail-stop, OCO, order-poll sweeps) | `backend/api/background.py:is_any_segment_open_cached` (fails open) + `_resolve_market_status_today` (once-per-IST-day cache); call site `backend/api/algo/order_poll.py:_task_order_poll` |
+| Ticker nightly WS stop/restart, conn_service (23:31 / 08:00 IST) | `backend/brokers/service/app.py:_task_daily_ticker_cycle` (+ `_ticker_quiet_window_now`, `_restart_ticker_for_new_day`) + `backend/brokers/kite_ticker.py:TickerManager.disconnect_keep_reactor` |
 | Postback fan-out | `backend/api/routes/orders.py:_postback_broadcast_fanout` |
 | Ticket placement | `backend/api/routes/orders_place.py:ticket_order_handler` |
 | Basket order | `backend/api/routes/orders_basket.py` |

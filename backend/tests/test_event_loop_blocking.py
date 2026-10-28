@@ -122,14 +122,23 @@ class TestBackgroundToThread:
         # Confirm the blocking call itself is gone from a generator
         assert "_fetch_special_sessions_safe" in src
 
-    def test_task_funds_offhours_uses_to_thread_for_segment_check(self):
+    def test_task_funds_offhours_is_a_noop_with_no_blocking_check(self):
+        """2026-10-28 reversal: _task_funds_offhours no longer performs any
+        segment check or broker fetch, so there is no blocking call that
+        would need to be routed through asyncio.to_thread. Asserting the
+        ABSENCE of the old work guards against a revert."""
         m = self._get_module()
         src = inspect.getsource(m._task_funds_offhours)
-        assert "asyncio.to_thread" in src, (
-            "_task_funds_offhours: is_any_segment_open must be called via "
-            "asyncio.to_thread"
+        assert "asyncio.to_thread" not in src, (
+            "_task_funds_offhours must not run any blocking segment check; "
+            "the task is a no-op during closed hours"
         )
-        assert "is_any_segment_open" in src
+        assert "is_any_segment_open" not in src, (
+            "_task_funds_offhours must not call is_any_segment_open (reversed 2026-10-28)"
+        )
+        assert "_fetch_margins_direct" not in src, (
+            "_task_funds_offhours must not fetch margins from the broker (reversed 2026-10-28)"
+        )
 
     def test_task_closed_hours_refresh_uses_to_thread_for_segment_check(self):
         m = self._get_module()

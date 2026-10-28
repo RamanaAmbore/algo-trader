@@ -259,7 +259,13 @@ async def _start_kite_ticker(app: Litestar) -> None:
     log = logger
     try:
         from backend.brokers.service.calendar_gate import conn_should_attempt_connect
-        if not await conn_should_attempt_connect():
+        if _ticker_quiet_window_now():
+            log.info(
+                "conn_service: boot inside the nightly ticker-quiet window "
+                "(23:31–08:00 IST) — skipping inline connect; the "
+                "daily ticker-cycle task will restart it at 08:00 IST"
+            )
+        elif not await conn_should_attempt_connect():
             pass  # logged inside the helper
         elif _try_start_ticker():
             log.info("conn_service: KiteTicker initial start succeeded")
@@ -284,6 +290,7 @@ async def _start_kite_ticker(app: Litestar) -> None:
     _loop.create_task(_ticker_watchdog())
     _loop.create_task(_health_heartbeat())
     _loop.create_task(_task_prewarm_tokens())
+    _loop.create_task(_task_daily_ticker_cycle())
 
 
 async def _health_heartbeat() -> None:
@@ -532,7 +539,23 @@ async def _ticker_watchdog() -> None:
             # watchdog keeps ticking at the normal 30s cadence either way,
             # so a same-day special session is picked up on the very next
             # iteration — no new timer needed.
+            #
+            # Quiet-window-gated (2026-10-28): also skip entirely during
+            # the nightly 23:31→08:00 IST ticker-quiet window — see
+            # `_ticker_quiet_window_now()`'s own docstring for why this is
+            # a SEPARATE, pure-clock gate rather than a settable/clearable
+            # marker set by `_task_daily_ticker_cycle()`'s 23:31 stop:
+            # `conn_should_attempt_connect()` answers a DAY-level question
+            # ("will any segment trade at all today") and stays True for
+            # the whole of a normal trading day, so without this check
+            # Phase 1 would reconnect on the very next 30s tick after that
+            # task's scheduled disconnect — fighting it directly. A pure
+            # clock check also stays correct across a process restart or
+            # crash recovery at any point inside the window, where a
+            # settable marker would be lost.
             if not ticker.status().get("started"):
+                if _ticker_quiet_window_now():
+                    continue
                 from backend.brokers.service.calendar_gate import conn_should_attempt_connect
                 if await conn_should_attempt_connect() and _try_start_ticker():
                     log.info(
@@ -758,6 +781,236 @@ async def _task_prewarm_tokens() -> None:
 
         await _asyncio.sleep(60)  # 60s — matches background.py _task_token_refresh cadence;
         # hourly polling statistically misses the 05:45–05:59 Kite token-expiry window
+
+
+def _ticker_quiet_window_now() -> bool:
+    """True during the nightly 23:31→08:00 IST KiteTicker-quiet window.
+
+    Pure clock function — no process state, no settable/clearable
+    marker, DELIBERATELY. A marker set by `_task_daily_ticker_cycle()`'s
+    23:31 disconnect and cleared by its 08:00 restart would be lost on
+    any conn_service process restart or crash recovery that happens
+    inside the window (e.g. a deploy at 01:00 IST) — the fresh process
+    would have no memory of "intentionally quiet" and `_ticker_watchdog`
+    Phase 1 would reconnect immediately, which is also pointless resource
+    use since no real market data flows during this window anyway (see
+    CLAUDE.md's "Market daily window" rule — 23:31→08:00 IST is the
+    closed window). A pure clock check is correct no matter when the
+    process (re)started.
+
+    Distinct from `calendar_gate.conn_should_attempt_connect()`, which
+    answers a DAY-level question ("will any configured market segment
+    trade at all today") and stays True for the whole of a normal
+    trading day — it has no notion of time-of-day, so on its own it
+    would let Phase 1 reconnect on the very next 30s watchdog tick after
+    this module's 23:31 disconnect. Both gates are consulted at every
+    call site that needs them; either one being True is enough to skip
+    a connect attempt.
+    """
+    from datetime import datetime, timezone, timedelta, time as _time
+
+    _IST = timezone(timedelta(hours=5, minutes=30))
+    t = datetime.now(_IST).time()
+    return t >= _time(23, 31) or t < _time(8, 0)
+
+
+def _restart_ticker_for_new_day() -> None:
+    """08:00 IST — rebind the KiteTicker to the freshly-minted access_token.
+
+    Reuses `_pick_kite_account()` (the SAME priority-ordered credential
+    resolver `_try_start_ticker()` already uses for cold-start/failover)
+    so this reads whichever token `_task_prewarm_tokens()` already minted
+    in its 05:45–05:59 IST window — no new login is triggered here.
+
+    Replicates `_try_start_ticker()`'s wiring steps (tick-buffer attach +
+    `set_loop()`) inline, rather than calling `_try_start_ticker()`
+    itself, so the explicit `ticker.restart()` call the operator's plan
+    specifies stays the one that actually opens the new connection. Both
+    steps are idempotent — safe even if a prior `_try_start_ticker()` call
+    already did them. This closes a gap a process that BOOTED inside the
+    23:31→08:00 quiet window would otherwise have: `_start_kite_ticker()`
+    skips its inline connect entirely in that case (see
+    `_ticker_quiet_window_now()`), so neither `attach_tick_buffer()` nor
+    `set_loop()` would have run yet — a bare `ticker.restart()` without
+    this wiring would reconnect the WebSocket but silently write no mmap
+    ticks and publish nothing to the SSE bus, the exact "LTP froze while
+    Chg% moved" incident class CLAUDE.md documents under "Conn-service
+    tick forwarder killed nightly, never revived".
+
+    Skips entirely if the ticker is already started — e.g. `_ticker_watchdog`
+    Phase 1 won the 08:00:00 boundary race (both this task and Phase 1
+    stop being gated by `_ticker_quiet_window_now()` at the identical
+    instant; `_try_start_ticker()` is idempotent, so no corruption either
+    way, but a redundant teardown+reconnect of an already-healthy
+    connection is still wasteful and logged here instead).
+    """
+    log = logger
+    from backend.brokers.kite_ticker import get_ticker
+    from backend.brokers.tick_buffer import TickBufferWriter
+
+    ticker = get_ticker()
+    if ticker.status().get("started"):
+        log.info(
+            "conn_service: [TICKER-CYCLE] 08:00 restart — ticker already "
+            "started (e.g. watchdog Phase 1 won the boundary race) — "
+            "skipping restart()"
+        )
+        return
+
+    if getattr(ticker, "_tick_buffer", None) is None:
+        try:
+            ticker.attach_tick_buffer(TickBufferWriter())
+        except Exception:
+            log.exception("conn_service: [TICKER-CYCLE] tick buffer attach failed")
+
+    api_key, access_token, account = _pick_kite_account()
+    if not (api_key and access_token):
+        log.warning(
+            "conn_service: [TICKER-CYCLE] 08:00 restart — no live Kite "
+            "credentials found; restart skipped. The existing "
+            "ticker_watchdog Phase 1 retry loop will keep attempting a "
+            "connect every 30s once one becomes available."
+        )
+        return
+
+    import asyncio as _asyncio
+    try:
+        _loop = _asyncio.get_running_loop()
+    except RuntimeError:
+        _loop = _asyncio.get_event_loop()
+    ticker.set_loop(_loop)
+
+    try:
+        ticker.restart(api_key, access_token, account=account)
+    except Exception:
+        log.exception(
+            "conn_service: [TICKER-CYCLE] 08:00 restart() raised — the "
+            "existing ticker_watchdog Phase 1 retry loop will keep "
+            "attempting a connect every 30s"
+        )
+        return
+
+    if ticker.status().get("started"):
+        log.info(
+            "conn_service: [TICKER-CYCLE] 08:00 IST — KiteTicker "
+            "restarted · account=%s", account,
+        )
+    else:
+        log.warning(
+            "conn_service: [TICKER-CYCLE] 08:00 restart() returned but "
+            "ticker not started (status=%s) — the existing "
+            "ticker_watchdog Phase 1 retry loop will keep attempting a "
+            "connect every 30s", ticker.status(),
+        )
+
+
+async def _task_daily_ticker_cycle() -> None:
+    """Fire-once-per-day nightly KiteTicker disconnect (23:31 IST) and
+    morning restart (08:00 IST) against the REAL upstream KiteTicker
+    WebSocket inside conn_service's own process.
+
+    Mirrors `_task_prewarm_tokens()`'s IST-date fire-once-per-day guard
+    idiom — compares `now_ist.date()` against a module-level sentinel so
+    a 30s-cadence loop fires each action exactly once per calendar day,
+    not once per matching tick within its window.
+
+    Deliberate deviation from the originating plan, documented here
+    because it changes the literal instruction given: the 23:31 action
+    calls `ticker.disconnect_keep_reactor()`, NOT `ticker.stop()`.
+    `stop()` calls Twisted's `reactor.stop()` — a process-wide, truly
+    irreversible action (see `disconnect_keep_reactor()`'s own docstring
+    in kite_ticker.py for the full trace through the kiteconnect-py SDK
+    source). Calling `stop()` here would mark `_reactor_dead = True`,
+    and `_ticker_watchdog`'s own top-of-loop reactor-dead check would
+    then fire a SIGTERM within the next 30s tick regardless of this
+    task's own 08:00 restart — i.e. EVERY night would silently become a
+    full conn_service process restart (forced Dhan/Groww re-logins, two
+    CRITICAL log lines paging ERROR_AGENT, ~30-90s tick blackout), which
+    is exactly what this two-process architecture exists to avoid (see
+    this module's own top-of-file docstring). `disconnect_keep_reactor()`
+    achieves the same clean WebSocket-session-level teardown (stop_retry
+    + close + drain sleep) without touching the reactor, so the 08:00
+    `restart()` call can genuinely reconnect in-process.
+
+    The 08:00 restart is also gated by `conn_should_attempt_connect()`
+    (the calendar day-level gate) — no reason to open a live WebSocket on
+    a confirmed-closed day (weekend / holiday with no special session).
+    The 23:31 disconnect needs no such gate: it only acts when
+    `ticker.status()["started"]` is already True, which on a closed day
+    it never would be (Phase 1 is itself calendar-gated).
+    """
+    import asyncio
+    from datetime import datetime, timezone, timedelta
+
+    from backend.brokers.kite_ticker import get_ticker
+    from backend.brokers.service.calendar_gate import conn_should_attempt_connect
+
+    _IST = timezone(timedelta(hours=5, minutes=30))
+    _last_stop_date = None
+    _last_restart_date = None
+
+    await asyncio.sleep(60)  # let startup settle first
+
+    while True:
+        try:
+            now_ist = datetime.now(_IST)
+            today = now_ist.date()
+
+            # 23:31–23:59 IST — nightly quiet-window disconnect, once/day.
+            if (
+                now_ist.hour == 23 and now_ist.minute >= 31
+                and _last_stop_date != today
+            ):
+                _last_stop_date = today
+                ticker = get_ticker()
+                if ticker.status().get("started"):
+                    logger.info(
+                        "conn_service: [TICKER-CYCLE] 23:31 IST — "
+                        "disconnecting KiteTicker for the nightly quiet "
+                        "window (reactor kept alive)"
+                    )
+                    try:
+                        ticker.disconnect_keep_reactor()
+                    except Exception:
+                        logger.exception(
+                            "conn_service: [TICKER-CYCLE] nightly "
+                            "disconnect_keep_reactor() raised"
+                        )
+                else:
+                    logger.debug(
+                        "conn_service: [TICKER-CYCLE] 23:31 IST — ticker "
+                        "wasn't started; nothing to disconnect"
+                    )
+
+            # 08:00–08:04 IST — morning restart on the fresh token, once/day.
+            # A 5-minute window (10 ticks at 30s cadence) gives slack
+            # against a slow/late tick landing exactly on the boundary —
+            # the once-per-day date guard still prevents a double-fire.
+            if (
+                now_ist.hour == 8 and now_ist.minute < 5
+                and _last_restart_date != today
+            ):
+                _last_restart_date = today
+                try:
+                    if await conn_should_attempt_connect():
+                        _restart_ticker_for_new_day()
+                    else:
+                        logger.info(
+                            "conn_service: [TICKER-CYCLE] 08:00 IST — "
+                            "calendar confirms closed today — skipping "
+                            "restart"
+                        )
+                except Exception:
+                    logger.exception(
+                        "conn_service: [TICKER-CYCLE] 08:00 restart "
+                        "dispatch failed"
+                    )
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            logger.exception("conn_service: [TICKER-CYCLE] loop error")
+
+        await asyncio.sleep(30)
 
 
 async def _init_connections_on_startup(app: Litestar) -> None:

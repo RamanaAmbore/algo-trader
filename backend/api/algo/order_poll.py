@@ -287,15 +287,31 @@ async def _task_order_poll() -> None:
     Dev-idle gate mirrors `_task_performance`'s own `is_engine_idle()`
     check — a non-main branch with no operator-selected PAPER/SIM/
     REPLAY session skips the broker round-trip entirely.
+
+    Closed-hours gate (2026-10-28) — no fill can happen at the broker
+    while every configured segment is closed, so this sweep has nothing
+    to reconcile overnight. Uses `background.py`'s once-per-day
+    `_resolve_market_status_today()` / `is_any_segment_open_cached()`
+    cache instead of re-deriving holiday/special-session state on every
+    5-min tick. Independent of (does not touch) the OrderBook/LogPanel
+    display path or its own freeze-on-failure behavior — this sweep only
+    ever corrects AlgoOrder rows when a real broker-truth mismatch is
+    found, and it finds none while the market is closed.
     """
     from backend.shared.helpers.utils import is_engine_idle
     from backend.api.routes.orders_helpers import _broker_order_snapshot
+    from backend.api.background import (
+        _resolve_market_status_today, is_any_segment_open_cached,
+    )
 
     while True:
         interval_s = _order_poll_interval_seconds()
         await asyncio.sleep(interval_s)
         try:
             if is_engine_idle():
+                continue
+            await _resolve_market_status_today()
+            if not is_any_segment_open_cached():
                 continue
             cutoff = datetime.now(timezone.utc) - timedelta(minutes=5)
             rows = await _order_poll_candidate_rows(cutoff)

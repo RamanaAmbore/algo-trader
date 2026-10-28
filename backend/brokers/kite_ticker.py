@@ -378,8 +378,29 @@ class TickerManager:
             self._kws.on_reconnect = self._on_reconnect
             # threaded=True runs Twisted's reactor in a daemon thread so
             # the asyncio event loop is never blocked.
-            self._kws.connect(threaded=True)
-            logger.info(f"KiteTicker: connect() initiated (account={self._current_account or '?'})")
+            #
+            # 2026-10-28: if the global Twisted reactor is ALREADY running
+            # (because an earlier start() in THIS process left it alive —
+            # see disconnect_keep_reactor()/restart()), connect(threaded=True)
+            # would skip spawning a new reactor thread (correct, since one
+            # already exists) but would still call connectWS() directly on
+            # THIS (asyncio) thread — Twisted does not guarantee that's
+            # thread-safe, and an idle reactor's own I/O wait may never wake
+            # up to service it. reactor.callFromThread() is Twisted's
+            # documented, thread-safe way to hand a call to the reactor's
+            # own thread and wake it if idle. When the reactor hasn't run
+            # yet in this process (the common, unchanged first-boot case),
+            # call connect() directly exactly as before.
+            from twisted.internet import reactor as _twisted_reactor
+            if _twisted_reactor.running:
+                _twisted_reactor.callFromThread(self._kws.connect, threaded=True)
+                logger.info(
+                    "KiteTicker: connect() scheduled via callFromThread on "
+                    f"already-running reactor (account={self._current_account or '?'})"
+                )
+            else:
+                self._kws.connect(threaded=True)
+                logger.info(f"KiteTicker: connect() initiated (account={self._current_account or '?'})")
         except Exception:
             logger.exception("KiteTicker: connect() failed — ticker disabled")
             self._started = False
@@ -734,6 +755,80 @@ class TickerManager:
         self._kws       = None
         logger.info("KiteTicker: stopped (clean)")
 
+    def disconnect_keep_reactor(self) -> None:
+        """Close the current WebSocket session WITHOUT stopping Twisted's
+        global reactor — unlike ``stop()``, this leaves the process able to
+        ``start()`` a fresh connection again later in the SAME process.
+
+        2026-10-28: added for ``restart()`` (below), whose own documented
+        purpose — rebind to a fresh token IN THIS PROCESS at 08:00 IST,
+        after a quiet overnight window — is structurally impossible if its
+        teardown step calls ``stop()``. ``stop()`` calls the SDK's own
+        ``KiteTicker.stop()``, which calls Twisted's ``reactor.stop()`` — a
+        PROCESS-WIDE action, since the SDK runs on Twisted's single global
+        reactor singleton, not a per-instance one (see the kiteconnect-py
+        source: ``def stop(self): reactor.stop()``). Once genuinely
+        stopped, ``reactor.run()`` raises ``ReactorNotRestartable`` on
+        every future attempt in this process — ``stop()`` already detects
+        this (``_was_started and not self._reactor_dead`` above) and sets
+        ``_reactor_dead = True`` so the watchdog exits for a systemd
+        restart. That is correct and intended for ``on_shutdown`` and for
+        a failover swap (a fresh process is an accepted, already-
+        documented recovery path there) — but calling ``stop()`` first
+        inside ``restart()`` guarantees the very next line's ``start()``
+        call hits the ``_reactor_dead`` guard and silently no-ops, which
+        is exactly the historical incident class CLAUDE.md documents under
+        "Conn-service tick forwarder killed nightly, never revived": a
+        restart path that calls a method whose precondition it itself just
+        broke.
+
+        Sequence (mirrors ``stop()``'s first two steps, OMITS its third —
+        the reactor-stopping ``kws.stop()`` call):
+          1. stop_retry() — kill the SDK's own auto-reconnect loop.
+          2. close() — send the WebSocket CLOSE frame so Kite ends the
+             session cleanly server-side.
+          3. Brief sleep so the CLOSE frame actually leaves the box.
+          4. Reset ``_started``/``_connected``/``_kws`` — same bookkeeping
+             tail ``stop()`` performs, including the ``_last_disconnected_at``
+             stamp — so a subsequent ``start()`` runs fully rather than
+             short-circuiting on the idempotency guard.
+
+        Deliberately does NOT touch ``_tick_map``, ``_subscribed``,
+        ``_token_to_sym``, ``_sym_to_token``, or ``_virtual_root_aliases``
+        — unlike ``restart_with_account()``'s failover teardown (which
+        resets most of these because instrument tokens can legitimately
+        differ across ACCOUNTS), this method is for the SAME account's own
+        daily quiet-window cycle. mmap/SSE consumers must keep reading the
+        last-known-good tick values through the whole quiet window (the
+        "never blank during closed hours" invariant) — this method only
+        ever touches the WS connection lifecycle, never the tick data
+        those invariants protect.
+        """
+        import time
+        kws = self._kws
+        if kws is not None:
+            for step in ("stop_retry", "close"):
+                fn = getattr(kws, step, None)
+                if fn is not None:
+                    try:
+                        fn()
+                    except Exception:
+                        logger.exception(
+                            f"KiteTicker: {step}() failed during disconnect_keep_reactor"
+                        )
+            try:
+                time.sleep(0.5)
+            except Exception:
+                pass
+        self._started = False
+        if self._connected:
+            self._last_disconnected_at = time.time()
+        self._connected = False
+        self._kws = None
+        logger.info(
+            "KiteTicker: disconnected (reactor kept alive for same-process restart)"
+        )
+
     def restart(self, api_key: str, access_token: str, account: str = "") -> None:
         """Tear down the current ticker and start fresh with new credentials.
 
@@ -743,21 +838,31 @@ class TickerManager:
         state.
 
         Sequence:
-          1. stop() — clean WebSocket disconnect + reactor halt attempt.
+          1. disconnect_keep_reactor() — clean WebSocket disconnect WITHOUT
+             killing the Twisted reactor (see that method's docstring for
+             why ``stop()`` cannot be used here — it would make step 3
+             below unconditionally no-op via the ``_reactor_dead`` guard).
           2. Reset ``_started``, ``_subscribed``, ``_pending``, ``_connected``
              so ``start()`` won't short-circuit on the idempotency guard.
           3. start() — opens a new Twisted WebSocket with the new token.
+             If the reactor is already running (the normal case after step
+             1, which never stops it), ``start()`` itself routes the new
+             ``connect()`` call through ``reactor.callFromThread()`` so it
+             is scheduled safely on the reactor's own thread.
 
-        Note: if ``_reactor_dead`` is True after step 1, ``start()`` will log
-        a critical warning and return without connecting.  systemd
-        (Restart=always on the conn-service unit) will spawn a fresh process.
+        Note: if ``_reactor_dead`` is already True for some OTHER reason
+        (e.g. a prior ``stop()``/``restart_with_account()`` call, or an
+        SDK-internal ``ReactorNotRunning``), ``start()`` will log a
+        critical warning and return without connecting.  systemd
+        (Restart=always on the conn-service unit) will spawn a fresh
+        process in that case.
         """
         prev_subs = set(self._subscribed) | set(self._pending)
         logger.info(
-            "KiteTicker: restart() — stopping current connection before"
+            "KiteTicker: restart() — disconnecting current connection before"
             f" re-start on account {account!r}"
         )
-        self.stop()
+        self.disconnect_keep_reactor()
         # Reset idempotency guard and subscription state so start() runs fully.
         self._started    = False
         self._subscribed = set()

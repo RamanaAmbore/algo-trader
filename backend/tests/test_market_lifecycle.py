@@ -975,7 +975,9 @@ async def test_funds_offhours_task_registered():
     )
     assert m
     body = m.group(0)
-    # Only fires while no segment is open.
-    assert "is_any_segment_open" in body
-    # 30 min cadence
+    # 2026-10-28 reversal: the task is a no-op during closed hours — it must
+    # not perform the old off-hours broker fetch or any segment check.
+    assert "_fetch_margins_direct" not in body
+    assert "is_any_segment_open" not in body
+    # 30 min cadence (task still registered and still ticking)
     assert "30 * 60" in body or "1800" in body

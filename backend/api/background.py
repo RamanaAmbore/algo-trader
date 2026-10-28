@@ -184,6 +184,256 @@ def _fetch_special_sessions_safe(exchange: str) -> list:
 
 
 # ---------------------------------------------------------------------------
+# Daily market-status cache (2026-10-28 closed-hours broker-call reduction)
+# ---------------------------------------------------------------------------
+# Several background loops (`_task_order_poll`, `_task_trail_stop`,
+# `_task_oco_pair_watcher`) were making a real broker call on every tick,
+# all night, with no closed-hours gate at all — each would otherwise need
+# to independently re-derive "is any segment open right now" via
+# `fetch_holidays` / `fetch_special_sessions`, duplicating the exact same
+# calendar resolution multiple times per minute across multiple loops.
+#
+# This section resolves each configured segment's (is_trading_day,
+# open_time, close_time) ONCE per IST calendar day, by calling
+# `_get_segments()` plus the EXISTING, already-persistently-cached
+# `fetch_holidays()` / `fetch_special_sessions_async()` helpers exactly
+# once each per segment per day, then caches the result in-process keyed
+# by that IST date. It is NOT a re-implementation of calendar logic —
+# every value here is read straight out of those functions' own caches.
+#
+# The cheap hot-path checker (`is_segment_open_cached` /
+# `is_any_segment_open_cached`) below does a pure wall-clock compare
+# against this cache and performs ZERO holiday/special-session/DB work.
+_MARKET_STATUS_CACHE: dict[str, dict] = {}
+_MARKET_STATUS_CACHE_DATE: "date | None" = None
+_market_status_resolve_lock = asyncio.Lock()
+
+
+async def _msc_marker_date() -> "date | None":
+    """DB-backed 'was today's market-status cache already resolved by
+    some process' marker — same restart-dedup idiom as
+    `_pcf_marker_date()` (see that function's own docstring for the
+    pattern this mirrors). Used only for log-dedup / traceability across
+    restarts within the same IST day; the functional gate every caller
+    actually depends on is the in-process `_MARKET_STATUS_CACHE_DATE`
+    check in `_resolve_market_status_today()` below — a bare date string
+    cannot reconstruct the resolved per-segment payload, only record the
+    fact that *some* process resolved it today."""
+    from backend.shared.helpers.settings import get_string
+    raw = get_string("task_markers.market_status_resolved_date", "")
+    if not raw:
+        return None
+    try:
+        return date.fromisoformat(raw)
+    except Exception:
+        return None
+
+
+async def _msc_mark_done(today: date) -> None:
+    from backend.shared.helpers.settings import set_string
+    await set_string(
+        "task_markers.market_status_resolved_date", today.isoformat(),
+        category="task_markers",
+        description=(
+            "Last IST date the daily per-segment market-status cache "
+            "(_resolve_market_status_today) was resolved. Log-dedup / "
+            "traceability marker only — the real gate every closed-"
+            "hours-skip caller depends on is the in-process "
+            "_MARKET_STATUS_CACHE_DATE check, which this marker does "
+            "not replace."
+        ),
+    )
+
+
+async def _resolve_segment_status_today(seg: dict, now: datetime) -> dict:
+    """Resolve one `_get_segments()` gate dict into
+    ``{"is_trading_day": bool, "open_time": dtime|None, "close_time": dtime|None}``
+    for *now*'s IST calendar date.
+
+    Mirrors `date_time_utils.is_market_open()`'s own precedence (special-
+    session override beats the holiday calendar, which beats the plain
+    weekday/session-window check) but collapses the result to a single
+    effective open/close window per gate per day — the granularity the
+    closed-hours-skip callers below actually need. This does NOT replace
+    `_segment_is_open()` / `is_market_open()`, which stay the per-tick
+    authoritative checkers for every other call site in the codebase.
+    """
+    from backend.brokers.broker_apis import fetch_holidays, fetch_special_sessions_async
+
+    exch = str((seg or {}).get("holiday_exchange") or "NSE").upper().strip()
+    today = now.date()
+
+    try:
+        holidays = await asyncio.to_thread(fetch_holidays, exch)
+    except Exception as e:
+        logger.warning(f"[MARKET-STATUS-CACHE] fetch_holidays({exch}) failed: {e}")
+        holidays = set()
+
+    try:
+        specials = await fetch_special_sessions_async(exch)
+    except Exception as e:
+        logger.warning(
+            f"[MARKET-STATUS-CACHE] fetch_special_sessions_async({exch}) failed: {e}"
+        )
+        specials = []
+
+    today_special = next(
+        (s for s in (specials or []) if s.get("date") == today), None,
+    )
+    if today_special is not None:
+        start = today_special.get("start")
+        end = today_special.get("end")
+        if start is not None and end is not None and start < end:
+            # Real override window (e.g. a late-announced/ad-hoc session).
+            return {"is_trading_day": True, "open_time": start, "close_time": end}
+        # Zero-width (or malformed) override row — explicit "closed all
+        # day" (e.g. the MCX evening-closed-holiday rows — see CLAUDE.md
+        # "MCX evening-closed holidays"). Must NOT fall through to the
+        # plain calendar check below.
+        return {"is_trading_day": False, "open_time": None, "close_time": None}
+
+    try:
+        trading = is_trading_day(today, holiday_set=holidays, exchange=exch, now=now)
+    except Exception as e:
+        logger.warning(f"[MARKET-STATUS-CACHE] is_trading_day({exch}) failed: {e}")
+        trading = True  # fail-open — never falsely suppress a real broker call
+
+    if not trading:
+        return {"is_trading_day": False, "open_time": None, "close_time": None}
+
+    return {
+        "is_trading_day": True,
+        "open_time": (seg or {}).get("hours_start"),
+        "close_time": (seg or {}).get("hours_end"),
+    }
+
+
+async def _resolve_market_status_today(force: bool = False) -> dict[str, dict]:
+    """Resolve + cache every configured segment's today-status, ONCE per
+    IST calendar day. Safe to call from any of the closed-hours-skip
+    loops on every iteration — a same-day cache hit returns immediately
+    with zero holiday/special-session/DB work.
+
+    Concurrent first-callers on a fresh day serialize on
+    `_market_status_resolve_lock` instead of each independently hitting
+    `fetch_holidays` / `fetch_special_sessions_async`.
+
+    Pass ``force=True`` to re-resolve regardless of the cached date (used
+    by the 05:30 holiday-refresh pre-warm hook so a stale pre-restart
+    cache from yesterday is never served into today).
+
+    Known limitation — same-day edits (mirrors the equivalent limitation
+    already documented for `fetch_special_sessions()` itself): an
+    operator who adds/edits a `market_special_sessions` row AFTER this
+    cache has already resolved today will not see it reflected until the
+    next IST calendar day's resolution (or a process restart, which
+    resets the in-process cache). This only governs the four closed-
+    hours-skip background loops (trailing-stop reprice, OCO sibling-
+    cancel, the chase-independent order-poll sweep, and the retired
+    funds-offhours fetch) — it does NOT affect order placement, chase,
+    template-attach, or any other real-money gate, all of which still
+    call `_segment_is_open()` / `is_market_open()` fresh on every check.
+    """
+    global _MARKET_STATUS_CACHE, _MARKET_STATUS_CACHE_DATE
+
+    today = timestamp_indian().date()
+    if not force and _MARKET_STATUS_CACHE_DATE == today and _MARKET_STATUS_CACHE:
+        return _MARKET_STATUS_CACHE
+
+    async with _market_status_resolve_lock:
+        # Re-check after acquiring the lock — another caller may have
+        # already resolved today while we were waiting on it.
+        now = timestamp_indian()
+        today = now.date()
+        if not force and _MARKET_STATUS_CACHE_DATE == today and _MARKET_STATUS_CACHE:
+            return _MARKET_STATUS_CACHE
+
+        resolved: dict[str, dict] = {}
+        for seg in _get_segments():
+            name = str(seg.get("name") or seg.get("holiday_exchange") or "UNKNOWN")
+            resolved[name] = await _resolve_segment_status_today(seg, now)
+
+        _MARKET_STATUS_CACHE = resolved
+        _MARKET_STATUS_CACHE_DATE = today
+
+        try:
+            if await _msc_marker_date() != today:
+                await _msc_mark_done(today)
+            logger.info(f"[MARKET-STATUS-CACHE] resolved for {today.isoformat()}: {resolved}")
+        except Exception as e:
+            logger.debug(f"[MARKET-STATUS-CACHE] marker write failed (non-fatal): {e}")
+
+        return resolved
+
+
+def is_segment_open_cached(segment_or_exchange: str, now: "datetime | None" = None) -> bool:
+    """Cheap, synchronous "is this segment open right now?" check backed
+    by the once-per-day cache resolved by `_resolve_market_status_today()`
+    — performs NO live holiday/special-session/DB work on this hot path.
+
+    Callers MUST `await _resolve_market_status_today()` at least once
+    today before relying on this returning anything other than the
+    fail-open default below — every closed-hours-skip loop in this file
+    does so once per iteration (the second-and-later calls that same day
+    are free, since the resolver short-circuits on its own cache).
+
+    ``segment_or_exchange`` matches either a `_get_segments()` gate NAME
+    (``"NON-MCX"`` / ``"MCX"``) or one of that gate's member EXCHANGE
+    codes (``"NSE"``, ``"MCX"``, ``"NFO"``, ...) — callers that only know
+    the exchange code (the common case for order/trail/OCO rows, which
+    carry an exchange field, not a gate name) don't need to resolve the
+    gate name themselves first.
+
+    Fail-open by design: returns **True** ("assume open, make the real
+    broker call") when the cache hasn't been resolved yet today, or when
+    *segment_or_exchange* matches no configured gate — a cold cache can
+    never cause this helper to silently suppress a broker call that
+    should have happened. A caller that wants to skip a broker call must
+    see an explicit **False** from every segment it checks.
+    """
+    now = now or timestamp_indian()
+    if not _MARKET_STATUS_CACHE or _MARKET_STATUS_CACHE_DATE != now.date():
+        return True
+
+    key = str(segment_or_exchange or "").upper().strip()
+    t = now.time()
+    segs_by_name = {str(s.get("name") or "").upper(): s for s in _get_segments()}
+
+    for name, info in _MARKET_STATUS_CACHE.items():
+        name_upper = name.upper()
+        if name_upper != key:
+            seg = segs_by_name.get(name_upper) or {}
+            exchanges = {str(e).upper() for e in (seg.get("exchanges") or [])}
+            if key not in exchanges:
+                continue
+        if not info.get("is_trading_day"):
+            continue
+        open_t = info.get("open_time")
+        close_t = info.get("close_time")
+        if open_t is not None and close_t is not None and open_t <= t <= close_t:
+            return True
+    return False
+
+
+def is_any_segment_open_cached(now: "datetime | None" = None) -> bool:
+    """Cheap "is ANY configured segment open right now?" check, backed by
+    the same once-per-day cache as `is_segment_open_cached()`. This is
+    what the closed-hours-skip background loops below actually call —
+    they don't need per-segment granularity, only "should I skip my real
+    broker call entirely this iteration?"
+
+    Same fail-open convention as `is_segment_open_cached()`: a cold cache
+    reads as "open" (never falsely skip a broker call), so this returns
+    **True** until `_resolve_market_status_today()` has resolved at least
+    once today.
+    """
+    now = now or timestamp_indian()
+    if not _MARKET_STATUS_CACHE or _MARKET_STATUS_CACHE_DATE != now.date():
+        return True
+    return any(is_segment_open_cached(name, now) for name in _MARKET_STATUS_CACHE)
+
+
+# ---------------------------------------------------------------------------
 # Direct broker fetch helpers
 # ---------------------------------------------------------------------------
 
@@ -3077,6 +3327,24 @@ def _snapshot_stop_ticker() -> None:
     lives in conn_service) — stopping its local poll task here would
     just kill the local tick-forwarder until the 08:00 restart, with no
     corresponding benefit, so this is an intentional no-op in that mode.
+
+    2026-10-28 fix — also clears `_TICKER_CALENDAR_STATE`'s `connected`
+    flag right here, in BOTH modes, instead of waiting for the IST
+    calendar-date rollover at midnight. Before this fix,
+    `ticker_connected_today()` (read by `_task_ticker_watchdog` to
+    decide whether to skip broker/connection-inspection work entirely)
+    kept reporting `True` for the ~29 minutes between this function's
+    23:31 IST stop and the midnight rollover that used to be the only
+    thing that could make `st.get("date") == timestamp_indian().date()`
+    go False — during that window the ticker is genuinely stopped (by
+    this same function), so the watchdog was skipping real checks
+    against a connection that no longer exists.
+    `get_ticker_calendar_status()` (the `/api/admin/broker-health`
+    badge) was never affected by this gap — its own [08:00, 23:30)
+    clock-window check already reports idle regardless of this field's
+    staleness; only `ticker_connected_today()`'s bare date-equality
+    check had it. Uses the SAME `_ticker_calendar_mark()` idiom every
+    other writer of this state uses — no parallel mechanism.
     """
     try:
         from backend.brokers.kite_ticker import get_ticker
@@ -3086,10 +3354,20 @@ def _snapshot_stop_ticker() -> None:
                 "Background: ticker stop — intentional no-op in "
                 "conn-service mode (MmapTickReader owns no socket/reactor)"
             )
-            return
-        _ticker_obj.stop()
+        else:
+            _ticker_obj.stop()
     except Exception as _stop_exc:
         logger.warning(f"Background: ticker stop failed: {_stop_exc}")
+    finally:
+        try:
+            _ticker_calendar_mark(
+                timestamp_indian().date(), connected=False, idle=True,
+                reason="ticker stopped for the night at 23:31 IST",
+            )
+        except Exception as _mark_exc:
+            logger.warning(
+                f"Background: ticker-calendar stop mark failed: {_mark_exc}"
+            )
 
 
 def _snapshot_restart_ticker() -> None:
@@ -4951,6 +5229,21 @@ async def _task_holiday_refresh() -> None:
         except Exception as e:
             logger.warning(f"Background: warm_special_sessions_cache failed: {e}")
 
+        # Piggyback the daily market-status cache resolution onto this
+        # same 05:30 wake-up (2026-10-28) — holiday + special-session
+        # data for today is already warm at this point, so resolving
+        # `_MARKET_STATUS_CACHE` here is free. `force=True` so a cache
+        # entry left over from yesterday (a restart that skipped the
+        # catch-up branch, or a process that never slept) is never
+        # served into today. This is a pre-warm only, not the sole
+        # resolution path — `_resolve_market_status_today()` also
+        # resolves lazily on first call of the day for any process that
+        # starts after 05:30 (the common case on a redeploy).
+        try:
+            await _resolve_market_status_today(force=True)
+        except Exception as e:
+            logger.warning(f"Background: market-status cache pre-warm failed: {e}")
+
         # Best-effort proactive token refresh — all broker types.
         # @retry_kite_conn auto-recovers on every subsequent API call if this
         # fails; do NOT raise so a login hiccup doesn't abort the loop.
@@ -5651,6 +5944,17 @@ async def _task_trail_stop() -> None:
             interval = 30
         await asyncio.sleep(interval)
         try:
+            # Closed-hours skip (2026-10-28) — no exit can genuinely fire
+            # at the broker while every configured segment is closed, so
+            # there's nothing for a trailing-stop re-quote to react to.
+            # Uses the once-per-day cache (`_resolve_market_status_today`)
+            # instead of re-deriving holiday/special-session state on
+            # every 30s tick. This does NOT touch any display route —
+            # Pulse/Derivatives/positions read `daily_book` snapshots via
+            # `closed_hours_or_broker()`, an entirely separate path.
+            await _resolve_market_status_today()
+            if not is_any_segment_open_cached():
+                continue
             async with async_session() as s:
                 rows = (await s.execute(
                     _sel(AlgoOrder).where(
@@ -6194,6 +6498,17 @@ async def _task_oco_pair_watcher() -> None:
             interval = 5
         await asyncio.sleep(interval)
         try:
+            # Closed-hours skip (2026-10-28) — same once-per-day cache
+            # as `_task_trail_stop` above. A GTT can only fire at the
+            # broker while its exchange segment is open, so there is
+            # nothing for this sibling-cancel watcher to react to while
+            # every configured segment reads closed. Independent of the
+            # Pulse/Derivatives/OrderBook "freeze to last-known-good"
+            # display path (`closed_hours_or_broker()`), which this loop
+            # never feeds.
+            await _resolve_market_status_today()
+            if not is_any_segment_open_cached():
+                continue
             async with async_session() as s:
                 rows = (await s.execute(_stmt)).scalars().all()
             rows_by_account, attached_by_row = _oco_parse_entries(rows, _json.loads)
@@ -7729,41 +8044,44 @@ async def _task_market_lifecycle() -> None:
 
 
 async def _task_funds_offhours() -> None:
-    """Low-cadence funds refresh during closed-market hours.
+    """No-op during closed-market hours — REVERSED 2026-10-28 per explicit
+    operator instruction.
 
-    Operator may transfer money during off-hours; the funds-cache must
-    still update so /performance + NavCard reflect the new balance
-    without waiting until the next session.
+    Original design (kept here verbatim so a future reader isn't
+    confused by the apparent mismatch between this function's name and
+    its now-empty body): "Low-cadence funds refresh during closed-market
+    hours. Operator may transfer money during off-hours; the funds-cache
+    must still update so /performance + NavCard reflect the new balance
+    without waiting until the next session. Runs every 30 min when NO
+    segment is open." That design deliberately called the broker every
+    30 min specifically BECAUSE the market was closed — the opposite of
+    this change's goal of reducing real broker calls during the closed
+    window (23:31→08:00 IST and weekends/holidays).
 
-    Runs every 30 min when NO segment is open. When any segment is
-    open this task short-circuits because the regular `_task_performance`
-    is already firing funds fetches at the standard 5-min cadence.
+    The real broker fetch is removed entirely. `/api/funds` is
+    unaffected: it already serves the frozen `daily_book`/`nav_daily`
+    snapshot during closed hours via `closed_hours_or_broker()`
+    (`routes/funds.py`) — same "freeze to last-known-good" invariant as
+    every other closed-hours display route (see CLAUDE.md "Staleness
+    indicator freeze rule" / "Market-close snapshot — frozen state
+    visible until next market open"). The only behavior change is that
+    an operator's off-hours money transfer will no longer be reflected
+    in that frozen snapshot until the next normal `_task_performance`
+    cycle after the market reopens — the funds view does not go blank or
+    stale-beyond-its-existing-freeze; it simply stays frozen to whatever
+    was last fetched before close, instead of being refreshed again
+    overnight.
+
+    This function is kept (rather than deleted and unregistered from the
+    supervisor) purely so a future reversal doesn't need to re-plumb a
+    new task from scratch — see `on_startup`'s
+    `bg-funds-offhours` registration.
     """
-    from backend.shared.helpers.date_time_utils import is_any_segment_open
-    from backend.api.cache import invalidate
-
-    # Startup settle.
+    # Startup settle — unchanged even though the body below is now a
+    # no-op, so a future re-enable doesn't also need to re-add this.
     await asyncio.sleep(60)
 
     while True:
-        try:
-            now_ist = timestamp_indian()
-            if not await asyncio.to_thread(is_any_segment_open, now_ist):
-                # Off-hours fetch — refresh funds only (cheapest broker
-                # call) so cash/balance moves are reflected for
-                # NAV + /performance. Positions + holdings need no
-                # tick refresh during closed hours; the daily snapshot
-                # task handles their EOD capture.
-                try:
-                    await _run(_fetch_margins_direct)
-                    invalidate("funds")
-                    logger.info("Background: funds refreshed during closed-market window")
-                except Exception as e:
-                    logger.warning(f"Background: off-hours funds refresh failed: {e}")
-            # 30 min cadence — operator transfers are minute-grained
-            # but rare; 30 min is the right balance vs broker quota.
-        except Exception as e:
-            logger.warning(f"Background: _task_funds_offhours iteration failed: {e}")
         await asyncio.sleep(30 * 60)
 
 
