@@ -1575,15 +1575,26 @@ async def test_conn_should_attempt_connect_same_day_two_calls_recompute_and_upse
 @pytest.mark.asyncio
 async def test_start_kite_ticker_skips_connect_when_calendar_closed():
     """A confirmed-closed day: `_try_start_ticker` must never be
-    called from `_start_kite_ticker`'s inline boot attempt."""
+    called from `_start_kite_ticker`'s inline boot attempt.
+
+    `_ticker_quiet_window_now()` is forced False for clarity and
+    isolation, matching the sibling test above — this assertion happens
+    to hold either way (calendar-closed also skips `_try_start_ticker`),
+    but pinning it keeps this test from accidentally exercising two
+    different skip reasons depending on wall-clock time.
+    `_task_daily_ticker_cycle` is also mocked so no real background task
+    leaks past this test's own event loop."""
     from backend.brokers.service.app import _start_kite_ticker
 
     with patch('backend.brokers.service.calendar_gate.conn_should_attempt_connect',
                new_callable=AsyncMock, return_value=False), \
+         patch('backend.brokers.service.app._ticker_quiet_window_now',
+               new_callable=AsyncMock, return_value=False), \
          patch('backend.brokers.service.app._try_start_ticker') as mock_try_start, \
          patch('backend.brokers.service.app._ticker_watchdog', new_callable=AsyncMock), \
          patch('backend.brokers.service.app._health_heartbeat', new_callable=AsyncMock), \
-         patch('backend.brokers.service.app._task_prewarm_tokens', new_callable=AsyncMock):
+         patch('backend.brokers.service.app._task_prewarm_tokens', new_callable=AsyncMock), \
+         patch('backend.brokers.service.app._task_daily_ticker_cycle', new_callable=AsyncMock):
         app = MagicMock()
         await _start_kite_ticker(app)
 
@@ -1593,15 +1604,27 @@ async def test_start_kite_ticker_skips_connect_when_calendar_closed():
 @pytest.mark.asyncio
 async def test_start_kite_ticker_connects_when_calendar_open():
     """A confirmed-open (or uncertain) day: behaviour is unchanged from
-    today — `_try_start_ticker` is called exactly once."""
+    today — `_try_start_ticker` is called exactly once.
+
+    `_ticker_quiet_window_now()` is forced False — 2026-10-28, the quiet
+    window's boundary became calendar-driven and the check now runs at
+    the TOP of `_start_kite_ticker()` before `_try_start_ticker()` is
+    ever reached. Without this mock, this test depends on real wall-clock
+    IST time: it fails whenever the suite happens to run inside
+    23:31-08:00 IST (confirmed live — failed when run at 00:04 IST).
+    `_task_daily_ticker_cycle` is also mocked so no real background task
+    leaks past this test's own event loop."""
     from backend.brokers.service.app import _start_kite_ticker
 
     with patch('backend.brokers.service.calendar_gate.conn_should_attempt_connect',
                new_callable=AsyncMock, return_value=True), \
+         patch('backend.brokers.service.app._ticker_quiet_window_now',
+               new_callable=AsyncMock, return_value=False), \
          patch('backend.brokers.service.app._try_start_ticker', return_value=True) as mock_try_start, \
          patch('backend.brokers.service.app._ticker_watchdog', new_callable=AsyncMock), \
          patch('backend.brokers.service.app._health_heartbeat', new_callable=AsyncMock), \
-         patch('backend.brokers.service.app._task_prewarm_tokens', new_callable=AsyncMock):
+         patch('backend.brokers.service.app._task_prewarm_tokens', new_callable=AsyncMock), \
+         patch('backend.brokers.service.app._task_daily_ticker_cycle', new_callable=AsyncMock):
         app = MagicMock()
         await _start_kite_ticker(app)
 
@@ -1637,12 +1660,19 @@ def _make_started_ticker():
 async def test_ticker_watchdog_phase1_never_calls_try_start_when_calendar_closed():
     """A confirmed-closed day: the watchdog's Phase 1 branch must never
     call `_try_start_ticker()` at all — not just tolerate a no-op
-    result from it."""
+    result from it.
+
+    `_ticker_quiet_window_now()` is forced False for clarity/isolation —
+    this assertion happens to hold either way (the quiet window also
+    skips `_try_start_ticker`), but pinning it keeps this test from
+    exercising two different skip reasons depending on wall-clock time."""
     from backend.brokers.service.app import _ticker_watchdog
 
     ticker = _make_not_started_ticker()
 
     with patch('backend.brokers.kite_ticker.get_ticker', return_value=ticker), \
+         patch('backend.brokers.service.app._ticker_quiet_window_now',
+               new_callable=AsyncMock, return_value=False), \
          patch('backend.brokers.service.calendar_gate.conn_should_attempt_connect',
                new_callable=AsyncMock, return_value=False), \
          patch('backend.brokers.service.app._try_start_ticker') as mock_try_start, \
@@ -1656,12 +1686,19 @@ async def test_ticker_watchdog_phase1_never_calls_try_start_when_calendar_closed
 @pytest.mark.asyncio
 async def test_ticker_watchdog_phase1_calls_try_start_when_calendar_open():
     """A confirmed-open day: behaviour is unchanged — `_try_start_ticker`
-    is still called from Phase 1."""
+    is still called from Phase 1.
+
+    `_ticker_quiet_window_now()` is forced False — 2026-10-28, Phase 1
+    also consults the now-calendar-driven quiet window before the
+    calendar gate; without this mock the test depends on real wall-clock
+    IST time (confirmed live — failed when run at 00:06 IST)."""
     from backend.brokers.service.app import _ticker_watchdog
 
     ticker = _make_not_started_ticker()
 
     with patch('backend.brokers.kite_ticker.get_ticker', return_value=ticker), \
+         patch('backend.brokers.service.app._ticker_quiet_window_now',
+               new_callable=AsyncMock, return_value=False), \
          patch('backend.brokers.service.calendar_gate.conn_should_attempt_connect',
                new_callable=AsyncMock, return_value=True), \
          patch('backend.brokers.service.app._try_start_ticker', return_value=True) as mock_try_start, \
@@ -1716,12 +1753,20 @@ async def test_ticker_watchdog_phase1_db_error_verdict_still_attempts_connect():
 async def test_ticker_watchdog_phase1_same_day_special_session_picked_up_next_tick():
     """A verdict that flips CLOSED → OPEN between watchdog ticks
     (simulating a same-day special session appearing) results in a
-    connect attempt on the SECOND tick, having skipped the first."""
+    connect attempt on the SECOND tick, having skipped the first.
+
+    `_ticker_quiet_window_now()` is forced False — without it, this test
+    depends on real wall-clock IST time (confirmed live — failed when
+    run at 00:06 IST, since the quiet window would short-circuit both
+    ticks before the calendar gate is ever consulted, making
+    `mock_gate.call_count == 2` fail)."""
     from backend.brokers.service.app import _ticker_watchdog
 
     ticker = _make_not_started_ticker()
 
     with patch('backend.brokers.kite_ticker.get_ticker', return_value=ticker), \
+         patch('backend.brokers.service.app._ticker_quiet_window_now',
+               new_callable=AsyncMock, return_value=False), \
          patch('backend.brokers.service.calendar_gate.conn_should_attempt_connect',
                new_callable=AsyncMock, side_effect=[False, True]) as mock_gate, \
          patch('backend.brokers.service.app._try_start_ticker', return_value=True) as mock_try_start, \

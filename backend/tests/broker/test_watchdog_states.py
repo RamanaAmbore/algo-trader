@@ -409,10 +409,21 @@ class TestWatchdogSpawnInvariant:
 
     @pytest.mark.asyncio
     async def test_watchdog_spawned_after_successful_start(self):
-        """Watchdog must be spawned even when _try_start_ticker() returns True."""
+        """Watchdog must be spawned even when _try_start_ticker() returns True.
+
+        `_ticker_quiet_window_now()` is forced False here — unrelated to
+        this test's own concern (watchdog-spawn invariant regardless of
+        `_try_start_ticker()`'s outcome), but it now runs at the TOP of
+        `_start_kite_ticker()` (2026-10-28, calendar-driven quiet window)
+        and would otherwise make this test depend on real wall-clock IST
+        time: it would short-circuit before `_try_start_ticker()` is ever
+        reached whenever the suite happens to run inside 23:31-08:00 IST,
+        a real flakiness source confirmed live (failed at 00:01 IST,
+        passed outside the window)."""
         from backend.brokers.service import app as svc_app
 
-        with patch.object(svc_app, "_try_start_ticker", return_value=True) as _mock_start, \
+        with patch.object(svc_app, "_ticker_quiet_window_now", return_value=False), \
+             patch.object(svc_app, "_try_start_ticker", return_value=True) as _mock_start, \
              patch.object(svc_app, "_ticker_watchdog") as _mock_watchdog:
             # Simulate a Litestar app object
             mock_litestar = MagicMock()
@@ -425,10 +436,14 @@ class TestWatchdogSpawnInvariant:
 
     @pytest.mark.asyncio
     async def test_watchdog_spawned_after_failed_start(self):
-        """Watchdog must be spawned when _try_start_ticker() returns False."""
+        """Watchdog must be spawned when _try_start_ticker() returns False.
+
+        See `test_watchdog_spawned_after_successful_start`'s docstring for
+        why `_ticker_quiet_window_now()` is forced False here too."""
         from backend.brokers.service import app as svc_app
 
-        with patch.object(svc_app, "_try_start_ticker", return_value=False) as _mock_start, \
+        with patch.object(svc_app, "_ticker_quiet_window_now", return_value=False), \
+             patch.object(svc_app, "_try_start_ticker", return_value=False) as _mock_start, \
              patch.object(svc_app, "_ticker_watchdog") as _mock_watchdog:
             mock_litestar = MagicMock()
             await svc_app._start_kite_ticker(mock_litestar)
@@ -438,10 +453,14 @@ class TestWatchdogSpawnInvariant:
 
     @pytest.mark.asyncio
     async def test_watchdog_spawned_when_start_raises(self):
-        """Watchdog must be spawned even when _try_start_ticker() raises."""
+        """Watchdog must be spawned even when _try_start_ticker() raises.
+
+        See `test_watchdog_spawned_after_successful_start`'s docstring for
+        why `_ticker_quiet_window_now()` is forced False here too."""
         from backend.brokers.service import app as svc_app
 
-        with patch.object(svc_app, "_try_start_ticker",
+        with patch.object(svc_app, "_ticker_quiet_window_now", return_value=False), \
+             patch.object(svc_app, "_try_start_ticker",
                           side_effect=RuntimeError("boot blip")) as _mock_start, \
              patch.object(svc_app, "_ticker_watchdog") as _mock_watchdog:
             mock_litestar = MagicMock()

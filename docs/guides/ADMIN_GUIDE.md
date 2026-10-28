@@ -1158,6 +1158,35 @@ the live LTP stream itself went quiet.
 `ticker_close` / `ticker_error` events on the Conn tab of `/admin/activity` (see the
 event table in this guide). The badge needs no manual dismissal and no page reload.
 
+### Overnight behaviour (MCX close to next session open)
+
+After the MCX evening session closes, the platform is in its quiet window until the next session
+opens. On a normal day that is 23:31 IST to 08:00 IST. The times come from the exchange schedule,
+not from fixed constants, so an alternate-hours day (for example a DST-shifted MCX close) moves the
+window with it. Two changes apply from 2026-10-28, and neither needs any configuration.
+
+- **Quieter background loops.** The order-reconciliation sweep, the trailing-stop poller, the OCO
+  pair watcher and the funds refresh no longer call the broker overnight. Each one checks the
+  market-status cache first and skips its broker call while every segment is closed. A closed
+  market means no broker traffic from those loops overnight. Funds, positions and order books keep
+  showing the last value fetched before 23:31.
+- **The ticker is cleanly cycled, not left idle.** The real Kite WebSocket inside the broker
+  connection service disconnects just after the MCX close and reconnects at the next session open
+  with that day's token. The health badge now goes to its idle state at the same moment, when the
+  ticker is stopped, instead of waiting for the next status check. If the exchange schedule cannot
+  be read, the window falls back to its default bounds (23:31 to 08:00 IST) and retries on the next
+  read.
+
+| What you will notice | What has not changed |
+|---|---|
+| Fewer broker calls and log lines overnight | The 05:35 IST market-status report still fires |
+| The ticker health badge shows idle from the MCX close | Pulse, Derivatives and order books show the frozen last-known-good snapshot all night |
+| Live ticks resume after 08:00 IST without a manual restart | No new settings in `/admin/settings` |
+
+A trading day where the ticker has not yet connected is never shown as idle. If the badge shows
+an error or stale state at 08:00 IST, use the troubleshooting steps under "If KiteTicker fails to
+restart at 08:00" below.
+
 ### Health endpoint
 
 `GET /api/admin/health` (main API) includes conn-service status under `broker_connection`:
@@ -1604,12 +1633,23 @@ GET /api/admin/broker/health
 ```
 
 **If KiteTicker fails to restart at 08:00:**
-1. Check `.log/kite_tokens.json` — `created_at` should be within the
-   last 23 hours.
-2. Run `POST /api/admin/broker/reconnect?account=ACCT_ID` to force
-   re-login.
-3. Restart the conn service: `sudo systemctl restart ramboq_conn` — this
-   triggers `_snapshot_restart_ticker()` on startup.
+
+Two mechanisms exist at 08:00 and they do different jobs. Check both before concluding the
+ticker is down.
+
+| Mechanism | Where it runs | What it does |
+|---|---|---|
+| Upstream WebSocket cycle (`_task_daily_ticker_cycle()` → `_restart_ticker_for_new_day()` in `backend/brokers/service/app.py`; window from `resolve_mcx_gate_bounds()` in `backend/brokers/service/calendar_gate.py`) | Inside `ramboq_conn` | Reconnects the **real** Kite WebSocket at the next session open (08:00 IST by default), after the disconnect at the MCX close. This is the primary restart. |
+| Local forwarder re-arm (`_snapshot_restart_ticker()` in `backend/api/background.py`) | Inside `ramboq_api` | Re-arms only the **local** tick forwarder in the API process, which reads the shared tick buffer. It does not reconnect the Kite WebSocket. |
+
+1. Check `.log/kite_tokens.json` — `created_at` should be within the last 23 hours. A stale token
+   stops the upstream reconnect from succeeding.
+2. Run `POST /api/admin/broker/reconnect?account=ACCT_ID` to force re-login.
+3. Restart the conn service: `sudo systemctl restart ramboq_conn`. A restart between the MCX close
+   and the next session open deliberately leaves the real WebSocket disconnected until that open,
+   so do not expect
+   ticks overnight. Restarting the conn service does not re-run `_snapshot_restart_ticker()`,
+   which lives in the API process. Restart `ramboq_api` too if the local forwarder looks dead.
 
 **Holiday refresh failures** (05:30 cron could not reach NSE API):
 - Retries automatically every 30 min until 08:00.

@@ -3234,6 +3234,63 @@ def fetch_special_sessions(exchange: str = "NSE") -> list[dict]:
     return rows
 
 
+async def _read_exchange_schedule_rows_async(gate: str, today) -> list[dict]:
+    """Async DB read for ``exchange_schedule`` rows for *gate*, covering
+    BOTH a date-specific override (``date == today``) and the permanent
+    default (``date IS NULL``) in one query.
+
+    2026-10-28: added so ``calendar_gate.py``'s MCX quiet-window resolver
+    can read this table directly from inside conn_service. This is the
+    SAME table ``background.py:_ds_tick_mcx_stop()`` already reads via
+    ``exchange_clock._effective_gate_rows('MCX')`` for its own "what time
+    does MCX actually close today" decision — a DST-adjusted or Muhurat
+    close/open time is modeled here as a date-override row, confirmed by
+    that function's own docstring and by ``exchange_clock.py``'s own
+    module docstring ("Date-specific rows override the default for that
+    particular calendar day"). Reading the SAME table conn_service's
+    quiet-window gate must agree with the main API process about when
+    MCX closes/opens; a different table (e.g. ``market_special_sessions``,
+    which models a DIFFERENT concept — whether a session exists at all,
+    not what time an existing session starts/ends) would risk the two
+    processes disagreeing about the boundary.
+
+    Deliberately does NOT read ``exchange_clock.py``'s in-process
+    ``_CACHE`` — that cache is populated only in the main API process's
+    own startup/refresh cycle, so depending on it from conn_service would
+    silently read stale or empty state, the same class of cross-process
+    staleness problem ``calendar_gate.py``'s own module docstring already
+    documents for ``run_on_main_loop``-dependent paths. Plain
+    ``async with async_session()`` instead, mirroring
+    ``_read_special_sessions_async``'s shape exactly.
+
+    Caller applies the override-wins-over-default precedence (mirrors
+    ``exchange_clock._effective_gate_rows()``'s own logic) and the
+    weekday filter for default rows — this function only fetches the
+    CANDIDATE rows for both branches in one round trip.
+    """
+    from sqlalchemy import select, or_
+    from backend.api.database import async_session
+    from backend.api.models import ExchangeSchedule
+    async with async_session() as sess:
+        result = await sess.execute(
+            select(ExchangeSchedule).where(
+                ExchangeSchedule.gate == gate,
+                or_(ExchangeSchedule.date == today, ExchangeSchedule.date.is_(None)),
+            )
+        )
+        rows = result.scalars().all()
+        return [
+            {
+                "date": r.date,
+                "weekdays": r.weekdays,
+                "open_time": r.open_time,
+                "close_time": r.close_time,
+                "is_open": r.is_open,
+            }
+            for r in rows
+        ]
+
+
 async def _read_special_sessions_async(exchange: str, today) -> list[dict]:
     """Async DB read for ``market_special_sessions`` rows matching
     ``(exchange, today)``. Hoisted to module level (was an inline

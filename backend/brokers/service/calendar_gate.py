@@ -111,7 +111,7 @@ already live" apart from "closed and genuinely never connected".
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, time as _time
 
 from backend.shared.helpers.ramboq_logger import get_logger
 
@@ -120,6 +120,24 @@ logger = get_logger(__name__)
 CAL_OPEN = "open"
 CAL_CLOSED = "closed"
 CAL_UNKNOWN = "unknown"
+
+# Fallback MCX gate bounds — byte-identical to this module's own prior
+# hardcoded quiet-window constants (23:31 = 23:30 + 1 min, 08:00), AND to
+# `exchange_schedule`'s own seeded default row for gate='MCX' (see
+# `exchange_clock.py`'s module docstring seed table). Used ONLY when a
+# DB read fails or returns no usable row — never cached as if it were a
+# real resolution, so a transient failure can't poison the rest of the
+# day (same "never cache a failure" discipline as `_SPECIAL_SESSION_CACHE`
+# elsewhere in this codebase).
+_MCX_GATE_DEFAULT_OPEN = _time(8, 0)
+_MCX_GATE_DEFAULT_CLOSE = _time(23, 30)
+
+# Per-IST-calendar-day cache for the resolved MCX gate bounds — keeps the
+# `exchange_schedule` read to at most once per day rather than once per
+# 30s tick forever (both `_task_daily_ticker_cycle()` and, while the
+# ticker isn't started, `_ticker_watchdog`'s Phase 1 consult this via
+# `ticker_quiet_window_now()`). (date, open_time, close_time) | None.
+_mcx_gate_bounds_cache: "tuple[date, _time, _time] | None" = None
 
 # Shared "already recorded today" sentinel — set by both
 # `conn_should_attempt_connect()` and `record_daily_verdict_if_needed()`
@@ -144,6 +162,140 @@ def _segments_config() -> dict:
     from backend.shared.helpers.utils import config
     segments = config.get("market_segments", {}) or {}
     return segments or _DEFAULT_SEGMENTS
+
+
+async def resolve_mcx_gate_bounds(today: date) -> "tuple[_time, _time]":
+    """Resolve TODAY's effective MCX gate (open_time, close_time) from
+    ``exchange_schedule``, with a date-specific override row taking
+    absolute priority over the permanent default — mirrors
+    ``exchange_clock._effective_gate_rows()``'s own precedence (see that
+    module's docstring), reading directly via
+    ``broker_apis._read_exchange_schedule_rows_async`` rather than that
+    module's in-process ``_CACHE`` (main-API-process-only state).
+
+    2026-10-28 — replaces the hardcoded 23:31/08:00 KiteTicker
+    quiet-window constants. ``background.py`` has had comments since
+    before this change anticipating "a future DST-adjusted MCX close"
+    modeled as an ``exchange_schedule`` date-override row (the SAME
+    table ``_ds_tick_mcx_stop()`` already reads for its own close-time
+    decision) — this makes conn_service's quiet window agree with that
+    mechanism instead of hardcoding a value that can silently drift out
+    of sync with it.
+
+    Both the open and close bounds are resolved for the SAME calendar
+    date (``today``), never a separate "tomorrow" lookup — this is
+    deliberate, not a simplification that loses the cross-midnight case:
+    at any instant, ``today`` (the current IST calendar date) already
+    carries the relevant boundary for whichever side of the quiet window
+    the caller is evaluating. Checked at 23:40 on 2026-10-30, ``today``
+    is 2026-10-30 and its own ``close_time`` is what just passed (or is
+    about to). Checked at 02:00 on 2026-10-31 (now inside the window),
+    ``today`` is 2026-10-31 and its own ``open_time`` is what the window
+    is waiting for. No row for "the next trading day" is ever needed.
+
+    Treats a holiday/no-session override row (``open_time`` or
+    ``close_time`` is ``None`` — ``exchange_clock.py``'s own
+    ``_is_within_session()`` documents this convention) the SAME as "no
+    override" — falls through to the default bounds. This is a
+    deliberate simplification: this function answers "what time does
+    the shared ticker's connectivity window open/close today", not
+    "does MCX have a session at all today" (that is the DIFFERENT,
+    pre-existing day-level question ``conn_should_attempt_connect()``
+    already answers, consulted independently by every call site that
+    needs it). Narrowing the quiet window further on a pure-MCX holiday
+    when NSE might still be open is out of scope here and would risk a
+    regression on the NSE side; this function only ever widens or
+    shifts the MCX-close boundary when a REAL alternate-hours override
+    exists, never invents a shorter/no-connectivity day on its own.
+
+    DB failures and "no usable row" both fall back to
+    ``(_MCX_GATE_DEFAULT_OPEN, _MCX_GATE_DEFAULT_CLOSE)`` — identical to
+    this module's historical hardcoded values — and are never cached, so
+    a transient failure doesn't poison the rest of the day (same
+    discipline as ``_SPECIAL_SESSION_CACHE`` elsewhere in this codebase).
+    A successful resolution IS cached, keyed on ``today``, so this reads
+    the DB at most once per IST calendar day rather than once per 30s
+    tick forever.
+    """
+    global _mcx_gate_bounds_cache
+
+    cached = _mcx_gate_bounds_cache
+    if cached is not None and cached[0] == today:
+        return cached[1], cached[2]
+
+    try:
+        from backend.brokers.broker_apis import _read_exchange_schedule_rows_async
+        rows = await _read_exchange_schedule_rows_async("MCX", today)
+    except Exception as e:
+        logger.warning(
+            "[CONN-TICKER-CALENDAR] exchange_schedule(MCX) read failed — "
+            "falling back to default gate bounds: %s", e,
+        )
+        return _MCX_GATE_DEFAULT_OPEN, _MCX_GATE_DEFAULT_CLOSE
+
+    override = [r for r in rows if r.get("date") == today]
+    if override:
+        row = override[0]
+    else:
+        defaults = [
+            r for r in rows
+            if r.get("date") is None and (
+                not r.get("weekdays") or today.weekday() in r["weekdays"]
+            )
+        ]
+        row = defaults[0] if defaults else None
+
+    if row and row.get("open_time") is not None and row.get("close_time") is not None:
+        open_t, close_t = row["open_time"], row["close_time"]
+    else:
+        open_t, close_t = _MCX_GATE_DEFAULT_OPEN, _MCX_GATE_DEFAULT_CLOSE
+
+    _mcx_gate_bounds_cache = (today, open_t, close_t)
+    return open_t, close_t
+
+
+async def ticker_quiet_window_now() -> bool:
+    """True during the nightly KiteTicker-quiet window, with its
+    boundaries resolved from ``exchange_schedule`` (via
+    ``resolve_mcx_gate_bounds()``) rather than hardcoded 23:31/08:00
+    constants.
+
+    2026-10-28 — moved here from ``service/app.py`` (was
+    ``_ticker_quiet_window_now()``, a pure, zero-argument clock function)
+    because resolving the boundary now needs calendar data, which is
+    this module's domain. ``app.py`` imports this under its old name via
+    ``from .calendar_gate import ticker_quiet_window_now as
+    _ticker_quiet_window_now`` so existing call sites and their tests
+    don't need to rename anything.
+
+    Still stateless PER CALL in the sense that mattered for the original
+    design decision (no settable/clearable marker tracking "did the
+    daily-cycle task already disconnect tonight") — a process restart or
+    crash recovery at any point inside the window is still handled
+    correctly, because every call re-derives the window fresh from
+    ``timestamp_indian()`` and the (cached-per-day, re-read-on-date-
+    rollover) resolved bounds. It is NOT a "no DB" function anymore —
+    the very first call on a new IST calendar day does one real
+    ``exchange_schedule`` read (see ``resolve_mcx_gate_bounds()``'s own
+    cache).
+
+    Close threshold is ``close_time + 1 minute`` (matching the historical
+    "MCX settles around 23:30; stopping 1 min later captures final
+    ticks" rationale in ``background.py:_ds_tick_mcx_stop()``), not the
+    raw close time. The open threshold is the raw resolved open time —
+    no buffer on that side, matching the original design (08:00 was
+    always used as-is, never 08:01).
+    """
+    from datetime import datetime as _dt_cls, timedelta
+    from backend.shared.helpers.date_time_utils import timestamp_indian
+
+    now = timestamp_indian()
+    today = now.date()
+    open_t, close_t = await resolve_mcx_gate_bounds(today)
+
+    close_threshold = (_dt_cls.combine(today, close_t) + timedelta(minutes=1)).time()
+    t = now.time()
+    return t >= close_threshold or t < open_t
 
 
 async def _conn_extra_trading_days() -> "set | None":

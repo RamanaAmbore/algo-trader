@@ -1223,18 +1223,45 @@ all night with no closed-window gate: `_task_order_poll`
   connected=False, idle=True, reason="ticker stopped for the night at 23:31 IST")` in a `finally`
   ([:3363](backend/api/background.py#L3363)), in both conn-service and direct modes. See the
   amendment under "Ticker idle badge on non-trading days".
-- **Conn-service WebSocket cycle.** The upstream KiteTicker inside conn_service's own process is
-  disconnected at 23:31 IST and reconnected at 08:00 IST. `_task_daily_ticker_cycle()`
-  ([service/app.py:907](backend/brokers/service/app.py#L907)) is spawned from `_start_kite_ticker()`
-  ([:293](backend/brokers/service/app.py#L293)), next to `_ticker_watchdog()`. It reuses the token
-  that `_task_prewarm_tokens()` minted in the 05:45–05:59 window. The 08:00 action
-  `_restart_ticker_for_new_day()` ([:817](backend/brokers/service/app.py#L817)) reattaches the tick
-  buffer and calls `ticker.restart()`. The quiet window is a pure clock function,
-  `_ticker_quiet_window_now()` ([:786](backend/brokers/service/app.py#L786)), with no stored marker,
-  so a mid-window process restart cannot leave it stuck. Phase 1 ([:557](backend/brokers/service/app.py#L557))
-  and the inline boot connect ([:262](backend/brokers/service/app.py#L262)) both honour it.
-  `conn_should_attempt_connect()` is a day-level gate only, and would otherwise reconnect right
-  after the 23:31 disconnect.
+- **Conn-service WebSocket cycle, DB-calendar driven.** The upstream KiteTicker inside
+  conn_service's own process is disconnected when the MCX quiet window opens (MCX close + 1 min,
+  default 23:31 IST) and reconnected when the next session opens (default 08:00 IST). Neither time
+  is hardcoded. Both come from `exchange_schedule` for the current IST date, via
+  `resolve_mcx_gate_bounds(today)` ([calendar_gate.py:167](backend/brokers/service/calendar_gate.py#L167)).
+  A date-specific override row, such as a DST-shifted MCX close, moves the real firing time. The
+  table choice is deliberate. `_ds_tick_mcx_stop()` in `background.py` already decides "when does MCX
+  close today" from `exchange_schedule` through `exchange_clock._effective_gate_rows("MCX")`. Reading
+  the same table keeps conn_service agreeing with the main API process. `market_special_sessions`
+  models whether a session exists at all, not its boundaries, so using it could split the two
+  processes. The read is `_read_exchange_schedule_rows_async()`
+  ([broker_apis.py:3237](backend/brokers/broker_apis.py#L3237)), a plain `async with async_session()`
+  read. It deliberately does not use `exchange_clock`'s in-process cache, which only the main API
+  process populates.
+  - **Fallback.** A DB failure, or no usable row, returns the default 08:00 / 23:30 bounds. These are
+    byte-identical to the old hardcoded values. A failure is never cached, so a transient outage
+    cannot poison the rest of the day. A successful resolution is cached per IST date, so the DB is
+    read at most once per day, not once per 30s tick.
+  - **Where it is used.** `ticker_quiet_window_now()`
+    ([calendar_gate.py:257](backend/brokers/service/calendar_gate.py#L257)) composes the bounds into
+    the close+1 min / open check. `app.py` keeps the old name `_ticker_quiet_window_now()`
+    ([service/app.py:794](backend/brokers/service/app.py#L794)) as an async delegator, so existing
+    call sites and tests are unchanged. `_task_daily_ticker_cycle()`
+    ([service/app.py:964](backend/brokers/service/app.py#L964)) is spawned from `_start_kite_ticker()`
+    ([:295](backend/brokers/service/app.py#L295)), next to `_ticker_watchdog()`. Its disconnect
+    branch is driven by `ticker_quiet_window_now()`. Its restart window runs from the resolved open
+    time for five minutes, once per day. The 08:00 action `_restart_ticker_for_new_day()`
+    ([:872](backend/brokers/service/app.py#L872)) reuses the token `_task_prewarm_tokens()` minted in
+    the 05:45–05:59 window, reattaches the tick buffer and calls `ticker.restart()`.
+  - **Gates.** Phase 1 of `_ticker_watchdog` ([:565](backend/brokers/service/app.py#L565)) and the
+    inline boot connect ([:262](backend/brokers/service/app.py#L262)) both `await` the quiet-window
+    check. `conn_should_attempt_connect()` is a day-level gate only, and would otherwise reconnect
+    right after the disconnect. Log lines name no clock time, since an override day shifts the
+    real time.
+  - The tests that pin this are in
+    `backend/tests/broker/test_ticker_daily_cycle_restart_resiliency.py`.
+    `test_non_zero_width_mcx_override_shifts_the_window` covers the override shift, and
+    `test_db_error_falls_back_to_default_never_earlier` covers the fallback. The file's parametrised
+    cases bring the total to 25.
 - **The plan's first assumption was unsafe.** The plan called `get_ticker().stop()` and
   `.restart()`. `stop()` calls Twisted's process-wide `reactor.stop()`, which sets `_reactor_dead`.
   `restart()` then returned at its own `_reactor_dead` guard, so it could never reconnect. Shipping
@@ -1250,7 +1277,7 @@ all night with no closed-window gate: `_task_order_poll`
   tick forwarder killed nightly, never revived" above. That path is unchanged.
 - Invariant: a closed-window broker call is skipped by a cached clock-plus-calendar check that
   fails open. A scheduled nightly action never calls `reactor.stop()`. The quiet window is computed
-  from the clock, never stored.
+  from the clock plus the DB calendar (`exchange_schedule`), never stored and never hardcoded.
 
 **Expiry-day position freeze — snapshots persist until next market open** (2026-09,
 commits 4fa0d711 + fd07dda3) — Once a F&O contract's expiry date passes, its final
@@ -2688,7 +2715,7 @@ now caches + returns a `stale` flag; `/api/nav/by-account` masks `errors` for no
 | Snapshot freshness check config / DSN | `scripts/check_stale_snapshots.py` (`yaml.safe_load`, `_build_dsn` quoting) |
 | Ticker idle state on non-trading days | `backend/api/background.py:_ticker_calendar_refresh_idle_status` + `frontend/src/lib/data/brokerHealthState.js:brokerAccountDisplayState` |
 | Closed-hours broker-call gating (trail-stop, OCO, order-poll sweeps) | `backend/api/background.py:is_any_segment_open_cached` (fails open) + `_resolve_market_status_today` (once-per-IST-day cache); call site `backend/api/algo/order_poll.py:_task_order_poll` |
-| Ticker nightly WS stop/restart, conn_service (23:31 / 08:00 IST) | `backend/brokers/service/app.py:_task_daily_ticker_cycle` (+ `_ticker_quiet_window_now`, `_restart_ticker_for_new_day`) + `backend/brokers/kite_ticker.py:TickerManager.disconnect_keep_reactor` |
+| Ticker nightly WS stop/restart, conn_service (DB-calendar driven: MCX close+1 min / next open) | `backend/brokers/service/app.py:_task_daily_ticker_cycle` (+ `_restart_ticker_for_new_day`) + `backend/brokers/service/calendar_gate.py:resolve_mcx_gate_bounds` / `ticker_quiet_window_now` (reads `exchange_schedule`) + `backend/brokers/kite_ticker.py:TickerManager.disconnect_keep_reactor` |
 | Postback fan-out | `backend/api/routes/orders.py:_postback_broadcast_fanout` |
 | Ticket placement | `backend/api/routes/orders_place.py:ticket_order_handler` |
 | Basket order | `backend/api/routes/orders_basket.py` |

@@ -3795,15 +3795,15 @@ calendar day via dedup sentinels keyed on trade-date.
 | Time (IST) | Event | Exchange | Function | File:Line |
 |------------|-------|----------|----------|-----------|
 | 00:15 | MCX settlement snapshot (`daily_book`) | MCX | `trigger_settlement_capture("MCX")` → `_snapshot_fire(label="mcx-settlement")` | background.py:1836–1847 |
-| 00:30 | KiteTicker full stop — reactor halt, WebSocket close, subscriptions cleared | ALL | `_snapshot_stop_ticker()` | background.py:1917–1935, 2089–2099 |
 | 05:30 | Holiday calendar refresh + token pre-warm (all brokers) | NSE+MCX | `_task_holiday_refresh()` | background.py `_task_holiday_refresh` (~L3997) |
-| 08:00 | KiteTicker restart with fresh token; `fix_daily_book_prev_close()` is marker-guarded (`task_markers.prev_close_fix_date`) and, in normal operation, updates zero rows (2026-10-20, see "Settlement re-arm rules" below) | ALL | `_snapshot_restart_ticker()`, `fix_daily_book_prev_close()` | background.py:2059–2112 |
+| 08:00 | Upstream KiteTicker WebSocket reconnect with fresh token (conn_service, §22.33); API-side local forwarder re-armed via `check_and_heal()`. `fix_daily_book_prev_close()` is marker-guarded (`task_markers.prev_close_fix_date`) and, in normal operation, updates zero rows (2026-10-20, see "Settlement re-arm rules" below) | ALL | `_task_daily_ticker_cycle()` → `_restart_ticker_for_new_day()` (conn_service, `backend/brokers/service/app.py`); `_snapshot_restart_ticker()`, `fix_daily_book_prev_close()` (API) | `app.py:907`, `:817`; background.py:2059–2112 |
 | 09:00 | MCX regular session opens | MCX | config | backend_config.yaml |
 | 09:15 | NSE/BSE/NFO/CDS regular session opens | NSE/BSE | config | backend_config.yaml |
 | 15:30 | NSE regular session closes | NSE/BSE | config | backend_config.yaml |
 | 15:45 | NSE close snapshot (`daily_book`) | NSE/BSE | `trigger_close_snapshot("NON-MCX")` → `_snapshot_fire(label="non-mcx-close")` | exchange_clock.py:368, background.py:1824–1833 |
 | 16:15 | NSE settlement snapshot + non-MCX unsubscribe from KiteTicker | NSE/BSE | `trigger_settlement_capture("NON-MCX")`, `_snapshot_unsub_nonmcx()` | background.py:1836–1847, 2078–2087 |
 | 23:30 | MCX regular session closes | MCX | config | backend_config.yaml |
+| MCX close + 1 min (23:31 by default, from `exchange_schedule`) | Upstream KiteTicker WebSocket disconnect inside conn_service (keeps reactor alive, §22.33); API-side ticker marked idle in `_TICKER_CALENDAR_STATE` | ALL | `_task_daily_ticker_cycle()` → `TickerManager.disconnect_keep_reactor()` (conn_service); `_snapshot_stop_ticker()` (API) | `service/app.py:964`; `kite_ticker.py:758`; `calendar_gate.py:167`; background.py:3315 |
 | 23:45 | MCX close snapshot (`daily_book`) | MCX | `trigger_close_snapshot("MCX")` → `_snapshot_fire(label="mcx-close")` | exchange_clock.py:380, background.py:1824–1833 |
 
 Snapshot times (15:45, 16:15, 23:45, 00:15) are stored in `exchange_schedule.snapshot_time` and 
@@ -6241,6 +6241,64 @@ regression, the preamble-only guard, the cooldown, the sim isolation and the str
 `frontend/src/lib/__tests__/consoleDispatch.test.js` covers the sticky-false rule.
 
 ---
+
+## 22.33. Closed-window gating and the nightly conn-service WebSocket cycle (2026-10-28)
+
+Two processes each own part of the overnight ticker lifecycle, and each now handles its share
+explicitly. The full incident narrative is in [CLAUDE.md](../CLAUDE.md) under "Market daily window".
+
+**Conn-service owns the daily WebSocket cycle.** The real KiteTicker lives inside conn_service, so
+the nightly disconnect and morning reconnect belong there, not in the API process.
+
+- `_task_daily_ticker_cycle()` ([service/app.py:964](../backend/brokers/service/app.py#L964)) is
+  spawned from `_start_kite_ticker()` beside `_ticker_watchdog()`. It disconnects when the MCX quiet
+  window opens (MCX close + 1 min) and reconnects at the next session open. It reuses the token
+  minted by the 05:45 token pre-warm.
+- **The window is calendar-driven, not hardcoded.** `resolve_mcx_gate_bounds(today)`
+  ([calendar_gate.py:167](../backend/brokers/service/calendar_gate.py#L167)) reads
+  `exchange_schedule` for the current IST date. A date-override row, such as a DST-shifted MCX
+  close, moves the window. `exchange_schedule` is the table because `_ds_tick_mcx_stop()` already
+  uses it for "when does MCX close today" through `exchange_clock._effective_gate_rows("MCX")`.
+  Reading the same table keeps conn_service agreeing with the API process. `market_special_sessions`
+  models whether a session exists, not its boundaries, so it was rejected. The read is
+  `_read_exchange_schedule_rows_async()` ([broker_apis.py:3237](../backend/brokers/broker_apis.py#L3237)).
+  It is a plain async DB read. It does not use `exchange_clock`'s in-process cache, which only the
+  API process populates.
+- **Fallback.** A DB failure, or no usable row, returns the default 08:00 / 23:30 bounds. These
+  match the old hardcoded values. Failures are never cached, so a transient outage cannot poison the
+  rest of the day. Successful reads are cached per IST date.
+- `ticker_quiet_window_now()` ([calendar_gate.py:257](../backend/brokers/service/calendar_gate.py#L257))
+  is true from `close_time + 1 min` through `open_time`. `app.py`'s `_ticker_quiet_window_now()`
+  ([app.py:794](../backend/brokers/service/app.py#L794)) is an async delegator with the old name, so
+  existing call sites are unchanged. The window is still stateless: there is no stored marker, so a
+  conn_service restart mid-window cannot leave the cycle stuck. The boot-time connect and Phase 1
+  both `await` the check, because the day-level connect gate alone would reconnect straight after
+  the disconnect.
+- `_restart_ticker_for_new_day()` ([app.py:872](../backend/brokers/service/app.py#L872)) reattaches
+  the tick buffer and restarts the ticker at the session open.
+- `TickerManager.disconnect_keep_reactor()` ([kite_ticker.py:758](../backend/brokers/kite_ticker.py#L758))
+  does the nightly disconnect. It never calls `reactor.stop()`. Stopping the process-wide Twisted
+  reactor would leave `restart()` unable to reconnect, so the cycle would crash-loop conn_service.
+  The subscription maps are kept, because this is a same-account daily cycle, not a failover.
+- Tests: `backend/tests/broker/test_ticker_daily_cycle_restart_resiliency.py`.
+  `test_non_zero_width_mcx_override_shifts_the_window` covers the override shift.
+
+**The API process resolves market status once per day.** Several background loops used to
+recompute "is any segment open?" independently on every tick.
+
+- `_resolve_market_status_today()` ([background.py:311](../backend/api/background.py#L311)) resolves
+  each segment once per IST day into a module-level cache. It runs at startup after the special-
+  sessions warm, and lazily on the first call each day.
+- `is_any_segment_open_cached()` ([background.py:418](../backend/api/background.py#L418)) is the
+  shared check. The trailing-stop, OCO-watcher and order-poll loops call it before any broker call.
+  It fails open: a cold or stale cache returns True, so a missed resolve costs one extra poll and
+  never a missed stop.
+- Funds refresh (`_task_funds_offhours`) no longer polls broker while closed. Funds freeze at the
+  last value fetched before the close, under the staleness freeze rule.
+
+**Invariants.** A closed-window broker call is skipped by the cached check. The quiet window is
+computed from the clock plus the DB calendar, never stored and never hardcoded. A scheduled nightly
+action never calls `reactor.stop()`.
 
 ## 23. How to add a new template field
 

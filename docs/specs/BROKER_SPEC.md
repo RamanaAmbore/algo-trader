@@ -2819,6 +2819,30 @@ not duck-typing):
 Before this fix, `_snapshot_stop_ticker` called `stop()` on the local poller at 23:31, and the
 08:00 restart did not revive it, so ticks stopped reaching the browser until a process restart.
 
+**Overnight upstream cycle (2026-10-28).** The upstream KiteTicker inside conn_service is cycled
+daily, separately from the local poller above. `_task_daily_ticker_cycle()` (in
+`backend/brokers/service/app.py`) disconnects when the MCX quiet window opens (MCX close + 1 min)
+and reconnects at the next session open. Neither time is hardcoded. Both come from
+`resolve_mcx_gate_bounds(today)` in `backend/brokers/service/calendar_gate.py`, which reads
+`exchange_schedule` for the current IST date through `_read_exchange_schedule_rows_async()` in
+`backend/brokers/broker_apis.py`. Date-override rows (for example a DST-shifted MCX close) move the
+window. `exchange_schedule` is the table because `background.py:_ds_tick_mcx_stop()` already reads
+it for "when does MCX close today", so conn_service and the API process agree on the boundary.
+`market_special_sessions` models whether a session exists, not its boundaries, so it is not used
+here.
+- **Fallback.** A DB failure, or no usable row, returns the default 08:00 / 23:30 bounds,
+  byte-identical to the previous hardcoded values. Failures are not cached, so a transient outage cannot hold the
+  wrong window for the day. A successful read is cached per IST date.
+- **Quiet window.** `ticker_quiet_window_now()` (in `calendar_gate.py`) is the async check. It is
+  true from `close_time + 1 min` through `open_time`. `app.py`'s `_ticker_quiet_window_now()` is an
+  async delegator with the same name, so existing call sites are unchanged.
+- `TickerManager.disconnect_keep_reactor()` (in `backend/brokers/kite_ticker.py`) performs the
+  disconnect and never stops the Twisted reactor. Tests:
+  `backend/tests/broker/test_ticker_daily_cycle_restart_resiliency.py`, including
+  `test_non_zero_width_mcx_override_shifts_the_window`.
+- The API process's closed-window broker gate (`is_any_segment_open_cached()`) is documented in
+  DESIGN_GUIDE §22.33.
+
 **Tests**: `backend/tests/test_mmap_ticker.py` · `backend/tests/test_bg_ticker_watchdog.py` ·
 `backend/tests/test_bg_snapshot_ticker_lifecycle.py` · frontend symptom:
 `frontend/e2e/tick_staleness_indicator.spec.js`.
