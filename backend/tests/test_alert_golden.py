@@ -283,12 +283,12 @@ async def test_partial_gtt_golden_text_and_urgent_priority(monkeypatch):
     ("TEMPLATE_ATTACH_URGENT_AGENT", "wing_hard_reject", "CRITICAL",
      {"reason": "premium too high", "symbol": "NIFTY", "exchange": "NFO", "target_premium": 12.5},
      ("Wing scan hard-rejected", f"Agent: manual\n{_FIXED_TS}\npremium too high | NIFTY NFO target ₹12.50", "urgent")),
-    ("TEMPLATE_ATTACH_HIGH_AGENT", "wing_skip", "WARNING",
-     {"reason": "no candidate", "parent_order_id": 9, "symbol": "BANKNIFTY", "exchange": "NFO"},
-     ("Wing attach skipped", f"Agent: manual\n{_FIXED_TS}\nno candidate | order #9 BANKNIFTY NFO", "high")),
-    ("TEMPLATE_ATTACH_HIGH_AGENT", "wing_offset_skip", "WARNING",
-     {"reason": "offset outside band", "parent_order_id": 9, "symbol": "BANKNIFTY", "exchange": "NFO"},
-     ("Wing offset attach skipped", f"Agent: manual\n{_FIXED_TS}\noffset outside band | order #9 BANKNIFTY NFO", "high")),
+    # 2026-10-28 noise tightening removed ntfy from TEMPLATE_ATTACH_HIGH_AGENT
+    # entirely (an FYI "leg skipped" notice, not action-required) — its
+    # wing_skip/wing_offset_skip rows are gone from this ntfy-golden-text
+    # parametrize list, since there is no longer any ntfy send to pin here.
+    # See test_alert_routing.py's oracle entry for the channel-set change,
+    # and test_alert_channel_collapse.py for the telegram-only text pin.
 ])
 async def test_template_attach_golden_text_and_priority(monkeypatch, agent_key, event, level, extra, expected):
     from datetime import timezone as _tz

@@ -233,7 +233,15 @@ async def test_template_attach_events_identical_via_channel_agents(
     rec = {"ts": _dt.datetime(2026, 10, 6, 4, 45, 30, tzinfo=_dt.timezone.utc), "level": level,
            "tags": ["gtt", "alert"], "extra": {"tags": ["orders", "gtt", "alert"], "alert_event": event, **extra}}
     await ea.dispatch([rec], _channel_agents())
-    assert chans["ntfy"] == [(expected_title, expected_body, expected_priority)]
+    # 2026-10-28 noise tightening — template-attach-high (wing_skip/
+    # wing_offset_skip) dropped ntfy; a skipped wing still has its own
+    # protective SL/TP live, so it's informational, not action-required.
+    # TEMPLATE_ATTACH_URGENT_AGENT (wing_unprotected/wing_hard_reject) is
+    # unaffected — those leave a position genuinely unprotected.
+    if event in ("wing_skip", "wing_offset_skip"):
+        assert chans["ntfy"] == []
+    else:
+        assert chans["ntfy"] == [(expected_title, expected_body, expected_priority)]
     assert len(chans["telegram"]) == 1  # see chase-cancel test's own comment on tg=None
     assert chans["email"] == []
 
@@ -268,8 +276,11 @@ async def test_order_correction_identical_via_channel_agents(chans):
                      "symbol": "NIFTY26OCTFUT", "exchange": "NFO", "prior_status": "OPEN",
                      "new_status": "FILLED", "source": "order_poll", "masked": "ZG####"}}
     await ea.dispatch([rec], _channel_agents())
-    assert len(chans["telegram"]) == 1 and len(chans["ntfy"]) == 1
-    assert chans["ntfy"][0][2] == "urgent"
+    # 2026-10-28 noise tightening — order-correction-alert dropped ntfy.
+    # A corrected status is informational (the row now shows its real
+    # broker state); it isn't an action the operator needs to take.
+    assert len(chans["telegram"]) == 1
+    assert chans["ntfy"] == []
     assert chans["email"] == []
     title, body, tg = chans["telegram"][0]
     assert title == "Order corrected: NIFTY26OCTFUT #1"
@@ -332,9 +343,12 @@ async def test_user_registered_identical_via_channel_agents(chans):
     rec = {"ts": _dt.datetime(2026, 10, 6, 9, 0, tzinfo=_dt.timezone.utc), "level": "INFO",
            "tags": ["info", "auth", "alert"], "extra": extra}
     await ea.dispatch([rec], _channel_agents())
+    # 2026-10-28 noise tightening — user-registered-alert gained email
+    # (a new pending-approval registration is action-required: the
+    # operator must approve or reject the account).
     assert chans["telegram"] == [("New user registered", body, body)]
     assert chans["ntfy"] == [("New user registered", body, "high")]
-    assert chans["email"] == []
+    assert len(chans["email"]) == 1
 
 
 @pytest.mark.asyncio
@@ -379,13 +393,20 @@ async def test_fill_paper_mode_never_sends_via_any_channel_agent(chans, monkeypa
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("alert_event, extra_extra", [
-    ("gtt_asymmetric", {"title": "GTT asymmetric", "body": "leg mismatch"}),
-    ("oco_double_fire", {"title": "OCO double fire", "body": "both legs fired"}),
-    ("ticker_recovered", {"title": "Ticker recovered", "body": "back up"}),
-    ("ticker_degraded", {"title": "Ticker degraded", "body": "degraded"}),
+@pytest.mark.parametrize("alert_event, extra_extra, expect_ntfy, expect_email", [
+    # 2026-10-28 noise tightening — gtt_asymmetric/oco_double_fire/
+    # ticker_degraded are genuine exposure/anomaly/connectivity issues,
+    # action-required, now synced to ntfy+email. ticker_recovered is
+    # good news with nothing to act on, so it lost ntfy entirely and is
+    # telegram-only — see alert_routing.py's own per-slug comments.
+    ("gtt_asymmetric", {"title": "GTT asymmetric", "body": "leg mismatch"}, True, True),
+    ("oco_double_fire", {"title": "OCO double fire", "body": "both legs fired"}, True, True),
+    ("ticker_recovered", {"title": "Ticker recovered", "body": "back up"}, False, False),
+    ("ticker_degraded", {"title": "Ticker degraded", "body": "degraded"}, True, True),
 ])
-async def test_generic_notice_events_identical_channel_set_and_priority(chans, alert_event, extra_extra):
+async def test_generic_notice_events_identical_channel_set_and_priority(
+    chans, alert_event, extra_extra, expect_ntfy, expect_email,
+):
     """These 4 share the `generic_notice` renderer. No pre-existing
     golden-text fixture exists for them (test_alert_golden.py only pins
     deploy_out_of_sync's own body via the same renderer) — this asserts
@@ -399,11 +420,18 @@ async def test_generic_notice_events_identical_channel_set_and_priority(chans, a
            "extra": {"alert_event": alert_event, **extra_extra}}
     await ea.dispatch([rec], _channel_agents())
     expected_channels = {c["channel"] for c in entry["channels"]}
-    assert expected_channels == {"telegram", "ntfy"}
+    expected = {"telegram"} | ({"ntfy"} if expect_ntfy else set()) | ({"email"} if expect_email else set())
+    assert expected_channels == expected
     assert chans["telegram"] == [(extra_extra["title"], extra_extra["body"], extra_extra["body"])]
-    expected_priority = next(c.get("priority") for c in entry["channels"] if c["channel"] == "ntfy")
-    assert chans["ntfy"] == [(extra_extra["title"], extra_extra["body"], expected_priority)]
-    assert chans["email"] == []
+    if expect_ntfy:
+        expected_priority = next(c.get("priority") for c in entry["channels"] if c["channel"] == "ntfy")
+        assert chans["ntfy"] == [(extra_extra["title"], extra_extra["body"], expected_priority)]
+    else:
+        assert chans["ntfy"] == []
+    if expect_email:
+        assert len(chans["email"]) == 1
+    else:
+        assert chans["email"] == []
 
 
 @pytest.mark.asyncio
@@ -413,9 +441,11 @@ async def test_gtt_not_accepted_identical_via_channel_agents(chans):
            "extra": {"tags": ["orders", "gtt", "alert"], "alert_event": "gtt_not_accepted",
                      "symbol": "NIFTY26OCTFUT", "label": "SL", "gtt_id": 55, "reason": "triggered, status mismatch"}}
     await ea.dispatch([rec], _channel_agents())
-    # ntfy-only in the pre-migration oracle (gtt-not-accepted-alert never
-    # gained `telegram` in the 2026-10-25 message-format pass).
-    assert chans["telegram"] == [] and chans["email"] == []
+    # 2026-10-28 noise tightening — gtt-not-accepted-alert gained
+    # telegram + email alongside its existing ntfy (a GTT the broker
+    # refused is action-required: the operator must re-arm manually).
+    assert len(chans["telegram"]) == 1
+    assert len(chans["email"]) == 1
     assert len(chans["ntfy"]) == 1
     assert chans["ntfy"][0][2] == "urgent"
 

@@ -75,11 +75,13 @@ _PER_SLUG_OVERRIDES: dict[str, list[dict]] = {
         {"channel": "telegram", "enabled": True},
         {"channel": "ntfy", "enabled": True, "priority": "urgent"},
     ],
-    # 2026-10 channel-routing fix — same as partial-gtt-alert above;
-    # this agent used to be ntfy-only.
+    # 2026-10-28 noise tightening (operator: "ntfy and email should be
+    # for important updates and for operator to take action") — a
+    # wing_skip/wing_offset_skip is an FYI notice ("this leg was
+    # skipped"), not something the operator needs to act on right now.
+    # Dropped ntfy (was priority="high"); telegram still carries it.
     "template-attach-high": [
         {"channel": "telegram", "enabled": True},
-        {"channel": "ntfy", "enabled": True, "priority": "high"},
     ],
     "order-failure-alert": [
         {"channel": "telegram", "enabled": True, "gate": False},
@@ -99,9 +101,12 @@ _PER_SLUG_OVERRIDES: dict[str, list[dict]] = {
     "mcp-ping-alert": [
         {"channel": "telegram", "enabled": True, "gate": False},
     ],
+    # 2026-10-28 noise tightening — a routine, self-resolving
+    # reconciliation correction (telemetry about something that ALREADY
+    # happened automatically), not an action the operator needs to take
+    # right now. Dropped ntfy (was priority="urgent"); telegram kept.
     "order-correction-alert": [
         {"channel": "telegram", "enabled": True, "gate": False},
-        {"channel": "ntfy", "enabled": True, "gate": False, "priority": "urgent"},
     ],
     # 2026-10 channel-routing fix — operator correction: deploy-sync
     # alerts reach "the telegram code deployment alerts channel alone"
@@ -150,27 +155,45 @@ _PER_SLUG_OVERRIDES: dict[str, list[dict]] = {
         {"channel": "telegram_info", "enabled": True, "gate": False},
         {"channel": "email", "enabled": True, "gate": False},
     ],
+    # 2026-10-28 noise tightening — a GTT the broker rejected outright
+    # leaves the position genuinely unprotected; this IS action-required,
+    # so ntfy+email are now in sync (email was missing before).
     "gtt-not-accepted-alert": [
+        {"channel": "telegram", "enabled": True, "gate": False},
         {"channel": "ntfy", "enabled": True, "gate": False, "priority": "urgent"},
+        {"channel": "email", "enabled": True, "gate": False},
     ],
     # The 5 `generic_notice` agents (council item 2's shared table) —
     # channel sets verbatim from `event_agents._GENERIC_NOTICE_SPECS`
     # before this migration moved them here.
+    # 2026-10-28 noise tightening — one leg of a GTT pair is protected,
+    # the other isn't: a real exposure gap, action-required. Email added
+    # to sync with ntfy.
     "gtt-asymmetric-alert": [
         {"channel": "telegram", "enabled": True, "gate": False},
         {"channel": "ntfy", "enabled": True, "gate": False, "priority": "high"},
+        {"channel": "email", "enabled": True, "gate": False},
     ],
+    # 2026-10-28 noise tightening — a duplicate-order anomaly needs
+    # investigation (potential double exposure), action-required. Email
+    # added to sync with ntfy.
     "oco-double-fire-alert": [
         {"channel": "telegram", "enabled": True, "gate": False},
         {"channel": "ntfy", "enabled": True, "gate": False, "priority": "urgent"},
+        {"channel": "email", "enabled": True, "gate": False},
     ],
+    # 2026-10-28 noise tightening — good news (the ticker came back),
+    # nothing to act on. Dropped ntfy (was priority="high"); telegram
+    # kept so the recovery is still visible in the ops feed.
     "ticker-recovered-alert": [
         {"channel": "telegram", "enabled": True, "gate": False},
-        {"channel": "ntfy", "enabled": True, "gate": False, "priority": "high"},
     ],
+    # 2026-10-28 noise tightening — connectivity impaired right now is
+    # genuinely action-required. Email added to sync with ntfy.
     "ticker-degraded-alert": [
         {"channel": "telegram", "enabled": True, "gate": False},
         {"channel": "ntfy", "enabled": True, "gate": False, "priority": "urgent"},
+        {"channel": "email", "enabled": True, "gate": False},
     ],
     "visitor-report-alert": [
         {"channel": "telegram_info", "enabled": True, "gate": False},
@@ -179,9 +202,13 @@ _PER_SLUG_OVERRIDES: dict[str, list[dict]] = {
     # were never reaching Telegram/ntfy (see `event_agents.py:
     # USER_REGISTERED_AGENT`'s own comment for the root cause). High,
     # not urgent: needs a look, not a 3x-repeat push.
+    # 2026-10-28 noise tightening: kept on ntfy specifically because the
+    # operator must approve/reject the new account — a real action, not
+    # pure FYI. Email added to sync with ntfy.
     "user-registered-alert": [
         {"channel": "telegram", "enabled": True, "gate": False},
         {"channel": "ntfy", "enabled": True, "gate": False, "priority": "high"},
+        {"channel": "email", "enabled": True, "gate": False},
     ],
     # 2026-10-25 alert-channel collapse — these 3 slugs
     # (`event_agents.TELEGRAM_CHANNEL_AGENT`/`NTFY_CHANNEL_AGENT`/
