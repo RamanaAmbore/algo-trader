@@ -386,9 +386,9 @@ async def test_batch_quote_closed_hours_resolves_for_lkg():
 
     lkg_calls: list[str] = []
 
-    def _mock_lkg(sym: str, max_age_s: float = 86400.0) -> float:
+    def _mock_lkg(sym: str, max_age_s: float = 86400.0):
         lkg_calls.append(sym)
-        return 6100.0 if sym == "CRUDEOILM26JULFUT" else 0.0
+        return (6100.0, 1_700_000_000.0) if sym == "CRUDEOILM26JULFUT" else None
 
     async def _mock_resolve(virtual: str, exchange: str) -> str:
         if virtual.upper() == "CRUDEOIL" and exchange == "MCX":
@@ -398,7 +398,7 @@ async def test_batch_quote_closed_hours_resolves_for_lkg():
     with (
         patch("backend.api.algo.symbol_resolver.resolve_symbol", side_effect=_mock_resolve),
         patch("backend.api.routes.quote._all_exchanges_closed", return_value=True),
-        patch.object(broker_apis, "get_last_good_ltp", side_effect=_mock_lkg),
+        patch.object(broker_apis, "get_last_good_ltp_with_ts", side_effect=_mock_lkg),
     ):
         handler_fn = QuoteController.batch_quote.fn
         result = await handler_fn(None, BatchQuoteRequest(keys=["MCX:CRUDEOIL"]))

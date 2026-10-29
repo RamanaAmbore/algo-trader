@@ -230,6 +230,159 @@ class TestServeClosedHoursBatch:
 
 
 # ---------------------------------------------------------------------------
+# 3b. as_of must reflect the REAL LKG capture time, never datetime.now()
+# ---------------------------------------------------------------------------
+
+class TestServeClosedHoursBatchAsOfRealCaptureTime:
+    """as_of on a closed-hours response must be the real time the LKG value
+    was captured (record_good_ltp/record_good_quote's own `now`), never the
+    time the HTTP response happened to be built — otherwise frozen/stale
+    data looks freshly updated on every closed-hours poll."""
+
+    def setup_method(self):
+        from backend.brokers import broker_apis
+        with broker_apis._LAST_GOOD_LTP_LOCK:
+            broker_apis._LAST_GOOD_LTP.clear()
+        with broker_apis._LAST_GOOD_QUOTE_LOCK:
+            broker_apis._LAST_GOOD_QUOTE.clear()
+
+    @pytest.mark.asyncio
+    async def test_as_of_matches_historical_capture_not_now(self):
+        """A value captured long ago must stamp as_of with that historical
+        time, not with datetime.now() (which is clearly later)."""
+        import time as _time_mod
+        from datetime import datetime, timezone
+        from backend.brokers import broker_apis
+        from backend.brokers.broker_apis import record_good_ltp
+        from backend.api.routes.quote import _serve_closed_hours_batch
+
+        record_good_ltp("RELIANCE", 2900.0)
+
+        # Rewrite the stored timestamp to a known historical instant —
+        # same direct-dict-manipulation convention as test_last_good_ltp.py
+        # (avoids monkey-patching time.time() globally).
+        historical_ts = _time_mod.time() - 7200.0  # 2 hours ago
+        with broker_apis._LAST_GOOD_LTP_LOCK:
+            _, ltp = broker_apis._LAST_GOOD_LTP["RELIANCE"]
+            broker_apis._LAST_GOOD_LTP["RELIANCE"] = (historical_ts, ltp)
+
+        km = MagicMock()
+        km.input_to_broker = {"NSE:RELIANCE": "NSE:RELIANCE"}
+
+        now_before_call = datetime.now(timezone.utc)
+        with patch("backend.api.routes.quote._maybe_warm_closed_hours_quotes", new=AsyncMock()):
+            resp = await _serve_closed_hours_batch(["NSE:RELIANCE"], km)
+
+        assert resp.as_of is not None
+        as_of_dt = datetime.fromisoformat(resp.as_of)
+        expected_dt = datetime.fromtimestamp(historical_ts, tz=timezone.utc)
+
+        # as_of must match the real historical capture time (within
+        # second-precision truncation from isoformat(timespec="seconds")).
+        assert abs((as_of_dt - expected_dt).total_seconds()) < 1.0, (
+            f"as_of {resp.as_of} must match the real capture time "
+            f"{expected_dt.isoformat()}, not datetime.now()"
+        )
+        # The bug this guards against: as_of stamped with "now" would be
+        # clearly later than the historical capture time (by ~2 hours).
+        assert (now_before_call - as_of_dt).total_seconds() > 1800.0, (
+            "as_of must be the stale historical capture time, not a "
+            "freshly-minted 'now' timestamp"
+        )
+
+    @pytest.mark.asyncio
+    async def test_as_of_uses_oldest_timestamp_across_multi_symbol_batch(self):
+        """Batch-level as_of (BatchQuoteRow has no per-row as_of field) must
+        use the OLDEST of the real per-symbol capture times — the most
+        conservative choice, never claiming the batch is fresher than its
+        stalest symbol."""
+        import time as _time_mod
+        from backend.brokers import broker_apis
+        from backend.brokers.broker_apis import record_good_ltp
+        from backend.api.routes.quote import _serve_closed_hours_batch
+
+        record_good_ltp("RELIANCE", 2900.0)
+        record_good_ltp("INFY", 1500.0)
+
+        now_ts = _time_mod.time()
+        older_ts = now_ts - 5000.0   # older symbol
+        newer_ts = now_ts - 100.0    # newer symbol
+        with broker_apis._LAST_GOOD_LTP_LOCK:
+            _, reliance_ltp = broker_apis._LAST_GOOD_LTP["RELIANCE"]
+            _, infy_ltp = broker_apis._LAST_GOOD_LTP["INFY"]
+            broker_apis._LAST_GOOD_LTP["RELIANCE"] = (older_ts, reliance_ltp)
+            broker_apis._LAST_GOOD_LTP["INFY"] = (newer_ts, infy_ltp)
+
+        km = MagicMock()
+        km.input_to_broker = {"NSE:RELIANCE": "NSE:RELIANCE", "NSE:INFY": "NSE:INFY"}
+
+        from datetime import datetime, timezone
+        with patch("backend.api.routes.quote._maybe_warm_closed_hours_quotes", new=AsyncMock()):
+            resp = await _serve_closed_hours_batch(["NSE:RELIANCE", "NSE:INFY"], km)
+
+        assert resp.as_of is not None
+        as_of_dt = datetime.fromisoformat(resp.as_of)
+        expected_dt = datetime.fromtimestamp(older_ts, tz=timezone.utc)
+        assert abs((as_of_dt - expected_dt).total_seconds()) < 1.0, (
+            f"as_of {resp.as_of} must equal the OLDEST per-symbol capture "
+            f"time ({expected_dt.isoformat()}), not the newest"
+        )
+
+    @pytest.mark.asyncio
+    async def test_cold_cache_as_of_is_none_not_fabricated(self):
+        """A symbol never captured (cold cache) must not crash and must
+        not fabricate an as_of timestamp — None, per this codebase's
+        missing-vs-zero convention."""
+        from backend.api.routes.quote import _serve_closed_hours_batch
+
+        km = MagicMock()
+        km.input_to_broker = {"NSE:NEVER_CAPTURED": "NSE:NEVER_CAPTURED"}
+
+        with patch("backend.api.routes.quote._maybe_warm_closed_hours_quotes", new=AsyncMock()):
+            resp = await _serve_closed_hours_batch(["NSE:NEVER_CAPTURED"], km)
+
+        assert len(resp.items) == 1
+        assert resp.items[0].ltp == pytest.approx(0.0, abs=0.001)
+        assert resp.items[0].stale is True
+        assert resp.as_of is None, (
+            "cold cache must yield as_of=None, never a fabricated 'now' "
+            "or any other invented timestamp"
+        )
+
+    @pytest.mark.asyncio
+    async def test_mixed_batch_one_real_one_cold_uses_real_oldest(self):
+        """A batch mixing a real captured symbol with a never-captured one
+        must still report the real symbol's own capture time (not None,
+        and not datetime.now()) — the cold symbol simply contributes
+        nothing to the oldest-timestamp computation."""
+        import time as _time_mod
+        from datetime import datetime, timezone
+        from backend.brokers import broker_apis
+        from backend.brokers.broker_apis import record_good_ltp
+        from backend.api.routes.quote import _serve_closed_hours_batch
+
+        record_good_ltp("RELIANCE", 2900.0)
+        historical_ts = _time_mod.time() - 3000.0
+        with broker_apis._LAST_GOOD_LTP_LOCK:
+            _, ltp = broker_apis._LAST_GOOD_LTP["RELIANCE"]
+            broker_apis._LAST_GOOD_LTP["RELIANCE"] = (historical_ts, ltp)
+
+        km = MagicMock()
+        km.input_to_broker = {
+            "NSE:RELIANCE": "NSE:RELIANCE",
+            "NSE:NEVER_CAPTURED": "NSE:NEVER_CAPTURED",
+        }
+
+        with patch("backend.api.routes.quote._maybe_warm_closed_hours_quotes", new=AsyncMock()):
+            resp = await _serve_closed_hours_batch(["NSE:RELIANCE", "NSE:NEVER_CAPTURED"], km)
+
+        assert resp.as_of is not None
+        as_of_dt = datetime.fromisoformat(resp.as_of)
+        expected_dt = datetime.fromtimestamp(historical_ts, tz=timezone.utc)
+        assert abs((as_of_dt - expected_dt).total_seconds()) < 1.0
+
+
+# ---------------------------------------------------------------------------
 # 4. SSOT: master functions reference helpers in source
 # ---------------------------------------------------------------------------
 

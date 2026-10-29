@@ -601,25 +601,51 @@ def _normalize_batch_keys(raw_keys: list[str]) -> list[str]:
     return out[:300]
 
 
-def _qt_lkg_ltp_snap(sym: str, resolved_sym: str, get_last_good_ltp, get_last_good_quote) -> "tuple[float, dict]":
-    """Fetch LKG ltp + snapshot dict for *sym*, trying *resolved_sym* first."""
-    ltp = (
-        get_last_good_ltp(resolved_sym, max_age_s=86400.0) or
-        get_last_good_ltp(sym, max_age_s=86400.0) or
-        0.0
-    )
-    snap: dict = (
-        get_last_good_quote(resolved_sym, max_age_s=86400.0) or
-        get_last_good_quote(sym, max_age_s=86400.0) or
-        {}
-    )
-    return ltp, snap
+def _qt_lkg_ltp_snap(
+    sym: str, resolved_sym: str, get_last_good_ltp_ts, get_last_good_quote_ts
+) -> "tuple[float, dict, Optional[float]]":
+    """Fetch LKG ltp + snapshot dict + real capture timestamp for *sym*,
+    trying *resolved_sym* first.
+
+    *get_last_good_ltp_ts* / *get_last_good_quote_ts* are expected to be
+    the `_with_ts` cache accessors (`broker_apis.get_last_good_ltp_with_ts`
+    / `get_last_good_quote_with_ts`), returning `(value, unix_ts) | None`.
+
+    The returned `captured_at` (unix seconds, UTC) is the real capture
+    time of whichever cache entry supplied the returned `ltp`, falling
+    back to the snapshot's own capture time when no LTP entry was found.
+    It is `None` only when neither `sym` nor `resolved_sym` has ever been
+    recorded (cold cache) — a timestamp is never fabricated.
+    """
+    ltp = 0.0
+    ltp_ts: Optional[float] = None
+    for candidate in (resolved_sym, sym):
+        hit = get_last_good_ltp_ts(candidate, max_age_s=86400.0)
+        if hit is not None:
+            ltp, ltp_ts = hit
+            break
+
+    snap: dict = {}
+    snap_ts: Optional[float] = None
+    for candidate in (resolved_sym, sym):
+        hit = get_last_good_quote_ts(candidate, max_age_s=86400.0)
+        if hit is not None:
+            snap, snap_ts = hit
+            break
+
+    captured_at = ltp_ts if ltp_ts is not None else snap_ts
+    return ltp, snap, captured_at
 
 
-def _qt_build_lkg_row(k: str, key_map, get_last_good_ltp, get_last_good_quote) -> "BatchQuoteRow | None":
+def _qt_build_lkg_row(
+    k: str, key_map, get_last_good_ltp_ts, get_last_good_quote_ts
+) -> "tuple[BatchQuoteRow, Optional[float]] | None":
     """Build a stale BatchQuoteRow from LKG cache for key *k*.
 
-    Returns None when *k* cannot be split into exchange:symbol.
+    Returns `(row, captured_at)` — `captured_at` is the real unix
+    timestamp the row's data was captured at (`None` on a cold cache,
+    never fabricated). Returns `None` (not a tuple) when *k* cannot be
+    split into exchange:symbol.
     """
     try:
         exch, sym = k.split(":", 1)
@@ -627,8 +653,10 @@ def _qt_build_lkg_row(k: str, key_map, get_last_good_ltp, get_last_good_quote) -
         return None
     broker_key = key_map.input_to_broker.get(k, k)
     _, resolved_sym = broker_key.split(":", 1) if ":" in broker_key else ("", sym)
-    ltp, snap = _qt_lkg_ltp_snap(sym, resolved_sym, get_last_good_ltp, get_last_good_quote)
-    return BatchQuoteRow(
+    ltp, snap, captured_at = _qt_lkg_ltp_snap(
+        sym, resolved_sym, get_last_good_ltp_ts, get_last_good_quote_ts
+    )
+    row = BatchQuoteRow(
         exchange=exch, tradingsymbol=sym,
         ltp=ltp,
         bid=snap.get("bid"),
@@ -641,6 +669,7 @@ def _qt_build_lkg_row(k: str, key_map, get_last_good_ltp, get_last_good_quote) -
         oi=int(snap.get("oi") or 0),
         stale=True,
     )
+    return row, captured_at
 
 
 async def _serve_closed_hours_batch(
@@ -650,12 +679,24 @@ async def _serve_closed_hours_batch(
     """Return a BatchQuoteResponse served entirely from LKG cache.
 
     Fires a one-shot broker.quote() warm (cold-start guard) then builds rows
-    from get_last_good_ltp / get_last_good_quote.  All rows carry stale=True
-    and the as_of field is set so the frontend can show a staleness hint.
+    from get_last_good_ltp_with_ts / get_last_good_quote_with_ts.  All rows
+    carry stale=True.
+
+    `as_of` reflects the REAL per-symbol capture time recorded by
+    `record_good_ltp`/`record_good_quote` at the moment each LKG value was
+    last written live — never `datetime.now()` (that would stamp "now" on
+    frozen/stale data, making it look freshly updated on every closed-hours
+    poll). `BatchQuoteRow` has no per-row `as_of` field, only a single
+    batch-level `as_of` on `BatchQuoteResponse`, so when the batch spans
+    multiple symbols with different individual capture times, the OLDEST of
+    the real per-symbol timestamps is used — the most conservative choice,
+    so the batch never claims to be fresher than its stalest symbol.
+    `as_of` is `None` when none of the requested symbols has ever had a
+    real capture (fully cold cache) — never fabricated.
     """
     from datetime import datetime, timezone
     from backend.brokers.broker_apis import (
-        get_last_good_ltp, get_last_good_quote,
+        get_last_good_ltp_with_ts, get_last_good_quote_with_ts,
     )
 
     logger.debug(f"batch_quote: market closed — serving LKG for {len(keys)} keys")
@@ -663,14 +704,25 @@ async def _serve_closed_hours_batch(
     # Cold-start warm — one broker.quote() per IST day per key-set signature.
     await _maybe_warm_closed_hours_quotes(keys, key_map)
 
-    as_of_str = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    refreshed_at_str = datetime.now(timezone.utc).isoformat(timespec="seconds")
     items: list[BatchQuoteRow] = []
+    oldest_captured_at: Optional[float] = None
     for k in keys:
-        row = _qt_build_lkg_row(k, key_map, get_last_good_ltp, get_last_good_quote)
-        if row is not None:
-            items.append(row)
+        built = _qt_build_lkg_row(k, key_map, get_last_good_ltp_with_ts, get_last_good_quote_with_ts)
+        if built is None:
+            continue
+        row, captured_at = built
+        items.append(row)
+        if captured_at is not None and (oldest_captured_at is None or captured_at < oldest_captured_at):
+            oldest_captured_at = captured_at
+
+    as_of_str: Optional[str] = (
+        datetime.fromtimestamp(oldest_captured_at, tz=timezone.utc).isoformat(timespec="seconds")
+        if oldest_captured_at is not None
+        else None
+    )
     return BatchQuoteResponse(
-        refreshed_at=as_of_str,
+        refreshed_at=refreshed_at_str,
         items=items,
         as_of=as_of_str,
     )

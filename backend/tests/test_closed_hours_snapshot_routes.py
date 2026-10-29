@@ -466,11 +466,11 @@ async def test_batch_quote_closed_returns_lkg_no_broker():
 
     with patch("backend.api.routes.quote._all_exchanges_closed", return_value=True), \
          patch(
-             "backend.brokers.broker_apis.get_last_good_ltp",
-             side_effect=lambda sym, max_age_s=3600.0: 1234.5 if sym == "RELIANCE" else 0.0,
+             "backend.brokers.broker_apis.get_last_good_ltp_with_ts",
+             side_effect=lambda sym, max_age_s=3600.0: (1234.5, 1_700_000_000.0) if sym == "RELIANCE" else None,
          ), \
          patch(
-             "backend.brokers.broker_apis.get_last_good_quote",
+             "backend.brokers.broker_apis.get_last_good_quote_with_ts",
              return_value=None,  # cold cache — snapshot fields will be null
          ), \
          patch("backend.brokers.broker_apis.record_good_ltp"), \

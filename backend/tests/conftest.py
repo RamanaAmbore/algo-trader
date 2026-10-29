@@ -163,6 +163,35 @@ def _reset_nse_holiday_json_memo():
     broker_apis._NSE_HOLIDAY_JSON_MEMO.clear()
 
 
+@pytest.fixture(autouse=True)
+def _reset_quote_batch_cache():
+    """`quote.py:_get_cached_batch_quote`'s 2s TTL `get_or_fetch` cache
+    (keyed `"quote_batch:" + sha1(sorted broker keys)`) is the same bug
+    class as `_NSE_HOLIDAY_JSON_MEMO` above — process-global, keyed only
+    on the symbol set, with no test-scoped reset. Two DIFFERENT test
+    modules independently exercising `batch_quote`'s open-market path for
+    the same symbol (e.g. "NSE:RELIANCE") within the 2s TTL window can
+    silently observe each other's mocked broker response instead of their
+    own, purely from pytest's execution order/speed on a given run —
+    confirmed live: discovered when an unrelated fix elsewhere nudged
+    `test_batch_quote_non_virtual_passthrough` into this exact collision
+    with `test_batch_quote_open_calls_broker`. Narrowly scoped to the
+    `quote_batch:` prefix only, matching the `preflight_instr:` precedent
+    above — never a blanket `_store.clear()`."""
+    from backend.api import cache as _cache_mod
+    _PREFIX = "quote_batch:"
+
+    def _purge():
+        for k in [k for k in _cache_mod._store if k.startswith(_PREFIX)]:
+            _cache_mod._store.pop(k, None)
+        for k in [k for k in _cache_mod._locks if k.startswith(_PREFIX)]:
+            _cache_mod._locks.pop(k, None)
+
+    _purge()
+    yield
+    _purge()
+
+
 @pytest.fixture
 def stub_kite_connection():
     """

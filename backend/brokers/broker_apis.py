@@ -80,6 +80,31 @@ def get_last_good_ltp(symbol: str, max_age_s: float = _LAST_GOOD_LTP_TTL_S) -> f
     return ltp
 
 
+def get_last_good_ltp_with_ts(
+    symbol: str, max_age_s: float = _LAST_GOOD_LTP_TTL_S
+) -> "tuple[float, float] | None":
+    """Like `get_last_good_ltp`, but also returns the real unix timestamp
+    the value was captured at (`record_good_ltp`'s own `now`), so callers
+    that must display an honest "data last updated" indicator (e.g. a
+    closed-hours `as_of` field) never substitute `datetime.now()` for the
+    actual capture time.
+
+    Returns `(ltp, captured_at_unix_ts)`, or `None` when `symbol` is
+    unknown or the entry has expired — never fabricates a timestamp for a
+    cold cache."""
+    if not symbol:
+        return None
+    now = _time.time()
+    with _LAST_GOOD_LTP_LOCK:
+        entry = _LAST_GOOD_LTP.get(symbol)
+    if entry is None:
+        return None
+    ts, ltp = entry
+    if now - ts > max_age_s:
+        return None
+    return (ltp, ts)
+
+
 # ---------------------------------------------------------------------------
 # Last-known-good QUOTE cache (open/close/volume/oi/change)
 # ---------------------------------------------------------------------------
@@ -142,6 +167,29 @@ def get_last_good_quote(symbol: str, max_age_s: float = _LAST_GOOD_QUOTE_TTL_S) 
     if now - ts > max_age_s:
         return None
     return dict(payload)
+
+
+def get_last_good_quote_with_ts(
+    symbol: str, max_age_s: float = _LAST_GOOD_QUOTE_TTL_S
+) -> "tuple[dict, float] | None":
+    """Like `get_last_good_quote`, but also returns the real unix timestamp
+    the snapshot was captured at, for the same reason as
+    `get_last_good_ltp_with_ts` above.
+
+    Returns `(snapshot_dict, captured_at_unix_ts)`, or `None` when
+    `symbol` is unknown or the entry has expired — never fabricates a
+    timestamp for a cold cache."""
+    if not symbol:
+        return None
+    now = _time.time()
+    with _LAST_GOOD_QUOTE_LOCK:
+        entry = _LAST_GOOD_QUOTE.get(symbol)
+    if entry is None:
+        return None
+    ts, payload = entry
+    if now - ts > max_age_s:
+        return None
+    return (dict(payload), ts)
 
 
 def _ts_label(unix_ts: float) -> str:
