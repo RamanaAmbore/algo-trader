@@ -859,6 +859,47 @@ which pool a slug's row lives in, and to the new counts/slug sets where it is.
 channel absent from its matched event's own verbatim channel list, and never sends the same forced
 email twice for one record.
 
+### 3.23 Unrouted catch-all firing on every alert with a `log` channel (2026-10-29, live fix)
+
+Live operator report: a benign WARNING loss-guardrail alert (`loss-positions-total`) was followed by
+a second, spurious `UNROUTED_ALERT_AGENT` notification reading `unrouted alertable record:
+tag=warning,agent level=WARNING logger=backend.api.algo.events alert_event=None message=ALERT
+[loss-positions-total]: …`, and the operator confirmed this followed *every* regular alert, not just
+this one.
+
+**Root cause.** The `log` notify-channel's own delivery write
+(`_send_log_channel()`, [channel_log.py](../../backend/api/algo/grammar_tokens/channel_log.py#L21))
+calls `logger.warning(log_line, extra={"tags": ["agent"], "agent_slug": agent_slug, "sim_mode":
+...})` — deliberately with **no** `alert_event` key, so it can never re-match `BREACH_AGENT`'s own
+condition and loop. `tags_for()` ([log_store.py:136](../../backend/shared/helpers/log_store.py#L136))
+then prepends the record's own level name, so the stored row carries `tags=["warning", "agent"]`.
+That satisfies `_looks_alert_shaped()` (WARNING+, tag `"agent"` is in `LOG_TAG_TOKENS`) — but no
+event-agent `conditions` dict is shaped to match a bare `tag="agent"` record with no `alert_event`
+(every such condition requires `where: {"alert_event": "breach"/"rich_alert"/...}`). So this record
+never matched any agent and `_run_unrouted_catch_all()` (§3.13) fired the self-alert every single
+time — for every agent whose `events`/`channels` list includes `"log"`, which is most of them. This
+bug predates the collapse in §3.22; it shipped with the catch-all itself (commit `65de9319`) and was
+never covered by a test, because every existing `_looks_alert_shaped()` test used `alert_event:
+"breach"` on its "ordinary" fixture, not the no-`alert_event`-but-`agent_slug`-set shape that is
+unique to the `log` channel's own echo.
+
+**Fix.** `_looks_alert_shaped()` gained a second exclusion: a record carrying `extra["agent_slug"]`
+with no `extra["alert_event"]` is never alert-shaped. This is unique to the `log` channel's delivery
+write — `RICH_ALERT_AGENT`'s (`agent_engine.py`) and `BREACH_AGENT`'s (`events.py`) own producers
+also stamp `agent_slug`, but always alongside a real `alert_event` (`rich_alert`/`breach`), so they
+are unaffected and still correctly match their own agent downstream rather than falling into this
+exclusion.
+
+**Tests.** `test_log_channel_delivery_echo_never_triggers_the_catch_all` (direct unit test of the new
+exclusion, plus a sanity check that the rich-alert/breach shapes are untouched) and
+`test_log_channel_delivery_echo_does_not_self_alert_through_dispatch_rows` (end-to-end through
+`dispatch_rows()` with zero agents loaded — the exact condition under which the bug fired on every
+occurrence) in [test_event_agents.py](../../backend/tests/test_event_agents.py).
+
+**Invariant.** A channel's own delivery write is a dispatch artifact, not a fresh observation — it
+must never be re-scanned by the unrouted catch-all for a condition match it was never designed to
+satisfy.
+
 ## 4. What changed, by file
 
 | File | Change |
@@ -892,6 +933,7 @@ email twice for one record.
 | `alert_utils.py` (2026-10-25, `492fd988`) | `_DISPATCH_LOGGER` replaces the skip-listed `logger` in `_send_order_failure_messages`/`send_summary` — fixes G16, zero delivery since 2026-10-06 |
 | `event_agents.py`, `alert_routing.py` (2026-10-25, alert-channel collapse) | 16 seeded agents retired from `SEEDED_AGENTS`, kept as `_COLLAPSED_DETECTOR_SPECS`; 3 new generic channel agents; `ALERT_EVENT_DISPATCH` table; `SEED_VERSION` 4 -> 5; `_retire_collapsed_event_agents()`; `alert_routing._PER_SLUG_OVERRIDES` gains 3 display-only rows (§3.22) |
 | `backend/tests/test_alert_channel_collapse.py` (2026-10-25) | New. Before/after delivery-identical golden gate for all 18 collapsed `alert_event` keys (§3.22) |
+| `event_agents.py` (2026-10-29) | `_looks_alert_shaped()` excludes the `log` channel's own delivery echo (`agent_slug` set, no `alert_event`) from the unrouted catch-all (§3.23) |
 
 ## 5. Gaps
 

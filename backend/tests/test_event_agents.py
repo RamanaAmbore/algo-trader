@@ -1276,6 +1276,57 @@ async def test_unknown_tag_never_triggers_the_catch_all():
     assert ea._looks_alert_shaped(rec) is False
 
 
+def test_log_channel_delivery_echo_never_triggers_the_catch_all():
+    """2026-10-29 live fix: the 'log' notify-channel's own delivery write
+    (`_send_log_channel`) stamps `agent_slug` but never `alert_event` —
+    before this guard, that echo was WARNING+ and tagged "agent" (a
+    known alert tag) with no event-agent condition shaped to match it,
+    so EVERY agent firing with "log" in its channel list produced a
+    spurious "unrouted alertable record" self-alert on the very next
+    flush. Direct unit test of the exclusion, independent of dispatch
+    plumbing or agent matching."""
+    from backend.api.algo import event_agents as ea
+    log_channel_echo = {"level": "WARNING", "tags": ["warning", "agent"],
+                        "extra": {"agent_slug": "loss-positions-total", "sim_mode": False}}
+    assert ea._looks_alert_shaped(log_channel_echo) is False
+    # Sanity: RICH_ALERT_AGENT's and BREACH_AGENT's own producers also
+    # stamp agent_slug, but always alongside a real alert_event — those
+    # must stay alert-shaped (they're excluded from the catch-all only
+    # because they correctly MATCH their own agent downstream, not
+    # because of this guard).
+    rich_alert_rec = {"level": "WARNING", "tags": ["agent"],
+                      "extra": {"agent_slug": "loss-positions-total", "alert_event": "rich_alert"}}
+    assert ea._looks_alert_shaped(rich_alert_rec) is True
+    breach_rec = {"level": "WARNING", "tags": ["agent"],
+                 "extra": {"agent_slug": "loss-positions-total", "alert_event": "breach"}}
+    assert ea._looks_alert_shaped(breach_rec) is True
+
+
+@pytest.mark.asyncio
+async def test_log_channel_delivery_echo_does_not_self_alert_through_dispatch_rows(monkeypatch):
+    """End-to-end, through the real `dispatch_rows()` entry point: a
+    record shaped exactly like `_send_log_channel`'s own write — tagged
+    "agent" at WARNING, carrying `agent_slug` with no `alert_event` —
+    must not fire `_emit_unrouted_self_alert`, even when zero agents are
+    loaded (the condition under which it would otherwise always fire)."""
+    from backend.api.algo import event_agents as ea
+    from backend.shared.helpers import utils as u
+    monkeypatch.setattr(u, "config", {"deploy_branch": "main"})
+    self_alert_calls = []
+    monkeypatch.setattr(ea, "_emit_unrouted_self_alert", lambda rec: self_alert_calls.append(rec))
+    monkeypatch.setattr(ea, "load_agents", lambda: _async_empty_agents())
+    log_channel_echo = {
+        "ts": datetime(2026, 10, 29, 9, 0, tzinfo=timezone.utc), "level": "WARNING",
+        "logger": "backend.api.algo.events",
+        "message": "ALERT [loss-positions-total]: Positions total loss guardrail - "
+                    "positions.total pnl_rate_abs=-9199.69 (<= -6000)",
+        "tags": ["warning", "agent"],
+        "extra": {"agent_slug": "loss-positions-total", "sim_mode": False},
+    }
+    await ea.dispatch_rows([log_channel_echo])
+    assert self_alert_calls == []
+
+
 def test_recursion_guard_is_the_reserved_alert_event_not_logger_exclusion():
     """The real recursion guard is `_looks_alert_shaped()` explicitly
     rejecting the reserved `alert_event` — direct unit test, independent

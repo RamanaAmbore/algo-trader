@@ -991,9 +991,31 @@ def _looks_alert_shaped(rec: dict) -> bool:
     (`_UNROUTED_ALERT_EVENT`) is NEVER alert-shaped by this function's
     own definition — this is what stops the self-alert from ever being
     flagged as itself unrouted, independent of whether it actually
-    matched a real agent downstream."""
+    matched a real agent downstream.
+
+    Second exclusion (2026-10-29 live fix): the 'log' notify-channel's
+    own delivery write (`_send_log_channel`,
+    grammar_tokens/channel_log.py) stamps `extra["agent_slug"]` but
+    deliberately NEVER `extra["alert_event"]` (see that function's own
+    docstring — setting one would re-match BREACH_AGENT and loop). That
+    record is an ECHO of an agent that already matched its own
+    conditions upstream and chose "log" as one of its delivery
+    channels — it is not a fresh observation that itself needs to match
+    a condition. Without this exclusion it is WARNING+ and tagged
+    "agent" (a known alert tag), so every single agent firing that
+    includes "log" in its channel list re-triggered this catch-all on
+    the very next flush, since no event-agent condition is shaped to
+    match a bare tag="agent" record with no `alert_event` — confirmed
+    live: this produced a spurious "unrouted alertable record"
+    self-alert following literally every regular alert.  The two other
+    producers that stamp `agent_slug` (`RICH_ALERT_AGENT`'s
+    `rich_alert` / `BREACH_AGENT`'s `breach` in `agent_engine.py` /
+    `events.py`) always carry a real `alert_event` alongside it, so
+    this check only ever excludes the log-channel echo."""
     extra = rec.get("extra") or {}
     if extra.get("alert_event") == _UNROUTED_ALERT_EVENT:
+        return False
+    if extra.get("agent_slug") and not extra.get("alert_event"):
         return False
     if not _level_at_least(rec.get("level"), "WARNING"):
         return False
