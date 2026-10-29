@@ -114,17 +114,20 @@ test.describe('NavStrip Day P&L SSOT static guards (2026-09 architecture)', () =
     expect(derivSrc).not.toContain('<PositionStrip');
   });
 
-  test('dispPositionsToday (P slot 1) is assigned exclusively from positionsDayPnlStore.total or a confirmed-empty 0', () => {
+  test('dispPositionsToday (P slot 1) is assigned exclusively from positionsDayPnlStore.total, a confirmed-empty 0, or null (never-polled)', () => {
     const stripSrc = readFileSync(_STRIP_FILE, 'utf8');
     // Every assignment site's right-hand side must be one of: the initial
-    // state read, the transition-reset literal 0, or the freeze/thaw
-    // effect's own `newPTotal` local (itself always
-    // `positionsDayPnlStore.total`) — never anything page-specific.
-    expect(stripSrc).toContain('let dispPositionsToday = $state(positionsDayPnlStore.total || 0);');
+    // state read, the transition-reset literal 0, the freeze/thaw effect's
+    // own `newPTotal` local (itself always `positionsDayPnlStore.total`),
+    // or `null` (2026-10 real-money fix — genuinely unknown, no poll has
+    // landed yet this session; see navStripDayPnlNullVsZero.test.js /
+    // navstrip_daypnl_null_vs_zero.spec.js for the dedicated coverage) —
+    // never anything page-specific.
+    expect(stripSrc).toContain('let dispPositionsToday = $state(positionsDayPnlStore.total ?? null);');
     const assignments = [...stripSrc.matchAll(/(?<!let )dispPositionsToday\s*=\s*([^;]+);/g)].map(m => m[1].trim());
     expect(assignments.length).toBeGreaterThan(0);
     for (const rhs of assignments) {
-      expect(['0', 'newPTotal']).toContain(rhs);
+      expect(['0', 'newPTotal', 'null']).toContain(rhs);
     }
     expect(stripSrc).toContain('const newPTotal = positionsDayPnlStore.total;');
   });
@@ -134,10 +137,16 @@ test.describe('NavStrip Day P&L SSOT static guards (2026-09 architecture)', () =
     // defect class: a momentary 0/null read from the store must not
     // immediately zero out the displayed value while positions are known
     // to be non-empty (or the store is degraded/reloading).
+    //
+    // 2026-10 real-money fix: the gate is now `!= null` (not `!== 0`) —
+    // a real confirmed 0 and a genuinely-unknown null are no longer
+    // conflated. The confirmed-empty fallback also requires
+    // positionsStore.value != null (a poll has actually landed), not just
+    // an empty positions array (which could be the pre-poll placeholder).
     const stripSrc = readFileSync(_STRIP_FILE, 'utf8');
-    expect(stripSrc).toContain('if (newPTotal !== 0) {');
+    expect(stripSrc).toContain('if (newPTotal != null) {');
     expect(stripSrc).toContain('dispPositionsToday = newPTotal;');
-    expect(stripSrc).toContain('} else if (positions.length === 0 && !positionsStore.meta?.degraded) {');
+    expect(stripSrc).toContain('} else if (positions.length === 0 && !positionsStore.meta?.degraded && positionsStore.value != null) {');
   });
 
   test('portfolioStore.positions.total.day_pnl (NavStrip\'s ultimate source) is built from baseDayPnlForPosition per row', () => {

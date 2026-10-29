@@ -101,9 +101,15 @@ test.describe('§2/§5 static regression guards', () => {
     // already-available warm-cache value on every fresh page load/reload.
     expect(content).not.toMatch(/let dispPositionsToday = \$state\(0\);/);
     expect(content).not.toMatch(/let dispHoldingsToday {2}= \$state\(0\);/);
-    // New pattern: seeded from positionsDayPnlStore.total / holdingsDayPnlStore.total.
-    expect(content).toMatch(/let dispPositionsToday = \$state\(positionsDayPnlStore\.total \|\| 0\);/);
-    expect(content).toMatch(/let dispHoldingsToday {2}= \$state\(holdingsDayPnlStore\.total \|\| 0\);/);
+    // Seeded from positionsDayPnlStore.total / holdingsDayPnlStore.total.
+    // 2026-10 real-money fix (NavStrip P/H-pill null-vs-zero consistency
+    // with margin/cash): `?? null` replaced `|| 0` — a genuine `0` from
+    // the store must not be coerced away (`||` treats `0` as falsy, `??`
+    // does not), and "no poll has landed yet this session" now renders
+    // as `—`, never a misleading `0`. See navStripDayPnlNullVsZero.test.js
+    // / navstrip_daypnl_null_vs_zero.spec.js for the dedicated coverage.
+    expect(content).toMatch(/let dispPositionsToday = \$state\(positionsDayPnlStore\.total \?\? null\);/);
+    expect(content).toMatch(/let dispHoldingsToday {2}= \$state\(holdingsDayPnlStore\.total \?\? null\);/);
   });
 
   test('PositionStrip modeChanged excludes ONLY the first (boot-placeholder) idle transition, not every idle-exit (item-6 fix, round 4)', () => {
