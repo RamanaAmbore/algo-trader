@@ -1241,6 +1241,47 @@ def _v2_derive_section(scope_tok: str) -> str:
     return 'Funds'
 
 
+# Calendar/state tokens that drive the pre-close and expiry-day awareness
+# agents (market-preclose-mcx-v2/market-preclose-nonmcx/expiry-day-mcx-v2/
+# expiry-day-nse-v2) carry no real P&L — they are facts about the clock or
+# the calendar, not a breach. Before this map existed, a match on one of
+# these fell straight into the generic per-account kind/threshold table:
+# scope rendered as the meaningless 'TOTAL' (these conditions are
+# funds.total-scoped with no account/underlying in `row`), and the "value"
+# rendered as a raw number (e.g. "1.00 (== 1.0)" for a boolean token, or
+# "28 (<= 30)" for a minutes-remaining token) — operator-reported as
+# "showing total values" with no indication the alert was about a pre-close
+# or expiry reminder at all. `_v2_reminder_only_line()` below recognizes an
+# all-reminder-metric match set and returns a clear, human line instead.
+_V2_REMINDER_METRIC_LABELS = {
+    "minutes_until_mcx_close": "MCX closes in 30 minutes",
+    "minutes_until_nse_close": "NSE closes in 30 minutes",
+    "is_mcx_expiry_today":     "a held MCX position expires today",
+    "is_nse_expiry_today":     "a held NSE/NFO position expires today",
+}
+
+
+def _v2_reminder_only_line(agent, matches: list[dict]) -> str | None:
+    """Return a clear one-line label when every match is a calendar/state
+    reminder metric (see `_V2_REMINDER_METRIC_LABELS`), or None when any
+    match is a real P&L breach — the generic kind/threshold table still
+    renders for everything else, unchanged.
+
+    A compound `{"all": [...]}` condition (e.g. expiry-day-mcx-v2, which
+    ANDs `is_mcx_expiry_today` with `minutes_until_mcx_close`) produces one
+    match per unkeyed leaf (see `_eval_all`'s docstring — TOTAL-scoped
+    leaves have no join key, so both survive independently), so `metrics`
+    below can legitimately hold more than one entry for a single firing.
+    """
+    metrics = {m.get('metric') for m in matches}
+    if not metrics or not metrics.issubset(_V2_REMINDER_METRIC_LABELS):
+        return None
+    notes = [_V2_REMINDER_METRIC_LABELS[m] for m in sorted(metrics)]
+    is_expiry = any(m.endswith('_expiry_today') for m in metrics)
+    prefix = "Expiry pre-close" if is_expiry else agent.name
+    return f"{prefix} — {' — '.join(notes)}"
+
+
 def _v2_derive_kind(metric: str, op: str = '') -> str:
     """Map a metric token (+ its leaf operator) to its alert kind label.
 
@@ -1562,6 +1603,9 @@ async def _v2_send_rich_alert(agent, matches, now, sim_mode: bool = False,
         scheduled_line = f"{agent.name} — Scheduled — {agent.fire_at_time} IST"
         tg_body    = scheduled_line
         email_html = f"<p>{html.escape(scheduled_line)}</p>"
+    elif (reminder_line := _v2_reminder_only_line(agent, matches)):
+        tg_body    = reminder_line
+        email_html = f"<p>{html.escape(reminder_line)}</p>"
     else:
         tg_body    = _tg_alert_body(rows)
         email_html = _email_alert_body(rows)
@@ -2123,33 +2167,64 @@ for _a in _EXPIRY_RISK_AGENTS:
 BUILTIN_AGENTS.extend(_EXPIRY_RISK_AGENTS)
 
 
-# ── Expiry-day awareness agents (2026-10-28) ──────────────────────────
+# ── Expiry-day awareness agents (2026-10-28, retimed 2026-10-29) ──────
 #
-# schedule="always" + no fire_at_time — these must fire the instant a
-# held F&O position's expiry day begins, not only during market_hours
-# or at a fixed clock string, since `is_{mcx,nse}_expiry_today` is a
-# state-level metric (see metric_is_mcx_expiry_today.py /
-# metric_is_nse_expiry_today.py), not a scheduled clock boundary.
-# cooldown_minutes=1320 (22h) caps this to one fire per expiry day,
-# same convention as the market-open-nse/market-preclose-mcx-v2/
-# market-preclose-nonmcx info agents below. Distinct from
-# expiry-nfo-risk-alert / expiry-mcx-risk-alert (per-position
-# ITM/unhedged risk, market_hours-scheduled, 60-min cooldown) — this
-# pair is a single once-a-day "today is an expiry day" heads-up, not a
-# per-position risk re-alert.
+# 2026-10-29 operator instruction: the original `expiry-day-mcx`/
+# `expiry-day-nse` (bare `is_{mcx,nse}_expiry_today==1` leaf) fired the
+# instant the FIRST `run_cycle` tick of the expiry day evaluated true —
+# observed live at 18:31 IST, hours before close. Operator: "it should
+# be 30 mins before market close" / "which 23:00 ist" (23:00 = MCX's own
+# 23:30 close minus 30 min, the same `minutes_until_mcx_close`/
+# `minutes_until_nse_close` tokens `market-preclose-mcx-v2`/
+# `market-preclose-nonmcx` above already use) / "high prioirty alert for
+# expiry" (tier stays "high", unchanged).
+#
+# Conditions are now a compound `all[]` — expiry-today AND within 30 min
+# of that exchange's own close — so the fire genuinely coincides with
+# the pre-close window instead of firing at an arbitrary earlier tick.
+# Both leaves are `funds.total`-scoped with no account/underlying, so
+# per `_eval_all`'s docstring ("TOTAL-scoped leaves... behave as plain
+# independent AND gates") this is a correct, simple AND — no cross-row
+# join ambiguity to worry about.
+#
+# RETIRE + RESHIP, not an in-place edit: `_ae_should_reset_conditions()`
+# only recognizes a stale 'pnl'/'pnl_pct' leaf (see its own docstring);
+# it has no idea a simple leaf became a compound `all[]` tree, so an
+# in-place edit would leave an already-seeded row (confirmed live:
+# `expiry-day-mcx` fired today, `trigger_count=1`, `status='cooldown'`)
+# stuck on its OLD condition forever. Same migration hazard, same fix
+# shape, as `market-preclose-mcx` → `market-preclose-mcx-v2` above — new
+# slugs `-v2` let `_ae_prune_retired_builtins` delete the stale rows and
+# `seed_agents` insert these fresh.
+#
+# schedule="always" + no fire_at_time — `minutes_until_mcx_close`/
+# `minutes_until_nse_close` are already clock-derived (see the
+# "Market-cycle event tokens" CLAUDE.md entry), so a fire_at_time isn't
+# needed to pin the window; cooldown_minutes=1320 (22h) still caps this
+# to one fire per expiry day. Distinct from expiry-nfo-risk-alert /
+# expiry-mcx-risk-alert (per-position ITM/unhedged risk, market_hours-
+# scheduled, 60-min cooldown) — this pair is a single once-a-day
+# "today is an expiry day, and close is 30 min out" heads-up, not a
+# per-position risk re-alert. Render text for both the outbound
+# Telegram/email body and the audit-log condition_text is handled by
+# `_v2_reminder_only_line()` (always renders "Expiry pre-close — ..."
+# for this pair, never the generic per-account kind/threshold table).
 _EXPIRY_DAY_AWARENESS_AGENTS = [
     {
-        "slug": "expiry-day-mcx",
+        "slug": "expiry-day-mcx-v2",
         "name": "MCX expiry day",
-        "long_name": "when:is_mcx_expiry_today==1   schedule:always/cooldown:1320   alert:high/tg+email+ntfy(high)+log   do:notify-only",
-        "description": "Fires once when a held MCX F&O position expires today — reminder to manage or close before settlement.",
+        "long_name": "when:is_mcx_expiry_today==1 AND minutes_until_mcx_close<=30   schedule:always/cooldown:1320   alert:high/tg+email+ntfy(high)+log   do:notify-only",
+        "description": "Fires once 30 minutes before MCX's own close, on a day a held MCX F&O position expires — reminder to manage or close before settlement.",
         "schedule": "always",
         "cooldown_minutes": 1320,
         "tier": "high",
         "topic": "expiry_warning",
         "status": "active",
         "actions": [],
-        "conditions": {"op": "==", "scope": "funds.total", "metric": "is_mcx_expiry_today", "value": 1.0},
+        "conditions": {"all": [
+            {"op": "==", "scope": "funds.total", "metric": "is_mcx_expiry_today", "value": 1.0},
+            {"op": "<=", "scope": "funds.total", "metric": "minutes_until_mcx_close", "value": 30},
+        ]},
         "events": [
             {"channel": "telegram", "enabled": True},
             {"channel": "email",    "enabled": True},
@@ -2158,17 +2233,20 @@ _EXPIRY_DAY_AWARENESS_AGENTS = [
         ],
     },
     {
-        "slug": "expiry-day-nse",
+        "slug": "expiry-day-nse-v2",
         "name": "NSE/NFO expiry day",
-        "long_name": "when:is_nse_expiry_today==1   schedule:always/cooldown:1320   alert:high/tg+email+ntfy(high)+log   do:notify-only",
-        "description": "Fires once when a held NFO (NSE equity F&O) position expires today — reminder to manage or close before settlement.",
+        "long_name": "when:is_nse_expiry_today==1 AND minutes_until_nse_close<=30   schedule:always/cooldown:1320   alert:high/tg+email+ntfy(high)+log   do:notify-only",
+        "description": "Fires once 30 minutes before NSE's own close, on a day a held NFO (NSE equity F&O) position expires — reminder to manage or close before settlement.",
         "schedule": "always",
         "cooldown_minutes": 1320,
         "tier": "high",
         "topic": "expiry_warning",
         "status": "active",
         "actions": [],
-        "conditions": {"op": "==", "scope": "funds.total", "metric": "is_nse_expiry_today", "value": 1.0},
+        "conditions": {"all": [
+            {"op": "==", "scope": "funds.total", "metric": "is_nse_expiry_today", "value": 1.0},
+            {"op": "<=", "scope": "funds.total", "metric": "minutes_until_nse_close", "value": 30},
+        ]},
         "events": [
             {"channel": "telegram", "enabled": True},
             {"channel": "email",    "enabled": True},
@@ -4032,6 +4110,17 @@ def _cycle_maybe_buffer_fire(
     if (getattr(agent, 'fire_at_time', None)
             and getattr(agent, 'tier', 'medium') in ('info', 'low')):
         result.condition_text = f"Scheduled — {agent.fire_at_time} IST"
+    elif (reminder_line := _v2_reminder_only_line(agent, matches)):
+        # Pre-close/expiry-day calendar tokens (see _v2_reminder_only_line)
+        # get the same clear label here as the Telegram/email body does —
+        # the raw auto-generated condition text ("funds.total: is_mcx_
+        # expiry_today == 1.0") is just as meaningless in the audit log/
+        # websocket view as the generic alert table was in the outbound
+        # message. Deliberately NOT gated on tier — expiry-day-mcx-v2 is
+        # tier="high" (so it's excluded from the "Scheduled" branch above
+        # by design, per that branch's own comment), but these specific
+        # tokens carry no real breach value worth preserving either way.
+        result.condition_text = reminder_line
     if sim_mode:
         _cycle_shadow_lifespan_decrement(agent, alert_state)
     if broadcast_fn:

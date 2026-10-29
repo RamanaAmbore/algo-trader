@@ -2,9 +2,13 @@
 
 Covers:
   - market-preclose-nonmcx (NSE counterpart of market-preclose-mcx-v2)
-  - expiry-day-mcx / expiry-day-nse (held F&O expiring today reminders)
-  - market-preclose-mcx (retired slug) is absent, so the boot-time
-    `_ae_prune_retired_builtins` sweep has a real row to delete
+  - expiry-day-mcx-v2 / expiry-day-nse-v2 (held F&O expiring today, retimed
+    2026-10-29 to fire within 30 min of that exchange's own close, per
+    operator instruction — see agent_engine.py's own comment above
+    `_EXPIRY_DAY_AWARENESS_AGENTS`)
+  - market-preclose-mcx / expiry-day-mcx / expiry-day-nse (retired slugs)
+    are absent, so the boot-time `_ae_prune_retired_builtins` sweep has a
+    real row to delete for each
 
 The pruning mechanism itself is DB-backed and covered by
 test_bracket_agent_unification.py; here we only assert the registry side
@@ -75,50 +79,53 @@ class TestMarketPrecloseNonMcx:
 
 
 class TestExpiryDayAgents:
-    """expiry-day-mcx / expiry-day-nse: held F&O expiring today."""
+    """expiry-day-mcx-v2 / expiry-day-nse-v2: held F&O expiring today,
+    firing within 30 minutes of that exchange's own close (2026-10-29
+    retime — operator: "it should be 30 mins before market close")."""
 
-    @pytest.mark.parametrize("slug,metric", [
-        ("expiry-day-mcx", "is_mcx_expiry_today"),
-        ("expiry-day-nse", "is_nse_expiry_today"),
+    @pytest.mark.parametrize("slug,metric,close_metric", [
+        ("expiry-day-mcx-v2", "is_mcx_expiry_today", "minutes_until_mcx_close"),
+        ("expiry-day-nse-v2", "is_nse_expiry_today", "minutes_until_nse_close"),
     ])
-    def test_exists_in_builtin_agents(self, slug, metric):
+    def test_exists_in_builtin_agents(self, slug, metric, close_metric):
         assert _by_slug(slug) is not None, f"{slug} not found in BUILTIN_AGENTS"
 
-    @pytest.mark.parametrize("slug,metric", [
-        ("expiry-day-mcx", "is_mcx_expiry_today"),
-        ("expiry-day-nse", "is_nse_expiry_today"),
+    @pytest.mark.parametrize("slug,metric,close_metric", [
+        ("expiry-day-mcx-v2", "is_mcx_expiry_today", "minutes_until_mcx_close"),
+        ("expiry-day-nse-v2", "is_nse_expiry_today", "minutes_until_nse_close"),
     ])
-    def test_is_token_driven_not_scheduled(self, slug, metric):
+    def test_is_token_driven_not_scheduled(self, slug, metric, close_metric):
         agent = _by_slug(slug)
         assert agent is not None
         assert agent.get('fire_at_time') is None, \
             f"{slug}: expected fire_at_time=None, got {agent.get('fire_at_time')}"
 
-    @pytest.mark.parametrize("slug,metric", [
-        ("expiry-day-mcx", "is_mcx_expiry_today"),
-        ("expiry-day-nse", "is_nse_expiry_today"),
+    @pytest.mark.parametrize("slug,metric,close_metric", [
+        ("expiry-day-mcx-v2", "is_mcx_expiry_today", "minutes_until_mcx_close"),
+        ("expiry-day-nse-v2", "is_nse_expiry_today", "minutes_until_nse_close"),
     ])
-    def test_condition_matches_expiry_token_equals_one(self, slug, metric):
+    def test_condition_is_expiry_today_and_within_30min_of_close(self, slug, metric, close_metric):
         agent = _by_slug(slug)
         assert agent is not None
-        assert agent.get('conditions') == {
-            "op": "==", "scope": "funds.total", "metric": metric, "value": 1.0,
-        }, f"{slug}: unexpected conditions {agent.get('conditions')}"
+        assert agent.get('conditions') == {"all": [
+            {"op": "==", "scope": "funds.total", "metric": metric, "value": 1.0},
+            {"op": "<=", "scope": "funds.total", "metric": close_metric, "value": 30},
+        ]}, f"{slug}: unexpected conditions {agent.get('conditions')}"
 
-    @pytest.mark.parametrize("slug", ["expiry-day-mcx", "expiry-day-nse"])
+    @pytest.mark.parametrize("slug", ["expiry-day-mcx-v2", "expiry-day-nse-v2"])
     def test_is_high_tier(self, slug):
         agent = _by_slug(slug)
         assert agent is not None
         assert agent.get('tier') == "high", f"{slug}: expected tier='high', got {agent.get('tier')}"
 
-    @pytest.mark.parametrize("slug", ["expiry-day-mcx", "expiry-day-nse"])
+    @pytest.mark.parametrize("slug", ["expiry-day-mcx-v2", "expiry-day-nse-v2"])
     def test_cooldown_is_22_hours(self, slug):
         agent = _by_slug(slug)
         assert agent is not None
         assert agent.get('cooldown_minutes') == 1320, \
             f"{slug}: expected cooldown_minutes=1320, got {agent.get('cooldown_minutes')}"
 
-    @pytest.mark.parametrize("slug", ["expiry-day-mcx", "expiry-day-nse"])
+    @pytest.mark.parametrize("slug", ["expiry-day-mcx-v2", "expiry-day-nse-v2"])
     def test_events_cover_all_four_channels_with_high_ntfy(self, slug):
         agent = _by_slug(slug)
         assert agent is not None
@@ -129,10 +136,95 @@ class TestExpiryDayAgents:
             f"{slug}: ntfy priority must be 'high' (not default/urgent), got {ntfy.get('priority')}"
 
 
-class TestRetiredPrecloseSlug:
-    """market-preclose-mcx (old slug) must be gone from the registry."""
+class TestRetiredSlugs:
+    """Old slugs must be gone from the registry so _ae_prune_retired_builtins
+    deletes the stale DB rows instead of leaving them stuck on a condition
+    shape the sync-on-restart logic can't detect as stale."""
 
-    def test_old_slug_absent_from_builtin_agents(self):
-        assert _by_slug('market-preclose-mcx') is None, \
-            "market-preclose-mcx is retired; it must not appear in BUILTIN_AGENTS " \
+    @pytest.mark.parametrize("slug", [
+        "market-preclose-mcx", "expiry-day-mcx", "expiry-day-nse",
+    ])
+    def test_old_slug_absent_from_builtin_agents(self, slug):
+        assert _by_slug(slug) is None, \
+            f"{slug} is retired; it must not appear in BUILTIN_AGENTS " \
             "or _ae_prune_retired_builtins will not delete the stale DB row"
+
+
+class TestReminderOnlyLine:
+    """_v2_reminder_only_line: clear text for calendar/state reminder
+    matches, replacing the generic per-account kind/threshold table that
+    previously rendered a meaningless 'TOTAL'/numeric row for these
+    agents (operator: "why it is showing total values for pre close.
+    expiry pre close should clearly say it is expiry pre close")."""
+
+    def test_plain_preclose_uses_agent_name(self):
+        from backend.api.algo.agent_engine import _v2_reminder_only_line
+
+        class _Agent:
+            name = "MCX pre-close"
+
+        line = _v2_reminder_only_line(
+            _Agent(), [{"metric": "minutes_until_mcx_close"}],
+        )
+        assert line == "MCX pre-close — MCX closes in 30 minutes"
+
+    def test_expiry_leaf_alone_says_expiry_pre_close(self):
+        from backend.api.algo.agent_engine import _v2_reminder_only_line
+
+        class _Agent:
+            name = "MCX expiry day"
+
+        line = _v2_reminder_only_line(
+            _Agent(), [{"metric": "is_mcx_expiry_today"}],
+        )
+        assert line == "Expiry pre-close — a held MCX position expires today"
+
+    def test_compound_expiry_and_close_leaves_says_expiry_pre_close(self):
+        from backend.api.algo.agent_engine import _v2_reminder_only_line
+
+        class _Agent:
+            name = "MCX expiry day"
+
+        line = _v2_reminder_only_line(
+            _Agent(), [
+                {"metric": "is_mcx_expiry_today"},
+                {"metric": "minutes_until_mcx_close"},
+            ],
+        )
+        assert line.startswith("Expiry pre-close — ")
+        assert "a held MCX position expires today" in line
+        assert "MCX closes in 30 minutes" in line
+
+    def test_real_breach_metric_returns_none(self):
+        from backend.api.algo.agent_engine import _v2_reminder_only_line
+
+        class _Agent:
+            name = "loss-positions-total"
+
+        assert _v2_reminder_only_line(
+            _Agent(), [{"metric": "pnl_rate_abs"}],
+        ) is None
+
+    def test_mixed_breach_and_reminder_returns_none(self):
+        """A real breach leaf anywhere in the match set must still render
+        the full table — never silently drop the breach info because a
+        reminder-shaped metric happened to be in the same match list."""
+        from backend.api.algo.agent_engine import _v2_reminder_only_line
+
+        class _Agent:
+            name = "mixed"
+
+        assert _v2_reminder_only_line(
+            _Agent(), [
+                {"metric": "is_mcx_expiry_today"},
+                {"metric": "pnl_rate_abs"},
+            ],
+        ) is None
+
+    def test_empty_matches_returns_none(self):
+        from backend.api.algo.agent_engine import _v2_reminder_only_line
+
+        class _Agent:
+            name = "whatever"
+
+        assert _v2_reminder_only_line(_Agent(), []) is None
