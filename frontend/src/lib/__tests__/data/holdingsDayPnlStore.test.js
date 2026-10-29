@@ -23,6 +23,14 @@
  */
 
 import { describe, it, expect } from 'vitest';
+// Vite `?raw` import — holdingsDayPnlStore.svelte.js imports
+// portfolioStore.svelte.js, which has top-level $derived.by(...) calls and
+// can't be imported directly under this project's Vitest config (same
+// established convention as positionsDayPnlStore.test.js's own source-grep
+// guard). Grep the real shipped source so a regression (e.g. someone
+// re-adding `?? 0`) is caught without needing to import/execute it.
+// @ts-ignore — Vite raw-import suffix has no TS module declaration here.
+import holdingsDayPnlStoreSrc from '$lib/data/holdingsDayPnlStore.svelte.js?raw';
 
 // ── Local helper: mirrors holdingsDayPnlStore's $derived.by body ────────────
 
@@ -874,5 +882,51 @@ describe('holdingsDayPnlStore — get(sym, fallback?) accessor', () => {
     const result = get('wipro', 0);
     expect(result.day_pnl).toBe(200);
     expect(result.chg_pct).toBe(1.5);
+  });
+});
+
+// ── Real-money fix (2026-10): `.total` propagates null (never-polled),
+// never coerces to 0 ──────────────────────────────────────────────────────
+//
+// holdingsDayPnlStore.total used to do `portfolioStore.holdings.total ??
+// 0`, silently coercing "no holdings poll has ever landed this session"
+// (null) into a confirmed-flat `0`. Matching the margin/cash pills'
+// existing `fundsAggregate.js` convention, it now propagates whatever
+// portfolioStore.holdings.total actually is.
+
+describe('holdingsDayPnlStore.svelte.js — .total null-propagation source-grep guard (real file)', () => {
+  const src = holdingsDayPnlStoreSrc;
+
+  it('the `total` getter no longer coerces with `?? 0`', () => {
+    const idx = src.indexOf('get total()');
+    expect(idx, 'get total() not found').toBeGreaterThan(-1);
+    const line = src.slice(idx, src.indexOf('\n', idx));
+    expect(line).toContain('portfolioStore.holdings.total');
+    expect(line).not.toContain('?? 0');
+  });
+});
+
+/**
+ * Mirror of the fixed `.total` getter: `get total() { return
+ * portfolioStore.holdings.total; }` — no `?? 0`.
+ */
+function getHoldingsDayPnlTotal(mockPortfolioStore) {
+  return mockPortfolioStore.holdings.total;
+}
+
+describe('holdingsDayPnlStore.total (mirror) — null (never-polled) vs 0 (confirmed-flat)', () => {
+  it('returns null when portfolioStore.holdings.total is null (cold start, no poll yet)', () => {
+    const mockStore = { holdings: { total: null } };
+    expect(getHoldingsDayPnlTotal(mockStore)).toBeNull();
+  });
+
+  it('returns a real 0 when the broker confirmed a genuinely flat book', () => {
+    const mockStore = { holdings: { total: 0 } };
+    expect(getHoldingsDayPnlTotal(mockStore)).toBe(0);
+  });
+
+  it('returns a real nonzero number unchanged', () => {
+    const mockStore = { holdings: { total: 987.65 } };
+    expect(getHoldingsDayPnlTotal(mockStore)).toBe(987.65);
   });
 });

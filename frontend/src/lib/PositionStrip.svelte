@@ -429,8 +429,12 @@
   // remount case _prevExecMode's init below already handles). A genuine
   // cold start with no cached data at all still yields 0 here, which is
   // the only honest value when nothing is known yet.
-  let dispPositionsToday = $state(positionsDayPnlStore.total || 0);
-  let dispHoldingsToday  = $state(holdingsDayPnlStore.total || 0);
+  // `?? null` (not `|| 0`, real-money fix 2026-10): a genuine `0` from the
+  // store must not be coerced away — `||` treats `0` as falsy, `??` does
+  // not. `null` (no poll landed yet this session) now renders as `—` via
+  // fmtMoney below, matching the margin/cash pills' existing convention.
+  let dispPositionsToday = $state(positionsDayPnlStore.total ?? null);
+  let dispHoldingsToday  = $state(holdingsDayPnlStore.total ?? null);
   let _prevMktOpen       = isNseOpen() || isMcxOpen();
   // Initialize from the ACTUAL current mode, not a hardcoded 'idle' default.
   // executionMode is already live by the time this script runs (the store
@@ -528,17 +532,34 @@
     const _isBootIdleResolution = _rawModeChanged && !_sawFirstModeChange && _prevExecMode === 'idle';
     if (_rawModeChanged) _sawFirstModeChange = true;
     const modeChanged = _rawModeChanged && !_isBootIdleResolution;
-    if ((open && !_prevMktOpen) || modeChanged) {
-      // Closed → Open transition OR execution-mode switch. Snapshot "now"
-      // so we suppress stale day_change_val (from the prior session, or
-      // from a real-broker poll just before swapping to SIM) until a
-      // fetch that lands AFTER this moment arrives. Force _load()
-      // immediately instead of waiting on the shared poller's next tick.
-      // Without the mode-change branch a mid-session SIM↔LIVE flip leaves
-      // dispPositionsToday tracking the old engine's P&L until the next
-      // poll naturally arrives.
-      dispPositionsToday = 0;
-      dispHoldingsToday  = 0;
+    // 2026-10 refinement: these two triggers need DIFFERENT treatment, not
+    // a shared reset. Closed→Open is a genuine session boundary where 0
+    // is mathematically correct (no price move since open yet). A mode
+    // switch is NOT a session boundary — it just means "viewing a
+    // different mode's data that hasn't loaded yet"; resetting to 0 there
+    // discards a real, valid number right before the reload replaces it.
+    const _isOpenTransition = open && !_prevMktOpen;
+    if (_isOpenTransition || modeChanged) {
+      // Closed → Open transition: the day's P&L genuinely IS zero at the
+      // instant a new session opens — 0 here is correct, not a
+      // placeholder. Snapshot "now" so we suppress stale day_change_val
+      // (from the prior session) until a fetch that lands AFTER this
+      // moment arrives. Force _load() immediately instead of waiting on
+      // the shared poller's next tick.
+      //
+      // Execution-mode switch: leave dispPositionsToday/dispHoldingsToday
+      // FROZEN at their last value — do not reset at all. The post-reload
+      // branch below (pFresh/hFresh) updates them in place once the new
+      // mode's fresh data lands, so there's zero flicker to 0 or — mid-
+      // switch. Same frozen-last-good pattern as portfolioAggregates'
+      // `_lastLiveXxx` sentinels. Without this branch running at all, a
+      // mid-session SIM↔LIVE flip would leave dispPositionsToday tracking
+      // the old engine's P&L until the next poll naturally arrives — that
+      // part is unchanged; only the "blank to 0 first" step is removed.
+      if (_isOpenTransition) {
+        dispPositionsToday = 0;
+        dispHoldingsToday  = 0;
+      }
       cachedDelete('strip.frozen');
       _openTransitionAt = Date.now();
       untrack(() => { _load(); });
@@ -575,20 +596,38 @@
     // reloading, and prevents the exact real-money "0 instead of last-known-
     // good" bug this guard exists to prevent from firing on a masked/
     // substituted failure that happens to parse to an empty array).
+    // Real-money fix (2026-10): distinguish "broker confirmed genuinely
+    // flat" (a real 0, render 0) from "no poll has landed yet this
+    // session" (null/unknown, render — via fmtMoney). Before this fix,
+    // positionsDayPnlStore.total/holdingsDayPnlStore.total coerced null to
+    // 0 internally, so these two cases were indistinguishable here.
+    // newPTotal/newHTotal is only null before the very first successful
+    // live cycle this session — after that, portfolioStore's own
+    // freeze-to-last-good mechanism (`_last`) carries forward a real
+    // number forever, even while degraded — so the fallback branches
+    // below are a true cold-start edge case, not a steady-state path.
     if (pFresh) {
       const newPTotal = positionsDayPnlStore.total;
-      if (newPTotal !== 0) {
+      if (newPTotal != null) {
         dispPositionsToday = newPTotal;
-      } else if (positions.length === 0 && !positionsStore.meta?.degraded) {
+      } else if (positions.length === 0 && !positionsStore.meta?.degraded && positionsStore.value != null) {
+        // Confirmed-empty: a poll has actually landed (positionsStore.value
+        // is populated, not the pre-poll placeholder) AND it found zero
+        // positions — a genuine broker-confirmed flat book.
         dispPositionsToday = 0;
+      } else {
+        // Genuinely unknown — no poll has landed yet. Render —, not 0.
+        dispPositionsToday = null;
       }
     }
     if (hFresh) {
       const newHTotal = holdingsDayPnlStore.total;
-      if (newHTotal !== 0) {
+      if (newHTotal != null) {
         dispHoldingsToday = newHTotal;
-      } else if (holdings.length === 0 && !pulseHoldingsStore.meta?.degraded) {
+      } else if (holdings.length === 0 && !pulseHoldingsStore.meta?.degraded && pulseHoldingsStore.value != null) {
         dispHoldingsToday = 0;
+      } else {
+        dispHoldingsToday = null;
       }
     }
     if (!open) return;

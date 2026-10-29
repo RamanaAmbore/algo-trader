@@ -32,7 +32,13 @@ const _byKeyProxy = new Proxy({}, {
 });
 
 export const positionsDayPnlStore = {
-  get total() { return portfolioStore.positions.total.day_pnl ?? 0; },
+  // Real-money fix (2026-10, NavStrip P∆ pill): propagate `null` (not `0`)
+  // when the underlying portfolioStore.positions.total.day_pnl is itself
+  // `null` — genuinely unknown, no positions poll has ever landed this
+  // session. A broker-confirmed-flat book still returns a real `0` once
+  // the first live cycle has run (see portfolioStore.svelte.js's
+  // _EMPTY_POSITIONS cold-start default + freeze-to-last-good mechanism).
+  get total() { return portfolioStore.positions.total.day_pnl; },
   get byKey() { return _byKeyProxy; },
   /** Per-account positions day P&L, keyed by UPPERCASE account + 'TOTAL'. */
   get byAccount() { return portfolioStore.positions.byAccount ?? {}; },

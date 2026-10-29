@@ -6,6 +6,7 @@ import {
   navTotalRow,
   positionsPnlFiltered,
   dayChangePct,
+  combineFirmDayPnlLegs,
 } from '$lib/data/nav.js';
 // navByAccount/navRowForAccount removed 2026-09 (NAV SSOT consolidation) —
 // the per-account NAV formula they duplicated now lives ONLY in
@@ -279,5 +280,42 @@ describe('dayChangePct', () => {
 
   it('zero dayPnl returns 0% not null', () => {
     expect(dayChangePct(0, 5000)).toBeCloseTo(0);
+  });
+});
+
+// ── combineFirmDayPnlLegs ──────────────────────────────────────────────────
+// Real-money fix (2026-10): NavCard's firmDayPnl = positions leg + holdings
+// leg must never silently drop a leg that's genuinely null (no poll landed
+// yet this session) via JS's `null + number === number` coercion.
+
+describe('combineFirmDayPnlLegs', () => {
+  it('returns null when BOTH legs are null (nothing known at all)', () => {
+    expect(combineFirmDayPnlLegs(null, null)).toBeNull();
+  });
+
+  it('sums both legs when both are real numbers', () => {
+    expect(combineFirmDayPnlLegs(500, 300)).toBe(800);
+  });
+
+  it('sums both legs when both are a real confirmed zero', () => {
+    expect(combineFirmDayPnlLegs(0, 0)).toBe(0);
+  });
+
+  it('positions leg null, holdings leg real — includes the known leg, does NOT silently drop to just that leg being mistaken for the total of an unrelated null', () => {
+    expect(combineFirmDayPnlLegs(null, 300)).toBe(300);
+  });
+
+  it('holdings leg null, positions leg real — includes the known leg', () => {
+    expect(combineFirmDayPnlLegs(500, null)).toBe(500);
+  });
+
+  it('a null leg contributes 0 to the sum, never excludes the whole total (include-not-exclude, matching fundsAggregate.js idiom)', () => {
+    expect(combineFirmDayPnlLegs(null, -200)).toBe(-200);
+    expect(combineFirmDayPnlLegs(-200, null)).toBe(-200);
+  });
+
+  it('treats undefined the same as null for either leg', () => {
+    expect(combineFirmDayPnlLegs(undefined, undefined)).toBeNull();
+    expect(combineFirmDayPnlLegs(undefined, 100)).toBe(100);
   });
 });

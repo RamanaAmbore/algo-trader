@@ -207,3 +207,97 @@ describe('portfolioAggregates — _portfolio partial fallback (§2)', () => {
     expect(src).toMatch(/funds:\s*fundsFresh \? _fundsAgg\s*: \(_last\?\.funds\s*\?\? _EMPTY_FUNDS\)/);
   });
 });
+
+// ── Real-money fix (2026-10): NavStrip P/H-pill null-vs-zero consistency
+// with the margin/cash pills ─────────────────────────────────────────────
+//
+// Before this fix, `_lastLivePositionsPnl`/`_lastLiveHoldingsTotal`/
+// `_lastLiveHoldingsValue` initialized to `0`, and `_EMPTY_POSITIONS.total.
+// day_pnl`/`_EMPTY_HOLDINGS.total` also initialized to `0` — so "no poll
+// has ever landed this session" and "broker confirmed a genuinely flat
+// book" were indistinguishable, unlike `_lastLiveCashTotal`/`_marginAvail`/
+// `_marginTotal` (already null-until-polled via fundsAggregate.js). These
+// three sentinels and two cold-start defaults now match that convention.
+
+describe('portfolioStore.svelte.js — _lastLiveXxx sentinels init to null, not 0 (real file)', () => {
+  it('_lastLivePositionsPnl / _lastLiveHoldingsTotal / _lastLiveHoldingsValue all init to null', () => {
+    expect(src).toMatch(/let _lastLivePositionsPnl\s*=\s*\/\*\*[^*]*\*\/\s*\(null\);/);
+    expect(src).toMatch(/let _lastLiveHoldingsTotal\s*=\s*\/\*\*[^*]*\*\/\s*\(null\);/);
+    expect(src).toMatch(/let _lastLiveHoldingsValue\s*=\s*\/\*\*[^*]*\*\/\s*\(null\);/);
+  });
+
+  it('_lastLongOptionsCashPaid is unchanged at 0 — out of scope, not its own NavStrip pill', () => {
+    expect(src).toMatch(/let _lastLongOptionsCashPaid\s*=\s*0;/);
+  });
+
+  it('each $derived.by still returns its own _lastLiveXxx sentinel on a null/degraded read (freeze-to-last-good unchanged)', () => {
+    expect(src).toMatch(/if \(!posRows \|\| positionsStore\.meta\?\.degraded\) return _lastLivePositionsPnl;/);
+    expect(src).toMatch(/if \(!holdRows \|\| pulseHoldingsStore\.meta\?\.degraded\) return _lastLiveHoldingsTotal;/);
+  });
+});
+
+describe('portfolioStore.svelte.js — cold-start defaults init day-delta fields to null, not 0 (real file)', () => {
+  it('_EMPTY_POSITIONS.total.day_pnl is null; its lifetime/aux fields are unchanged at 0', () => {
+    const idx = src.indexOf('const _EMPTY_POSITIONS = {');
+    expect(idx, '_EMPTY_POSITIONS not found').toBeGreaterThan(-1);
+    const blockEnd = src.indexOf('\n};', idx);
+    const block = src.slice(idx, blockEnd);
+    expect(block).toMatch(/total:\s*\{\s*day_pnl:\s*null,\s*exp_pnl:\s*0,\s*extrinsic:\s*0,\s*prev_mv:\s*0,\s*chg_pct:\s*null\s*\},/);
+  });
+
+  it('_EMPTY_HOLDINGS.total is null; its chg_pct/byKey/byAccount/rows/fresh fields are unchanged', () => {
+    expect(src).toMatch(/const _EMPTY_HOLDINGS = \{ total: null, byKey: \{\}, byAccount: \{\}, chg_pct: null, chgPctByKey: \{\}, rows: \[\], fresh: false \};/);
+  });
+
+  it('the LIVE recompute object (_posAgg.posTotal) is unaffected — still inits day_pnl at a real 0, since it always gets overwritten by a real sum on a fresh cycle', () => {
+    // Distinguishes the one-time cold-start PLACEHOLDER (_EMPTY_POSITIONS,
+    // used only before the very first live cycle / while degraded) from
+    // the PER-CYCLE accumulator inside _posAgg (posTotal), which must stay
+    // a real 0 starting point so `posTotal.day_pnl += p._day_pnl` sums
+    // correctly — changing this one to null would break every live cycle,
+    // not just the cold-start placeholder.
+    expect(src).toMatch(/const posTotal\s*=\s*\{ day_pnl: 0, exp_pnl: 0, extrinsic: 0, prev_mv: 0, chg_pct: null \};/);
+  });
+});
+
+/**
+ * Mirror of the freeze-to-last-good sentinel pattern: null until the first
+ * successful (non-degraded) read, then a real number (even a confirmed 0)
+ * forever after, surviving subsequent degraded/null reads.
+ */
+function makeFreezeToLastGoodMirror() {
+  let last = /** @type {number|null} */ (null);
+  return {
+    read(rows, degraded) {
+      if (!rows || degraded) return last;
+      let s = 0;
+      for (const v of rows) s += Number(v || 0);
+      last = s;
+      return s;
+    },
+  };
+}
+
+describe('freeze-to-last-good sentinel (mirror) — null before first poll, frozen real number after', () => {
+  it('returns null before any successful read', () => {
+    const agg = makeFreezeToLastGoodMirror();
+    expect(agg.read(null, false)).toBeNull();
+  });
+
+  it('returns a real 0 on the first successful read of a confirmed-empty/flat set', () => {
+    const agg = makeFreezeToLastGoodMirror();
+    expect(agg.read([], false)).toBe(0);
+  });
+
+  it('returns a real nonzero number on a successful read', () => {
+    const agg = makeFreezeToLastGoodMirror();
+    expect(agg.read([100, 50], false)).toBe(150);
+  });
+
+  it('freezes at the last real number (never reverts to null) once degraded after a successful read', () => {
+    const agg = makeFreezeToLastGoodMirror();
+    expect(agg.read([100, 50], false)).toBe(150);
+    expect(agg.read([999], true)).toBe(150); // degraded — frozen, not 999, not null
+    expect(agg.read(null, false)).toBe(150); // null rows — frozen, not null
+  });
+});

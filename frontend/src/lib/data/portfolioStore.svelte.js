@@ -560,7 +560,13 @@ const _fundsAgg = $derived.by(() => {
 
 // ── Default shapes returned when deps are null (SWR fallback) ────────────────
 const _EMPTY_POSITIONS = {
-  total:          { day_pnl: 0, exp_pnl: 0, extrinsic: 0, prev_mv: 0, chg_pct: null },
+  // day_pnl: null (real-money fix, 2026-10) — genuinely unknown until the
+  // first live positions cycle actually computes it; a confirmed-flat
+  // book still yields a real 0 on that first cycle, which then freezes
+  // forward via `_last` on every subsequent degraded cycle (see the
+  // `_portfolio` $derived below). exp_pnl/extrinsic/prev_mv are lifetime/
+  // aux fields, out of scope for this fix — left at 0.
+  total:          { day_pnl: null, exp_pnl: 0, extrinsic: 0, prev_mv: 0, chg_pct: null },
   byKey:          {},
   byAccount:      {},
   byRootPositions:{},
@@ -571,7 +577,9 @@ const _EMPTY_POSITIONS = {
   rows:           [],
   fresh:          false,
 };
-const _EMPTY_HOLDINGS = { total: 0, byKey: {}, byAccount: {}, chg_pct: null, chgPctByKey: {}, rows: [], fresh: false };
+// total: null (real-money fix, 2026-10) — same cold-start-only null
+// convention as _EMPTY_POSITIONS.total.day_pnl above.
+const _EMPTY_HOLDINGS = { total: null, byKey: {}, byAccount: {}, chg_pct: null, chgPctByKey: {}, rows: [], fresh: false };
 const _EMPTY_FUNDS    = { total: { live_cash: 0, avail_margin: 0, used_margin: 0, totalMargin: 0, utilPct: 0, collateral: 0 }, byAccount: {} };
 
 // ── Final collector ────────────────────────────────────────────────────────
@@ -774,9 +782,17 @@ export const portfolioStore = {
 // store value, and every one of these getters returned a bare 0 with no
 // stale-while-revalidate guard — lifetime P&L, holdings value, cash,
 // margin would all flash to 0 until the next poll landed.
-let _lastLivePositionsPnl    = 0;
-let _lastLiveHoldingsTotal   = 0;
-let _lastLiveHoldingsValue   = 0;
+// Real-money fix (2026-10, NavStrip P/H-pill consistency with margin/cash):
+// null (not 0) until the first live cycle actually computes a value — see
+// the same `null`-until-polled convention already used by
+// _lastLiveCashTotal / _marginAvail / _marginTotal via fundsAggregate.js.
+// `null` means "genuinely unknown, no poll has ever landed this session";
+// a confirmed-flat broker read (0 positions/holdings) still produces a
+// real computed `0` on the first live cycle below, which then becomes the
+// frozen last-good value for every subsequent degraded cycle.
+let _lastLivePositionsPnl    = /** @type {number|null} */ (null);
+let _lastLiveHoldingsTotal   = /** @type {number|null} */ (null);
+let _lastLiveHoldingsValue   = /** @type {number|null} */ (null);
 let _lastLongOptionsCashPaid = 0;
 // _lastLiveCashTotal / _lastMarginAvail / _lastMarginTotal (real-money
 // fix, 2026-09 NavStrip "₹0 margin for an extended period" incident):
@@ -928,11 +944,16 @@ const _marginTotal = $derived.by(() => {
  * All values gate on _tick (4Hz) — same reactive cadence as portfolioStore.
  */
 export const portfolioAggregates = {
-  /** Σ position.pnl — lifetime P&L total (NO live-LTP delta), matching MarketPulse TOTAL. */
+  /** Σ position.pnl — lifetime P&L total (NO live-LTP delta), matching MarketPulse TOTAL.
+   *  null when no positions poll has ever landed this session (genuinely unknown —
+   *  render `—`, never `₹0`); a confirmed-flat (0 positions) read still freezes to a
+   *  real `0` on its first live cycle, matching liveCashTotal's convention below. */
   get livePositionsPnl()   { return _livePositionsPnl;    },
-  /** Live holdings P&L: (ltp − avg) × qty per holding; falls back to broker h.pnl. */
+  /** Live holdings P&L: (ltp − avg) × qty per holding; falls back to broker h.pnl.
+   *  null until the first holdings poll lands this session — see livePositionsPnl's doc. */
   get liveHoldingsTotal()  { return _liveHoldingsTotal;   },
-  /** Live holdings market value: ltp × qty (three-tier fallback). */
+  /** Live holdings market value: ltp × qty (three-tier fallback).
+   *  null until the first holdings poll lands this session — see livePositionsPnl's doc. */
   get liveHoldingsValue()  { return _liveHoldingsValue;   },
   /** Available cash across all accounts (Kite avail.cash, fallback to cash).
    *  null when no funds poll has ever landed (genuinely unknown — render `—`,

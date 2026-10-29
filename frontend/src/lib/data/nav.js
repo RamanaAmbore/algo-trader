@@ -159,3 +159,27 @@ export function navTotalRow(rows) {
     nav:          acc.nav          + r.nav,
   }), { account: 'TOTAL', cash: 0, pos_m2m: 0, holdings_mtm: 0, nav: 0 });
 }
+
+/**
+ * Combine the two Day P&L legs (positions + holdings) that make up NavCard's
+ * firm-level Day P&L, using the same include-not-exclude convention as
+ * fundsAggregate.js's sumMarginAvail/sumMarginTotal/sumLiveCashTotal: a
+ * `null` leg (no poll has ever landed for that leg this session) never
+ * blanks the whole combined total — it simply contributes nothing. `null`
+ * is returned only when BOTH legs are null (nothing known at all).
+ *
+ * Real-money fix (2026-10): `positionsDayPnlStore.total`/
+ * `holdingsDayPnlStore.total` now propagate a real `null` (see those
+ * shims) instead of silently coercing to `0`. A plain `a + b` would have
+ * then let JS's `null → 0` coercion in `+` silently drop one leg and
+ * render a confidently-wrong combined figure instead of an honest partial
+ * or unknown one.
+ *
+ * @param {number|null|undefined} positionsDayPnl
+ * @param {number|null|undefined} holdingsDayPnl
+ * @returns {number|null}
+ */
+export function combineFirmDayPnlLegs(positionsDayPnl, holdingsDayPnl) {
+  if (positionsDayPnl == null && holdingsDayPnl == null) return null;
+  return (positionsDayPnl ?? 0) + (holdingsDayPnl ?? 0);
+}

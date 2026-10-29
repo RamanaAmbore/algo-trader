@@ -18,6 +18,7 @@
   import { priceFmt, pctFmt, aggCompact } from '$lib/format';
   import { positionsDayPnlStore } from '$lib/data/positionsDayPnlStore.svelte.js';
   import { holdingsDayPnlStore } from '$lib/data/holdingsDayPnlStore.svelte.js';
+  import { combineFirmDayPnlLegs } from '$lib/data/nav.js';
 
   // Reactive auth state — bridged through $state so reactivity is stable
   // across CSR hydration (avoids the stale-derived $store.x pattern).
@@ -47,7 +48,16 @@
   // book poller (which updates at 5s cadence). Override with live store
   // values so the FIRM NAV sub-line stays in sync with PositionStrip's
   // P slot at sub-second latency.
-  const firmDayPnl  = $derived(positionsDayPnlStore.total + holdingsDayPnlStore.total);
+  //
+  // Real-money fix (2026-10): positionsDayPnlStore.total/
+  // holdingsDayPnlStore.total now propagate a real `null` when no poll has
+  // landed for that leg yet this session (matching the margin/cash
+  // convention). A plain `a + b` would have let JS's `null → 0` coercion
+  // silently drop one leg, producing a confidently-wrong figure.
+  // combineFirmDayPnlLegs is `null` only when BOTH legs are null;
+  // otherwise it sums whatever is known (include-not-exclude, same idiom
+  // as fundsAggregate.js's sumMarginAvail/sumMarginTotal/sumLiveCashTotal).
+  const firmDayPnl  = $derived(combineFirmDayPnlLegs(positionsDayPnlStore.total, holdingsDayPnlStore.total));
   const firmCumPnl  = $derived(nav ? Number(nav.firm_cum_pnl ?? 0) : 0);
   const partnerCount= $derived(nav ? (nav.partner_count ?? 0) : 0);
   // `nav.as_of` arrives as a raw Python isoformat() string (e.g.
@@ -55,9 +65,11 @@
   // dual-timezone formatter RefreshButton/LogPanel use, never raw.
   const asOf        = $derived(nav?.as_of ? formatDualTz(new Date(nav.as_of)) : '');
 
-  // Day P&L % relative to NAV (avoids /0 when nav is fresh/zero)
+  // Day P&L % relative to NAV (avoids /0 when nav is fresh/zero).
+  // firmDayPct is explicitly null when firmDayPnl is null (genuinely
+  // unknown) — never computed as 0/0 or coerced from a null numerator.
   const shareDayPct = $derived(shareNav > 0 ? (shareDayPnl / shareNav * 100) : 0);
-  const firmDayPct  = $derived(firmNav  > 0 ? (firmDayPnl  / firmNav  * 100) : 0);
+  const firmDayPct  = $derived(firmDayPnl == null ? null : (firmNav > 0 ? (firmDayPnl / firmNav * 100) : 0));
 
   // Show YOUR SHARE panel only when the user has a stake
   const showMyShare = $derived(isLoggedIn && sharePct > 0);
@@ -200,8 +212,12 @@
           <span class="nav-currency">₹</span>{aggCompact(firmNav)}
         </div>
         <div class="nav-sub {pnlClass(firmDayPnl)} tabular-nums {flash.classOf('firmDayPnl')}">
-          {signLabel(firmDayPnl)}₹{aggCompact(Math.abs(firmDayPnl))} today
-          ({signLabel(firmDayPct)}{pctFmt(Math.abs(firmDayPct))}%)
+          {#if firmDayPnl == null}
+            — today
+          {:else}
+            {signLabel(firmDayPnl)}₹{aggCompact(Math.abs(firmDayPnl))} today
+            ({signLabel(firmDayPct)}{pctFmt(Math.abs(firmDayPct ?? 0))}%)
+          {/if}
         </div>
         {#if partnerCount > 0}
           <div class="nav-meta">{partnerCount} partner{partnerCount === 1 ? '' : 's'}</div>

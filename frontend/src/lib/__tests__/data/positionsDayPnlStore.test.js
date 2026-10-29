@@ -29,6 +29,15 @@
 
 import { describe, it, expect } from 'vitest';
 import { baseDayPnlForPosition } from '$lib/data/nav.js';
+// Vite `?raw` import — positionsDayPnlStore.svelte.js imports
+// portfolioStore.svelte.js, which has top-level $derived.by(...) calls and
+// can't be imported directly under this project's Vitest config (no svelte
+// compiler plugin registered — same established convention as
+// portfolioStore.test.js's own R4a source-grep guard). Grep the real
+// shipped source directly so a regression (e.g. someone re-adding `?? 0`)
+// is caught without needing to import/execute it.
+// @ts-ignore — Vite raw-import suffix has no TS module declaration here.
+import positionsDayPnlStoreSrc from '$lib/data/positionsDayPnlStore.svelte.js?raw';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -1018,5 +1027,51 @@ describe('positionsDayPnlStore.byAccount — NavBreakdown consumption pattern', 
     const positionsTotal = mockStore.positions.total.day_pnl;
 
     expect(byAccount['TOTAL']).toBe(positionsTotal);
+  });
+});
+
+// ── Real-money fix (2026-10): `.total` propagates null (never-polled),
+// never coerces to 0 ──────────────────────────────────────────────────────
+//
+// positionsDayPnlStore.total used to do `portfolioStore.positions.total.
+// day_pnl ?? 0`, silently coercing "no poll has ever landed this session"
+// (null) into a confirmed-flat `0`. Matching the margin/cash pills'
+// existing `fundsAggregate.js` convention, it now propagates whatever
+// portfolioStore.positions.total.day_pnl actually is.
+
+describe('positionsDayPnlStore.svelte.js — .total null-propagation source-grep guard (real file)', () => {
+  const src = positionsDayPnlStoreSrc;
+
+  it('the `total` getter no longer coerces with `?? 0`', () => {
+    const idx = src.indexOf('get total()');
+    expect(idx, 'get total() not found').toBeGreaterThan(-1);
+    const line = src.slice(idx, src.indexOf('\n', idx));
+    expect(line).toContain('portfolioStore.positions.total.day_pnl');
+    expect(line).not.toContain('?? 0');
+  });
+});
+
+/**
+ * Mirror of the fixed `.total` getter: `get total() { return
+ * portfolioStore.positions.total.day_pnl; }` — no `?? 0`.
+ */
+function getPositionsDayPnlTotal(mockPortfolioStore) {
+  return mockPortfolioStore.positions.total.day_pnl;
+}
+
+describe('positionsDayPnlStore.total (mirror) — null (never-polled) vs 0 (confirmed-flat)', () => {
+  it('returns null when portfolioStore.positions.total.day_pnl is null (cold start, no poll yet)', () => {
+    const mockStore = { positions: { total: { day_pnl: null } } };
+    expect(getPositionsDayPnlTotal(mockStore)).toBeNull();
+  });
+
+  it('returns a real 0 when the broker confirmed a genuinely flat book', () => {
+    const mockStore = { positions: { total: { day_pnl: 0 } } };
+    expect(getPositionsDayPnlTotal(mockStore)).toBe(0);
+  });
+
+  it('returns a real nonzero number unchanged', () => {
+    const mockStore = { positions: { total: { day_pnl: -1234.5 } } };
+    expect(getPositionsDayPnlTotal(mockStore)).toBe(-1234.5);
   });
 });

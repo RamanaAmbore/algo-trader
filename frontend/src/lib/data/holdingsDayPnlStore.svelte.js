@@ -20,7 +20,13 @@
 import { portfolioStore } from './portfolioStore.svelte.js';
 
 export const holdingsDayPnlStore = {
-  get total()        { return portfolioStore.holdings.total ?? 0;       },
+  // Real-money fix (2026-10, NavStrip H∆ pill): propagate `null` (not `0`)
+  // when portfolioStore.holdings.total is itself `null` — genuinely
+  // unknown, no holdings poll has ever landed this session. A broker-
+  // confirmed-flat book still returns a real `0` once the first live cycle
+  // has run — see portfolioStore.svelte.js's _EMPTY_HOLDINGS cold-start
+  // default + freeze-to-last-good mechanism.
+  get total()        { return portfolioStore.holdings.total;             },
   get byKey()        { return portfolioStore.holdings.byKey;            },
   get byAccount()    { return portfolioStore.holdings.byAccount;        },
   get chg_pct()      { return portfolioStore.holdings.chg_pct ?? null;  },
