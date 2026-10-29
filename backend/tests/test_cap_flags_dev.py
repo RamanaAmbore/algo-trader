@@ -2,8 +2,11 @@
 Tests for capability-flag guards added to background.py.
 
 Coverage:
-1. is_enabled('market_summary') == False → _perf_send_open_summaries returns immediately
-   without calling send_summary.
+1. _perf_send_open_summaries is permanently disabled (2026-10-28 operator
+   instruction: "market open summary is not required as alert. market
+   close is enough") — it never calls send_summary, REGARDLESS of the
+   market_summary flag's state. The two tests below cover both flag
+   states to prove the no-op is unconditional, not flag-gated.
 2. is_enabled('market_summary') == False → _run_close_once returns immediately without
    calling send_summary.
 3. is_enabled('visitor_report') == False → _run_once inside _task_visitor_log_daily
@@ -38,18 +41,21 @@ def _empty_df() -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# Guard 1 — _perf_send_open_summaries exits early when market_summary is off
+# Guard 1 — _perf_send_open_summaries is permanently disabled (2026-10-28
+# operator instruction: "market open summary is not required as alert.
+# market close is enough"). Unlike every other guard in this file, this is
+# NOT flag-gated — both flag states must behave identically (never send).
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_open_summary_skipped_when_cap_off():
-    """_perf_send_open_summaries must return without sending when market_summary=False."""
+async def test_open_summary_never_fires_when_cap_off():
+    """_perf_send_open_summaries must never send, flag off."""
     from backend.api.background import _perf_send_open_summaries
     from datetime import datetime, date, time as dtime
 
     now = datetime(2026, 9, 1, 9, 30, 0)
     today = date(2026, 9, 1)
-    # Segment whose open trigger would fire if not gated.
+    # Segment whose open trigger would fire if the function weren't a no-op.
     open_segments = [{"name": "equity", "hours_start": dtime(9, 15)}]
     seg_state = {"equity": {"last_open": None, "last_close": None}}
 
@@ -58,7 +64,10 @@ async def test_open_summary_skipped_when_cap_off():
         return_value=False,
     ), patch(
         "backend.shared.helpers.alert_utils.send_summary",
-    ) as mock_send:
+    ) as mock_send, patch(
+        "backend.api.background._run",
+        new_callable=AsyncMock,
+    ) as mock_run:
         await _perf_send_open_summaries(
             open_segments=open_segments,
             seg_state=seg_state,
@@ -72,11 +81,16 @@ async def test_open_summary_skipped_when_cap_off():
             df_positions=_empty_df(),
         )
         mock_send.assert_not_called()
+        mock_run.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_open_summary_fires_when_cap_on():
-    """_perf_send_open_summaries must attempt to send when market_summary=True."""
+async def test_open_summary_never_fires_even_when_cap_on():
+    """_perf_send_open_summaries must never send, flag on — proves the
+    2026-10-28 disable is unconditional, not merely flag-gated. This test
+    previously asserted the OPPOSITE (that it fires when the cap is on);
+    it is inverted here because the operator-approved fix made the open
+    summary permanently inert, independent of `market_summary`."""
     from backend.api.background import _perf_send_open_summaries
     from datetime import datetime, date, time as dtime
 
@@ -104,8 +118,9 @@ async def test_open_summary_fires_when_cap_on():
             df_margins=_empty_df(),
             df_positions=_empty_df(),
         )
-        # _run is called to dispatch send_summary when cap is on
-        mock_run.assert_called_once()
+        # _run must NEVER be called now — the open summary is permanently
+        # disabled regardless of the market_summary flag's state.
+        mock_run.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

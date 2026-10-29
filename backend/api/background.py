@@ -7,9 +7,13 @@ never stall the async event loop.
 
 Two tasks are started on Litestar startup:
   1. _task_performance — refresh holdings/positions/funds every N minutes during market hours,
-                         send open summaries (via _perf_send_open_summaries), fire loss alerts.
-                         The market-closure (close) report is sent separately, once daily
-                         after MCX settles, by _run_close_once (see _task_post_market_cron).
+                         fire loss alerts. The open-market summary is permanently disabled
+                         (2026-10-28 operator instruction: "market open summary is not
+                         required as alert. market close is enough") —
+                         _perf_send_open_summaries is still called every cycle but is a
+                         no-op. The market-closure (close) report is sent separately, once
+                         daily after MCX settles, by _run_close_once (see
+                         _task_post_market_cron), and only on a confirmed MCX trading day.
   2. _task_market      — hydrate market cache from DB at startup (whatever
                          row exists, regardless of age — never blocks a
                          visitor on a live Gemini call). The daily proactive
@@ -1489,31 +1493,20 @@ async def _perf_send_open_summaries(
     df_margins: pd.DataFrame,
     df_positions: pd.DataFrame,
 ) -> None:
-    """Fire the once-per-day open summary per open segment. Uses
-    `seg_state[seg['name']]['last_open']` as the idempotency key."""
-    from backend.shared.helpers.utils import is_enabled
-    if not is_enabled('market_summary'):
-        return
-    from backend.shared.helpers.alert_utils import send_summary
-    for seg in open_segments:
-        ss = seg_state[seg['name']]
-        open_trigger = now.replace(
-            hour=seg['hours_start'].hour,
-            minute=seg['hours_start'].minute,
-            second=0, microsecond=0
-        ) + timedelta(minutes=open_offset)
-        if ss['last_open'] != today and now >= open_trigger:
-            _label = seg['name'].capitalize()
-            _dm = df_margins
-            _dp = df_positions
-            try:
-                await _run(lambda: send_summary(all_sum_h, all_sum_p, ist_display,
-                                                'open', label=_label,
-                                                df_margins=_dm, df_positions=_dp))
-                logger.info(f"Background: open summary sent for {seg['name']}")
-            except Exception as e:
-                logger.error(f"Background: open summary failed for {seg['name']}: {e}")
-            ss['last_open'] = today
+    """Permanently disabled (2026-10-28 operator instruction: "market open
+    summary is not required as alert. market close is enough").
+
+    Deliberately neutered at the top, unconditionally, rather than only
+    removed from its call site in `_task_performance` — this way the open
+    summary can never fire again even if a future caller is added, without
+    anyone having to remember this decision. The full signature + the
+    `_task_performance` call site are both left in place on purpose (zero
+    behaviour-adjacent diff elsewhere in that loop); every parameter below
+    is now unused. Do NOT remove this early return to "re-enable" the open
+    summary without an explicit new operator instruction — the close
+    summary (`_run_close_once`) is the one daily report that stays.
+    """
+    return
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -9397,6 +9390,24 @@ async def _run_close_once(state: dict) -> None:
     (never filtered to a segment's own exchanges), so the single MCX-
     triggered report already reflects the complete day across both NSE
     and MCX — no data is lost by skipping the NON-MCX trigger entirely.
+
+    2026-10-28 operator instruction: "even close summary should happen
+    only on market open day." The old gate was a bare `now.weekday() < 5`
+    — Mon-Fri only, no holiday-calendar lookup at all — so a weekday MCX
+    holiday fired the close summary anyway. The gate now calls
+    `_market_status_for_segment("commodity", now)`, the same
+    calendar-only "is this segment scheduled to trade today" resolver the
+    05:35 IST market-status report already uses (see CLAUDE.md "05:35 IST
+    market-status alert" / `grammar_tokens/action_send_market_status.py`).
+    That function, not a bare `is_trading_day(today, fetch_holidays("MCX"))`
+    check, is required here: a plain holiday-set lookup would wrongly
+    suppress this report on an MCX evening-open holiday (COM-listed date,
+    morning closed, evening trades 17:00-23:30 per
+    `evening_open_on_holidays: true` in the commodity YAML block) — a day
+    that genuinely needs its close report. `_market_status_for_segment`
+    already gets that case right (special-session override > weekend >
+    holiday-with-evening-open > holiday > plain weekday), so it is reused
+    rather than re-implemented.
     """
     from backend.shared.helpers.utils import is_enabled
     if not is_enabled('market_summary'):
@@ -9433,7 +9444,38 @@ async def _run_close_once(state: dict) -> None:
             second=0, microsecond=0,
         ) + timedelta(minutes=close_offset)
 
-        if now.weekday() < 5 and now >= close_trigger:
+        if now >= close_trigger:
+            from backend.api.algo.grammar_tokens.action_send_market_status import (
+                _market_status_for_segment,
+            )
+            try:
+                mcx_status = await _market_status_for_segment("commodity", now)
+                mcx_traded_today = bool(mcx_status.get("open"))
+            except Exception as e:
+                # Fail OPEN (send) rather than silently losing the one
+                # report of the day on a transient holiday-calendar
+                # lookup failure — matches `_market_status_for_segment`'s
+                # own internal fail-open convention on each of its
+                # sub-fetches.
+                logger.warning(
+                    f"Background[cron]: close-summary trading-day check "
+                    f"failed for {seg['name']} (sending anyway): {e}"
+                )
+                mcx_traded_today = True
+
+            if not mcx_traded_today:
+                # Confirmed non-trading day for MCX (weekend or a holiday
+                # with no evening-open exception) — mark handled so this
+                # branch doesn't re-evaluate the calendar on every
+                # subsequent 30s tick for the rest of the day.
+                ss["last_close"] = today
+                logger.info(
+                    f"Background[cron]: close summary skipped for "
+                    f"{seg['name']} — not a trading day "
+                    f"({mcx_status.get('reason') if isinstance(mcx_status, dict) else None})"
+                )
+                continue
+
             try:
                 try:
                     (df_h, sum_h), (df_p, sum_p) = await asyncio.wait_for(
