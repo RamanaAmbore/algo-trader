@@ -987,10 +987,9 @@ async def test_movers_prewarm_closes_the_gap_for_mcx():
 
 def test_batch_quote_prewarms_before_all_exchanges_closed():
     """Source-order assertion for the `batch_quote` route handler."""
-    import inspect
-    from backend.api.routes.quote import QuoteController
+    from backend.tests.quote_source import quote_method_source
 
-    src = inspect.getsource(QuoteController.batch_quote.fn)
+    src = quote_method_source("QuoteController", "batch_quote")
     prewarm_idx = src.find("_qt_prewarm_special_sessions(")
     closed_idx = src.find("_all_exchanges_closed(")
     assert prewarm_idx != -1, "prewarm call not found in batch_quote"
@@ -1003,10 +1002,9 @@ def test_batch_quote_prewarms_before_all_exchanges_closed():
 
 def test_batch_sparkline_prewarms_before_all_exchanges_closed():
     """Source-order assertion for the `batch_sparkline` route handler."""
-    import inspect
-    from backend.api.routes.quote import SparklineController
+    from backend.tests.quote_source import quote_method_source
 
-    src = inspect.getsource(SparklineController.batch_sparkline.fn)
+    src = quote_method_source("SparklineController", "batch_sparkline")
     prewarm_idx = src.find("_qt_prewarm_special_sessions(")
     closed_idx = src.find("_all_exchanges_closed(")
     assert prewarm_idx != -1, "prewarm call not found in batch_sparkline"

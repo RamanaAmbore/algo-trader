@@ -62,13 +62,9 @@ def test_batch_sparkline_uses_get_or_fetch_intraday():
     db_only plumbing added in Slice A and silently fall through to the
     broker during closed hours.
     """
-    import backend.api.routes.quote as quote_mod
-    # _fetch_bars_parallel is a module-level helper; find it via getattr
-    fetch_fn = getattr(quote_mod, "_fetch_bars_parallel", None)
-    assert fetch_fn is not None, (
-        "quote.py must define _fetch_bars_parallel as a module-level helper"
-    )
-    src = inspect.getsource(fetch_fn)
+    from backend.tests.quote_source import quote_function_source
+    # _fetch_bars_parallel is a module-level helper in quote.py
+    src = quote_function_source("_fetch_bars_parallel")
     assert "get_or_fetch_intraday" in src, (
         "_fetch_bars_parallel must call "
         "intraday_store.get_or_fetch_intraday (not _intraday_store.get directly)"
@@ -89,10 +85,8 @@ def test_no_inline_market_open_in_batch_sparkline():
     patterns: is_any_segment_open / _all_exchanges_closed / is_market_open
     inside the function body.
     """
-    from backend.api.routes.quote import SparklineController
-    handler = SparklineController.batch_sparkline
-    fn = getattr(handler, "fn", handler)
-    src = inspect.getsource(fn)
+    from backend.tests.quote_source import quote_method_source
+    src = quote_method_source("SparklineController", "batch_sparkline")
     # These would indicate an inline reimplementation bypassing snapshot_gate.
     assert "is_any_segment_open(" not in src, (
         "batch_sparkline must not call is_any_segment_open() inline; "
@@ -106,13 +100,9 @@ def test_no_inline_market_open_in_batch_sparkline():
 
 def test_batch_sparkline_threads_db_only():
     """_fetch_bars_parallel must pass db_only=db_only to both fetch helpers."""
-    import backend.api.routes.quote as quote_mod
-    # _fetch_bars_parallel is a module-level helper
-    fetch_fn = getattr(quote_mod, "_fetch_bars_parallel", None)
-    assert fetch_fn is not None, (
-        "quote.py must define _fetch_bars_parallel as a module-level helper"
-    )
-    src = inspect.getsource(fetch_fn)
+    from backend.tests.quote_source import quote_function_source
+    # _fetch_bars_parallel is a module-level helper in quote.py
+    src = quote_function_source("_fetch_bars_parallel")
     assert "db_only=db_only" in src, (
         "_fetch_bars_parallel must pass db_only=db_only to get_or_fetch_intraday "
         "and get_or_fetch_daily so closed-hours calls skip the broker"

@@ -15,11 +15,14 @@ Quality dimensions (feedback_test_dimensions.md):
 from __future__ import annotations
 
 import asyncio
-import inspect
 from typing import Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+from backend.tests.quote_source import quote_method_source as _method_source
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -438,75 +441,48 @@ class TestHelperSsot:
 
     def test_batch_quote_references_normalize(self):
         """batch_quote body must call _normalize_batch_keys."""
-        import backend.api.routes.quote as q
-        handler = q.QuoteController.batch_quote
-        fn = getattr(handler, "fn", handler)
-        src = inspect.getsource(fn)
-        assert "_normalize_batch_keys" in src
+        src = _method_source("QuoteController", "batch_quote")
+        assert "_normalize_batch_keys" in src, "_normalize_batch_keys must be referenced in the handler body (SSOT helper delegation)"
 
     def test_batch_quote_references_serve_closed(self):
         """batch_quote body must delegate closed-hours path to _serve_closed_hours_batch."""
-        import backend.api.routes.quote as q
-        handler = q.QuoteController.batch_quote
-        fn = getattr(handler, "fn", handler)
-        src = inspect.getsource(fn)
-        assert "_serve_closed_hours_batch" in src
+        src = _method_source("QuoteController", "batch_quote")
+        assert "_serve_closed_hours_batch" in src, "_serve_closed_hours_batch must be referenced in the handler body (SSOT helper delegation)"
 
     def test_batch_quote_references_build_live_row(self):
         """batch_quote body must call _build_live_batch_row for live path."""
-        import backend.api.routes.quote as q
-        handler = q.QuoteController.batch_quote
-        fn = getattr(handler, "fn", handler)
-        src = inspect.getsource(fn)
-        assert "_build_live_batch_row" in src
+        src = _method_source("QuoteController", "batch_quote")
+        assert "_build_live_batch_row" in src, "_build_live_batch_row must be referenced in the handler body (SSOT helper delegation)"
 
     def test_batch_quote_references_subscribe(self):
         """batch_quote body must delegate ticker subscribe to _subscribe_batch_universe_to_ticker."""
-        import backend.api.routes.quote as q
-        handler = q.QuoteController.batch_quote
-        fn = getattr(handler, "fn", handler)
-        src = inspect.getsource(fn)
-        assert "_subscribe_batch_universe_to_ticker" in src
+        src = _method_source("QuoteController", "batch_quote")
+        assert "_subscribe_batch_universe_to_ticker" in src, "_subscribe_batch_universe_to_ticker must be referenced in the handler body (SSOT helper delegation)"
 
     def test_batch_sparkline_references_normalize(self):
         """batch_sparkline body must call _normalize_sparkline_symbols."""
-        import backend.api.routes.quote as q
-        handler = q.SparklineController.batch_sparkline
-        fn = getattr(handler, "fn", handler)
-        src = inspect.getsource(fn)
-        assert "_normalize_sparkline_symbols" in src
+        src = _method_source("SparklineController", "batch_sparkline")
+        assert "_normalize_sparkline_symbols" in src, "_normalize_sparkline_symbols must be referenced in the handler body (SSOT helper delegation)"
 
     def test_batch_sparkline_references_fetch_bars(self):
         """batch_sparkline body must delegate bar fetching to _fetch_bars_parallel."""
-        import backend.api.routes.quote as q
-        handler = q.SparklineController.batch_sparkline
-        fn = getattr(handler, "fn", handler)
-        src = inspect.getsource(fn)
-        assert "_fetch_bars_parallel" in src
+        src = _method_source("SparklineController", "batch_sparkline")
+        assert "_fetch_bars_parallel" in src, "_fetch_bars_parallel must be referenced in the handler body (SSOT helper delegation)"
 
     def test_batch_sparkline_references_self_heal(self):
         """batch_sparkline body must delegate self-heal to _self_heal_empty_bars."""
-        import backend.api.routes.quote as q
-        handler = q.SparklineController.batch_sparkline
-        fn = getattr(handler, "fn", handler)
-        src = inspect.getsource(fn)
-        assert "_self_heal_empty_bars" in src
+        src = _method_source("SparklineController", "batch_sparkline")
+        assert "_self_heal_empty_bars" in src, "_self_heal_empty_bars must be referenced in the handler body (SSOT helper delegation)"
 
     def test_batch_sparkline_references_resolve_ltps(self):
         """batch_sparkline body must delegate LTP resolution to _resolve_spark_ltps."""
-        import backend.api.routes.quote as q
-        handler = q.SparklineController.batch_sparkline
-        fn = getattr(handler, "fn", handler)
-        src = inspect.getsource(fn)
-        assert "_resolve_spark_ltps" in src
+        src = _method_source("SparklineController", "batch_sparkline")
+        assert "_resolve_spark_ltps" in src, "_resolve_spark_ltps must be referenced in the handler body (SSOT helper delegation)"
 
     def test_batch_sparkline_references_compose(self):
         """batch_sparkline body must delegate composition to _compose_and_dual_write."""
-        import backend.api.routes.quote as q
-        handler = q.SparklineController.batch_sparkline
-        fn = getattr(handler, "fn", handler)
-        src = inspect.getsource(fn)
-        assert "_compose_and_dual_write" in src
+        src = _method_source("SparklineController", "batch_sparkline")
+        assert "_compose_and_dual_write" in src, "_compose_and_dual_write must be referenced in the handler body (SSOT helper delegation)"
 
     def test_all_helpers_importable(self):
         """All new helpers must be importable directly from quote module."""

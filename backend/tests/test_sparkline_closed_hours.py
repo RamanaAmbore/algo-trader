@@ -588,8 +588,8 @@ def test_fill_from_daily_book_sparkline_exists_in_quote():
 
 def test_tier4_fallback_called_only_in_db_only_mode():
     """batch_sparkline must reach Tier 4 only via a db_only gate (direct or via helper)."""
-    import backend.api.routes.quote as quote_mod
-    src = inspect.getsource(quote_mod)
+    from backend.tests.quote_source import quote_function_source, quote_module_source
+    src = quote_module_source()
     batch_body = src.split("async def batch_sparkline")[-1]
     lines = batch_body.splitlines()
 
@@ -602,7 +602,7 @@ def test_tier4_fallback_called_only_in_db_only_mode():
 
     # When delegated to a helper, verify the helper itself contains the db_only guard
     if helper_in_batch and not direct_in_batch:
-        helper_src = inspect.getsource(quote_mod._qt_batch_spark_db_fallback)
+        helper_src = quote_function_source("_qt_batch_spark_db_fallback")
         assert "_fill_from_daily_book_sparkline" in helper_src, (
             "_qt_batch_spark_db_fallback must call _fill_from_daily_book_sparkline"
         )

@@ -199,10 +199,9 @@ def test_batch_sparkline_uses_semaphore():
     module source rather than the method body so the test survives helper
     extraction without weakening the behavioural guard.
     """
-    import inspect
-    import backend.api.routes.quote as quote_mod
+    from backend.tests.quote_source import quote_module_source
 
-    src = inspect.getsource(quote_mod)
+    src = quote_module_source()
     assert "Semaphore(3)" in src, (
         "The bar-fetch path must cap concurrency at Semaphore(3) to avoid "
         "saturating Kite's 3 req/s historical_data budget on cold cache."
@@ -213,9 +212,9 @@ def test_batch_sparkline_uses_semaphore():
         "_fetch_bars_parallel (which owns the Semaphore throttle)."
     )
     # batch_sparkline must call _fetch_bars_parallel (not inline the fan-out).
-    handler = quote_mod.SparklineController.batch_sparkline
-    fn = getattr(handler, "fn", handler)
-    fn_src = inspect.getsource(fn)
+    from backend.tests.quote_source import quote_method_source
+
+    fn_src = quote_method_source("SparklineController", "batch_sparkline")
     assert "_fetch_bars_parallel" in fn_src, (
         "batch_sparkline body must delegate to _fetch_bars_parallel."
     )
