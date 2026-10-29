@@ -108,8 +108,8 @@ status, thresholds and channels. They change more often than this file does.
 | `market-open-nse` | NSE open notice (fires at 09:15 IST) |
 | `market-preclose-mcx-v2` | MCX pre-close notice (fires 30 min before MCX closes today) |
 | `market-preclose-nonmcx` | NSE pre-close notice (fires 30 min before NSE closes today) |
-| `expiry-day-mcx` | Held MCX F&O position expires today; high-priority reminder |
-| `expiry-day-nse` | Held NFO position expires today; high-priority reminder |
+| `expiry-day-mcx-v2` | Held MCX F&O position expires today AND MCX closes in 30 min; high-priority reminder |
+| `expiry-day-nse-v2` | Held NFO position expires today AND NSE closes in 30 min; high-priority reminder |
 | `market-status-report` | Market-status notice |
 | `manual` | Audit trail for every manual ticket or chain order |
 
@@ -117,6 +117,12 @@ Pre-close reminders follow the real exchange close time, not a fixed clock time.
 reminder fires 30 minutes before MCX closes that day, and the NSE reminder 30 minutes before NSE
 closes. If the exchange moves a close time for a day, the reminder moves with it. Each reminder
 fires at most once per day.
+
+The expiry-day reminders (`expiry-day-mcx-v2`/`expiry-day-nse-v2`) are gated the same way: they
+fire only when a held F&O position expires today AND that exchange is within 30 minutes of its
+own close — not the instant the expiry-day flag first turns true (which could be hours before
+close). Both the Telegram/email body and the in-app alert text read "Expiry pre-close — ..." so
+an expiry reminder is never confused with the plain, non-expiry pre-close reminder above it.
 
 The two expiry-day agents fire once on a day when you hold a position that expires that day.
 They check your own positions, not the whole exchange, so a day with no expiring position in your

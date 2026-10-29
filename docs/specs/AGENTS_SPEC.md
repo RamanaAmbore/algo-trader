@@ -243,12 +243,25 @@ Expiry risk agents (2):
 - `expiry-nfo-risk-alert` (high tier)
 - `expiry-mcx-risk-alert` (high tier)
 
-Expiry-day awareness agents (2, `_EXPIRY_DAY_AWARENESS_AGENTS`, 2026-10-28):
-- `expiry-day-mcx` (high tier, schedule=always, 22h cooldown, no fire_at). Condition
-  `is_mcx_expiry_today == 1`, which is per-portfolio: it fires only when a held MCX F&O
-  position expires today. Channels: telegram + email + log + ntfy(priority=high).
-- `expiry-day-nse` (high tier, same shape). Condition `is_nse_expiry_today == 1` over held
-  NFO positions. Same channels.
+Expiry-day awareness agents (2, `_EXPIRY_DAY_AWARENESS_AGENTS`, 2026-10-28, retimed
+2026-10-29):
+- `expiry-day-mcx-v2` (high tier, schedule=always, 22h cooldown, no fire_at). Condition is a
+  compound `all[]`: `is_mcx_expiry_today == 1` (per-portfolio — only when a held MCX F&O
+  position expires today) AND `minutes_until_mcx_close <= 30`, so the fire genuinely coincides
+  with the pre-close window instead of the instant the expiry-day flag first turns true.
+  Channels: telegram + email + log + ntfy(priority=high). Replaces the retired `expiry-day-mcx`
+  (bare `is_mcx_expiry_today == 1` leaf, fired hours before close) — new slug, not an in-place
+  edit, for the same `_ae_should_reset_conditions` migration-hazard reason as
+  `market-preclose-mcx-v2` below.
+- `expiry-day-nse-v2` (high tier, same shape). Compound condition: `is_nse_expiry_today == 1`
+  AND `minutes_until_nse_close <= 30`. Replaces the retired `expiry-day-nse`. Same channels.
+- Both agents render their outbound Telegram/email body and their audit-log `condition_text`
+  via `_v2_reminder_only_line()` — a clear "Expiry pre-close — a held {MCX|NSE/NFO} position
+  expires today — {exchange} closes in 30 minutes" line, never the generic per-account
+  kind/threshold table (which rendered a meaningless 'TOTAL' scope and raw numbers for these
+  calendar-token conditions before this fix). `market-preclose-mcx-v2`/`market-preclose-nonmcx`
+  get the same treatment, rendering as e.g. "MCX pre-close — MCX closes in 30 minutes" — this is
+  what visibly distinguishes a routine pre-close reminder from an expiry pre-close reminder.
 
 Market lifecycle agents (3, `_INFO_AGENTS`):
 - `market-open-nse` (info tier, fire_at=09:15). Still uses the `avail_margin >= -999999999`
