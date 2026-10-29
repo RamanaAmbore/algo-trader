@@ -372,6 +372,14 @@ class TestTaskOrderPoll:
                  "backend.shared.helpers.utils.is_engine_idle",
                  return_value=False,
              ), \
+             patch(
+                 "backend.api.background._resolve_market_status_today",
+                 new=AsyncMock(),
+             ), \
+             patch(
+                 "backend.api.background.is_any_segment_open_cached",
+                 return_value=True,
+             ), \
              patch.object(
                  op_mod, "_order_poll_candidate_rows",
                  new=AsyncMock(return_value=[stuck_row]),
