@@ -137,7 +137,14 @@
   // for F&O, unchanged for cash equity). Storage / API calls keep using
   // _symRaw which is the Kite tradingsymbol.
   const _sym       = $derived(formatSymbol(_symRaw));
-  const _limit     = $derived(order?.price ?? order?.initial_price ?? null);
+  // current_limit is the chase's live re-quoted price (updated on every
+  // cancel-and-replace); price/initial_price are the order's ORIGINAL
+  // submission price and go stale the moment chase re-prices. Same
+  // priority OrderCard's dedicated sibling ChaseCard.svelte already uses
+  // (`row.current_limit ?? row.initial_price`) — OrderBook.svelte and
+  // LogPanel.svelte already merge `current_limit` onto this row before
+  // it reaches OrderCard, this was just never read here.
+  const _limit     = $derived(order?.current_limit ?? order?.price ?? order?.initial_price ?? null);
   const _filled    = $derived(order?.average_price ?? order?.fill_price ?? null);
   const _ts        = $derived(order?.order_timestamp || order?.created_at || null);
   const _qtyFilled = $derived(order?.filled_quantity ?? (order?.fill_price != null ? order?.quantity : 0));
