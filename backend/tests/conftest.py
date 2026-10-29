@@ -173,11 +173,15 @@ def _reset_quote_batch_cache():
     the same symbol (e.g. "NSE:RELIANCE") within the 2s TTL window can
     silently observe each other's mocked broker response instead of their
     own, purely from pytest's execution order/speed on a given run —
-    confirmed live: discovered when an unrelated fix elsewhere nudged
-    `test_batch_quote_non_virtual_passthrough` into this exact collision
-    with `test_batch_quote_open_calls_broker`. Narrowly scoped to the
-    `quote_batch:` prefix only, matching the `preflight_instr:` precedent
-    above — never a blanket `_store.clear()`."""
+    reproduced deterministically in this repo's own test run: an
+    unrelated fix elsewhere (correcting two mismatched `patch()` targets)
+    nudged `test_batch_quote_non_virtual_passthrough`'s timing into this
+    exact collision with `test_batch_quote_open_calls_broker`, confirmed
+    by code inspection of `_get_cached_batch_quote`'s cache-key logic (not
+    independently verified against an unmodified baseline run — stash/
+    worktree verification was unavailable in that session). Narrowly
+    scoped to the `quote_batch:` prefix only, matching the
+    `preflight_instr:` precedent above — never a blanket `_store.clear()`."""
     from backend.api import cache as _cache_mod
     _PREFIX = "quote_batch:"
 

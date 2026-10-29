@@ -611,11 +611,15 @@ def _qt_lkg_ltp_snap(
     the `_with_ts` cache accessors (`broker_apis.get_last_good_ltp_with_ts`
     / `get_last_good_quote_with_ts`), returning `(value, unix_ts) | None`.
 
-    The returned `captured_at` (unix seconds, UTC) is the real capture
-    time of whichever cache entry supplied the returned `ltp`, falling
-    back to the snapshot's own capture time when no LTP entry was found.
-    It is `None` only when neither `sym` nor `resolved_sym` has ever been
-    recorded (cold cache) — a timestamp is never fabricated.
+    The returned `captured_at` (unix seconds, UTC) is the OLDER of the
+    ltp cache entry's and the snapshot cache entry's own capture times —
+    same "never claim fresher than the stalest contributing source" rule
+    applied at the batch level in `_serve_closed_hours_batch`, since the
+    row's close/change/volume/oi fields can have been captured at a
+    different moment than its ltp. Falls back to whichever single source
+    actually has data when only one of the two was found. It is `None`
+    only when neither `sym` nor `resolved_sym` has ever been recorded in
+    either cache (cold cache) — a timestamp is never fabricated.
     """
     ltp = 0.0
     ltp_ts: Optional[float] = None
@@ -633,7 +637,10 @@ def _qt_lkg_ltp_snap(
             snap, snap_ts = hit
             break
 
-    captured_at = ltp_ts if ltp_ts is not None else snap_ts
+    if ltp_ts is not None and snap_ts is not None:
+        captured_at = min(ltp_ts, snap_ts)
+    else:
+        captured_at = ltp_ts if ltp_ts is not None else snap_ts
     return ltp, snap, captured_at
 
 

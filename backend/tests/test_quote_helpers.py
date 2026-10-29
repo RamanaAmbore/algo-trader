@@ -381,6 +381,54 @@ class TestServeClosedHoursBatchAsOfRealCaptureTime:
         expected_dt = datetime.fromtimestamp(historical_ts, tz=timezone.utc)
         assert abs((as_of_dt - expected_dt).total_seconds()) < 1.0
 
+    def test_per_symbol_captured_at_is_older_of_ltp_and_snap(self):
+        """_qt_lkg_ltp_snap's own captured_at must be the OLDER of the ltp
+        cache entry's and the snapshot cache entry's capture times — a
+        row's close/change/volume/oi fields can have been captured at a
+        different moment than its ltp, and the row must never claim to be
+        fresher than its stalest contributing source (same rule as the
+        batch-level oldest-timestamp selection above)."""
+        from backend.api.routes.quote import _qt_lkg_ltp_snap
+
+        newer_ts = 1_700_000_000.0
+        older_ts = 1_700_000_000.0 - 500.0
+
+        def _fake_ltp_ts(sym, max_age_s=86400.0):
+            return (2900.0, newer_ts) if sym == "RELIANCE" else None
+
+        def _fake_quote_ts(sym, max_age_s=86400.0):
+            return ({"open": 2870.0}, older_ts) if sym == "RELIANCE" else None
+
+        ltp, snap, captured_at = _qt_lkg_ltp_snap(
+            "RELIANCE", "RELIANCE", _fake_ltp_ts, _fake_quote_ts
+        )
+        assert ltp == pytest.approx(2900.0, abs=0.001)
+        assert captured_at == pytest.approx(older_ts, abs=0.001), (
+            f"captured_at must be the OLDER timestamp ({older_ts}), "
+            f"got {captured_at}"
+        )
+
+    def test_per_symbol_captured_at_falls_back_to_single_source(self):
+        """When only the ltp cache (not the snapshot cache) has an entry,
+        captured_at must be that single source's timestamp — not None,
+        and not crash on a missing snapshot side."""
+        from backend.api.routes.quote import _qt_lkg_ltp_snap
+
+        ltp_ts = 1_700_000_000.0
+
+        def _fake_ltp_ts(sym, max_age_s=86400.0):
+            return (2900.0, ltp_ts) if sym == "RELIANCE" else None
+
+        def _fake_quote_ts(sym, max_age_s=86400.0):
+            return None  # cold — no snapshot entry at all
+
+        ltp, snap, captured_at = _qt_lkg_ltp_snap(
+            "RELIANCE", "RELIANCE", _fake_ltp_ts, _fake_quote_ts
+        )
+        assert ltp == pytest.approx(2900.0, abs=0.001)
+        assert snap == {}
+        assert captured_at == pytest.approx(ltp_ts, abs=0.001)
+
 
 # ---------------------------------------------------------------------------
 # 4. SSOT: master functions reference helpers in source
