@@ -339,7 +339,7 @@ describe('ALERT/DO omission and reordering — decompiled output stays canonical
 // ── Real builtin-agent shapes (agent_engine.py BUILTIN_AGENTS) ──────────
 
 describe('real builtin agents — never authored via the CLI', () => {
-  it('market-open-nse / market-preclose-mcx: always-sentinel with REORDERED keys + 3-channel events + actions=[]', () => {
+  it('market-open-nse: always-sentinel with REORDERED keys + 3-channel events + actions=[]', () => {
     // Exact shape from agent_engine.py's _INFO_AGENTS / _INFO_AGENT_DEFAULTS
     // — note op/scope/metric/value key order, NOT ALWAYS_LEAF's own
     // metric/scope/op/value order, confirming field-by-field (not

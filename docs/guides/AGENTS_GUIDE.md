@@ -105,10 +105,23 @@ status, thresholds and channels. They change more often than this file does.
 | `expiry-day-commodity-itm-auto-close` | Commodity expiry auto-close (MCX); ships inactive |
 | `expiry-nfo-risk-alert` | Expiry-day risk notice for NFO |
 | `expiry-mcx-risk-alert` | Expiry-day risk notice for MCX |
-| `market-open-nse` | NSE open notice (timing via sentinel condition) |
-| `market-preclose-mcx` | MCX pre-close notice (same timing pattern) |
+| `market-open-nse` | NSE open notice (fires at 09:15 IST) |
+| `market-preclose-mcx-v2` | MCX pre-close notice (fires 30 min before MCX closes today) |
+| `market-preclose-nonmcx` | NSE pre-close notice (fires 30 min before NSE closes today) |
+| `expiry-day-mcx` | Held MCX F&O position expires today; high-priority reminder |
+| `expiry-day-nse` | Held NFO position expires today; high-priority reminder |
 | `market-status-report` | Market-status notice |
 | `manual` | Audit trail for every manual ticket or chain order |
+
+Pre-close reminders follow the real exchange close time, not a fixed clock time. The MCX
+reminder fires 30 minutes before MCX closes that day, and the NSE reminder 30 minutes before NSE
+closes. If the exchange moves a close time for a day, the reminder moves with it. Each reminder
+fires at most once per day.
+
+The two expiry-day agents fire once on a day when you hold a position that expires that day.
+They check your own positions, not the whole exchange, so a day with no expiring position in your
+account stays silent. They send to Telegram, email, the log and a high-priority ntfy push, so
+treat them as a prompt to manage or close the position before settlement.
 
 Alert channel routing for event agents is not defined per agent. It is resolved by
 `alert_routing.py`. See [CLAUDE.md](../../CLAUDE.md) (Alert channels resolved by a routing tree).

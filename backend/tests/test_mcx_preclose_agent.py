@@ -2,7 +2,7 @@
 Tests for MCX pre-close agent configuration and scheduled fire_at_time override.
 
 Covers:
-1. market-preclose-mcx slug exists with correct fire_at_time="23:00" and name
+1. market-preclose-mcx-v2 slug exists with correct fire_at_time="23:00" and name
 2. market-close-mcx slug does NOT exist in BUILTIN_AGENTS
 3. When _cycle_maybe_buffer_fire is called with an info-tier agent that has
    fire_at_time set, the EvalResult's condition_text is overridden to
@@ -24,27 +24,30 @@ class TestMCXPrecloseAgentConfig:
     """MCX pre-close agent has correct configuration."""
 
     def test_market_preclose_mcx_exists_in_builtin_agents(self):
-        """market-preclose-mcx slug exists in BUILTIN_AGENTS."""
+        """market-preclose-mcx-v2 slug exists in BUILTIN_AGENTS."""
         from backend.api.algo.agent_engine import BUILTIN_AGENTS
 
-        agent = next((a for a in BUILTIN_AGENTS if a.get('slug') == 'market-preclose-mcx'), None)
-        assert agent is not None, "market-preclose-mcx not found in BUILTIN_AGENTS"
+        agent = next((a for a in BUILTIN_AGENTS if a.get('slug') == 'market-preclose-mcx-v2'), None)
+        assert agent is not None, "market-preclose-mcx-v2 not found in BUILTIN_AGENTS"
 
-    def test_market_preclose_mcx_has_correct_fire_at_time(self):
-        """market-preclose-mcx has fire_at_time == '23:00'."""
+    def test_market_preclose_mcx_v2_is_token_driven_not_scheduled(self):
+        """market-preclose-mcx-v2 has no fire_at_time; it fires on the
+        minutes_until_mcx_close token <= 30 instead of a fixed 23:00 clock."""
         from backend.api.algo.agent_engine import BUILTIN_AGENTS
 
-        agent = next((a for a in BUILTIN_AGENTS if a.get('slug') == 'market-preclose-mcx'), None)
-        assert agent is not None, "market-preclose-mcx not found"
-        assert agent.get('fire_at_time') == '23:00', \
-            f"Expected fire_at_time='23:00', got {agent.get('fire_at_time')}"
+        agent = next((a for a in BUILTIN_AGENTS if a.get('slug') == 'market-preclose-mcx-v2'), None)
+        assert agent is not None, "market-preclose-mcx-v2 not found"
+        assert agent.get('fire_at_time') is None, \
+            f"Expected fire_at_time=None, got {agent.get('fire_at_time')}"
+        assert agent.get('conditions') == {"op": "<=", "scope": "funds.total", "metric": "minutes_until_mcx_close", "value": 30}, \
+            f"Unexpected conditions: {agent.get('conditions')}"
 
     def test_market_preclose_mcx_has_correct_name(self):
-        """market-preclose-mcx has name == 'MCX pre-close'."""
+        """market-preclose-mcx-v2 has name == 'MCX pre-close'."""
         from backend.api.algo.agent_engine import BUILTIN_AGENTS
 
-        agent = next((a for a in BUILTIN_AGENTS if a.get('slug') == 'market-preclose-mcx'), None)
-        assert agent is not None, "market-preclose-mcx not found"
+        agent = next((a for a in BUILTIN_AGENTS if a.get('slug') == 'market-preclose-mcx-v2'), None)
+        assert agent is not None, "market-preclose-mcx-v2 not found"
         assert agent.get('name') == 'MCX pre-close', \
             f"Expected name='MCX pre-close', got {agent.get('name')}"
 
@@ -62,7 +65,7 @@ class TestMCXPrecloseAgentConfig:
         no email)."""
         from backend.api.algo.agent_engine import BUILTIN_AGENTS
 
-        agent = next((a for a in BUILTIN_AGENTS if a.get('slug') == 'market-preclose-mcx'), None)
+        agent = next((a for a in BUILTIN_AGENTS if a.get('slug') == 'market-preclose-mcx-v2'), None)
         assert agent is not None
         channels = {e["channel"] for e in agent.get('events', [])}
         assert channels == {"telegram", "log", "ntfy", "email"}, \
@@ -72,7 +75,7 @@ class TestMCXPrecloseAgentConfig:
         """Scope discipline: the operator named MCX pre-close specifically,
         not its NSE-open sibling — market-open-nse must keep using the
         shared _INFO_AGENT_DEFAULTS (telegram+ntfy+log, no email),
-        unaffected by market-preclose-mcx's own explicit override."""
+        unaffected by market-preclose-mcx-v2's own explicit override."""
         from backend.api.algo.agent_engine import BUILTIN_AGENTS
 
         agent = next((a for a in BUILTIN_AGENTS if a.get('slug') == 'market-open-nse'), None)
@@ -82,19 +85,19 @@ class TestMCXPrecloseAgentConfig:
             f"market-open-nse should be unaffected, got {channels}"
 
     def test_market_preclose_mcx_is_info_tier(self):
-        """market-preclose-mcx should be info tier (notification only, low priority)."""
+        """market-preclose-mcx-v2 should be info tier (notification only, low priority)."""
         from backend.api.algo.agent_engine import BUILTIN_AGENTS
 
-        agent = next((a for a in BUILTIN_AGENTS if a.get('slug') == 'market-preclose-mcx'), None)
+        agent = next((a for a in BUILTIN_AGENTS if a.get('slug') == 'market-preclose-mcx-v2'), None)
         assert agent is not None
         assert agent.get('tier') == 'info', \
             f"Expected tier='info', got {agent.get('tier')}"
 
     def test_market_preclose_mcx_is_active_status(self):
-        """market-preclose-mcx should be active by default."""
+        """market-preclose-mcx-v2 should be active by default."""
         from backend.api.algo.agent_engine import BUILTIN_AGENTS
 
-        agent = next((a for a in BUILTIN_AGENTS if a.get('slug') == 'market-preclose-mcx'), None)
+        agent = next((a for a in BUILTIN_AGENTS if a.get('slug') == 'market-preclose-mcx-v2'), None)
         assert agent is not None
         assert agent.get('status') == 'active', \
             f"Expected status='active', got {agent.get('status')}"
@@ -645,7 +648,7 @@ class TestDeriveKindOpAware:
     """
 
     def test_avail_margin_always_true_leaf_is_not_negative_margin(self):
-        """The market-open-nse/market-preclose-mcx trick leaf (avail_margin
+        """The market-open-nse/market-preclose-mcx-v2 trick leaf (avail_margin
         >= -999999999) must NOT classify as 'negative_margin'."""
         from backend.api.algo.agent_engine import _v2_derive_kind
         kind = _v2_derive_kind('avail_margin', '>=')

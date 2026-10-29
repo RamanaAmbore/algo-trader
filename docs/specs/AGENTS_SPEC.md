@@ -222,7 +222,7 @@ influence today's fire order.
 
 ### Seeded at startup
 
-Fourteen builtin agents ship as hardcoded rows (`BUILTIN_AGENTS` in `agent_engine.py`):
+Seventeen builtin agents ship as hardcoded rows (`BUILTIN_AGENTS` in `agent_engine.py`):
 
 Loss agents (6):
 - `loss-positions-acct` (high tier, 30-min cooldown, status=inactive)
@@ -243,9 +243,25 @@ Expiry risk agents (2):
 - `expiry-nfo-risk-alert` (high tier)
 - `expiry-mcx-risk-alert` (high tier)
 
-Market lifecycle agents (2):
-- `market-open-nse` (info tier, fire_at=09:15)
-- `market-preclose-mcx` (info tier, fire_at=23:00)
+Expiry-day awareness agents (2, `_EXPIRY_DAY_AWARENESS_AGENTS`, 2026-10-28):
+- `expiry-day-mcx` (high tier, schedule=always, 22h cooldown, no fire_at). Condition
+  `is_mcx_expiry_today == 1`, which is per-portfolio: it fires only when a held MCX F&O
+  position expires today. Channels: telegram + email + log + ntfy(priority=high).
+- `expiry-day-nse` (high tier, same shape). Condition `is_nse_expiry_today == 1` over held
+  NFO positions. Same channels.
+
+Market lifecycle agents (3, `_INFO_AGENTS`):
+- `market-open-nse` (info tier, fire_at=09:15). Still uses the `avail_margin >= -999999999`
+  sentinel. This is the reference pattern for fire_at-based info agents.
+- `market-preclose-mcx-v2` (info tier, condition-based, no fire_at). Fires once per day when
+  `minutes_until_mcx_close <= 30`. The close time comes from the real exchange session, so it
+  tracks `exchange_schedule` overrides. Channels: telegram + log + ntfy(default) + email.
+  Replaces the retired `market-preclose-mcx` (fire_at=23:00). The slug was not reused, so
+  `_ae_prune_retired_builtins` deletes the old row and `seed_agents` inserts the new one.
+- `market-preclose-nonmcx` (info tier, condition-based, no fire_at). Fires once per day when
+  `minutes_until_nse_close <= 30`. Channels: telegram + ntfy(default) + log (the shared
+  `_INFO_AGENT_DEFAULTS`, no email).
+- Both condition-based info agents use `cooldown_minutes=1320` to cap them at one fire per day.
 
 Manual agent (1):
 - `manual` (audit trail only)

@@ -1123,8 +1123,8 @@ def _v2_format_threshold(kind: str, threshold) -> str:
     negative_cash, negative_margin}. Non-numeric thresholds fall through to
     the str() fallback via the except branch.
 
-    Belt-and-suspenders guard: some built-in agents (e.g. market-open-nse,
-    market-preclose-mcx) hand-author an "always-true" sentinel threshold
+    Belt-and-suspenders guard: some built-in agents (e.g. market-open-nse)
+    hand-author an "always-true" sentinel threshold
     (-999999999) purely to drive a fire_at_time gate — never a real,
     displayable figure. Any threshold whose magnitude is absurdly large
     (>= 1e8, i.e. beyond any real ₹/% figure this app would ever alert on)
@@ -1544,12 +1544,12 @@ async def _v2_send_rich_alert(agent, matches, now, sim_mode: bool = False,
     # not the generic "Scheduled — HH:MM IST" line). See
     # _v2_rich_alert_custom_message's docstring for the bug this fixes.
     custom_message = _v2_rich_alert_custom_message(agent, eval_result, context)
-    # Scheduled, notify-only informational agents (market-open-nse,
-    # market-preclose-mcx) use an always-true `avail_margin >= -999999999`
-    # leaf purely to drive their `fire_at_time` gate — there is no real
-    # breach to report, so the per-account kind/threshold table is
-    # meaningless here (and, pre-fix, actively misleading). Mirrors the
-    # exact predicate _cycle_maybe_buffer_fire already uses to override
+    # Scheduled, notify-only informational agents (market-open-nse) use
+    # an always-true `avail_margin >= -999999999` leaf purely to drive
+    # their `fire_at_time` gate — there is no real breach to report, so
+    # the per-account kind/threshold table is meaningless here (and,
+    # pre-fix, actively misleading). Mirrors the exact predicate
+    # _cycle_maybe_buffer_fire already uses to override
     # `condition_text` to "Scheduled — HH:MM IST" for the same agents —
     # that text never reached Telegram/email (only the audit log/websocket
     # did), so it's surfaced here too, with the agent's own name, so the
@@ -2123,6 +2123,64 @@ for _a in _EXPIRY_RISK_AGENTS:
 BUILTIN_AGENTS.extend(_EXPIRY_RISK_AGENTS)
 
 
+# ── Expiry-day awareness agents (2026-10-28) ──────────────────────────
+#
+# schedule="always" + no fire_at_time — these must fire the instant a
+# held F&O position's expiry day begins, not only during market_hours
+# or at a fixed clock string, since `is_{mcx,nse}_expiry_today` is a
+# state-level metric (see metric_is_mcx_expiry_today.py /
+# metric_is_nse_expiry_today.py), not a scheduled clock boundary.
+# cooldown_minutes=1320 (22h) caps this to one fire per expiry day,
+# same convention as the market-open-nse/market-preclose-mcx-v2/
+# market-preclose-nonmcx info agents below. Distinct from
+# expiry-nfo-risk-alert / expiry-mcx-risk-alert (per-position
+# ITM/unhedged risk, market_hours-scheduled, 60-min cooldown) — this
+# pair is a single once-a-day "today is an expiry day" heads-up, not a
+# per-position risk re-alert.
+_EXPIRY_DAY_AWARENESS_AGENTS = [
+    {
+        "slug": "expiry-day-mcx",
+        "name": "MCX expiry day",
+        "long_name": "when:is_mcx_expiry_today==1   schedule:always/cooldown:1320   alert:high/tg+email+ntfy(high)+log   do:notify-only",
+        "description": "Fires once when a held MCX F&O position expires today — reminder to manage or close before settlement.",
+        "schedule": "always",
+        "cooldown_minutes": 1320,
+        "tier": "high",
+        "topic": "expiry_warning",
+        "status": "active",
+        "actions": [],
+        "conditions": {"op": "==", "scope": "funds.total", "metric": "is_mcx_expiry_today", "value": 1.0},
+        "events": [
+            {"channel": "telegram", "enabled": True},
+            {"channel": "email",    "enabled": True},
+            {"channel": "log",      "enabled": True},
+            {"channel": "ntfy",     "enabled": True, "priority": "high"},
+        ],
+    },
+    {
+        "slug": "expiry-day-nse",
+        "name": "NSE/NFO expiry day",
+        "long_name": "when:is_nse_expiry_today==1   schedule:always/cooldown:1320   alert:high/tg+email+ntfy(high)+log   do:notify-only",
+        "description": "Fires once when a held NFO (NSE equity F&O) position expires today — reminder to manage or close before settlement.",
+        "schedule": "always",
+        "cooldown_minutes": 1320,
+        "tier": "high",
+        "topic": "expiry_warning",
+        "status": "active",
+        "actions": [],
+        "conditions": {"op": "==", "scope": "funds.total", "metric": "is_nse_expiry_today", "value": 1.0},
+        "events": [
+            {"channel": "telegram", "enabled": True},
+            {"channel": "email",    "enabled": True},
+            {"channel": "log",      "enabled": True},
+            {"channel": "ntfy",     "enabled": True, "priority": "high"},
+        ],
+    },
+]
+
+BUILTIN_AGENTS.extend(_EXPIRY_DAY_AWARENESS_AGENTS)
+
+
 # ── Market open/close info agents ────────────────────────────────────
 #
 # Notify-only agents that fire at exact market open/close times.
@@ -2156,24 +2214,48 @@ _INFO_AGENTS = [
         "conditions": {"op": ">=", "scope": "funds.any_acct", "metric": "avail_margin", "value": -999999999},
     },
     {
-        "slug": "market-preclose-mcx",
+        # 2026-10-28: `market-preclose-mcx` (fire_at_time="23:00" sentinel
+        # condition) is RETIRED in favour of this slug. Do not reuse the
+        # old slug for a changed trigger mechanism — `_ae_sync_existing_
+        # builtin` only conditionally re-syncs `conditions` (via
+        # `_ae_should_reset_conditions`, which doesn't recognize this
+        # sentinel-to-token migration) while unconditionally re-syncing
+        # `fire_at_time`, so an in-place edit would have left an
+        # already-seeded prod/dev row with fire_at_time=None synced but
+        # the OLD always-true condition un-synced — firing at market-
+        # open instead of 30 min before MCX close. A brand-new slug lets
+        # `_ae_prune_retired_builtins` delete the stale row cleanly and
+        # `seed_agents` insert this one fresh. See CLAUDE.md's
+        # "Market-cycle event tokens" section for the token data flow.
+        "slug": "market-preclose-mcx-v2",
         "name": "MCX pre-close",
-        "long_name": "when:fire_at=23:00   alert:info/tg+ntfy(default)+email+log   do:notify-only",
-        "description": "Fires 30 minutes before MCX close (23:00 IST) on trading days.",
-        "fire_at_time": "23:00",
-        "conditions": {"op": ">=", "scope": "funds.any_acct", "metric": "avail_margin", "value": -999999999},
+        "long_name": "when:minutes_until_mcx_close<=30   schedule:always/cooldown:1320   alert:info/tg+ntfy(default)+email+log   do:notify-only",
+        "description": "Fires once 30 minutes before MCX's own session closes today.",
+        "conditions": {"op": "<=", "scope": "funds.total", "metric": "minutes_until_mcx_close", "value": 30},
         # 2026-10-28 operator instruction: MCX pre-close is an important
         # event and must reach every channel, not just the shared
-        # market-open-nse/market-preclose-mcx default (telegram+ntfy+log).
-        # Own explicit `events` override (not the shared _INFO_AGENT_DEFAULTS
-        # dict below, which only fills keys via setdefault) so market-open-nse
-        # is deliberately left untouched — operator named MCX pre-close only.
+        # market-open-nse default (telegram+ntfy+log). Own explicit
+        # `events` override (not the shared _INFO_AGENT_DEFAULTS dict
+        # below, which only fills keys via setdefault) so market-open-nse
+        # is deliberately left untouched — operator named MCX pre-close
+        # only.
         "events": [
             {"channel": "telegram", "enabled": True},
             {"channel": "log",      "enabled": True},
             {"channel": "ntfy",     "enabled": True, "priority": "default"},
             {"channel": "email",    "enabled": True},
         ],
+    },
+    {
+        # Brand-new slug, no migration hazard — the non-MCX (NSE/equity)
+        # counterpart to market-preclose-mcx-v2 above. Uses the shared
+        # _INFO_AGENT_DEFAULTS channel set (telegram+ntfy(default)+log)
+        # via setdefault below — email was not named for this one.
+        "slug": "market-preclose-nonmcx",
+        "name": "NSE pre-close",
+        "long_name": "when:minutes_until_nse_close<=30   schedule:always/cooldown:1320   alert:info/tg+ntfy(default)+log   do:notify-only",
+        "description": "Fires once 30 minutes before NSE's own session closes today.",
+        "conditions": {"op": "<=", "scope": "funds.total", "metric": "minutes_until_nse_close", "value": 30},
     },
 ]
 
@@ -2192,10 +2274,13 @@ BUILTIN_AGENTS.extend(_INFO_AGENTS)
 # skips agent evaluation entirely whenever no `_get_segments()` segment
 # is open per THAT function's own gate, which uses the broad
 # exchange_schedule hours (08:00 open), NOT each segment's real
-# 09:00/09:15 session start. `market-open-nse` (fire_at_time=09:15) and
-# `market-preclose-mcx` (23:00) both fire because 09:15/23:00 are already
-# PAST that 08:00 gate — not because either time literally coincides
-# with MCX/NSE's own session boundary. 05:35 IST is still BEFORE that
+# 09:00/09:15 session start. `market-open-nse` (fire_at_time=09:15)
+# fires because 09:15 is already PAST that 08:00 gate — not because
+# that time literally coincides with NSE's own session boundary.
+# (`market-preclose-mcx-v2`/`market-preclose-nonmcx` no longer use a
+# fire_at_time at all — they trigger off the `minutes_until_{mcx,nse}_
+# close` token instead, see the "Expiry-day awareness agents" /
+# `_INFO_AGENTS` block above.) 05:35 IST is still BEFORE that
 # 08:00 gate on every day, open or closed, so it is unconditionally true
 # at 05:35 regardless of market state. No `fire_at_time` choice inside
 # the normal agent-engine trigger mechanism can satisfy "fires whether
@@ -3341,8 +3426,8 @@ def _cycle_agent_is_preamble_only(agent) -> bool:
     Why this matters: a preamble-only statement's `conditions` field is
     NOT a real breach condition — the frontend compiler emits the same
     always-true sentinel leaf (`avail_margin@funds.any_acct >=
-    -999999999`) the existing `market-open-nse`/`market-preclose-mcx`
-    scheduled agents use purely to drive a `fire_at_time` gate (see
+    -999999999`) the existing `market-open-nse` scheduled agent uses
+    purely to drive a `fire_at_time` gate (see
     `agentsGrammar.test.js`'s "preamble-only statement" fixture). Without
     this guard, that sentinel would match on EVERY tick, and
     `_v2_send_rich_alert()` sends its rich alert log record

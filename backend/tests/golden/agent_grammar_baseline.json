@@ -505,6 +505,24 @@
     {
       "grammar_kind": "condition",
       "token_kind": "metric",
+      "token": "is_mcx_expiry_today",
+      "value_type": "number",
+      "units": "binary",
+      "description": "1.0 when any currently-held MCX F&O position is expiring today (or already past expiry), 0.0 otherwise. Never None.",
+      "resolver": "backend.api.algo.grammar_tokens.metric_is_mcx_expiry_today._metric_is_mcx_expiry_today"
+    },
+    {
+      "grammar_kind": "condition",
+      "token_kind": "metric",
+      "token": "is_nse_expiry_today",
+      "value_type": "number",
+      "units": "binary",
+      "description": "1.0 when any currently-held NFO (NSE equity F&O) position is expiring today (or already past expiry), 0.0 otherwise. Never None.",
+      "resolver": "backend.api.algo.grammar_tokens.metric_is_nse_expiry_today._metric_is_nse_expiry_today"
+    },
+    {
+      "grammar_kind": "condition",
+      "token_kind": "metric",
       "token": "underlying_market_loss",
       "value_type": "number",
       "units": "₹",
