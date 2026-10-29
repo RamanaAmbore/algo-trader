@@ -13,7 +13,7 @@
   import AlgoTimestamp from '$lib/AlgoTimestamp.svelte';
   import StrategyPicker from '$lib/StrategyPicker.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
-  import { isMarketOpen } from '$lib/marketHours';
+  import { isMarketOpen, isNseOpen, isMcxOpen } from '$lib/marketHours';
   import { createPerformanceSocket } from '$lib/ws';
   import { bookChanged } from '$lib/data/bookChanged';
   import {
@@ -4674,7 +4674,13 @@
     // Latch (never un-set) — same legitimate remaining use of the
     // whole-book `fresh` signal as the propagation effect above.
     if (_posStoreFresh) _hasHadFreshPositionsSnapshot = true;
-    if (!positionsStore.error) lastRefreshAt.set(Date.now());
+    // Freeze (not reset) the header "last refreshed" clock during closed
+    // market hours — a completed poll cycle while both segments are
+    // closed is a frozen-snapshot re-serve, not fresh data. Same
+    // AND-gate shape as RefreshButton.svelte / tickStaleness.svelte.js.
+    if (isNseOpen() || isMcxOpen()) {
+      if (!positionsStore.error) lastRefreshAt.set(Date.now());
+    }
 
     // Do NOT include enabledSymbols in the positions-poll snapshot —
     // the strategy-success path persists selections; polls must not

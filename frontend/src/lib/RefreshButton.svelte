@@ -382,7 +382,12 @@
   // tooltip timestamp updates without any per-page wiring.
   let _prevLoading = false;
   $effect(() => {
-    if (_prevLoading && !loading) {
+    // Freeze (not reset) during closed market hours: a completed fetch
+    // cycle while both segments are closed is a snapshot re-serve, not
+    // fresh data — the header clock must not advance. Same AND-gate
+    // shape as tickStaleness.svelte.js's `_check()` / RefreshButton's
+    // own palette logic (`_nseOpen`/`_mcxOpen`, computed above).
+    if (_prevLoading && !loading && (_nseOpen || _mcxOpen)) {
       lastRefreshAt.set(Date.now());
     }
     _prevLoading = loading;
@@ -390,7 +395,7 @@
 
   let _prevRefiring = false;
   $effect(() => {
-    if (_prevRefiring && !_refiring) lastRefreshAt.set(Date.now());
+    if (_prevRefiring && !_refiring && (_nseOpen || _mcxOpen)) lastRefreshAt.set(Date.now());
     _prevRefiring = _refiring;
   });
 

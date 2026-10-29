@@ -178,6 +178,11 @@ function makeBookPollerHarness({ bookClosedMs = 30 * 60 * 1000 } = {}) {
   let lastGraceFetchAt = 0;
   let fetchCount = 0;
   let tickCounter = 0; // bookPollerTick analog — only advances on a fetch
+  // lastRefreshAt analog (2026-10 freeze fix): unlike tickCounter, this
+  // ONLY advances on a genuinely LIVE fetch — a grace-window fetch (closed
+  // market, daily_book reset/settlement write) bumps tickCounter but must
+  // leave this at its prior value (freeze, not reset).
+  let lastRefreshStampCount = 0;
 
   function tick({ nseOpen, mcxOpen, graceWindow, now }) {
     const live = nseOpen || mcxOpen;
@@ -187,6 +192,7 @@ function makeBookPollerHarness({ bookClosedMs = 30 * 60 * 1000 } = {}) {
     }
     fetchCount++;
     tickCounter++;
+    if (live) lastRefreshStampCount++;
     lastGraceFetchAt = live ? 0 : now;
     return true;
   }
@@ -195,6 +201,7 @@ function makeBookPollerHarness({ bookClosedMs = 30 * 60 * 1000 } = {}) {
     tick,
     get fetchCount() { return fetchCount; },
     get tickCounter() { return tickCounter; },
+    get lastRefreshStampCount() { return lastRefreshStampCount; },
   };
 }
 
@@ -267,6 +274,26 @@ describe('_tickBookPollers behavioral harness (mirrors shipped control flow)', (
     expect(h.fetchCount).toBe(1);
   });
 
+  it('lastRefreshAt freezes (not resets) during a grace-window fetch — tick still advances', () => {
+    const h = makeBookPollerHarness({ bookClosedMs: 1_800_000 });
+    const t0 = 1_000_000_000;
+    // Live fetch — both counters advance together.
+    h.tick({ nseOpen: true, mcxOpen: false, graceWindow: false, now: t0 });
+    expect(h.tickCounter).toBe(1);
+    expect(h.lastRefreshStampCount).toBe(1);
+    // Market closes; a grace-window fetch lands (e.g. 08:00 daily reset) —
+    // tickCounter (flash signal) advances, but lastRefreshStampCount (the
+    // header clock) must NOT — it stays frozen at its prior value.
+    const fired = h.tick({ nseOpen: false, mcxOpen: false, graceWindow: true, now: t0 + 1000 });
+    expect(fired).toBe(true);
+    expect(h.tickCounter).toBe(2);
+    expect(h.lastRefreshStampCount).toBe(1); // frozen, not reset to 0 and not bumped
+    // Market reopens — the clock resumes advancing.
+    h.tick({ nseOpen: true, mcxOpen: false, graceWindow: false, now: t0 + 2000 });
+    expect(h.tickCounter).toBe(3);
+    expect(h.lastRefreshStampCount).toBe(2);
+  });
+
   it('a live fetch resets the grace throttle so the next closed period gets an immediate grace-window fetch', () => {
     // Uses realistic epoch-ms magnitudes (like real `Date.now()`), not
     // small relative offsets — `lastGraceFetchAt` resetting to `0` (epoch)
@@ -333,6 +360,29 @@ describe('marketDataStores.svelte.js — real control flow matches the harness',
     }
     expect(block).toMatch(/_bookPollerTick\+\+/);
     expect(block).toMatch(/lastRefreshAt\.set\(Date\.now\(\)\)/);
+  });
+
+  // 2026-10 fix: `lastRefreshAt` (the header "last refreshed" clock) must
+  // freeze — not advance — on a completed fetch cycle while both NSE and
+  // MCX are closed, even though `_bookPollerTick` (the flash-animation
+  // signal) still advances unconditionally on every completed fetch,
+  // including a grace-window one. Ties the real shipped gate to the
+  // harness split below.
+  it('_loadBookOnce gates lastRefreshAt.set on isNseOpen()||isMcxOpen(), but bumps _bookPollerTick unconditionally', () => {
+    const block = extractFunctionBlock('_loadBookOnce');
+    // _bookPollerTick++ must come BEFORE the live/gate computation —
+    // bumping the tick is unconditional on every completed fetch.
+    const tickIdx = block.indexOf('_bookPollerTick++');
+    const liveIdx = block.indexOf('isNseOpen() || isMcxOpen()');
+    const setIdx = block.indexOf('lastRefreshAt.set(Date.now())');
+    expect(tickIdx).toBeGreaterThan(-1);
+    expect(liveIdx).toBeGreaterThan(-1);
+    expect(setIdx).toBeGreaterThan(-1);
+    expect(liveIdx).toBeGreaterThan(tickIdx);
+    // The stamp call itself must be gated (inside an `if (live)` branch),
+    // not unconditional like the tick bump.
+    expect(block).toMatch(/if\s*\(live\)\s*lastRefreshAt\.set\(Date\.now\(\)\);/);
+    expect(setIdx).toBeGreaterThan(liveIdx);
   });
 
   it('startBookPollers fires the cold-load kick UNGATED via _loadBookOnce, not the gated _tickBookPollers', () => {

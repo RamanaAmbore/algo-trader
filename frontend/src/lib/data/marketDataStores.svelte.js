@@ -782,8 +782,14 @@ async function _loadBookOnce() {
     // Signal completion so PositionStrip's flash animation fires at
     // book-poller cadence (default 5 s) rather than its own 30 s interval.
     _bookPollerTick++;
-    lastRefreshAt.set(Date.now());
-    _lastGraceFetchAt = (isNseOpen() || isMcxOpen()) ? 0 : Date.now();
+    // Freeze (not reset) the header "last refreshed" clock during closed
+    // market hours — a grace-window fetch (08:00 reset / 23:45 MCX
+    // settlement write) still re-serves the frozen `daily_book` snapshot
+    // to the UI, so it must not advance the clock either. Same AND-gate
+    // shape as RefreshButton.svelte / tickStaleness.svelte.js.
+    const live = isNseOpen() || isMcxOpen();
+    if (live) lastRefreshAt.set(Date.now());
+    _lastGraceFetchAt = live ? 0 : Date.now();
     // Keep the running timer's cadence reconciled with the `polling.
     // book_live_ms` setting (settings change takes effect on the next
     // landed fetch). No more open/closed branch here — the closed-window

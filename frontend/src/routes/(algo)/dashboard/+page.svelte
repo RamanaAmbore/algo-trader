@@ -16,6 +16,7 @@
   import ChartCrosshair from '$lib/ChartCrosshair.svelte';
   import ChartPopup from '$lib/ChartPopup.svelte';
   import { clientTimestamp, visibleInterval, lastRefreshAt, connStatus, selectedStrategyId, strategyOpenSymbols, formatDualTz } from '$lib/stores';
+  import { isNseOpen, isMcxOpen } from '$lib/marketHours';
   import AlgoTimestamp from '$lib/AlgoTimestamp.svelte';
   import { bookChanged } from '$lib/data/bookChanged';
   import StrategyPicker from '$lib/StrategyPicker.svelte';
@@ -1221,8 +1222,12 @@
       _heroLoadedAt = clientTimestamp();
       // Stamp as soon as primary data (positions + holdings + events)
       // arrives so the RefreshButton tooltip reflects the completed
-      // critical fetch, not the slower secondary batch below.
-      lastRefreshAt.set(Date.now());
+      // critical fetch, not the slower secondary batch below. Freeze
+      // (not reset) during closed market hours — a completed fetch
+      // cycle while both segments are closed re-serves the frozen
+      // snapshot, not fresh data. Same AND-gate shape as
+      // RefreshButton.svelte / tickStaleness.svelte.js.
+      if (isNseOpen() || isMcxOpen()) lastRefreshAt.set(Date.now());
 
       // Parallel: funds + NIFTY quote.
       // _fetchEquity intentionally NOT in this batch — it has its

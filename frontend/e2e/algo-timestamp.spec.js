@@ -28,6 +28,31 @@ import { loginAsAdmin } from './fixtures/auth.js';
 
 const PAGE = '/admin/derivatives';
 
+// ── Market-open mock ────────────────────────────────────────────────────
+// 2026-10 fix: `lastRefreshAt` is now frozen (not stamped) while both NSE
+// and MCX are closed (see CLAUDE.md "lastRefreshAt frozen during closed
+// market hours" + RefreshButton.svelte / marketDataStores.svelte.js /
+// derivatives +page.svelte). This spec's refresh-timestamp assertions
+// depend on `lastRefreshAt` actually advancing on click, so every test
+// that calls `triggerRefreshAndWait` must mock an OPEN market — otherwise
+// the assertions would pass or fail depending on real wall-clock time
+// (true during the original market hours, flaky/failing overnight or on
+// weekends). Mirrors the mock shape already used in
+// market_closed_color_consistency.spec.js.
+async function mockOpenMarket(page) {
+  await page.route('**/api/market/status', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      nse_open: true,
+      mcx_open: true,
+      any_open: true,
+      is_holiday: false,
+      checked_at: new Date().toISOString(),
+    }),
+  }));
+}
+
 // ── Helper: find the AlgoTimestamp button on the current page ──────────────
 async function findTimestampBtn(page) {
   // AlgoTimestamp renders <button class="ats-group">.
@@ -95,6 +120,7 @@ async function triggerRefreshAndWait(page) {
 test.describe('AlgoTimestamp — Desktop', () => {
   test.describe.configure({ mode: 'serial' });
   test.beforeEach(async ({ page }) => {
+    await mockOpenMarket(page);
     await loginAsAdmin(page);
     await page.goto(PAGE, { waitUntil: 'domcontentloaded' });
     await page.waitForTimeout(500);
@@ -184,6 +210,7 @@ test.describe('AlgoTimestamp — Desktop', () => {
 test.describe('AlgoTimestamp — Mobile toggle', () => {
   test.describe.configure({ mode: 'serial' });
   test.beforeEach(async ({ page }) => {
+    await mockOpenMarket(page);
     await loginAsAdmin(page);
     await page.goto(PAGE, { waitUntil: 'domcontentloaded' });
     await page.waitForTimeout(500);
@@ -404,6 +431,7 @@ test.describe('AlgoTimestamp — Mobile toggle', () => {
 test.describe('AlgoTimestamp — Rapid tap stress', () => {
   test.describe.configure({ mode: 'serial' });
   test.beforeEach(async ({ page }) => {
+    await mockOpenMarket(page);
     await loginAsAdmin(page);
     await page.goto(PAGE, { waitUntil: 'domcontentloaded' });
     await page.waitForTimeout(500);
