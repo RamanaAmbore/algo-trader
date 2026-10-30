@@ -61,7 +61,7 @@
   import InfoHint from '$lib/InfoHint.svelte';
   import { liveSnap } from '$lib/data/symbolStore.svelte.js';
   import RefreshButton from '$lib/RefreshButton.svelte';
-  import { resolveUnderlyingTradingsymbol } from '$lib/data/resolveUnderlying.js';
+  import { resolveUnderlying, resolveUnderlyingTradingsymbol } from '$lib/data/resolveUnderlying.js';
   import { findNearestFuture, instrumentsCacheVersion, getInstrument } from '$lib/data/instruments.js';
   import { rootOf } from '$lib/data/rootOf.js';
   import { payoffDrafts } from '$lib/data/payoffDrafts.svelte.js';
@@ -2583,9 +2583,29 @@
   // ambiguity the way Ticket can have), so it gets its own independent
   // resolution: focused/last basket leg's own exchange first, then the
   // resolved LTP symbol's instrument-cache exchange, then NFO.
-  const _chainMktExch = $derived(
-    String(_focusedLeg?.exchange || getInstrument(_ltpSym)?.e || 'NFO').toUpperCase()
-  );
+  const _chainMktExch = $derived.by(() => {
+    /* eslint-disable-next-line @typescript-eslint/no-unused-expressions */
+    $instrumentsCacheVersion;
+    if (_focusedLeg?.exchange) return String(_focusedLeg.exchange).toUpperCase();
+    const inst = getInstrument(_ltpSym);
+    if (inst?.e) return String(inst.e).toUpperCase();
+    // Bare-root rescue (2026-10-29 live incident: "MCX closed" shown
+    // while MCX was open, no leg staged). `_ltpSym` can end up as a
+    // bare commodity/currency root ("GOLD") when `resolveUnderlying-
+    // Tradingsymbol`'s own `findNearestFuture` lookup misses — that
+    // wrapper returns only the tradingsymbol STRING, discarding the
+    // `.exchange` field `resolveUnderlying()` already correctly
+    // computed (it defaults MCX commodities/CDS currencies to their
+    // real exchange even on its own stub-fallback branch — see
+    // resolveUnderlying.js). `getInstrument()` can never hit on a bare
+    // root (never a real instrument row), so the lookup above always
+    // misses in that case, and this used to fall straight through to
+    // the hardcoded 'NFO' default. Re-resolve the FULL object directly
+    // instead of re-deriving the same lookup a second, lossy way.
+    const root = _parseRoot(_localSymbol) || _localSymbol;
+    const resolved = root ? resolveUnderlying(root, findNearestFuture) : null;
+    return String(resolved?.exchange || 'NFO').toUpperCase();
+  });
   let _chainMktOpen = $state(false);
   function _recomputeChainMktOpen() {
     _chainMktOpen = segmentOpenForExchange(_chainMktExch);

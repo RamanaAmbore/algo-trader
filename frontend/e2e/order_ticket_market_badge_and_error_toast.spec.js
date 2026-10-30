@@ -256,6 +256,56 @@ test.describe('OrderTicket market-state badge', () => {
       expect(text).not.toContain('MCX closed');
     }
   });
+
+  test('live incident regression: the Chain tab for a bare MCX root with no leg staged must not show "Market closed" while MCX is open (2026-10-29)', async ({ page }) => {
+    // Root cause: unlike Ticket (which mirrors OrderTicket's own
+    // `_resolvedExchange`, with a bare-root `findNearestFuture` rescue
+    // added 2026-10-22/23), Chain's own `_chainMktExch` had no such
+    // rescue — it fell straight to `getInstrument(_ltpSym)`, and when
+    // `_ltpSym` is a bare commodity root ("GOLD", the Chain tab's
+    // permanent shape before a strike is picked) `getInstrument()` can
+    // never hit (a bare root is never a real instrument row), so it
+    // fell through to the hardcoded 'NFO' default. With MCX open and
+    // NFO closed, that produced the exact reported symptom: the
+    // Chain-tab order notice said "Market closed" while MCX was
+    // genuinely open. Fixed by re-resolving via `resolveUnderlying()`
+    // directly (which already knows MCX commodities default to 'MCX'
+    // even on its own stub-fallback branch) instead of re-deriving the
+    // same lookup a second, lossy way.
+    await page.route('**/api/market/status', (route) => route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        nse_open: false,
+        mcx_open: true,
+        any_open: true,
+        is_holiday: false,
+        checked_at: new Date().toISOString(),
+      }),
+    }));
+    await loginAsAdmin(page);
+    await page.goto(`${BASE}/orders?symbol=GOLD`, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+
+    const mktPill = page.locator('[data-testid="algo-ts-market-badge-any"]').first();
+    await expect(mktPill).toBeVisible({ timeout: 15_000 });
+    await expect(mktPill).toHaveClass(/ats-mkt-mcx-only/, { timeout: 10_000 });
+
+    const chainTab = page.getByRole('tab', { name: 'Chain' });
+    await expect(chainTab).toBeEnabled({ timeout: 45_000 });
+    await chainTab.click();
+
+    // No leg staged — reproduces the bare-root (no CE/PE suffix) shape
+    // the bug depended on. Generous timeout absorbs the same real
+    // instruments-cache warm-up variance the Ticket-tab test above
+    // documents.
+    const notice = page.locator('.oes-notice').first();
+    await page.waitForTimeout(2000);
+    if (await notice.count() > 0) {
+      const text = (await notice.textContent() || '');
+      expect(text).not.toContain('Market closed');
+      expect(text).not.toContain('MCX closed');
+    }
+  });
 });
 
 test.describe('OrderTicket submit-error toast truncation', () => {
