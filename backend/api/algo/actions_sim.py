@@ -269,23 +269,35 @@ async def _sim_expiry_close(agent, action_type: str, params: dict) -> None:
     Hedging filter is not applied in sim mode — the operator is
     validating the timing + condition path, not the live ExpiryEngine
     grouping logic.
+
+    `exchange` param is optional (2026-10-29 consolidation — the live
+    action and its agent now cover both exchanges in one call); when
+    absent, dry-run both NFO and MCX against the sim book, matching
+    the live path. An explicit `exchange` param still restricts to
+    just that one (old single-exchange agent shape, or a test).
     """
-    exch = (params.get("exchange") or "NFO").upper()
+    raw_exch = (params.get("exchange") or "").upper()
+    exchanges = [raw_exch] if raw_exch in ("NFO", "MCX") else ["NFO", "MCX"]
     all_pos = _sim_positions_in_scope({"scope": "total"})
-    targets = [p for p in all_pos
-               if (p.get("exchange") or "").upper() == exch]
-    if not targets:
-        logger.info(f"[SIM] expiry_auto_close: no {exch} positions in sim book "
-                    f"for {agent.slug}")
+    any_targets = False
+    for exch in exchanges:
+        targets = [p for p in all_pos
+                   if (p.get("exchange") or "").upper() == exch]
+        if not targets:
+            logger.info(f"[SIM] expiry_auto_close: no {exch} positions in sim book "
+                        f"for {agent.slug}")
+            continue
+        any_targets = True
+        for p in targets:
+            await _sim_expiry_close_position(agent, action_type, p, exch)
+    if not any_targets:
+        label = exchanges[0] if len(exchanges) == 1 else "/".join(exchanges)
         await _write_sim_order(agent, action_type, {
             "account":  "TOTAL",
-            "symbol":   f"(no {exch} positions in sim book)",
+            "symbol":   f"(no {label} positions in sim book)",
             "side":     "SELL", "qty": 0, "price": None,
-            "exchange": exch,
+            "exchange": exchanges[0],
         })
-        return
-    for p in targets:
-        await _sim_expiry_close_position(agent, action_type, p, exch)
 
 
 # ───────────────────────────────────────────────────────────────────────────

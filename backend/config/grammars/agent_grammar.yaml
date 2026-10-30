@@ -459,6 +459,20 @@ system_tokens:
   resolver: backend.api.algo.grammar_tokens.metric_is_nse_expiry_today._metric_is_nse_expiry_today
 - grammar_kind: condition
   token_kind: metric
+  token: is_expiry_preclose_alert_window
+  value_type: number
+  units: binary
+  description: 1.0 when MCX or NSE is expiring today and within 30 minutes of its own close, else 0.0. Never None.
+  resolver: backend.api.algo.grammar_tokens.metric_is_expiry_preclose_alert_window._metric_is_expiry_preclose_alert_window
+- grammar_kind: condition
+  token_kind: metric
+  token: is_expiry_preclose_close_window
+  value_type: number
+  units: binary
+  description: 1.0 when MCX or NSE is expiring today and within 25 minutes of its own close, else 0.0. Never None.
+  resolver: backend.api.algo.grammar_tokens.metric_is_expiry_preclose_close_window._metric_is_expiry_preclose_close_window
+- grammar_kind: condition
+  token_kind: metric
   token: underlying_market_loss
   value_type: number
   units: ₹
@@ -1280,9 +1294,10 @@ system_tokens:
   token_kind: action_type
   token: expiry_auto_close
   value_type: void
-  description: Run ExpiryEngine scan + close, restricted to ONE exchange. NFO closes all ITM/NTM; MCX
-    closes only unhedged ITM/NTM (CE/PE pairs that net to zero are skipped). Used by the expiry-day auto-close
-    agents.
+  description: Run ExpiryEngine scan + close. NFO closes all ITM/NTM; MCX closes only unhedged ITM/NTM
+    (CE/PE pairs that net to zero are skipped). 2026-10-29 - exchange is no longer required; omitting
+    it (the built-in expiry-day-itm-auto-close agent's own params) processes both NFO and MCX from one
+    scan. An explicit exchange still restricts the scan + close to just that one.
   resolver: null
   params_schema:
     exchange:
@@ -1290,8 +1305,8 @@ system_tokens:
       enum:
       - NFO
       - MCX
-      required: true
-      description: Restrict scan + close to this exchange.
+      required: false
+      description: Optional - restrict scan + close to this one exchange. Omit to process both.
 
 # Simpler one-shot close of a specific position — LIMIT order at the
 # instrument's current LTP. Side is derived from position direction

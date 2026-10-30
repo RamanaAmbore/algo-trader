@@ -473,10 +473,15 @@ Close and settlement snapshots are the only source of truth during closed hours.
 
 The system must recover from any single-tier failure without operator intervention.
 
-**Expiry-day auto-close agent** (commit cbbe0f23): `expiry-day-equity-itm-auto-close` and 
-`expiry-day-commodity-itm-auto-close` agents are now **active** by default. These agents 
-re-scan for newly-ITM expiring positions every 30 minutes (until 15:25 IST), enabling 
-intraday ITM close automation when positions tick ITM after initial close snapshot.
+**Expiry-day auto-close background task** (commit cbbe0f23; agent layer consolidated 2026-10-29
+— see CLAUDE.md "Expiry pre-close alert + auto-close"): the prod-only `ExpiryEngine.run()`
+background task (09:20 IST, unrelated to the agent-engine's own `expiry-day-itm-auto-close`,
+which fires per-exchange 25 min before that exchange's own close) re-scans for newly-ITM
+expiring positions every 30 minutes (until 15:25 IST), enabling intraday ITM close automation
+when positions tick ITM after the initial close snapshot. Both mechanisms route every close
+through the same `ExpiryEngine.close_positions()` → `expiry_close_held()` hold-by-default check,
+so they cannot double-place a live order even though both can independently attempt the same
+close on the same day.
 
 ### Failure modes and expected recovery:
 

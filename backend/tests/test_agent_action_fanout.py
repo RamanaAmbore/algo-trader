@@ -239,28 +239,34 @@ class TestBackwardCompatRealAgentShapes:
         assert exec_mock.call_args.args[2]["account"] == "TOTAL"
 
     @pytest.mark.asyncio
-    async def test_expiry_auto_close_nfo_three_itm_rows_fires_once(self):
-        """Real agent `expiry-day-equity-itm-auto-close`: per-row scope
-        (positions.expiring_today.nfo) + expiry_auto_close action (NO
-        $row — the action scans+closes the whole NFO exchange in one
-        call). Three matching ITM rows (the exact scenario fan-out COULD
-        have broken) must still fire exactly once — re-invoking a whole-
-        exchange sweep 3x would be actively harmful (redundant races),
-        not 3 correct partial actions."""
-        spec = _builtin("expiry-day-equity-itm-auto-close")
-        assert spec["actions"] == [{"type": "expiry_auto_close", "params": {"exchange": "NFO"}}]
+    async def test_expiry_auto_close_fires_once_even_with_multiple_matches(self):
+        """Real agent `expiry-day-itm-auto-close` (2026-10-29 consolidation
+        — covers MCX+NFO in one agent, replacing the old
+        expiry-day-equity-itm-auto-close/expiry-day-commodity-itm-auto-close
+        pair): expiry_auto_close action (NO $row — the action scans+closes
+        both exchanges in one call, via ExpiryEngine.scan_positions()).
+        The agent's real condition is a single flat `funds.total` leaf
+        (never multiple rows in practice), but the fan-out guard itself —
+        a whole-exchange sweep action must fire ONCE regardless of match
+        count, never N times — is a general engine invariant worth
+        pinning independent of what this specific agent's condition shape
+        can produce. Re-invoking a whole-exchange sweep N times would be
+        actively harmful (redundant races), not N correct partial
+        actions."""
+        spec = _builtin("expiry-day-itm-auto-close")
+        assert spec["actions"] == [{"type": "expiry_auto_close", "params": {}}]
         agent = _Agent(id=103, slug=spec["slug"], tier=spec["tier"], topic=spec["topic"],
                        actions=spec["actions"])
+        # Synthetic multi-match set — the real condition is a single flat
+        # leaf and never produces more than one match in practice, but the
+        # fan-out guard itself must hold regardless of match count.
         matches = [
-            _m(metric="is_itm", scope="positions.expiring_today.nfo", account="ZG0790",
-               op="==", threshold=1.0, value=1.0,
-               row=_row("ZG0790", tradingsymbol="NIFTY26OCT22500CE", exchange="NFO")),
-            _m(metric="is_itm", scope="positions.expiring_today.nfo", account="ZG0790",
-               op="==", threshold=1.0, value=1.0,
-               row=_row("ZG0790", tradingsymbol="NIFTY26OCT22600CE", exchange="NFO")),
-            _m(metric="is_itm", scope="positions.expiring_today.nfo", account="ZJ6294",
-               op="==", threshold=1.0, value=1.0,
-               row=_row("ZJ6294", tradingsymbol="BANKNIFTY26OCT48000PE", exchange="NFO")),
+            _m(metric="is_expiry_preclose_close_window", scope="funds.total",
+               op="==", threshold=1.0, value=1.0, row={}),
+            _m(metric="is_expiry_preclose_close_window", scope="funds.total",
+               op="==", threshold=1.0, value=1.0, row={}),
+            _m(metric="is_expiry_preclose_close_window", scope="funds.total",
+               op="==", threshold=1.0, value=1.0, row={}),
         ]
 
         exec_mock, fired = await _run_tick(agent, matches)
@@ -268,35 +274,10 @@ class TestBackwardCompatRealAgentShapes:
         assert fired
         assert exec_mock.call_count == 1, (
             f"expiry_auto_close (whole-exchange sweep, no $row) must fire "
-            f"ONCE for 3 matched rows, got {exec_mock.call_count} — a "
-            f"regression here means N redundant close-sweeps racing each "
-            f"other"
+            f"ONCE, got {exec_mock.call_count} — a regression here means "
+            f"N redundant close-sweeps racing each other"
         )
         assert exec_mock.call_args.args[2]["account"] == "TOTAL"
-
-    @pytest.mark.asyncio
-    async def test_expiry_auto_close_mcx_unhedged_fires_once(self):
-        """Same proof as above for the MCX sibling
-        (expiry-day-commodity-itm-auto-close, scope
-        positions.expiring_today.mcx_unhedged)."""
-        spec = _builtin("expiry-day-commodity-itm-auto-close")
-        agent = _Agent(id=104, slug=spec["slug"], tier=spec["tier"], topic=spec["topic"],
-                       actions=spec["actions"])
-        matches = [
-            _m(metric="is_itm", scope="positions.expiring_today.mcx_unhedged",
-               account="ZG0790", op="==", threshold=1.0, value=1.0,
-               row=_row("ZG0790", tradingsymbol="CRUDEOIL26OCT6000CE", exchange="MCX")),
-            _m(metric="is_itm", scope="positions.expiring_today.mcx_unhedged",
-               account="ZG0790", op="==", threshold=1.0, value=1.0,
-               row=_row("ZG0790", tradingsymbol="CRUDEOIL26OCT6100CE", exchange="MCX")),
-        ]
-
-        exec_mock, fired = await _run_tick(agent, matches)
-
-        assert fired
-        assert exec_mock.call_count == 1, (
-            f"expected exactly 1 execute() call, got {exec_mock.call_count}"
-        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════

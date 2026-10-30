@@ -41,8 +41,16 @@ from backend.api.algo.agent_engine import (
     _ae_sync_existing_builtin,
 )
 
-EQUITY_SLUG = "expiry-day-equity-itm-auto-close"
-COMMODITY_SLUG = "expiry-day-commodity-itm-auto-close"
+BUILTIN_EXAMPLE_SLUG = "expiry-day-positions-alert"
+# 2026-10-29: the two real expiry-close agents this file used to pin
+# (expiry-day-equity-itm-auto-close / expiry-day-commodity-itm-auto-close)
+# were retired and consolidated into expiry-day-itm-auto-close, which
+# deliberately does NOT carry the "Ships INACTIVE" phrase (its safety
+# net is the order-level hold-by-default in ExpiryEngine.close_positions(),
+# not agent deactivation — see agent_engine.py's own comment above
+# _EXPIRY_DAY_AWARENESS_AGENTS). expiry-day-positions-alert is the
+# remaining real example of a seeded agent that genuinely ships inactive
+# behind this exact phrase.
 
 
 def _by_slug(slug: str) -> dict:
@@ -52,30 +60,40 @@ def _by_slug(slug: str) -> dict:
 
 
 class TestRealExpiryAgentsShipInactive:
-    """Direct regression on the raw seed dicts — bypasses the guard
+    """Direct regression on a raw seed dict — bypasses the guard
     entirely so a future regression is caught even if the guard itself
     were ever weakened or removed."""
 
-    @pytest.mark.parametrize("slug", [EQUITY_SLUG, COMMODITY_SLUG])
-    def test_status_is_inactive_on_raw_dict(self, slug):
-        agent_def = _by_slug(slug)
+    def test_status_is_inactive_on_raw_dict(self):
+        agent_def = _by_slug(BUILTIN_EXAMPLE_SLUG)
         assert agent_def["status"] == "inactive", (
-            f"{slug}: status must be 'inactive' to match its own "
+            f"{BUILTIN_EXAMPLE_SLUG}: status must be 'inactive' to match its own "
             f"description's 'Ships INACTIVE' claim, got "
             f"{agent_def['status']!r}"
         )
 
-    @pytest.mark.parametrize("slug", [EQUITY_SLUG, COMMODITY_SLUG])
-    def test_description_still_claims_ships_inactive(self, slug):
+    def test_description_still_claims_ships_inactive(self):
         """Sanity-check the fixture assumption itself: if a future edit
         removes the phrase from the description, this test (not the
         status test above) should be the one that fails, surfacing the
         intent clearly."""
-        agent_def = _by_slug(slug)
+        agent_def = _by_slug(BUILTIN_EXAMPLE_SLUG)
         assert _SEED_SHIPS_INACTIVE_PHRASE in agent_def.get("description", ""), (
-            f"{slug}: expected description to contain "
+            f"{BUILTIN_EXAMPLE_SLUG}: expected description to contain "
             f"{_SEED_SHIPS_INACTIVE_PHRASE!r}"
         )
+
+    def test_new_consolidated_auto_close_agent_does_not_carry_the_phrase(self):
+        """expiry-day-itm-auto-close (2026-10-29) is a brand-new slug and
+        deliberately does NOT carry "Ships INACTIVE" — its safety net is
+        the order-level hold-by-default in ExpiryEngine.close_positions(),
+        not agent deactivation. Pins that deliberate choice so a future
+        edit doesn't silently reintroduce the phrase (which would force
+        status back to inactive on every restart via _ae_guard_seed_status,
+        defeating the design)."""
+        agent_def = _by_slug("expiry-day-itm-auto-close")
+        assert _SEED_SHIPS_INACTIVE_PHRASE not in agent_def.get("description", "")
+        assert agent_def["status"] == "active"
 
 
 class TestNoBuiltinAgentContradictsItsOwnDescription:

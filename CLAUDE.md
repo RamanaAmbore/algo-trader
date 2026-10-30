@@ -2532,6 +2532,84 @@ and never reached any grammar resolver. The older `minutes_since_open` token sti
 - **Invariant:** a state-change trigger must treat a missing flag as unknown, never as closed or
   zero. An empty `segment_flags` (event-feed or hand-built `Context`) yields `None` for every token.
 
+**Expiry pre-close alert + auto-close — one agent each covering MCX + NFO, same identification
+for both, order-level hold-by-default (2026-10-29)** — `expiry-day-mcx-v2`/`expiry-day-nse-v2`
+(the per-exchange retime from earlier the same day) were retired a few hours later and
+consolidated, per three direct operator instructions: "create one agent for order placing and
+one agent for alert instead of two", "why can't you have one agent for nfo and mcx" / "let the
+function that you register identify the positions, 30 mins before market close, etc.", "alert
+agent 30 mins before expiry market closure, close agents 25 mins before". Final shape:
+- **`expiry-day-preclose-alert`** (high tier) and **`expiry-day-itm-auto-close`** (critical
+  tier), both `schedule="always"`, no `fire_at_time`, `cooldown_minutes=1320` → **180**, each a
+  single flat leaf condition (`is_expiry_preclose_alert_window==1` / `is_expiry_preclose_close_
+  window==1`). The exchange-loop and lead-time check live inside the metric resolver
+  ([grammar_tokens/metric_is_expiry_preclose_alert_window.py](backend/api/algo/grammar_tokens/metric_is_expiry_preclose_alert_window.py)
+  + its `_close_window` sibling, threshold 25 not 30), not a DSL compound tree — each reads the
+  already-computed cheap tokens (`is_{mcx,nse}_expiry_today`, `minutes_until_{mcx,nse}_close`, no
+  broker call) for BOTH exchanges and returns one boolean.
+- **180-min cooldown, not 22h — deliberate, not an oversight.** Both agents share ONE metric name
+  across MCX and NFO, and the per-fire latch key is `(agent_slug, metric, scope, account)` with
+  no exchange dimension (`funds.total`-scoped, no account/underlying to key on). A 22h cooldown
+  would let NFO's ~15:00 fire suppress MCX's own ~23:00 fire the SAME day — NFO structurally
+  always precedes MCX (15:30 vs 23:30 close), so this is a real bug class, not hypothetical. 180
+  min covers one ~30-min firing window (no same-exchange double-fire) while clearing hours before
+  the ~7.5h gap to the other exchange's window. Pinned by
+  `test_expiry_day_and_preclose_agents.py::TestExpiryDayAgentsSameDayNoSuppression`.
+- **Identification is shared, not duplicated.** Both the alert's render helper
+  (`_v2_expiry_position_breakdown()`, agent_engine.py, called from `_v2_send_rich_alert`'s
+  reminder-only branch) and the order-placing action (`_action_live_expiry_auto_close`,
+  actions_live.py) call `ExpiryEngine.scan_positions()` — confirmed read-only (fetches
+  positions/instruments/LTP only, no order placement) and the backend's own mirror of the
+  Derivatives Exp-close tab (confirmed: `derivativesMath.js:350` —
+  `"// Equity: ITM → close, OTM → otm. No netting on NFO."` — matches `ExpiryEngine` exactly). MCX
+  gets the real 4-rule theta-priority netting on ITM/NTM legs only (`residual_qty != 0` → needs
+  closing); NFO gets unconditional ITM/NTM closing with no netting exception. The action was
+  generalized to run ONE scan covering both exchanges (previously two separate agents, one scan
+  each, restricted to one exchange via a `params.exchange` the action no longer requires —
+  `agent_grammar.yaml`'s `expiry_auto_close` token's `exchange` param moved `required: true` →
+  `false`, golden baseline updated to match). `before_cutoff()` per-exchange gating was removed
+  from the action — the agent's own condition already gates timing, so a second,
+  independently-configured gate inside the action would just be a second place the same decision
+  could disagree.
+- **Wording never claims a verdict it can't back.** MCX: a root with zero `needs_close` legs
+  renders demoted/last as `netted: ROOT`, NEUTRAL wording only — never "safe"/"hedged, no action
+  needed" (a long-CE+long-PE pair legitimately nets to zero but can still devolve into a naked
+  future on settlement if spot lands between strikes). NFO: an OTM leg renders demoted/last as
+  `no action (OTM): ROOT` — never "netted" (no pairing step exists for equity at all; a root can
+  genuinely mix an ITM leg needing closure with an OTM leg needing none, and NFO's render loop is
+  per-leg, not per-root, specifically so both facts show). A `scan_positions()` failure renders an
+  explicit `(position detail unavailable...)` note, never a silent blank (which would read as a
+  false "all clear" — the same "Staleness indicator freeze rule" invariant applied here).
+- **Order-level safety was already built — no new plumbing.** `expiry-day-itm-auto-close` ships
+  `status="active"` deliberately: it is a brand-new slug, so it is NOT bound by
+  `_ae_guard_seed_status`'s "Ships INACTIVE" fail-safe (that guard triggers only on the literal
+  phrase appearing in a seeded agent's own description, by design — see the "Kind classification"
+  entry elsewhere in this file for the sibling schedule-only-sentinel guard). The real safety net
+  is `ExpiryEngine.close_positions()`'s pre-existing `expiry_close_held()` check
+  (`order_hold_gate.py`, `HoldCategory.EXPIRY_CLOSE`, `DEFAULT_HELD=True`) — every close lands as a
+  `HELD` `AlgoOrder` row via `record_held_order()`, no broker call, unless the operator has
+  explicitly turned on `hold.expiry_close_released` (exposed as `expiry_close_hold_enabled` on
+  `/admin/settings`, inverted naming documented inline in `admin.py`: `true` = held, the default).
+  Once released, a close already routes through the real chase engine
+  (`chase_order(..., intent="close")`) — this was true of `close_positions()` before this change
+  and needed no new wiring.
+- **Paper/sim dry-run generalized too.** `_paper_expiry_close`/`_sim_expiry_close`
+  (actions_paper.py/actions_sim.py) now default to both exchanges when `params.exchange` is
+  absent (matching the live action), while an explicit `exchange` param still restricts to one
+  (old shape, or a test).
+- Tests: `test_expiry_day_and_preclose_agents.py` (agent shape, flat conditions, cooldown,
+  same-day no-suppression regression), `test_expiry_position_breakdown.py` (wording rules, masked
+  accounts, lot-size fallback, multi-account never pooled, degraded-scan note).
+- **Known coupling with the pre-existing background 09:20 IST task** (`background.py`,
+  prod-only, `ExpiryEngine.run()`, `_start_offset_h`=2h before close) — intentionally left
+  running side-by-side, unchanged. It also routes through `close_positions()`'s same hold check,
+  so the two mechanisms cannot double-place a live order even though they can both independently
+  attempt the same close on the same day; whichever runs first stages (or places, once released)
+  the HELD row, and the second finds nothing new to close.
+- Invariant: alert and auto-close identification can never disagree — they call the identical
+  `ExpiryEngine.scan_positions()`. A root's "unnetted"/"ITM" classification is never duplicated
+  into a second, independent implementation.
+
 **close_price / ltp invariant — DO NOT CHANGE without explicit operator instruction** —
 `prev_close` = previous session's **settlement LTP** (frozen from settlement until next session opens at 08:00 IST). `ltp` ticks live during session, freezes at settlement price at close. Day P&L = `(ltp − prev_close) × qty`.
 
@@ -2695,6 +2773,8 @@ now caches + returns a `stale` flag; `/api/nav/by-account` masks `errors` for no
 | Summary timing | `backend/config/backend_config.yaml` |
 | Order-entry grammar | `backend/config/grammars/orders.yaml` |
 | Toggle agent default status | `backend/api/algo/agent_engine.py` |
+| Expiry pre-close alert + auto-close (one agent each, both exchanges) | `backend/api/algo/agent_engine.py` (`expiry-day-preclose-alert`/`expiry-day-itm-auto-close`, `_v2_expiry_position_breakdown`) + `backend/api/algo/actions_live.py:_action_live_expiry_auto_close` + `backend/api/algo/grammar_tokens/metric_is_expiry_preclose_{alert,close}_window.py` |
+| Expiry close hold/release | `/admin/settings` → `expiry_close_hold_enabled` (inverted: `true`=held, default) |
 | Dhan/Groww margin enforce | `/admin/settings` → `preflight.enforce_margin_{dhan,groww}` |
 | Add MCP tool | `backend/mcp/kite_server.py` @app.tool() |
 | Tune MCP audit | `/admin/settings` |

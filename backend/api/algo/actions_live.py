@@ -1705,7 +1705,12 @@ async def _action_live_chase_close_positions(agent, context: dict, params: dict)
 
 async def _action_live_expiry_auto_close(agent, context: dict, params: dict):
     """
-    Expiry-day surgical close restricted to ONE exchange.
+    Expiry-day surgical close, both exchanges in one scan+close pass
+    (2026-10-29 consolidation — was restricted to one exchange per call,
+    requiring two separate agents; `expiry-day-itm-auto-close` now fires
+    once and this covers MCX + NFO together via a single `scan_positions()`
+    call, matching the single-agent design the alert sibling
+    `expiry-day-preclose-alert` also uses).
 
     Wraps the legacy ExpiryEngine so the agent path inherits the
     battle-tested rules:
@@ -1718,18 +1723,23 @@ async def _action_live_expiry_auto_close(agent, context: dict, params: dict):
     Reads NTM buffer + chase config from `algo.expiry_*` settings (same
     knobs the bg task uses), so a single /admin/settings change tunes
     both paths.
+
+    `before_cutoff()` per-exchange gating is deliberately NOT used here
+    (unlike the pre-2026-10-29 version) — the agent's own
+    `is_expiry_preclose_close_window` condition already gates timing
+    (25 min before each exchange's own close) before this action is
+    ever dispatched, so a second, independently-configured timing gate
+    inside the action would just be a second place the same decision
+    could disagree. `close_positions()` itself still routes every
+    close through `expiry_close_held()` — HELD by default
+    (`HoldCategory.EXPIRY_CLOSE`), never a live broker call unless the
+    operator has explicitly released that category.
+
+    `params` is accepted for action-dispatch signature compatibility
+    but intentionally empty/unused — this action always processes
+    whatever `scan_positions()` finds, both exchanges, every call.
     """
     from backend.api.algo.expiry import ExpiryEngine
-
-    exch = (params.get("exchange") or "").upper()
-    if exch not in ("NFO", "MCX"):
-        logger.error(f"[LIVE] expiry_auto_close: invalid exchange param {exch!r} for agent {agent.slug}")
-        return
-
-    from backend.api.algo.order_hold_gate import before_cutoff
-    if before_cutoff(exch):
-        logger.info(f"[LIVE] expiry_auto_close: {exch} before cut-off; scan deferred (agent={agent.slug})")
-        return
 
     engine = ExpiryEngine(agent_id=getattr(agent, "id", None))
     try:
@@ -1738,15 +1748,17 @@ async def _action_live_expiry_auto_close(agent, context: dict, params: dict):
         logger.error(f"[LIVE] expiry_auto_close: scan failed for agent {agent.slug}: {e}")
         return
 
-    targets = [p for p in to_close if (p.exchange or "").upper() == exch]
-    if not targets:
-        logger.info(f"[LIVE] expiry_auto_close: no {exch} positions need closing "
-                    f"(agent={agent.slug}, scanned={len(to_close)})")
+    if not to_close:
+        logger.info(f"[LIVE] expiry_auto_close: no positions need closing "
+                    f"(agent={agent.slug})")
         return
 
+    by_exch: dict[str, int] = {}
+    for p in to_close:
+        by_exch[p.exchange] = by_exch.get(p.exchange, 0) + 1
     logger.info(f"[LIVE] expiry_auto_close: agent {agent.slug} closing "
-                f"{len(targets)} {exch} positions")
-    await engine.close_positions(targets)
+                f"{len(to_close)} positions ({by_exch})")
+    await engine.close_positions(to_close)
     logger.info(f"[LIVE] expiry_auto_close: agent {agent.slug} done — "
                 f"closed={len(engine.state.closed)} failed={len(engine.state.failed)} "
                 f"slippage=₹{engine.state.total_slippage:.2f}")

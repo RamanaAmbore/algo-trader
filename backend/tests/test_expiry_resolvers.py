@@ -51,50 +51,46 @@ def test_new_tokens_registered_in_system_catalog():
 # ── Seeded agents: shape + slug ──────────────────────────────────
 
 def test_expiry_agents_seeded_with_correct_shape():
+    """2026-10-29: the two per-exchange auto-close agents were retired
+    and consolidated into expiry-day-itm-auto-close, covering both
+    exchanges with no exchange param and a flat, token-driven condition
+    (no fire_at_time, no per-row scope — the position identification
+    moved into ExpiryEngine.scan_positions(), called from the action).
+    See test_expiry_day_and_preclose_agents.py for the full shape
+    coverage of the current agent."""
     from backend.api.algo.agent_engine import BUILTIN_AGENTS
     by_slug = {a["slug"]: a for a in BUILTIN_AGENTS}
     for slug in ("expiry-day-equity-itm-auto-close",
-                 "expiry-day-commodity-itm-auto-close",
-                 "expiry-day-positions-alert"):
+                 "expiry-day-commodity-itm-auto-close"):
+        assert slug not in by_slug, f"retired slug still present: {slug}"
+    for slug in ("expiry-day-itm-auto-close", "expiry-day-positions-alert"):
         assert slug in by_slug, f"missing seeded agent: {slug}"
-    equity = by_slug["expiry-day-equity-itm-auto-close"]
-    commodity = by_slug["expiry-day-commodity-itm-auto-close"]
 
-    # Equity: fires at 15:15 IST (matches order_hold_gate.cutoff_for("NFO")'s
-    # default lead_minutes_nfo=15: 15:30 close - 15 = 15:15) against NFO
-    # scope, action exchange=NFO. Fixed 2026-10 (Sprint 1a) — was "15:00",
-    # 15 min BEFORE its own cutoff, so the action's before_cutoff() gate
-    # deferred every cycle and never actually scanned/closed anything.
-    assert equity["fire_at_time"] == "15:15"
-    leaf = equity["conditions"]["all"][0]
-    assert leaf["scope"] == "positions.expiring_today.nfo"
-    assert equity["actions"][0]["type"] == "expiry_auto_close"
-    assert equity["actions"][0]["params"]["exchange"] == "NFO"
-    # Ships INACTIVE (destructive) per its own description — matches
-    # status so a fresh/reset DB doesn't resurrect it active with zero
-    # operator review. Fixed 2026-10.
-    assert equity["status"] == "inactive"
-
-    # Commodity: fires at 23:00 IST against MCX-unhedged scope, exchange=MCX
-    assert commodity["fire_at_time"] == "23:00"
-    leaf = commodity["conditions"]["all"][0]
-    assert leaf["scope"] == "positions.expiring_today.mcx_unhedged"
-    assert commodity["actions"][0]["type"] == "expiry_auto_close"
-    assert commodity["actions"][0]["params"]["exchange"] == "MCX"
-    # Ships INACTIVE (destructive) per its own description — matches
-    # status so a fresh/reset DB doesn't resurrect it active with zero
-    # operator review. Fixed 2026-10.
-    assert commodity["status"] == "inactive"
+    combined = by_slug["expiry-day-itm-auto-close"]
+    assert combined.get("fire_at_time") is None
+    assert combined["conditions"] == {
+        "op": "==", "scope": "funds.total",
+        "metric": "is_expiry_preclose_close_window", "value": 1.0,
+    }
+    assert combined["actions"][0]["type"] == "expiry_auto_close"
+    assert combined["actions"][0]["params"] == {}
+    # Deliberately active — see the comment above
+    # _EXPIRY_DAY_AWARENESS_AGENTS in agent_engine.py: its safety net is
+    # the order-level hold-by-default in ExpiryEngine.close_positions(),
+    # not agent deactivation.
+    assert combined["status"] == "active"
 
 
 def test_expiry_auto_close_action_token_has_exchange_param():
-    """The grammar token must require `exchange` so an agent can't
-    fire an unscoped expiry close that would hit the wrong segment."""
+    """The grammar token's `exchange` param is now optional (2026-10-29
+    — omitting it, the built-in agent's own params, processes both
+    exchanges from one scan). An explicit exchange still restricts to
+    just that one."""
     tok = next(t for t in grammar.SYSTEM_TOKENS
                if t['grammar_kind'] == 'action'
                and t['token'] == 'expiry_auto_close')
     schema = tok['params_schema']['exchange']
-    assert schema.get('required') is True
+    assert schema.get('required') is False
     assert set(schema['enum']) == {"NFO", "MCX"}
 
 
@@ -132,17 +128,29 @@ def _seed_registry_inline():
 
 
 def test_commodity_agent_condition_fires_on_unhedged_itm_goldm():
-    """Walk the full condition tree the seeded commodity agent uses
-    against a fabricated GOLDM book where ONE leg is ITM + unhedged
-    and another is fully hedged. Engine should match exactly the
-    unhedged leg.
+    """Walk the `positions.expiring_today.mcx_unhedged` + `is_itm`
+    condition tree against a fabricated GOLDM book where ONE leg is
+    ITM + unhedged and another is fully hedged. Engine should match
+    exactly the unhedged leg. The condition tree is built inline
+    (2026-10-29) rather than read off a BUILTIN_AGENTS entry — the two
+    exchange-specific auto-close agents that used to carry this exact
+    shape were retired and consolidated into a single
+    expiry-day-itm-auto-close, whose own condition is a flat
+    is_expiry_preclose_close_window leaf with no per-row scope at all
+    (the real position identification moved into
+    ExpiryEngine.scan_positions(), called from the action, not
+    evaluated via this condition tree). This test still proves the
+    `mcx_unhedged`/`is_itm` resolvers themselves are correct — they
+    remain live, used today by the still-active expiry-mcx-risk-alert
+    agent.
     """
     _seed_registry_inline()
     from backend.api.algo.agent_evaluator import evaluate
-    from backend.api.algo.agent_engine import BUILTIN_AGENTS
 
-    agent = next(a for a in BUILTIN_AGENTS
-                 if a["slug"] == "expiry-day-commodity-itm-auto-close")
+    agent_conditions = {"all": [
+        {"op": "==", "scope": "positions.expiring_today.mcx_unhedged",
+         "metric": "is_itm", "value": 1.0},
+    ]}
 
     # Build a real GOLDM book — strike 75000, spot 76000 → call ITM.
     # Add a perfectly hedged GOLD pair as a distractor; should NOT match.
@@ -163,7 +171,7 @@ def test_commodity_agent_condition_fires_on_unhedged_itm_goldm():
         ],
         spot_prices={"GOLDM": 76000.0, "GOLD": 76000.0},
     )
-    matches = evaluate(agent["conditions"], ctx)
+    matches = evaluate(agent_conditions, ctx)
     # The condition is "is_itm == 1 over MCX-unhedged" — should fire
     # once, against the GOLDM leg only.
     assert len(matches) == 1, (
@@ -171,17 +179,18 @@ def test_commodity_agent_condition_fires_on_unhedged_itm_goldm():
 
 
 def test_equity_agent_condition_fires_on_itm_nifty_calls():
-    """Validate the equity agent on a NIFTY book where one strike is
-    deep ITM and another is far OTM. Should match only the ITM leg.
-    Equity rules: hedging does NOT save you — every ITM contract
-    must close — so a hedged distractor should also surface if it's
-    ITM. Use a long call + long put pair: both ITM at right spot."""
+    """Validate the `positions.expiring_today.nfo` + `is_itm` condition
+    tree on a NIFTY book where one strike is deep ITM and another is
+    far OTM. Should match only the ITM leg. Equity rules: hedging does
+    NOT save you — every ITM contract must close. Condition built
+    inline (2026-10-29, same rationale as the commodity test above) —
+    the resolvers remain live, used today by the still-active
+    expiry-nfo-risk-alert agent."""
     _seed_registry_inline()
     from backend.api.algo.agent_evaluator import evaluate
-    from backend.api.algo.agent_engine import BUILTIN_AGENTS
 
-    agent = next(a for a in BUILTIN_AGENTS
-                 if a["slug"] == "expiry-day-equity-itm-auto-close")
+    agent_conditions = {"op": "==", "scope": "positions.expiring_today.nfo",
+                         "metric": "is_itm", "value": 1.0}
 
     today = date(2025, 4, 24)
     today_dt = datetime(today.year, today.month, today.day, 9, 30,
@@ -198,7 +207,7 @@ def test_equity_agent_condition_fires_on_itm_nifty_calls():
         ],
         spot_prices={"NIFTY": 22200.0},
     )
-    matches = evaluate(agent["conditions"], ctx)
+    matches = evaluate(agent_conditions, ctx)
     assert len(matches) == 1
     # The matched row should be the ITM one.
     matched_syms = {m.get('row', {}).get('tradingsymbol')

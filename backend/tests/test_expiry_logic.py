@@ -182,108 +182,50 @@ def test_index_ltp_key_maps_nifty():
 
 
 def test_expiry_auto_close_agents_ship_inactive():
-    """Both expiry auto-close built-in agents must ship with status='inactive'.
-
-    Both agents' own `description` text says "Ships INACTIVE (destructive)"
-    — their seed `status` must match. Fixed 2026-10: the seed dicts
-    previously said status='active', contradicting their own description
-    (a fresh/reset DB would have resurrected both as active with zero
-    operator review). See `_ae_guard_seed_status` in agent_engine.py for
-    the runtime guard that now catches this class of bug for any future
-    seeded agent.
+    """2026-10-29: the two per-exchange expiry auto-close built-in agents
+    (expiry-day-equity-itm-auto-close/expiry-day-commodity-itm-auto-close,
+    both status='inactive') were retired and consolidated into the single
+    expiry-day-itm-auto-close, which covers both exchanges in one agent.
+    It deliberately ships status='active' — its safety net is the
+    order-level hold-by-default in ExpiryEngine.close_positions()
+    (HoldCategory.EXPIRY_CLOSE), not agent deactivation. See
+    test_expiry_day_and_preclose_agents.py::TestExpiryDayItmAutoCloseAgent
+    and test_seed_ships_inactive_guard.py for the current coverage of
+    both halves of this invariant.
     """
     from backend.api.algo.agent_engine import BUILTIN_AGENTS
     slugs = {a["slug"]: a for a in BUILTIN_AGENTS}
-    assert slugs["expiry-day-equity-itm-auto-close"]["status"] == "inactive"
-    assert slugs["expiry-day-commodity-itm-auto-close"]["status"] == "inactive"
+    assert "expiry-day-equity-itm-auto-close" not in slugs, "retired slug must be gone"
+    assert "expiry-day-commodity-itm-auto-close" not in slugs, "retired slug must be gone"
+    assert slugs["expiry-day-itm-auto-close"]["status"] == "active"
 
 
 # ---------------------------------------------------------------------------
-# Fix: seeded expiry_auto_close agents' fire_at_time must NOT be before
-# their own order_hold_gate.cutoff_for(exchange) — otherwise
-# _action_live_expiry_auto_close's before_cutoff() gate defers every
-# cycle inside the agent's firing window and the scan+close action
-# never actually runs. Regression fixed 2026-10 (Sprint 1a): the NFO
-# seed used fire_at_time="15:00", 15 minutes BEFORE its own cutoff of
-# 15:15 (15:30 close - lead_minutes_nfo=15); the MCX sibling happened
-# to work only because its fire_at_time (23:00) already equals its own
-# cutoff (23:30 close - lead_minutes_mcx=30).
+# 2026-10-29: the fire_at_time/before_cutoff() coordination this section
+# used to test no longer applies. expiry-day-itm-auto-close has no
+# fire_at_time at all — it fires on a flat `is_expiry_preclose_close_window`
+# condition (25 min before whichever exchange's own close), and
+# _action_live_expiry_auto_close no longer calls before_cutoff() at all
+# (removed 2026-10-29 — the condition already gates timing, so a second,
+# independently-configured timing gate inside the action would just be a
+# second place the same decision could disagree). See
+# test_expiry_day_and_preclose_agents.py for the current condition-shape
+# coverage, and the comment above _action_live_expiry_auto_close in
+# actions_live.py for the before_cutoff removal rationale.
 # ---------------------------------------------------------------------------
-
-def test_expiry_agents_fire_at_time_not_before_own_cutoff(monkeypatch):
-    """Every seeded expiry_auto_close agent's fire_at_time, evaluated at
-    the default lead_minutes_<exchange>, must satisfy before_cutoff()==False
-    — i.e. the agent's scan-and-close action is actually allowed to run
-    the instant its firing window opens, not deferred."""
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
-    from backend.api.algo.agent_engine import BUILTIN_AGENTS
-    from backend.api.algo import order_hold_gate as gate
-
-    # Force module defaults (15 for NFO/NSE/BFO, 30 for MCX/NCO) — never
-    # let a real backend_config.yaml override make this test environment-
-    # dependent, same pattern as test_order_hold_gate.py.
-    monkeypatch.setattr(gate, "get_int", lambda key, default=0: default)
-
-    checked = []
-    for agent in BUILTIN_AGENTS:
-        actions = agent.get("actions") or []
-        exch = next(
-            (a["params"]["exchange"] for a in actions
-             if a.get("type") == "expiry_auto_close"),
-            None,
-        )
-        if exch is None:
-            continue
-        fire_at = agent.get("fire_at_time")
-        assert fire_at, (
-            f"{agent['slug']}: expiry_auto_close agent must set fire_at_time"
-        )
-        hh, mm = (int(x) for x in fire_at.split(":"))
-        now = datetime(2026, 10, 15, hh, mm, tzinfo=ZoneInfo("Asia/Kolkata"))
-        cutoff = gate.cutoff_for(exch, now).strftime("%H:%M")
-        assert gate.before_cutoff(exch, now) is False, (
-            f"{agent['slug']}: fire_at_time={fire_at!r} is BEFORE its own "
-            f"cutoff_for({exch!r})={cutoff!r} — the scan+close action "
-            f"would be deferred every cycle inside the firing window and "
-            f"never actually run"
-        )
-        checked.append(agent["slug"])
-
-    assert "expiry-day-equity-itm-auto-close" in checked
-    assert "expiry-day-commodity-itm-auto-close" in checked
 
 
 @pytest.mark.asyncio
-async def test_nfo_expiry_auto_close_action_executes_at_fire_at_time():
-    """_action_live_expiry_auto_close must actually scan (not defer) when
-    invoked at the NFO agent's configured fire_at_time, with the default
-    lead_minutes_nfo=15 in effect. Reproduces the fix end-to-end through
-    the real before_cutoff() gate (not mocked) by pinning wall-clock IST
-    to the seeded fire_at_time via order_hold_gate's own now_ist default
-    parameter — patches datetime inside order_hold_gate so
-    before_cutoff(exch) with no explicit now_ist resolves to the fire time."""
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
-    from unittest.mock import AsyncMock, MagicMock, patch
-    from backend.api.algo.agent_engine import BUILTIN_AGENTS
+async def test_expiry_auto_close_action_scans_unconditionally_no_cutoff_gate():
+    """_action_live_expiry_auto_close must always call scan_positions()
+    when invoked — there is no before_cutoff()-style internal timing gate
+    to defer it (that responsibility moved entirely to the agent's own
+    condition, evaluated before this action is ever dispatched)."""
+    from unittest.mock import MagicMock, patch
     from backend.api.algo.actions_live import _action_live_expiry_auto_close
-    import backend.api.algo.order_hold_gate as gate
-
-    agent_def = next(
-        a for a in BUILTIN_AGENTS if a["slug"] == "expiry-day-equity-itm-auto-close"
-    )
-    fire_at = agent_def["fire_at_time"]
-    hh, mm = (int(x) for x in fire_at.split(":"))
-    fixed_now = datetime(2026, 10, 15, hh, mm, tzinfo=ZoneInfo("Asia/Kolkata"))
-
-    class _FixedDatetime(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return fixed_now if tz is not None else fixed_now.replace(tzinfo=None)
 
     agent = MagicMock()
-    agent.slug = "expiry-day-equity-itm-auto-close"
+    agent.slug = "expiry-day-itm-auto-close"
 
     mock_engine = MagicMock()
     mock_engine.scan_positions.return_value = []
@@ -291,13 +233,9 @@ async def test_nfo_expiry_auto_close_action_executes_at_fire_at_time():
     mock_engine.state.failed = []
     mock_engine.state.total_slippage = 0.0
 
-    with patch.object(gate, "datetime", _FixedDatetime), \
-         patch("backend.api.algo.expiry.ExpiryEngine", return_value=mock_engine):
-        await _action_live_expiry_auto_close(
-            agent, {}, {"exchange": "NFO"},
-        )
+    with patch("backend.api.algo.expiry.ExpiryEngine", return_value=mock_engine):
+        await _action_live_expiry_auto_close(agent, {}, {})
 
-    # The scan must actually run — before_cutoff() must NOT have deferred it.
     mock_engine.scan_positions.assert_called_once()
 
 

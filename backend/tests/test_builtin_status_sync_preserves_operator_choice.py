@@ -160,7 +160,7 @@ class TestShipsInactiveSafetyCaseStillForceCorrected:
         )
 
     @pytest.mark.parametrize("slug", [
-        "expiry-day-positions-alert", "expiry-day-equity-itm-auto-close",
+        "expiry-day-positions-alert",
     ])
     def test_other_ships_inactive_builtins_still_force_corrected(self, slug):
         agent_def = _by_slug(slug)

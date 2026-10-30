@@ -342,8 +342,8 @@ The platform ships with 9 built-in agents pre-seeded:
 - `loss-funds-negative` — Cash or margin negative (hard stop)
 - `loss-pos-total-auto-close` — Auto-close all positions on critical loss
 - `expiry-day-positions-alert` — Notification when positions expire today
-- `expiry-day-equity-itm-auto-close` — Auto-close ITM equity options on expiry
-- `expiry-day-commodity-itm-auto-close` — Auto-close ITM commodity options on expiry
+- `expiry-day-preclose-alert` — Lists affected roots + unnetted/ITM positions, 30 min before close (both NFO and MCX)
+- `expiry-day-itm-auto-close` — Stages HELD closing orders for the same positions, 5 min later (both NFO and MCX)
 
 Edit them from `/automation` — change a threshold, pick notification channels (Telegram, email, ntfy, in-app, WebSocket, or log), or attach a `chase_close_positions` action that auto-cuts losses. The conditions are JSON trees you can read like a sentence.
 

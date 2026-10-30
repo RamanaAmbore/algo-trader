@@ -232,36 +232,83 @@ Loss agents (6):
 - `loss-funds-negative` (critical tier)
 - `loss-pos-total-auto-close` (critical tier, status=inactive, Ships INACTIVE)
 
-Expiry-day agents (3):
+Expiry-day agents (1):
 - `expiry-day-positions-alert` (high tier, status=inactive, Ships INACTIVE)
-- `expiry-day-equity-itm-auto-close` (critical tier, status=inactive, fire_at=15:15,
-  Ships INACTIVE)
-- `expiry-day-commodity-itm-auto-close` (critical tier, status=inactive, fire_at=23:00,
-  Ships INACTIVE)
+
+(The former `expiry-day-equity-itm-auto-close`/`expiry-day-commodity-itm-auto-close` pair was
+retired 2026-10-29, consolidated into `expiry-day-itm-auto-close` below.)
 
 Expiry risk agents (2):
 - `expiry-nfo-risk-alert` (high tier)
 - `expiry-mcx-risk-alert` (high tier)
 
-Expiry-day awareness agents (2, `_EXPIRY_DAY_AWARENESS_AGENTS`, 2026-10-28, retimed
-2026-10-29):
-- `expiry-day-mcx-v2` (high tier, schedule=always, 22h cooldown, no fire_at). Condition is a
-  compound `all[]`: `is_mcx_expiry_today == 1` (per-portfolio — only when a held MCX F&O
-  position expires today) AND `minutes_until_mcx_close <= 30`, so the fire genuinely coincides
-  with the pre-close window instead of the instant the expiry-day flag first turns true.
-  Channels: telegram + email + log + ntfy(priority=high). Replaces the retired `expiry-day-mcx`
-  (bare `is_mcx_expiry_today == 1` leaf, fired hours before close) — new slug, not an in-place
-  edit, for the same `_ae_should_reset_conditions` migration-hazard reason as
-  `market-preclose-mcx-v2` below.
-- `expiry-day-nse-v2` (high tier, same shape). Compound condition: `is_nse_expiry_today == 1`
-  AND `minutes_until_nse_close <= 30`. Replaces the retired `expiry-day-nse`. Same channels.
-- Both agents render their outbound Telegram/email body and their audit-log `condition_text`
-  via `_v2_reminder_only_line()` — a clear "Expiry pre-close — a held {MCX|NSE/NFO} position
-  expires today — {exchange} closes in 30 minutes" line, never the generic per-account
-  kind/threshold table (which rendered a meaningless 'TOTAL' scope and raw numbers for these
-  calendar-token conditions before this fix). `market-preclose-mcx-v2`/`market-preclose-nonmcx`
-  get the same treatment, rendering as e.g. "MCX pre-close — MCX closes in 30 minutes" — this is
-  what visibly distinguishes a routine pre-close reminder from an expiry pre-close reminder.
+Expiry-day awareness agents (2, `_EXPIRY_DAY_AWARENESS_AGENTS`) — ONE alert, ONE order-placer,
+each covering MCX + NFO internally (2026-10-28 → retimed and consolidated 2026-10-29, through
+three direct operator instructions: "create one agent for order placing and one agent for alert
+instead of two", "why can't you have one agent for nfo and mcx" / "let the function that you
+register identify the positions, 30 mins before market close, etc.", "alert agent 30 mins before
+expiry market closure, close agents 25 mins before"):
+
+- **`expiry-day-preclose-alert`** (high tier, schedule=always, 180-min cooldown, no fire_at).
+  Condition is ONE flat leaf: `is_expiry_preclose_alert_window == 1` — the metric resolver
+  (`grammar_tokens/metric_is_expiry_preclose_alert_window.py`) internally loops MCX and NFO,
+  returning 1.0 when EITHER exchange is expiring today and within 30 minutes of its own close.
+  Rendering (`_v2_expiry_position_breakdown()`, called from `_v2_send_rich_alert`) runs ONE
+  `ExpiryEngine.scan_positions()` call and lists, per matching exchange: which root symbols are
+  affected, and which positions are genuinely unnetted (MCX, after the real 4-rule netting pass)
+  or ITM/NTM (NFO, no netting exception) and need closing — masked account, qty in lots, the
+  engine's own `close_reason`. Fully-netted MCX roots render demoted/last with NEUTRAL wording
+  only (never "safe"/"hedged, no action needed"); NFO OTM legs render demoted/last as "no action"
+  — never "netted" (different mechanism — no pairing on NFO at all). A scan failure renders an
+  explicit "(position detail unavailable...)" note, never a silent blank. Channels: telegram +
+  email + log + ntfy(priority=high).
+- **`expiry-day-itm-auto-close`** (critical tier, schedule=always, 180-min cooldown, no
+  fire_at). Condition is the sibling flat leaf `is_expiry_preclose_close_window == 1` — same
+  exchange-loop shape, 25-minute threshold (5 min after the alert's 30). Action:
+  `{"type": "expiry_auto_close", "params": {}}` — no `exchange` restriction;
+  `_action_live_expiry_auto_close` (`actions_live.py`) now runs ONE `ExpiryEngine.
+  scan_positions()` call covering both exchanges and passes the full result to
+  `close_positions()` in one call (previously two agents, one scan each, one exchange each).
+  `before_cutoff()` per-exchange gating was removed from this action — the condition already
+  gates timing, so a second independently-configured gate inside the action would just be a
+  second place the same decision could disagree.
+  - **Status is `active`**, deliberately — this is a brand-new slug, so it is NOT bound by
+    `_ae_guard_seed_status`'s "Ships INACTIVE" fail-safe (that guard triggers only on the literal
+    phrase appearing in an agent's own description — this agent's description does not contain
+    it). Its real safety net is the order-level hold-by-default already built into
+    `ExpiryEngine.close_positions()`: every close is checked against `expiry_close_held()`
+    (`order_hold_gate.py`, `HoldCategory.EXPIRY_CLOSE`, `DEFAULT_HELD=True`) and lands as a
+    `HELD` `AlgoOrder` row via `record_held_order()` — no broker call at all — unless the
+    operator has explicitly turned on `hold.expiry_close_released` (exposed as
+    `expiry_close_hold_enabled` on `/admin/settings`, with the INVERTED naming documented
+    inline in `admin.py`: `expiry_close_hold_enabled=True` means closes ARE held). Once
+    released, a close already routes through the real chase engine
+    (`chase_order(..., intent="close")`) — this was already true of `close_positions()` before
+    this change and needed no new wiring.
+  - Channels: telegram + email + log (no ntfy — this is a staging/hold action, not an
+    action-required alert in the ntfy sense).
+
+Cooldown is **180 minutes (3h), not the 22h used elsewhere in this file** — deliberately. Both
+agents share ONE metric name across MCX and NFO, and the per-fire latch key is
+`(agent_slug, metric, scope, account)` with no exchange dimension (this `funds.total`-scoped
+leaf carries no account/underlying to key on). A 22h cooldown would let NFO's ~15:00 fire
+suppress MCX's own ~23:00 fire the SAME day — NFO structurally always precedes MCX (15:30 vs
+23:30 close), so this is a real risk, not hypothetical. 180 min safely covers one ~30-min firing
+window (so the same exchange's own window doesn't double-fire every cycle tick) while clearing
+hours before the ~7.5h gap to the other exchange's window the same day. Pinned by
+`test_expiry_day_and_preclose_agents.py::TestExpiryDayAgentsSameDayNoSuppression`.
+
+The pre-existing per-exchange risk agents (`expiry-nfo-risk-alert`/`expiry-mcx-risk-alert`,
+`market_hours`-scheduled, 60-min cooldown, per-position ITM/unhedged re-alert) are UNCHANGED and
+distinct from this pair — they fire repeatedly through the day on genuine risk, while this pair
+is a single once-a-day-per-exchange "today is an expiry day, close is near" heads-up plus staged
+close.
+
+**No reflection/dynamic dispatch change was needed for this consolidation** — the `expiry_auto_close`
+action token's `params_schema.exchange` moved from `required: true` to `required: false`
+(`agent_grammar.yaml` + golden baseline), since the resolver path (`actions.py`'s `_HandlerRef`
+→ `importlib.import_module` + `getattr`) was always string-based; omitting the param is simply an
+empty `params: {}` dict reaching the same `_action_live_expiry_auto_close` function.
 
 Market lifecycle agents (3, `_INFO_AGENTS`):
 - `market-open-nse` (info tier, fire_at=09:15). Still uses the `avail_margin >= -999999999`

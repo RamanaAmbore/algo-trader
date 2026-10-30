@@ -582,63 +582,27 @@ class TestFireAtTimeTierGating:
 
 
 class TestExpiryAutoCloseAgentBuiltins:
-    """Verify BUILTIN_AGENTS expiry-day auto-close agents have the correct configuration.
+    """expiry-day-equity-itm-auto-close/expiry-day-commodity-itm-auto-close
+    were retired 2026-10-29, consolidated into the single
+    expiry-day-itm-auto-close (covers both exchanges, condition-token
+    driven, no fire_at_time) — see
+    test_expiry_day_and_preclose_agents.py::TestExpiryDayItmAutoCloseAgent
+    and ::TestRetiredSlugs for the current coverage."""
 
-    These are the agents most affected by Fix 1: they are tier='critical' with
-    fire_at_time set, so they must NOT get the 'Scheduled — …' label.
-    """
-
-    def test_expiry_day_equity_itm_auto_close_is_critical_tier(self):
-        """expiry-day-equity-itm-auto-close has tier='critical'."""
+    def test_critical_tier_agent_has_no_fire_at_time_scheduled_label(self):
+        """expiry-day-itm-auto-close is tier='critical' with no
+        fire_at_time — confirms it correctly does NOT hit the
+        'Scheduled — …' bypass (that bypass requires BOTH fire_at_time
+        set AND tier in (info, low); critical agents must render their
+        real condition text/breakdown, not a generic scheduled line)."""
         from backend.api.algo.agent_engine import BUILTIN_AGENTS
         agent = next(
-            (a for a in BUILTIN_AGENTS if a.get('slug') == 'expiry-day-equity-itm-auto-close'),
+            (a for a in BUILTIN_AGENTS if a.get('slug') == 'expiry-day-itm-auto-close'),
             None,
         )
-        assert agent is not None, "expiry-day-equity-itm-auto-close not found in BUILTIN_AGENTS"
-        assert agent.get('tier') == 'critical', (
-            f"Expected tier='critical', got {agent.get('tier')!r}"
-        )
-
-    def test_expiry_day_equity_itm_auto_close_has_fire_at_time(self):
-        """expiry-day-equity-itm-auto-close has fire_at_time='15:15'
-        (matches order_hold_gate.cutoff_for('NFO')'s default
-        lead_minutes_nfo=15: 15:30 close - 15 = 15:15). Fixed 2026-10
-        (Sprint 1a) — was '15:00', which is BEFORE its own cutoff, so
-        the action's before_cutoff() gate deferred every cycle."""
-        from backend.api.algo.agent_engine import BUILTIN_AGENTS
-        agent = next(
-            (a for a in BUILTIN_AGENTS if a.get('slug') == 'expiry-day-equity-itm-auto-close'),
-            None,
-        )
-        assert agent is not None
-        assert agent.get('fire_at_time') == '15:15', (
-            f"Expected fire_at_time='15:15', got {agent.get('fire_at_time')!r}"
-        )
-
-    def test_expiry_day_commodity_itm_auto_close_is_critical_tier(self):
-        """expiry-day-commodity-itm-auto-close has tier='critical'."""
-        from backend.api.algo.agent_engine import BUILTIN_AGENTS
-        agent = next(
-            (a for a in BUILTIN_AGENTS if a.get('slug') == 'expiry-day-commodity-itm-auto-close'),
-            None,
-        )
-        assert agent is not None, "expiry-day-commodity-itm-auto-close not found in BUILTIN_AGENTS"
-        assert agent.get('tier') == 'critical', (
-            f"Expected tier='critical', got {agent.get('tier')!r}"
-        )
-
-    def test_expiry_day_commodity_itm_auto_close_has_fire_at_time(self):
-        """expiry-day-commodity-itm-auto-close has fire_at_time='23:00'."""
-        from backend.api.algo.agent_engine import BUILTIN_AGENTS
-        agent = next(
-            (a for a in BUILTIN_AGENTS if a.get('slug') == 'expiry-day-commodity-itm-auto-close'),
-            None,
-        )
-        assert agent is not None
-        assert agent.get('fire_at_time') == '23:00', (
-            f"Expected fire_at_time='23:00', got {agent.get('fire_at_time')!r}"
-        )
+        assert agent is not None, "expiry-day-itm-auto-close not found in BUILTIN_AGENTS"
+        assert agent.get('tier') == 'critical'
+        assert agent.get('fire_at_time') is None
 
 
 class TestDeriveKindOpAware:
