@@ -233,7 +233,16 @@ async def test_expiry_auto_close_action_scans_unconditionally_no_cutoff_gate():
     mock_engine.state.failed = []
     mock_engine.state.total_slippage = 0.0
 
-    with patch("backend.api.algo.expiry.ExpiryEngine", return_value=mock_engine):
+    # 2026-10-29 audit fix: the action re-derives which exchange(s) are
+    # actually within their own pre-close window (an empty context has
+    # none), so this must be patched for scan_positions() to be reached
+    # at all — see test_expiry_position_breakdown.py's identical pattern.
+    with patch("backend.api.algo.expiry.ExpiryEngine", return_value=mock_engine), \
+         patch(
+             "backend.api.algo.grammar_tokens.metric_is_expiry_preclose_alert_window."
+             "_expiry_preclose_exchanges",
+             return_value={"MCX", "NFO"},
+         ):
         await _action_live_expiry_auto_close(agent, {}, {})
 
     mock_engine.scan_positions.assert_called_once()

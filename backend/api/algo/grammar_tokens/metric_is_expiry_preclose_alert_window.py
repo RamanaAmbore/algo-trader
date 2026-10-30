@@ -42,20 +42,45 @@ from backend.api.algo.grammar_tokens.metric_minutes_until_nse_close import (
 ALERT_LEAD_MINUTES = 30
 
 
-def _expiry_preclose_within(ctx, row, lead_minutes: float) -> bool:
-    """True when MCX or NSE is expiring today AND within `lead_minutes`
-    of its own close. Shared by both preclose-window tokens so the two
-    thresholds can never drift into two different exchange-loop
-    implementations."""
+def _expiry_preclose_exchanges(ctx, row, lead_minutes: float) -> set[str]:
+    """Which of {"MCX", "NFO"} are expiring today AND within
+    `lead_minutes` of their own close, right now. Shared by both
+    preclose-window tokens AND by the alert/action render paths
+    (`agent_engine.py:_v2_expiry_position_breakdown`,
+    `actions_live.py:_action_live_expiry_auto_close`) so there is
+    exactly one exchange-loop implementation to drift.
+
+    2026-10-29 audit fix: the condition token (`_metric_is_expiry_
+    preclose_*_window`) is a single flat `funds.total`-scoped boolean —
+    it tells the agent engine THAT something qualifies, but a scalar
+    match carries no exchange identity, so the render/action side
+    cannot recover which exchange fired from the match row alone (same
+    class of problem the 180-min-cooldown design already works around
+    for the condition's OWN re-fire timing). Before this fix, the
+    render and action paths silently processed BOTH exchanges
+    unconditionally whenever a MATCH existed, regardless of which
+    exchange(s) actually caused it — e.g. an NFO-only fire at ~15:05
+    would also render/close whatever MCX residual happened to exist at
+    that moment, using MCX's moneyness from 8 hours before its own
+    close. Callers must re-filter `ExpiryEngine` results to exactly
+    this returned set."""
+    exchanges: set[str] = set()
     if _metric_is_mcx_expiry_today(ctx, row) == 1.0:
         mins = _metric_minutes_until_mcx_close(ctx, row)
         if mins is not None and mins <= lead_minutes:
-            return True
+            exchanges.add("MCX")
     if _metric_is_nse_expiry_today(ctx, row) == 1.0:
         mins = _metric_minutes_until_nse_close(ctx, row)
         if mins is not None and mins <= lead_minutes:
-            return True
-    return False
+            exchanges.add("NFO")
+    return exchanges
+
+
+def _expiry_preclose_within(ctx, row, lead_minutes: float) -> bool:
+    """True when MCX or NSE is expiring today AND within `lead_minutes`
+    of its own close. Thin wrapper over `_expiry_preclose_exchanges` —
+    the condition token only needs the boolean, never the set."""
+    return bool(_expiry_preclose_exchanges(ctx, row, lead_minutes))
 
 
 def _metric_is_expiry_preclose_alert_window(ctx, row):

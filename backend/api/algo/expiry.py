@@ -444,6 +444,46 @@ class ExpiryEngine:
         else:
             return "OTM"
 
+    def _mcx_front_month_symbol(self, root: str) -> str | None:
+        """Resolve a bare MCX commodity root (e.g. 'GOLD') to its current
+        front-month FUT tradingsymbol (e.g. 'GOLD26OCTFUT').
+
+        2026-10-29 fix (audit finding): Kite's instrument master 'name'
+        field is the bare underlying name, never a quotable symbol on
+        its own — f"MCX:{root}" (e.g. "MCX:GOLD") is NOT a valid Kite
+        quote key. This silently made every MCX underlying_ltp lookup
+        fail, so every MCX expiring leg classified as moneyness=UNKNOWN
+        and was never flagged for closing — the exact bug class
+        `options_helpers.py:_resolve_commodity_spot()` already guards
+        against elsewhere in this codebase (it quotes a RESOLVED
+        contract symbol, never the bare name). Reuses this engine's own
+        already-loaded, synchronous instrument cache (self._load_
+        instruments) rather than the async symbol_resolver.py helpers,
+        since this whole call chain (scan_positions -> _fetch_
+        underlying_ltps) is sync. "Front month" here is simply the
+        nearest FUT contract for this root whose expiry hasn't yet
+        passed (today's own expiry counts, since the contract is still
+        tradeable through its own expiry day) — this is a spot-price
+        lookup for moneyness classification, not a rollover/settlement
+        decision, so the stricter is_mcx_future_still_current() freeze
+        window doesn't apply here.
+        """
+        today = timestamp_indian().date()
+        candidates = []
+        for inst in self._load_instruments("MCX"):
+            if inst.get("instrument_type") != "FUT":
+                continue
+            if (inst.get("name") or "").upper() != (root or "").upper():
+                continue
+            exp = inst.get("expiry")
+            if not exp or exp < today:
+                continue
+            candidates.append((exp, inst.get("tradingsymbol")))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda c: c[0])
+        return candidates[0][1]
+
     def _fetch_underlying_ltps(self, positions: list[OptionPosition]) -> dict:
         """Fetch LTPs for all unique underlyings.
 
@@ -458,15 +498,36 @@ class ExpiryEngine:
         # Map underlying name to its index/futures symbol for LTP.
         # For equity indices: use Kite's canonical key (NSE:NIFTY 50,
         # NSE:NIFTY BANK, etc.) via _NSE_INDEX_QUOTE_KEYS — bare
-        # "NSE:NIFTY" is an invalid Kite key and returns nothing.
-        # For commodities: use MCX:<underlying>.
+        # "NSE:NIFTY" is an invalid Kite key and returns nothing. Plain
+        # stock underlyings quote directly under their own symbol
+        # ("NSE:RELIANCE"), so the f"NSE:{p.underlying}" fallback is
+        # correct for those.
+        # For commodities: resolve the real front-month FUT symbol first
+        # (see _mcx_front_month_symbol's own docstring for why the bare
+        # name alone is not a valid Kite key) — tracked via
+        # symbol_to_root so the result can be mapped back to the
+        # underlying root the rest of this engine keys on.
         symbols = set()
+        symbol_to_root: dict[str, str] = {}
+        unresolved_mcx_roots: set[str] = set()
         for p in positions:
             if p.exchange == "NFO":
                 kite_key = _NSE_INDEX_QUOTE_KEYS.get(p.underlying, f"NSE:{p.underlying}")
                 symbols.add(kite_key)
             else:
-                symbols.add(f"MCX:{p.underlying}")
+                front = self._mcx_front_month_symbol(p.underlying)
+                if not front:
+                    unresolved_mcx_roots.add(p.underlying)
+                    continue
+                symbols.add(f"MCX:{front}")
+                symbol_to_root[front] = p.underlying
+
+        if unresolved_mcx_roots:
+            logger.error(
+                f"Expiry: no current MCX front-month future found for "
+                f"underlying(s) {sorted(unresolved_mcx_roots)} — LTP lookup "
+                f"skipped, moneyness will read UNKNOWN for these legs"
+            )
 
         if not symbols:
             return {}
@@ -476,7 +537,7 @@ class ExpiryEngine:
             ltps: dict[str, float] = {}
             for kite_k, val in data.items():
                 suffix = kite_k.split(":", 1)[1] if ":" in kite_k else kite_k
-                underlying = _KITE_KEY_TO_UNDERLYING.get(suffix, suffix)
+                underlying = symbol_to_root.get(suffix) or _KITE_KEY_TO_UNDERLYING.get(suffix, suffix)
                 ltps[underlying] = val.get("last_price", 0.0)
             return ltps
         except Exception as e:

@@ -56,13 +56,49 @@ async def record_held_order(category: HoldCategory, *, account: str, symbol: str
     on the row so a later release's resumed chase correctly labels its
     failure alerts "Agent"/"Agent Bracket" instead of defaulting to "Manual"
     — see `alert_utils._classify_order_origin_label`.
+
+    Dedup guard (2026-10-29 audit fix): on the expiry-close path alone,
+    up to three independent sources can legitimately try to hold the
+    SAME leg — the legacy prod-only `bg-expiry` background task, its own
+    30-min re-scan loop, and the agent-engine's `expiry-day-itm-auto-
+    close`. Without a check here each one wrote its own HELD row for the
+    same (account, symbol, exchange, side); `release_held_order` only
+    verifies the live position still matches the HELD qty before
+    chasing, which a SECOND duplicate row also still passes (the
+    position hasn't moved yet, since the first chase hasn't filled) —
+    releasing both placed two real closes, the second of which flips the
+    position. Before inserting, this now locks and returns the id of an
+    existing not-yet-resolved HELD row for the same (account, symbol,
+    exchange, side) instead of creating a second one. Category is
+    deliberately NOT part of the match — two different categories
+    holding the exact same leg+side is the same real-world hazard this
+    guard exists to prevent, not a legitimate distinct case.
     """
+    from sqlalchemy import select
     from backend.api.database import async_session
     from backend.api.models import AlgoOrder
 
     held_at = datetime.now(timezone.utc)
     try:
         async with async_session() as s:
+            existing = (await s.execute(
+                select(AlgoOrder)
+                .where(
+                    AlgoOrder.account == account,
+                    AlgoOrder.symbol == symbol,
+                    AlgoOrder.exchange == exchange,
+                    AlgoOrder.transaction_type == side,
+                    AlgoOrder.status == "HELD",
+                )
+                .with_for_update()
+            )).scalars().first()
+            if existing is not None:
+                logger.info(
+                    f"[HOLD] {category.value} held: {side} {qty} {symbol} "
+                    f"acct={account} already has a HELD row id={existing.id} "
+                    f"({existing.detail!r}) — not creating a duplicate"
+                )
+                return existing.id
             row = AlgoOrder(
                 account=account, symbol=symbol, exchange=exchange,
                 transaction_type=side, quantity=qty, product=product,

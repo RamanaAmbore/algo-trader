@@ -26,6 +26,19 @@ import pytest
 from backend.api.algo.agent_engine import _v2_expiry_position_breakdown
 from backend.api.algo.expiry import OptionPosition
 
+# `_v2_expiry_position_breakdown` re-derives, independently, which
+# exchange(s) are currently within their own pre-close window (2026-10-29
+# audit fix — the agent's single flat condition carries no exchange
+# identity) via `_expiry_preclose_exchanges`. These tests are about the
+# RENDERING logic given a fabricated ExpiryEngine result, not the window
+# computation itself (covered by test_expiry_day_and_preclose_agents.py),
+# so every test here patches it to report "both exchanges in window"
+# unless it's specifically testing the exchange filter.
+_WINDOW_PATCH_TARGET = (
+    "backend.api.algo.grammar_tokens.metric_is_expiry_preclose_alert_window."
+    "_expiry_preclose_exchanges"
+)
+
 
 def _pos(**kw) -> OptionPosition:
     defaults = dict(
@@ -54,8 +67,9 @@ async def test_mcx_unnetted_root_renders_first_with_masked_account_and_reason():
              close_reason="MCX unhedged ITM after 4-rule netting (residual qty +1; theta=-1.200)"),
     ]
     with patch("backend.api.algo.expiry.ExpiryEngine", return_value=_mock_engine(positions)), \
+         patch(_WINDOW_PATCH_TARGET, return_value={"MCX", "NFO"}), \
          patch("backend.api.algo.agent_engine._v2_expiry_qty_display", new=AsyncMock(return_value="1 lot")):
-        text = await _v2_expiry_position_breakdown()
+        text = await _v2_expiry_position_breakdown({})
     assert text is not None
     assert "MCX:" in text
     assert "GOLD" in text
@@ -74,8 +88,9 @@ async def test_mcx_fully_netted_root_is_demoted_and_neutral_never_safe_language(
         _pos(account="ZG0790", tradingsymbol="CRUDEOIL26OCT6000PE", underlying="CRUDEOIL",
              exchange="MCX", quantity=-1, residual_qty=0, needs_close=False),
     ]
-    with patch("backend.api.algo.expiry.ExpiryEngine", return_value=_mock_engine(positions)):
-        text = await _v2_expiry_position_breakdown()
+    with patch("backend.api.algo.expiry.ExpiryEngine", return_value=_mock_engine(positions)), \
+         patch(_WINDOW_PATCH_TARGET, return_value={"MCX", "NFO"}):
+        text = await _v2_expiry_position_breakdown({})
     assert text is not None
     assert "netted: CRUDEOIL" in text
     for banned in ("safe", "hedged, no action needed", "no action needed"):
@@ -92,8 +107,9 @@ async def test_mcx_unnetted_sorts_before_netted_root():
              close_reason="MCX unhedged ITM"),
     ]
     with patch("backend.api.algo.expiry.ExpiryEngine", return_value=_mock_engine(positions)), \
+         patch(_WINDOW_PATCH_TARGET, return_value={"MCX", "NFO"}), \
          patch("backend.api.algo.agent_engine._v2_expiry_qty_display", new=AsyncMock(return_value="1 lot")):
-        text = await _v2_expiry_position_breakdown()
+        text = await _v2_expiry_position_breakdown({})
     assert text is not None
     assert text.index("GOLD") < text.index("netted: CRUDEOIL"), \
         "action-needed root must render before the demoted netted root"
@@ -109,13 +125,58 @@ async def test_nfo_itm_leg_renders_first_never_says_netted():
              exchange="NFO", quantity=50, needs_close=False),
     ]
     with patch("backend.api.algo.expiry.ExpiryEngine", return_value=_mock_engine(positions)), \
+         patch(_WINDOW_PATCH_TARGET, return_value={"MCX", "NFO"}), \
          patch("backend.api.algo.agent_engine._v2_expiry_qty_display", new=AsyncMock(return_value="50 (contracts)")):
-        text = await _v2_expiry_position_breakdown()
+        text = await _v2_expiry_position_breakdown({})
     assert text is not None
     assert "NSE/NFO:" in text
     assert "no action (OTM): NIFTY" in text
     assert "netted" not in text.lower(), "NFO must never use MCX's netting wording"
     assert text.index("NIFTY") < text.index("no action (OTM)")
+
+
+@pytest.mark.asyncio
+async def test_exchange_filter_excludes_out_of_window_exchange():
+    """2026-10-29 audit fix regression — when only ONE exchange is in its
+    pre-close window, the other exchange's section must not render at all,
+    even though `ExpiryEngine.scan_positions()` always returns both.
+    This is the primary bug the fix addressed: before it, an NFO-only
+    window would still render MCX's (stale, hours-old) moneyness."""
+    positions = [
+        _pos(account="ZG0790", tradingsymbol="GOLD26OCT75000CE", underlying="GOLD",
+             exchange="MCX", quantity=1, residual_qty=1, needs_close=True,
+             close_reason="MCX unhedged ITM"),
+        _pos(account="ZJ6294", tradingsymbol="NIFTY26OCT22000CE", underlying="NIFTY",
+             exchange="NFO", quantity=50, needs_close=True,
+             close_reason="Equity ITM — must close before expiry"),
+    ]
+    with patch("backend.api.algo.expiry.ExpiryEngine", return_value=_mock_engine(positions)), \
+         patch(_WINDOW_PATCH_TARGET, return_value={"NFO"}), \
+         patch("backend.api.algo.agent_engine._v2_expiry_qty_display", new=AsyncMock(return_value="1 lot")):
+        text = await _v2_expiry_position_breakdown({})
+    assert text is not None
+    assert "NSE/NFO:" in text
+    assert "NIFTY" in text
+    assert "MCX:" not in text, "MCX section must not render when only NFO is in its pre-close window"
+    assert "GOLD" not in text
+
+
+@pytest.mark.asyncio
+async def test_no_exchange_in_window_returns_none():
+    """When neither exchange is currently in its own pre-close window, the
+    breakdown must return None (no scan, no stale render) rather than a
+    blank or misleading section."""
+    positions = [
+        _pos(account="ZG0790", tradingsymbol="GOLD26OCT75000CE", underlying="GOLD",
+             exchange="MCX", quantity=1, residual_qty=1, needs_close=True,
+             close_reason="MCX unhedged ITM"),
+    ]
+    engine = _mock_engine(positions)
+    with patch("backend.api.algo.expiry.ExpiryEngine", return_value=engine), \
+         patch(_WINDOW_PATCH_TARGET, return_value=set()):
+        text = await _v2_expiry_position_breakdown({})
+    assert text is None
+    engine.scan_positions.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -129,8 +190,9 @@ async def test_multi_account_same_root_never_pooled():
              close_reason="MCX unhedged ITM"),
     ]
     with patch("backend.api.algo.expiry.ExpiryEngine", return_value=_mock_engine(positions)), \
+         patch(_WINDOW_PATCH_TARGET, return_value={"MCX", "NFO"}), \
          patch("backend.api.algo.agent_engine._v2_expiry_qty_display", new=AsyncMock(return_value="1 lot")):
-        text = await _v2_expiry_position_breakdown()
+        text = await _v2_expiry_position_breakdown({})
     assert text is not None
     assert text.count("GOLD") == 2, \
         "two different accounts holding the same root must render as two separate lines, never pooled"
@@ -141,16 +203,18 @@ async def test_multi_account_same_root_never_pooled():
 async def test_scan_failure_renders_explicit_degraded_note_never_blank():
     broken_engine = MagicMock()
     broken_engine.scan_positions.side_effect = RuntimeError("broker fetch failed")
-    with patch("backend.api.algo.expiry.ExpiryEngine", return_value=broken_engine):
-        text = await _v2_expiry_position_breakdown()
+    with patch("backend.api.algo.expiry.ExpiryEngine", return_value=broken_engine), \
+         patch(_WINDOW_PATCH_TARGET, return_value={"MCX", "NFO"}):
+        text = await _v2_expiry_position_breakdown({})
     assert text is not None
     assert "unavailable" in text.lower()
 
 
 @pytest.mark.asyncio
 async def test_no_expiring_positions_returns_none():
-    with patch("backend.api.algo.expiry.ExpiryEngine", return_value=_mock_engine([])):
-        text = await _v2_expiry_position_breakdown()
+    with patch("backend.api.algo.expiry.ExpiryEngine", return_value=_mock_engine([])), \
+         patch(_WINDOW_PATCH_TARGET, return_value={"MCX", "NFO"}):
+        text = await _v2_expiry_position_breakdown({})
     assert text is None
 
 
@@ -163,8 +227,9 @@ async def test_lot_size_resolution_failure_falls_back_to_raw_contracts():
              close_reason="MCX unhedged ITM"),
     ]
     with patch("backend.api.algo.expiry.ExpiryEngine", return_value=_mock_engine(positions)), \
+         patch(_WINDOW_PATCH_TARGET, return_value={"MCX", "NFO"}), \
          patch("backend.brokers.adapters.kite.get_lot_size", new=AsyncMock(return_value=0)):
-        text = await ae_mod._v2_expiry_position_breakdown()
+        text = await ae_mod._v2_expiry_position_breakdown({})
     assert text is not None
     assert "200 (contracts)" in text, \
         f"lot_size=0 (unknown sentinel) must fall back to raw contracts with an explicit label, got: {text}"

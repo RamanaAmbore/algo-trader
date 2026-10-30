@@ -1337,25 +1337,50 @@ async def _v2_expiry_root_action_lines(exch: str, root: str, positions: list) ->
     return lines
 
 
+def _v2_expiry_root_unknown_lines(root: str, positions: list) -> list[str]:
+    """Explicit warning line(s) for a leg whose moneyness could not be
+    determined (underlying LTP fetch failed or returned nothing — see
+    `ExpiryEngine._classify_moneyness`, which returns "UNKNOWN" rather
+    than guessing ITM/OTM). Audit finding (2026-10-29): without this,
+    an UNKNOWN leg silently fell into the demoted branch below and
+    rendered as `netted: ROOT` / `no action (OTM): ROOT` — a false
+    all-clear on exactly the kind of failure this whole function's
+    try/except was built to surface loudly. Checked per-leg, both
+    exchanges — moneyness is computed for every expiring position
+    regardless of exchange."""
+    return [
+        f"  {root} {mask_account(p.account or '')} price unavailable — moneyness unknown, not evaluated"
+        for p in positions if p.moneyness == "UNKNOWN"
+    ]
+
+
 def _v2_expiry_root_demoted_lines(exch: str, root: str, positions: list) -> list[str]:
     """Demoted (no-action) line(s) for one (exchange, root)'s positions.
     Extracted from `_v2_expiry_position_breakdown` to keep it below the
-    CC gate.
+    CC gate. UNKNOWN-moneyness legs are excluded here — see
+    `_v2_expiry_root_unknown_lines`, which renders them as an explicit
+    warning instead.
 
     MCX: root-level netting concept — a leg with no residual is only
     "netted" relative to the OTHER legs in this same (account,
     underlying, expiry) group, so this is ONE line for the whole root,
-    only when NOTHING in it needs closing (mentioning it per-leg would
-    be redundant with, or contradict, an action line in the same root).
+    only when NOTHING in it needs closing AND NOTHING in it is UNKNOWN
+    (mentioning it per-leg would be redundant with, or contradict, an
+    action line in the same root; an UNKNOWN leg means the root's real
+    net state is itself unverified, so it must not claim "netted").
     NFO: no netting step at all (per-leg ITM/NTM flag only) — a root can
     genuinely mix an ITM leg (needs closing) with an OTM leg (no
     action), so this is per-LEG, never mutually exclusive with an
     action line in the same root.
     """
     needs = [p for p in positions if p.needs_close]
+    unknown = [p for p in positions if p.moneyness == "UNKNOWN"]
     if exch == "MCX":
-        return [f"netted: {root}"] if not needs else []
-    return [f"no action (OTM): {root}" for p in positions if not p.needs_close]
+        return [f"netted: {root}"] if not needs and not unknown else []
+    return [
+        f"no action (OTM): {root}" for p in positions
+        if not p.needs_close and p.moneyness != "UNKNOWN"
+    ]
 
 
 async def _v2_expiry_exchange_section(exch: str, label: str, all_expiring: list) -> str | None:
@@ -1371,19 +1396,39 @@ async def _v2_expiry_exchange_section(exch: str, label: str, all_expiring: list)
     for p in exch_positions:
         by_root.setdefault(p.underlying or "?", []).append(p)
 
+    unknown_lines: list[str] = []
     action_lines: list[str] = []
     demoted_lines: list[str] = []
     for root in sorted(by_root):
         positions = sorted(by_root[root], key=lambda p: p.account or "")
+        unknown_lines.extend(_v2_expiry_root_unknown_lines(root, positions))
         action_lines.extend(await _v2_expiry_root_action_lines(exch, root, positions))
         demoted_lines.extend(_v2_expiry_root_demoted_lines(exch, root, positions))
 
-    if not action_lines and not demoted_lines:
+    if not unknown_lines and not action_lines and not demoted_lines:
         return None
+    # Unknown-price warnings lead — a failed price lookup is itself the
+    # most urgent fact in this section (see _v2_expiry_root_unknown_lines).
+    action_lines = unknown_lines + action_lines
     return f"{label}:\n" + "\n".join(action_lines + demoted_lines)
 
 
-async def _v2_expiry_position_breakdown() -> str | None:
+def _v2_expiry_context_shim(context: dict | None):
+    """Minimal attribute-accessible shim over the dispatch `context`
+    dict, so the grammar-token metric resolvers (which read `ctx.
+    segment_flags`/`ctx.position_rows` via `getattr`) can be reused
+    outside the condition-evaluation path. Same pattern used by
+    `actions_live.py:_al_expiry_exchanges_in_window` — kept as one
+    function so the two never drift into different attribute sets."""
+    from types import SimpleNamespace
+    context = context or {}
+    return SimpleNamespace(
+        segment_flags=context.get("segment_flags") or {},
+        position_rows=context.get("position_rows") or [],
+    )
+
+
+async def _v2_expiry_position_breakdown(context: dict | None) -> str | None:
     """Render the MCX + NFO expiry position breakdown for
     `expiry-day-preclose-alert` — which roots are affected, and which
     positions are genuinely unnetted (MCX, after ExpiryEngine's real
@@ -1401,6 +1446,14 @@ async def _v2_expiry_position_breakdown() -> str | None:
     failure returns an explicit degraded note, never a silent blank
     (which would read as a false "all clear").
 
+    Audit fix (2026-10-29): only renders exchanges that are ACTUALLY
+    within their own 30-minute pre-close window right now, re-derived
+    via `_expiry_preclose_exchanges()` — the agent's own condition is a
+    single flat boolean with no exchange identity, so without this an
+    NFO-only fire would also render whatever MCX residual happened to
+    exist at that moment (and vice versa), using the wrong exchange's
+    timing context. See `_expiry_preclose_exchanges`'s own docstring.
+
     Called only when the firing agent is the expiry pre-close alert
     (see the call site in `_v2_send_rich_alert`) — `scan_positions()`
     makes real (cached, read-only) broker calls, so this must never run
@@ -1408,6 +1461,19 @@ async def _v2_expiry_position_breakdown() -> str | None:
     has already matched.
     """
     from backend.api.algo.expiry import ExpiryEngine
+    from backend.api.algo.grammar_tokens.metric_is_expiry_preclose_alert_window import (
+        ALERT_LEAD_MINUTES, _expiry_preclose_exchanges,
+    )
+
+    shim = _v2_expiry_context_shim(context)
+    exchanges_in_window = _expiry_preclose_exchanges(shim, None, ALERT_LEAD_MINUTES)
+    if not exchanges_in_window:
+        logger.warning(
+            "_v2_expiry_position_breakdown: fired but no exchange is currently "
+            "within its own pre-close window (stale context or a race) — "
+            "rendering nothing rather than guessing"
+        )
+        return None
 
     engine = ExpiryEngine()
     try:
@@ -1422,7 +1488,8 @@ async def _v2_expiry_position_breakdown() -> str | None:
 
     sections = [
         section for exch, label in (("MCX", "MCX"), ("NFO", "NSE/NFO"))
-        if (section := await _v2_expiry_exchange_section(exch, label, all_expiring)) is not None
+        if exch in exchanges_in_window
+        and (section := await _v2_expiry_exchange_section(exch, label, all_expiring)) is not None
     ]
     return "\n\n".join(sections) if sections else None
 
@@ -1756,7 +1823,7 @@ async def _v2_send_rich_alert(agent, matches, now, sim_mode: bool = False,
         # reminders (market-preclose-mcx-v2/market-preclose-nonmcx),
         # which carry no position breakdown.
         if getattr(agent, 'slug', None) == 'expiry-day-preclose-alert':
-            breakdown = await _v2_expiry_position_breakdown()
+            breakdown = await _v2_expiry_position_breakdown(context)
             if breakdown:
                 tg_body = f"{reminder_line}\n\n{breakdown}"
                 email_html = (

@@ -1703,6 +1703,22 @@ async def _action_live_chase_close_positions(agent, context: dict, params: dict)
         )
 
 
+def _al_expiry_context_shim(context: dict | None):
+    """Minimal attribute-accessible shim over the dispatch `context`
+    dict, so the grammar-token metric resolvers (which read `ctx.
+    segment_flags`/`ctx.position_rows` via `getattr`, matching the
+    `Context` class condition-evaluation shape) can be reused here. Same
+    pattern as `agent_engine.py:_v2_expiry_context_shim` — duplicated
+    rather than imported to avoid a circular import between this module
+    and agent_engine.py."""
+    from types import SimpleNamespace
+    context = context or {}
+    return SimpleNamespace(
+        segment_flags=context.get("segment_flags") or {},
+        position_rows=context.get("position_rows") or [],
+    )
+
+
 async def _action_live_expiry_auto_close(agent, context: dict, params: dict):
     """
     Expiry-day surgical close, both exchanges in one scan+close pass
@@ -1726,31 +1742,60 @@ async def _action_live_expiry_auto_close(agent, context: dict, params: dict):
 
     `before_cutoff()` per-exchange gating is deliberately NOT used here
     (unlike the pre-2026-10-29 version) — the agent's own
-    `is_expiry_preclose_close_window` condition already gates timing
-    (25 min before each exchange's own close) before this action is
-    ever dispatched, so a second, independently-configured timing gate
-    inside the action would just be a second place the same decision
-    could disagree. `close_positions()` itself still routes every
-    close through `expiry_close_held()` — HELD by default
-    (`HoldCategory.EXPIRY_CLOSE`), never a live broker call unless the
-    operator has explicitly released that category.
+    `is_expiry_preclose_close_window` condition already gates WHETHER
+    this action runs at all. It does NOT, by itself, say WHICH exchange
+    caused it to run — the condition is a single flat `funds.total`
+    boolean with no exchange identity (audit finding, 2026-10-29). This
+    action re-derives that independently via `_expiry_preclose_
+    exchanges()` (the exact same per-exchange window check the
+    condition token itself uses) and filters `scan_positions()`'s
+    result to ONLY the exchange(s) actually in-window right now — an
+    NFO-only fire must never also close/stage whatever MCX residual
+    happens to exist at that moment, using MCX's moneyness from hours
+    before its own close (and vice versa). `close_positions()` itself
+    still routes every close through `expiry_close_held()` — HELD by
+    default (`HoldCategory.EXPIRY_CLOSE`), never a live broker call
+    unless the operator has explicitly released that category.
+
+    `scan_positions()` is synchronous and makes real, blocking broker
+    calls (positions/instruments/LTP) — run via `asyncio.to_thread` so
+    it cannot stall the event loop (chase polls, postbacks, SSE) for
+    its duration, matching the alert sibling's own `_v2_expiry_
+    position_breakdown()`.
 
     `params` is accepted for action-dispatch signature compatibility
-    but intentionally empty/unused — this action always processes
-    whatever `scan_positions()` finds, both exchanges, every call.
+    but intentionally empty/unused — which exchange(s) get processed is
+    decided by the live window check above, not a static param.
     """
     from backend.api.algo.expiry import ExpiryEngine
+    from backend.api.algo.grammar_tokens.metric_is_expiry_preclose_alert_window import (
+        _expiry_preclose_exchanges,
+    )
+    from backend.api.algo.grammar_tokens.metric_is_expiry_preclose_close_window import (
+        CLOSE_LEAD_MINUTES,
+    )
+
+    shim = _al_expiry_context_shim(context)
+    exchanges_in_window = _expiry_preclose_exchanges(shim, None, CLOSE_LEAD_MINUTES)
+    if not exchanges_in_window:
+        logger.info(
+            f"[LIVE] expiry_auto_close: agent {agent.slug} fired but no "
+            f"exchange is currently within its own pre-close window "
+            f"(stale context or a race) — skipping rather than guessing"
+        )
+        return
 
     engine = ExpiryEngine(agent_id=getattr(agent, "id", None))
     try:
-        to_close = engine.scan_positions()
+        to_close = await asyncio.to_thread(engine.scan_positions)
     except Exception as e:
         logger.error(f"[LIVE] expiry_auto_close: scan failed for agent {agent.slug}: {e}")
         return
 
+    to_close = [p for p in to_close if (p.exchange or "").upper() in exchanges_in_window]
     if not to_close:
-        logger.info(f"[LIVE] expiry_auto_close: no positions need closing "
-                    f"(agent={agent.slug})")
+        logger.info(f"[LIVE] expiry_auto_close: no positions need closing in "
+                    f"{sorted(exchanges_in_window)} (agent={agent.slug})")
         return
 
     by_exch: dict[str, int] = {}

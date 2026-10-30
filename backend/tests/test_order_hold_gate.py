@@ -108,6 +108,23 @@ def _mock_session_for_insert():
     mock_session.__aexit__ = AsyncMock(return_value=False)
     mock_session.add = MagicMock()
 
+    # `record_held_order`'s dedup guard (2026-10-29) does
+    # `(await s.execute(select(...).with_for_update())).scalars().first()`
+    # BEFORE the insert. SQLAlchemy's real `AsyncSession.execute()` is
+    # awaited but returns a plain sync `Result` — `.scalars()`/`.first()`
+    # are sync calls on it. A bare `AsyncMock()`'s child attributes are
+    # themselves `AsyncMock` recursively, so `result.scalars()` would
+    # return a coroutine (not a value) and `.first()` would fail on it.
+    # Build the execute-result chain as plain `MagicMock` so it mirrors
+    # the real sync `Result` shape; "no existing HELD row" (`None`) is
+    # the correct simulation for every test here — none of them are
+    # exercising the dedup-hit path.
+    _scalars = MagicMock()
+    _scalars.first.return_value = None
+    _result = MagicMock()
+    _result.scalars.return_value = _scalars
+    mock_session.execute = AsyncMock(return_value=_result)
+
     async def _commit():
         # Simulate the DB assigning a primary key on commit/flush, the
         # way the real AsyncSession would for an autoincrement PK.
@@ -148,5 +165,36 @@ def test_record_held_order_creates_row_with_requested_category_agent_order(monke
     rec = parse_hold_record(created.hold_json)
     assert rec["category"] == "agent_order"
     assert rec["price_policy"] == "n/a"
+
+
+def test_record_held_order_dedup_returns_existing_row_id_without_inserting(monkeypatch):
+    """2026-10-29 audit fix — up to 3 independent sources (legacy bg-expiry
+    task, its own 30-min re-scan, and the new expiry-day-itm-auto-close
+    agent) can legitimately try to hold the SAME leg. The second caller
+    must get back the FIRST caller's existing HELD row id, not insert a
+    duplicate — see the function's own docstring for why a duplicate is
+    a real double-close hazard, not just noise."""
+    mock_session = AsyncMock()
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+    mock_session.add = MagicMock()
+
+    _existing_row = MagicMock(id=456, detail="HELD: already staged")
+    _scalars = MagicMock()
+    _scalars.first.return_value = _existing_row
+    _result = MagicMock()
+    _result.scalars.return_value = _scalars
+    mock_session.execute = AsyncMock(return_value=_result)
+    mock_session.commit = AsyncMock()
+
+    monkeypatch.setattr("backend.api.database.async_session", lambda: mock_session)
+    with patch("backend.api.algo.order_events.write_event", new_callable=AsyncMock) as mock_write:
+        row_id = asyncio.run(gate.record_held_order(
+            HoldCategory.EXPIRY_CLOSE, account="ZG0790", symbol="CRUDEOIL26OCT8600CE",
+            exchange="MCX", side="SELL", qty=200, product="NRML", reason="expiry close"))
+
+    assert row_id == 456
+    mock_session.add.assert_not_called()
+    mock_write.assert_not_called()
 
 
