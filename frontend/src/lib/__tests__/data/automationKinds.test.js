@@ -8,7 +8,10 @@ import {
 describe('KIND_CARDS', () => {
   it('has exactly the three cards (Templates folded into Agents, 2026-10-12), in display order', () => {
     expect(KIND_CARDS.map((c) => c.id)).toEqual(['agents', 'alerts', 'brackets']);
-    expect(KIND_CARDS.map((c) => c.label)).toEqual(['Agents', 'Alerts', 'Brackets']);
+    // 2026-10-29: labels renamed to distinguish order-placing agents from
+    // notify-only alert agents in the count pills (operator: "call agents
+    // as action agents, alerts as alert agents in count pills").
+    expect(KIND_CARDS.map((c) => c.label)).toEqual(['Action agents', 'Alert agents', 'Brackets']);
   });
 });
 

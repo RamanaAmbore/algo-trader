@@ -985,15 +985,23 @@
           </span>
           <DisclosureChevron open={isOpen} ariaLabel={isOpen ? 'Collapse row' : 'Expand row'} />
         </div>
-        <!-- Collapsed-state detail chip row (2026-10-12, operator: "make
-             agent row card styling similar to order card styling... name,
-             group and short description") — reuses the SAME `.log-chip`
-             class OrderCard.svelte's own chip row already uses (app.css,
-             explicitly documented there as shared across log/orders/
-             notification surfaces), instead of a bespoke style, so a
-             collapsed agent row reads with the same density/chrome as a
-             collapsed order row. Expand/collapse-on-click behavior
-             itself is unchanged — only the collapsed view shows more.
+        <!-- Collapsed-state detail row (2026-10-12, operator: "make agent
+             row card styling similar to order card styling... name, group
+             and short description") — originally reused the SAME `.log-chip`
+             class OrderCard.svelte's own chip row uses (app.css, shared
+             across log/orders/notification surfaces), so a collapsed agent
+             row read with the same density/chrome as a collapsed order
+             row. Background/border removed (2026-10-29, operator: "remove
+             background and border [from the] off-white agent description
+             text") — `.log-chip`'s navy gradient + sky border is tuned for
+             a genuinely chip-like key:value tag (order side/qty/account),
+             not a free-text sentence; plain muted/italic text here instead,
+             matching the EXPANDED view's own description styling
+             (line ~826) so collapsed and expanded read consistently. Scoped
+             to this one usage — `.log-chip` itself is untouched, still used
+             verbatim by OrderCard.svelte and LogPanel.svelte. Expand/
+             collapse-on-click behavior itself is unchanged — only the
+             collapsed view shows more.
 
              Group folded into the description text as a trailing
              `#group:name` tag (2026-10-12, operator: "instead of having
@@ -1003,11 +1011,11 @@
              chip. Only appends the tag for a REAL custom group (an
              ungrouped row shows nothing extra, which is the actual
              space-saving — tagging every row "#group:Ungrouped" would
-             be more noise, not less). The whole chip is omitted only
+             be more noise, not less). The whole row is omitted only
              when there's neither a description nor a group. -->
         {#if row.description || row.group}
           <div class="flex flex-wrap items-center gap-y-1 px-2 pb-1">
-            <span class="log-chip" title={row.description || ''}>{row.description}{row.description && row.group ? ' ' : ''}{row.group ? `#group:${row.group}` : ''}</span>
+            <span class="aw-row-desc text-[length:var(--fs-sm)] text-[var(--c-muted)] italic" title={row.description || ''}>{row.description}{row.description && row.group ? ' ' : ''}{row.group ? `#group:${row.group}` : ''}</span>
           </div>
         {/if}
         </div>

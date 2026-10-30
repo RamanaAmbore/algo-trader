@@ -2981,27 +2981,31 @@
 .algo-status-card[data-status="held"]      { --st-fg: #c084fc; --st-bg: rgba(192,132,252,0.12); --st-border: rgba(192,132,252,0.38); }
 
 /* Shared status pill — inherits color from parent .algo-status-card[data-status].
-   min-width (2026-10-24 consistency fix): the pill used to auto-size to its own
-   text, so OPEN/FILLED rendered visibly narrower than CANCELLED/REJECTED/
-   "⚠ KILL FAILED" in the same grid column — a min-width floor (not a rigid
-   fixed width) gives every common status the same footprint while a rare,
-   longer raw broker status (e.g. PUT_ORDER_REQ_RECEIVED) still grows past it
-   rather than clipping — white-space:nowrap above is unchanged, so overflow
-   is never hidden mid-word. text-align:center keeps the label centered in the
-   extra space on short labels. Unaffected at mobile widths: the pill lives in
-   a flex row with its own `flex-shrink: 0`, and the rest of that row's
-   siblings (symbol, account) already carry `min-w-0 truncate` to absorb the
-   difference — see order_card_mobile_pill_overflow.spec.js. */
+   Fixed width (2026-10-29, amends the 2026-10-24 min-width fix): a min-width
+   FLOOR still let a long single word (CANCELLED, REJECTED, "⚠ KILL FAILED")
+   grow past it and render wider than OPEN/FILLED in the same column —
+   operator: "cacelled/rejected has more width than others. keep all of them
+   as same width." Fixed width is now a true ceiling too; white-space:normal +
+   word-break:break-word wraps a long label onto a second row WITHIN that same
+   width instead of growing the pill or clipping. Short labels (OPEN, FILLED,
+   HELD, GTT) still render on one line and stay vertically centered via the
+   parent flex row. text-align:center keeps either row centered. Unaffected at
+   mobile widths: the pill lives in a flex row with its own `flex-shrink: 0`,
+   and the rest of that row's siblings (symbol, account) already carry
+   `min-w-0 truncate` to absorb the difference — see
+   order_card_mobile_pill_overflow.spec.js. */
 .algo-status-pill {
   font-size: 0.55rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  padding: 0.15rem 0.45rem;
+  padding: 0.15rem 0.3rem;
   border-radius: 3px;
-  white-space: nowrap;
+  white-space: normal;
+  word-break: break-word;
+  line-height: 1.15;
   flex-shrink: 0;
-  min-width: 5.5rem;
+  width: 5.5rem;
   text-align: center;
   color: var(--st-fg, var(--text-muted));
   background: var(--st-bg, rgba(126,151,184,0.08));

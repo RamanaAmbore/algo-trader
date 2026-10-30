@@ -37,19 +37,31 @@ test.describe('OrderDepth — row divider + wash reuse Chain\'s own literal alph
     expect(chainSrc).toMatch(/\.chain-row > td \{[^}]*border-bottom: 1px solid rgba\(255,255,255,0\.025\)/);
   });
 
-  test('.ot-depth-cell carries a border-bottom divider at Chain\'s exact 0.025 alpha', () => {
+  test('.ot-depth-row-wash carries a border-bottom divider at Chain\'s exact 0.025 alpha', () => {
+    // 2026-10-29 (operator: "extend the background shading for depth to
+    // container left to right. no gap in background shading between bid
+    // and ask and other numbers") — the wash + divider moved OFF the
+    // per-cell .ot-depth-cell rule onto a full-bleed .ot-depth-row-wash
+    // layer (one continuous band per row instead of 4 separate chips
+    // with visible gaps at the column-gap and the grid's centering
+    // gutter) — same technique, same alpha values, as .ot-depth-header-bg
+    // above. Named "-wash", not "-bg", to avoid colliding with the
+    // "Stale-code" guard below, which bans a DIFFERENT, unrelated prior
+    // design (.ot-depth-row-bg, the dropped per-side bid=green/ask=orange
+    // + best-row-marker scaffolding) — this is a plain neutral wash, not
+    // a reintroduction of that elaborate design.
     const src = readFileSync(DEPTH_PATH, 'utf8');
-    const rule = src.match(/\.ot-depth-cell\s*\{[^}]*\}/)?.[0] ?? '';
+    const rule = src.match(/\.ot-depth-row-wash::before\s*\{[^}]*\}/)?.[0] ?? '';
     expect(rule).toMatch(/border-bottom:\s*1px solid rgba\(255,255,255,0\.025\)/);
   });
 
-  test('.ot-depth-cell carries a subtle background wash — neutral, not a per-side ITM/OTM color mapping', () => {
+  test('.ot-depth-row-wash carries a subtle background wash — neutral, not a per-side ITM/OTM color mapping', () => {
     const src = readFileSync(DEPTH_PATH, 'utf8');
-    const rule = src.match(/\.ot-depth-cell\s*\{[^}]*\}/)?.[0] ?? '';
+    const rule = src.match(/\.ot-depth-row-wash::before\s*\{[^}]*\}/)?.[0] ?? '';
     expect(rule).toMatch(/background-color:\s*rgba\(255,255,255,0\.03\)/);
     // The operator explicitly rejected the earlier elaborate per-side
     // bid=green/ask=orange wash design — confirm no colored (non-white)
-    // background was reintroduced on the base cell rule.
+    // background was reintroduced on the row-wash rule.
     expect(rule).not.toMatch(/background-color:\s*rgba\(74,222,128/);
     expect(rule).not.toMatch(/background-color:\s*rgba\(251,146,60/);
     expect(rule).not.toMatch(/background-color:\s*rgba\(248,113,113/);
@@ -57,9 +69,16 @@ test.describe('OrderDepth — row divider + wash reuse Chain\'s own literal alph
 
   test('the final depth row drops the divider, mirroring Chain\'s .chain-row:last-child > td { border-bottom: 0 }', () => {
     const src = readFileSync(DEPTH_PATH, 'utf8');
-    expect(src).toMatch(/class:ot-depth-cell-last-row=\{isLastRow\}/);
-    const rule = src.match(/\.ot-depth-cell-last-row\s*\{[^}]*\}/)?.[0] ?? '';
+    expect(src).toMatch(/class:ot-depth-row-wash-last=\{isLastRow\}/);
+    const rule = src.match(/\.ot-depth-row-wash-last::before\s*\{[^}]*\}/)?.[0] ?? '';
     expect(rule).toMatch(/border-bottom:\s*none/);
+  });
+
+  test('.ot-depth-cell itself paints no background/border — painting consolidated onto .ot-depth-row-wash::before alone', () => {
+    const src = readFileSync(DEPTH_PATH, 'utf8');
+    const rule = src.match(/\.ot-depth-cell\s*\{[^}]*\}/)?.[0] ?? '';
+    expect(rule).not.toMatch(/background-color:/);
+    expect(rule).not.toMatch(/border-bottom:/);
   });
 
   test('isLastRow is computed from the real row index, not hardcoded', () => {

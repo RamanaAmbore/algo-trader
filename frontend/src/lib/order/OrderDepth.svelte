@@ -161,16 +161,27 @@
     {#each buyRows as b, i (i)}
       {@const a = sellRows[i]}
       {@const isLastRow = i === buyRows.length - 1}
-      <!-- Per-row divider + wash — reuses Chain's own literal row
-           decoration directly on each cell (no extra background
-           elements, no explicit grid placement needed — see the CSS
-           on .ot-depth-cell for the exact Chain alpha values reused).
-           Last row's divider is dropped, mirroring Chain's own
-           `.chain-row:last-child > td { border-bottom: 0 }`. -->
-      <span class="ot-depth-cell ot-depth-bid-qty" class:ot-depth-cell-last-row={isLastRow}>{b ? qtyFmt(b.quantity) : '—'}</span>
-      <span class="ot-depth-cell ot-depth-bid" class:ot-depth-cell-last-row={isLastRow}>{b ? priceFmt(b.price) : '—'}</span>
-      <span class="ot-depth-cell ot-depth-ask" class:ot-depth-cell-last-row={isLastRow}>{a ? priceFmt(a.price) : '—'}</span>
-      <span class="ot-depth-cell ot-depth-ask-qty" class:ot-depth-cell-last-row={isLastRow}>{a ? qtyFmt(a.quantity) : '—'}</span>
+      {@const gridRow = i + 2}
+      <!-- Per-row wash, full-bleed (2026-10-29, operator: "extend the
+           background shading for depth to container left to right. no
+           gap in background shading between bid and ask and other
+           numbers") — same technique as .ot-depth-header-bg above: one
+           element spanning all 4 explicit column tracks, painted
+           BEHIND the row's cells, with its own ::before bleeding past
+           the grid's centered content width out to .ot-depth's full
+           edges. Per-cell backgrounds (the old approach) left visible
+           gaps at the 0.9rem column-gap AND at the centering gutter on
+           each side of the content-sized column group — this div's
+           explicit grid-row (shared with the 4 cells below) makes it a
+           true overlap, not a 5th auto-placed item competing for the
+           same cells (see the header-bg comment above for why that
+           class of fix needs BOTH axes explicit). -->
+      <div class="ot-depth-row-wash" class:ot-depth-row-wash-last={isLastRow}
+           style="grid-row:{gridRow}" aria-hidden="true"></div>
+      <span class="ot-depth-cell ot-depth-bid-qty" style="grid-row:{gridRow}; grid-column:1">{b ? qtyFmt(b.quantity) : '—'}</span>
+      <span class="ot-depth-cell ot-depth-bid" style="grid-row:{gridRow}; grid-column:2">{b ? priceFmt(b.price) : '—'}</span>
+      <span class="ot-depth-cell ot-depth-ask" style="grid-row:{gridRow}; grid-column:3">{a ? priceFmt(a.price) : '—'}</span>
+      <span class="ot-depth-cell ot-depth-ask-qty" style="grid-row:{gridRow}; grid-column:4">{a ? qtyFmt(a.quantity) : '—'}</span>
     {/each}
   </div>
   <!-- Additional-info strip (2026-09-30, operator: "use your judgement
@@ -544,31 +555,50 @@
       #1d2a44;
     border-bottom: 1px solid var(--algo-amber-border-soft);
   }
-  /* Row divider + wash (operator: "apply background and border
-     decoration of chain to order ticket depth" — simplified per
-     follow-up operator instruction to "just subtle border and
-     background," no per-side ITM/OTM-style color mapping, and kept
-     "in sync with chain" by reusing Chain's own literal alpha values
-     verbatim (OptionChainTab.svelte) rather than picking new numbers
-     that merely look similarly faint:
-       - border-bottom 0.025 white = Chain's exact row-divider alpha
-         (`.chain-row > td` border-bottom, its own "very very subtle"
-         pass).
-       - background-color 0.03 white = Chain's exact weaker/cross-tint
-         wash alpha tier (the OTM-side cells in `.chain-row-itm-*`).
-         Neutral white here, not orange/green, since this ladder has
-         no ITM/OTM-style two-sided signal to hang a color mapping on;
-         see `.ot-depth-diag` below for the "different" row, which
-         reuses Chain's OTHER literal tier (0.05, its ATM-row shade). */
+  /* Row wash + divider — color tokens only here now; the actual
+     background-color/border-bottom painting moved to the full-bleed
+     .ot-depth-row-wash::before below (2026-10-29) so each row reads as
+     ONE continuous band instead of 4 disconnected per-cell chips with
+     visible gaps at the column-gap and the grid's centering gutter.
+     Alpha values are unchanged from the original per-cell version
+     (operator: "apply background and border decoration of chain to
+     order ticket depth"), reusing Chain's own literal row-divider
+     (0.025 white) and weak cross-tint wash (0.03 white) tiers
+     verbatim (OptionChainTab.svelte) — neutral white, not orange/
+     green, since this ladder has no ITM/OTM-style two-sided signal to
+     hang a color mapping on; see `.ot-depth-diag` below for the
+     "different" row, which reuses Chain's OTHER literal tier (0.05,
+     its ATM-row shade). */
   .ot-depth-cell {
     text-align: right;
     color: var(--algo-slate);
-    border-bottom: 1px solid rgba(255,255,255,0.025);
+    position: relative;
+    z-index: 1;
+  }
+  /* Full-bleed per-row background layer — same technique as
+     .ot-depth-header-bg::before above (2026-09-30), applied to data
+     rows (2026-10-29). position:relative anchors ::before; this host
+     element paints nothing itself (consolidated onto ::before alone,
+     same reasoning as the header's own "uneven border width" fix —
+     two separately-rasterized copies of the same line read as
+     uneven). grid-column:1/-1 spans all 4 explicit column tracks;
+     grid-row is set inline per-row (see markup) so this div and its
+     row's 4 cells truly overlap rather than competing for auto-placed
+     cells. */
+  .ot-depth-row-wash {
+    grid-column: 1 / -1;
+    position: relative;
+  }
+  .ot-depth-row-wash::before {
+    content: '';
+    position: absolute;
+    inset: 0 -9999px;
     background-color: rgba(255,255,255,0.03);
+    border-bottom: 1px solid rgba(255,255,255,0.025);
   }
   /* No divider under the final depth row — mirrors Chain's own
      `.chain-row:last-child > td { border-bottom: 0 }`. */
-  .ot-depth-cell-last-row {
+  .ot-depth-row-wash-last::before {
     border-bottom: none;
   }
   .ot-depth-bid     { color: var(--algo-green, var(--c-long)); border-right: 1px solid rgba(255,255,255,0.03); padding-right: 0.3rem; }

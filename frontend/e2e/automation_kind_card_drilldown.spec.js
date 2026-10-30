@@ -195,10 +195,13 @@ test.describe('Agents tab — kind-count cards (Sprint C)', () => {
 
     // Collapsed row shows name + group + description without expanding
     // (operator: "make agent row card styling similar to order card
-    // styling... name, group and short description") — reuses the same
-    // `.log-chip` class OrderCard.svelte's chip row already uses.
+    // styling... name, group and short description"). Originally reused
+    // `.log-chip` (OrderCard.svelte's chip row); 2026-10-29 (operator:
+    // "remove background and border off-white agent description text")
+    // swapped to the dedicated `.aw-row-desc` plain-text class — `.log-chip`
+    // itself is untouched for its other, genuinely chip-like usages.
     const cycleRow = page.locator('[role="listitem"]').filter({ hasText: 'Loss Funds Negative E2E' });
-    await expect(cycleRow.locator('.log-chip')).toContainText('Blocks on heavy account-level drawdown');
+    await expect(cycleRow.locator('.aw-row-desc')).toContainText('Blocks on heavy account-level drawdown');
 
     // Switching to a different kind card changes the row list IN PLACE.
     await page.locator('.kind-card[data-kind="alerts"]').click();
@@ -245,12 +248,12 @@ test.describe('Agents tab — groups are strictly per-kind (Sprint C regression)
       for (const expectName of c.expectRows) {
         const row = page.locator('[role="listitem"]').filter({ hasText: expectName });
         await expect(row, `${c.card} card must show ${expectName}`).toHaveCount(1, { timeout: TIMEOUT });
-        // Group now folds into the single description .log-chip as a
+        // Group now folds into the single description .aw-row-desc as a
         // trailing `#group:name` tag (2026-10-12 revision) rather than
         // its own separate chip — operator: "instead of having a
         // separate group button... put it in the description, as
         // #group: at the end of the description."
-        await expect(row.locator('.log-chip'), `${expectName}'s row must show its group as a #group: tag`)
+        await expect(row.locator('.aw-row-desc'), `${expectName}'s row must show its group as a #group: tag`)
           .toContainText('#group:hedge-book');
       }
       for (const excluded of c.excludeRows) {
@@ -270,11 +273,11 @@ test.describe('Agents tab — groups are strictly per-kind (Sprint C regression)
     await page.locator('.kind-card[data-kind="agents"]').click();
     const groupedRow = page.locator('[role="listitem"]').filter({ hasText: 'Loss Funds Negative E2E' });
     const ungroupedRow = page.locator('[role="listitem"]').filter({ hasText: 'AAA Ungrouped E2E' });
-    await expect(groupedRow.locator('.log-chip')).toContainText('#group:hedge-book');
+    await expect(groupedRow.locator('.aw-row-desc')).toContainText('#group:hedge-book');
     // CYCLE_ROW_UNGROUPED has neither description nor group — per the
-    // 2026-10-12 "reduce space wastage" revision, the whole chip is
+    // 2026-10-12 "reduce space wastage" revision, the whole row is
     // omitted entirely (no "#group:Ungrouped" noise on every plain row).
-    await expect(ungroupedRow.locator('.log-chip')).toHaveCount(0);
+    await expect(ungroupedRow.locator('.aw-row-desc')).toHaveCount(0);
 
     // Sort-by-group check: "AAA Ungrouped E2E" would sort FIRST under a
     // plain alphabetical-by-name order — asserting it renders AFTER the

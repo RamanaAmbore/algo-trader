@@ -30,8 +30,8 @@
  *  `group` tag + inline `.log-chip` detail, same as any other row —
  *  no forced/synthetic group value is applied here. */
 export const KIND_CARDS = [
-  { id: 'agents',    label: 'Agents' },
-  { id: 'alerts',    label: 'Alerts' },
+  { id: 'agents',    label: 'Action agents' },
+  { id: 'alerts',    label: 'Alert agents' },
   { id: 'brackets',  label: 'Brackets' },
 ];
 
