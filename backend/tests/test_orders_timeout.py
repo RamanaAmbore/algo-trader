@@ -65,7 +65,13 @@ class TestFetchOrdersBrokerTimeout:
 
         from backend.api.routes.orders_helpers import _fetch_orders
 
-        with patch("backend.brokers.registry.all_brokers", return_value=[slow]):
+        # 2026-10-30 closed-window gate — pin open explicitly. Without
+        # this, a closed gate would return instantly with empty rows,
+        # which happens to satisfy this test's own assertions WITHOUT
+        # actually exercising the per-broker timeout this test exists
+        # to guard (see the identical note in test_orders_gtt.py).
+        with patch("backend.brokers.registry.all_brokers", return_value=[slow]), \
+             patch("backend.api.background.is_any_segment_open_cached", return_value=True):
             t0 = time.monotonic()
             result = _fetch_orders()
             elapsed = time.monotonic() - t0
@@ -82,7 +88,11 @@ class TestFetchOrdersBrokerTimeout:
 
         from backend.api.routes.orders_helpers import _fetch_orders
 
-        with patch("backend.brokers.registry.all_brokers", return_value=[slow, fast]):
+        # 2026-10-30 closed-window gate — pin open explicitly; this test
+        # is about per-broker timeout isolation, not market hours (see
+        # the identical note in test_orders_gtt.py).
+        with patch("backend.brokers.registry.all_brokers", return_value=[slow, fast]), \
+             patch("backend.api.background.is_any_segment_open_cached", return_value=True):
             t0 = time.monotonic()
             result = _fetch_orders()
             elapsed = time.monotonic() - t0

@@ -109,6 +109,25 @@ def peek(key: str) -> "Any | None":
     return None
 
 
+def peek_stale(key: str) -> "Any | None":
+    """Return the cached value for `key` even if its TTL has expired —
+    the stale entry sits in `_store` until the next successful fetch
+    overwrites it (this module never proactively evicts). Returns None
+    only when the key has NEVER been cached at all.
+
+    Used by closed-window route fetchers (e.g. Orders/GTT list) that
+    skip the real broker call while the market is closed — the broker
+    call is doomed to fail identically every time (the day's token
+    often isn't refreshed yet), so there is nothing a fresh call would
+    add; freezing to the last successfully fetched value (the
+    "staleness freeze" convention used elsewhere for positions/
+    holdings) beats returning an empty list, which would read as "no
+    orders/GTTs" rather than "not re-checked since the market closed."
+    """
+    entry = _store.get(key)
+    return entry[1] if entry else None
+
+
 def put(key: str, value: Any, ttl_seconds: int) -> None:
     """Prime the cache with an already-fetched value directly — used by
     keep-warm background jobs so the NEXT real request hits a warm cache

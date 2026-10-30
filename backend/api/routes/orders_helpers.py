@@ -23,6 +23,7 @@ from litestar.exceptions import HTTPException
 from backend.api.schemas import OrderRow, OrdersResponse
 from backend.shared.helpers.date_time_utils import timestamp_display
 from backend.shared.helpers.ramboq_logger import get_logger
+from backend.shared.helpers.recovery import dedup_log_error
 
 logger = get_logger(__name__)
 
@@ -611,10 +612,148 @@ def _row_from_dict(d: dict, account: str, broker_id: str = "") -> OrderRow:
 
 _BROKER_ORDERS_TIMEOUT = 8
 
+# ── Order-book / GTT closed-hours snapshot (2026-10-30) ─────────────────
+#
+# Durable counterpart to `backend/api/cache.py:peek_stale()` — that cache
+# is in-process only and is wiped on every restart/deploy, which would
+# silently re-blank the closed-hours view the very next time the API
+# process restarts during the closed window. `OrderBookSnapshot`
+# (models.py) persists the same payload to the DB, one row per (kind,
+# date), upserted — same "staleness freeze" convention as `MoversSnapshot`
+# (watchlist.py) and `daily_book` (positions/holdings). Operator: "it
+# should show the stored order info without checking with brokers during
+# market close hours."
+#
+# `_fetch_orders()`/`_fetch_gtts()` are both SYNC (run via
+# `asyncio.to_thread` inside `cache.get_or_fetch`), so DB I/O from here
+# must cross back onto the main event loop via `run_on_main_loop()`
+# (the same bridge `apply_plan_live` uses from its own worker thread) —
+# never a bare `asyncio.run()`, which would spin up a second, disconnected
+# event loop for the DB engine.
+_ORDER_BOOK_SNAPSHOT_TIMEOUT_S = 3.0
+
+
+async def _save_order_book_snapshot_async(kind: str, payload_json: str) -> None:
+    from datetime import datetime, timezone
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    from backend.api.database import async_session
+    from backend.api.models import OrderBookSnapshot
+    from backend.shared.helpers.date_time_utils import timestamp_indian
+
+    today = timestamp_indian().date()
+    now_utc = datetime.now(timezone.utc)
+    try:
+        async with async_session() as s:
+            stmt = (
+                pg_insert(OrderBookSnapshot)
+                .values(kind=kind, date=today, payload_json=payload_json, captured_at=now_utc)
+                .on_conflict_do_update(
+                    constraint="uq_order_book_snapshots_kind_date",
+                    set_={"payload_json": payload_json, "captured_at": now_utc},
+                )
+            )
+            await s.execute(stmt)
+            await s.commit()
+    except Exception as exc:
+        logger.warning(f"order_book snapshot save failed (kind={kind}): {exc}")
+
+
+async def _load_order_book_snapshot_async(kind: str) -> "tuple[str, object] | None":
+    """Returns (payload_json, captured_at) for the most recent row of
+    this kind, or None if never saved (e.g. a fresh DB, or every save so
+    far has failed)."""
+    from sqlalchemy import desc, select
+    from backend.api.database import async_session
+    from backend.api.models import OrderBookSnapshot
+
+    try:
+        async with async_session() as s:
+            result = await s.execute(
+                select(OrderBookSnapshot.payload_json, OrderBookSnapshot.captured_at)
+                .where(OrderBookSnapshot.kind == kind)
+                .order_by(desc(OrderBookSnapshot.captured_at))
+                .limit(1)
+            )
+            row = result.first()
+            return (row[0], row[1]) if row is not None else None
+    except Exception as exc:
+        logger.warning(f"order_book snapshot load failed (kind={kind}): {exc}")
+        return None
+
+
+def _save_order_book_snapshot_sync(kind: str, payload_json: str) -> None:
+    """Fire-and-forget — the live response has already been computed and
+    is about to be returned to the caller; it must never wait on this
+    write. Unlike `_load_order_book_snapshot_sync` below (used only on
+    the already-slower closed-window branch, where the caller genuinely
+    needs the result before it can respond), this one schedules the
+    coroutine onto the main loop and does not block for its outcome —
+    blocking here would add latency to EVERY successful open-hours poll,
+    not just the closed-window case this feature exists for."""
+    import asyncio
+    from backend.api.persistence.write_queue import get_main_loop
+
+    loop = get_main_loop()
+    if loop is None or not loop.is_running():
+        return
+    try:
+        running = asyncio.get_running_loop()
+    except RuntimeError:
+        running = None
+    if running is loop:
+        return  # already on the main loop — scheduling here would be a no-op anyway
+    asyncio.run_coroutine_threadsafe(
+        _save_order_book_snapshot_async(kind, payload_json), loop,
+    )
+
+
+def _load_order_book_snapshot_sync(kind: str) -> "tuple[str, object] | None":
+    from backend.api.persistence.write_queue import run_on_main_loop
+    return run_on_main_loop(
+        _load_order_book_snapshot_async(kind),
+        default=None, timeout=_ORDER_BOOK_SNAPSHOT_TIMEOUT_S,
+    )
+
+
+def _closed_hours_orders_response() -> OrdersResponse:
+    """DB-backed snapshot first (durable — survives a restart), the
+    in-process TTL cache second (covers a DB hiccup without losing the
+    freshest in-memory value), empty last (a fresh install with neither)."""
+    snap = _load_order_book_snapshot_sync("orders")
+    if snap is not None:
+        payload_json, captured_at = snap
+        try:
+            from backend.shared.helpers.date_time_utils import format_dual_tz
+            rows = msgspec.json.decode(payload_json.encode(), type=list[OrderRow])
+            return OrdersResponse(rows=rows, refreshed_at=format_dual_tz(captured_at))
+        except Exception as exc:
+            logger.warning(f"order_book snapshot decode failed (kind=orders): {exc}")
+    from backend.api.cache import peek_stale
+    stale = peek_stale("orders")
+    if stale is not None:
+        return stale
+    return OrdersResponse(rows=[], refreshed_at=timestamp_display())
+
 
 def _fetch_orders() -> OrdersResponse:
     import concurrent.futures as _cf
+    from backend.api.background import is_any_segment_open_cached
     from backend.brokers.registry import all_brokers
+
+    # Closed-window gate (2026-10-30 live incident) — "no broker activity
+    # before the market's own open time" is the standing invariant for
+    # every other broker-calling path (`_task_order_poll`/`_task_trail_stop`/
+    # `_task_oco_pair_watcher`/`_task_funds_offhours`, see CLAUDE.md
+    # "Closed-window broker calls gated"). This route was the one path
+    # that never got that gate — the frontend's own 15s poll kept calling
+    # it regardless of market state, and before the day's Kite login
+    # completes every call fails identically (stale access_token), which
+    # fanned one real condition into one ERROR_AGENT alert per poll.
+    # Fail-open (same convention as `is_any_segment_open_cached` itself):
+    # a cold status cache reads as "open", so this never falsely
+    # suppresses a call that should have happened.
+    if not is_any_segment_open_cached():
+        return _closed_hours_orders_response()
 
     brokers = list(all_brokers())
     if not brokers:
@@ -628,7 +767,15 @@ def _fetch_orders() -> OrdersResponse:
         except Exception as e:
             from backend.shared.helpers.recovery import already_logged
             if not already_logged(e):
-                logger.error(f"Orders list failed for {account}: {e}")
+                # Dedup key is account + exception CLASS, not the message —
+                # a stale-token burst (e.g. before the day's Kite login
+                # completes) repeats the identical failure every ~15-35s
+                # via this route's own 15s cache TTL; one alert per
+                # cooldown window beats one per poll (2026-10-30).
+                dedup_log_error(
+                    logger, f"orders_list:{account}:{type(e).__name__}",
+                    f"Orders list failed for {account}: {e}",
+                )
             return []
 
     results: list[list[OrderRow]] = []
@@ -648,6 +795,11 @@ def _fetch_orders() -> OrdersResponse:
     pool.shutdown(wait=False, cancel_futures=True)
 
     rows: list[OrderRow] = [row for chunk in results for row in chunk]
+    if rows:
+        # Never overwrite a good snapshot with an all-accounts-failed
+        # empty result — same "don't poison the LKG cache" rule the
+        # staleness-freeze convention uses elsewhere.
+        _save_order_book_snapshot_sync("orders", msgspec.json.encode(rows).decode())
     return OrdersResponse(rows=rows, refreshed_at=timestamp_display())
 
 

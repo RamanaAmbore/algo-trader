@@ -68,6 +68,61 @@ def already_logged(exc: BaseException) -> bool:
     return bool(getattr(exc, "_recovery_logged", False))
 
 
+# ── Repeat-failure dedup (2026-10-30) ────────────────────────────────────
+#
+# `recoverable()` above only escalation-gates exceptions matched by its own
+# `retry_on` tuple — by design, a non-retryable exception (e.g. Kite's
+# TokenException for a stale/not-yet-refreshed daily access_token) is never
+# worth retrying, so it bypasses the decorator's except clause entirely and
+# propagates straight to the caller. Several call sites (orders_helpers.py,
+# orders_gtt.py) catch it themselves and log a bare `logger.error(...)` —
+# live incident, 2026-10-30: while that day's Kite token hadn't refreshed
+# yet, the `/api/orders` route's own 15s cache TTL meant the frontend's poll
+# re-hit the broker every ~15-35s, and EVERY poll logged its own fresh,
+# unsuppressed ERROR — one real condition (a stale token, self-resolving
+# once the day's login completes) fanned out into 18 separate ERROR_AGENT
+# alerts over a few minutes.
+#
+# `dedup_log_error()` is a narrow, opt-in gate for exactly this shape: a
+# call site that already catches its own exception and wants "one alert
+# per distinct failure, not one per repeat within a cooldown window" —
+# deliberately NOT a change to `recoverable()` itself, which would alter
+# behaviour for every one of its existing call sites (positions, holdings,
+# margins, ltp, quote, ...) rather than just the two noisy ones this fixes.
+_dedup_lock = threading.Lock()
+_dedup_last_logged: dict[str, float] = {}
+DEDUP_COOLDOWN_S = 300  # 5 minutes
+
+
+def dedup_log_error(logger, key: str, message: str, cooldown_s: float = DEDUP_COOLDOWN_S,
+                     **log_kwargs) -> bool:
+    """Log `message` at ERROR, unless the same `key` already logged within
+    `cooldown_s`seconds — then log it at DEBUG instead (so the record still
+    exists for troubleshooting, but doesn't reach the alert pipeline again
+    until the window clears). Returns True if it logged at ERROR, False if
+    suppressed to DEBUG.
+
+    `key` should identify the FAILURE CLASS (e.g. account + exception type),
+    not the verbatim message — a message that embeds a changing detail
+    (a timestamp, a request id) would otherwise defeat the dedup by never
+    matching itself twice.
+    """
+    now = time.monotonic()
+    with _dedup_lock:
+        last = _dedup_last_logged.get(key)
+        if last is not None and (now - last) < cooldown_s:
+            logger.debug(f"[DEDUP] repeat suppressed (key={key}, cooldown={cooldown_s:.0f}s): {message}")
+            return False
+        _dedup_last_logged[key] = now
+    logger.error(message, **log_kwargs)
+    return True
+
+
+def _reset_dedup_for_tests() -> None:
+    with _dedup_lock:
+        _dedup_last_logged.clear()
+
+
 def recoverable(name: str, attempts: int = 3, backoff_s: float = 1.0,
                 retry_on: tuple = (Exception,)):
     """Retry the wrapped call, logging a warning per failed attempt, then escalate."""

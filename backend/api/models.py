@@ -2414,6 +2414,43 @@ class MoversSnapshot(Base):
     )
 
 
+class OrderBookSnapshot(Base):
+    """Last-good broker order-book / GTT-list snapshot, for closed-hours
+    display (2026-10-30, same "staleness freeze" convention as
+    `MoversSnapshot` above and `daily_book` for positions/holdings).
+
+    Written at the end of every successful in-market `/api/orders` or
+    `/api/orders/gtts` broker fetch. One row per (kind, date) — upserted,
+    the latest intraday call always wins. The route reads the most
+    recent row for that `kind` when the market is closed, instead of
+    making a doomed broker call (the day's access_token often isn't
+    refreshed yet before 08:00 IST) — operator: "it should show the
+    stored order info without checking with brokers during market
+    close hours."
+
+    Retention: not yet wired into `_task_purge_persistence_caches` —
+    7-day purge (MoversSnapshot's own retention) is a reasonable
+    follow-up, not required for correctness (an unbounded but tiny
+    one-row-per-day-per-kind table).
+    """
+    __tablename__ = "order_book_snapshots"
+
+    id:           Mapped[int]      = mapped_column(primary_key=True, autoincrement=True)
+    kind:         Mapped[str]      = mapped_column(String(16), nullable=False, index=True)  # 'orders' | 'gtts'
+    date:         Mapped[datetime] = mapped_column(Date, nullable=False, index=True)
+    # JSON-serialised list[dict] — each dict is one OrderRow/GttRow payload.
+    payload_json: Mapped[str]      = mapped_column(Text, nullable=False)
+    captured_at:  Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (
+        UniqueConstraint("kind", "date", name="uq_order_book_snapshots_kind_date"),
+    )
+
+
 class MarketLifecycleEvent(Base):
     """Audit row for every per-exchange lifecycle transition fired by
     `backend.api.algo.market_lifecycle.MarketLifecycle.poll()`.

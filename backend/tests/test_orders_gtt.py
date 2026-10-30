@@ -122,7 +122,15 @@ class TestFetchGtts:
              "status": "active", "trigger_type": "single", "orders": [], "created_at": ""},
         ])
 
-        with patch("backend.brokers.registry.all_brokers", return_value=[b1, b2]):
+        # 2026-10-30 closed-window gate: `is_any_segment_open_cached()`
+        # fails open on a COLD status cache, but an EARLIER test in a
+        # full-suite run can legitimately warm it with the real wall
+        # clock (which, run before 08:00 IST, genuinely reads "closed").
+        # This test is about multi-account combination, not market
+        # hours — pin the gate open explicitly so it can't flip on
+        # ambient cache state/time of day.
+        with patch("backend.brokers.registry.all_brokers", return_value=[b1, b2]), \
+             patch("backend.api.background.is_any_segment_open_cached", return_value=True):
             rows = _fetch_gtts()
 
         accounts = {r.account for r in rows}
@@ -140,7 +148,8 @@ class TestFetchGtts:
         ])
         broken = self._broker("ACC-BROKEN", "dhan", raises=RuntimeError("network error"))
 
-        with patch("backend.brokers.registry.all_brokers", return_value=[broken, good]):
+        with patch("backend.brokers.registry.all_brokers", return_value=[broken, good]), \
+             patch("backend.api.background.is_any_segment_open_cached", return_value=True):
             rows = _fetch_gtts()
 
         assert len(rows) == 1
@@ -156,6 +165,57 @@ class TestFetchGtts:
         with patch("backend.brokers.registry.all_brokers", return_value=[b]):
             rows = _fetch_gtts()
         assert rows == []
+
+    def test_closed_window_skips_broker_call_and_freezes_to_stale_cache(self):
+        """2026-10-30 live incident fix — before the day's Kite login
+        completes, every broker call during the closed window (23:31→
+        08:00 IST) fails identically (stale access_token). The frontend's
+        own poll doesn't know or care about market hours, so it kept
+        calling anyway and fanned one real condition into one alert per
+        poll. `_fetch_gtts()` must skip the broker call entirely when
+        `is_any_segment_open_cached()` says closed, and freeze to the
+        last successfully cached "gtts" value instead of returning
+        empty (which would read as "no GTTs" rather than "not
+        re-checked since market closed")."""
+        from backend.api import cache as cache_mod
+
+        b = self._broker("ACC-SHOULD-NOT-BE-CALLED", "zerodha_kite")
+        stale_rows = [MagicMock()]
+        cache_mod.put("gtts", stale_rows, ttl_seconds=0)  # already expired, still readable via peek_stale
+        try:
+            with patch("backend.brokers.registry.all_brokers", return_value=[b]), \
+                 patch("backend.api.background.is_any_segment_open_cached", return_value=False):
+                rows = _fetch_gtts()
+            assert rows is stale_rows
+            b.get_gtts.assert_not_called()
+        finally:
+            cache_mod.invalidate("gtts")
+
+    def test_closed_window_with_no_prior_cache_returns_empty_not_an_error(self):
+        b = self._broker("ACC-SHOULD-NOT-BE-CALLED", "zerodha_kite")
+        from backend.api import cache as cache_mod
+        cache_mod.invalidate("gtts")
+        with patch("backend.brokers.registry.all_brokers", return_value=[b]), \
+             patch("backend.api.background.is_any_segment_open_cached", return_value=False):
+            rows = _fetch_gtts()
+        assert rows == []
+        b.get_gtts.assert_not_called()
+
+    def test_open_window_calls_broker_as_normal(self):
+        """Fail-open sanity check — when the market IS open (or the
+        status cache is cold, same fail-open default as
+        `is_any_segment_open_cached()` itself), the gate must not
+        suppress the real broker call."""
+        good = self._broker("ACC-GOOD", "zerodha_kite", rows=[
+            {"id": 9, "tradingsymbol": "RELIANCE", "exchange": "NSE",
+             "trigger_values": [2500.0], "last_price": 2400.0,
+             "status": "active", "type": "single", "orders": [], "created_at": ""},
+        ])
+        with patch("backend.brokers.registry.all_brokers", return_value=[good]), \
+             patch("backend.api.background.is_any_segment_open_cached", return_value=True):
+            rows = _fetch_gtts()
+        assert len(rows) == 1
+        good.get_gtts.assert_called_once()
 
 
 # ── _parse_accounts_filter / _filter_gtts_by_accounts ───────────────────────

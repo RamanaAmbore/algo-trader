@@ -39,6 +39,7 @@ from backend.api.auth_guard import auth_or_demo_guard, admin_guard, is_admin_req
 from backend.api.cache import get_or_fetch, invalidate
 from backend.api.schemas import GttCancelResponse, GttListResponse, GttRow
 from backend.shared.helpers.ramboq_logger import get_logger
+from backend.shared.helpers.recovery import dedup_log_error
 from backend.shared.helpers.utils import mask_account
 
 logger = get_logger(__name__)
@@ -92,14 +93,49 @@ def _normalize_gtt_row(raw: dict, account: str, broker_id: str) -> GttRow:
 
 # ── Fetch (all accounts, per-account isolation) ─────────────────────────────
 
+def _closed_hours_gtts_response() -> list[GttRow]:
+    """DB-backed snapshot first (durable), the in-process TTL cache
+    second, empty last. Mirrors `orders_helpers.py:_closed_hours_orders_
+    response()` — see that function's docstring for the full rationale."""
+    import msgspec
+    from backend.api.routes.orders_helpers import _load_order_book_snapshot_sync
+
+    snap = _load_order_book_snapshot_sync("gtts")
+    if snap is not None:
+        payload_json, _captured_at = snap
+        try:
+            return msgspec.json.decode(payload_json.encode(), type=list[GttRow])
+        except Exception as exc:
+            logger.warning(f"order_book snapshot decode failed (kind=gtts): {exc}")
+    from backend.api.cache import peek_stale
+    stale = peek_stale("gtts")
+    return stale if stale is not None else []
+
+
 def _fetch_gtts() -> list[GttRow]:
     """Fetch every account's broker GTTs in parallel. One account/broker
     failure (timeout or exception) contributes an empty list for that
     account only — never blanks the combined response (staleness-freeze
     convention: a partial failure degrades gracefully, it doesn't collapse
-    everything to empty)."""
+    everything to empty).
+
+    Closed-window gate (2026-10-30 live incident) — same rationale as
+    `orders_helpers.py:_fetch_orders()`: before the day's Kite login
+    completes, every call here fails identically (stale access_token),
+    and this route's frontend poller doesn't know or care about market
+    hours, so it kept calling anyway. Reads the DB-persisted
+    `OrderBookSnapshot` (durable — survives a restart) instead of
+    making a doomed live call; falls back to the in-process TTL cache,
+    then to empty. Operator: "it should show the stored order info
+    without checking with brokers during market close hours."
+    Fail-open on a cold status cache, same as `is_any_segment_open_cached()`
+    itself."""
     import concurrent.futures as _cf
+    from backend.api.background import is_any_segment_open_cached
     from backend.brokers.registry import all_brokers
+
+    if not is_any_segment_open_cached():
+        return _closed_hours_gtts_response()
 
     brokers = list(all_brokers())
     if not brokers:
@@ -116,7 +152,13 @@ def _fetch_gtts() -> list[GttRow]:
                 if isinstance(r, dict)
             ]
         except Exception as e:
-            logger.error(f"GTT list failed for {account}: {e}")
+            # Dedup key is account + exception CLASS, not the message —
+            # same stale-token-burst rationale as orders_helpers.py's
+            # Orders-list fetch (2026-10-30).
+            dedup_log_error(
+                logger, f"gtt_list:{account}:{type(e).__name__}",
+                f"GTT list failed for {account}: {e}",
+            )
             return []
 
     results: list[list[GttRow]] = []
@@ -131,11 +173,21 @@ def _fetch_gtts() -> list[GttRow]:
             )
             results.append([])
         except Exception as exc:
-            logger.error(f"GTT list failed for {account}: {exc}")
+            dedup_log_error(
+                logger, f"gtt_list_pool:{account}:{type(exc).__name__}",
+                f"GTT list failed for {account}: {exc}",
+            )
             results.append([])
     pool.shutdown(wait=False, cancel_futures=True)
 
-    return [row for chunk in results for row in chunk]
+    rows = [row for chunk in results for row in chunk]
+    if rows:
+        # Never overwrite a good snapshot with an all-accounts-failed
+        # empty result — same rule as orders_helpers.py's own save.
+        import msgspec
+        from backend.api.routes.orders_helpers import _save_order_book_snapshot_sync
+        _save_order_book_snapshot_sync("gtts", msgspec.json.encode(rows).decode())
+    return rows
 
 
 def _parse_accounts_filter(s: Optional[str]) -> list[str]:

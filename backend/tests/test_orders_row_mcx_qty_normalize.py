@@ -218,7 +218,11 @@ class TestFetchOrdersPassesBrokerId:
         broker.broker_id = "zerodha_kite"
         broker.orders.return_value = [_crudeoilm_order_dict(qty=1, pending=1, filled=0)]
 
+        # 2026-10-30 closed-window gate — pin open explicitly; this test
+        # is about MCX qty conversion, not market hours (see the
+        # identical note in test_orders_gtt.py).
         with patch("backend.brokers.registry.all_brokers", return_value=[broker]), \
+             patch("backend.api.background.is_any_segment_open_cached", return_value=True), \
              patch.dict(_LOT_INDEX_PATCH_TARGET,
                         {("MCX", "CRUDEOILM26JULFUT"): _CRUDEOILM_LOT_SIZE}, clear=True):
             result = _fetch_orders()
