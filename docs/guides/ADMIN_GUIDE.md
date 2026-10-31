@@ -449,6 +449,8 @@ Real Kite quotes + paper engine. Status: `CHASING` (orders in flight) · `IDLE` 
 
 ## Basket orders — multi-leg, multi-account
 
+Only `designated` and `trader` can place baskets (see
+[role matrix](#order-placement-and-nav-visibility-by-role)).
 Orders > Ticket tab: **+ Basket** button → add legs, pick account per pill. Margin strip shows Required / Avail / After per account. Routes: `GET /api/orders/basket/margin`, `POST /api/orders/basket` (PAPER), `POST /api/orders/basket/place` (LIVE).
 
 ---
@@ -1765,10 +1767,10 @@ The platform's RBAC surface is **5 canonical roles** + 1 legacy preserved role +
 | Role | Caps | Notes |
 |---|---|---|
 | `designated` | Everything per the matrix in `backend/api/rbac.py::CAPS` | Firm owner / top tier |
-| `trader` | place / modify / cancel orders + view book; horizontal scope via `assigned_accounts` + `assigned_strategies` | PM tier |
+| `trader` | place / modify / cancel orders + view book; horizontal scope via `assigned_accounts` + `assigned_strategies` | PM tier. With `designated`, the only role that may place orders (see below) |
 | `risk` | view everything + kill-switch + adjust risk floors | Compliance + on-call monitoring |
 | `admin` | manage brokers, test broker connection, view audit, view health, trigger NAV compute, view settings (read-only) | Operational support |
-| `partner` | view-only aggregate; no trading, no settings | LP-style read access |
+| `partner` | view-only aggregate; no trading, no settings; firm-wide NAV blanked (see below) | LP-style read access |
 | `demo` | view-only on prod (anonymous visitor) | Public surface, no auth |
 
 **Where `designated` still matters at the code level:**
@@ -1777,6 +1779,28 @@ The platform's RBAC surface is **5 canonical roles** + 1 legacy preserved role +
 - `/admin` UI hides terminate / promote / view-as buttons unless the actor is designated
 
 The designated role has all admin caps PLUS three super-admin gates. Going forward new users should land on one of the 5 canonical roles (`designated / trader / risk / admin / partner`). The auto-bootstrap migration (init_db) is complete and no longer runs. Operator can promote an admin → designated via `/admin` → user row → Promote button.
+
+### Order placement and NAV visibility by role
+
+Enforced server-side by the capability matrix in [rbac.py](../../backend/api/rbac.py)
+(`CAPS`). The frontend hides controls for convenience only; the API check is the real gate.
+
+| Role | Place / modify / cancel orders | Firm-wide NAV (`/api/nav/`, `/api/nav/by-account`) | Own NAV (`/api/nav/me`) |
+|---|---|---|---|
+| `designated` | Allowed | Full | Full |
+| `trader` | Allowed | Full | Full |
+| `risk` | **403** | Full | Full |
+| `admin` | **403** | Full | Full |
+| `partner` | **403** | Blank (empty rows, no total) | Own slice only |
+| `demo` | **403** (no JWT) | n/a | n/a |
+
+- **Order placement** is gated by `cap_guard("place_order")` on `POST /api/orders/ticket` and
+  `POST /api/orders/basket`. An `admin` who tries to place an order gets HTTP 403 with
+  `Capability 'place_order' required`. This is intended: admin is operational support, not trading.
+  Basket orders (see Basket orders above) follow the same rule.
+- **Partner NAV blanking.** `/api/nav/` returns an empty history and `/api/nav/by-account` returns
+  empty rows with `total: null`, for a caller whose token role is `partner`. The LP's correct view
+  is `/api/nav/me` and `/api/nav/me/history`. Other roles are unchanged.
 
 ### Audit workflow — the #audit tag
 

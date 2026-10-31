@@ -872,6 +872,7 @@ Line 2 onwards: compact `log-chip` format (label:value pairs):
 - variety:regular
 - mode:live
 - engine:algo
+- agent:manual | agent:<agent name> (who placed it; always shown, see `agent_origin` under §14)
 - time:DD-MMM HH:MM:SS IST | EST
 - tag:ramboq-ticket or ramboq-agent-loss (color-coded chips)
 - tp:+30.0% (take-profit %; green background)
@@ -1105,6 +1106,11 @@ brokers).
 
 **Purpose**: Place single order (same validation as basket, single account).
 
+**Auth**: `guards=[cap_guard("place_order")]`. Only `designated` and `trader` hold `place_order`
+([rbac.py](../../backend/api/rbac.py) `CAPS`). Any other role, including `admin`, is rejected with HTTP 403
+`Capability 'place_order' required` before the handler runs. See
+[ADMIN_GUIDE role matrix](../guides/ADMIN_GUIDE.md#order-placement-and-nav-visibility-by-role).
+
 **Request**:
 
 ```json
@@ -1140,7 +1146,9 @@ brokers).
 
 **Error codes**:
 - 400 Bad Request — missing required field
-- 403 Forbidden — demo session / branch mismatch / admin check failed
+- 403 Forbidden — caller role lacks `place_order` (only `designated` / `trader`; `admin`, `risk`,
+  `partner` and `demo` are refused)
+- 403 Forbidden — demo session / branch mismatch
 - 403 Forbidden — G2 fat-finger cap exceeded
 - 403 Forbidden — strategy capacity cap exceeded
 - 503 Service Unavailable — price resolution failed (capacity guard)
@@ -1167,6 +1175,9 @@ brokers).
 ### POST /api/orders/basket
 
 **Purpose**: Place multi-account batch with offset-aware margin.
+
+**Auth**: `guards=[cap_guard("place_order")]`, same as `/ticket`. Only `designated` and `trader`
+may place; other roles get HTTP 403 `Capability 'place_order' required`.
 
 **Request**:
 
@@ -1206,6 +1217,30 @@ brokers).
       ]
     }
   ]
+}
+```
+
+### GET /api/orders/algo/recent (and other algo-row lists)
+
+**Purpose**: Ramboq-owned `AlgoOrder` rows. Each row is an `AlgoOrderInfo` and carries
+`agent_origin`, the "who placed this" value shown as the **agent:** chip on every order card.
+Also returned by `GET /api/orders/chases/active` and the drafts list.
+
+- `agent_origin` is always present. It is `"manual"` for an operator-placed order (bare ticket or
+  basket), or the real name of the agent that fired it (e.g. `"loss-funds-negative"`). If the agent
+  row was since deleted, it reads `"Agent #<id>"`.
+- Resolved server-side with the same SSOT as every alert's `Agent:` origin line
+  (`alert_utils.resolve_origin()`), so an order's chip and its alert never disagree.
+- The broker-row response `GET /api/orders/` does not carry `agent_origin`. OrderBook copies it onto
+  matching broker rows from the algo row, so `/orders` shows the same chip for both.
+
+```json
+{
+  "id": 123,
+  "symbol": "GOLD26OCT142000PE",
+  "mode": "live",
+  "status": "FILLED",
+  "agent_origin": "expiry-day-itm-auto-close"
 }
 ```
 
@@ -1741,6 +1776,7 @@ alongside existing `set_bool`/`set_string` helpers.
 | 2026-10-08 | 7e6c3b92: `HeldOrdersCard.svelte` styling improved: held-order categories now color-coded by urgency (red/amber/orange); hardcoded colors/radius replaced with app.css tokens; BUY/SELL side text colored; hover states added; InfoHint explains "held" status. |
 | 2026-10-08 | 90ad3d6d: Template GTT placement now tracks unverified ids with a new `unverified` flag; on ambiguous outcome (`_verify_gtt_accepted` failure), code calls `broker.cancel_gtt()` then surfaces the id + flag via `result.errors` + critical log, preventing duplicate GTTs on re-attach (§13 Duplicate Postbacks). |
 | 2026-10-08 | e77c8993: `release_held_order` (expiry-close release) now compares contracts vs contracts via normalized `broker_apis.fetch_positions()`, not raw broker (Kite reports MCX in lots). Fails closed on stale/circuit-open/fetch-failed data (§18 Release Implementation Details). |
+| 2026-10-31 | v2.5 Order-placement capability gate: `/api/orders/ticket` and `/basket` now `cap_guard("place_order")` (designated / trader only; admin/risk/partner refused with 403) (§14). Added `agent_origin` to `AlgoOrderInfo` and the **agent:** chip on OrderCard (§11 Metadata Chips, §14). Role matrix in ADMIN_GUIDE. |
 | 2026-10-08 | 2e1f0dd8: `release_held_order` now clears `hold_json = None` alongside status change; fixes stuck-in-held-list and 409-on-reclick bugs (§18 Release Implementation Details). |
 | 2026-10-08 | 5d5ab349: `release_template_exit` now validates GTT placement with `bypass_hold` kwarg; reports success only when GTTs/wing placed; restores hold on failure for operator retry (§18 Release Implementation Details). |
 | 2026-10-08 | (pre-existing corrections): Fixed broken relative links in §18 (BROKER_SPEC.md → BROKER_SPEC.md, SETTINGS_SPEC.md → SETTINGS_SPEC.md); fixed stale BROKER_SPEC refs to release route location and cancel-path availability. |

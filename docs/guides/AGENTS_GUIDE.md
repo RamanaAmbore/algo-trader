@@ -86,6 +86,38 @@ Auto-deactivation is final. Set `status` back to `active` to re-enable.
 
 The Order log Mode pill (SIM / PAPER / LIVE / SHADOW) shows which path ran.
 
+### Scoping the fan-out actions — `cancel_all_orders` and `chase_close_positions`
+
+Both actions take the same scope params. Omitting `scope` (or `scope: total`) means every account,
+the existing behaviour for every saved agent.
+
+| Param | Values | Required when | Meaning |
+|---|---|---|---|
+| `scope` | `total` (default), `account`, `role`, `user` | — | Which accounts the action may touch |
+| `account` | account code | `scope: account` | One account |
+| `role` | `trader` | `scope: role` | Union of every trader-role user's assigned accounts |
+| `user` | trader-role username | `scope: user` | One trader's own assigned accounts |
+| `side` | `BUY` / `SELL` | — (`cancel_all_orders` only) | Cancel only orders on this side |
+| `symbol` | tradingsymbol | — (`cancel_all_orders` only) | Cancel only orders on this symbol |
+
+- **Only `trader` is a valid `role`.** Every other role (`admin`, `risk`, `designated`, `partner`) is
+  firm-wide and has no per-user account list, so `scope: role` with any other role is refused.
+- **`scope: user` must name a trader.** Naming any other user is refused, for the same reason.
+- A refused scope raises `ValueError` before any broker call, so no order is touched. An unknown
+  username fails the same way.
+- Enforced in [actions_live.py](../../backend/api/algo/actions_live.py). `cancel_all_orders_scoped()`
+  runs its own role/user checks, and `chase_close_positions` goes through
+  `_al_resolve_scope_accounts()`. Both use `_al_accounts_for_trader_role()` and
+  `_al_accounts_for_trader_user()` for the account lists. The schema lives in
+  [agent_grammar.yaml](../../backend/config/grammars/agent_grammar.yaml) under each token's
+  `params_schema`.
+
+Example — cancel every open order belonging to one trader's accounts:
+
+```
+cancel_all_orders(scope="user", user="asha")
+```
+
 ### Built-in agents you can study
 
 These slugs are seeded from code on boot. Read the live rows at `/automation` for current

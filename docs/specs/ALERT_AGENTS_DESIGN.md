@@ -900,6 +900,73 @@ occurrence) in [test_event_agents.py](../../backend/tests/test_event_agents.py).
 must never be re-scanned by the unrouted catch-all for a condition match it was never designed to
 satisfy.
 
+### 3.24 Action-agent and alert-agent tag on every outbound alert (2026-10-31, `aa816ca7`)
+
+Operator: the alert should name both the agent that acted and the agent that sent it. Line 1 of
+every body already said `Agent: ...`, but that line names only the ACTION agent, meaning who or what
+did the thing being reported. The dispatching ALERT agent, which actually sent this notification,
+existed only as internal DB bookkeeping (`agent.slug`/`agent.name`) and never reached the rendered
+text. This section adds a trailing tag row carrying both values, built once, at the single funnel
+every channel passes through.
+
+**Mechanism.** All of it lives in
+[event_agents.py](../../backend/api/algo/event_agents.py#L544), in the block headed "Action-agent /
+alert-agent tag (2026-10-31)", directly above `_send_channel`.
+- **Action agent, reused, not re-resolved.** `_agent_tag_line()`
+  ([event_agents.py:602](../../backend/api/algo/event_agents.py#L602)) calls
+  `alert_utils.resolve_origin(extra["agent_id"], extra["agent_name"])`, the same resolver that
+  produces the existing `Agent: ...` header (§3.2a, §3.21). The value is the same one rendered a
+  second way, as a filterable hashtag or pill. It is never a second, independent resolution.
+- **Alert agent, read from the detector's own slug.**
+  `_alert_agent_source_slug()` ([event_agents.py:563](../../backend/api/algo/event_agents.py#L563))
+  prefers `ALERT_EVENT_DISPATCH[alert_event]["source_slug"]` (§3.22) whenever the record carries an
+  `alert_event` with a table entry. For the 16 collapsed types it therefore returns the retired
+  detector's own slug, such as `chase-cancel-alert`. Without this, the three generic channel agents
+  (`alert-channel-telegram`/`-ntfy`/`-email`) would each stamp their own generic name on the same
+  record. The seven dedicated agents that stayed out of the collapse have no table entry and fall
+  through to `agent.slug`, then `agent.name`, then the literal `"alert"`. For them the dispatching
+  agent is already the real one.
+- **Sanitising for Telegram.** `_tag_token()`
+  ([event_agents.py:590](../../backend/api/algo/event_agents.py#L590)) lowercases the value and maps
+  every run of non-alphanumeric characters to a single underscore, then strips leading and trailing
+  underscores. Telegram's hashtag entity only recognises `[A-Za-z0-9_]+` after `#`. A raw slug such
+  as `chase-cancel-alert` would render as a tappable `#chase` followed by plain text. An empty result
+  becomes `unknown`.
+- **Telegram and ntfy.** The tag is the line `#<action> #<alert>`, for example `#manual
+  #chase_cancel_alert`. `_send_channel()` appends it to the plain body and, when present, to the
+  Telegram text. Both channels are plain text (§3.21), so the tag is a real tappable hashtag.
+- **Email.** `_agent_pill_html()`
+  ([event_agents.py:615](../../backend/api/algo/event_agents.py#L615)) renders the same two values
+  unsanitised, as two inline-styled pill badges (`action: manual`, `alert: chase-cancel-alert`).
+  Email has no hashtag constraint, so the readable form is used. `_append_agent_pill_to_html()`
+  ([event_agents.py:640](../../backend/api/algo/event_agents.py#L640)) inserts the row just before
+  `</body>`, or appends it when no `</body>` exists. Styles are inline only, because email clients
+  strip `<style>` blocks.
+- **Single injection point.** The whole block runs inside `_send_channel(ch, out, agent, rec=None)`
+  ([event_agents.py:649](../../backend/api/algo/event_agents.py#L649)). The one caller in the
+  dispatch loop passes `rec` ([event_agents.py:804](../../backend/api/algo/event_agents.py#L804)).
+  Renderers are not touched. `rec=None` is the default, so any caller that does not pass a record gets
+  exactly the pre-change output. Every existing test relies on that.
+
+**Sibling feature: order-display origin.** `AlgoOrderInfo.agent_origin` is a separate, display-side
+feature from the same day, shipped in `46804516` ("order display shows Agent: manual / Agent: <name>
+origin"). It is not part of this alert tag and does not change any alert. In
+[routes/orders.py](../../backend/api/routes/orders.py#L612), `_chase_row_to_info()` calls the same
+`resolve_origin()` on the row's `agent_id`, using `agent_name_map` from `_fetch_agent_name_map()`
+([orders.py:588](../../backend/api/routes/orders.py#L588)). That map is one batched lookup, and `None`
+ids are dropped before it runs. The order pill and chip read `agent_origin` to show `agent: manual`
+or `agent: <name>`. The two features share the resolver and nothing else. The order feature decides
+what an order shows. The alert tag decides what a notification shows.
+
+**Known imprecision.** `_tag_token()` is lossy. `Loss Funds` and `loss-funds` both become
+`loss_funds`, and `Agent #42` becomes `agent_42`. Two distinct values can therefore collide into one
+hashtag. The tag is for filtering, not identity. The unsanitised pill in email and the header line
+remain the authoritative text.
+
+**Invariant.** The action token and the header's `Agent:` line come from one `resolve_origin()` call
+and can never disagree. The alert token never reads the action agent. For a collapsed type it is the
+retired detector's `source_slug`, so all three channel agents show the same label for the same record.
+
 ## 4. What changed, by file
 
 | File | Change |
@@ -934,6 +1001,8 @@ satisfy.
 | `event_agents.py`, `alert_routing.py` (2026-10-25, alert-channel collapse) | 16 seeded agents retired from `SEEDED_AGENTS`, kept as `_COLLAPSED_DETECTOR_SPECS`; 3 new generic channel agents; `ALERT_EVENT_DISPATCH` table; `SEED_VERSION` 4 -> 5; `_retire_collapsed_event_agents()`; `alert_routing._PER_SLUG_OVERRIDES` gains 3 display-only rows (§3.22) |
 | `backend/tests/test_alert_channel_collapse.py` (2026-10-25) | New. Before/after delivery-identical golden gate for all 18 collapsed `alert_event` keys (§3.22) |
 | `event_agents.py` (2026-10-29) | `_looks_alert_shaped()` excludes the `log` channel's own delivery echo (`agent_slug` set, no `alert_event`) from the unrouted catch-all (§3.23) |
+| `event_agents.py` (2026-10-31, `aa816ca7`) | Trailing action-agent / alert-agent tag: `_alert_agent_source_slug`, `_tag_token`, `_agent_tag_line`, `_agent_pill_html`, `_append_agent_pill_to_html`, and the `rec` param on `_send_channel` (§3.24) |
+| `routes/orders.py` (2026-10-31, `46804516`) | `AlgoOrderInfo.agent_origin` via `resolve_origin()` in `_chase_row_to_info` (display-side sibling of §3.24) |
 
 ## 5. Gaps
 
