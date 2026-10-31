@@ -1,6 +1,7 @@
 """Event agents: match, render, per-channel send, capability gate, failure isolation, startup scope."""
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -266,6 +267,156 @@ def test_every_seeded_agent_passes_validation():
     from backend.api.algo import event_agents as ea
     for spec in ea.SEEDED_AGENTS:
         assert ea.validate_seed_spec(spec) == [], spec["slug"]
+
+
+def test_every_live_seeded_agent_has_a_description():
+    """2026-10-30 fix (operator: "alert agents don't have description") —
+    the Automation page's collapsed-row detail line only renders when
+    `row.description or row.group` is truthy. Every one of the 10 live
+    `SEEDED_AGENTS` entries must carry real description text, or an
+    alert-kind row on that page silently shows nothing."""
+    from backend.api.algo import event_agents as ea
+    for spec in ea.SEEDED_AGENTS:
+        assert spec.get("description"), f"{spec['slug']} has no description"
+
+
+@pytest.mark.asyncio
+async def test_seed_event_agents_writes_description_on_insert():
+    from backend.api.algo import event_agents as ea
+    spec = ea.ERROR_AGENT
+
+    class _FakeScalars:
+        def all(self):
+            return []
+
+    class _FakeResult:
+        def scalar_one_or_none(self):
+            return None  # no existing row -> insert
+
+        def scalars(self):
+            return _FakeScalars()
+
+    added = []
+
+    class _FakeSession:
+        async def execute(self, *_a, **_k):
+            return _FakeResult()
+
+        async def commit(self):
+            pass
+
+        def add(self, row):
+            added.append(row)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    import backend.api.database as db
+    with patch.object(ea, "SEEDED_AGENTS", (spec,)), \
+         patch.object(db, "async_session", lambda: _FakeSession()):
+        await ea.seed_event_agents()
+
+    assert len(added) == 1
+    assert added[0].description == spec["description"]
+
+
+@pytest.mark.asyncio
+async def test_seed_event_agents_writes_description_on_update():
+    from backend.api.algo import event_agents as ea
+    spec = ea.ERROR_AGENT
+    row = SimpleNamespace(
+        slug=spec["slug"], name=spec["name"], description="",
+        status="active", kind="event", seed_version=0, seed_spec_hash=None,
+        conditions=spec["conditions"], events=[], actions=spec["actions"], priority=None,
+    )
+
+    class _FakeScalars:
+        def all(self):
+            return []
+
+    class _FakeResult:
+        def scalar_one_or_none(self):
+            return row
+
+        def scalars(self):
+            return _FakeScalars()
+
+    class _FakeSession:
+        async def execute(self, *_a, **_k):
+            return _FakeResult()
+
+        async def commit(self):
+            pass
+
+        def add(self, *_a, **_k):
+            raise AssertionError("update must not insert")
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    import backend.api.database as db
+    with patch.object(ea, "SEEDED_AGENTS", (spec,)), \
+         patch.object(db, "async_session", lambda: _FakeSession()):
+        await ea.seed_event_agents()
+
+    assert row.description == spec["description"]
+
+
+@pytest.mark.asyncio
+async def test_seed_event_agents_leaves_description_untouched_on_modified_skip():
+    """Same protection `priority` already gets — an operator-edited row
+    (its current conditions/events/actions no longer hash-match what
+    seeding last wrote) must not have ANY of its content, description
+    included, silently rewritten."""
+    from backend.api.algo import event_agents as ea
+    spec = ea.ERROR_AGENT
+    stale_hash = ea.compute_seed_spec_hash(spec["conditions"], [], spec["actions"])
+    row = SimpleNamespace(
+        slug=spec["slug"], name=spec["name"], description="operator's own text",
+        status="active", kind="event", seed_version=0, seed_spec_hash=stale_hash,
+        conditions={"log": {"tag": "something-else"}}, events=[], actions=spec["actions"],
+        priority=None,
+    )
+
+    class _FakeScalars:
+        def all(self):
+            return []
+
+    class _FakeResult:
+        def scalar_one_or_none(self):
+            return row
+
+        def scalars(self):
+            return _FakeScalars()
+
+    class _FakeSession:
+        async def execute(self, *_a, **_k):
+            return _FakeResult()
+
+        async def commit(self):
+            pass
+
+        def add(self, *_a, **_k):
+            raise AssertionError("modified_skip must not insert")
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    import backend.api.database as db
+    with patch.object(ea, "SEEDED_AGENTS", (spec,)), \
+         patch.object(db, "async_session", lambda: _FakeSession()):
+        await ea.seed_event_agents()
+
+    assert row.description == "operator's own text"
 
 
 def test_validation_reports_unknown_tag_renderer_and_channel():
@@ -792,8 +943,16 @@ def test_generic_notice_agents_sourced_from_shared_table_byte_identical():
     # "alert" token for all 5, not the category tag ("gtt"/"broker"/
     # "visitor") — `where.alert_event` already uniquely discriminates
     # each one. See `ea.SEED_VERSION`'s own comment for the rationale.
+    # 2026-10-30 — every `_GENERIC_NOTICE_SPECS` entry now carries a
+    # `description` key (operator: "alert agents don't have description")
+    # fed through `_build_generic_notice_agent()` via `spec.get(
+    # "description", "")`. Only `visitor-report-alert` sets real text —
+    # it's the one entry still live in `SEEDED_AGENTS`; the other 4 are
+    # retired and keep the "" default (harmless, since they're never
+    # seeded).
     assert ea.GTT_ASYMMETRIC_AGENT == {
         "slug": "gtt-asymmetric-alert", "name": "GTT asymmetric",
+        "description": "",
         "conditions": {"log": {"tag": "alert", "min_level": "WARNING",
                                "where": {"alert_event": "gtt_asymmetric"}}},
         "priority": "high",
@@ -801,6 +960,7 @@ def test_generic_notice_agents_sourced_from_shared_table_byte_identical():
     }
     assert ea.OCO_DOUBLE_FIRE_AGENT == {
         "slug": "oco-double-fire-alert", "name": "OCO double-fire",
+        "description": "",
         "conditions": {"log": {"tag": "alert", "min_level": "WARNING",
                                "where": {"alert_event": "oco_double_fire"}}},
         "priority": "urgent",
@@ -808,6 +968,7 @@ def test_generic_notice_agents_sourced_from_shared_table_byte_identical():
     }
     assert ea.TICKER_RECOVERED_AGENT == {
         "slug": "ticker-recovered-alert", "name": "Ticker recovered",
+        "description": "",
         "conditions": {"log": {"tag": "alert", "min_level": "INFO",
                                "where": {"alert_event": "ticker_recovered"}}},
         "priority": "high",
@@ -815,6 +976,7 @@ def test_generic_notice_agents_sourced_from_shared_table_byte_identical():
     }
     assert ea.TICKER_DEGRADED_AGENT == {
         "slug": "ticker-degraded-alert", "name": "Ticker degraded",
+        "description": "",
         "conditions": {"log": {"tag": "alert", "min_level": "WARNING",
                                "where": {"alert_event": "ticker_degraded"}}},
         "priority": "urgent",
@@ -822,6 +984,7 @@ def test_generic_notice_agents_sourced_from_shared_table_byte_identical():
     }
     assert ea.VISITOR_REPORT_AGENT == {
         "slug": "visitor-report-alert", "name": "Visitor report",
+        "description": "Sends the periodic site-visitor traffic report.",
         "conditions": {"log": {"tag": "alert", "min_level": "INFO",
                                "where": {"alert_event": "visitor_report"}}},
         "priority": "info",

@@ -1164,6 +1164,8 @@ def _run_unrouted_catch_all(rows: list[dict], agents: list) -> None:
 ERROR_AGENT = {
     "slug": "error-alert",
     "name": "Error alert",
+    "description": "Catch-all for any ERROR (or unrouted CRITICAL) log line "
+                    "that isn't already alerted by its own dedicated path.",
     # tag="error" also matches a CRITICAL record as of 2026-10-24 — see
     # `log_store.py:tags_for()`'s own docstring. This condition dict is
     # deliberately left UNCHANGED (no `{"any": [...]}` tag="critical"
@@ -1339,6 +1341,8 @@ MCP_PING_AGENT = {
 DEPLOY_SYNC_AGENT = {
     "slug": "deploy-sync-alert",
     "name": "Deploy out of sync",
+    "description": "Fires when a push lands on dev or main but the webhook "
+                    "deploy on the other branch hasn't caught up.",
     # 2026-10-25 tag-unification — see FILL_AGENT's comment above.
     # Producer (`background.py`) now also tags `"alert"` (additive,
     # alongside its pre-existing "deploy" tag).
@@ -1359,6 +1363,8 @@ DEPLOY_SYNC_AGENT = {
 RICH_ALERT_AGENT = {
     "slug": "agent-alert-rich",
     "name": "Agent alert",
+    "description": "Generic multiplexer — renders and delivers every other "
+                    "cycle agent's own threshold/breach alert.",
     "conditions": {"log": {"tag": "agent", "min_level": "INFO", "where": {"alert_event": "rich_alert"}}},
     # 2026-10-16 fix (unchanged by the routing-tree migration) — no
     # hardcoded ntfy priority. This agent fans out EVERY other agent's
@@ -1378,6 +1384,8 @@ RICH_ALERT_AGENT = {
 SUMMARY_AGENT = {
     "slug": "market-summary",
     "name": "Market summary",
+    "description": "Sends the scheduled market-open/close funds and "
+                    "positions summary.",
     # 2026-10-25 tag-unification — see FILL_AGENT's comment above.
     # Producer (`alert_utils.py`) now also tags `"alert"` (additive,
     # alongside its pre-existing "summary" tag).
@@ -1389,6 +1397,8 @@ SUMMARY_AGENT = {
 BREACH_AGENT = {
     "slug": "cycle-breach-alert",
     "name": "Cycle breach",
+    "description": "Renders a cycle agent's own threshold-breach detail "
+                    "(kind, value, account) when it fires.",
     "conditions": {"log": {"tag": "agent", "min_level": "INFO", "where": {"alert_event": "breach"}}},
     "events": [],
     "actions": [{"type": "render", "render": "breach"}],
@@ -1435,7 +1445,7 @@ _GENERIC_NOTICE_SPECS: tuple[dict, ...] = (
      "priority": "urgent"},
     {"slug": "visitor-report-alert", "name": "Visitor report",
      "tag": "visitor", "min_level": "INFO", "alert_event": "visitor_report",
-     "priority": "info"},
+     "priority": "info", "description": "Sends the periodic site-visitor traffic report."},
 )
 
 
@@ -1451,6 +1461,7 @@ def _build_generic_notice_agent(spec: dict) -> dict:
     return {
         "slug": spec["slug"],
         "name": spec["name"],
+        "description": spec.get("description", ""),
         "conditions": {"log": {"tag": "alert", "min_level": spec["min_level"],
                                "where": {"alert_event": spec["alert_event"]}}},
         "priority": spec["priority"],
@@ -1542,6 +1553,8 @@ USER_REGISTERED_AGENT = {
 UNROUTED_ALERT_AGENT = {
     "slug": "unrouted-alert-catch-all",
     "name": "Unrouted alert catch-all",
+    "description": "Last-resort delivery for any alert that matched no "
+                    "specific routing rule, so it is never silently dropped.",
     # Matches exactly the shape `_emit_unrouted_self_alert()` builds —
     # tag "alert" (a real, known alert tag; "agent" is still carried
     # additively too), the reserved `alert_event=_UNROUTED_ALERT_EVENT`
@@ -1585,7 +1598,20 @@ UNROUTED_ALERT_AGENT = {
 }
 
 
-SEED_VERSION = 5
+SEED_VERSION = 6
+# 2026-10-30 (SEED_VERSION 5 -> 6) — every live `SEEDED_AGENTS` entry gets
+# a `description` field (operator: "alert agents don't have description").
+# The Automation page's collapsed-row detail line (`automation/+page.
+# svelte`, `{#if row.description || row.group}`) was silently omitted for
+# every alert-kind row — `event_agents.py`'s seed specs never set this
+# field at all, unlike `agent_engine.py`'s cycle-agent seeds, which always
+# have. Written the same way `priority` is (direct kwarg on insert, direct
+# attribute on update) — NOT added to `event_agent_row_fields()`, which is
+# shared with operator-authored agents and whose docstring already states
+# `name`/`slug`/`status`/`seed_version` are caller-owned; `description`
+# belongs in that same caller-owned category. Deliberately left untouched
+# on a `modified_skip` row, same protection as `priority`.
+#
 # 2026-10-25 — tag-unification: every `kind='event'` seeded agent except
 # ERROR_AGENT/RICH_ALERT_AGENT/BREACH_AGENT (explicitly excluded — see
 # each one's own dict comment, or the module-level rationale in each
@@ -1826,6 +1852,7 @@ def _channel_agent_spec(slug: str, name: str, channel_key: str) -> dict:
     all (see that function's own docstring)."""
     return {
         "slug": slug, "name": name,
+        "description": f"Delivers alerts routed to the {name.split(': ', 1)[-1]} channel.",
         "conditions": _CHANNEL_AGENT_CONDITION,
         "priority": None,
         "actions": [{"type": "render", "render": _CHANNEL_AGENT_RENDER_SENTINEL, "channel_key": channel_key}],
@@ -1991,7 +2018,8 @@ async def seed_event_agents() -> None:
             spec_events = spec.get("events", [])
             spec_hash = compute_seed_spec_hash(spec["conditions"], spec_events, spec["actions"])
             if action == "insert":
-                s.add(Agent(slug=spec["slug"], name=spec["name"], status="active",
+                s.add(Agent(slug=spec["slug"], name=spec["name"],
+                            description=spec.get("description", ""), status="active",
                             seed_version=SEED_VERSION, seed_spec_hash=spec_hash,
                             **event_agent_row_fields(spec["conditions"], spec_events,
                                                       spec["actions"], priority=spec.get("priority"))))
@@ -2000,6 +2028,7 @@ async def seed_event_agents() -> None:
                 row.events = spec_events
                 row.actions = spec["actions"]
                 row.priority = spec.get("priority")
+                row.description = spec.get("description", "")
                 row.kind = "event"
                 row.seed_version = SEED_VERSION
                 row.seed_spec_hash = spec_hash
