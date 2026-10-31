@@ -413,6 +413,43 @@ async def _intraday_day_range(
     return merged
 
 
+def _trim_to_latest_session_day(merged: list) -> list:
+    """Keep only the bars from the most recent calendar date present.
+
+    2026-10-31 — operator: "when I change chart duration, I think it is not
+    showing chart correctly. I think intraday charts are not correct."
+    Root cause (second half, found auditing the shipped 5minute-for-1D fix):
+    ``_historical_intraday_store`` computes ``from_d = to_d - timedelta(days=
+    days)``, i.e. ``days=1`` sweeps [today-1, today] INCLUSIVE — two calendar
+    dates, not one. On a weekday mid-session this silently merged yesterday's
+    full session with today's partial one into a single "1D" response (an
+    overnight gap once rendered, VWAP accumulating across two sessions, HH:MM
+    labels with no date to disambiguate them). On a weekend the same
+    off-by-one accidentally produced the right *single*-day answer only
+    because "today" (Sat/Sun) has zero bars, so the only non-empty date left
+    standing was Friday's — the Saturday verification run that shipped the
+    5minute fix could not have caught the weekday case.
+    Fix: for the ``days == 1`` ("1D") case only, trim to the single calendar
+    date (by the ``ts`` field's own date, which is UTC but never crosses
+    midnight relative to an NSE/MCX session — both run entirely within one
+    UTC day) that is LATEST among the bars actually present. On a weekday
+    that's today's partial session; on a weekend/holiday fallback it's the
+    last real trading day — preserving the "never blank during closed hours"
+    invariant (see CLAUDE.md "Market-close snapshot" / "Staleness indicator
+    freeze rule") while fixing the weekday double-session bug.
+    Deliberately NOT applied to ``days > 1`` — those ranges are SUPPOSED to
+    span multiple calendar dates (1W/1M views).
+    """
+    if not merged:
+        return merged
+    dates = [str(getattr(b, "ts", "") or "")[:10] for b in merged]
+    latest = max((d for d in dates if d), default=None)
+    if latest is None:
+        return merged
+    trimmed = [b for b, d in zip(merged, dates) if d == latest]
+    return trimmed or merged
+
+
 async def _historical_intraday_store(
     sym: str,
     exchange: str,
@@ -449,6 +486,13 @@ async def _historical_intraday_store(
                 )
 
         if merged:
+            # 2026-10-31 — see _trim_to_latest_session_day's own docstring.
+            # days=1 ("1D") sweeps two calendar dates by construction
+            # (from_d..to_d inclusive); trim to the single latest date so a
+            # weekday mid-session request doesn't silently merge yesterday's
+            # full session onto today's partial one.
+            if days == 1:
+                merged = _trim_to_latest_session_day(merged)
             result = HistoricalResponseCls(  # type: ignore[operator]
                 symbol=sym, instrument_token=None, interval=interval, bars=merged,
             )

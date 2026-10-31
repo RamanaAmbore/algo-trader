@@ -69,11 +69,53 @@ export function ema(bars, n) {
   return out;
 }
 
+// 2026-10-31 — operator: "audit all the chart durations and indicators" +
+// "if the backend/frontend computes VWAP naively across the whole multi-day
+// window instead of per-session, that's a real bug worth finding". It was:
+// `vwap()` accumulated from bar[0] of WHATEVER window got fetched, with no
+// reset at session boundaries. Confirmed live (reproducible, not latent) —
+// for a multi-day range (1W/1M/3M/6M/1Y, one bar per day), the SAME calendar
+// date's "VWAP" value differs depending on which range button is active,
+// because the denominator is "since this window started", not "since this
+// session started". That's a different metric wearing VWAP's name.
+//
+// Fix: reset the cumulative accumulators every time the bar's own IST
+// TRADING-SESSION date (08:00 IST rollover, matching this app's session
+// boundary everywhere else — see CLAUDE.md "Market daily window" and
+// `positions.py`'s `_SESSION_ANCHOR_CUTOFF_TS_SQL`) changes from the
+// previous bar. `_sessionDateIST` mirrors
+// `frontend/src/lib/dateFormat.js:tradingSessionDateIST()` byte-for-byte —
+// duplicated rather than imported because this file is deliberately
+// dependency-free (see module docstring: usable in unit tests without a DOM
+// or Svelte runtime). Any change to the 08:00 IST rollover rule must be
+// mirrored in both places.
+//
+// On a DAILY-bar chart (1W/1M/3M/6M/1Y as currently shipped) every bar is
+// its own session, so a correctly-reset VWAP trivially equals that bar's
+// own typical price — not a useful distinct line. ChartWorkspace.svelte
+// gates VWAP rendering/signals to intraday ranges only (`interval !== 'day'`)
+// and keeps the chip selectable with an "intraday only" hint, matching how
+// TradingView/Kite disable session VWAP above daily resolution.
+/**
+ * @param {string} ts
+ * @returns {string|null} YYYY-MM-DD trading-session date in IST, or null for
+ *   an unparseable timestamp.
+ */
+function _sessionDateIST(ts) {
+  const ms = Date.parse(ts);
+  if (!Number.isFinite(ms)) return null;
+  const shifted = new Date(ms - 8 * 60 * 60 * 1000);
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(shifted);
+}
+
 // ── VWAP (Volume-Weighted Average Price) ──────────────────────────────────────
 /**
- * VWAP — cumulative (TP×V) / cumulative V from bar[0] onward.
- * Typical Price = (high + low + close) / 3.
- * Returns a value for every bar (no warmup period needed).
+ * VWAP — cumulative (TP×V) / cumulative V, RESET at the start of each IST
+ * trading session (see _sessionDateIST above). Typical Price = (high + low +
+ * close) / 3. Returns a value for every bar (no warmup period needed).
  * @param {Array<{ts:string,high:number|string,low:number|string,close:number|string,volume:number|string}>} bars
  * @returns {Array<{ts:string,value:number|null}>}
  */
@@ -81,7 +123,14 @@ export function vwap(bars) {
   const out = [];
   let cumTPV = 0;
   let cumVol = 0;
+  let curSession = /** @type {string|null} */ (undefined);
   for (const b of bars) {
+    const session = _sessionDateIST(b.ts);
+    if (session !== curSession) {
+      cumTPV = 0;
+      cumVol = 0;
+      curSession = session;
+    }
     const tp  = (Number(b.high) + Number(b.low) + Number(b.close)) / 3;
     const vol = Number(b.volume || 0);
     cumTPV += tp * vol;

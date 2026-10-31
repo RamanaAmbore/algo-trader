@@ -177,4 +177,91 @@ test.describe('chart-ranges: range button smoke', () => {
       await page.waitForTimeout(300);
     }
   });
+
+  // ── 1D weekday double-session regression — operator: "audit all the
+  // chart durations and indicators" (2026-10-31), found auditing the
+  // 5minute-for-1D fix above. _historical_intraday_store's from_d/to_d
+  // sweep is INCLUSIVE, so days=1 fetched two calendar dates (yesterday's
+  // full session + today's partial one) on a weekday. Fixed by
+  // _trim_to_latest_session_day() on the backend (see
+  // backend/tests/test_chart_1d_session_trim.py for the backend-level
+  // repro). This is the frontend-observable half: every bar in the "1D"
+  // response must share the same calendar date — for BOTH an NSE equity
+  // and an MCX future, since the two exchanges' sessions sit in different
+  // UTC-date-boundary positions. ────────────────────────────────────────
+  for (const [label, symbol] of [['RELIANCE (NSE)', 'RELIANCE'], ['CRUDEOIL (MCX)', 'CRUDEOIL']]) {
+    test(`1D range bars share a single calendar date — ${label}`, async ({ page }) => {
+      test.setTimeout(60_000);
+
+      const histPromise = page.waitForResponse(
+        (r) => r.url().includes('/api/options/historical') && /days=1\b/.test(r.url())
+          && r.url().includes(`symbol=${symbol}`),
+        { timeout: 30_000 },
+      ).catch(() => null);
+
+      await page.goto(`/charts?symbol=${symbol}`, { waitUntil: 'domcontentloaded' });
+      const rangeGroup = page.locator('.cw-range-group');
+      await expect(rangeGroup).toBeVisible({ timeout: 30_000 });
+      const btn1D = rangeGroup.locator('.cw-range-btn', { hasText: '1D' });
+      await expect(btn1D).toBeEnabled({ timeout: 30_000 });
+      await btn1D.click();
+
+      const resp = await histPromise;
+      expect(resp, `/api/options/historical?days=1 for ${symbol} was not requested`).not.toBeNull();
+      const body = await resp.json().catch(() => null);
+      const bars = Array.isArray(body?.bars) ? body.bars : [];
+      expect(bars.length, `expected 1D bars for ${symbol}`).toBeGreaterThan(1);
+
+      const dates = new Set(bars.map((b) => String(b.ts).slice(0, 10)));
+      expect(
+        dates.size,
+        `1D response for ${symbol} spans ${dates.size} calendar dates ` +
+        `(${[...dates].join(', ')}) — the weekday double-session bug is ` +
+        'back if this is ever more than 1.',
+      ).toBe(1);
+    });
+  }
+
+  // ── VWAP session-reset gating — operator: "if the backend/frontend
+  // computes VWAP naively across the whole multi-day window instead of
+  // per-session, that's a real bug worth finding" (2026-10-31). Confirmed
+  // live and fixed in frontend/src/lib/chart/indicators.js:vwap() (session
+  // reset) + ChartWorkspace.svelte's _showVwap (daily-interval gate — a
+  // correctly session-reset VWAP on a one-bar-per-session daily chart is
+  // just that bar's own typical price, not a useful line, matching how
+  // TradingView/Kite disable session VWAP above daily resolution). ───────
+  test('VWAP renders on 1D, is gated (no line) on 1M, and carries an "intraday only" hint', async ({ page }) => {
+    test.setTimeout(60_000);
+
+    await page.goto('/charts?symbol=RELIANCE', { waitUntil: 'domcontentloaded' });
+    const rangeGroup = page.locator('.cw-range-group');
+    await expect(rangeGroup).toBeVisible({ timeout: 30_000 });
+    const btn1M = rangeGroup.locator('.cw-range-btn', { hasText: '1M' });
+    await expect(btn1M).toBeEnabled({ timeout: 30_000 });
+    await btn1M.click();
+    await expect(page.locator('.cw-fetch-spinner')).toHaveCount(0, { timeout: 20_000 });
+
+    const trigger = page.locator('.rbq-multi-trigger').first();
+    await trigger.click();
+    const panel = page.locator('.rbq-multi-panel');
+    await expect(panel).toBeVisible({ timeout: 5_000 });
+    const vwapOpt = panel.locator('.rbq-multi-option', { hasText: 'VWAP' });
+    await expect(vwapOpt).toContainText('intraday only');
+    await vwapOpt.click();
+    // Confirm the chip is checked (selected) BEFORE closing the panel —
+    // it unmounts entirely on close ({#if open} in MultiSelect.svelte).
+    await expect(vwapOpt).toHaveClass(/rbq-multi-option-selected/);
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(400);
+
+    // Gated on 1M (daily bars) — no VWAP line drawn, even though selected.
+    expect(await page.locator('.overlay-vwap').count()).toBe(0);
+
+    // Switch to 1D — VWAP renders immediately with no re-pick needed
+    // (selection must survive the range change — chartStore persists it).
+    const btn1D = rangeGroup.locator('.cw-range-btn', { hasText: '1D' });
+    await btn1D.click();
+    await expect(page.locator('.cw-fetch-spinner')).toHaveCount(0, { timeout: 20_000 });
+    await expect(page.locator('.overlay-vwap')).toHaveCount(1, { timeout: 10_000 });
+  });
 });

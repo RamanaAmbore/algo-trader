@@ -141,19 +141,43 @@
   // it is the only intraday granularity backed by BOTH the three-tier
   // persistence store (_historical_intraday_store) AND the closed-hours
   // broker-quota guard (_historical_closed_guard) on the backend — "minute"
-  // bypasses both and would hit the live broker on every request. Every
-  // other range keeps "day" exactly as before.
+  // bypasses both and would hit the live broker on every request.
+  // (A second, backend-only bug in the same area — "1D" silently sweeping
+  // TWO calendar dates, yesterday-plus-today, on a weekday mid-session —
+  // was found auditing this fix and is fixed separately in
+  // backend/api/routes/options_helpers.py:_trim_to_latest_session_day().)
+  //
+  // 2026-10-31 (follow-up) — coordinator asked whether 1W/1M should also
+  // move off "day" to an industry-standard intraday interval (the backend
+  // supports 15minute/60minute with the same store + closed-hours-guard
+  // coverage as 5minute — confirmed via a live curl against both). Audited
+  // and REJECTED for both, for a structural reason, not a data-availability
+  // one: the x-axis (_xOf below) is time-linear — pixel position is
+  // proportional to real elapsed wall-clock time, not bar index. A single
+  // trading day has no gap so this is invisible for 1D. A multi-day
+  // intraday window has one ~18h overnight dead-zone per day with zero
+  // data. Measured against a real 7-day/15minute RELIANCE fetch: 5 trading
+  // sessions × 5h45m = 28.75h of real candles inside a 101.75h elapsed
+  // window — ~72% of the axis width would render as blank gaps between 4
+  // isolated clusters of candles. That is a worse, actively misleading
+  // chart than the current sparse-but-contiguous daily view, not a fix.
+  // The real fix is index-based (gap-compressed) x-axis spacing, which
+  // touches every _xOf consumer (crosshair, tooltips, zoom/pan, x-axis
+  // labels — ~8 call sites) and is a separate, larger follow-up, not a
+  // same-day change alongside this audit. 1W/1M stay on "day" — unchanged.
   function _intervalForDays(/** @type {number} */ days) {
     return days === 1 ? '5minute' : 'day';
   }
 
-  /** @type {Array<{value:string,label:string}>} */
+  /** @type {Array<{value:string,label:string,hint?:string}>} */
   const _OVERLAY_OPTS = [
     { value: 'sma20',    label: 'SMA 20' },
     { value: 'sma50',    label: 'SMA 50' },
     { value: 'ema20',    label: 'EMA 20' },
     { value: 'ema50',    label: 'EMA 50' },
-    { value: 'vwap',     label: 'VWAP' },
+    // 2026-10-31 — hint clarifies why VWAP renders nothing on 1W/1M/3M/6M/1Y
+    // (daily bars, one bar = one session — see _showVwap's own comment).
+    { value: 'vwap',     label: 'VWAP', hint: 'intraday only' },
     { value: 'bb',       label: 'Bollinger' },
     { value: 'rsi',      label: 'RSI 14' },
     { value: 'macd',     label: 'MACD' },
@@ -502,7 +526,17 @@
   const _showVol   = true;
   const _showEma20 = $derived(_overlays.includes('ema20'));
   const _showEma50 = $derived(_overlays.includes('ema50'));
-  const _showVwap  = $derived(_overlays.includes('vwap'));
+  // 2026-10-31 — operator: "audit all the chart durations and indicators".
+  // VWAP is a session-reset metric (see indicators.js:vwap()'s own 2026-10-31
+  // comment for the full root-cause writeup). On a DAILY-bar range (every
+  // shipped range except 1D), each bar IS its own session, so a correctly
+  // session-reset VWAP would just equal that bar's own typical price — not a
+  // distinct, useful line. Matches how TradingView/Kite disable session VWAP
+  // above daily resolution. The chip stays selectable (never stripped from
+  // `_overlays` — see the "intraday only" hint in _OVERLAY_OPTS below) so
+  // flipping back to 1D shows it immediately without re-picking it.
+  const _activeInterval = $derived(_intervalForDays(_chartDays));
+  const _showVwap  = $derived(_overlays.includes('vwap') && _activeInterval !== 'day');
   const _showBb    = $derived(_overlays.includes('bb'));
   const _showRsi   = $derived(_overlays.includes('rsi'));
   const _showMacd  = $derived(_overlays.includes('macd'));
@@ -1273,7 +1307,9 @@
     }
 
     // VWAP cross — needs volume; skip indices (volume=0 → vwap all-null).
-    if (_overlays.includes('vwap') && _bars.length >= 2) {
+    // Daily-interval gate matches _showVwap above (session-reset VWAP is a
+    // no-op signal source on a one-bar-per-session chart).
+    if (_overlays.includes('vwap') && _activeInterval !== 'day' && _bars.length >= 2) {
       const v = calcVwap(_bars).map(p => p.value);
       pushSignals(vwapSignals(_bars, v), 'VWAP', 'VWAP↑', 'VWAP↓');
     }
