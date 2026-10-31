@@ -162,7 +162,12 @@ async def test_registered_renderer_is_used(monkeypatch, senders):
     monkeypatch.setitem(event_agents.RENDERS, "custom", lambda rec: ("T", "B"))
     agent = _agent(actions=[{"type": "render", "render": "custom"}], events=_TG_NTFY_EVENTS)
     await event_agents.dispatch([_rec()], [agent])
-    assert senders["ntfy"] == [("T", "B")]
+    # 2026-10-31 — trailing action-agent/alert-agent tag line appended
+    # by `_send_channel` (see that function's own comment). `_rec()`'s
+    # default `extra` has no `agent_id`/`agent_name` -> "manual"; its
+    # `alert_event="filled"` resolves via the real
+    # `ALERT_EVENT_DISPATCH` table to the fill detector's own slug.
+    assert senders["ntfy"] == [("T", "B\n\n#manual #fill_alert")]
 
 
 @pytest.mark.asyncio
@@ -684,8 +689,19 @@ async def test_breach_record_sends_only_its_stored_channels(monkeypatch):
     spec = event_agents.BREACH_AGENT
     agent = SimpleNamespace(slug=spec["slug"], **{k: spec[k] for k in ("conditions", "events", "actions")})
     await event_agents.dispatch([_breach_rec(channels)], [agent])
-    assert sent["tg"] == ["Alert — Account funds gone negative"]
-    assert sent["ntfy"] == [("Account funds gone negative", "Alert — Account funds gone negative\nCondition: cash < 0", "urgent")]
+    # 2026-10-31 — trailing tag: action agent = the real breaching
+    # agent's name ("Account funds gone negative" -> tag_token'd),
+    # alert agent = BREACH_AGENT's own slug ("cycle-breach-alert" ->
+    # tag_token'd) — `alert_event="breach"` has no `ALERT_EVENT_DISPATCH`
+    # entry (that table only covers the 16 collapsed post-2026-10-25
+    # detector specs), so the fallback to `agent.slug` applies here.
+    _tag = "\n\n#account_funds_gone_negative #cycle_breach_alert"
+    assert sent["tg"] == [f"Alert — Account funds gone negative{_tag}"]
+    assert sent["ntfy"] == [(
+        "Account funds gone negative",
+        f"Alert — Account funds gone negative\nCondition: cash < 0{_tag}",
+        "urgent",
+    )]
     assert sent["mail"][0][1] == "a@x.com" and sent["mail"][0][2] == "RamboQuant Agent: Account funds gone negative"
     assert sent["mail"][0][0] == "RamboQuant"
 

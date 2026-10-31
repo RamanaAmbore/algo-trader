@@ -541,7 +541,112 @@ def _gate_passes(agent, rec: dict, gated: bool) -> dict | None:
     return None if repeats is None else {**rec, "repeats": repeats}
 
 
-async def _send_channel(ch: dict, out: tuple, agent) -> bool:
+# ── Action-agent / alert-agent tag (2026-10-31) ─────────────────────────
+# Operator: "action agent take actions... alert agent... sends the
+# notification... so the alert should have action agent name, as well
+# alert agent names... add action agent name, and alert agent name in
+# the alert... this should be ssot functionality".
+#
+# `format_notification_header()`'s existing "Agent: {origin}" line
+# already identifies the ACTION agent (who did the thing — "manual" or
+# a real agent name) and is left completely unchanged here. What was
+# missing: which ALERT agent actually dispatched this notification —
+# that identity existed only as internal DB bookkeeping
+# (`agent.slug`/`agent.name`), never in the rendered text. Both values
+# are appended as a trailing tag/pill row, built ONCE here (the one
+# place every channel already funnels through, with both `agent` — the
+# dispatching alert-agent — and `rec` — the record carrying the real
+# action-agent's `agent_id`/`agent_name` extras — in scope) rather than
+# re-derived in every individual renderer.
+
+
+def _alert_agent_source_slug(agent, rec: dict) -> str:
+    """The real dispatching alert-agent's short label.
+
+    Prefers `ALERT_EVENT_DISPATCH[alert_event]['source_slug']` — the
+    ORIGINAL (now-retired) detector agent's own slug, e.g.
+    'chase-cancel-alert' — over `agent.slug`/`agent.name` directly.
+    Without this, the 3 generic post-collapse channel agents
+    (`alert-channel-telegram`/`-ntfy`/`-email`) would each show their
+    own generic name ("Alert channel: Email") when independently
+    dispatching the SAME record to their one channel — three different,
+    less meaningful labels for what is really one alert. `source_slug`
+    is read, never retyped (same convention `ALERT_EVENT_DISPATCH`
+    itself is built with), so all 3 channel agents resolve to the
+    identical, original detector name. The 7 agents that stayed
+    dedicated post-collapse (`agent-alert-rich`, `cycle-breach-alert`,
+    etc.) have no `alert_event`/no table entry and fall through to
+    their own slug directly — already the real dispatching agent.
+    """
+    extra = rec.get("extra") or {}
+    alert_event = extra.get("alert_event")
+    if alert_event:
+        entry = ALERT_EVENT_DISPATCH.get(alert_event)
+        if entry and entry.get("source_slug"):
+            return str(entry["source_slug"])
+    return str(getattr(agent, "slug", None) or getattr(agent, "name", None) or "alert")
+
+
+def _tag_token(value: "str | None") -> str:
+    """Hashtag/pill-safe token: word characters + underscore only,
+    lowercase. Telegram's hashtag entity only recognises `[A-Za-z0-9_]+`
+    after `#` — a raw kebab-case slug ('chase-cancel-alert') would
+    render as the real hashtag '#chase' followed by plain, untapped
+    text '-cancel-alert'. Converting every other character to an
+    underscore keeps the whole value as one real, tappable tag."""
+    import re
+    token = re.sub(r"[^0-9a-zA-Z]+", "_", str(value or "")).strip("_").lower()
+    return token or "unknown"
+
+
+def _agent_tag_line(agent, rec: dict) -> str:
+    """Trailing plain-text tag line for Telegram/ntfy:
+    '#<action_agent> #<alert_agent>'. Both values are sanitised forms
+    of the exact same already-resolved values
+    `format_notification_header()`'s own "Agent: ..." line uses — never
+    a second, independent resolution of the action agent."""
+    from backend.shared.helpers.alert_utils import resolve_origin
+    extra = rec.get("extra") or {}
+    action_label = resolve_origin(extra.get("agent_id"), extra.get("agent_name"))
+    alert_label = _alert_agent_source_slug(agent, rec)
+    return f"#{_tag_token(action_label)} #{_tag_token(alert_label)}"
+
+
+def _agent_pill_html(agent, rec: dict) -> str:
+    """Trailing HTML pill row for email — same two values as
+    `_agent_tag_line`, rendered as their ORIGINAL readable form (not
+    the underscored tag token — email has no hashtag constraint, so
+    the readable form reads better), as two small inline-styled
+    badges. Inline `style=` only — email clients strip `<style>`
+    blocks and external CSS, so this can't reuse the app's own
+    `.algo-status-pill` class."""
+    from backend.shared.helpers.alert_utils import resolve_origin
+    extra = rec.get("extra") or {}
+    action_label = resolve_origin(extra.get("agent_id"), extra.get("agent_name"))
+    alert_label = _alert_agent_source_slug(agent, rec)
+    pill_style = (
+        "display:inline-block;padding:2px 8px;margin:2px 4px 2px 0;"
+        "border-radius:10px;background:#eef1f5;color:#44546a;"
+        "font-size:12px;font-family:monospace;"
+    )
+    return (
+        f'<div style="margin-top:10px">'
+        f'<span style="{pill_style}">action: {html.escape(action_label)}</span>'
+        f'<span style="{pill_style}">alert: {html.escape(alert_label)}</span>'
+        f"</div>"
+    )
+
+
+def _append_agent_pill_to_html(html_body: str, pill_html: str) -> str:
+    """Insert the pill row just before `</body>` when present (keeps it
+    inside the real document); otherwise append — tolerant of any
+    renderer's exact HTML shape, never raises."""
+    if "</body>" in html_body:
+        return html_body.replace("</body>", f"{pill_html}</body>", 1)
+    return html_body + pill_html
+
+
+async def _send_channel(ch: dict, out: tuple, agent, rec: "dict | None" = None) -> bool:
     spec = CHANNELS.get(ch.get("channel")) if isinstance(ch, dict) else None
     if spec is None or not ch.get("enabled"):
         return False
@@ -550,6 +655,15 @@ async def _send_channel(ch: dict, out: tuple, agent) -> bool:
         return False
     title, body = out[0], out[1]
     tg = out[2] if len(out) > 2 else None
+    # 2026-10-31 — trailing action-agent / alert-agent tag (see the
+    # three helpers above). `rec` is None for every pre-existing caller
+    # that hasn't been updated to pass it (and every existing test) —
+    # a complete no-op in that case, zero behavior change.
+    if rec is not None:
+        tag_line = _agent_tag_line(agent, rec)
+        body = f"{body}\n\n{tag_line}"
+        if tg:
+            tg = f"{tg}\n\n{tag_line}"
     priority = ch.get("priority")
     # Tier-driven default — ntfy ONLY. `_send_telegram_html`/
     # `_send_telegram_info_html` take no `priority` parameter at all (a
@@ -584,6 +698,11 @@ async def _send_channel(ch: dict, out: tuple, agent) -> bool:
                 f"RamboQuant {title}",
                 f"<html><body><pre style='white-space:pre-wrap;font-family:monospace'>"
                 f"{html.escape(body)}</pre></body></html>",
+            )
+        if rec is not None:
+            subject, html_body = email_payload
+            email_payload = (
+                subject, _append_agent_pill_to_html(html_body, _agent_pill_html(agent, rec)),
             )
         kwargs["email"] = email_payload
         kwargs["recipients"] = ch.get("recipients")
@@ -682,7 +801,7 @@ async def _dispatch_record_channels(
             _dispatch_trace(agent, rec, channel_name, eff_ch, "suppressed_action_required_gate")
             continue
         override_applied = gated_ch != eff_ch
-        ok = await _send_channel(gated_ch, out, agent)
+        ok = await _send_channel(gated_ch, out, agent, rec)
         decision = "sent" if ok else "send_failed"
         if override_applied:
             decision = f"{decision}_gate_override_applied"

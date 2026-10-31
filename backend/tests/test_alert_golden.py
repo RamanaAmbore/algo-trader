@@ -68,17 +68,22 @@ async def test_error_alert_golden_text(sent, error_agent):
     # 2026-10 plain-text reversal: no `<b>`/`<code>` tags — telegram and
     # ntfy differ only in whether the "RamboQuant error" line repeats
     # (ntfy already shows it as a separate Title header).
+    # 2026-10-31 — trailing action-agent/alert-agent tag appended by
+    # `_send_channel` (see its own comment). No `agent_id`/`agent_name`
+    # on this record's extra -> action agent "manual"; ERROR_AGENT's own
+    # slug is "error-alert" (tag-token'd "error_alert") — no
+    # `ALERT_EVENT_DISPATCH` entry for a bare error log line.
     from backend.api.algo import event_agents
     await event_agents.dispatch([_error_rec("boom: bad value")], [error_agent])
-    assert sent["ntfy"] == [("RamboQuant error", f"Agent: manual\nbackend.x\nboom: bad value\n{_FIXED_TS}")]
-    assert sent["tg"] == [f"Agent: manual\nRamboQuant error\nbackend.x\nboom: bad value\n{_FIXED_TS}"]
+    assert sent["ntfy"] == [("RamboQuant error", f"Agent: manual\nbackend.x\nboom: bad value\n{_FIXED_TS}\n\n#manual #error_alert")]
+    assert sent["tg"] == [f"Agent: manual\nRamboQuant error\nbackend.x\nboom: bad value\n{_FIXED_TS}\n\n#manual #error_alert"]
 
 
 @pytest.mark.asyncio
 async def test_error_alert_strips_html_like_fragments_as_before(sent, error_agent):
     from backend.api.algo import event_agents
     await event_agents.dispatch([_error_rec("boom <bad>")], [error_agent])
-    assert sent["ntfy"] == [("RamboQuant error", f"Agent: manual\nbackend.x\nboom\n{_FIXED_TS}")]
+    assert sent["ntfy"] == [("RamboQuant error", f"Agent: manual\nbackend.x\nboom\n{_FIXED_TS}\n\n#manual #error_alert")]
 
 
 @pytest.mark.asyncio
@@ -92,9 +97,10 @@ async def test_error_alert_repeat_suffix_after_cooldown(monkeypatch, sent, error
     clock["t"] = error_alerts.COOLDOWN_S + 1
     await event_agents.dispatch([_error_rec("down", alert_now=True)], [error_agent])
     assert [b for _, b in sent["ntfy"]] == [
-        f"Agent: manual\nbackend.x\ndown\n{_FIXED_TS}", f"Agent: manual\nbackend.x\ndown (+1 repeats)\n{_FIXED_TS}",
+        f"Agent: manual\nbackend.x\ndown\n{_FIXED_TS}\n\n#manual #error_alert",
+        f"Agent: manual\nbackend.x\ndown (+1 repeats)\n{_FIXED_TS}\n\n#manual #error_alert",
     ]
-    assert sent["tg"][1] == f"Agent: manual\nRamboQuant error\nbackend.x\ndown (+1 repeats)\n{_FIXED_TS}"
+    assert sent["tg"][1] == f"Agent: manual\nRamboQuant error\nbackend.x\ndown (+1 repeats)\n{_FIXED_TS}\n\n#manual #error_alert"
 
 
 @pytest.mark.asyncio
@@ -196,8 +202,11 @@ async def test_fill_delivery_golden_via_event_agent(monkeypatch):
     # 2026-10 plain-text reversal: the dispatch-layer fallback
     # (`_send_telegram_html`) that used to wrap a bare 2-tuple renderer's
     # title in `<b>` now sends plain `f"{title}\n{body}"`.
+    # 2026-10-31 — trailing tag: action agent "manual" (no agent_id on
+    # `row`), alert agent "fill-alert" (FILL_AGENT's slug, tag-token'd).
     assert sent["tg"] == ["Order filled: SELL 1 CRUDEOIL26OCTFUT\n"
-                          f"Agent: manual\n{_FIXED_TS}\nAccount: ZG####\nSELL 1 CRUDEOIL26OCTFUT (MCX) @ 8750.00\nProduct: NRML\nOrder id: 7"]
+                          f"Agent: manual\n{_FIXED_TS}\nAccount: ZG####\nSELL 1 CRUDEOIL26OCTFUT (MCX) @ 8750.00\nProduct: NRML\nOrder id: 7"
+                          "\n\n#manual #fill_alert"]
 
 
 def _chase_rec():
@@ -231,13 +240,18 @@ async def test_chase_cancel_golden_text_and_urgent_priority(monkeypatch):
     # 2026-10 audit fix (origin header): leads with "Agent: manual" (no
     # `agent_id` in this record's extra) + the shared dual-tz timestamp,
     # replacing the old standalone trailing timestamp line.
+    # 2026-10-31 — trailing tag: action agent "manual", alert agent
+    # CHASE_CANCEL_AGENT's own slug "chase-cancel-alert" (also this
+    # record's own `ALERT_EVENT_DISPATCH["cancel_unconfirmed"]
+    # ["source_slug"]`, tag-token'd).
     assert sent == [(
         "Chase cancel unconfirmed — possible resting duplicate order",
         f"Agent: manual\n{_FIXED_TS}\n"
         "BUY NIFTY26OCTFUT — cancel of order O1 on ZG#### could not be confirmed after attempt "
         "2 (40 contracts filled so far). "
         "The chase has been ABORTED without placing a replacement order. "
-        "Manually verify the broker's order book — the old order may still be live.",
+        "Manually verify the broker's order book — the old order may still be live."
+        "\n\n#manual #chase_cancel_alert",
         "urgent",
     )]
 
@@ -265,8 +279,11 @@ async def test_partial_gtt_golden_text_and_urgent_priority(monkeypatch):
     # 2026-10 audit fix: origin header ("Agent: manual" — no `agent_id`
     # in this record's extra) leads, replacing the old standalone
     # trailing timestamp line.
+    # 2026-10-31 — trailing tag: action agent "manual", alert agent
+    # "partial-gtt-alert" (tag-token'd).
     assert sent == [("Partial GTT placement",
-                     f"Agent: manual\n{_FIXED_TS}\nparent #1088 CRUDEOIL26OCTFUT: 1/3 GTTs placed. Errors: rate limit; invalid price",
+                     f"Agent: manual\n{_FIXED_TS}\nparent #1088 CRUDEOIL26OCTFUT: 1/3 GTTs placed. Errors: rate limit; invalid price"
+                     "\n\n#manual #partial_gtt_alert",
                      "urgent")]
 
 
@@ -275,14 +292,17 @@ async def test_partial_gtt_golden_text_and_urgent_priority(monkeypatch):
     # 2026-10 audit fix: these 4 now lead with the origin header
     # ("Agent: manual" — no `agent_id` in any of these fixtures — plus
     # the dual-tz timestamp), replacing the old trailing bare timestamp.
+    # 2026-10-31 — trailing tag: action agent "manual", alert agent
+    # TEMPLATE_ATTACH_URGENT_AGENT's own `ALERT_EVENT_DISPATCH` source
+    # slug "template-attach-urgent" (tag-token'd), for both events.
     ("TEMPLATE_ATTACH_URGENT_AGENT", "wing_unprotected", "WARNING",
      {"gtt_ids_text": "['G1', 'G2']", "reason": "no candidate", "parent_order_id": 7,
       "symbol": "NIFTY", "exchange": "NFO"},
      ("Unprotected SELL position",
-      f"Agent: manual\n{_FIXED_TS}\nGTTs placed (ids: ['G1', 'G2']) but wing failed: no candidate | order #7 NIFTY NFO", "urgent")),
+      f"Agent: manual\n{_FIXED_TS}\nGTTs placed (ids: ['G1', 'G2']) but wing failed: no candidate | order #7 NIFTY NFO\n\n#manual #template_attach_urgent", "urgent")),
     ("TEMPLATE_ATTACH_URGENT_AGENT", "wing_hard_reject", "CRITICAL",
      {"reason": "premium too high", "symbol": "NIFTY", "exchange": "NFO", "target_premium": 12.5},
-     ("Wing scan hard-rejected", f"Agent: manual\n{_FIXED_TS}\npremium too high | NIFTY NFO target ₹12.50", "urgent")),
+     ("Wing scan hard-rejected", f"Agent: manual\n{_FIXED_TS}\npremium too high | NIFTY NFO target ₹12.50\n\n#manual #template_attach_urgent", "urgent")),
     # 2026-10-28 noise tightening removed ntfy from TEMPLATE_ATTACH_HIGH_AGENT
     # entirely (an FYI "leg skipped" notice, not action-required) — its
     # wing_skip/wing_offset_skip rows are gone from this ntfy-golden-text
@@ -354,15 +374,18 @@ async def test_order_failure_golden_text_channels_and_html(monkeypatch):
     # (order_failure_messages() builds one plain string, used directly
     # for both slots; `_render_order_failure` no longer calls
     # `_html_to_plain`).
-    assert sent["tg"] == ['Agent: manual\n10:15:30 IST\n❌ Order rejected  [Manual]  [LIVE]  (+2 suppressed)\nZG####  BUY  75  NIFTY26OCTFUT  (NFO)\nsource: ticket\nInsufficient funds <x>']
+    # 2026-10-31 — trailing tag: action agent "manual", alert agent
+    # "order-failure-alert" (tag-token'd); email body SHA re-derived
+    # (now includes the trailing pill row).
+    assert sent["tg"] == ['Agent: manual\n10:15:30 IST\n❌ Order rejected  [Manual]  [LIVE]  (+2 suppressed)\nZG####  BUY  75  NIFTY26OCTFUT  (NFO)\nsource: ticket\nInsufficient funds <x>\n\n#manual #order_failure_alert']
     assert sent["ntfy"] == [("Order Rejected: NIFTY26OCTFUT BUY",
-                             "Agent: manual\n10:15:30 IST\n❌ Order rejected  [Manual]  [LIVE]  (+2 suppressed)\nZG####  BUY  75  NIFTY26OCTFUT  (NFO)\nsource: ticket\nInsufficient funds <x>",
+                             "Agent: manual\n10:15:30 IST\n❌ Order rejected  [Manual]  [LIVE]  (+2 suppressed)\nZG####  BUY  75  NIFTY26OCTFUT  (NFO)\nsource: ticket\nInsufficient funds <x>\n\n#manual #order_failure_alert",
                              "urgent")]
     assert len(sent["mail"]) == 1
     _, addr, subj, body = sent["mail"][0]
     assert addr == "a@x.com"
     assert subj == "[Manual] RamboQuant Order Rejected: NIFTY26OCTFUT BUY (live)"
-    assert hashlib.sha256(body.encode()).hexdigest() == "3617fd02eb9f98ba63c409024aabfac8764c5e88383b0c6d1c1c038123aab9c1"
+    assert hashlib.sha256(body.encode()).hexdigest() == "ab35cac9e1cf6a3816f71fb25b4def548fa1d4ea4c58f716c9b1972a0dc64492"
 
 
 @pytest.mark.asyncio
@@ -397,10 +420,13 @@ async def test_template_guard_golden_text_and_channels(monkeypatch):
     # this record's extra) now leads every template-guard alert.
     # 2026-10 plain-text reversal — no `<b>`/`<code>` tags or escaping;
     # telegram and ntfy carry the byte-identical plain `tg`.
+    # 2026-10-31 — trailing tag: action agent "manual", alert agent
+    # "template-guard-alert" (tag-token'd).
     expected_tg = ("Agent: manual\n⚠ Template guard fired — Tue, Oct 06 2026, 14:30 IST\n\norder #1088\nSELL 75 NIFTY26OCTFUT\n"
                    "@ ₹112.50  (ZG####)\n\ntemplate:    default-bull\napplies_to:  sell_option\nreason:      qty < lot_size\n\n"
                    "Parent order FILLED. Exits NOT attached.\nArm exits manually if needed.\n\n"
-                   "Fix: at /admin/templates, change this template's 'applies_to' to 'both' or 'buy_option'.")
+                   "Fix: at /admin/templates, change this template's 'applies_to' to 'both' or 'buy_option'."
+                   "\n\n#manual #template_guard_alert")
     assert sent["tg"] == [expected_tg]
     assert sent["ntfy"] == [("Template guard fired", expected_tg, "high")]
     # 2026-10 audit fix (item 10): TEMPLATE_GUARD_AGENT now also delivers
@@ -442,8 +468,11 @@ async def test_template_attach_fail_golden_text_and_channels(monkeypatch):
     # 2026-10 audit fix: origin header ("Agent: manual" — no agent_id in
     # this record's extra) now leads every template-attach-fail alert.
     # 2026-10 plain-text reversal — no `<b>`/`<code>` tags or escaping.
+    # 2026-10-31 — trailing tag: action agent "manual", alert agent
+    # "template-attach-fail-alert" (tag-token'd).
     expected_tg = ("Agent: manual\n⚠ Template attach failed — Tue, Oct 06 2026, 14:30 IST\n\norder #1088\nsymbol:   NIFTY26OCTFUT\naccount:  ZG####\n\n"
-                   "errors:   qty < lot_size; rate limit\n\nParent order FILLED. Exits NOT attached.\nArm exits manually if needed.")
+                   "errors:   qty < lot_size; rate limit\n\nParent order FILLED. Exits NOT attached.\nArm exits manually if needed."
+                   "\n\n#manual #template_attach_fail_alert")
     assert sent["tg"] == [expected_tg]
     assert sent["ntfy"] == [("Template attach failed", expected_tg, "urgent")]
     # 2026-10 audit fix (item 10): TEMPLATE_ATTACH_FAIL_AGENT now also
@@ -473,7 +502,9 @@ async def test_mcp_ping_sends_recorded_html_to_telegram_only(monkeypatch):
     agent = SimpleNamespace(slug="mcp-ping-alert",
                             **{k: event_agents.MCP_PING_AGENT.get(k, []) for k in ("conditions", "events", "actions")})
     await event_agents.dispatch([rec], [agent])
-    assert sent == [tg]
+    # 2026-10-31 — trailing tag appended to `tg` (non-empty here):
+    # action agent "manual", alert agent "mcp-ping-alert" (tag-token'd).
+    assert sent == [tg + "\n\n#manual #mcp_ping_alert"]
 
 
 @pytest.mark.asyncio
@@ -513,8 +544,11 @@ async def test_user_registered_agent_sends_telegram_and_ntfy_high(monkeypatch):
                             **{k: event_agents.USER_REGISTERED_AGENT.get(k, [])
                                for k in ("conditions", "events", "actions")})
     await event_agents.dispatch([rec], [agent])
-    assert sent["tg"] == [body]
-    assert sent["ntfy"] == [("New user registered", body, "high")]
+    # 2026-10-31 — trailing tag: action agent "manual", alert agent
+    # "user-registered-alert" (tag-token'd).
+    tagged_body = body + "\n\n#manual #user_registered_alert"
+    assert sent["tg"] == [tagged_body]
+    assert sent["ntfy"] == [("New user registered", tagged_body, "high")]
 
 
 def test_registration_alert_extra_does_not_escape_username_and_email():
@@ -580,7 +614,9 @@ async def test_deploy_sync_reaches_only_the_dedicated_telegram_deploy_channel(mo
     # `_send_telegram_deploy_html`'s `tg or f"{title}\n{body}"` fallback
     # therefore uses `tg` directly here, so the title is not duplicated
     # into the message.
-    assert sent["telegram_deploy"] == ["Local HEAD abc12345 != origin/main"]
+    # 2026-10-31 — trailing tag appended to `tg`: action agent "manual",
+    # alert agent "deploy-sync-alert" (tag-token'd).
+    assert sent["telegram_deploy"] == ["Local HEAD abc12345 != origin/main\n\n#manual #deploy_sync_alert"]
     assert sent["telegram"] == []
     assert sent["ntfy"] == []
     assert sent["mail"] == []
@@ -590,19 +626,26 @@ async def test_deploy_sync_reaches_only_the_dedicated_telegram_deploy_channel(mo
 @pytest.mark.asyncio
 @pytest.mark.parametrize("name, sim, mode_tag, expected_title, expected_subject, expected_sha, expected_tg_head", [
     # 2026-10 plain-text reversal: no `<b>` wrap on the Telegram header line.
+    # 2026-10-31 — trailing action-agent/alert-agent tag/pill (operator:
+    # "add action agent name, and alert agent name in the alert") changes
+    # the email body for every row below -> SHAs re-derived. Action agent
+    # "manual" (no agent_id/agent_name in this fixture's extra); alert
+    # agent "agent-alert-rich" (RICH_ALERT_AGENT's own slug — "rich_alert"
+    # has no `ALERT_EVENT_DISPATCH` entry). live/paper share one SHA
+    # (mode_tag affects only subject/tg, not body) as they did before;
+    # sim's differs (its own SIMULATOR banner), as it did before.
     ("live", False, "", "Agent — 10:15:30 IST", "RamboQuant Agent: ZG0790 summary",
-     "1af06ceba4520c4eafe151f6374e443db04ce2a2d7897ec49d58625f9b978b8e", "Agent — 10:15:30 IST"),
+     "19d539e6f8c9733db178dacd5215746a659add4ec494be59fdfb436a8c324811", "Agent — 10:15:30 IST"),
     ("paper", False, "[PAPER]", "Agent — 10:15:30 IST", "RamboQuant Agent:  [PAPER]ZG0790 summary",
-     "1af06ceba4520c4eafe151f6374e443db04ce2a2d7897ec49d58625f9b978b8e", "Agent [PAPER] — 10:15:30 IST"),
+     "19d539e6f8c9733db178dacd5215746a659add4ec494be59fdfb436a8c324811", "Agent [PAPER] — 10:15:30 IST"),
     # 2026-10-31 fix (operator: "the alerts should show paper and
     # simulation mode explicitly ... wire it") — dispatch_payload() now
     # auto-derives the [SIM] bracket tag from sim_mode=True whenever the
     # caller passes an empty mode_tag (this fixture's "" is exactly that
     # case), instead of leaving it blank as before. Subject and TG head
-    # updated to match; email body SHA is unchanged (mode_tag never
-    # appeared in the body HTML, only the subject line).
+    # updated to match.
     ("sim", True, "", "SIMULATOR Agent — 10:15:30 IST", "SIMULATOR RamboQuant Agent:  [SIM]ZG0790 summary",
-     "6096d641965b387d72f6ce35c9001cdae3950a7f7422ef0d08ba86024d823ff4", "SIMULATOR Agent [SIM] — 10:15:30 IST"),
+     "52e04e178c4aabe195f2df865d4035e18a648e25407191b44884ff2f5da2f266", "SIMULATOR Agent [SIM] — 10:15:30 IST"),
 ])
 async def test_rich_alert_matches_the_pre_migration_dispatch(monkeypatch, name, sim, mode_tag,
                                                               expected_title, expected_subject,
@@ -691,10 +734,15 @@ async def test_rich_alert_priority_resolved_from_tracked_tier(monkeypatch, tier,
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("msg_type, title, subject, sha", [
+    # 2026-10-31 — trailing action-agent/alert-agent tag/pill changes the
+    # `info` text and email body -> re-derived. Action agent "manual"
+    # (no agent_id/agent_name in this fixture's extra); alert agent
+    # SUMMARY_AGENT's own slug "market-summary" (tag-token'd
+    # "market_summary" — "summary" has no `ALERT_EVENT_DISPATCH` entry).
     ("open", "Open Summary — 10:15:30 IST", "RamboQuant Open Summary: Summary — 10:15:30 IST",
-     "025ab93a9c4cdcc0b31c5aaae84c2ea48415de06d15e685863b669d947a6d925"),
+     "239826c41d5b5156b18d5f4d59207aa54e4324708beb13ac33ec27b969a1b058"),
     ("close", "Close Summary — 10:15:30 IST", "RamboQuant Close Summary: Summary — 10:15:30 IST",
-     "16114ca79451a6c3576cb73206083948184fdc9574ee9aa2caf2777aa03b9770"),
+     "02452bbd76386cd0fc95799937d9d92c436e14be1ca07d20c1cd26af0eb99297"),
 ])
 async def test_summary_matches_the_pre_migration_dispatch(monkeypatch, msg_type, title, subject, sha):
     import hashlib
@@ -723,7 +771,7 @@ async def test_summary_matches_the_pre_migration_dispatch(monkeypatch, msg_type,
     agent = SimpleNamespace(slug=spec["slug"], **{k: spec.get(k, []) for k in ("conditions", "events", "actions")})
     await event_agents.dispatch([rec], [agent])
     # 2026-10 plain-text reversal — no `<b>`/`<code>` tags.
-    assert sent["info"] == [f"{title}\n\nHoldings  ZG####  ₹1,20,000\nPositions  ZG####  -₹300"]
+    assert sent["info"] == [f"{title}\n\nHoldings  ZG####  ₹1,20,000\nPositions  ZG####  -₹300\n\n#manual #market_summary"]
     _, addr, subj, body = sent["mail"][0]
     assert subj == subject
     assert hashlib.sha256(body.encode()).hexdigest() == sha
@@ -784,10 +832,15 @@ async def test_breach_dispatch_default_group_golden_round_trip(monkeypatch):
                                    **{k: event_agents.BREACH_AGENT.get(k, []) for k in ("conditions", "events", "actions")})
     await event_agents.dispatch([rec], [breach_agent])
 
+    # 2026-10-31 — trailing tag: action agent "Account funds gone
+    # negative" (the real firing agent's name, tag-token'd), alert agent
+    # BREACH_AGENT's own slug "cycle-breach-alert" (tag-token'd) — a bare
+    # breach record's `alert_event` has no `ALERT_EVENT_DISPATCH` entry.
     expected_body = (
         f"Alert — Account funds gone negative\n"
         f"Agent: Account funds gone negative (#42)\n{_FIXED_TS}\n"
         f"Condition: cash < 0"
+        f"\n\n#account_funds_gone_negative #cycle_breach_alert"
     )
     assert sent["tg"] == [expected_body]
     assert sent["ntfy"] == [("Account funds gone negative", expected_body, "urgent")]
@@ -842,15 +895,20 @@ async def test_breach_dispatch_custom_message_channel_golden_round_trip(monkeypa
                "extra": extra}
         await event_agents.dispatch([rec], [breach_agent])
 
+    # 2026-10-31 — same trailing tag as the default-group test above,
+    # appended to both the shared and the custom-message body.
+    _tag = "\n\n#account_funds_gone_negative #cycle_breach_alert"
     shared_body = (
         f"Alert — Account funds gone negative\n"
         f"Agent: Account funds gone negative (#42)\n{_FIXED_TS}\n"
         f"Condition: cash < 0"
+        f"{_tag}"
     )
     custom_body = (
         f"Alert — Account funds gone negative\n"
         f"Agent: Account funds gone negative (#42)\n{_FIXED_TS}\n"
         f"Condition: Cash is deeply negative — act now"
+        f"{_tag}"
     )
     assert sent["tg"] == [shared_body]
     assert sent["ntfy"] == [("Account funds gone negative", custom_body, "urgent")]

@@ -129,14 +129,17 @@ async def test_dsl_single_tag_alert_dispatches_to_telegram_and_ntfy(sent):
     )
 
     assert n_sent == 2, "1 matching record x 2 channels (telegram + ntfy)"
+    # 2026-10-31 — trailing tag: action agent "manual", alert agent
+    # this demo agent's own slug "demo-error-alert" (tag-token'd) — the
+    # bare `extra={}` fixture has no `alert_event`.
     assert sent["ntfy"] == [
         ("RamboQuant error",
-         f"Agent: manual\nbackend.api.routes.orders\norder placement failed: insufficient margin\n{_FIXED_TS}"),
+         f"Agent: manual\nbackend.api.routes.orders\norder placement failed: insufficient margin\n{_FIXED_TS}\n\n#manual #demo_error_alert"),
     ]
     # 2026-10 plain-text reversal: no `<b>`/`<code>` tags.
     assert sent["tg"] == [
         f"Agent: manual\nRamboQuant error\nbackend.api.routes.orders\n"
-        f"order placement failed: insufficient margin\n{_FIXED_TS}",
+        f"order placement failed: insufficient margin\n{_FIXED_TS}\n\n#manual #demo_error_alert",
     ]
 
 

@@ -869,6 +869,60 @@ must split plain and HTML slots. It must never hand a tagged body to an escape-f
 - Test-only commit `368c98a8` adds [backend/tests/test_alert_agent_dsl_examples.py](backend/tests/test_alert_agent_dsl_examples.py). It is illustrative DSL-to-dispatch fixtures and changes no runtime code.
 - Invariant: an outbound Telegram or ntfy message is plain text with no markup. The origin line is line 1 of every event-renderer message, with the agent-less summary as the one named exception. A deploy-sync notice reaches only `telegram_deploy`. An action-required record always reaches email. An Alerts-tab row never collides with an `AgentEvent` id.
 
+**Every alert carries a trailing action-agent + alert-agent tag — "manual"/real agent name, plus
+which dispatching agent sent it (2026-10-31, operator: "action agent take actions... alert agent...
+sends the notification... add action agent name, and alert agent name in the alert... this should be
+ssot functionality")** — Before this, `format_notification_header()`'s existing `Agent: {origin}`
+line already identified the ACTION agent (who did the thing — "manual" or a real agent name) and is
+left completely unchanged. What was missing: which ALERT agent (the dispatching agent that actually
+sent this Telegram/ntfy/email) fired — that identity existed only as internal DB bookkeeping
+(`agent.slug`/`agent.name`), never in the rendered text.
+- **Injection point.** `_send_channel(ch, out, agent, rec=None)` ([event_agents.py:649](backend/api/algo/event_agents.py#L649))
+  — the one place every channel already funnels through, with both `agent` (the dispatching
+  alert-agent) and `rec` (the record carrying the real action-agent's `agent_id`/`agent_name` extras)
+  in scope. `rec` is a new, backward-compatible optional 4th param — `None` for every pre-existing
+  caller/test (no tag, zero behavior change); the one real production call site,
+  `_dispatch_record_channels()`, passes the real `rec`.
+- **Three helper functions**, all in `event_agents.py`: `_alert_agent_source_slug(agent, rec)`
+  prefers `ALERT_EVENT_DISPATCH[alert_event]['source_slug']` (the ORIGINAL retired detector's own
+  slug) over `agent.slug`/`agent.name` directly — without this, the 3 generic post-collapse channel
+  agents would each show their own generic name ("Alert channel: Email") when independently
+  dispatching the SAME record to their one channel, three different labels for what is really one
+  alert. `_tag_token(value)` sanitises to `[A-Za-z0-9_]+` — Telegram's hashtag entity only recognises
+  word characters + underscore, so a raw kebab-case slug (`chase-cancel-alert`) would render as the
+  real hashtag `#chase` followed by plain, untapped text `-cancel-alert`. `_agent_tag_line(agent,
+  rec)` builds `#<action_agent> #<alert_agent>` for Telegram/ntfy (both sanitised via `_tag_token`).
+  `_agent_pill_html(agent, rec)` builds the email equivalent as two small inline-`style=` `<span>`
+  badges (readable, unsanitised form — email has no hashtag constraint, and most clients strip
+  `<style>` blocks/external CSS, so this can't reuse the app's own `.algo-status-pill` class).
+- **Where each value comes from.** Both helpers call `resolve_origin(rec['extra'].get('agent_id'),
+  rec['extra'].get('agent_name'))` for the action-agent value — the EXACT same SSOT every alert's own
+  "Agent:" line already uses, never a second independent resolution.
+- **Splice points inside `_send_channel`.** `body` always gets the tag line appended (covers ntfy,
+  which reads `body`, and telegram's `tg or f"{title}\n{body}"` fallback for a bare 2-tuple
+  renderer). `tg`, when already truthy (a renderer that built one explicitly), also gets it appended.
+  Email: the pill row is spliced into the HTML body via `_append_agent_pill_to_html()` (inserted
+  before `</body>` when present, else appended) — covers both a renderer's own structured 4-tuple
+  payload and `_send_channel`'s own `<pre>`-wrapped fallback synthesis for a bare 2-tuple renderer.
+- **Default field value.** `AlgoOrderInfo.agent_origin` (orders-display feature, same day, see the
+  entry above) and this alert tag are deliberately two separate mechanisms sharing one resolver
+  (`resolve_origin`) — the order display shows the action agent only; this alert tag additionally
+  shows which agent dispatched the notification.
+- **Golden-test cost, paid in full, not skipped.** ~35 tests across `test_alert_golden.py` (incl. 2
+  SHA-pinned email-body hashes), `test_event_agents.py`, `test_alert_agent_dsl_examples.py`, and
+  `test_alert_channel_collapse.py` asserted exact rendered text/hashes and were re-derived against
+  the real dispatch output (not hand-computed) — every SHA value in these files was produced by
+  actually running the real code with the fix applied, confirmed via a throwaway script before
+  editing each assertion.
+- **Reviewed, no renames needed.** The operator's ask also said "the agent names should be short.
+  update the agent names if required" — audited: every seeded agent's `name` field (`event_agents.py`
+  `SEEDED_AGENTS`) is already a 2–4-word label ("Error alert", "Agent alert", "Cycle breach", "Market
+  summary", etc.), none read as a sentence. No renames were made.
+- Invariant: an alert's displayed action-agent and alert-agent values are resolved by the identical
+  functions this module's other alert text already uses — never a second, independent lookup. A
+  collapsed alert type's 3 generic channel agents always agree on the SAME alert-agent label for one
+  record, via `source_slug`, never 3 different ones.
+
 **MCX spot resolution — a transient 4a quote failure never swaps the contract (2026-10-25; commit `21f74618`)** — `_resolve_commodity_spot()` ([`options_helpers.py:191`](backend/api/routes/options_helpers.py#L191)) resolves the MCX future in priority order: the option_symbol contract (`lookup_future_for_option`, [:209](backend/api/routes/options_helpers.py#L209)), then `expiry_hint` ([:213](backend/api/routes/options_helpers.py#L213)), then the front-month ([:215](backend/api/routes/options_helpers.py#L215)). When the option_symbol contract resolved but its 4a price quote failed transiently (broker or thread-pool timeout), step 4b used to rebuild the spot from `expiry_hint` and quote a DIFFERENT contract. Reproduced under forced 4a timeout: the anchor flipped from the option_symbol month to the expiry_hint month. The guard at [:240](backend/api/routes/options_helpers.py#L240) now skips 4b whenever `resolved_via_option_symbol` is set. A 4a failure then returns `(None, "none", …)`, and the caller falls through to its last-resort spot source. Invariant: a transient quote failure changes the price's availability, never which contract anchors it.
 
 **F&O order qty convention** — API now accepts LOTS as input for instruments with 
@@ -3047,6 +3101,10 @@ now caches + returns a `stale` flag; `/api/nav/by-account` masks `errors` for no
 | Alerts tab: merge of `alert`-tagged log rows | `backend/api/routes/alerts.py:_build_log_alert_stmt` / `_log_event_to_alert` / `alert_history` |
 | Plain-text Telegram send (no `parse_mode`) | `backend/shared/helpers/alert_utils.py:_send_telegram` / `_send_telegram_info` |
 | Origin line on every alert | `backend/shared/helpers/alert_utils.py:format_notification_header` |
+| Trailing action-agent/alert-agent tag (hashtag/pill) on every alert | `backend/api/algo/event_agents.py:_send_channel` (`_agent_tag_line`, `_agent_pill_html`, `_alert_agent_source_slug`, `_tag_token`) |
+| Order display "Agent: manual"/"Agent: name" chip | `backend/api/routes/orders.py:_chase_row_to_info` (`agent_origin`, `_fetch_agent_name_map`) + `frontend/src/lib/order/OrderCard.svelte` |
+| Visitor-report weekly Telegram cadence | `backend/api/background.py:_visitor_report_send_telegram_today` (called from `_task_visitor_log_daily`) |
+| Action scope by trader role/user (cancel_all_orders, chase_close_positions) | `backend/api/algo/actions_live.py:_al_resolve_scope_accounts` / `_al_accounts_for_trader_role` / `_al_accounts_for_trader_user` |
 | Agent DSL grammar (compile / decompile) | `frontend/src/lib/command/grammars/agents.js` + `consoleDispatch.js` (`updateConsoleAgent` sticky-false) |
 | Saved-agent preamble execution (every-cycle / once / cooldown) | `backend/api/algo/agent_engine.py:_cycle_run_preamble` |
 
