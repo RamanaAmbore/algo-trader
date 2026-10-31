@@ -343,23 +343,41 @@ def _render_rich_alert(rec: dict) -> tuple:
 
     2026-10 plain-text reversal: `dispatch_payload()`'s `telegram_msg` is
     now plain text, used directly for both slots — no `_html_to_plain`.
+
+    `replay_mode` (2026-10-31, operator: "the alerts should show paper
+    and simulation mode explicitly ... wire it") — now also read from
+    extras and passed through, so a replay-fired rich alert gets the
+    [REPLAY] tag + warning banner dispatch_payload now derives, not
+    just the mode_tag this call site already pre-computed.
     """
     from backend.shared.helpers.alert_utils import dispatch_payload
     x = rec.get("extra") or {}
     p = dispatch_payload("alert", x["ist_display"], x["tg_table"], x["email_table_html"],
                          x["subject_detail"], sim_mode=bool(x.get("sim_mode")),
                          mode_tag=x.get("mode_tag") or "",
-                         agent_name=x.get("agent_name"), agent_id=x.get("agent_id"))
+                         agent_name=x.get("agent_name"), agent_id=x.get("agent_id"),
+                         replay_mode=bool(x.get("replay_mode")))
     return p["title"], p["telegram_msg"], p["telegram_msg"], (p["email_subject"], p["email_html"])
 
 
 def _render_summary(rec: dict) -> tuple:
     """Open/close market performance summary. Plain text (2026-10
-    reversal) — see `_render_rich_alert`'s docstring."""
+    reversal) — see `_render_rich_alert`'s docstring.
+
+    2026-10-31 fix (operator: "the alerts should show paper and
+    simulation mode explicitly ... base code for all alerts") — used to
+    hardcode `sim_mode=False, mode_tag=""` unconditionally, so a summary
+    fired by the `send_summary` DSL action inside a sim/replay cycle
+    (background.py's own scheduled summary never sets these — always a
+    real market-hours cron task) carried no distinguishing tag at all.
+    Now reads the real flags `send_summary()` writes into the record's
+    extras and lets `dispatch_payload` derive the tag/banner itself.
+    """
     from backend.shared.helpers.alert_utils import dispatch_payload
     x = rec.get("extra") or {}
     p = dispatch_payload(x["msg_type"], x["ist_display"], x["tg_table"], x["email_table_html"],
-                         x["subject_detail"], sim_mode=False, mode_tag="")
+                         x["subject_detail"], sim_mode=bool(x.get("sim_mode")),
+                         replay_mode=bool(x.get("replay_mode")))
     return p["title"], p["telegram_msg"], p["telegram_msg"], (p["email_subject"], p["email_html"])
 
 

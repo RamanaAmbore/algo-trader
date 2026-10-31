@@ -1740,7 +1740,8 @@ def _v2_rich_alert_custom_message(agent, eval_result, context: dict | None):
 
 
 async def _v2_send_rich_alert(agent, matches, now, sim_mode: bool = False,
-                              context: dict | None = None, eval_result=None):
+                              context: dict | None = None, eval_result=None,
+                              replay_mode: bool = False):
     """
     Render the v2 alert as the same narrow-TG + HTML-table format the legacy
     engine uses, and send through Telegram + email via alert_utils's own
@@ -1760,6 +1761,13 @@ async def _v2_send_rich_alert(agent, matches, now, sim_mode: bool = False,
     for the bug this closes. `None` (the default, for any caller that
     doesn't have one — e.g. existing tests) disables the override check
     entirely, preserving the exact prior behavior.
+
+    `replay_mode` (2026-10-31) — threaded into `_agent_execution_mode_tag`
+    alongside `sim_mode` so a replay-driven alert is tagged `[REPLAY]`
+    instead of looking identical to a real live breach. Does not affect
+    suppression (`_ae_sim_notify_suppressed` below still keys on
+    `sim_mode` only) — a replay alert still sends, now explicitly
+    labeled.
     """
     # Late import avoids the agent_engine → alert_utils cycle at import time.
     from backend.shared.helpers.alert_utils import (
@@ -1856,7 +1864,7 @@ async def _v2_send_rich_alert(agent, matches, now, sim_mode: bool = False,
     subject = (_subject_header_line[len("Agent: "):]
                if _subject_header_line.startswith("Agent: ")
                else _subject_header_line)
-    mode_tag   = '' if sim_mode else _agent_execution_mode_tag(agent)
+    mode_tag   = _agent_execution_mode_tag(agent, sim_mode=sim_mode, replay_mode=replay_mode)
     try:
         logger.info(
             f"Agent [{agent.slug}] alert recorded",
@@ -1866,6 +1874,7 @@ async def _v2_send_rich_alert(agent, matches, now, sim_mode: bool = False,
                 "ist_display": timestamp_display(), "tg_table": tg_body,
                 "email_table_html": email_html, "subject_detail": subject,
                 "sim_mode": bool(sim_mode), "mode_tag": mode_tag,
+                "replay_mode": bool(replay_mode),
                 # 2026-10-16 fix — the REAL triggering agent's tier, so
                 # event_agents.py's RICH_ALERT_AGENT (a generic fan-out
                 # dispatcher for every agent's alerts, itself always
@@ -1881,18 +1890,41 @@ async def _v2_send_rich_alert(agent, matches, now, sim_mode: bool = False,
     return True
 
 
-def _agent_execution_mode_tag(agent) -> str:
+def _agent_execution_mode_tag(agent, *, sim_mode: bool = False,
+                              replay_mode: bool = False) -> str:
     """
-    Inspect the master paper_trading_mode toggle and report whether this
-    agent's broker actions would land as paper or live. Used to tag alert
-    subjects so an operator on Telegram can tell at a glance whether a
-    fired agent caused a real broker order or a paper one.
+    Report which non-live mode (if any) this alert fired under, so an
+    operator on Telegram/email can tell at a glance whether it reflects
+    a real breach or a backtest/paper run.
 
-      - non-main branch: returns '' (live engine doesn't run on dev)
+    2026-10-31 fix (operator: "the alerts should show paper and
+    simulation mode explicitly in alert notification. wire it") — the
+    ONLY call site (`_v2_send_rich_alert`) used to blank this tag
+    entirely during sim mode (`mode_tag = '' if sim_mode else
+    _agent_execution_mode_tag(agent)`) and never considered replay_mode
+    at all, so a sim/replay alert that reached a channel (sim: only
+    when the operator has explicitly turned on
+    `simulator.notify_during_run`; replay: unconditionally — see the
+    separate replay-alert-suppression gap, not fixed here) looked
+    EXACTLY like a real live breach, with no distinguishing tag.
+
+    Precedence: replay > sim > paper > live. replay/sim are properties
+    of the WHOLE cycle (synthetic/historical data), so they tag every
+    alert fired under them regardless of whether the specific agent has
+    a broker action — unlike the paper check below, which only tags an
+    agent that would actually place a (simulated) order.
+
+      - replay_mode=True:  '[REPLAY]'
+      - sim_mode=True:     '[SIM]'
+      - non-main branch:   '' (live engine doesn't run on dev)
       - main, no broker actions configured: '' (alert-only agent)
       - main, paper_trading_mode=True:  '[PAPER]'
       - main, paper_trading_mode=False: '' (live execution)
     """
+    if replay_mode:
+        return '[REPLAY]'
+    if sim_mode:
+        return '[SIM]'
     from backend.shared.helpers.utils import is_prod_branch
     from backend.shared.helpers.settings import get_bool
     from backend.api.algo.actions import BROKER_ACTIONS
@@ -4996,6 +5028,12 @@ async def _ae_dispatch_survivor_entry(entry: dict, now, context: dict,
     matches_    = entry['matches']
     result      = entry['result']
     sim_mode_p  = entry['sim_mode']
+    # 2026-10-31 fix — entry already carries 'replay_mode' (set by the
+    # buffer-time code alongside 'sim_mode'), but this function never
+    # read it, so a replay-driven alert reached _v2_send_rich_alert
+    # below with no way to tag itself [REPLAY] — it read identically to
+    # a real live breach. See _agent_execution_mode_tag's docstring.
+    replay_mode_p = entry.get('replay_mode', False)
 
     # Fix #7 — the per-key latch is already updated at buffer-time
     # (`_cycle_maybe_buffer_fire` → `_v2_reconcile_latch`), BEFORE
@@ -5048,7 +5086,7 @@ async def _ae_dispatch_survivor_entry(entry: dict, now, context: dict,
     else:
         rich_sent = await _v2_send_rich_alert(
             agent, matches_, now, sim_mode=sim_mode_p, context=context,
-            eval_result=result,
+            eval_result=result, replay_mode=replay_mode_p,
         )
     # Rich alert (telegram+email+ntfy table) runs first via alert_utils._dispatch
     # -> _alert_route, which already routes telegram/email/ntfy per

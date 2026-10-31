@@ -51,3 +51,36 @@ async def test_defaults_to_both_segments_and_open_summary():
     assert mock_send.call_count == 2
     for call in mock_send.call_args_list:
         assert call.args[3] == "open"
+
+
+@pytest.mark.asyncio
+async def test_threads_sim_mode_and_replay_mode_from_context():
+    """2026-10-31 fix (operator: "the alerts should show paper and
+    simulation mode explicitly ... wire it") — this action can fire
+    inside a sim/replay cycle, unlike background.py's own scheduled
+    summary, which never sets these. Before this fix, send_summary()
+    had no way to know and always tagged as live."""
+    context = {
+        "sum_holdings": {"total": 1}, "sum_positions": None,
+        "df_margins": None, "ist_display": "",
+        "sim_mode": True, "replay_mode": False,
+    }
+    with patch("backend.shared.helpers.alert_utils.send_summary") as mock_send:
+        await _action_send_summary(context, {"segments": ["equity"]})
+    assert mock_send.call_count == 1
+    call = mock_send.call_args_list[0]
+    assert call.kwargs.get("sim_mode") is True
+    assert call.kwargs.get("replay_mode") is False
+
+
+@pytest.mark.asyncio
+async def test_defaults_sim_and_replay_mode_to_false_when_absent():
+    context = {
+        "sum_holdings": {"total": 1}, "sum_positions": None,
+        "df_margins": None, "ist_display": "",
+    }
+    with patch("backend.shared.helpers.alert_utils.send_summary") as mock_send:
+        await _action_send_summary(context, {"segments": ["equity"]})
+    call = mock_send.call_args_list[0]
+    assert call.kwargs.get("sim_mode") is False
+    assert call.kwargs.get("replay_mode") is False

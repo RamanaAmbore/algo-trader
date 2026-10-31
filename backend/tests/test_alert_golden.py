@@ -594,8 +594,15 @@ async def test_deploy_sync_reaches_only_the_dedicated_telegram_deploy_channel(mo
      "1af06ceba4520c4eafe151f6374e443db04ce2a2d7897ec49d58625f9b978b8e", "Agent — 10:15:30 IST"),
     ("paper", False, "[PAPER]", "Agent — 10:15:30 IST", "RamboQuant Agent:  [PAPER]ZG0790 summary",
      "1af06ceba4520c4eafe151f6374e443db04ce2a2d7897ec49d58625f9b978b8e", "Agent [PAPER] — 10:15:30 IST"),
-    ("sim", True, "", "SIMULATOR Agent — 10:15:30 IST", "SIMULATOR RamboQuant Agent: ZG0790 summary",
-     "6096d641965b387d72f6ce35c9001cdae3950a7f7422ef0d08ba86024d823ff4", "SIMULATOR Agent — 10:15:30 IST"),
+    # 2026-10-31 fix (operator: "the alerts should show paper and
+    # simulation mode explicitly ... wire it") — dispatch_payload() now
+    # auto-derives the [SIM] bracket tag from sim_mode=True whenever the
+    # caller passes an empty mode_tag (this fixture's "" is exactly that
+    # case), instead of leaving it blank as before. Subject and TG head
+    # updated to match; email body SHA is unchanged (mode_tag never
+    # appeared in the body HTML, only the subject line).
+    ("sim", True, "", "SIMULATOR Agent — 10:15:30 IST", "SIMULATOR RamboQuant Agent:  [SIM]ZG0790 summary",
+     "6096d641965b387d72f6ce35c9001cdae3950a7f7422ef0d08ba86024d823ff4", "SIMULATOR Agent [SIM] — 10:15:30 IST"),
 ])
 async def test_rich_alert_matches_the_pre_migration_dispatch(monkeypatch, name, sim, mode_tag,
                                                               expected_title, expected_subject,

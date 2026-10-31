@@ -1830,6 +1830,48 @@ Rule: these buttons must always live inside the shared card button-group slot. N
 
 ## Critical math guards
 
+**Every alert must explicitly show paper/sim/replay mode; live stays silent (2026-10-31, operator:
+"the alerts should show paper and simulation mode explicitly in alert notification ... this
+functionality should be in the base code for all alerts")** — Mode labeling was scattered and
+incomplete before this fix: `_v2_send_rich_alert()` blanked its own `mode_tag` entirely during sim
+mode (`'' if sim_mode else _agent_execution_mode_tag(agent)`) and never considered `replay_mode` at
+all, so a sim/replay alert that reached a channel (sim: only when `simulator.notify_during_run` is
+explicitly on; replay: unconditionally — see the "deferred replay risk" entry this re-audit
+reopened) read identically to a real live breach. `send_summary()`/`_render_summary`
+(`event_agents.py`) hardcoded `sim_mode=False, mode_tag=""` unconditionally, so a summary fired via
+the `send_summary` DSL action inside a sim/replay cycle carried no tag either.
+- **Fix moved the derivation into `dispatch_payload()`** (`alert_utils.py`) — the one shared base
+  dispatcher every alert type funnels through. It now accepts `replay_mode` alongside the existing
+  `sim_mode`, and whenever a caller doesn't pass a more specific `mode_tag`, derives both the
+  `[SIM]`/`[REPLAY]` bracket tag AND the `SIMULATOR `/`REPLAY ` word-prefix (on the Telegram/email
+  prefix and title) AND the red warning banner (`_build_tg_warning_block`/`_build_email_banners`,
+  now both accepting `replay_mode`) itself — a caller only needs to pass its own two booleans, not
+  pre-compute anything. **Live mode (both flags False, no explicit `mode_tag`) resolves to `''`
+  everywhere** — no pill, no prefix, no banner; per the operator's explicit "for live, pill is not
+  required, as it is assumed to be default."
+- `_agent_execution_mode_tag(agent, *, sim_mode=False, replay_mode=False)`
+  (`agent_engine.py`) — precedence **replay > sim > paper > live**. replay/sim are properties of the
+  WHOLE cycle (synthetic/historical data), so they tag unconditionally, regardless of whether the
+  specific agent has a broker action — unlike the paper check, which only tags an agent that would
+  actually place a (simulated) order (`BROKER_ACTIONS` intersection non-empty) and only applies on
+  the prod branch (`execution.paper_trading_mode`).
+- `_ae_dispatch_survivor_entry` (the real alert-send path) now reads `entry.get('replay_mode',
+  False)` — it already carried this key (set alongside `sim_mode` at buffer time) but never read it,
+  the exact gap a prior replay-risk audit had flagged as still open.
+- `send_summary()` gained `sim_mode`/`replay_mode` params; the `send_summary` DSL action
+  (`grammar_tokens/action_send_summary.py`) threads them from its own `context` (it can fire inside a
+  sim/replay cycle). The background cron-driven open/close summary (`background.py`) never passes
+  either — it is always a real market-hours task — so it is unaffected and stays silent/live.
+- Bracket tag uses the short `[SIM]`/`[REPLAY]` form (matching `_agent_execution_mode_tag`'s own
+  convention) — deliberately distinct from the longer `SIMULATOR`/`REPLAY` word used for the
+  prefix, which is a separate, pre-existing convention this fix extends rather than replaces.
+- Tests: `test_alert_mode_labeling.py` (dispatch_payload + `_agent_execution_mode_tag` precedence,
+  including the explicit-tag-never-overridden and live-stays-silent cases),
+  `grammar_tokens/test_action_send_summary.py` (context threading).
+- Invariant: a caller that knows its own `sim_mode`/`replay_mode` gets a correct tag/banner for free
+  by passing them to `dispatch_payload()` — it must never need to pre-compute the bracket text
+  itself unless it has agent-specific information (the paper case) that the base dispatcher lacks.
+
 **`diagnose_live_failure`'s post-failure margin re-check must never assert a root cause it can't actually
 distinguish (2026-10-31, live operator-reported incident)** — When a real `place_order` call fails with
 Kite's own "Insufficient funds" error, `backend/api/algo/actions_preflight.py:diagnose_live_failure()`

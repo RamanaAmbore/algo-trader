@@ -424,11 +424,26 @@ def _sim_banner_html() -> str:
     )
 
 
+def _replay_banner_html() -> str:
+    """Red banner shown on every replay-run email (2026-10-31, operator:
+    "the alerts should show paper and simulation mode explicitly in
+    alert notification. wire it"). Mirrors _sim_banner_html exactly —
+    a replay run evaluates historical data, not the live market, and
+    must never read as indistinguishable from a real breach."""
+    return (
+        f"<div style='background-color:#3a1010;border:1px solid {_EMAIL_RED};"
+        f"border-radius:4px;padding:8px 14px;margin-bottom:12px;"
+        f"font-family:sans-serif;font-size:13px;color:{_EMAIL_RED}'>"
+        "&#128680; <strong>REPLAY RUN — historical backtest data, not a real alert.</strong>"
+        "</div>"
+    )
+
+
 def _email_message(
     *, email_prefix_full: str, branch_tag: str, mode_tag: str,
     subject_detail: str, sim_mode: bool, branch: str,
     tg_prefix_full: str, ist_display: str, email_table_html: str,
-    agent_line: str = '',
+    agent_line: str = '', replay_mode: bool = False,
 ) -> tuple[str, str]:
     """Subject and HTML body of an agent or summary email. Pure.
 
@@ -444,7 +459,7 @@ def _email_message(
         if (branch_tag or mode_tag)
         else f"{email_prefix_full}{subject_detail}"
     )
-    banners = _build_email_banners(sim_mode, branch)
+    banners = _build_email_banners(sim_mode, branch, replay_mode=replay_mode)
     agent_line_html = (
         f"<p style='font-size:13px;color:{_EMAIL_TEXT_MUTED};margin:0 0 10px 0'>"
         f"{html.escape(agent_line)}</p>"
@@ -478,23 +493,38 @@ def _send_email_to_recipients(subject: str, html_body: str, log_prefix: str) -> 
         _SMTP_EXECUTOR.submit(_send_one)
 
 
-def _build_tg_warning_block(sim_mode: bool, branch: str) -> str:
-    """Build the Telegram warning block for simulator and non-main-branch
-    runs. Plain text (2026-10 reversal) — the literal emoji character
-    replaces the old `&#128680;` HTML numeric entity (meaningless once
-    nothing requests `parse_mode: HTML`), and the `<b>` wraps are dropped."""
+def _build_tg_warning_block(sim_mode: bool, branch: str,
+                            replay_mode: bool = False) -> str:
+    """Build the Telegram warning block for simulator/replay and
+    non-main-branch runs. Plain text (2026-10 reversal) — the literal
+    emoji character replaces the old `&#128680;` HTML numeric entity
+    (meaningless once nothing requests `parse_mode: HTML`), and the
+    `<b>` wraps are dropped.
+
+    `replay_mode` (2026-10-31, operator: "the alerts should show paper
+    and simulation mode explicitly in alert notification. wire it") —
+    replay evaluates historical data, same "not a real breach" concern
+    as sim_mode; mutually exclusive with it in practice (one cycle run
+    is either sim or replay, never both), so no precedence issue."""
     lines = []
-    if sim_mode:
+    if replay_mode:
+        lines.append("🚨 REPLAY RUN — historical backtest data, not live")
+    elif sim_mode:
         lines.append("🚨 SIMULATOR RUN — fabricated market data")
     if branch != 'main':
         lines.append(f"⚠ Branch: {branch}")
     return ("\n" + "\n".join(lines)) if lines else ''
 
 
-def _build_email_banners(sim_mode: bool, branch: str) -> str:
-    """Build HTML banners for the email body (simulator and non-main-branch)."""
+def _build_email_banners(sim_mode: bool, branch: str,
+                         replay_mode: bool = False) -> str:
+    """Build HTML banners for the email body (simulator/replay and
+    non-main-branch). See `_build_tg_warning_block` for the
+    replay_mode rationale."""
     banners = ''
-    if sim_mode:
+    if replay_mode:
+        banners += _replay_banner_html()
+    elif sim_mode:
         banners += _sim_banner_html()
     if branch != 'main':
         banners += _branch_banner_html(branch)
@@ -615,7 +645,8 @@ def format_notification_header(
 
 def dispatch_payload(msg_type: str, ist_display: str, tg_table: str, email_table_html: str,
                      subject_detail: str, sim_mode: bool = False, mode_tag: str = '',
-                     agent_name: "str | None" = None, agent_id: "int | None" = None) -> dict:
+                     agent_name: "str | None" = None, agent_id: "int | None" = None,
+                     replay_mode: bool = False) -> dict:
     """Telegram message, title, route key and email for one alert. Pure; no sending.
 
     `agent_name`/`agent_id` — when both are given, the real firing agent's
@@ -624,10 +655,26 @@ def dispatch_payload(msg_type: str, ist_display: str, tg_table: str, email_table
     entirely for alert types with no single originating agent (open/close
     summaries) — the dual-tz `ist_display` already shown in the header
     line is not duplicated.
+
+    `replay_mode` / `mode_tag` auto-derivation (2026-10-31, operator:
+    "the alerts should show paper and simulation mode explicitly in
+    alert notification. wire it ... this functionality should be in
+    the base code for all alerts") — this is the ONE shared dispatcher
+    every alert type (rich alerts, summaries, and any future caller)
+    funnels through, so the mode word/banner now live HERE rather than
+    requiring each caller to pre-compute them. A caller that already
+    knows a more specific tag (e.g. `_v2_send_rich_alert`'s
+    `_agent_execution_mode_tag`, which also covers the per-agent PAPER
+    case this function has no agent object to check) still wins — an
+    explicit `mode_tag` is never overridden. A caller that only knows
+    its own `sim_mode`/`replay_mode` flags (e.g. `send_summary`, which
+    has no agent at all) now gets a correct `[SIM]`/`[REPLAY]` tag and
+    banner for free, simply by passing those two booleans through.
     """
     tg_prefix, email_prefix = _MSG_TYPES[msg_type]
-    tg_prefix_full    = f"SIMULATOR {tg_prefix}"    if sim_mode else tg_prefix
-    email_prefix_full = f"SIMULATOR {email_prefix}" if sim_mode else email_prefix
+    _mode_word = 'REPLAY' if replay_mode else ('SIMULATOR' if sim_mode else '')
+    tg_prefix_full    = f"{_mode_word} {tg_prefix}"    if _mode_word else tg_prefix
+    email_prefix_full = f"{_mode_word} {email_prefix}" if _mode_word else email_prefix
 
     # 2026-10 audit fix: the ntfy/lock-screen TITLE used to be the bare
     # generic `tg_prefix` ("Agent") for every alert, showing e.g.
@@ -639,10 +686,16 @@ def dispatch_payload(msg_type: str, ist_display: str, tg_table: str, email_table
     # prior generic text for callers with no single originating agent
     # (open/close summaries) — unchanged behaviour there.
     title_base = agent_name if (agent_name and agent_id is not None) else tg_prefix
-    title_base_full = f"SIMULATOR {title_base}" if sim_mode else title_base
+    title_base_full = f"{_mode_word} {title_base}" if _mode_word else title_base
 
     branch = config.get('deploy_branch', 'main')
     branch_tag = f" [{branch}]" if branch != 'main' else ''
+    # Bracket tag uses the short [SIM]/[REPLAY] form (matching
+    # _agent_execution_mode_tag's own convention, agent_engine.py) —
+    # deliberately NOT the longer "SIMULATOR" word used for the
+    # prefix above, which is a separate, pre-existing convention.
+    _mode_bracket = '[REPLAY]' if replay_mode else ('[SIM]' if sim_mode else '')
+    mode_tag = mode_tag or _mode_bracket
     mode_pfx = f"{mode_tag} " if mode_tag else ''
 
     # Agent-identity line only — the dual-tz timestamp already appears in
@@ -653,7 +706,7 @@ def dispatch_payload(msg_type: str, ist_display: str, tg_table: str, email_table
     if agent_name and agent_id is not None:
         agent_line = format_notification_header(agent_name, agent_id, ist_display=ist_display).splitlines()[0]
 
-    warning_block = _build_tg_warning_block(sim_mode, branch)
+    warning_block = _build_tg_warning_block(sim_mode, branch, replay_mode=replay_mode)
     # 2026-10 audit fix: the agent-identity line now leads the message
     # (was appended after the bold title line) — operator requirement
     # that origin always appears first. Only ever populated when a real
@@ -676,6 +729,7 @@ def dispatch_payload(msg_type: str, ist_display: str, tg_table: str, email_table
         subject_detail=subject_detail, sim_mode=sim_mode, branch=branch,
         tg_prefix_full=tg_prefix_full, ist_display=ist_display,
         email_table_html=email_table_html, agent_line=agent_line,
+        replay_mode=replay_mode,
     )
     return {
         "event_key": event_key,
@@ -683,7 +737,7 @@ def dispatch_payload(msg_type: str, ist_display: str, tg_table: str, email_table
         "telegram_msg": telegram_msg,
         "email_subject": subject,
         "email_html": html_body,
-        "log_prefix": f"{'[SIM] ' if sim_mode else ''}{tg_prefix}",
+        "log_prefix": f"{(mode_tag + ' ') if mode_tag else ''}{tg_prefix}",
     }
 
 
@@ -872,7 +926,8 @@ def _partial_outage_warning_lines(sum_positions) -> "list[str] | None":
 
 
 def send_summary(sum_holdings, sum_positions, ist_display: str, msg_type: str,
-                 label: str = "", df_margins=None, df_positions=None):
+                 label: str = "", df_margins=None, df_positions=None,
+                 sim_mode: bool = False, replay_mode: bool = False):
     """
     Send holdings + positions + funds summary at market open or close.
     msg_type: 'open' or 'close'
@@ -882,6 +937,15 @@ def send_summary(sum_holdings, sum_positions, ist_display: str, msg_type: str,
         per-underlying section is appended after the Positions table —
         same format as the per-alert breakdown so the operator's eye
         moves naturally between the two surfaces.
+
+    `sim_mode`/`replay_mode` (2026-10-31, operator: "the alerts should
+    show paper and simulation mode explicitly ... base code for all
+    alerts") — the background cron-driven open/close summary
+    (background.py) never passes either, so it stays the ordinary
+    live tag always. The `send_summary` DSL action (an agent's DO
+    clause) threads them from its own `context`, since that action can
+    run inside a sim/replay cycle — before this fix, a summary fired
+    that way carried no distinguishing tag at all.
     """
     h_rows    = _summary_holdings_rows(sum_holdings)
     p_rows    = _summary_positions_rows(sum_positions)
@@ -910,6 +974,7 @@ def send_summary(sum_holdings, sum_positions, ist_display: str, msg_type: str,
             "tags": ["summary", "alert"], "alert_event": "summary", "msg_type": msg_type,
             "ist_display": ist_display, "tg_table": tg_table,
             "email_table_html": email_html, "subject_detail": subject_detail,
+            "sim_mode": bool(sim_mode), "replay_mode": bool(replay_mode),
         },
     )
 
