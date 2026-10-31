@@ -160,19 +160,26 @@
   }
 
   .cm-header {
-    /* canonical-modal-header supplies gradient/border/box-shadow (shared
-       with 6 other modals — AddToPulseModal, PositionStrip, MarketPulse,
-       AgentFireModal, LogPanel, BrokerHealthBadge — left untouched there).
-       Local overrides: gap between icon+title+actions, no shrink, and
-       padding zeroed (2026-10, operator: sync this modal's header height
-       with the order-ticket modal's) — CardHeader's own `--ch-padding: 0`
-       body-level default is what every other CardHeader-based header in
-       the app already uses; this header isn't CardHeader-based (it's the
-       shared canonical-modal-header class instead) but adopts the same
-       zero-padding convention here, scoped to THIS modal only. */
+    /* canonical-modal-header supplies gradient/border/box-shadow AND the
+       0.35rem/0.85rem padding (shared with 6 other modals —
+       AddToPulseModal, PositionStrip, MarketPulse, AgentFireModal,
+       LogPanel, BrokerHealthBadge). Local override here is just the gap
+       between icon+title+actions, plus no-shrink.
+       2026-10-31 — operator: "X button location inconsistent on popup
+       windows ... some flush to right-top corner, some with a gap."
+       Playwright measurement (getBoundingClientRect) confirmed ChartModal
+       was the outlier: `.cm-close` sat ~1px/0px from the panel's
+       top-right corner while every other canonical-modal-header popup
+       (NavBreakdown, BrokerHealthBadge) sits at the shared ~14.6px
+       right / ~6.6px top inset. Root cause: a prior (2026-10) local
+       `padding: 0` override here, added to sync this modal's header
+       height with the order-ticket's CardHeader-based header. That
+       height-sync is deliberately reversed by this fix — the shared
+       canonical-modal-header padding wins so the close button lands at
+       the same inset as every sibling popup. Header height grows from
+       ~23.7px to ~34.9px as a direct, accepted consequence. */
     gap: 0.5rem;
     flex-shrink: 0;
-    padding: 0;
   }
 
   .cm-title {

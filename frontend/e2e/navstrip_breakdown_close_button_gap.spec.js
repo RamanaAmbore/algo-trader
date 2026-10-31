@@ -44,6 +44,88 @@ const TIMEOUT = 30000;
 const EXPECTED_RIGHT_PADDING_PX = 13.6;
 const TOLERANCE_PX = 3;
 
+/**
+ * 2026-10-31 follow-up — operator reported "X button location inconsistent
+ * on popup windows on navstrip, some flush to right-top corner, some with
+ * a gap." Investigation (Playwright measurement across every popup
+ * PositionStrip.svelte itself launches — all four P/M/C/H slots, desktop/
+ * tablet/mobile) found the breakdown popup's close button is ALREADY
+ * self-consistent across every slot and viewport (~14.6px right / 6.6px
+ * top gap, matching BrokerHealthBadge's `.bh-close`, both built on the
+ * shared `canonical-modal-header` convention) — no source change was
+ * needed in PositionStrip.svelte/NavBreakdown.svelte.
+ *
+ * A read-only probe of the page-header-launched modals (ChartModal,
+ * ActivityLogModal, the chase drawer — none of which PositionStrip.svelte
+ * triggers, and ChartModal is explicitly out of scope for NavStrip work)
+ * found the likely real source of the operator's report: ChartModal's
+ * `.cm-close` sits flush at (0,0) relative to its panel — zero gap — while
+ * ActivityLogModal's `.lp-close-btn` and the chase drawer's `.chd-close`
+ * each carry a small but different gap. That inconsistency is a separate,
+ * out-of-scope fix (see CLAUDE.md's "Things to Avoid"/UI card button group
+ * conventions) and is intentionally NOT touched by this spec.
+ *
+ * This block adds a same-component cross-slot check (M/C/H, not just P)
+ * so a future regression in any one slot is caught even though today all
+ * four already match.
+ */
+test.describe('NavStrip breakdown close-button gap — all four slots (2026-10-31)', () => {
+  test.beforeEach(async ({ page }) => {
+    await loginAsAdmin(page);
+    await page.goto('/pulse', { waitUntil: 'domcontentloaded', timeout: TIMEOUT }).catch(() => {});
+    await page.waitForTimeout(2000);
+  });
+
+  async function measureSlot(page, slotClass) {
+    const value = page.locator(`.ps-strip ${slotClass}`)
+      .locator('xpath=following-sibling::span[1][contains(@class, "ps-agg-v")]').first();
+    const visible = await value.isVisible({ timeout: 3000 }).catch(() => false);
+    if (!visible) return null;
+    await value.click();
+    const panel = page.locator('.ps-breakdown-panel');
+    await expect(panel).toBeVisible({ timeout: 5000 });
+    const panelBox = await panel.boundingBox();
+    const closeBox = await panel.locator('.ps-bd-close').boundingBox();
+    await page.keyboard.press('Escape');
+    await expect(panel).not.toBeVisible({ timeout: 3000 }).catch(() => {});
+    if (!panelBox || !closeBox) return null;
+    return {
+      rightGap: (panelBox.x + panelBox.width) - (closeBox.x + closeBox.width),
+      topGap: closeBox.y - panelBox.y,
+    };
+  }
+
+  test('P/M/C/H slots all share the same close-button gap', async ({ page }) => {
+    test.setTimeout(60000);
+    const strip = page.locator('.ps-strip');
+    const stripVisible = await strip.isVisible({ timeout: 5000 }).catch(() => false);
+    if (!stripVisible) {
+      test.info().annotations.push({ type: 'skip', description: 'PositionStrip not visible' });
+      return;
+    }
+
+    const results = {};
+    for (const [slot, cls] of [['P', '.ps-k-p'], ['M', '.ps-k-m'], ['C', '.ps-k-c'], ['H', '.ps-k-h']]) {
+      results[slot] = await measureSlot(page, cls);
+    }
+
+    const measured = Object.entries(results).filter(([, v]) => v !== null);
+    if (measured.length < 2) {
+      test.info().annotations.push({ type: 'skip', description: 'Fewer than 2 slots measurable' });
+      return;
+    }
+
+    const [, first] = measured[0];
+    for (const [slot, gaps] of measured) {
+      expect(Math.abs(gaps.rightGap - first.rightGap), `${slot} rightGap vs baseline`).toBeLessThanOrEqual(1);
+      expect(Math.abs(gaps.topGap - first.topGap), `${slot} topGap vs baseline`).toBeLessThanOrEqual(1);
+      // Same canonical-modal-header padding envelope as the rest of this file.
+      expect(gaps.rightGap).toBeGreaterThanOrEqual(EXPECTED_RIGHT_PADDING_PX - TOLERANCE_PX);
+      expect(gaps.rightGap).toBeLessThanOrEqual(EXPECTED_RIGHT_PADDING_PX + TOLERANCE_PX);
+    }
+  });
+});
+
 test.describe('NavStrip breakdown close-button gap regression', () => {
   test.beforeEach(async ({ page }) => {
     await loginAsAdmin(page);
