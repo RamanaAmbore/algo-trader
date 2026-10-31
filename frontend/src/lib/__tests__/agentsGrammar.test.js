@@ -3270,6 +3270,150 @@ describe('Sprint G — GIVEN preamble + "=" bind operator (labels)', () => {
   });
 });
 
+describe('Sprint [given-in-leaf] — a preamble-assigned operator-expression binding can be referenced inside a WHEN leaf', () => {
+  // No "GIVEN" keyword anywhere below — a bare `name = expr` line before
+  // WHEN is the real, current, keyword-less syntax (the preamble is
+  // self-delimiting by position, not introduced by a keyword — see
+  // `parseAgentStmt`'s own header comment). "GIVEN" only survives as a
+  // historical function/sprint name (`parseGivenRhs`) left over from
+  // before that redesign.
+  //
+  // A real metric (e.g. `cash@funds.total`) must be bound to its OWN
+  // pure-alias label FIRST before it can appear inside an operator
+  // expression (`_arithContainsDynamicRead` rejects an inline `metric@scope`
+  // mixed directly into one — see that function's own "bind it first"
+  // error, exercised in the 'Sprint [GIVEN-expr]' describe block above).
+  // `c = cash@funds.total; m = avail_margin@funds.total; gap = c - m` is
+  // therefore the realistic shape for every example below, not
+  // `gap = cash - avail_margin` directly.
+  const GAP_PREAMBLE = 'c = cash@funds.total; m = avail_margin@funds.total; gap = c - m; z = m - c';
+
+  it('(a) a preamble assignment referenced by a WHEN leaf with a NEW comparator compiles successfully, to the existing {"$given": name} marker in the metric slot (no "scope" key)', () => {
+    const r = compile(`${GAP_PREAMBLE} WHEN gap < 0 DO alert(telegram)`);
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions).toEqual({ metric: { '$given': 'gap' }, op: '<', value: 0 });
+    expect('scope' in r.agent.conditions).toBe(false);
+  });
+
+  it('(a) the referenced label is lowercased in the compiled marker, same as every other $given reference site, regardless of how it was typed', () => {
+    const r = compile('c = cash@funds.total; m = avail_margin@funds.total; Gap = c - m WHEN Gap < 0 DO alert(telegram)');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions).toEqual({ metric: { '$given': 'gap' }, op: '<', value: 0 });
+  });
+
+  it('(a) a re-exported bare-NAME binding (q = gap, no operator — also classified "expr") is usable the same way', () => {
+    const r = compile(`${GAP_PREAMBLE}; q = gap WHEN q < 0 DO alert(telegram)`);
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions).toEqual({ metric: { '$given': 'q' }, op: '<', value: 0 });
+  });
+
+  it('(a) the full comparator set and literal shapes all compile through the same marker', () => {
+    expect(compile(`${GAP_PREAMBLE} WHEN gap >= 100 DO alert(telegram)`).agent.conditions)
+      .toEqual({ metric: { '$given': 'gap' }, op: '>=', value: 100 });
+    expect(compile(`${GAP_PREAMBLE} WHEN gap in [1, 2, 3] DO alert(telegram)`).agent.conditions)
+      .toEqual({ metric: { '$given': 'gap' }, op: 'in', value: [1, 2, 3] });
+  });
+
+  it('(a) VALUE position: an ordinary catalog-metric leaf can also compare against a bound label on the right (WHEN metric@scope < gap)', () => {
+    const r = compile(`${GAP_PREAMBLE} WHEN cash@funds.total < gap DO alert(telegram)`);
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions).toEqual({ metric: 'cash', scope: 'funds.total', op: '<', value: { '$given': 'gap' } });
+  });
+
+  it('(a) VALUE position: a given-leaf can also compare against ANOTHER \'expr\'-kind bound label on the right (WHEN gap < z)', () => {
+    const r = compile(`${GAP_PREAMBLE} WHEN gap < z DO alert(telegram)`);
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions).toEqual({ metric: { '$given': 'gap' }, op: '<', value: { '$given': 'z' } });
+  });
+
+  it('(a) VALUE position is scoped to \'expr\'-kind labels only — a pure-alias (condition-kind) label on the right is NOT treated as a $given marker (no metric-vs-metric comparison support here)', () => {
+    const r = compile(`${GAP_PREAMBLE} WHEN gap < m DO alert(telegram)`);
+    expect(r.ok).toBe(false);
+  });
+
+  it('(a) VALUE position: in/not_in against a bound label is rejected at compile time (comparing a resolved scalar against a list operator has no sensible meaning)', () => {
+    const r = compile(`${GAP_PREAMBLE} WHEN cash@funds.total in gap DO alert(telegram)`);
+    expect(r.ok).toBe(false);
+  });
+
+  it('(a) decompile round-trip: compile -> decompile -> recompile is byte-identical JSON (a saved agent using this feature can be reopened in Console/Automation Edit)', () => {
+    const r1 = compile(`${GAP_PREAMBLE} WHEN gap < 0 DO alert(telegram)`);
+    expect(r1.ok).toBe(true);
+    const dec = decompileAgent(r1.agent, CATALOG);
+    expect(dec.errors).toEqual([]);
+    const r2 = compile(dec.text);
+    expect(r2.ok).toBe(true);
+    expect(r2.agent).toEqual(r1.agent);
+  });
+
+  it('(a) decompile round-trip also covers a VALUE-position bound-label reference (WHEN gap < z)', () => {
+    const r1 = compile(`${GAP_PREAMBLE} WHEN gap < z DO alert(telegram)`);
+    expect(r1.ok).toBe(true);
+    const dec = decompileAgent(r1.agent, CATALOG);
+    expect(dec.errors).toEqual([]);
+    const r2 = compile(dec.text);
+    expect(r2.ok).toBe(true);
+    expect(r2.agent).toEqual(r1.agent);
+  });
+
+  it('(a) end-to-end: the preamble\'s own "given" entries carry the real metric expressions that resolve "gap" server-side', () => {
+    const r = compile(`${GAP_PREAMBLE} WHEN gap < 0 DO alert(telegram)`);
+    expect(r.ok).toBe(true);
+    expect(r.agent.given).toEqual([
+      { name: 'c', expr: 'cash@funds.total' },
+      { name: 'm', expr: 'avail_margin@funds.total' },
+      { name: 'gap', expr: 'c - m' },
+      { name: 'z', expr: 'm - c' },
+    ]);
+  });
+
+  it('(b) regression guard — a bare, undeclared name used as the WHOLE WHEN condition still raises the original "unknown metric" compile-time error', () => {
+    const r = compile('WHEN totally_unbound_name DO alert(telegram)');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /unknown metric 'totally_unbound_name'/.test(e.message))).toBe(true);
+  });
+
+  it('(b) regression guard — an undeclared name followed by a NEW comparator still raises the original "unexpected trailing input" parse error (unaffected: the new branch only activates when the name IS a declared \'expr\'-kind label)', () => {
+    const r = compile('WHEN totally_unbound_name < 0 DO alert(telegram)');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /unexpected trailing input/.test(e.message))).toBe(true);
+  });
+
+  it('(c) regression guard — a WHEN leaf referencing a real catalog metric token directly is completely unaffected, same compiled output as before this change', () => {
+    const r = compile('WHEN cash@funds.total < -1000 DO alert(telegram)');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions).toEqual({ metric: 'cash', scope: 'funds.total', op: '<', value: -1000 });
+  });
+
+  it('scope boundary — compound arithmetic written directly inline in a WHEN leaf with NO preceding assignment is still rejected (the operand must resolve to a catalog token or a previously-declared label, nothing else)', () => {
+    const r = compile('WHEN cash@funds.total - avail_margin@funds.total < 0 DO alert(telegram)');
+    expect(r.ok).toBe(false);
+  });
+
+  it('scope boundary — a VALUE-kind binding (a plain literal, e.g. x = 5) followed by a NEW comparator is still a clear compile-time error — only \'expr\'-kind bindings gained this capability', () => {
+    const r = compile('x = 5 WHEN x < 0 DO alert(telegram)');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /bound to a plain value.*cannot be used as a WHEN condition/.test(e.message))).toBe(true);
+  });
+
+  it('scope boundary — an \'expr\'-kind binding used bare (no comparator at all) is still a clear compile-time error — there is no boolean-shorthand reading for a computed value', () => {
+    const r = compile(`${GAP_PREAMBLE} WHEN gap DO alert(telegram)`);
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /bound to a plain value.*cannot be used as a WHEN condition/.test(e.message))).toBe(true);
+  });
+
+  it('combines with an ordinary leaf via "&" exactly like any other leaf would', () => {
+    const r = compile(`${GAP_PREAMBLE} WHEN (gap < 0) & (cash@funds.total > 0) DO alert(telegram)`);
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions).toEqual({
+      all: [
+        { metric: { '$given': 'gap' }, op: '<', value: 0 },
+        { metric: 'cash', scope: 'funds.total', op: '>', value: 0 },
+      ],
+    });
+  });
+});
+
 describe('Sprint G — debug(x)', () => {
   it('debug(x) for a PRIMITIVE-bound label renders its plain value as the log message', () => {
     const r = compile('x = "ping" WHEN always DO alert(telegram), debug(x)');

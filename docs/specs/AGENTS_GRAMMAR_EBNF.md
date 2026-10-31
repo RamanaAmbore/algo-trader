@@ -141,6 +141,28 @@ leaf           := metric_ref comparator value
                                                    gets "expected '@' after metric" at compile
                                                    time. A log-condition (`log(tag=…, ...)`) is
                                                    ALSO a bare call — see prose below. *)
+                                                (* A bare NAME in `metric_ref`'s position
+                                                   (comparator/value positions below) that
+                                                   resolves against an earlier label assignment
+                                                   in THIS statement's preamble (`item :=
+                                                   NAME "=" rhs`, no keyword — see "Label
+                                                   assignment" in Prose below) is a VALID
+                                                   operand here too, resolved at compile time the
+                                                   same way the bare-call branch above already
+                                                   resolves a label against `state.bindings`.
+                                                   It compiles to the EXISTING `{"$given":
+                                                   "<name>"}` marker (already used for a DO
+                                                   action param referencing an operator-expression
+                                                   label — see Actions below) in place of a plain
+                                                   metric token, so `leaf.metric` is either a
+                                                   string token or this single-key marker dict —
+                                                   no new top-level leaf shape, no discriminator
+                                                   key. No `scope_ref`/`@` follows — the bound
+                                                   value is a single per-tick scalar the engine
+                                                   already resolved before the condition tree
+                                                   walk runs, not a per-row scope selection. See
+                                                   "Known gaps" below for the resolved note and
+                                                   the one real restriction this leaves. *)
 metric_ref     := call "@" scope_ref
 scope_ref      := scope_seg ("." scope_seg)*   (* scope_seg := call | qualifier_seg. A
                                                    qualifier_seg is trailing only. Short scope
@@ -475,8 +497,28 @@ catalog-content facts, not grammar bugs unless marked.
 - **[open] The `log` action `level` enum omits `debug`.** `agent_grammar.yaml`'s enum lists
   `info`, `warning`, `error`, `critical`. `debug(x)` compiles to level `debug`. Verify whether the
   enum is validated at compile time, and reconcile the YAML or the sugar.
-- **[open] `rhs := arith_expr`** (the operator-expression form) is not restated in this file. Its
-  grammar lives in `parseGivenRhs`'s own comments in `agents.js`.
+- **Resolved — `rhs := arith_expr`** (the operator-expression form) is still not restated in this
+  file byte-for-byte; its own grammar lives in `parseGivenRhs`'s own comments in `agents.js`, and
+  that split is unchanged. What WAS genuinely open — whether a label bound to one of these
+  expressions could be READ BACK inside a `leaf`'s comparator positions — is resolved: it can, via
+  the `leaf` production note above. A label assignment (`name = expr`, an ordinary `item` in the
+  preamble — everything before `WHEN`, no introducer keyword required) that resolves to an
+  operator expression is evaluated server-side ONCE PER CYCLE, before the condition tree runs
+  (`agent_engine._cycle_evaluate_given_bindings`, called from `_cycle_evaluate_agent` before
+  `v2_evaluate`), and the resulting per-tick scalar is what a later `leaf` referencing that name by
+  bare `NAME` resolves against (`agent_evaluator._eval_leaf`'s new `{"$given": "<name>"}`-marker
+  branch, reading `Context.given_bindings`) — fail-closed: a binding missing or unresolved this
+  cycle (its own evaluation raised, or an upstream metric it depends on was `None`) makes the
+  referencing leaf a clean no-match, never an exception, never a false match. The one real
+  restriction versus a true inline-arithmetic condition: `WHEN cash - used_margin < 0` (no prior
+  binding) is still not supported — the label must be bound first (`cash_gap = cash -
+  used_margin` as its own preamble item, THEN `WHEN cash_gap < 0`). This is a deliberate scope
+  boundary, not a gap: reusing the EXISTING `{"$given": "<name>"}` marker needs no new leaf JSON
+  shape, no discriminator tag, and no arithmetic-tree evaluation inside the condition walker
+  itself — `expr_eval.py`'s operator set, guards, and trust-boundary separation from
+  `grammar.py:OPERATORS` are untouched; only WHAT can feed its namespace (an already-resolved
+  bound label) changed. No grammar-level change to `leaf`/`primary`/`or_expr`'s own structure
+  beyond the `leaf` production note — `&`/`|`/`~`/comparators/`between`/parens are unaffected.
 - **[open, Wave 3] Chevrotain (`agentsLexer.js`/`agentsParser.js`) still throws a fixed
   `"event_stmt is not implemented"` error for any text matching the OLD `ALERT log_tag=...`
   shape — it was never updated to recognize the new `log(...)`/`render(...)` calls as anything

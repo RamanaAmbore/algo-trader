@@ -4249,6 +4249,16 @@ def _cycle_evaluate_agent(agent, context: dict, cfg: dict, now, alert_state: dic
     # V2Context just built. Never raises (see the function's own
     # docstring) and is a true no-op for every agent without `given`.
     _cycle_evaluate_given_bindings(agent, v2_ctx, context)
+    # Thread THIS agent's own resolved bindings onto the SAME Context the
+    # tree walk is about to use — `context["given"]` is keyed per-agent-id
+    # (shared dict, every agent evaluated this tick), but `v2_ctx` is
+    # per-agent already (built fresh above), so this is the one place a
+    # WHEN leaf referencing a bound label (`{"$given": "<name>"}` — see
+    # `agent_evaluator._eval_leaf`) gets access to it. `.get(agent.id) or
+    # {}` degrades to an empty dict for an agent with no bindings at all
+    # (the common case) — a referencing leaf then simply fails to match,
+    # never a crash.
+    v2_ctx.given_bindings = (context.get("given") or {}).get(agent.id) or {}
     try:
         matches = v2_evaluate(agent.conditions, v2_ctx)
         return matches, v2_ctx.observations

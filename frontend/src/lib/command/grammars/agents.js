@@ -1379,6 +1379,35 @@ export function parseValue(state) {
   throw new _ParseError('expected a value (number, string, or bare name)', tok);
 }
 
+/** `parseLeaf`'s own value-parsing helper, used ONLY for a WHEN leaf's
+ *  comparator value (`metric@scope <op> value`, `scope.column <op>
+ *  value`, and the `rhsKind === 'expr'`-bound-label leaf below) — NOT
+ *  inside `parseValue` itself, which is shared by far more productions
+ *  (preamble assignment RHS, list-literal items, action-param call args)
+ *  that must NOT gain this reclassification.
+ *
+ *  Parses an ordinary `value` (`parseValue`'s unchanged production),
+ *  then checks whether a bare-NAME result matches an already-declared
+ *  `'expr'`-kind label (the SAME check the metric-position branch above
+ *  makes) — if so, reclassifies it to a `{type:'given_ref', label}` node
+ *  instead of an ordinary literal `name` ValueNode, so `_compileComparatorValue`
+ *  (shared by `compileLeaf`/`compileColRef`) can compile it to the
+ *  `{"$given": "<name>"}` marker in the leaf's VALUE slot — e.g. `WHEN
+ *  pnl@positions.total < gap` or (inside a `given_leaf`) `WHEN gap < m`,
+ *  mirroring the backend's own `_resolve_given_operand`, which accepts a
+ *  marker at EITHER the metric or the value position of a leaf. `true`/
+ *  `false` can never collide with this — both are reserved words
+ *  (`_RESERVED`) a label can never be bound to. */
+function _parseLeafValue(state) {
+  const value = parseValue(state);
+  if (value.type !== 'name' || !state.bindings) return value;
+  const bound = state.bindings.get(String(value.value).toLowerCase());
+  if (bound && bound.rhsKind === 'expr') {
+    return { type: 'given_ref', label: value.value };
+  }
+  return value;
+}
+
 const _COMPARATOR_MAP = { LT: '<', LE: '<=', GT: '>', GE: '>=', EQEQ: '==', NE: '!=' };
 
 function _isComparatorStart(tok) {
@@ -1455,7 +1484,7 @@ export function parseLeaf(state) {
     }
     if (_isComparatorStart(_peek(state))) {
       const op = parseComparator(state);
-      const value = parseValue(state);
+      const value = _parseLeafValue(state);
       return { type: 'colref', segments, op, value };
     }
     return { type: 'colref', segments, op: null, value: null };
@@ -1466,10 +1495,14 @@ export function parseLeaf(state) {
     // CONDITION-kind label reference: splice in a CLONE of the bound
     // condition subtree directly, in place of what would otherwise be a
     // Sprint-10 Token ($ref) reference — this is the "label used as the
-    // whole bare WHEN condition" case (`GIVEN x = (...) & (...); WHEN x`).
-    // A PRIMITIVE-kind label used here is a clear parse-time error (zero
-    // catalog dependency either way, so there's no reason to defer this
-    // one to compile time the way an unrecognized name normally is).
+    // whole bare WHEN condition" case (`x = (...) & (...); WHEN x` — no
+    // keyword precedes the preamble assignment; see the file-header EBNF's
+    // own note that the preamble is self-delimiting by position, not by a
+    // "GIVEN" keyword). A `'value'`-kind label (a plain literal) used here
+    // is a clear parse-time error (zero catalog dependency either way, so
+    // there's no reason to defer this one to compile time the way an
+    // unrecognized name normally is) — see the `'expr'`-kind branch below
+    // for the one other label shape that is NOT an error here.
     if (!firstCall.hasCall && state.bindings) {
       const bound = state.bindings.get(firstCall.name.toLowerCase());
       if (bound) {
@@ -1497,12 +1530,42 @@ export function parseLeaf(state) {
           const node = bound.rhsNode;
           if (node && node.op === null && (node.type === 'leaf' || node.type === 'colref') && _isComparatorStart(_peek(state))) {
             const op = parseComparator(state);
-            const value = parseValue(state);
+            const value = _parseLeafValue(state);
             return node.type === 'leaf'
               ? { type: 'leaf', metric: _cloneAstNode(node.metric), scope: _cloneAstNode(node.scope), op, value }
               : { type: 'colref', segments: _cloneAstNode(node.segments), op, value };
           }
           return _cloneAstNode(node);
+        }
+        // Sprint [given-in-leaf] — an `'expr'`-kind binding (an operator
+        // expression, OR a bare re-export of an earlier binding — see
+        // `parseGivenRhs`'s own reclassification note) immediately
+        // followed by a comparator here forms a FRESH leaf referencing
+        // the bound, per-cycle-computed value — e.g. `c = cash@funds.
+        // total; m = avail_margin@funds.total; gap = c - m` then `WHEN
+        // gap < 0`. (A real metric must be bound to its own pure-alias
+        // label FIRST, same as everywhere else an 'expr' can reference
+        // one — `_arithContainsDynamicRead` rejects an inline `metric@
+        // scope` mixed directly into the expression itself; writing
+        // `gap = cash - avail_margin` with no "@" is syntactically legal
+        // but refers to two UNDEFINED names, which fails closed at
+        // runtime — see `compileGivenLeaf`'s own docstring — not a
+        // mistake introduced here, the same pre-existing trap applies to
+        // referencing such a binding from debug(...)/an action param.)
+        // This lifts the KNOWN LIMITATION documented below for exactly
+        // this one case (comparator present). A bare reference with NO
+        // comparator following still falls through to the unconditional
+        // throw just below, unchanged — there is no boolean-shorthand
+        // reading for a computed value whose runtime type isn't known at
+        // parse time (and this does not relax `'value'`-kind — a plain
+        // literal binding like `x = 5` — which still throws
+        // unconditionally here, same as today: a literal has no server-
+        // side per-cycle evaluation step to reference, so there is
+        // nothing new to lift for that kind).
+        if (bound.rhsKind === 'expr' && _isComparatorStart(_peek(state))) {
+          const op = parseComparator(state);
+          const value = _parseLeafValue(state);
+          return { type: 'given_leaf', label: firstCall.name, op, value };
         }
         throw new _ParseError(
           `label '${firstCall.name}' is bound to a plain value — it cannot be used as a WHEN condition `
@@ -1517,30 +1580,31 @@ export function parseLeaf(state) {
     // parse permissively, validate once the catalog is known, same split
     // this grammar already uses everywhere else.
     //
-    // KNOWN LIMITATION, operator-accepted 2026-10-11 (Sprint G): a
-    // PRIMITIVE-kind label (e.g. `GIVEN x = mean_pnl(30)@positions.total`)
-    // can ONLY be read as a whole value (an action/channel argument) or
-    // — via the CONDITION-kind branch above — as a whole bare WHEN
-    // condition. It canNOT be re-attached to a NEW comparator to form a
-    // fresh leaf (`WHEN x <= -50000` does NOT work when `x` is bound to a
-    // metric_ref, even though `WHEN x` alone works when `x` is bound to a
-    // full condition). This is structural, not an oversight: a leaf's
-    // shape (`metric_ref comparator value`) is fixed at PARSE time by
-    // this very function, and a bare label reaching this branch has
-    // already committed to being parsed as a `ref`/condition-splice node,
-    // not a `metric_ref` — there is no production here that re-opens a
-    // label into "the left operand of a comparator I haven't seen yet."
-    // Supporting it would need a real grammar change (a label's bound
-    // metric_ref AST node substituting into leaf position), not a
-    // compile-time workaround. If this is ever needed, write the full
-    // expression inline instead: `WHEN mean_pnl(30)@positions.total <= -50000`.
+    // FORMER "KNOWN LIMITATION" (operator-accepted 2026-10-11, Sprint G;
+    // resolved in two steps since — see the two branches above): a bound
+    // label used to be re-attachable to a NEW comparator (`WHEN x <=
+    // -50000` where `x` was bound earlier) ONLY via its whole-node splice,
+    // never as a fresh leaf. That's now covered for both label shapes that
+    // can meaningfully form one: a CONDITION-kind "pure alias" (`x =
+    // metric@scope`, no comparator of its own — the `node.op === null`
+    // branch above) and an `'expr'`-kind operator-expression binding (`x =
+    // a - b`, or a bare re-export of another binding — the `rhsKind ===
+    // 'expr'` branch above, compiling to a fresh leaf whose `metric` is
+    // the SAME `{"$given": name}` marker this file already uses in VALUE
+    // positions like action params/debug(...) — see `compileGivenLeaf`'s
+    // own docstring. `_parseLeafValue` extends the identical marker to a
+    // leaf's VALUE slot too, e.g. `WHEN pnl@positions.total < gap`).
+    // A `'value'`-kind binding (a plain literal, e.g. `x = 5`) still has no
+    // comparator-reattach form — a literal has no server-side per-cycle
+    // evaluation step to reference, so there is nothing to lift for it;
+    // it keeps throwing the "bound to a plain value" error just above.
     return { type: 'ref', call: firstCall };
   }
   _advance(state); // consume "@"
   const scope = parseScopeRef(state);
   if (_isComparatorStart(_peek(state))) {
     const op = parseComparator(state);
-    const value = parseValue(state);
+    const value = _parseLeafValue(state);
     return { type: 'leaf', metric: firstCall, scope, op, value };
   }
   // Boolean-metric shorthand — syntactically accepted here; the semantic
@@ -3234,8 +3298,29 @@ function _compileListValue(listNode, valueType, errors) {
  *  already-compiled `metricStr`/`scopeStr` (a column's `metricStr` is its
  *  bare exposed name, e.g. `"pnl"` — see `_resolveDotAccess`) so the
  *  output shape is byte-identical to what `compileLeaf` always produced
- *  for a real metric. */
+ *  for a real metric.
+ *
+ *  Sprint [given-in-leaf] — a `value.type === 'given_ref'` (see
+ *  `_parseLeafValue`, a bare NAME on the RIGHT of the comparator that
+ *  matches an earlier `'expr'`-kind binding, e.g. `WHEN pnl@positions.
+ *  total < gap`) is checked FIRST, before any `valueType`-specific
+ *  literal check below — the catalog's declared `valueType` is
+ *  irrelevant once the right-hand side is a live per-cycle value the
+ *  backend resolves itself (mirrors `compileGivenLeaf`'s identical
+ *  check for the metric side; compiles to the SAME `{"$given": name}`
+ *  marker, matching the backend's `_resolve_given_operand`, which is
+ *  applied to a leaf's `value` unconditionally, independent of its
+ *  `metric`). `in`/`not_in` is rejected here — comparing a single
+ *  resolved scalar against a list operator has no sensible meaning. */
 function _compileComparatorValue(metricStr, scopeStr, valueType, op, value, errors) {
+  if (value && value.type === 'given_ref') {
+    if (op === 'in' || op === 'not_in') {
+      errors.push(_err(`'${op === 'in' ? 'in' : 'not in'}' cannot compare against a bound label — use a literal list on the right`));
+      return null;
+    }
+    return { metric: metricStr, scope: scopeStr, op, value: { '$given': String(value.label).toLowerCase() } };
+  }
+
   if (op === null) {
     if (valueType === 'boolean') {
       return { metric: metricStr, scope: scopeStr, op: '==', value: true };
@@ -3451,6 +3536,104 @@ function _resolveDotAccess(segments, catalog, errors) {
   }
   errors.push(_err(`unknown column '${lastName}' on scope '${scopeEntry.token}'`));
   return null;
+}
+
+/** Compile a `{type:'given_leaf', label, op, value}` node (see the
+ *  `rhsKind === 'expr'` branch in `parseLeaf`, above) — a WHEN leaf whose
+ *  LEFT operand references an earlier `'expr'`-kind binding (e.g. `c =
+ *  cash@funds.total; m = avail_margin@funds.total; gap = c - m` then
+ *  `WHEN gap < 0`) instead of a catalog metric token.
+ *
+ *  Compiles `metric` to the EXISTING `{"$given": "<name>"}` marker this
+ *  file already uses for every other "this value is a GIVEN-expr
+ *  reference, not a literal" position (`debug(...)`, action params,
+ *  ALERT message parts — see `_resolveGivenExprRefOrNull`), just in the
+ *  leaf's `metric` slot instead of a value slot, lowercased the same way
+ *  every one of those reference sites already lowercases it. There is
+ *  deliberately NO `scope` key: unlike a real metric, a GIVEN binding
+ *  resolves to one per-agent scalar per cycle with no account/symbol
+ *  dimension (see `_cycle_evaluate_given_bindings` server-side) — there
+ *  is no scope string to put there, and a plain leaf's `scope` is
+ *  otherwise always a non-empty string (see `_isPlainLeaf`'s own type
+ *  check, which this shape is deliberately built to fail — a reader that
+ *  only recognizes the ordinary `metric`+`scope`-both-strings shape must
+ *  fall through to its own "unrecognized" handling rather than silently
+ *  misread this; see `decompileGivenLeaf`, below, for the one reader
+ *  that DOES recognize it). The match/latch-key `metric` field server-
+ *  side is the bound NAME ITSELF (a plain hashable string), never the
+ *  marker dict — `_V2_LATCH`'s tuple key would raise on an unhashable
+ *  dict — so `_eval_given_metric_leaf` unwraps the marker before using
+ *  it there; this compile step is not responsible for that unwrap.
+ *
+ *  `value` may ALSO be a `{type:'given_ref', label}` node (see
+ *  `_parseLeafValue`) — a SECOND bound label compared against this one,
+ *  e.g. `WHEN gap < m` — which compiles to the SAME marker in the
+ *  `value` slot, mirroring the backend's `_resolve_given_operand`
+ *  (called on a leaf's value regardless of whether its metric is itself
+ *  a marker). Only the ordinary scalar comparators accept a
+ *  `given_ref` value (see the early check below) — `in`/`not_in`
+ *  against a single resolved scalar has no sensible meaning, so it is
+ *  rejected at compile time rather than left to silently never fire.
+ *
+ *  There is no catalog entry for a GIVEN binding — its runtime type isn't
+ *  known until the backend evaluates its expression this cycle — so,
+ *  mirroring `_resolveGivenExprRefOrNull`'s own "defer type-checking to
+ *  runtime" choice for action params, a LITERAL value accepts the same
+ *  shapes `_compileComparatorValue` already accepts for a real leaf
+ *  (number / string / `true`/`false` / list via `in`/`not_in`), with no
+ *  catalog-driven `valueType` gate — the backend's own runtime comparison
+ *  is the real type check. */
+function compileGivenLeaf(node, catalog) {
+  const errors = [];
+  const label = String(node.label).toLowerCase();
+  const value = node.value;
+  const metric = { '$given': label };
+
+  if (value && value.type === 'given_ref') {
+    if (node.op === 'in' || node.op === 'not_in') {
+      errors.push(_err(`'${node.op === 'in' ? 'in' : 'not in'}' cannot compare against a bound label — use a literal list on the right`));
+      return { conditions: null, errors };
+    }
+    return { conditions: { metric, op: node.op, value: { '$given': String(value.label).toLowerCase() } }, errors: [] };
+  }
+
+  if (node.op === 'in' || node.op === 'not_in') {
+    if (value.type !== 'list') {
+      errors.push(_err(`'${node.op === 'in' ? 'in' : 'not in'}' requires a list literal on the right`));
+      return { conditions: null, errors };
+    }
+    // No catalog `valueType` to pass — `_compileListValue` treats a falsy
+    // `valueType` as numeric (its own existing default), the same
+    // assumption this whole function makes for every other literal shape
+    // below.
+    const list = _compileListValue(value, null, errors);
+    if (errors.length) return { conditions: null, errors };
+    return { conditions: { metric, op: node.op, value: list }, errors: [] };
+  }
+  if (value.type === 'number') {
+    return { conditions: { metric, op: node.op, value: value.value }, errors: [] };
+  }
+  if (value.type === 'string') {
+    if (node.op !== '==' && node.op !== '!=') {
+      errors.push(_err(`'${node.label}': a string comparison only supports == / !=`));
+      return { conditions: null, errors };
+    }
+    return { conditions: { metric, op: node.op, value: String(value.value) }, errors: [] };
+  }
+  if (value.type === 'name') {
+    const lower = String(value.value).toLowerCase();
+    if (lower === 'true' || lower === 'false') {
+      if (node.op !== '==' && node.op !== '!=') {
+        errors.push(_err(`'${node.label}': a boolean comparison only supports == / !=`));
+        return { conditions: null, errors };
+      }
+      return { conditions: { metric, op: node.op, value: lower === 'true' }, errors: [] };
+    }
+    errors.push(_err(`'${node.label}': expected a number, string, true/false, or list on the right`));
+    return { conditions: null, errors };
+  }
+  errors.push(_err(`'${node.label}': unsupported comparison value`));
+  return { conditions: null, errors };
 }
 
 function compileLeaf(node, catalog) {
@@ -3674,6 +3857,7 @@ function compileCondNode(node, catalog) {
   }
   if (node.type === 'between') return compileBetween(node, catalog);
   if (node.type === 'leaf') return compileLeaf(node, catalog);
+  if (node.type === 'given_leaf') return compileGivenLeaf(node, catalog);
   if (node.type === 'colref') return compileColRef(node, catalog);
   if (node.type === 'ref') return compileRef(node, catalog);
   return { conditions: null, errors: [_err('internal: unknown condition node type')] };
@@ -6483,6 +6667,60 @@ function decompileLeaf(node, catalog, errors) {
   return null;
 }
 
+/** Decompile a `{metric: {"$given": "<name>"}, op, value}` given-leaf —
+ *  the mirror of `compileGivenLeaf`, and the ONE reader of the compiled
+ *  condition tree that recognizes a MARKER-shaped `metric` (every other
+ *  reader treats it as "not an ordinary leaf" and falls through to its
+ *  own unrecognized/no-op handling — see `compileGivenLeaf`'s own
+ *  docstring). Renders back to the exact source text `parseLeaf`'s
+ *  `rhsKind === 'expr'` branch accepts (`<name> <op> <value>`), so a
+ *  saved agent using this feature can be reopened in Console/Automation
+ *  Edit and recompile byte-identically. The referenced label renders
+ *  lowercased (the compiled marker is already lowercased, same as every
+ *  other `$given`-style reference in this file; a label reference is
+ *  resolved case-insensitively against `state.bindings` regardless, so
+ *  this loses nothing an operator could observe). A `value` that is
+ *  ITSELF a `{"$given": name}` marker (`WHEN gap < m`) renders as the
+ *  bare referenced name instead of a quoted/numeric literal — mirrors
+ *  `_renderMsg`'s existing `$given`-vs-literal branch used elsewhere in
+ *  this file for the same marker in a VALUE position. Dispatched from
+ *  `decompileCondNode` ONLY when `node.metric` is marker-shaped — never
+ *  otherwise. */
+function decompileGivenLeaf(node, errors) {
+  const name = node.metric['$given'];
+  if (_isGivenRefMarker(node.value)) {
+    if (!['<', '<=', '>', '>=', '==', '!='].includes(node.op)) {
+      errors.push(_err(`given-leaf '${name}': '${node.op}' cannot compare against a bound label`));
+      return null;
+    }
+    return `${name} ${node.op} ${node.value['$given']}`;
+  }
+  if (node.op === 'in' || node.op === 'not_in') {
+    if (!Array.isArray(node.value)) {
+      errors.push(_err(`given-leaf '${name}': '${node.op}' requires a list value`));
+      return null;
+    }
+    const r = _renderListLiteral(node.value);
+    if (r.error) { errors.push(_err(`given-leaf '${name}': ${r.message}`)); return null; }
+    return `${name} ${node.op === 'not_in' ? 'not in' : 'in'} ${r.text}`;
+  }
+  if (['<', '<=', '>', '>=', '==', '!='].includes(node.op) && typeof node.value === 'number') {
+    const numText = _renderNumber(node.value);
+    if (numText == null) { errors.push(_err(`given-leaf '${name}': value ${node.value} cannot be rendered as a CLI numeric literal`)); return null; }
+    return `${name} ${node.op} ${numText}`;
+  }
+  if ((node.op === '==' || node.op === '!=') && typeof node.value === 'boolean') {
+    return `${name} ${node.op} ${node.value}`;
+  }
+  if ((node.op === '==' || node.op === '!=') && typeof node.value === 'string') {
+    const r = _renderListItem(node.value);
+    if (r.error) { errors.push(_err(`given-leaf '${name}': ${r.message}`)); return null; }
+    return `${name} ${node.op} ${r.text}`;
+  }
+  errors.push(_err(`given-leaf '${name}': unrecognized op/value combination (op=${node.op}, value=${JSON.stringify(node.value)})`));
+  return null;
+}
+
 /** Recursively expand any child of an `all`/`any` array that is ITSELF
  *  the SAME op (e.g. a nested `all:[{all:[a,b]}, c]}`, which is exactly
  *  what `compileCondNode` builds for any chain of 3+ ANDed/ORed leaves —
@@ -6634,6 +6872,13 @@ function decompileCondNode(node, catalog, errors) {
   if ('log' in node) return _decompileLogConditionLeaf(node.log, errors);
   if (typeof node.metric === 'string' && typeof node.scope === 'string') {
     return decompileLeaf(node, catalog, errors);
+  }
+  // Sprint [given-in-leaf] — a MARKER-shaped `metric` (`{"$given": name}`,
+  // never a real catalog token/scope pair — `compileGivenLeaf` never
+  // emits a `scope` key alongside it) is the one other leaf-like shape
+  // this dispatcher recognizes.
+  if (_isGivenRefMarker(node.metric) && typeof node.op === 'string') {
+    return decompileGivenLeaf(node, errors);
   }
   errors.push(_err(`unrecognized condition shape: ${JSON.stringify(node)}`));
   return null;

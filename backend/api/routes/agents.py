@@ -561,11 +561,41 @@ def _flatten_dry_run_matches(matches: list) -> list[dict]:
     ]
 
 
+def _dry_run_bound_label_values(agent, bindings: dict) -> dict:
+    """Per-declared-label view of this agent's own bound-label values for
+    THIS dry-run tick — `name -> resolved value`, or `name -> None` when
+    that one binding's own evaluation failed or was skipped this tick
+    (see `agent_engine._cycle_evaluate_given_bindings`'s fail-closed
+    contract — it already logs the specific reason; this view only
+    needs to show resolved-vs-not, so an operator can see what a label
+    actually resolved to BEFORE saving a leaf that references it by
+    name — the dry-run visibility addressed by this function).
+
+    `agent.given` is `list[{"name": str, "expr"|"parts": ...}]` in
+    declaration order (see `models.py:Agent.given`). Reports under the
+    label's own ORIGINAL typed case (not lowercased) — matching how the
+    operator actually wrote it — while looking the value up under
+    `name.lower()`, the key every binding is actually stored under
+    (same convention `resolve_given_ref_params` and `_given_resolve_parts`
+    already use for every OTHER reference to a bound label)."""
+    declared = getattr(agent, "given", None) or []
+    out: dict = {}
+    for b in declared:
+        if not isinstance(b, dict):
+            continue
+        name = b.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        out[name] = (bindings or {}).get(name.lower())
+    return out
+
+
 def _build_dry_run_response(agent, slug, ctx, now) -> dict:
     """Phase 22 — pure gate/eval/response builder. Module-level so the
     route handler can wrap it in a single try/except that logs the
     actual traceback rather than relying on Litestar's silent default."""
     from backend.api.algo.agent_evaluator import evaluate as v2_evaluate, Context
+    from backend.api.algo.agent_engine import _cycle_evaluate_given_bindings
 
     blocked_by = _check_dry_run_gates(agent, ctx, now)
 
@@ -593,6 +623,20 @@ def _build_dry_run_response(agent, slug, ctx, now) -> dict:
         agent=agent,
     )
 
+    # A dry-run builds its own fresh `v2_ctx`/`ctx` per call — it never
+    # goes through `agent_engine._cycle_evaluate_agent` (the real per-
+    # tick entry point `run_cycle` uses) — so it must call the SAME
+    # bindings step directly here, before the tree walk, or a WHEN leaf
+    # referencing a bound label (`{"$given": "<name>"}`) would always
+    # see an empty `v2_ctx.given_bindings` and fail closed regardless of
+    # whether the binding genuinely resolves on a real tick. Never
+    # raises (see that function's own docstring); a true no-op for any
+    # agent with no bound labels at all.
+    _cycle_evaluate_given_bindings(agent, v2_ctx, ctx)
+    resolved_bindings = (ctx.get("given") or {}).get(agent.id) or {}
+    v2_ctx.given_bindings = resolved_bindings
+    bound_label_values = _dry_run_bound_label_values(agent, resolved_bindings)
+
     matches = []
     try:
         if agent.conditions:
@@ -605,6 +649,7 @@ def _build_dry_run_response(agent, slug, ctx, now) -> dict:
             "would_fire":  False,
             "blocked_by":  "eval_error",
             "eval_error":  str(e),
+            "bindings":    bound_label_values,
             "evaluated_at": now.isoformat(),
         }
 
@@ -616,6 +661,7 @@ def _build_dry_run_response(agent, slug, ctx, now) -> dict:
         "match_count":  len(matches),
         "would_fire":   would_fire,
         "blocked_by":   blocked_by,
+        "bindings":     bound_label_values,
         "evaluated_at": now.isoformat(),
     }
 
@@ -1113,7 +1159,22 @@ def _age_validate_event_spec(slug: str, conditions: dict, events: list, actions:
             detail="; ".join(errors), extra={"errors": errors})
 
 
-def _age_validate_threshold_conditions(conditions: dict) -> None:
+def _age_given_names(given: list | None) -> set:
+    """Lowercased set of label names a statement's own `given` list
+    declares — the set `agent_evaluator.validate()` checks a WHEN leaf's
+    `{"$given": "<name>"}` marker reference against (see that function's
+    `given_names` param). Matches the storage-key convention every OTHER
+    reference to a bound label already uses (`name.lower()`)."""
+    out: set = set()
+    for b in (given or []):
+        if isinstance(b, dict):
+            name = b.get("name")
+            if isinstance(name, str) and name:
+                out.add(name.lower())
+    return out
+
+
+def _age_validate_threshold_conditions(conditions: dict, given: list | None = None) -> None:
     """Reject unknown/malformed metric-scope-op leaf tokens at save time —
     kind-agnostic companion to `_age_validate_event_spec` above. Runs for
     EVERY agent (event-kind included), since `conditions` leaves aren't
@@ -1127,12 +1188,28 @@ def _age_validate_threshold_conditions(conditions: dict) -> None:
     conditions value (not yet a real grammar tree) is left alone — only a
     tree that actually looks like a condition attempt gets its tokens
     checked, so this never retroactively tightens behaviour for agents
-    that never had real conditions to begin with."""
+    that never had real conditions to begin with.
+
+    `given` — this same statement's OWN declared bound labels (the
+    `Agent.given` list, in declaration order; `None` means the same as
+    an empty list — "this statement declares zero bindings" — NOT "no
+    label context available", since both real callers (create/update)
+    always have the real row's own `given` field in hand, even when
+    it's null). Threaded into `v2_validate()`'s `given_names` so a WHEN
+    leaf referencing a label by name (`{"$given": "<name>"}`) is
+    checked against what this statement ACTUALLY declares, not left
+    unchecked — a typo'd label reference would otherwise save clean and
+    simply never fire, the exact class of defect this function exists
+    to catch. The genuinely contextless case (`given_names=None`,
+    skipping the existence check entirely) is reserved for a caller
+    with NO agent row at all, e.g. the standalone `/validate-condition`
+    endpoint, which calls `agent_evaluator.validate()` directly and
+    never goes through this wrapper."""
     from backend.api.algo.agent_evaluator import validate as v2_validate
     from backend.api.algo.agent_engine import is_grammar_tree
     if not is_grammar_tree(conditions):
         return
-    errors = v2_validate(conditions)
+    errors = v2_validate(conditions, given_names=_age_given_names(given))
     if errors:
         raise HTTPException(status_code=422,
             detail="; ".join(errors), extra={"errors": errors})
@@ -1372,7 +1449,7 @@ class AgentController(Controller):
                                                is_create=True, slug=data.slug)
             else:
                 _age_validate_action_entries(data.actions)
-            _age_validate_threshold_conditions(data.conditions)
+            _age_validate_threshold_conditions(data.conditions, data.given)
             tm = _age_resolve_trade_mode(data.trade_mode)
             agent = Agent(
                 slug=data.slug, name=data.name,
@@ -1530,7 +1607,7 @@ class AgentController(Controller):
                                                is_create=False)
             else:
                 _age_validate_action_entries(agent.actions)
-            _age_validate_threshold_conditions(agent.conditions)
+            _age_validate_threshold_conditions(agent.conditions, getattr(agent, "given", None))
             await session.commit()
         if agent.kind == "event":
             from backend.api.algo import event_agents as _ea

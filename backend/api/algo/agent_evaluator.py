@@ -262,6 +262,22 @@ class Context:
     # longer breaching) apart from "data missing this tick" (never
     # observed) — see agent_engine._v2_apply_latch.
     observations:    list                   = field(default_factory=list)
+    # A label bound by an ordinary assignment statement earlier in this
+    # agent's own statement (anything before `WHEN` — no introducer
+    # keyword required) resolves, once per cycle, to a single scalar
+    # BEFORE this tree walk runs: `agent_engine._cycle_evaluate_given_
+    # bindings()` computes it, and `agent_engine._cycle_evaluate_agent()`
+    # copies this agent's own slice of that result onto this field right
+    # before calling `evaluate()`. Keyed by `name.lower()`, matching the
+    # lowercase-everywhere convention every OTHER reference to a bound
+    # label already uses (`{"$given": name}` action-param markers, DO-
+    # action params, ALERT message parts). Empty `{}` for every caller
+    # that never populates it (hand-built Context in a test, a log-feed-
+    # driven event agent, any agent whose statement never binds a label)
+    # — a leaf referencing a name absent from this dict then simply fails
+    # to match (see `_eval_leaf`'s marker-metric branch below), never an
+    # exception, never a false 0/None coerced into a comparable value.
+    given_bindings:  dict                   = field(default_factory=dict)
 
     # ─── Cross-row helpers the resolvers rely on ─────────────────────────
 
@@ -710,9 +726,152 @@ def _resolve_metric_fn(metric_tok: Optional[str], scope_tok: Optional[str]) -> O
     return _exposed_column_resolver
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+#  Bound-label references ($given) inside a WHEN leaf's comparator positions
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# A label bound by an ordinary assignment statement earlier in the SAME
+# agent's own preamble (anything before `WHEN` — no introducer keyword) can
+# be read back inside a leaf's metric OR value position. Wire shape: the
+# EXISTING `{"$given": "<name>"}` marker (already used for a DO action
+# param referencing an operator-expression label — see
+# `actions.py:resolve_given_ref_params`) appears in place of a plain
+# string token. No new top-level leaf shape, no discriminator key — a
+# leaf's `metric`/`value` field is either its ordinary type (a string
+# token / a literal) or this single-key marker dict.
+#
+# The bound value is a single per-tick scalar the engine already resolved
+# BEFORE this tree walk runs (`agent_engine._cycle_evaluate_given_bindings`,
+# threaded onto `Context.given_bindings` by `_cycle_evaluate_agent`) — not
+# a per-row scope selection, so a marker-metric leaf never consults
+# `REGISTRY.scope()`/`_resolve_metric_fn()` at all.
+
+_GIVEN_LEAF_SCOPE = "preamble"
+
+
+def _is_given_ref_marker(v: Any) -> bool:
+    """True iff `v` is EXACTLY the single-key marker dict
+    `{"$given": "<name>"}` — mirrors `actions.py:_is_given_ref_marker`
+    (duplicated here, not imported, to avoid a new cross-module
+    dependency `agent_evaluator.py` otherwise has no reason to carry)."""
+    return isinstance(v, dict) and len(v) == 1 and "$given" in v
+
+
+def _given_marker_name(marker: dict) -> Optional[str]:
+    """Extract and lowercase a marker's bound-label name, or None when
+    malformed (missing/non-string/empty). Lowercased to match the SAME
+    convention every other reference to a bound label already uses —
+    `agent_engine._cycle_evaluate_given_bindings` stores bindings keyed
+    by `name.lower()`."""
+    raw = marker.get("$given")
+    if not isinstance(raw, str) or not raw:
+        return None
+    return raw.lower()
+
+
+def _resolve_given_operand(raw: Any, ctx: Context) -> "tuple[Any, bool]":
+    """Resolve a leaf operand that MAY be a `{"$given": name}` marker.
+
+    Returns `(value, ok)`. `ok=False` is the fail-closed signal: the
+    marker was malformed, OR the named binding is absent from
+    `ctx.given_bindings` this cycle, OR it resolved to `None` (its own
+    upstream evaluation failed/was skipped). The caller MUST treat
+    `ok=False` as a clean no-match — never substitute a coerced default,
+    never raise. A non-marker `raw` passes through unchanged (`ok=True`)
+    — this is the common case for an ordinary literal RHS value."""
+    if not _is_given_ref_marker(raw):
+        return raw, True
+    name = _given_marker_name(raw)
+    if name is None:
+        return None, False
+    bindings = ctx.given_bindings or {}
+    if name not in bindings or bindings[name] is None:
+        return None, False
+    return bindings[name], True
+
+
+def _eval_given_metric_leaf(leaf: dict, ctx: Context, marker: dict) -> list[dict]:
+    """Evaluate a WHEN leaf whose `metric` is a `{"$given": "<name>"}`
+    marker — a reference to a label bound earlier in this same agent's
+    own statement. See the module section comment above for the wire
+    shape and `Context.given_bindings` for where the per-tick value
+    comes from.
+
+    Fail-closed, non-negotiable: a missing/unresolved binding (this
+    leaf's own metric OR its value operand, when the value is also a
+    marker) makes this leaf a clean no-match — mirrors the EXISTING
+    `if val is None: continue` guard the ordinary per-row path below
+    applies to every registry-resolved metric, just a different source
+    for the value.
+
+    The match/observation entry's own `metric` field is the bound
+    NAME ITSELF (a plain, hashable string, e.g. `"gap"`) — never the
+    marker dict — because `agent_engine._latch_key`/`_V2_LATCH` hash
+    this value; a dict there would raise `TypeError: unhashable type`
+    and abort evaluation for every agent still queued this cycle
+    (`run_cycle`'s per-agent loop has no surrounding try/except). The
+    name is already unique per agent (an operator cannot assign the
+    same label twice in one statement), so the existing
+    `(agent_slug, metric, scope, account)` latch key works unmodified —
+    no composite-key redesign needed. `account` is stamped 'TOTAL' (a
+    single per-tick scalar is an aggregate value, not a per-row one),
+    matching every other aggregate scope's own convention."""
+    name = _given_marker_name(marker)
+    op_tok = leaf.get('op')
+    op_fn = REGISTRY.op(op_tok)
+    if name is None or op_fn is None:
+        logger.warning(
+            f"Condition leaf has a malformed bound-label metric reference "
+            f"or unknown operator — metric={marker!r} op={op_tok!r}"
+        )
+        return []
+
+    bindings = ctx.given_bindings or {}
+    if name not in bindings or bindings[name] is None:
+        # Either never bound by this statement, or its own evaluation
+        # failed/was skipped this tick (see Context.given_bindings'
+        # docstring) — never an exception, never a false match.
+        return []
+    val = bindings[name]
+
+    value, ok = _resolve_given_operand(leaf.get('value'), ctx)
+    if not ok:
+        return []
+
+    try:
+        fired = bool(op_fn(val, value))
+    except Exception as e:
+        logger.warning(
+            f"Operator '{op_tok}' failed comparing bound value "
+            f"{val!r} (label={name!r}) vs {value!r}: {e}"
+        )
+        return []
+
+    entry = {
+        'metric':    name,
+        'scope':     _GIVEN_LEAF_SCOPE,
+        'op':        op_tok,
+        'threshold': value,
+        'value':     val,
+        'row':       {},
+        'account':   'TOTAL',
+        'underlying': None,
+    }
+    try:
+        ctx.observations.append({**entry, 'fired': fired})
+    except Exception:
+        pass
+    return [entry] if fired else []
+
+
 def _eval_leaf(leaf: dict, ctx: Context) -> list[dict]:
     if "log" in leaf:
         return _eval_log(leaf, ctx)
+
+    metric_raw = leaf.get('metric')
+    if _is_given_ref_marker(metric_raw):
+        return _eval_given_metric_leaf(leaf, ctx, metric_raw)
+
     try:
         metric_tok = leaf['metric']
         scope_tok  = leaf['scope']
@@ -720,6 +879,15 @@ def _eval_leaf(leaf: dict, ctx: Context) -> list[dict]:
         value      = leaf.get('value')
     except KeyError as e:
         logger.warning(f"Condition leaf missing key {e}: {leaf!r}")
+        return []
+
+    # An ordinary metric_ref leaf whose VALUE (not metric) operand
+    # references a bound label — e.g. `pnl@positions.total < gap` — same
+    # fail-closed contract as the marker-metric branch above: a missing/
+    # unresolved binding makes this leaf a clean no-match, never a crash
+    # from comparing a real number against an unresolved marker dict.
+    value, value_ok = _resolve_given_operand(value, ctx)
+    if not value_ok:
         return []
 
     metric_fn = _resolve_metric_fn(metric_tok, scope_tok)
@@ -812,7 +980,32 @@ def _eval_leaf(leaf: dict, ctx: Context) -> list[dict]:
 #  Validation helper (used by admin UI / test harness)
 # ═══════════════════════════════════════════════════════════════════════════
 
-def validate(cond: dict) -> list[str]:
+def _validate_given_marker_shape(marker: dict, given_names, path: str,
+                                  errors: list[str], *, where: str) -> None:
+    """Dry-check a `{"$given": "<name>"}` marker found at `where`
+    ('metric' or 'value') inside leaf `path`. Always checks the marker
+    is well-formed. Only checks the name is actually a label this
+    statement declares when `given_names` is supplied — `None` means
+    the caller (e.g. the standalone `/validate-condition` endpoint,
+    which dry-checks a bare condition tree with no agent context at
+    all) has no label set to check against, so this degrades to a pure
+    shape check, same leniency this function already applies elsewhere
+    when a check needs context it doesn't have."""
+    name = marker.get("$given")
+    if not isinstance(name, str) or not name:
+        errors.append(
+            f"{path}.{where}: malformed bound-label reference {marker!r} "
+            f"— '$given' must be a non-empty string"
+        )
+        return
+    if given_names is not None and name.lower() not in given_names:
+        errors.append(
+            f"{path}.{where}: references bound label '{name}', which is "
+            f"not assigned anywhere earlier in this statement"
+        )
+
+
+def validate(cond: dict, given_names: "set[str] | None" = None) -> list[str]:
     """
     Dry-check a condition tree against the registry. Returns a list of
     human-readable error strings (empty list ⇒ tree looks well-formed).
@@ -820,6 +1013,16 @@ def validate(cond: dict) -> list[str]:
     token exists in the registry. Resolves `{"$ref": <name>}` against the
     fragment registry and recurses into the resolved body so a typo
     deep inside a fragment still surfaces.
+
+    `given_names` — optional set of lowercased label names this agent's
+    OWN statement assigns before `WHEN` (an ordinary assignment item in
+    the preamble, no keyword). When supplied, a leaf referencing a
+    `{"$given": "<name>"}` marker (see `agent_evaluator._eval_leaf`'s
+    module-section comment) in its metric or value position is checked
+    against this set — a name absent from it is flagged, same as an
+    unknown metric/scope token everywhere else in this function. `None`
+    (the default) skips that existence check entirely — used by callers
+    that validate a bare condition tree with no agent/label context.
     """
     errors: list[str] = []
 
@@ -872,6 +1075,22 @@ def validate(cond: dict) -> list[str]:
             if str(spec.get('min_level', 'INFO')).upper() not in _LEVEL_NO:
                 errors.append(f"{path}.log: unknown min_level '{spec.get('min_level')}'")
             return
+        if _is_given_ref_marker(c.get('metric')):
+            # Marker-metric leaf — references a bound label, not a
+            # registered scope/metric token. `scope` is unused by
+            # evaluation (see `_eval_given_metric_leaf`) and is NOT
+            # required here. `op` still must be a real registered
+            # operator. `value` may itself be a marker (two bound
+            # labels compared against each other) — checked the same
+            # way as the ordinary leaf path below.
+            _validate_given_marker_shape(c['metric'], given_names, path, errors, where='metric')
+            if 'op' not in c:
+                errors.append(f"{path}: leaf missing 'op'")
+            elif c.get('op') and REGISTRY.op(c['op']) is None:
+                errors.append(f"{path}: unknown operator token '{c['op']}'")
+            if _is_given_ref_marker(c.get('value')):
+                _validate_given_marker_shape(c['value'], given_names, path, errors, where='value')
+            return
         for k in ('metric', 'scope', 'op'):
             if k not in c:
                 errors.append(f"{path}: leaf missing '{k}'")
@@ -881,6 +1100,8 @@ def validate(cond: dict) -> list[str]:
             errors.append(f"{path}: unknown scope token '{c['scope']}'")
         if c.get('op') and REGISTRY.op(c['op']) is None:
             errors.append(f"{path}: unknown operator token '{c['op']}'")
+        if _is_given_ref_marker(c.get('value')):
+            _validate_given_marker_shape(c['value'], given_names, path, errors, where='value')
         # Sprint 21 — quote.* is instrument-rooted (no account dimension),
         # so a leaf with no (or wildcard) scope_filter.symbol has nothing
         # to disambiguate WHICH tracked symbol it means — ctx.quote_rows
