@@ -175,9 +175,25 @@
            explicit grid-row (shared with the 4 cells below) makes it a
            true overlap, not a 5th auto-placed item competing for the
            same cells (see the header-bg comment above for why that
-           class of fix needs BOTH axes explicit). -->
+           class of fix needs BOTH axes explicit).
+           Two side-wash divs added (2026-10-31, operator: "chain border
+           lines for strikes and order border line for depth are not in
+           sync. reuse chain border and look to order ticket. follow
+           different background shade ask qty and price, and bid qty
+           and price") — .ot-depth-row-wash-bid / -ask paint the actual
+           per-side colored fill; .ot-depth-row-wash (this div) now
+           paints ONLY the row-bottom divider (see its own ::before
+           below for why the background-color was removed from it).
+           Placed BEFORE the bid/ask wash divs in the DOM, same
+           default z-index (auto) as them, so the two colored fills
+           paint on top of it; its ::before carries no background of
+           its own so the border-bottom line still shows through
+           on top, unobscured — see that rule's comment for the full
+           reasoning. -->
       <div class="ot-depth-row-wash" class:ot-depth-row-wash-last={isLastRow}
            style="grid-row:{gridRow}" aria-hidden="true"></div>
+      <div class="ot-depth-row-wash-bid" style="grid-row:{gridRow}" aria-hidden="true"></div>
+      <div class="ot-depth-row-wash-ask" style="grid-row:{gridRow}" aria-hidden="true"></div>
       <span class="ot-depth-cell ot-depth-bid-qty" style="grid-row:{gridRow}; grid-column:1">{b ? qtyFmt(b.quantity) : '—'}</span>
       <span class="ot-depth-cell ot-depth-bid" style="grid-row:{gridRow}; grid-column:2">{b ? priceFmt(b.price) : '—'}</span>
       <span class="ot-depth-cell ot-depth-ask" style="grid-row:{gridRow}; grid-column:3">{a ? priceFmt(a.price) : '—'}</span>
@@ -337,8 +353,28 @@
        number") — max-content columns (above) size EXACTLY to their
        content with zero internal buffer, so the original 0.4rem gap
        read as visually cramped, especially between the qty and price
-       columns on each side. Row-gap (between price rows) unchanged. */
-    gap: 0.15rem 0.9rem;
+       columns on each side. Row-gap (between price rows) unchanged.
+       Row-gap zeroed 0.15rem -> 0 (2026-10-31, operator: "chain border
+       lines for strikes and order border line for depth are not in
+       sync. reuse chain border and look to order ticket") — live
+       screenshot comparison found the actual discrepancy: Chain's
+       `<table>` rows abut directly (zero gap; `.chain-row > td`'s own
+       border-bottom is the ONLY vertical separation), so its hairline
+       divider and Strike-column side-borders read as one continuous
+       line down the whole grid. This CSS Grid's 0.15rem row-gap left a
+       sliver of the card's plain dark background showing BETWEEN each
+       row-wash band — the border-bottom (painted on the wash's own
+       bottom edge) and the next row's wash (painted on its own top
+       edge) never touched, so the line read as a series of short
+       disconnected dashes, and the Bid|Ask column divider
+       (.ot-depth-bid/-ask border-right/-left, below) read as a
+       segmented tick per row instead of one continuous line. Zeroing
+       the row-gap makes consecutive row tracks abut exactly like
+       Chain's collapsed table rows; the removed 0.15rem of vertical
+       breathing room is restored via padding on .ot-depth-cell (below)
+       instead, so overall ladder height (and the --chain-depth-h
+       parity with Chain's own grid) is unchanged. */
+    gap: 0 0.9rem;
     font-family: var(--font-numeric);
     /* Audit fix — explicit tabular-nums on the price/qty cells. The
        shared --font-numeric stack covers digit-width consistency, but
@@ -568,14 +604,24 @@
      green, since this ladder has no ITM/OTM-style two-sided signal to
      hang a color mapping on; see `.ot-depth-diag` below for the
      "different" row, which reuses Chain's OTHER literal tier (0.05,
-     its ATM-row shade). */
+     its ATM-row shade).
+     REVERSED 2026-10-31 — the operator explicitly asked for a per-side
+     bid/ask color mapping after all; see `.ot-depth-row-wash-bid`/
+     `-ask` below for the new design and the full rationale. This
+     paragraph is kept as the historical record of the earlier,
+     opposite decision, not as the current behavior. */
   .ot-depth-cell {
     text-align: right;
     color: var(--algo-slate);
     position: relative;
     z-index: 1;
+    /* Replaces the 0.15rem row-gap removed above (2026-10-31) — split
+       evenly top/bottom so each row's vertical footprint (and the
+       overall ladder height) is unchanged, only the TRACK GAP between
+       rows is gone. */
+    padding-block: 0.075rem;
   }
-  /* Full-bleed per-row background layer — same technique as
+  /* Full-bleed per-row DIVIDER layer — same technique as
      .ot-depth-header-bg::before above (2026-09-30), applied to data
      rows (2026-10-29). position:relative anchors ::before; this host
      element paints nothing itself (consolidated onto ::before alone,
@@ -584,7 +630,20 @@
      uneven). grid-column:1/-1 spans all 4 explicit column tracks;
      grid-row is set inline per-row (see markup) so this div and its
      row's 4 cells truly overlap rather than competing for auto-placed
-     cells. */
+     cells.
+     background-color REMOVED (2026-10-31, operator: "follow different
+     background shade ask qty and price, and bid qty and price") — the
+     old flat 0.03-white fill (same alpha/value on both bid and ask
+     sides) is replaced by the two per-side tints below
+     (.ot-depth-row-wash-bid/-ask); this element keeps ONLY the
+     border-bottom divider line so it still reads as one genuine
+     reusable layer for "where does this row end", painted on top of
+     (DOM-after) the two colored fills — see the markup comment above
+     for the stacking rationale. A border-only box with no
+     background-color of its own doesn't obscure whatever is
+     underneath except at the 1px border itself, so paint order here
+     doesn't actually matter for correctness; kept after the two wash
+     divs in the DOM to mirror "the line sits on top" reading. */
   .ot-depth-row-wash {
     grid-column: 1 / -1;
     position: relative;
@@ -593,13 +652,57 @@
     content: '';
     position: absolute;
     inset: 0 -9999px;
-    background-color: rgba(255,255,255,0.03);
     border-bottom: 1px solid rgba(255,255,255,0.025);
   }
   /* No divider under the final depth row — mirrors Chain's own
      `.chain-row:last-child > td { border-bottom: 0 }`. */
   .ot-depth-row-wash-last::before {
     border-bottom: none;
+  }
+  /* Bid-side / ask-side background tint (2026-10-31, operator: "follow
+     different background shade ask qty and price, and bid qty and
+     price") — the operator's EARLIER instruction on this same ladder
+     (2026-10-29, preserved above) explicitly asked for a single
+     NEUTRAL wash, rejecting a per-side green/orange design that had
+     been drafted and then simplified away (see
+     order_ticket_depth_chain_decoration.spec.js's "Stale-code" guard,
+     which pinned that rejection). This is a direct, explicit reversal
+     of that decision, not an oversight — the stale-code test is
+     updated in lockstep to match (same class of reversal as the Chain
+     ITM hue swap, 2026-10-25, CLAUDE.md).
+     Each wash spans exactly 2 of the 4 explicit column tracks (bid-qty
+     + bid, or ask + ask-qty) and bleeds half the 0.9rem column-gap
+     (0.45rem) into the Bid|Ask boundary so the two fills meet exactly
+     at the gap's midpoint, regardless of how wide the max-content
+     bid/ask-qty columns happen to be that tick — splitting a single
+     full-bleed wash at a fixed 50% point would NOT land on that
+     boundary whenever the two qty columns differ in width. The outer
+     edge bleeds -9999px the same way every other full-bleed layer in
+     this file does, clipped at .ot-depth's own border via its
+     overflow:hidden.
+     Colors reuse this file's own existing bid/ask text-color tokens
+     (--algo-green/--c-long for bid, --algo-red/--c-short for ask) at
+     literal rgba — same literal-value convention Chain's own ITM/OTM
+     washes use (OptionChainTab.svelte) — at the file's established
+     "very very subtle" 0.03 tier, the same magnitude as the neutral
+     wash this replaces, not a new scale. */
+  .ot-depth-row-wash-bid,
+  .ot-depth-row-wash-ask {
+    position: relative;
+  }
+  .ot-depth-row-wash-bid { grid-column: 1 / 3; }
+  .ot-depth-row-wash-ask { grid-column: 3 / 5; }
+  .ot-depth-row-wash-bid::before {
+    content: '';
+    position: absolute;
+    inset: 0 -0.45rem 0 -9999px;
+    background-color: rgba(74,222,128,0.03);
+  }
+  .ot-depth-row-wash-ask::before {
+    content: '';
+    position: absolute;
+    inset: 0 -9999px 0 -0.45rem;
+    background-color: rgba(248,113,113,0.03);
   }
   .ot-depth-bid     { color: var(--algo-green, var(--c-long)); border-right: 1px solid rgba(255,255,255,0.03); padding-right: 0.3rem; }
   .ot-depth-bid-qty { color: var(--algo-green, var(--c-long)); opacity: 0.7; }

@@ -147,8 +147,14 @@ test.describe('Static source checks — OrderDepth.svelte', () => {
     expect(body).not.toMatch(/grid-template-columns:\s*1fr\s+1fr\s+1fr\s+1fr/);
     expect(body).toMatch(/justify-content:\s*center/);
     // Widened from 0.4rem -> 0.9rem after "columns too close" feedback
-    // on the just-landed content-sized-column change.
-    expect(body).toMatch(/gap:\s*0\.15rem\s+0\.9rem/);
+    // on the just-landed content-sized-column change. Row-gap zeroed
+    // 0.15rem -> 0 (2026-10-31, operator: "chain border lines for
+    // strikes and order border line for depth are not in sync. reuse
+    // chain border") — the row-gap sliver broke the row-bottom divider
+    // into disconnected dashes against Chain's own zero-gap table rows;
+    // see order_ticket_depth_chain_decoration.spec.js for the full
+    // rationale and the .ot-depth-cell padding-block compensation.
+    expect(body).toMatch(/gap:\s*0\s+0\.9rem/);
   });
 
   test('.ot-depth-label column headers tint toward their own data column color, via nth-of-type not nth-child (2026-09-30, fixed same day — see "hidden header" bug below)', () => {
