@@ -47,7 +47,23 @@ def _reset_for_tests() -> None:
 
 def _log_failed_call(logger, name: str, attempts: int, exc: Exception, count: int) -> None:
     if count > ESCALATE_AFTER:
-        logger.error(
+        # 2026-10-31 live incident: once `count` crosses ESCALATE_AFTER this
+        # branch ran on EVERY SUBSEQUENT failed call, not just the first —
+        # a genuinely down broker (confirmed: Zerodha's own Kite API
+        # returning 502) gets probed again every ~60s by the circuit
+        # breaker's own half-open recovery test (by design, to detect
+        # recovery), and each failed probe re-escalated here, firing a
+        # fresh ERROR_AGENT alert every single time. Live-reported: 8+
+        # separate "kite.margins"/"kite.positions"/"kite.holdings" alerts
+        # in minutes, all for the SAME ongoing outage. `dedup_log_error`
+        # (same mechanism as orders_helpers.py's own repeated-failure
+        # dedup) now gates this specific escalation: one alert per `name`
+        # per cooldown window, not one per retry — the WARNING branch
+        # below (pre-escalation) is untouched, since those never reach
+        # ERROR_AGENT anyway.
+        dedup_log_error(
+            logger,
+            f"recoverable_escalate:{name}",
             f"{name}: failed after {attempts} attempts ({count} failed calls in "
             f"{WINDOW_S // 60} min): {exc}",
             extra={"alert_now": True},

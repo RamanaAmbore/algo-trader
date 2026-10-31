@@ -16,6 +16,9 @@ class _FakeLogger:
     def error(self, msg, **kw):
         self.records.append(("ERROR", msg, kw))
 
+    def debug(self, msg, **kw):
+        self.records.append(("DEBUG", msg, kw))
+
 
 @pytest.fixture
 def fake(monkeypatch):
@@ -23,6 +26,7 @@ def fake(monkeypatch):
     monkeypatch.setattr(recovery, "get_logger", lambda name: logger)
     monkeypatch.setattr(recovery.time, "sleep", lambda s: None)
     recovery._reset_for_tests()
+    recovery._reset_dedup_for_tests()
     return logger
 
 
@@ -57,6 +61,39 @@ def test_repeated_failed_calls_stay_warning_then_escalate(fake):
     last = [r for r in fake.records if "failed after" in r[1]][-1]
     assert last[0] == "ERROR"
     assert last[2] == {"extra": {"alert_now": True}}
+
+
+def test_escalation_does_not_realert_on_every_subsequent_failure(fake):
+    """2026-10-31 live incident: a genuinely down broker (circuit
+    breaker's own half-open recovery test still probes every ~60s by
+    design) kept crossing ESCALATE_AFTER on every call once past the
+    threshold, firing a fresh ERROR_AGENT alert each time — 8+ alerts
+    in minutes for the SAME ongoing outage. Only the FIRST escalation
+    past threshold should reach ERROR; repeats within the dedup cooldown
+    must not log a second one. `already_logged()` must still read True
+    on every failure, deduped or not, so a caller's own fallback error
+    log stays suppressed throughout."""
+    @recovery.recoverable("kite.margins", attempts=1, backoff_s=0)
+    def down():
+        raise RuntimeError("502")
+
+    for _ in range(recovery.ESCALATE_AFTER):
+        with pytest.raises(RuntimeError):
+            down()
+
+    # Three more calls past the threshold — in the old behaviour each one
+    # would escalate to a fresh ERROR; now only ever one ERROR total.
+    excs = []
+    for _ in range(3):
+        try:
+            down()
+        except RuntimeError as e:
+            excs.append(e)
+    errors = [r for r in fake.records if r[0] == "ERROR"]
+    assert len(errors) == 1, f"expected exactly one ERROR escalation, got {len(errors)}"
+    assert all(recovery.already_logged(e) for e in excs), (
+        "already_logged() must stay True even when the ERROR itself was deduped"
+    )
 
 
 def test_exception_is_reraised_unchanged(fake):
