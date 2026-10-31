@@ -1373,7 +1373,9 @@
           "type": "enum",
           "enum": [
             "total",
-            "account"
+            "account",
+            "role",
+            "user"
           ],
           "default": "total"
         },
@@ -1381,6 +1383,16 @@
           "type": "string",
           "required": false,
           "description": "Required when scope=account."
+        },
+        "role": {
+          "type": "string",
+          "required": false,
+          "description": "Required when scope=role. Only 'trader' is supported."
+        },
+        "user": {
+          "type": "string",
+          "required": false,
+          "description": "Required when scope=user. Must be a trader-role username."
         },
         "side": {
           "type": "enum",
@@ -1409,13 +1421,25 @@
           "type": "enum",
           "enum": [
             "total",
-            "account"
+            "account",
+            "role",
+            "user"
           ],
           "default": "total"
         },
         "account": {
           "type": "string",
           "required": false
+        },
+        "role": {
+          "type": "string",
+          "required": false,
+          "description": "Required when scope=role. Only 'trader' is supported."
+        },
+        "user": {
+          "type": "string",
+          "required": false,
+          "description": "Required when scope=user. Must be a trader-role username."
         },
         "timeout_minutes": {
           "type": "number",

@@ -1244,11 +1244,28 @@ system_tokens:
       enum:
       - total
       - account
+      - role
+      - user
       default: total
     account:
       type: string
       required: false
       description: Required when scope=account.
+    # 2026-10-31 — operator: "I should be able to select an account in
+    # actions ... for accounts, roles, users, etc. If the parameters are
+    # not mentioned, it should be for all." role/user scoping is
+    # restricted to role='trader' — the only role with a well-defined
+    # per-user account list (every other role is firm-wide and sees all
+    # accounts regardless of list contents); a non-trader role/user
+    # raises rather than silently resolving wrong.
+    role:
+      type: string
+      required: false
+      description: Required when scope=role. Only 'trader' is supported.
+    user:
+      type: string
+      required: false
+      description: Required when scope=user. Must be a trader-role username.
     side:
       type: enum
       enum:
@@ -1271,10 +1288,22 @@ system_tokens:
       enum:
       - total
       - account
+      - role
+      - user
       default: total
     account:
       type: string
       required: false
+    # 2026-10-31 — same role/user scoping as cancel_all_orders above,
+    # restricted to role='trader' for the same well-definedness reason.
+    role:
+      type: string
+      required: false
+      description: Required when scope=role. Only 'trader' is supported.
+    user:
+      type: string
+      required: false
+      description: Required when scope=user. Must be a trader-role username.
     timeout_minutes:
       type: number
       default: 10

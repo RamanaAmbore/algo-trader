@@ -973,11 +973,19 @@ class CancelAllOrdersRequest(msgspec.Struct):
     """Body for `POST /api/orders/cancel-all`. Mirrors the
     `cancel_all_orders` agent-action params_schema (agent_grammar.yaml)
     field-for-field — `scope="account"` without `account` is refused by
-    the shared helper (`actions_live.cancel_all_orders_scoped`)."""
+    the shared helper (`actions_live.cancel_all_orders_scoped`).
+
+    2026-10-31 — `role`/`user`: scope='role' narrows to every trader-role
+    user's own assigned accounts (role must be 'trader' — every other
+    role is firm-wide and has no well-defined per-user account list);
+    scope='user' narrows to one trader-role user's own assigned accounts.
+    """
     scope: "str | None" = None
     account: "str | None" = None
     symbol: "str | None" = None
     side: "str | None" = None
+    role: "str | None" = None
+    user: "str | None" = None
 
 
 class CancelAllOrdersResponse(msgspec.Struct):
@@ -987,6 +995,8 @@ class CancelAllOrdersResponse(msgspec.Struct):
     account: "str | None" = None
     symbol: "str | None" = None
     side: "str | None" = None
+    role: "str | None" = None
+    user: "str | None" = None
     detail: str = "Cancel-all requested"
 
 

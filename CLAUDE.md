@@ -1888,6 +1888,44 @@ Rule: these buttons must always live inside the shared card button-group slot. N
 
 ## Critical math guards
 
+**Fan-out actions (`cancel_all_orders`, `chase_close_positions`) can scope by role/user as well as
+account (2026-10-31, operator: "I should be able to select an account in actions... for accounts,
+roles, users, etc. If the parameters are not mentioned, it should be for all")** — `place_order`/
+`order`/`modify_order`/`cancel_order`/`close_position` are single-target actions (exactly one
+account + one order/position) and are out of scope for this — confirmed by audit, nothing to add
+there. `cancel_all_orders` and `chase_close_positions` are the genuine fan-out actions and already
+had `scope: total|account`; `scope` gained `role`/`user`, deliberately restricted to `role='trader'`
+— the only role with a real per-user `assigned_accounts` list (`_FIRM_WIDE_ROLES` in `rbac.py` —
+every other role sees all accounts regardless of list contents, so "accounts for role=admin" has no
+well-defined answer). `scope=role` requires `role='trader'` and resolves to the UNION of every
+trader-role user's own accounts; `scope=user` requires a trader-role username and resolves to that
+one user's own accounts. Either raises `ValueError` for a non-trader role/user rather than silently
+resolving an empty or wrong set. An empty resolution (no matching trader, or a trader with no
+accounts assigned) narrows to ZERO accounts/positions — the existing trader fail-safe convention,
+not an error.
+- `_al_resolve_scope_accounts()` / `_al_accounts_for_trader_role()` / `_al_accounts_for_trader_user()`
+  ([`actions_live.py`](backend/api/algo/actions_live.py)) are the shared resolvers.
+  `cancel_all_orders_scoped()` keeps the pre-existing `account` param's "narrows whenever set,
+  regardless of scope" behaviour unchanged (backward compat); `role`/`user` narrow WHICH brokers are
+  even considered, orthogonal to and composable with that. `_chase_resolve_positions()` (for
+  `chase_close_positions`) routes `scope`/`account`/`role`/`user` straight through
+  `_al_resolve_scope_accounts()` — `account` there only narrows when `scope=='account'` (chase's own
+  pre-existing, different-from-cancel_all convention, unchanged).
+- `_al_positions_filter()` accepts either a single account string or an iterable of accounts.
+  **Bug caught by its own test**: a bare `elif scope_accts:` on an iterable would have treated an
+  explicit empty list (a role/user query matching nobody) as falsy and silently fallen through to
+  "keep everything" — the exact falsy-empty-collection trap this file flags elsewhere (e.g. the
+  `events=[]` alert-routing entry). Fixed to `elif scope_accts is not None:`.
+- `POST /api/orders/cancel-all` (`CancelAllOrdersRequest`/`Response`) gained `role`/`user` fields,
+  passed straight through to the same shared helper — no duplicated refusal logic.
+- Deliberately NOT extended to the paper/sim position-scope mirrors (`_live_positions_in_scope`,
+  `_sim_positions_in_scope`) — live-only for now, per Scope Discipline; flagged, not silently
+  propagated to those sibling paths.
+- Tests: `test_action_scope_role_user_2026_10_31.py` (resolvers, `_al_positions_filter`'s is-not-None
+  fix, broker-loop role/user narrowing, backward-compat no-op when role/user are omitted).
+- Invariant: omitting role/user entirely is a complete no-op — every already-saved agent using
+  `scope='total'`/`'account'` behaves identically to before this change.
+
 **Every alert must explicitly show paper/sim/replay mode; live stays silent (2026-10-31, operator:
 "the alerts should show paper and simulation mode explicitly in alert notification ... this
 functionality should be in the base code for all alerts")** — Mode labeling was scattered and

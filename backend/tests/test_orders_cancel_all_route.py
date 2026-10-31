@@ -51,6 +51,7 @@ async def test_cancel_all_orders_happy_path_calls_shared_helper():
 
     mock_helper.assert_awaited_once_with(
         scope="account", account="ZG0790", symbol="NIFTY", side="BUY",
+        role=None, user=None,
     )
     assert result.cancelled == 3
     assert result.errors == 1
@@ -78,6 +79,7 @@ async def test_cancel_all_orders_default_scope_is_total():
 
     mock_helper.assert_awaited_once_with(
         scope="total", account=None, symbol=None, side=None,
+        role=None, user=None,
     )
     assert result.scope == "total"
 

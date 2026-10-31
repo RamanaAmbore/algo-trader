@@ -1317,11 +1317,102 @@ async def _al_cancel_broker_orders(
     return cancelled, errors
 
 
+async def _al_accounts_for_trader_role() -> "list[str]":
+    """Every account assigned to a trader-role user, deduped. `trader` is
+    the only role with a real per-user `assigned_accounts` list — every
+    other role is firm-wide and sees all accounts regardless of list
+    contents (`_FIRM_WIDE_ROLES` in `rbac.py`), so "accounts for role=X"
+    has no well-defined answer for any role other than trader."""
+    from sqlalchemy import select as _sql_select
+    from backend.api.database import async_session
+    from backend.api.models import User
+    async with async_session() as s:
+        rows = (await s.execute(
+            _sql_select(User.assigned_accounts).where(User.role == "trader")
+        )).scalars().all()
+    accts: set[str] = set()
+    for lst in rows:
+        for a in (lst or []):
+            if a:
+                accts.add(str(a))
+    return sorted(accts)
+
+
+async def _al_accounts_for_trader_user(username: str) -> "list[str]":
+    """One trader-role user's own `assigned_accounts`. Raises ValueError
+    for an unknown user or a user whose role isn't trader — same
+    well-definedness reasoning as `_al_accounts_for_trader_role`: a
+    firm-wide role's `assigned_accounts` list is unused/irrelevant to
+    that user's real visibility, so narrowing to it would silently
+    under- or over-scope relative to what the operator actually sees."""
+    from sqlalchemy import select as _sql_select
+    from backend.api.database import async_session
+    from backend.api.models import User
+    async with async_session() as s:
+        row = (await s.execute(
+            _sql_select(User.role, User.assigned_accounts)
+            .where(User.username == username)
+        )).first()
+    if row is None:
+        raise ValueError(f"scope=user: no such user {username!r}")
+    role, assigned = row
+    if (role or "").strip().lower() != "trader":
+        raise ValueError(
+            f"scope=user is only well-defined for a trader-role user — "
+            f"{username!r} has role={role!r}, which is firm-wide and has "
+            "no per-user account list to narrow to"
+        )
+    return sorted({str(a) for a in (assigned or []) if a})
+
+
+async def _al_resolve_scope_accounts(
+    scope: "str | None", account: "str | None",
+    role: "str | None", user: "str | None",
+) -> "list[str] | None":
+    """Resolve params.scope/account/role/user into the real account set a
+    fan-out action (cancel_all_orders, chase_close_positions) should
+    narrow to. Returns `None` for scope='total' (or unset) — "no
+    narrowing", today's existing default behaviour, 100% backward
+    compatible with every already-saved agent that never set these.
+
+    scope='role'/'user' is deliberately restricted to the `trader` role
+    (see the two helpers above) — every other role is firm-wide, so
+    "accounts for role=admin" or "accounts for user=<a partner>" has no
+    well-defined answer today. Raises ValueError rather than silently
+    resolving to an empty or a wrong set.
+    """
+    scope = (scope or "total").lower()
+    if scope == "account":
+        acct = str(account or "").strip()
+        if not acct:
+            raise ValueError("scope=account requires account")
+        return [acct]
+    if scope == "role":
+        role_norm = str(role or "").strip().lower()
+        if not role_norm:
+            raise ValueError("scope=role requires role")
+        if role_norm != "trader":
+            raise ValueError(
+                f"scope=role is only well-defined for role='trader' — "
+                f"role={role_norm!r} is firm-wide and has no per-user "
+                "account list to narrow to"
+            )
+        return await _al_accounts_for_trader_role()
+    if scope == "user":
+        username = str(user or "").strip()
+        if not username:
+            raise ValueError("scope=user requires user")
+        return await _al_accounts_for_trader_user(username)
+    return None
+
+
 async def cancel_all_orders_scoped(
     scope: "str | None" = None,
     account: "str | None" = None,
     symbol: "str | None" = None,
     side: "str | None" = None,
+    role: "str | None" = None,
+    user: "str | None" = None,
 ) -> "tuple[int, int]":
     """
     Shared implementation of "cancel every open order across all accounts
@@ -1351,6 +1442,20 @@ async def cancel_all_orders_scoped(
     and is deliberately NOT relaxed to "only gate when scope=='account'",
     which would have widened an accidental account-scoped cancel under
     scope='total' to every account — the opposite of this fix's intent.
+
+    2026-10-31 — `scope="role"`/`scope="user"` (operator: "I should be
+    able to select an account in actions... for accounts, roles, users,
+    etc. If the parameters are not mentioned, it should be for all").
+    Resolved via `_al_resolve_scope_accounts()` to a trader-role account
+    set (see that function's docstring for why role/user scoping is
+    restricted to `trader` — every other role is firm-wide and has no
+    well-defined per-user account list). An empty resolved set (a
+    trader-role query matching nobody, or a trader with no accounts
+    assigned) narrows to ZERO accounts — same fail-safe convention as
+    `trader`'s own empty `assigned_accounts` elsewhere in this app, not
+    an error. Orthogonal to the pre-existing `account` narrowing above:
+    both can combine (role/user narrows WHICH brokers are even
+    considered; `account`, if also set, narrows within that further).
     """
     import asyncio
     from backend.brokers.registry import all_brokers
@@ -1362,6 +1467,23 @@ async def cancel_all_orders_scoped(
         raise ValueError(
             "cancel_all_orders: account is required when scope=account"
         )
+    role_user_accounts: "set[str] | None" = None
+    if scope == "role":
+        role_norm = str(role or "").strip().lower()
+        if not role_norm:
+            raise ValueError("cancel_all_orders: role is required when scope=role")
+        if role_norm != "trader":
+            raise ValueError(
+                f"cancel_all_orders: scope=role is only well-defined for "
+                f"role='trader' — role={role_norm!r} is firm-wide and has "
+                "no per-user account list to narrow to"
+            )
+        role_user_accounts = set(await _al_accounts_for_trader_role())
+    elif scope == "user":
+        username = str(user or "").strip()
+        if not username:
+            raise ValueError("cancel_all_orders: user is required when scope=user")
+        role_user_accounts = set(await _al_accounts_for_trader_user(username))
     symbol = str(symbol) if symbol else None
     side = str(side).upper() if side else None
 
@@ -1369,6 +1491,8 @@ async def cancel_all_orders_scoped(
     total_errors = 0
 
     for broker in all_brokers():
+        if role_user_accounts is not None and broker.account not in role_user_accounts:
+            continue
         cancelled, errors = await _al_cancel_broker_orders(
             broker, scope_account, loop, symbol=symbol, side=side,
         )
@@ -1391,14 +1515,17 @@ async def _action_live_cancel_all_orders(agent, context: dict, params: dict):
     scope_account = params.get("account")
     symbol = params.get("symbol")
     side = params.get("side")
+    role = params.get("role")
+    user = params.get("user")
 
     total_cancelled, total_errors = await cancel_all_orders_scoped(
         scope=scope, account=scope_account, symbol=symbol, side=side,
+        role=role, user=user,
     )
 
     logger.info(f"[LIVE] cancel_all_orders complete: {total_cancelled} cancelled, "
                 f"{total_errors} errors (agent={agent.slug}, scope={scope or 'total'}, "
-                f"symbol={symbol}, side={side})")
+                f"symbol={symbol}, side={side}, role={role}, user={user})")
 
 
 def _al_positions_to_rows(df) -> "list[dict]":
@@ -1417,24 +1544,43 @@ def _al_positions_to_rows(df) -> "list[dict]":
         return []
 
 
-def _al_positions_filter(rows: list, scope_acct: "str | None") -> list:
-    """Apply account scope filter and drop zero-qty rows."""
-    if scope_acct:
-        rows = [r for r in rows if str(r.get("account")) == scope_acct]
+def _al_positions_filter(rows: list, scope_accts: "str | list[str] | set[str] | None") -> list:
+    """Apply account scope filter and drop zero-qty rows. `scope_accts`
+    may be a single account string (legacy 'account' scope) or an
+    iterable of accounts (2026-10-31 — 'role'/'user' scope, see
+    `_al_resolve_scope_accounts`); either form narrows to rows whose
+    account matches.
+
+    `None` or an empty string -> no filter at all, every row kept
+    (today's pre-existing 'no account given' convention). A non-string
+    iterable is checked via `is not None`, NOT truthiness -- an explicit
+    empty list/set (a role/user query that resolved to zero accounts)
+    must narrow to ZERO rows, never silently fall through to "keep
+    everything" the way a bare `elif scope_accts:` would (the exact
+    falsy-empty-collection trap this app's own CLAUDE.md repeatedly
+    flags elsewhere)."""
+    if isinstance(scope_accts, str):
+        if scope_accts:
+            rows = [r for r in rows if str(r.get("account")) == scope_accts]
+    elif scope_accts is not None:
+        allowed = {str(a) for a in scope_accts}
+        rows = [r for r in rows if str(r.get("account")) in allowed]
     return [r for r in rows if int(r.get("quantity") or 0) != 0]
 
 
-def _chase_resolve_positions(context: dict, params: dict) -> list[dict]:
+async def _chase_resolve_positions(context: dict, params: dict) -> list[dict]:
     """Read df_positions from context, apply scope filter, drop zero-qty rows.
 
     Returns an empty list when the DataFrame is missing, empty, or cannot
     be converted — caller checks and returns early.
     """
-    scope      = (params.get("scope") or "total").lower()
-    scope_acct = str(params.get("account") or "") if scope == "account" else None
+    scope_accts = await _al_resolve_scope_accounts(
+        params.get("scope"), params.get("account"),
+        params.get("role"), params.get("user"),
+    )
 
     rows = _al_positions_to_rows(context.get("df_positions"))
-    return _al_positions_filter(rows, scope_acct)
+    return _al_positions_filter(rows, scope_accts)
 
 
 async def _al_chase_handle_blocked(
@@ -1646,9 +1792,17 @@ async def _action_live_chase_close_positions(agent, context: dict, params: dict)
     """
     Close every open position in scope using the adaptive chase engine.
 
-    Scope resolution — params.scope:
+    Scope resolution — params.scope (via `_chase_resolve_positions` ->
+    `_al_resolve_scope_accounts`, 2026-10-31):
       'total'   (default) — every position across all accounts
       'account'           — positions for params.account only
+      'role'              — positions for every trader-role user's own
+                             assigned accounts (params.role must be
+                             'trader' — the only role with a well-defined
+                             per-user account list; any other role raises)
+      'user'              — positions for one trader-role user's own
+                             assigned accounts (params.user; raises if
+                             that user's role isn't trader)
 
     For each non-zero position, derives the closing side (SELL for long,
     BUY for short), fetches LTP for the initial limit, writes an
@@ -1669,7 +1823,7 @@ async def _action_live_chase_close_positions(agent, context: dict, params: dict)
 
     scope = (params.get("scope") or "total").lower()
 
-    rows = _chase_resolve_positions(context, params)
+    rows = await _chase_resolve_positions(context, params)
     if not rows:
         logger.warning(f"[LIVE] chase_close_positions: no positions in context "
                        f"(agent={agent.slug}, scope={scope})")

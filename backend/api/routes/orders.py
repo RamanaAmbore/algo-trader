@@ -3108,7 +3108,7 @@ class OrdersController(Controller):
         """Fleet/account-wide cancel-all, optionally narrowed by
         `symbol`/`side`. Shares its underlying implementation
         (`actions_live.cancel_all_orders_scoped`) with the
-        `cancel_all_orders` agent DO-action — same scope/account
+        `cancel_all_orders` agent DO-action — same scope/account/role/user
         narrowing, same `scope="account"` without `account` refusal.
 
         Same RBAC pattern as the single-order `cancel_order` route above
@@ -3129,6 +3129,7 @@ class OrdersController(Controller):
             cancelled, errors = await cancel_all_orders_scoped(
                 scope=scope, account=data.account,
                 symbol=data.symbol, side=data.side,
+                role=data.role, user=data.user,
             )
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
@@ -3138,11 +3139,12 @@ class OrdersController(Controller):
         logger.info(
             f"cancel-all: {cancelled} cancelled, {errors} errors "
             f"(scope={scope}, account={masked_acct}, symbol={data.symbol}, "
-            f"side={data.side})"
+            f"side={data.side}, role={data.role}, user={data.user})"
         )
         return CancelAllOrdersResponse(
             cancelled=cancelled, errors=errors, scope=scope,
             account=data.account, symbol=data.symbol, side=data.side,
+            role=data.role, user=data.user,
         )
 
 class AccountsController(Controller):
