@@ -823,7 +823,7 @@
       {#if _aiMeta.rest}<span class="ai-meta-rest">{_aiMeta.rest}</span>{/if}
     </div>
   {:else if agent.description}
-    <div class="text-[length:var(--fs-sm)] text-[var(--c-muted)] italic mt-1.5 mb-1">{agent.description}</div>
+    <div class="text-[length:var(--fs-md)] text-[var(--c-muted)] italic mt-1.5 mb-1">{agent.description}</div>
   {/if}
 
   <div class="text-[length:var(--fs-sm)] text-[var(--c-muted)] mt-2 mb-1 flex items-center flex-wrap gap-x-2 gap-y-0.5">
@@ -1015,7 +1015,7 @@
              when there's neither a description nor a group. -->
         {#if row.description || row.group}
           <div class="flex flex-wrap items-center gap-y-1 px-2 pb-1">
-            <span class="aw-row-desc text-[length:var(--fs-sm)] text-[var(--c-muted)] italic" title={row.description || ''}>{row.description}{row.description && row.group ? ' ' : ''}{row.group ? `#group:${row.group}` : ''}</span>
+            <span class="aw-row-desc text-[length:var(--fs-md)] text-[var(--c-muted)] italic" title={row.description || ''}>{row.description}{row.description && row.group ? ' ' : ''}{row.group ? `#group:${row.group}` : ''}</span>
           </div>
         {/if}
         </div>
