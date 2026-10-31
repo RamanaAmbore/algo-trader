@@ -1174,6 +1174,32 @@ swallowed the error and returned `False`, so the guard never fired. **It now fir
 starting a sim while any segment is open is refused with HTTP 409. Operators who relied on the
 bypass must set `simulator.block_during_market_hours=false` on `/admin/settings`. Note that
 `_markets_currently_open()` still masks any other exception as `False`.
+- *Amended 2026-10-31 — default flipped back to `false`.* `SimDriver`'s own evaluation logic already
+  ignores real market hours entirely, so blocking the START of a sim while a real exchange happens to
+  be open was backwards — the engine's own internal clock is the only one that matters. Both read
+  sites (`_market_hours_block_check()` and the `/defaults` response builder,
+  [`simulator.py:220`](backend/api/routes/simulator.py#L220) / [`:806`](backend/api/routes/simulator.py#L806))
+  now fall back to `False`, and the seeded default (`settings.py` `SEEDS`) matches. A one-shot migration
+  (`_flip_sim_block_default_once()`, guarded by a `task_markers.`-prefixed marker so it runs exactly
+  once per database) corrects any already-seeded row still sitting at the old `value="true"` default —
+  `_upsert_seeds()` only ever syncs `default_value`, never `value`, so without this a pre-existing row
+  would never pick up the new default. The gate mechanism itself (`/admin/settings` toggle, the 409
+  response) is unchanged — an operator who explicitly wants the block can still turn it on.
+
+**Abandoned `mode='sim'` orders now get a terminal status when a sim run stops (2026-10-31)** —
+`SimDriver._internal_stop()` used to log the count of still-`OPEN` paper orders and discard
+`self._paper`, leaving every one of those `AlgoOrder` rows stuck at `status='OPEN'` forever — both on
+an explicit stop and on a mode-pill switch away from sim (`execution.py:_stop_drivers()` calls
+`SimDriver.stop()`). Fix: `_sd_finalize_stale_open_orders()`
+([`sim/driver.py:1230`](backend/api/algo/sim/driver.py#L1230)) iterates `self._paper.open_order_details()`
+and calls `self._paper.cancel_paper_order(algo_order_id, source="sim_stop")` for each — the same
+mechanism the operator Kill button and the MCP cancel tool already use (writes `status='CANCELLED'`
++ an `AlgoOrderEvent`). `_internal_stop()` calls this before `_revert_settings()`/the `sim_stop`
+recording event, and uses its return value for the recording's `open_orders` count (re-querying
+afterward would always read back 0 post-cancel). New cancel-source label `"sim_stop"`, added to
+`paper.py`'s `_CANCEL_SOURCE_LABELS` dict alongside the pre-existing `"mcp"`/`"operator"` wording.
+Invariant: stopping a sim run — explicitly, or via a mode-pill switch — never leaves a `mode='sim'`
+order dangling at `OPEN`.
 
 **Probe cost — monitor after deploy.** Sites that previously omitted `exchange=` (the simulator
 guard and status, the ticker watchdog) can now trigger live Kite-quote probes. `is_trading_day()`
