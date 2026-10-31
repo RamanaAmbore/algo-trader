@@ -1194,18 +1194,48 @@ test.describe('Static source checks — OrderDepth.svelte (2026-09-30, order tic
     expect(rule).not.toMatch(/\n\s*align-self:\s*flex-end;/);
   });
 
-  test('.ot-depth-diag border-top matches the header\'s amber border, and font-size matches Chain\'s label size (2026-09-30, operator: "make the border above the labels to align with header border... the text size the label text size be in sync with chain")', () => {
+  test('.ot-depth-diag font-size matches Chain\'s label size (2026-09-30, operator: "the text size the label text size be in sync with chain") — border-top now lives on ::before, see the dedicated 2026-10-31 full-bleed test below', () => {
     const content = readFile('src/lib/order/OrderDepth.svelte');
     const rule = ruleBody(content, '.ot-depth-diag') ?? '';
     expect(rule, '.ot-depth-diag rule must exist').not.toBe('');
-    // Same amber alpha as .ot-depth-header-bg's border-bottom, kept in
-    // sync with Chain's own .chain-th-* box-shadow amber throughout.
-    expect(rule).toMatch(/\n\s*border-top:\s*1px solid rgba\(251,191,36,0\.40\);/);
-    expect(rule).not.toMatch(/\n\s*border-top:\s*1px solid rgba\(255,255,255,0\.10\);/);
     // --fs-sm matches Chain's .chain-th-ce/-pe/-strike label size,
     // was --fs-2xs (smaller than Chain's equivalent labels).
     expect(rule).toMatch(/\n\s*font-size:\s*var\(--fs-sm\);/);
     expect(rule).not.toMatch(/\n\s*font-size:\s*var\(--fs-2xs\);/);
+    // 2026-10-31 reversal: the bare host rule no longer paints its own
+    // border-top/background-color directly — both moved to a full-bleed
+    // ::before (see the dedicated rule + tests below). A regression that
+    // re-adds either declaration directly to the host would silently
+    // reintroduce the pre-reversal "limited to content" look even if
+    // ::before still exists.
+    expect(rule).not.toMatch(/\n\s*border-top:/);
+    expect(rule).not.toMatch(/\n\s*background-color:/);
+  });
+
+  test('.ot-depth-diag::before carries the amber border-top and 0.05-white background full-bleed (2026-10-31, operator: "in order ticket, extend border and background for the row with text buy levels. this is the last row") — reverses the 2026-09-30 "limited to content" decision', () => {
+    const content = readFile('src/lib/order/OrderDepth.svelte');
+    const beforeRule = content.match(/\.ot-depth-diag::before\s*\{[^}]*\}/)?.[0] ?? '';
+    expect(beforeRule, '.ot-depth-diag::before rule must exist').not.toBe('');
+    expect(beforeRule).toMatch(/position:\s*absolute;/);
+    expect(beforeRule).toMatch(/inset:\s*0\s+-9999px;/);
+    // Same amber alpha as .ot-depth-header-bg's border-bottom, kept in
+    // sync with Chain's own .chain-th-* box-shadow amber throughout.
+    expect(beforeRule).toMatch(/border-top:\s*1px solid rgba\(251,191,36,0\.40\);/);
+    expect(beforeRule).not.toMatch(/border-top:\s*1px solid rgba\(255,255,255,0\.10\);/);
+    // Unchanged literal value from the pre-reversal host rule — only
+    // WHERE it paints moved, not the alpha tier itself.
+    expect(beforeRule).toMatch(/background-color:\s*rgba\(255,255,255,0\.05\);/);
+    // Host must anchor the bleed via position: relative, same convention
+    // as .ot-depth-header-bg/.ot-depth-row-wash above.
+    const hostRule = ruleBody(content, '.ot-depth-diag') ?? '';
+    expect(hostRule).toMatch(/\n\s*position:\s*relative;/);
+  });
+
+  test('.ot-depth-diag-item is positioned so it paints above ::before\'s full-bleed background (2026-10-31)', () => {
+    const content = readFile('src/lib/order/OrderDepth.svelte');
+    const rule = ruleBody(content, '.ot-depth-diag-item') ?? '';
+    expect(rule, '.ot-depth-diag-item rule must exist').not.toBe('');
+    expect(rule).toMatch(/\n\s*position:\s*relative;/);
   });
 
   test('.ot-depth-diag-lbl is right-aligned (2026-09-30, operator: "align the labels to right")', () => {
@@ -1249,35 +1279,60 @@ test.describe('Static source checks — OrderDepth.svelte (2026-09-30, order tic
     expect(Math.abs(diagCenter - gridCenter), 'diag center must align with grid center, not sit right-anchored').toBeLessThanOrEqual(2);
   });
 
-  test('live: .ot-depth-diag\'s own box (and its border-top) is narrower than .ot-depth-grid\'s card, not full-width', async ({ page }) => {
+  test('live: .ot-depth-diag\'s own box stays content-sized (text still centers), but its ::before background/border now bleeds to .ot-depth\'s full card edges (2026-10-31 reversal)', async ({ page }) => {
     await loginAsAdmin(page);
-    await page.goto('/orders', { waitUntil: 'domcontentloaded' }).catch(() => {});
+    await page.goto('/orders', { waitUntil: 'domcontentloaded', timeout: 30000 });
     const symInput = page.locator('.ssi-input').first();
-    const visible = await symInput.isVisible({ timeout: 10_000 }).catch(() => false);
-    if (!visible) {
-      test.info().annotations.push({ type: 'skip', description: 'symbol input not visible' });
-      return;
-    }
+    // expect().toBeVisible() retries/polls for up to the timeout — unlike
+    // the sibling tests above's isVisible().catch() snapshot check (a
+    // non-retrying immediate read that fires before the modal has even
+    // mounted and always resolves false near-instantly, the same pattern
+    // the header-bg full-bleed test above deliberately avoids).
+    await expect(symInput).toBeVisible({ timeout: 15_000 });
     await symInput.fill('NIFTY');
     const sugg = page.locator('.ssi-drop .ssi-row').first();
-    const suggVisible = await sugg.isVisible({ timeout: 8_000 }).catch(() => false);
-    if (!suggVisible) {
-      test.info().annotations.push({ type: 'skip', description: 'no suggestions' });
-      return;
-    }
+    await expect(sugg).toBeVisible({ timeout: 10_000 });
     await sugg.click({ force: true });
     const diag = page.locator('.ot-depth-diag').first();
-    const diagVisible = await diag.isVisible({ timeout: 10_000 }).catch(() => false);
+    // waitFor (polling), not isVisible() (snapshot) — this condition is a
+    // genuine "did a quote arrive" network race, worth retrying for,
+    // distinct from the input/suggestion mounting checks above.
+    const diagVisible = await diag.waitFor({ state: 'visible', timeout: 10_000 }).then(() => true).catch(() => false);
     if (!diagVisible) {
       test.info().annotations.push({ type: 'skip', description: '.ot-depth-diag not rendered (no quote)' });
       return;
     }
     const card = page.locator('.ot-depth').first();
+    // The host's own layout box is still content-sized — centering the
+    // text is unchanged from the 2026-09-30 decision. Only the painted
+    // decoration (::before) is now full-bleed, checked below.
     const [diagWidth, cardWidth] = await Promise.all([
       diag.evaluate((el) => el.getBoundingClientRect().width),
       card.evaluate((el) => el.getBoundingClientRect().width),
     ]);
-    expect(diagWidth, `.ot-depth-diag width (${diagWidth}px) must be narrower than .ot-depth's card width (${cardWidth}px) — content-sized, not full-width`).toBeLessThan(cardWidth);
+    expect(diagWidth, `.ot-depth-diag width (${diagWidth}px) must stay narrower than .ot-depth's card width (${cardWidth}px) — the TEXT box is still content-sized`).toBeLessThan(cardWidth);
+
+    // Same elementFromPoint technique as the header-bg full-bleed test
+    // above: sample near .ot-depth's own left/right edges, well outside
+    // the narrow centered content box — if the ::before bleed reaches
+    // there, elementFromPoint resolves back to .ot-depth-diag itself
+    // (pseudo-elements paint as part of their host for hit-testing).
+    const result = await card.evaluate((cardEl) => {
+      const diagEl = cardEl.querySelector('.ot-depth-diag');
+      const cr = cardEl.getBoundingClientRect();
+      const dr = diagEl.getBoundingClientRect();
+      const y = dr.top + dr.height / 2;
+      const nearLeftX = cr.left + 3;
+      const nearRightX = cr.right - 3;
+      const elAtLeft = document.elementFromPoint(nearLeftX, y);
+      const elAtRight = document.elementFromPoint(nearRightX, y);
+      return {
+        leftIsDiag: !!elAtLeft && (elAtLeft === diagEl || elAtLeft.closest('.ot-depth-diag') === diagEl),
+        rightIsDiag: !!elAtRight && (elAtRight === diagEl || elAtRight.closest('.ot-depth-diag') === diagEl),
+      };
+    });
+    expect(result.leftIsDiag, 'near-left edge must land on .ot-depth-diag (::before bleed reaches it)').toBe(true);
+    expect(result.rightIsDiag, 'near-right edge must land on .ot-depth-diag (::before bleed reaches it)').toBe(true);
   });
 
   test('live: .ot-depth-diag is visible below the bid/ask grid with labeled Buy levels / Sell levels / Volume (raw) values', async ({ page }) => {

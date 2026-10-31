@@ -178,9 +178,9 @@ test.describe('OrderDepth — "the last row with buy levels text" gets a differe
     expect(labelIdx).toBeGreaterThan(gridCloseIdx);
   });
 
-  test('.ot-depth-diag background reuses Chain\'s ATM-row literal alpha (0.05), distinct from the per-side 0.03 tint', () => {
+  test('.ot-depth-diag background reuses Chain\'s ATM-row literal alpha (0.05), distinct from the per-side 0.03 tint — lives on ::before since the 2026-10-31 full-bleed reversal', () => {
     const src = readFileSync(DEPTH_PATH, 'utf8');
-    const rule = src.match(/\.ot-depth-diag\s*\{[^}]*\}/)?.[0] ?? '';
+    const rule = src.match(/\.ot-depth-diag::before\s*\{[^}]*\}/)?.[0] ?? '';
     expect(rule).toMatch(/background-color:\s*rgba\(255,255,255,0\.05\)/);
   });
 

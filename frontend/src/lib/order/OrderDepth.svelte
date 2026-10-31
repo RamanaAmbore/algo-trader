@@ -744,9 +744,9 @@
        border-top spanned the whole card even though justify-content:
        center only centered the TEXT within that full-width box.
        inline-flex shrinks the container itself to fit its own content
-       (the 3 labeled items), so the border-top is exactly as wide as
-       "Buy levels 0 · Sell levels 0 · Volume (raw) 0" — genuinely
-       limited to the content, not stretching edge to edge.
+       (the 3 labeled items) — this TEXT-centering behavior is kept
+       unchanged below; only the border/background PAINTING moved off
+       this host (see ::before, next rule).
        align-self: flex-end tried (2026-09-30, operator: "align the
        labels to right") — was align-self: center (itself a
        replacement for the old justify-content: center, redundant on
@@ -758,40 +758,67 @@
        the card; centered the diag row matches that reference point.
        The .ot-depth-diag-lbl text-align: right (below) still applies
        per-label, independent of this container-level alignment.
-       border-top color/alpha matched to the header's own border
-       (2026-09-30, operator: "make the border above the labels to
-       align with header border") — was a plain white 0.10 alpha line,
-       now the same amber used by .ot-depth-header-bg's border-bottom,
-       which is itself kept in sync with Chain's .chain-th-*
-       box-shadow amber.
        font-size bumped --fs-2xs -> --fs-sm (2026-09-30, operator:
        "the label text size be in sync with chain") — matches Chain's
        own header-label size (.chain-th-ce/-pe/-strike), was smaller
-       than Chain's equivalent labels. */
+       than Chain's equivalent labels.
+       REVERSED 2026-10-31 (operator: "in order ticket, extend border
+       and background for the row with text buy levels. this is the
+       last row") — this is a direct, explicit reversal of the
+       2026-09-30 "the border above should be limited to the content"
+       decision quoted above, same class of reversal as the bid/ask
+       wash reversal elsewhere in this file (see .ot-depth-row-wash-bid/
+       -ask comments) and the Chain ITM hue swap (2026-10-25, CLAUDE.md)
+       — not an oversight. Border-top and background-color move off
+       this host onto a full-bleed ::before (same technique as
+       .ot-depth-header-bg and .ot-depth-row-wash above: inset
+       0 -9999px, clipped at .ot-depth's own overflow:hidden edge) so
+       the divider between the price ladder and this strip reads as
+       one continuous edge-to-edge line — matching the full-bleed rows
+       above — instead of a short line centered under the text. The
+       host itself stays inline-flex/content-centered so the TEXT still
+       centers against the grid above, unchanged from the 2026-09-30
+       decision; only the decorative paint is now full-bleed.
+       margin-top folded into padding-top (0.35rem -> added onto the
+       existing 0.2rem, below) so the row's total height is unchanged
+       but the whole span is now inside the ::before's padding-box —
+       margin is OUTSIDE the box and would otherwise leave a blank,
+       un-painted strip between the last price row and this strip's new
+       full-bleed border/background, breaking the "one continuous
+       table" read. position: relative anchors the ::before layer. */
     display: inline-flex;
     align-self: center;
     gap: 0.7rem;
     flex-wrap: wrap;
-    margin-top: 0.35rem;
-    padding: 0.2rem 0.5rem 0.25rem;
-    border-top: 1px solid rgba(251,191,36,0.40);
+    padding: 0.55rem 0.5rem 0.25rem;
     font-size: var(--fs-sm);
-    /* This is "the last row" of the ladder (the one carrying the
-       "Buy levels"/"Sell levels"/"Volume (raw)" text) — operator asked
-       for it to carry a different background than the 5 bid/ask rows
-       above (.ot-depth-cell, 0.03 white). Reuses Chain's OTHER literal
-       subtlety tier verbatim: 0.05 white, the same alpha Chain uses for
-       its ATM row's own "this row is different" shade
-       (`.chain-row-atm > td` background-image, OptionChainTab.svelte) —
-       not a new value picked by eye. border-radius matches the other
-       small background chips in this file (e.g. `.chain-spot-pill`). */
+    position: relative;
+  }
+  .ot-depth-diag::before {
+    content: '';
+    position: absolute;
+    inset: 0 -9999px;
+    /* Same literal values as the pre-2026-10-31 host rule, unchanged —
+       only WHERE they paint moved. 0.05 white reuses Chain's own
+       ATM-row shade (`.chain-row-atm > td` background-image,
+       OptionChainTab.svelte); the amber border-top is the header's own
+       border-bottom color, kept in sync with Chain's .chain-th-*
+       box-shadow amber throughout this file. */
     background-color: rgba(255,255,255,0.05);
-    border-radius: 3px;
+    border-top: 1px solid rgba(251,191,36,0.40);
   }
   .ot-depth-diag-item {
+    /* position: relative (no explicit z-index needed — document order
+       alone settles it, same reasoning as .ot-depth-cell/.ot-depth-label
+       above) so this item paints AFTER (on top of) ::before's full-bleed
+       background — a positioned descendant with z-index:auto is painted
+       in step 6 of the CSS2.1 painting order, document order deciding
+       ties within that step; ::before is this element's first child in
+       source order, so a later sibling at the same step always wins. */
     display: inline-flex;
     align-items: baseline;
     gap: 0.2rem;
+    position: relative;
   }
   .ot-depth-diag-lbl {
     color: var(--algo-muted);
