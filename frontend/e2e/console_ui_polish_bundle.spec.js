@@ -15,13 +15,13 @@
  *    standardization Part 8, 2026-10-13 — superseded ConsoleTab's own
  *    now-removed CardHeader), with Fullscreen wired (Search omitted —
  *    no grid at this level).
- * 4. The three Agents-tab kind-count cards (Agents/Alerts/Brackets —
- *    Templates folded into Agents 2026-10-12) each render a `.kind-
- *    card-n` AND `.kind-card-l` color keyed off `data-kind`. Revised
- *    2026-10-13: Brackets moved OFF the amber "Open status card" scheme
- *    it briefly shared with Agents, onto the GREEN "Filled status"
- *    scheme instead (operator-requested) — all three kind-cards
- *    (Agents/Alerts/Brackets) are distinct colors again.
+ * 4. The three Agents-tab kind counts (Agents/Alerts/Brackets —
+ *    Templates folded into Agents 2026-10-12) each carry a colour keyed
+ *    to their kind. Revised 2026-10-13: Brackets moved OFF the amber
+ *    "Open status card" scheme it briefly shared with Agents, onto the
+ *    GREEN "Filled status" scheme instead (operator-requested) — all
+ *    three kind counts (Agents/Alerts/Brackets) are distinct colors
+ *    again. (2026-10-31: the kind-count grid was replaced by a dropdown.)
  *
  * Mocking — order submission is mocked at the network boundary
  * (`POST /api/orders/ticket`), same approach as the sibling
@@ -33,6 +33,7 @@
 
 import { test, expect } from '@playwright/test';
 import { loginAsAdmin } from './fixtures/auth.js';
+import { agentKindTrigger, pickAgentKind } from './fixtures/agentKind.js';
 
 test.use({ projects: ['chromium-desktop'] });
 
@@ -416,50 +417,11 @@ test.describe('Item 3 — Workspace header removed; Console/Agents tab row carri
     const awView = page.locator('.aw-view');
 
     await awView.getByRole('tab', { name: 'Agents' }).click();
-    await expect(page.locator('.kind-card-grid')).toBeVisible({ timeout: TIMEOUT });
+    await expect(agentKindTrigger(page)).toBeVisible({ timeout: TIMEOUT });
     await expect(page.locator('textarea.agent-cli-textarea')).toHaveCount(0);
 
     await awView.getByRole('tab', { name: 'Console' }).click();
     await expect(page.locator('textarea.agent-cli-textarea')).toBeVisible({ timeout: TIMEOUT });
-    await expect(page.locator('.kind-card-grid')).toHaveCount(0);
-  });
-});
-
-test.describe('Item 4 — Agents-tab kind-cards each get a distinct color', () => {
-  test.beforeEach(async ({ page }) => {
-    await loginAsAdmin(page);
-  });
-
-  // Revised 2026-10-13 — operator: "brackets color should match Filled
-  // status, not Open" — Brackets now uses the GREEN scheme (Orders'
-  // `.ob-sc[data-status="active"]`/"Filled" chip tokens), distinct from
-  // both Agents' amber and Alerts' sky. All three kind-cards assert
-  // pairwise distinct colors.
-  test('Agents/Alerts/Brackets kind-cards each have a distinct color (.kind-card-n)', async ({ page }) => {
-    await page.goto('/automation', { waitUntil: 'domcontentloaded' });
-
-    const colorOf = async (kind) => {
-      const card = page.locator(`.kind-card[data-kind="${kind}"] .kind-card-n`);
-      await expect(card).toBeVisible({ timeout: TIMEOUT });
-      return card.evaluate((el) => getComputedStyle(el).color);
-    };
-    const [agents, alerts, brackets] = await Promise.all([colorOf('agents'), colorOf('alerts'), colorOf('brackets')]);
-    expect(brackets).not.toBe(agents);
-    expect(alerts).not.toBe(agents);
-    expect(brackets).not.toBe(alerts);
-  });
-
-  test('Agents/Alerts/Brackets kind-cards each have a distinct .kind-card-l (label) color', async ({ page }) => {
-    await page.goto('/automation', { waitUntil: 'domcontentloaded' });
-
-    const colorOf = async (kind) => {
-      const label = page.locator(`.kind-card[data-kind="${kind}"] .kind-card-l`);
-      await expect(label).toBeVisible({ timeout: TIMEOUT });
-      return label.evaluate((el) => getComputedStyle(el).color);
-    };
-    const [agents, alerts, brackets] = await Promise.all([colorOf('agents'), colorOf('alerts'), colorOf('brackets')]);
-    expect(brackets).not.toBe(agents);
-    expect(alerts).not.toBe(agents);
-    expect(brackets).not.toBe(alerts);
+    await expect(agentKindTrigger(page)).toHaveCount(0);
   });
 });

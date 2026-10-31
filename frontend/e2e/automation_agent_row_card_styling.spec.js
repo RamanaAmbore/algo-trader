@@ -32,17 +32,19 @@ test.describe('automation agent rows — card chrome matches agent-templates .fr
     expect(styleBlock).toMatch(/\.algo-status-card\s*\{/);
   });
 
-  test('the scoped rule matches agent-templates .frag-row gradient, with a deliberately bumped border alpha', () => {
+  test('the scoped rule matches agent-templates .frag-row gradient, with a deliberately pinned 0.20 border alpha', () => {
     // 2026-10 follow-up: .frag-row's own 0.10 border read as near-
     // invisible against this dark gradient (operator: "rows ... can have
-    // a subtle border around them") — bumped to var(--card-divider)
-    // (0.20) for actual visibility. Gradient/radius/overflow still match
+    // a subtle border around them") — set to the 0.20 literal for actual
+    // visibility. Commit 792f9746 deliberately pinned this literal (NOT
+    // var(--card-divider), which moved to 0.40 there) so the row chrome
+    // keeps its tuned subtlety. Gradient/radius/overflow still match
     // .frag-row exactly; only the border alpha is an intentional
     // divergence from the original "match exactly" goal.
     const styleBlock = pageSrc.match(/<style>([\s\S]*)<\/style>/)?.[1] ?? '';
     const rule = styleBlock.match(/\.algo-status-card\s*\{[^}]*\}/)?.[0] ?? '';
     expect(rule).toMatch(/linear-gradient\(180deg,\s*#0f1729 0%,\s*#0a1020 100%\)/);
-    expect(rule).toMatch(/border:\s*1px solid var\(--card-divider\)/);
+    expect(rule).toMatch(/border:\s*1px solid rgba\(126,\s*151,\s*184,\s*0\.20\)/);
     expect(rule).toMatch(/border-radius:\s*0\.3rem/);
     expect(rule).toMatch(/overflow:\s*hidden/);
   });
@@ -96,6 +98,7 @@ test.describe('automation agent rows — card chrome matches agent-templates .fr
 // the rest of the app's row-text convention (Activity/LogPanel/Config
 // tables use --fs-xs/--fs-sm, not --fs-lg).
 import { loginAsAdmin } from './fixtures/auth.js';
+import { agentKindTrigger, pickAgentKind } from './fixtures/agentKind.js';
 
 test.describe('automation agent rows — status-keyed border color + row text size (live render)', () => {
   test.use({ projects: ['chromium-desktop'] });
@@ -153,9 +156,9 @@ test.describe('automation agent rows — status-keyed border color + row text si
     // playwright.config.js's own timeout comment calls out "SSE keeps
     // networkidle busy"), so wait on a concrete element instead.
     await page.goto('/automation', { waitUntil: 'domcontentloaded' });
-    await expect(page.locator('.kind-card[data-kind="agents"]')).toBeVisible({ timeout: TIMEOUT });
+    await expect(agentKindTrigger(page)).toBeVisible({ timeout: TIMEOUT });
 
-    await page.locator('.kind-card[data-kind="agents"]').click();
+    await pickAgentKind(page, 'agents');
     // Playwright's `hasText` string filter is a case-insensitive substring
     // match, so filtering by 'Active Agent...' also matches the row whose
     // name is 'Inactive Agent...' (contains "active" as a substring).
@@ -179,7 +182,7 @@ test.describe('automation agent rows — status-keyed border color + row text si
 
     // Kind cards stay visible always (2026-10-12 revision — no more
     // drill-down/Back navigation) — switching kinds is just another click.
-    await page.locator('.kind-card[data-kind="brackets"]').click();
+    await pickAgentKind(page, 'brackets');
     // Only one row renders under the Brackets card — data-status is
     // enough on its own, same collision-avoidance reasoning as above.
     const bracketRow = page.locator('[role="listitem"][data-status="active"]');
@@ -190,8 +193,8 @@ test.describe('automation agent rows — status-keyed border color + row text si
 
   test('agent row name renders at --fs-sm, not --fs-lg', async ({ page }) => {
     await page.goto('/automation', { waitUntil: 'domcontentloaded' });
-    await expect(page.locator('.kind-card[data-kind="agents"]')).toBeVisible({ timeout: TIMEOUT });
-    await page.locator('.kind-card[data-kind="agents"]').click();
+    await expect(agentKindTrigger(page)).toBeVisible({ timeout: TIMEOUT });
+    await pickAgentKind(page, 'agents');
 
     // `.truncate` is the innermost name span's own class (see markup
     // around +page.svelte:758) — row.long_name is null in this fixture so

@@ -101,8 +101,13 @@
   // bookkeeping. The real dispatch decision still always comes from
   // ConsoleTab's own `classifyConsoleStatement(value)` on the typed
   // text, never from this selector — it's a pure UI hint.
-  const _KIND_OPTIONS = ['order', 'bracket', 'agent', 'alert'];
-  const _KIND_LABELS = { order: 'Order', bracket: 'Bracket', agent: 'Agent', alert: 'Alert' };
+  // 2026-10-31 — operator: "we can call them action agent, alert agent,
+  // bracket and order in that sequence in dropdown". Order and labels
+  // only; `_kindHint`'s default below and `_KIND_SEED`'s keys are
+  // unaffected — this is purely the dropdown's own display sequence
+  // and text.
+  const _KIND_OPTIONS = ['agent', 'alert', 'bracket', 'order'];
+  const _KIND_LABELS = { agent: 'Action agent', alert: 'Alert agent', bracket: 'Bracket', order: 'Order' };
   const _KIND_SEED = {
     order: 'order(account="", symbol="", side="BUY", lots=1)',
     bracket: 'bracket(applies_to=buy_any, tp_pct=30, sl_pct=-20) #name=""',
@@ -956,21 +961,27 @@
 {/snippet}
 
 <!-- 2026-10-12 (revised, supersedes Sprint C's kind-count-card → per-kind
-     #group= tabs → row-list drill-down) — kind cards are now ALWAYS
-     visible (never replaced by a drilled-down screen), exactly one is
-     active at a time, and the row list for the active kind renders
-     directly below — matches OrderBook.svelte's `.ob-status-bar`/`.ob-sc`
-     reference model exactly. Group tabs are gone; each row shows its own
-     `group` as a tag instead, and rows are sorted by group
-     (`_sortedActiveCardRows`). -->
-<div class="page-grid kind-card-grid mb-3" role="list">
-  {#each KIND_CARDS as card (card.id)}
-    <button type="button" class="kind-card" class:is-active={_activeCard === card.id} data-kind={card.id}
-            onclick={() => selectCard(card.id)}>
-      <span class="kind-card-n">{_cardCounts[card.id] ?? 0}</span>
-      <span class="kind-card-l">{card.label}</span>
-    </button>
-  {/each}
+     #group= tabs → row-list drill-down) — exactly one kind is active at
+     a time, and the row list for the active kind renders directly below.
+     Group tabs are gone; each row shows its own `group` as a tag instead,
+     and rows are sorted by group (`_sortedActiveCardRows`).
+
+     2026-10-31 (operator: "removing the pills under agents tabs and use
+     the same dropdown with orders removed in dropdown") — the 3-pill
+     row (one button per kind, count + label each) is replaced by the
+     same `Select` dropdown pattern the Console tab's statement-kind
+     selector already uses, just without the 'order' option (orders
+     aren't a kind-card here). The count that used to live in its own
+     `.kind-card-n` span now lives inside the option's own label text —
+     "Action agent (12)" — so the same information survives in less
+     horizontal space, one trigger instead of three buttons. -->
+<div class="aw-kind-select mb-3">
+  <Select
+    value={_activeCard}
+    options={KIND_CARDS.map((card) => ({ value: card.id, label: `${card.label} (${_cardCounts[card.id] ?? 0})` }))}
+    ariaLabel="Agent kind"
+    onValueChange={selectCard}
+  />
 </div>
 
   <div class="page-grid agent-group-grid mt-2" role="list">
@@ -1303,105 +1314,14 @@
     max-width: 100%;
   }
 
-  /* ── Kind-count-card row (Sprint C, 2026-10) — Agents/Alerts/Brackets/
-     Templates summary cards, same status-chip-count pattern as
-     OrderBook.svelte's `.ob-status-bar`/`.ob-sc` (count + label per
-     button, clicking drills into that kind).
-     REVERSED 2026-10-11 (explicit operator instruction) — originally
-     deliberately palette-neutral ("all four cards are peers, not a
-     severity/state spectrum"). Operator now wants each kind visually
-     distinct, matching the decoration level of OrderBook.svelte's
-     `.ob-sc[data-status="..."]` chips. Same mechanism: color keyed off
-     the existing `data-kind={card.id}` attribute, reusing existing
-     app.css palette tokens (no new hex colors) — amber/sky/cyan/violet,
-     deliberately NOT green/red (long/short) to avoid implying a P&L
-     sentiment these peer cards don't carry. */
-  .kind-card-grid {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.5rem;
-  }
-  .kind-card {
-    flex: 1 1 8rem;
-    min-width: 7rem;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 0.15rem;
-    padding: 0.6rem 0.5rem;
-    border-radius: 0.4rem;
-    border: 1px solid var(--card-divider);
-    background: linear-gradient(180deg, #0f1729 0%, #0a1020 100%);
-    cursor: pointer;
-    transition: border-color 0.08s;
-  }
-  .kind-card:hover { border-color: rgba(251,191,36,0.35); }
-  .kind-card[data-kind="agents"]:hover    { border-color: var(--algo-amber-border); }
-  .kind-card[data-kind="alerts"]:hover    { border-color: var(--algo-sky-border); }
-  .kind-card[data-kind="brackets"]:hover  { border-color: var(--algo-green-border); }
-
-  /* ── Always-active kind-tinted background + border (2026-10-12) —
-     matches OrderBook.svelte's `.ob-sc[data-status]` decoration level
-     exactly: a persistent tinted gradient overlay (not hover-only) plus
-     an amber inset ring on `.is-active`, since exactly one kind card is
-     always the active filter now (no more drill-down/back navigation —
-     operator: "keep agents status cards always... toggle... instead of
-     using go back"). RGB triples match the existing --algo-amber/-sky/
-     -green tokens verbatim (app.css) — no new colors.
-
-     2026-10-13 (operator request) — Brackets moved OFF the amber/"Open"
-     scheme it briefly shared with Agents, onto the GREEN/"Filled" scheme
-     instead — the exact tokens Orders' `.ob-sc[data-status="active"]`
-     chip uses (`rgba(74,222,128,...)` / `--c-long` / `--algo-green-
-     border[-soft]`). Agents and Alerts are unaffected; all three
-     kind-cards are distinct again. */
-  .kind-card.is-active {
-    box-shadow: 0 0 0 2px rgba(251,191,36,0.55) inset;
-  }
-  .kind-card[data-kind="agents"] {
-    background:
-      linear-gradient(180deg, rgba(251,191,36,0.14) 0%, rgba(251,191,36,0.04) 60%, rgba(0,0,0,0.08) 100%),
-      linear-gradient(180deg, #0f1729 0%, #0a1020 100%);
-    border-color: var(--algo-amber-border-soft);
-  }
-  .kind-card[data-kind="alerts"] {
-    background:
-      linear-gradient(180deg, rgba(125,211,252,0.14) 0%, rgba(125,211,252,0.04) 60%, rgba(0,0,0,0.08) 100%),
-      linear-gradient(180deg, #0f1729 0%, #0a1020 100%);
-    border-color: var(--algo-sky-border-soft);
-  }
-  .kind-card[data-kind="brackets"] {
-    background:
-      linear-gradient(180deg, rgba(74,222,128,0.14) 0%, rgba(74,222,128,0.04) 60%, rgba(0,0,0,0.08) 100%),
-      linear-gradient(180deg, #0f1729 0%, #0a1020 100%);
-    border-color: var(--algo-green-border-soft);
-  }
-  .kind-card.is-active[data-kind="agents"]    { border-color: var(--algo-amber-border); }
-  .kind-card.is-active[data-kind="alerts"]    { border-color: var(--algo-sky-border); }
-  .kind-card.is-active[data-kind="brackets"]  { border-color: var(--algo-green-border); }
-
-  .kind-card-n {
-    font-size: var(--fs-xl);
-    font-weight: 700;
-    font-family: var(--font-numeric);
-    color: var(--c-action);
-  }
-  .kind-card[data-kind="agents"]    .kind-card-n { color: var(--c-action); }
-  .kind-card[data-kind="alerts"]    .kind-card-n { color: var(--algo-sky); }
-  .kind-card[data-kind="brackets"]  .kind-card-n { color: var(--c-long); }
-  .kind-card-l {
-    font-size: var(--fs-sm);
-    color: var(--c-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-  }
-  /* Label text colored per kind too (2026-10-12, operator: "alerts and
-     brackets background, border, text colors can be different from
-     agents") — same per-kind tokens `.kind-card-n` already uses, so
-     background/border/number/label all agree on one color per card. */
-  .kind-card[data-kind="agents"]    .kind-card-l { color: var(--c-action); }
-  .kind-card[data-kind="alerts"]    .kind-card-l { color: var(--algo-sky); }
-  .kind-card[data-kind="brackets"]  .kind-card-l { color: var(--c-long); }
+  /* ── Kind selector (2026-10-31) — the 3-pill row (count-card-per-kind,
+     Sprint C/2026-10-11/2026-10-12/2026-10-13 per-kind color decoration)
+     is gone — see the operator comment at the markup's own call site
+     above. One `Select` dropdown now owns this, sharing `.aw-kind-select`
+     with the Console tab's statement-kind selector (defined where that
+     CardHeader markup lives, earlier in this file). No per-kind color
+     decoration survives the move — the dropdown trigger is one neutral
+     control, like every other Select on this page. */
 
   /* ── Agent row card chrome — matches agent-templates' .frag-row look
      (same literal gradient/border/radius) for visual parity across the

@@ -12,7 +12,7 @@
  * replaces the old flat Agents grid AND the original Sprint C per-kind
  * `#group=` tab layer (now gone — each row shows its own `group` as an
  * inline tag instead, rows sorted by group):
- *   1. The four kind-cards (Agents/Alerts/Brackets/Templates) show the
+ *   1. The Agent-kind dropdown (Action agent / Alert agent / Bracket, counts in labels) shows the
  *      right row counts and selecting each shows the right rows,
  *      directly below the cards, with no navigation.
  *   2. Groups are strictly per-kind — four rows (one Agent-cycle, one
@@ -28,6 +28,7 @@
 
 import { test, expect } from '@playwright/test';
 import { loginAsAdmin } from './fixtures/auth.js';
+import { agentKindTrigger, pickAgentKind } from './fixtures/agentKind.js';
 
 test.use({ projects: ['chromium-desktop'] });
 
@@ -138,14 +139,20 @@ test.describe('Agents tab — kind-count cards (Sprint C)', () => {
     // keeps the network non-idle indefinitely (same caveat already
     // documented in automation_agent_row_card_styling.spec.js).
     await page.goto('/automation', { waitUntil: 'domcontentloaded' });
-    await expect(page.locator('.kind-card-grid')).toBeVisible({ timeout: TIMEOUT });
+    await expect(agentKindTrigger(page)).toBeVisible({ timeout: TIMEOUT });
 
     // CYCLE_ROW + CYCLE_ROW_UNGROUPED + TEMPLATE_ROW (kind=template, now
     // folded into Agents) = 3.
-    await expect(page.locator('.kind-card[data-kind="agents"] .kind-card-n')).toHaveText('3', { timeout: TIMEOUT });
-    await expect(page.locator('.kind-card[data-kind="alerts"] .kind-card-n')).toHaveText('1');
-    await expect(page.locator('.kind-card[data-kind="brackets"] .kind-card-n')).toHaveText('1');
-    await expect(page.locator('.kind-card[data-kind="templates"]')).toHaveCount(0);
+    // Counts now live inside the single "Agent kind" dropdown's option labels
+    // (e.g. "Action agent (3)"). Templates were folded into Agents, so there
+    // is no templates option at all — exactly three options render.
+    await agentKindTrigger(page).click();
+    await expect(page.getByRole('option', { name: 'Action agent (3)' })).toBeVisible({ timeout: TIMEOUT });
+    await expect(page.getByRole('option', { name: 'Alert agent (1)' })).toBeVisible();
+    await expect(page.getByRole('option', { name: 'Bracket (1)' })).toBeVisible();
+    await expect(page.getByRole('option')).toHaveCount(3);
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('option')).toHaveCount(0);
   });
 
   // 2026-10-13 regression (operator: declutter the collapsed row) — the
@@ -154,7 +161,7 @@ test.describe('Agents tab — kind-count cards (Sprint C)', () => {
   // always-visible collapsed row.
   test('collapsed row hides the trade-mode/ON-OFF buttons; expanding the row reveals them', async ({ page }) => {
     await page.goto('/automation', { waitUntil: 'domcontentloaded' });
-    await expect(page.locator('.kind-card-grid')).toBeVisible({ timeout: TIMEOUT });
+    await expect(agentKindTrigger(page)).toBeVisible({ timeout: TIMEOUT });
 
     const cycleRow = page.locator('[role="listitem"]').filter({ hasText: 'Loss Funds Negative E2E' });
     await expect(cycleRow).toBeVisible({ timeout: TIMEOUT });
@@ -177,17 +184,17 @@ test.describe('Agents tab — kind-count cards (Sprint C)', () => {
     // keeps the network non-idle indefinitely (same caveat already
     // documented in automation_agent_row_card_styling.spec.js).
     await page.goto('/automation', { waitUntil: 'domcontentloaded' });
-    await expect(page.locator('.kind-card-grid')).toBeVisible({ timeout: TIMEOUT });
+    await expect(agentKindTrigger(page)).toBeVisible({ timeout: TIMEOUT });
 
     // Default-active card is 'agents' — its rows are already visible with
     // no click needed (matches OrderBook.svelte's always-one-active model).
-    await expect(page.locator('.kind-card-grid')).toBeVisible({ timeout: TIMEOUT });
+    await expect(agentKindTrigger(page)).toBeVisible({ timeout: TIMEOUT });
     await expect(page.locator('[role="listitem"]').filter({ hasText: 'Loss Funds Negative E2E' })).toBeVisible({ timeout: TIMEOUT });
 
-    await page.locator('.kind-card[data-kind="agents"]').click();
+    await pickAgentKind(page, 'agents');
     // Cards remain visible (never replaced by a drilled-down screen) and
     // there is no Back/navigation affordance to return from.
-    await expect(page.locator('.kind-card-grid')).toBeVisible();
+    await expect(agentKindTrigger(page)).toBeVisible();
     await expect(page.locator('button', { hasText: 'Back to cards' })).toHaveCount(0);
     await expect(page.locator('[role="listitem"]').filter({ hasText: 'Loss Funds Negative E2E' })).toBeVisible();
     // The event-kind row must NOT appear under the Agents card.
@@ -204,8 +211,8 @@ test.describe('Agents tab — kind-count cards (Sprint C)', () => {
     await expect(cycleRow.locator('.aw-row-desc')).toContainText('Blocks on heavy account-level drawdown');
 
     // Switching to a different kind card changes the row list IN PLACE.
-    await page.locator('.kind-card[data-kind="alerts"]').click();
-    await expect(page.locator('.kind-card-grid')).toBeVisible();
+    await pickAgentKind(page, 'alerts');
+    await expect(agentKindTrigger(page)).toBeVisible();
     await expect(page.locator('[role="listitem"]').filter({ hasText: 'Error Alert E2E' })).toBeVisible({ timeout: TIMEOUT });
     await expect(page.locator('[role="listitem"]').filter({ hasText: 'Loss Funds Negative E2E' })).toHaveCount(0);
   });
@@ -215,13 +222,13 @@ test.describe('Agents tab — kind-count cards (Sprint C)', () => {
     // keeps the network non-idle indefinitely (same caveat already
     // documented in automation_agent_row_card_styling.spec.js).
     await page.goto('/automation', { waitUntil: 'domcontentloaded' });
-    await expect(page.locator('.kind-card-grid')).toBeVisible({ timeout: TIMEOUT });
+    await expect(agentKindTrigger(page)).toBeVisible({ timeout: TIMEOUT });
 
-    await page.locator('.kind-card[data-kind="alerts"]').click();
-    const active = page.locator('.kind-card[data-kind="alerts"]');
-    const inactive = page.locator('.kind-card[data-kind="agents"]');
-    await expect(active).toHaveClass(/is-active/);
-    await expect(inactive).not.toHaveClass(/is-active/);
+    await pickAgentKind(page, 'alerts');
+    await agentKindTrigger(page).click();
+    await expect(page.getByRole('option', { name: /Alert agent \(/ })).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByRole('option', { name: /Action agent \(/ })).toHaveAttribute('aria-selected', 'false');
+    await page.keyboard.press('Escape');
   });
 });
 
@@ -231,7 +238,7 @@ test.describe('Agents tab — groups are strictly per-kind (Sprint C regression)
     // keeps the network non-idle indefinitely (same caveat already
     // documented in automation_agent_row_card_styling.spec.js).
     await page.goto('/automation', { waitUntil: 'domcontentloaded' });
-    await expect(page.locator('.kind-card-grid')).toBeVisible({ timeout: TIMEOUT });
+    await expect(agentKindTrigger(page)).toBeVisible({ timeout: TIMEOUT });
 
     // 'Notify Critical Trio E2E' (kind=template) now shares the 'agents'
     // card with 'Loss Funds Negative E2E' (kind=cycle) — 2026-10-12,
@@ -244,7 +251,7 @@ test.describe('Agents tab — groups are strictly per-kind (Sprint C regression)
     ];
 
     for (const c of cases) {
-      await page.locator('.kind-card[data-kind="' + c.card + '"]').click();
+      await pickAgentKind(page, c.card);
       for (const expectName of c.expectRows) {
         const row = page.locator('[role="listitem"]').filter({ hasText: expectName });
         await expect(row, `${c.card} card must show ${expectName}`).toHaveCount(1, { timeout: TIMEOUT });
@@ -268,9 +275,9 @@ test.describe('Agents tab — groups are strictly per-kind (Sprint C regression)
     // keeps the network non-idle indefinitely (same caveat already
     // documented in automation_agent_row_card_styling.spec.js).
     await page.goto('/automation', { waitUntil: 'domcontentloaded' });
-    await expect(page.locator('.kind-card-grid')).toBeVisible({ timeout: TIMEOUT });
+    await expect(agentKindTrigger(page)).toBeVisible({ timeout: TIMEOUT });
 
-    await page.locator('.kind-card[data-kind="agents"]').click();
+    await pickAgentKind(page, 'agents');
     const groupedRow = page.locator('[role="listitem"]').filter({ hasText: 'Loss Funds Negative E2E' });
     const ungroupedRow = page.locator('[role="listitem"]').filter({ hasText: 'AAA Ungrouped E2E' });
     await expect(groupedRow.locator('.aw-row-desc')).toContainText('#group:hedge-book');
@@ -292,7 +299,7 @@ test.describe('Agents tab — groups are strictly per-kind (Sprint C regression)
   });
 });
 
-test.describe('Brackets kind-card reads live Agent(kind=bracket) data (Sprint E)', () => {
+test.describe('Brackets kind-filter reads live Agent(kind=bracket) data (Sprint E)', () => {
   test('Edit on the Brackets card PATCHes /api/admin/templates/{legacy_template_id}, never {agent.id}', async ({ page }) => {
     // BRACKET_AGENT_ROW.legacy_template_id = 201 (the real, canonical
     // OrderTemplate.id) while its OWN Agent.id = 202 — deliberately
@@ -316,9 +323,9 @@ test.describe('Brackets kind-card reads live Agent(kind=bracket) data (Sprint E)
     // keeps the network non-idle indefinitely (same caveat already
     // documented in automation_agent_row_card_styling.spec.js).
     await page.goto('/automation', { waitUntil: 'domcontentloaded' });
-    await expect(page.locator('.kind-card-grid')).toBeVisible({ timeout: TIMEOUT });
+    await expect(agentKindTrigger(page)).toBeVisible({ timeout: TIMEOUT });
 
-    await page.locator('.kind-card[data-kind="brackets"]').click();
+    await pickAgentKind(page, 'brackets');
     const row = page.locator('[role="listitem"]').filter({ hasText: 'E2E Bracket' });
     await expect(row).toBeVisible({ timeout: TIMEOUT });
     await row.locator('[role="button"]').first().click();

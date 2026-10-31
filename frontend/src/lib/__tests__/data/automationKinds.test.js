@@ -11,7 +11,12 @@ describe('KIND_CARDS', () => {
     // 2026-10-29: labels renamed to distinguish order-placing agents from
     // notify-only alert agents in the count pills (operator: "call agents
     // as action agents, alerts as alert agents in count pills").
-    expect(KIND_CARDS.map((c) => c.label)).toEqual(['Action agents', 'Alert agents', 'Brackets']);
+    // 2026-10-31: singularized ("Action agent" not "Action agents") to
+    // match the Console statement-kind dropdown's own labels, now that
+    // this same Select pattern is reused for both (operator: "we can
+    // call them action agent, alert agent, bracket and order ... in
+    // dropdown").
+    expect(KIND_CARDS.map((c) => c.label)).toEqual(['Action agent', 'Alert agent', 'Bracket']);
   });
 });
 

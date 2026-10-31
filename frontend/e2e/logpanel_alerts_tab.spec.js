@@ -19,7 +19,7 @@
  *     "Alert Log" used during Sprint C — see LogPanel.svelte's own
  *     comment above `_ALL_TABS` for the full history + the accepted,
  *     purely-cosmetic wording overlap with /automation's "Alerts"
- *     kind-card)
+ *     kind dropdown option)
  *   - tab-set consistency across every real embedding site
  *   - contextual default-active-tab on ActivityLogModal, threaded via
  *     PageHeaderActions' new `logTabHint` prop (reuses the existing

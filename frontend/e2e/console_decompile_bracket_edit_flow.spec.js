@@ -4,8 +4,8 @@
  * "Automation redesign").
  *
  * BracketsTab.svelte (and its "Open in Console" create-only button) is
- * DELETED in Sprint C — Brackets are now a kind-card on the Agents tab
- * (`/automation` → "Brackets" card → group tab → row list). Edit on a row
+ * DELETED in Sprint C — Brackets are now a kind option in the Agents-tab
+ * kind dropdown (`/automation` → "Bracket" kind → row list). Edit on a row
  * decompiles its live JSON straight into the Console tab's CLI textarea
  * AND arms edit mode (`_consoleEditTarget`), so Save now genuinely routes
  * through `PATCH /api/admin/templates/{id}` (update), never
@@ -40,6 +40,7 @@
 
 import { test, expect } from '@playwright/test';
 import { loginAsAdmin } from './fixtures/auth.js';
+import { agentKindTrigger, pickAgentKind } from './fixtures/agentKind.js';
 
 test.use({ projects: ['chromium-desktop'] });
 
@@ -99,18 +100,18 @@ async function mockAgentsList(/** @type {import('@playwright/test').Page} */ pag
   });
 }
 
-/** Drill into the Brackets kind-card's (single, ungrouped) row list and
+/** Drill into the Bracket kind's (single, ungrouped) row list and
  *  expand the row matching `name`. Returns the row locator, already
  *  expanded. */
 async function openBracketRow(/** @type {import('@playwright/test').Page} */ page, /** @type {string} */ name) {
-  await page.locator('.kind-card[data-kind="brackets"]').click();
+  await pickAgentKind(page, 'brackets');
   const row = page.locator('[role="listitem"]').filter({ hasText: name });
   await expect(row).toBeVisible({ timeout: TIMEOUT });
   await row.locator('[role="button"]').first().click();
   return row;
 }
 
-test.describe('Brackets kind-card row → Edit → decompileBracket → Console (Sprint C)', () => {
+test.describe('Bracket kind row → Edit → decompileBracket → Console (Sprint C)', () => {
   test.beforeEach(async ({ page }) => {
     await loginAsAdmin(page);
   });
@@ -137,7 +138,7 @@ test.describe('Brackets kind-card row → Edit → decompileBracket → Console 
     // domcontentloaded, not networkidle — /automation's WS reconnect loop
     // keeps the network non-idle indefinitely.
     await page.goto('/automation', { waitUntil: 'domcontentloaded' });
-    await expect(page.locator('.kind-card-grid')).toBeVisible({ timeout: TIMEOUT });
+    await expect(agentKindTrigger(page)).toBeVisible({ timeout: TIMEOUT });
 
     const row = await openBracketRow(page, 'ZZZ E2E Custom Bracket');
     await row.getByRole('button', { name: 'Edit' }).click();
@@ -211,7 +212,7 @@ test.describe('Brackets kind-card row → Edit → decompileBracket → Console 
     // domcontentloaded, not networkidle — /automation's WS reconnect loop
     // keeps the network non-idle indefinitely.
     await page.goto('/automation', { waitUntil: 'domcontentloaded' });
-    await expect(page.locator('.kind-card-grid')).toBeVisible({ timeout: TIMEOUT });
+    await expect(agentKindTrigger(page)).toBeVisible({ timeout: TIMEOUT });
 
     const row = await openBracketRow(page, 'Default Bull');
     // is_system rows have no Delete action, but Edit is still offered —

@@ -16,6 +16,7 @@
 
 import { test, expect } from '@playwright/test';
 import { loginAsAdmin } from './fixtures/auth.js';
+import { agentKindTrigger, pickAgentKind } from './fixtures/agentKind.js';
 
 test.use({ projects: ['chromium-desktop'] });
 
@@ -122,8 +123,8 @@ async function openCardAndRow(/** @type {import('@playwright/test').Page} */ pag
   // domcontentloaded, not networkidle — this page's WS reconnect loop
   // keeps the network non-idle indefinitely.
   await page.goto('/automation', { waitUntil: 'domcontentloaded' });
-  await expect(page.locator('.kind-card-grid')).toBeVisible({ timeout: TIMEOUT });
-  await page.locator(`.kind-card[data-kind="${cardId}"]`).click();
+  await expect(agentKindTrigger(page)).toBeVisible({ timeout: TIMEOUT });
+  await pickAgentKind(page, cardId);
   const row = page.locator('[role="listitem"]').filter({ hasText: name });
   await expect(row).toBeVisible({ timeout: TIMEOUT });
   // Expand the row (click its own clickable header) so the Edit/Delete

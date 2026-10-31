@@ -269,7 +269,8 @@ test.describe('Console — Guide link + kind-selector dropdown, relocated to the
   test('the Console NAV TAB itself is unaffected — still labeled "Console"', async ({ page }) => {
     // AutomationTabs.svelte's own nav-strip tab — a separate, unrelated
     // control from the relocated Guide link/dropdown sharing its row.
-    await expect(page.getByRole('tab', { name: 'Console' })).toBeVisible({ timeout: TIMEOUT });
+    // Two Console tabs render (desktop + compact); scope to the visible strip.
+    await expect(page.locator('section').getByRole('tab', { name: 'Console' })).toBeVisible({ timeout: TIMEOUT });
   });
 
   test('kind-selector dropdown defaults to "Order" and all four options are pickable', async ({ page }) => {
@@ -284,21 +285,28 @@ test.describe('Console — Guide link + kind-selector dropdown, relocated to the
     await trigger.click();
     await page.getByRole('option', { name: 'Bracket' }).click();
     await expect(trigger).toContainText('Bracket');
-    await expect(page.locator('.agent-cli-textarea')).toHaveValue(/^bracket\(/);
+    // Seed is a native placeholder now (2026-10-31: _consolePlaceholder), never
+    // written into the real value — the textarea stays empty.
+    await expect(page.locator('.agent-cli-textarea')).toHaveValue('');
+    await expect(page.locator('.agent-cli-textarea')).toHaveAttribute('placeholder', /^bracket\(/);
 
-    // Picking Agent likewise seeds a WHEN... starter.
+    // Picking Action agent likewise seeds a WHEN... starter.
+    // 2026-10-31 — relabeled from bare "Agent" (operator: "we can call
+    // them action agent, alert agent, bracket and order ... in dropdown").
     await page.locator('.agent-cli-textarea').fill('');
     await trigger.click();
-    await page.getByRole('option', { name: 'Agent' }).click();
-    await expect(trigger).toContainText('Agent');
-    await expect(page.locator('.agent-cli-textarea')).toHaveValue(/^WHEN/);
+    await page.getByRole('option', { name: 'Action agent' }).click();
+    await expect(trigger).toContainText('Action agent');
+    await expect(page.locator('.agent-cli-textarea')).toHaveValue('');
+    await expect(page.locator('.agent-cli-textarea')).toHaveAttribute('placeholder', /^WHEN/);
 
-    // Picking Alert likewise seeds a bare ALERT starter.
+    // Picking Alert agent likewise seeds a bare ALERT starter.
     await page.locator('.agent-cli-textarea').fill('');
     await trigger.click();
-    await page.getByRole('option', { name: 'Alert' }).click();
-    await expect(trigger).toContainText('Alert');
-    await expect(page.locator('.agent-cli-textarea')).toHaveValue(/^ALERT/);
+    await page.getByRole('option', { name: 'Alert agent' }).click();
+    await expect(trigger).toContainText('Alert agent');
+    await expect(page.locator('.agent-cli-textarea')).toHaveValue('');
+    await expect(page.locator('.agent-cli-textarea')).toHaveAttribute('placeholder', /^alert\(/);
   });
 
   test('kind-selector reflects auto-detection once typed text resolves to a kind, without overwriting it', async ({ page }) => {

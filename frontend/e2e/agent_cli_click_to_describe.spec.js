@@ -42,8 +42,7 @@
 
 import { test, expect } from '@playwright/test';
 import { loginAsAdmin } from './fixtures/auth.js';
-
-test.use({ projects: ['chromium-desktop'] });
+import { agentKindTrigger, pickAgentKind } from './fixtures/agentKind.js';
 
 const TIMEOUT = 20_000;
 
@@ -118,16 +117,16 @@ test.describe('AgentCliEditor — click-to-describe already-typed tokens', () =>
   });
 
   // ── (a) clauseKind coverage ──────────────────────────────────────────
-  test('clicking a catalog token in WHEN/ALERT/DO/GIVEN each shows a description panel', async ({ page }) => {
+  test('clicking a catalog token in WHEN/ALERT/DO/label-assignment each shows a description panel', async ({ page }) => {
     const textarea = await goConsole(page);
     const statement =
-      'GIVEN p = pnl@positions.total\n' +
+      'p = pnl@positions.total\n' +
       'WHEN p <= -50000\n' +
       'ALERT telegram\n' +
       'DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)';
     await setStatement(page, textarea, statement);
 
-    // GIVEN clause — click the "pnl" metric on the GIVEN line.
+    // Label-assignment line — click the "pnl" metric on the assignment line.
     await clickTokenAt(page, textarea, 'pnl');
     await expect(describePanel(page)).toBeVisible({ timeout: TIMEOUT });
     await expect(describePanel(page)).toContainText('pnl');
@@ -135,7 +134,7 @@ test.describe('AgentCliEditor — click-to-describe already-typed tokens', () =>
     // WHEN clause — click the bound label "p" (a binding, still a
     // describable token — see the dedicated (b) test below for the
     // binding-specific assertion). Occurrence 1 — "p" also appears as the
-    // GIVEN line's own defining occurrence (occurrence 0), which must NOT
+    // assignment line's own defining occurrence (occurrence 0), which must NOT
     // be clicked here (clicking a label's OWN definition site never
     // resolves as a binding-reference — see describeTokenAt.test.js).
     await clickTokenAt(page, textarea, 'p', 1);
@@ -153,18 +152,18 @@ test.describe('AgentCliEditor — click-to-describe already-typed tokens', () =>
   });
 
   // ── (b) GIVEN-bound label ────────────────────────────────────────────
-  test('clicking a GIVEN-bound label used in WHEN describes the binding, not a catalog miss', async ({ page }) => {
+  test('clicking a label-bound name used in WHEN describes the binding, not a catalog miss', async ({ page }) => {
     const textarea = await goConsole(page);
     await setStatement(page, textarea,
-      'GIVEN myloss = pnl@positions.total\nWHEN myloss <= -50000\nALERT telegram\nDO nop');
+      'myloss = pnl@positions.total\nWHEN myloss <= -50000\nALERT telegram\nDO alert(telegram)');
 
-    // Occurrence 1 — the WHEN clause's USE of the label, not the GIVEN
-    // clause's own defining occurrence (0).
+    // Occurrence 1 — the WHEN clause's USE of the label, not the assignment
+    // line's own defining occurrence (0).
     await clickTokenAt(page, textarea, 'myloss', 1);
     const panel = describePanel(page);
     await expect(panel).toBeVisible({ timeout: TIMEOUT });
     await expect(panel).toContainText('myloss');
-    await expect(panel).toContainText('Bound via GIVEN');
+    await expect(panel).toContainText('Bound label — myloss = pnl@positions.total');
   });
 
   // ── (c) call param key — open and closed ─────────────────────────────
@@ -231,15 +230,10 @@ test.describe('AgentCliEditor — click-to-describe already-typed tokens', () =>
   // ── (e) Escape dismisses without closing the host modal ─────────────
   test('Escape dismisses the describe panel without closing the host order-ticket modal', async ({ page }) => {
     await page.goto('/dashboard', { waitUntil: 'domcontentloaded' });
-    await page.waitForTimeout(800);
-    const modal = page.locator('[role="dialog"], .canonical-modal-overlay').first();
-    for (let attempt = 0; attempt < 3; attempt++) {
-      await page.click('body').catch(() => {});
-      await page.waitForTimeout(300);
-      await page.keyboard.press('t');
-      const ok = await modal.waitFor({ state: 'visible', timeout: 3000 }).then(() => true).catch(() => false);
-      if (ok) break;
-    }
+    const orderBtn = page.locator('button.pha-order').first();
+    await expect(orderBtn).toBeVisible({ timeout: TIMEOUT });
+    await orderBtn.click();
+    const modal = page.locator('.oes-modal').first();
     await expect(modal).toBeVisible({ timeout: TIMEOUT });
 
     const cliTab = modal.getByRole('tab', { name: 'CLI' });
@@ -318,7 +312,7 @@ test.describe('AgentCliEditor — click-to-describe already-typed tokens', () =>
   // ── Generated-statement preview click-to-describe ────────────────────
   test('clicking a token in the "Generated statement" preview describes it', async ({ page }) => {
     const textarea = await goConsole(page);
-    await setStatement(page, textarea, 'WHEN pnl@positions.total <= -50000\nALERT telegram\nDO nop');
+    await setStatement(page, textarea, 'WHEN pnl@positions.total <= -50000 DO alert(telegram)');
 
     const previewToken = page.locator('[data-testid="agent-cli-canonical-token"]', { hasText: 'telegram' }).first();
     await expect(previewToken).toBeVisible({ timeout: TIMEOUT });
@@ -361,8 +355,8 @@ test.describe('Automation page — JSON-preview card click-to-describe (Part 2)'
 
   test('clicking a top-level JSON param key shows its description without touching the raw JSON text', async ({ page }) => {
     await page.goto('/automation', { waitUntil: 'domcontentloaded' });
-    await expect(page.locator('.kind-card-grid')).toBeVisible({ timeout: TIMEOUT });
-    await page.locator('.kind-card[data-kind="agents"]').click();
+    await expect(agentKindTrigger(page)).toBeVisible({ timeout: TIMEOUT });
+    await pickAgentKind(page, 'agents');
     const row = page.locator('[role="listitem"]').filter({ hasText: 'Click Describe JSON E2E' });
     await expect(row).toBeVisible({ timeout: TIMEOUT });
     await row.locator('[role="button"]').first().click();

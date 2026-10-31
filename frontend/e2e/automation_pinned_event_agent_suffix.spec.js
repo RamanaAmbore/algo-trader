@@ -32,6 +32,7 @@
 
 import { test, expect } from '@playwright/test';
 import { loginAsAdmin } from './fixtures/auth.js';
+import { agentKindTrigger, pickAgentKind } from './fixtures/agentKind.js';
 
 test.use({ projects: ['chromium-desktop'] });
 
@@ -87,8 +88,8 @@ async function mockAgents(/** @type {import('@playwright/test').Page} */ page) {
 
 async function expandRow(/** @type {import('@playwright/test').Page} */ page, /** @type {string} */ cardId, /** @type {string} */ name) {
   await page.goto('/automation', { waitUntil: 'domcontentloaded' });
-  await expect(page.locator('.kind-card-grid')).toBeVisible({ timeout: TIMEOUT });
-  await page.locator(`.kind-card[data-kind="${cardId}"]`).click();
+  await expect(agentKindTrigger(page)).toBeVisible({ timeout: TIMEOUT });
+  await pickAgentKind(page, cardId);
   const row = page.locator('[role="listitem"]').filter({ hasText: name });
   await expect(row).toBeVisible({ timeout: TIMEOUT });
   await row.locator('[role="button"]').first().click();
