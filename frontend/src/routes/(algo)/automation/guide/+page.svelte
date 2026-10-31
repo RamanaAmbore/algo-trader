@@ -234,6 +234,26 @@ WHEN pnl_now &lt;= -50000 DO alert(telegram)</pre>
       </p>
     </div>
 
+    <div class="cg-example">
+      <p class="cg-why">
+        You want to combine two already-bound labels (e.g. a gap between two live metrics) and
+        compare it against another label, not just a literal — on EITHER side of the comparator.
+      </p>
+      <pre class="cg-code">c = cash@funds.total
+m = used_margin@funds.total
+gap = c - m
+WHEN gap &lt; 0 DO alert(telegram)</pre>
+      <p class="cg-what">
+        <code>gap</code> is built from two earlier labels, then read as the metric in <code>WHEN</code>
+        — same mechanism as <code>pnl_now</code> above. A label can also appear on the VALUE side of a
+        comparator (<code>WHEN cash@funds.total &lt; gap</code>, or even <code>WHEN gap &lt; m</code> —
+        a label on both sides). A label can only reference labels declared EARLIER in the same
+        preamble — no forward references. If a referenced label fails to resolve on a given cycle
+        (e.g. an upstream metric came back unavailable), the leaf is a clean no-match that cycle,
+        never an error.
+      </p>
+    </div>
+
     <p class="cg-note">
       A label can be assigned <strong>once per statement</strong> (no rebinding across statements),
       and the right-hand side can be any expression — a literal number, a metric@scope binding,
