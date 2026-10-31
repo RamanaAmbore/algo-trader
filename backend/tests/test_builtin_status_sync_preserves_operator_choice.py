@@ -44,6 +44,7 @@ import pytest
 
 from backend.api.algo.agent_engine import (
     BUILTIN_AGENTS,
+    _ae_build_agent_row,
     _ae_seed_ships_inactive,
     _ae_sync_existing_builtin,
 )
@@ -172,4 +173,51 @@ class TestShipsInactiveSafetyCaseStillForceCorrected:
         assert existing.status == "inactive", (
             f"{slug}: safety-critical category must still force-correct "
             f"to inactive, got {existing.status!r}"
+        )
+
+
+class TestBuildAgentRowReadsTradeModeFromSpec:
+    """2026-10-31 live-incident fix: _ae_build_agent_row() never read
+    `trade_mode` from the seed spec at all, so a builtin explicitly
+    wanting `trade_mode: "live"` (e.g. expiry-day-itm-auto-close) got
+    the ORM column default ("paper") instead on first insert — confirmed
+    via prod: every real close on that agent's first live trading day
+    silently ran through PaperTradeEngine. Only passed through when the
+    spec explicitly sets it, so every other builtin (none of which
+    specify trade_mode today) keeps the exact same default behaviour."""
+
+    def test_expiry_day_itm_auto_close_spec_requests_live(self):
+        agent_def = _by_slug("expiry-day-itm-auto-close")
+        assert agent_def.get("trade_mode") == "live", (
+            "this agent's own design relies on reaching the real "
+            "hold-gate path — omitting trade_mode here silently falls "
+            "back to paper and the hold-gate never engages"
+        )
+
+    def test_build_agent_row_passes_through_explicit_trade_mode(self):
+        agent_def = _by_slug("expiry-day-itm-auto-close")
+        row = _ae_build_agent_row(agent_def)
+        assert row.trade_mode == "live", (
+            f"_ae_build_agent_row() must read trade_mode from the spec "
+            f"when present, got {row.trade_mode!r}"
+        )
+
+    def test_build_agent_row_omits_trade_mode_kwarg_when_spec_silent(self):
+        """An ordinary builtin with no trade_mode key must NOT have the
+        kwarg passed at all — the ORM column default ('paper') is applied
+        by SQLAlchemy at INSERT time, not at bare construction, so the
+        in-memory object's attribute reads None here (identical to the
+        pre-fix behaviour, which never knew about this field either).
+        Not a hardcoded 'paper' baked into the builder itself, which
+        would be a second place this value lives."""
+        agent_def = _by_slug("loss-funds-negative")
+        assert "trade_mode" not in agent_def, (
+            "test premise: this agent must not specify trade_mode for "
+            "this test to actually exercise the omitted-kwarg path"
+        )
+        row = _ae_build_agent_row(agent_def)
+        assert row.trade_mode is None, (
+            f"with no explicit trade_mode, the kwarg must be omitted "
+            f"entirely (letting SQLAlchemy's column default apply only "
+            f"on insert) — got {row.trade_mode!r}"
         )

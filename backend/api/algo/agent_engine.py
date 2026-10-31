@@ -2412,6 +2412,16 @@ _EXPIRY_DAY_AWARENESS_AGENTS = [
         "tier": "critical",
         "topic": "expiry_warning",
         "status": "active",
+        # trade_mode (2026-10-31 fix, live-incident): never set here before,
+        # so this agent silently inherited execution.default_agent_trade_
+        # mode ('paper') — every real close on its first live trading day
+        # ran through PaperTradeEngine instead of the real hold-gate path
+        # (HoldCategory.EXPIRY_CLOSE, see the docstring above), so the
+        # staged-for-review HELD order this agent's whole design depends
+        # on never actually got created. The real safety net stays intact
+        # regardless of this field — a close still only reaches the broker
+        # if the operator explicitly releases hold.expiry_close_released.
+        "trade_mode": "live",
         "actions": [
             {"type": "expiry_auto_close", "params": {}},
         ],
@@ -2748,8 +2758,20 @@ def _ae_sync_existing_builtin(existing, agent_def: dict) -> None:
 def _ae_build_agent_row(agent_def: dict) -> 'Agent':
     """Construct a new system Agent ORM instance from a BUILTIN_AGENTS entry.
 
-    Extracted from seed_agents to isolate the construction block."""
-    return Agent(
+    Extracted from seed_agents to isolate the construction block.
+
+    `trade_mode` (2026-10-31 fix): this builder never read `trade_mode`
+    from `agent_def` at all, so a builtin spec that explicitly wanted
+    `trade_mode: "live"` (e.g. `expiry-day-itm-auto-close`, whose own
+    action is supposed to reach the real hold-gate path) silently got
+    the ORM column default ("paper") instead — confirmed live:
+    `expiry-day-itm-auto-close` ran every real close through
+    PaperTradeEngine on its first live trading day, never creating the
+    HELD AlgoOrder rows its own design relies on. Only passed through
+    when the spec explicitly sets it, so every other builtin (none of
+    which specify `trade_mode` today) keeps the exact same default
+    behaviour as before."""
+    kwargs = dict(
         slug=agent_def["slug"],
         name=agent_def["name"],
         long_name=agent_def.get("long_name"),
@@ -2767,6 +2789,9 @@ def _ae_build_agent_row(agent_def: dict) -> 'Agent':
         fire_at_time=agent_def.get("fire_at_time"),
         is_system=True,
     )
+    if "trade_mode" in agent_def:
+        kwargs["trade_mode"] = agent_def["trade_mode"]
+    return Agent(**kwargs)
 
 
 async def _ae_prune_retired_builtins(session, builtin_slugs: set) -> None:

@@ -194,6 +194,22 @@ class TestExpiryDayItmAutoCloseAgent:
         assert agent is not None
         assert _channels(agent) == {"telegram", "email", "log"}
 
+    def test_trade_mode_is_live(self):
+        """2026-10-31 live-incident fix: without an explicit trade_mode
+        here, this agent silently inherited execution.default_agent_
+        trade_mode ('paper') and every real close on its first live
+        trading day ran through PaperTradeEngine instead of the real
+        hold-gate path — confirmed via prod algo_orders rows written
+        mode='paper'/engine='paper' for a genuine ExpiryEngine-identified
+        close. The real safety net (HoldCategory.EXPIRY_CLOSE, held by
+        default) only engages once this reaches the live action path at
+        all."""
+        agent = _by_slug(self.SLUG)
+        assert agent is not None
+        assert agent.get('trade_mode') == "live", \
+            "must explicitly set trade_mode='live' — omitting it silently " \
+            "falls back to the paper default and the hold-gate never engages"
+
 
 class TestExpiryDayAgentsSameDayNoSuppression:
     """Regression test for the one real risk the consolidation

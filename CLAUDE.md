@@ -2638,6 +2638,37 @@ agent 30 mins before expiry market closure, close agents 25 mins before". Final 
   `ExpiryEngine.scan_positions()`. A root's "unnetted"/"ITM" classification is never duplicated
   into a second, independent implementation.
 
+**`expiry-day-itm-auto-close` silently ran in paper mode on its first live trading day —
+`trade_mode` was never read by the builtin-agent builder (2026-10-31, live incident, GOLD's
+October MCX expiry)** — The seed spec above never set `trade_mode`, so this brand-new agent
+silently inherited `execution.default_agent_trade_mode` ("paper", the system-wide default for
+every new agent). Separately, `_ae_build_agent_row()` ([agent_engine.py](backend/api/algo/agent_engine.py))
+never read a `trade_mode` key from the spec at all, so even an explicit value would have been
+ignored on first insert. Confirmed live: `ExpiryEngine.scan_positions()` genuinely found 7 real
+unnetted legs across two real accounts at the 23:06 IST fire, and `execute()`'s `_resolve_mode()`
+routed the close through `PaperTradeEngine` — 7 `algo_orders` rows landed as
+`mode='paper', engine='paper', status='UNFILLED'`, with zero effect on the real book. The
+designed safety net (a real `HELD` row via `HoldCategory.EXPIRY_CLOSE`) never engaged, because
+paper mode never reaches that code path at all. No loss occurred this time — the operator was
+independently, heavily trading these exact positions manually that evening (`algo_orders.agent_id
+= 34`, the literal `"manual"` sentinel row, not an automated agent — an earlier draft of this
+investigation misread that id as a live chase/scale agent, which it is not) — but the mechanism
+that was supposed to be the backstop silently no-op'd the whole time.
+- Fix: `_ae_build_agent_row()` now reads `trade_mode` from the spec when present, and only then
+  — every other builtin (none of which specify it) keeps the exact same SQLAlchemy column-default
+  behaviour as before (`default="paper"`, applied at INSERT, not at bare object construction).
+  `expiry-day-itm-auto-close`'s own spec now carries `"trade_mode": "live"` explicitly.
+- `seed_agents()`'s restart-sync (`_ae_sync_existing_builtin`) treats `trade_mode` as
+  operator-tunable and does NOT force-sync it on an existing row (same convention as `status` for
+  ordinary builtins) — so fixing the spec alone does not retroactively correct an already-seeded
+  row. The existing DB row (id 98 on both dev and prod) was corrected with a one-time manual
+  `UPDATE agents SET trade_mode='live' WHERE id=98`.
+- Tests: `test_builtin_status_sync_preserves_operator_choice.py::TestBuildAgentRowReadsTradeModeFromSpec`,
+  `test_expiry_day_and_preclose_agents.py::TestExpiryDayItmAutoCloseAgent::test_trade_mode_is_live`.
+- Invariant: a builtin agent spec that explicitly needs `trade_mode: "live"` to reach its own
+  real safety-gate path (hold-by-default, or any other live-only gate) must say so explicitly in
+  its own spec dict — never rely on the system-wide default, which is paper for every new agent.
+
 **close_price / ltp invariant — DO NOT CHANGE without explicit operator instruction** —
 `prev_close` = previous session's **settlement LTP** (frozen from settlement until next session opens at 08:00 IST). `ltp` ticks live during session, freezes at settlement price at close. Day P&L = `(ltp − prev_close) × qty`.
 
