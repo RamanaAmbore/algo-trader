@@ -779,23 +779,38 @@ async def _fetch_positions_from_snapshot(
     positions.py — the exact same path GET /api/positions uses in its
     closed-hours branch. Sibling to `_fetch_holdings_from_snapshot`
     below; never calls the live broker.
+
+    SSOT: converts `snap.rows` into a DataFrame and routes through the
+    SAME `_positions_from_df` / `_accumulate_by_account` the live-fetch
+    branch uses, instead of re-deriving the `unrealised[qty!=0] +
+    realised` formula inline — a second, independently-maintained copy
+    of that formula is exactly the drift risk `_accumulate_by_account`'s
+    own docstring exists to rule out (`sum(by_account) == firm_total` by
+    construction, not by convention).
     """
     from backend.api.routes.positions import _positions_snapshot
+    import pandas as pd
     try:
         snap = await _positions_snapshot()
         if snap is None:
             errors.append("positions_snapshot: no snapshot available")
             return 0.0
-        total = 0.0
-        for row in (snap.rows or []):
-            qty = float(getattr(row, "quantity", 0) or 0)
-            unr = float(getattr(row, "unrealised", 0) or 0) if qty != 0 else 0.0
-            real = float(getattr(row, "realised", 0) or 0)
-            total += unr + real
-            acct = str(getattr(row, "account", "") or "")
-            _merge_accounts(accounts_in, [acct] if acct else [])
-            if by_account is not None and acct:
-                by_account[acct] = by_account.get(acct, 0.0) + unr + real
+        rows = snap.rows or []
+        if not rows:
+            return 0.0
+        df = pd.DataFrame([
+            {
+                "account": str(getattr(r, "account", "") or ""),
+                "quantity": getattr(r, "quantity", 0) or 0,
+                "unrealised": getattr(r, "unrealised", 0) or 0,
+                "realised": getattr(r, "realised", 0) or 0,
+            }
+            for r in rows
+        ])
+        total, accts = _positions_from_df(df)
+        _merge_accounts(accounts_in, accts)
+        if by_account is not None:
+            _accumulate_by_account(df, by_account, _positions_from_df)
         return total
     except Exception as exc:
         errors.append(f"{_UNDERSTATED_TAG}positions_snapshot: {exc}")
