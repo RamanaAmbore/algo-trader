@@ -1830,6 +1830,25 @@ Rule: these buttons must always live inside the shared card button-group slot. N
 
 ## Critical math guards
 
+**`diagnose_live_failure`'s post-failure margin re-check must never assert a root cause it can't actually
+distinguish (2026-10-31, live operator-reported incident)** — When a real `place_order` call fails with
+Kite's own "Insufficient funds" error, `backend/api/algo/actions_preflight.py:diagnose_live_failure()`
+re-runs `basket_order_margins` as a secondary data point. Live-observed: a genuine, tiny shortfall
+(₹32,131 short on a ₹10.37M requirement) during the account's heaviest concurrent trading minute of
+the day — the re-check ran moments later, after other chase/basket orders on the same account had
+settled and freed margin, and came back clean. The old message asserted **"likely segment permission"**
+as if this re-check could distinguish a transient, already-recovered shortfall from a genuine
+account-permission issue — it cannot, because it runs strictly after the fact and `basket_order_margins`
+succeeding only proves margin was sufficient AT THAT LATER MOMENT, not at the time of the original
+failure. It also discarded Kite's own original error (the one authoritative source for the real
+required/available figures at failure time) after only a `logger.debug()` line. Fixed: the message now
+states what was actually observed ("margin now reports sufficient via basket_margin (re-checked after
+the failure — may have recovered since...)") without asserting a cause, and appends the original
+`kite_error` text verbatim so the real shortfall figures reach whoever reads the alert. Test:
+`test_diagnose_live_failure_message.py`. Invariant: a diagnostic that runs after a race-prone window
+must describe what it observed, never assert a specific root cause it cannot actually distinguish from
+the alternative.
+
 **MCX underlying-spot future resolution must key off the FUTURE's own expiry, never the paired option's (2026-10-15, live operator-reported incident)** —
 `backend/api/algo/derivatives.py:lookup_future_for_option()` → `_resolve_monthly_option_future()` →
 `_matched_or_roll()` previously ALSO rolled the resolved underlying future to next month when the

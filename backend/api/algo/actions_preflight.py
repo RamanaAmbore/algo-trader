@@ -1172,11 +1172,30 @@ async def run_preflight(
 
 async def diagnose_live_failure(broker, order: dict, kite_error: str) -> str:
     """
-    When a place_order call raises, re-run basket_order_margins to
-    distinguish the likely root cause:
+    When a place_order call raises, re-run basket_order_margins as a
+    SECONDARY data point — NOT a root-cause diagnosis.
 
-      - basket_margin succeeds  →  margin OK; the failure was likely a
-                                   segment-permission issue
+    2026-10-31 fix (live incident): this re-check runs strictly AFTER
+    the failure, often with other chase/basket orders on the same
+    account actively placing/filling/cancelling concurrently (observed
+    live: a ₹32,131 shortfall on a ₹10.37M requirement during the
+    account's heaviest trading minute of the day). basket_margin
+    succeeding moments later proves margin recovered by THAT point —
+    it does NOT prove the original failure was a segment/permission
+    issue rather than a real, momentary shortfall. The previous message
+    asserted "likely segment permission" as if this were a reliable
+    diagnosis; it is a plausible guess at best, and was actively
+    misleading during concurrent order flow. The returned string now
+    states what was actually observed, not a presumed cause, and
+    preserves Kite's own original error (the authoritative source for
+    the real required/available figures at the moment of failure)
+    instead of discarding it after a debug-only log line.
+
+      - basket_margin succeeds  →  margin now reports sufficient; may
+                                   mean the original failure was
+                                   transient (margin recovered since),
+                                   OR a segment/permission issue — this
+                                   check alone cannot distinguish them
       - basket_margin fails with margin/fund/shortfall keywords → margin
       - basket_margin fails with the same generic error → unclear
 
@@ -1184,8 +1203,6 @@ async def diagnose_live_failure(broker, order: dict, kite_error: str) -> str:
     compatibility we still accept a raw SDK handle and reach for its
     `basket_order_margins` method — callers should pass the adapter.
     """
-    if kite_error:
-        logger.debug("kite_error in diagnose_live_failure: %s", kite_error)
     import asyncio
     from backend.brokers.adapters.kite import get_lot_size
     # Accept either a Broker adapter or a legacy SDK handle.
@@ -1217,9 +1234,16 @@ async def diagnose_live_failure(broker, order: dict, kite_error: str) -> str:
     try:
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, basket_margin_fn, [basket_order])
-        return ("margin OK via basket_margin — likely segment permission "
-                "(check Account → Segments + API key exchange scope at "
-                "the broker's developer console)")
+        # basket_margin now reports sufficient — this is a re-check made
+        # AFTER the failure, not a root-cause diagnosis (see docstring).
+        # Kite's own original error carries the real required/available
+        # figures at the moment of failure; preserve it instead of
+        # replacing it with a guessed cause.
+        orig = f" Original: {kite_error[:200]}" if kite_error else ""
+        return ("margin now reports sufficient via basket_margin (re-checked "
+                "after the failure — may have recovered since, e.g. during "
+                "concurrent chase/basket activity on this account; this does "
+                "not confirm a segment/permission issue)." + orig)
     except Exception as bm_e:
         bm_msg = str(bm_e)
         low = bm_msg.lower()
