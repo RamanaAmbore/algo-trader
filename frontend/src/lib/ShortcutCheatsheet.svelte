@@ -134,6 +134,11 @@
     border: 1px solid var(--algo-amber-border);
     border-radius: 6px;
     box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+    /* --modal-frame-ring (app.css, 2026-10-31, operator: "add some kind
+       border decoration, to show the modal") — unified ring, same as
+       every other modal in the app. */
+    outline: var(--modal-frame-ring);
+    outline-offset: -2px;
     color: var(--algo-slate);
     font-family: var(--font-numeric);
     animation: sc-pop 140ms ease-out;

@@ -19,7 +19,18 @@
  *      ActivityLogModal (bare 10500 → var(--z-command)),
  *      BrokerHealthBadge (9990 → var(--z-drawer), matching its own
  *      modal's tier), RefreshButton (1000/1001 → --z-dropdown pair).
+ *   5. Modal frame ring (2026-10-31, operator: "add some kind border
+ *      decoration, to show the modal. some times, I am confused, if it
+ *      is a modal or a page") — `.canonical-modal-panel` (ChartModal,
+ *      ActivityLogModal, SymbolPanel/OrderTicket) is a full-bleed sheet
+ *      with `border-top: none`, so its literal border sat flush against
+ *      the screen edges and was effectively invisible. A shared
+ *      `--modal-frame-ring` token (app.css) is applied via `outline` (not
+ *      another box-shadow, since outline paints above a child header's
+ *      own opaque background) to `.algo-modal` and `.canonical-modal-panel`
+ *      so every modal in the app carries the same decoration.
  *
+
  * Five quality dimensions (matches this repo's e2e convention):
  *   1. SSOT   — z-index/dim read from app.css custom properties at
  *               runtime, not re-hardcoded in the test
@@ -289,5 +300,87 @@ test.describe('Functional — z-index tiers resolve correctly at runtime (real b
     ]);
     expect(overlayZ).toBe(zDrawer);
     expect(modalZ).toBe(zDrawer);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Item 5 — modal frame ring (border decoration) on every modal
+// ─────────────────────────────────────────────────────────────────────────
+
+test.describe('Static source checks — --modal-frame-ring token is the SSOT', () => {
+  const app_css = readFile('src/app.css');
+
+  test('token is defined once in app.css, derived from the amber border tokens', () => {
+    expect(app_css).toMatch(/--modal-frame-ring:\s*2px solid var\(--algo-amber-border\);/);
+  });
+
+  test('.algo-modal and .canonical-modal-panel both consume the token via outline', () => {
+    const algoModalBlock = app_css.slice(app_css.indexOf('.algo-modal {'), app_css.indexOf('.algo-modal {') + 700);
+    const sheetBlock = app_css.slice(app_css.indexOf('.canonical-modal-panel {'), app_css.indexOf('.canonical-modal-panel {') + 1200);
+    for (const block of [algoModalBlock, sheetBlock]) {
+      expect(block).toMatch(/outline:\s*var\(--modal-frame-ring\);/);
+      expect(block).toMatch(/outline-offset:\s*-2px;/);
+    }
+  });
+});
+
+test.describe('Functional — resolved outline color on the real modals (real browser)', () => {
+  // The token resolves to rgba(251, 191, 36, 0.55) — --algo-amber-border.
+  const AMBER_RGB = '251, 191, 36';
+
+  test.beforeEach(async ({ page }) => {
+    await loginAsAdmin(page);
+  });
+
+  test('SymbolPanel (`t` shortcut) canonical-modal-panel carries the amber outline ring', async ({ page }) => {
+    await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded' });
+    await page.locator('body').click({ position: { x: 5, y: 5 } });
+    await page.keyboard.press('t');
+
+    const panel = page.locator('.canonical-modal-panel').first();
+    await expect(panel, 'SymbolPanel sheet should open on `t`').toBeVisible({ timeout: 10_000 });
+
+    const outline = await panel.evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return { style: cs.outlineStyle, color: cs.outlineColor, width: cs.outlineWidth, offset: cs.outlineOffset };
+    });
+    expect(outline.style).toBe('solid');
+    expect(outline.color).toContain(AMBER_RGB);
+    expect(outline.width).toBe('2px');
+    expect(outline.offset).toBe('-2px');
+  });
+
+  test('ChartModal (`k` shortcut) canonical-modal-panel carries the amber outline ring', async ({ page }) => {
+    await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded' });
+    await page.locator('body').click({ position: { x: 5, y: 5 } });
+    await page.keyboard.press('k');
+
+    const panel = page.locator('.canonical-modal-overlay[aria-label*="Chart" i] .canonical-modal-panel').first();
+    await expect(panel, 'ChartModal sheet should open on `k`').toBeVisible({ timeout: 10_000 });
+
+    const outline = await panel.evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return { style: cs.outlineStyle, color: cs.outlineColor, width: cs.outlineWidth };
+    });
+    expect(outline.style).toBe('solid');
+    expect(outline.color).toContain(AMBER_RGB);
+    expect(outline.width).toBe('2px');
+  });
+
+  test('ActivityLogModal (`h` shortcut) canonical-modal-panel carries the amber outline ring', async ({ page }) => {
+    await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded' });
+    await page.locator('body').click({ position: { x: 5, y: 5 } });
+    await page.keyboard.press('h');
+
+    const panel = page.locator('.canonical-modal-panel.alm-panel').first();
+    await expect(panel, 'ActivityLogModal sheet should open on `h`').toBeVisible({ timeout: 10_000 });
+
+    const outline = await panel.evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return { style: cs.outlineStyle, color: cs.outlineColor, width: cs.outlineWidth };
+    });
+    expect(outline.style).toBe('solid');
+    expect(outline.color).toContain(AMBER_RGB);
+    expect(outline.width).toBe('2px');
   });
 });

@@ -386,6 +386,15 @@
     touch-action: pan-x pan-y pinch-zoom;
     -webkit-overflow-scrolling: touch;
     box-sizing: border-box;
+    /* Border decoration (2026-10-31, operator: "add some kind border
+       decoration, to show the modal... sometimes, I am confused, if it
+       is a modal or a page") — this panel had none at all and fills
+       nearly the whole viewport. Reuses the public/cream theme's own
+       existing card-chrome convention (`.pub-form-panel`, app.css) rather
+       than the dark-side amber token, which has no presence anywhere on
+       this cream-themed page. */
+    border: 1px solid var(--card-surface-border, #ddd8ce);
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12);
   }
   /* Wrap = the actual flex centering container. `min-width:
      100%; min-height: 100%` means it fills the panel WHEN SVG is

@@ -4001,11 +4001,34 @@
 
   /* Re-arm-auto button — visible only after the operator has
      touched the price field. Click → reset _priceTouched and
-     re-fill from the latest quote. */
+     re-fill from the latest quote.
+     Row-alignment fix (2026-10-31, operator: "check all the surface
+     if all the elements in the same row aligned correctly vertically
+     example lots entry and price entry element alignment and size")
+     — this button sits INLINE inside `.ot-price-cell`'s own
+     `.ot-label` (next to the "Price" text + `.ot-tick-chip`), and
+     `.ot-lots-price-row` is `align-items: flex-start`, so the whole
+     Lots/Price/Validity stack is positioned straight off each
+     cell's own label height. At the old `height: 0.95rem` (an
+     inline-block <button>, which DOES contribute its full box
+     height to the line, unlike the plain-text `.ot-tick-chip`
+     span), the "Price" label's line box grew from 14.39px to
+     16.19px the moment the operator touched the price field — live-
+     measured via a scoped-class-identical injected button, since a
+     real quote/reset state needs live market data this pass's dev
+     session didn't have (weekend). That pushed `#ot-price` ~1.8px
+     lower than `.ot-lots-row`'s control, a real same-row vertical
+     offset once the reset button is visible — not present at the
+     untouched default state, so the earlier Fix C test (which only
+     measured the untouched state) never caught it. `0.72rem` is the
+     largest height that measured BACK to the exact same label line
+     box (14.390625px, matching `.ot-lots-cell`'s label byte-for-byte)
+     — no coincidence that it equals `--fs-lg`'s own declared value;
+     chosen empirically, not derived from it. */
   .ot-price-reset {
     margin-left: 0.4rem;
     padding: 0 0.35rem;
-    height: 0.95rem;
+    height: 0.72rem;
     line-height: 1;
     border-radius: 2px;
     border: 1px solid rgba(125,211,252,0.55);
@@ -4799,6 +4822,11 @@
     padding: 1.2rem 1.3rem 1rem;
     color: var(--algo-slate);
     font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+    /* --modal-frame-ring (app.css, 2026-10-31, operator: "add some kind
+       border decoration, to show the modal") — unified ring, same as
+       every other modal in the app. */
+    outline: var(--modal-frame-ring);
+    outline-offset: -2px;
   }
   .ot-demo-close {
     position: absolute; top: 0.55rem; right: 0.7rem;

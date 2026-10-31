@@ -1225,6 +1225,11 @@
     border: 1px solid rgba(251, 191, 36, 0.55);
     border-radius: 6px;
     box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+    /* --modal-frame-ring (app.css, 2026-10-31, operator: "add some kind
+       border decoration, to show the modal") — same unified ring every
+       other modal now carries, for one consistent signal app-wide. */
+    outline: var(--modal-frame-ring);
+    outline-offset: -2px;
     z-index: var(--z-drawer);
     /* No padding on the panel itself — the header provides its own
        internal spacing (canonical-modal-header) and the body wrapper

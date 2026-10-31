@@ -1375,7 +1375,13 @@
 <style>
   .ip-modal {
     background: #0f172a;
-    border: 1px solid rgba(126, 151, 184, 0.30);
+    /* Border normalized from a bespoke slate rgba(126,151,184,0.30) to the
+       shared amber modal token (2026-10-31 border-decoration audit,
+       operator: "add some kind border decoration, to show the modal") —
+       this was the only modal in the app with a different border color
+       family from the rest of the `.algo-modal`/canonical-modal-panel
+       convention. */
+    border: 1px solid var(--algo-amber-border-soft);
     border-radius: 8px;
     width: 100%;
     max-width: 720px;
@@ -1384,6 +1390,8 @@
     padding: 1rem 1.2rem 1.3rem;
     color: var(--algo-slate);
     box-shadow: 0 18px 36px rgba(0,0,0,0.45);
+    outline: var(--modal-frame-ring);
+    outline-offset: -2px;
   }
   .ip-modal-head {
     display: flex; align-items: flex-start; justify-content: space-between;

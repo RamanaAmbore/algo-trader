@@ -265,7 +265,7 @@ test.describe('Fix #2 — 15d DTE chip vs TP%/SL% input height', () => {
   });
 });
 
-test.describe('Fix #3 (2026-09-30 follow-up, superseded same day) — Expiry toolbar row height audit', () => {
+test.describe('Fix #3 (2026-09-30 follow-up, superseded same day; STALE cross-row assertion corrected 2026-10-31) — Expiry toolbar row height audit', () => {
   // SUPERSEDED — the initial "two deliberate tiers" finding below (Select
   // trigger + Template toggle at 1.55rem vs DTE chip + TP% input at
   // 1.4rem) was re-reviewed the same day and found to be a real, un-
@@ -281,6 +281,34 @@ test.describe('Fix #3 (2026-09-30 follow-up, superseded same day) — Expiry too
   // OptionChainTab.svelte, so they never render in this row (or any
   // row) and are excluded from the audit. Flagged here for visibility;
   // removal is out of scope for this visual-only pass.
+  //
+  // CORRECTED 2026-10-31 (found while auditing "all surfaces... lots
+  // entry and price entry element alignment", the row-alignment pass
+  // this file's Fix E describe block documents) — the live "Template
+  // toggle vs DTE chip" leg of this test was failing: 22.39px vs
+  // 24.80px, a genuine 2.4px delta. Root cause is NOT a CSS regression
+  // — it's this test going stale. OptionChainTab.svelte's own 2026-10-21
+  // "shared-row re-wire" comment (right above the now-empty `{#if
+  // _dte != null...}` DTE-chip block in the markup) says: "Template
+  // toggle — REMOVED 2026-10-21... The Bracket (TemplateBar) toggle +
+  // Draft checkbox now render once, at shell level, inside SymbolPanel's
+  // single CHASE/BRACKET/DRAFT row... this tab no longer mounts its own
+  // copy." Confirmed live via `toolbar.contains(tplButton)` →
+  // `false`, and the two elements sit ~29px apart on genuinely
+  // different rows. `.oes-basket-tpl-param > input` moved with it —
+  // also confirmed `toolbar.contains(input)` → `false`. Both elements
+  // this test used to compare against `.oct-toolbar`'s own controls are
+  // simply no longer IN that toolbar, or even in the same row, so
+  // asserting their heights match is no longer a same-row-alignment
+  // check at all — it was coincidentally still passing for the DTE-
+  // chip/TP-input pair only because both independently use the same
+  // hardcoded 1.4rem value, not because they're row-mates. The two
+  // genuinely-still-same-row controls (Select trigger + DTE chip, both
+  // still direct children of `.oct-toolbar`) are re-asserted below;
+  // confirmed consistent. The Template toggle / TP-input pair moved to
+  // SymbolPanel's own shared row and has its own height-consistency
+  // audit there (not duplicated here — see this file's Fix E block for
+  // the surfaces audited in that pass).
   test('dead-code check: .oct-mode-btn / .oct-controls / .oct-field-mode / .oct-mode-toggle have CSS rules but no matching markup', () => {
     expect(CHAIN_TAB).toMatch(/\.oct-mode-btn\s*\{/);
     expect(CHAIN_TAB).not.toMatch(/class="[^"]*\boct-controls\b/);
@@ -289,29 +317,38 @@ test.describe('Fix #3 (2026-09-30 follow-up, superseded same day) — Expiry too
     expect(CHAIN_TAB).not.toMatch(/class="[^"]*\boct-mode-btn\b/);
   });
 
-  test('live: .oct-toolbar controls (Select trigger, Template toggle, DTE chip, TP% input) all render at the same height', async ({ page }) => {
+  test('live: .oct-toolbar\'s OWN two remaining controls — Select trigger + DTE chip — still render at the same height (same row, confirmed via DOM containment)', async ({ page }) => {
     await loginAsAdmin(page);
     await _seedNiftyOnChainWithTemplOn(page);
 
     const selectTrigger = page.locator('.oct-expiry-pick .rbq-select-trigger').first();
-    const tplButton = page.locator('.oes-tpl-button').first();
     const dteChip = page.locator('.oct-expiry-dte').first();
-    const tpInput = page.locator('.oes-basket-tpl-param > input').first();
     await expect(selectTrigger).toBeVisible({ timeout: 15_000 });
-    await expect(tplButton).toBeVisible({ timeout: 10_000 });
     await expect(dteChip).toBeVisible({ timeout: 10_000 });
-    await expect(tpInput).toBeVisible({ timeout: 10_000 });
 
-    const [selectH, tplH, dteH, inputH] = await Promise.all([
+    const containment = await page.evaluate(() => {
+      const toolbar = document.querySelector('.oct-toolbar');
+      const select = document.querySelector('.oct-expiry-pick .rbq-select-trigger');
+      const dte = document.querySelector('.oct-expiry-dte');
+      const tpl = document.querySelector('.oes-tpl-button');
+      return {
+        selectInToolbar: toolbar && select ? toolbar.contains(select) : null,
+        dteInToolbar: toolbar && dte ? toolbar.contains(dte) : null,
+        // Documents the architecture this correction is based on — the
+        // Template toggle is confirmed OUTSIDE .oct-toolbar's own DOM
+        // subtree, so it is genuinely not a same-row control any more.
+        tplInToolbar: toolbar && tpl ? toolbar.contains(tpl) : null,
+      };
+    });
+    expect(containment.selectInToolbar, 'Select trigger must still be inside .oct-toolbar').toBe(true);
+    expect(containment.dteInToolbar, 'DTE chip must still be inside .oct-toolbar').toBe(true);
+    expect(containment.tplInToolbar, 'Template toggle must be OUTSIDE .oct-toolbar (2026-10-21 shared-row re-wire) — regression guard against this correction going stale the other way').toBe(false);
+
+    const [selectH, dteH] = await Promise.all([
       selectTrigger.evaluate((el) => el.getBoundingClientRect().height),
-      tplButton.evaluate((el) => el.getBoundingClientRect().height),
       dteChip.evaluate((el) => el.getBoundingClientRect().height),
-      tpInput.evaluate((el) => el.getBoundingClientRect().height),
     ]);
-
-    expect(Math.abs(selectH - tplH), `Select trigger ${selectH}px vs Template toggle ${tplH}px`).toBeLessThanOrEqual(1);
-    expect(Math.abs(dteH - inputH), `DTE chip ${dteH}px vs TP% input ${inputH}px`).toBeLessThanOrEqual(1);
-    expect(Math.abs(tplH - dteH), `Template toggle ${tplH}px vs DTE chip ${dteH}px (should now match — single tier)`).toBeLessThanOrEqual(1);
+    expect(Math.abs(selectH - dteH), `Select trigger ${selectH}px vs DTE chip ${dteH}px`).toBeLessThanOrEqual(1);
   });
 });
 
@@ -750,5 +787,111 @@ test.describe('Bug fix — SymbolPanel tab strip matches Pulse tabs\' compact si
     // not just that the class name is present.
     expect(info.padding).toBe('0px 9.6px');
     expect(info.minHeight).toBe('22px');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// Fix E — row-alignment audit (2026-10-31, operator: "check all the
+// surface if all the elements in the same row aligned correctly
+// vertically example lots entry and price entry element alignment and
+// size. Make the sure the vertical height also consistent as much as
+// possible.")
+//
+// Audited every order-entry row (OrderTicket.svelte, TemplateBar.svelte,
+// OrderKnobsRow.svelte/SideToggle.svelte, SymbolPanel.svelte's basket
+// pills). Only ONE genuine, previously-unverified mismatch was found:
+//
+//  `.ot-lots-price-row` is `align-items: flex-start` (not `center`), so
+//  Lots / Price / Validity are positioned purely off each cell's own
+//  label height. `.ot-price-reset` (the ↺ re-arm-auto button, visible
+//  only once the operator has touched the Price field AND a live quote
+//  has loaded) is an inline-block <button> with a fixed `height` —
+//  unlike `.ot-tick-chip` (a plain `<span>`, which per the CSS inline
+//  box model never grows the line it sits in regardless of its own
+//  padding/border). At the old `height: 0.95rem`, the "Price" label's
+//  line box grew ~1.8px taller than the Lots label's the moment ↺
+//  appeared, pushing `#ot-price` ~1.8px lower than `.ot-lots-row`'s
+//  control — a real, state-dependent, same-row vertical offset. The
+//  pre-existing Fix C test above only measured the row BEFORE the
+//  operator ever touches Price, so it never exercised this state.
+//  Live-measuring the real ↺ state needs a loaded market quote
+//  (`_lastQuote`), unavailable during this pass's weekend/closed-market
+//  dev session — verified instead by injecting a real `.ot-price-reset`
+//  button (sharing the exact same Svelte scoped-class hash as the
+//  component's own, so the identical compiled CSS rule applies) into
+//  the live-rendered label, which reproduces the app's real rendering
+//  without needing a live quote.
+//
+// Everything else audited came back consistent already:
+//  - Knobs row (Side/Type/Product/Variety) — Fix B above, re-confirmed
+//    live this pass at both 1400px and 375px: 27.1875px / identical
+//    center-Y whenever on the same line (Variety wraps to its own line
+//    at 375px — a width-driven flex-wrap, not a same-row mismatch).
+//  - TemplateBar.svelte's TP%/SL%/Wing param row (`.oes-basket-tpl-
+//    param > input`) — all 3 inputs share ONE CSS rule; live-measured
+//    at 1400px: height 22.390625px, identical center-Y across all 3.
+//  - SymbolPanel.svelte's basket-leg pill row (`.oes-basket-pill`) —
+//    uses `align-items: center` (unlike the Lots/Price row), so minor
+//    sub-2px height deltas between the lots stepper/text and the limit
+//    input are auto-centered by flexbox, not a visible misalignment.
+//    Could not force a live leg onto the basket this pass (every
+//    chain-row Buy/Sell button is quote-gated and stayed disabled with
+//    the market closed) — noted as a lower-confidence pass, not a
+//    found-and-fixed defect.
+// ═══════════════════════════════════════════════════════════════════════
+test.describe('Fix E — .ot-price-reset no longer grows the Price label taller than the Lots label', () => {
+  test('source: .ot-price-reset height is 0.72rem (was 0.95rem)', () => {
+    const rule = ORDER_TICKET.match(/\.ot-price-reset\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';
+    expect(rule, '.ot-price-reset rule').not.toBe('');
+    expect(rule).toMatch(/height:\s*0\.72rem/);
+    expect(rule).not.toMatch(/height:\s*0\.95rem/);
+  });
+
+  test('live: injecting a real .ot-price-reset button (same scoped-class hash as the component\'s own) does not grow .ot-price-cell\'s label past .ot-lots-cell\'s label, and keeps #ot-price top-aligned with .ot-lots-row', async ({ page }) => {
+    await loginAsAdmin(page);
+    await _seedNiftyOnTicket(page);
+
+    const priceLabel = page.locator('.ot-price-cell .ot-label').first();
+    await expect(priceLabel).toBeVisible({ timeout: 15_000 });
+
+    // Inject a real .ot-price-reset button carrying the SAME Svelte
+    // scoped-class hash as the label it's injected into, so the
+    // browser applies the exact compiled CSS rule the component's own
+    // conditional ↺ button would get — this reproduces the live "price
+    // touched + quote loaded" state without needing a real broker quote.
+    await page.evaluate(() => {
+      const label = document.querySelector('.ot-price-cell .ot-label');
+      const scopeClasses = Array.from(label.classList).filter((c) => c.startsWith('s-'));
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = ['ot-price-reset', ...scopeClasses].join(' ');
+      btn.textContent = '↺';
+      label.appendChild(btn);
+    });
+    await page.waitForTimeout(100);
+
+    const [priceLabelBox, lotsLabelBox, priceInputBox, lotsRowBox] = await Promise.all([
+      priceLabel.evaluate((el) => el.getBoundingClientRect().height),
+      page.locator('.ot-lots-cell .ot-label').first().evaluate((el) => el.getBoundingClientRect().height),
+      page.locator('#ot-price').first().evaluate((el) => el.getBoundingClientRect().top),
+      page.locator('.ot-lots-row').first().evaluate((el) => el.getBoundingClientRect().top),
+    ]);
+
+    expect(Math.abs(priceLabelBox - lotsLabelBox), `Price label height ${priceLabelBox}px vs Lots label height ${lotsLabelBox}px, with ↺ visible`).toBeLessThanOrEqual(1);
+    expect(Math.abs(priceInputBox - lotsRowBox), `#ot-price top ${priceInputBox}px vs .ot-lots-row top ${lotsRowBox}px, with ↺ visible`).toBeLessThanOrEqual(1);
+  });
+
+  test('live: Validity / Lots / Price render on the same top edge at 1400px desktop (untouched state, sanity re-check)', async ({ page }) => {
+    await loginAsAdmin(page);
+    await _seedNiftyOnTicket(page);
+
+    const [validityTop, lotsTop, priceTop] = await Promise.all([
+      page.locator('#ot-validity-sel').first().evaluate((el) => el.getBoundingClientRect().top),
+      page.locator('.ot-lots-row').first().evaluate((el) => el.getBoundingClientRect().top),
+      page.locator('#ot-price').first().evaluate((el) => el.getBoundingClientRect().top),
+    ]);
+
+    expect(Math.abs(validityTop - lotsTop), `Validity top ${validityTop}px vs Lots top ${lotsTop}px`).toBeLessThanOrEqual(1);
+    expect(Math.abs(lotsTop - priceTop), `Lots top ${lotsTop}px vs Price top ${priceTop}px`).toBeLessThanOrEqual(1);
   });
 });

@@ -6197,6 +6197,11 @@
     border: 1px solid rgba(251, 191, 36, 0.55);
     border-radius: 6px;
     box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6);
+    /* --modal-frame-ring (app.css, 2026-10-31, operator: "add some kind
+       border decoration, to show the modal") — unified ring, same as
+       every other modal in the app. */
+    outline: var(--modal-frame-ring);
+    outline-offset: -2px;
     overflow: hidden;
   }
   /* search-header adopts canonical-modal-header gradient via class in markup;

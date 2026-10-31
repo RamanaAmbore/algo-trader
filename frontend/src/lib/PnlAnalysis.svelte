@@ -1286,6 +1286,11 @@
     max-height: 90vh;
     overflow-y: auto;
     box-shadow: 0 8px 28px rgba(0,0,0,0.55);
+    /* --modal-frame-ring (app.css, 2026-10-31, operator: "add some kind
+       border decoration, to show the modal") — unified ring, same as
+       every other modal in the app. */
+    outline: var(--modal-frame-ring);
+    outline-offset: -2px;
   }
   .modal-head {
     display: flex;

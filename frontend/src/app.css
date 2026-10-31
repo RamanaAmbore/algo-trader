@@ -74,6 +74,26 @@
   --algo-amber-border-soft:rgba(251, 191, 36, 0.30);
   --algo-amber-border:     rgba(251, 191, 36, 0.55);
 
+  /* ── Modal frame ring (2026-10-31) ─────────────────────────────────────
+     Operator: "add some kind border decoration, to show the modal. some
+     times, I am confused, if it is a modal or a page." Audit found the
+     canonical sheet variant (.canonical-modal-panel — ChartModal,
+     ActivityLogModal, SymbolPanel, OrderTicket, the highest-traffic
+     modals) renders `width:100%` / full viewport height with
+     `border-top: none`, so its 1px literal border sits flush against the
+     screen's own edges and its box-shadow blur paints off-screen — on a
+     real desktop viewport this is visually indistinguishable from a page.
+     `outline` (not another box-shadow) is the fix: it paints ABOVE all
+     descendant content per the CSS painting-order spec, so a negative
+     `outline-offset` draws a ring INSIDE the panel that is never hidden
+     behind a child header's own opaque background — the one spot
+     (directly under the fixed page-header) where "modal vs page" is most
+     ambiguous. One shared token so every modal — sheet or floating box —
+     carries the identical decoration; a component's own literal `border`
+     (e.g. AgentFireModal's tier severity color) is left untouched, this
+     ring layers on top of it. */
+  --modal-frame-ring: 2px solid var(--algo-amber-border);
+
   /* Cyan alpha variants */
   --algo-cyan-bg-soft:     rgba(34, 211, 238, 0.08);
   --algo-cyan-bg:          rgba(34, 211, 238, 0.14);
@@ -594,6 +614,12 @@
   border-radius: 6px;
   box-shadow: 0 8px 40px rgba(0, 0, 0, 0.55),
               0 0 0 1px var(--algo-amber-bg-soft);
+  /* --modal-frame-ring, see :root — unified modal border decoration
+     (2026-10-31). Already-floating popups like this one read clearly
+     as a modal without it, but every modal gets the same ring so
+     there is one consistent signal app-wide. */
+  outline: var(--modal-frame-ring);
+  outline-offset: -2px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -684,6 +710,18 @@
   border-top: none;
   border-radius: 0;
   box-shadow: 0 8px 40px rgba(0, 0, 0, 0.55), 0 0 0 1px var(--algo-amber-bg-soft);
+  /* --modal-frame-ring, see :root (2026-10-31, operator: "add some kind
+     border decoration, to show the modal... sometimes, I am confused, if
+     it is a modal or a page"). This sheet fills the full viewport width/
+     height with no top border, so the literal `border` above sits flush
+     against the screen edges and is easy to miss entirely. The ring is
+     `outline`, not another box-shadow, specifically because it paints
+     above `.canonical-modal-header`'s own opaque background — the only
+     technique that makes the TOP edge (right under the fixed page
+     header, the most ambiguous seam) visibly read as "floating panel"
+     rather than "page". */
+  outline: var(--modal-frame-ring);
+  outline-offset: -2px;
   width: 100%;
   height: calc(100dvh - var(--modal-sheet-top, calc(3rem + 1.8rem)));
   display: flex;

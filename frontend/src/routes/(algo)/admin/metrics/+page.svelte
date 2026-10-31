@@ -558,13 +558,20 @@
      panel's own chrome. */
   .metrics-modal {
     background: var(--panel-bg, #0f172a);
-    border: 1px solid rgba(148, 163, 184, 0.3);
+    /* Border normalized from a bespoke slate rgba(148,163,184,0.3) to the
+       shared amber modal token (2026-10-31 border-decoration audit,
+       operator: "add some kind border decoration, to show the modal") —
+       matches the `.algo-modal`/canonical-modal-panel convention used by
+       every other modal in the app. */
+    border: 1px solid var(--algo-amber-border-soft);
     border-radius: 6px;
     max-width: 90vw;
     max-height: 88vh;
     width: 720px;
     display: flex;
     flex-direction: column;
+    outline: var(--modal-frame-ring);
+    outline-offset: -2px;
   }
   .metrics-modal-head {
     display: flex;
