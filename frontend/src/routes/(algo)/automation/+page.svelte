@@ -1120,49 +1120,77 @@
     flex-direction: column;
     min-height: 0;
   }
-  /* Guide link + kind-select — sized/aligned to match the Orders CLI
-     tab's own reference convention (2026-10-15, operator: "console
-     dropdown and trader guide elements on header should look like
-     order cli header in terms of size, position, and vertical
-     alignment") — `.oes-cli-guide-link` (SymbolPanel.svelte /
-     OrderCliTab.svelte) uses `min-height: var(--ctl-h, 1.7rem)` with
-     ZERO vertical padding (height comes purely from min-height, not
-     from padding), not the `.btn-secondary`-derived vertical padding
-     this recipe used before. That earlier recipe (0.25rem vertical
-     padding, converging on Select's own then-24.8px natural height)
-     is why Automation's header row (33.6px) measured taller than the
-     Orders CLI tab's reference row (28.2px) — this still isn't 0.6rem
-     horizontal + min-height, it's padding-driven height, same class of
-     mismatch the CLI-tab fix (earlier this session) already corrected
-     once on Orders. Converging both elements on the SAME --ctl-h floor
-     here fixes the height mismatch at the source instead of fighting
-     it with a different padding recipe per element. */
+  /* Guide link + kind-select — RE-TARGETED 2026-10-31 (operator, three
+     follow-ups in one ask): (1) "make orders dropdown in automation look
+     similar size and format like all accounts dropdown in pulse page",
+     (2) "make orders dropdwon and trade guide element of same height and
+     vertical alaignement", (3) "They should be aligned tab text too."
+     This SUPERSEDES the 2026-10-15 "match the Orders CLI tab" anchor
+     below — the reference control is now Pulse's AccountMultiSelect
+     (`AccountMultiSelect.svelte` → `MultiSelect.svelte`'s
+     `.rbq-multi-trigger`), not `.oes-cli-guide-link`.
+     `MultiSelect.svelte`'s trigger (`min-height: 1.55rem; padding:
+     0.25rem 0.5rem 0.25rem 0.4rem; border-radius: 3px; font-size: var(
+     --fs-sm);`) is already BYTE-FOR-BYTE identical to `Select.svelte`'s
+     own unoverridden `.rbq-select-trigger` default — both components
+     share one box-model convention by design. So "look like Pulse's
+     dropdown" is the SAME target as "use Select's own natural size" —
+     confirmed via direct source comparison (Select.svelte lines
+     260-285 vs MultiSelect.svelte lines 191-208) and a sandboxed
+     box-model replay (border-box, --fs-sm 0.6rem, min-height 1.55rem
+     → renders 24.796875px, vs the previous 1.7rem-floor renders
+     27.1875px — this page's own live rendering before this change,
+     confirming the floor value governs almost exactly). Pulse's own
+     AccountMultiSelect could not be measured live in this dev checkout
+     (no broker accounts configured in `_knownBrokerAccounts`, so
+     `availableAccounts` stays empty and the picker never mounts) — this
+     is a source-derived reference, not a fresh live DOM capture of
+     Pulse itself.
+     Former 1.7rem floor dropped to 1.55rem on both elements below.
+     `max(1.55rem, var(--toolbar-h))` — not a bare 1.55rem — because
+     `--toolbar-h` (the SAME SSOT height AutomationTabs' own `.algo-tab`
+     already floors at) steps up to 28px at the ≤600px breakpoint
+     (app.css), while 1.55rem stays a flat 24.8px. A bare 1.55rem would
+     make the dropdown/Guide link SHORTER than the tab strip on mobile —
+     `max()` keeps all three locked together at both breakpoints: 24.8px
+     desktop (0.8px above the tab's own 24px — within the file's
+     existing 1-2px tolerance), 28px mobile (exact tab match). Colors,
+     the inside-shade fill, the width, and the horizontal ordering are
+     UNCHANGED per this round's explicit scope — only height/padding/
+     alignment move. Width stays 5.4rem (narrower than Pulse's 7rem
+     reference) and the background stays the white-fill override (Pulse
+     uses its own navy gradient) — both flagged as open items, not
+     touched here; the operator's three messages this round named height
+     and vertical alignment only. */
   .console-guide-btn {
     display: inline-flex;
     align-items: center;
     white-space: nowrap;
     text-decoration: none;
-    min-height: 1.7rem;
+    min-height: max(1.55rem, var(--toolbar-h));
     padding: 0 0.6rem;
     font-size: var(--fs-sm);
     box-sizing: border-box;
   }
-  /* Scopes the shared $lib/Select.svelte's trigger to the SAME --ctl-h
-     floor as .console-guide-btn above. Select.svelte has no `class`/
-     style passthrough prop, so this is scoped via the wrapping <span>
-     in the markup rather than touching the shared component (narrower
-     blast radius — Select is also used on /admin/settings).
+  /* Scopes the shared $lib/Select.svelte's trigger to the SAME floor
+     as .console-guide-btn above. Select.svelte has no `class`/style
+     passthrough prop, so this is scoped via the wrapping <span> in the
+     markup rather than touching the shared component (narrower blast
+     radius — Select is also used on /admin/settings).
      2026-10-15 — operator follow-up: width reduced 20% from the first
      pass's 7.5rem (still comfortably fits "Bracket", the longest kind
      label) down to 6rem; "it is touching the lower border of the
-     header" — the trigger's own 1.7rem min-height left only ~1px
-     clearance from the header's 1px bottom border at the achieved
-     28.1875px row height (confirmed live) — a 1px vertical margin now
-     gives real breathing room without changing the overall row height
-     target from the earlier alignment fix; margin-right adds the
-     requested gap before the Trader Guide link (separate from
-     `.ch-left`'s own smaller `--ch-gap` default, which otherwise spaces
-     every header child identically). */
+     header" — the trigger's own then-1.7rem min-height left only ~1px
+     clearance from the header's 1px bottom border at the then-28.1875px
+     row height (confirmed live) — a 1px vertical margin gave real
+     breathing room at that height. Now that the floor has dropped to
+     1.55rem (2026-10-31, see the comment above), there is MORE
+     clearance than before by construction — the 1px margin is no
+     longer strictly load-bearing, but is left in place unchanged since
+     this round's ask was height/alignment, not margin; margin-right
+     still adds the requested gap before the Trader Guide link (separate
+     from `.ch-left`'s own smaller `--ch-gap` default, which otherwise
+     spaces every header child identically). */
   .aw-kind-select {
     display: inline-flex;
     /* 2026-10-17 (operator: "add a slight background... reduce its width
@@ -1175,14 +1203,22 @@
   }
   .aw-kind-select :global(.rbq-select-trigger) {
     /* `height` (not `min-height`) — hard-caps the trigger at the same
-       1.7rem floor as .console-guide-btn even if the caret glyph's own
-       font metrics (0.85rem via --fs-xl, see Select.svelte) render
-       taller than the label text in some browser/font combo, which
+       floor as .console-guide-btn even if the caret glyph's own font
+       metrics (0.85rem via --fs-xl, see Select.svelte) render taller
+       than the label text in some browser/font combo, which
        `min-height` alone can't prevent (operator: "dropdown button
-       height... looks little taller than trade guide"). */
-    height: 1.7rem;
-    min-height: 1.7rem;
-    padding: 0 0.5rem 0 0.4rem;
+       height... looks little taller than trade guide") — same defensive
+       reasoning as 2026-10-17, just retargeted to the new floor below. */
+    height: max(1.55rem, var(--toolbar-h));
+    min-height: max(1.55rem, var(--toolbar-h));
+    /* 2026-10-31 — padding restored to Select's own natural vertical
+       value (0.25rem top/bottom, was 0 before this round) so the
+       trigger's internal spacing reads like Pulse's AccountMultiSelect
+       "format", not just its height. Harmless under the `height:`
+       hard-cap above — content (0.25rem × 2 padding + 1px border × 2 +
+       ~11.5px text line-height ≈ 14.5px used) stays well inside the
+       24.8px/28px floor at both breakpoints. */
+    padding: 0.25rem 0.5rem 0.25rem 0.4rem;
     box-sizing: border-box;
     /* 2026-10-17 follow-up (operator: "you added shade around it. i
        want shade inside the dropdown which looks like a button... remove
@@ -1201,7 +1237,9 @@
        enough in tone to the dark CardHeader that it read as flush/
        invisible — this lighter fill is what actually differentiates the
        control AND reads as "a button" (a real inside fill, not just an
-       outline like the Guide link's own transparent/border-only style). */
+       outline like the Guide link's own transparent/border-only style).
+       2026-10-31: kept unchanged — this round's ask is height/alignment
+       only, not color (see comment above). */
     background: rgba(255,255,255,0.10);
   }
   /* 2026-10-15 — operator: "I want trader guide and dropdown control in
@@ -1221,7 +1259,19 @@
      strip the same way it already centers Select/Guide, matching the
      Orders Ticket/Chain/CLI tab row's own reference behavior (confirmed
      live: tab text center there already matches LTP/CHASE center
-     exactly). */
+     exactly).
+     2026-10-31 — operator's 3rd follow-up this round ("They should be
+     aligned tab text too") re-confirmed this still holds after the
+     Select/Guide floor dropped from 1.7rem to 1.55rem (see the comment
+     above `.console-guide-btn`): centering is driven entirely by
+     `.ch-left`'s own `align-items: center` across all three children,
+     independent of each child's own natural height, so no NEW override
+     was needed here — `AutomationTabs.svelte`'s `.algo-tab` floors at
+     the shared `--toolbar-h` token (24px desktop / 28px mobile), which
+     this round's `max(1.55rem, var(--toolbar-h))` on Select/Guide was
+     deliberately chosen to track, so the three stay close in height at
+     both breakpoints without touching the tab's own CSS (a global SSOT
+     used by chart toolbars elsewhere — out of scope to edit here). */
   .aw-tabs-in-header {
     display: inline-flex;
   }

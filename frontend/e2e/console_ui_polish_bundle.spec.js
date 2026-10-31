@@ -278,7 +278,20 @@ test.describe('Item 3 — Workspace header removed; Console/Agents tab row carri
   // (already covered above), but matching that external reference, and
   // the kind-select is no longer clipped/cramped at its old ~61.5px
   // natural width.
-  test('kind-dropdown and Guide link height matches the Orders CLI tab reference (--ctl-h), width is 5.4rem (reduced a further 10%, 2026-10-17), with a gap before Trader Guide', async ({ page }) => {
+  //
+  // 2026-10-31 — SUPERSEDED by a further operator refinement (three
+  // follow-ups in one ask): "make orders dropdown in automation look
+  // similar size and format like all accounts dropdown in pulse page" /
+  // "make orders dropdwon and trade guide element of same height and
+  // vertical alaignement" / "They should be aligned tab text too." The
+  // reference control is now Pulse's AccountMultiSelect
+  // (`MultiSelect.svelte`'s `.rbq-multi-trigger`, min-height 1.55rem),
+  // not the Orders CLI tab's 1.7rem floor — the height range below moves
+  // from 26-29px to the new ~24.8px (desktop) target. See the dated
+  // comment above `.console-guide-btn` in `+page.svelte` for the full
+  // box-model derivation. Width/gap assertions are UNCHANGED — this
+  // round's ask was height/alignment only.
+  test('kind-dropdown and Guide link height matches the Pulse AccountMultiSelect reference (2026-10-31), width is 5.4rem (reduced a further 10%, 2026-10-17), with a gap before Trader Guide', async ({ page }) => {
     await page.goto('/automation?tab=console', { waitUntil: 'domcontentloaded' });
     const select = page.locator('.aw-kind-select .rbq-select-trigger');
     const guide = page.locator('.console-guide-btn');
@@ -286,12 +299,25 @@ test.describe('Item 3 — Workspace header removed; Console/Agents tab row carri
 
     const selectBox = await select.boundingBox();
     const guideBox = await guide.boundingBox();
-    // Orders CLI tab's own reference height, confirmed live earlier this
-    // session: 27.1875px (--ctl-h: 1.7rem at 16px root).
-    expect(selectBox.height).toBeGreaterThan(26);
-    expect(selectBox.height).toBeLessThan(29);
-    expect(guideBox.height).toBeGreaterThan(26);
-    expect(guideBox.height).toBeLessThan(29);
+    // Pulse AccountMultiSelect's own reference height, confirmed live
+    // on this page post-fix: 24.796875px (min-height: 1.55rem at 16px
+    // root, matching MultiSelect.svelte's `.rbq-multi-trigger` box model
+    // byte-for-byte — see the 2026-10-31 comment in +page.svelte).
+    // 2026-10-31 — `test.use({ projects: [...] })` above this describe
+    // is NOT a real Playwright restriction (confirmed by running this
+    // spec explicitly with `--project=mobile-portrait`: it still
+    // executes) — a plain `npx playwright test` with no `--project`
+    // filter runs every spec on all three configured projects. The CSS
+    // this test checks is now viewport-aware (`max(1.55rem, var(
+    // --toolbar-h))`, which steps to 28px at the ≤600px breakpoint), so
+    // the expected height must branch on the real viewport width rather
+    // than assume chromium-desktop's 1400px.
+    const vpWidth = page.viewportSize()?.width ?? 1400;
+    const [lo, hi] = vpWidth <= 600 ? [27, 29] : [23, 26];
+    expect(selectBox.height).toBeGreaterThan(lo);
+    expect(selectBox.height).toBeLessThan(hi);
+    expect(guideBox.height).toBeGreaterThan(lo);
+    expect(guideBox.height).toBeLessThan(hi);
     // 2026-10-15 operator follow-up: "rdudce the width of dropdown by
     // 20%" — down from the first pass's 7.5rem (120px) to 6rem (96px).
     // 2026-10-17 operator follow-up: reduced a further 10%, to 5.4rem
