@@ -502,33 +502,63 @@ async def _auth_nav_live_session_fallback(
     return _auth_nav_pnl_fallback(total_h, total_p, pos_pnl)
 
 
-async def _auth_nav_closed_hours_fallback(
-    total_h: "pd.DataFrame", total_p: "pd.DataFrame", pos_pnl: float,
-) -> "tuple[float, float, str]":
+async def _auth_nav_legacy_broker_fallback() -> "tuple[float, float, str]":
+    """Last-resort LIVE BROKER fetch for the closed-hours Day/Cum P&L
+    path — used ONLY when BOTH closed-hours snapshot readers
+    (`_positions_snapshot` / `_holdings_snapshot`) come back unavailable
+    (e.g. a cold-start process with no `daily_book` row yet, or a
+    swallowed DB error inside either reader).
+
+    2026-10-30 fix: this fetch used to run UNCONDITIONALLY at the top of
+    `_compute_firm_nav`, before the open/closed branch even looked at
+    the snapshot readers — so a cache-miss on the PUBLIC, unauthenticated
+    `/api/auth/firm-nav` route called the live broker every ~30s
+    regardless of day/hour, even on a genuinely closed Saturday with a
+    perfectly good `daily_book` snapshot sitting right there. Extracted
+    into its own lazy helper so the common case (a real snapshot exists)
+    never reaches the broker at all — this is now the ONLY broker call
+    left anywhere in the closed-hours path, reached only from the two
+    double-failure branches in `_auth_nav_closed_hours_fallback` below."""
+    from backend.api.background import _fetch_holdings_direct, _fetch_positions_direct
+    import asyncio as _asyncio
+    from concurrent.futures import ThreadPoolExecutor as _TPE
+    try:
+        loop = _asyncio.get_running_loop()
+        with _TPE(max_workers=2) as ex:
+            df_h_fut = loop.run_in_executor(ex, _fetch_holdings_direct)
+            df_p_fut = loop.run_in_executor(ex, _fetch_positions_direct)
+            _df_h, sum_h = await df_h_fut
+            _df_p, sum_p = await df_p_fut
+    except Exception as _fe:
+        logger.warning(
+            f"_compute_firm_nav: legacy closed-hours broker fallback "
+            f"fetch failed: {_fe}", extra=_AUTH_INTERNAL_TAGS,
+        )
+        import pandas as _pd
+        sum_h, sum_p = _pd.DataFrame(), _pd.DataFrame()
+    total_h = _auth_nav_total_row(sum_h)
+    total_p = _auth_nav_total_row(sum_p)
+    pos_pnl = _auth_nav_pos_pnl(total_p)
+    return _auth_nav_pnl_fallback(total_h, total_p, pos_pnl)
+
+
+async def _auth_nav_closed_hours_fallback() -> "tuple[float, float, str]":
     """Day/cum P&L when the market is FULLY CLOSED — CANONICAL
     closed-hours gate (CLAUDE.md "Closed-hours route gate"): never
-    DERIVE Day P&L from a live-fetch-anchored baseline here (the raw
-    broker fetch for `total_h`/`total_p`/`pos_pnl` — the arguments this
-    function receives — already happened unconditionally at the top of
-    `_compute_firm_nav`, before the open/closed branch; that pre-existing
-    fetch is NOT re-run or newly triggered by this function — this
-    function only decides which FORMULA to apply to already-fetched
-    data, and never calls `_override_stale_close_from_snapshot` /
-    `_fetch_snapshot_close_map`). `_fetch_snapshot_close_map`'s fixed
-    `today_08` cutoff self-collides with the most recent close-reset row
-    whenever "today" (wall clock) isn't a live trading session — the
-    SAME collision class as item #1, just on the live-fetch baseline path
-    instead of `_positions_snapshot`'s own CTE (verified empirically:
-    baseline resolved to the SAME row as "current" for a Saturday-morning
-    `today_08` cutoff against the item #1 fixture, giving day_pnl≈0
-    instead of the frozen Friday session change).
+    DERIVE Day P&L from a live-fetch-anchored baseline here, and never
+    call the live broker in the common case (2026-10-30 fix — this
+    function used to receive pre-fetched `total_h`/`total_p`/`pos_pnl`
+    computed by an UNCONDITIONAL broker fetch at the top of
+    `_compute_firm_nav`; that fetch is now gone, and the only broker call
+    left is the lazy `_auth_nav_legacy_broker_fallback()` below, reached
+    only when both snapshot readers also fail).
 
     Reuses the already-anchored closed-hours snapshot readers
     (`_positions_snapshot` / `_holdings_snapshot` — item #1's fixed
     captured_at-derived baseline anchor) instead, so this NAV path shows
     the SAME frozen last-session figure `/api/positions` and
     `/api/holdings` already serve when closed. Falls back to the legacy
-    (pre-override) sums when BOTH snapshot readers come back empty (they
+    broker fetch only when BOTH snapshot readers come back empty (they
     catch their own DB errors internally and return `None` rather than
     raising — see each function's docstring — so a bare `except Exception`
     here would never actually observe a DB failure; the explicit
@@ -548,7 +578,7 @@ async def _auth_nav_closed_hours_fallback(
                 "— falling back to legacy live-fetch sums",
                 extra=_AUTH_INTERNAL_TAGS,
             )
-            return _auth_nav_pnl_fallback(total_h, total_p, pos_pnl)
+            return await _auth_nav_legacy_broker_fallback()
         _p_total = next(
             (r for r in (pos_snap.summary if pos_snap else []) if r.account == 'TOTAL'),
             None,
@@ -577,7 +607,7 @@ async def _auth_nav_closed_hours_fallback(
             f"(falling back to legacy live-fetch sums): {_se}",
             extra=_AUTH_INTERNAL_TAGS,
         )
-        return _auth_nav_pnl_fallback(total_h, total_p, pos_pnl)
+        return await _auth_nav_legacy_broker_fallback()
 
 
 async def _compute_firm_nav() -> tuple[float, float, float, str, bool]:
@@ -656,38 +686,6 @@ async def _compute_firm_nav() -> tuple[float, float, float, str, bool]:
         # day_change_val + pnl). Run holdings/positions only — funds
         # already consumed inside compute_firm_nav.
         #
-        # Isolated in its own try/except (2026-09, companion to
-        # `_fetch_positions_direct`'s `_is_positions_outage` guard):
-        # a masked broker outage now raises instead of silently
-        # returning a fake-empty summary. Without this inner guard,
-        # that raise would propagate to the OUTER except below and
-        # abort the whole function BEFORE the `_intraday_equity` /
-        # live-session / closed-hours branches run — wiping a
-        # perfectly good deque-derived day/cum P&L back to the 0.0
-        # defaults just because the redundant direct-fetch (used only
-        # for the off-hours/cold-start fallback shape) failed. On
-        # failure here, fall through with empty frames so the deque
-        # branch (the common case) still answers correctly; only the
-        # live-session/closed-hours fallbacks lose their direct-fetch
-        # inputs, which they already tolerate (see their own docstrings).
-        loop = _asyncio.get_running_loop()
-        try:
-            with _TPE(max_workers=2) as ex:
-                df_h_fut = loop.run_in_executor(ex, _fetch_holdings_direct)
-                df_p_fut = loop.run_in_executor(ex, _fetch_positions_direct)
-                df_h, sum_h = await df_h_fut
-                df_p, sum_p = await df_p_fut
-        except Exception as _fe:
-            logger.warning(f"_compute_firm_nav: holdings/positions fetch failed: {_fe}", extra=_AUTH_INTERNAL_TAGS)
-            import pandas as _pd
-            df_h, sum_h, df_p, sum_p = (
-                _pd.DataFrame(), _pd.DataFrame(), _pd.DataFrame(), _pd.DataFrame()
-            )
-
-        total_h = _auth_nav_total_row(sum_h)
-        total_p = _auth_nav_total_row(sum_p)
-        pos_pnl = _auth_nav_pos_pnl(total_p)
-
         # Prefer the deque for P&L (already running totals) when alive.
         # Buffer carries (ts, day, cum, ...) per tick. When empty, branch
         # on whether a market segment is genuinely open: a live session
@@ -698,18 +696,54 @@ async def _compute_firm_nav() -> tuple[float, float, float, str, bool]:
         # (`_auth_nav_closed_hours_fallback`). See each helper's docstring
         # for the full rationale (2026-09 Day P&L audit round 3, item #3
         # + its closed-hours follow-up).
+        #
+        # Market-hours gate (2026-10-30 fix): the raw broker fetch below
+        # used to run UNCONDITIONALLY, before this very branch decided
+        # whether it was even needed — so a cache-miss on the PUBLIC,
+        # unauthenticated `/api/auth/firm-nav` route called the live
+        # broker every ~30s regardless of day/hour (live-reported
+        # repeated kite.positions/holdings 502s on a closed Saturday).
+        # It is now fetched ONLY on the one branch that actually consumes
+        # it (`_intraday_equity` empty AND a segment genuinely open) —
+        # the closed-hours branch calls the broker only as the lazy,
+        # last-resort fallback inside `_auth_nav_closed_hours_fallback`
+        # itself (both snapshot readers also unavailable). Never call
+        # the broker when closed: operator: "it is not supposed to do
+        # any broker activity ... during market close hours."
         if _intraday_equity:
             firm_day_pnl, firm_cum_pnl, as_of_iso = _auth_nav_pnl_from_intraday(
                 _intraday_equity
             )
         elif await _asyncio.to_thread(_any_segment_open):
+            # Isolated in its own try/except (2026-09, companion to
+            # `_fetch_positions_direct`'s `_is_positions_outage` guard):
+            # a masked broker outage now raises instead of silently
+            # returning a fake-empty summary. Without this inner guard,
+            # that raise would propagate to the OUTER except below and
+            # abort the whole function. On failure here, fall through
+            # with empty frames so `_auth_nav_live_session_fallback`
+            # degrades to its own pre-override sums rather than aborting.
+            loop = _asyncio.get_running_loop()
+            try:
+                with _TPE(max_workers=2) as ex:
+                    df_h_fut = loop.run_in_executor(ex, _fetch_holdings_direct)
+                    df_p_fut = loop.run_in_executor(ex, _fetch_positions_direct)
+                    df_h, sum_h = await df_h_fut
+                    df_p, sum_p = await df_p_fut
+            except Exception as _fe:
+                logger.warning(f"_compute_firm_nav: holdings/positions fetch failed: {_fe}", extra=_AUTH_INTERNAL_TAGS)
+                import pandas as _pd
+                df_h, sum_h, df_p, sum_p = (
+                    _pd.DataFrame(), _pd.DataFrame(), _pd.DataFrame(), _pd.DataFrame()
+                )
+            total_h = _auth_nav_total_row(sum_h)
+            total_p = _auth_nav_total_row(sum_p)
+            pos_pnl = _auth_nav_pos_pnl(total_p)
             firm_day_pnl, firm_cum_pnl, as_of_iso = await _auth_nav_live_session_fallback(
                 df_h, df_p, total_h, total_p, pos_pnl
             )
         else:
-            firm_day_pnl, firm_cum_pnl, as_of_iso = await _auth_nav_closed_hours_fallback(
-                total_h, total_p, pos_pnl
-            )
+            firm_day_pnl, firm_cum_pnl, as_of_iso = await _auth_nav_closed_hours_fallback()
     except Exception as e:
         logger.warning(f"_compute_firm_nav: broker fetch failed: {e}", extra=_AUTH_INTERNAL_TAGS)
         outer_failed = True

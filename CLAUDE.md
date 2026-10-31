@@ -323,6 +323,34 @@ Any new broker proxy layer must do the same — failing to do so sends raw contr
 Invariant: `broker_fn` NEVER called when closed. Returns source tags: `'live'` / `'snapshot'` / 
 `'snapshot-fallback'`. Every new data route MUST use. Tests patch `_any_segment_open()`.
 
+**Firm NAV (`/api/auth/firm-nav`, PUBLIC unauthenticated) was the one call chain with NO
+closed-hours gate — live-reported repeated kite.positions/holdings 502s on a closed Saturday
+(2026-10-30 fix)** — `compute_firm_nav()`'s `_fetch_funds_phase`/`_fetch_holdings_phase`
+(`backend/api/algo/nav.py`) already had closed-hours branches; `_fetch_positions_phase` did
+not — it called `broker_apis.fetch_positions()` unconditionally on every call. Behind only a
+30s TTL cache (`auth.py:_NAV_CACHE`) on a PUBLIC route needing no login, this meant any site
+visitor (or a crawler/uptime monitor) triggered a real broker round-trip roughly every 30s, 24/7,
+including closed weekends and holidays. Separately, `auth.py:_compute_firm_nav()` ran its OWN
+redundant direct fetch (`_fetch_holdings_direct`/`_fetch_positions_direct` via a `ThreadPoolExecutor`)
+UNCONDITIONALLY, before even checking `_any_segment_open()` — the open/closed branch only decided
+which FORMULA to apply to data that had already been fetched regardless. Fixed: (1)
+`_fetch_positions_phase` gained the same `_any_segment_open()` gate + a new
+`_fetch_positions_from_snapshot()` (reuses `positions.py:_positions_snapshot()`, the same SSOT
+`/api/positions` itself serves when closed) — mirrors `_fetch_holdings_phase`/`_fetch_holdings_from_snapshot`.
+(2) `_compute_firm_nav()`'s direct fetch now runs ONLY on the one branch that actually consumes
+it (`_intraday_equity` empty AND a segment genuinely open, i.e. `_auth_nav_live_session_fallback`'s
+own branch). (3) The closed-hours branch's last-resort "both snapshot readers also failed" case
+(a real, already-tested design — cold start / DB outage) is preserved but made LAZY:
+`_auth_nav_legacy_broker_fallback()` does the direct fetch only when actually reached, which in
+steady-state operation (a real snapshot exists) is never. Positions span both NSE and MCX, so
+`_fetch_positions_phase` uses `_any_segment_open()` (not the NSE-only `is_exchange_closed_now("NSE")`
+check `_fetch_holdings_phase` uses — holdings are equity-only). Invariant: no leg of the public
+firm-NAV call chain may call the live broker while every segment is closed and a real snapshot
+exists; a broker call there is reached only as a genuine last resort, never as the default path.
+Tests: `test_nav_degraded_fetch_freeze.py::TestPositionsPhaseMarketHoursGate`,
+`test_auth_nav_off_hours_baseline_diff.py` (strengthened to assert
+`_fetch_holdings_direct`/`_fetch_positions_direct` are never called when closed).
+
 **Staleness indicator freeze rule — any degraded/failed fetch must freeze to last-known-good** (2026-09, fixes A1–A4 + B-C) — When any broker data fetch degrades or fails (not just market-close), ALL downstream consumers must show the last-known-good cached value with explicit staleness marking, never silently collapse to 0/blank. Root cause was `backend/brokers/client/sync.py:_fetch_per_account` (A1, lines 51–91) treating HTTP 200 with `accounts=[]` + `errors: [...]` (a genuine failure masked as empty) identically to a real empty-book result. Fix chain: (1) `sync.py:_failed_sentinel()` (lines 42–48) + the `payload.errors` check (lines 77–82) surfaces all degraded responses. (2) `backend/api/routes/positions.py:_is_positions_outage()` (lines 625–651) detects both "all per-account failed" AND "empty list with configured accounts" cases, treating both as outages (A2). (3) `_accounts_flagged_stale()` (lines 654–677) collects stale/failed account codes and passes them to `PositionsResponse.stale_accounts` (line 934, 1021). (4) Frontend `dataStore.svelte.js` (line 135, documented 121–134) adds a `meta` extractor to preserve stale_accounts + source tags across the fetch–parse boundary; consumers (`PositionStrip`, `portfolioStore`) check the metadata to decide between "show last-good + stale badge" (degraded) vs. "show real 0" (confirmed empty). (5) Stale accounts render with CSS class `row-account-stale` (app.css:819–831) — slate desaturation + diagonal hatch — matching the existing `STALE@HH:MM` badge (pulseColumns.js:417). Invariant: any response carrying `stale_accounts` or `source='snapshot-fallback'` is never written to Tier 2 (localStorage) to prevent next page load from poisoning the cache with a masked-failure value. See memory `feedback_market_close_snapshot`.
 
 **Cross-account aggregates must not freeze on single-account degradation (2026-09-29,

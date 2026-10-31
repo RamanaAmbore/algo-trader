@@ -439,3 +439,19 @@ class TestAuthClosedHoursUsesSnapshotNotLiveFetch:
         # to the snapshot readers.
         assert mock_override_p.await_count == 0
         assert mock_override_h.await_count == 0
+
+        # 2026-10-30 fix: the raw _fetch_holdings_direct/_fetch_positions_
+        # direct broker calls must not even be ATTEMPTED when the market
+        # is closed and a real snapshot is available — these used to run
+        # unconditionally before this test was written, hitting the live
+        # broker on every ~30s cache-miss of the public, unauthenticated
+        # /api/auth/firm-nav route regardless of day/hour (live-reported
+        # repeated kite.positions/holdings 502s on a closed Saturday).
+        assert mock_fetch_h.call_count == 0, (
+            "closed market with an available snapshot must never call "
+            "the live broker for holdings"
+        )
+        assert mock_fetch_p.call_count == 0, (
+            "closed market with an available snapshot must never call "
+            "the live broker for positions"
+        )

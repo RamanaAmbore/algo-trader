@@ -770,15 +770,65 @@ async def _fetch_funds_phase(
     )
 
 
+async def _fetch_positions_from_snapshot(
+    accounts_in: list[str], errors: list[str],
+    by_account: Optional[dict[str, float]] = None,
+) -> float:
+    """Compute positions_mtm when every segment is closed using the
+    positions route SSOT. Delegates to _positions_snapshot() from
+    positions.py — the exact same path GET /api/positions uses in its
+    closed-hours branch. Sibling to `_fetch_holdings_from_snapshot`
+    below; never calls the live broker.
+    """
+    from backend.api.routes.positions import _positions_snapshot
+    try:
+        snap = await _positions_snapshot()
+        if snap is None:
+            errors.append("positions_snapshot: no snapshot available")
+            return 0.0
+        total = 0.0
+        for row in (snap.rows or []):
+            qty = float(getattr(row, "quantity", 0) or 0)
+            unr = float(getattr(row, "unrealised", 0) or 0) if qty != 0 else 0.0
+            real = float(getattr(row, "realised", 0) or 0)
+            total += unr + real
+            acct = str(getattr(row, "account", "") or "")
+            _merge_accounts(accounts_in, [acct] if acct else [])
+            if by_account is not None and acct:
+                by_account[acct] = by_account.get(acct, 0.0) + unr + real
+        return total
+    except Exception as exc:
+        errors.append(f"{_UNDERSTATED_TAG}positions_snapshot: {exc}")
+        return 0.0
+
+
 async def _fetch_positions_phase(
     accounts_in: list[str], errors: list[str],
     by_account: Optional[dict[str, float]] = None,
 ) -> float:
     """Fetch positions data and return positions_mtm; mutates accounts_in and errors.
 
+    Market-hours gate (2026-10-30 fix — this phase was the one leg of
+    compute_firm_nav() missing the closed-hours branch its siblings
+    `_fetch_funds_phase`/`_fetch_holdings_phase` already have, so every
+    cache-miss on the PUBLIC, unauthenticated `/api/auth/firm-nav` route
+    called the live broker regardless of day/hour — live-reported
+    repeated kite.positions 502s on a closed Saturday). `_any_segment_open()`
+    is used (not the NSE-only check `_fetch_holdings_phase` uses) because
+    positions span both NSE and MCX. When closed, uses the positions
+    route's own closed-hours snapshot and never falls through to the
+    broker on a snapshot miss — operator: "it is not supposed to do any
+    broker activity ... during market close hours."
+
     `by_account`, when passed, is mutated in place with each account's
     position M2M leg (unrealised[qty!=0] + realised, per `_positions_from_df`).
     """
+    from backend.api.helpers.snapshot_gate import _any_segment_open
+
+    mkt_open: bool = await asyncio.to_thread(_any_segment_open)
+    if not mkt_open:
+        return await _fetch_positions_from_snapshot(accounts_in, errors, by_account)
+
     from backend.brokers.broker_apis import fetch_positions
     try:
         pos_dfs = await asyncio.to_thread(fetch_positions)

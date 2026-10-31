@@ -761,3 +761,103 @@ class TestComputeFirmNavUnderstatedField:
             snap = await compute_firm_nav()
 
         assert any("holdings_snapshot" in e for e in snap["understated"])
+
+
+# ---------------------------------------------------------------------------
+# _fetch_positions_phase — market-hours gate (2026-10-30 fix)
+#
+# Root cause: unlike its siblings `_fetch_funds_phase` / `_fetch_holdings_
+# phase`, this phase had NO closed-hours branch at all — it called
+# `broker_apis.fetch_positions()` unconditionally on every single call.
+# compute_firm_nav() backs the PUBLIC, unauthenticated `/api/auth/firm-nav`
+# route behind only a 30s cache, so every cache-miss hit the live broker
+# regardless of day/hour — live-reported repeated kite.positions 502s on a
+# closed Saturday. Fixed by adding the same `_any_segment_open()` gate +
+# closed-hours snapshot reader (`_fetch_positions_from_snapshot`, reusing
+# `_positions_snapshot()` from positions.py) its siblings already have.
+# ---------------------------------------------------------------------------
+
+class TestPositionsPhaseMarketHoursGate:
+    @pytest.mark.asyncio
+    async def test_closed_market_never_calls_live_broker(self):
+        from backend.api.algo.nav import _fetch_positions_phase
+
+        accounts_in: list[str] = []
+        errors: list[str] = []
+        with patch(
+            "backend.api.helpers.snapshot_gate._any_segment_open", return_value=False,
+        ), patch(
+            "backend.api.routes.positions._positions_snapshot",
+            new=AsyncMock(return_value=None),
+        ), patch(
+            "backend.brokers.broker_apis.fetch_positions",
+        ) as mock_fetch:
+            total = await _fetch_positions_phase(accounts_in, errors)
+
+        mock_fetch.assert_not_called()
+        assert total == 0.0
+        assert any("positions_snapshot" in e for e in errors)
+
+    @pytest.mark.asyncio
+    async def test_closed_market_uses_positions_snapshot_total(self):
+        from backend.api.algo.nav import _fetch_positions_phase
+        from backend.api.schemas import PositionsResponse, PositionRow
+
+        snap = PositionsResponse(
+            rows=[
+                PositionRow(
+                    account="ZG0790", tradingsymbol="RELIANCE", exchange="NSE",
+                    product="CNC", quantity=0, average_price=0.0, pnl=0.0,
+                    unrealised=0.0, realised=1234.5,
+                ),
+                PositionRow(
+                    account="DH6847", tradingsymbol="NIFTY26NOVFUT", exchange="NFO",
+                    product="NRML", quantity=50, average_price=0.0, pnl=0.0,
+                    unrealised=500.0, realised=0.0,
+                ),
+            ],
+            summary=[], refreshed_at="x", as_of="2026-10-30T02:00:00Z",
+        )
+
+        accounts_in: list[str] = []
+        errors: list[str] = []
+        by_account: dict[str, float] = {}
+        with patch(
+            "backend.api.helpers.snapshot_gate._any_segment_open", return_value=False,
+        ), patch(
+            "backend.api.routes.positions._positions_snapshot",
+            new=AsyncMock(return_value=snap),
+        ), patch(
+            "backend.brokers.broker_apis.fetch_positions",
+        ) as mock_fetch:
+            total = await _fetch_positions_phase(accounts_in, errors, by_account)
+
+        mock_fetch.assert_not_called()
+        # realised (quantity==0) is summed ungated; unrealised only where
+        # quantity != 0 — matches _positions_from_df's own contract.
+        assert total == pytest.approx(1234.5 + 500.0)
+        assert set(accounts_in) == {"ZG0790", "DH6847"}
+        assert by_account["ZG0790"] == pytest.approx(1234.5)
+        assert by_account["DH6847"] == pytest.approx(500.0)
+
+    @pytest.mark.asyncio
+    async def test_open_market_still_calls_live_broker(self):
+        from backend.api.algo.nav import _fetch_positions_phase
+
+        df = pd.DataFrame([
+            {"account": "ZG0790", "quantity": 10, "unrealised": 100.0, "realised": 0.0},
+        ])
+        accounts_in: list[str] = []
+        errors: list[str] = []
+        with patch(
+            "backend.api.helpers.snapshot_gate._any_segment_open", return_value=True,
+        ), patch(
+            "backend.brokers.broker_apis.fetch_positions", return_value=[df],
+        ) as mock_fetch, patch(
+            "backend.api.routes.positions._positions_snapshot",
+        ) as mock_snap:
+            total = await _fetch_positions_phase(accounts_in, errors)
+
+        mock_fetch.assert_called_once()
+        mock_snap.assert_not_called()
+        assert total == pytest.approx(100.0)
