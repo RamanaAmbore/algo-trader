@@ -22,7 +22,8 @@
   } = $props();
 
   /**
-   * Format a bar timestamp string as "D Mon YYYY".
+   * Format a bar timestamp string as "D Mon YYYY", or "D Mon YYYY HH:MM"
+   * for an intraday bar (5-minute/etc — carries a real time-of-day).
    * @param {string} ts
    */
   function _fmtBarTs(ts) {
@@ -31,12 +32,28 @@
     // new Date("YYYY-MM-DD") parses as UTC midnight — for IST (+5:30)
     // users this renders as the previous calendar day. Force local-time
     // parsing by appending T00:00:00 (no timezone → local midnight).
-    const d = (typeof ts === 'string' && ts.length === 10)
-      ? new Date(ts + 'T00:00:00')
-      : new Date(ts);
+    const isDateOnly = typeof ts === 'string' && ts.length === 10;
+    const d = isDateOnly ? new Date(ts + 'T00:00:00') : new Date(ts);
     if (!Number.isFinite(d.getTime())) return ts.slice(0, 10);
     const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-    return `${d.getDate()} ${MON[d.getMonth()]} ${d.getFullYear()}`;
+    const datePart = `${d.getDate()} ${MON[d.getMonth()]} ${d.getFullYear()}`;
+    // 2026-10-31 — intraday bars (1D range, 5-minute interval) carry a
+    // full ISO timestamp, not a bare date. Dropping the time entirely
+    // made every bar on a 1D chart show the same tooltip date with no
+    // way to tell them apart. Shown explicitly in IST (not the browser's
+    // local timezone) — trading happens in IST, same convention as
+    // PriceChart's fmtTime.
+    if (isDateOnly) return datePart;
+    let timePart;
+    try {
+      timePart = d.toLocaleTimeString('en-GB', {
+        hour: '2-digit', minute: '2-digit',
+        hour12: false, timeZone: 'Asia/Kolkata',
+      });
+    } catch (_) {
+      timePart = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    }
+    return `${datePart} ${timePart}`;
   }
 </script>
 

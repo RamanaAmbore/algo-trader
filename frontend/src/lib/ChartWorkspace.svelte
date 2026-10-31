@@ -131,6 +131,22 @@
     { value: 365, label: '1Y' },
   ];
 
+  // 2026-10-31 — operator: "when I change chart duration, I think it is
+  // not showing chart correctly. I think intraday charts are not correct."
+  // Root cause: _loadHistorical() always fetched interval="day" (the
+  // fetchOptionsHistorical default), including for the "1D" range. The
+  // backend's daily store explicitly excludes today's still-forming bar,
+  // so a 1-day request fell through to a single near-empty candle from
+  // the broker. "5minute" is chosen over "minute" for the 1D case because
+  // it is the only intraday granularity backed by BOTH the three-tier
+  // persistence store (_historical_intraday_store) AND the closed-hours
+  // broker-quota guard (_historical_closed_guard) on the backend — "minute"
+  // bypasses both and would hit the live broker on every request. Every
+  // other range keeps "day" exactly as before.
+  function _intervalForDays(/** @type {number} */ days) {
+    return days === 1 ? '5minute' : 'day';
+  }
+
   /** @type {Array<{value:string,label:string}>} */
   const _OVERLAY_OPTS = [
     { value: 'sma20',    label: 'SMA 20' },
@@ -776,13 +792,17 @@
       // have no historical data.
       const retryKey = _buildRetryKey(fetchSym, fetchExch, _chartDays);
 
+      // 2026-10-31 — interval now tracks the selected range (see
+      // _intervalForDays above) instead of always requesting daily bars.
+      const _interval = _intervalForDays(_chartDays);
+
       const promises = [
-        fetchOptionsHistorical(fetchSym, { days: _chartDays, exchange: fetchExch, fresh }),
+        fetchOptionsHistorical(fetchSym, { days: _chartDays, interval: _interval, exchange: fetchExch, fresh }),
       ];
       if (_isDerivative && _underlying) {
         const _spotExch = MCX_COMMODITIES.has((_underlying || '').toUpperCase()) ? 'MCX' : 'NFO';
         promises.push(
-          fetchOptionsHistorical(_underlying, { days: _chartDays, exchange: _spotExch })
+          fetchOptionsHistorical(_underlying, { days: _chartDays, interval: _interval, exchange: _spotExch })
             .catch(() => ({ bars: [] }))
         );
       }
@@ -1334,15 +1354,34 @@
   });
 
   // X-axis labels: switch to month abbreviations for long ranges (≥90d).
+  // 2026-10-31 — the 1D range now fetches 5-minute bars (see
+  // _intervalForDays above); a dd/mm label repeated 5× across one trading
+  // day told the operator nothing. Intraday bars all share the same
+  // calendar date, so show HH:MM instead — explicitly in IST (not the
+  // browser's local timezone) since all trading happens in IST and every
+  // other time display in this app (PriceChart's fmtTime, the header
+  // clock) is IST-pinned the same way.
   const _xLabels = $derived.by(() => {
     if (!_barXs.length) return [];
+    const isIntraday = _chartDays === 1;
     const useMon = _chartDays >= 90;
     const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
     return Array.from({ length: 5 }, (_, i) => {
       const t = _xMin + (_xSpan * i) / 4;
       const d = new Date(t);
       let label;
-      if (useMon) {
+      if (isIntraday) {
+        try {
+          label = d.toLocaleTimeString('en-GB', {
+            hour: '2-digit', minute: '2-digit',
+            hour12: false, timeZone: 'Asia/Kolkata',
+          });
+        } catch (_) {
+          const hh = String(d.getHours()).padStart(2, '0');
+          const mi = String(d.getMinutes()).padStart(2, '0');
+          label = `${hh}:${mi}`;
+        }
+      } else if (useMon) {
         label = MON[d.getMonth()];
       } else {
         const mm = String(d.getMonth() + 1).padStart(2, '0');
