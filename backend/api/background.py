@@ -7540,6 +7540,16 @@ async def _task_ticker_watchdog(state: dict) -> None:
             logger.exception("ticker watchdog: unexpected error")
 
 
+def _visitor_report_send_telegram_today(weekday: int) -> bool:
+    """True exactly once per week — operator: "the visitor alert should
+    happen once in a week on weekend". `weekday` is Python's
+    `date.weekday()` convention (Monday=0 ... Sunday=6). Sunday was
+    chosen as the single firing day (end of the traffic week); the
+    underlying daily report-write/upsert is unaffected by this gate —
+    see `_task_visitor_log_daily`'s own call site comment."""
+    return weekday == 6
+
+
 async def _task_visitor_log_daily() -> None:
     """
     Parse the day's nginx access.log once per day at 23:35 IST — five
@@ -7651,7 +7661,16 @@ async def _task_visitor_log_daily() -> None:
             f"until {hh:02d}:{mm:02d} IST"
         )
         await asyncio.sleep(sleep_s)
-        await _run_once()
+        # 2026-10-31 — operator: "the visitor alert should happen once
+        # in a week on weekend". The underlying report (markdown on
+        # disk + visitor_log upsert) still runs every day — it is real,
+        # ongoing audit data, not alert noise, and the pre-existing
+        # comment above already established that rationale. Only the
+        # TELEGRAM send is now gated to once a week, via
+        # `_visitor_report_send_telegram_today`. `next_run` (the real
+        # fire instant, not a fresh `.now()` re-read that could have
+        # drifted past midnight during the sleep above) decides the day.
+        await _run_once(send_telegram=_visitor_report_send_telegram_today(next_run.weekday()))
 
 
 async def _apply_retention(
