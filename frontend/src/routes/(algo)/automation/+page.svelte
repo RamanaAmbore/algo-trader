@@ -823,7 +823,13 @@
       {#if _aiMeta.rest}<span class="ai-meta-rest">{_aiMeta.rest}</span>{/if}
     </div>
   {:else if agent.description}
-    <div class="text-[length:var(--fs-md)] text-[var(--c-muted)] italic mt-1.5 mb-1">{agent.description}</div>
+    <!-- 2026-10-31, operator: "the off white text description in agent
+         is not clearly visible" — --c-muted (#7e97b8) is only 4.08:1 on
+         the elevated card surface, below the 4.5:1 WCAG minimum (see
+         app.css's "WCAG-guaranteed text tier" block). --text-lo is the
+         documented replacement for exactly this case ("muted row
+         secondary"), at 4.66–5.45:1. -->
+    <div class="text-[length:var(--fs-md)] text-[var(--text-lo)] italic mt-1.5 mb-1">{agent.description}</div>
   {/if}
 
   <div class="text-[length:var(--fs-sm)] text-[var(--c-muted)] mt-2 mb-1 flex items-center flex-wrap gap-x-2 gap-y-0.5">
@@ -1015,7 +1021,12 @@
              when there's neither a description nor a group. -->
         {#if row.description || row.group}
           <div class="flex flex-wrap items-center gap-y-1 px-2 pb-1">
-            <span class="aw-row-desc text-[length:var(--fs-md)] text-[var(--c-muted)] italic" title={row.description || ''}>{row.description}{row.description && row.group ? ' ' : ''}{row.group ? `#group:${row.group}` : ''}</span>
+            <!-- 2026-10-31, operator: "the off white text description in
+                 agent is not clearly visible" — see the matching fix on
+                 the expanded view's description above for the contrast
+                 rationale (--c-muted is 4.08:1, below WCAG 4.5:1; --text-lo
+                 is the documented replacement). -->
+            <span class="aw-row-desc text-[length:var(--fs-md)] text-[var(--text-lo)] italic" title={row.description || ''}>{row.description}{row.description && row.group ? ' ' : ''}{row.group ? `#group:${row.group}` : ''}</span>
           </div>
         {/if}
         </div>
