@@ -171,9 +171,11 @@
     if (!tag) return '';
     if (tag === 'ramboq-ticket') return 'tag-manual';
     // 'ramboq-agent' branch removed (2026-10-18) — no backend path ever
-    // produces that broker tag (confirmed via repo-wide grep); the real
-    // agent-origin signal is `order.source` (rendered separately as the
-    // "origin:" chip), not this broker tag.
+    // produces that broker tag (confirmed via repo-wide grep). The real
+    // agent-origin signal is `order.agent_origin` (2026-10-31, rendered
+    // as the "agent:" chip below) — `order.source` is an unrelated
+    // cancel-source label (mcp/operator/sim_stop), rendered separately
+    // as the "origin:" chip.
     return '';
   }
 
@@ -293,6 +295,13 @@
     {#if order.variety}<span class="log-chip"><span class="log-chip-key">variety:</span>{order.variety}</span>{/if}
     {#if order.mode}<span class="log-chip"><span class="log-chip-key">mode:</span>{order.mode}</span>{/if}
     {#if order.engine}<span class="log-chip"><span class="log-chip-key">engine:</span>{order.engine}</span>{/if}
+    <!-- 2026-10-31 — "Agent: manual" / "Agent: <name>" on every order,
+         same SSOT resolution (`resolve_origin()`) as every alert's own
+         origin line (see "Every alert leads with its origin" in
+         CLAUDE.md). AlgoOrderInfo.agent_origin defaults to "manual" so
+         this always renders — distinct from the "origin:" chip below,
+         which is `order.source` (an unrelated cancel-source label). -->
+    {#if order.agent_origin}<span class="log-chip"><span class="log-chip-key">agent:</span>{order.agent_origin}</span>{/if}
     <!-- Sprint 2b (SPRINT2_LAYER_INTEGRATION.md §3) — AlgoOrder.source,
          labeled "Origin" in the UI (not "source") to avoid colliding
          with UnifiedLogRow.source, an unrelated field meaning "which

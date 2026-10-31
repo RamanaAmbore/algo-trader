@@ -1119,6 +1119,18 @@ class AlgoOrderInfo(msgspec.Struct, kw_only=True):
     # already feature-detects this exact field name/shape
     # (`_backendSupersededShipped`).
     superseded_broker_order_ids: list[str] = []
+    # 2026-10-31 — the "Origin" chip fix the comment above was waiting on.
+    # "manual" when the order has no real originating agent (bare ticket/
+    # basket, or the Manual-operator-order sentinel), or the agent's real
+    # name when one fired it. Resolved via the same SSOT
+    # `alert_utils.resolve_origin()` every alert already uses, so an
+    # order's displayed origin can never disagree with its own alert's
+    # origin line. Callers pass a real resolved name whenever `agent_id`
+    # is set (see `_fetch_agent_name_map`); `resolve_origin()`'s own
+    # "Agent #{id}" fallback only fires if that lookup finds no row
+    # (e.g. the firing agent was since deleted) — an honest "unresolved
+    # but real" label, never silently blanked.
+    agent_origin: str = "manual"
 
 
 async def _fetch_child_order_ids(session, parent_ids: list[int]) -> dict[int, list[int]]:

@@ -585,11 +585,33 @@ def _chase_row_superseded_ids(r) -> list[str]:
         return []
 
 
-def _chase_row_to_info(r, masked_acct, child_map: dict) -> "AlgoOrderInfo":
+async def _fetch_agent_name_map(session, agent_ids: "list[int | None]") -> dict[int, str]:
+    """One round-trip {agent_id: name} lookup for a batch of rows, so
+    `_chase_row_to_info` resolves a real agent name instead of
+    `resolve_origin()`'s generic "Agent #{id}" fallback. `None` ids are
+    dropped before the query — they always mean "manual", never a lookup.
+    """
+    ids = sorted({a for a in agent_ids if a is not None})
+    if not ids:
+        return {}
+    from sqlalchemy import select as _sql_select
+    from backend.api.models import Agent as _Agent
+    rows = (await session.execute(
+        _sql_select(_Agent.id, _Agent.name).where(_Agent.id.in_(ids))
+    )).all()
+    return {aid: name for aid, name in rows}
+
+
+def _chase_row_to_info(
+    r, masked_acct, child_map: dict, agent_name_map: "dict[int, str] | None" = None,
+) -> "AlgoOrderInfo":
     """Materialise an AlgoOrder ORM row into the API response Struct.
     Extracted so the list_active_chases + list_orders response builders
     can share the same mapping.
     """
+    from backend.shared.helpers.alert_utils import resolve_origin
+    _aid = getattr(r, "agent_id", None)
+    _agent_origin = resolve_origin(_aid, (agent_name_map or {}).get(_aid))
     return AlgoOrderInfo(
         id=r.id, account=masked_acct(r.account), symbol=r.symbol,
         exchange=r.exchange,
@@ -615,8 +637,9 @@ def _chase_row_to_info(r, masked_acct, child_map: dict) -> "AlgoOrderInfo":
         next_attempt_at=(float(r.next_attempt_at) if getattr(r, "next_attempt_at", None) is not None else None),
         broker_order_id=r.broker_order_id,
         source=getattr(r, "source", None),
-        agent_id=getattr(r, "agent_id", None),
+        agent_id=_aid,
         superseded_broker_order_ids=_chase_row_superseded_ids(r),
+        agent_origin=_agent_origin,
     )
 
 
@@ -1887,12 +1910,13 @@ class OrdersController(Controller):
                 q = q.where(AlgoOrder.mode == mode)
             rows = (await s.execute(q)).scalars().all()
             child_map = await _fetch_child_order_ids(s, [r.id for r in rows])
+            agent_name_map = await _fetch_agent_name_map(s, [r.agent_id for r in rows])
         # Mask account codes for everyone who is NOT admin/designated.
         # Partner JWTs see masked codes too (audit fix). Same masking
         # the /performance grids apply — turns ZG0790 into ZG####.
         do_mask = not is_admin_request(request)
         masked_acct = mask_account if do_mask else (lambda a: a)
-        return [_chase_row_to_info(r, masked_acct, child_map) for r in rows]
+        return [_chase_row_to_info(r, masked_acct, child_map, agent_name_map) for r in rows]
 
     @get("/chases/active")
     async def list_active_chases(self, request: Request) -> list[AlgoOrderInfo]:
@@ -2009,6 +2033,7 @@ class OrdersController(Controller):
                 kept.append(r)
 
             child_map = await _fetch_child_order_ids(s, [r.id for r in kept])
+            agent_name_map = await _fetch_agent_name_map(s, [r.agent_id for r in kept])
 
         # Template-attach fires AFTER the lock above releases, same as
         # before — `apply_order_truth` already wrote the FIFO ledger
@@ -2023,7 +2048,7 @@ class OrdersController(Controller):
 
         do_mask = not is_admin_request(request)
         masked_acct = mask_account if do_mask else (lambda a: a)
-        return [_chase_row_to_info(r, masked_acct, child_map) for r in kept]
+        return [_chase_row_to_info(r, masked_acct, child_map, agent_name_map) for r in kept]
 
     @post("/chases/{algo_order_id:int}/kill", guards=[admin_guard])
     async def kill_chase(self, algo_order_id: int, request: Request) -> dict:

@@ -338,7 +338,7 @@
         ...brokerRowsVisible.map(o => {
           const _m = _algoByBrokerId.get(String(o?.order_id || ''));
           return _m
-            ? { ...o, _rowOrigin: 'broker', attempts: _m.attempts, current_limit: _m.current_limit, next_attempt_at: _m.next_attempt_at, _algoId: _m.id }
+            ? { ...o, _rowOrigin: 'broker', attempts: _m.attempts, current_limit: _m.current_limit, next_attempt_at: _m.next_attempt_at, _algoId: _m.id, agent_origin: _m.agent_origin }
             : { ...o, _rowOrigin: 'broker' };
         }),
         ...algoOnly.map(o => ({ ...o, _rowOrigin: 'algo' })),

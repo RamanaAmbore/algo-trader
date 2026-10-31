@@ -723,6 +723,38 @@ The fix:
 - Invariant: origin is always line 1 of every outbound message. A manual order shows the same origin
   on every alert for that order, never `manual` on one and `[Agent]` on another.
 
+**Order display now shows the same "Agent: manual / Agent: {name}" origin every alert already
+shows (2026-10-31, operator: "order should have manual as agent, if triggered manually or agent
+name if triggered by agent")** — `AlgoOrderInfo` carried a real `agent_id` column
+(Sprint 1a/1b-i) and the field's own comment flagged "needed by an upcoming 'Origin' chip fix" — no
+order surface actually resolved it to a label before this. `AlgoOrderInfo.agent_origin`
+([`orders_helpers.py`](backend/api/routes/orders_helpers.py)) is that label, resolved through the
+identical SSOT every alert's own origin line already uses —
+`resolve_origin(agent_id, agent_name)` ([`alert_utils.py:570`](backend/shared/helpers/alert_utils.py#L570)) —
+so an order's displayed agent can never disagree with that same order's own alert text.
+- `_chase_row_to_info()` ([`orders.py:588`](backend/api/routes/orders.py#L588)) is the one
+  construction site, computing `resolve_origin(r.agent_id, agent_name_map.get(r.agent_id))`.
+  `_fetch_agent_name_map()` ([`orders.py:588`](backend/api/routes/orders.py#L588), just above) is a
+  new batch `{agent_id: name}` lookup the two LIVE call sites —
+  `GET /algo/recent` (`list_algo_orders`) and `GET /chases/active` (`list_active_chases`) — run once
+  per response, so `resolve_origin` resolves a real agent name instead of its generic
+  `"Agent #{id}"` fallback. The two draft-only call sites (`/drafts`, `PATCH /drafts/{id}`) pass no
+  map at all — a draft's `agent_id` is always `None` (drafts never route through an agent), so
+  `resolve_origin` returns `"manual"` with no lookup needed.
+- Frontend: a new `agent:` chip on `OrderCard.svelte`, reading `order.agent_origin`. Deliberately a
+  SEPARATE chip from the pre-existing `origin:` chip (`order.source`, an unrelated cancel-source
+  label — mcp/operator/sim_stop) — the two must never collide on label text.
+  `OrderBook.svelte`/`LogPanel.svelte`'s existing chase-field passthrough (the same mechanism that
+  already copies `attempts`/`current_limit`/`next_attempt_at` from the algo row onto a broker row
+  that wins the merge) now also copies `agent_origin`, so a chased order that has reached the broker
+  book still shows its real agent.
+- `AlgoOrderInfo.agent_origin` defaults to `"manual"`, never `None`/`""` — every order renders an
+  agent chip, unlike the conditional `origin:` chip.
+- Tests: `test_order_agent_origin_2026_10_31.py` (resolution precedence, name-map batching),
+  `orderCardAgentChip.test.js` (chip markup, label distinctness from `origin:`).
+- Invariant: an order's displayed agent and that order's own alert "Agent: ..." line are resolved
+  by the identical function and can never disagree.
+
 **Alert routing hygiene — chase re-quote suppression, self-alerted ERROR gate, masking (2026-10-23;
 commit `6ba6936e`)** — Four alert-path defects, bundled into one commit: routine chase events paging the
 operator, an unscoped ERROR catch-all double-alerting, a silently hidden DB write failure, and an
