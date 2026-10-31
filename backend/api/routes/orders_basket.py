@@ -49,6 +49,9 @@ from backend.api.routes.orders_place import (
 )
 from backend.api.algo.actions_preflight import MCX_MAX_LOTS, FO_FAT_FINGER_LOT_CAP
 from backend.api.auth_guard import is_admin_request
+from backend.api.rbac import (
+    normalise_role, resolve_role_from_connection, user_scope_for_connection,
+)
 
 
 async def basket_margin_handler(
@@ -209,6 +212,51 @@ async def basket_margin_handler(
     return BasketMarginResponse(groups=list(results))
 
 
+async def _bk_validate_strategy_scope(data: BasketOrderRequest, request: Request) -> None:
+    """RBAC guard: traders may only submit basket legs to strategies
+    they are assigned — parity with `/ticket`'s
+    `_validate_ticket_strategy_scope` (orders_place.py).
+
+    2026-10-31: `/basket` previously required `is_admin_request`
+    (designated/admin only), so a trader could never reach this point
+    at all and this gap was dormant. Once `guards=[cap_guard("place_order")]`
+    (orders.py) opened `/basket` to `trader`, the same strategy_id
+    bypass `/ticket` already had to be fixed for (2026-09-27 audit)
+    newly applied here too — closing it is part of this fix, not a
+    change to existing trader logic.
+
+    Runs ONCE for the whole request, before any group/leg dispatch —
+    deliberately NOT inside the per-leg loop. A mid-loop rejection
+    would abort a group after earlier legs in the same group already
+    placed live orders (the exact bug class fixed in the 2026-09-27
+    basket cold-cache-abort audit). One failing leg here means the
+    WHOLE request is rejected with no broker call made at all, which
+    is strictly safer than a partial-group abort.
+    """
+    role = normalise_role(resolve_role_from_connection(request))
+    if role != "trader":
+        return
+    strategy_ids = {
+        int(leg.strategy_id)
+        for grp in data.groups for leg in grp.legs
+        if leg.strategy_id
+    }
+    if not strategy_ids:
+        return
+    _, allowed_strategies = await user_scope_for_connection(request)
+    allowed_set = set(allowed_strategies or [])
+    disallowed = strategy_ids - allowed_set
+    if disallowed:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"Strategy {sorted(disallowed)[0]} not in your "
+                f"assigned_strategies list. Ask an admin to "
+                f"grant access, or pick a strategy you own."
+            ),
+        )
+
+
 async def basket_order_handler(
     data: BasketOrderRequest,
     request: Request,
@@ -240,9 +288,17 @@ async def basket_order_handler(
     if getattr(request.state, "is_demo", False):
         raise HTTPException(status_code=403,
             detail="Demo: basket orders require sign-in.")
-    if not is_admin_request(request):
-        raise HTTPException(status_code=403,
-            detail="Admin access required for basket orders.")
+    await _bk_validate_strategy_scope(data, request)
+    # Role gating is now enforced at the route layer by
+    # `guards=[cap_guard("place_order")]` on `OrdersController.basket_order`
+    # (backend/api/routes/orders.py) — the capability matrix scopes
+    # `place_order` to {designated, trader}. The old in-handler
+    # `is_admin_request(request)` check removed here used to allow
+    # `admin` (not entitled to place orders per the matrix) and block
+    # `trader` (entitled); it would now also silently double-block
+    # `trader` requests that already passed the route guard. Do not
+    # reintroduce a role check here — the route guard is the sole
+    # authority.
 
     # Resolve effective mode — same gate as /ticket.
     _ptm = _get_bool("execution.paper_trading_mode", False)

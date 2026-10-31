@@ -278,6 +278,24 @@ async def test_get_lot_size_mcx_raw_one_never_confirmed_still_returns_0():
 # ── Integration tests: /ticket MCX gate ───────────────────────────────────
 
 
+async def _fake_jwt_guard_designated(connection, handler) -> None:
+    """Stand-in for `auth_guard.jwt_guard` that stamps a `designated`
+    role onto `connection.state.token_payload` — same shape a real JWT
+    decode would produce. Needed since 2026-10-31
+    (`guards=[cap_guard("place_order")]` added to `/ticket`): a bare
+    `AsyncMock(return_value=None)` never sets `token_payload`, so
+    `require_capability`'s role lookup fell through to the
+    `normalise_role(None) -> "partner"` fallback and every one of these
+    tests got 403'd by the new guard before ever reaching the lot-size
+    logic under test. `designated` is unambiguously authorized to place
+    orders under the capability matrix — these tests are about the
+    cold-cache / lot-size guard, not about RBAC, so any role in
+    `{designated, trader}` would do."""
+    connection.state.token_payload = {
+        "role": "designated", "sub": "test-admin", "tv": 1,
+    }
+
+
 def _admin_patches():
     """Mark every request as authenticated admin so the guard doesn't
     tag test requests as demo and 403 before account validation."""
@@ -285,7 +303,7 @@ def _admin_patches():
         "backend.api.auth_guard",
         is_authenticated_request=lambda _conn: True,
         is_admin_request=lambda _conn: True,
-        jwt_guard=AsyncMock(return_value=None),
+        jwt_guard=_fake_jwt_guard_designated,
     )
 
 

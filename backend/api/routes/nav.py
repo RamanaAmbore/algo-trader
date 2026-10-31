@@ -191,6 +191,39 @@ def _to_row(r: NavDaily) -> NavRow:
     )
 
 
+def _nav_caller_role_from_header(request: Request) -> Optional[str]:
+    """Decode the raw Authorization header's JWT role claim directly —
+    deliberately NOT via `rbac.resolve_role_from_connection`.
+
+    `nav_by_account` carries no guard, so no guard ever populates
+    `connection.state.token_payload` for this specific route. Every
+    caller — including `designated`/`admin` — therefore resolves
+    through `resolve_role_from_connection`'s `{}` → `normalise_role(None)`
+    fallback to `"partner"`, regardless of who's actually calling. Using
+    that resolver for a partner-only check here would misclassify every
+    other role as partner too and blank the grid for everyone. This
+    helper mirrors `auth_guard.is_admin_request`'s own pattern (decode
+    the header independent of any guard state) instead, returning the
+    RAW claimed role (or None) with no `normalise_role` fallback — a
+    missing/invalid/absent header must read as "unknown", never as
+    "partner" by default, or this check would re-create the exact trap
+    it exists to avoid.
+    """
+    try:
+        auth_header = request.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return None
+        token = auth_header.removeprefix("Bearer ").strip()
+        from backend.api.routes.auth import verify_token
+        payload = verify_token(token)
+        if not payload:
+            return None
+        role = payload.get("role")
+        return str(role).strip().lower() if role else None
+    except Exception:
+        return None
+
+
 async def _load_user_history_data(username: str, cutoff) -> tuple:
     """Fetch user row, investor events, and NavDaily rows for the history endpoint.
 
@@ -226,9 +259,28 @@ class NavController(Controller):
     path = "/api/nav"
 
     @get("/", guards=[cap_guard("view_nav")])
-    async def list_nav(self, days: int = 90) -> NavListResponse:
+    async def list_nav(self, request: Request, days: int = 90) -> NavListResponse:
         """NAV history — last `days` rows (default 90, cap 1825 ≈ 5y).
-        Sorted ASC by date (oldest first) so the chart plots left-to-right."""
+        Sorted ASC by date (oldest first) so the chart plots left-to-right.
+
+        2026-10-31 security fix: `partner` must not see the firm-wide NAV
+        time series here — their correctly-scoped view is `/api/nav/me`
+        / `/me/history`. Unlike `nav_by_account` just below, THIS route
+        carries `guards=[cap_guard("view_nav")]`, and `view_nav` is
+        demo-eligible, so `cap_guard` already ran `auth_or_demo_guard`
+        before this handler — `connection.state.token_payload` is
+        reliably fresh from the DB by the time we get here. So this
+        check uses `resolve_role_from_connection` directly, NOT the
+        header-decode helper `nav_by_account` needs — the two routes
+        resolve role differently on purpose; do not "simplify" them to
+        share one mechanism without first fixing `nav_by_account`'s
+        missing guard (a larger, out-of-scope change — see that route's
+        own docstring).
+        """
+        from backend.api.rbac import normalise_role, resolve_role_from_connection
+        if normalise_role(resolve_role_from_connection(request)) == "partner":
+            return NavListResponse(rows=[], days=max(1, min(int(days or 90), 1825)))
+
         days = max(1, min(int(days or 90), 1825))
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).date()
         async with async_session() as s:
@@ -259,6 +311,17 @@ class NavController(Controller):
         `trader` role horizontally scoped to `assigned_accounts`. This
         does NOT expose anything the three underlying routes don't already
         expose individually — it's an aggregate view over the same data.
+
+        2026-10-31 security fix: a `partner` (LP) caller must not see the
+        firm-wide per-account breakdown here — partner's own correctly-
+        scoped view is `GET /api/nav/me` / `/me/history` (the units-based
+        `InvestorSlice`). Checked via `_nav_caller_role_from_header`, NOT
+        `resolve_role_from_connection` (see that helper's own docstring —
+        this route's missing guard means the latter misclassifies every
+        caller as partner). An empty breakdown (no rows, no total) is
+        returned rather than a 403, mirroring the existing `trader`-with-
+        no-assigned-accounts convention just below and avoiding a 403
+        toast on a route the frontend polls.
         """
         from backend.api.algo.nav import compute_firm_nav as _algo_compute_firm_nav
         from backend.api.auth_guard import is_admin_request
@@ -266,6 +329,12 @@ class NavController(Controller):
             normalise_role, resolve_role_from_connection, user_scope_for_connection,
         )
         from backend.shared.helpers.utils import mask_account, mask_account_in_text
+
+        if _nav_caller_role_from_header(request) == "partner":
+            return NavByAccountResponse(
+                rows=[], total=None,
+                as_of=datetime.now(timezone.utc).isoformat(), errors=[],
+            )
 
         snap = await _algo_compute_firm_nav()
         by_acct: dict = dict(snap.get("by_account") or {})

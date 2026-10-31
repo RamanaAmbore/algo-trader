@@ -16,6 +16,21 @@ import pytest
 from unittest.mock import patch, AsyncMock
 
 
+async def _fake_jwt_guard_designated(connection, handler) -> None:
+    """Stand-in for `auth_guard.jwt_guard` that stamps a `designated`
+    role onto `connection.state.token_payload`. Needed since 2026-10-31
+    (`guards=[cap_guard("place_order")]` added to `/ticket`): a bare
+    `AsyncMock(return_value=None)` never sets `token_payload`, so
+    `require_capability`'s role lookup fell through to the
+    `normalise_role(None) -> "partner"` fallback and these tests got
+    403'd by the new guard before ever reaching the account-validation
+    logic under test. `designated` is unambiguously authorized to
+    place orders under the capability matrix."""
+    connection.state.token_payload = {
+        "role": "designated", "sub": "test-admin", "tv": 1,
+    }
+
+
 def _admin_auth_patches():
     """Combined patch context: mark every request as authenticated so
     the `auth_or_demo_guard` doesn't tag the test request as demo on
@@ -29,7 +44,7 @@ def _admin_auth_patches():
         "backend.api.auth_guard",
         is_authenticated_request=lambda _conn: True,
         is_admin_request=lambda _conn: True,
-        jwt_guard=AsyncMock(return_value=None),
+        jwt_guard=_fake_jwt_guard_designated,
     )
 
 

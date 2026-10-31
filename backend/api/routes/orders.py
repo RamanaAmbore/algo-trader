@@ -29,6 +29,7 @@ from litestar.params import Parameter
 from litestar.status_codes import HTTP_200_OK
 
 from backend.api.auth_guard import jwt_guard, auth_or_demo_guard, admin_guard, is_admin_request
+from backend.api.rbac import cap_guard
 from backend.api.cache import get_or_fetch, invalidate
 from backend.api.routes.ws import broadcast
 from backend.api.schemas import (
@@ -2686,9 +2687,19 @@ class OrdersController(Controller):
             basis=r.basis, reason=r.reason,
         )
 
-    @post("/ticket")
+    @post("/ticket", guards=[cap_guard("place_order")])
     async def ticket_order(self, data: TicketOrderRequest, request: Request) -> TicketOrderResponse:
-        """Ticket order placement. Delegates full logic to orders_place.ticket_order_handler."""
+        """Ticket order placement. Delegates full logic to orders_place.ticket_order_handler.
+
+        2026-10-31 security fix: real broker order placement had no
+        capability guard — any authenticated-or-demo caller (controller
+        guard is `auth_or_demo_guard`) could reach this handler. The
+        capability matrix (`backend/api/rbac.py`) scopes `place_order` to
+        `{designated, trader}` only; `cap_guard` now enforces that at the
+        route layer, matching the precedent at `kill_chase` (admin_guard
+        layered on this same controller) and `agents.py:create_agent`
+        (cap_guard layered on a controller-level guard).
+        """
         from backend.api.routes.orders_place import ticket_order_handler
         return await ticket_order_handler(data, request)
 
@@ -2992,9 +3003,17 @@ class OrdersController(Controller):
         from backend.api.routes.orders_basket import basket_margin_handler
         return await basket_margin_handler(data, request)
 
-    @post("/basket")
+    @post("/basket", guards=[cap_guard("place_order")])
     async def basket_order(self, data: BasketOrderRequest, request: Request) -> BasketOrderResponse:
-        """Multi-account basket order dispatch. Delegates to orders_basket."""
+        """Multi-account basket order dispatch. Delegates to orders_basket.
+
+        2026-10-31 security fix: see `ticket_order`'s docstring above —
+        same gap, same fix. `basket_order_handler`'s own internal
+        `is_admin_request` role check (which incorrectly allowed `admin`
+        and incorrectly blocked `trader`, diverging from the capability
+        matrix) is removed in the same change; this route guard is now
+        the sole authority on who may place a basket order.
+        """
         from backend.api.routes.orders_basket import basket_order_handler
         return await basket_order_handler(data, request)
 
