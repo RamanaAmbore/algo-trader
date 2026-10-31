@@ -189,6 +189,17 @@ def _market_hours_block_check() -> None:
     `simulator.block_during_market_hours` setting is on. Raises 409 so
     the UI can render a clear "Markets open — sim blocked" banner.
 
+    2026-10-31: the setting's seeded default flipped True -> False (see
+    `backend/shared/helpers/settings.py`'s SEEDS entry for this key) —
+    blocking sim starts during real market hours was backwards for a
+    backtesting/scenario tool whose own agent-evaluation context
+    (`market_state` in `sim/driver.py`) already fully ignores real
+    wall-clock market status. The gate mechanism itself is unchanged and
+    still available for an operator who explicitly wants it; only the
+    default changed. Existing/pre-change installs get a one-shot DB
+    migration (`_flip_sim_block_default_once` in settings.py) so an
+    already-seeded row that was never explicitly touched also flips.
+
     2026-10-20 fix: this call site imported `_build_segments` from
     `backend.api.background`, a name removed (renamed to `_get_segments`)
     in commit 7cd6c12c — every other internal background.py call site was
@@ -206,7 +217,7 @@ def _market_hours_block_check() -> None:
     overriding with the YAML's static `sessions` list.
     """
     from backend.shared.helpers.settings import get_bool
-    if not get_bool("simulator.block_during_market_hours", True):
+    if not get_bool("simulator.block_during_market_hours", False):
         return
     from backend.api.background import _get_segments, _yaml_segment_for_gate
     from backend.brokers.broker_apis import fetch_holidays, fetch_special_sessions
@@ -792,7 +803,7 @@ class SimulatorController(Controller):
             seed_mode   =get_string("simulator.default_seed_mode", "live"),
             force_close_on_timeout=get_bool("simulator.default_force_close_on_timeout", True),
             notify_during_run     =get_bool("simulator.notify_during_run", True),
-            block_during_market_hours=get_bool("simulator.block_during_market_hours", True),
+            block_during_market_hours=get_bool("simulator.block_during_market_hours", False),
             iteration_retention_days =get_int("simulator.iteration_retention_days", 30),
             rate_ms     =get_int("simulator.default_rate_ms", 2000),
             spread_pct  =get_float("simulator.default_spread_pct", 0.10),

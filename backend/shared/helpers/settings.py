@@ -226,11 +226,16 @@ SEEDS: list[tuple] = [
      "the full live-style feedback. agent_events + log lines are always "
      "written regardless of this setting.",
      None, {}),
-    ("simulator", "simulator.block_during_market_hours", "bool", True,
+    ("simulator", "simulator.block_during_market_hours", "bool", False,
      "Hard-block /api/simulator/start when any segment (NSE/MCX) is currently "
-     "open. Safety guard: prevents an operator from kicking off a sim during "
-     "live trading and mixing SIMULATOR alerts with real ones. Turn off only "
-     "if you genuinely want to sim during market hours.",
+     "open. Default OFF (2026-10-31) — SimDriver's own agent-evaluation "
+     "context (market_state in sim/driver.py) is already fully decoupled "
+     "from real wall-clock market status (MARKET_STATE_PRESETS / explicit "
+     "overrides / the scenario's own spec — never calls is_market_open()), "
+     "so blocking sim starts during real market hours was backwards for a "
+     "backtesting/scenario tool. Turn on if you specifically want to "
+     "prevent sim runs from overlapping live trading hours (e.g. to avoid "
+     "mixing SIMULATOR alerts with real ones when notify_during_run=True).",
      None, {}),
     ("simulator", "simulator.iteration_retention_days", "int", 30,
      "Sim iteration rows older than this are eligible for purge by an out-of-"
@@ -829,11 +834,69 @@ async def _prune_retired_keys(session: "Any", existing_by_key: dict, seed_keys: 
     return 0
 
 
+# One-shot migration marker (2026-10-31) — see
+# `_flip_sim_block_default_once`'s docstring below.
+_SIM_BLOCK_DEFAULT_FLIP_MARKER = "task_markers.sim_block_default_flipped"
+
+
+def _flip_sim_block_default_once(session: "Any", existing_by_key: dict) -> bool:
+    """One-shot migration — `simulator.block_during_market_hours`'s seeded
+    default flipped True -> False on 2026-10-31 (see the SEEDS entry's own
+    comment for why: SimDriver's own agent-evaluation context already
+    ignores real wall-clock market status, so blocking sim starts during
+    real market hours was backwards).
+
+    `_upsert_seeds` only ever syncs `default_value` on an EXISTING row,
+    never `value` — operator overrides must survive deploys (see this
+    module's own docstring). Without this, an install whose row was
+    auto-seeded at the OLD default (True) and never touched by an operator
+    would silently keep blocking sim starts forever after this code change
+    ships, failing the "existing installs also get the new default" goal.
+
+    This flips `value` to "false" ONCE, only when it is still exactly the
+    old default ("true"), and only once globally — guarded by a
+    `task_markers.`-prefixed marker row (survives `_prune_retired_keys`,
+    see `_OWNED_OUTSIDE_SEEDS_PREFIXES`). An operator who deliberately
+    re-enables the guard after this migration has run is never flipped
+    back — the marker makes this a true one-time event per database.
+
+    Known, accepted limitation: an operator who had deliberately set
+    `value="true"` (matching the old default) BEFORE this migration ran
+    is indistinguishable from an untouched auto-seeded row at the DB
+    level, and gets flipped too. There is no "operator touched this"
+    column to disambiguate (see `Setting` model).
+
+    Returns True iff this call performed the one-time flip (for logging).
+    """
+    from backend.api.models import Setting
+    if _SIM_BLOCK_DEFAULT_FLIP_MARKER in existing_by_key:
+        return False
+    row = existing_by_key.get("simulator.block_during_market_hours")
+    if row is not None and str(row.value).strip().lower() in ("1", "true", "yes", "on"):
+        row.value = "false"
+    session.add(Setting(
+        category="task_markers",
+        key=_SIM_BLOCK_DEFAULT_FLIP_MARKER,
+        value_type="bool",
+        value="true",
+        default_value="true",
+        description=(
+            "One-shot marker — simulator.block_during_market_hours's "
+            "seeded default was flipped True->False on 2026-10-31. "
+            "Presence means the flip already ran on this database; "
+            "it is never re-applied."
+        ),
+    ))
+    return True
+
+
 async def seed_settings() -> None:
     """
     Insert any missing seeded rows. Updates default_value on existing rows
     so the "Reset" button reflects the current code default. Leaves the
-    operator's `value` alone to preserve runtime overrides across deploys.
+    operator's `value` alone to preserve runtime overrides across deploys
+    — EXCEPT the one-shot `_flip_sim_block_default_once` migration below,
+    which intentionally flips one specific row's `value` exactly once.
 
     On non-main branches, seeds with a dev_default (8th tuple element) are
     inserted with that value instead of the production default so dev boxes
@@ -854,6 +917,7 @@ async def seed_settings() -> None:
 
         inserted, updated_defaults = _upsert_seeds(session, existing_by_key, is_dev=_is_dev)
         _seed_execution_flags(session, existing_by_key)
+        flipped = _flip_sim_block_default_once(session, existing_by_key)
         removed = await _prune_retired_keys(session, existing_by_key, seed_keys)
 
         await session.commit()
@@ -862,6 +926,11 @@ async def seed_settings() -> None:
         logger.info(
             f"Settings: seeded {inserted} new rows, refreshed "
             f"{updated_defaults} existing, pruned {removed} retired"
+        )
+    if flipped:
+        logger.info(
+            "Settings: one-shot flip — simulator.block_during_market_hours "
+            "reset from true to false (2026-10-31 default change)"
         )
 
     await reload_cache()

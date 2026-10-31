@@ -1227,6 +1227,52 @@ class SimDriver:
             self._run_active = False
         return self._internal_stop()
 
+    def _sd_finalize_stale_open_orders(self) -> list[dict]:
+        """Force-finalize every paper order still OPEN when a sim run
+        stops (2026-10-31 fix).
+
+        Without this, an order left OPEN at stop() time was abandoned
+        forever: `self._paper` (the PaperTradeEngine instance managing
+        it) is about to go inactive — nothing ever calls `step()` on
+        this engine again once `self.active` flips False — and the
+        next `start()` constructs state fresh (`self._paper.reset()`)
+        with no memory of the old row. The row stayed
+        `status='OPEN', mode='sim'` in `algo_orders` forever, even
+        across a mode-pill switch away from sim or a brand-new sim run.
+
+        Reuses the EXACT mechanism the ordinary operator Kill button
+        and the MCP cancel_order tool already use —
+        `PaperTradeEngine.cancel_paper_order()` — rather than writing a
+        second, independent AlgoOrder-status-transition path. Passing
+        `source="sim_stop"` (see `_CANCEL_SOURCE_LABELS` in paper.py)
+        writes `status='CANCELLED'` plus a detail/event note that
+        correctly says the sim session ended, distinct from an
+        operator-clicked Kill. `cancel_paper_order` itself is sync and
+        schedules its DB write via `asyncio.create_task(...)` — the
+        exact same sync-calling-async convention this method's own
+        caller (`_internal_stop`) already relies on for
+        `_flush_recording()` below; `cancel_paper_order` swallows a
+        missing event loop with its own `except RuntimeError: pass`.
+
+        Returns the pre-cancel open-order snapshot (not a live re-read)
+        so the caller can still log an accurate "N open orders at stop
+        time" count — re-querying `open_order_details()` after this
+        runs would report 0.
+        """
+        stale_open_orders = self._paper.open_order_details()
+        for o in stale_open_orders:
+            algo_order_id = o.get("algo_order_id")
+            if algo_order_id is None:
+                continue
+            try:
+                self._paper.cancel_paper_order(algo_order_id, source="sim_stop")
+            except Exception as e:
+                logger.warning(
+                    f"[SIM] could not finalize stale open order "
+                    f"{algo_order_id} on stop: {e}"
+                )
+        return stale_open_orders
+
     def _internal_stop(self) -> dict:
         """
         Per-iteration shutdown. Called from `_run_loop` when an
@@ -1243,6 +1289,9 @@ class SimDriver:
             self._task.cancel()
         self._task = None
         self._revert_settings()
+        # Any order still OPEN at stop time would otherwise be abandoned
+        # forever — see _sd_finalize_stale_open_orders's own docstring.
+        stale_open_orders = self._sd_finalize_stale_open_orders()
         self._record_tick(
             kind="stopped", moves=[], changes=[],
             note=f"Stopped after {self.tick_index} ticks",
@@ -1256,7 +1305,7 @@ class SimDriver:
             self._record("sim_stop", {
                 "tick_index":     self.tick_index,
                 "positions_left": len(self._positions_rows),
-                "open_orders":    len(self._paper.open_order_details()),
+                "open_orders":    len(stale_open_orders),
             })
             try:
                 import asyncio

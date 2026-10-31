@@ -39,6 +39,38 @@ logger = get_logger(__name__)
 # deque maxlen so memory stays bounded across long uptimes.
 PRICE_HISTORY_LIMIT = 600
 
+# Cancel-source labels — shared by cancel_paper_order,
+# _safe_update_algo_order_cancel, and _paper_cancel_fanout so all three
+# read ONE mapping instead of each repeating its own `source == "mcp"`
+# ternary (which is how "operator" vs "mcp" wording could already drift
+# before this). "sim_stop" is used by SimDriver._internal_stop() to
+# force-finalize any order still OPEN when a sim run ends — see
+# `sim/driver.py`. Any unrecognised source string falls back to the
+# "operator" entry via `_cancel_source_label()` below.
+_CANCEL_SOURCE_LABELS: dict[str, dict[str, str]] = {
+    "mcp": {
+        "note":           "operator-initiated cancel via MCP",
+        "by":             "operator via MCP",
+        "status_message": "operator cancel via MCP",
+    },
+    "sim_stop": {
+        "note":           "sim session stopped — order abandoned",
+        "by":             "sim session stop",
+        "status_message": "sim session stopped — order abandoned",
+    },
+    "operator": {
+        "note":           "operator-initiated cancel",
+        "by":             "operator",
+        "status_message": "operator cancel",
+    },
+}
+
+
+def _cancel_source_label(source: str, field: str) -> str:
+    """Look up one labelling field for a cancel `source`, falling back to
+    the "operator" entry for any unrecognised source string."""
+    return _CANCEL_SOURCE_LABELS.get(source, _CANCEL_SOURCE_LABELS["operator"])[field]
+
 
 class PaperTradeEngine:
     """
@@ -293,12 +325,14 @@ class PaperTradeEngine:
         `source` identifies the real caller for event-log attribution —
         pass `source="mcp"` from the MCP cancel_order tool; the default
         `"operator"` covers the ordinary ChaseCard/OrderBook Kill button
-        (`_rco_kill_paper_mode` in orders.py). Sprint 2a fix
-        (docs/proposals/SPRINT2_LAYER_INTEGRATION.md §2): previously this
-        function hard-coded "via MCP" in both the event note and the
-        AlgoOrder.detail string regardless of which caller invoked it, so
-        every manual operator Kill was mislabeled as an MCP action in the
-        event log.
+        (`_rco_kill_paper_mode` in orders.py); `source="sim_stop"` is used
+        by `SimDriver._internal_stop()` to force-finalize any order still
+        OPEN when a sim run ends. See `_CANCEL_SOURCE_LABELS` above.
+        Sprint 2a fix (docs/proposals/SPRINT2_LAYER_INTEGRATION.md §2):
+        previously this function hard-coded "via MCP" in both the event
+        note and the AlgoOrder.detail string regardless of which caller
+        invoked it, so every manual operator Kill was mislabeled as an
+        MCP action in the event log.
 
         Idempotent — calling twice on the same id returns False on
         the second call (order is already gone). Safe to invoke from
@@ -319,8 +353,7 @@ class PaperTradeEngine:
         # CANCELLED — but actually we want CANCELLED, not UNFILLED. We
         # write a dedicated event payload below + bypass the kind-based
         # status flip by calling _update_algo_order_cancel directly.
-        _note = "operator-initiated cancel via MCP" if source == "mcp" \
-            else "operator-initiated cancel"
+        _note = _cancel_source_label(source, "note")
         self._record_event(target, kind="cancel", note=_note)
         try:
             import asyncio
@@ -397,8 +430,7 @@ class PaperTradeEngine:
             from backend.api.routes.orders import _postback_broadcast_fanout
             from backend.shared.helpers.utils import mask_account
             _acct = str(order.get("account") or "")
-            _status_message = "operator cancel via MCP" if source == "mcp" \
-                else "operator cancel"
+            _status_message = _cancel_source_label(source, "status_message")
             _postback_broadcast_fanout(
                 status="CANCELLED",
                 order_id=order["algo_order_id"],
@@ -435,14 +467,14 @@ class PaperTradeEngine:
 
         `source` is threaded through from `cancel_paper_order` so the
         event/detail label correctly distinguishes a genuine MCP-initiated
-        cancel from an ordinary operator Kill-button cancel (Sprint 2a fix,
-        see `cancel_paper_order`'s docstring)."""
+        cancel, an ordinary operator Kill-button cancel, and a sim-session-
+        ended force-finalize (Sprint 2a fix, see `cancel_paper_order`'s
+        docstring; `_CANCEL_SOURCE_LABELS` above)."""
         try:
             from backend.api.database import async_session
             from backend.api.models  import AlgoOrder
             from sqlalchemy          import select as _select
             from backend.api.algo.order_events import write_event
-            _via_mcp = source == "mcp"
             async with async_session() as s:
                 row = (await s.execute(
                     _select(AlgoOrder).where(AlgoOrder.id == order["algo_order_id"])
@@ -455,11 +487,10 @@ class PaperTradeEngine:
                 side   = order.get("side") or "?"
                 qty    = order.get("qty") or 0
                 symbol = order.get("symbol") or "?"
-                _by = "operator via MCP" if _via_mcp else "operator"
+                _by = _cancel_source_label(source, "by")
                 row.detail = f"[{tag}] CANCELLED by {_by} · {side} {qty} {symbol}"
                 await s.commit()
-            _note = "operator-initiated cancel via MCP" if _via_mcp \
-                else "operator-initiated cancel"
+            _note = _cancel_source_label(source, "note")
             await write_event(
                 order["algo_order_id"], "cancel",
                 f"[{self._label.upper()}] {_note}",
