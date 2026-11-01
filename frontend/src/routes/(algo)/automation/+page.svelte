@@ -786,6 +786,17 @@
   <CardHeader showControls={false}>
     {#snippet left()}
       <span class="aw-tabs-in-header"><AutomationTabs value={activeTab} onChange={setActiveTab} /></span>
+      <!-- 2026-11-01 (operator: "the dropdown in automation agents tab
+           for various agents count can be on the header like in
+           console" / "even tra[d]e guide can be a[gents] automation" /
+           "on the header") — the kind-dropdown AND the Trader Guide
+           link now both render on EITHER tab, not console-only. The
+           dropdown relocated out of the view body (it used to sit above
+           the row grid as its own `.mb-3` block) into this header `left`
+           zone, reusing `.aw-kind-select` unchanged — no new CSS, the
+           class was already tuned for this exact CardHeader context by
+           the console dropdown. Only the dropdown's own options/value/
+           handler differ per tab; the link is identical either way. -->
       {#if activeTab === 'console'}
         <span class="aw-kind-select">
           <Select
@@ -795,8 +806,17 @@
             onValueChange={_pickKind}
           />
         </span>
-        <a href="/automation/guide" title="CLI grammar guide" class="btn-secondary console-guide-btn">Trader Guide</a>
+      {:else}
+        <span class="aw-kind-select">
+          <Select
+            value={_activeCard}
+            options={KIND_CARDS.map((card) => ({ value: card.id, label: `${card.label} (${_cardCounts[card.id] ?? 0})` }))}
+            ariaLabel="Agent kind"
+            onValueChange={selectCard}
+          />
+        </span>
       {/if}
+      <a href="/automation/guide" title="CLI grammar guide" class="btn-secondary console-guide-btn">Trader Guide</a>
     {/snippet}
   </CardHeader>
   <div class="aw-view-body">
@@ -967,22 +987,16 @@
      and rows are sorted by group (`_sortedActiveCardRows`).
 
      2026-10-31 (operator: "removing the pills under agents tabs and use
-     the same dropdown with orders removed in dropdown") — the 3-pill
-     row (one button per kind, count + label each) is replaced by the
-     same `Select` dropdown pattern the Console tab's statement-kind
-     selector already uses, just without the 'order' option (orders
-     aren't a kind-card here). The count that used to live in its own
-     `.kind-card-n` span now lives inside the option's own label text —
-     "Action agent (12)" — so the same information survives in less
-     horizontal space, one trigger instead of three buttons. -->
-<div class="aw-kind-select mb-3">
-  <Select
-    value={_activeCard}
-    options={KIND_CARDS.map((card) => ({ value: card.id, label: `${card.label} (${_cardCounts[card.id] ?? 0})` }))}
-    ariaLabel="Agent kind"
-    onValueChange={selectCard}
-  />
-</div>
+     the same dropdown with orders removed in dropdown") replaced the
+     3-pill row with a `Select` dropdown, right here in the body.
+
+     2026-11-01 (operator: "the dropdown ... can be on the header like
+     in console") relocated that SAME dropdown out of the body entirely
+     — it now lives in the CardHeader `left` snippet above (see the
+     comment there), alongside the Trader Guide link. Nothing renders
+     here anymore; this comment stays as the history of why the dropdown
+     isn't in the body despite `_activeCard`/`selectCard` still being
+     defined further up this file. -->
 
   <div class="page-grid agent-group-grid mt-2" role="list">
     {#each _sortedActiveCardRows as row (row.id ?? row.slug)}

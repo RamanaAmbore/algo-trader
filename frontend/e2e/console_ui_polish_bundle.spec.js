@@ -397,12 +397,21 @@ test.describe('Item 3 — Workspace header removed; Console/Agents tab row carri
     expect(Math.abs(info.tabCenter - info.selectCenter)).toBeLessThanOrEqual(1);
   });
 
-  test('the kind-dropdown + Guide link are console-only — absent on the Agents tab', async ({ page }) => {
+  test('the Guide link renders on the Agents tab too, with the Agents tab\'s own kind-dropdown — 2026-11-01', async ({ page }) => {
+    // Supersedes the prior "console-only" expectation (operator: "the
+    // dropdown in automation agents tab for various agents count can be
+    // on the header like in console" / "even trade guide can be
+    // a[gents] automation" / "on the header") — the Guide link and a
+    // kind-dropdown both render on either tab now, in the same header
+    // zone. Console's own `.aw-kind-select` is a DIFFERENT dropdown
+    // (aria-label "Statement kind") from the Agents tab's (aria-label
+    // "Agent kind") — this test only needs to confirm SOMETHING with
+    // that class renders, not which one.
     await page.goto('/automation?tab=agents', { waitUntil: 'domcontentloaded' });
-    await expect(page.locator('a.console-guide-btn')).toHaveCount(0);
+    await expect(page.locator('a.console-guide-btn')).toHaveCount(1);
+    await expect(page.locator('.aw-kind-select')).toHaveCount(1);
 
-    // AutomationTabs itself still renders on the Agents tab — only the
-    // console-specific controls are gated.
+    // AutomationTabs itself still renders on the Agents tab.
     await expect(page.locator('.aw-tabs-wrap')).toBeVisible({ timeout: TIMEOUT });
   });
 

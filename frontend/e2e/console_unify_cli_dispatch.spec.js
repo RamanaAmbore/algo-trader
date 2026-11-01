@@ -320,9 +320,18 @@ test.describe('Console — Guide link + kind-selector dropdown, relocated to the
     await expect(cli).toHaveValue('bracket(applies_to=buy_any, tp_pct=30, sl_pct=-20) #name="X"');
   });
 
-  test('the kind-selector dropdown and Guide link are absent on the Agents tab', async ({ page }) => {
+  test('the Agents tab has its own kind-dropdown and the Guide link, both in the header — 2026-11-01', async ({ page }) => {
+    // Supersedes the prior "absent on the Agents tab" expectation
+    // (operator: "the dropdown in automation agents tab for various
+    // agents count can be on the header like in console" / "even trade
+    // guide can be a[gents] automation" / "on the header") — both now
+    // render unconditionally in the SAME CardHeader `left` zone, on
+    // either tab. Console's own "Statement kind" dropdown (a DIFFERENT
+    // aria-label from the Agents tab's "Agent kind" one) is still
+    // console-only — the two dropdowns never both render at once.
     await page.goto('/automation?tab=agents', { waitUntil: 'domcontentloaded' });
-    await expect(page.locator('a.console-guide-btn')).toHaveCount(0);
+    await expect(page.locator('a.console-guide-btn')).toHaveCount(1);
     await expect(page.getByRole('button', { name: 'Statement kind' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Agent kind' })).toHaveCount(1);
   });
 });
