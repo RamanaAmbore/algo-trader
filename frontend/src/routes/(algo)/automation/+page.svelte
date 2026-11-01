@@ -789,14 +789,13 @@
       <!-- 2026-11-01 (operator: "the dropdown in automation agents tab
            for various agents count can be on the header like in
            console" / "even tra[d]e guide can be a[gents] automation" /
-           "on the header") — the kind-dropdown AND the Trader Guide
-           link now both render on EITHER tab, not console-only. The
-           dropdown relocated out of the view body (it used to sit above
-           the row grid as its own `.mb-3` block) into this header `left`
-           zone, reusing `.aw-kind-select` unchanged — no new CSS, the
-           class was already tuned for this exact CardHeader context by
-           the console dropdown. Only the dropdown's own options/value/
-           handler differ per tab; the link is identical either way. -->
+           "on the header") — the kind-dropdown now renders on EITHER
+           tab, not console-only. Relocated out of the view body (it
+           used to sit above the row grid as its own `.mb-3` block)
+           into this header `left` zone, reusing `.aw-kind-select`
+           unchanged — no new CSS, the class was already tuned for this
+           exact CardHeader context by the console dropdown. Only the
+           dropdown's own options/value/handler differ per tab. -->
       {#if activeTab === 'console'}
         <span class="aw-kind-select">
           <Select
@@ -816,6 +815,15 @@
           />
         </span>
       {/if}
+    {/snippet}
+    {#snippet right()}
+      <!-- 2026-11-01 (operator: "trade guide in automation page" ... "make
+           [it] to shift to right edge") — moved out of `left` into `right`.
+           `.ch-right` sits after `.ch-middle` (flex: 1 1 0, always present
+           even empty), which absorbs all remaining header width, so
+           anything in `right` pins to the header's far right edge —
+           CardHeader.svelte's own layout, no new CSS needed here. Renders
+           on either tab, unchanged from the prior behavior. -->
       <a href="/automation/guide" title="CLI grammar guide" class="btn-secondary console-guide-btn">Trader Guide</a>
     {/snippet}
   </CardHeader>

@@ -223,15 +223,22 @@ test.describe('Item 3 — Workspace header removed; Console/Agents tab row carri
   // zone (were split across left/right, pushed apart by the middle
   // spacer), in that exact order, with height parity between the
   // dropdown and the Guide link.
-  test('tabs, kind-dropdown, and "Trader Guide" link render in that exact order, same height, vertically centered', async ({ page }) => {
+  test('tabs + kind-dropdown render in order in .ch-left; Trader Guide pins to .ch-right at the far edge, same height, vertically centered', async ({ page }) => {
+    // 2026-11-01 (operator: "trade guide in automation page" ... "make
+    // [it] to shift to right edge") — Trader Guide moved from `.ch-left`
+    // (sequential after tabs/dropdown) into `.ch-right`, which sits after
+    // `.ch-middle` (CardHeader's own flex:1 spacer) and so pins to the
+    // header's far right edge. Supersedes the prior "same-container,
+    // three-item order" assertion below.
     await page.goto('/automation?tab=console', { waitUntil: 'domcontentloaded' });
 
-    const left = page.locator('.aw-view .card-header .ch-left');
+    const header = page.locator('.aw-view .card-header');
+    const left = header.locator('.ch-left');
     await expect(left).toBeVisible({ timeout: TIMEOUT });
 
-    const info = await left.evaluate((el) => {
-      const children = Array.from(el.children);
-      const order = children.map((c) => {
+    const info = await header.evaluate((headerEl) => {
+      const leftEl = headerEl.querySelector('.ch-left');
+      const order = Array.from(leftEl.children).map((c) => {
         // 2026-10-15 — AutomationTabs is now wrapped in `.aw-tabs-in-
         // header` (a scoping span that zeroes the shared `.aw-tabs-wrap`
         // component's own bottom margin, which otherwise ate the
@@ -245,29 +252,39 @@ test.describe('Item 3 — Workspace header removed; Console/Agents tab row carri
         // direct .ch-left child is the wrapper, not `.rbq-select`
         // itself anymore.
         if (c.classList.contains('aw-kind-select') || c.classList.contains('rbq-select')) return 'dropdown';
-        if (c.classList.contains('console-guide-btn')) return 'guide';
         return 'other';
       });
-      const select = el.querySelector('.rbq-select-trigger');
-      const guide = el.querySelector('.console-guide-btn');
+      const select = leftEl.querySelector('.rbq-select-trigger');
+      const guide = headerEl.querySelector('.ch-right .console-guide-btn');
       const selectRect = select?.getBoundingClientRect();
       const guideRect = guide?.getBoundingClientRect();
+      const headerRect = headerEl.getBoundingClientRect();
       return {
         order,
+        guideInRight: !!headerEl.querySelector('.ch-right .console-guide-btn'),
         guideText: guide?.textContent.trim(),
         selectHeight: selectRect?.height,
         guideHeight: guideRect?.height,
         selectCenterY: selectRect ? selectRect.top + selectRect.height / 2 : null,
         guideCenterY: guideRect ? guideRect.top + guideRect.height / 2 : null,
+        // Guide's right edge must be at (or very near) the header's own
+        // right edge — the "pinned to the far right" assertion.
+        guideRightGap: guideRect ? headerRect.right - guideRect.right : null,
       };
     });
 
-    expect(info.order).toEqual(['tabs', 'dropdown', 'guide']);
+    expect(info.order).toEqual(['tabs', 'dropdown']);
+    expect(info.guideInRight).toBe(true);
     expect(info.guideText).toBe('Trader Guide');
     // Height parity within 1px (sub-pixel rendering tolerance), and
-    // vertical centers aligned within 1px.
+    // vertical centers aligned within 1px — still true across the two
+    // separate flex children, since both share the same `.card-header`
+    // row with `align-items: center`.
     expect(Math.abs(info.selectHeight - info.guideHeight)).toBeLessThanOrEqual(1);
     expect(Math.abs(info.selectCenterY - info.guideCenterY)).toBeLessThanOrEqual(1);
+    // Within a few px of the header's own right padding — "pinned to the
+    // right edge", not just "somewhere after middle".
+    expect(info.guideRightGap).toBeLessThanOrEqual(8);
   });
 
   // 2026-10-15 — operator: "console dropdown and trader guide elements on
