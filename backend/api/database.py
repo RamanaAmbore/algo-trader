@@ -1472,6 +1472,26 @@ async def seed_special_sessions() -> None:
 
     Primary key is ``(exchange, date, start_time)`` so the SELECT-before-
     INSERT guard is exact and concurrent boots cannot duplicate rows.
+
+    2026-11-01 correction: the values below were originally seeded in
+    July 2026 as a placeholder guess (date=2026-11-01, 18:00-19:00),
+    months before NSE/MCX actually published their real 2026 Muhurat
+    circulars. Those real circulars (both issued 2026-10-19 —
+    NSE/CMTR/76941, NSE/FAOP/76940, and MCX/TRD/590/2026) say the real
+    session is on Sunday 2026-11-08, not 2026-11-01, and runs ~14:20-
+    15:40 (NSE: continuous trading opens 14:20, F&O normal market to
+    15:40, CM closing auction ends 15:15) / ~14:20-15:30 (MCX, per a
+    secondary source citing the same circular — not independently
+    verified against the primary MCX PDF). The wrong placeholder was
+    live in prod for ~4 months and fired a real (confusing but
+    code-correct) "market open" alert on the wrong Sunday before this
+    was caught and fixed. Confirmed via live restart test that this
+    function has NO live NSE/MCX fetch of any kind — it is pure
+    hardcoded Python, re-inserted byte-for-byte on every boot if the
+    row is missing. Correcting this value does NOT retroactively fix
+    an already-seeded wrong row in an existing database — that needs a
+    one-time manual DELETE (already done on prod 2026-11-01) before the
+    corrected row can seed in.
     """
     from datetime import date as _date, time as _time
     from sqlalchemy import select
@@ -1481,17 +1501,17 @@ async def seed_special_sessions() -> None:
         # NSE Diwali Muhurat 2026 — operator updates annually.
         {
             "exchange":   "NSE",
-            "date":       _date(2026, 11, 1),
-            "start_time": _time(18, 0),
-            "end_time":   _time(19, 0),
+            "date":       _date(2026, 11, 8),
+            "start_time": _time(14, 20),
+            "end_time":   _time(15, 40),
             "reason":     "Diwali Muhurat 2026",
         },
-        # MCX Diwali Muhurat 2026 — same window, different exchange.
+        # MCX Diwali Muhurat 2026 — same date, slightly different close.
         {
             "exchange":   "MCX",
-            "date":       _date(2026, 11, 1),
-            "start_time": _time(18, 0),
-            "end_time":   _time(19, 0),
+            "date":       _date(2026, 11, 8),
+            "start_time": _time(14, 20),
+            "end_time":   _time(15, 30),
             "reason":     "Diwali Muhurat 2026 (MCX)",
         },
     ]

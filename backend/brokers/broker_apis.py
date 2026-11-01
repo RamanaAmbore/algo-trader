@@ -3194,7 +3194,8 @@ def fetch_special_sessions(exchange: str = "NSE") -> list[dict]:
     retry-storm.
 
     Returns a list of dicts, each with:
-      ``{"date": datetime.date, "start": datetime.time, "end": datetime.time}``
+      ``{"date": datetime.date, "start": datetime.time, "end": datetime.time,
+      "reason": str | None}``
 
     The list only contains rows whose ``date`` field equals today (IST).
     Callers pass this list as ``special_sessions=`` to ``is_market_open``.
@@ -3357,7 +3358,7 @@ async def _read_special_sessions_async(exchange: str, today) -> list[dict]:
         )
         rows = result.scalars().all()
         return [
-            {"date": r.date, "start": r.start_time, "end": r.end_time}
+            {"date": r.date, "start": r.start_time, "end": r.end_time, "reason": r.reason}
             for r in rows
         ]
 

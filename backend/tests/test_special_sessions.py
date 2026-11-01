@@ -15,7 +15,8 @@ Five quality dimensions:
   2. Correctness — covers all stated precondition scenarios.
   3. Performance — special-session block short-circuits before probe.
   4. Reuse      — seed helper and fetch helper used by tests directly.
-  5. UX         — 2026-11-01 (Sunday + Muhurat) open ONLY 18:00-19:00.
+  5. UX         — 2026-11-08 (Sunday + real Muhurat date) open ONLY
+                  14:20-15:40.
 """
 
 from __future__ import annotations
@@ -47,9 +48,9 @@ from backend.shared.helpers.date_time_utils import is_market_open  # noqa: E402
 # Fixtures — special-session list for 2026-11-01
 # ---------------------------------------------------------------------------
 
-MUHURAT_DATE  = date(2026, 11, 1)   # Sunday in 2026
-MUHURAT_START = dtime(18, 0)
-MUHURAT_END   = dtime(19, 0)
+MUHURAT_DATE  = date(2026, 11, 8)   # Sunday — real NSE/MCX Muhurat 2026 date
+MUHURAT_START = dtime(14, 20)
+MUHURAT_END   = dtime(15, 40)
 
 SPECIAL_NSE = [
     {"date": MUHURAT_DATE, "start": MUHURAT_START, "end": MUHURAT_END}
@@ -101,47 +102,47 @@ class TestPrecedence:
     # --- inside window --------------------------------------------------
 
     def test_inside_window_returns_true(self):
-        """18:30 on Muhurat day → open."""
-        now = _ist(2026, 11, 1, 18, 30)
+        """15:00 on Muhurat day → open."""
+        now = _ist(2026, 11, 8, 15, 0)
         assert is_market_open(now, set(), special_sessions=SPECIAL_NSE) is True
 
     def test_just_after_start_returns_true(self):
-        """18:01 → open (inside the window)."""
-        now = _ist(2026, 11, 1, 18, 1)
+        """14:21 → open (inside the window)."""
+        now = _ist(2026, 11, 8, 14, 21)
         assert is_market_open(now, set(), special_sessions=SPECIAL_NSE) is True
 
     # --- outside window -------------------------------------------------
 
     def test_before_window_returns_false(self):
         """12:00 on Muhurat day → closed (outside window)."""
-        now = _ist(2026, 11, 1, 12, 0)
+        now = _ist(2026, 11, 8, 12, 0)
         assert is_market_open(now, set(), special_sessions=SPECIAL_NSE) is False
 
     def test_at_end_time_returns_false(self):
-        """19:00 exactly — half-open [start, end) so end is EXCLUDED."""
-        now = _ist(2026, 11, 1, 19, 0)
+        """15:40 exactly — half-open [start, end) so end is EXCLUDED."""
+        now = _ist(2026, 11, 8, 15, 40)
         assert is_market_open(now, set(), special_sessions=SPECIAL_NSE) is False
 
     def test_after_window_returns_false(self):
-        """19:30 on Muhurat day → closed."""
-        now = _ist(2026, 11, 1, 19, 30)
+        """16:00 on Muhurat day → closed."""
+        now = _ist(2026, 11, 8, 16, 0)
         assert is_market_open(now, set(), special_sessions=SPECIAL_NSE) is False
 
     # --- beats holiday --------------------------------------------------
 
     def test_special_beats_holiday(self):
-        """Special session overrides holiday (18:30 in window, holiday set)."""
+        """Special session overrides holiday (15:00 in window, holiday set)."""
         holiday_set = {MUHURAT_DATE}
-        now = _ist(2026, 11, 1, 18, 30)
+        now = _ist(2026, 11, 8, 15, 0)
         result = is_market_open(now, holiday_set, special_sessions=SPECIAL_NSE)
         assert result is True, (
-            "Special session must override holiday and return True at 18:30"
+            "Special session must override holiday and return True at 15:00"
         )
 
     def test_special_beats_holiday_outside_window(self):
         """Holiday + outside special window → closed (override says closed)."""
         holiday_set = {MUHURAT_DATE}
-        now = _ist(2026, 11, 1, 12, 0)
+        now = _ist(2026, 11, 8, 12, 0)
         result = is_market_open(now, holiday_set, special_sessions=SPECIAL_NSE)
         assert result is False, (
             "Special session override says closed outside its window — "
@@ -170,20 +171,20 @@ class TestPrecedence:
     # --- beats Sunday / weekend -----------------------------------------
 
     def test_special_beats_sunday(self):
-        """2026-11-01 is a Sunday. Special session opens it from 18:00-19:00."""
+        """2026-11-08 is a Sunday. Special session opens it from 14:20-15:40."""
         # Confirm it's actually Sunday
-        assert datetime(2026, 11, 1).strftime("%A") == "Sunday"
-        now = _ist(2026, 11, 1, 18, 30)
+        assert datetime(2026, 11, 8).strftime("%A") == "Sunday"
+        now = _ist(2026, 11, 8, 15, 0)
         # Without special — Sunday is closed (is_trading_day → False)
         result_without = is_market_open(now, set())
-        assert result_without is False, "Baseline: Sunday 18:30 is False without override"
+        assert result_without is False, "Baseline: Sunday 15:00 is False without override"
         # With special — True
         result_with = is_market_open(now, set(), special_sessions=SPECIAL_NSE)
         assert result_with is True, "Special session must open on Sunday"
 
     def test_special_outside_window_on_sunday_stays_false(self):
         """12:00 on Sunday with special session → closed (outside window)."""
-        now = _ist(2026, 11, 1, 12, 0)
+        now = _ist(2026, 11, 8, 12, 0)
         assert is_market_open(now, set(), special_sessions=SPECIAL_NSE) is False
 
     # --- fall-through to normal logic -----------------------------------
@@ -227,7 +228,7 @@ class TestPrecedence:
 class TestPerformance:
     def test_special_session_does_not_call_probe(self):
         """When a special session matches, is_trading_day (probe) is never called."""
-        now = _ist(2026, 11, 1, 18, 30)
+        now = _ist(2026, 11, 8, 15, 0)
         with patch(
             "backend.shared.helpers.date_time_utils.is_trading_day"
         ) as mock_probe:
@@ -237,7 +238,7 @@ class TestPerformance:
 
     def test_special_session_outside_window_does_not_call_probe(self):
         """Outside special window → False without probe call."""
-        now = _ist(2026, 11, 1, 12, 0)
+        now = _ist(2026, 11, 8, 12, 0)
         with patch(
             "backend.shared.helpers.date_time_utils.is_trading_day"
         ) as mock_probe:
@@ -311,45 +312,51 @@ class TestSeedIdempotency:
 
 
 # ============================================================
-# 5. UX — 2026-11-01 is open ONLY 18:00-19:00 for NSE + MCX
+# 5. UX — 2026-11-08 is open ONLY 14:20-15:40 for NSE + MCX
 # ============================================================
+#
+# 2026-11-01 correction: this class used to assert a 2026-11-01,
+# 18:00-19:00 window — a placeholder guess seeded months before NSE/MCX
+# published their real 2026 Muhurat circulars (both issued 2026-10-19).
+# The real session is 2026-11-08, ~14:20-15:40 — see
+# `backend.api.database.seed_special_sessions`'s own docstring for the
+# full correction note and circular references.
 
 class TestUXMuhurat2026:
-    """Operator-visible: on 2026-11-01 only the 18:00-19:00 window is open."""
+    """Operator-visible: on 2026-11-08 only the 14:20-15:40 window is open."""
 
     @pytest.mark.parametrize("hour,minute,expected", [
         (9,  15, False),  # normal NSE open — not open (special overrides)
         (12,  0, False),
-        (15, 30, False),  # normal NSE close — not open
-        (17,  0, False),  # MCX evening start — not open (not in special window)
-        (17, 59, False),
-        (18,  0, True),   # special window START (inclusive)
-        (18, 30, True),
-        (18, 59, True),
-        (19,  0, False),  # special window END (exclusive)
-        (19, 30, False),
+        (14, 19, False),  # just before window start
+        (14, 20, True),   # special window START (inclusive)
+        (15,  0, True),
+        (15, 39, True),   # just before window end
+        (15, 40, False),  # special window END (exclusive)
+        (16,  0, False),
+        (18,  0, False),  # the OLD (wrong) placeholder window — must NOT be open
         (23, 30, False),  # MCX commodity close — not open
     ])
     def test_muhurat_nse_window(self, hour, minute, expected):
-        """Every hour of 2026-11-01: only 18:00-18:59 IST is open."""
-        now = _ist(2026, 11, 1, hour, minute)
+        """Every hour of 2026-11-08: only 14:20-15:39 IST is open."""
+        now = _ist(2026, 11, 8, hour, minute)
         holiday_set = {MUHURAT_DATE}  # also in holiday_set (Diwali)
         result = is_market_open(
             now, holiday_set, special_sessions=SPECIAL_NSE
         )
         assert result is expected, (
             f"Expected {'open' if expected else 'closed'} at {hour:02d}:{minute:02d} "
-            f"on 2026-11-01, got {'open' if result else 'closed'}"
+            f"on 2026-11-08, got {'open' if result else 'closed'}"
         )
 
     def test_mcx_same_window(self):
-        """MCX special session same 2026-11-01 18:00-19:00 window."""
+        """MCX special session, same date, its own slightly shorter close (14:20-15:30)."""
         special_mcx = [
-            {"date": MUHURAT_DATE, "start": dtime(18, 0), "end": dtime(19, 0)}
+            {"date": MUHURAT_DATE, "start": dtime(14, 20), "end": dtime(15, 30)}
         ]
-        now = _ist(2026, 11, 1, 18, 30)
+        now = _ist(2026, 11, 8, 15, 0)
         assert is_market_open(now, set(), special_sessions=special_mcx) is True
-        now_after = _ist(2026, 11, 1, 19, 0)
+        now_after = _ist(2026, 11, 8, 15, 30)
         assert is_market_open(now_after, set(), special_sessions=special_mcx) is False
 
     def test_fetch_special_sessions_returns_list(self):

@@ -72,13 +72,14 @@ async def _market_status_for_segment(seg_key: str, now) -> dict:
     for row in (special or []):
         if row.get("date") == today:
             start, end = row.get("start"), row.get("end")
+            row_reason = row.get("reason")
             if start == end:
-                return {"open": False, "hours": None, "reason": "Special closure"}
+                return {"open": False, "hours": None, "reason": row_reason or "Special closure"}
             try:
                 hrs = f"{start.strftime('%H:%M')}–{end.strftime('%H:%M')} IST"
             except Exception:
                 hrs = hours_str
-            return {"open": True, "hours": hrs, "reason": None}
+            return {"open": True, "hours": hrs, "reason": row_reason}
 
     # ② Weekend.
     if today.weekday() >= 5:
@@ -95,7 +96,7 @@ async def _market_status_for_segment(seg_key: str, now) -> dict:
             # threshold — absent an auto-inserted zero-width special
             # session (full-day closure), the segment still opens for its
             # evening leg.
-            return {"open": True, "hours": f"17:00–{sessions[-1]['end']} IST", "reason": None}
+            return {"open": True, "hours": f"17:00–{sessions[-1]['end']} IST", "reason": "Evening session (holiday)"}
         reason = await _holiday_reason(exch, today)
         return {"open": False, "hours": None, "reason": reason or "Holiday"}
 
@@ -125,7 +126,8 @@ def _format_market_status_message(now, equity: dict, commodity: dict) -> str:
     lines = [f"Market Status — {date_str}"]
     for label, st in (("NSE/Equity", equity), ("MCX/Commodity", commodity)):
         if st["open"]:
-            lines.append(f"{label}: OPEN {st['hours']}")
+            suffix = f" ({st['reason']})" if st["reason"] else ""
+            lines.append(f"{label}: OPEN {st['hours']}{suffix}")
         else:
             lines.append(f"{label}: CLOSED ({st['reason'] or 'Closed'})")
     return "\n".join(lines)
