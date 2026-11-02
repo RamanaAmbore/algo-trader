@@ -549,6 +549,39 @@ WHEN funds.margin@funds.any_acct &gt; 100000 DO alert(telegram)</pre>
         Use the dot notation <code>scope.column</code> (not <code>column@scope</code>).
       </p>
     </div>
+
+    <div class="cg-example">
+      <p class="cg-why">
+        You want to hear about one slice of your book only — MCX positions expiring today that
+        are still unhedged — without the rest of the book diluting the number.
+      </p>
+      <pre class="cg-code">WHEN pnl@positions.expiring_today(exchange == "MCX" &amp; is_unhedged == 1) &lt;= -30000 DO alert(telegram)</pre>
+      <p class="cg-what">
+        A parenthesized <code>(...)</code> on the last scope segment is a where-filter. It keeps
+        only the rows of <code>positions.expiring_today</code> that match, and the comparison runs
+        on what remains. Bare column names inside the parens refer to that scope's own columns.
+        Combine them with <code>&amp;</code> (and), <code>|</code> (or) and <code>~</code> (not),
+        or use a chained range such as <code>(0 &lt; qty &lt; 100)</code>.
+      </p>
+    </div>
+
+    <div class="cg-example">
+      <p class="cg-why">
+        Book-wide guards that look at the whole set of rows at once — how many positions expire
+        today, how many lots are in one exchange, or how bad the single worst position is.
+      </p>
+      <pre class="cg-code">WHEN count@positions.expiring_today &gt; 5 DO alert(telegram)
+WHEN sum(column=qty)@positions.expiring_today(exchange == "MCX") &gt; 500 DO alert(telegram)
+WHEN max(column=pnl)@positions.expiring_today &lt;= -10000 DO alert(telegram)</pre>
+      <p class="cg-what">
+        <code>count</code>, <code>sum</code>, <code>max</code> and <code>avg</code> reduce every row
+        of a scope into one number for the tick, instead of evaluating each row or account on its
+        own. <code>count</code> takes no arguments. The other three take one
+        <code>column=</code> naming a numeric column of that scope. A where-filter on the same leaf
+        narrows the rows first, as in the second line. An empty set sums and counts to
+        <code>0</code>, while <code>max</code> and <code>avg</code> over no rows do not fire.
+      </p>
+    </div>
   </section>
 
   <!-- ══════════════════════════ QUICK REFERENCE ══════════════════════════ -->
