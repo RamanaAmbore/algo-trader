@@ -1225,6 +1225,18 @@ def _rco_preview_empty_plan(data) -> dict:
     }
 
 
+def _rco_preview_degraded_message(e: BaseException) -> str:
+    """Build the operator-facing `gtt_trigger_errors` text for a preview
+    that failed to resolve (e.g. an MCX instruments-cache miss right
+    after a `ramboq_conn` restart — see `_validate_exchange_qty_multiple`
+    in backend/brokers/base.py). Masks any account code, falls back to
+    the exception's class name when `str(e)` is empty (e.g. a bare
+    `asyncio.TimeoutError`), and truncates so a stray traceback-shaped
+    message never reaches the client in full."""
+    msg = str(e).strip() or type(e).__name__
+    return f"Preview unavailable: {mask_account_in_text(msg)}"[:200]
+
+
 async def _preview_check_broker_gates(data, exch: str) -> None:
     """Raise 422 early at preview for MCX GTT capability + wing_premium_pct=0. (#5, #7)"""
     if data.template_id and exch in ("MCX", "NCO"):
@@ -2734,28 +2746,55 @@ class OrdersController(Controller):
         # sizes exit GTTs against the same unit convention it always has.
         _sym = (data.tradingsymbol or "").upper()
         _exch = (data.exchange or "NFO")
-        await _preview_check_broker_gates(data, _exch)
 
-        _parent_qty = await _rco_preview_resolve_qty(_exch, _sym, int(data.quantity or 0))
-        result = await apply_template_to_order(
-            template_id=data.template_id,
-            template_slug=None,
-            overrides=_ticket_overrides_dict(data),
-            parent_account=(data.account or ""),
-            parent_symbol=_sym,
-            parent_side=(data.side or "").upper(),
-            parent_qty=_parent_qty,
-            parent_exchange=_exch,
-            parent_fill_price=float(data.reference_price or 0.0),
-            parent_product=(data.product or "NRML"),
-            apply_path="preview",
-        )
-        if result is None:
-            return TicketPreviewResponse(plan=_rco_preview_empty_plan(data))
+        # Preview is read-only / best-effort (no broker or DB writes — see
+        # the docstring above). A transient resolver failure (e.g. the
+        # MCX instruments cache hasn't warmed back up yet right after a
+        # `ramboq_conn` restart — `_validate_exchange_qty_multiple` in
+        # backend/brokers/base.py correctly refuses with a ValueError in
+        # that window) must degrade to a structured response, never a raw
+        # 500 — this endpoint fires on every Chain-tab field change while
+        # Bracket is armed. A genuine HTTPException (422 gate failure,
+        # 422 from a bad template override deep in apply_template_to_order)
+        # is a real validation/authorization outcome and must still
+        # propagate as-is.
+        try:
+            await _preview_check_broker_gates(data, _exch)
 
-        _wing_feasible, _gtt_errors = await _preview_template_meta(result, data, _sym, _exch)
+            _parent_qty = await _rco_preview_resolve_qty(_exch, _sym, int(data.quantity or 0))
+            result = await apply_template_to_order(
+                template_id=data.template_id,
+                template_slug=None,
+                overrides=_ticket_overrides_dict(data),
+                parent_account=(data.account or ""),
+                parent_symbol=_sym,
+                parent_side=(data.side or "").upper(),
+                parent_qty=_parent_qty,
+                parent_exchange=_exch,
+                parent_fill_price=float(data.reference_price or 0.0),
+                parent_product=(data.product or "NRML"),
+                apply_path="preview",
+            )
+            if result is None:
+                return TicketPreviewResponse(plan=_rco_preview_empty_plan(data))
+
+            _plan_dict = result.plan.to_dict()
+            _wing_feasible, _gtt_errors = await _preview_template_meta(result, data, _sym, _exch)
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.warning(
+                f"[TICKET-PREVIEW] sym={_sym} exch={_exch} "
+                f"template_id={data.template_id} error={e}"
+            )
+            return TicketPreviewResponse(
+                plan=_rco_preview_empty_plan(data),
+                wing_feasible=False,
+                gtt_trigger_errors=[_rco_preview_degraded_message(e)],
+            )
+
         return TicketPreviewResponse(
-            plan=result.plan.to_dict(),
+            plan=_plan_dict,
             wing_feasible=_wing_feasible,
             gtt_trigger_errors=_gtt_errors,
         )
