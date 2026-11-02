@@ -515,6 +515,45 @@ def _retry_build_result_response(result, attached_now: bool) -> dict:
     }
 
 
+def _retry_response_for_outcome(outcome: "tuple | None") -> dict:
+    """Map `_rco_run_template_attach`'s return value to the operator-
+    facing `/retry-template` response dict.
+
+    Pure (no I/O, no DB, no broker) — extracted from `retry_template`
+    so the three distinct outcome shapes (`None`, `"persist_failed"`,
+    `"empty"`/`"persisted"`) are directly unit-testable without
+    exercising the lock/placement/persist machinery that produces them.
+    """
+    if outcome is None:
+        return {"ok": False, "reason": "apply_template_to_order returned no result (template missing or empty plan)"}
+
+    result, persist_state = outcome
+    if persist_state == "persist_failed":
+        # T16 parity — exits are genuinely LIVE at the broker; only
+        # the DB write recording them failed. _rco_run_template_attach
+        # has already registered the _TPL_ATTACH_PERSIST_PENDING hold
+        # and fired the template_attach_failed alert. Tell the
+        # operator not to retry, reusing _retry_precheck_row's own
+        # wording for this exact state so the two surfaces never say
+        # different things.
+        return {
+            "ok": False,
+            "reason": "exits already placed at the broker but not "
+                      "recorded — do not Re-attach; reconcile the "
+                      "broker GTT book manually",
+            "wing_order_id": result.wing_order_id,
+            "gtt_ids": result.gtt_ids,
+            "attached": True,
+        }
+
+    # Sc.5c — distinguish full success from silent no-op. When the plan
+    # resolved but produced no GTTs and no wing (all branches rejected
+    # by overrides or chain-scan), the response previously claimed
+    # `ok: true, attached: false` which read like a success. Treat the
+    # empty-payload case as a failure with a clear reason.
+    return _retry_build_result_response(result, persist_state == "persisted")
+
+
 def _retry_precheck_row(row) -> Optional[dict]:
     """Return an early-exit response dict when the row shouldn't be
     retried; `None` when the retry may proceed.
@@ -1421,23 +1460,89 @@ async def _rco_attached_gtts_already_set(row_id: int) -> bool:
     return bool(_val)
 
 
+async def _rco_annotate_retry_detail(row_id: int, errors: list) -> None:
+    """Best-effort note on AlgoOrder.detail summarising retry-attach
+    errors — mirrors the note the old (pre-2026-11) `_rco_persist_attach_
+    payload` used to write via the caller's own session. Uses its OWN
+    session (same pattern as `_opp_persist_attached_gtts` /
+    `_rco_attached_gtts_already_set`) rather than the retry route's
+    outer session, which has already been closed by the time this runs
+    (see `_rco_run_template_attach`'s docstring). Never allowed to raise
+    into the caller — the exits are already placed and persisted by the
+    time this runs; a cosmetic detail-note failure must not look like an
+    attach failure.
+    """
+    try:
+        from sqlalchemy import select as _sel_note
+        from backend.api.database import async_session as _async_s_note
+        from backend.api.models import AlgoOrder as _AO_note
+
+        async with _async_s_note() as _s_note:
+            _row = (await _s_note.execute(
+                _sel_note(_AO_note).where(_AO_note.id == row_id)
+            )).scalar_one_or_none()
+            if _row is not None:
+                _row.detail = ((_row.detail or "")[:200]
+                               + " · retry attach: "
+                               + "; ".join(str(e) for e in errors[:2]))[:240]
+                await _s_note.commit()
+    except Exception as _e:
+        logger.debug(
+            "[TPL-ATTACH] retry detail annotation failed for #%s: %s",
+            row_id, _e,
+        )
+
+
 async def _rco_run_template_attach(row) -> "tuple | None":
-    """Run apply_template_to_order for *row* and persist attached_gtts_json.
+    """Run apply_template_to_order for *row* and persist attached_gtts_json,
+    broker placement AND the DB persist happening under ONE continuous
+    per-row lock acquisition.
 
-    Returns (result, payload_persisted) where payload_persisted is True
-    when attached_gtts_json was written to the row. Returns None when
-    apply_template_to_order returned no result, OR when a concurrent
-    fill-triggered attach already populated attached_gtts_json while
-    this call was waiting for the per-row lock (see
-    _rco_attached_gtts_already_set).
+    Returns:
+      - `None` when a concurrent fill-triggered attach already populated
+        `attached_gtts_json` while this call waited for the lock (T13),
+        or when `apply_template_to_order` itself returned no result.
+      - `(result, "empty")` — the plan resolved but produced nothing to
+        attach (no GTTs, no wing); nothing was persisted because there
+        was nothing to persist.
+      - `(result, "persisted")` — a non-empty payload was built and the
+        DB write succeeded.
+      - `(result, "persist_failed")` — exits are LIVE at the broker
+        (placement inside `apply_template_to_order` succeeded) but the
+        DB write recording them exhausted every `_opp_persist_with_retry`
+        attempt. A `_TPL_ATTACH_PERSIST_PENDING` hold has been
+        registered for this row and the same `template_attach_failed`
+        alert the fill-triggered path fires has already gone out (see
+        `_opp_handle_persist_failure`). The caller must tell the
+        operator not to retry.
 
-    Must be called within an active SQLAlchemy session context (row is
-    session-attached). The caller must commit after this returns.
+    CRITICAL FIX (2026-11) — broker placement and the DB persist now run
+    under the SAME lock acquisition as the T13 in-lock re-check, not two
+    separate critical sections. Before this fix the per-row lock
+    released the instant `apply_template_to_order` returned, and the
+    caller (`retry_template`) built + committed the persisted payload
+    with NO lock held at all. In that window a concurrent fill-triggered
+    attach (`_fire_template_attach_on_fill`, orders_place.py — a late
+    postback or chase-terminal fill for the SAME row) could win the
+    now-free lock, see `attached_gtts_json` still NULL (this call's
+    write hadn't committed yet), and place a SECOND live GTT/wing set
+    against a real position. See CLAUDE.md "Template and bracket attach
+    hardening" for the class of bug this belongs to.
+
+    Must be called with the row's own scalar attributes already loaded
+    (the row need not remain session-attached — this function and the
+    functions it calls each open their own session, exactly like
+    `_rco_attached_gtts_already_set` / `_opp_persist_attached_gtts`
+    already do).
     """
     from backend.api.algo.template_attach import apply_template_to_order
+    from backend.api.routes.orders_place import (
+        _opp_handle_persist_failure, _opp_persist_with_retry,
+    )
 
     apply_path = "sim" if (row.mode or "").lower() == "sim" else "live"
     _retry_overrides = _retry_parse_overrides(row.template_overrides_json)
+    _fill_price = float(row.fill_price or row.initial_price or 0)
     # Same per-row lock the fill-triggered path (_fire_template_attach_on_fill)
     # uses, now that the live apply_plan_live chain runs off the event loop
     # (asyncio.to_thread) and can genuinely interleave with a concurrent
@@ -1458,6 +1563,12 @@ async def _rco_run_template_attach(row) -> "tuple | None":
                 row.id,
             )
             return None
+        # M7 — re-fetch filled_quantity from the DB *inside* the lock,
+        # immediately before placement, not before acquiring the lock.
+        # Reading it earlier would widen the exact window M7 exists to
+        # close: a partial fill landing while this call waited on the
+        # lock would otherwise size the exit GTT off a stale count.
+        _parent_qty = await _retry_effective_parent_qty(row)
         result = await apply_template_to_order(
             template_id=row.template_id,
             template_slug=None,
@@ -1465,32 +1576,39 @@ async def _rco_run_template_attach(row) -> "tuple | None":
             parent_account=row.account or "",
             parent_symbol=row.symbol or "",
             parent_side=row.transaction_type or "BUY",
-            parent_qty=await _retry_effective_parent_qty(row),
+            parent_qty=_parent_qty,
             parent_exchange=row.exchange or "NFO",
-            parent_fill_price=float(row.fill_price or row.initial_price or 0),
+            parent_fill_price=_fill_price,
             parent_product=row.product or "NRML",
             parent_order_id=row.id,
             parent_agent_id=getattr(row, "agent_id", None),
             apply_path=apply_path,
         )
-    return result
+        if result is None:
+            return None
 
-
-def _rco_persist_attach_payload(row, result, session) -> bool:
-    """Write the attached_gtts_json payload onto *row* from *result*.
-    Returns True when a payload was written, False when empty.
-    Assumes the session's commit will be called by the caller.
-    """
-    _attached_payload = _retry_build_attached_payload(result, row.product or "NRML")
-    if _attached_payload:
-        import json as _json_retry
-        row.attached_gtts_json = _json_retry.dumps(_attached_payload)
+        # 2026-11 fix — build + persist the attach payload WHILE STILL
+        # HOLDING the lock (see this function's own docstring above).
+        # Previously this happened in the caller, after the lock had
+        # already been released.
+        _attached_payload = _retry_build_attached_payload(
+            result, row.product or "NRML",
+        )
+        if not _attached_payload:
+            return (result, "empty")
+        _persist_ok = await _opp_persist_with_retry(
+            row.id, _attached_payload, _fill_price,
+        )
+        if not _persist_ok:
+            await _opp_handle_persist_failure(
+                row.id, _attached_payload, _fill_price,
+                row.symbol or "", row.account or "",
+                getattr(row, "agent_id", None),
+            )
+            return (result, "persist_failed")
         if result.errors:
-            row.detail = ((row.detail or "")[:200]
-                          + " · retry attach: "
-                          + "; ".join(result.errors[:2]))[:240]
-        return True
-    return False
+            await _rco_annotate_retry_detail(row.id, result.errors)
+        return (result, "persisted")
 
 
 async def _rco_dispatch_kill(row) -> str:
@@ -2194,6 +2312,17 @@ class OrdersController(Controller):
         when the order isn't FILLED, or when no template was attached
         in the first place. Operator gets a clear reason string back
         rather than a generic 4xx.
+
+        2026-11 fix — the actual attach-and-persist sequence
+        (`_rco_run_template_attach`) now runs AFTER this session closes,
+        not inside it. It manages its own locking and its own DB
+        session(s) end-to-end (placement + persist under one continuous
+        per-row lock — see that function's own docstring), so nothing
+        here needs to commit or refresh `row` for the attach itself any
+        more. `row`'s scalar attributes read below were already loaded
+        while `s` was open and remain valid after it closes
+        (`expire_on_commit=False` on `async_session`, and none of these
+        are lazy-loaded relationships).
         """
         from sqlalchemy import select as _sql_select
         from backend.api.database import async_session
@@ -2239,21 +2368,16 @@ class OrdersController(Controller):
                         f"bracket mirror for template #{row.template_id} is "
                         f"missing — the live resolver cannot arm this fill"}
 
-            result = await _rco_run_template_attach(row)
-            if result is None:
-                return {"ok": False, "reason": "apply_template_to_order returned no result (template missing or empty plan)"}
-            if _rco_persist_attach_payload(row, result, s):
-                await s.commit()
-                await s.refresh(row)
-
-        # Sc.5c — distinguish full success from silent no-op. When the
-        # plan resolved but produced no GTTs and no wing (all branches
-        # rejected by overrides or chain-scan), the response previously
-        # claimed `ok: true, attached: false` which read like a success.
-        # Treat the empty-payload case as a failure with a clear reason.
-        return _retry_build_result_response(
-            result, row.attached_gtts_json is not None,
-        )
+        # 2026-11 fix — deliberately OUTSIDE the `async with
+        # async_session() as s:` block above. `_rco_run_template_attach`
+        # holds the per-row template-attach lock across BOTH broker
+        # placement AND the DB persist (see its own docstring) — it must
+        # never run while this route's own session `s` is still open,
+        # since every other reader of this lock (the fill-triggered
+        # path) also owns its own session end-to-end rather than nesting
+        # inside a caller's.
+        _attach_outcome = await _rco_run_template_attach(row)
+        return _retry_response_for_outcome(_attach_outcome)
 
     @post("/algo/reconcile")
     async def reconcile_algo_orders(self, request: Request) -> dict:

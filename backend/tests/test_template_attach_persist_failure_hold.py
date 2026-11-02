@@ -227,6 +227,103 @@ async def test_fire_template_attach_on_fill_never_places_twice_when_persist_keep
     opl._TPL_ATTACH_PERSIST_PENDING.clear()
 
 
+class TestRetryPathPersistFailureHold:
+    """2026-11 fix — `_rco_run_template_attach` (the retry-template
+    route's attach-and-persist helper) now builds + persists the attach
+    payload under its OWN lock, reusing the same `_opp_persist_with_retry`
+    / `_opp_handle_persist_failure` machinery the fill-triggered path
+    already uses (see `test_fire_template_attach_on_fill_never_places_
+    twice_when_persist_keeps_failing` above for that end-to-end case).
+    This covers the same failure mode reached via the RETRY path
+    instead: broker placement succeeds, every persist attempt fails, and
+    a SECOND attach attempt for the same row (another Retry click, or a
+    racing fill-triggered attach funnelling through the same hold check)
+    must not place a second broker order."""
+
+    @pytest.mark.asyncio
+    async def test_retry_persist_failure_registers_hold_and_blocks_second_attempt(self):
+        from backend.api.routes import orders as orders_mod
+        from backend.api.routes import orders_place as opl
+
+        opl._TPL_ATTACH_PERSIST_PENDING.clear()
+        _ROW_ID = 918273646
+
+        row = MagicMock()
+        row.id = _ROW_ID
+        row.template_id = 11
+        row.account = "ZG0790"
+        row.symbol = "NIFTY25JULFUT"
+        row.exchange = "NFO"
+        row.transaction_type = "SELL"
+        row.product = "NRML"
+        row.mode = "live"
+        row.fill_price = 100.0
+        row.initial_price = 100.0
+        row.template_overrides_json = None
+        row.agent_id = None
+
+        fake_result = MagicMock()
+        fake_result.plan = None
+        fake_result.wing_order_id = "W1"
+        fake_result.wing_chased = False
+        fake_result.gtt_ids = []
+        fake_result.errors = []
+
+        apply_template_to_order_mock = AsyncMock(return_value=fake_result)
+
+        async def _no_sleep(_s):
+            return None
+
+        # The FIRST call's in-lock recheck (`_rco_attached_gtts_already_set`)
+        # finds nothing in `_TPL_ATTACH_PERSIST_PENDING` yet, so it falls
+        # through to a real DB read of `attached_gtts_json` — fake that
+        # session out (no real DB in this unit test). The SECOND call's
+        # recheck short-circuits on the now-populated pending dict and
+        # never reaches this session at all, so returning "not attached"
+        # unconditionally here is safe for both calls.
+        fake_db_result = MagicMock()
+        fake_db_result.scalar_one_or_none.return_value = None
+        fake_session = MagicMock()
+        fake_session.execute = AsyncMock(return_value=fake_db_result)
+        fake_session_cm = MagicMock()
+        fake_session_cm.__aenter__ = AsyncMock(return_value=fake_session)
+        fake_session_cm.__aexit__ = AsyncMock(return_value=False)
+
+        try:
+            with patch("backend.api.algo.template_attach.apply_template_to_order",
+                       new=apply_template_to_order_mock), \
+                 patch.object(orders_mod, "_retry_effective_parent_qty",
+                              new=AsyncMock(return_value=50)), \
+                 patch.object(opl, "_opp_persist_attached_gtts",
+                              new=AsyncMock(side_effect=RuntimeError("DB down"))), \
+                 patch("backend.api.database.async_session",
+                       return_value=fake_session_cm), \
+                 patch("asyncio.sleep", new=_no_sleep), \
+                 patch("backend.api.algo.template_attach._fire_attach_fail_alert"), \
+                 patch("backend.api.algo.order_events.write_event",
+                       new=AsyncMock()):
+
+                outcome1 = await orders_mod._rco_run_template_attach(row)
+                assert outcome1 == (fake_result, "persist_failed")
+                assert _ROW_ID in opl._TPL_ATTACH_PERSIST_PENDING
+                assert apply_template_to_order_mock.await_count == 1
+
+                # A second attach attempt for the SAME row — another
+                # operator Retry click, or a racing fill-triggered
+                # attach — must see the hold (via the real, unpatched
+                # _rco_attached_gtts_already_set) and bail WITHOUT
+                # calling apply_template_to_order again.
+                outcome2 = await orders_mod._rco_run_template_attach(row)
+                assert outcome2 is None
+                assert apply_template_to_order_mock.await_count == 1, (
+                    "a pending persist-failure hold registered via the "
+                    "retry path must block a second broker placement "
+                    "attempt for the same row"
+                )
+        finally:
+            opl._TPL_ATTACH_PERSIST_PENDING.clear()
+
+
 class TestRetryPathRecognisesPendingHold:
     @pytest.mark.asyncio
     async def test_rco_attached_gtts_already_set_true_for_pending_row(self):

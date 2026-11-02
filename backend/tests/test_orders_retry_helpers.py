@@ -12,6 +12,7 @@ from backend.api.routes.orders import (
     _retry_effective_parent_qty,
     _retry_parse_overrides,
     _retry_precheck_row,
+    _retry_response_for_outcome,
 )
 
 
@@ -398,3 +399,57 @@ class TestBuildResultResponse:
         )
         r = _retry_build_result_response(result, attached_now=True)
         assert r["notes"] == []
+
+
+# ── _retry_response_for_outcome ──────────────────────────────────────────
+# 2026-11 fix — extracted from `retry_template` so the mapping from
+# `_rco_run_template_attach`'s `(result, persist_state) | None` outcome
+# to the operator-facing response dict is directly unit-testable,
+# without exercising the lock/placement/persist machinery that
+# produces that outcome. The `persist_failed` case in particular is the
+# safety-relevant one (exits are live at the broker; the operator must
+# be told NOT to retry) and had no direct test coverage before this.
+class TestRetryResponseForOutcome:
+    def test_none_outcome_is_no_result_failure(self):
+        r = _retry_response_for_outcome(None)
+        assert r["ok"] is False
+        assert "no result" in r["reason"]
+
+    def test_persist_failed_tells_operator_not_to_retry(self):
+        result = SimpleNamespace(
+            plan=None, gtt_ids=["G1"], wing_order_id="W1", errors=[],
+        )
+        r = _retry_response_for_outcome((result, "persist_failed"))
+        assert r["ok"] is False
+        assert "not recorded" in r["reason"]
+        assert "do not Re-attach" in r["reason"]
+        assert r["attached"] is True
+        assert r["wing_order_id"] == "W1"
+        assert r["gtt_ids"] == ["G1"]
+
+    def test_empty_with_no_errors_is_nothing_to_attach_failure(self):
+        result = SimpleNamespace(
+            plan=_plan(), gtt_ids=[], wing_order_id=None, errors=[],
+        )
+        r = _retry_response_for_outcome((result, "empty"))
+        assert r["ok"] is False
+        assert "nothing to attach" in r["reason"]
+        assert r["attached"] is False
+
+    def test_empty_with_errors_is_ok_but_not_attached(self):
+        result = SimpleNamespace(
+            plan=_plan(), gtt_ids=[], wing_order_id=None,
+            errors=["chain scan empty"],
+        )
+        r = _retry_response_for_outcome((result, "empty"))
+        assert r["ok"] is True
+        assert r["attached"] is False
+        assert "chain scan empty" in r["errors"]
+
+    def test_persisted_is_success(self):
+        result = SimpleNamespace(
+            plan=_plan(), gtt_ids=["gid1"], wing_order_id="W1", errors=[],
+        )
+        r = _retry_response_for_outcome((result, "persisted"))
+        assert r["ok"] is True
+        assert r["attached"] is True
