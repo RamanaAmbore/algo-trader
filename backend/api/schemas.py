@@ -608,6 +608,12 @@ class BasketLeg(msgspec.Struct):
     # AlgoOrder row for per-strategy P&L attribution. Same semantics as
     # TicketOrderRequest.strategy_id. None = unattributed.
     strategy_id: Optional[int] = None
+    # Per-leg override of the attached template exit hold. Same semantics
+    # as TicketOrderRequest.hold_template_exit — None = use the global
+    # switch (`hold.template_exit_released`). Added so a Chain/basket
+    # submission can also use a per-order release override, matching the
+    # ticket route (2026-11, item 5 of the bracket-UX plan).
+    hold_template_exit: Optional[bool] = None
 
 
 class BasketGroup(msgspec.Struct):

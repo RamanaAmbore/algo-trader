@@ -874,7 +874,10 @@ must split plain and HTML slots. It must never hand a tagged body to an escape-f
 **Alert message format — plain text everywhere, origin line first, dedicated deploy channel, forced email for action-required, Alerts tab merges `alert`-tagged log rows (2026-10-25; commit `17a1c85a`; test-only follow-up `368c98a8`)** — Three standardisation changes and one surface change, all in the alert pipeline.
 - **Plain text, no HTML in Telegram or ntfy.** `alert_utils._send_telegram()` ([alert_utils.py:218](backend/shared/helpers/alert_utils.py#L218)) sends no `parse_mode` unless a caller passes one explicitly, and nothing does (payload at [:264-266](backend/shared/helpers/alert_utils.py#L264)). `_send_telegram_info()` ([:276](backend/shared/helpers/alert_utils.py#L276)) never sets one. `dispatch_payload()` builds `telegram_msg` without `<b>`/`<code>` and without `html.escape()` ([:682-685](backend/shared/helpers/alert_utils.py#L682)). The event-path senders `_send_telegram_html` ([event_agents.py:452](backend/api/algo/event_agents.py#L452)) and `_send_telegram_info_html` ([:501](backend/api/algo/event_agents.py#L501)) are now bare pass-throughs. Their `_html` suffix is kept for name stability only. `_html_to_plain()` ([alert_utils.py:319](backend/shared/helpers/alert_utils.py#L319)) has no production caller left. Email keeps its HTML body (`_email_message`).
 - **`webhook/notify_deploy.py` is Telegram-only.** Its ntfy send is gone, the email path stays retired ([notify_deploy.py:106-110](webhook/notify_deploy.py#L106)), and no `parse_mode` is sent. Its `tg_body` is plain text ([:77-87](webhook/notify_deploy.py#L77)).
-- **Origin line first.** `format_notification_header()` ([alert_utils.py:587](backend/shared/helpers/alert_utils.py#L587)) emits `Agent: {origin}` as line 1, then the dual-tz timestamp. The event renderers that build their own text lead with it: `_render_chase_cancel` ([event_agents.py:94](backend/api/algo/event_agents.py#L94)), `_render_partial_gtt` ([:113](backend/api/algo/event_agents.py#L113)), `_render_template_attach` ([:144](backend/api/algo/event_agents.py#L144)), `_render_order_correction` ([:268](backend/api/algo/event_agents.py#L268)), `_render_gtt_not_accepted` ([:380](backend/api/algo/event_agents.py#L380)) and `_render_error` ([:411](backend/api/algo/event_agents.py#L411)). `_render_order_failure` gets its header from `order_failure_messages()` ([alert_utils.py:1085](backend/shared/helpers/alert_utils.py#L1085), header call at [:1126](backend/shared/helpers/alert_utils.py#L1126)). MCP pings get theirs at the single chokepoint `lab.py` ([routes/lab.py:1141-1143](backend/api/routes/lab.py#L1141)).
+- **Origin line first.** `format_notification_header()` ([alert_utils.py:587](backend/shared/helpers/alert_utils.py#L587)) emits `Agent: {origin}` as line 1, then the dual-tz timestamp. *Amended 2026-11-02:* on the Telegram and ntfy path,
+  `dispatch_payload()` now puts the agent line and the timestamp on one pipe-separated line. The bare
+  `format_notification_header()` output is still two lines. See "Alert header consolidation" below. The
+  event renderers that build their own text lead with it: `_render_chase_cancel` ([event_agents.py:94](backend/api/algo/event_agents.py#L94)), `_render_partial_gtt` ([:113](backend/api/algo/event_agents.py#L113)), `_render_template_attach` ([:144](backend/api/algo/event_agents.py#L144)), `_render_order_correction` ([:268](backend/api/algo/event_agents.py#L268)), `_render_gtt_not_accepted` ([:380](backend/api/algo/event_agents.py#L380)) and `_render_error` ([:411](backend/api/algo/event_agents.py#L411)). `_render_order_failure` gets its header from `order_failure_messages()` ([alert_utils.py:1085](backend/shared/helpers/alert_utils.py#L1085), header call at [:1126](backend/shared/helpers/alert_utils.py#L1126)). MCP pings get theirs at the single chokepoint `lab.py` ([routes/lab.py:1141-1143](backend/api/routes/lab.py#L1141)).
   - **Deliberate exception — agent-less summaries.** `dispatch_payload()` adds the agent line only when both `agent_name` and `agent_id` are given ([alert_utils.py:666-668](backend/shared/helpers/alert_utils.py#L666)). Open and close summaries therefore lead with the title line `… — <dual-tz>` and carry no origin line ([:682-685](backend/shared/helpers/alert_utils.py#L682)).
   - **Known gap — `generic_notice` producers do not lead with origin.** `_render_deploy_sync` ([event_agents.py:293](backend/api/algo/event_agents.py#L293)) is a pass-through of `extra["body"]`. Its five `background.py` producers build a bare `msg` with no `Agent:` line: gtt-asymmetric ([background.py:5290-5300](backend/api/background.py#L5290)), oco-double-fire, ticker-recovered, ticker-degraded, and visitor-report ([:7232-7246](backend/api/background.py#L7232)). Deploy-sync also builds its own `message` ([:8999-9001](backend/api/background.py#L8999)). None of these carry an origin line. This is stated here, not fixed.
 - **Visitor report is plain text.** The Telegram body is `_summary_text()` ([backend/scripts/visitor_report.py:770](backend/scripts/visitor_report.py#L770)), not the HTML `summary_for_telegram()` builder ([:780](backend/scripts/visitor_report.py#L780)). The 2026-10-23 `generic_notice` HTML leak entry above is therefore moot. Its HTML split no longer exists.
@@ -941,6 +944,38 @@ sent this Telegram/ntfy/email) fired — that identity existed only as internal 
   functions this module's other alert text already uses — never a second, independent lookup. A
   collapsed alert type's 3 generic channel agents always agree on the SAME alert-agent label for one
   record, via `source_slug`, never 3 different ones.
+
+**Alert header consolidation — one pipe-separated identity line on Telegram and ntfy, "Alert:" label,
+email subject reshaped, email table overflow fixed (2026-11-02, uncommitted this session)** — Presentation
+changes in [alert_utils.py](backend/shared/helpers/alert_utils.py). The scope is deliberately narrow.
+- **One line, not two (Telegram and ntfy).** `dispatch_payload()`
+  ([alert_utils.py:781-830](backend/shared/helpers/alert_utils.py#L781)) used to send `Agent: {name} (#{id})`
+  and a separate `Agent — {ts}` line. It now sends one line, `Alert: {name} (#{id}) | {IST} | {EST}`, with
+  any branch and mode tag before the pipe. The generic `tg_prefix_full` ("Agent", "SIMULATOR Agent",
+  "REPLAY Agent") is dropped in this branch. The SIM/REPLAY bracket and the warning banner still carry
+  that fact.
+- **Label scope.** "Agent" becomes "Alert" only in this merged line (via `_relabel_agent_label_to_alert()`)
+  and in the email subject and body header paragraphs. `format_notification_header()` is unchanged. Every
+  other `Agent: {origin}` label still says "Agent:". That covers the order-display `agent_origin` chip and
+  the fill, failure, chase-cancel and template-attach renderers. This is not a global rename.
+- **Email subject.** Was `RamboQuant Agent: {name} (#{id})` with no timestamp. It is now
+  `Alert: {name} (#{id}){branch_tag}{mode_tag} | {IST}`
+  ([alert_utils.py:481](backend/shared/helpers/alert_utils.py#L481)). An early draft silently dropped the
+  PAPER and branch tags from the subject. That would have broken the "every alert must explicitly show
+  paper/sim/replay mode" invariant. It was caught and fixed before shipping.
+- **Email body.** The two-paragraph structure is unchanged, per operator instruction not to merge it. Only
+  the word "Agent" became "Alert" inside both paragraphs.
+- **Table overflow (bundled).** The `<td>` cells in `_email_alert_body()`
+  ([alert_utils.py:1724](backend/shared/helpers/alert_utils.py#L1724)) use
+  `white-space:normal;word-break:break-word;overflow-wrap:break-word` instead of `nowrap`. The table is
+  `width:100%`, and long cell content was overflowing its container. `<th>` keeps `nowrap`, because its
+  labels are short and fixed.
+- Tests: [test_alert_golden.py](backend/tests/test_alert_golden.py) (subject and header, around :962),
+  [test_dispatch_payload_title_and_subject.py](backend/tests/test_dispatch_payload_title_and_subject.py),
+  [test_rich_alert_custom_message.py](backend/tests/test_rich_alert_custom_message.py).
+- Invariant: on Telegram and ntfy, the agent identity and the timestamp share one line. "Alert:" labels only
+  that line and the email headers. The origin line stays first. Every other `Agent:` origin label is
+  unchanged.
 
 **MCX spot resolution — a transient 4a quote failure never swaps the contract (2026-10-25; commit `21f74618`)** — `_resolve_commodity_spot()` ([`options_helpers.py:191`](backend/api/routes/options_helpers.py#L191)) resolves the MCX future in priority order: the option_symbol contract (`lookup_future_for_option`, [:209](backend/api/routes/options_helpers.py#L209)), then `expiry_hint` ([:213](backend/api/routes/options_helpers.py#L213)), then the front-month ([:215](backend/api/routes/options_helpers.py#L215)). When the option_symbol contract resolved but its 4a price quote failed transiently (broker or thread-pool timeout), step 4b used to rebuild the spot from `expiry_hint` and quote a DIFFERENT contract. Reproduced under forced 4a timeout: the anchor flipped from the option_symbol month to the expiry_hint month. The guard at [:240](backend/api/routes/options_helpers.py#L240) now skips 4b whenever `resolved_via_option_symbol` is set. A 4a failure then returns `(None, "none", …)`, and the caller falls through to its last-resort spot source. Invariant: a transient quote failure changes the price's availability, never which contract anchors it.
 
@@ -1581,6 +1616,30 @@ loop in `ramboq_conn` ("ReactorNotRestartable"), which kept the cache cold for s
 - Invariant: a read-only preview never returns a raw 500 for a transient resolver failure. A real
   validation outcome still does.
 
+**Decision record — a retry wrapper around the Ticket preview's template resolve was built, found
+unreachable, and removed; the degraded message now says "Recovering" (2026-11-02, uncommitted this
+session)** — A retry layer around `apply_template_to_order` in `ticket_preview` (reusing the
+`@recoverable` decorator pattern) was built, then removed. Reading the real code showed it could never
+fire. `apply_template_to_order(apply_path="preview")` short-circuits before any broker call
+(`_route_apply_path`, literal comment `# Preview short-circuit — never apply.`,
+[template_attach.py:2956](backend/api/algo/template_attach.py#L2956)). It therefore cannot raise the
+qty guard's `InstrumentsCacheMissError`. Its lot-size resolver
+([`_resolve_lot_size_for_order`, template_attach.py:2782](backend/api/algo/template_attach.py#L2782))
+already retries a cache miss once and degrades to `AttachResult.errors` on its exception paths.
+- **What shipped.** `_rco_preview_degraded_message()`
+  ([orders.py:1247](backend/api/routes/orders.py#L1247)) now leads with "Recovering — preview
+  temporarily unavailable: " in place of "Preview unavailable: ". That path is genuinely reachable,
+  because the broad except in `ticket_preview` fires for any failure. The underlying detail is still
+  masked and truncated after the lead-in.
+- **Typing, shipped independently.** `InstrumentsCacheMissError(ValueError)`
+  ([base.py:29](backend/brokers/base.py#L29)) is raised only from the `lot_size<=1` branch of
+  `_validate_exchange_qty_multiple` ([base.py:73](backend/brokers/base.py#L73)). That is the one
+  transient condition a future caller might retry, because the cache self-warms within minutes. Sub-lot
+  and non-multiple quantities stay plain `ValueError` and must never be retried. The existing
+  bare-`ValueError` catches in the live, basket and chase placement paths still catch the subtype.
+- Invariant: a retry or recovery mechanism must be verified reachable on the real failure path it claims
+  to protect before it ships. This one was not. It was removed rather than left as misleading dead code.
+
 **Chain live-wing confirmation badge — a Bracket wing that fires live shows on its strike cell
 (2026-11-02; commit `6fbbe205`)** — A Bracket wing/hedge leg is placed asynchronously, on parent
 fill, by `_fire_template_attach_on_fill` → `apply_template_to_order` (`_chase_wing`,
@@ -1619,6 +1678,59 @@ Positions. A read-only `chain-leg-badge-live` on the strike cell now shows it.
   only record is the parent's `attached_gtts_json`, so it never shows this badge. It is silent, not wrong.
 - Invariant: a confirmed-live wing is shown read-only and never enters the staging array. The badge
   appears only for a wing row the backend actually created.
+
+**Chain Bracket scope change carries a Default forward and says so, instead of silently clearing
+(2026-11-02, uncommitted this session)** — The `_lastSideScope` effect in
+[SymbolPanel.svelte:1365](frontend/src/lib/SymbolPanel.svelte#L1365) re-resolves the armed Bracket on
+every strike, CE/PE or side change. A Default-slot template that no longer fit the new scope was set to
+`null` silently, so the operator saw the Bracket vanish with no explanation.
+- **Chain tab only.** A Default that no longer fits is re-bound to the new scope's own default, read from
+  the `_sideAwareDefault` derived that the explicit Default click also resolves against
+  ([:1430-1432](frontend/src/lib/SymbolPanel.svelte#L1430)). If no default exists for the new scope, the
+  Bracket clears. The Ticket tab branch stays a plain `null` with no flash. `OrderTicket.svelte`'s own
+  side and symbol re-validation effect owns that same binding under the 2f60d39a "never re-arm" policy.
+  Two effects writing one value with opposite policies would be a real bug.
+- **Flash.** `_flashBracketScopeChange('switched' | 'cleared')`
+  ([:1349](frontend/src/lib/SymbolPanel.svelte#L1349)) sets `_bracketScopeFlash` for 1.2 s. It renders as
+  `.oes-bracket-scope-flash` ([markup :3168](frontend/src/lib/SymbolPanel.svelte#L3168), CSS
+  [:5650](frontend/src/lib/SymbolPanel.svelte#L5650)), with the text "Bracket switched to default for new
+  side" or "Bracket cleared for new side". The flash is gated to `_activeTab === 'chain'`.
+- **Protected, unchanged.** A named (non-default) pick is never touched. A `none` choice stays `none`. A
+  cold or cleared Bracket is never armed implicitly. The 2f60d39a policy still holds for all of these.
+  This carries forward a Default the operator already armed, so it is not a reversal of 2f60d39a.
+- **Test.** `frontend/e2e/bracket_scope_reset_pending_label_and_held_toast.spec.js`. These are
+  source-level assertions. No live-reachable path exists in CI, the same precedent as the Chain
+  live-wing badge spec.
+- Invariant: a Chain-tab scope change never silently drops an armed Default. A named pick is never
+  auto-changed.
+
+**Bracket status pill on the order card — Pending, Tmpl Hold, Active; one click releases a held exit
+(2026-11-02, uncommitted this session)** — A filled order's Bracket exit (TP/SL and wing) was not visible
+on its card. `OrderCard.svelte` now shows a three-state `.oc-bracket-pill`
+([:409](frontend/src/lib/order/OrderCard.svelte#L409)), driven by `_bracketPillState(order)`
+([:64](frontend/src/lib/order/OrderCard.svelte#L64)).
+- **States.** `active`: `attached_gtts_json` is populated, so TP/SL are live at the broker. The tooltip
+  shows the TP trigger from the live `gttLegs` prop, because the static `attached_gtts_json` entry carries
+  no price. `tmplhold` (label "Tmpl Hold"): FILLED, no `attached_gtts_json`, and
+  `hold_json.category === 'template_exit'`, via the shared `isHeldPendingReleaseState()`.
+  `pending` (label "Pending") is the catch-all. It covers an order not yet FILLED and the brief post-fill
+  async-attach race window.
+- **Click.** Only `tmplhold` is clickable (`role="button"`). It calls `_releaseTemplateHold()`
+  ([:50](frontend/src/lib/order/OrderCard.svelte#L50)), which calls `releaseHeldOrder()`. That is the same
+  function `HeldOrdersCard.svelte` calls, so there is no second release path.
+- **Styling.** Mirrors `ChaseCard.svelte`'s `.cc-mode` recipe: plain coloured uppercase text, no box or
+  border. The colour ladder is sky (pending), amber `--c-action` (needs action) and green `--c-long`
+  (done). All are existing tokens.
+- **Upstream gap, fixed.** The broker and algo row-merge in
+  [OrderBook.svelte:349](frontend/src/lib/OrderBook.svelte#L349) and
+  [LogPanel.svelte:952](frontend/src/lib/LogPanel.svelte#L952) passed only the chase fields through. It
+  now also passes `template_id`, `attached_gtts_json` and `hold_json`. Before this, a live order that
+  reached the broker book lost all three on merge, which silently blanked this pill and the toast in
+  "Template-exit hold toast" below.
+- **Scope.** TP and SL stay broker GTT orders and are not chased. This is display and one-click release
+  only. No execution path changed.
+- Invariant: the pill state is derived from the row's own fields. Only a real `tmplhold` state can release,
+  and it goes through the same release call the Held Orders card uses.
 
 **Chase countdown column minimum-width guard on mobile (2026-10-16, commit de68fbda)** — The age/countdown column in `ChaseCard.svelte` had no minimum width (`minmax(0, 0.6fr)`), allowing it to shrink to unreadable slivers on narrow mobile viewports competing with 8+ other columns and a locked-minimum kill button. Fixed by setting `minmax(2.1rem, 0.6fr)` in both `.cc-row` and `.cc-compact .cc-row` grid templates.
 
@@ -2694,6 +2806,97 @@ path, grouped by mechanism. Each bullet names its own fix.
   SL. `f626457a` requires `8e26a0b3` (the `getattr` guard on the pending-hold check). `510e0a30` and
   `20ee0815` are independent. Ship the full range together.
 
+**Template 5's TP order type was MARKET, which Kite's GTT API always rejects — corrected on prod, data
+change only (2026-11-02, live incident)** — Order #1377 (CRUDEOIL26NOV9200PE, template 5 "Default Long
+Option", TP-only at 80%) had its TP exit stuck. The first suspect was the global
+`hold.template_exit_released` switch, and that was off. Investigation found a second, independent defect:
+template 5's `tp_order_type` was `MARKET`. Kite's `place_gtt` rejects any MARKET leg with
+`BrokerCapabilityError`. See the "Kite MARKET-leg TP cap warning (T17)" bullet above.
+- **Two copies held the value.** `order_templates.id=5.tp_order_type` and the mirrored `agents.id=75`
+  row's `bracket_config->>'tp_order_type'` both said `MARKET`. The live attach path resolves through the
+  `Agent(kind='bracket')` mirror via `legacy_template_id`, in `load_template_for_slug_or_id()`
+  ([template_attach.py:2611](backend/api/algo/template_attach.py#L2611)). A raw SQL update to
+  `order_templates` alone had zero effect until the mirror was also corrected.
+- **Fix.** Both were set to `LIMIT` on prod. Confirmed by a real hold-release and re-attach cycle. Before
+  the fix, the attach failed with the MARKET rejection. After it, `attached_gtts_json` held a real broker
+  GTT id.
+- Invariant: a template's `tp_order_type` must be checked in both `order_templates` and its mirrored
+  `Agent.bracket_config` row. The two can silently diverge if only one is edited directly. The live attach
+  path reads only the mirror.
+
+**Template-exit hold label is "Pending", not "Held" (2026-11-02, uncommitted this session)** — "Held"
+already names the covered-call leg label in this app, and the hold gate's own status word collided with
+it. The operator asked for "Pending" on the template-exit hold. The mechanism is `HoldCategory.TEMPLATE_EXIT`
+and the `hold_json` column.
+- `OrderCard.svelte` HELD badge → `Pending` ([:281](frontend/src/lib/order/OrderCard.svelte#L281)). The
+  CSS class names `held` and `held-badge` stay as internal names.
+- `OrderBook.svelte` chip `Held/Attn` → `Pending/Attn` ([:925](frontend/src/lib/OrderBook.svelte#L925)).
+  The Attn half covers `CANCEL_FAILED`, a different state, and is unchanged.
+- `HeldOrdersCard.svelte` `kindOf()` catch-all fallback `'Held'` → `'Pending'`
+  ([:34](frontend/src/lib/HeldOrdersCard.svelte#L34)). Its real per-row labels, "Bracket exit", "Repeated
+  rejection" and "Expiry close", never said "Held".
+- **Backend scope is wider than the template-exit path.** `record_held_order()`
+  ([order_hold_gate.py:106](backend/api/algo/order_hold_gate.py#L106)) is shared by every hold category,
+  including expiry close and agent-order holds. Its `detail` prefix is now `Pending: {reason}` for all of
+  them. The `write_event` line in the same function still reads "Held: …" and was not changed.
+  `hold_template_exit()` writes its own text, `Template exits pending release for {symbol}`, and its hold
+  reason is `template exits pending release` ([order_hold_gate.py:144-148](backend/api/algo/order_hold_gate.py#L144)).
+- The DB event kind `"held"` is unchanged everywhere. It is internal taxonomy, not operator text.
+- **Deliberately unresolved**, per the operator's instruction to flag rather than decide: the
+  `HeldOrdersCard` header title and `aria-label` still read "Held orders", beside per-row "Pending" text.
+- The covered-call feature's own "Held" label is a separate concept. It was not touched and must not be
+  changed without a fresh operator decision.
+- Invariant: operator-facing hold text reads "Pending". The DB kind stays `held`. The covered-call "Held"
+  label is untouched.
+
+**Template-exit hold toast — "Pending" instead of "did not attach" for a correctly held exit (2026-11-02,
+uncommitted this session)** — A held exit and a genuinely failed attach used the same "did not attach"
+wording. A held exit is the normal state once an operator is expected to release it, so the wording was
+misleading.
+- `OrderBook.svelte` ([:382-383](frontend/src/lib/OrderBook.svelte#L382)) and `LogPanel.svelte`
+  ([:981-982](frontend/src/lib/LogPanel.svelte#L981)) call `noteHeldPendingRelease()` first. A held row shows
+  `Order #{id} Bracket pending — release from Held Orders`. The held state has no race window, so this
+  toast is not debounced. It is deduplicated per row through sessionStorage.
+- `isAttachFailedState()` ([templateAttachToast.js:121](frontend/src/lib/data/templateAttachToast.js#L121))
+  returns false for a held row. A held row therefore cannot also cross the stall threshold and fire the
+  failure toast.
+- `parseHold()` moved to the shared [holdRecord.js](frontend/src/lib/data/holdRecord.js). `OrderCard.svelte`
+  and `templateAttachToast.js` both import it. It was previously an OrderCard-local copy.
+- **Known, pre-existing, not fixed here** (noted in the `templateAttachToast.js` module header): a
+  broker-merged row's status and mode vocabulary (`COMPLETE`, no `mode`) never matches AlgoOrder's
+  (`FILLED`, `live`). The FILLED-gated attach toast therefore cannot fire on a merged row, whatever the
+  hold state.
+- Invariant: a held-pending-release order never toasts as a failed attach.
+
+**Basket legs carry the per-order template-exit hold override (2026-11-02, uncommitted this session)** —
+Chain and basket submissions could only use the global `hold.template_exit_released` switch. The ticket
+route already threaded a per-order `hold_template_exit`, so basket was the gap.
+- `BasketLeg.hold_template_exit: Optional[bool] = None` ([schemas.py:616](backend/api/schemas.py#L616)).
+  `None` means use the global switch.
+- Threaded to `AlgoOrder.template_hold_override` at all four leg-construction sites in
+  [orders_basket.py](backend/api/routes/orders_basket.py): live chase pre-persist
+  ([:616](backend/api/routes/orders_basket.py#L616)), live direct place
+  ([:710](backend/api/routes/orders_basket.py#L710)), shadow ([:776](backend/api/routes/orders_basket.py#L776))
+  and paper ([:819](backend/api/routes/orders_basket.py#L819)). Each uses
+  `getattr(leg, "hold_template_exit", None)`, the same defensive pattern as the ticket route in
+  [orders_place.py](backend/api/routes/orders_place.py#L2107).
+- Purely additive. A leg that never sets the field behaves exactly as before.
+- Tests: [test_order_source_persistence.py](backend/tests/test_order_source_persistence.py) (basket
+  per-order hold block, around :513).
+- Invariant: a basket leg stores its per-order hold value in the same `template_hold_override` column the
+  ticket route uses.
+
+**Held Orders card already lists template-exit holds — a false lead, now pinned by a test (2026-11-02,
+uncommitted this session)** — An investigation suspected that `orders_held.py`'s list query returned only
+`status == 'HELD'` rows. That would miss template-exit holds, which leave the parent at `status='FILLED'`.
+The suspicion was wrong. The query has been `or_(status == "HELD", hold_json.isnot(None))`
+([orders_held.py:22](backend/api/routes/orders_held.py#L22)) since the original feature commit `9910f6c4`.
+Two separate agents confirmed this via `git log -p --follow`.
+- Regression test: `backend/tests/test_held_orders_template_exit_visibility.py`. It locks in the existing
+  correct behaviour.
+- Invariant: before investigating a "held order missing from the card" report, check the list query's
+  `or_` clause. The template-exit case already works.
+
 **Chain template scope and remembered preference (2026-09-30, commit b8bd1b7b)** —
 Two UI defects blocked option-specific template selection on Chain:
 - Scope detection always resolved to the root symbol, never buy_option/sell_option,
@@ -3246,6 +3449,10 @@ now caches + returns a `stale` flag; `/api/nav/by-account` masks `errors` for no
 | Bracket default scope on Ticket tab | `frontend/src/lib/order/OrderTicket.svelte:_defaultTemplate` + `frontend/src/lib/SymbolPanel.svelte:_currentScope()` |
 | Ticket preview degraded response (no 500 on resolver failure) | `backend/api/routes/orders.py:ticket_preview` + `_rco_preview_degraded_message` |
 | Chain live-wing confirmation badge (Bracket wing fired live) | `frontend/src/lib/data/liveWingBadge.js:computeLiveWingState` + `liveWingTracker.svelte.js` + `OptionChainTab.svelte:_liveWingByKey` + `orderFillPoller.js:latestAlgoOrderRows` |
+| Bracket status pill on order card (Pending / Tmpl Hold / Active) | `frontend/src/lib/order/OrderCard.svelte:_bracketPillState` + `holdRecord.js:parseHold` + `templateAttachToast.js:isHeldPendingReleaseState` |
+| Chain Bracket scope-change carry-forward + flash | `frontend/src/lib/SymbolPanel.svelte` (`_lastSideScope` effect, `_flashBracketScopeChange`) |
+| Template-exit hold label / toast | `backend/api/algo/order_hold_gate.py` (`record_held_order`, `hold_template_exit`) + `OrderCard.svelte` + `templateAttachToast.js:noteHeldPendingRelease` |
+| Alert identity line + email subject ("Alert:" label) | `backend/shared/helpers/alert_utils.py:dispatch_payload` (merged `alert_line`) + `_email_alert_body` |
 | Scale-out ladder OCO pairing | `template_attach.py:_ta_detect_scale_sl_group` + `background.py:_oco_process_group_entry` |
 | MCX real per-contract expiry (live freeze filter) | `expiry_freeze.py:_mcx_future_real_expiry` |
 | generic_notice body (plain text, no origin line — see "Alert message format") | `event_agents.py:_render_deploy_sync` (pass-through) + producer `msg` in `background.py` |

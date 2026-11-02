@@ -708,7 +708,11 @@
   background: var(--card-bg-gradient);
   border: 1px solid rgba(251, 191, 36, 0.40);
   border-top: none;
-  border-radius: 0;
+  /* Operator: "modal corners, add radius to make them slightly round".
+     Top stays square — border-top is none, flush against the fixed page
+     header above (see the ring comment below), so a top radius would cut
+     a gap into that deliberately-continuous seam. Bottom corners round. */
+  border-radius: 0 0 8px 8px;
   box-shadow: 0 8px 40px rgba(0, 0, 0, 0.55), 0 0 0 1px var(--algo-amber-bg-soft);
   /* --modal-frame-ring, see :root (2026-10-31, operator: "add some kind
      border decoration, to show the modal... sometimes, I am confused, if

@@ -103,7 +103,7 @@ async def record_held_order(category: HoldCategory, *, account: str, symbol: str
                 account=account, symbol=symbol, exchange=exchange,
                 transaction_type=side, quantity=qty, product=product,
                 initial_price=None, status="HELD", engine="live", mode="live",
-                broker_order_id="", detail=f"HELD: {reason}", agent_id=agent_id,
+                broker_order_id="", detail=f"Pending: {reason}", agent_id=agent_id,
                 hold_json=hold_record(category, reason, price_policy, None, held_at),
             )
             s.add(row)
@@ -111,7 +111,7 @@ async def record_held_order(category: HoldCategory, *, account: str, symbol: str
             row_id = row.id
         logger.info(f"[HOLD] {category.value} held: {side} {qty} {symbol} acct={account} id={row_id}")
         from backend.api.algo.order_events import write_event
-        await write_event(row_id, "held", f"Held: {side} {qty} {symbol} ({reason})", {"reason": reason})
+        await write_event(row_id, "held", f"Pending: {side} {qty} {symbol} ({reason})", {"reason": reason})
         return row_id
     except Exception as e:
         logger.error(f"[HOLD] could not record held order ({category.value}) for {symbol}: {e}")
@@ -141,11 +141,11 @@ async def hold_template_exit(parent_row_id: int, symbol: str) -> None:
         if row is None:
             return
         row.hold_json = hold_record(HoldCategory.TEMPLATE_EXIT,
-                                    "template exits held until released",
+                                    "template exits pending release",
                                     "n/a", None, held_at)
         await s.commit()
     from backend.api.algo.order_events import write_event
-    await write_event(parent_row_id, "held", f"Template exits held for {symbol}",
+    await write_event(parent_row_id, "held", f"Template exits pending release for {symbol}",
                       {"category": "template_exit"})
 
 

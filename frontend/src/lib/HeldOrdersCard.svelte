@@ -24,7 +24,14 @@
       if (h.category === 'agent_order') return 'Repeated rejection';
       return 'Expiry close';
     } catch {
-      return 'Held';
+      // Item 3 (2026-11-02, PLAN.md) — "Held" → "Pending": a malformed/
+      // unparseable hold record is the one case here with no real
+      // category to label, but it's still a release-pending row, not a
+      // genuine failure — same "Pending" vocabulary as every other
+      // template-exit-hold surface. Distinct from the unrelated
+      // covered-call feature's own "Held" usage, which this does not
+      // touch.
+      return 'Pending';
     }
   }
 

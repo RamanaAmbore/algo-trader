@@ -70,6 +70,7 @@ class TestDhanMarginRealShape:
             "exchange": "NFO", "tradingsymbol": "NIFTY25NOVFUT",
             "transaction_type": "SELL", "quantity": 75,
             "product": "NRML", "price": 24000.0,
+            "security_id": "99999",  # bypass _ensure_dhan_instruments network call
         })
 
         assert result["total"] == pytest.approx(48250.5)
@@ -79,6 +80,10 @@ class TestDhanMarginRealShape:
         # exist on this flat dict — so _preflight_leg_required returned
         # 0.0 regardless of the real totalMargin value above.
         assert _preflight_leg_required(result) == pytest.approx(48250.5)
+        # `security_id` passed straight through to the SDK call when
+        # provided — confirms the real network-resolution branch
+        # (`_resolve_security_id`) was never reached for this leg.
+        assert sdk_mock.margin_calculator.call_args.kwargs["security_id"] == "99999"
 
     def test_margin_for_order_missing_field_is_none_not_zero(self, dhan_broker):
         """Missing-vs-zero convention (item 5): a genuinely absent
@@ -98,6 +103,7 @@ class TestDhanMarginRealShape:
         result = dhan_broker._margin_for_order({
             "exchange": "NFO", "tradingsymbol": "NIFTY25NOVFUT",
             "transaction_type": "BUY", "quantity": 75,
+            "security_id": "99999",  # bypass _ensure_dhan_instruments network call
         })
 
         assert result["total"] is None
@@ -114,6 +120,7 @@ class TestDhanMarginRealShape:
         out = dhan_broker.basket_order_margins([{
             "exchange": "NFO", "tradingsymbol": "NIFTY25NOVFUT",
             "transaction_type": "BUY", "quantity": 75,
+            "security_id": "99999",  # bypass _ensure_dhan_instruments network call
         }])
 
         assert len(out) == 1

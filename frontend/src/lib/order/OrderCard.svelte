@@ -25,10 +25,14 @@
 
   import { priceFmt, qtyFmt } from '$lib/format';
   import { isDraftOrderRow } from '$lib/data/draftOrderRow.js';
+  import { parseHold } from '$lib/data/holdRecord.js';
+  import { isHeldPendingReleaseState } from '$lib/data/templateAttachToast.js';
+  import { orderTemplatesStore } from '$lib/data/templates.js';
   import { formatDualTz } from '$lib/stores';
   import { longPress } from '$lib/actions/longPress.js';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
-  import { retryTemplateAttach } from '$lib/api';
+  import { retryTemplateAttach, releaseHeldOrder } from '$lib/api';
+  import { toast } from '$lib/data/toastStore.svelte.js';
   import { acctColor } from '$lib/account';
 
   // Re-attach button state — per-card spinner + inline note. The note
@@ -36,6 +40,33 @@
   // fresh order prop (typical poll cadence ≤5s) so it stays ephemeral.
   let _retrying = $state(false);
   let _retryNote = $state('');
+
+  // Item 2 refinement (2026-11-02) — the 3-state Bracket status pill's
+  // "Tmpl Hold" click calls the SAME release endpoint
+  // `HeldOrdersCard.svelte`'s own Release button already calls
+  // (`releaseHeldOrder`, `POST /orders/held/{id}/release`) — no
+  // duplicated release logic, just a second entry point into it.
+  let _releasingHold = $state(false);
+  async function _releaseTemplateHold(/** @type {any} */ o) {
+    if (_releasingHold) return;
+    _releasingHold = true;
+    try {
+      await releaseHeldOrder(o.id);
+      toast?.success?.(`Released bracket exit for #${o.id}`);
+    } catch (e) {
+      toast?.error?.(/** @type {any} */ (e)?.message || 'Release refused');
+    } finally {
+      _releasingHold = false;
+    }
+  }
+  /** 'pending' | 'tmplhold' | 'active' | null — see the markup block
+   *  below for the full state-mapping rationale. */
+  function _bracketPillState(/** @type {any} */ o) {
+    if (o?.template_id == null) return null;
+    if (o.attached_gtts_json) return 'active';
+    if (isHeldPendingReleaseState(o)) return 'tmplhold';
+    return 'pending';
+  }
 
   // #26 — re-attach failure history tracked in sessionStorage per order.
   // Key: 'rbq.reattach-fail.<order_id>'. Value: JSON array of {ts, error}.
@@ -71,11 +102,10 @@
     /** @type {import('svelte').Snippet | undefined} */  actions       = undefined,
   } = $props();
 
-  // Hold state: the backend stores it as JSON on hold_json; null when the order is not held.
-  function parseHold(raw) {
-    if (!raw) return null;
-    try { return JSON.parse(raw); } catch { return null; }
-  }
+  // Hold state: the backend stores it as JSON on hold_json; null when the
+  // order is not held. `parseHold` moved to `$lib/data/holdRecord.js`
+  // (2026-11-02, PLAN.md item 4) so `templateAttachToast.js`'s toast-
+  // wording decision reads the exact same parsed shape as this card.
   const holdInfo = $derived(parseHold(order.hold_json));
 
   // Status → data-status attribute. .algo-status-card reads this for
@@ -241,8 +271,14 @@
           : ''}>{order.status === 'CANCEL_FAILED' ? '⚠ KILL FAILED' : order.status}</span>
     {/if}
     {#if holdInfo}
+      <!-- Item 3 (2026-11-02, PLAN.md) — "Pending" replaces "HELD" for
+           the template-exit-hold mechanism (order_hold_gate.py). CSS
+           class `held-badge`/`held` kept as-is — internal selector,
+           not operator-visible text. Distinct from the unrelated
+           covered-call feature's own "Held" usage elsewhere in the
+           app, which this does NOT touch. -->
       <span class="algo-status-pill held-badge ml-1"
-        title={`Held: ${holdInfo.reason || holdInfo.category}`}>HELD</span>
+        title={`Pending: ${holdInfo.reason || holdInfo.category}`}>Pending</span>
     {/if}
   </div>
   {#if holdInfo?.category === 'template_exit'}
@@ -315,6 +351,77 @@
     {#if order.tag}<span class="log-chip {_tagClass(order.tag)}"><span class="log-chip-key">tag:</span>{order.tag}</span>{/if}
     {#if order.target_pct != null}<span class="log-chip log-chip-tp"><span class="log-chip-key">tp:</span>+{(Number(order.target_pct) * 100).toFixed(1)}%</span>{/if}
     {#if order.template_id != null}
+      <!-- Item 2 (2026-11-02, PLAN.md; refined same day) — paired
+           main+bracket display as a 3-state status pill, mirroring
+           ChaseCard.svelte's own mode-pill pattern (plain colored
+           uppercase text, no box/border — see that file's `.cc-mode`
+           family and its 2026-11-02 "remove the button/box appearance"
+           fix) rather than inventing a new boxed-chip look. Shows the
+           bracket alongside the main order from the moment it's
+           selected (pending), not only once a wing/TP fires live at the
+           Chain strike row (that's the separate, post-fire-only
+           `6fbbe205` badge, untouched).
+           States (`_bracketPillState`, declared above):
+             'pending'  — armed, main order not yet FILLED (or FILLED
+                          but attach hasn't resolved either way yet —
+                          the brief async-attach race window; a
+                          genuinely stuck attach still gets the
+                          separate Re-attach chip/toast below/
+                          `templateAttachToast.js`, unrelated to this
+                          pill).
+             'tmplhold' — FILLED, no attached_gtts_json, and
+                          `isHeldPendingReleaseState()` is true (the
+                          hold-gate setting is holding this exit) —
+                          clickable: calls the SAME `releaseHeldOrder()`
+                          HeldOrdersCard.svelte's own Release button
+                          calls, no duplicated release logic.
+             'active'   — attach succeeded, attached_gtts_json
+                          populated — TP/SL are live broker GTT orders
+                          (NOT chased; only the main order is chased).
+           Template NAME + resolved TP trigger price (from `gttLegs`,
+           the live broker-matched GTT row — see `gttMatch.js` — not
+           the static `attached_gtts_json` entry, which carries no price
+           unless a trailing stop is configured) move from the pill's
+           visible text (now terse, matching ChaseCard's own terse mode
+           labels) into its `title` tooltip. Replaces the prior plain
+           "Bracket: {name} · Pending"/"triggered — TP @ {price}" text
+           chip entirely — folded in, not kept alongside. -->
+      {@const _tplName = (() => {
+        const t = $orderTemplatesStore.find(t => t.id === order.template_id);
+        return t ? (t.name || t.slug || `#${order.template_id}`) : `#${order.template_id}`;
+      })()}
+      {@const _pairedTpLeg = (gttLegs || []).find(l => /TP/i.test(l?.label || ''))
+        || (gttLegs || [])[0]
+        || null}
+      {@const _pairedTpPrice = _pairedTpLeg && Array.isArray(_pairedTpLeg.trigger_values) && _pairedTpLeg.trigger_values.length
+        ? _pairedTpLeg.trigger_values[0]
+        : null}
+      {@const _bpState = _bracketPillState(order)}
+      {@const _bpTitle = _bpState === 'active'
+        ? `Bracket: ${_tplName} — triggered${_pairedTpPrice != null ? `, TP @ ${priceFmt(_pairedTpPrice)}` : ''} — live broker GTT, not chased.`
+        : _bpState === 'tmplhold'
+          ? `Bracket: ${_tplName} — held pending release (hold-gate setting). Click to release.`
+          : `Bracket: ${_tplName} — armed, attaches once the order fills.`}
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex -- role/tabindex
+           are conditional on `_bpState === 'tmplhold'` (the only
+           clickable state); the linter's static check can't see that
+           and flags the span as permanently noninteractive. -->
+      <span class="oc-bracket-pill oc-bracket-pill-{_bpState}"
+            class:oc-bracket-pill-clickable={_bpState === 'tmplhold'}
+            role={_bpState === 'tmplhold' ? 'button' : undefined}
+            tabindex={_bpState === 'tmplhold' ? 0 : undefined}
+            aria-disabled={_bpState === 'tmplhold' && _releasingHold ? 'true' : undefined}
+            title={_bpTitle}
+            onclick={_bpState === 'tmplhold' ? () => _releaseTemplateHold(order) : undefined}
+            onkeydown={_bpState === 'tmplhold'
+              ? (/** @type {KeyboardEvent} */ e) => {
+                  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); _releaseTemplateHold(order); }
+                }
+              : undefined}>
+        {_releasingHold && _bpState === 'tmplhold'
+          ? '…'
+          : _bpState === 'active' ? 'Active' : _bpState === 'tmplhold' ? 'Tmpl Hold' : 'Pending'}
+      </span>
       <!-- Audit fix (H-3) — distinguish full attach vs partial. Pre-fix
            `attached_gtts_json != null` = ✓ (full). A row where TP
            attached but the wing failed (e.g. low-OI chain scan)
@@ -492,6 +599,34 @@
   /* TP / parent / basket linkage chips */
   :global(.log-chip-tp)      { color: var(--c-long); background: var(--algo-green-bg); }
   :global(.log-chip-template) { color: var(--algo-violet); background: rgba(192, 132, 252, 0.12); }
+  /* Item 2 (2026-11-02, PLAN.md, refined same day) — 3-state Bracket
+     status pill. Mirrors ChaseCard.svelte's own `.cc-mode`/`.cc-mode-*`
+     pattern deliberately (plain colored uppercase text, NO box/border —
+     ChaseCard itself removed the boxed look from its mode pill the
+     same day, per its own "remove the button/box appearance" comment),
+     rather than matching the boxed `.log-chip` family it sits inside —
+     an explicit operator design choice, not an oversight. Three colors,
+     one semantic ladder: sky (waiting/neutral) -> amber (needs your
+     action) -> green (done/safe) — the same ladder ChaseCard's own
+     mode-pill greens/reds already use for "safe" vs "live" modes. */
+  :global(.oc-bracket-pill) {
+    display: inline-block;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-2xs);
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    padding: 0 0.2rem;
+  }
+  :global(.oc-bracket-pill-pending)  { color: var(--algo-sky); }
+  :global(.oc-bracket-pill-tmplhold) { color: var(--c-action); }
+  :global(.oc-bracket-pill-active)   { color: var(--c-long); }
+  /* Only the "Tmpl Hold" state is actionable (click releases the exit
+     hold) — cursor + hover-brighten is the sole affordance; matches
+     the plain-text (no new box) convention above. */
+  :global(.oc-bracket-pill-clickable) { cursor: pointer; }
+  :global(.oc-bracket-pill-clickable:hover) { text-decoration: underline; }
+  :global(.oc-bracket-pill-clickable[aria-disabled="true"]) { cursor: progress; opacity: var(--btn-disabled-opacity); }
   :global(.log-chip-parent)  { color: var(--algo-sky); background: rgba(125, 211, 252, 0.10); }
   :global(.log-chip-child)   { color: var(--algo-violet); background: rgba(192, 132, 252, 0.12); }
   :global(.log-chip-basket)  { color: var(--c-action); background: rgba(251, 191, 36, 0.10); }

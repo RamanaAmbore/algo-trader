@@ -634,10 +634,20 @@ async def test_deploy_sync_reaches_only_the_dedicated_telegram_deploy_channel(mo
     # has no `ALERT_EVENT_DISPATCH` entry). live/paper share one SHA
     # (mode_tag affects only subject/tg, not body) as they did before;
     # sim's differs (its own SIMULATOR banner), as it did before.
+    #
+    # 2026-11-02 — "Agent" -> "Alert" email-body relabel (operator
+    # follow-up): this fixture is agent-LESS (no agent_name/agent_id in
+    # extra), so Telegram title/body and the email SUBJECT are
+    # unaffected (unchanged "Agent — ..." text below, confirmed by
+    # actually running the real fixed code) — only the email BODY's
+    # bold prefix+timestamp paragraph changes ("Agent — ..." ->
+    # "Alert — ..." / "SIMULATOR Agent — ..." -> "SIMULATOR Alert —
+    # ..."), so only `expected_sha` changes here, re-derived by
+    # actually running the real fixed dispatch, not hand-computed.
     ("live", False, "", "Agent — 10:15:30 IST", "RamboQuant Agent: ZG0790 summary",
-     "19d539e6f8c9733db178dacd5215746a659add4ec494be59fdfb436a8c324811", "Agent — 10:15:30 IST"),
+     "fd6b2f4067d8223318d8754220e3f4925d2a2dfffbbb586a64f0b73b88de42a7", "Agent — 10:15:30 IST"),
     ("paper", False, "[PAPER]", "Agent — 10:15:30 IST", "RamboQuant Agent:  [PAPER]ZG0790 summary",
-     "19d539e6f8c9733db178dacd5215746a659add4ec494be59fdfb436a8c324811", "Agent [PAPER] — 10:15:30 IST"),
+     "fd6b2f4067d8223318d8754220e3f4925d2a2dfffbbb586a64f0b73b88de42a7", "Agent [PAPER] — 10:15:30 IST"),
     # 2026-10-31 fix (operator: "the alerts should show paper and
     # simulation mode explicitly ... wire it") — dispatch_payload() now
     # auto-derives the [SIM] bracket tag from sim_mode=True whenever the
@@ -645,7 +655,7 @@ async def test_deploy_sync_reaches_only_the_dedicated_telegram_deploy_channel(mo
     # case), instead of leaving it blank as before. Subject and TG head
     # updated to match.
     ("sim", True, "", "SIMULATOR Agent — 10:15:30 IST", "SIMULATOR RamboQuant Agent:  [SIM]ZG0790 summary",
-     "52e04e178c4aabe195f2df865d4035e18a648e25407191b44884ff2f5da2f266", "SIMULATOR Agent [SIM] — 10:15:30 IST"),
+     "09e988ac9dec3a2b45333d46ca0c227a20a4e7ac90b7c578e9babe6e4e5cd882", "SIMULATOR Agent [SIM] — 10:15:30 IST"),
 ])
 async def test_rich_alert_matches_the_pre_migration_dispatch(monkeypatch, name, sim, mode_tag,
                                                               expected_title, expected_subject,
@@ -914,3 +924,271 @@ async def test_breach_dispatch_custom_message_channel_golden_round_trip(monkeypa
     assert sent["ntfy"] == [("Account funds gone negative", custom_body, "urgent")]
     assert len(sent["mail"]) == 1
     assert sent["mail"][0][2] == "RamboQuant Agent: Account funds gone negative"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  2026-11-02 — dispatch_payload() one-line agent-header merge (operator:
+#  the two-line "Agent: {name} (#{id})" / "Agent — {ts}" header read as a
+#  redundant duplicate — the word "Agent" literally repeated). The two
+#  lines are merged into ONE pipe-separated line for the Telegram/ntfy
+#  body (`telegram_msg`, shared verbatim by both channels via
+#  `_render_rich_alert`/`_render_summary`'s `out[1] is out[2]`), AND the
+#  email SUBJECT is reshaped the same way (operator, follow-up ask).
+#
+#  Word relabel, SCOPED to the merged line/subject AND the email BODY's
+#  two header paragraphs (operator, second AND third follow-up asks):
+#  the label reads "Alert:", not "Agent:", in the merged Telegram/ntfy
+#  header line, the email subject, AND both paragraphs of the email
+#  body (`agent_line_html` and the bold `tg_prefix_full` + ts
+#  paragraph — see `TestEmailMessageSubjectReshapeAndBodyRelabel`
+#  below for that coverage). `format_notification_header()` itself is
+#  untouched, and every OTHER caller of it (order display's
+#  `agent_origin` chip, fill/failure/chase-cancel renderers, etc.)
+#  still says "Agent:" — a deliberate, separate origin-tracking SSOT
+#  ("who placed this order: manual or which agent") that must never
+#  say "Alert:".
+#
+#  Email body LAYOUT/STRUCTURE (two separate paragraphs, not merged
+#  into one) is untouched — only the label WORD inside those two
+#  existing paragraphs changes. See
+#  `TestEmailMessageSubjectReshapeAndBodyRelabel` for the exact
+#  before/after body text.
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestDispatchPayloadAgentHeaderOneLineMerge:
+    def test_known_agent_merges_identity_and_timestamp_onto_one_line(self):
+        """Confirmed target shape (operator-provided, reproduced by
+        actually running the real fixed dispatch_payload() — not hand-
+        computed): 'Alert: {name} (#{id})' and the dual-tz `ist_display`
+        land on ONE pipe-separated line, with no second, redundant
+        line and no repeated label word."""
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(alert_utils, "config", {"deploy_branch": "main"})
+            p = alert_utils.dispatch_payload(
+                "alert",
+                "Mon 02 Nov 22:59 IST | Mon 02 Nov 12:29 EST",
+                "MCX pre-close — MCX closes in 30 minutes",
+                "<p>MCX pre-close — MCX closes in 30 minutes</p>",
+                "MCX pre-close (#93)",
+                agent_name="MCX pre-close", agent_id=93,
+            )
+        assert p["telegram_msg"] == (
+            "Alert: MCX pre-close (#93) | Mon 02 Nov 22:59 IST | Mon 02 Nov 12:29 EST"
+            "\n\nMCX pre-close — MCX closes in 30 minutes"
+        )
+        # Exactly one label token in the merged header line, not two,
+        # and it is never the literal "Agent:" (relabel is scoped to
+        # this merged line only, but must still take effect here).
+        header_line = p["telegram_msg"].splitlines()[0]
+        assert header_line.count("Alert") == 1
+        assert "Agent" not in header_line
+        assert "\nAgent —" not in p["telegram_msg"]
+        # Email subject reshaped the same way: "Alert: {subject_detail}
+        # | {ist_display}", no "RamboQuant Agent: " prefix.
+        assert p["email_subject"] == (
+            "Alert: MCX pre-close (#93) | Mon 02 Nov 22:59 IST | Mon 02 Nov 12:29 EST"
+        )
+
+    def test_known_agent_sim_mode_keeps_bracket_tag_and_banner_on_one_line(self):
+        """The SIMULATOR/REPLAY *word* prefix is dropped from the merged
+        header line (pure redundancy once a real agent name is shown —
+        see the comment in dispatch_payload), but the fact itself is not
+        lost: the [SIM] bracket tag and the warning banner still render."""
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(alert_utils, "config", {"deploy_branch": "main"})
+            p = alert_utils.dispatch_payload(
+                "alert", "10:15:30 IST", "tg_table", "<p>x</p>", "subject",
+                sim_mode=True, agent_name="loss-margin-low", agent_id=42,
+            )
+        assert p["telegram_msg"].startswith("Alert: loss-margin-low (#42) [SIM] | 10:15:30 IST")
+        assert "SIMULATOR RUN" in p["telegram_msg"]
+        assert "\nAgent —" not in p["telegram_msg"]
+        # Title construction (untouched by this fix) still carries the
+        # SIMULATOR word and still says "SIMULATOR {name}", not "Alert"
+        # — only the merged telegram/ntfy body line and the email
+        # subject get the new label/merge; title is a separate,
+        # unrelated field this fix does not touch.
+        assert "SIMULATOR" in p["title"]
+        # Email subject also carries [SIM] — see the dedicated PAPER-mode
+        # regression test below for why this is asserted explicitly.
+        assert p["email_subject"] == "Alert: subject [SIM] | 10:15:30 IST"
+
+    def test_known_agent_paper_mode_subject_still_carries_mode_tag(self):
+        """Regression guard: the known-agent email subject reshape must
+        thread `mode_tag`/`branch_tag` through, exactly like the
+        Telegram/ntfy merged line does. PAPER mode is the case that
+        would otherwise disappear entirely from the email — unlike
+        SIM/REPLAY, PAPER has no warning banner in the body, and the
+        body's bold paragraph never carried `mode_tag` either, so the
+        subject was PAPER's only surface anywhere in the email. Caught
+        by actually running the real code and comparing before/after
+        this fix — initial subject reshape dropped `mode_tag` outright,
+        silently losing [PAPER] from the email."""
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(alert_utils, "config", {"deploy_branch": "main"})
+            p = alert_utils.dispatch_payload(
+                "alert", "10:15:30 IST", "tg_table", "<p>x</p>", "loss-margin-low (#42)",
+                mode_tag="[PAPER]", agent_name="loss-margin-low", agent_id=42,
+            )
+        assert p["email_subject"] == "Alert: loss-margin-low (#42) [PAPER] | 10:15:30 IST"
+
+    def test_known_agent_non_main_branch_subject_carries_branch_tag(self):
+        """Same regression class as the PAPER-mode test above, for the
+        non-main-branch `branch_tag` instead of `mode_tag`."""
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(alert_utils, "config", {"deploy_branch": "workshop"})
+            p = alert_utils.dispatch_payload(
+                "alert", "10:15:30 IST", "tg_table", "<p>x</p>", "loss-margin-low (#42)",
+                agent_name="loss-margin-low", agent_id=42,
+            )
+        assert p["email_subject"] == "Alert: loss-margin-low (#42) [workshop] | 10:15:30 IST"
+
+    def test_agentless_summary_branch_is_byte_identical_to_before(self):
+        """No agent identity known (open/close summaries and any other
+        agent-less dispatch) -> `telegram_msg` AND `email_subject` are
+        completely unchanged by this fix: still the single
+        generic-prefix shapes they always were, with no merge/relabel
+        logic applied."""
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(alert_utils, "config", {"deploy_branch": "main"})
+            p = alert_utils.dispatch_payload(
+                "open", "09:14:22 IST", "tg_table", "<html></html>", "Summary — 09:14:22 IST",
+            )
+        assert p["telegram_msg"] == "Open Summary — 09:14:22 IST\n\ntg_table"
+        assert p["email_subject"] == "RamboQuant Open Summary: Summary — 09:14:22 IST"
+
+    def test_ntfy_body_is_the_same_string_as_telegram_msg(self):
+        """`_render_rich_alert`'s `out[1]`/`out[2]` share one string —
+        confirming this fix covers ntfy and Telegram identically with no
+        separate ntfy-specific change required."""
+        from backend.api.algo.event_agents import _render_rich_alert
+        rec = {"extra": {
+            "ist_display": "Mon 02 Nov 22:59 IST | Mon 02 Nov 12:29 EST",
+            "tg_table": "MCX pre-close — MCX closes in 30 minutes",
+            "email_table_html": "<p>x</p>", "subject_detail": "MCX pre-close (#93)",
+            "agent_name": "MCX pre-close", "agent_id": 93,
+        }}
+        title, ntfy_body, tg_body, (email_subject, email_html) = _render_rich_alert(rec)
+        assert ntfy_body == tg_body
+        assert ntfy_body == (
+            "Alert: MCX pre-close (#93) | Mon 02 Nov 22:59 IST | Mon 02 Nov 12:29 EST"
+            "\n\nMCX pre-close — MCX closes in 30 minutes"
+        )
+        assert email_subject == (
+            "Alert: MCX pre-close (#93) | Mon 02 Nov 22:59 IST | Mon 02 Nov 12:29 EST"
+        )
+
+
+class TestEmailMessageSubjectReshapeAndBodyRelabel:
+    """Focused coverage for the email SUBJECT reshape AND the "Agent"
+    -> "Alert" body word relabel (operator follow-up asks, both
+    2026-11-02). Layout/structure (two separate paragraphs, not
+    merged) is unchanged in BOTH cases — only the subject's shape and
+    the label WORD inside the two existing paragraphs change.
+    Verified by actually running the real `_email_message()`, not
+    hand-computed."""
+
+    def test_known_agent_subject_and_body_say_alert_not_agent(self):
+        from backend.shared.helpers.alert_utils import _email_message
+
+        common = dict(
+            branch_tag="", mode_tag="", sim_mode=False, branch="main",
+            tg_prefix_full="Agent", ist_display="Mon 02 Nov 22:59 IST | Mon 02 Nov 12:29 EST",
+            email_table_html="<p>x</p>",
+        )
+        subj_known, body_known = _email_message(
+            email_prefix_full="RamboQuant Agent: ", subject_detail="MCX pre-close (#93)",
+            agent_line="Agent: MCX pre-close (#93)", **common,
+        )
+        assert subj_known == (
+            "Alert: MCX pre-close (#93) | Mon 02 Nov 22:59 IST | Mon 02 Nov 12:29 EST"
+        )
+        # Both header paragraphs now say "Alert", never "Agent" — exact
+        # real-output body, confirmed by running the real function.
+        assert body_known == (
+            "<html><body style='font-family:sans-serif;background-color:#0c1830;"
+            "color:#c8d8f0;margin:0;padding:18px'><div style='max-width:760px;"
+            "margin:0 auto'><p style='font-size:13px;color:#a3b9d0;margin:0 0 10px 0'>"
+            "Alert: MCX pre-close (#93)</p><p style='font-size:14px;color:#fbbf24;"
+            "letter-spacing:0.04em;margin:0 0 14px 0'><b>Alert — Mon 02 Nov 22:59 IST "
+            "| Mon 02 Nov 12:29 EST</b></p><p>x</p></div></body></html>"
+        )
+        assert "Agent" not in body_known
+        # Still two SEPARATE paragraphs — structure is not merged.
+        assert body_known.count("<p") >= 3  # agent_line_html + bold ts + table
+
+    def test_agentless_case_subject_unchanged_body_still_relabeled(self):
+        """Agent-less (summary-shaped) case: subject keeps its prior
+        shape exactly (operator's explicit scope boundary for the
+        subject reshape), but the body's bold prefix+timestamp
+        paragraph is relabeled the same way, because `tg_prefix_full`
+        ("Agent") is the SAME label word regardless of whether an
+        agent identity is known — this is a deliberate asymmetry
+        versus the Telegram/ntfy merged-line fix, which leaves the
+        agent-less Telegram line saying "Agent" unchanged."""
+        from backend.shared.helpers.alert_utils import _email_message
+
+        common = dict(
+            branch_tag="", mode_tag="", sim_mode=False, branch="main",
+            tg_prefix_full="Agent", ist_display="Mon 02 Nov 22:59 IST | Mon 02 Nov 12:29 EST",
+            email_table_html="<p>x</p>",
+        )
+        subj_unknown, body_unknown = _email_message(
+            email_prefix_full="RamboQuant Agent: ", subject_detail="MCX pre-close (#93)",
+            agent_line="", **common,
+        )
+        assert subj_unknown == "RamboQuant Agent: MCX pre-close (#93)"
+        assert body_unknown == (
+            "<html><body style='font-family:sans-serif;background-color:#0c1830;"
+            "color:#c8d8f0;margin:0;padding:18px'><div style='max-width:760px;"
+            "margin:0 auto'><p style='font-size:14px;color:#fbbf24;"
+            "letter-spacing:0.04em;margin:0 0 14px 0'><b>Alert — Mon 02 Nov 22:59 IST "
+            "| Mon 02 Nov 12:29 EST</b></p><p>x</p></div></body></html>"
+        )
+        assert "Agent" not in body_unknown
+
+    def test_summary_msg_type_prefix_never_contains_agent_word_unaffected(self):
+        """Open/close summary prefixes ("Open Summary", "SIMULATOR
+        Open Summary", ...) never contain the word "Agent" — the
+        relabel helper is a correct no-op for them, confirmed with the
+        real summary-shaped `tg_prefix_full`."""
+        from backend.shared.helpers.alert_utils import _email_message
+
+        subj, body = _email_message(
+            email_prefix_full="RamboQuant Open Summary: ", branch_tag="", mode_tag="",
+            subject_detail="Summary — 09:14:22 IST", sim_mode=False, branch="main",
+            tg_prefix_full="Open Summary", ist_display="09:14:22 IST",
+            email_table_html="<p>x</p>", agent_line="",
+        )
+        assert subj == "RamboQuant Open Summary: Summary — 09:14:22 IST"
+        assert "<b>Open Summary — 09:14:22 IST</b>" in body
+        assert "Alert" not in body
+
+
+class TestEmailAlertBodyTableOverflowFix:
+    """2026-11-02 — operator-reported email table text overflowing its
+    grid. `_email_alert_body()`'s data cells (`td`) had
+    `white-space:nowrap` combined with the table's own `width:100%`,
+    so any cell content longer than its column's available width
+    pushed the table past its container. Headers (`th`) stay
+    `nowrap` — short, fixed labels. Data cells now wrap."""
+
+    def test_td_style_no_longer_nowrap_th_still_does(self):
+        import re
+        from backend.shared.helpers.alert_utils import _email_alert_body
+
+        row = {
+            'section': 'Positions', 'scope': 'ZG0790', 'kind': 'static_pct',
+            'pnl': -1200.0, 'pct': -1.2, 'rate_val': None,
+            'threshold': '-1.0%', 'underlyings_breakdown': [],
+        }
+        html = _email_alert_body([row])
+        assert "<th style='" in html and "white-space:nowrap" in html.split("<td")[0]
+        # Every <td ...> style attribute must NOT contain nowrap, and
+        # must carry both wrap-safety properties.
+        td_styles = re.findall(r"<td style='([^']*)'", html)
+        assert td_styles, "expected at least one <td> in the rendered table"
+        for style in td_styles:
+            assert "white-space:nowrap" not in style
+            assert "word-break:break-word" in style
+            assert "overflow-wrap:break-word" in style

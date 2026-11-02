@@ -26,7 +26,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from backend.brokers.base import _exchange_contracts_to_wire, _validate_exchange_qty_multiple
+from backend.brokers.base import (
+    InstrumentsCacheMissError,
+    _exchange_contracts_to_wire,
+    _validate_exchange_qty_multiple,
+)
 from backend.brokers.adapters.kite import KiteBroker
 
 
@@ -120,6 +124,56 @@ class TestValidateExchangeQtyMultiple:
         broker = KiteBroker.__new__(KiteBroker)
         broker._conn = MagicMock()
         assert broker.translate_qty("MCX", 200, 100) == 2
+
+
+# ---------------------------------------------------------------------------
+# InstrumentsCacheMissError — narrow typing regression guard (2026-11-02).
+#
+# Only the `lot_size<=1` condition (an instruments-cache miss, transient —
+# the cache self-warms within a few minutes) is worth retrying by a future
+# caller. The other two conditions (sub-lot qty, non-multiple qty) are
+# permanent data/logic problems — retrying would never fix them, so they
+# must stay plain ValueError and must NEVER become InstrumentsCacheMissError
+# by accident.
+# ---------------------------------------------------------------------------
+
+class TestInstrumentsCacheMissErrorNarrowTyping:
+    def test_lot_size_le_1_raises_instruments_cache_miss_error(self):
+        """The transient cache-miss condition raises the narrow subtype."""
+        with pytest.raises(InstrumentsCacheMissError, match="QTY-GUARD"):
+            _validate_exchange_qty_multiple("MCX", 100, 1)
+
+    def test_lot_size_le_1_is_still_a_value_error(self):
+        """InstrumentsCacheMissError must remain a ValueError subclass so
+        every existing bare `except ValueError` catch around translate_qty /
+        _exchange_contracts_to_wire / _validate_exchange_qty_multiple keeps
+        working unchanged."""
+        try:
+            _validate_exchange_qty_multiple("MCX", 100, 1)
+        except InstrumentsCacheMissError as exc:
+            assert isinstance(exc, ValueError)
+        else:
+            pytest.fail("expected InstrumentsCacheMissError to be raised")
+
+    def test_lot_size_zero_also_raises_instruments_cache_miss_error(self):
+        """lot_size=0 (the real-world Kite cache-miss sentinel, not just
+        lot_size=1) hits the same `lot_size <= 1` branch."""
+        with pytest.raises(InstrumentsCacheMissError, match="QTY-GUARD"):
+            _validate_exchange_qty_multiple("MCX", 100, 0)
+
+    def test_sub_lot_qty_stays_plain_value_error_not_cache_miss(self):
+        """Sub-lot qty (permanent data problem) must NOT become
+        InstrumentsCacheMissError — it must never be retried."""
+        with pytest.raises(ValueError, match="QTY-GUARD") as exc_info:
+            _validate_exchange_qty_multiple("MCX", 50, 100)
+        assert not isinstance(exc_info.value, InstrumentsCacheMissError)
+
+    def test_non_multiple_qty_stays_plain_value_error_not_cache_miss(self):
+        """Non-multiple qty (permanent data problem) must NOT become
+        InstrumentsCacheMissError — it must never be retried."""
+        with pytest.raises(ValueError, match="QTY-GUARD") as exc_info:
+            _validate_exchange_qty_multiple("MCX", 150, 100)
+        assert not isinstance(exc_info.value, InstrumentsCacheMissError)
 
 
 # ---------------------------------------------------------------------------

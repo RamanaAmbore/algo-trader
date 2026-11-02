@@ -1330,6 +1330,27 @@
   // success branch — so a later, unrelated order starts clean and can
   // read remembered prefs normally again.
   let _templExplicitThisSession = $state(false);
+  // Item 1 (2026-11-02, PLAN.md, operator ask) — brief Chain-tab-only
+  // flash when the scope-change effect below re-binds a Default-slot
+  // Bracket to the new scope's own default, or clears it when none
+  // exists for the new scope. Deliberately a SEPARATE mechanism from
+  // OrderTicket.svelte's own `.ot-tmpl-changed-flash` (#16) — that one
+  // covers the Ticket tab, which keeps the older "never re-arm" policy
+  // (2f60d39a) for the exact same shared `_sharedTemplateId` binding;
+  // this flash only ever fires for the Chain-tab re-bind/clear this
+  // effect performs, so the two surfaces never double-announce the
+  // same event. Mirrors `_wlFlash`'s own transient-toast shape (see
+  // `_wlToast` above) rather than reusing it directly — that toast is
+  // scoped to the +W/watchlist header affordance and is hidden
+  // entirely when `headerless` is true (e.g. `/orders`), which would
+  // silently swallow this flash on a real, common host.
+  let _bracketScopeFlash = $state(/** @type {{kind:'switched'|'cleared'}|null} */ (null));
+  let _bracketScopeFlashTimer = null;
+  function _flashBracketScopeChange(/** @type {'switched'|'cleared'} */ kind) {
+    _bracketScopeFlash = { kind };
+    if (_bracketScopeFlashTimer) clearTimeout(_bracketScopeFlashTimer);
+    _bracketScopeFlashTimer = setTimeout(() => { _bracketScopeFlash = null; }, 1200);
+  }
   $effect(() => {
     // action='modify' and 'cancel' don't need template auto-swap —
     // the template is irrelevant for those actions. All other actions
@@ -1368,13 +1389,55 @@
         const cscope = (current.applies_to || '').toLowerCase();
         if (cscope === scope || cscope === 'both') return;
       }
-      // No current pick (cold mount / cleared) OR the current default
-      // no longer fits the new scope — resolve to the side-aware
-      // default (null when nothing fits, e.g. operator has only a
-      // buy_option default and flipped to SELL — clears the stale
-      // template so the preview fires with templateId=null rather
-      // than carrying the wrong-direction template).
-      _sharedTemplateId = null;
+      // No current pick (cold mount / already cleared) — 2f60d39a
+      // policy (2026-10-05, "no implicit ... default ticket template")
+      // unchanged: nothing auto-ARMS a bracket that wasn't already
+      // armed. Silent — there's no prior selection for the operator to
+      // notice a change to, so no flash either.
+      if (!current) {
+        _sharedTemplateId = null;
+        return;
+      }
+      // `current` is the account's Default-slot template (checked
+      // above) and no longer fits the new scope (strike/CE-PE/side
+      // change). Item 1 (2026-11-02, PLAN.md, operator ask) — on the
+      // Chain tab, re-resolve to the NEW scope's own default rather
+      // than silently dropping to None, reusing the same
+      // `_sideAwareDefault` $derived every other Default-resolution
+      // call site already shares (`_onTemplSelectDefault`) instead of
+      // re-deriving the match. This is narrower than reverting
+      // 2f60d39a: it only ever CARRIES FORWARD a Default the operator
+      // already had armed — the cold/cleared branch above still never
+      // implicitly arms one. Reading `_sideAwareDefault` here, even
+      // inside `untrack()`, still recomputes against the just-updated
+      // `scope` — a $derived's own recomputation is independent of
+      // this effect's dependency tracking; `untrack()` only stops THIS
+      // effect from subscribing to it as a dependency.
+      //
+      // Deliberately scoped to the Chain tab only. On the Ticket tab,
+      // OrderTicket.svelte's own side+symbol re-validation effect (not
+      // suspended there) owns this exact decision for the SAME shared
+      // `_sharedTemplateId`/`templateId` binding, and that effect's
+      // policy is "never re-arm" (2f60d39a, pinned by a live Playwright
+      // test in order_ticket_bracket_scope_ssot_and_clear_policy.spec.js
+      // — "BUY default armed -> flip to SELL -> bracket clears to
+      // None"). Two effects racing to write the same binding with
+      // opposing policies would be a real bug, not a UX choice, so the
+      // Ticket-tab branch below stays a plain null and fires no flash
+      // of its own — OrderTicket already renders its own
+      // `.ot-tmpl-changed-flash` ("Bracket cleared for new side") for
+      // that case.
+      if (_activeTab === 'chain') {
+        if (_sideAwareDefault) {
+          _sharedTemplateId = _sideAwareDefault.id;
+          _flashBracketScopeChange('switched');
+        } else {
+          _sharedTemplateId = null;
+          _flashBracketScopeChange('cleared');
+        }
+      } else {
+        _sharedTemplateId = null;
+      }
     });
   });
   // Account list — falls through three layers:
@@ -3098,6 +3161,18 @@
           <span class="oct-tpl-demo-note">Exit rules (TP / SL / Wing) not available in demo.</span>
         {/if}
 
+        <!-- Item 1 (2026-11-02) — Chain-tab-only scope-change flash,
+             see `_flashBracketScopeChange` above for why this is a
+             separate mechanism from OrderTicket's own `.ot-tmpl-
+             changed-flash`. -->
+        {#if _activeTab === 'chain' && _bracketScopeFlash}
+          <span class="oes-bracket-scope-flash" role="status" aria-live="polite">
+            {_bracketScopeFlash.kind === 'switched'
+              ? 'Bracket switched to default for new side'
+              : 'Bracket cleared for new side'}
+          </span>
+        {/if}
+
         <!-- DRAFT — markup + class names moved verbatim from
              OrderTicket.svelte so existing Playwright selectors keyed
              on `.ot-draft-toggle`/`.ot-draft-label` keep matching. Now
@@ -3796,6 +3871,7 @@
                   <span class="oes-margin-pill-val">{aggFmtMargin(_marginInfo.required)}</span>
                 </span>
                 {#if _marginInfo.available != null}
+                  <span class="oes-margin-pill-sep">·</span>
                   <span class="oes-margin-pill-row">
                     <span class="oes-margin-pill-key">{_avlKey}</span>
                     <span class="oes-margin-pill-val">{aggFmtMargin(_marginInfo.available)}</span>
@@ -5561,6 +5637,26 @@
     color: var(--text-lo);
     font-style: italic;
   }
+  /* Item 1 (2026-11-02) — Chain-tab scope-change flash. Amber pulse,
+     same palette + timing as OrderTicket.svelte's own
+     `.ot-tmpl-changed-flash` (#16), kept as a separate class because
+     this one fires for a DIFFERENT event (Chain-tab re-bind/clear,
+     not Ticket-tab clear-only). */
+  @keyframes oes-bracket-scope-flash-kf {
+    0%   { background: rgba(251, 191, 36, 0.28); border-color: rgba(251, 191, 36, 0.65); }
+    60%  { background: rgba(251, 191, 36, 0.18); border-color: rgba(251, 191, 36, 0.45); }
+    100% { background: rgba(251, 191, 36, 0.06); border-color: rgba(251, 191, 36, 0.20); }
+  }
+  .oes-bracket-scope-flash {
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
+    color: var(--c-action);
+    background: rgba(251, 191, 36, 0.06);
+    border: 1px solid rgba(251, 191, 36, 0.20);
+    border-radius: 3px;
+    padding: 0.2rem 0.5rem;
+    animation: oes-bracket-scope-flash-kf 1.2s ease-out forwards;
+  }
   /* DRAFT toggle — class names + styling duplicated verbatim from
      OrderTicket.svelte (now removed there) so existing Playwright
      selectors keyed on `.ot-draft-toggle`/`.ot-draft-label` keep
@@ -5719,31 +5815,31 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  /* Stacked variant — two rows (Req / Avail) one above the other.
-     Pinned to the shared --ctl-h (item 9) with tight padding/line-
-     height so it never resizes the footer row relative to its
-     siblings — was ~2.2rem (0.35rem padding × 2 + 2 lines at
-     line-height 1.15), against every sibling in the row fixed at
-     --ctl-h (1.7rem); the footer visibly grew/shrank as the info
-     slot swapped between this chip and the 1-line cold-prompt. */
+  /* Single-row variant — Req and Avail sit side by side, separated by
+     a middot (operator: "the margin area can be shown in a single
+     row ... instead of current two rows" — was previously stacked
+     two-high, see the archived rationale this replaces). Pinned to
+     the shared --ctl-h (item 9) so it never resizes the footer row
+     relative to its siblings. */
   .oes-margin-pill-stack {
     display: inline-flex;
-    flex-direction: column;
-    align-items: flex-start;
+    flex-direction: row;
+    align-items: baseline;
     justify-content: center;
-    gap: 0;
+    gap: 0.4rem;
     padding: 0.15rem 0.6rem;
     line-height: 1.05;
     height: var(--ctl-h, 1.7rem);
     min-height: var(--ctl-h, 1.7rem);
     box-sizing: border-box;
+    min-width: 0;
+    overflow: hidden;
   }
   .oes-margin-pill-row {
     display: inline-flex;
     align-items: baseline;
     gap: 0.3rem;
-    width: 100%;
-    justify-content: space-between;
+    flex-shrink: 1;
     /* Alignment fix (2026-09-30) — paired with the parent
        `.oes-margin-pill`'s overflow:hidden so an overlong Req/Avail
        value inside this row is clipped, not painted past the pill's

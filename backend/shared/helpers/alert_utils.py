@@ -448,23 +448,63 @@ def _email_message(
     """Subject and HTML body of an agent or summary email. Pure.
 
     `agent_line` — the real firing agent's "Agent: {name} (#{id})" label.
-    2026-10 audit fix: now shown ABOVE the dual-tz `ist_display` header
-    paragraph (was below it) — origin leads, matching the Telegram body's
-    same reordering. Empty string (the default) when the alert has no
-    single originating agent (summaries) — never put into the subject,
-    which must stay single-line."""
-    subj_pfx = f"{email_prefix_full}{branch_tag}{(' ' + mode_tag) if mode_tag else ''}"
-    subject = (
-        f"{subj_pfx}{subject_detail}"
-        if (branch_tag or mode_tag)
-        else f"{email_prefix_full}{subject_detail}"
-    )
+    2026-10 audit fix: shown ABOVE the dual-tz `ist_display` header
+    paragraph in the BODY (was below it) — origin leads, matching the
+    Telegram body's same reordering. Empty string (the default) when
+    the alert has no single originating agent (summaries).
+
+    2026-11-02 subject reshape (operator), SCOPED to the subject only.
+    The label-word relabel below additionally applies to the two HTML
+    BODY header paragraphs (see `_relabel_agent_label_to_alert()`'s own
+    docstring and the operator's follow-up ask) — only the SUBJECT's
+    overall *shape* (prefix/ordering) is what changes HERE, in this
+    `if agent_line:` branch. When a real agent/alert identity is known
+    (`agent_line` truthy — same signal `agent_line_html` already gates
+    on), the subject becomes `"Alert: {subject_detail}{branch_tag}
+    {mode_tag} | {ist_display}"`, dropping the "RamboQuant Agent: "
+    prefix entirely and adding the dual-tz timestamp the subject never
+    carried before. `branch_tag`/`mode_tag` are threaded through (same
+    ordering convention as the Telegram/ntfy merged line in
+    `dispatch_payload`) so a PAPER/SIM/REPLAY/non-main-branch alert's
+    email subject still carries that fact — dropping them here would
+    have been the only place in the whole email that lost the mode tag
+    entirely, since the body's bold paragraph never carried `mode_tag`
+    either (see CLAUDE.md's "Every alert must explicitly show paper/
+    sim/replay mode" invariant). This is deliberately NOT applied to
+    the agent-less (summary) branch below, which keeps its prior shape
+    unchanged: `send_summary()`'s own `subject_detail` already has
+    `ist_display` baked into it (`f"{label} — {ist_display}"` in
+    `send_summary`), so re-appending `ist_display` here would duplicate
+    the timestamp and misname a summary as an "Alert"."""
+    if agent_line:
+        _mode_sfx = f" {mode_tag}" if mode_tag else ""
+        subject = f"Alert: {subject_detail}{branch_tag}{_mode_sfx} | {ist_display}"
+    else:
+        subj_pfx = f"{email_prefix_full}{branch_tag}{(' ' + mode_tag) if mode_tag else ''}"
+        subject = (
+            f"{subj_pfx}{subject_detail}"
+            if (branch_tag or mode_tag)
+            else f"{email_prefix_full}{subject_detail}"
+        )
     banners = _build_email_banners(sim_mode, branch, replay_mode=replay_mode)
+    # 2026-11-02 "Agent" -> "Alert" relabel (operator follow-up), SCOPED
+    # to these two header paragraphs ONLY — layout/structure (two
+    # separate paragraphs, not merged) is unchanged; only the label word
+    # itself changes, via the same `_relabel_agent_label_to_alert()`
+    # helper the Telegram/ntfy merge uses (see its own docstring for the
+    # "never touches format_notification_header or any other caller"
+    # scope boundary). `tg_prefix_full` is relabeled unconditionally
+    # here (not gated on `agent_line`) because it is the SAME label
+    # word in both the known- and agent-less-identity case for this
+    # msg_type — "Agent" / "SIMULATOR Agent" / "REPLAY Agent" — and the
+    # open/close summary prefixes ("Open Summary", ...) never contain
+    # that word, so the relabel is a no-op for them.
     agent_line_html = (
         f"<p style='font-size:13px;color:{_EMAIL_TEXT_MUTED};margin:0 0 10px 0'>"
-        f"{html.escape(agent_line)}</p>"
+        f"{html.escape(_relabel_agent_label_to_alert(agent_line))}</p>"
         if agent_line else ''
     )
+    tg_prefix_full_label = _relabel_agent_label_to_alert(tg_prefix_full)
     html_body = (
         f"<html><body style='font-family:sans-serif;background-color:{_EMAIL_BG};"
         f"color:{_EMAIL_TEXT};margin:0;padding:18px'>"
@@ -473,7 +513,7 @@ def _email_message(
         f"{agent_line_html}"
         f"<p style='font-size:14px;color:{_EMAIL_AMBER};letter-spacing:0.04em;"
         f"margin:0 0 14px 0'>"
-        f"<b>{tg_prefix_full}{branch_tag} — {ist_display}</b></p>"
+        f"<b>{tg_prefix_full_label}{branch_tag} — {ist_display}</b></p>"
         f"{email_table_html}"
         f"</div>"
         f"</body></html>"
@@ -600,6 +640,42 @@ def resolve_origin(agent_id: "int | None", agent_name: "str | None" = None) -> s
     return f"Agent #{agent_id}"
 
 
+def _relabel_agent_label_to_alert(text: str) -> str:
+    """Scoped word relabel "Agent" -> "Alert" (operator, 2026-11-02),
+    used ONLY by `dispatch_payload()`'s merged Telegram/ntfy header line
+    and by `_email_message()`'s two header paragraphs (the agent-
+    identity line and the bold prefix+timestamp line).
+
+    `format_notification_header()` itself is NEVER changed by this —
+    its own output always still says "Agent: ..."/"Agent #{id}". Every
+    OTHER caller of it (order display's `agent_origin` chip, fill/
+    failure/chase-cancel/template-attach renderers, etc.) is a
+    deliberate, separate origin-tracking SSOT ("who placed this order:
+    manual, or which agent") and must keep saying "Agent:" — this
+    helper is applied only at the two call sites above, never plumbed
+    into `format_notification_header` or any of its other readers.
+
+    Handles every shape `text` can actually take at those two call
+    sites:
+      - `format_notification_header(...).splitlines()[0]`, i.e.
+        "Agent: {name} (#{id})" or the bare "Agent #{id}" fallback.
+      - `tg_prefix_full` / `title_base_full`-style generic prefixes:
+        the bare word "Agent", or "SIMULATOR Agent" / "REPLAY Agent"
+        (mode-word prefix prepended) — relabels the trailing "Agent"
+        word, leaving the mode word untouched.
+    Any other text (e.g. "Open Summary", "SIMULATOR Open Summary" —
+    the open/close summary prefixes, which never contain the word
+    "Agent") is returned unchanged.
+    """
+    if text.startswith("Agent: "):
+        return "Alert: " + text[len("Agent: "):]
+    if text.startswith("Agent #"):
+        return "Alert #" + text[len("Agent #"):]
+    if text == "Agent" or text.endswith(" Agent"):
+        return text[:-len("Agent")] + "Alert"
+    return text
+
+
 def format_notification_header(
     agent_name: "str | None", agent_id: "int | None", *, ist_display: "str | None" = None,
 ) -> str:
@@ -698,30 +774,62 @@ def dispatch_payload(msg_type: str, ist_display: str, tg_table: str, email_table
     mode_tag = mode_tag or _mode_bracket
     mode_pfx = f"{mode_tag} " if mode_tag else ''
 
-    # Agent-identity line only — the dual-tz timestamp already appears in
-    # the bold header line below, so only the first line of
-    # format_notification_header's output is used here to avoid showing
-    # the same timestamp twice.
+    # Agent-identity line only — the first line of
+    # format_notification_header's output ("Agent: {name} (#{id})"),
+    # never its own timestamp (format_notification_header's SECOND line
+    # is dropped here; the dual-tz timestamp used in the merged line
+    # below is `ist_display` itself, already pipe-separated dual-tz
+    # text).
     agent_line = ''
     if agent_name and agent_id is not None:
         agent_line = format_notification_header(agent_name, agent_id, ist_display=ist_display).splitlines()[0]
 
     warning_block = _build_tg_warning_block(sim_mode, branch, replay_mode=replay_mode)
-    # 2026-10 audit fix: the agent-identity line now leads the message
-    # (was appended after the bold title line) — operator requirement
-    # that origin always appears first. Only ever populated when a real
-    # agent identity pair is known (see `agent_line` above); summaries
-    # and other agent-less dispatches are unaffected.
+    # 2026-10 audit fix: the agent-identity line leads the message —
+    # operator requirement that origin always appears first. Only ever
+    # populated when a real agent identity pair is known (see
+    # `agent_line` above); summaries and other agent-less dispatches are
+    # unaffected (unmerged `else` branch below).
+    #
+    # 2026-10-31 one-line merge (operator: duplicate "Agent: {name}
+    # (#{id})" + "Agent — {ts}" two-line header read as redundant —
+    # "Agent" is literally repeated). When the real agent is known, the
+    # identity line and the dual-tz timestamp are pipe-separated onto
+    # ONE line instead of two: `agent_line` already omits any
+    # timestamp of its own (see the comment above), and `ist_display`
+    # is itself already pipe-separated dual-tz text, so simple
+    # concatenation produces the confirmed target shape with no
+    # duplicated "Agent" word. `tg_prefix_full` (the generic "Agent" /
+    # "SIMULATOR Agent" / "REPLAY Agent" prefix) is dropped entirely in
+    # this branch — it is pure redundancy once a real name is shown,
+    # and the SIMULATOR/REPLAY *word* it carried is not lost: the
+    # [SIM]/[REPLAY] bracket (`mode_pfx`) and the warning banner
+    # (`warning_block`) below still carry that fact.
     #
     # 2026-10 plain-text reversal — no `<b>`/`<code>` tags and no
     # `html.escape()` anywhere: `_send_telegram()` no longer requests
     # `parse_mode: HTML`, so escaping here would show literal `&lt;`/
     # `&amp;` text instead of protecting markup that no longer exists.
-    agent_line_tg = f"{agent_line}\n" if agent_line else ''
-    telegram_msg = (
-        f"{agent_line_tg}{tg_prefix_full}{branch_tag} {mode_pfx}— {ist_display}{warning_block}\n\n"
-        f"{tg_table}"
-    )
+    #
+    # 2026-11-02 "Agent" -> "Alert" relabel (operator), SCOPED to this
+    # merged line only via `_relabel_agent_label_to_alert()` (see that
+    # helper's own docstring) — `format_notification_header()` itself,
+    # and every OTHER caller of it (order display's `agent_origin`
+    # chip, fill/failure/chase-cancel renderers, etc.) keep saying
+    # "Agent:" unchanged; those answer a different question ("who
+    # placed this order: manual or which agent") and must never say
+    # "Alert:".
+    alert_line = _relabel_agent_label_to_alert(agent_line)
+    if agent_line:
+        telegram_msg = (
+            f"{alert_line}{branch_tag} {mode_pfx}| {ist_display}{warning_block}\n\n"
+            f"{tg_table}"
+        )
+    else:
+        telegram_msg = (
+            f"{tg_prefix_full}{branch_tag} {mode_pfx}— {ist_display}{warning_block}\n\n"
+            f"{tg_table}"
+        )
     event_key = 'market_open' if msg_type == 'open' else (
                 'market_close' if msg_type == 'close' else 'agent_alert')
     subject, html_body = _email_message(
@@ -1624,9 +1732,22 @@ def _email_alert_body(alerts: list) -> str:
         f"text-align:left;font-size:13px;font-weight:700;letter-spacing:0.04em;"
         f"border-bottom:2px solid {_EMAIL_AMBER};white-space:nowrap"
     )
+    # 2026-11-02 overflow fix (operator-reported: email table text
+    # overflows its grid) — headers are short, fixed labels ("Type",
+    # "Account", "Rule", ...) and stay `nowrap` intentionally. Data
+    # cells are NOT bounded the same way (the "Rule" cell today renders
+    # `_KIND_LABEL[a['kind']]`, but `cell()` is the general-purpose
+    # renderer, so any longer string reaching it hits the same
+    # overflow). `width:100%` on the table + `nowrap` on `td` forced the
+    # table wider than its container whenever a cell's content exceeded
+    # its column's available width. `word-break` and `overflow-wrap`
+    # are deliberately doubled up (harmless when both apply) because
+    # email-client HTML rendering (Outlook/Gmail/Apple Mail) is
+    # inconsistent about which one it honours.
     td = (
         f"padding:7px 12px;font-size:13px;color:{_EMAIL_TEXT};"
-        f"border-bottom:1px solid {_EMAIL_BORDER};white-space:nowrap"
+        f"border-bottom:1px solid {_EMAIL_BORDER};white-space:normal;"
+        f"word-break:break-word;overflow-wrap:break-word"
     )
     # Per-kind row tints in algo dark palette. Static = amber-tinted
     # navy, rate = red-tinted, fund-negative = slate. Each is a

@@ -167,6 +167,50 @@ def test_record_held_order_creates_row_with_requested_category_agent_order(monke
     assert rec["price_policy"] == "n/a"
 
 
+def test_record_held_order_detail_uses_pending_not_held(monkeypatch):
+    """2026-11 'Pending' rename — the template-exit-hold mechanism's own
+    vocabulary ('HELD' collides with the unrelated covered-call feature's
+    'Held' label). `record_held_order`'s AlgoOrder.detail must read
+    'Pending: {reason}', never the old 'HELD: {reason}'."""
+    mock_session = _mock_session_for_insert()
+    monkeypatch.setattr("backend.api.database.async_session", lambda: mock_session)
+    with patch("backend.api.algo.order_events.write_event", new_callable=AsyncMock):
+        asyncio.run(gate.record_held_order(
+            HoldCategory.EXPIRY_CLOSE, account="ZG0790", symbol="CRUDEOIL26OCT8600CE",
+            exchange="MCX", side="SELL", qty=200, product="NRML", reason="expiry close"))
+
+    created = mock_session.add.call_args.args[0]
+    assert created.detail == "Pending: expiry close"
+    assert "HELD" not in created.detail
+
+
+def test_hold_template_exit_write_event_message_uses_pending_not_held(monkeypatch):
+    """2026-11 'Pending' rename — `hold_template_exit`'s order_events message
+    (rendered in the order timeline drawer) must say 'pending release', not
+    'held'. The event `kind` itself ('held') is an internal DB taxonomy
+    value and is deliberately left unchanged."""
+    from backend.api.algo import order_hold_gate as gate2
+
+    mock_row = MagicMock()
+    mock_session = AsyncMock()
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+    _scalar = MagicMock()
+    _scalar.scalar_one_or_none.return_value = mock_row
+    mock_session.execute = AsyncMock(return_value=_scalar)
+    mock_session.commit = AsyncMock()
+    monkeypatch.setattr("backend.api.database.async_session", lambda: mock_session)
+
+    with patch("backend.api.algo.order_events.write_event", new_callable=AsyncMock) as mock_write:
+        asyncio.run(gate2.hold_template_exit(1377, "GOLD26OCT142000PE"))
+
+    mock_write.assert_awaited_once()
+    args = mock_write.call_args.args
+    assert args[0] == 1377
+    assert args[1] == "held"  # DB enum/kind value — unchanged by design
+    assert args[2] == "Template exits pending release for GOLD26OCT142000PE"
+
+
 def test_record_held_order_dedup_returns_existing_row_id_without_inserting(monkeypatch):
     """2026-10-29 audit fix — up to 3 independent sources (legacy bg-expiry
     task, its own 30-min re-scan, and the new expiry-day-itm-auto-close

@@ -27,9 +27,13 @@ test.describe('hold UI (H6)', () => {
     );
   });
 
-  test('order card shows a HELD badge from hold_json', () => {
+  test('order card shows a Pending badge from hold_json', () => {
+    // 2026-11-02 (PLAN.md item 3) — "HELD" renamed to "Pending" on the
+    // chip; "held" already means something else (covered-call leg label
+    // elsewhere in the app). The CSS class `held-badge`/`held` stays
+    // unchanged (internal selector, not operator-visible).
     expect(card).toMatch(/const holdInfo = \$derived\(parseHold\(order\.hold_json\)\)/);
-    expect(card).toMatch(/\{#if holdInfo\}[\s\S]*HELD<\/span>/);
+    expect(card).toMatch(/\{#if holdInfo\}[\s\S]*Pending<\/span>/);
   });
 
   test('order card warns that a held template exit is unprotected', () => {

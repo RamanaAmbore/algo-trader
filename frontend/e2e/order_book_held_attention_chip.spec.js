@@ -15,6 +15,13 @@
  * statuses are exempted from the 08:00 IST session-boundary filter the
  * same way OPEN/TRIGGER_PENDING already are.
  *
+ * Label updated 2026-11-02 (PLAN.md item 3): "Held/Attn" -> "Pending/Attn"
+ * — "held" already means something else (a covered-call leg label
+ * elsewhere in the app). The CANCEL_FAILED half ("Attn") is unaffected —
+ * a failed cancel is a genuine attention-needed state, not a
+ * release-pending one. The underlying predicate/mechanism below is
+ * unchanged, only the chip's own display text.
+ *
  * HELD and CANCEL_FAILED are AlgoOrder-only statuses (never present on a
  * bare broker book row), so both fixture rows live in the algo/recent
  * mock, matching `order_book_filled_predicate_and_mobile_overflow.spec.js`'s
@@ -65,7 +72,7 @@ async function authOnce(page) {
 const _NOW_ISO = '2026-09-30T04:30:00.000Z';
 
 // A resting, un-held, un-failed OPEN broker row — present purely so the
-// "Open" chip has a non-zero count too, proving Held/Attn's default
+// "Open" chip has a non-zero count too, proving Pending/Attn's default
 // priority genuinely outranks it rather than winning only because it's
 // the sole non-zero chip.
 const _BROKER_ROWS = [
@@ -125,7 +132,7 @@ async function mockEndpoints(page) {
 test.describe('OrderBook — Held/Attention chip (HELD + CANCEL_FAILED)', () => {
   test.setTimeout(60_000);
 
-  test('Held/Attn chip shows combined count and is the default-highlighted chip over Open', async ({ page }) => {
+  test('Pending/Attn chip shows combined count and is the default-highlighted chip over Open', async ({ page }) => {
     await authOnce(page);
     await page.clock.setFixedTime(new Date(_NOW_ISO));
     await mockEndpoints(page);
@@ -135,12 +142,12 @@ test.describe('OrderBook — Held/Attention chip (HELD + CANCEL_FAILED)', () => 
     await page.waitForSelector('.ob-status-bar', { timeout: 15_000 });
     await page.waitForTimeout(600);
 
-    const heldChip = page.locator('.ob-status-bar .ob-sc', { has: page.locator('.ob-sc-l', { hasText: /^Held\/Attn$/ }) });
+    const heldChip = page.locator('.ob-status-bar .ob-sc', { has: page.locator('.ob-sc-l', { hasText: /^Pending\/Attn$/ }) });
     await expect(heldChip).toHaveCount(1);
     await expect(heldChip.locator('.ob-sc-n')).toHaveText('2');
     await expect(heldChip).toHaveAttribute('data-status', 'held');
 
-    // Default (nothing clicked) highlights Held/Attn, not Open — even
+    // Default (nothing clicked) highlights Pending/Attn, not Open — even
     // though Open also has a non-zero count — because `held` sits first
     // in CHIP_ORDER.
     await expect(heldChip).toHaveClass(/is-active/);
@@ -163,7 +170,7 @@ test.describe('OrderBook — Held/Attention chip (HELD + CANCEL_FAILED)', () => 
     await page.waitForSelector('.ob-status-bar', { timeout: 15_000 });
     await page.waitForTimeout(600);
 
-    const heldChip = page.locator('.ob-status-bar .ob-sc', { has: page.locator('.ob-sc-l', { hasText: /^Held\/Attn$/ }) });
+    const heldChip = page.locator('.ob-status-bar .ob-sc', { has: page.locator('.ob-sc-l', { hasText: /^Pending\/Attn$/ }) });
     await heldChip.click();
 
     // RBQ-HELDROW's created_at (2026-09-29, prior session) would be
@@ -182,7 +189,7 @@ test.describe('OrderBook — Held/Attention chip (HELD + CANCEL_FAILED)', () => 
     await page.waitForSelector('.ob-status-bar', { timeout: 15_000 });
     await page.waitForTimeout(600);
 
-    const heldChip = page.locator('.ob-status-bar .ob-sc', { has: page.locator('.ob-sc-l', { hasText: /^Held\/Attn$/ }) });
+    const heldChip = page.locator('.ob-status-bar .ob-sc', { has: page.locator('.ob-sc-l', { hasText: /^Pending\/Attn$/ }) });
     await heldChip.click();
 
     const card = page.locator('.oc-book-grid .order-card', { hasText: 'RBQ-CANCELFAILROW' });

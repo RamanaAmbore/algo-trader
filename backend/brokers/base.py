@@ -26,6 +26,25 @@ _logger = logging.getLogger(__name__)
 _MCX_EXCHANGES = frozenset({"MCX", "NCO"})
 
 
+class InstrumentsCacheMissError(ValueError):
+    """Raised by `_validate_exchange_qty_multiple` specifically for the
+    `lot_size <= 1` condition — the instruments cache hasn't warmed up
+    yet (e.g. right after a `ramboq_conn` restart) and no real lot_size
+    is known for the symbol yet.
+
+    Deliberately a `ValueError` subclass (not a new unrelated base) so
+    every existing `except ValueError` catch around `translate_qty` /
+    `_exchange_contracts_to_wire` / `_validate_exchange_qty_multiple`
+    keeps catching it unchanged.
+
+    This is the ONLY one of the three `_validate_exchange_qty_multiple`
+    guard conditions that is transient and worth retrying — the cache
+    self-warms within a few minutes. The sub-lot qty and non-multiple
+    qty conditions are permanent data/logic problems and stay plain
+    `ValueError`; retrying those would never fix them.
+    """
+
+
 def _validate_exchange_qty_multiple(
     exchange: str, contracts: int, lot_size: int, *, label: str = "broker"
 ) -> None:
@@ -41,14 +60,17 @@ def _validate_exchange_qty_multiple(
 
     Raises ValueError on the same conditions `_exchange_contracts_to_wire`
     always has: lot_size ≤ 1 (instruments-cache miss — no real MCX contract
-    has lot_size≤1), sub-lot qty (0 < contracts < lot_size), and
-    non-multiple qty (contracts not evenly divisible by lot_size). No-op
-    for non-MCX/NCO exchanges and for contracts == 0.
+    has lot_size≤1; raised as `InstrumentsCacheMissError`, a `ValueError`
+    subclass — see its own docstring), sub-lot qty (0 < contracts <
+    lot_size), and non-multiple qty (contracts not evenly divisible by
+    lot_size) — these last two stay plain `ValueError`, since they are
+    permanent data/logic problems, not transient. No-op for non-MCX/NCO
+    exchanges and for contracts == 0.
     """
     if exchange not in _MCX_EXCHANGES:
         return
     if lot_size <= 1:
-        raise ValueError(
+        raise InstrumentsCacheMissError(
             f"[QTY-GUARD] {exchange} lot_size={lot_size} for "
             f"qty={contracts} — instruments cache miss (no real MCX "
             f"contract has lot_size≤1). Refusing order to prevent "

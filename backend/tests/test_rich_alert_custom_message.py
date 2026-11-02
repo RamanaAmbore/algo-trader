@@ -429,7 +429,16 @@ class TestSubjectDetailNoLongerDuplicatesAgentPrefix:
     async def test_end_to_end_email_subject_has_no_duplicate_agent_label(self):
         """Full round trip through dispatch_payload, matching exactly
         what event_agents.py:_render_rich_alert builds for the real
-        email Subject header."""
+        email Subject header.
+
+        2026-11-02: the subject for a known agent/alert identity was
+        reshaped (operator) to `"Alert: {subject_detail} |
+        {ist_display}"` — no "RamboQuant Agent: " prefix, and the
+        dual-tz timestamp is now appended. `extra["ist_display"]` is
+        real-clock here (not frozen by this test module), so the
+        assertion checks shape rather than pinning an exact string —
+        confirmed against the real fixed code's actual output before
+        writing this, not hand-computed."""
         from backend.shared.helpers.alert_utils import dispatch_payload
 
         agent = _Agent(name="loss-margin-low", id=42,
@@ -442,4 +451,7 @@ class TestSubjectDetailNoLongerDuplicatesAgentPrefix:
                 agent_name=extra.get("agent_name"), agent_id=extra.get("agent_id"),
             )
         assert "Agent: Agent:" not in payload["email_subject"]
-        assert payload["email_subject"] == "RamboQuant Agent: loss-margin-low (#42)"
+        assert "RamboQuant" not in payload["email_subject"]
+        assert payload["email_subject"] == (
+            f"Alert: loss-margin-low (#42) | {extra['ist_display']}"
+        )

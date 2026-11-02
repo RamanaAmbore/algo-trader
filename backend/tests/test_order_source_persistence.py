@@ -507,3 +507,159 @@ class TestBasketShadowSource:
         assert len(added_rows) == 1
         assert added_rows[0].source == "basket"
         assert added_rows[0].mode == "shadow"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Basket leg per-order `hold_template_exit` → `AlgoOrder.template_hold_override`
+# threading (2026-11, item 5 of the bracket-UX plan). Before this fix,
+# orders_place.py's ticket route threaded `data.hold_template_exit` into
+# `AlgoOrder.template_hold_override` at both its live and paper persist
+# sites, but `orders_basket.py` had zero references to either field — a
+# Chain/basket submission could never use a per-order release override,
+# only the global `hold.template_exit_released` switch. `BasketLeg` gained
+# the same field, and all four leg-construction sites now thread it with
+# the identical `getattr(leg, "hold_template_exit", None)` defensive
+# pattern the ticket route already uses.
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestBasketLegTemplateHoldOverride:
+
+    @pytest.mark.asyncio
+    async def test_chase_pre_persist_leg_threads_override_true(
+        self, mock_request, mock_lot_sizes, mock_positions_df, mock_broker
+    ):
+        from backend.api.routes.orders_basket import basket_order_handler
+
+        leg = BasketLeg(
+            tradingsymbol="NIFTY25APRFUT", exchange="NFO",
+            transaction_type="BUY", quantity=1, order_type="LIMIT",
+            price=22000.0, chase=True, hold_template_exit=True,
+        )
+        request_data = BasketOrderRequest(groups=[
+            BasketGroup(account="TEST001", legs=[leg])
+        ])
+        positions_df = mock_positions_df("TEST001", [])
+        session_factory, _inst, added_rows = _session_mock(assigned_id=701)
+
+        patches = _basket_common_patches(
+            mock_broker, positions_df, mock_lot_sizes,
+            session_factory=session_factory, is_prod_branch=True,
+        ) + [
+            patch("backend.api.routes.orders_basket._start_live_chase",
+                  new=AsyncMock(return_value="CHASE-OID-2")),
+            patch("backend.api.routes.orders_basket._ticket_seed_broker_order_id",
+                  new=AsyncMock()),
+        ]
+
+        result = await _run_with_patches(
+            patches, lambda: basket_order_handler(request_data, mock_request)
+        )
+
+        leg_result = result.groups[0].results[0]
+        assert leg_result.status == "OPEN", leg_result.error
+        assert len(added_rows) == 1
+        assert added_rows[0].template_hold_override is True
+
+    @pytest.mark.asyncio
+    async def test_direct_place_leg_omitting_override_leaves_none(
+        self, mock_request, mock_lot_sizes, mock_positions_df, mock_broker
+    ):
+        """Backward-compat case — a leg that never sets hold_template_exit
+        (every existing caller today) must leave template_hold_override
+        unset (None), not coerce to False, so the global switch still
+        governs exactly as it did before this field existed."""
+        from backend.api.routes.orders_basket import basket_order_handler
+
+        leg = BasketLeg(
+            tradingsymbol="NIFTY25APRFUT", exchange="NFO",
+            transaction_type="BUY", quantity=1, order_type="MARKET",
+            price=None, chase=True,
+        )
+        request_data = BasketOrderRequest(groups=[
+            BasketGroup(account="TEST001", legs=[leg])
+        ])
+        positions_df = mock_positions_df("TEST001", [])
+        session_factory, _inst, added_rows = _session_mock(assigned_id=702)
+
+        patches = _basket_common_patches(
+            mock_broker, positions_df, mock_lot_sizes,
+            session_factory=session_factory, is_prod_branch=True,
+        )
+
+        result = await _run_with_patches(
+            patches, lambda: basket_order_handler(request_data, mock_request)
+        )
+
+        leg_result = result.groups[0].results[0]
+        assert leg_result.status == "OPEN", leg_result.error
+        assert len(added_rows) == 1
+        assert added_rows[0].template_hold_override is None
+
+    @pytest.mark.asyncio
+    async def test_shadow_leg_threads_override_false(
+        self, mock_request, mock_lot_sizes, mock_positions_df, mock_broker
+    ):
+        from backend.api.routes.orders_basket import basket_order_handler
+
+        leg = BasketLeg(
+            tradingsymbol="SBIN", exchange="NSE",
+            transaction_type="BUY", quantity=10, order_type="LIMIT",
+            price=500.0, chase=True, hold_template_exit=False,
+        )
+        request_data = BasketOrderRequest(groups=[
+            BasketGroup(account="TEST001", legs=[leg])
+        ])
+        positions_df = mock_positions_df("TEST001", [])
+        session_factory, _inst, added_rows = _session_mock(assigned_id=703)
+
+        patches = _basket_common_patches(
+            mock_broker, positions_df, mock_lot_sizes,
+            session_factory=session_factory,
+            is_prod_branch=True, shadow=True,
+        )
+
+        result = await _run_with_patches(
+            patches, lambda: basket_order_handler(request_data, mock_request)
+        )
+
+        leg_result = result.groups[0].results[0]
+        assert leg_result.status == "SHADOW", leg_result.error
+        assert len(added_rows) == 1
+        assert added_rows[0].template_hold_override is False
+
+    @pytest.mark.asyncio
+    async def test_paper_leg_threads_override_true(
+        self, mock_request, mock_lot_sizes, mock_positions_df, mock_broker
+    ):
+        from backend.api.routes.orders_basket import basket_order_handler
+
+        leg = BasketLeg(
+            tradingsymbol="SBIN", exchange="NSE",
+            transaction_type="BUY", quantity=10, order_type="LIMIT",
+            price=500.0, chase=True, hold_template_exit=True,
+        )
+        request_data = BasketOrderRequest(groups=[
+            BasketGroup(account="TEST001", legs=[leg])
+        ])
+        positions_df = mock_positions_df("TEST001", [])
+        session_factory, _inst, added_rows = _session_mock(assigned_id=704)
+
+        patches = _basket_common_patches(
+            mock_broker, positions_df, mock_lot_sizes,
+            session_factory=session_factory,
+            is_prod_branch=False,
+        ) + [
+            patch("backend.api.algo.paper.get_prod_paper_engine",
+                  return_value=MagicMock(register_open_order=MagicMock())),
+            patch("backend.api.algo.agent_engine.get_agent_id_by_slug",
+                  new=AsyncMock(return_value=1)),
+        ]
+
+        result = await _run_with_patches(
+            patches, lambda: basket_order_handler(request_data, mock_request)
+        )
+
+        leg_result = result.groups[0].results[0]
+        assert leg_result.status == "PAPER", leg_result.error
+        assert len(added_rows) == 1
+        assert added_rows[0].template_hold_override is True

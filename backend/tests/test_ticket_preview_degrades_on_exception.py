@@ -28,6 +28,18 @@ Covers:
     wing_feasible / gtt_trigger_errors computed by `_preview_template_meta`
   - a failure inside `_preview_template_meta` (e.g. a live LTP broker call
     failing) also degrades cleanly, not a 500
+
+2026-11-02: the degraded message now leads with "Recovering — " (operator:
+"show the message, and say recovering"). A retry layer around
+`apply_template_to_order` was considered and explicitly dropped after
+confirming, by reading the real code, that it would be structurally
+unreachable: `apply_template_to_order(apply_path="preview")` never makes
+a broker call (`template_attach.py:_route_apply_path`'s preview
+short-circuit), so it can never raise the qty-guard's
+`InstrumentsCacheMissError`; its own lot-size resolver already retries a
+cache miss once internally and degrades to `AttachResult.errors` rather
+than raising. See `backend/api/routes/orders.py:ticket_preview`'s own
+comment for the full reasoning.
 """
 
 from __future__ import annotations
@@ -106,7 +118,7 @@ async def test_qty_guard_value_error_degrades_to_200_not_500(async_client):
     assert body["wing_feasible"] is False
     assert isinstance(body["gtt_trigger_errors"], list) and body["gtt_trigger_errors"]
     assert "lot_size=0" in body["gtt_trigger_errors"][0]
-    assert "Preview unavailable" in body["gtt_trigger_errors"][0]
+    assert "Recovering" in body["gtt_trigger_errors"][0]
     # Plan degrades to the existing empty-plan shape — never half-built.
     assert body["plan"]["gtts"] == []
     assert body["plan"]["wing"] is None
@@ -127,7 +139,9 @@ async def test_exception_with_empty_str_falls_back_to_class_name(async_client):
     assert response.status_code == 201
     body = response.json()
     assert body["wing_feasible"] is False
-    assert body["gtt_trigger_errors"] == ["Preview unavailable: TimeoutError"]
+    assert body["gtt_trigger_errors"] == [
+        "Recovering — preview temporarily unavailable: TimeoutError"
+    ]
 
 
 @pytest.mark.asyncio

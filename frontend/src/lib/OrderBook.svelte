@@ -47,7 +47,7 @@
   import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
   import CardHeader from '$lib/CardHeader.svelte';
   import { toast } from '$lib/data/toastStore.svelte.js';
-  import { noteAttachObservation } from '$lib/data/templateAttachToast.js';
+  import { noteAttachObservation, noteHeldPendingRelease } from '$lib/data/templateAttachToast.js';
   import { noteOrderPollFills } from '$lib/data/orderFillDetector.js';
   import { isDraftOrderRow } from '$lib/data/draftOrderRow.js';
   import { groupPropFor } from '$lib/data/pulseDetached.svelte.js';
@@ -335,10 +335,18 @@
         // same stale poll data that already decided this row belongs in
         // `brokerRowsVisible` in the first place (see that function's
         // own comment for why re-checking stale data can never fire).
+        // 2026-11-02 (PLAN.md items 2/4) — `template_id`/`attached_gtts_json`/
+        // `hold_json` added to the passthrough. A broker-fetched row never
+        // carries any of these (Bracket/hold bookkeeping lives only on the
+        // AlgoOrder row); without this, OrderCard's paired Bracket chip and
+        // the held-pending-release toast both silently read `undefined` the
+        // instant a live, chased order reached the broker book — the exact
+        // same gap the pre-existing attempts/current_limit/next_attempt_at
+        // fields were added here to close.
         ...brokerRowsVisible.map(o => {
           const _m = _algoByBrokerId.get(String(o?.order_id || ''));
           return _m
-            ? { ...o, _rowOrigin: 'broker', attempts: _m.attempts, current_limit: _m.current_limit, next_attempt_at: _m.next_attempt_at, _algoId: _m.id, agent_origin: _m.agent_origin }
+            ? { ...o, _rowOrigin: 'broker', attempts: _m.attempts, current_limit: _m.current_limit, next_attempt_at: _m.next_attempt_at, _algoId: _m.id, agent_origin: _m.agent_origin, template_id: _m.template_id, attached_gtts_json: _m.attached_gtts_json, hold_json: _m.hold_json }
             : { ...o, _rowOrigin: 'broker' };
         }),
         ...algoOnly.map(o => ({ ...o, _rowOrigin: 'algo' })),
@@ -362,9 +370,18 @@
       // it fires regardless of which status bucket the operator has
       // selected. See templateAttachToast.js for the live-only gate +
       // time-based debounce this relies on.
+      //
+      // 2026-11-02 (PLAN.md item 4) — a HELD-pending-release row (a
+      // template-exit hold) is checked FIRST, via the separate
+      // `noteHeldPendingRelease()`, and gets its own, factually-correct
+      // wording instead of the "did not attach" text — see
+      // `isHeldPendingReleaseState`'s doc comment for why these are two
+      // distinct states that can never both be true for the same row.
       for (const o of merged) {
-        if (noteAttachObservation(o)) {
-          const oid = o?.id ?? o?.order_id;
+        const oid = o?.id ?? o?.order_id;
+        if (noteHeldPendingRelease(o)) {
+          toast.warning(`Order #${oid} Bracket pending — release from Held Orders`, { timeoutMs: 5000 });
+        } else if (noteAttachObservation(o)) {
           toast.warning(`Order #${oid} Bracket did not attach — check Order Book`, { timeoutMs: 5000 });
         }
       }
@@ -900,7 +917,12 @@
 <!-- Order card grid -->
   <div class="ob-status-bar scroll-x">
     {#each [
-      { id: 'held',               label: 'Held/Attn',          status: 'held',    count: _statusCounts.held },
+      // Item 3 (2026-11-02, PLAN.md) — "Held" → "Pending" for the
+      // template-exit-hold mechanism (order_hold_gate.py); "Attn" (the
+      // CANCEL_FAILED half of this combined chip) is unaffected — a
+      // failed cancel is a genuine attention-needed state, not a
+      // release-pending one.
+      { id: 'held',               label: 'Pending/Attn',       status: 'held',    count: _statusCounts.held },
       { id: 'chase',              label: 'Chase',              status: 'chase',   count: _statusCounts.chase },
       { id: 'open',               label: 'Open',               status: 'running', count: _statusCounts.open },
       { id: 'complete',           label: 'Filled',             status: 'active',  count: _statusCounts.complete },

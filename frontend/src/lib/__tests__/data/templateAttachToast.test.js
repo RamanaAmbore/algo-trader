@@ -41,7 +41,9 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   isAttachFailedState,
+  isHeldPendingReleaseState,
   noteAttachObservation,
+  noteHeldPendingRelease,
   ATTACH_STALL_THRESHOLD_MS,
   _resetAttachToastState,
 } from '../../data/templateAttachToast.js';
@@ -51,6 +53,14 @@ const T0 = 1_800_000_000_000; // arbitrary fixed epoch for deterministic tests
 function filledLiveNoAttach(id, overrides = {}) {
   return { id, template_id: 7, status: 'FILLED', mode: 'live', attached_gtts_json: null, ...overrides };
 }
+
+const TEMPLATE_EXIT_HOLD_JSON = JSON.stringify({
+  category: 'template_exit',
+  reason: 'template exits held until released',
+  price_policy: 'n/a',
+  override: null,
+  held_at: '2026-11-02T10:00:00+00:00',
+});
 
 beforeEach(() => {
   _resetAttachToastState();
@@ -92,6 +102,89 @@ describe('isAttachFailedState', () => {
 
   it('still true for an otherwise-identical row with no parent_order_id (a real parent order)', () => {
     expect(isAttachFailedState(filledLiveNoAttach(1, { parent_order_id: null }))).toBe(true);
+  });
+
+  // 2026-11-02 (PLAN.md item 4) — a HELD-pending-release row must never
+  // also be classified as a genuine attach failure; see
+  // isHeldPendingReleaseState's own describe block below for the
+  // positive case this guards against.
+  it('false for a HELD-pending-release row (template_exit hold) — this is NOT a failure', () => {
+    expect(isAttachFailedState(filledLiveNoAttach(1, { hold_json: TEMPLATE_EXIT_HOLD_JSON }))).toBe(false);
+  });
+
+  it('still true when hold_json is set but for an unrelated category (expiry_close) — only template_exit is exempted here', () => {
+    const otherCategory = JSON.stringify({ category: 'expiry_close', reason: 'x' });
+    expect(isAttachFailedState(filledLiveNoAttach(1, { hold_json: otherCategory }))).toBe(true);
+  });
+});
+
+describe('isHeldPendingReleaseState — template_exit hold, distinct from a genuine failure', () => {
+  it('true for a live, FILLED, template-selected, unattached row carrying a template_exit hold', () => {
+    expect(isHeldPendingReleaseState(filledLiveNoAttach(1, { hold_json: TEMPLATE_EXIT_HOLD_JSON }))).toBe(true);
+  });
+
+  it('false with no hold_json at all — this is the genuine-failure shape, not held', () => {
+    expect(isHeldPendingReleaseState(filledLiveNoAttach(1))).toBe(false);
+  });
+
+  it('false for an unrelated hold category (expiry_close/agent_order)', () => {
+    expect(isHeldPendingReleaseState(filledLiveNoAttach(1, {
+      hold_json: JSON.stringify({ category: 'expiry_close', reason: 'x' }),
+    }))).toBe(false);
+    expect(isHeldPendingReleaseState(filledLiveNoAttach(1, {
+      hold_json: JSON.stringify({ category: 'agent_order', reason: 'x' }),
+    }))).toBe(false);
+  });
+
+  it('false once attached_gtts_json is populated — the hold was released and attach ran', () => {
+    expect(isHeldPendingReleaseState(filledLiveNoAttach(1, {
+      hold_json: TEMPLATE_EXIT_HOLD_JSON,
+      attached_gtts_json: '[{"kind":"gtt","id":1}]',
+    }))).toBe(false);
+  });
+
+  it('false for non-live mode, no template, not FILLED yet, or a child row — same gating as isAttachFailedState', () => {
+    expect(isHeldPendingReleaseState(filledLiveNoAttach(1, { hold_json: TEMPLATE_EXIT_HOLD_JSON, mode: 'paper' }))).toBe(false);
+    expect(isHeldPendingReleaseState(filledLiveNoAttach(1, { hold_json: TEMPLATE_EXIT_HOLD_JSON, template_id: null }))).toBe(false);
+    expect(isHeldPendingReleaseState(filledLiveNoAttach(1, { hold_json: TEMPLATE_EXIT_HOLD_JSON, status: 'OPEN' }))).toBe(false);
+    expect(isHeldPendingReleaseState(filledLiveNoAttach(1, { hold_json: TEMPLATE_EXIT_HOLD_JSON, parent_order_id: 999 }))).toBe(false);
+  });
+
+  it('handles a null/undefined order defensively', () => {
+    expect(isHeldPendingReleaseState(null)).toBe(false);
+    expect(isHeldPendingReleaseState(undefined)).toBe(false);
+  });
+});
+
+describe('noteHeldPendingRelease — un-debounced, fire-once-per-order toast', () => {
+  it('fires on the FIRST observation (no stall threshold, unlike noteAttachObservation)', () => {
+    expect(noteHeldPendingRelease(filledLiveNoAttach(401, { hold_json: TEMPLATE_EXIT_HOLD_JSON }))).toBe(true);
+  });
+
+  it('does not fire again for the same order_id', () => {
+    noteHeldPendingRelease(filledLiveNoAttach(402, { hold_json: TEMPLATE_EXIT_HOLD_JSON }));
+    expect(noteHeldPendingRelease(filledLiveNoAttach(402, { hold_json: TEMPLATE_EXIT_HOLD_JSON }))).toBe(false);
+  });
+
+  it('never fires for a non-held row', () => {
+    expect(noteHeldPendingRelease(filledLiveNoAttach(403))).toBe(false);
+  });
+
+  it('releasing (attach lands) clears the toasted flag so a later, genuinely new hold toasts again', () => {
+    noteHeldPendingRelease(filledLiveNoAttach(404, { hold_json: TEMPLATE_EXIT_HOLD_JSON }));
+    // Released — attach landed.
+    noteHeldPendingRelease(filledLiveNoAttach(404, {
+      hold_json: TEMPLATE_EXIT_HOLD_JSON,
+      attached_gtts_json: '[{"kind":"gtt","id":1}]',
+    }));
+    // Re-held later (e.g. a failed release attempt restored the hold).
+    expect(noteHeldPendingRelease(filledLiveNoAttach(404, { hold_json: TEMPLATE_EXIT_HOLD_JSON }))).toBe(true);
+  });
+
+  it('tracks distinct order_ids independently', () => {
+    noteHeldPendingRelease(filledLiveNoAttach(501, { hold_json: TEMPLATE_EXIT_HOLD_JSON }));
+    expect(noteHeldPendingRelease(filledLiveNoAttach(502, { hold_json: TEMPLATE_EXIT_HOLD_JSON }))).toBe(true);
+    expect(noteHeldPendingRelease(filledLiveNoAttach(501, { hold_json: TEMPLATE_EXIT_HOLD_JSON }))).toBe(false);
   });
 });
 

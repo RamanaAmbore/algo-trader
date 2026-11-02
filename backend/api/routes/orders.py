@@ -1232,9 +1232,19 @@ def _rco_preview_degraded_message(e: BaseException) -> str:
     in backend/brokers/base.py). Masks any account code, falls back to
     the exception's class name when `str(e)` is empty (e.g. a bare
     `asyncio.TimeoutError`), and truncates so a stray traceback-shaped
-    message never reaches the client in full."""
+    message never reaches the client in full.
+
+    Leads with "Recovering — " rather than a bare "unavailable" — a
+    cache-miss-shaped failure here is self-healing (the resolver's own
+    lot-size lookup already retries once internally, and the frontend's
+    reactive re-fire-on-input-change retries again on top of that), so
+    the operator-facing text should read that way rather than as a
+    permanent failure needing action. The real underlying detail is
+    kept, masked and truncated, right after the lead-in (operator asked
+    to "show the message, and say recovering" — not to drop the
+    diagnostic text)."""
     msg = str(e).strip() or type(e).__name__
-    return f"Preview unavailable: {mask_account_in_text(msg)}"[:200]
+    return f"Recovering — preview temporarily unavailable: {mask_account_in_text(msg)}"[:200]
 
 
 async def _preview_check_broker_gates(data, exch: str) -> None:
@@ -2739,8 +2749,6 @@ class OrdersController(Controller):
         for the shape. Empty plan (no gtts + no wing) when neither a
         template nor overrides were supplied.
         """
-        from backend.api.algo.template_attach import apply_template_to_order
-
         # v2 API (2026-07-08): `data.quantity` is LOTS for F&O and shares
         # for equity. Convert to contracts here so the template resolver
         # sizes exit GTTs against the same unit convention it always has.
@@ -2750,17 +2758,26 @@ class OrdersController(Controller):
         # Preview is read-only / best-effort (no broker or DB writes — see
         # the docstring above). A transient resolver failure (e.g. the
         # MCX instruments cache hasn't warmed back up yet right after a
-        # `ramboq_conn` restart — `_validate_exchange_qty_multiple` in
-        # backend/brokers/base.py correctly refuses with a ValueError in
-        # that window) must degrade to a structured response, never a raw
-        # 500 — this endpoint fires on every Chain-tab field change while
-        # Bracket is armed. A genuine HTTPException (422 gate failure,
-        # 422 from a bad template override deep in apply_template_to_order)
-        # is a real validation/authorization outcome and must still
-        # propagate as-is.
+        # `ramboq_conn` restart) must degrade to a structured response,
+        # never a raw 500 — this endpoint fires on every Chain-tab field
+        # change while Bracket is armed. A genuine HTTPException (422 gate
+        # failure, 422 from a bad template override deep in
+        # apply_template_to_order) is a real validation/authorization
+        # outcome and must still propagate as-is.
+        #
+        # Note: apply_template_to_order(apply_path="preview") never makes
+        # a broker call (see template_attach.py:_route_apply_path's
+        # preview short-circuit), so it never raises
+        # InstrumentsCacheMissError; its own lot-size resolver
+        # (_resolve_lot_size_for_order) already retries a cache miss
+        # in-process (one 3s retry) and degrades to AttachResult.errors
+        # rather than raising. An outer retry wrapper here would be
+        # structurally unreachable — confirmed by reading both functions
+        # directly, not assumed — so this stays a direct call.
         try:
             await _preview_check_broker_gates(data, _exch)
 
+            from backend.api.algo.template_attach import apply_template_to_order
             _parent_qty = await _rco_preview_resolve_qty(_exch, _sym, int(data.quantity or 0))
             result = await apply_template_to_order(
                 template_id=data.template_id,
