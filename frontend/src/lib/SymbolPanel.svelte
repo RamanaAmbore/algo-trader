@@ -52,6 +52,12 @@
   // CRUD on the Brackets tab propagates here without a refresh.
   import { loadOrderTemplates, orderTemplatesStore } from '$lib/data/templates';
   import { appliesToFor as _appliesToFor } from '$lib/data/templateScope.js';
+  // Chain tab's read-only "wing fired live" confirmation badge — tracks
+  // this session's own LIVE basket submissions by their broker order id
+  // so OptionChainTab can later recognize the async wing/hedge leg
+  // firing on parent fill. Never touches basketLegs/chainBasket — see
+  // liveWingBadge.js's module docstring.
+  import { trackChainParentSubmission } from '$lib/data/liveWingTracker.svelte.js';
   // resolveUnderlying / findNearestFuture / resolveAnchorToTradeable
   // dynamically imported inside effects only — no static imports needed.
   import { loadAccounts, getDefaultAccount, recentSymbolStore, setRecentSymbol, setRecentAccount } from '$lib/data/accounts';
@@ -2255,6 +2261,21 @@
           failedIdx.add(origIdx);
         } else {
           ok++;
+          // Chain live-wing badge — remember this leg's own broker
+          // order id (NOT written into basketLegs/leg itself — a
+          // separate, session-local tracker) so OptionChainTab can
+          // later recognize this template's wing leg firing on parent
+          // fill. Live-only: a paper/sim/replay fill never attaches a
+          // real broker wing (see CLAUDE.md "Template attach mode
+          // gate"), so tracking those would never match anything.
+          // Option legs only (strike/optType) — equity legs never
+          // carry a Chain-grid key to badge against anyway.
+          if (basketMode2 === 'live' && leg.strike != null && leg.optType && r.order_id) {
+            trackChainParentSubmission({
+              account: acct, symbol: leg.sym, brokerOrderId: r.order_id,
+              templateName: _legEffectiveTpl(leg)?.name || _legEffectiveTpl(leg)?.slug || '',
+            });
+          }
           onSubmit?.({
             mode:            basketMode2,
             side:            leg.side,
