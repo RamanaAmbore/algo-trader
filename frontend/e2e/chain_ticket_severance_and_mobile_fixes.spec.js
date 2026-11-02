@@ -288,11 +288,14 @@ test.describe('Ticket/Chain template severance', () => {
     // reused by `_sideAwareDefault`, the side-flip auto-swap effect,
     // and the three Templ onSelect* persistence call sites, so they
     // can never disagree on the fallback.
-    // Limit bumped 400 → 1800 (2026-09-30, bug-1 fix) — `_currentScope()`
+    // Limit bumped 400 → 1800 (2026-09-30, bug-1 fix), then 1800 → 3000
+    // (2026-11-01, ticketState.resolvedSymbol fix below) — `_currentScope()`
     // grew a documentation block explaining the Chain-tab leg-symbol
     // preference reorder (root symbol was never option-suffixed, so
-    // appliesToFor() could never resolve to buy_option/sell_option).
-    const scopeFn = SYMBOL_PANEL.match(/function _currentScope\(\) \{[\s\S]{0,1800}?\n  \}/)?.[0] ?? '';
+    // appliesToFor() could never resolve to buy_option/sell_option), and
+    // again when the Ticket-tab-no-legs branch gained a comment + a read
+    // of `_ticketState.resolvedSymbol`.
+    const scopeFn = SYMBOL_PANEL.match(/function _currentScope\(\) \{[\s\S]{0,3000}?\n  \}/)?.[0] ?? '';
     expect(scopeFn, '_currentScope() helper').not.toBe('');
     expect(scopeFn).toMatch(/_focusedLeg\?\.side \|\| _modalSide \|\| 'BUY'/);
     expect(scopeFn).toMatch(/_appliesToFor\(sideForScope, symForScope\)/);
@@ -1261,8 +1264,8 @@ async function _findEnabledOptionButton(page, side, optType) {
 test.describe('Bug 1 (2026-09-30) — Chain scope-detection prefers the leg symbol over the root symbol', () => {
   test('source: _currentScope() prefers _focusedLeg/last-basket-leg sym ahead of _localSymbol whenever a leg exists or Chain is active', () => {
     // Limit matches the bump applied above in the earlier fallback test
-    // (400 → 1800) for the same function.
-    const scopeFn = SYMBOL_PANEL.match(/function _currentScope\(\) \{[\s\S]{0,1800}?\n  \}/)?.[0] ?? '';
+    // (400 → 1800 → 3000, latest 2026-11-01) for the same function.
+    const scopeFn = SYMBOL_PANEL.match(/function _currentScope\(\) \{[\s\S]{0,3000}?\n  \}/)?.[0] ?? '';
     expect(scopeFn, '_currentScope() helper').not.toBe('');
     // The leg symbol (option contract, e.g. "...CE"/"...PE") must be
     // computed and consulted AHEAD of _localSymbol (root symbol on
@@ -1271,9 +1274,19 @@ test.describe('Bug 1 (2026-09-30) — Chain scope-detection prefers the leg symb
     expect(scopeFn).toMatch(/const legSym = \(_focusedLeg\?\.sym \|\| ''\)/);
     expect(scopeFn).toMatch(/preferLeg = _activeTab === 'chain' \|\| basketLegs\.length > 0/);
     // Fallback ladder preserved — legSym still falls back to
-    // _localSymbol when preferLeg is true and no leg symbol exists yet,
-    // and _localSymbol still falls back to legSym on Ticket with legs.
-    expect(scopeFn).toMatch(/preferLeg\s*\n\s*\? \(legSym \|\| \(_localSymbol \|\| ''\)\.trim\(\)\)\s*\n\s*: \(\(_localSymbol \|\| ''\)\.trim\(\) \|\| legSym\)/);
+    // _localSymbol when preferLeg is true and no leg symbol exists yet
+    // (preferLeg branch byte-identical to the 2026-09-30 fix, never
+    // touched by the 2026-11-01 ticketState.resolvedSymbol change below).
+    expect(scopeFn).toMatch(/preferLeg\s*\n\s*\? \(legSym \|\| \(_localSymbol \|\| ''\)\.trim\(\)\)/);
+    // 2026-11-01: the Ticket-tab-no-legs (preferLeg === false) branch now
+    // prefers `_ticketState.resolvedSymbol` (OrderTicket's own resolved
+    // contract, mirrored via `onTicketStateChange`) ahead of
+    // `_localSymbol`, which only ever holds whatever the operator
+    // directly typed/picked — closing a label-vs-click-action SSOT gap
+    // for a bare-underlying option order (see
+    // order_ticket_bracket_scope_ssot_and_clear_policy.spec.js for the
+    // full writeup and a behavioural proof of three-way agreement).
+    expect(scopeFn).toMatch(/: \(String\(_ticketState\?\.resolvedSymbol \|\| ''\)\.trim\(\) \|\| \(_localSymbol \|\| ''\)\.trim\(\) \|\| legSym\)/);
   });
 
   test('live: staging a SELL CE (or PE) option leg on Chain resolves the Templ default to a sell_option-scoped template (wing-eligible), not the buy_any/sell_any fallback', async ({ page }) => {

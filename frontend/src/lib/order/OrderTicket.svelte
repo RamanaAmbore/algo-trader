@@ -103,7 +103,7 @@
    *   onMarginUpdate?: ((preview:any, loading:boolean, meta?: {isCashMode:boolean, cash:number|null, availMargin:number|null, usedMargin:number|null, fundsAccount:string, kind:string, side:string}) => void) | null,
    *   onPreviewPlanUpdate?: ((plan:any, loading:boolean, error:string, capWarning:string) => void) | null,
    *   onValidationChange?: ((err: string) => void) | null,
-   *   onTicketStateChange?: ((state: {side: 'BUY'|'SELL'|null, qty: number, submitting: boolean, pending: boolean, depthPending: boolean, mktOpen: boolean, mktExch: string, showDraftToggle: boolean, selectedTemplate: object|null, defaultTemplate: object|null, showsWing: boolean, isUsingNone: boolean}) => void) | null,
+   *   onTicketStateChange?: ((state: {side: 'BUY'|'SELL'|null, qty: number, submitting: boolean, pending: boolean, depthPending: boolean, mktOpen: boolean, mktExch: string, showDraftToggle: boolean, selectedTemplate: object|null, defaultTemplate: object|null, showsWing: boolean, isUsingNone: boolean, resolvedSymbol: string|null}) => void) | null,
    *   fundsHidden?: boolean,
    *   symbolHidden?: boolean,
    *   symType?: 'ALL' | 'EQ' | 'FUT' | 'OPT',
@@ -1014,7 +1014,16 @@
   // None    → explicit opt-out (no GTT / no wing on submit).
   const _defaultTemplate = $derived.by(() => {
     if (_templates.length === 0) return null;
-    const scope = _appliesToFor(_side, symbol);
+    // Byte-identical to the side+symbol re-validation effect's own scope
+    // expression below (`_appliesToFor(_side, _resolvedSymbol || symbol)`)
+    // — both must resolve the same scope string, or this derived (which
+    // feeds the Bracket toggle's DISPLAYED label via the
+    // `onTicketStateChange` -> `_ticketState.defaultTemplate` mirror)
+    // could show a default for the WRONG scope whenever _resolvedSymbol
+    // diverges from the bare symbol prop (bare-underlying option
+    // picker: operator picked a specific strike/expiry not reflected
+    // in `symbol` itself). Previously used the bare `symbol` prop.
+    const scope = _appliesToFor(_side, _resolvedSymbol || symbol);
     return _templates.find(t =>
       t.is_active && t.is_default && (t.applies_to === scope || t.applies_to === 'both')
     ) || null;
@@ -1130,22 +1139,37 @@
     return parts.length ? parts.join(' · ') : '(entry only)';
   }
 
-  // Default template auto-selection by side + symbol kind. Runs once on
-  // mount AFTER templates are loaded so the dropdown opens with the
-  // right pick already highlighted.
+  // Deliberate no-op — DO NOT fill this in without a fresh, explicit
+  // operator decision to reverse commit 2f60d39a (2026-10-05,
+  // "fix(orders): no implicit take-profit, no default ticket
+  // template..."). That commit is what gutted this function's real
+  // body (it used to assign the matched default template's own id — a
+  // side-scope match, else a 'both'-scope match, else the none-slug
+  // row — added 5a584847 2026-06-19 — the "Operator (turn N):
+  // 'Some templates are valid only for sell or buy...'" quote below is
+  // from THAT older commit, predates and is superseded by 2f60d39a, and
+  // describes behavior that no longer exists) — and it made the
+  // identical change to SymbolPanel.svelte's own side-aware auto-swap
+  // effect (`_sharedTemplateId = null;`, no re-selection either). Both
+  // files were changed together, for the same reason, in the same
+  // commit. A 2026-11-01 task to "fix" this by restoring the old
+  // `templateId = _defaultTemplate?.id ?? null;` body was investigated
+  // and NOT applied — see that investigation's handback for the full
+  // chronology. The one real, independent bug fixed alongside this
+  // comment is `_defaultTemplate`'s own scope computation below (now
+  // `_resolvedSymbol || symbol`, matching the re-validation effect) —
+  // that fix stands on its own regardless of the auto-select policy,
+  // since `_defaultTemplate` still feeds the Bracket toggle's DISPLAYED
+  // label (mirrored to SymbolPanel via `_ticketState.defaultTemplate`)
+  // even though nothing auto-arms it any more.
   function _autoSelectTemplate() {
     if (action === 'close') return;         // close orders never get a template
     if (templateId !== null) return;        // operator already picked
     if (_templates.length === 0) return;
-    // Operator (turn N): "Some templates are valid only for sell or
-    // buy. Instead of None, going forward use the default valid
-    // template for buy or sell, instead of None."
-    // First-paint pick is now the side-aware is_default template that
-    // matches the current scope (`_appliesToFor` resolves SELL CE/PE
-    // → sell_option, BUY any → buy_any, etc.). Falls back to a 'both'
-    // scope default, then to null — so the
-    // form is never stuck and a legacy install without seeded
-    // defaults still works.
+    // Intentionally does nothing further — see the policy note above.
+    // The operator arms a bracket only by explicitly clicking the
+    // Bracket toggle (SymbolPanel's `_onTemplSelectDefault`/
+    // `_onTemplSelectTemplate`), never automatically from this effect.
   }
 
   // Close orders must never carry a template — clear templateId
@@ -1162,10 +1186,9 @@
     }
   });
 
-  // Side+symbol → template re-validation. The _autoSelectTemplate
-  // above only runs ONCE on first paint; if the operator flips side
+  // Side+symbol → template re-validation. If the operator flips side
   // (BUY → SELL pill) or changes the symbol kind (equity → option)
-  // after the initial pick, a stale templateId carries over and may
+  // after picking a template, a stale templateId carries over and may
   // no longer match the new applies_to scope. Concrete incident:
   // 2026-06-22 — modal opened BUY (default scope: buy_any → picked
   // `default-bull`), operator clicked SELL pill on a PE option, submit
@@ -1202,11 +1225,18 @@
       // 'both' and 'none' (the explicit opt-out) match any scope.
       if (ap === 'both' || current.slug === 'none') return;
       if (ap === newScope) return;      // still valid for the new scope
-      // Mismatch: reset to null so _autoSelectTemplate picks the
-      // correct side-aware default on the next derived re-eval.
+      // Mismatch: clear it. `_autoSelectTemplate()` is a deliberate
+      // no-op (see its own comment) — nothing re-arms a default here,
+      // per operator policy (commit 2f60d39a, 2026-10-05: "no implicit
+      // ... default ticket template"). The operator must explicitly
+      // click the Bracket toggle again for the new side.
       templateId = null;
       _autoSelectTemplate();
-      // #16 — brief amber flash so the operator sees the auto-switch
+      // #16 — brief amber flash so the operator notices the bracket
+      // was cleared (NOT "auto-updated" — nothing re-selects it; see
+      // the policy note above). Wording fixed 2026-11-01: the old text
+      // ("Bracket auto-updated for new side") became false the moment
+      // 2f60d39a removed the re-selection this flash used to announce.
       _templateChanged = true;
       setTimeout(() => { _templateChanged = false; }, 1200);
     });
@@ -1990,6 +2020,16 @@
   // resolution — see SymbolPanel's `_currentScope()`). Every field here
   // is a pure local-state read (no write to shared/bound state), so
   // this effect does NOT need a `suspended` gate.
+  // 2026-11-01 — added `resolvedSymbol` (the SAME `_resolvedSymbol` that
+  // `_defaultTemplate` and the side+symbol re-validation effect already
+  // key off, via `_appliesToFor(_side, _resolvedSymbol || symbol)`).
+  // Without this, SymbolPanel's own `_currentScope()` (which drives both
+  // the Bracket toggle's "Default" click AND the remembered-pref/
+  // auto-swap effect) could only see the shell's bare `_localSymbol` on
+  // the Ticket tab — disagreeing with Ticket's own resolved contract for
+  // a bare-underlying option order and letting the displayed default
+  // label (fed by `defaultTemplate` above) diverge from the template a
+  // Default click actually arms.
   $effect(() => {
     onTicketStateChange?.({
       side: _side,
@@ -2004,6 +2044,7 @@
       defaultTemplate: _defaultTemplate,
       showsWing: _showsWing,
       isUsingNone: _isUsingNone,
+      resolvedSymbol: _resolvedSymbol,
     });
   });
 
@@ -2744,11 +2785,12 @@
 
   // Side-flip auto-update $effect removed when templateId became a
   // shared SymbolPanel-level state (commit 108ce3a5) — operator's
-  // pick persists across tabs and side flips. The `_autoSelectTemplate`
-  // function itself is still called once on mount (line ~1454 onMount
-  // callback) to pick the side-aware default when templateId arrives
-  // null. To restore a side-aware default after a side flip, click
-  // the Default pill in the template row.
+  // pick persists across tabs and side flips. Stale as of commit
+  // 2f60d39a (2026-10-05): `_autoSelectTemplate` is NOT called on
+  // mount any more (see the onMount comment near `loadOrderTemplates()`
+  // and `_autoSelectTemplate`'s own comment) — it's a deliberate no-op
+  // everywhere. To arm a side-aware default (new or after a side
+  // flip), the operator clicks the Bracket toggle in the template row.
 
   // Pre-submit preview — debounced fetch so an operator typing in the
   // override fields doesn't fire a request per keystroke.
@@ -3352,10 +3394,14 @@
       </div>
     {/if}
 
-    <!-- #16 — brief amber flash when auto-selection fired due to side/scope flip -->
+    <!-- #16 — brief amber flash when the bracket is cleared due to a
+         side/scope flip (2026-11-01: wording fixed — nothing re-arms a
+         replacement default any more, see the re-validation $effect's
+         own comment; this used to say "auto-updated", which stopped
+         being true once commit 2f60d39a removed the re-selection). -->
     {#if _templateChanged}
       <div class="ot-tmpl-changed-flash" role="status" aria-live="polite">
-        Bracket auto-updated for new side
+        Bracket cleared for new side
       </div>
     {/if}
 

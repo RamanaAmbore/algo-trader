@@ -1086,12 +1086,27 @@
     // Fallback ladder preserved, just reordered conditionally: every
     // consumer (`_sideAwareDefault`, the `_lastSideScope` effect, the
     // three template-pref persistence call sites) shares this function.
+    //
+    // 2026-11-01: the Ticket-tab-no-legs branch (preferLeg === false) now
+    // prefers `_ticketState.resolvedSymbol` — OrderTicket's own resolved
+    // contract symbol, mirrored up via `onTicketStateChange` — ahead of
+    // `_localSymbol`. `_localSymbol` only ever holds whatever the
+    // operator directly typed/picked (see `_pickSymbol`'s Ticket-tab
+    // branch); for a bare-underlying option order it stays the bare
+    // root while OrderTicket resolves a specific CE/PE contract
+    // internally. Without this, `_currentScope()` could disagree with
+    // OrderTicket's own `_defaultTemplate`/re-validation-effect scope
+    // (`_appliesToFor(_side, _resolvedSymbol || symbol)`), so the
+    // Bracket toggle's displayed default label and the template a
+    // Default click actually arms could be for two different scopes.
+    // The preferLeg (Chain tab / basket legs) branch is untouched —
+    // that's the unrelated 2026-09-30 fix above and must not change.
     const legSym = (_focusedLeg?.sym || '')
       || (basketLegs.length > 0 ? basketLegs[basketLegs.length - 1].sym : '');
     const preferLeg = _activeTab === 'chain' || basketLegs.length > 0;
     const symForScope = preferLeg
       ? (legSym || (_localSymbol || '').trim())
-      : ((_localSymbol || '').trim() || legSym);
+      : (String(_ticketState?.resolvedSymbol || '').trim() || (_localSymbol || '').trim() || legSym);
     const sideForScope = _focusedLeg?.side || _modalSide || 'BUY';
     return _appliesToFor(sideForScope, symForScope);
   }
@@ -1637,10 +1652,10 @@
   // defaultTemplate/showsWing/isUsingNone) needed to render the
   // single shared TemplateBar instance for the Ticket tab.
   let _ticketState = $state(
-    /** @type {{side: 'BUY'|'SELL'|null, qty: number, submitting: boolean, pending: boolean, depthPending: boolean, mktOpen: boolean, mktExch: string, showDraftToggle: boolean, selectedTemplate: any, defaultTemplate: any, showsWing: boolean, isUsingNone: boolean}} */
+    /** @type {{side: 'BUY'|'SELL'|null, qty: number, submitting: boolean, pending: boolean, depthPending: boolean, mktOpen: boolean, mktExch: string, showDraftToggle: boolean, selectedTemplate: any, defaultTemplate: any, showsWing: boolean, isUsingNone: boolean, resolvedSymbol: string|null}} */
     ({ side: null, qty: 0, submitting: false, pending: false, depthPending: false,
        mktOpen: false, mktExch: '', showDraftToggle: false, selectedTemplate: null,
-       defaultTemplate: null, showsWing: false, isUsingNone: true })
+       defaultTemplate: null, showsWing: false, isUsingNone: true, resolvedSymbol: '' })
   );
   function _modalFireSubmit() {
     if (_activeTab !== 'ticket') {
