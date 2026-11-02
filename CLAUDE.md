@@ -1501,6 +1501,47 @@ the row's own 08:00-IST session boundary (same convention as
 - **Critical gotcha, same architecture class as the account-freeze bug above**: `OrderTicket` stays mounted with `display:none` (not `{#if}`-unmounted) while Chain is active, specifically so its margin-preflight effect keeps running. Once `templateId` became a real shared binding again, OrderTicket's own pre-existing side/symbol template re-validation effect (the 2026-06-22 incident fix — `$effect` watching `_side`/`_resolvedSymbol`, resetting a stale `templateId` on scope mismatch) and its close-order-clears-template effect were *also* still running while hidden behind the Chain tab — silently resetting the SHARED `_sharedTemplateId` out from under Chain's own auto-selection logic on every Chain-tab side/symbol change. Fixed by gating both effects on `if (suspended) return;` (the same convention the pre-existing margin-preflight effect already uses) — only the visually active tab may touch shared template state. The `<TemplateBar>` markup itself is also gated with `{#if !suspended && ...}` (not left to the ancestor's CSS `display:none` alone) — otherwise a second, invisible `.oes-tpl-button` existed in the DOM at all times whenever Chain was active, and any selector's `.first()` (tests, future code) could resolve to the wrong one.
 Invariant: when a component is kept mounted-but-hidden for background-effect reasons, every effect inside it that writes to *shared/bound* state must be gated on the same visibility flag — an effect reading only local state is safe to leave ungated, but one that writes to a value another visible component also owns is not. Tests: `e2e/order_ticket_template_toggle_regression.spec.js` (includes a network-interception test asserting a real `template_id` reaches `/api/orders/ticket` — confirmed to fail against the pre-fix severed code, the strongest guard for this exact class of bug).
 
+**Bracket default scope resolved one way on the Ticket tab; side-flip flash no longer claims a
+re-arm (2026-11-01; commit `68f889a1`)** — Three places decided which scope the Bracket default
+resolves against. They disagreed for a bare-underlying option order, where the operator picks a
+specific CE/PE in the ticket but the `symbol` prop stays the underlying.
+- `OrderTicket.svelte:_defaultTemplate` ([`OrderTicket.svelte:1015`](frontend/src/lib/order/OrderTicket.svelte#L1015)),
+  the label the Bracket toggle displays, used the bare `symbol` prop. It now uses
+  `_appliesToFor(_side, _resolvedSymbol || symbol)` ([:1026](frontend/src/lib/order/OrderTicket.svelte#L1026)),
+  the same expression as the side/symbol re-validation effect.
+- `SymbolPanel.svelte:_currentScope()` ([`SymbolPanel.svelte:1075`](frontend/src/lib/SymbolPanel.svelte#L1075)),
+  which decides what a Default click arms on the Ticket tab with no basket legs. Its non-`preferLeg`
+  branch now prefers `_ticketState.resolvedSymbol` ahead of `_localSymbol`
+  ([:1109](frontend/src/lib/SymbolPanel.svelte#L1109)). That value comes from OrderTicket's existing
+  `onTicketStateChange` payload, which now carries `resolvedSymbol`
+  ([`OrderTicket.svelte:2047`](frontend/src/lib/order/OrderTicket.svelte#L2047)).
+- The `preferLeg` branch (Chain tab or basket legs, [:1106-1108](frontend/src/lib/SymbolPanel.svelte#L1106))
+  is unchanged. It is the 2026-09-30 fix and must not change.
+
+Side-flip flash: the #16 flash ([`OrderTicket.svelte:3404`](frontend/src/lib/order/OrderTicket.svelte#L3404))
+said "Bracket auto-updated for new side". That has been false since commit `2f60d39a` (2026-10-05,
+"no implicit take-profit, no default ticket template"), which removed the re-selection from
+`OrderTicket.svelte` and `SymbolPanel.svelte` together. The flash now reads "Bracket cleared for new
+side". The re-validation effect ([`OrderTicket.svelte:1233`](frontend/src/lib/order/OrderTicket.svelte#L1233))
+clears `templateId` on a scope mismatch, and nothing re-arms it. This was checked with `git log -S`
+on the function and confirmed as deliberate recent policy, not the accidental regression an earlier
+audit assumed. It was NOT reversed. `_autoSelectTemplate()`
+([`OrderTicket.svelte:1165`](frontend/src/lib/order/OrderTicket.svelte#L1165)) stays a deliberate
+no-op. Its comment cites `2f60d39a` and warns against restoring default-selection without a fresh
+explicit operator decision.
+
+Test: `frontend/e2e/order_ticket_bracket_scope_ssot_and_clear_policy.spec.js`. Source-level checks pin
+the shared scope expression, the `resolvedSymbol` mirror, the `_currentScope()` branches and the
+no-op `_autoSelectTemplate`. Behavioural checks cover a bare-underlying option order, the flash text
+after a side flip, and the Chain branch being unaffected.
+
+Invariant: the Bracket label, the re-validation effect and the Default-click target resolve one scope,
+from `_resolvedSymbol || symbol`. A side flip clears the Bracket, and nothing re-arms it without an
+explicit click.
+
+**Known gap —** the same 2026-11-01 bracket audit (backend bracket execution, frontend bracket UI, and
+the DSL where-filter) left further findings open and untriaged. This entry does not claim them fixed.
+
 **Chase countdown column minimum-width guard on mobile (2026-10-16, commit de68fbda)** — The age/countdown column in `ChaseCard.svelte` had no minimum width (`minmax(0, 0.6fr)`), allowing it to shrink to unreadable slivers on narrow mobile viewports competing with 8+ other columns and a locked-minimum kill button. Fixed by setting `minmax(2.1rem, 0.6fr)` in both `.cc-row` and `.cc-compact .cc-row` grid templates.
 
 **ChaseCard header-drawer column floors on mobile (2026-10-23; commit `bcb9bad6`, amends the entry
@@ -1729,6 +1770,34 @@ commits `fa70a893`, `d53ad4c9`)** — Three linked defects in the Kill path. The
   terminal status while a chase still owns the row.
 - Deploy coupling: `fa70a893` requires `6ba6936e` (the `mark_order_killed` marker lives in `chase.py`).
   `d53ad4c9` pairs with `fa70a893` (the frontend `ok` contract). Ship them together.
+
+**Retry-attach holds its per-row lock across placement AND persist (2026-11-01; commit `85618c6b`)** —
+`/retry-template` used to release the per-row template-attach lock the instant
+`apply_template_to_order()` returned. The caller then built and committed `attached_gtts_json` with no
+lock held. A concurrent fill-triggered attach for the same row (a late postback or chase-terminal fill)
+could take the free lock in that gap, read `attached_gtts_json` still NULL, and place a second live
+GTT/wing set against the real position. The fix moves the persist inside the lock.
+`_rco_run_template_attach()` ([`orders.py:1496`](backend/api/routes/orders.py#L1496)) takes
+`_get_template_attach_lock(row.id)` ([`orders_place.py:332`](backend/api/routes/orders_place.py#L332))
+once and holds it through the T13 in-lock re-check, the in-lock `filled_quantity` re-read,
+`apply_template_to_order()`, `_retry_build_attached_payload()`, `_opp_persist_with_retry()` and, on
+exhaustion, `_opp_handle_persist_failure()`. It releases only after all of these.
+- A retry-path persist failure now registers the same `_TPL_ATTACH_PERSIST_PENDING` hold
+  ([`orders_place.py:329`](backend/api/routes/orders_place.py#L329)) and fires the same alert as the
+  fill path. Every other reader of that state therefore treats both paths identically.
+- The outcome maps to the response in `_retry_response_for_outcome()`
+  ([`orders.py:518`](backend/api/routes/orders.py#L518)). `persist_failed` tells the operator not to
+  Re-attach.
+- The route calls `_rco_run_template_attach()` only after its own DB session has closed
+  ([`orders.py:2379`](backend/api/routes/orders.py#L2379)), so the lock never nests inside that session.
+- Test: `backend/tests/test_retry_template_inlock_recheck.py::test_retry_and_fill_triggered_attach_never_place_broker_orders_twice`.
+  It uses the real per-row lock registry, not a stub, and proves the fill-triggered attach stays blocked
+  until the retry path's persist completes. The commit records that the test was confirmed to fail with
+  the lock release restored.
+
+Invariant: a retry-attach and a fill-triggered attach for the same row serialise on one per-row lock.
+The attached-GTT record is written before that lock is released, so no second live set can be placed
+in between.
 
 **Order reconcile consolidated onto one accessor; periodic order-poll sweep; postback follow-up
 verification (2026-10-23; commit `8c0d5180`)** — Three reconcile paths and the open-order watchdog
@@ -2467,6 +2536,9 @@ path, grouped by mechanism. Each bullet names its own fix.
   placed a second live GTT and wing set. `_rco_attached_gtts_already_set()`
   ([`orders.py:1317`](backend/api/routes/orders.py#L1317)) re-reads the row inside the lock (called at
   [`orders.py:1389`](backend/api/routes/orders.py#L1389)). It matches the fill path's own in-lock check.
+  *Amended 2026-11-01 (commit `85618c6b`):* the persist used to run after the lock was released, so the
+  in-lock re-check alone did not close the window. Placement and persist now both run under the lock.
+  See the retry-attach entry under "Chase Kill lifecycle" above.
 - **GTT persist failure holds and alerts, never silently duplicates (T16, `f626457a`, `8e26a0b3`).**
   `_opp_persist_attached_gtts` runs after broker placement. A DB failure there used to log a WARNING
   only. The exits stayed live but unrecorded, so a redelivery or a manual retry placed a second set.
@@ -3091,6 +3163,8 @@ now caches + returns a `stale` flag; `/api/nav/by-account` masks `errors` for no
 | Update ops runbook | `docs/deployment.md` |
 | Chase Kill / CANCEL_FAILED retry | `backend/api/routes/orders.py:kill_chase` + `chase.py:mark_order_killed` |
 | Template persist-failure hold (in-memory) | `orders_place.py:_TPL_ATTACH_PERSIST_PENDING` + `_opp_handle_persist_failure` |
+| Retry-attach per-row lock (placement + persist) | `orders.py:_rco_run_template_attach` (lock from `orders_place.py:_get_template_attach_lock`) |
+| Bracket default scope on Ticket tab | `frontend/src/lib/order/OrderTicket.svelte:_defaultTemplate` + `frontend/src/lib/SymbolPanel.svelte:_currentScope()` |
 | Scale-out ladder OCO pairing | `template_attach.py:_ta_detect_scale_sl_group` + `background.py:_oco_process_group_entry` |
 | MCX real per-contract expiry (live freeze filter) | `expiry_freeze.py:_mcx_future_real_expiry` |
 | generic_notice body (plain text, no origin line — see "Alert message format") | `event_agents.py:_render_deploy_sync` (pass-through) + producer `msg` in `background.py` |
