@@ -2063,6 +2063,51 @@ async def _perf_build_symbols_rows() -> list[dict]:
     return out
 
 
+def _broadcast_mcx_ce_pe_group_columns(position_rows: list) -> None:
+    """DSL dataframe-access gaps, item 1 — group-derived columns.
+
+    `is_unhedged`/`net_qty` are computed ONCE per MCX (root, expiry)
+    CE/PE group — reusing `compute_mcx_ce_pe_net_groups` verbatim (the
+    SAME helper `positions.expiring_today.mcx_unhedged`'s own scope
+    resolver uses, lifted not duplicated — see that module's docstring
+    for the parity guarantee this gives `positions.expiring_today
+    (exchange == "MCX" & is_unhedged == 1)`) — and broadcast onto every
+    row in the group, the same shape as pandas'
+    `.groupby(key)[col].transform(...)`. Every row defaults to `None`
+    (never a coerced 0/False) first; only rows that land in a real MCX
+    CE/PE group get a real value. Computed over EVERY MCX row
+    regardless of expiry — the group key already includes expiry, so
+    this changes no group's membership or net_qty versus restricting
+    to "expiring today" first, it just ALSO computes (harmless,
+    informational) values for groups expiring on other days.
+
+    Mutates `position_rows` in place. Never raises — a failure degrades
+    every row to `is_unhedged=None`/`net_qty=None` (already the
+    default), logged at debug, so a bug here can never abort the
+    caller's own agent-engine cycle."""
+    for _r in position_rows:
+        _r["is_unhedged"] = None
+        _r["net_qty"] = None
+    try:
+        mcx_rows = [
+            _r for _r in position_rows
+            if (_r.get("exchange") or "").upper() == "MCX"
+        ]
+        if not mcx_rows:
+            return
+        from backend.api.algo.grammar_tokens.scope_positions_expiring_today_mcx_unhedged import (
+            compute_mcx_ce_pe_net_groups,
+        )
+        for g in compute_mcx_ce_pe_net_groups(mcx_rows).values():
+            net = g["net_qty"]
+            is_unhedged = None if net is None else (1.0 if net != 0 else 0.0)
+            for gr in g["rows"]:
+                gr["is_unhedged"] = is_unhedged
+                gr["net_qty"] = net
+    except Exception as ge:
+        logger.debug(f"Background: position_rows is_unhedged/net_qty derivation failed: {ge}")
+
+
 async def _perf_run_agent_engine(
     sim_active: bool,
     df_holdings: pd.DataFrame,
@@ -2123,6 +2168,10 @@ async def _perf_run_agent_engine(
                     _r["underlying"] = underlying_of_symbol(_r.get("tradingsymbol"))
             except Exception as ue:
                 logger.debug(f"Background: position_rows underlying derivation failed: {ue}")
+            # DSL dataframe-access gaps, item 1 — group-derived columns.
+            # Extracted to a module-level helper (not inlined here) to
+            # keep this function under the radon complexity gate.
+            _broadcast_mcx_ce_pe_group_columns(position_rows)
         spot_prices = await _run(_resolve_spot_prices, df_positions)
         if not spot_prices:
             logger.warning(

@@ -28,6 +28,11 @@ const FIXTURE_ROWS = [
   },
   { grammar_kind: 'condition', token_kind: 'metric', token: 'stdev_pnl', value_type: 'number', params_schema: { minutes: { type: 'number' } } },
   { grammar_kind: 'condition', token_kind: 'metric', token: 'max_drawdown_pnl', value_type: 'number', params_schema: { minutes: { type: 'number' } } },
+  // Sprint [rowset-aggregates] — a `type: 'string'` column-reference
+  // param (confirmed against the real backend's `_parse_call_token` —
+  // there is no dedicated `'column'` type), for the `column=`
+  // autocomplete coverage below.
+  { grammar_kind: 'condition', token_kind: 'metric', token: 'sum', value_type: 'number', params_schema: { column: { type: 'string' } } },
   // scopes
   {
     grammar_kind: 'condition', token_kind: 'scope', token: 'positions.total', params_schema: null,
@@ -36,6 +41,8 @@ const FIXTURE_ROWS = [
   { grammar_kind: 'condition', token_kind: 'scope', token: 'positions.any_acct', params_schema: null },
   { grammar_kind: 'condition', token_kind: 'scope', token: 'funds.total', params_schema: null },
   { grammar_kind: 'condition', token_kind: 'scope', token: 'funds.any_acct', params_schema: null },
+  { grammar_kind: 'condition', token_kind: 'column', token: 'positions.any_acct.qty', value_type: 'number' },
+  { grammar_kind: 'condition', token_kind: 'column', token: 'positions.total.pnl', value_type: 'number' },
   // channels
   {
     grammar_kind: 'notify', token_kind: 'channel', token: 'telegram', params_schema: null,
@@ -191,6 +198,25 @@ describe('suggestAgentCliAt() — enum value position', () => {
     const r = suggest(text);
     expect(r.kind).toBeNull();
     expect(r.suggestions).toEqual([]);
+  });
+
+  // Sprint [rowset-aggregates] — a row-set aggregate's own `column=`
+  // argument (`type: 'string'`, on a METRIC-catalog entry) reuses this
+  // SAME param-value suggestion mechanism, candidate-sourced from
+  // `_allExposedColumnNames` (the union of every scope's own exposed
+  // columns — the one list already available at this position, since
+  // the metric's own scope hasn't been typed yet at this point in the
+  // statement, "@" comes after).
+  it('right after a column-typed param\'s "=" (sum(column=) suggests every known exposed column name', () => {
+    const text = 'WHEN sum(column=';
+    const r = suggest(text);
+    expect(r.suggestions).toEqual(expect.arrayContaining(['qty', 'pnl']));
+  });
+
+  it('mid-typing a column-typed param value fuzzy-filters the SAME candidate list', () => {
+    const text = 'WHEN sum(column=q';
+    const r = suggest(text);
+    expect(r.suggestions).toEqual(['qty']);
   });
 });
 
@@ -534,13 +560,25 @@ describe('suggestAgentCliAt() — Sprint H item 5: "#" meta-tag suggestions', ()
 });
 
 describe('suggestAgentCliAt() — Sprint H item 6: WHEN suggests dot-access scope roots', () => {
-  it('right after "WHEN " suggests scope-family roots (positions/funds) alongside metric names', () => {
+  // Operator's standing alias-only UX rule (general, not scoped to any one
+  // sprint — see `_allScopeFamilyRootNames`'s own docstring): when a real
+  // token has a registered shorter alias, the dropdown shows ONLY the
+  // alias, never both. Before this fix, BOTH `positions`/`pos` (and
+  // `funds`/`fnd`) appeared as separate candidates here.
+  it('right after "WHEN " suggests scope-family roots as their SHORT ALIAS ONLY (pos/fnd), never the canonical long form alongside it', () => {
     const r = suggest('WHEN ');
-    expect(r.suggestions).toEqual(expect.arrayContaining(['positions', 'funds', 'mean_pnl']));
+    expect(r.suggestions).toEqual(expect.arrayContaining(['pos', 'fnd', 'mean_pnl']));
+    expect(r.suggestions).not.toContain('positions');
+    expect(r.suggestions).not.toContain('funds');
   });
 
   it('typing "positions." (bare dot-access, no "@") still completes to the real scope tokens', () => {
     const r = suggest('WHEN positions.');
+    expect(r.suggestions).toEqual(expect.arrayContaining(['positions.total', 'positions.any_acct']));
+  });
+
+  it('typing the short alias "pos." ALSO completes to the real scope tokens — `_scopeFamilyAliasOf` resolves the alias before the scope-chain lookup runs, same as picking the alias from the dropdown above would', () => {
+    const r = suggest('WHEN pos.');
     expect(r.suggestions).toEqual(expect.arrayContaining(['positions.total', 'positions.any_acct']));
   });
 });
@@ -548,13 +586,13 @@ describe('suggestAgentCliAt() — Sprint H item 6: WHEN suggests dot-access scop
 describe('suggestAgentCliAt() — Sprint [grammar-unify]: preamble item-head offers the FULL call vocabulary (GIVEN removed; the old debug-only restriction is gone — a preamble item is order/bracket/alert/debug/help/label-assignment, identical to DO)', () => {
   it('right at the very start (fresh preamble item head) suggests the full call vocabulary, not just debug', () => {
     const r = suggest('');
-    expect(r.suggestions).toEqual(expect.arrayContaining(['place_order', 'debug', 'help', 'WHEN']));
+    expect(r.suggestions).toEqual(expect.arrayContaining(['place_order', 'alert', 'debug', 'help', 'WHEN']));
   });
 
   it('right after a "," ending a label assignment, suggests the same full preamble vocabulary again — identical to ";"', () => {
     const viaComma = suggest('a1 = 1,');
     const viaSemi = suggest('a1 = 1;');
-    expect(viaComma.suggestions).toEqual(expect.arrayContaining(['place_order', 'debug', 'help']));
+    expect(viaComma.suggestions).toEqual(expect.arrayContaining(['place_order', 'alert', 'debug', 'help']));
     expect(viaComma.suggestions).toEqual(viaSemi.suggestions);
   });
 });
@@ -578,9 +616,11 @@ describe('suggestAgentCliAt() — Sprint H item 8: bound labels suggested wherev
     expect(r.suggestions).not.toContain('x');
   });
 
-  it('right after a label-bind\'s own "=" (given_rhs position), suggests metrics + scope roots', () => {
+  it('right after a label-bind\'s own "=" (given_rhs position), suggests metrics + scope roots as their short alias only (pos/fnd)', () => {
     const r = suggest('x =');
-    expect(r.suggestions).toEqual(expect.arrayContaining(['mean_pnl', 'positions', 'funds']));
+    expect(r.suggestions).toEqual(expect.arrayContaining(['mean_pnl', 'pos', 'fnd']));
+    expect(r.suggestions).not.toContain('positions');
+    expect(r.suggestions).not.toContain('funds');
   });
 
   it('a PRIMITIVE-kind label is suggested as an ordinary call param value, alongside real enum values', () => {

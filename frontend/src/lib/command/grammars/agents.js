@@ -645,6 +645,52 @@ function _parseNotifyListArg(rawBracketText, baseStart) {
   return { type: 'list', value: calls };
 }
 
+/** Sprint [where-filter] — parse a scope_seg's `(...)` body (e.g.
+ *  `exchange == "MCX" & qty > 0`) as a where-expression: a REAL condition
+ *  sub-tree, reusing the EXISTING `&`/`and`/`|`/`or`/`~`/`not`/comparator/
+ *  `between` grammar unchanged (`parseCondition`) — same "re-lex the raw
+ *  span via the main lexer, then parse it with a real production"
+ *  precedent `_parseNotifyListArg` above already establishes for
+ *  `notify=[...]`. `rawText` is the raw span between the parens (same
+ *  convention as that function's `rawBracketText`); `baseStart` is its
+ *  absolute offset, reapplied via `_shiftPositions` since a fresh
+ *  `lexAgentStatement` call always counts from 0.
+ *
+ *  The fresh `state` carries NO `bindings` (`undefined`, never an empty
+ *  Map) — a where-expression's bare names are plain row-column
+ *  references, never a GIVEN-bound label; leaving `bindings` unset is
+ *  what keeps `parseLeaf`'s pre-existing label-splice branches
+ *  (`if (!firstCall.hasCall && state.bindings) {...}`) correctly inert
+ *  here with zero new guard code. `state.whereMode = true` routes
+ *  `parseLeaf` to the narrower `_parseWhereExprLeaf` production instead
+ *  (see that function's own docstring for exactly what's narrowed and
+ *  why: no metric_ref, no colref dot-chain, no bare Token ($ref)
+ *  reference — a where-expression's whole job is narrowing rows by their
+ *  OWN exposed columns, nothing else).
+ *
+ *  An empty `(...)` is a clear parse error (not silently "no filter") —
+ *  deliberately narrower than the qualifier mechanism's `account:*`
+ *  wildcard convention, to avoid a second "what does emptiness mean"
+ *  special case; omit the `(...)` entirely for "no filter". */
+function _parseWhereExprArg(rawText, baseStart) {
+  if (rawText.trim() === '') {
+    throw new _ParseError(
+      'a where-expression cannot be empty — omit the "(...)" entirely for "no filter"',
+      { start: baseStart },
+    );
+  }
+  const { tokens, errors } = lexAgentStatement(rawText);
+  if (errors.length) {
+    const e = errors[0];
+    throw new _ParseError(e.message, { start: (typeof e.position === 'number' ? e.position : 0) + baseStart });
+  }
+  const state = { tokens: _shiftPositions(tokens, baseStart), pos: 0, whereMode: true };
+  const cond = parseCondition(state);
+  const trailing = _peek(state);
+  if (trailing.type !== 'EOF') throw new _ParseError('unexpected trailing input after where-expression', trailing);
+  return cond;
+}
+
 /** Bracket/brace/quote-aware split of a call's RAW inner text on TOP-LEVEL
  *  commas only (Sprint 8) — commas nested inside a `tp_scales_json=[...]`
  *  value (list of `{...}` object literals) must never split the arg list.
@@ -834,6 +880,30 @@ export function lexAgentStatement(text) {
   const tokens = [];
   let i = 0;
   const n = text.length;
+  // Sprint [where-filter] — tiny 3-state machine tracking whether the NEXT
+  // NAME token sits in `scope_seg` position of an "@"-anchored `scope_ref`
+  // chain (`metric_ref := call "@" scope_ref`, `scope_ref := scope_seg
+  // ("." scope_seg)*`) — the ONE position a scope-segment's own "(...)" is
+  // unambiguously a where-expression rather than an ordinary arg-list (see
+  // `_resolveScopeRefFull`'s pre-existing "scope segment takes no
+  // arguments" rejection — there is no COMPETING legitimate use of
+  // parenthesized args there today, so this is a lossless reinterpretation,
+  // not a new ambiguity). States: 0 = NONE, 1 = AFTER_AT_OR_DOT (the NEXT
+  // NAME, if any, is a scope_seg), 2 = AFTER_NAME (a scope_seg NAME was
+  // just consumed; a FOLLOWING "." continues the chain, anything else ends
+  // it). Transitions, applied at the SAME single choke-point the token-type
+  // dispatch below already uses for AT/DOT (`_PUNCT_SINGLE`) and for NAME
+  // (the word-start branch) — every OTHER branch (STRING/HASH-meta/
+  // comparators/STARSTAR/NUMBER/MINUS) resets to 0, since none of them can
+  // appear mid-chain in valid syntax. Deliberately NOT a persistent "stays
+  // true until something explicit resets it" flag (an earlier draft of
+  // this design leaked across `DO`/`and`/`or`/every other later NAME in the
+  // statement — a NAME immediately following another NAME with no "."
+  // between them, e.g. `...any_acct DO order(...)` or `...any_acct and
+  // mean_pnl(...)`, must NOT be treated as a continuing scope_seg, and this
+  // state machine's AFTER_NAME→NONE-on-NAME transition is exactly what
+  // prevents that).
+  let _scopeSegState = 0;
   try {
     while (i < n) {
       while (i < n && /\s/.test(text[i])) i++;
@@ -848,6 +918,7 @@ export function lexAgentStatement(text) {
         if (i >= n) throw new _ParseError('unterminated string literal', { start });
         i++;
         tokens.push({ type: 'STRING', value: text.slice(start + 1, i - 1), start, end: i });
+        _scopeSegState = 0;
         continue;
       }
 
@@ -896,10 +967,12 @@ export function lexAgentStatement(text) {
           }
           break;
         }
+        _scopeSegState = 0;
         continue;
       }
 
       if (ch === '<' || ch === '>' || ch === '=' || ch === '!') {
+        _scopeSegState = 0;
         const two = text.slice(i, i + 2);
         if (ch === '<') { if (two === '<=') { tokens.push({ type: 'LE', start, end: i + 2 }); i += 2; } else { tokens.push({ type: 'LT', start, end: i + 1 }); i += 1; } continue; }
         if (ch === '>') { if (two === '>=') { tokens.push({ type: 'GE', start, end: i + 2 }); i += 2; } else { tokens.push({ type: 'GT', start, end: i + 1 }); i += 1; } continue; }
@@ -935,12 +1008,21 @@ export function lexAgentStatement(text) {
       if (ch === '*' && text[i + 1] === '*') {
         tokens.push({ type: 'STARSTAR', start, end: i + 2 });
         i += 2;
+        _scopeSegState = 0;
         continue;
       }
 
       if (_PUNCT_SINGLE[ch]) {
-        tokens.push({ type: _PUNCT_SINGLE[ch], start, end: i + 1 });
+        const _ptype = _PUNCT_SINGLE[ch];
+        tokens.push({ type: _ptype, start, end: i + 1 });
         i++;
+        // Sprint [where-filter] — the state machine's one AT/DOT branch;
+        // every other punctuation token (COMMA/AMP/PIPE/TILDE/COLON/STAR/
+        // brackets/braces/SEMI/PLUS/SLASH/PERCENT) ends a chain, same as
+        // every non-punctuation token below.
+        if (_ptype === 'AT') _scopeSegState = 1;
+        else if (_ptype === 'DOT') _scopeSegState = (_scopeSegState === 2) ? 1 : 0;
+        else _scopeSegState = 0;
         continue;
       }
 
@@ -953,6 +1035,7 @@ export function lexAgentStatement(text) {
         }
         tokens.push({ type: 'NUMBER', value: Number(text.slice(start, j)), start, end: j });
         i = j;
+        _scopeSegState = 0;
         continue;
       }
 
@@ -974,10 +1057,16 @@ export function lexAgentStatement(text) {
       if (ch === '-') {
         tokens.push({ type: 'MINUS', start, end: i + 1 });
         i++;
+        _scopeSegState = 0;
         continue;
       }
 
       if (_isWordStart(ch)) {
+        // Sprint [where-filter] — read BEFORE this NAME's own state update
+        // below: true iff the PREVIOUS token was AT or a chain-continuing
+        // DOT, i.e. this NAME is a real `scope_seg` in an "@"-anchored
+        // `scope_ref` (see the state machine's own header comment above).
+        const _isScopeSegPos = _scopeSegState === 1;
         // Sprint 10 — this is the ONE place a bare CALL/TOKEN-REFERENCE NAME
         // is scanned (metric/scope/channel/action names, call names
         // generally — everywhere `call := NAME | NAME "(" arg_list ")"` is
@@ -1046,6 +1135,27 @@ export function lexAgentStatement(text) {
           if (pd !== 0) throw new _ParseError(`unbalanced parentheses after '${nameRaw}'`, { start });
           const innerEnd = k - 1;
           const innerText = text.slice(innerStart, innerEnd);
+          // Sprint [where-filter] — this call's "(...)" is a
+          // where-expression (a real condition sub-tree, not an arg-list)
+          // iff BOTH: (1) `_isScopeSegPos` — this NAME sits in `scope_seg`
+          // position of an "@"-anchored `scope_ref` chain (see the state
+          // machine's own header comment above `_isWordStart`'s branch);
+          // (2) it is the LAST segment of that chain — checked here by
+          // peeking PAST this call's own closing ")" (skipping whitespace)
+          // for a continuing "." (`scope_ref := scope_seg ("."
+          // scope_seg)*`). Without (2), `positions(foo=5).account:ZG0790`
+          // (a real, pre-existing test fixture — an args-violation on a
+          // NON-last scope segment) would be mis-routed here instead of
+          // falling through to `_resolveScopeRefFull`'s existing "scope
+          // segment takes no arguments" rejection. `debug`/`help` can
+          // never reach this branch as true — neither is ever preceded by
+          // "@"/a chain-continuing "." in valid syntax, so `_isScopeSegPos`
+          // is always false for them; checked AFTER this block anyway,
+          // since dispatch order must still resolve unambiguously either
+          // way.
+          let _laIdx = k;
+          while (_laIdx < n && /\s/.test(text[_laIdx])) _laIdx++;
+          const _isWherePosition = _isScopeSegPos && text[_laIdx] !== '.';
           // Sprint G (Task 2) — `debug(x)` takes exactly ONE BARE argument
           // (a label or token reference name, no "="), which `arg_list`'s
           // ordinary keyword-only rule (every argument is `name=value`)
@@ -1072,7 +1182,24 @@ export function lexAgentStatement(text) {
           // its value resolves against bound LABELS, not a catalog
           // schema).
           let args;
-          if (lower === 'debug' || lower === 'help') {
+          let _whereExpr;
+          if (_isWherePosition) {
+            // Sprint [where-filter] — parsed EAGERLY, here at lex time
+            // (mirrors `_parseNotifyListArg`'s own "re-lex + real-parse an
+            // extracted span" precedent elsewhere in this file) so the
+            // resulting ConditionNode is already attached to the token by
+            // the time `parseScopeSeg`/`parseCall` ever see it — no second
+            // parse pass needed by the caller. `args` stays `[]` — the
+            // where-expression is carried in its OWN field, never folded
+            // into the ordinary ArgEntry[] shape (a where-expression is a
+            // condition sub-tree, not a flat key=value list — this
+            // grammar's arg_list is keyword-only by explicit design, see
+            // `_parseArgSegment`'s own "every argument is always keyword"
+            // comment, and a condition tree cannot be squeezed into that
+            // shape without inventing a second, parallel mini-language).
+            _whereExpr = _parseWhereExprArg(innerText, innerStart);
+            args = [];
+          } else if (lower === 'debug' || lower === 'help') {
             const trimmed = innerText.trim();
             const leadWs = innerText.length - innerText.replace(/^\s+/, '').length;
             if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(trimmed)) {
@@ -1093,11 +1220,17 @@ export function lexAgentStatement(text) {
             // case to guard here.
             args = _parseArgListFromInnerText(innerText, { start });
           }
-          tokens.push({ type: 'NAME', value: nameRaw, reserved: _RESERVED.has(lower), hasCall: true, args, start, end: k });
+          tokens.push({ type: 'NAME', value: nameRaw, reserved: _RESERVED.has(lower), hasCall: true, args, whereExpr: _whereExpr, start, end: k });
           i = k;
         } else {
           tokens.push({ type: 'NAME', value: nameRaw, reserved: _RESERVED.has(lower), hasCall: false, args: null, start, end: i });
         }
+        // Sprint [where-filter] — state-machine update for THIS NAME (see
+        // the header comment above `_isWordStart`'s branch): a NAME in
+        // `scope_seg` position keeps the chain live (a following "."
+        // continues it); any other NAME ends it — regardless of whether
+        // it had a call/parens at all.
+        _scopeSegState = _isScopeSegPos ? 2 : 0;
         continue;
       }
 
@@ -1167,7 +1300,16 @@ export function parseCall(state) {
   const tok = _peek(state);
   if (tok.type !== 'NAME') throw new _ParseError('expected a name', tok);
   if (tok.reserved) throw new _ParseError(`"${tok.value}" is a reserved word and cannot be used as a token name`, tok);
-  if (tok.hasCall && (!tok.args || tok.args.length === 0)) {
+  // Sprint [where-filter] — `tok.whereExpr !== undefined` means this
+  // call's "(...)" was ALREADY recognized at lex time as a non-empty
+  // where-expression (see `lexAgentStatement`'s own detection) — its
+  // `args` is deliberately always `[]` (the where-expr lives in its own
+  // field, never squeezed into ArgEntry[] — see `_parseWhereExprArg`'s
+  // docstring), so the generic "empty parens" rejection below must not
+  // fire for it. An actually-EMPTY where-position "()" already threw at
+  // lex time (`_parseWhereExprArg`'s own "cannot be empty" check), so
+  // this bypass can never mask a genuinely empty call elsewhere.
+  if (tok.hasCall && tok.whereExpr === undefined && (!tok.args || tok.args.length === 0)) {
     throw new _ParseError(`"${tok.value}()" is a parse error — a zero-argument token is always written bare`, tok);
   }
   const isAlertCall = tok.type === 'NAME' && !tok.hasCall && tok.value.toLowerCase() === 'alert'
@@ -1195,7 +1337,10 @@ export function parseCall(state) {
       start: tok.start, end: close.end, _bindingsAt: bindingsAt, _alertBody: items,
     };
   }
-  return { type: 'call', name: tok.value, args: tok.args || [], hasCall: tok.hasCall, start: tok.start, end: tok.end, _bindingsAt: bindingsAt };
+  return {
+    type: 'call', name: tok.value, args: tok.args || [], hasCall: tok.hasCall, start: tok.start, end: tok.end,
+    _bindingsAt: bindingsAt, _whereExpr: tok.whereExpr,
+  };
 }
 
 /** `arg_list := first_arg ("," kw_arg)*` — args are resolved at LEX time
@@ -1444,12 +1589,81 @@ function _isLiteralStart(tok) {
   return tok.type === 'NUMBER' || tok.type === 'STRING' || tok.type === 'LBRACKET';
 }
 
+/** Sprint [where-filter] — a where-expression's own narrower `col_ref`:
+ *  a BARE column name only — no "@" (no metric_ref: there is nothing to
+ *  scope INTO, we're already inside one row), no "." (no colref dot-chain:
+ *  a where-expression's columns are flat, never dotted), no "(...)" (a
+ *  column reference never itself takes arguments). Validated against the
+ *  enclosing scope's own exposed-column whitelist at COMPILE time
+ *  (`_compileWhereLeaf`/`_exposedColumnForScope`), not here — this
+ *  function only shapes the AST, same parse-permissively/validate-at-
+ *  compile split this grammar uses everywhere else. */
+function _whereColToken(state) {
+  const tok = _peek(state);
+  if (tok.type !== 'NAME') throw new _ParseError('expected a column name inside a where-expression', tok);
+  if (tok.reserved) throw new _ParseError(`"${tok.value}" is a reserved word and cannot be used as a column name`, tok);
+  if (tok.hasCall) throw new _ParseError(`a where-expression column name cannot take arguments ('${tok.value}(...)')`, tok);
+  _advance(state);
+  if (_peek(state).type === 'DOT') {
+    throw new _ParseError('a where-expression column name cannot be dotted — only a bare column name is allowed', _peek(state));
+  }
+  if (_peek(state).type === 'AT') {
+    throw new _ParseError('"@" is not valid inside a where-expression — a where-expression compares bare columns only', _peek(state));
+  }
+  return { name: tok.value, start: tok.start, end: tok.end };
+}
+
+/** `where_leaf := col comparator value | col
+ *              | value comparator col comparator value` — the where-
+ *  expression's own `leaf` production (Sprint [where-filter]), dispatched
+ *  from `parseLeaf` the instant `state.whereMode` is set (see
+ *  `_parseWhereExprArg`). Deliberately a SEPARATE, narrower function
+ *  rather than extending `parseLeaf`/`parseMetricOrColRef` in place: a
+ *  where-expression never has a bound-label-splice branch (its fresh
+ *  sub-lex `state` carries no `bindings` at all — see
+ *  `_parseWhereExprArg`'s docstring), never a metric_ref, never a colref
+ *  dot-chain, and never a bare Token ($ref) reference — every one of
+ *  `parseLeaf`'s other branches would be dead code here, and keeping them
+ *  reachable would silently accept syntax (e.g. `metric@scope` nested
+ *  inside a where-expression) this feature's own design explicitly
+ *  rejects. Returns `{type:'wcol', col, op, value}` or (for a chained
+ *  comparison) `{type:'wbetween', col, op1, value1, op2, value2}` —
+ *  compiled by `_compileWhereLeaf`/`_compileWhereBetween`. */
+function _parseWhereExprLeaf(state) {
+  const startTok = _peek(state);
+  if (_isLiteralStart(startTok)) {
+    const value1 = parseValue(state);
+    const op1 = parseComparator(state);
+    const col = _whereColToken(state);
+    const op2 = parseComparator(state);
+    const value2 = parseValue(state);
+    return { type: 'wbetween', col, op1, value1, op2, value2 };
+  }
+  const col = _whereColToken(state);
+  if (_isComparatorStart(_peek(state))) {
+    const op = parseComparator(state);
+    const value = parseValue(state);
+    return { type: 'wcol', col, op, value };
+  }
+  // Boolean-column shorthand — same deferred-to-compile-time semantic
+  // check `parseLeaf`'s own boolean-metric shorthand uses ("was this
+  // column actually boolean?" is resolved once the catalog is known).
+  return { type: 'wcol', col, op: null, value: null };
+}
+
 /** `leaf := metric_ref comparator value | col_ref comparator value
  *         | value comparator (metric_ref | col_ref) comparator value | call`
  *  (Sprint 10's bare-call/Token-reference alternative, and Sprint 15's bare
  *  `col_ref` dot-access alternative — see the file-header EBNF's own
- *  comment on this production for the full rationale on both.) */
+ *  comment on this production for the full rationale on both.)
+ *
+ *  Sprint [where-filter] — `state.whereMode` (set only by
+ *  `_parseWhereExprArg`'s fresh sub-lex state) dispatches to the narrower
+ *  `_parseWhereExprLeaf` FIRST, before any of the ordinary branches below
+ *  — see that function's own docstring for why none of them apply inside
+ *  a where-expression. */
 export function parseLeaf(state) {
+  if (state.whereMode) return _parseWhereExprLeaf(state);
   const startTok = _peek(state);
   if (_isLiteralStart(startTok)) {
     const value1 = parseValue(state);
@@ -3080,17 +3294,232 @@ function _qualifierValueText(q) {
   return String(q.value.value);
 }
 
+// ── Where-expression compiler (Sprint [where-filter]) ──────────────────
+// A where-expression's wire shape is `{column, op, value}` — a DIFFERENT
+// key than a top-level condition leaf's own `metric`, and DELIBERATELY
+// never a `scope` sibling: the real backend's `agent_evaluator.py`
+// where-leaf walker (`_where_leaf_well_formed`/`_eval_where_leaf`)
+// resolves `node['column']` directly against the LEAF's own already-
+// resolved `scope`/exposed-column schema — a nested `scope` key on a
+// where-leaf would be meaningless (there is no "scope within a scope").
+// 2026-11-01 correction — an earlier version of this comment claimed the
+// key was `metric` (reusing the top-level leaf's own key name) and
+// asserted this had been "confirmed" against the real backend. That was
+// wrong: `_where_leaf_well_formed` reads `node.get('column')`, never
+// `node.get('metric')`. The earlier claim was never actually checked
+// against the validator function itself — every CLI-authored where-
+// filter compiled clean and then failed backend validation with a 422
+// on save, caught only when a doc-writing pass read the real validator
+// code directly. Fixed here to the real contract: `column`. Combinators
+// reuse the EXISTING `all`/`any`/`not` shape `compileCondNode` already
+// produces — they carry no metric/scope-specific payload of their own,
+// so sharing the shape (not the code, to avoid a cross-module coupling
+// for three keys) is lossless.
+
+/** Shared comparator/value compile logic for ONE where-leaf's bare
+ *  column/metric name — deliberately NOT `_compileComparatorValue`
+ *  (reused as-is everywhere else in this file): that function
+ *  unconditionally emits a `scope` sibling too, which a where-leaf must
+ *  never carry (see the section header above). A parallel implementation
+ *  (same per-valueType branches: boolean ==/!=-only, string ==/!=-only,
+ *  `in`/`not_in` requires a list, numeric ordered comparators) is
+ *  intentional duplication, not an oversight — trading a few mirrored
+ *  lines for zero risk of a NEW output shape leaking out of a shared
+ *  function three existing, well-tested call sites
+ *  (`compileLeaf`/`compileColRef`/`compileBetween`) already depend on
+ *  byte-for-byte.
+ *
+ *  `metricName === 'exchange'` uppercases a string value — mirrors the
+ *  qualifier mechanism's OWN identical rule (`_resolveScopeRefFull`'s
+ *  qualifier loop, `if (column === 'exchange') qualText =
+ *  qualText.toUpperCase();`) for the exact same reason: every real row's
+ *  `exchange` column is uppercase, and the backend's row-predicate match
+ *  is case-sensitive — `exchange == "mcx"` would otherwise compile clean
+ *  and never match a single row. */
+// 2026-11-01 fix — the backend's where-leaf validator
+// (`agent_evaluator.py:_where_leaf_well_formed`/`_eval_where_leaf`) reads
+// `node['column']`, never `node['metric']`. This function used to return
+// `{metric: metricName, ...}` for every branch — byte-identical to a
+// top-level condition LEAF's own shape, but a where-leaf is a DIFFERENT
+// wire shape (see `_compileWhereLeaf`'s own docstring: "a where-leaf's
+// key is 'column', not 'metric'"). Every CLI-authored where-filter
+// compiled clean and then failed backend validation with a 422 on save
+// — caught by the doc agent reading the real validator code, not by any
+// compile-time test (the compile tests pinned `metric`, so they passed
+// while every real save failed). Fixed by renaming the key in all four
+// return branches below; `metricName` (the local variable/parameter) is
+// unchanged, only the OUTPUT key changes.
+function _compileWhereComparatorValue(metricName, valueType, op, value, errors) {
+  if (op === null) {
+    if (valueType === 'boolean') return { column: metricName, op: '==', value: true };
+    errors.push(_err(`expected a comparator after where-column '${metricName}'`));
+    return null;
+  }
+  if (op === 'in' || op === 'not_in') {
+    if (value.type !== 'list') {
+      errors.push(_err(`'${op === 'in' ? 'in' : 'not in'}' requires a list literal on the right`));
+      return null;
+    }
+    const list = _compileListValue(value, valueType, errors);
+    if (errors.length) return null;
+    return { column: metricName, op, value: list };
+  }
+  if (valueType === 'boolean') {
+    if (op !== '==' && op !== '!=') {
+      errors.push(_err(`boolean where-column '${metricName}' only supports == / !=`));
+      return null;
+    }
+    if (value.type !== 'name' || !['true', 'false'].includes(String(value.value).toLowerCase())) {
+      errors.push(_err(`${metricName}: expected true or false`));
+      return null;
+    }
+    return { column: metricName, op, value: String(value.value).toLowerCase() === 'true' };
+  }
+  if (valueType === 'string') {
+    if (op !== '==' && op !== '!=') {
+      errors.push(_err(`string where-column '${metricName}' only supports == / !=`));
+      return null;
+    }
+    if (value.type !== 'string' && value.type !== 'name') {
+      errors.push(_err(`${metricName}: expected a string value`));
+      return null;
+    }
+    let text = String(value.value);
+    if (metricName === 'exchange') text = text.toUpperCase();
+    return { column: metricName, op, value: text };
+  }
+  if (value.type !== 'number') {
+    errors.push(_err('where-comparator requires both sides numeric'));
+    return null;
+  }
+  return { column: metricName, op, value: value.value };
+}
+
+/** Resolve + compile ONE `{type:'wcol', col, op, value}` node — validates
+ *  `col.name` against `scopeStr`'s own exposed-column whitelist via
+ *  `_exposedColumnForScope` (the SAME shared lookup `$row`'s compile-time
+ *  guard already uses — see that function's own docstring — so a column
+ *  valid for `$row` and a column valid inside a where-expression can
+ *  never silently disagree). */
+function _compileWhereLeaf(col, op, value, scopeStr, catalog, errors) {
+  const colEntry = _exposedColumnForScope(catalog, scopeStr, String(col.name).toLowerCase());
+  if (!colEntry) {
+    errors.push(_err(`unknown column '${col.name}' on scope '${scopeStr}' (where-expression)`, col));
+    return null;
+  }
+  const column = String(colEntry.token).split('.').pop();
+  return _compileWhereComparatorValue(column, colEntry.valueType, op, value, errors);
+}
+
+/** Resolve + compile a `{type:'wbetween', col, op1, value1, op2, value2}`
+ *  chain — mirrors `compileBetween`'s STRICT/mixed-strictness fallback
+ *  (an explicit `all` of two leaves) UNCONDITIONALLY, never the
+ *  inclusive-collapse-to-a-single-`op:'between'`-leaf shape that
+ *  production also has: a where-leaf's wire shape has no `between` op of
+ *  its own (deliberately — see the section header above), so there is no
+ *  single-leaf form to collapse to here. Reuses the top-level compiler's
+ *  own `_BETWEEN_FLIP` table (module-level `const`, safe to reference
+ *  here regardless of textual declaration order — same hoisting
+ *  guarantee every other forward-reference in this file already relies
+ *  on). */
+function _compileWhereBetween(node, scopeStr, catalog, errors) {
+  if (node.value1.type !== 'number' || node.value2.type !== 'number') {
+    errors.push(_err('chained ("between") where-comparison literals must be numeric'));
+    return null;
+  }
+  const lowSet = new Set(['<', '<=']);
+  const highSet = new Set(['>', '>=']);
+  const dirLow = lowSet.has(node.op1) && lowSet.has(node.op2);
+  const dirHigh = highSet.has(node.op1) && highSet.has(node.op2);
+  if (!dirLow && !dirHigh) {
+    errors.push(_err('mixed-direction chained where-comparison — both sides must point the same direction'));
+    return null;
+  }
+  const leaf1 = _compileWhereLeaf(node.col, _BETWEEN_FLIP[node.op1], node.value1, scopeStr, catalog, errors);
+  const leaf2 = _compileWhereLeaf(node.col, node.op2, node.value2, scopeStr, catalog, errors);
+  if (errors.length) return null;
+  return { all: [leaf1, leaf2] };
+}
+
+/** Recursively compile a where-expression AST node (`and`/`or`/`not`/
+ *  `wcol`/`wbetween` — see `_parseWhereExprLeaf`/`parseOrExpr`/
+ *  `parseTerm`'s shared combinator productions) into its wire shape.
+ *  `and`/`or`/`not` reuse the EXACT key names (`all`/`any`/`not`)
+ *  `compileCondNode` already uses for the top-level condition tree. */
+function _compileWhereExprNode(node, scopeStr, catalog, errors) {
+  if (node.type === 'and' || node.type === 'or') {
+    const l = _compileWhereExprNode(node.left, scopeStr, catalog, errors);
+    const r = _compileWhereExprNode(node.right, scopeStr, catalog, errors);
+    if (errors.length) return null;
+    return { [node.type === 'and' ? 'all' : 'any']: [l, r] };
+  }
+  if (node.type === 'not') {
+    const inner = _compileWhereExprNode(node.term, scopeStr, catalog, errors);
+    if (errors.length) return null;
+    return { not: inner };
+  }
+  if (node.type === 'wcol') return _compileWhereLeaf(node.col, node.op, node.value, scopeStr, catalog, errors);
+  if (node.type === 'wbetween') return _compileWhereBetween(node, scopeStr, catalog, errors);
+  errors.push(_err('internal: unknown where-expression node type'));
+  return null;
+}
+
+/** Top-level entry point — called from `_resolveScopeRefFull` with the
+ *  RAW parsed where-expression AST (`lastSeg._whereExpr`). `null`
+ *  (an empty "(...)", which can never actually reach here — see
+ *  `_parseWhereExprArg`'s own "cannot be empty" lex-time rejection — kept
+ *  as a defensive no-op rather than an assumed-unreachable branch) and
+ *  the `{type:'always'}` sentinel (an explicit `always` written inside
+ *  the parens, e.g. `positions.any_acct(always)`) both mean "no filter",
+ *  mirroring the qualifier mechanism's existing `account:*` wildcard
+ *  convention ("explicit wildcard == omit the key"). Returns `undefined`
+ *  for "no filter", a compiled condition tree otherwise, or `null` after
+ *  pushing onto `errors`. */
+function _compileWhereFilterTop(whereAst, scopeStr, catalog, errors) {
+  if (whereAst == null || whereAst.type === 'always') return undefined;
+  return _compileWhereExprNode(whereAst, scopeStr, catalog, errors);
+}
+
 /** `scope_ref` resolver (Sprint 15's `_resolveScopeString`, extended for
- *  Sprint 19's qualifier segments). Returns `{ scopeStr, scopeFilter }` —
- *  `scopeFilter` is `undefined` when no literal-valued qualifier was
- *  present (NEVER an empty `{}`). Returns `null` (after pushing onto
- *  `errors`) on any failure. */
+ *  Sprint 19's qualifier segments). Returns `{ scopeStr, scopeFilter,
+ *  where }` — `scopeFilter`/`where` are `undefined` when absent (NEVER an
+ *  empty `{}`/falsy sentinel). Returns `null` (after pushing onto
+ *  `errors`) on any failure.
+ *
+ *  Sprint [where-filter] — `where` (a compiled condition tree) is only
+ *  ever populated by the NO-QUALIFIER fast path below, read off the
+ *  chain's LAST segment's `_whereExpr` (see `lexAgentStatement`'s own
+ *  scope-seg-position detection — only the trailing segment can ever
+ *  carry one; the lexer's own trailing-dot lookahead makes this a true
+ *  structural guarantee, not merely a convention, so no defensive check
+ *  for "an EARLIER segment carries one" is written here — it can never
+ *  fire). The qualifier-bearing path never sets `where` at all, for the
+ *  same structural reason in reverse: a qualifier's leading COLON token
+ *  always resets the lexer's scope-chain state machine, so NO segment
+ *  anywhere in a qualifier-bearing chain can ever carry a `_whereExpr`
+ *  either — "where-expression combined with a qualifier" is therefore
+ *  not a case this function needs to reject; it is unreachable by
+ *  construction. (A where-expression followed by a trailing qualifier,
+ *  e.g. `positions.any_acct(exchange=="MCX").account:ZG0790`, hits the
+ *  OTHER lexer guard instead — the trailing-dot lookahead sees the "."
+ *  before ".account" and never treats `any_acct(...)`'s parens as a
+ *  where-expression at all, so its raw text falls through to the
+ *  ordinary arg-list parser and fails there with its own, pre-existing
+ *  error shape — see `test_scope_where_filter.test.js`'s pinning test for
+ *  the exact message.) */
 function _resolveScopeRefFull(scopeNode, catalog, errors) {
   const segs = scopeNode.segments;
   const qualIdx = segs.findIndex((s) => s.type === 'qualifier');
   if (qualIdx === -1) {
     const scopeStr = _resolveScopeString(scopeNode, catalog, errors);
-    return scopeStr ? { scopeStr, scopeFilter: undefined } : null;
+    if (!scopeStr) return null;
+    const lastSeg = segs[segs.length - 1];
+    let where;
+    if (lastSeg.type === 'call' && lastSeg._whereExpr !== undefined) {
+      where = _compileWhereFilterTop(lastSeg._whereExpr, scopeStr, catalog, errors);
+      if (errors.length) return null;
+    }
+    return { scopeStr, scopeFilter: undefined, where };
   }
   // Trailing-only — a 'call' segment after the first qualifier segment is
   // a clear, specific compile error (same "trailing-only" convention
@@ -3247,8 +3676,32 @@ function _decompileScopeFilter(scopeFilter, errors) {
  *  `grammar_registry.py:_parse_call_token`, which ONLY accepts a single
  *  positional literal per declared param, EXACT arity (no optional/default
  *  params for metric/scope calls — unlike action/channel calls, which use
- *  per-key `required`). */
-function _compileMetricCallString(callNode, entry, errors) {
+ *  per-key `required`).
+ *
+ *  Sprint [rowset-aggregates] — `scopeStr`/`catalog` are NEW, OPTIONAL
+ *  trailing params, needed only by a row-set-aggregate metric's own
+ *  `column=` argument (`sum(column=qty)`, `max(column=pnl)`,
+ *  `avg(column=day_pct)`) — a param whose catalog schema declares
+ *  `type: 'string'` (confirmed against the real backend's
+ *  `grammar_registry.py:_parse_call_token` — it dispatches on
+ *  `type === 'string'`, accepting either a bare `ast.Name` or a quoted
+ *  string literal, both of which resolve to the SAME column-name string;
+ *  there is no dedicated `'column'` type on the backend side, so this
+ *  reads the IDENTICAL discriminator the real catalog will actually
+ *  carry, not an invented one). Rendered as a BARE identifier here
+ *  (`parts.push(...)`, no quotes) — the `ast.Name` half of that same
+ *  backend acceptance. Validated against the CALLER's already-resolved
+ *  scope via `_exposedColumnForScope`, the SAME shared lookup the
+ *  where-filter/`$row` mechanisms use, instead of this function's pre-
+ *  existing, unconditional "must be a positive numeric literal" rule.
+ *  Every EXISTING metric factory (`mean_pnl`/`stdev_pnl`/etc.) declares
+ *  only `type:'number'` params, so this branch is never reached for
+ *  them — zero behavior change, no new params needed at either of the
+ *  two pre-existing call sites that still omit them (none do today;
+ *  both `compileLeaf`/`compileBetween` thread them through
+ *  unconditionally, since a resolved `scopeStr` is always available by
+ *  the time either calls this function). */
+function _compileMetricCallString(callNode, entry, errors, scopeStr, catalog) {
   const keys = entry.paramKeys;
   if (keys.length === 0) {
     if (callNode.args && callNode.args.length) { errors.push(_err(`${entry.token} takes no arguments`)); return null; }
@@ -3262,6 +3715,24 @@ function _compileMetricCallString(callNode, entry, errors) {
   const parts = [];
   for (const k of keys) {
     const v = provided.get(k);
+    const spec = entry.paramsSchema && entry.paramsSchema[k];
+    if (spec && spec.type === 'string') {
+      if (v.type !== 'name') {
+        errors.push(_err(`${entry.token}: argument '${k}' must be a bare column name`));
+        return null;
+      }
+      if (!scopeStr || !catalog) {
+        errors.push(_err(`internal: ${entry.token}'s '${k}' needs a resolved scope to validate — caller did not provide one`));
+        return null;
+      }
+      const colEntry = _exposedColumnForScope(catalog, scopeStr, String(v.value).toLowerCase());
+      if (!colEntry) {
+        errors.push(_err(`${entry.token}: '${v.value}' is not a known column on scope '${scopeStr}'`));
+        return null;
+      }
+      parts.push(String(colEntry.token).split('.').pop());
+      continue;
+    }
     if (v.type !== 'number' || !(v.value > 0)) {
       errors.push(_err(`${entry.token}: argument '${k}' must be a positive numeric literal`));
       return null;
@@ -3643,7 +4114,7 @@ function compileLeaf(node, catalog) {
   if (errors.length) return { conditions: null, errors };
   _checkQuoteScopeRequiresSymbol(scopeResolved.scopeStr, scopeResolved.scopeFilter, errors);
   if (errors.length) return { conditions: null, errors };
-  const metricStr = _compileMetricCallString(node.metric, metricEntry, errors);
+  const metricStr = _compileMetricCallString(node.metric, metricEntry, errors, scopeResolved.scopeStr, catalog);
   if (errors.length) return { conditions: null, errors };
   const conditions = _compileComparatorValue(metricStr, scopeResolved.scopeStr, metricEntry.valueType, node.op, node.value, errors);
   if (errors.length) return { conditions: null, errors };
@@ -3651,6 +4122,11 @@ function compileLeaf(node, catalog) {
   // condition object the comparator just built, never folded into
   // `scope`/`metric` — mirrors the real backend leaf shape exactly.
   if (scopeResolved.scopeFilter) conditions.scope_filter = scopeResolved.scopeFilter;
+  // Sprint [where-filter] — a compiled where-expression is ALSO a
+  // sibling key (never folded into `scope`), mutually exclusive with
+  // `scope_filter` by construction (see `_resolveScopeRefFull`'s own
+  // docstring on why the two can never both be set).
+  if (scopeResolved.where) conditions.where = scopeResolved.where;
   return { conditions, errors: [] };
 }
 
@@ -3700,7 +4176,7 @@ const _BETWEEN_FLIP = { '<': '>', '<=': '>=', '>': '<', '>=': '<=' };
 
 function compileBetween(node, catalog) {
   const errors = [];
-  let metricStr, scopeStr, valueType, scopeFilter;
+  let metricStr, scopeStr, valueType, scopeFilter, where;
   if (node.colSegments) {
     const resolved = _resolveDotAccess(node.colSegments, catalog, errors);
     if (errors.length) return { conditions: null, errors };
@@ -3709,11 +4185,12 @@ function compileBetween(node, catalog) {
     const metricEntry = _resolveMetric(node.metric, catalog, errors);
     const scopeResolved = metricEntry ? _resolveScopeRefFull(node.scope, catalog, errors) : null;
     if (errors.length) return { conditions: null, errors };
-    metricStr = _compileMetricCallString(node.metric, metricEntry, errors);
+    metricStr = _compileMetricCallString(node.metric, metricEntry, errors, scopeResolved.scopeStr, catalog);
     if (errors.length) return { conditions: null, errors };
     valueType = metricEntry.valueType;
     scopeStr = scopeResolved.scopeStr;
     scopeFilter = scopeResolved.scopeFilter;
+    where = scopeResolved.where;
   }
   _checkQuoteScopeRequiresSymbol(scopeStr, scopeFilter, errors);
   if (errors.length) return { conditions: null, errors };
@@ -3741,6 +4218,10 @@ function compileBetween(node, catalog) {
     const [low, high] = dirLow ? [node.value1.value, node.value2.value] : [node.value2.value, node.value1.value];
     const conditions = { metric: metricStr, scope: scopeStr, op: 'between', value: [low, high] };
     if (scopeFilter) conditions.scope_filter = scopeFilter;
+    // Sprint [where-filter] — shared onto the single collapsed leaf, same
+    // "duplicated onto both halves of a between-chain" convention
+    // `scope_filter` already uses just below for the strict branch.
+    if (where) conditions.where = where;
     return { conditions, errors: [] };
   }
   // Strict / mixed-strictness chain — the backend's `between` op is ALWAYS
@@ -3751,6 +4232,7 @@ function compileBetween(node, catalog) {
   const leaf1 = { metric: metricStr, scope: scopeStr, op: _BETWEEN_FLIP[node.op1], value: node.value1.value };
   const leaf2 = { metric: metricStr, scope: scopeStr, op: node.op2, value: node.value2.value };
   if (scopeFilter) { leaf1.scope_filter = scopeFilter; leaf2.scope_filter = scopeFilter; }
+  if (where) { leaf1.where = where; leaf2.where = where; }
   return { conditions: { all: [leaf1, leaf2] }, errors: [] };
 }
 
@@ -4383,7 +4865,7 @@ function compileAlertClause(alertCalls, alertMsg, catalog, bindingsMap) {
 // a candidate, resolution ALWAYS returns success or a specific compile
 // error — never silently falls through to a different, confusing error.
 //
-// Three compile-time guards (mirror the runtime backstop in
+// Four compile-time guards (mirror the runtime backstop in
 // `actions.py:resolve_row_ref_params` plus the operator's explicit scope
 // rules):
 //   1. AGGREGATE scope (any leaf scoped `*.total`) — no real per-row
@@ -4402,6 +4884,13 @@ function compileAlertClause(alertCalls, alertMsg, catalog, bindingsMap) {
 //      carries no account/qty identity suitable for an order-placing
 //      action, even for a name (`symbol`) that IS present in its own
 //      exposed-column schema.
+//   4. AGGREGATE metric (any leaf whose metric is count/sum/max/avg) —
+//      added Sprint [where-filter/aggregates] addendum. Same "no real
+//      per-row identity" consequence as guard 1, but keyed on the leaf's
+//      METRIC rather than its scope — a row-set-aggregate leaf can be
+//      scoped to an ordinary per-row scope (e.g. `count@positions.
+//      expiring_today`) and still collapse to one aggregate match at
+//      runtime, which guard 1's `.total`-suffix check cannot see.
 
 /** Union of every exposed-column PLAIN name (the part after the scope
  *  prefix) registered anywhere in the catalog, lowercased — e.g. `pnl`,
@@ -4420,6 +4909,28 @@ function _allExposedColumnNames(catalog) {
 
 function _isAggregateScope(scope) {
   return typeof scope === 'string' && scope.toLowerCase().endsWith('.total');
+}
+
+// Sprint [where-filter/aggregates] addendum — the four row-set-aggregate
+// metric tokens (`count`/`sum`/`max`/`avg`). Per the backend's
+// `_ae_is_aggregate_match` (agent_engine.py), a leaf whose METRIC is one
+// of these collapses to a single aggregate match with no per-row identity
+// bound — the exact same "no real `_matched_row`" consequence as the
+// existing `.total`-scope guard above, just keyed on the metric instead
+// of the scope. There is no generic catalog flag for this (these are a
+// small, fixed set of new tokens, not an extensible metadata-driven
+// category — see the backend handback's own note that `sum`/`max`/`avg`
+// stamp `.column` on their Python closure, a runtime-only attribute never
+// surfaced through the token catalog), so the check is a hardcoded name
+// match, mirroring `_isAggregateScope`/`_isWatchlistScope`'s own style.
+// A leaf's compiled `metric` string is either a bare token (`"count"`) or
+// a call string (`"sum(qty)"`, `"avg(pnl)"`) — strip an optional
+// `(...)` suffix before comparing.
+const _ROWSET_AGGREGATE_METRIC_NAMES = new Set(['count', 'sum', 'max', 'avg']);
+function _isRowsetAggregateMetricString(metric) {
+  if (typeof metric !== 'string') return false;
+  const base = metric.split('(')[0].trim().toLowerCase();
+  return _ROWSET_AGGREGATE_METRIC_NAMES.has(base);
 }
 
 function _isWatchlistScope(scope) {
@@ -4451,13 +4962,24 @@ function _isWatchlistScope(scope) {
  *      — genuinely unknowable here, so the "name must be exposed on
  *      EVERY leaf's scope" check (guard 2) cannot be soundly performed
  *      when a leaf's scope isn't even visible, whether the Token is the
- *      ENTIRE condition or just one leaf mixed into a larger tree. */
+ *      ENTIRE condition or just one leaf mixed into a larger tree.
+ *    - `state.hasAggregateMetric` — ANY leaf whose `metric` is a
+ *      row-set aggregate (`count`/`sum`/`max`/`avg`, see
+ *      `_isRowsetAggregateMetricString`), regardless of that leaf's own
+ *      `scope` (NOT scoped `.total` — the backend's own guard-1
+ *      `.total`-scope check can't see this case at all; the aggregate
+ *      collapse comes from the METRIC here, same runtime consequence —
+ *      `_ae_is_aggregate_match` treats it identically to a `.total`-
+ *      scoped leaf: a single aggregate match, no `_matched_row` bound).
+ *      Added Sprint [where-filter/aggregates] addendum — this leaf shape
+ *      didn't exist before that sprint introduced the four metrics. */
 function _collectLeafScopes(node, out, state) {
   if (!node || typeof node !== 'object') return;
   if (Array.isArray(node.all)) { for (const n of node.all) _collectLeafScopes(n, out, state); return; }
   if (Array.isArray(node.any)) { for (const n of node.any) _collectLeafScopes(n, out, state); return; }
   if (node.not) { state.hasNegation = true; _collectLeafScopes(node.not, out, state); return; }
   if ('$ref' in node) { state.hasTokenRef = true; return; }
+  if (_isRowsetAggregateMetricString(node.metric)) state.hasAggregateMetric = true;
   if (typeof node.scope === 'string') out.add(node.scope);
 }
 
@@ -4475,7 +4997,7 @@ function _exposedColumnForScope(catalog, scope, lowerName) {
  *      to pre-Sprint-16 behavior.
  *    - `{ value: {"$row": name} }` — resolved successfully.
  *    - `{ error }` — a definite row-ref-shaped value that FAILS one of
- *      the three guards — never falls through to a different error. */
+ *      the four guards — never falls through to a different error. */
 function _resolveRowRefOrNull(valueNode, rowRefCtx, label) {
   if (!rowRefCtx || !valueNode || valueNode.type !== 'name') return null;
   const raw = valueNode.value;
@@ -4495,6 +5017,13 @@ function _resolveRowRefOrNull(valueNode, rowRefCtx, label) {
     return { error: _err(
       `${label}: '${requested}' cannot be bound from a matched row — WHEN condition includes a `
       + `Token ($ref) reference whose own per-row scope isn't visible at compile time`
+    ) };
+  }
+  if (rowRefCtx.hasAggregateMetric) {
+    return { error: _err(
+      `${label}: '${requested}' cannot be bound from a matched row — WHEN condition includes a `
+      + `row-set aggregate (count/sum/max/avg), which collapses to a single aggregate match with `
+      + `no real per-row identity (same as a '.total'-scoped leaf)`
     ) };
   }
   if (leafScopes.size === 0) {
@@ -5519,11 +6048,12 @@ function compileAgentStmt(ast, catalog, opts) {
   // from), rather than the clear compile-time error `_resolveRowRefOrNull`
   // gives for every OTHER no-row-available case.
   const leafScopes = new Set();
-  const scopeState = { hasNegation: false, hasTokenRef: false };
+  const scopeState = { hasNegation: false, hasTokenRef: false, hasAggregateMetric: false };
   _collectLeafScopes(condResult.conditions, leafScopes, scopeState);
   const rowRefCtx = {
     catalog, leafScopes, allExposedNames: _allExposedColumnNames(catalog),
     hasNegation: scopeState.hasNegation, hasTokenRef: scopeState.hasTokenRef,
+    hasAggregateMetric: scopeState.hasAggregateMetric,
   };
   const preambleResult = compilePreambleClause(preambleCallsSubst, catalog, opts, null);
   errors.push(...preambleResult.errors);
@@ -6475,11 +7005,31 @@ function _resolveMetricCall(metricStr, catalog) {
   }
   const pairs = [];
   for (let i = 0; i < rawArgs.length; i++) {
+    const key = entry.paramKeys[i];
+    const spec = entry.paramsSchema && entry.paramsSchema[key];
+    // Sprint [rowset-aggregates] — a row-set aggregate's own `column`
+    // param (e.g. stored `"sum(qty)"`) reverses to a bare column name,
+    // never a numeric literal — mirrors `_compileMetricCallString`'s
+    // identical `type:'string'` branch (see that function's own
+    // docstring for why `'string'`, confirmed against the real
+    // backend's `_parse_call_token`, not an invented `'column'` type).
+    // No scope-aware re-validation here (decompile never had catalog/
+    // scope context for a column either, same as `_decompileWhereLeaf`'s
+    // own column handling) — a stale/bogus column name is instead
+    // caught at RECOMPILE time.
+    if (spec && spec.type === 'string') {
+      const colName = rawArgs[i];
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(colName)) {
+        return { error: `metric '${entry.token}': stored argument '${colName}' is not a renderable bare column name` };
+      }
+      pairs.push(`${key}=${colName}`);
+      continue;
+    }
     const n = Number(rawArgs[i]);
     if (!Number.isFinite(n)) return { error: `metric '${entry.token}': stored argument '${rawArgs[i]}' is not numeric` };
     const t = _renderNumber(n);
     if (t == null) return { error: `metric '${entry.token}': stored argument '${rawArgs[i]}' cannot be rendered as a CLI numeric literal` };
-    pairs.push(`${entry.paramKeys[i]}=${t}`);
+    pairs.push(`${key}=${t}`);
   }
   return { entry, text: `${entry.token}(${pairs.join(', ')})` };
 }
@@ -6539,6 +7089,17 @@ function _tryDecompileBetween(a, b, catalog) {
   // aren't really the same qualified scope and must fall back to generic
   // per-leaf rendering.
   if (JSON.stringify(a.scope_filter || null) !== JSON.stringify(b.scope_filter || null)) return null;
+  // Sprint [where-filter] — this function builds its OWN `scopeText`
+  // inline (below) and has no `(where)` rendering of its own; bailing out
+  // on either side carrying one (rather than teaching this pretty-printer
+  // a THIRD scope-suffix shape) is a deliberate simplification — the
+  // generic `(leaf1) & (leaf2)` fallback in `decompileAllAny` already
+  // renders a where-carrying strict-between pair correctly (via the
+  // ordinary `decompileLeaf` path, which DOES know about `where`).
+  // Without this check, a where-filtered strict-between chain would
+  // silently collapse to pretty `lo <= x <= hi` text with the where-filter
+  // dropped entirely — a real data-loss bug, not merely a cosmetic one.
+  if (a.where !== undefined || b.where !== undefined) return null;
   if (typeof a.value !== 'number' || typeof b.value !== 'number') return null;
   const aLow = _CMP_LOW_OPS.has(a.op), aHigh = _CMP_HIGH_OPS.has(a.op);
   const bLow = _CMP_LOW_OPS.has(b.op), bHigh = _CMP_HIGH_OPS.has(b.op);
@@ -6580,6 +7141,120 @@ function _tryDecompileBetween(a, b, catalog) {
  *  (e.g. `pnl`) is COMPLETELY UNAFFECTED by this fallback — it keeps
  *  decompiling to `pnl@positions.total` exactly as before; this is
  *  expected normalization (both spellings compile to the same JSON). */
+/** Decompile a `{column, op, value}` where-leaf — the mirror of
+ *  `_compileWhereLeaf`/`_compileWhereComparatorValue`. `column` (not
+ *  `metric`) is the real backend wire key — see the where-expression
+ *  compiler's own section-header comment above for the 2026-11-01
+ *  correction that settled this (an earlier version of both comments
+ *  wrongly claimed `metric`, unchecked against the real validator).
+ *  Deliberately modeled on
+ *  `decompileGivenLeaf` (pure `typeof node.value` dispatch), NOT on
+ *  `decompileLeaf`/`decompileColRef` (which need a resolved catalog
+ *  `valueType` to pick a branch) — a where-leaf carries no catalog entry
+ *  of its own at decompile time, and the JS value's own type already
+ *  disambiguates every case unambiguously (no catalog lookup needed, so
+ *  none is attempted — a hand-edited/AI-authored bogus column name is
+ *  instead caught at RECOMPILE time, same "fail at recompile, not
+ *  decompile" convention `decompileGivenLeaf` already follows). The
+ *  `op:'=='`/`value:true` boolean-shorthand collapse is unconditional,
+ *  mirroring `decompileLeaf`'s own identical unconditional collapse. */
+function _decompileWhereLeaf(node, errors) {
+  // 2026-11-01 fix — reads 'column', matching the compiler-side rename
+  // in `_compileWhereComparatorValue` (the backend's own wire contract,
+  // `agent_evaluator.py:_where_leaf_well_formed`, requires `column`, not
+  // `metric` — a where-leaf is NOT a top-level condition leaf, which
+  // keeps using `metric`).
+  if (typeof node.column !== 'string' || !node.column) {
+    errors.push(_err(`where-leaf 'column' must be a non-empty string, got ${JSON.stringify(node.column)}`));
+    return null;
+  }
+  const col = node.column;
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(col)) {
+    errors.push(_err(`where-leaf column '${col}' is not a renderable bare identifier`));
+    return null;
+  }
+  if (node.op === 'in' || node.op === 'not_in') {
+    if (!Array.isArray(node.value)) {
+      errors.push(_err(`where-leaf '${col}': '${node.op}' requires a list value`));
+      return null;
+    }
+    const r = _renderListLiteral(node.value);
+    if (r.error) { errors.push(_err(`where-leaf '${col}': ${r.message}`)); return null; }
+    return `${col} ${node.op === 'not_in' ? 'not in' : 'in'} ${r.text}`;
+  }
+  if (node.op === '==' && node.value === true) return col; // boolean shorthand
+  if (typeof node.value === 'boolean') {
+    if (node.op !== '==' && node.op !== '!=') {
+      errors.push(_err(`where-leaf '${col}': boolean comparison only supports == / !=`));
+      return null;
+    }
+    return `${col} ${node.op} ${node.value}`;
+  }
+  if (['<', '<=', '>', '>=', '==', '!='].includes(node.op) && typeof node.value === 'number') {
+    const numText = _renderNumber(node.value);
+    if (numText == null) { errors.push(_err(`where-leaf '${col}': value ${node.value} cannot be rendered as a CLI numeric literal`)); return null; }
+    return `${col} ${node.op} ${numText}`;
+  }
+  if ((node.op === '==' || node.op === '!=') && typeof node.value === 'string') {
+    const r = _renderListItem(node.value);
+    if (r.error) { errors.push(_err(`where-leaf '${col}': ${r.message}`)); return null; }
+    return `${col} ${node.op} ${r.text}`;
+  }
+  errors.push(_err(`where-leaf '${col}': unrecognized op/value combination (op=${node.op}, value=${JSON.stringify(node.value)})`));
+  return null;
+}
+
+/** Decompile an `{all:[...]}` / `{any:[...]}` where-expression combinator
+ *  — a deliberately MINIMAL sibling of `decompileAllAny` (reuses the
+ *  SAME generic, catalog-free `_flattenCompositeChildren` flattening
+ *  helper, but skips that function's catalog-coupled "pretty between-
+ *  chain reversal" attempt entirely — a where-expression's own between
+ *  chain never collapses to a single leaf in the first place, see
+ *  `_compileWhereBetween`'s own docstring, so there is nothing to try to
+ *  reverse). A flat 3+ / single-element array normalizes to whatever
+ *  shape the grammar's own left-associative chain naturally produces on
+ *  recompile — same documented, deliberate policy `decompileAllAny`
+ *  already uses. */
+function _decompileWhereAllAny(node, opKey, errors) {
+  const rawArr = node[opKey];
+  if (!Array.isArray(rawArr) || rawArr.length === 0) {
+    errors.push(_err(`where-expression '${opKey}' must be a non-empty array`));
+    return null;
+  }
+  const flat = _flattenCompositeChildren(opKey, rawArr);
+  if (flat.length === 1) return _decompileWhereExprNode(flat[0], errors);
+  const sym = opKey === 'all' ? '&' : '|';
+  const parts = [];
+  let bad = false;
+  for (const c of flat) {
+    const inner = _decompileWhereExprNode(c, errors);
+    if (inner == null) { bad = true; continue; }
+    parts.push(`(${inner})`);
+  }
+  if (bad) return null;
+  return parts.join(` ${sym} `);
+}
+
+/** Decompile a where-expression AST node (`all`/`any`/`not`/leaf) back to
+ *  CLI text — dispatched from `decompileLeaf` for the leaf's own `where`
+ *  sibling key. Mirrors `decompileCondNode`'s own dispatch shape. */
+function _decompileWhereExprNode(node, errors) {
+  if (!node || typeof node !== 'object' || Array.isArray(node)) {
+    errors.push(_err(`where-expression node must be an object, got ${JSON.stringify(node)}`));
+    return null;
+  }
+  if (Array.isArray(node.all)) return _decompileWhereAllAny(node, 'all', errors);
+  if (Array.isArray(node.any)) return _decompileWhereAllAny(node, 'any', errors);
+  if ('not' in node) {
+    const inner = _decompileWhereExprNode(node.not, errors);
+    if (inner == null) return null;
+    return `~(${inner})`;
+  }
+  if (typeof node.column === 'string') return _decompileWhereLeaf(node, errors);
+  errors.push(_err(`unrecognized where-expression node shape: ${JSON.stringify(node)}`));
+  return null;
+}
+
 function decompileLeaf(node, catalog, errors) {
   const s = _decompileResolveScopeString(node.scope, catalog);
   if (s.error) { errors.push(_err(s.error)); return null; }
@@ -6594,6 +7269,22 @@ function decompileLeaf(node, catalog, errors) {
     const qualSuffix = _decompileScopeFilter(node.scope_filter, errors);
     if (qualSuffix == null) return null;
     scopeText = `${scopeText}${qualSuffix}`;
+  }
+  // Sprint [where-filter] — a stored `where` renders as a trailing
+  // `(...)` suffix on the LAST scope segment, applied the SAME way
+  // `scope_filter` is just above — before the metric/column resolution,
+  // so the `@`-metric-form and the `between`/`in`/boolean ops downstream
+  // automatically pick it up via the shared `refText`. Mutually
+  // exclusive with `scope_filter` by construction (see
+  // `_resolveScopeRefFull`'s own docstring) — a leaf carrying BOTH is an
+  // unrecognized shape no compiler path here can ever produce, so no
+  // dedicated rejection is written for it; `_decompileScopeFilter`
+  // already ran above and would have consumed `scope_filter` had it
+  // somehow been present too.
+  if (node.where !== undefined) {
+    const whereText = _decompileWhereExprNode(node.where, errors);
+    if (whereText == null) return null;
+    scopeText = `${scopeText}(${whereText})`;
   }
 
   const m = _resolveMetricCall(node.metric, catalog);
@@ -8516,8 +9207,42 @@ function _callNameStartBefore(text, parenPos) {
 }
 
 /** Suggest param-name or enum-value completions for the call whose "("
- *  sits at `parenPos`, given everything typed so far up to `cursor`. */
-function _paramOrEnumSuggestion(text, parenPos, cursor, entry, opts = {}) {
+ *  sits at `parenPos`, given everything typed so far up to `cursor`.
+ *
+ *  Sprint [rowset-aggregates] — `catalog` is a NEW, OPTIONAL trailing
+ *  param, needed only for a row-set-aggregate metric's `column=`
+ *  argument (e.g. `sum(column=qty)`) — every PRE-EXISTING param ignores
+ *  it completely. That param's catalog schema declares `type: 'string'`
+ *  (confirmed against the real backend's `grammar_registry.py:
+ *  _parse_call_token` — see `_compileMetricCallString`'s own docstring;
+ *  there is no dedicated `'column'` type), the EXACT SAME declared type
+ *  an ordinary free-text action param (`place_order`'s `account`/
+ *  `symbol`) also uses — `spec.type === 'string'` alone cannot tell them
+ *  apart. The real, load-bearing distinction is WHICH catalog bucket
+ *  `entry` came from: `entry` IS the live `catalog.metrics` entry for a
+ *  metric/scope-factory call (`sum`/`max`/`avg`), and is NEVER one for
+ *  an action/channel call (`place_order`/`log`/`telegram`/...) — those
+ *  compile through a completely disjoint path
+ *  (`_compileGenericActionParams`/`_compileOrderActionParams`, never
+ *  `_compileMetricCallString`). The identity check below
+ *  (`catalog.metrics.get(entry.token.toLowerCase()) === entry`) is
+ *  exactly that boundary, so `account=`/`symbol=`/`tag=` and any other
+ *  ordinary string-typed action param are UNAFFECTED — they still fall
+ *  through to their own existing branches below, unchanged.
+ *
+ *  The candidate source is `_allExposedColumnNames(catalog)` (the SAME
+ *  union-of-every-scope's-own-columns list the `$row` mechanism already
+ *  computes for an analogous "which column names are even possible"
+ *  question) — not a scope-specific list, because at a metric-call's
+ *  own param position (`sum(column=|)@positions.any_acct`) the scope
+ *  hasn't been typed yet (it comes AFTER the "@"), so there is no
+ *  narrower, resolved scope to offer columns FROM yet; this is the same
+ *  structural ordering constraint every other metric-before-scope
+ *  position in this grammar already has. Narrowing to the enclosing
+ *  scope's own columns once it IS known (the where-expression's inline
+ *  column completion) is a separate, NOT-yet-implemented mechanism —
+ *  see the handback report's named gap. */
+function _paramOrEnumSuggestion(text, parenPos, cursor, entry, opts = {}, catalog = null) {
   const innerSoFar = text.slice(parenPos + 1, cursor);
   const segments = _splitTopLevelCommasWithOffsets(innerSoFar);
   const usedKeys = new Set();
@@ -8557,7 +9282,10 @@ function _paramOrEnumSuggestion(text, parenPos, cursor, entry, opts = {}) {
     // symbols starting with that characters") — below that, no symbol
     // candidates are suggested at all (not a smaller/noisier list).
     const _symbolPrefix = valuePartial.trim();
+    const _isMetricFactoryCall = !!(catalog && catalog.metrics
+      && catalog.metrics.get(String(entry.token).toLowerCase()) === entry);
     const enumValues = (spec && spec.type === 'enum' && Array.isArray(spec.enum)) ? spec.enum
+      : (spec && spec.type === 'string' && _isMetricFactoryCall) ? [..._allExposedColumnNames(catalog)].sort()
       : (realKey === 'account' && Array.isArray(opts.accountIds) && opts.accountIds.length) ? opts.accountIds
       : (realKey === 'symbol' && typeof opts.suggestSymbols === 'function' && _symbolPrefix.length >= 3) ? opts.suggestSymbols(_symbolPrefix)
       : [];
@@ -8632,21 +9360,36 @@ function _paramOrEnumSuggestion(text, parenPos, cursor, entry, opts = {}) {
 
 /** Every word a bare scope-chain's FIRST segment could be typed as — the
  *  canonical family names actually present in the live catalog (derived,
- *  never hand-listed, so a future new family needs no edit here) PLUS
- *  every short alias for one of those families (Sprint H items 6/11 —
- *  `pos`/`hld`/`hold`/`fnd`/`wl`). Used to offer `positions`/`holdings`/
- *  `hold`/etc. as bare-name candidates at a WHEN/GIVEN leaf-start position
- *  (the newer Sprint 15 dot-access leaf form, `positions.total.pnl <= 0`,
- *  has no `metric@scope` prefix to anchor off of, so it needs its OWN
- *  entry point into autocomplete, distinct from `_suggestScopeRef`'s
- *  "@"-anchored one). */
+ *  never hand-listed, so a future new family needs no edit here), ALIAS-
+ *  ONLY where a short alias exists (operator's explicit standing UX rule,
+ *  not scoped to this sprint — "when a real token has a registered
+ *  shorter alias, the dropdown shows ONLY the alias, never both", to
+ *  reduce dropdown clutter). Before this, `positions` AND `pos` (etc.)
+ *  both appeared as separate candidates — this emits `pos`/`hld`/`fnd`/
+ *  `wl` in place of their canonical long forms, never alongside them.
+ *  `SCOPE_FAMILY_ALIASES` declares exactly one canonical short alias per
+ *  family — `_EXTRA_SCOPE_FAMILY_ALIASES`'s `hold` (an ADDITIONAL
+ *  accepted alias for `holdings`, alongside `hld`) is deliberately NOT
+ *  added to this candidate list: the operator's own wording is singular
+ *  ("the shorter alias"), and `hold` stays fully valid as TYPED input —
+ *  only its own `_scopeFamilyAliasOf` resolver entry, never a second
+ *  dropdown candidate, is affected by this. A family with no registered
+ *  alias (none exist today) would still show its own canonical name,
+ *  unaffected. Used to offer these as bare-name candidates at a WHEN/
+ *  GIVEN leaf-start position (the Sprint 15 dot-access leaf form,
+ *  `positions.total.pnl <= 0`, has no `metric@scope` prefix to anchor
+ *  off of, so it needs its OWN entry point into autocomplete, distinct
+ *  from `_suggestScopeRef`'s "@"-anchored one — see that function's own
+ *  docstring, which still shows the canonical `positions.total` form
+ *  with no alias variant at all once a family root is typed; this is
+ *  NOT the same "both appear" defect pattern, so it is left unchanged
+ *  here). */
 function _allScopeFamilyRootNames(catalog) {
   if (!catalog || !catalog.scopes) return [];
   const canonical = new Set();
   for (const token of catalog.scopes.keys()) canonical.add(token.split('.')[0]);
-  const names = new Set(canonical);
-  for (const [real, alias] of Object.entries(SCOPE_FAMILY_ALIASES)) if (canonical.has(real)) names.add(alias);
-  for (const [alias, real] of Object.entries(_EXTRA_SCOPE_FAMILY_ALIASES)) if (canonical.has(real)) names.add(alias);
+  const names = new Set();
+  for (const real of canonical) names.add(SCOPE_FAMILY_ALIASES[real] || real);
   return [...names];
 }
 
@@ -8874,6 +9617,26 @@ function _bareNameCandidates(clauseKind, catalog, contextTok, text, boundaryPos)
     const base = [...section.values()];
     const tokens = base.map((e) => e.token);
     const descByToken = new Map(base.map((e) => [e.token, e.description || '']));
+    // Sprint [where-filter/aggregates] — `alert` is a valid DO-clause call
+    // (`DO alert(...)`) but deliberately carries no `catalog.actions` row
+    // of its own — it compiles through its own `compileAlertClause`
+    // machinery, never the generic action-dispatch table `catalog.actions`
+    // is sourced from (see CLAUDE.md's "Unified agent DSL" entry). Before
+    // this, `catalog.actions` was the WHOLE candidate pool for `clauseKind
+    // === 'do'`, so `alert` could never appear no matter what was typed —
+    // not a ranking/scoring bug (an exact-prefix match always sorts
+    // first), a total absence from the pool. Injected here as a synthetic
+    // candidate ALONGSIDE (never replacing) the real catalog list, for
+    // `'do'` ONLY — never `'alert'`, since `alert(...)`'s OWN body
+    // position expects channel names, and `alert` calling itself makes no
+    // sense there. Wording mirrors the established "hand-compiled,
+    // non-catalog construct" tone already used for `alert`'s own inner-
+    // body special case elsewhere in this file (`_suggestBareNamePosition`'s
+    // "clauseKind FORCED to 'alert'" branch, a few hundred lines below).
+    if (clauseKind === 'do') {
+      tokens.push('alert');
+      descByToken.set('alert', 'Send a notification — alert(telegram, ntfy(...), ...).');
+    }
     // Sprint H item 9 — debug(...) is a valid call anywhere an
     // action/channel call is expected inside DO or alert(...)'s own body
     // (it's compiled to a real `log` action regardless of which position
@@ -8909,6 +9672,18 @@ function _bareNameCandidates(clauseKind, catalog, contextTok, text, boundaryPos)
     const base = [...catalog.actions.values()];
     const tokens = base.map((e) => e.token);
     const descByToken = new Map(base.map((e) => [e.token, e.description || '']));
+    // Sprint [where-filter/aggregates] addendum — `alert(...)` is a valid
+    // top-level preamble entry too (compiles to `{type:'alert', events:
+    // [...]}` — see `preamble.push({ type: 'alert', ... })` in the
+    // compiler above), via the same hand-compiled, non-catalog
+    // `compileAlertClause` machinery as the DO-clause case just above.
+    // This branch's own comment claims "the SAME candidate set DO
+    // already offers" — that was false until this line: DO injects
+    // `alert` as a synthetic candidate alongside `catalog.actions`
+    // (never inside it), and this branch only ever sourced
+    // `catalog.actions` directly, silently excluding it.
+    tokens.push('alert');
+    descByToken.set('alert', 'Send a notification — alert(telegram, ntfy(...), ...).');
     tokens.push('debug');
     descByToken.set('debug', 'Emit a debug log line for a bound label or matched-row column — debug(x).');
     return { tokens, descByToken };
@@ -9184,7 +9959,7 @@ function _suggestAgentCliAtImpl(text, cursor, catalog, opts = {}) {
     const clauseKind = prefixLex.errors.length ? null : _clauseKindFromTokenPrefix(prefixLex.tokens);
     const entry = _lookupAnyCatalogEntry(name, catalog, clauseKind, scopeHint);
     if (!entry) return _emptySuggest(pos);
-    return _paramOrEnumSuggestion(text, openCall.parenPos, pos, entry, opts);
+    return _paramOrEnumSuggestion(text, openCall.parenPos, pos, entry, opts, catalog);
   }
 
   // 2. Not inside a call — bare metric/channel/action NAME being typed.

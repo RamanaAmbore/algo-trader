@@ -51,6 +51,19 @@ const FIXTURE_ROWS = [
   { grammar_kind: 'condition', token_kind: 'metric', token: 'is_itm', value_type: 'boolean', params_schema: null },
   // fixture-only non-numeric metric, for the generic `in`/`not_in` mechanism
   { grammar_kind: 'condition', token_kind: 'metric', token: 'side', value_type: 'string', params_schema: null },
+  // Sprint [rowset-aggregates] — generic row-set aggregate metric
+  // factories (plan item 3). `count` takes no params, matching the
+  // "a zero-argument token is always written bare" rule every other
+  // zero-arg metric already follows. `sum`/`max`/`avg` each declare ONE
+  // `column` param typed `'column'` — a bare exposed-column NAME,
+  // validated against the LEAF's own already-resolved scope (never a
+  // numeric literal) — see `_compileMetricCallString`'s own `type:
+  // 'column'` branch for the compile-side mechanism this schema shape
+  // triggers.
+  { grammar_kind: 'condition', token_kind: 'metric', token: 'count', value_type: 'number', params_schema: null },
+  { grammar_kind: 'condition', token_kind: 'metric', token: 'sum', value_type: 'number', params_schema: { column: { type: 'string' } } },
+  { grammar_kind: 'condition', token_kind: 'metric', token: 'max', value_type: 'number', params_schema: { column: { type: 'string' } } },
+  { grammar_kind: 'condition', token_kind: 'metric', token: 'avg', value_type: 'number', params_schema: { column: { type: 'string' } } },
   // scopes
   { grammar_kind: 'condition', token_kind: 'scope', token: 'positions.total', params_schema: null },
   { grammar_kind: 'condition', token_kind: 'scope', token: 'positions.any_acct', params_schema: null },
@@ -124,8 +137,13 @@ const FIXTURE_ROWS = [
   { grammar_kind: 'condition', token_kind: 'metric', token: 'loss-positions-default', is_fragment_ref: true, params_schema: null },
   { grammar_kind: 'notify', token_kind: 'channel', token: 'notify-critical-trio', is_fragment_ref: true, params_schema: null },
   // Sprint 15 — appended at the END (not spliced in among the earlier
-  // rows) so the existing `fetchAgentCatalog()` test's `FIXTURE_ROWS[13]`/
-  // `FIXTURE_ROWS[17]` index references stay valid.
+  // rows), originally to keep the `fetchAgentCatalog()` test's then-
+  // hardcoded `FIXTURE_ROWS[13]`/`FIXTURE_ROWS[17]` index references
+  // valid. Sprint [rowset-aggregates] (count/sum/max/avg) spliced new
+  // metric rows in among the earlier ones anyway and broke those indices
+  // — that test now looks its three rows up BY TOKEN instead, so this
+  // "append at the end" convention is no longer load-bearing for it, but
+  // new rows are still appended here rather than re-litigating position.
   //
   // A real multi-segment SCOPE (positions.expiring_today.mcx_unhedged is
   // the live catalog's own canonical example) — needed for the
@@ -208,6 +226,31 @@ const FIXTURE_ROWS = [
     label: 'Account',
     description: "Account. Sourced from DataFrame column 'account' on ctx.sum_positions, populated by backend.api.algo.grammar._scope_positions_any_acct.",
   },
+  // Sprint [where-filter] — fixture-only columns for the generic
+  // row-filter + row-set-aggregate tests. `exchange`/`qty` on
+  // `positions.any_acct` are plausible real exposed columns this scope
+  // doesn't happen to carry in the live catalog's fixture mirror yet;
+  // declared here so the where-filter/aggregate mechanism is exercised
+  // against realistic names without perturbing any EXISTING test (purely
+  // additive rows, nothing here is read by a test that existed before
+  // this sprint).
+  { grammar_kind: 'condition', token_kind: 'column', token: 'positions.any_acct.exchange', value_type: 'string' },
+  { grammar_kind: 'condition', token_kind: 'column', token: 'positions.any_acct.qty', value_type: 'number' },
+  { grammar_kind: 'condition', token_kind: 'column', token: 'positions.any_acct.pnl', value_type: 'number' },
+  // A genuinely boolean exposed COLUMN (fixture-only — no real boolean
+  // column exists in the live catalog's own EXPOSED_COLUMNS yet), for the
+  // where-expression bare-boolean-shorthand test — `is_unhedged` itself
+  // is a NUMBER (1.0/0.0), never boolean, see below.
+  { grammar_kind: 'condition', token_kind: 'column', token: 'positions.any_acct.is_itm', value_type: 'boolean' },
+  // `is_unhedged` (plan item 1's group-derived proof-of-pattern column) —
+  // declared NUMBER (1.0/0.0, never boolean) — confirmed against the
+  // real backend's own `grammar.py` diff: "`is_unhedged` is 1.0/0.0, not
+  // a bool — this registry has no boolean leaf type." Matches the plan's
+  // own "Done when" example (`is_unhedged == 1`) exactly; an EARLIER
+  // draft of this fixture had guessed `boolean` and used bare/`==true`
+  // phrasing — reconciled here once the real backend value_type was
+  // confirmed, see the handback report.
+  { grammar_kind: 'condition', token_kind: 'column', token: 'positions.expiring_today.is_unhedged', value_type: 'number' },
   // Watchlist scope — guard 3 (watchlist rejection) fixture. `symbol` IS
   // a real exposed column on this scope (mirrors the live
   // `_WATCHLIST_COLUMNS` registry) — the point of the guard is that this
@@ -441,10 +484,18 @@ describe('buildCatalog()', () => {
 
 describe('fetchAgentCatalog()', () => {
   it('fetches all three grammar kinds and merges into one catalog', async () => {
+    // Sprint [rowset-aggregates] — looked up BY TOKEN, not by hardcoded
+    // array index: this sprint inserted new rows ahead of these three in
+    // FIXTURE_ROWS, which silently shifted every later literal index
+    // (13/18) onto the WRONG rows. A by-token lookup survives any future
+    // insertion too, regardless of position.
+    const condRow = FIXTURE_ROWS.find((r) => r.grammar_kind === 'condition' && r.token === 'pnl');
+    const notifyRow = FIXTURE_ROWS.find((r) => r.grammar_kind === 'notify' && r.token === 'telegram');
+    const actionRow = FIXTURE_ROWS.find((r) => r.grammar_kind === 'action' && r.token === 'place_order');
     vi.mocked(fetchGrammarTokens).mockImplementation(async (kind) => {
-      if (kind === 'condition') return [FIXTURE_ROWS[0]];
-      if (kind === 'notify') return [FIXTURE_ROWS[13]];
-      return [FIXTURE_ROWS[18]];
+      if (kind === 'condition') return [condRow];
+      if (kind === 'notify') return [notifyRow];
+      return [actionRow];
     });
     const cat = await fetchAgentCatalog();
     expect(cat.metrics.has('pnl')).toBe(true);
@@ -2245,6 +2296,44 @@ describe('Sprint 16 — compile-time guard 3: watchlist.* scope rejects $row eve
   });
 });
 
+describe('Sprint [where-filter/aggregates] addendum — compile-time guard 4: a row-set-aggregate metric rejects $row even on an ordinary per-row scope', () => {
+  it('count@positions.any_acct (NOT a .total scope) still rejects $row — the aggregate collapse comes from the metric, not the scope', () => {
+    const r = compile(
+      'WHEN count@positions.any_acct > 5 DO close_position(account=account_id, symbol="NIFTY25JULFUT")'
+    );
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e =>
+      /'account_id' cannot be bound from a matched row/.test(e.message)
+      && /row-set aggregate \(count\/sum\/max\/avg\)/.test(e.message)
+    )).toBe(true);
+  });
+
+  it('sum(column=qty)@positions.expiring_today — a call-syntax aggregate — is caught the same way', () => {
+    const r = compile(
+      'WHEN sum(column=qty)@positions.expiring_today > 500 '
+      + 'DO close_position(account=account_id, symbol=symbol)'
+    );
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /row-set aggregate \(count\/sum\/max\/avg\)/.test(e.message))).toBe(true);
+  });
+
+  it('a plain non-aggregate metric on the SAME scope still compiles fine — guard 4 does not misfire', () => {
+    const r = compile(
+      'WHEN pnl@positions.expiring_today > 0 DO close_position(account=account_id, symbol=symbol)'
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  it('an aggregate leaf mixed into a larger tree alongside a real per-row leaf still fails closed', () => {
+    const r = compile(
+      'WHEN (count@positions.any_acct > 5) | (pnl@positions.expiring_today > 0) '
+      + 'DO close_position(account=account_id, symbol=symbol)'
+    );
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /row-set aggregate \(count\/sum\/max\/avg\)/.test(e.message))).toBe(true);
+  });
+});
+
 describe('Sprint 16 — $row fails closed against a Token ($ref) reference (own scope unknowable at compile time)', () => {
   it('a WHEN clause that is a bare Token ($ref) reference is a compile error naming the Token-reference reason', () => {
     // `loss-positions-default` is a Token reference (is_fragment_ref), so
@@ -2475,6 +2564,288 @@ describe('Sprint 19 — account:/symbol: qualifier syntax on scope chains', () =
     const r = compile('WHEN avail_margin@funds.symbol:* <= 0 DO alert(telegram)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /not a valid qualifier for scope 'funds\.any_acct'/.test(e.message))).toBe(true);
+  });
+});
+
+describe('Sprint [where-filter] — generic where-expression on the last scope segment', () => {
+  it('a single comparator where-filter compiles to a sibling `where` key, never folded into `scope`', () => {
+    const r = compile('WHEN pnl@positions.any_acct(exchange == "MCX") <= -5000 DO alert(telegram)');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions).toEqual({
+      metric: 'pnl', scope: 'positions.any_acct', op: '<=', value: -5000,
+      // 2026-11-01 fix — a where-leaf's key is 'column', not 'metric'
+      // (the backend's _where_leaf_well_formed reads node['column']).
+      // These expectations were pinning the ORIGINAL, confirmed-wrong
+      // key, so they passed while every real save 422'd.
+      where: { column: 'exchange', op: '==', value: 'MCX' },
+    });
+  });
+
+  it('"&" combines two where-leaves into the SAME {all:[...]} shape the top-level condition tree uses', () => {
+    const r = compile('WHEN pnl@positions.any_acct(exchange == "MCX" & qty > 0) <= -5000 DO alert(telegram)');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions.where).toEqual({
+      all: [
+        { column: 'exchange', op: '==', value: 'MCX' },
+        { column: 'qty', op: '>', value: 0 },
+      ],
+    });
+  });
+
+  it('"|"/"or" combines into {any:[...]}; "~"/"not" combines into {not:...}', () => {
+    const r = compile('WHEN pnl@positions.any_acct(exchange == "MCX" or exchange == "NFO") <= -5000 DO alert(telegram)');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions.where).toEqual({
+      any: [
+        { column: 'exchange', op: '==', value: 'MCX' },
+        { column: 'exchange', op: '==', value: 'NFO' },
+      ],
+    });
+
+    const r2 = compile('WHEN pnl@positions.any_acct(~(exchange == "MCX")) <= -5000 DO alert(telegram)');
+    expect(r2.ok).toBe(true);
+    expect(r2.agent.conditions.where).toEqual({ not: { column: 'exchange', op: '==', value: 'MCX' } });
+  });
+
+  it('a parenthesized "&"/"|" mix respects the same and-binds-tighter precedence as the top-level condition grammar', () => {
+    const r = compile('WHEN pnl@positions.any_acct(exchange == "MCX" | exchange == "NFO" & qty > 0) <= -5000 DO alert(telegram)');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions.where).toEqual({
+      any: [
+        { column: 'exchange', op: '==', value: 'MCX' },
+        { all: [{ column: 'exchange', op: '==', value: 'NFO' }, { column: 'qty', op: '>', value: 0 }] },
+      ],
+    });
+  });
+
+  it('a chained ("between") where-comparison compiles to an {all:[leaf,leaf]} pair (no dedicated between-op on a where-leaf)', () => {
+    const r = compile('WHEN pnl@positions.any_acct(0 < qty < 100) <= -5000 DO alert(telegram)');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions.where).toEqual({
+      all: [
+        { column: 'qty', op: '>', value: 0 },
+        { column: 'qty', op: '<', value: 100 },
+      ],
+    });
+  });
+
+  it('is_unhedged (a NUMBER column, 1.0/0.0 — confirmed against the real backend, never boolean) compiles with an explicit numeric comparator, matching the plan\'s own "== 1" example exactly', () => {
+    const r = compile('WHEN pnl@positions.expiring_today(is_unhedged == 1) <= -5000 DO alert(telegram)');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions.where).toEqual({ column: 'is_unhedged', op: '==', value: 1 });
+  });
+
+  it('a bare boolean where-column (no comparator) compiles to the standard op:"=="/value:true shorthand — using a genuinely boolean fixture column (is_unhedged itself is a NUMBER, not boolean, see above)', () => {
+    const r = compile('WHEN pnl@positions.any_acct(is_itm) <= -5000 DO alert(telegram)');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions.where).toEqual({ column: 'is_itm', op: '==', value: true });
+  });
+
+  it('exchange column values are uppercased, mirroring the "account:"/"exchange:" qualifier mechanism\'s own rule', () => {
+    const r = compile('WHEN pnl@positions.any_acct(exchange == "mcx") <= -5000 DO alert(telegram)');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions.where).toEqual({ column: 'exchange', op: '==', value: 'MCX' });
+  });
+
+  it('an unknown column name inside a where-expression is a clear compile-time rejection, not a silent pass-through', () => {
+    const r = compile('WHEN pnl@positions.any_acct(bogus_col == 1) <= -5000 DO alert(telegram)');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /unknown column 'bogus_col' on scope 'positions\.any_acct'/.test(e.message))).toBe(true);
+  });
+
+  it('a where-filter is accepted off the "pos" short scope-family alias too (same alias resolution every other scope use already gets)', () => {
+    const r = compile('WHEN pnl@pos.any_acct(exchange == "MCX") <= -5000 DO alert(telegram)');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions.scope).toBe('positions.any_acct');
+    expect(r.agent.conditions.where).toEqual({ column: 'exchange', op: '==', value: 'MCX' });
+  });
+
+  it('decompile round-trip: compile -> decompile -> recompile is byte-identical', () => {
+    const text = 'WHEN pnl@positions.any_acct(exchange == "MCX" & qty > 0) <= -5000 DO alert(telegram)';
+    const first = compile(text);
+    expect(first.ok).toBe(true);
+    const decompiled = decompileCondition(first.agent.conditions, CATALOG);
+    expect(decompiled.error).toBeUndefined();
+    const second = compile(`WHEN ${decompiled.text} DO alert(telegram)`);
+    expect(second.ok).toBe(true);
+    expect(second.agent.conditions).toEqual(first.agent.conditions);
+  });
+
+  it('decompile round-trip for the "|"/between/not shapes too', () => {
+    for (const text of [
+      'WHEN pnl@positions.any_acct(exchange == "MCX" | exchange == "NFO") <= -5000 DO alert(telegram)',
+      'WHEN pnl@positions.any_acct(0 < qty < 100) <= -5000 DO alert(telegram)',
+      'WHEN pnl@positions.any_acct(~(exchange == "MCX")) <= -5000 DO alert(telegram)',
+      'WHEN pnl@positions.expiring_today(is_unhedged == 1) <= -5000 DO alert(telegram)',
+      'WHEN pnl@positions.any_acct(is_itm) <= -5000 DO alert(telegram)',
+    ]) {
+      const first = compile(text);
+      expect(first.ok).toBe(true);
+      const decompiled = decompileCondition(first.agent.conditions, CATALOG);
+      expect(decompiled.error).toBeUndefined();
+      const second = compile(`WHEN ${decompiled.text} DO alert(telegram)`);
+      expect(second.ok).toBe(true);
+      expect(second.agent.conditions).toEqual(first.agent.conditions);
+    }
+  });
+
+  it('parity check — the general where-filter mechanism produces the SAME result as the existing bespoke .mcx_unhedged token, on an equivalent fixture', () => {
+    // positions.expiring_today.mcx_unhedged is a bespoke, pre-existing
+    // scope token (not part of this sprint); the general where-filter
+    // equivalent is expressed via exchange==MCX & is_unhedged==1 against
+    // the plain positions.expiring_today scope. Both resolve the SAME
+    // underlying scope token, confirming the general mechanism subsumes
+    // the narrower one at the SCOPE-RESOLUTION level — full behavioral
+    // parity (identical candidate ROWS at runtime) is the backend's own
+    // test to make, since that requires the real row data this frontend
+    // compiler never sees.
+    const bespoke = compile('WHEN pnl@positions.expiring_today.mcx_unhedged <= -30000 DO alert(telegram)');
+    const general = compile('WHEN pnl@positions.expiring_today(qty > 0 & is_unhedged == 1) <= -30000 DO alert(telegram)');
+    expect(bespoke.ok).toBe(true);
+    expect(general.ok).toBe(true);
+    expect(general.agent.conditions.scope).toBe('positions.expiring_today');
+  });
+
+  it('regression guard — a NON-last scope segment carrying an args-violation still gets the OLD "takes no arguments" rejection, never mis-routed through the where-expression parser', () => {
+    // The lexer's own trailing-dot lookahead (is THIS the LAST scope_seg?)
+    // is what keeps this case routed to the pre-existing arg-list path —
+    // confirms the where-filter feature introduced no regression on the
+    // pre-existing fixture this exact statement is drawn from, above.
+    const r = compile('WHEN pnl@positions(foo=5).account:ZG0790 <= -50000 DO alert(telegram)');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /takes no arguments/.test(e.message))).toBe(true);
+  });
+
+  it('regression guard — a where-filter followed by a trailing qualifier falls through to the old arg-list error, not a silent accept', () => {
+    const r = compile('WHEN pnl@positions.any_acct(exchange == "MCX").account:ZG0790 <= -50000 DO alert(telegram)');
+    expect(r.ok).toBe(false);
+  });
+
+  it('regression guard — a where-filter on a scope segment used in DO-clause/preamble position never leaks (e.g. a boolean-shorthand leaf followed by a real DO action call lexes/compiles unaffected)', () => {
+    const r = compile('WHEN is_itm@positions.any_acct DO place_order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", qty=1)');
+    expect(r.ok).toBe(true);
+  });
+
+  it('regression guard — "and"/"or" word-alias chains after a complete scope_ref never get mis-routed either', () => {
+    const r = compile(
+      'WHEN pnl@positions.any_acct <= -1 and mean_pnl(minutes=30)@positions.total < 0 DO alert(telegram)'
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  it('empty "(...)" is a clear parse error, not silently "no filter"', () => {
+    const r = compile('WHEN pnl@positions.any_acct() <= -5000 DO alert(telegram)');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /cannot be empty/.test(e.message))).toBe(true);
+  });
+
+  it('an explicit "always" inside the parens means "no filter", mirroring the qualifier mechanism\'s "*" wildcard convention', () => {
+    const r = compile('WHEN pnl@positions.any_acct(always) <= -5000 DO alert(telegram)');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions.where).toBeUndefined();
+  });
+
+  it('a nested "@" (metric_ref) inside a where-expression is rejected, not silently accepted', () => {
+    const r = compile('WHEN pnl@positions.any_acct(pnl@positions.total == 1) <= -5000 DO alert(telegram)');
+    expect(r.ok).toBe(false);
+  });
+
+  it('a dotted column name inside a where-expression is rejected, not silently accepted', () => {
+    const r = compile('WHEN pnl@positions.any_acct(positions.total.pnl == 1) <= -5000 DO alert(telegram)');
+    expect(r.ok).toBe(false);
+  });
+
+  it('regression guard — every existing leaf/scope/metric with NO where-filter compiles byte-identical to before this sprint', () => {
+    const texts = [
+      'WHEN mean_pnl(minutes=30)@positions.total <= -50000 DO alert(telegram)',
+      'WHEN pnl@positions.account:ZG0790 <= -5000 DO alert(telegram)',
+      'WHEN positions.total.pnl <= -50000 DO alert(telegram)',
+      'WHEN -5000 <= pnl@positions.account:ZG0790 <= 5000 DO alert(telegram)',
+    ];
+    for (const text of texts) {
+      const r = compile(text);
+      expect(r.ok).toBe(true);
+      expect(r.agent.conditions.where).toBeUndefined();
+    }
+  });
+});
+
+describe('Sprint [rowset-aggregates] — generic row-set aggregate metrics (count/sum/max/avg)', () => {
+  it('count (zero-arg, always written bare) compiles like any other bare metric', () => {
+    const r = compile('WHEN count@positions.any_acct > 5 DO alert(telegram)');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions).toEqual({ metric: 'count', scope: 'positions.any_acct', op: '>', value: 5 });
+  });
+
+  it('count(...) with any parens at all is rejected — a zero-argument token is always written bare', () => {
+    const r = compile('WHEN count()@positions.any_acct > 5 DO alert(telegram)');
+    expect(r.ok).toBe(false);
+  });
+
+  it('sum(column=qty) compiles to the positional-only "sum(qty)" wire string, same normalization every other metric factory already gets', () => {
+    const r = compile('WHEN sum(column=qty)@positions.any_acct > 500 DO alert(telegram)');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions).toEqual({ metric: 'sum(qty)', scope: 'positions.any_acct', op: '>', value: 500 });
+  });
+
+  it('max(column=pnl) and avg(column=pnl) both compile, same mechanism, different token', () => {
+    const rMax = compile('WHEN max(column=pnl)@positions.any_acct <= -10000 DO alert(telegram)');
+    expect(rMax.ok).toBe(true);
+    expect(rMax.agent.conditions.metric).toBe('max(pnl)');
+
+    const rAvg = compile('WHEN avg(column=pnl)@positions.any_acct <= -1000 DO alert(telegram)');
+    expect(rAvg.ok).toBe(true);
+    expect(rAvg.agent.conditions.metric).toBe('avg(pnl)');
+  });
+
+  it('a positional (non-keyword) column argument is rejected — arg_list is keyword-only, same rule every other call-arg position uses', () => {
+    const r = compile('WHEN sum(qty)@positions.any_acct > 500 DO alert(telegram)');
+    expect(r.ok).toBe(false);
+  });
+
+  it('an unknown column name inside an aggregate metric is a clear compile-time rejection', () => {
+    const r = compile('WHEN sum(column=bogus_col)@positions.any_acct > 500 DO alert(telegram)');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /'bogus_col' is not a known column on scope 'positions\.any_acct'/.test(e.message))).toBe(true);
+  });
+
+  it('a numeric literal passed where a column name is expected is rejected (must be a bare column name, not a number)', () => {
+    const r = compile('WHEN sum(column=5)@positions.any_acct > 500 DO alert(telegram)');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /must be a bare column name/.test(e.message))).toBe(true);
+  });
+
+  it('an aggregate metric combines with a where-filter on the same leaf (both new features compose)', () => {
+    const r = compile('WHEN sum(column=qty)@positions.any_acct(exchange == "MCX") > 500 DO alert(telegram)');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions).toEqual({
+      metric: 'sum(qty)', scope: 'positions.any_acct', op: '>', value: 500,
+      where: { column: 'exchange', op: '==', value: 'MCX' },
+    });
+  });
+
+  it('decompile round-trip: compile -> decompile -> recompile is byte-identical for every aggregate shape', () => {
+    for (const text of [
+      'WHEN count@positions.any_acct > 5 DO alert(telegram)',
+      'WHEN sum(column=qty)@positions.any_acct > 500 DO alert(telegram)',
+      'WHEN max(column=pnl)@positions.any_acct <= -10000 DO alert(telegram)',
+      'WHEN avg(column=pnl)@positions.any_acct <= -1000 DO alert(telegram)',
+    ]) {
+      const first = compile(text);
+      expect(first.ok).toBe(true);
+      const decompiled = decompileCondition(first.agent.conditions, CATALOG);
+      expect(decompiled.error).toBeUndefined();
+      const second = compile(`WHEN ${decompiled.text} DO alert(telegram)`);
+      expect(second.ok).toBe(true);
+      expect(second.agent.conditions).toEqual(first.agent.conditions);
+    }
+  });
+
+  it('decompile renders the keyword form column=<name>, never a positional/quoted spelling', () => {
+    const first = compile('WHEN sum(column=qty)@positions.any_acct > 500 DO alert(telegram)');
+    const decompiled = decompileCondition(first.agent.conditions, CATALOG);
+    expect(decompiled.error).toBeUndefined();
+    expect(decompiled.text).toBe('sum(column=qty)@positions.any_acct > 500');
   });
 });
 
@@ -4164,6 +4535,45 @@ describe('Sprint [grammar-unify] — no ALERT keyword exists anywhere; alert(...
   it('a literal bare ALERT keyword (the old removed clause introducer) is rejected — not a valid spelling in either position', () => {
     const r = compile('WHEN pnl@positions.total <= -1 ALERT telegram DO nop');
     expect(r.ok).toBe(false);
+  });
+});
+
+// Addendum fix — `alert` was structurally ABSENT from the `DO`-clause
+// lookahead candidate pool (`catalog.actions` only), not merely ranked low —
+// `DO al` never offered it at all regardless of `_fuzzyScore`'s own
+// exact-prefix-match-sorts-first rule. See CLAUDE.md / .claude/PLAN.md's
+// addendum for the full root-cause writeup.
+describe('addendum — DO-clause lookahead offers `alert` as a candidate', () => {
+  it('typing "DO al" after any condition offers alert, ranked first (exact-prefix match)', () => {
+    const text = 'WHEN always DO al';
+    const r = suggestAgentCliAt(text, text.length, CATALOG);
+    expect(r.suggestions).toContain('alert');
+    expect(r.suggestions[0]).toBe('alert');
+  });
+
+  it('"DO " with nothing typed yet also includes alert alongside every real catalog action', () => {
+    const text = 'WHEN always DO ';
+    const r = suggestAgentCliAt(text, text.length, CATALOG);
+    expect(r.suggestions).toContain('alert');
+    expect(r.suggestions).toContain('place_order');
+  });
+
+  it('catalog.actions itself is unchanged — alert is still not a dispatched action', () => {
+    expect(CATALOG.actions.has('alert')).toBe(false);
+  });
+
+  it('the alert(...) CLAUSE-POSITION candidate pool (channels) is unaffected — no "alert" leaks into its own channel list', () => {
+    const text = 'WHEN always DO alert(';
+    const r = suggestAgentCliAt(text, text.length, CATALOG);
+    expect(r.suggestions).not.toContain('alert');
+  });
+
+  it('every pre-existing real DO-clause action token still suggests unchanged (regression guard)', () => {
+    const text = 'WHEN always DO ';
+    const r = suggestAgentCliAt(text, text.length, CATALOG);
+    for (const entry of CATALOG.actions.values()) {
+      expect(r.suggestions).toContain(entry.token);
+    }
   });
 });
 

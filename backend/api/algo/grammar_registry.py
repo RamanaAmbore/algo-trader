@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import ast
 import importlib
+import re
 import threading
 from typing import Any, Callable, Optional
 
@@ -351,6 +352,60 @@ class GrammarRegistry:
             cache[token] = result
         return result
 
+    # DSL dataframe-access gaps, item 3 — a row-set aggregate factory
+    # (`sum`/`max`/`avg`) needs a COLUMN NAME argument, not a numeric
+    # window — `sum(qty)`, not `sum(30)`. `_CALL_ARG_IDENTIFIER_RE`
+    # validates the resulting string the same way every real exposed-
+    # column name is already shaped (enforced independently by
+    # `test_grammar_exposed_columns.py`), so a malformed/injection-shaped
+    # arg can never reach a factory. Positional-only, confirmed against
+    # the frontend's real compiler (`agents.js:_compileMetricCallString`):
+    # the operator-facing surface syntax `sum(column=qty)` is keyword-
+    # shaped for readability, but it compiles down to the bare
+    # positional call string `"sum(qty)"` before it ever reaches this
+    # registry — the wire contract NEVER carries a keyword argument.
+    # `node.keywords` is rejected outright below for exactly that
+    # reason, not as a provisional gap.
+    _CALL_ARG_IDENTIFIER_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+
+    @staticmethod
+    def _parse_call_string_arg(arg_node) -> Optional[str]:
+        """A `'string'`-typed call-arg accepts EITHER a bare identifier
+        (`ast.Name` — the column name typed unquoted, e.g. `sum(qty)`)
+        OR a quoted string literal (`ast.Constant` str, e.g.
+        `sum("qty")`) — both resolve to the identical column-name
+        string. `None` on anything else, or on a result that doesn't
+        match `_CALL_ARG_IDENTIFIER_RE`."""
+        if isinstance(arg_node, ast.Name):
+            name = arg_node.id
+        elif isinstance(arg_node, ast.Constant) and isinstance(arg_node.value, str):
+            name = arg_node.value
+        else:
+            return None
+        return name if GrammarRegistry._CALL_ARG_IDENTIFIER_RE.match(name) else None
+
+    @staticmethod
+    def _parse_call_number_arg(arg_node):
+        """Unchanged from the pre-item-3 behavior (the ONLY shape a
+        `'number'`-typed call-arg has ever accepted) — only a plain
+        positive numeric literal. No names, no arithmetic, no
+        strings/bools. Matches this registry's narrow purpose (window
+        sizes etc.); the whitelist AST evaluator in expr_eval.py is the
+        place for general expressions. A non-positive value (0 or
+        negative) is rejected too — every current number-typed
+        params_schema is a window-in-minutes, and a zero/negative
+        window always resolves to a real callable that then silently
+        returns None forever at evaluation time (the window cutoff is
+        >= now, so <2 samples ever fall inside it). Negative literals
+        already failed by accident (ast parses "-5" as
+        UnaryOp(USub, Constant(5)), not Constant(-5)) — this makes that
+        rejection intentional and also catches the 0 case the accident
+        didn't cover."""
+        if not isinstance(arg_node, ast.Constant) or isinstance(arg_node.value, bool) \
+           or not isinstance(arg_node.value, (int, float)) or arg_node.value <= 0:
+            return None
+        return arg_node.value
+
     @staticmethod
     def _parse_call_token(token: str, factories: dict) -> Optional[Callable]:
         try:
@@ -369,25 +424,16 @@ class GrammarRegistry:
         param_count = len(params_schema or {})
         if len(node.args) != param_count:
             return None
+        param_types = [spec.get('type', 'number') for spec in (params_schema or {}).values()]
         args = []
-        for arg_node in node.args:
-            # Only plain numeric literals — no names, no arithmetic, no
-            # strings/bools. Matches this registry's narrow purpose
-            # (window sizes etc.); the whitelist AST evaluator in
-            # expr_eval.py is the place for general expressions. A
-            # non-positive value (0 or negative) is rejected too — every
-            # current params_schema is a window-in-minutes, and a
-            # zero/negative window always resolves to a real callable
-            # that then silently returns None forever at evaluation time
-            # (the window cutoff is >= now, so <2 samples ever fall
-            # inside it). Negative literals already failed by accident
-            # (ast parses "-5" as UnaryOp(USub, Constant(5)), not
-            # Constant(-5)) — this makes that rejection intentional and
-            # also catches the 0 case the accident didn't cover.
-            if not isinstance(arg_node, ast.Constant) or isinstance(arg_node.value, bool) \
-               or not isinstance(arg_node.value, (int, float)) or arg_node.value <= 0:
+        for arg_node, param_type in zip(node.args, param_types):
+            if param_type == 'string':
+                value = GrammarRegistry._parse_call_string_arg(arg_node)
+            else:
+                value = GrammarRegistry._parse_call_number_arg(arg_node)
+            if value is None:
                 return None
-            args.append(arg_node.value)
+            args.append(value)
         try:
             return factory(*args)
         except Exception as e:

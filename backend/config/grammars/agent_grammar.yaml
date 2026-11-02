@@ -319,6 +319,55 @@ system_tokens:
   params_schema:
     minutes: {type: number}
 
+# ── Row-set aggregates (DSL dataframe-access gaps, item 3) ───────────────
+# Reduce ACROSS THE ROWS of the current scope snapshot (after any
+# where-filter has already narrowed them), not across time samples in
+# pnl_history like mean_pnl/stdev_pnl/etc. above. Each collapses a leaf to
+# AT MOST one result regardless of the underlying scope's own suffix —
+# see `agent_engine._ae_is_aggregate_match`'s `rowset_aggregate` check and
+# `agent_evaluator._eval_leaf_rowset_aggregate`. `$row` is rejected (fails
+# closed) on any leaf using one of these metrics — there is no single
+# "the row that matched" for a reduction over several rows.
+- grammar_kind: condition
+  token_kind: metric
+  token: count
+  value_type: number
+  description: Number of rows in the current scope snapshot (after any where-filter). Row-set aggregate
+    — collapses to ONE result regardless of scope suffix; $row is rejected on a leaf using this metric.
+    Call with no parentheses, e.g. count@positions.expiring_today(exchange == "MCX") > 5. exists(...) is
+    expressible as count(...) > 0 — there is no separate exists primitive.
+  resolver: backend.api.algo.grammar_tokens.metric_count._metric_count
+- grammar_kind: condition
+  token_kind: metric
+  token: sum
+  value_type: number
+  description: Sum of a numeric exposed column across the current scope snapshot's rows. Row-set
+    aggregate — collapses to ONE result regardless of scope suffix; $row is rejected on a leaf using this
+    metric. Call syntax, e.g. sum(column=qty)@positions.expiring_today(exchange == "MCX") > 500.
+  resolver: backend.api.algo.grammar_tokens.metric_sum._metric_factory_sum
+  params_schema:
+    column: {type: string}
+- grammar_kind: condition
+  token_kind: metric
+  token: max
+  value_type: number
+  description: Largest value of a numeric exposed column across the current scope snapshot's rows.
+    Row-set aggregate — collapses to ONE result regardless of scope suffix; $row is rejected on a leaf
+    using this metric. Call syntax, e.g. max(pnl)@positions.any_acct <= -10000.
+  resolver: backend.api.algo.grammar_tokens.metric_max._metric_factory_max
+  params_schema:
+    column: {type: string}
+- grammar_kind: condition
+  token_kind: metric
+  token: avg
+  value_type: number
+  description: Mean value of a numeric exposed column across the current scope snapshot's rows. Row-set
+    aggregate — collapses to ONE result regardless of scope suffix; $row is rejected on a leaf using this
+    metric. Call syntax, e.g. avg(pnl)@positions.any_acct < -5000.
+  resolver: backend.api.algo.grammar_tokens.metric_avg._metric_factory_avg
+  params_schema:
+    column: {type: string}
+
 # ── Expiry-aware metrics (Item 1 / Phase 25) ─────────────────────
 # Parse the tradingsymbol on every call. Returns None for
 # non-derivatives (cash equity) → leaf is skipped.

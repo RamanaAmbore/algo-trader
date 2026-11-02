@@ -3497,6 +3497,29 @@ def _given_resolve_bare_metric_scope(match: "re.Match", v2_ctx, agent_slug: str)
             f"scope selector failed: {e}"
         )
         return _GIVEN_UNRESOLVED
+    # DSL dataframe-access gaps, item 3 — a row-set aggregate metric
+    # (count/sum/max/avg) has the DIFFERENT `(ctx, rows, scope_tok)`
+    # calling convention `agent_evaluator._eval_leaf_rowset_aggregate`
+    # uses, not the ordinary `(ctx, row)` every other metric resolver
+    # takes, and it is MEANT to reduce over several rows at once — the
+    # `len(rows) > 1` "unsupported per-row scope" restriction below
+    # exists for ordinary per-row metrics only and must not apply here.
+    # Checked BEFORE that restriction so e.g. `x = count@positions.
+    # expiring_today` actually computes a real aggregate instead of
+    # always hitting "unsupported in this phase". An empty `rows` is
+    # still `None` (unavailable this tick), same convention
+    # `_eval_leaf_rowset_aggregate` itself uses.
+    if getattr(metric_fn, 'rowset_aggregate', False):
+        if not rows:
+            return None
+        try:
+            return metric_fn(v2_ctx, rows, scope_tok)
+        except Exception as e:
+            logger.warning(
+                f"Agent [{agent_slug}]: GIVEN binding metric '{metric_tok}' "
+                f"failed on scope '{scope_tok}': {e}"
+            )
+            return _GIVEN_UNRESOLVED
     if len(rows) > 1:
         logger.warning(
             f"Agent [{agent_slug}]: GIVEN binding '{metric_tok}@{scope_tok}' "
@@ -4963,6 +4986,18 @@ def _ae_is_aggregate_match(m: dict) -> bool:
     Every other match (including `quote.tracked`, whose rows have
     `account=None` but a real `scope='quote.tracked'`) is a genuine
     per-row match and must bind its row for `$row`-referencing actions.
+
+    DSL dataframe-access gaps, item 3 — a FOURTH, independent
+    condition: `m.get('rowset_aggregate') is True`. A row-set aggregate
+    leaf (`count`/`sum(column)`/`max(column)`/`avg(column)` —
+    `agent_evaluator._eval_leaf_rowset_aggregate`) reduces across every
+    row of its scope snapshot into ONE value; there is no single "the
+    row that matched" to bind, regardless of the scope's own suffix
+    (`sum(qty)@positions.any_acct` is not `.total`-scoped, but must
+    still classify as aggregate). Aggregate classification is now a
+    function of (scope suffix OR metric choice) — this check is
+    additive; it never weakens the three existing scope-shape checks
+    above, which stay untouched.
     """
     if 'scope' not in m:
         return True
@@ -4970,6 +5005,8 @@ def _ae_is_aggregate_match(m: dict) -> bool:
     if isinstance(scope_tok, str) and scope_tok.endswith('.total'):
         return True
     if m.get('account') == 'TOTAL':
+        return True
+    if m.get('rowset_aggregate') is True:
         return True
     return False
 

@@ -126,9 +126,12 @@ BARE_WORD      := (* an unquoted run of 1+ characters containing NONE of: whites
 
 (* ── Condition tree (shipped) ────────────────────────────────────────────── *)
 condition      := "always" | or_expr
-or_expr        := term (("&" | "|") term)*     (* equal precedence, left-to-right.
-                                                   a & b | c groups as (a & b) | c. *)
-term           := "~" primary | primary
+or_expr        := and_expr (("|" | "or") and_expr)*
+                                                (* Sprint 20: "&"/"and" binds TIGHTER than "|"/"or"
+                                                   (parseAndExpr / parseOrExpr, agents.js:1883,
+                                                   :1913). a | b & c = a | (b & c). *)
+and_expr       := term (("&" | "and") term)*
+term           := ("~" | "not") primary | primary
 primary        := "(" or_expr ")" | leaf
 leaf           := metric_ref comparator value
                  | col_ref comparator value
@@ -164,10 +167,13 @@ leaf           := metric_ref comparator value
                                                    "Known gaps" below for the resolved note and
                                                    the one real restriction this leaves. *)
 metric_ref     := call "@" scope_ref
-scope_ref      := scope_seg ("." scope_seg)*   (* scope_seg := call | qualifier_seg. A
+scope_ref      := scope_seg ("." scope_seg)* where_expr?
+                                                (* scope_seg := call | qualifier_seg. A
                                                    qualifier_seg is trailing only. Short scope
                                                    aliases (pos/hld/fnd/wl) apply to the FIRST
-                                                   call segment only. *)
+                                                   call segment only. where_expr (below) may
+                                                   follow the LAST scope_seg only, and never
+                                                   when a qualifier_seg is in the chain. *)
 scope_seg      := call | qualifier_seg
 qualifier_seg  := NAME ":" qualifier_value    (* account:value / symbol:value. Compiles to a
                                                    leaf-level scope_filter dict, never folded into
@@ -185,6 +191,31 @@ col_ref        := call ("." call)+             (* A bare dotted chain with NO "@
                                                    known scope first, then fall back to "last
                                                    segment is a column on the scope so far". *)
 comparator     := "<" | "<=" | ">" | ">=" | "==" | "!=" | "in" | "not in"
+
+(* ── Leaf-level where-expression (shipped, Sprint [where-filter]) ─────────── *)
+where_expr     := "(" where_body ")"           (* Lexed by SCOPE-SEGMENT position, not by call
+                                                   shape — `call` above is unchanged. "()" is a
+                                                   lex-time error. *)
+where_body     := "always" | or_expr           (* "(always)" = no filter; no `where` key is
+                                                   emitted. Otherwise the same or_expr as the
+                                                   condition, with where_leaf as its leaf. *)
+where_leaf     := where_col comparator where_value
+                 | where_value comparator where_col comparator where_value
+                                                (* Chained form: numeric literals, one direction.
+                                                   Compiles to an {all:[leaf,leaf]} pair. *)
+                 | where_col                    (* Boolean-column shorthand. Compile error unless
+                                                   the column is boolean-typed. See Known gaps. *)
+where_col      := NAME                         (* ONE bare column exposed on the outer leaf's own
+                                                   scope. Never dotted, never "@", never a call. *)
+where_value    := NUMBER | STRING | NAME | list_literal
+                                                (* No object_literal and no $given/$row marker. *)
+
+(* ── Row-set aggregate call shapes (shipped, Sprint [rowset-aggregates]) ──── *)
+rowset_call    := "count" | ("sum" | "max" | "avg") "(" "column" "=" NAME ")"
+                                                (* A shape note, not a new leaf: this is the `call`
+                                                   inside metric_ref. `count` is always bare.
+                                                   The column arg is keyword-only, a bare NAME.
+                                                   Full token list: agent_grammar.yaml. *)
 
 (* ── Values and calls ────────────────────────────────────────────────────── *)
 value          := NUMBER | STRING | NAME | list_literal
@@ -394,6 +425,147 @@ Prose rules (all shipped, Wave 2):
   parse error naming the removed clause keyword. A bare `alert = …` is a label-reservation error.
 - **Compiled JSON `preamble`.** The preamble compiles to a top-level `preamble` array on
   `kind:'agent'` rows (omitted when empty). Shape and execution are in AGENTS_SPEC §13.
+- **Group-derived columns.** A row scope may compute a fact once per GROUP of its rows and stamp
+  that value onto every row in the group as an ordinary exposed column, filterable like any
+  other field. The ONLY shipped example is MCX CE/PE netting on the `positions.expiring_today`
+  family: `is_unhedged` and `net_qty` ([grammar.py:826-827](../../backend/api/algo/grammar.py#L826)).
+  - **Real group key: `(root, expiry)`, across ALL accounts.** `_mcx_ce_pe_group_key()`
+    ([scope_positions_expiring_today_mcx_unhedged.py:22-33](../../backend/api/algo/grammar_tokens/scope_positions_expiring_today_mcx_unhedged.py#L22))
+    contains no account, so a hedge split across two accounts nets within one group. The key
+    is NOT per-account.
+  - **MCX only.** `compute_mcx_ce_pe_net_groups()` expects MCX rows, and the one broadcast site,
+    `_broadcast_mcx_ce_pe_group_columns()`
+    ([background.py:2066-2108](../../backend/api/background.py#L2066)), filters
+    `exchange == "MCX"`. Non-MCX rows and rows with no resolvable root get `None`. Nothing in
+    the backend stamps a group-derived column for NFO or NSE. Do not read this as a generic
+    cross-exchange mechanism.
+  - **Futures in a group.** Futures rows are stamped too, but they add 0 to `net_qty`. A group
+    holding only futures therefore reads `is_unhedged == 0`, which is the same result the
+    `.mcx_unhedged` scope gives.
+  - **Type.** Both columns are declared `number` (`_col()` default,
+    [grammar.py:675](../../backend/api/algo/grammar.py#L675)). `is_unhedged` is `1.0` / `0.0` /
+    `None`, never a boolean. Write `is_unhedged == 1`. The grammar has no boolean leaf type.
+  - Such columns appear in `EXPOSED_COLUMNS` ([grammar.py:951](../../backend/api/algo/grammar.py#L951))
+    and nowhere else in the grammar.
+
+### Leaf-level where-filter
+
+A condition leaf may carry a `where` key, a SIBLING of `scope_filter`, which narrows the scope's
+own rows before the leaf's comparator runs. Operator syntax is a trailing `(...)` on the last
+scope segment of the leaf's `scope_ref`:
+
+```
+WHEN pnl@positions.expiring_today(exchange == "MCX" & is_unhedged == 1) <= -30000
+  DO alert(telegram)
+WHEN pnl@positions.expiring_today(0 < qty < 100) <= -5000 DO alert(telegram)
+WHEN pnl@positions.expiring_today(~(exchange == "NFO")) <= -5000 DO alert(telegram)
+```
+
+Parse rules (confirmed in `_parseWhereExprArg`, [agents.js:675](../../frontend/src/lib/command/grammars/agents.js#L675),
+and `_parseWhereExprLeaf`, [agents.js:1632](../../frontend/src/lib/command/grammars/agents.js#L1632)):
+
+- The body is the same `or_expr` as a condition. `&`/`and` bind tighter than `|`/`or`. `~`/`not`
+  negates. Parentheses group.
+- A where-leaf is `column comparator value`, a chained `value < column < value`, or a bare
+  `column`. The column is a bare NAME. A dotted name, a `@`, or a call inside the parens is a
+  compile error.
+- `()` is a lex-time error. `(always)` means no filter, and no `where` key is emitted
+  (`_compileWhereFilterTop`, [agents.js:3464](../../frontend/src/lib/command/grammars/agents.js#L3464)).
+- The `(...)` may not be followed by a qualifier. `...(exchange == "MCX").account:ZG0790` is
+  rejected.
+- The chained form requires numeric literals in one direction. It compiles to an `all` of two
+  leaves (`_compileWhereBetween`, [agents.js:3411](../../frontend/src/lib/command/grammars/agents.js#L3411)).
+- A bare `column` compiles only if that column is boolean-typed. No live column is, so it is a
+  compile error today (see Known gaps).
+- Column names are checked at compile time against the outer scope's exposed columns
+  (`_compileWhereLeaf`, [agents.js:3390](../../frontend/src/lib/command/grammars/agents.js#L3390)).
+  An unknown column is a clear error, not a silent pass.
+
+**Backend wire contract** (what `agent_evaluator.py` evaluates and validates). The `where` value
+is a tree whose composite nodes are `all` / `any` / `not` and whose leaves are
+`{"column": <name>, "op": <operator token>, "value": <literal>}`. A where-leaf has no `scope`
+key. The outer leaf's scope is the only scope. Example:
+
+```json
+{"metric": "pnl", "scope": "positions.expiring_today", "op": "<=", "value": -30000,
+ "where": {"all": [{"column": "exchange", "op": "==", "value": "MCX"},
+                    {"column": "is_unhedged", "op": "==", "value": 1}]}}
+```
+
+**Known gap:** the compiler currently emits `metric`, not `column`, for where-leaves. The saved
+JSON therefore fails validation. See Known gaps. The example above is the backend contract, not
+what the CLI produces today.
+
+- **Runtime.** The filter runs after `scope_filter` and before the metric
+  ([agent_evaluator.py:1177-1192](../../backend/api/algo/agent_evaluator.py#L1177)). It
+  validates the whole tree once (`_where_tree_well_formed`,
+  [agent_evaluator.py:926](../../backend/api/algo/agent_evaluator.py#L926)), never per row.
+  A malformed tree, or an unknown column, skips the whole leaf. It never fails open under `not`.
+- **Missing values.** A `None` or NaN column value excludes the row for that leaf, whatever the
+  operator is (`_eval_where_leaf`,
+  [agent_evaluator.py:942](../../backend/api/algo/agent_evaluator.py#L942)).
+- **Empty after filtering.** A well-formed filter that narrows a non-empty scope to zero rows
+  is a real zero. A `count` leaf over it fires on `== 0` (see below).
+- **Validation on save.** `create` and `update` both run the validator
+  ([routes/agents.py:1452](../../backend/api/routes/agents.py#L1452),
+  [:1610](../../backend/api/routes/agents.py#L1610)). `/validate-condition` returns the same
+  errors.
+- **Exposed columns.** A where-filter may only reference columns on the scope's own schema
+  ([grammar.py:951](../../backend/api/algo/grammar.py#L951)). The row-level scopes are
+  `positions.expiring_today`, `.nfo`, `.mcx_unhedged`, and `positions.worst_symbol`. Their
+  columns are `account_id`, `symbol`, `exchange`, `product`, `underlying`, `qty`, `avg_price`,
+  `ltp`, `prev_close`, `pnl`, `day_val`, `day_change_pct`, `realised`, `unrealised`, `lots`,
+  `lot_size`, `is_unhedged`, and `net_qty`
+  ([grammar.py:764-828](../../backend/api/algo/grammar.py#L764)). The summary scopes
+  (`positions.total` / `.any_acct` / `.worst_acct`) expose only the account summary columns
+  ([grammar.py:688](../../backend/api/algo/grammar.py#L688)). They have no `exchange` or `qty`.
+- **No markers.** A where-value may not be a dict. There is no `$given` or `$row` support inside
+  a where-expression.
+
+### Row-set aggregates
+
+`count`, `sum`, `max`, and `avg` are row-set aggregate metrics. They reduce across the scope's
+rows for the tick, not per row. The catalog is the source of truth for the full token list
+([agent_grammar.yaml:331-369](../../backend/config/grammars/agent_grammar.yaml#L331)). This file
+does not enumerate individual metric tokens. The call shape is:
+
+```
+WHEN count@positions.expiring_today > 5 DO alert(telegram)
+WHEN sum(column=qty)@positions.expiring_today(exchange == "MCX") > 500 DO alert(telegram)
+WHEN max(column=pnl)@positions.expiring_today <= -10000 DO alert(telegram)
+```
+
+- **Shape.** `count` is always bare, and `count()` is a compile error. `sum`, `max`, and `avg`
+  take one keyword argument, `column=<name>`. The name must be a bare NAME naming a NUMBER column
+  on the leaf's own scope (`_compileMetricCallString`, [agents.js:3690](../../frontend/src/lib/command/grammars/agents.js#L3690)).
+  The compiled `metric` is the positional string `"sum(qty)"`, which decompiles back to
+  `sum(column=qty)`. The backend parses that string in `_parse_call_token`
+  ([grammar_registry.py:410](../../backend/api/algo/grammar_registry.py#L410)).
+- **Scope.** The column must exist on the leaf's own scope. `pnl`, `day_val`, and
+  `day_change_pct` exist on the summary scopes, so `max(column=pnl)@positions.any_acct` is
+  valid ([grammar.py:688-701](../../backend/api/algo/grammar.py#L688)). `qty` and `exchange`
+  exist only on the row scopes, so use `positions.expiring_today` for those.
+- **Single synthetic match.** An aggregate leaf produces at most one match. Its `account` is
+  `'TOTAL'`, and it sets `rowset_aggregate: True` (`_eval_leaf_rowset_aggregate`,
+  [agent_evaluator.py:1015](../../backend/api/algo/agent_evaluator.py#L1015)). `$row` is rejected
+  on any leaf that uses one of these metrics, because there is no single matching row to bind.
+  The check is `_ae_is_aggregate_match`
+  ([agent_engine.py:4952](../../backend/api/algo/agent_engine.py#L4952)).
+- **`count == 0` fires only when the scope returned rows.** If the scope resolver itself returned
+  nothing this tick, the leaf is skipped entirely. An outage and a genuinely empty book are
+  indistinguishable here, the same as every per-row leaf's "no rows, no match" default. If a
+  `where` or `scope_filter` narrows a non-empty scope to zero rows, that is a confirmed zero.
+  `count == 0` fires on it. The `raw_rows` check is at
+  [agent_evaluator.py:1032](../../backend/api/algo/agent_evaluator.py#L1032).
+- **Empty-set values.** `count` and `sum` return `0` on an empty filtered set. `max` and `avg`
+  return `None`, which means no match
+  ([metric_max.py:26-32](../../backend/api/algo/grammar_tokens/metric_max.py#L26),
+  [metric_avg.py:26-31](../../backend/api/algo/grammar_tokens/metric_avg.py#L26)).
+- **NaN or missing cell.** If any row's value for the column is `None` or NaN, the whole
+  reduction is `None` (no partial sum). A warning is logged
+  ([metric_sum.py:25-63](../../backend/api/algo/grammar_tokens/metric_sum.py#L25)).
+- **Composition.** An aggregate and a where-filter on the same leaf compose. The where-filter runs
+  first.
 
 ---
 
@@ -455,6 +627,13 @@ ArgEntry  := { key: string, value: ValueNode } (* key is never null *)
 ScopeNode := { type:'scope', segments: (CallNode | QualifierNode)[] }
 QualifierNode := { type:'qualifier', key: string,
                    value: { type:'star' } | { type:'name' | 'string', value }, start, end }
+WhereNode := { type:'wcol', col: { name, start, end }, op, value }
+           | { type:'wbetween', col, op1, value1, op2, value2 }
+           | { type:'and' | 'or', left: WhereNode, right: WhereNode }
+           | { type:'not', term: WhereNode }
+               (* Attached as `_whereExpr` on the LAST ScopeNode segment only, from
+                  `where_expr` above. `(always)` is stored as type 'always' and compiles to no
+                  `where` key. Compiled by `_compileWhereFilterTop` (agents.js). *)
 ValueNode := { type:'number' | 'string' | 'name', value }
            | { type:'list', value: ValueNode[] }
            | { type:'object', value: { [key: string]: ValueNode } }
@@ -528,3 +707,40 @@ catalog-content facts, not grammar bugs unless marked.
   `isEventStmtGap` ratchet (`agentsChevrotainDiff.test.js`) still catches every OLD-syntax corpus
   string as a known gap regardless of which side rejects it or why; re-capturing the corpus
   against the new grammar (dropping the now-invalid old-syntax strings) is Wave 3 scope.
+- **[open] Where-leaf key mismatch: the compiler emits `metric`; the backend requires `column`.**
+  `_compileWhereComparatorValue` ([agents.js:3338-3363](../../frontend/src/lib/command/grammars/agents.js#L3338))
+  emits `{metric, op, value}` for a where-leaf. The backend's `_where_leaf_well_formed`
+  ([agent_evaluator.py:907-923](../../backend/api/algo/agent_evaluator.py#L907)) and
+  `_eval_where_leaf` ([:942-951](../../backend/api/algo/agent_evaluator.py#L942)) read only
+  `column`. `create` and `update` run the validator
+  ([routes/agents.py:1452](../../backend/api/routes/agents.py#L1452),
+  [:1610](../../backend/api/routes/agents.py#L1610)), so every CLI-authored where-filter is
+  rejected on save with "malformed, or references a column not exposed". It is not silently
+  skipped at runtime. The compile tests pin `metric` (`agentsGrammar.test.js` at ~:2576, ~:2585,
+  ~:2631), so they pass while the saved shape fails. The fix belongs in the compiler: emit
+  `column`, and update those test expectations in the same change. Not fixed here.
+- **[open] Frontend test fixtures expose columns the live catalog does not.**
+  `agentsGrammar.test.js` ~:237-238 declares `positions.any_acct.exchange` and `.qty` (and
+  `is_itm` as boolean) as fixture-only rows. The live `positions.any_acct` exposes only
+  `_POSITIONS_SUMMARY_COLUMNS` ([grammar.py:688](../../backend/api/algo/grammar.py#L688),
+  [:953](../../backend/api/algo/grammar.py#L953)). A live compile of
+  `pnl@positions.any_acct(exchange == "MCX")` is therefore rejected, because `exchange` and
+  `qty` are row-level columns. The fixture-based compile tests check syntax, not live column
+  availability. Operator examples that use `exchange` or `qty` must use
+  `positions.expiring_today` or a variant.
+- **[open] The per-leaf latch key ignores `where` and `scope_filter`.**
+  `_latch_key()` ([agent_engine.py:92-108](../../backend/api/algo/agent_engine.py#L92)) is
+  `(agent_slug, metric, scope, account or underlying or 'TOTAL')`. Two leaves on one agent that
+  differ only by `where` or `scope_filter` share a latch and cooldown slot. Row-set aggregates
+  always carry `account='TOTAL'`, so two aggregate leaves that differ only by `where` collide on
+  every tick. The backend flags this; it is not fixed.
+- **[open] Bare where-column shorthand works only for boolean columns, and none is live.**
+  `_compileWhereComparatorValue` ([agents.js:3339-3343](../../frontend/src/lib/command/grammars/agents.js#L3339))
+  accepts a bare column only when its `valueType` is `boolean`. No exposed column in
+  `grammar.py` is boolean-typed (the string `'boolean'` does not appear in it). `is_unhedged`
+  and `net_qty` are `number`. Write
+  `is_unhedged == 1`. This extends the boolean-metric bullet above.
+- **[boundary] No `$given` or `$row` inside a where-expression.** A dict-valued where-leaf is
+  malformed ([agent_evaluator.py:893-896](../../backend/api/algo/agent_evaluator.py#L893),
+  [:921-923](../../backend/api/algo/agent_evaluator.py#L921)). A bound label cannot feed a
+  where-value.

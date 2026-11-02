@@ -807,6 +807,24 @@ _POSITION_ROW_COLUMNS = {
     'unrealised':     _col('unrealised', 'Unrealised P&L (₹)'),
     'lots':           _col('lots', 'Lots'),
     'lot_size':       _col('lot_size', 'Lot Size'),
+    # Group-derived columns (DSL dataframe-access gaps, item 1) — computed
+    # ONCE per (root, expiry) MCX CE/PE group by `background.py`'s
+    # position_rows construction (reusing the EXACT netting logic
+    # `grammar_tokens.scope_positions_expiring_today_mcx_unhedged.
+    # compute_mcx_ce_pe_net_groups` already has — lifted into a shared
+    # helper, not duplicated) and broadcast onto every row in that group,
+    # the same shape as pandas' `.groupby(key)[col].transform(...)`. `None`
+    # (never a coerced 0/False) for a non-MCX row, an MCX row with no
+    # resolvable underlying, or a group whose quantity couldn't be
+    # coerced to a number. `is_unhedged` is 1.0/0.0, not a bool — this
+    # registry has no boolean leaf type (see the Sprint 15 module
+    # docstring above). Parity: `positions.expiring_today(exchange ==
+    # "MCX" & is_unhedged == 1)` reproduces
+    # `positions.expiring_today.mcx_unhedged`'s own row set exactly,
+    # because both read the SAME grouping function — see
+    # `test_scope_where_filter.py`'s parity test.
+    'is_unhedged':    _col('is_unhedged', 'Unhedged (MCX CE/PE net != 0)'),
+    'net_qty':        _col('net_qty', 'Net CE/PE Qty (MCX group)'),
 }
 
 # Watchlist rows (ctx.watchlist_rows — see `_sd_build_watchlist_row`,
@@ -998,6 +1016,35 @@ def exposed_columns_for_scope(scope_token: str) -> dict:
     `scope_token`, or `{}` if the scope has no registered schema (unknown
     scope / a future scope added without updating EXPOSED_COLUMNS)."""
     return EXPOSED_COLUMNS.get(scope_token, {})
+
+
+def read_exposed_value(row: dict, col: dict):
+    """Read + coerce ONE exposed-column entry's value off `row`.
+
+    Shared coercion helper (DSL dataframe-access gaps, items 2/3) —
+    extracted from `agent_evaluator._resolve_metric_fn`'s inline
+    `_exposed_column_resolver` closure so the EXACT same None/NaN-vs-
+    string coercion rule is used by three call sites instead of each
+    re-implementing it: the Sprint 15 dot-access fallback above, the
+    generic where-filter's per-row leaf evaluation, and the row-set
+    aggregate factories' (`sum`/`max`/`avg`) column reader. `col` is
+    one `exposed_columns_for_scope(...)` schema entry (`{type,
+    from_column, label}`).
+
+    Returns `None` for a missing/NaN numeric cell — never a coerced 0
+    — the standard missing-vs-zero convention this module uses
+    everywhere else. A `'string'`-typed column passes its raw value
+    through unchanged (no float coercion attempted)."""
+    v = row.get(col['from_column'])
+    if v is None:
+        return None
+    if col.get('type', 'number') == 'string':
+        return v
+    try:
+        fv = float(v)
+    except (TypeError, ValueError):
+        return None
+    return None if fv != fv else fv
 
 
 # ── Scope filter (Sprint 19) — generic row-predicate for leaf.scope_filter ──

@@ -704,24 +704,9 @@ def _resolve_metric_fn(metric_tok: Optional[str], scope_tok: Optional[str]) -> O
     exposed = grammar.exposed_columns_for_scope(scope_tok).get(metric_tok)
     if not exposed:
         return None
-    from_column = exposed['from_column']
-    value_type = exposed.get('type', 'number')
 
-    def _exposed_column_resolver(ctx, row, _col=from_column, _type=value_type):
-        v = row.get(_col)
-        if v is None:
-            return None
-        if _type == 'string':
-            return v
-        try:
-            v = float(v)
-        except (TypeError, ValueError):
-            return None
-        # NaN guard — rows sourced from a DataFrame can carry NaN for a
-        # genuinely-missing numeric cell; treat it as missing (None),
-        # same missing-vs-zero convention as every hand-written metric
-        # resolver, never a coerced 0.
-        return None if v != v else v
+    def _exposed_column_resolver(ctx, row, _col=exposed):
+        return grammar.read_exposed_value(row, _col)
 
     return _exposed_column_resolver
 
@@ -864,6 +849,267 @@ def _eval_given_metric_leaf(leaf: dict, ctx: Context, marker: dict) -> list[dict
     return [entry] if fired else []
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+#  Generic where-filter on a scope segment (DSL dataframe-access gaps, item 2)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Wire shape (confirmed against the frontend's actual compiler —
+# `agents.js:_compileWhereLeaf`/`_compileWhereComparatorValue`): an
+# OPTIONAL `where` key on an ordinary leaf, SIBLING of the existing
+# `scope_filter` key —
+#   {"metric": "pnl", "scope": "positions.expiring_today", "op": "<=",
+#    "value": -30000,
+#    "where": {"all": [{"column": "exchange", "op": "==", "value": "MCX"},
+#                       {"column": "is_unhedged", "op": "==", "value": 1}]}}
+# — reusing the EXISTING top-level condition-tree composite shapes
+# (`all`/`any`/`not`) verbatim. A where-LEAF is `{"column": <bare exposed
+# column name>, "op": <operator token>, "value": <literal>}` — deliberately
+# the KEY NAME `column`, NOT `metric` (the outer leaf's own key), so a
+# where-leaf can never be mistaken for a metric/scope leaf missing a
+# field (the frontend's own rationale for this choice — see
+# `agents.js`'s where-compiler module comment). No `scope` key: there is
+# no nested `@`, the bare name resolves directly against THAT row's own
+# exposed-column schema (the leaf's own outer `scope`), never a fresh
+# scope/metric lookup.
+#
+# Deliberately a SEPARATE, pure (row, schema) -> bool walker — NOT a
+# re-entry into `evaluate()`/`_eval_leaf`. Reusing those would re-run
+# `scope_fn` per where-leaf, let `REGISTRY.metric` shadow a bare column
+# name, append spurious `ctx.observations` entries (corrupting latch
+# recovery), and drag in `_eval_all`'s cross-row join — none of which
+# apply to "is this ONE already-selected row's own field value true of
+# this sub-expression".
+#
+# Validated ONCE, structurally, against the WHOLE tree before any row is
+# evaluated (`_where_tree_well_formed`) — never per leaf per row. A
+# malformed/unknown-column leaf wrapped in `not` would otherwise evaluate
+# False on every row, and `not` would flip that to True — matching EVERY
+# row (fail OPEN), the opposite of the required fail-CLOSED "skip this
+# whole where-filter" contract. `_apply_where_filter` returns `None`
+# (never a partial list) on that failure; the caller treats `None`
+# exactly like an unknown metric/scope/op token — the whole leaf is
+# skipped, logged, never a crash.
+#
+# No `$given`/`$row` marker support inside a where-expression — explicit
+# scope boundary (not requested by the design, and a dict-shaped `value`
+# would be ambiguous with those markers) — a dict `value` on a where-leaf
+# is rejected as malformed during the structural check.
+
+def _where_operators() -> dict:
+    """`grammar.OPERATORS` — the SAME comparator dict `REGISTRY.op()` is
+    seeded from at registry-reload time (see `grammar_registry.reload()`).
+    Read lazily (not at import time) only so this module never needs to
+    care about `grammar` module init ordering; there is no real lazy
+    state here, `grammar.OPERATORS` is a plain module-level dict."""
+    return grammar.OPERATORS
+
+
+def _where_leaf_well_formed(node: Any, schema: dict) -> bool:
+    """Structural + schema check for ONE where-leaf — no row data
+    involved. `node` must be a dict with a `column` that is a real
+    exposed column on `schema`, a known operator token, and a `value`
+    that is present and not itself a dict (no $given/$row markers; see
+    the module section comment above)."""
+    if not isinstance(node, dict):
+        return False
+    name = node.get('column')
+    op_tok = node.get('op')
+    if not isinstance(name, str) or not name or name not in schema:
+        return False
+    if not isinstance(op_tok, str) or op_tok not in _where_operators():
+        return False
+    if 'value' not in node:
+        return False
+    return not isinstance(node.get('value'), dict)
+
+
+def _where_tree_well_formed(node: Any, schema: dict) -> bool:
+    """Recursively validate an entire where sub-tree against `schema`
+    ONCE — see the module section comment above for why this must run
+    before any row is evaluated, not per row."""
+    if not isinstance(node, dict) or not node:
+        return False
+    if 'all' in node or 'any' in node:
+        children = node.get('all') if 'all' in node else node.get('any')
+        if not isinstance(children, list) or not children:
+            return False
+        return all(_where_tree_well_formed(c, schema) for c in children)
+    if 'not' in node:
+        return _where_tree_well_formed(node.get('not'), schema)
+    return _where_leaf_well_formed(node, schema)
+
+
+def _eval_where_leaf(node: dict, row: dict, schema: dict) -> bool:
+    """Evaluate ONE pre-validated where-leaf against `row`. A missing or
+    NaN column value excludes the row via THIS leaf regardless of
+    operator (missing-vs-zero convention — never silently matched via,
+    say, `!= value` comparing against a bare `None`). Operator failures
+    (e.g. a malformed `between` range) are caught and treated as
+    non-matching, never raised — this runs inside a per-row list
+    comprehension with no surrounding try/except at the call site."""
+    col = schema[node['column']]
+    actual = grammar.read_exposed_value(row, col)
+    if actual is None:
+        return False
+    op_fn = _where_operators().get(node['op'])
+    try:
+        return bool(op_fn(actual, node['value']))
+    except Exception as e:
+        logger.warning(
+            f"where-filter: operator '{node['op']}' failed comparing "
+            f"{actual!r} vs {node['value']!r}: {e}"
+        )
+        return False
+
+
+def _eval_where_tree(node: dict, row: dict, schema: dict) -> bool:
+    """Evaluate a pre-validated where sub-tree against one row."""
+    if 'all' in node:
+        return all(_eval_where_tree(c, row, schema) for c in node['all'])
+    if 'any' in node:
+        return any(_eval_where_tree(c, row, schema) for c in node['any'])
+    if 'not' in node:
+        return not _eval_where_tree(node['not'], row, schema)
+    return _eval_where_leaf(node, row, schema)
+
+
+def _apply_where_filter(rows: list, where: Any, scope_tok: str) -> "list | None":
+    """Narrow `rows` by an optional leaf-level `where` sub-tree.
+
+    Returns `None` (never a partial/best-effort list) when `where` is
+    structurally malformed, or references a column not exposed on
+    `scope_tok` — the caller fails the WHOLE leaf closed, same
+    treatment as an unknown metric/scope/op token. A well-formed
+    where-tree that narrows every row away is a legitimate, meaningful
+    `[]` — "nothing passed the filter" — not a failure.
+
+    `where is None` (the common case — no caller uses this feature)
+    returns `rows` unchanged, a true no-op."""
+    if where is None:
+        return rows
+    schema = grammar.exposed_columns_for_scope(scope_tok)
+    if not schema or not _where_tree_well_formed(where, schema):
+        return None
+    return [r for r in rows if _eval_where_tree(where, r, schema)]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Row-set aggregates (DSL dataframe-access gaps, item 3)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# `count` / `sum(column)` / `max(column)` / `avg(column)` — see
+# `grammar_tokens/metric_count.py` and its three siblings. Unlike every
+# other metric resolver `(ctx, row) -> value`, a row-set aggregate's
+# resolved callable carries a truthy `rowset_aggregate` attribute and has
+# the signature `(ctx, rows, scope_tok) -> value`: it reduces ONCE across
+# the scope's whole (already scope_filter + where-filtered) row list for
+# this tick, rather than being called once per row. `_eval_leaf` detects
+# this via `getattr(metric_fn, 'rowset_aggregate', False)` and branches
+# to `_eval_leaf_rowset_aggregate` below instead of the ordinary per-row
+# loop — collapsing to AT MOST one synthetic match, regardless of the
+# underlying scope's own suffix (`sum(qty)@positions.any_acct` is ONE
+# number, never a fan-out). `agent_engine._ae_is_aggregate_match` checks
+# the SAME `rowset_aggregate` key on the match entry so `$row` fails
+# closed on it exactly like a `.total`-scoped leaf.
+
+def _eval_leaf_rowset_aggregate(metric_fn: Callable, op_fn: Callable,
+                                 metric_tok: str, scope_tok: str, op_tok: str,
+                                 value: Any, raw_rows: list, rows: list,
+                                 ctx: Context) -> list[dict]:
+    """Row-set aggregate branch of `_eval_leaf`.
+
+    `raw_rows` is the scope resolver's OWN unfiltered output (before
+    `scope_filter`/`where`). An EMPTY `raw_rows` means the scope itself
+    produced nothing this tick — outage or a genuinely flat book are
+    indistinguishable here, same as every ordinary per-row leaf's "no
+    rows this tick -> no match" default — so the aggregate is skipped
+    entirely rather than computed over an empty set. A non-empty
+    `raw_rows` narrowed to an EMPTY `rows` by `scope_filter`/`where` IS
+    meaningful (a confirmed zero after filtering) and is passed through
+    to the reducer — each aggregate factory decides for itself what an
+    empty filtered set means (0 for count/sum, None/undefined for
+    max/avg — see `metric_sum.py`'s module docstring)."""
+    if not raw_rows:
+        return []
+    try:
+        val = metric_fn(ctx, rows, scope_tok)
+    except Exception as e:
+        logger.warning(
+            f"Row-set aggregate metric '{metric_tok}' failed on scope "
+            f"'{scope_tok}': {e}"
+        )
+        return []
+    if val is None:
+        return []
+    try:
+        fired = bool(op_fn(val, value))
+    except Exception as e:
+        logger.warning(f"Operator '{op_tok}' failed comparing {val!r} vs {value!r}: {e}")
+        return []
+    entry = {
+        'metric':    metric_tok,
+        'scope':     scope_tok,
+        'op':        op_tok,
+        'threshold': value,
+        'value':     val,
+        'row':       {},
+        'account':   'TOTAL',
+        'underlying': None,
+        # Explicit classifier `agent_engine._ae_is_aggregate_match` checks
+        # — see that function's docstring. Set even though `account`
+        # already carries the pre-existing 'TOTAL' sentinel belt-and-
+        # suspenders check, per the DSL dataframe-access-gaps design:
+        # aggregate classification is a function of (scope suffix OR
+        # metric choice), checked explicitly, not inferred only from the
+        # account field.
+        'rowset_aggregate': True,
+    }
+    try:
+        ctx.observations.append({**entry, 'fired': fired})
+    except Exception:
+        pass
+    return [entry] if fired else []
+
+
+def _eval_leaf_per_row(metric_fn: Callable, op_fn: Callable, metric_tok: str,
+                       scope_tok: str, op_tok: str, value: Any, rows: list,
+                       ctx: Context) -> list[dict]:
+    """Ordinary per-row branch of `_eval_leaf` — extracted verbatim
+    (byte-identical logic) so `_eval_leaf` itself stays under the radon
+    complexity gate after the where-filter/aggregate additions."""
+    matches = []
+    for row in rows:
+        try:
+            val = metric_fn(ctx, row)
+        except Exception as e:
+            logger.warning(f"Metric resolver '{metric_tok}' failed on row {row.get('account','?')}: {e}")
+            continue
+        if val is None:
+            continue
+        try:
+            fired = bool(op_fn(val, value))
+        except Exception as e:
+            logger.warning(f"Operator '{op_tok}' failed comparing {val!r} vs {value!r}: {e}")
+            continue
+        entry = {
+            'metric':    metric_tok,
+            'scope':     scope_tok,
+            'op':        op_tok,
+            'threshold': value,
+            'value':     val,
+            'row':       row,
+            'account':   row.get('account'),
+            'underlying': row.get('underlying'),
+        }
+        try:
+            ctx.observations.append({**entry, 'fired': fired})
+        except Exception:
+            pass
+        if fired:
+            matches.append(entry)
+    return matches
+
+
 def _eval_leaf(leaf: dict, ctx: Context) -> list[dict]:
     if "log" in leaf:
         return _eval_log(leaf, ctx)
@@ -904,10 +1150,11 @@ def _eval_leaf(leaf: dict, ctx: Context) -> list[dict]:
         return []
 
     try:
-        rows = scope_fn(ctx) or []
+        raw_rows = scope_fn(ctx) or []
     except Exception as e:
         logger.warning(f"Scope selector '{scope_tok}' failed: {e}")
         return []
+    rows = raw_rows
 
     # Sprint 19 — optional symbol-filtered scope. Applied AFTER scope_fn's
     # own row-selection logic (expiry / NFO / MCX-unhedged filtering),
@@ -927,53 +1174,36 @@ def _eval_leaf(leaf: dict, ctx: Context) -> list[dict]:
             return []
         rows = [r for r in rows if predicate(r)]
 
-    matches = []
-    for row in rows:
-        try:
-            val = metric_fn(ctx, row)
-        except Exception as e:
-            logger.warning(f"Metric resolver '{metric_tok}' failed on row {row.get('account','?')}: {e}")
-            continue
-        if val is None:
-            continue
-        try:
-            fired = bool(op_fn(val, value))
-        except Exception as e:
-            logger.warning(f"Operator '{op_tok}' failed comparing {val!r} vs {value!r}: {e}")
-            continue
-        entry = {
-            'metric':    metric_tok,
-            'scope':     scope_tok,
-            'op':        op_tok,
-            'threshold': value,
-            'value':     val,
-            'row':       row,
-            'account':   row.get('account'),
-            # Underlying-scoped divergence feature (theoretical-vs-market
-            # loss gate, per underlying) — `positions.any_underlying` rows
-            # carry no `account` key at all (they roll up across every
-            # account holding that underlying), so without this, two
-            # DIFFERENT underlyings breaching in the same tick would
-            # collapse onto the same 'account'-less latch key / cross-row
-            # AND-join identity (the exact bug class CLAUDE.md's
-            # `loss-margin-low` incident already fixed for accounts — see
-            # `agent_engine._latch_key` / `_match_join_key` below).
-            'underlying': row.get('underlying'),
-        }
-        # Fix #5/#7/#8/#9 support — record EVERY successfully-resolved row
-        # (matched or not) so the engine can tell "observed and recovered"
-        # (real data, condition no longer breaching) apart from "never
-        # observed this tick" (fetch timeout/failure/empty frame) when
-        # deciding whether to clear a per-key latch. `ctx.observations` is
-        # a plain list on the Context the caller supplied — safe even when
-        # unused (default empty list, cheap append).
-        try:
-            ctx.observations.append({**entry, 'fired': fired})
-        except Exception:
-            pass
-        if fired:
-            matches.append(entry)
-    return matches
+    # DSL dataframe-access gaps, item 2 — generic where-filter. Applied
+    # AFTER scope_filter (both narrow the SAME row list), BEFORE the
+    # metric evaluates each row — see the module section comment above
+    # `_apply_where_filter` for why this must be its own filter step and
+    # not folded into the per-row loop below.
+    where = leaf.get('where')
+    if where is not None:
+        filtered = _apply_where_filter(rows, where, scope_tok)
+        if filtered is None:
+            logger.warning(
+                f"Condition leaf 'where' filter is malformed, or "
+                f"references a column not exposed on scope '{scope_tok}' "
+                f"— leaf skipped"
+            )
+            return []
+        rows = filtered
+
+    # DSL dataframe-access gaps, item 3 — row-set aggregates (count/sum/
+    # max/avg) collapse to ONE result over `rows` as a whole, regardless
+    # of the scope's own suffix; every other metric evaluates per row,
+    # unchanged. See the module section comment above
+    # `_eval_leaf_rowset_aggregate` for the full contract.
+    if getattr(metric_fn, 'rowset_aggregate', False):
+        return _eval_leaf_rowset_aggregate(
+            metric_fn, op_fn, metric_tok, scope_tok, op_tok, value,
+            raw_rows, rows, ctx,
+        )
+    return _eval_leaf_per_row(
+        metric_fn, op_fn, metric_tok, scope_tok, op_tok, value, rows, ctx,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1094,8 +1324,33 @@ def validate(cond: dict, given_names: "set[str] | None" = None) -> list[str]:
         for k in ('metric', 'scope', 'op'):
             if k not in c:
                 errors.append(f"{path}: leaf missing '{k}'")
-        if c.get('metric') and _resolve_metric_fn(c['metric'], c.get('scope')) is None:
-            errors.append(f"{path}: unknown metric token '{c['metric']}'")
+        _resolved_metric_fn = None
+        if c.get('metric'):
+            _resolved_metric_fn = _resolve_metric_fn(c['metric'], c.get('scope'))
+            if _resolved_metric_fn is None:
+                errors.append(f"{path}: unknown metric token '{c['metric']}'")
+        # DSL dataframe-access gaps, item 3 — a row-set aggregate factory
+        # (sum/max/avg) builds its callable with NO scope context (the
+        # registry's call-token cache has no scope to check against), so
+        # an unknown/wrong-type `column=` argument otherwise sails
+        # through save-time validation and only ever surfaces as a
+        # runtime warning, every tick, on an MCP/API-authored agent.
+        # Checked the SAME way item 2's where-filter columns are: against
+        # `exposed_columns_for_scope(scope)`, requiring `type == 'number'`
+        # (sum/max/avg only ever accept a numeric column — see
+        # `metric_sum.rowset_numeric_values`).
+        if (_resolved_metric_fn is not None
+                and getattr(_resolved_metric_fn, 'rowset_aggregate', False)
+                and hasattr(_resolved_metric_fn, 'column')
+                and c.get('scope')):
+            _agg_col = _resolved_metric_fn.column
+            _agg_entry = grammar.exposed_columns_for_scope(c['scope']).get(_agg_col)
+            if not _agg_entry or _agg_entry.get('type') != 'number':
+                errors.append(
+                    f"{path}: metric '{c['metric']}' references column "
+                    f"'{_agg_col}', which is not a number-typed exposed "
+                    f"column on scope '{c['scope']}'"
+                )
         if c.get('scope') and REGISTRY.scope(c['scope']) is None:
             errors.append(f"{path}: unknown scope token '{c['scope']}'")
         if c.get('op') and REGISTRY.op(c['op']) is None:
@@ -1150,6 +1405,23 @@ def validate(cond: dict, given_names: "set[str] | None" = None) -> list[str]:
                         f"{path}.scope_filter: qualifier(s) "
                         f"{sorted(scope_filter.keys())} not valid for scope "
                         f"'{c['scope']}'"
+                    )
+
+        # DSL dataframe-access gaps, item 2 — dry-check an optional
+        # `where` sub-tree the SAME way as `scope_filter` above: only
+        # once the base scope itself resolved (a typo'd scope already
+        # produced its own error above), reusing the EXACT same
+        # structural+schema walker the runtime `_apply_where_filter`
+        # uses (`_where_tree_well_formed`) — the two can never disagree
+        # about what counts as well-formed.
+        where = c.get('where')
+        if where is not None:
+            if c.get('scope') and REGISTRY.scope(c['scope']) is not None:
+                schema = grammar.exposed_columns_for_scope(c['scope'])
+                if not schema or not _where_tree_well_formed(where, schema):
+                    errors.append(
+                        f"{path}.where: malformed, or references a column "
+                        f"not exposed on scope '{c['scope']}'"
                     )
 
     walk(cond)
