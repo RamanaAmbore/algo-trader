@@ -50,12 +50,19 @@ test.describe('Console kind dropdown — placeholder sample always reflects the 
 
     await pickKind(page, 'Bracket');
     await expect(textarea).toHaveAttribute('placeholder', /^bracket\(/, { timeout: TIMEOUT });
-    await pickKind(page, 'Agent');
+    // 2026-11-01: labels renamed 'Agent'/'Alert' -> 'Action agent'/'Alert agent'
+    // (2026-10-31 operator rename) — stale exact-text matches here timed out
+    // forever since 'Agent'/'Alert' no longer render anywhere in the dropdown.
+    await pickKind(page, 'Action agent');
     await expect(textarea).toHaveAttribute('placeholder', /^WHEN /, { timeout: TIMEOUT });
     await pickKind(page, 'Order');
     await expect(textarea).toHaveAttribute('placeholder', /^order\(/, { timeout: TIMEOUT });
-    await pickKind(page, 'Alert');
-    await expect(textarea).toHaveAttribute('placeholder', /^ALERT /, { timeout: TIMEOUT });
+    await pickKind(page, 'Alert agent');
+    // Unified-DSL rename: ALERT is no longer a clause keyword — alert(...)
+    // is an ordinary call (see CLAUDE.md "WHEN...DO... is the only
+    // conditional wrapper"). The real seed (_KIND_SEED.alert) is
+    // 'alert(telegram)', lowercase call syntax, not 'ALERT ...'.
+    await expect(textarea).toHaveAttribute('placeholder', /^alert\(/, { timeout: TIMEOUT });
 
     // The real value is untouched by any of this — only the placeholder changed.
     await expect(textarea).toHaveValue('', { timeout: TIMEOUT });
@@ -63,8 +70,8 @@ test.describe('Console kind dropdown — placeholder sample always reflects the 
 
   test('a placeholder is never real content — focusing/clicking never leaves committed text behind', async ({ page }) => {
     const textarea = page.locator('.aw-view-body textarea, textarea').first();
-    await pickKind(page, 'Alert');
-    await expect(textarea).toHaveAttribute('placeholder', /^ALERT /, { timeout: TIMEOUT });
+    await pickKind(page, 'Alert agent');
+    await expect(textarea).toHaveAttribute('placeholder', /^alert\(/, { timeout: TIMEOUT });
     await textarea.click();
     // Native placeholder — clicking/focusing never copies it into the value.
     await expect(textarea).toHaveValue('', { timeout: TIMEOUT });
@@ -74,13 +81,13 @@ test.describe('Console kind dropdown — placeholder sample always reflects the 
     const textarea = page.locator('.aw-view-body textarea, textarea').first();
     const realText = 'order(account="ZG0790", symbol="NIFTY25JULFUT", side="BUY", lots=2)';
     await textarea.fill(realText);
-    await pickKind(page, 'Alert');
+    await pickKind(page, 'Alert agent');
     await expect(textarea).toHaveValue(realText, { timeout: TIMEOUT });
   });
 
   test('real typed text is never cleared by focusing the textarea again', async ({ page }) => {
     const textarea = page.locator('.aw-view-body textarea, textarea').first();
-    const realText = 'ALERT telegram, email';
+    const realText = 'alert(telegram, email)';
     await textarea.fill(realText);
     await textarea.blur();
     await textarea.click();

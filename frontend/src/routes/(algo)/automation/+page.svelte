@@ -103,9 +103,23 @@
   // text, never from this selector — it's a pure UI hint.
   // 2026-10-31 — operator: "we can call them action agent, alert agent,
   // bracket and order in that sequence in dropdown". Order and labels
-  // only; `_kindHint`'s default below and `_KIND_SEED`'s keys are
-  // unaffected — this is purely the dropdown's own display sequence
-  // and text.
+  // only; `_KIND_SEED`'s keys are unaffected — this is purely the
+  // dropdown's own display sequence and text.
+  //
+  // 2026-11-01 — operator: "console can have dropdown with same labels
+  // as agents with the exception of order. the default in both cases
+  // is same with the exception of count, the sequence should also be
+  // same." `_kindHint`'s default below used to be `'order'` — a
+  // leftover from BEFORE this reorder, when `_KIND_OPTIONS` had `order`
+  // FIRST (`['order', 'bracket', 'agent', 'alert']`). The reorder above
+  // moved `agent` to first position but never updated the default to
+  // follow it, so Console silently kept defaulting to the OLD first
+  // item. Agents-tab's own default (`_activeCard`, below) already
+  // defaults to `'agents'` (Action agent) — changed here to match, so
+  // both dropdowns now default to the SAME kind. The only difference
+  // between the two is the Agents-tab label's trailing count suffix
+  // ("Action agent (12)" vs plain "Action agent" here) — display-only,
+  // not a default-kind mismatch.
   const _KIND_OPTIONS = ['agent', 'alert', 'bracket', 'order'];
   const _KIND_LABELS = { agent: 'Action agent', alert: 'Alert agent', bracket: 'Bracket', order: 'Order' };
   const _KIND_SEED = {
@@ -114,7 +128,7 @@
     agent: 'WHEN pnl_pct@positions.total <= -5 DO alert(telegram)',
     alert: 'alert(telegram)',
   };
-  let _kindHint = $state('order');
+  let _kindHint = $state('agent');
   const _consolePlaceholder = $derived(_KIND_SEED[_kindHint] || '');
 
   function _pickKind(/** @type {string} */ k) {

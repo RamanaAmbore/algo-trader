@@ -315,6 +315,18 @@ test.describe('Item 3 — Workspace header removed; Console/Agents tab row carri
     const guide = page.locator('.console-guide-btn');
     await expect(select).toBeVisible({ timeout: TIMEOUT });
 
+    // 2026-11-01 — Console's default kind changed 'Order' -> 'Action agent'
+    // (to match the Agents tab's own default), so the trigger's CONTENT-
+    // DRIVEN width (min-width is a floor, not a cap — see `.aw-kind-select`
+    // in +page.svelte) now renders wider at default than this test's
+    // 80-92px window, which was tuned against the short 'Order' label.
+    // Explicitly select 'Order' first so this test still measures the
+    // floor-width case it was written for, independent of whatever kind
+    // happens to be the default.
+    await select.click();
+    await page.getByRole('option', { name: 'Order' }).click();
+    await expect(select).toContainText('Order');
+
     const selectBox = await select.boundingBox();
     const guideBox = await guide.boundingBox();
     // Pulse AccountMultiSelect's own reference height, confirmed live

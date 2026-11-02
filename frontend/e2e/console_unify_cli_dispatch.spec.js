@@ -26,9 +26,10 @@
  *        followed by the Guide button on the SAME row — not the tab's
  *        own nav-strip label, which stays "Console".
  *      - the Guide button text no longer carries a trailing arrow.
- *      - a kind-selector (Order/Bracket/Agent/Alert) sits above the
- *        textbox, defaults to "Order", and all four options are
- *        clickable.
+ *      - a kind-selector (Action agent/Alert agent/Bracket/Order) sits
+ *        above the textbox, defaults to "Action agent" (matching the
+ *        Agents-tab dropdown's own default — 2026-11-01), and all four
+ *        options are clickable.
  *
  * Mocking: `/api/admin/exec` and `/api/orders/ticket` are intercepted
  * via `page.route()` — same convention as the sibling
@@ -273,13 +274,18 @@ test.describe('Console — Guide link + kind-selector dropdown, relocated to the
     await expect(page.locator('section').getByRole('tab', { name: 'Console' })).toBeVisible({ timeout: TIMEOUT });
   });
 
-  test('kind-selector dropdown defaults to "Order" and all four options are pickable', async ({ page }) => {
+  test('kind-selector dropdown defaults to "Action agent" (matching the Agents tab) and all four options are pickable', async ({ page }) => {
+    // 2026-11-01 — operator: "the default in both cases is same ...
+    // the sequence should also be same" — Console's default used to be
+    // "Order" (a leftover from before the options were reordered to put
+    // Agent first); it now matches the Agents-tab dropdown's own
+    // default (`_activeCard = 'agents'`, i.e. Action agent).
     // Select.svelte's trigger text is "<label> ▾" (a trailing caret glyph,
     // .rbq-select-caret) — `toContainText` rather than an exact `toHaveText`
     // match, so the assertion isn't coupled to that decorative character.
     const trigger = page.getByRole('button', { name: 'Statement kind' });
     await expect(trigger).toBeVisible({ timeout: TIMEOUT });
-    await expect(trigger).toContainText('Order');
+    await expect(trigger).toContainText('Action agent');
 
     // Picking Bracket (box empty) seeds a bracket(...) starter snippet.
     await trigger.click();
