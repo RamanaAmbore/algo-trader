@@ -172,9 +172,11 @@ class ExecutionController(Controller):
             _stop_drivers()
 
         elif target == "live":
-            updates["execution.paper_trading_mode"] = "false"
-            updates["execution.shadow_mode"]        = "false"
-            _stop_drivers()
+            await reset_to_live_mode(reason="navbar mode chip")
+            # reset_to_live_mode already upserted the settings and stopped
+            # drivers directly (it's also called from login, which has no
+            # `updates` dict to batch through) — nothing left to add here.
+            updates = {}
 
         elif target in ("sim", "replay"):
             # The driver is started separately; we just validate and
@@ -221,6 +223,54 @@ class ExecutionController(Controller):
             branch=branch,
             allowed_modes=allowed,
         )
+
+
+async def reset_to_live_mode(reason: str) -> None:
+    """Force the system back to LIVE mode.
+
+    Same two settings flips + driver stop that the navbar's `live` target
+    in `set_mode` already performs (see the `elif target == "live":`
+    branch above) — pulled out into a standalone, reusable function so a
+    second call site (currently: `auth.py`'s login handler, resetting a
+    forgotten paper/shadow toggle from a prior session on admin/designated
+    sign-in) doesn't have to duplicate the settings-upsert + driver-stop
+    logic.
+
+    `reason` is threaded into the settings-audit `description` so a manual
+    navbar click and an automatic login-triggered reset are distinguishable
+    in the settings history, instead of both reading as the generic navbar
+    description.
+
+    Awaits `reload_cache()` itself — unlike `set_mode`'s `elif` branches,
+    which batch their updates into a shared `updates` dict and reload once
+    after the whole if/elif chain, this function is also called standalone
+    from `auth.py` with no such batching wrapper around it.
+
+    Order matters and matches the pre-refactor `live` branch exactly:
+    `_stop_drivers()` runs BEFORE the settings are written, not after. A
+    running sim driver's own `stop()` calls `_revert_settings()`
+    (`sim/driver.py`), which restores any setting the sim mutated via its
+    `set_setting` action straight into the settings `_CACHE` — including,
+    in principle, these same two execution flags. Writing the flags first
+    and stopping the driver second would let that revert silently
+    overwrite the `False` this function just wrote, defeating the whole
+    reset. Stopping first means any such revert lands before, and is then
+    superseded by, our own writes.
+    """
+    from backend.shared.helpers.settings import reload_cache, set_bool
+
+    _stop_drivers()
+
+    description = f"Reset to live: {reason}"
+    await set_bool(
+        "execution.paper_trading_mode", False, category="execution",
+        description=description,
+    )
+    await set_bool(
+        "execution.shadow_mode", False, category="execution",
+        description=description,
+    )
+    await reload_cache()
 
 
 def _stop_drivers(exclude: str | None = None) -> None:

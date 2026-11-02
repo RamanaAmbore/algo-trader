@@ -840,6 +840,26 @@ class AuthController(Controller):
             f"Auth: login OK {data.username!r} role={user.role} "
             f"tv={user.token_version}"
         )
+
+        # Reset execution mode to LIVE on a privileged sign-in so a prior
+        # session's forgotten paper/shadow toggle never silently carries
+        # over. Admin/designated only — same privilege boundary admin_guard
+        # already enforces on the mode-control endpoints themselves; a
+        # trader/risk/partner login must never have this side effect, since
+        # those roles can't even see the mode picker. Prod-only — dev
+        # doesn't have a `live` mode at all (see execution.py:_DEV_MODES).
+        # Local import (not module-level) to avoid introducing a circular
+        # import between auth.py and execution.py, matching the local-import
+        # convention execution.py's own handlers already use throughout.
+        # Best-effort: this must never block a successful login.
+        if user.role in ("admin", "designated"):
+            try:
+                if is_prod_branch():
+                    from backend.api.routes.execution import reset_to_live_mode
+                    await reset_to_live_mode(reason=f"login by {data.username}")
+            except Exception as e:
+                logger.warning(f"Auth: reset-to-live-mode on login failed: {e}")
+
         return LoginResponse(
             access_token=token,
             username=user.username,

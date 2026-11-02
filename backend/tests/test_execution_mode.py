@@ -11,7 +11,7 @@ get_bool/get_string resolve without a real DB connection.
 """
 
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, AsyncMock, MagicMock
 
 
 # ---------------------------------------------------------------------------
@@ -171,3 +171,74 @@ class TestSetMode:
         assert "live" not in resp.allowed_modes
         assert "shadow" not in resp.allowed_modes
         assert resp.branch == "dev"
+
+
+class TestSetModeLiveRefactorRegression:
+    """Regression guard for the `live` branch of `set_mode`, which now
+    delegates to the shared `reset_to_live_mode()` helper (added so
+    auth.py's login handler can reuse the same logic) instead of
+    inlining it. Confirms the branch still writes the same two settings
+    keys/values/category, still stops any running sim/replay driver, and
+    — the one thing a naive extraction could get wrong — still stops the
+    driver BEFORE writing the settings, matching the pre-refactor order
+    (`_stop_drivers()` ran synchronously inside the elif; the `set_bool`
+    writes landed afterward, in the shared `if updates:` block further
+    down the function).
+
+    One deliberate, brief-directed behavior change: the persisted
+    `description` text changed from the generic
+    "Set by /api/admin/execution/mode (navbar mode chip)." to
+    "Reset to live: navbar mode chip" (reset_to_live_mode threads its
+    `reason` argument into the description so a navbar click and a
+    login-triggered reset are distinguishable in the settings audit
+    trail). That is not asserted as unchanged here — it's the one
+    intentional difference from the pre-refactor branch.
+    """
+
+    @pytest.mark.asyncio
+    async def test_set_mode_live_writes_same_settings_and_stops_drivers_first(self):
+        from backend.api.routes.execution import ExecutionController, ExecutionModeRequest
+
+        order_tracker = MagicMock()
+        set_bool_mock = AsyncMock(side_effect=order_tracker.set_bool)
+        stop_drivers_mock = MagicMock(side_effect=order_tracker.stop_drivers)
+        reload_cache_mock = AsyncMock()
+
+        controller = ExecutionController.__new__(ExecutionController)
+        req = ExecutionModeRequest(mode="live")
+        set_mode_fn = ExecutionController.set_mode.fn
+
+        with patch("backend.shared.helpers.utils.config",
+                   {"deploy_branch": "main"}), \
+             patch("backend.shared.helpers.settings.set_bool", set_bool_mock), \
+             patch("backend.shared.helpers.settings.reload_cache", reload_cache_mock), \
+             patch("backend.api.routes.execution._stop_drivers", stop_drivers_mock), \
+             patch("backend.api.routes.execution._get_current_mode",
+                   return_value="live"):
+
+            resp = await set_mode_fn(controller, req)
+
+        assert resp.mode == "live"
+
+        # Same two settings keys, same values, same category as the
+        # pre-refactor inline branch.
+        written = {
+            call.args[0]: (call.args[1], call.kwargs.get("category"))
+            for call in set_bool_mock.await_args_list
+        }
+        assert written["execution.paper_trading_mode"] == (False, "execution")
+        assert written["execution.shadow_mode"] == (False, "execution")
+
+        # _stop_drivers() still called exactly once, with no args — same
+        # as the pre-refactor branch (reset_to_live_mode's own internal
+        # call; the live branch itself doesn't call it a second time).
+        stop_drivers_mock.assert_called_once_with()
+
+        # Order: stop_drivers runs BEFORE either set_bool write, matching
+        # the pre-refactor branch's own ordering (_stop_drivers() was the
+        # synchronous call inside the elif; set_bool ran afterward in the
+        # shared `if updates:` block).
+        call_names = [c[0] for c in order_tracker.mock_calls]
+        assert call_names.index("stop_drivers") < call_names.index("set_bool")
+
+        reload_cache_mock.assert_awaited()
