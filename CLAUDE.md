@@ -1581,6 +1581,45 @@ loop in `ramboq_conn` ("ReactorNotRestartable"), which kept the cache cold for s
 - Invariant: a read-only preview never returns a raw 500 for a transient resolver failure. A real
   validation outcome still does.
 
+**Chain live-wing confirmation badge — a Bracket wing that fires live shows on its strike cell
+(2026-11-02; commit `6fbbe205`)** — A Bracket wing/hedge leg is placed asynchronously, on parent
+fill, by `_fire_template_attach_on_fill` → `apply_template_to_order` (`_chase_wing`,
+[`template_attach.py:2274`](backend/api/algo/template_attach.py#L2274)). It is never placed at Submit
+time, so nothing in the Chain grid confirmed a wing had fired. The operator had to check OrderBook or
+Positions. A read-only `chain-leg-badge-live` on the strike cell now shows it.
+- **Matching.** `SymbolPanel.svelte:submitBasket()` ([:2273](frontend/src/lib/SymbolPanel.svelte#L2273))
+  calls `trackChainParentSubmission()` only for a live option leg that returned a broker order id.
+  Paper, sim and replay never attach a real wing, so they are skipped. `computeLiveWingState()`
+  ([liveWingBadge.js:111](frontend/src/lib/data/liveWingBadge.js#L111)) finds the parent's `AlgoOrder`
+  id through `broker_order_id` or `superseded_broker_order_ids`. The wing row must carry
+  `source === 'template_wing'` and a `parent_order_id` equal to that id. The literal is set in
+  `_chase_wing` ([template_attach.py:2320](backend/api/algo/template_attach.py#L2320)). A bare
+  `parent_order_id` match is not enough, because take-profit children carry the same parent id with
+  `source='take_profit'`.
+- **Staging isolation.** The badge map `_liveWingByKey`
+  ([OptionChainTab.svelte:589](frontend/src/lib/order/OptionChainTab.svelte#L589)) is separate from
+  `_basketLegByKey` ([:569](frontend/src/lib/order/OptionChainTab.svelte#L569)), which derives from
+  `chainBasket`. A confirmed-live wing never enters the pre-submit array, so a later Submit cannot
+  re-place it as a duplicate live order. The new modules do not reference `chainBasket`, `basketLegs`
+  or `_localBasket`.
+- **No new poll.** `pollOrderFillWatch()` ([orderFillPoller.js:67](frontend/src/lib/data/orderFillPoller.js#L67))
+  already runs from the `(algo)` layout ([`+layout.svelte:826`](<frontend/src/routes/(algo)/+layout.svelte#L826>)).
+  It now also writes its `fetchAlgoOrdersRecent(100, 'all')` result to `latestAlgoOrderRows`
+  ([orderFillPoller.js:65](frontend/src/lib/data/orderFillPoller.js#L65)). The write happens before the
+  broker-fetch early return, so a broker outage does not blank the feed.
+- **Lifetime.** Tracking is module-level `$state` ([liveWingTracker.svelte.js:27](frontend/src/lib/data/liveWingTracker.svelte.js#L27)).
+  It survives Chain close and reopen in the same tab, not a page reload. It is pruned after 30 minutes
+  without activity (`WING_TRACK_PRUNE_MS`, [liveWingBadge.js:41](frontend/src/lib/data/liveWingBadge.js#L41)).
+  A wing row in a dead status (REJECTED, CANCELLED, UNFILLED, CANCEL_FAILED) drops its tracked parent at
+  once. OrderBook and Positions stay the permanent record.
+- **Scope limit, not a bug.** Only the chase-routed LIMIT wing writes an `AlgoOrder` row with
+  `source='template_wing'` (`_ta_live_place_wing` → `_start_wing_chase`,
+  [template_attach.py:2416](backend/api/algo/template_attach.py#L2416)). A direct MARKET wing goes
+  through `_place_wing_leg` ([:1866](backend/api/algo/template_attach.py#L1866)) and writes no row. Its
+  only record is the parent's `attached_gtts_json`, so it never shows this badge. It is silent, not wrong.
+- Invariant: a confirmed-live wing is shown read-only and never enters the staging array. The badge
+  appears only for a wing row the backend actually created.
+
 **Chase countdown column minimum-width guard on mobile (2026-10-16, commit de68fbda)** — The age/countdown column in `ChaseCard.svelte` had no minimum width (`minmax(0, 0.6fr)`), allowing it to shrink to unreadable slivers on narrow mobile viewports competing with 8+ other columns and a locked-minimum kill button. Fixed by setting `minmax(2.1rem, 0.6fr)` in both `.cc-row` and `.cc-compact .cc-row` grid templates.
 
 **ChaseCard header-drawer column floors on mobile (2026-10-23; commit `bcb9bad6`, amends the entry
@@ -3206,6 +3245,7 @@ now caches + returns a `stale` flag; `/api/nav/by-account` masks `errors` for no
 | Retry-attach per-row lock (placement + persist) | `orders.py:_rco_run_template_attach` (lock from `orders_place.py:_get_template_attach_lock`) |
 | Bracket default scope on Ticket tab | `frontend/src/lib/order/OrderTicket.svelte:_defaultTemplate` + `frontend/src/lib/SymbolPanel.svelte:_currentScope()` |
 | Ticket preview degraded response (no 500 on resolver failure) | `backend/api/routes/orders.py:ticket_preview` + `_rco_preview_degraded_message` |
+| Chain live-wing confirmation badge (Bracket wing fired live) | `frontend/src/lib/data/liveWingBadge.js:computeLiveWingState` + `liveWingTracker.svelte.js` + `OptionChainTab.svelte:_liveWingByKey` + `orderFillPoller.js:latestAlgoOrderRows` |
 | Scale-out ladder OCO pairing | `template_attach.py:_ta_detect_scale_sl_group` + `background.py:_oco_process_group_entry` |
 | MCX real per-contract expiry (live freeze filter) | `expiry_freeze.py:_mcx_future_real_expiry` |
 | generic_notice body (plain text, no origin line — see "Alert message format") | `event_agents.py:_render_deploy_sync` (pass-through) + producer `msg` in `background.py` |
