@@ -319,6 +319,25 @@ conn service so MCX/NCO contracts→lots translation happens correctly. Fixed 20
 Any new broker proxy layer must do the same — failing to do so sends raw contract qty
 (e.g. 100 contracts) as 100 lots to the Kite adapter, hitting the 50-lot ceiling.
 
+**Execution mode resets to LIVE on admin/designated prod login (2026-11-02; commit `c7e66df7`)** — A
+forgotten Paper or Shadow toggle from a prior session no longer carries into a new one. On a successful
+prod `login` for role `admin` or `designated` ([`auth.py:855`](backend/api/routes/auth.py#L855)), the
+handler calls `reset_to_live_mode(reason=f"login by {username}")`
+([`execution.py:228`](backend/api/routes/execution.py#L228)). The reason becomes the settings-history
+description. Dev has no `live` mode (`_DEV_MODES`, [`execution.py:47`](backend/api/routes/execution.py#L47)),
+so the reset is prod-only. Trader, risk and partner logins never trigger it, and those roles cannot see
+the mode picker. The privilege boundary matches `admin_guard` on the mode-control endpoints.
+- `reset_to_live_mode()` is the same code the navbar's `live` branch in `set_mode` runs
+  ([`execution.py:174`](backend/api/routes/execution.py#L174)), extracted so both call sites share it.
+- Driver stop runs BEFORE the settings writes. A sim driver's `stop()` calls `_revert_settings()`
+  ([`sim/driver.py`](backend/api/algo/sim/driver.py)), which can restore a setting into the cache.
+  Writing the flags first would let that revert undo the reset.
+- The login call is best-effort: try/except with a warning log. It never blocks a successful login.
+- Intended side effect: an admin/designated login also stops a sim or replay run that a different
+  operator started in another session. That run's open sim orders are cancelled with cancel source
+  `sim_stop`.
+- Invariant: a privileged prod login always lands in LIVE, and the login itself never fails on this reset.
+
 **Closed-hours route gate** — `closed_hours_or_broker()` in `snapshot_gate.py` CANONICAL gate. 
 Invariant: `broker_fn` NEVER called when closed. Returns source tags: `'live'` / `'snapshot'` / 
 `'snapshot-fallback'`. Every new data route MUST use. Tests patch `_any_segment_open()`.
@@ -1541,6 +1560,26 @@ explicit click.
 
 **Known gap —** the same 2026-11-01 bracket audit (backend bracket execution, frontend bracket UI, and
 the DSL where-filter) left further findings open and untriaged. This entry does not claim them fixed.
+
+**Ticket preview degrades instead of returning a 500 — Bracket preview survives a cold MCX
+instruments cache (2026-11-02; commit `99bcf08b`)** — `POST /api/orders/ticket/preview`
+([`orders.py:2730`](backend/api/routes/orders.py#L2730)) fires on every Chain-tab field change while a
+Bracket template is armed. It calls `apply_template_to_order(..., apply_path="preview")` to resolve the
+wing/TP/SL plan for display. It had no exception handling. Right after a `ramboq_conn` restart, the MCX
+instruments cache can still be cold. The qty-oversize guard `_validate_exchange_qty_multiple`
+([`base.py:29`](backend/brokers/base.py#L29)) then correctly raised `ValueError`. Nothing caught it, so
+Litestar returned a raw 500. The restart window came from a KiteTicker Twisted-reactor crash-restart
+loop in `ramboq_conn` ("ReactorNotRestartable"), which kept the cache cold for several minutes.
+- **Fix.** A bare `Exception` now degrades to a structured `TicketPreviewResponse`: an empty plan,
+  `wing_feasible=false`, and one `gtt_trigger_errors` entry from `_rco_preview_degraded_message()`
+  ([`orders.py:1228`](backend/api/routes/orders.py#L1228)). That helper masks account codes, falls back
+  to the class name when `str(e)` is empty, and truncates to 200 characters. A genuine `HTTPException`
+  (422 broker-capability gate, bad template override) still propagates unchanged.
+- The pattern matches `/spread-check` in the same class ("Always 200 with a structured result").
+  The qty guard in `base.py` is unchanged. The endpoint is read-only, so the degrade cannot leave a
+  partial write behind.
+- Invariant: a read-only preview never returns a raw 500 for a transient resolver failure. A real
+  validation outcome still does.
 
 **Chase countdown column minimum-width guard on mobile (2026-10-16, commit de68fbda)** — The age/countdown column in `ChaseCard.svelte` had no minimum width (`minmax(0, 0.6fr)`), allowing it to shrink to unreadable slivers on narrow mobile viewports competing with 8+ other columns and a locked-minimum kill button. Fixed by setting `minmax(2.1rem, 0.6fr)` in both `.cc-row` and `.cc-compact .cc-row` grid templates.
 
@@ -3118,6 +3157,7 @@ now caches + returns a `stale` flag; `/api/nav/by-account` masks `errors` for no
 | Expiry pre-close alert + auto-close (one agent each, both exchanges) | `backend/api/algo/agent_engine.py` (`expiry-day-preclose-alert`/`expiry-day-itm-auto-close`, `_v2_expiry_position_breakdown`) + `backend/api/algo/actions_live.py:_action_live_expiry_auto_close` + `backend/api/algo/grammar_tokens/metric_is_expiry_preclose_{alert,close}_window.py` |
 | Expiry close hold/release | `/admin/settings` → `expiry_close_hold_enabled` (inverted: `true`=held, default) |
 | Dhan/Groww margin enforce | `/admin/settings` → `preflight.enforce_margin_{dhan,groww}` |
+| Execution mode reset to LIVE on admin/designated prod login | `backend/api/routes/execution.py:reset_to_live_mode` (called from `auth.py:login`) |
 | Add MCP tool | `backend/mcp/kite_server.py` @app.tool() |
 | Tune MCP audit | `/admin/settings` |
 | Update macro data | `backend/config/backend_config.yaml` |
@@ -3165,6 +3205,7 @@ now caches + returns a `stale` flag; `/api/nav/by-account` masks `errors` for no
 | Template persist-failure hold (in-memory) | `orders_place.py:_TPL_ATTACH_PERSIST_PENDING` + `_opp_handle_persist_failure` |
 | Retry-attach per-row lock (placement + persist) | `orders.py:_rco_run_template_attach` (lock from `orders_place.py:_get_template_attach_lock`) |
 | Bracket default scope on Ticket tab | `frontend/src/lib/order/OrderTicket.svelte:_defaultTemplate` + `frontend/src/lib/SymbolPanel.svelte:_currentScope()` |
+| Ticket preview degraded response (no 500 on resolver failure) | `backend/api/routes/orders.py:ticket_preview` + `_rco_preview_degraded_message` |
 | Scale-out ladder OCO pairing | `template_attach.py:_ta_detect_scale_sl_group` + `background.py:_oco_process_group_entry` |
 | MCX real per-contract expiry (live freeze filter) | `expiry_freeze.py:_mcx_future_real_expiry` |
 | generic_notice body (plain text, no origin line — see "Alert message format") | `event_agents.py:_render_deploy_sync` (pass-through) + producer `msg` in `background.py` |
