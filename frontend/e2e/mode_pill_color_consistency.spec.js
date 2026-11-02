@@ -30,6 +30,17 @@ const otdSrc = readFileSync(
 const logPanelSrc = readFileSync(
   new URL('../src/lib/LogPanel.svelte', import.meta.url).pathname, 'utf8'
 );
+// `.mode-pill*` CSS moved out of LogPanel.svelte's own <style> block into
+// this shared SSOT (LogPanel.svelte:871's own comment: "the .mode-pill*
+// CSS itself moved to app.css"). `.om-chip*` did NOT move — those rules
+// are still in LogPanel.svelte's own <style> block, read from logPanelSrc
+// as before. Pre-existing drift found 2026-11-02 while touching this file
+// for an unrelated ChaseCard fix — these lookups were silently matching
+// nothing (LogPanel.svelte's own copy was deleted, not duplicated) and
+// every assertion against them was failing.
+const appCssSrc = readFileSync(
+  new URL('../src/app.css', import.meta.url).pathname, 'utf8'
+);
 
 test.describe('mode-pill color consistency — LIVE is red everywhere, never green', () => {
   test('navbar MODE_COLOR is the canonical reference: live=red, sim/replay=green', () => {
@@ -61,7 +72,7 @@ test.describe('mode-pill color consistency — LIVE is red everywhere, never gre
   });
 
   test('LogPanel .mode-pill-live and the om-chip-live filter chip are red (already correct — regression guard)', () => {
-    const pill = logPanelSrc.match(/:global\(\.mode-pill-live\)\s*\{[^}]*\}/)?.[0] ?? '';
+    const pill = appCssSrc.match(/\.mode-pill-live\s*\{[^}]*\}/)?.[0] ?? '';
     const chip = logPanelSrc.match(/\.om-chip\.om-on\.om-chip-live\s*\{[^}]*\}/)?.[0] ?? '';
     expect(pill).not.toBe('');
     expect(chip).not.toBe('');
@@ -77,7 +88,7 @@ test.describe('mode-pill color consistency — LIVE is red everywhere, never gre
     for (const [name, src, selector] of [
       ['ChaseCard', chaseCardSrc, /\.cc-mode-live\s*\{[^}]*\}/],
       ['OrderTimelineDrawer', otdSrc, /\.otd-mode-live\s*\{[^}]*\}/],
-      ['LogPanel pill', logPanelSrc, /:global\(\.mode-pill-live\)\s*\{[^}]*\}/],
+      ['LogPanel pill', appCssSrc, /\.mode-pill-live\s*\{[^}]*\}/],
       ['LogPanel chip', logPanelSrc, /\.om-chip\.om-on\.om-chip-live\s*\{[^}]*\}/],
     ]) {
       const rule = src.match(selector)?.[0] ?? '';
@@ -126,12 +137,12 @@ test.describe('mode-pill color consistency — SIM/REPLAY/SHADOW/PAPER unified t
   });
 
   test('LogPanel: sim pill + chip unified to green (was amber), paper pill + chip use --algo-sky family (was a mismatched blue literal)', () => {
-    const simPill = logPanelSrc.match(/:global\(\.mode-pill-sim\)\s*\{[^}]*\}/)?.[0] ?? '';
+    const simPill = appCssSrc.match(/\.mode-pill-sim\s*\{[^}]*\}/)?.[0] ?? '';
     const simChip = logPanelSrc.match(/\.om-chip\.om-on\.om-chip-sim\s*\{[^}]*\}/)?.[0] ?? '';
     expect(simPill).toMatch(/var\(--c-long\)/);
     expect(simChip).toMatch(/var\(--c-long\)/);
 
-    const paperPill = logPanelSrc.match(/:global\(\.mode-pill-paper\)\s*\{[^}]*\}/)?.[0] ?? '';
+    const paperPill = appCssSrc.match(/\.mode-pill-paper\s*\{[^}]*\}/)?.[0] ?? '';
     const paperChip = logPanelSrc.match(/\.om-chip\.om-on\.om-chip-paper\s*\{[^}]*\}/)?.[0] ?? '';
     for (const rule of [paperPill, paperChip]) {
       expect(rule).not.toBe('');
@@ -150,11 +161,46 @@ test.describe('mode-pill shape unification — 2px radius everywhere, not a mix 
     expect(rule).not.toMatch(/border-radius:\s*9999px/);
   });
 
-  test('LogPanel .mode-pill and ChaseCard .cc-mode already use a 2px radius (regression guard)', () => {
-    const logRule = logPanelSrc.match(/:global\(\.mode-pill\)\s*\{[^}]*\}/)?.[0] ?? '';
-    const ccRule = chaseCardSrc.match(/\.cc-mode\s*\{[^}]*\}/)?.[0] ?? '';
+  test('LogPanel .mode-pill already uses a 2px radius (regression guard)', () => {
+    const logRule = appCssSrc.match(/\.mode-pill\s*\{[^}]*\}/)?.[0] ?? '';
     expect(logRule).toMatch(/border-radius:\s*2px/);
-    expect(ccRule).toMatch(/border-radius:\s*2px/);
+  });
+});
+
+test.describe('ChaseCard mode pill — button/box appearance removed (2026-11-02)', () => {
+  // Operator: "the pill chase with border like live or paper, the button
+  // appearance should be removed" — the base .cc-mode rule used to be a
+  // bordered, padded pill-box (border: 1px solid currentColor; padding;
+  // border-radius), visually reading as a small button. It now matches
+  // the plain colored-text style .cc-side-buy/.cc-side-sell already use
+  // for the adjacent Side column — color + weight only, no box.
+  test('base .cc-mode rule has no border, no padding, no border-radius', () => {
+    // `\.cc-mode\s*\{` requires the brace immediately after "cc-mode"
+    // (optional whitespace only) — `.cc-mode-draft {` / `.cc-mode-live {`
+    // have "-draft"/"-live" in between, so they never match this pattern,
+    // same convention this file's other base-rule lookups already use.
+    const rule = chaseCardSrc.match(/\.cc-mode\s*\{[^}]*\}/)?.[0] ?? '';
+    expect(rule).not.toBe('');
+    expect(rule).not.toMatch(/\bborder\b/);
+    expect(rule).not.toMatch(/padding/);
+    expect(rule).not.toMatch(/border-radius/);
+  });
+
+  test('live/paper/shadow/sim/replay variant rules carry only a color override, no box styling', () => {
+    for (const cls of ['cc-mode-live', 'cc-mode-paper', 'cc-mode-shadow', 'cc-mode-sim', 'cc-mode-replay']) {
+      const rule = chaseCardSrc.match(new RegExp(`\\.${cls}\\s*\\{[^}]*\\}`))?.[0] ?? '';
+      expect(rule, `${cls} rule should exist`).not.toBe('');
+      expect(rule, `${cls} must not set a border`).not.toMatch(/\bborder\b/);
+      expect(rule, `${cls} must not set padding`).not.toMatch(/padding/);
+    }
+  });
+
+  test('cc-mode-draft keeps its own full border (color + style + width) — the one deliberate exception', () => {
+    const rule = chaseCardSrc.match(/\.cc-mode-draft\s*\{[^}]*\}/)?.[0] ?? '';
+    expect(rule).not.toBe('');
+    expect(rule).toMatch(/border-width:\s*1px/);
+    expect(rule).toMatch(/border-style:\s*dashed/);
+    expect(rule).toMatch(/border-radius:\s*2px/);
   });
 });
 
@@ -168,7 +214,7 @@ test.describe('DRAFT mode pill — unified to muted/dashed (was amber in ChaseCa
   });
 
   test('LogPanel .mode-pill-draft and OrderTimelineDrawer .otd-mode-draft are muted + dashed (regression guard)', () => {
-    const logRule = logPanelSrc.match(/:global\(\.mode-pill-draft\)\s*\{[^}]*\}/)?.[0] ?? '';
+    const logRule = appCssSrc.match(/\.mode-pill-draft\s*\{[^}]*\}/)?.[0] ?? '';
     const otdRule = otdSrc.match(/\.otd-mode-draft\s*\{[^}]*\}/)?.[0] ?? '';
     for (const rule of [logRule, otdRule]) {
       expect(rule).toMatch(/var\(--algo-muted\)/);

@@ -807,13 +807,14 @@
   }
   .cc-side-buy  { color: var(--c-long); font-weight: 700; }
   .cc-side-sell { color: var(--c-short); font-weight: 700; }
+  /* 2026-11-02 operator: "the pill chase with border like live or paper,
+     the button appearance should be removed" — was a bordered/padded
+     pill box (button-like), unlike the plain colored text .cc-side-buy/
+     .cc-side-sell use just above. Now matches that plain-text style. */
   .cc-mode {
     font-size: var(--fs-2xs);
     font-weight: 800;
-    padding: 0 0.32rem;
-    border-radius: 2px;
     text-align: center;
-    border: 1px solid currentColor;
   }
   /* LIVE — red, matching the navbar MODE_COLOR (the canonical mode→color
      map, see +layout.svelte) and LogPanel's .mode-pill-live. LIVE is the
@@ -928,6 +929,15 @@
      mode pill, and is intentionally left unchanged. */
   .cc-mode-draft {
     color: var(--algo-muted);
+    /* 2026-11-02 — the base .cc-mode rule no longer carries a border
+       (see its own comment), so this variant's dashed look needs its
+       own full border declaration now, not just color/style layered on
+       a shared width. Padding restored here too, scoped to draft only —
+       every other variant (live/paper/shadow/sim/replay) stays plain
+       colored text with no box around it. */
+    padding: 0 0.32rem;
+    border-radius: 2px;
+    border-width: 1px;
     border-color: rgba(126, 151, 184, 0.45);
     border-style: dashed;
   }
