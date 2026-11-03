@@ -321,6 +321,41 @@ Four parts:
 3. **Actions** — what to do (often empty; the alert *is* the response).
 4. **Metadata** — when this should run (market hours / always), how long to wait between two fires (cooldown).
 
+### The agent DSL — WHEN / DO, and a preamble
+
+Every rule compiles down to this same small language, whether you build
+it with the form UI or type it directly in the Console tab of
+`/automation`:
+
+- **A shared statement vocabulary** — `order(...)`, `bracket(...)`,
+  `alert(...)`, `log(...)`, `debug(...)`, and `help(...)`. These are the
+  only kinds of statement that exist; nothing else is special-cased.
+- **`WHEN ... DO ...`** is the one conditional wrapper. Everything
+  inside `WHEN` is the condition (what the four-part anatomy above
+  calls "Condition"); everything inside `DO` only runs when that
+  condition is true.
+- **The preamble** is whatever comes *before* `WHEN` — a statement with
+  no condition wrapper, self-delimited by position. A bare `alert(...)`
+  or `log(...)` in the preamble runs on every cycle (rate-limited by the
+  agent's own cooldown, same as a `DO`-level alert); `help(...)` and
+  `debug(...)` run uncapped, every cycle, and never page anyone. A
+  side-effecting statement (`order(...)`, `close_position(...)`,
+  `cancel_order(...)`, etc.) in the preamble fires **at most once per
+  activation** — turning an agent off and back on is what re-arms it,
+  not editing it while it's running.
+- **`help(<name>)`** is read-only: it looks up any token in the
+  grammar catalogue (a metric, a scope, an action, a channel, …) and
+  prints its signature and description. Use it from the Console to
+  explore what's available without guessing.
+
+You don't need to write this by hand — the form UI on `/automation`
+builds it for you, and the chat-driven agent builder under `/admin/mcp`
+(see the [MCP guide](LAB_MCP_GUIDE.md)) can draft a whole agent from a
+plain-English request and show you the compiled rule before saving.
+Typing the DSL directly in the Console tab is for operators who want
+the fastest path to a precise rule, or who are debugging why one isn't
+firing as expected.
+
 ### When an agent re-fires
 
 To stop you from getting 100 emails when you've crossed a threshold once:
@@ -333,28 +368,34 @@ So the first email when things go bad is the static agent. Subsequent emails are
 
 ### Built-in agents
 
-The platform ships with 9 built-in agents pre-seeded:
+The platform ships with 14 built-in threshold/schedule agents
+pre-seeded (plus a separate internal layer of alert-dispatch agents —
+error routing, chase-cancel, template-attach failures, and the like —
+that you don't edit directly; see "Notification channels" below):
 
+**Loss guardrails:**
 - `loss-positions-acct` — Per-account position loss guardrail
 - `loss-rate-acct` — Per-account rate-of-loss alert
 - `loss-positions-total` — Book-wide position loss guardrail
 - `loss-margin-low` — Available margin low warning (DISABLED — cross-account false positive with Dhan/Groww; `loss-funds-negative` covers the critical case)
 - `loss-funds-negative` — Cash or margin negative (hard stop)
 - `loss-pos-total-auto-close` — Auto-close all positions on critical loss
-- `expiry-day-positions-alert` — Notification when positions expire today
-- `expiry-day-preclose-alert` — Lists affected roots + unnetted/ITM positions, 30 min before close (both NFO and MCX)
-- `expiry-day-itm-auto-close` — Stages HELD closing orders for the same positions, 5 min later (both NFO and MCX)
 
-Edit them from `/automation` — change a threshold, pick notification channels (Telegram, email, ntfy, in-app, WebSocket, or log), or attach a `chase_close_positions` action that auto-cuts losses. The conditions are JSON trees you can read like a sentence.
+**Expiry-day:**
+- `expiry-nfo-risk-alert` — Any NFO position expiring today that's ITM or an open future
+- `expiry-mcx-risk-alert` — Any MCX position expiring today that's unhedged or an open future
+- `expiry-day-preclose-alert` — 30 minutes before that exchange's own close, lists which affected roots are genuinely unnetted (MCX) or ITM/NTM (NFO) and need closing
+- `expiry-day-itm-auto-close` — 25 minutes before close (5 minutes after the alert above), stages the actual closing orders for those same positions — held pending release unless you've turned on auto-release (see "Order templates" below for the hold/release pattern; the setting here is `expiry_close_hold_enabled`)
 
-**Notification channels** — every alert can route through one or more delivery channels:
+**Market schedule:**
+- `market-open-nse` — NSE open notification
+- `market-preclose-mcx-v2` — 30 minutes before MCX close
+- `market-preclose-nonmcx` — 30 minutes before NSE close
+- `market-status-report` — Daily 05:35 IST status summary
 
-- `telegram` — Telegram message to configured chat
-- `email` — HTML email to designated recipients
-- `ntfy` — Push notification via ntfy.sh
-- `inapp` — In-app notification (browser WebSocket)
-- `websocket` — Raw WebSocket event (API consumers only)
-- `log` — Server log entry only (no external delivery)
+Edit them from `/automation` — change a threshold, pick notification channels, or attach an action like `chase_close_positions` that auto-cuts losses. You can read and edit each one either through the form UI or as DSL text in the Console tab (see "The agent DSL" above); both produce the identical compiled rule.
+
+**Notification channels** — an alert resolves to one or more delivery channels (Telegram, email, ntfy, in-app, WebSocket, or log). Most built-in agents don't hardcode their channel list — a routing tree picks it: a specific per-agent rule if one exists, otherwise a default keyed on the agent's tier (critical/high/medium/low), falling back to a catch-all if nothing else matches. This is why two agents at the same tier usually notify the same way without anyone having typed that twice — and why changing an agent's tier can change where it notifies, not just how urgent it reads.
 
 ---
 

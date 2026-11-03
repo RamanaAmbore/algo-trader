@@ -30,6 +30,7 @@
   } from '$lib/data/instruments';
   import { POPULAR_UNDERLYINGS } from '$lib/data/popularUnderlyings';
   import { parseChainQuoteRow } from '$lib/data/chainQuotes';
+  import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
   import { KITE_INDEX_QUOTE_KEY_TO_ROOT as _KITE_IDX_TO_ROOT } from '$lib/data/resolveUnderlying.js';
   import { priceFmt } from '$lib/format';
   // Order-template catalog — same source the OrderTicket uses.
@@ -39,6 +40,12 @@
   import {
     loadOrderTemplates,
   } from '$lib/data/templates';
+  // Read-only "wing fired live" confirmation badge — see
+  // liveWingBadge.js's module docstring. `latestAlgoOrderRows` is the
+  // SAME poll `(algo)/+layout.svelte` already runs every tick
+  // (orderFillPoller.js); no second interval is started here.
+  import { latestAlgoOrderRows } from '$lib/data/orderFillPoller.js';
+  import { refreshLiveWingState } from '$lib/data/liveWingTracker.svelte.js';
 
   /** @type {{
    *   symbol?:         string,
@@ -70,6 +77,8 @@
    *   onSelectDefault?:  () => void,
    *   onSelectNone?:     () => void,
    *   onSelectTemplate?: (id: number) => void,
+   *   draftMode?:           boolean,
+   *   onDraftToggleChange?: (checked: boolean) => void,
    * }} */
   let {
     // Seed the underlying from a known symbol (e.g. NIFTY25APR22000CE → NIFTY).
@@ -131,6 +140,16 @@
     onSelectDefault  = /** @type {(() => void)|undefined} */ (undefined),
     onSelectNone     = /** @type {(() => void)|undefined} */ (undefined),
     onSelectTemplate = /** @type {((id: number) => void)|undefined} */ (undefined),
+    // DRAFT toggle (2026-11-03, operator: "move draft to days before
+    // expiry row") — state + handler are owned by SymbolPanel (shared
+    // with the Ticket tab's own `_sharedDraftMode`); this tab only
+    // renders the control, on the Expiry row, and reports clicks back
+    // up. Ticket tab keeps rendering its own copy in the shared
+    // CHASE/BRACKET/DRAFT row — SymbolPanel suppresses that copy
+    // specifically while Chain is active, so there is never a second,
+    // duplicate DRAFT control on screen at once.
+    draftMode           = false,
+    onDraftToggleChange = /** @type {((checked: boolean) => void)|undefined} */ (undefined),
   } = $props();
 
   // "Place" mode toggle — default OFF (Basket mode). Off: +/− stage
@@ -451,6 +470,18 @@
 
   let chainQuotesKey = '';
   let chainQuotesPoll = /** @type {any} */ (null);
+  // Bid/ask flash parity with Pulse/Legs LTP (operator: "does it flash the
+  // bid-ask prices while refreshing... even ltp which is a common element
+  // flashes"). Driven from the poll's own success callback below, NOT a
+  // separate `$effect` reading `chainQuotesMap` — the live-wing-badge
+  // incident (2026-11-03) was exactly an `$effect` that read a poll-driven
+  // value and wrote a derived one back on every tick; `createTickFlash`'s
+  // `update()` only writes its OWN internal `classes` state on a genuine
+  // value change (see its own module comment on the identical Svelte 5
+  // hazard), and calling it here is a plain one-way write inside a
+  // `.then()` callback that fires once per successful poll — there is no
+  // effect dependency cycle to create.
+  const _bidAskFlash = createTickFlash({ durationMs: 350 });
   function _refreshChainQuotes() {
     if (!chainUnderlying || !chainExpiry) return;
     if (_pricesFetching) return;
@@ -468,6 +499,8 @@
       for (const row of (r?.rows || [])) {
         const [k, q] = parseChainQuoteRow(row, r?.exchange);
         map[k] = q;
+        if (q?.ce) { _bidAskFlash.update(`${k}:CE:bid`, q.ce.bid); _bidAskFlash.update(`${k}:CE:ask`, q.ce.ask); }
+        if (q?.pe) { _bidAskFlash.update(`${k}:PE:bid`, q.pe.bid); _bidAskFlash.update(`${k}:PE:ask`, q.pe.ask); }
       }
       chainQuotesMap = map;
     }).catch(() => {}).finally(() => { clearTimeout(_tout); _pricesFetching = false; });
@@ -484,7 +517,7 @@
       chainQuotesPoll = visibleInterval(_refreshChainQuotes, 30000);
     });
   });
-  onDestroy(() => { if (chainQuotesPoll) { chainQuotesPoll(); chainQuotesPoll = null; } _pricesAbort?.abort(); _pricesAbort = null; });
+  onDestroy(() => { if (chainQuotesPoll) { chainQuotesPoll(); chainQuotesPoll = null; } _pricesAbort?.abort(); _pricesAbort = null; _bidAskFlash.dispose(); });
 
   // Periodic ATM spot refresh — re-fetch spot every 30s during market
   // hours so the ATM row marker tracks NIFTY/CRUDEOIL moves intraday.
@@ -567,6 +600,47 @@
       if (b.strike != null && b.optType) map.set(`${b.strike}:${b.optType}`, b);
     }
     return map;
+  });
+
+  // ── Live-wing confirmation badge (read-only, NEVER a basket entry) ──
+  // Deliberately a SEPARATE map from `_basketLegByKey` above — see
+  // liveWingBadge.js's module docstring for why. Built from the
+  // existing orders-poll (`latestAlgoOrderRows`, from
+  // `orderFillPoller.js` — no new network call) cross-referenced
+  // against this session's own tracked Chain submissions
+  // (`liveWingTracker.svelte.js`). Recomputed in an `$effect` (not a
+  // `$derived`) because `refreshLiveWingState` also prunes the tracker
+  // module's own state as a side effect every time it runs — see
+  // CLAUDE.md's "never call get(store) inside $derived" convention.
+  /** @type {Map<string, {lots:number, templateName:string, side:string, algoOrderId:number, status:string}>} */
+  let _liveWingByKey = $state(new Map());
+  $effect(() => {
+    const rows = $latestAlgoOrderRows;
+    // 2026-11-03 — root cause of the live incident this feature caused
+    // (Chain hangs the instant it's pressed) was NOT in this effect; it
+    // was an unconditional write one layer below, inside
+    // `refreshLiveWingState()` itself (liveWingTracker.svelte.js — see
+    // that file's own header comment for the full account). This outer
+    // guard (skip reassigning `_liveWingByKey` when the result and the
+    // current value are both empty) is still kept — it is a real,
+    // independent optimization against needless re-renders of the
+    // whole strike grid on every poll tick — but it is not, on its
+    // own, what makes this effect safe; the inner fix is what does
+    // that. Also wrapped in try/catch: an uncaught exception inside an
+    // unguarded `$effect` can independently break a component's
+    // further reactivity, and `refreshLiveWingState` is read-only/
+    // display-only, so skipping one bad tick is always safe here.
+    try {
+      const next = refreshLiveWingState({
+        algoRows: rows,
+        chainUnderlying, chainExpiry,
+        findOption, getInstrument,
+      });
+      if (next.size === 0 && _liveWingByKey.size === 0) return;
+      _liveWingByKey = next;
+    } catch (e) {
+      console.error('[CHAIN] live-wing badge refresh failed, skipping this tick', e);
+    }
   });
 
   let basketPlacing  = $state(false);
@@ -1216,15 +1290,30 @@
         </span>
       {/if}
       <!-- Template toggle — REMOVED 2026-10-21 (shared-row re-wire).
-           The Bracket (TemplateBar) toggle + Draft checkbox now render
-           once, at shell level, inside SymbolPanel's single CHASE/
-           BRACKET/DRAFT row (visible identically on Ticket + Chain) —
-           this tab no longer mounts its own copy. `selectedTemplate`/
-           `nonNoneTemplates`/`shellUsingNone` stay as props (still read
-           internally by `_effTemplateForLeg`/`_effWingParams`/the
-           spread-gate effect below); `showTemplateBar`/`showDemoTplNote`
-           were removed entirely since they existed only to gate this
-           now-deleted render. -->
+           The Bracket (TemplateBar) toggle now renders once, at shell
+           level, inside SymbolPanel's single CHASE/BRACKET/DRAFT row
+           (visible identically on Ticket + Chain) — this tab no longer
+           mounts its own copy. `selectedTemplate`/`nonNoneTemplates`/
+           `shellUsingNone` stay as props (still read internally by
+           `_effTemplateForLeg`/`_effWingParams`/the spread-gate effect
+           below); `showTemplateBar`/`showDemoTplNote` were removed
+           entirely since they existed only to gate this now-deleted
+           render. DRAFT itself moved back here 2026-11-03 (operator:
+           "move draft to days before expiry row") — Chain-only; the
+           Ticket tab keeps its own copy in the shared row below, and
+           SymbolPanel suppresses that copy specifically while Chain is
+           active so the two never both render at once. Class names
+           (`.ot-draft-toggle`/`.ot-draft-label`) are kept identical to
+           the shared-row copy so existing Playwright selectors keep
+           matching regardless of which tab is active. -->
+      <label class="ot-draft-toggle"
+             title={draftMode
+               ? 'Draft ON — submit adds this leg to the payoff chart without placing an order'
+               : 'Draft OFF — submit routes to broker normally'}>
+        <input type="checkbox" checked={draftMode}
+               onchange={(e) => onDraftToggleChange?.(/** @type {HTMLInputElement} */ (e.currentTarget).checked)} />
+        <span class="ot-draft-label" class:on={draftMode}>DRAFT</span>
+      </label>
     </div>
   {/if}
 
@@ -1305,6 +1394,8 @@
             {@const peSpreadWide = peQ?.bid > 0 && peQ?.ask > 0 && (peQ.ask - peQ.bid) / ((peQ.ask + peQ.bid) / 2) > 0.10}
             {@const ceLeg = _basketLegByKey.get(`${k}:CE`)}
             {@const peLeg = _basketLegByKey.get(`${k}:PE`)}
+            {@const ceLive = _liveWingByKey.get(`${k}:CE`)}
+            {@const peLive = _liveWingByKey.get(`${k}:PE`)}
             {@const tmplAttached = !templateIsNone && !!templateName}
             {@const tmplShort = tmplAttached ? String(templateName).slice(0, 6) : ''}
             {#if isAtm}
@@ -1312,9 +1403,9 @@
                 <td class="chain-td-ce">
                   <span class="chain-cell-row chain-cell-row-ce">
                     <span class="chain-cell-quote">
-                      <span class="chain-cell-bid">{_fmtLtp(ceQ?.bid)}</span><span
+                      <span class="chain-cell-bid {_bidAskFlash.classOf(`${k}:CE:bid`)}">{_fmtLtp(ceQ?.bid)}</span><span
                             class="chain-cell-sep">-</span><span
-                            class="chain-cell-ask">{_fmtLtp(ceQ?.ask)}</span>{#if ceSpreadWide}<span class="chain-cell-spread-warn" title="Wide spread — {_fmtLtp(ceQ.ask - ceQ.bid)} ({((ceQ.ask - ceQ.bid)/((ceQ.ask+ceQ.bid)/2)*100).toFixed(0)}% of mid)">⚠</span>{/if}
+                            class="chain-cell-ask {_bidAskFlash.classOf(`${k}:CE:ask`)}">{_fmtLtp(ceQ?.ask)}</span>{#if ceSpreadWide}<span class="chain-cell-spread-warn" title="Wide spread — {_fmtLtp(ceQ.ask - ceQ.bid)} ({((ceQ.ask - ceQ.bid)/((ceQ.ask+ceQ.bid)/2)*100).toFixed(0)}% of mid)">⚠</span>{/if}
                     </span>
                     <span class="chain-side-action">
                       <span class="chain-btn-pair">
@@ -1330,6 +1421,14 @@
                       {#if ceLeg}
                         <span class="chain-leg-badge" class:chain-leg-badge-tmpl={tmplAttached}
                               title={`${ceLeg.side} ${ceLeg.lots} lot${ceLeg.lots === 1 ? '' : 's'} × ${ceLeg.lotSize} = ${ceLeg.lots * ceLeg.lotSize} qty${tmplAttached ? ' · Bracket: ' + templateName : ' · no Bracket'}`}>{ceLeg.lots}L{tmplAttached ? ' · ' + tmplShort : ''}</span>
+                      {:else if ceLive}
+                        <!-- Read-only confirmation — the wing fired on parent
+                             fill and landed on THIS strike/side. Nothing is
+                             staged here (chainBasket has no entry); the
+                             +/- buttons above still behave as if nothing
+                             were staged, same as an empty cell. -->
+                        <span class="chain-leg-badge chain-leg-badge-live"
+                              title={`${ceLive.side} ${ceLive.lots} lot${ceLive.lots === 1 ? '' : 's'} — wing fired live${ceLive.templateName ? ' · Bracket: ' + ceLive.templateName : ''} (#${ceLive.algoOrderId})`}>{ceLive.lots}L · live{ceLive.templateName ? ' · ' + String(ceLive.templateName).slice(0, 6) : ''}</span>
                       {/if}
                       {#if quickToast?.key === ceKey}
                         <span class="chain-quick-toast">{quickToast.msg}</span>
@@ -1354,15 +1453,20 @@
                       {#if peLeg}
                         <span class="chain-leg-badge" class:chain-leg-badge-tmpl={tmplAttached}
                               title={`${peLeg.side} ${peLeg.lots} lot${peLeg.lots === 1 ? '' : 's'} × ${peLeg.lotSize} = ${peLeg.lots * peLeg.lotSize} qty${tmplAttached ? ' · Bracket: ' + templateName : ' · no Bracket'}`}>{peLeg.lots}L{tmplAttached ? ' · ' + tmplShort : ''}</span>
+                      {:else if peLive}
+                        <!-- Read-only confirmation — see the matching CE
+                             comment above. -->
+                        <span class="chain-leg-badge chain-leg-badge-live"
+                              title={`${peLive.side} ${peLive.lots} lot${peLive.lots === 1 ? '' : 's'} — wing fired live${peLive.templateName ? ' · Bracket: ' + peLive.templateName : ''} (#${peLive.algoOrderId})`}>{peLive.lots}L · live{peLive.templateName ? ' · ' + String(peLive.templateName).slice(0, 6) : ''}</span>
                       {/if}
                       {#if quickToast?.key === peKey}
                         <span class="chain-quick-toast">{quickToast.msg}</span>
                       {/if}
                     </span>
                     <span class="chain-cell-quote">
-                      <span class="chain-cell-bid">{_fmtLtp(peQ?.bid)}</span><span
+                      <span class="chain-cell-bid {_bidAskFlash.classOf(`${k}:PE:bid`)}">{_fmtLtp(peQ?.bid)}</span><span
                             class="chain-cell-sep">-</span><span
-                            class="chain-cell-ask">{_fmtLtp(peQ?.ask)}</span>{#if peSpreadWide}<span class="chain-cell-spread-warn" title="Wide spread — {_fmtLtp(peQ.ask - peQ.bid)} ({((peQ.ask - peQ.bid)/((peQ.ask+peQ.bid)/2)*100).toFixed(0)}% of mid)">⚠</span>{/if}
+                            class="chain-cell-ask {_bidAskFlash.classOf(`${k}:PE:ask`)}">{_fmtLtp(peQ?.ask)}</span>{#if peSpreadWide}<span class="chain-cell-spread-warn" title="Wide spread — {_fmtLtp(peQ.ask - peQ.bid)} ({((peQ.ask - peQ.bid)/((peQ.ask+peQ.bid)/2)*100).toFixed(0)}% of mid)">⚠</span>{/if}
                     </span>
                   </span>
                 </td>
@@ -1372,9 +1476,9 @@
                 <td class="chain-td-ce">
                   <span class="chain-cell-row chain-cell-row-ce">
                     <span class="chain-cell-quote">
-                      <span class="chain-cell-bid">{_fmtLtp(ceQ?.bid)}</span><span
+                      <span class="chain-cell-bid {_bidAskFlash.classOf(`${k}:CE:bid`)}">{_fmtLtp(ceQ?.bid)}</span><span
                             class="chain-cell-sep">-</span><span
-                            class="chain-cell-ask">{_fmtLtp(ceQ?.ask)}</span>{#if ceSpreadWide}<span class="chain-cell-spread-warn" title="Wide spread — {_fmtLtp(ceQ.ask - ceQ.bid)} ({((ceQ.ask - ceQ.bid)/((ceQ.ask+ceQ.bid)/2)*100).toFixed(0)}% of mid)">⚠</span>{/if}
+                            class="chain-cell-ask {_bidAskFlash.classOf(`${k}:CE:ask`)}">{_fmtLtp(ceQ?.ask)}</span>{#if ceSpreadWide}<span class="chain-cell-spread-warn" title="Wide spread — {_fmtLtp(ceQ.ask - ceQ.bid)} ({((ceQ.ask - ceQ.bid)/((ceQ.ask+ceQ.bid)/2)*100).toFixed(0)}% of mid)">⚠</span>{/if}
                     </span>
                     <span class="chain-side-action">
                       <span class="chain-btn-pair">
@@ -1390,6 +1494,14 @@
                       {#if ceLeg}
                         <span class="chain-leg-badge" class:chain-leg-badge-tmpl={tmplAttached}
                               title={`${ceLeg.side} ${ceLeg.lots} lot${ceLeg.lots === 1 ? '' : 's'} × ${ceLeg.lotSize} = ${ceLeg.lots * ceLeg.lotSize} qty${tmplAttached ? ' · Bracket: ' + templateName : ' · no Bracket'}`}>{ceLeg.lots}L{tmplAttached ? ' · ' + tmplShort : ''}</span>
+                      {:else if ceLive}
+                        <!-- Read-only confirmation — the wing fired on parent
+                             fill and landed on THIS strike/side. Nothing is
+                             staged here (chainBasket has no entry); the
+                             +/- buttons above still behave as if nothing
+                             were staged, same as an empty cell. -->
+                        <span class="chain-leg-badge chain-leg-badge-live"
+                              title={`${ceLive.side} ${ceLive.lots} lot${ceLive.lots === 1 ? '' : 's'} — wing fired live${ceLive.templateName ? ' · Bracket: ' + ceLive.templateName : ''} (#${ceLive.algoOrderId})`}>{ceLive.lots}L · live{ceLive.templateName ? ' · ' + String(ceLive.templateName).slice(0, 6) : ''}</span>
                       {/if}
                       {#if quickToast?.key === ceKey}
                         <span class="chain-quick-toast">{quickToast.msg}</span>
@@ -1414,15 +1526,20 @@
                       {#if peLeg}
                         <span class="chain-leg-badge" class:chain-leg-badge-tmpl={tmplAttached}
                               title={`${peLeg.side} ${peLeg.lots} lot${peLeg.lots === 1 ? '' : 's'} × ${peLeg.lotSize} = ${peLeg.lots * peLeg.lotSize} qty${tmplAttached ? ' · Bracket: ' + templateName : ' · no Bracket'}`}>{peLeg.lots}L{tmplAttached ? ' · ' + tmplShort : ''}</span>
+                      {:else if peLive}
+                        <!-- Read-only confirmation — see the matching CE
+                             comment above. -->
+                        <span class="chain-leg-badge chain-leg-badge-live"
+                              title={`${peLive.side} ${peLive.lots} lot${peLive.lots === 1 ? '' : 's'} — wing fired live${peLive.templateName ? ' · Bracket: ' + peLive.templateName : ''} (#${peLive.algoOrderId})`}>{peLive.lots}L · live{peLive.templateName ? ' · ' + String(peLive.templateName).slice(0, 6) : ''}</span>
                       {/if}
                       {#if quickToast?.key === peKey}
                         <span class="chain-quick-toast">{quickToast.msg}</span>
                       {/if}
                     </span>
                     <span class="chain-cell-quote">
-                      <span class="chain-cell-bid">{_fmtLtp(peQ?.bid)}</span><span
+                      <span class="chain-cell-bid {_bidAskFlash.classOf(`${k}:PE:bid`)}">{_fmtLtp(peQ?.bid)}</span><span
                             class="chain-cell-sep">-</span><span
-                            class="chain-cell-ask">{_fmtLtp(peQ?.ask)}</span>{#if peSpreadWide}<span class="chain-cell-spread-warn" title="Wide spread — {_fmtLtp(peQ.ask - peQ.bid)} ({((peQ.ask - peQ.bid)/((peQ.ask+peQ.bid)/2)*100).toFixed(0)}% of mid)">⚠</span>{/if}
+                            class="chain-cell-ask {_bidAskFlash.classOf(`${k}:PE:ask`)}">{_fmtLtp(peQ?.ask)}</span>{#if peSpreadWide}<span class="chain-cell-spread-warn" title="Wide spread — {_fmtLtp(peQ.ask - peQ.bid)} ({((peQ.ask - peQ.bid)/((peQ.ask+peQ.bid)/2)*100).toFixed(0)}% of mid)">⚠</span>{/if}
                     </span>
                   </span>
                 </td>
@@ -1557,7 +1674,13 @@
     display: flex;
     align-items: center;
     gap: 0.4rem;
-    padding: 0.25rem 0.1rem 0.35rem;
+    /* Left padding matches the shell's 0.4rem left-edge convention
+       (`.oes-picker`, `.oes-tabs`, `.oes-chase-row` in SymbolPanel.svelte
+       all use 0.4rem) — was 0.1rem, which pulled the Expiry label
+       ~0.3rem left of CHASE/BRACKET/DRAFT below it, a visible
+       left-alignment mismatch between this toolbar and every other row
+       in the same modal. */
+    padding: 0.25rem 0.4rem 0.35rem;
     margin-bottom: 0.25rem;
     /* Dashed border-bottom removed (2026-09-30, operator: "the dotted
        line is not needed") — it sat directly above the CE/Strike/PE
@@ -1608,6 +1731,46 @@
     color: var(--c-action);
     background: var(--algo-amber-bg);
     border-color: rgba(251, 191, 36, 0.42);
+  }
+  /* DRAFT toggle (2026-11-03, moved onto the Expiry row — operator:
+     "move draft to days before expiry row") — class names + styling
+     duplicated verbatim from SymbolPanel.svelte's own shared-row copy
+     (which itself duplicated OrderTicket.svelte's original rule) so
+     existing Playwright selectors keyed on `.ot-draft-toggle`/
+     `.ot-draft-label` keep matching regardless of which copy rendered.
+     Svelte scopes `<style>` per component, so this copy is required —
+     SymbolPanel's own rule cannot reach markup rendered inside this
+     child component. Magenta/purple palette matches the draft-row
+     identity in CandidateLegRow.svelte. */
+  .ot-draft-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    cursor: pointer;
+    user-select: none;
+    margin-left: auto;
+  }
+  .ot-draft-toggle input[type="checkbox"] {
+    accent-color: var(--algo-violet);
+    width: 0.85rem;
+    height: 0.85rem;
+    cursor: pointer;
+  }
+  .ot-draft-label {
+    font-family: monospace;
+    font-size: var(--fs-md);
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    padding: 0.15rem 0.4rem;
+    border-radius: 3px;
+    border: 1px solid rgba(255,255,255,0.12);
+    color: var(--text-muted);
+    background: rgba(255,255,255,0.04);
+  }
+  .ot-draft-label.on {
+    background: rgba(192,132,252,0.18);
+    border-color: rgba(192,132,252,0.55);
+    color: var(--algo-violet);
   }
   /* .oct-tpl-demo-note removed 2026-10-21 (shared-row re-wire) — the
      demo-mode note now renders once, at shell level, inside
@@ -2340,6 +2503,27 @@
     height: 4px;
     border-radius: 50%;
     background: var(--c-action);
+    flex-shrink: 0;
+  }
+  /* Read-only "wing fired live" confirmation badge (`_liveWingByKey`) —
+     DISTINCT from the staged leg badge above: this cell has nothing in
+     chainBasket/basketLegs, it reflects a real broker order already
+     placed asynchronously on parent fill. Solid red fill rather than
+     the staged badge's neutral/amber outline — matches this app's
+     established "LIVE = red" convention (ChaseCard's .cc-mode-live,
+     LogPanel's .mode-pill-live; the staged badge's slate/amber palette
+     is reserved for pre-submit intent, never confirmed-live state), so
+     "already live" reads visually heavier/more final than "about to
+     submit". */
+  .chain-leg-badge-live {
+    background: rgba(248, 113, 113, 0.22);
+    border-color: rgba(248, 113, 113, 0.55);
+    color: var(--c-short);
+  }
+  .chain-leg-badge-live::before {
+    content: '✓';
+    font-size: 0.6rem;
+    line-height: 1;
     flex-shrink: 0;
   }
   /* Template selector — small inline label + dropdown. Sized to sit

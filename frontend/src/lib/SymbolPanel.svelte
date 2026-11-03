@@ -52,6 +52,12 @@
   // CRUD on the Brackets tab propagates here without a refresh.
   import { loadOrderTemplates, orderTemplatesStore } from '$lib/data/templates';
   import { appliesToFor as _appliesToFor } from '$lib/data/templateScope.js';
+  // Chain tab's read-only "wing fired live" confirmation badge — tracks
+  // this session's own LIVE basket submissions by their broker order id
+  // so OptionChainTab can later recognize the async wing/hedge leg
+  // firing on parent fill. Never touches basketLegs/chainBasket — see
+  // liveWingBadge.js's module docstring.
+  import { trackChainParentSubmission } from '$lib/data/liveWingTracker.svelte.js';
   // resolveUnderlying / findNearestFuture / resolveAnchorToTradeable
   // dynamically imported inside effects only — no static imports needed.
   import { loadAccounts, getDefaultAccount, recentSymbolStore, setRecentSymbol, setRecentAccount } from '$lib/data/accounts';
@@ -60,6 +66,7 @@
   import CardHeader from '$lib/CardHeader.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
   import { liveSnap } from '$lib/data/symbolStore.svelte.js';
+  import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import { resolveUnderlying, resolveUnderlyingTradingsymbol } from '$lib/data/resolveUnderlying.js';
   import { findNearestFuture, instrumentsCacheVersion, getInstrument } from '$lib/data/instruments.js';
@@ -551,6 +558,16 @@
     ?? (_activeTab === 'chain' ? liveSnap(_parseRoot(_localSymbol) || _localSymbol)?.ltp : null)
     ?? null
   );
+  // Flash parity with Pulse's LTP (operator: "even ltp which is a common
+  // element flashes while refresh" — this header chip, shared by both the
+  // Chain and Ticket tabs, had none). Standard `createTickFlash` usage
+  // per its own module docstring: an `$effect` that only READS `_ltpSym`/
+  // `_ltp` (both plain `$derived`) and calls `update()`, which writes
+  // only its own internal `classes` state — no dependency cycle, unlike
+  // the live-wing-badge incident this session (an effect that read AND
+  // wrote the same tracked value).
+  const _ltpFlash = createTickFlash({ durationMs: 350 });
+  $effect(() => { _ltpFlash.update(_ltpSym, _ltp); });
 
   // Tab-activation refresh bumps. Operator request: "when chain tab is
   // pressed, the chain details need to be refreshed. when order ticket
@@ -637,6 +654,7 @@
   // No Vitest test: onDestroy cleanup in .svelte components requires a component
   // mount harness; no corresponding Vitest test file exists for this component.
   onDestroy(() => {
+    _ltpFlash.dispose();
     // Prevent dangling debounce from firing a symbol search after unmount.
     if (_symbolDebounce) clearTimeout(_symbolDebounce);
     // Prevent sticky result clear-timer from accessing destroyed state.
@@ -1324,6 +1342,23 @@
   // success branch — so a later, unrelated order starts clean and can
   // read remembered prefs normally again.
   let _templExplicitThisSession = $state(false);
+  // Item 1 (2026-11-02, PLAN.md, operator ask) — brief Chain-tab-only
+  // flash when the scope-change effect below re-binds a Default-slot
+  // Bracket to the new scope's own default, or clears it when none
+  // exists for the new scope. Deliberately a SEPARATE mechanism from
+  // OrderTicket.svelte's own `.ot-tmpl-changed-flash` (#16) — that one
+  // covers the Ticket tab, which keeps the older "never re-arm" policy
+  // (2f60d39a) for the exact same shared `_sharedTemplateId` binding;
+  // this flash only ever fires for the Chain-tab re-bind/clear this
+  // effect performs, so the two surfaces never double-announce the
+  // same event.
+  let _bracketScopeFlash = $state(/** @type {{kind:'switched'|'cleared'}|null} */ (null));
+  let _bracketScopeFlashTimer = null;
+  function _flashBracketScopeChange(/** @type {'switched'|'cleared'} */ kind) {
+    _bracketScopeFlash = { kind };
+    if (_bracketScopeFlashTimer) clearTimeout(_bracketScopeFlashTimer);
+    _bracketScopeFlashTimer = setTimeout(() => { _bracketScopeFlash = null; }, 1200);
+  }
   $effect(() => {
     // action='modify' and 'cancel' don't need template auto-swap —
     // the template is irrelevant for those actions. All other actions
@@ -1362,13 +1397,55 @@
         const cscope = (current.applies_to || '').toLowerCase();
         if (cscope === scope || cscope === 'both') return;
       }
-      // No current pick (cold mount / cleared) OR the current default
-      // no longer fits the new scope — resolve to the side-aware
-      // default (null when nothing fits, e.g. operator has only a
-      // buy_option default and flipped to SELL — clears the stale
-      // template so the preview fires with templateId=null rather
-      // than carrying the wrong-direction template).
-      _sharedTemplateId = null;
+      // No current pick (cold mount / already cleared) — 2f60d39a
+      // policy (2026-10-05, "no implicit ... default ticket template")
+      // unchanged: nothing auto-ARMS a bracket that wasn't already
+      // armed. Silent — there's no prior selection for the operator to
+      // notice a change to, so no flash either.
+      if (!current) {
+        _sharedTemplateId = null;
+        return;
+      }
+      // `current` is the account's Default-slot template (checked
+      // above) and no longer fits the new scope (strike/CE-PE/side
+      // change). Item 1 (2026-11-02, PLAN.md, operator ask) — on the
+      // Chain tab, re-resolve to the NEW scope's own default rather
+      // than silently dropping to None, reusing the same
+      // `_sideAwareDefault` $derived every other Default-resolution
+      // call site already shares (`_onTemplSelectDefault`) instead of
+      // re-deriving the match. This is narrower than reverting
+      // 2f60d39a: it only ever CARRIES FORWARD a Default the operator
+      // already had armed — the cold/cleared branch above still never
+      // implicitly arms one. Reading `_sideAwareDefault` here, even
+      // inside `untrack()`, still recomputes against the just-updated
+      // `scope` — a $derived's own recomputation is independent of
+      // this effect's dependency tracking; `untrack()` only stops THIS
+      // effect from subscribing to it as a dependency.
+      //
+      // Deliberately scoped to the Chain tab only. On the Ticket tab,
+      // OrderTicket.svelte's own side+symbol re-validation effect (not
+      // suspended there) owns this exact decision for the SAME shared
+      // `_sharedTemplateId`/`templateId` binding, and that effect's
+      // policy is "never re-arm" (2f60d39a, pinned by a live Playwright
+      // test in order_ticket_bracket_scope_ssot_and_clear_policy.spec.js
+      // — "BUY default armed -> flip to SELL -> bracket clears to
+      // None"). Two effects racing to write the same binding with
+      // opposing policies would be a real bug, not a UX choice, so the
+      // Ticket-tab branch below stays a plain null and fires no flash
+      // of its own — OrderTicket already renders its own
+      // `.ot-tmpl-changed-flash` ("Bracket cleared for new side") for
+      // that case.
+      if (_activeTab === 'chain') {
+        if (_sideAwareDefault) {
+          _sharedTemplateId = _sideAwareDefault.id;
+          _flashBracketScopeChange('switched');
+        } else {
+          _sharedTemplateId = null;
+          _flashBracketScopeChange('cleared');
+        }
+      } else {
+        _sharedTemplateId = null;
+      }
     });
   });
   // Account list — falls through three layers:
@@ -2255,6 +2332,21 @@
           failedIdx.add(origIdx);
         } else {
           ok++;
+          // Chain live-wing badge — remember this leg's own broker
+          // order id (NOT written into basketLegs/leg itself — a
+          // separate, session-local tracker) so OptionChainTab can
+          // later recognize this template's wing leg firing on parent
+          // fill. Live-only: a paper/sim/replay fill never attaches a
+          // real broker wing (see CLAUDE.md "Template attach mode
+          // gate"), so tracking those would never match anything.
+          // Option legs only (strike/optType) — equity legs never
+          // carry a Chain-grid key to badge against anyway.
+          if (basketMode2 === 'live' && leg.strike != null && leg.optType && r.order_id) {
+            trackChainParentSubmission({
+              account: acct, symbol: leg.sym, brokerOrderId: r.order_id,
+              templateName: _legEffectiveTpl(leg)?.name || _legEffectiveTpl(leg)?.slug || '',
+            });
+          }
           onSubmit?.({
             mode:            basketMode2,
             side:            leg.side,
@@ -2765,12 +2857,37 @@
          passed from context). Uses CardHeader with showControls=false;
          amber gradient bg + border supplied by the algo layout's
          CardHeader theme tokens. -->
-    <!-- --ch-padding override removed (2026-10 CardHeader/grid
-         consistency pass, Part C) — inherits the shared body-level
-         default now, matching every other CardHeader in the app.
-         .oes-modal-name's amber color/letter-spacing is unchanged
-         (confirmed intentional, preserved below). -->
-    <div>
+    <!-- --ch-padding override removed in the 2026-10 CardHeader/grid
+         consistency pass (Part C), then partially RE-ADDED here
+         (2026-11-03, operator: "orders and chart modal header button
+         placement is not in sync... X button right alignment"). That
+         pass made this header inherit the shared body-level
+         `--ch-padding: 0` default so it would match every ordinary
+         CardHeader-based card. Measured (Playwright getBoundingClientRect,
+         desktop 1400px): with the zero-padding default, `.oes-close` sat
+         1px right / 0px top from `.oes-modal`'s corner — flush — while
+         ChartModal's `.cm-close` and NavBreakdown's `.ps-bd-close` (both
+         built on `.canonical-modal-header`, app.css) sit ~14.6px right /
+         ~5.6-6.6px top, the shared convention three other popups already
+         use. This override applies the SAME canonical padding
+         (0.35rem 0.85rem) to just this one CardHeader instance, scoped to
+         non-inline (real modal) use only — the global
+         `--ch-padding: 0` default in (algo)/+layout.svelte is untouched
+         and still governs every ordinary in-page card header. Re-measured
+         after this change: `.oes-close` lands at the same ~14.6px/~5.6px
+         inset as the other two. Known, accepted tradeoff: the header's
+         own height grows from ~23.4px to ~34.6px (same growth ChartModal's
+         sibling fix already accepted) and `.oes-modal-name`'s
+         `algo-label-decor` left-border bar (sized via `.ch-left`'s
+         `align-self: stretch`, which stretches to the CONTENT box, not
+         the padding box) now stops short of the header's visual top/
+         bottom edges by about half the new vertical padding — the same
+         decor-bar inset ChartModal and NavBreakdown never show because
+         neither of their titles carries that decor class. Not fixed here;
+         flagged for a future pass if the inset becomes visually
+         objectionable. `.oes-modal-name`'s amber color/letter-spacing is
+         unchanged (confirmed intentional, preserved below). -->
+    <div class:oes-modal-hdr-canonical={!inline}>
       <CardHeader showControls={false} onRefresh={_refreshAll}>
         {#snippet left()}
           <span class="oes-modal-name algo-label-decor">
@@ -2888,7 +3005,7 @@
         <a href="/automation/guide" title="CLI grammar guide" class="btn-secondary oes-cli-guide-link">Trader Guide</a>
       {:else}
         {#if _ltp != null && _ltp > 0}
-          <span class="oes-tab-ltp"><span class="oes-tab-ltp-label">LTP</span>{priceFmt(_ltp)}</span>
+          <span class="oes-tab-ltp {_ltpFlash.classOf(_ltpSym)}"><span class="oes-tab-ltp-label">LTP</span>{priceFmt(_ltp)}</span>
         {/if}
       {/if}
     </div>
@@ -3077,12 +3194,33 @@
           <span class="oct-tpl-demo-note">Exit rules (TP / SL / Wing) not available in demo.</span>
         {/if}
 
+        <!-- Item 1 (2026-11-02) — Chain-tab-only scope-change flash,
+             see `_flashBracketScopeChange` above for why this is a
+             separate mechanism from OrderTicket's own `.ot-tmpl-
+             changed-flash`. -->
+        {#if _activeTab === 'chain' && _bracketScopeFlash}
+          <span class="oes-bracket-scope-flash" role="status" aria-live="polite">
+            {_bracketScopeFlash.kind === 'switched'
+              ? 'Bracket switched to default for new side'
+              : 'Bracket cleared for new side'}
+          </span>
+        {/if}
+
         <!-- DRAFT — markup + class names moved verbatim from
              OrderTicket.svelte so existing Playwright selectors keyed
              on `.ot-draft-toggle`/`.ot-draft-label` keep matching. Now
              bound to the shared `_sharedDraftMode` instead of a local
-             OrderTicket-only $state. -->
-        {#if _draftToggleVisible}
+             OrderTicket-only $state.
+             Chain-tab exclusion (2026-11-03, operator: "move draft to
+             days before expiry row") — Chain now renders its OWN copy
+             inside `<OptionChainTab>`'s Expiry toolbar (see the
+             `draftMode`/`onDraftToggleChange` props passed to it
+             below), so this shared-row copy is suppressed specifically
+             while Chain is active to avoid a second, duplicate DRAFT
+             control on screen at once. The Ticket tab is unaffected —
+             it has no Expiry/dte row to move the toggle onto, so it
+             keeps rendering this copy exactly as before. -->
+        {#if _draftToggleVisible && _activeTab !== 'chain'}
           <label class="ot-draft-toggle"
                  title={_sharedDraftMode
                    ? 'Draft ON — submit adds this leg to the payoff chart without placing an order'
@@ -3230,6 +3368,8 @@
           onSelectDefault={_onTemplSelectDefault}
           onSelectNone={_onTemplSelectNone}
           onSelectTemplate={_onTemplSelectTemplate}
+          draftMode={_sharedDraftMode}
+          onDraftToggleChange={_onSharedDraftToggleChange}
           {accounts}
           refreshKey={_chainBump}
           basketLegs={basketLegs}
@@ -4085,6 +4225,17 @@
     flex-wrap: nowrap;
     flex-shrink: 0;
     min-width: 0;
+  }
+  /* Scoped CardHeader padding override for the real modal header only
+     (2026-11-03) — see the markup comment above the `<CardHeader>` call
+     for the full measurement/rationale. Sets the SAME padding value
+     `.canonical-modal-header` (app.css) uses, on just this one
+     CardHeader instance, so `.oes-close` lands at the same inset as
+     ChartModal's `.cm-close` / NavBreakdown's `.ps-bd-close` instead of
+     the global `--ch-padding: 0` body-level default (which stays correct
+     for every ordinary in-page CardHeader card and is not touched). */
+  .oes-modal-hdr-canonical {
+    --ch-padding: 0.35rem 0.85rem;
   }
   /* Cluster inside `.oes-header` — sits immediately AFTER the title
      chip (left-aligned per operator). The close X carries
@@ -5540,6 +5691,26 @@
     font-size: var(--fs-xs);
     color: var(--text-lo);
     font-style: italic;
+  }
+  /* Item 1 (2026-11-02) — Chain-tab scope-change flash. Amber pulse,
+     same palette + timing as OrderTicket.svelte's own
+     `.ot-tmpl-changed-flash` (#16), kept as a separate class because
+     this one fires for a DIFFERENT event (Chain-tab re-bind/clear,
+     not Ticket-tab clear-only). */
+  @keyframes oes-bracket-scope-flash-kf {
+    0%   { background: rgba(251, 191, 36, 0.28); border-color: rgba(251, 191, 36, 0.65); }
+    60%  { background: rgba(251, 191, 36, 0.18); border-color: rgba(251, 191, 36, 0.45); }
+    100% { background: rgba(251, 191, 36, 0.06); border-color: rgba(251, 191, 36, 0.20); }
+  }
+  .oes-bracket-scope-flash {
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
+    color: var(--c-action);
+    background: rgba(251, 191, 36, 0.06);
+    border: 1px solid rgba(251, 191, 36, 0.20);
+    border-radius: 3px;
+    padding: 0.2rem 0.5rem;
+    animation: oes-bracket-scope-flash-kf 1.2s ease-out forwards;
   }
   /* DRAFT toggle — class names + styling duplicated verbatim from
      OrderTicket.svelte (now removed there) so existing Playwright

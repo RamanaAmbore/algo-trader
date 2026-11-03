@@ -99,6 +99,23 @@ async def test_frozen_symbol_unioned_in_when_masked_by_fresher_batch():
     with (
         patch("backend.api.database.async_session", return_value=mock_session),
         patch("backend.api.algo.expiry_freeze.expiry_status", side_effect=_fake_status),
+        # `is_live_row_past_freeze_window` is the SECOND, independent
+        # exclusion predicate `_union_and_filter_expiry_frozen_rows` runs
+        # for every "not_expiry" row (see its own docstring, item 3) —
+        # added after this test was first written, and never added to
+        # this patch set. Left real, it answers against the real wall
+        # clock: CRUDEOIL26OCTFUT's real October expiry eventually falls
+        # into the past relative to whenever this suite actually runs,
+        # so the row started being excluded for real (unrelated to this
+        # test's actual target, the UNION/FILTER wiring) once the
+        # calendar passed that contract's freeze boundary. Mocked False
+        # here for the same reason `expiry_status` is mocked above —
+        # this test isolates the wiring, not either predicate's own
+        # calendar logic (that's `test_expiry_freeze.py`'s job).
+        patch(
+            "backend.api.algo.expiry_freeze.is_live_row_past_freeze_window",
+            AsyncMock(return_value=False),
+        ),
     ):
         resp = await _positions_snapshot()
 

@@ -11,6 +11,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { fetchQuote } from '$lib/api';
   import { priceFmt, qtyFmt, aggCompact } from '$lib/format';
+  import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
 
   /** @type {{
    *   symbol: string,
@@ -31,6 +32,16 @@
   // data already populated by the NEW symbol's first poll.
   let _pollGen = 0;
 
+  // Bid/ask flash parity with Pulse/Chain LTP (operator: "does it flash the
+  // bid-ask prices while refreshing"). Keyed by symbol so a symbol swap
+  // never flashes the new symbol's first-ever price against the old
+  // symbol's leftover baseline — `update()`'s own "first sample, no flash"
+  // rule (see tickFlash.svelte.js) handles that for a never-seen key.
+  // Driven from this poll's own success branch, not a separate `$effect`
+  // that reads `q`/`buyRows`/`sellRows` — same reasoning as the identical
+  // Chain-tab fix (see OptionChainTab.svelte's own comment on this).
+  const _depthFlash = createTickFlash({ durationMs: 350 });
+
   async function poll() {
     if (!symbol) return;
     const gen = ++_pollGen;
@@ -44,6 +55,12 @@
         // this prevents a momentary null from blanking the ladder.
         q = result;
         err = '';
+        for (let i = 0; i < 5; i++) {
+          const bp = result.depth_buy?.[i]?.price;
+          const ap = result.depth_sell?.[i]?.price;
+          if (bp != null) _depthFlash.update(`${symbol}:bid:${i}`, bp);
+          if (ap != null) _depthFlash.update(`${symbol}:ask:${i}`, ap);
+        }
         try { onQuote?.(q); } catch (_) { /* ignore */ }
       } else {
         // Falsy response: surface the error but preserve stale q.
@@ -77,6 +94,7 @@
   });
   onDestroy(() => {
     document.removeEventListener('visibilitychange', _onVisibilityChange);
+    _depthFlash.dispose();
   });
 
   // Single lifecycle effect — start polling iff: have symbol, not
@@ -195,8 +213,8 @@
       <div class="ot-depth-row-wash-bid" style="grid-row:{gridRow}" aria-hidden="true"></div>
       <div class="ot-depth-row-wash-ask" style="grid-row:{gridRow}" aria-hidden="true"></div>
       <span class="ot-depth-cell ot-depth-bid-qty" style="grid-row:{gridRow}; grid-column:1">{b ? qtyFmt(b.quantity) : '—'}</span>
-      <span class="ot-depth-cell ot-depth-bid" style="grid-row:{gridRow}; grid-column:2">{b ? priceFmt(b.price) : '—'}</span>
-      <span class="ot-depth-cell ot-depth-ask" style="grid-row:{gridRow}; grid-column:3">{a ? priceFmt(a.price) : '—'}</span>
+      <span class="ot-depth-cell ot-depth-bid {_depthFlash.classOf(`${symbol}:bid:${i}`)}" style="grid-row:{gridRow}; grid-column:2">{b ? priceFmt(b.price) : '—'}</span>
+      <span class="ot-depth-cell ot-depth-ask {_depthFlash.classOf(`${symbol}:ask:${i}`)}" style="grid-row:{gridRow}; grid-column:3">{a ? priceFmt(a.price) : '—'}</span>
       <span class="ot-depth-cell ot-depth-ask-qty" style="grid-row:{gridRow}; grid-column:4">{a ? qtyFmt(a.quantity) : '—'}</span>
     {/each}
   </div>

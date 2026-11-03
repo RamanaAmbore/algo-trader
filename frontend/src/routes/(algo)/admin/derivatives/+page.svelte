@@ -5622,7 +5622,7 @@
      Candidates panel below so they can be picked / checked alongside
      live + sim positions. -->
 {#if drafts.length}
-  <div class="algo-status-card cmd-surface p-3 mb-3" data-status="inactive">
+  <div class="algo-status-card cmd-surface p-3 mb-3 opt-drafts-card" data-status="inactive">
     <!-- 2026-10 CardHeader adoption sweep — plain title + meta text,
          no button group (nothing to preserve beyond the text itself). -->
     <CardHeader title="Drafts" showControls={false} detectOverflow={false}>
@@ -6483,15 +6483,23 @@
 {#if strategy}
   <aside class="opt-side opt-side-row">
 
-        <div class="opt-block">
-          <div class="opt-block-h" style="cursor:pointer" bind:this={_sumHintAnchor.greeksNote}
-               role="button" tabindex="0" aria-expanded={_sumHintOpen.greeksNote}
-               onclick={() => { _sumHintOpen.greeksNote = !_sumHintOpen.greeksNote; }}
-               onkeydown={(e) => _sumHintKeydown(e, () => _sumHintOpen.greeksNote = !_sumHintOpen.greeksNote)}>
-            Greeks (position)
-            <InfoHint popup hideButton id="sum-hint-greeks-note" anchor={_sumHintAnchor.greeksNote} bind:open={_sumHintOpen.greeksNote}
-              panel title="Greeks (position)" text={'Sum of every leg\'s signed-qty Greeks, including +qty per enabled equity-holding leg (long stock = +1 Δ/share). Θ / 𝒱 / Γ / ρ stay option-only since vanilla stock has zero convexity, decay, IV and rate sensitivity.'} />
-          </div>
+        <div class="algo-status-card cmd-surface p-3 opt-block" data-status="inactive">
+          <!-- Title now goes through CardHeader's own `title` prop (same
+               `.ch-title` slate/white color every other card — Snapshot,
+               Payoff, Legs — uses) instead of the hand-rolled `.opt-block-h`
+               amber label, which is what caused this card's heading to
+               read in a different color than Snapshot's. The InfoHint
+               moves to a plain visible "(i)" trigger in `left()` (no
+               `hideButton`/`anchor`) since the title itself is no longer
+               the clickable element — matches the convention elsewhere in
+               this app: a plain-text label needs its own "(i)" icon,
+               an already-interactive label doesn't. -->
+          <CardHeader title="Greeks (position)" showControls={false} detectOverflow={false}>
+            {#snippet left()}
+              <InfoHint popup id="sum-hint-greeks-note"
+                panel title="Greeks (position)" text={'Sum of every leg\'s signed-qty Greeks, including +qty per enabled equity-holding leg (long stock = +1 Δ/share). Θ / 𝒱 / Γ / ρ stay option-only since vanilla stock has zero convexity, decay, IV and rate sensitivity.'} />
+            {/snippet}
+          </CardHeader>
           <div class="opt-kv opt-kv-greeks">
             <div class="kv-pair">
               <span class="kv-k kv-k-greek" bind:this={_sumHintAnchor.delta} role="button" tabindex="0"
@@ -6541,15 +6549,13 @@
           </div>
         </div>
 
-        <div class="opt-block">
-          <div class="opt-block-h" style="cursor:pointer" bind:this={_sumHintAnchor.riskNote}
-               role="button" tabindex="0" aria-expanded={_sumHintOpen.riskNote}
-               onclick={() => { _sumHintOpen.riskNote = !_sumHintOpen.riskNote; }}
-               onkeydown={(e) => _sumHintKeydown(e, () => _sumHintOpen.riskNote = !_sumHintOpen.riskNote)}>
-            Risk &amp; expected value
-            <InfoHint popup hideButton id="sum-hint-risk-note" anchor={_sumHintAnchor.riskNote} bind:open={_sumHintOpen.riskNote}
-              panel title="Risk &amp; expected value" text={'Aggregate risk + expected value across all legs. Probability-weighted outcomes integrated against the lognormal pdf of the underlying using a qty-weighted IV proxy. POP × magnitudes captures the asymmetry that POP alone misses.'} />
-          </div>
+        <div class="algo-status-card cmd-surface p-3 opt-block" data-status="inactive">
+          <CardHeader title="Risk &amp; expected value" showControls={false} detectOverflow={false}>
+            {#snippet left()}
+              <InfoHint popup id="sum-hint-risk-note"
+                panel title="Risk &amp; expected value" text={'Aggregate risk + expected value across all legs. Probability-weighted outcomes integrated against the lognormal pdf of the underlying using a qty-weighted IV proxy. POP × magnitudes captures the asymmetry that POP alone misses.'} />
+            {/snippet}
+          </CardHeader>
           <div class="opt-kv opt-kv-risk">
             <div class="kv-pair">
               <span class="kv-k" bind:this={_sumHintAnchor.rr} role="button" tabindex="0"
@@ -7070,25 +7076,87 @@
     gap: 0.6rem;
     margin-bottom: 0.6rem;
   }
+  /* Greeks/Risk now wrap in the same `algo-status-card cmd-surface p-3`
+     + <CardHeader> pattern Snapshot/Payoff/Legs use (2026-11-03,
+     operator: "greeks and risk grid labels are in different color than
+     snapshot label ... enclose these two in additional container like
+     snapshot") — that outer card already supplies background/border/
+     radius/padding, so `.opt-block` carries NO background/border/
+     padding of its own any more. The earlier version did (plus its own
+     `.opt-block-h` title bar, now deleted — its only consumers were
+     replaced by CardHeader's own `title` prop), which stacked the
+     card's padding on top of this div's own padding: exactly the
+     "whitespace is not consistent across grids" complaint from the
+     same request.
+
+     `gap: 0.5rem` below was STILL a residual of that old layout — it
+     sits between this div's only two flex children, CardHeader and the
+     `.opt-kv` row, so it is literally the CardHeader-to-content gap.
+     Measured live (Playwright, getBoundingClientRect): Payoff/Legs/
+     Snapshot all measure exactly 0px here (their content's own
+     `.algo-grid-chrome`-family wrapper sets `margin-top: 0` deliberately
+     so the header's bottom border and the grid's own top border read as
+     ONE line — see `.byund-scroll`/`.cand-scroll` comments above). Greeks/
+     Risk measured 8px (this `gap: 0.5rem`) — the exact "wasted/
+     inconsistent space" the operator flagged, just one CSS property
+     downstream of the already-fixed outer-padding stack. Zeroed to match
+     the Legs/Snapshot reference exactly. `.opt-kv`'s own internal
+     row-gap/column-gap (0.3rem/0.7rem, between kv-pairs) is untouched —
+     only the header→content seam changes. */
   .opt-block {
-    background: var(--card-bg-gradient);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 4px;
-    padding: 0.5rem 0.65rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    min-width: 0;
   }
-  /* Canonical .algo-card-title tokens — this is the "GREEKS" heading
-     operator explicitly cited as the reference. Locked size + family
-     + spacing so future edits can't drift. */
-  .opt-block-h {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: var(--fs-sm);
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--c-action);
-    border-bottom: 1px solid rgba(251,191,36,0.18);
-    padding-bottom: 0.25rem;
-    margin-bottom: 0.4rem;
+  /* Card padding — scoped override, not a Tailwind utility swap
+     (2026-11-03, operator: "padding is inconsistent for grid, grid
+     container, and other panels... Pulse has balanced padding").
+     An earlier attempt here swapped the `p-3` Tailwind class for
+     `p-1.5`, matching what a padding audit reported as Pulse's own
+     value — WRONG on two counts, confirmed by direct measurement
+     (`getComputedStyle`), not by re-reading source: (1) `.algo-status-
+     card`'s own base rule in `(algo)/+layout.svelte` hardcodes
+     `padding: 0.75rem` directly — every `p-*` Tailwind utility on this
+     element has always been a dead no-op, the swap measured 12px before
+     AND after; (2) the real `/pulse` route doesn't even use `.algo-
+     status-card` — `MarketPulse.svelte` renders it with `flat=true`
+     there, which swaps to a borderless `.mp-flat-wrap` with no
+     comparable per-side card padding to match at all. This rule instead
+     overrides the global base directly, at higher specificity (two
+     classes vs. the base rule's one), scoped to this page's own cards
+     only — not a global change to every `.algo-status-card` app-wide,
+     which would be a much larger blast radius than this request asked
+     for. 0.375rem chosen as a real, verified-compiling literal value
+     (not a Tailwind decimal utility, which this build does not
+     reliably generate for an unused class — also confirmed by direct
+     measurement, not assumption). */
+  .opt-payoff-full.algo-status-card,
+  .opt-legs-card.algo-status-card,
+  .opt-byund-card.algo-status-card,
+  .opt-block.algo-status-card,
+  .opt-drafts-card.algo-status-card {
+    padding: 0.375rem;
+  }
+  /* Greeks/Risk title's left-border bar reads as "missing" next to
+     Snapshot's (2026-11-03, operator: "for greeks and risk labels, the
+     left border should be present like snapshot label") — it is NOT
+     missing; confirmed by direct measurement (getComputedStyle):
+     `.algo-label-decor`'s `border-left: 3px solid currentColor` and its
+     white color are byte-identical on both. The only real difference is
+     HEIGHT: Snapshot's CardHeader has `showControls` (the default,
+     true), whose button row inflates `.card-header` to 23.4px;
+     Greeks/Risk pass `showControls={false}` (nothing to control), so
+     `.card-header` collapses to the bare title's own 15.4px line
+     height — `.ch-left`'s `align-self: stretch` then only has that
+     shorter box to stretch the border-left bar into, making it ~64% as
+     tall and visually read as "thinner/absent" at a glance even though
+     it is the same color and width. Fixed with an explicit min-height
+     matching Snapshot's own measured value, scoped to just these two
+     CardHeaders (not a global CardHeader change) via `:global()` to
+     reach the child component's internal `.card-header` class. */
+  .opt-block :global(.card-header) {
+    min-height: 1.4625rem;
   }
   /* kv-pairs flow TWO per row, with label and value SIDE BY SIDE
      within each pair: "Underlying  CRUDE OIL", "Spot  ₹9000". Two

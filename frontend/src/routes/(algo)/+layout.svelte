@@ -2169,17 +2169,23 @@
     display: flex;
     flex-wrap: nowrap;
     align-items: center;
-    /* flex-start, not center — `justify-content: center` inside a
+    /* flex-start (unchanged) — bare `justify-content: center` inside a
        scrollable (`overflow-x: auto`) row centers the CONTENT'S VIRTUAL
        BOX, not the visible viewport, so when content overflows, the
        default scroll position (scrollLeft: 0) lands partway into that
-       centered box — clipping the FIRST item ("RamboQuant", the most
-       important text) from the very start, even though it's never been
-       scrolled. flex-start guarantees the first item is always fully
-       visible on load; only the later, less-important content
-       (page name, credits) needs a scroll to reach. Matches every other
-       scrollable row in this app (.ats-scroll, .ob-status-bar) — none
-       of them center-justify either. */
+       centered box — clipping the FIRST item ("RamboQuant") from the
+       very start, even though it's never been scrolled. `justify-
+       content: safe center` (CSS Box Alignment L3) would fix that, but
+       isn't universally supported across the Safari versions this app
+       targets, so the actual "footer is not centered" fix below uses
+       flex auto-margins instead — supported everywhere flexbox is:
+       `margin-left: auto` on the first child + `margin-right: auto` on
+       the last child (see `.algo-footer-brand`/the final
+       `.algo-footer-text` below) absorb the container's free space
+       equally on BOTH sides, visually centering the row — and auto
+       margins can never go negative, so the instant content overflows
+       they resolve to 0 and the row falls back to exactly this
+       flex-start packing, with the first item never clipped. */
     justify-content: flex-start;
     gap: 0;
     padding: 0 0.5rem;
@@ -2192,8 +2198,15 @@
     overflow-y: hidden;
     overscroll-behavior-x: contain;
   }
-  .algo-footer-brand { flex-shrink: 0; white-space: nowrap; }
+  /* `margin-left: auto` here + `margin-right: auto` on the footer's own
+     last child (below) are the centering mechanism — see the
+     `.algo-footer` comment above. */
+  .algo-footer-brand { flex-shrink: 0; white-space: nowrap; margin-left: auto; }
   .algo-footer-text { font-size: var(--fs-sm); color: rgba(160,185,220,0.7); font-family: var(--font-numeric); flex-shrink: 0; white-space: nowrap; }
+  /* Scoped to `.algo-footer`'s own last child specifically, not every
+     `.algo-footer-text` — that class is also reused for `pageLabel` in
+     the middle of the row, which must NOT get an auto margin. */
+  .algo-footer > .algo-footer-text:last-child { margin-right: auto; }
   .algo-footer-sep  { font-size: var(--fs-sm); color: rgba(251,191,36,0.6); margin: 0 0.4rem; flex-shrink: 0; }
   .algo-footer-link {
     color: rgba(251,191,36,0.85);

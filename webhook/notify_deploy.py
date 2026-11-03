@@ -12,9 +12,27 @@ Flags:
 """
 import argparse
 import sys
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import requests
 import yaml
+
+# Same dual-tz format as backend/shared/helpers/date_time_utils.py's
+# format_dual_tz() / timestamp_display() — every other alert in the
+# system gets this line via dispatch_payload()/format_notification_header(),
+# but this script deliberately avoids importing backend modules (see the
+# module docstring), so the format is reproduced inline with stdlib
+# zoneinfo. Verified byte-for-byte against the real function's output
+# before shipping, not written from memory.
+_EST_ZONE = ZoneInfo("US/Eastern")
+_IST_ZONE = ZoneInfo("Asia/Kolkata")
+
+
+def _dual_tz_timestamp() -> str:
+    dt = datetime.now(tz=_IST_ZONE)
+    est = dt.astimezone(_EST_ZONE)
+    return f"{dt.strftime('%a %d %b %H:%M IST')} | {est.strftime('%a %d %b %H:%M %Z')}"
 
 def main():
     parser = argparse.ArgumentParser(description="RamboQuant deploy notification")
@@ -74,15 +92,16 @@ def main():
     # (operator requirement #4). Telegram-only, via the dedicated
     # deploy bot/chat below. `event_label`/`detail_line` are kept
     # unchanged — the AppMessage record below still uses them.
+    ts_line = _dual_tz_timestamp()
     if status == "ok":
         event_label = f"Deploy OK{branch_tag}{type_suffix}"
         detail_line = f"{branch} → {commit}{layers_line}"
-        tg_body = (f"Deploy OK{branch_tag}{type_suffix} · {commit}"
+        tg_body = (f"Deploy OK{branch_tag}{type_suffix} · {commit}\n{ts_line}"
                    + (f"\nLayers: {layers}" if layers else ""))
     else:
         event_label = f"⚠ DEPLOY FAILED{branch_tag}"
         detail_line = f"{branch} → {commit}" + (f" — {reason}" if reason else "") + layers_line
-        tg_body = (f"⚠ DEPLOY FAILED{branch_tag} · {commit}"
+        tg_body = (f"⚠ DEPLOY FAILED{branch_tag} · {commit}\n{ts_line}"
                    + (f"\n{reason}" if reason else "")
                    + (f"\nLayers: {layers}" if layers else ""))
 
