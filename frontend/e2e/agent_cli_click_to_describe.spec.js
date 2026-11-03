@@ -18,6 +18,12 @@
  *   (f) panel never overlaps the Place-order/Cancel-all buttons
  *   (g) regression smoke for the existing hover-dropdown-description
  *       mechanism (current selectors — see note below)
+ *   (i) 2026-11-03, operator: "when I edit an existing agent, it shows
+ *       help text on the first token... when I move to its parameter
+ *       and next token, the look ahead info message does not change."
+ *       An already-open describe panel must track arrow-key/Tab cursor
+ *       navigation between tokens, not just stay pinned to whatever was
+ *       last clicked.
  *   (h) the JSON-preview-card click mechanism on the Automation page
  *
  * Reaches AgentCliEditor via `/automation?tab=console` (full statement
@@ -109,6 +115,24 @@ async function clickTokenAt(page, textarea, token, occurrence = 0) {
   }, { token, occurrence });
 }
 
+/** Moves the cursor to the Nth occurrence of `token`, WITHOUT a click —
+ *  dispatches a `keyup` event instead, mirroring real arrow-key/Tab/
+ *  Home/End navigation (which fires `onkeyup` -> `_updateCursor()`,
+ *  never `_onTokenClick()`). Used to prove the describe panel tracks
+ *  pure cursor movement, not only an explicit click. */
+async function moveCursorTo(page, textarea, token, occurrence = 0) {
+  await textarea.evaluate((el, { token, occurrence }) => {
+    const esc = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(`(?<![A-Za-z0-9_])${esc}(?![A-Za-z0-9_])`, 'g');
+    const matches = [...el.value.matchAll(re)];
+    const m = matches[occurrence];
+    if (!m) throw new Error(`moveCursorTo: token "${token}" occurrence ${occurrence} not found in "${el.value}"`);
+    const mid = m.index + Math.max(0, Math.floor(token.length / 2));
+    el.selectionStart = el.selectionEnd = mid;
+    el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'ArrowRight' }));
+  }, { token, occurrence });
+}
+
 const describePanel = (page) => page.locator('[data-testid="agent-cli-describe-panel"]');
 
 test.describe('AgentCliEditor — click-to-describe already-typed tokens', () => {
@@ -176,6 +200,30 @@ test.describe('AgentCliEditor — click-to-describe already-typed tokens', () =>
     const panel = describePanel(page);
     await expect(panel).toBeVisible({ timeout: TIMEOUT });
     await expect(panel).toContainText('symbol');
+  });
+
+  // ── (i) already-open panel tracks pure cursor movement ───────────────
+  test('an already-open describe panel refreshes when the cursor moves to a different token via keyup, not just click', async ({ page }) => {
+    const textarea = await goConsole(page);
+    await setStatement(page, textarea,
+      'WHEN pnl@positions.total <= -50000\nALERT telegram\nDO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)');
+
+    // Click opens the panel on "symbol" — the baseline the operator
+    // describes ("shows help text on the first token, when I keep the
+    // cursor on it").
+    await clickTokenAt(page, textarea, 'symbol');
+    const panel = describePanel(page);
+    await expect(panel).toBeVisible({ timeout: TIMEOUT });
+    await expect(panel).toContainText('symbol');
+
+    // Move the cursor to a DIFFERENT param key via keyup only (no
+    // click) — the exact "move to its parameter and next token" case.
+    // Before the fix, the panel stayed pinned on "symbol" text forever.
+    await moveCursorTo(page, textarea, 'side');
+    await expect(panel).toContainText('side', { timeout: TIMEOUT });
+
+    await moveCursorTo(page, textarea, 'lots');
+    await expect(panel).toContainText('lots', { timeout: TIMEOUT });
   });
 
   test('clicking a param key inside a STILL-OPEN call (missing closing paren) also resolves', async ({ page }) => {

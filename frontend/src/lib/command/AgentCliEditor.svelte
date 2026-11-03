@@ -286,6 +286,37 @@
 
   function _updateCursor() {
     cursorPos = textareaEl ? (textareaEl.selectionStart ?? value.length) : value.length;
+    // 2026-11-03, operator: "when I edit an existing agent, it shows
+    // help text on the first token... when I move to its parameter and
+    // next token, the look ahead info message does not change." Root
+    // cause: `_onTokenClick()` (the only place that recomputes
+    // `_clickDescResult`) was wired ONLY to the textarea's `onclick` —
+    // arrow-key/Tab/Home/End navigation calls this function (via
+    // `onkeyup`) and correctly updates `cursorPos`, but never refreshed
+    // the already-open describe panel, which just sat on whatever token
+    // was last clicked.
+    //
+    // Scoped fix, not a reversal of the original click-only design (see
+    // `_onTokenClick`'s own docstring: a `$derived` tracking `value`/
+    // `cursorPos` was explicitly rejected because it would "flip the
+    // panel on/off on every keystroke for no reason"). This only
+    // refreshes an ALREADY-open textarea describe panel as the cursor
+    // moves — it never newly opens one from a bare cursor move, so a
+    // closed panel stays closed on every other keyup exactly as before.
+    if (_clickDescResult && _clickDescSource === 'textarea' && catalog && textareaEl) {
+      try { _clickDescResult = describeTokenAt(value, cursorPos, catalog); }
+      catch { _clickDescResult = null; }
+      // Mirrors `_onTokenClick`'s own `_dismissedAt` write (see its
+      // docstring on "dropdown-wins" precedence). Without this, moving
+      // to a new param-key position (e.g. "side" after "symbol") makes
+      // `suggestAgentCliAt` return non-empty `kind:'param'` candidates
+      // for THIS new position too — `_showDropdown` would re-qualify
+      // and take over the panel slot the moment the cursor landed on
+      // another param key, hiding the just-refreshed describe panel
+      // instead of showing it (confirmed live: the panel vanished from
+      // the DOM entirely on the "side" move before this line was added).
+      if (_clickDescResult) _dismissedAt = { pos: cursorPos, text: value };
+    }
   }
 
   function handleInput() {
