@@ -150,6 +150,26 @@
     ]
   },
   {
+    "slug": "market-status-alert",
+    "name": "Market status",
+    "conditions": {
+      "log": {
+        "tag": "alert",
+        "min_level": "INFO",
+        "where": {
+          "alert_event": "market_status"
+        }
+      }
+    },
+    "events": [],
+    "actions": [
+      {
+        "type": "render",
+        "render": "market_status"
+      }
+    ]
+  },
+  {
     "slug": "alert-channel-telegram",
     "name": "Alert channel: Telegram",
     "conditions": {

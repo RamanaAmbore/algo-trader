@@ -126,12 +126,21 @@ async def test_market_status_for_segment_closed_special_session_no_reason_falls_
 
 @pytest.mark.asyncio
 async def test_action_live_send_market_status_telegram_always_ntfy_conditional():
+    """2026-11-03 conversion — no more direct sends; the telegram-
+    always/ntfy-if-open routing is now carried as a per-record
+    `channels` list on the logged record. See
+    test_market_status_alert.py::TestActionLiveSendMarketStatus for the
+    full set of open/closed/mixed/lookup-failure cases."""
     now = datetime(2026, 10, 24, 5, 35, tzinfo=IST)  # Saturday — both closed
     with patch("backend.shared.helpers.date_time_utils.timestamp_indian", return_value=now), \
          patch("backend.brokers.broker_apis.fetch_holidays", return_value=set()), \
          patch("backend.brokers.broker_apis.fetch_special_sessions_async", new=AsyncMock(return_value=[])), \
-         patch("backend.shared.helpers.alert_utils._send_telegram") as mock_tg, \
-         patch("backend.shared.helpers.alert_utils.send_ntfy_alert") as mock_ntfy:
+         patch("backend.api.algo.agent_engine.get_agent_id_by_slug", new=AsyncMock(return_value=99)), \
+         patch("backend.shared.helpers.alert_utils._DISPATCH_LOGGER") as mock_logger:
         await _action_live_send_market_status({}, {})
-    mock_tg.assert_called_once()
-    mock_ntfy.assert_not_called()
+    mock_logger.info.assert_called_once()
+    extra = mock_logger.info.call_args.kwargs["extra"]
+    assert extra["alert_event"] == "market_status"
+    channels = {c["channel"] for c in extra["channels"]}
+    assert "telegram" in channels
+    assert "ntfy" not in channels

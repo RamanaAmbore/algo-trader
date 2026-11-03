@@ -183,7 +183,10 @@ def test_frozen_oracle_covers_every_migrated_agent_exactly():
     oracle slugs now live only in the latter (see `_spec_by_slug`'s own
     comment above). The 3 new generic channel agents are excluded for
     the same reason `USER_REGISTERED_AGENT` already was — net-new, no
-    pre-migration oracle entry to pin."""
+    pre-migration oracle entry to pin. `MARKET_STATUS_ALERT_AGENT`
+    (2026-11-03, alert-agent audit Wave 1) is excluded for the identical
+    reason — a brand-new agent added long after this oracle was frozen,
+    not a migration of any pre-existing one."""
     all_specs = event_agents.SEEDED_AGENTS + event_agents._COLLAPSED_DETECTOR_SPECS
     migrated_slugs = {
         spec["slug"] for spec in all_specs
@@ -192,6 +195,7 @@ def test_frozen_oracle_covers_every_migrated_agent_exactly():
             event_agents.USER_REGISTERED_AGENT["slug"],
             event_agents.TELEGRAM_CHANNEL_AGENT["slug"], event_agents.NTFY_CHANNEL_AGENT["slug"],
             event_agents.EMAIL_CHANNEL_AGENT["slug"],
+            event_agents.MARKET_STATUS_ALERT_AGENT["slug"],
         )
     }
     assert migrated_slugs == set(_FROZEN_ORACLE)

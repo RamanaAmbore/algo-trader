@@ -61,13 +61,14 @@ def test_frontend_fixture_matches_live_seeded_agents():
     )
 
 
-def test_fixture_has_all_10_agents_and_covers_both_log_and_any_shapes():
+def test_fixture_has_all_11_agents_and_covers_both_log_and_any_shapes():
     # 2026-10-25: 23 -> 10 — the alert-channel collapse retires 16
     # per-event detector agents into 3 generic channel agents (see
-    # event_agents.SEED_VERSION's own comment).
+    # event_agents.SEED_VERSION's own comment). 2026-11-03: 10 -> 11 —
+    # alert-agent audit Wave 1 adds `market-status-alert`.
     with open(_FIXTURE_PATH, "r", encoding="utf-8") as f:
         fixture = json.load(f)
-    assert len(fixture) == 10
+    assert len(fixture) == 11
     has_plain_log = any("log" in a["conditions"] for a in fixture)
     has_any_of_logs = any("any" in a["conditions"] for a in fixture)
     has_nonempty_events = any(a["events"] for a in fixture)

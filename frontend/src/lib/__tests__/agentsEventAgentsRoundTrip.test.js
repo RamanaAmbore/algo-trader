@@ -50,10 +50,12 @@ function compile(text, opts = {}) {
   return compileAgentCliStatement(text, CATALOG, opts);
 }
 
-describe('Wave 2 — byte-identical compile gate: all 10 real SEEDED_AGENTS shapes', () => {
+describe('Wave 2 — byte-identical compile gate: all 11 real SEEDED_AGENTS shapes', () => {
   // 2026-10-25 alert-channel collapse (commit 7d2b51fc): 23 -> 10 seeded
   // kind='event' agents. See CLAUDE.md's "Alert-channel collapse" entry.
-  expect(seededAgents.length).toBe(10);
+  // 2026-11-03: 10 -> 11 — alert-agent audit Wave 1 adds
+  // `market-status-alert`, a brand-new dedicated agent.
+  expect(seededAgents.length).toBe(11);
 
   for (const agent of seededAgents) {
     it(`${agent.slug}: decompile -> recompile reproduces the EXACT stored conditions/events/actions`, () => {
