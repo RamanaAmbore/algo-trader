@@ -82,20 +82,21 @@ def _freeze_ts(monkeypatch):
 
 # ─────────────────────────────────────────────────────────────────────────
 # Structural sanity — the 3 new channel agents + the 7 kept specs = 10
-# (the 2026-10-25 collapse), PLUS two dedicated additions from the
+# (the 2026-10-25 collapse), PLUS three dedicated additions from the
 # 2026-11-03 alert-agent audit (`market-status-alert` Wave 1,
-# `action-notify-alert` Wave 2 — both unrelated to the collapse, brand-
-# new agents, not replaced detectors) = 12.
+# `action-notify-alert` Wave 2, `order-cancelled-alert` Wave 3 — all
+# unrelated to the collapse, brand-new agents, not replaced
+# detectors) = 13.
 # ─────────────────────────────────────────────────────────────────────────
 
-def test_seeded_agents_count_is_12_not_23():
-    assert len(ea.SEEDED_AGENTS) == 12
+def test_seeded_agents_count_is_13_not_23():
+    assert len(ea.SEEDED_AGENTS) == 13
     slugs = {s["slug"] for s in ea.SEEDED_AGENTS}
     assert slugs == {
         "error-alert", "deploy-sync-alert", "agent-alert-rich", "market-summary",
         "cycle-breach-alert", "visitor-report-alert", "unrouted-alert-catch-all",
         "alert-channel-telegram", "alert-channel-ntfy", "alert-channel-email",
-        "market-status-alert", "action-notify-alert",
+        "market-status-alert", "action-notify-alert", "order-cancelled-alert",
     }
 
 

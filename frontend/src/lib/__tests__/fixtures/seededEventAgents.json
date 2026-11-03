@@ -190,6 +190,26 @@
     ]
   },
   {
+    "slug": "order-cancelled-alert",
+    "name": "Order cancelled",
+    "conditions": {
+      "log": {
+        "tag": "alert",
+        "min_level": "WARNING",
+        "where": {
+          "alert_event": "order_cancelled"
+        }
+      }
+    },
+    "events": [],
+    "actions": [
+      {
+        "type": "render",
+        "render": "order_cancelled"
+      }
+    ]
+  },
+  {
     "slug": "alert-channel-telegram",
     "name": "Alert channel: Telegram",
     "conditions": {

@@ -7,9 +7,16 @@ Covers:
       unconditional, clock-default-priority ntfy push for EVERY
       CANCELLED postback — a chase-managed row currently inside an
       active `chase_order()` retry loop is routine cancel-and-replace,
-      not action-required, and must be suppressed (ntfy skipped
-      entirely). A genuinely unexpected / operator-initiated cancel
-      must still reach ntfy, forced urgent.
+      not action-required, and must be suppressed (no alert-tagged log
+      record at all). A genuinely unexpected / operator-initiated
+      cancel must still alert, forced urgent.
+
+      2026-11-03 (Wave 3 of the alert-agent audit) — the direct
+      `send_ntfy_alert` call is gone; this now writes a log record
+      (`alert_event="order_cancelled"`, `action_required=True`) picked
+      up by the new `ORDER_CANCELLED_AGENT`, using the SAME binary
+      ntfy/email gate every other action-required alert in this
+      codebase already goes through.
 
   O9. ERROR_AGENT (event_agents.py) is a blanket catch-all matching ANY
       `logger.error(...)` call anywhere (log_store.py auto-tags every
@@ -33,7 +40,7 @@ from __future__ import annotations
 import inspect
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import pytest_asyncio
@@ -111,13 +118,17 @@ class TestCancelAlertChaseGate:
         assert await _opp_cancel_is_own_chase_requote(None) is False
         assert await _opp_cancel_is_own_chase_requote("") is False
 
-    async def test_cancel_alert_suppresses_ntfy_for_own_chase_requote(
-        self, _cancel_alert_sqlite_factory, monkeypatch,
+    async def test_cancel_alert_writes_no_log_record_for_own_chase_requote(
+        self, _cancel_alert_sqlite_factory,
     ):
         """Regression guard for O4 — pre-fix, `_opp_send_cancel_alert`
         called `send_ntfy_alert` unconditionally for every CANCELLED
-        event, including chase's own routine re-quote cancels. This
-        must now be suppressed entirely."""
+        event, including chase's own routine re-quote cancels.
+
+        2026-11-03 (Wave 3 of the alert-agent audit) — the direct send
+        is gone; this now asserts no alert-tagged log record is written
+        at all for chase's own requote, matching "a routine, self-
+        resolving chase event never pages the operator"."""
         from backend.api.routes.orders import _opp_send_cancel_alert
         from backend.api.algo.chase import _ch_mark_chase_active, _ch_mark_chase_inactive
 
@@ -128,13 +139,8 @@ class TestCancelAlertChaseGate:
             await s.commit()
             row_id = row.id
 
-        calls = []
-        monkeypatch.setattr(
-            "backend.shared.helpers.alert_utils.send_ntfy_alert",
-            lambda *a, **kw: calls.append((a, kw)),
-        )
-
-        with patch("backend.api.database.async_session", factory):
+        with patch("backend.api.database.async_session", factory), \
+             patch("backend.shared.helpers.alert_utils._DISPATCH_LOGGER") as mock_logger:
             _ch_mark_chase_active(row_id)
             try:
                 await _opp_send_cancel_alert(
@@ -144,40 +150,53 @@ class TestCancelAlertChaseGate:
             finally:
                 _ch_mark_chase_inactive(row_id)
 
-        assert calls == [], (
-            "a CANCELLED event for a row currently under an active chase "
-            "retry loop must NOT fire ntfy — it is chase's own routine "
-            "cancel-and-replace, not action-required"
-        )
+        mock_logger.warning.assert_not_called()
 
-    async def test_cancel_alert_sends_urgent_ntfy_when_not_chase_managed(
-        self, _cancel_alert_sqlite_factory, monkeypatch,
+    async def test_cancel_alert_logs_action_required_record_when_not_chase_managed(
+        self, _cancel_alert_sqlite_factory,
     ):
         """A genuinely unexpected / operator-initiated cancel (no active
-        chase for this row) must still reach ntfy, forced urgent."""
+        chase for this row) must still write an alert-tagged log record
+        with `action_required=True` — the SAME binary gate
+        (`event_agents.py:_apply_action_required_ntfy_gate`) that forces
+        urgent ntfy for every other action-required alert in this
+        codebase, rather than a bespoke direct `send_ntfy_alert` call."""
         from backend.api.routes.orders import _opp_send_cancel_alert
 
         factory, _AlgoOrder = _cancel_alert_sqlite_factory
-        calls = []
-        monkeypatch.setattr(
-            "backend.shared.helpers.alert_utils.send_ntfy_alert",
-            lambda *a, **kw: calls.append((a, kw)),
-        )
 
-        with patch("backend.api.database.async_session", factory):
+        with patch("backend.api.database.async_session", factory), \
+             patch("backend.api.routes.orders._opp_cancel_alert_identity",
+                   new=AsyncMock(return_value=(7, "Loss guardrail"))), \
+             patch("backend.shared.helpers.alert_utils._DISPATCH_LOGGER") as mock_logger:
             await _opp_send_cancel_alert(
                 "ZG0790", "RELIANCE", "BUY", 10, "cancelled by operator",
                 "BO-ALERT-3",
             )
 
-        assert len(calls) == 1, "a non-chase-managed cancel must still alert"
-        args, kwargs = calls[0]
-        # send_ntfy_alert(title, message, priority) — priority is the 3rd
-        # positional arg.
-        assert args[2] == "urgent", (
-            "a genuinely action-required cancel must force urgent priority, "
-            "not fall through to send_ntfy_alert's clock-based day/night default"
-        )
+        mock_logger.warning.assert_called_once()
+        extra = mock_logger.warning.call_args.kwargs["extra"]
+        assert extra["alert_event"] == "order_cancelled"
+        assert extra["action_required"] is True
+        assert extra["agent_id"] == 7
+        assert extra["agent_name"] == "Loss guardrail"
+        channels = {c["channel"] for c in extra["channels"]}
+        assert "ntfy" in channels
+        assert "ZG0790" not in extra["body"], "account must be masked in the logged body"
+
+    async def test_cancel_alert_identity_degrades_to_none_on_lookup_failure(self):
+        """A DB hiccup resolving the AlgoOrder/Agent identity must never
+        block the alert — degrades to (None, None), the pre-existing
+        "manual" origin fallback via resolve_origin()."""
+        from backend.api.routes.orders import _opp_cancel_alert_identity
+
+        with patch("backend.api.database.async_session", side_effect=RuntimeError("db down")):
+            agent_id, agent_name = await _opp_cancel_alert_identity("BO-ALERT-4")
+        assert (agent_id, agent_name) == (None, None)
+
+        # Falsy order_id short-circuits without even attempting a lookup.
+        assert await _opp_cancel_alert_identity(None) == (None, None)
+        assert await _opp_cancel_alert_identity("") == (None, None)
 
 
 # ─────────────────────────────────────────────────────────────────────────
