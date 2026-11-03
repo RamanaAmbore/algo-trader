@@ -2,27 +2,19 @@
  * bracket_scope_reset_pending_label_and_held_toast.spec.js
  *
  * .claude/PLAN.md — "Bracket UX — scope-reset-not-clear, paired display,
- * 'Pending' label, basket hold wiring" (2026-11-02). Covers the
- * frontend-scoped items assigned to this agent: 1 (scope-reset-not-clear
- * + flash), 2 (paired main+bracket display), 4 (toast wording
- * distinction), and 6 (HeldOrdersCard surfaces a template-exit-held row).
- * Item 3's ("Pending" label) surfaces are covered incidentally by every
- * test below that renders a held/pending row.
+ * 'Pending' label, basket hold wiring" (2026-11-02). Covers items 2
+ * (paired main+bracket display), 4 (toast wording distinction), and 6
+ * (HeldOrdersCard surfaces a template-exit-held row). Item 3's ("Pending"
+ * label) surfaces are covered incidentally by every test below that
+ * renders a held/pending row.
  *
- * Item 1 is a SOURCE-LEVEL regression guard, not a live-UI interaction —
- * same precedent this exact surface already established in
- * `order_ticket_bracket_scope_ssot_and_clear_policy.spec.js` ("Not live-
- * reachable... tests below are source-level") and
- * `chain_live_wing_confirmation_badge.spec.js` ("the Chain tab needs live
- * quotes + a logged-in session + a real template catalog to even render
- * an interactive strike grid... impractical in CI"). Confirmed during
- * implementation: on the Chain tab with no basket legs, `_currentScope()`
- * falls back to `_modalSide`, which can only change via OrderTicket's own
- * BUY/SELL pills — rendered with `display:none` while Chain is active, so
- * there is no live-UI path to flip scope on Chain with zero legs staged.
- * Driving a REAL Chain-tab leg add (needed to flip scope via a focused
- * leg's own side/CE-PE) requires mocked option-chain quote data, the same
- * class of setup those two precedent specs document as impractical.
+ * Item 1 (Chain-tab scope-reset-not-clear + flash) was REVERTED on
+ * 2026-11-03 — a live incident traced Chain tab's bid/ask freezing and
+ * the order-ticket modal becoming unresponsive to this feature (plus
+ * the separate live-wing-badge feature from the day before); both were
+ * rolled back to their last known-working state. Its test coverage was
+ * removed along with the feature. Do not reintroduce without a fresh
+ * root-cause investigation into why it caused the freeze.
  *
  * Items 2/4/6 ARE live-UI tests against `/orders` — no Chain UI needed,
  * reusing the mocking pattern established in
@@ -47,102 +39,8 @@
  */
 
 import { test, expect } from '@playwright/test';
-import { readFileSync } from 'fs';
 import { loginAsAdmin } from './fixtures/auth.js';
 import { priceFmt } from '../src/lib/format.js';
-
-const ROOT = '/Users/ramanambore/projects/ramboq/frontend/src/lib';
-
-// ─────────────────────────────────────────────────────────────────────────
-// Item 1 — SymbolPanel.svelte's `_lastSideScope` effect: scope-reset, not
-// silent clear, on the Chain tab only. Source-level.
-// ─────────────────────────────────────────────────────────────────────────
-
-test.describe('SymbolPanel — Chain-tab Bracket scope-reset (source)', () => {
-  let src = '';
-  test.beforeAll(() => {
-    src = readFileSync(`${ROOT}/SymbolPanel.svelte`, 'utf-8');
-  });
-
-  function effectBody() {
-    const idx = src.indexOf('let _lastSideScope = \'\';');
-    expect(idx, '_lastSideScope declaration not found').toBeGreaterThan(-1);
-    // Grab a generous slice covering the whole effect — bounded by the
-    // next top-level comment block (the Account-list section) so we
-    // don't need full brace-counting for a one-off regression guard.
-    const endIdx = src.indexOf('// Account list — falls through three layers:', idx);
-    expect(endIdx, 'end marker not found').toBeGreaterThan(idx);
-    return src.slice(idx, endIdx);
-  }
-
-  test('a cold-mount / already-cleared pick (!current) stays a plain null — no re-arm, no flash (2f60d39a policy unchanged)', () => {
-    const body = effectBody();
-    const idx = body.indexOf('if (!current) {');
-    expect(idx, '!current branch not found').toBeGreaterThan(-1);
-    const block = body.slice(idx, body.indexOf('}', idx) + 1);
-    expect(block).toMatch(/_sharedTemplateId\s*=\s*null;/);
-    expect(block).not.toContain('_flashBracketScopeChange');
-  });
-
-  test('the Default-slot re-bind is gated on `_activeTab === \'chain\'` only', () => {
-    const body = effectBody();
-    expect(body).toMatch(/if\s*\(_activeTab === 'chain'\)\s*\{/);
-  });
-
-  test('on Chain, a fitting new-scope default re-binds `_sharedTemplateId` and flashes "switched"', () => {
-    const body = effectBody();
-    const chainIdx = body.indexOf("if (_activeTab === 'chain') {");
-    expect(chainIdx).toBeGreaterThan(-1);
-    const chainBlock = body.slice(chainIdx, body.indexOf('} else {', chainIdx));
-    expect(chainBlock).toMatch(/if\s*\(_sideAwareDefault\)\s*\{/);
-    expect(chainBlock).toMatch(/_sharedTemplateId\s*=\s*_sideAwareDefault\.id;/);
-    expect(chainBlock).toMatch(/_flashBracketScopeChange\('switched'\);/);
-  });
-
-  test('on Chain, no fitting default clears to null and flashes "cleared" — never silently drops with no feedback', () => {
-    const body = effectBody();
-    // Unambiguous within the whole effect body (appears exactly once) —
-    // the inner `else` (no-default-for-new-scope) nested one level
-    // inside the outer `if (_activeTab === 'chain')` branch.
-    expect(body).toMatch(/_sharedTemplateId\s*=\s*null;\s*\n\s*_flashBracketScopeChange\('cleared'\);/);
-  });
-
-  test('the Ticket-tab branch (else) stays a plain null with NO flash call of its own — avoids racing OrderTicket\'s own "never re-arm" effect', () => {
-    const body = effectBody();
-    const elseIdx = body.lastIndexOf('} else {');
-    expect(elseIdx).toBeGreaterThan(-1);
-    const elseBlock = body.slice(elseIdx, body.indexOf('}', elseIdx + 8) + 1);
-    expect(elseBlock).toMatch(/_sharedTemplateId\s*=\s*null;/);
-    expect(elseBlock).not.toContain('_flashBracketScopeChange');
-  });
-
-  test('a NAMED (non-default) template pick is still protected, unchanged', () => {
-    // The pre-existing guard this item must never touch.
-    expect(src).toContain("if (current && !current.is_default) return;");
-  });
-
-  test('the flash helper + state exist, with a 1200ms auto-clear timer (mirrors OrderTicket\'s own #16 flash timing)', () => {
-    expect(src).toMatch(/let _bracketScopeFlash = \$state\(/);
-    expect(src).toContain('function _flashBracketScopeChange(');
-    expect(src).toMatch(/setTimeout\(\(\) => \{ _bracketScopeFlash = null; \}, 1200\);/);
-  });
-
-  test('the flash markup is Chain-tab-gated and renders both wordings', () => {
-    const idx = src.indexOf("{#if _activeTab === 'chain' && _bracketScopeFlash}");
-    expect(idx, 'flash markup block not found').toBeGreaterThan(-1);
-    const block = src.slice(idx, src.indexOf('{/if}', idx));
-    expect(block).toContain('Bracket switched to default for new side');
-    expect(block).toContain('Bracket cleared for new side');
-  });
-
-  test("OrderTicket.svelte's own no-re-arm policy is untouched — _autoSelectTemplate is still a deliberate no-op", () => {
-    const otSrc = readFileSync(`${ROOT}/order/OrderTicket.svelte`, 'utf-8');
-    const idx = otSrc.indexOf('function _autoSelectTemplate()');
-    expect(idx).toBeGreaterThan(-1);
-    const block = otSrc.slice(idx, otSrc.indexOf('\n  }', idx) + 4);
-    expect(block).not.toMatch(/templateId\s*=/);
-  });
-});
 
 // ─────────────────────────────────────────────────────────────────────────
 // Shared /orders mocking — items 2, 4, 6 below

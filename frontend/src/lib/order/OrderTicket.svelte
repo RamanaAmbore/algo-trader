@@ -1155,18 +1155,7 @@
   // commit. A 2026-11-01 task to "fix" this by restoring the old
   // `templateId = _defaultTemplate?.id ?? null;` body was investigated
   // and NOT applied — see that investigation's handback for the full
-  // chronology.
-  // STALE CROSS-REFERENCE, corrected 2026-11-02 (PLAN.md item 1): the
-  // "no re-selection either" claim above about SymbolPanel.svelte is no
-  // longer true for the Chain tab. That effect now re-binds a
-  // Default-slot pick to the new scope's own default on a Chain-tab
-  // scope change (narrower than reverting 2f60d39a: it only carries
-  // forward a Default the operator already armed, never implicitly
-  // arms one from cold/cleared). THIS function (`_autoSelectTemplate`,
-  // Ticket tab) and OrderTicket's own re-validation effect below are
-  // UNCHANGED and still the "never re-arm" policy — see that effect's
-  // own comment for why the two tabs are deliberately allowed to
-  // disagree here. The one real, independent bug fixed alongside this
+  // chronology. The one real, independent bug fixed alongside this
   // comment is `_defaultTemplate`'s own scope computation below (now
   // `_resolvedSymbol || symbol`, matching the re-validation effect) —
   // that fix stands on its own regardless of the auto-select policy,
