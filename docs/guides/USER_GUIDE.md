@@ -640,6 +640,15 @@ popup means the chase is mid-replacement, so press Kill again in a few seconds. 
 the broker, or the order had already ended without a fill. If the order had already filled or
 been rejected, Kill reports that there is nothing to kill.
 
+**Bracket exits held for release (2026-11-03)** — if your Bracket's exit orders (TP/SL/wing)
+are configured to wait for your explicit release (an admin setting, held by default), a
+filled bracket order shows **Pending** in this same drawer instead of **Kill** — there's
+nothing live to cancel yet, since the exits were deliberately never placed. Press Pending to
+release the hold: the exits are placed, and if the bracket has a chased hedge leg, it then
+appears in this drawer as a normal live chase with Kill available. This is the same release
+action as the "Tmpl Hold" pill on an order card or the Held Orders card's Release button —
+whichever surface you use, it's the same action.
+
 ### "Order corrected" alerts
 
 Occasionally the platform finds an order whose local record disagreed with what the
