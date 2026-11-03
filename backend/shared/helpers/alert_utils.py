@@ -819,10 +819,19 @@ def dispatch_payload(msg_type: str, ist_display: str, tg_table: str, email_table
     # "Agent:" unchanged; those answer a different question ("who
     # placed this order: manual or which agent") and must never say
     # "Alert:".
+    # 2026-11-03 (operator) — split back to two lines: the merged
+    # pipe-separated single line read too cramped in practice. This is
+    # NOT a reversion to the original duplicated "Agent: X" / "Agent —
+    # ts" shape — there is still exactly one agent mention (line 1)
+    # and exactly one timestamp (line 2), just on separate lines for
+    # readability. `branch_tag` stays with the identity line; `mode_pfx`
+    # moves to the timestamp line (matches where it sat relative to
+    # `ist_display` before the one-line merge).
     alert_line = _relabel_agent_label_to_alert(agent_line)
     if agent_line:
         telegram_msg = (
-            f"{alert_line}{branch_tag} {mode_pfx}| {ist_display}{warning_block}\n\n"
+            f"{alert_line}{branch_tag}\n"
+            f"{mode_pfx}{ist_display}{warning_block}\n\n"
             f"{tg_table}"
         )
     else:

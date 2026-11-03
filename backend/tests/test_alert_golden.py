@@ -956,12 +956,17 @@ async def test_breach_dispatch_custom_message_channel_golden_round_trip(monkeypa
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestDispatchPayloadAgentHeaderOneLineMerge:
-    def test_known_agent_merges_identity_and_timestamp_onto_one_line(self):
+    """Class name kept for history — the header is TWO lines again as of
+    2026-11-03 (operator: the one-line merge read too cramped). Still
+    exactly one agent mention and one timestamp, just split for
+    readability — not a reversion to the original duplicated "Agent: X"
+    / "Agent — ts" shape (which repeated the word "Agent" on both
+    lines)."""
+    def test_known_agent_splits_identity_and_timestamp_onto_two_lines(self):
         """Confirmed target shape (operator-provided, reproduced by
         actually running the real fixed dispatch_payload() — not hand-
-        computed): 'Alert: {name} (#{id})' and the dual-tz `ist_display`
-        land on ONE pipe-separated line, with no second, redundant
-        line and no repeated label word."""
+        computed): line 1 is 'Alert: {name} (#{id})', line 2 is the bare
+        dual-tz `ist_display` with no repeated label word."""
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(alert_utils, "config", {"deploy_branch": "main"})
             p = alert_utils.dispatch_payload(
@@ -973,34 +978,40 @@ class TestDispatchPayloadAgentHeaderOneLineMerge:
                 agent_name="MCX pre-close", agent_id=93,
             )
         assert p["telegram_msg"] == (
-            "Alert: MCX pre-close (#93) | Mon 02 Nov 22:59 IST | Mon 02 Nov 12:29 EST"
+            "Alert: MCX pre-close (#93)\n"
+            "Mon 02 Nov 22:59 IST | Mon 02 Nov 12:29 EST"
             "\n\nMCX pre-close — MCX closes in 30 minutes"
         )
-        # Exactly one label token in the merged header line, not two,
+        # Exactly one label token across the two header lines, not two,
         # and it is never the literal "Agent:" (relabel is scoped to
-        # this merged line only, but must still take effect here).
-        header_line = p["telegram_msg"].splitlines()[0]
-        assert header_line.count("Alert") == 1
-        assert "Agent" not in header_line
+        # this header only, but must still take effect here).
+        lines = p["telegram_msg"].splitlines()
+        header = lines[0] + "\n" + lines[1]
+        assert header.count("Alert") == 1
+        assert "Agent" not in header
         assert "\nAgent —" not in p["telegram_msg"]
-        # Email subject reshaped the same way: "Alert: {subject_detail}
-        # | {ist_display}", no "RamboQuant Agent: " prefix.
+        # Email subject is unaffected by this 2026-11-03 change (operator
+        # scoped it to Telegram/ntfy only) — still the one-line
+        # "Alert: {subject_detail} | {ist_display}" shape.
         assert p["email_subject"] == (
             "Alert: MCX pre-close (#93) | Mon 02 Nov 22:59 IST | Mon 02 Nov 12:29 EST"
         )
 
-    def test_known_agent_sim_mode_keeps_bracket_tag_and_banner_on_one_line(self):
-        """The SIMULATOR/REPLAY *word* prefix is dropped from the merged
-        header line (pure redundancy once a real agent name is shown —
-        see the comment in dispatch_payload), but the fact itself is not
-        lost: the [SIM] bracket tag and the warning banner still render."""
+    def test_known_agent_sim_mode_keeps_bracket_tag_and_banner_on_two_lines(self):
+        """The SIMULATOR/REPLAY *word* prefix is dropped from the header
+        (pure redundancy once a real agent name is shown — see the
+        comment in dispatch_payload), but the fact itself is not lost:
+        the [SIM] bracket tag moves to the timestamp line, and the
+        warning banner still renders right after it."""
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(alert_utils, "config", {"deploy_branch": "main"})
             p = alert_utils.dispatch_payload(
                 "alert", "10:15:30 IST", "tg_table", "<p>x</p>", "subject",
                 sim_mode=True, agent_name="loss-margin-low", agent_id=42,
             )
-        assert p["telegram_msg"].startswith("Alert: loss-margin-low (#42) [SIM] | 10:15:30 IST")
+        assert p["telegram_msg"].startswith(
+            "Alert: loss-margin-low (#42)\n[SIM] 10:15:30 IST"
+        )
         assert "SIMULATOR RUN" in p["telegram_msg"]
         assert "\nAgent —" not in p["telegram_msg"]
         # Title construction (untouched by this fix) still carries the
@@ -1071,7 +1082,8 @@ class TestDispatchPayloadAgentHeaderOneLineMerge:
         title, ntfy_body, tg_body, (email_subject, email_html) = _render_rich_alert(rec)
         assert ntfy_body == tg_body
         assert ntfy_body == (
-            "Alert: MCX pre-close (#93) | Mon 02 Nov 22:59 IST | Mon 02 Nov 12:29 EST"
+            "Alert: MCX pre-close (#93)\n"
+            "Mon 02 Nov 22:59 IST | Mon 02 Nov 12:29 EST"
             "\n\nMCX pre-close — MCX closes in 30 minutes"
         )
         assert email_subject == (
