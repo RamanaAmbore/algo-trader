@@ -589,11 +589,38 @@
   let _liveWingByKey = $state(new Map());
   $effect(() => {
     const rows = $latestAlgoOrderRows;
-    _liveWingByKey = refreshLiveWingState({
-      algoRows: rows,
-      chainUnderlying, chainExpiry,
-      findOption, getInstrument,
-    });
+    // 2026-11-03 fix — live incident (Chain bid/ask freezing, modal
+    // unresponsive after some time). This effect used to reassign
+    // `_liveWingByKey` to a BRAND-NEW Map unconditionally on every
+    // single orders-poll tick (every 60s), even when nothing
+    // wing-related had happened — the overwhelmingly common case,
+    // since `_tracked` (liveWingTracker.svelte.js) is empty unless the
+    // operator has placed a live Bracket order from Chain THIS
+    // session. A new Map object identity forces every `{@const
+    // ceLive = _liveWingByKey.get(...)}` read across the ENTIRE
+    // strike grid to re-evaluate on every tick, for the full lifetime
+    // of the tab being open, regardless of whether anything visible
+    // actually changed. Skip the reassignment when the result is
+    // empty and was already empty — the only state transition that
+    // matters (a wing appearing/disappearing/updating) still always
+    // reassigns. Also wrapped in try/catch: an uncaught exception
+    // inside an unguarded `$effect` can silently break a component's
+    // further reactivity, which fits the reported "works, then hangs
+    // after some time" pattern as well as the needless-rerender
+    // explanation — defensive regardless of which one is the real
+    // cause, since `refreshLiveWingState` is read-only/display-only
+    // and skipping one bad tick is always safe here.
+    try {
+      const next = refreshLiveWingState({
+        algoRows: rows,
+        chainUnderlying, chainExpiry,
+        findOption, getInstrument,
+      });
+      if (next.size === 0 && _liveWingByKey.size === 0) return;
+      _liveWingByKey = next;
+    } catch (e) {
+      console.error('[CHAIN] live-wing badge refresh failed, skipping this tick', e);
+    }
   });
 
   let basketPlacing  = $state(false);

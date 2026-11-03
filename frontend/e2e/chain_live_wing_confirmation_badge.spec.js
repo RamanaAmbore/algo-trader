@@ -284,7 +284,12 @@ test.describe('Chain live-wing badge — wiring + staging-array isolation (sourc
     expect(chainSrc).toContain('$latestAlgoOrderRows');
     // No direct network fetch for this feature inside OptionChainTab's
     // own live-wing effect — only the already-fetched store is read.
-    const effectIdx = chainSrc.indexOf('_liveWingByKey = refreshLiveWingState(');
+    // 2026-11-03: the call site now reads `const next = refreshLiveWingState(`
+    // (guarded against an unnecessary reassign + wrapped in try/catch —
+    // see that fix's own comment) rather than assigning directly into
+    // `_liveWingByKey`, so match on the call itself, not the old
+    // direct-assignment shape.
+    const effectIdx = chainSrc.indexOf('refreshLiveWingState(');
     expect(effectIdx).toBeGreaterThan(-1);
     const effectSlice = chainSrc.slice(Math.max(0, effectIdx - 300), effectIdx + 100);
     expect(effectSlice).not.toMatch(/fetchAlgoOrdersRecent|fetchOrders\(/);
