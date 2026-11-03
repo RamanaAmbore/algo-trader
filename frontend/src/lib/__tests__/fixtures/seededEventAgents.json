@@ -170,6 +170,26 @@
     ]
   },
   {
+    "slug": "action-notify-alert",
+    "name": "Agent action notify",
+    "conditions": {
+      "log": {
+        "tag": "alert",
+        "min_level": "INFO",
+        "where": {
+          "alert_event": "action_notify"
+        }
+      }
+    },
+    "events": [],
+    "actions": [
+      {
+        "type": "render",
+        "render": "action_notify"
+      }
+    ]
+  },
+  {
     "slug": "alert-channel-telegram",
     "name": "Alert channel: Telegram",
     "conditions": {
