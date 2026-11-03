@@ -2100,6 +2100,7 @@ class OrdersController(Controller):
         from sqlalchemy import desc, select as sql_select
         from backend.api.database import async_session
         from backend.api.models import AlgoOrder
+        from backend.api.algo.order_hold import parse_hold_record
 
         # Snapshot paper engine's open-order ids ONCE before the DB
         # query so we don't pay for the lock on every row.
@@ -2171,6 +2172,39 @@ class OrdersController(Controller):
                                 filled_ids.append(r.id)
                             continue
                 kept.append(r)
+
+            # Bracket (template-exit) holds — FILLED parent orders whose
+            # exit GTTs/wing are deliberately withheld pending operator
+            # release (`order_hold_gate.hold_template_exit`, gated by the
+            # `hold.template_exit_released` admin setting). These never
+            # reach status OPEN — nothing was placed, so there is nothing
+            # for the query above to find — but the operator still needs
+            # to act on them from the same card they already watch for
+            # live chases. Surfaced here as a distinct, non-chasing row;
+            # the frontend (`ChaseCard.svelte`) renders a "Pending" action
+            # in place of "Kill" for these (via the shared
+            # `isHeldPendingReleaseState()` predicate, already used by
+            # OrderCard's Bracket pill and HeldOrdersCard) that calls the
+            # SAME release endpoint (`POST /orders/held/{id}/release`),
+            # never a second release implementation. Operator: "the kill
+            # button in chase can be used to make it pending and release
+            # for bracket on hold... for bracket orders only."
+            held_rows = (await s.execute(
+                sql_select(AlgoOrder)
+                .where(
+                    AlgoOrder.hold_json.isnot(None),
+                    AlgoOrder.status == "FILLED",
+                    AlgoOrder.mode != "draft",
+                )
+                .order_by(desc(AlgoOrder.id))
+                .limit(200)
+            )).scalars().all()
+            held_kept = [
+                r for r in held_rows
+                if (parse_hold_record(getattr(r, "hold_json", None)) or {}).get("category")
+                == "template_exit"
+            ]
+            kept = sorted(kept + held_kept, key=lambda r: r.id, reverse=True)
 
             child_map = await _fetch_child_order_ids(s, [r.id for r in kept])
             agent_name_map = await _fetch_agent_name_map(s, [r.agent_id for r in kept])

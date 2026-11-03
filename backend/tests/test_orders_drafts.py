@@ -79,6 +79,7 @@ async def sqlite_session_factory():
         next_attempt_at      = Column(Float, nullable=True)
         source               = Column(String(32), nullable=True)
         agent_id             = Column(Integer, nullable=True)
+        hold_json            = Column(Text, nullable=True)
 
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
     async with engine.begin() as conn:

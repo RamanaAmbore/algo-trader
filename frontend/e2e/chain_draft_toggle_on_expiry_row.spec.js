@@ -80,6 +80,17 @@ test.describe('Chain DRAFT toggle moved onto the Expiry row (source-scan)', () =
     expect(chainSrc).toMatch(/\.ot-draft-label\.on\s*\{/);
   });
 
+  test('the DRAFT toggle is left-aligned, not pushed to the right edge (2026-11-03, operator: "left aligned")', () => {
+    // `.oct-toolbar` is a plain flex row with no `justify-content` spread,
+    // so a bare `.ot-draft-toggle` with no auto-margin sits naturally left,
+    // immediately after the dte chip — margin-left:auto was the earlier
+    // 2026-11-03 "move to Expiry row" fix's own right-push, now reverted.
+    const idx = chainSrc.indexOf('.ot-draft-toggle {');
+    expect(idx).toBeGreaterThan(-1);
+    const rule = chainSrc.slice(idx, chainSrc.indexOf('}', idx));
+    expect(rule).not.toMatch(/margin-left:\s*auto/);
+  });
+
   test('SymbolPanel suppresses its own shared-row DRAFT copy specifically while Chain is active', () => {
     const idx = panelSrc.indexOf('{#if _draftToggleVisible');
     expect(idx, 'DRAFT toggle if-block not found').toBeGreaterThan(-1);

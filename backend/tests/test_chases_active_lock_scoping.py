@@ -90,7 +90,10 @@ async def test_no_lock_taken_when_nothing_needs_reconciling():
     row needs no change) — zero locking statements should run."""
     from backend.api.routes.orders import OrdersController
 
-    spy = _StatementSpy(row_sequences=[[]])
+    # Second empty result for the bracket-hold query (`held_rows`,
+    # 2026-11-03 addition) — runs unconditionally after the main loop,
+    # unlocked, same as the classification read.
+    spy = _StatementSpy(row_sequences=[[], []])
     controller = OrdersController.__new__(OrdersController)
 
     with patch("backend.api.database.async_session", spy), \
@@ -106,12 +109,15 @@ async def test_no_lock_taken_when_nothing_needs_reconciling():
         )
 
     assert result == []
-    assert len(spy.statements) == 1, (
-        "only the unlocked classification read should run when there's "
-        "nothing to reconcile"
+    assert len(spy.statements) == 2, (
+        "the unlocked classification read plus the unlocked bracket-hold "
+        "query should run when there's nothing to reconcile"
     )
     assert spy.statements[0]._for_update_arg is None, (
         "the unlocked classification read must NOT take a row lock"
+    )
+    assert spy.statements[1]._for_update_arg is None, (
+        "the bracket-hold query must NOT take a row lock either"
     )
     assert spy.committed == 0
 
@@ -129,7 +135,9 @@ async def test_lock_scoped_to_only_the_row_needing_reconcile():
     # read — in production these would be two distinct instances
     # (`populate_existing=True` refreshes the locked one from the DB),
     # but for this test only the STATEMENTS matter.
-    spy = _StatementSpy(row_sequences=[[stale_row], [stale_row]])
+    # Third empty result for the bracket-hold query (`held_rows`,
+    # 2026-11-03 addition) — runs unconditionally after the main loop.
+    spy = _StatementSpy(row_sequences=[[stale_row], [stale_row], []])
     controller = OrdersController.__new__(OrdersController)
 
     with patch("backend.api.database.async_session", spy), \
@@ -144,9 +152,13 @@ async def test_lock_scoped_to_only_the_row_needing_reconcile():
             controller, request=MagicMock(),
         )
 
-    assert len(spy.statements) == 2, (
-        "expected the unlocked classification read plus exactly one "
-        "scoped locked re-read"
+    assert len(spy.statements) == 3, (
+        "expected the unlocked classification read, exactly one scoped "
+        "locked re-read, and the unlocked bracket-hold query"
+    )
+    assert spy.statements[2]._for_update_arg is None, (
+        "the bracket-hold query must stay unlocked, like the "
+        "classification read"
     )
     assert spy.statements[0]._for_update_arg is None, (
         "the first (classification) read must stay unlocked"

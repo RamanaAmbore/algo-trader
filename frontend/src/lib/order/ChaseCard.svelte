@@ -38,10 +38,11 @@
    *                   does not populate `_chases`).
    */
   import { onMount, onDestroy, untrack } from 'svelte';
-  import { fetchActiveChases, killChase, reconcileAlgoOrders } from '$lib/api';
+  import { fetchActiveChases, killChase, releaseHeldOrder, reconcileAlgoOrders } from '$lib/api';
   import { priceFmt } from '$lib/format';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
   import { toast } from '$lib/data/toastStore.svelte.js';
+  import { isHeldPendingReleaseState } from '$lib/data/templateAttachToast.js';
   import CardHeader from '$lib/CardHeader.svelte';
   import { visibleInterval } from '$lib/stores';
 
@@ -169,6 +170,11 @@
   let _loading = $state(false);
   let _err     = $state('');
   let _killing = $state(/** @type {Set<number>} */ (new Set()));
+  // Bracket (template-exit) hold release — a HELD row's action button
+  // shows "Pending" instead of "Kill" (see `isHeldPendingReleaseState`
+  // below) and calls this instead of `_kill`. Separate tracking set
+  // since a row can only ever be one or the other, never both.
+  let _releasing = $state(/** @type {Set<number>} */ (new Set()));
   let _reconciling = $state(false);
   let _reconcileMsg = $state('');
   // Operator: "in chase card, if there are no active chases, no need
@@ -315,6 +321,30 @@
       const next = new Set(_killing);
       for (const id of toKill) next.delete(id);
       _killing = next;
+    }
+  }
+
+  // Release a held Bracket exit (operator: "the kill button in chase can
+  // be used to make it pending and release for bracket on hold... for
+  // bracket orders only"). Calls the SAME release endpoint
+  // `HeldOrdersCard.svelte`'s Release button and `OrderCard.svelte`'s
+  // "Tmpl Hold" pill already call — no second release implementation,
+  // just another entry point. On success the row's `hold_json` clears
+  // (and, if the bracket has a wing, a genuine chase for it may start) —
+  // re-fetch rather than guess the resulting shape locally.
+  async function _release(/** @type {any} */ row) {
+    if (_releasing.has(row.id)) return;
+    _releasing = new Set([..._releasing, row.id]);
+    try {
+      await releaseHeldOrder(row.id);
+      toast.success(`Released bracket exits for #${row.id}`);
+      await _load();
+    } catch (e) {
+      toast.error(/** @type {any} */ (e)?.message || `Release #${row.id} failed`);
+    } finally {
+      const next = new Set(_releasing);
+      next.delete(row.id);
+      _releasing = next;
     }
   }
 
@@ -492,14 +522,27 @@
           <span class="cc-col {_modeCls(row.mode)}">{(row.mode || '?').toUpperCase()}</span>
         {/if}
         <span class="cc-col cc-col-actions">
-          <button type="button" class="cc-kill"
-            disabled={_killing.has(row.id)}
-            title={row.child_order_ids && row.child_order_ids.length
-              ? `Cancel this chase + ${row.child_order_ids.length} auto-attached child order${row.child_order_ids.length === 1 ? '' : 's'}.`
-              : 'Cancel this chase'}
-            onclick={() => _kill(row)}>
-            {_killing.has(row.id) ? '…' : 'Kill'}
-          </button>
+          {#if isHeldPendingReleaseState(row)}
+            <!-- Bracket exit held pending operator release — no broker
+                 order is resting for this row, so "Kill" would be
+                 meaningless here. Same release action as the "Tmpl Hold"
+                 pill on OrderCard / the Release button on HeldOrdersCard. -->
+            <button type="button" class="cc-pending"
+              disabled={_releasing.has(row.id)}
+              title="Bracket exits are held pending release — click to release"
+              onclick={() => _release(row)}>
+              {_releasing.has(row.id) ? '…' : 'Pending'}
+            </button>
+          {:else}
+            <button type="button" class="cc-kill"
+              disabled={_killing.has(row.id)}
+              title={row.child_order_ids && row.child_order_ids.length
+                ? `Cancel this chase + ${row.child_order_ids.length} auto-attached child order${row.child_order_ids.length === 1 ? '' : 's'}.`
+                : 'Cancel this chase'}
+              onclick={() => _kill(row)}>
+              {_killing.has(row.id) ? '…' : 'Kill'}
+            </button>
+          {/if}
         </span>
       </div>
     {/each}
@@ -846,6 +889,24 @@
   }
   .cc-kill:hover:not(:disabled) { background: var(--btn-sell-bg-hi); }
   .cc-kill:disabled { opacity: var(--btn-disabled-opacity); cursor: progress; }
+  /* Bracket exit held pending release — same amber "needs action" token
+     as OrderCard's `.oc-bracket-pill-tmplhold` pill, so this reads as
+     the identical state wherever it's shown. */
+  .cc-pending {
+    padding: 0.18rem 0.5rem;
+    border-radius: 3px;
+    border: 1px solid var(--c-action);
+    background: transparent;
+    color: var(--c-action);
+    font-family: monospace;
+    font-size: var(--fs-xs);
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    cursor: pointer;
+    text-transform: uppercase;
+  }
+  .cc-pending:hover:not(:disabled) { background: var(--algo-amber-bg); }
+  .cc-pending:disabled { opacity: var(--btn-disabled-opacity); cursor: progress; }
   .cc-countdown {
     /* 2026-10-20 fix — was --fs-2xs (8px, the smallest token in the
        whole app, smaller even than this column's own "Next" header).

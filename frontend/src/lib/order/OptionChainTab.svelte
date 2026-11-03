@@ -1748,7 +1748,6 @@
     gap: 0.3rem;
     cursor: pointer;
     user-select: none;
-    margin-left: auto;
   }
   .ot-draft-toggle input[type="checkbox"] {
     accent-color: var(--algo-violet);
