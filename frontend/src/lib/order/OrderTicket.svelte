@@ -1969,7 +1969,16 @@
   const validationErr = $derived.by(() =>
     _validateQtyLots(Number(_qty), Number(_lots), _lotSize, symbol) ??
     _validateLotSizeResolved(_resolvedSymbol || symbol, _lotSize, action) ??
-    _validatePriceTrigger(showLimit, showTrigger, Number(_price), Number(_trigger), _tickSize, _tickDecimals) ??
+    // Skipped while Draft mode is on (operator: a draft order "does not
+    // need market to be open ... it just needs to set entry price as
+    // ltp") — a draft never places a broker order, so a limit/trigger
+    // price never needs to resolve here at all. The actual submit()
+    // draft branch below prices the entry from `liveSnap(sym)?.ltp`
+    // directly, not from `_price`/`_trigger` — this check existing at
+    // all for drafts only ever blocked Submit (via `_ticketValidationErr`
+    // in SymbolPanel's `_modalFireSubmit`) when no live depth quote had
+    // arrived, which is routine and expected whenever market is closed.
+    (draftMode ? null : _validatePriceTrigger(showLimit, showTrigger, Number(_price), Number(_trigger), _tickSize, _tickDecimals)) ??
     _validateOrderContext(_mode, _account) ??
     // #7 — TemplateBar override validation (blocks submit on invalid override values)
     (!_isUsingNone && templateId !== null && tpOverride !== '' && tpOverride != null && Number(tpOverride) <= 0
@@ -2373,7 +2382,13 @@
           qty:        signedQty,
           avg_cost:   (_liveLtp != null && _liveLtp > 0)
                         ? Number(_liveLtp)
-                        : (_price != null ? Number(_price) : null),
+                        // `_price !== ''` (not just `!= null`) — the
+                        // price-required validation is now skipped for
+                        // drafts (see `validationErr` above), so `_price`
+                        // routinely IS the empty string here; `Number('')`
+                        // is 0, not "unknown", which would silently record
+                        // a ₹0 cost basis instead of a genuinely unresolved one.
+                        : (_price !== '' && _price != null ? Number(_price) : null),
           underlying: rootOf(sym, _resolvedExchange || exchange || 'NFO'),
           account:    _account || null,
         };

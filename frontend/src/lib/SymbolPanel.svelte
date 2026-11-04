@@ -1974,6 +1974,11 @@
     // literal 'Market' placeholder when nothing has resolved yet (no
     // symbol at all); treat that placeholder as unresolved and suppress
     // the notice, matching the old "don't guess" behavior.
+    // A draft never reaches the broker at all — it never "queues" and
+    // is never "deferred", so this notice (which only makes sense for a
+    // real order) would be actively misleading while Draft is on
+    // (operator: a draft order "does not need market to be open").
+    if (_sharedDraftMode) return null;
     try {
       const exch = _mktBadgeExchShell;
       if (!exch || exch === 'Market') return null;  // exchange not known — no warning

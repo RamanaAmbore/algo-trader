@@ -729,6 +729,19 @@
     }
   }
 
+  // The 8 +/- add-leg buttons (CE/PE × buy/sell, duplicated across the
+  // ATM/non-ATM row markup) are `disabled={!draftMode && !(bid>0||ask>0)}`
+  // — when Draft is on, a leg can be staged with no live bid/ask at all
+  // (operator: a draft order "does not need market to be open ... it
+  // just needs to set entry price as ltp"). `addOptionToBasket` itself
+  // never needed the quote to resolve a symbol — it already resolves via
+  // `findOption()` against the local instruments cache below, and both
+  // draft-pricing paths (this file's own submitBasket-equivalent in
+  // SymbolPanel, and OrderTicket's single-leg draft submit) price from
+  // `liveSnap(sym)?.ltp`, never from `leg.limit`/`chainQuotesMap`. The
+  // `limit: Number(q?.bid ?? ...) || 0` fallback below only matters for
+  // a REAL (non-draft) submission, which still requires a live quote via
+  // `_legNeedsDepth`/`_basketDepthPending` in SymbolPanel.
   function addOptionToBasket(/** @type {number} */ strike, /** @type {'CE'|'PE'} */ optType, /** @type {'long'|'short'} */ side) {
     if (!chainUnderlying || !chainExpiry) return;
     const inst = findOption(chainUnderlying.toUpperCase(), optType, strike, chainExpiry);
@@ -1410,12 +1423,12 @@
                     <span class="chain-side-action">
                       <span class="chain-btn-pair">
                         <button type="button" class="chain-btn chain-btn-buy"
-                                disabled={!(ceQ?.bid > 0 || ceQ?.ask > 0)}
-                                title={ceQ?.bid > 0 || ceQ?.ask > 0 ? `BUY ${k} CE` : "No quote — price unknown"}
+                                disabled={!draftMode && !(ceQ?.bid > 0 || ceQ?.ask > 0)}
+                                title={(draftMode || ceQ?.bid > 0 || ceQ?.ask > 0) ? `BUY ${k} CE` : "No quote — price unknown"}
                                 onclick={() => addOptionToBasket(k, 'CE', 'long')}>+</button>
                         <button type="button" class="chain-btn chain-btn-sell"
-                                disabled={!(ceQ?.bid > 0 || ceQ?.ask > 0)}
-                                title={ceQ?.bid > 0 || ceQ?.ask > 0 ? `SELL ${k} CE` : "No quote — price unknown"}
+                                disabled={!draftMode && !(ceQ?.bid > 0 || ceQ?.ask > 0)}
+                                title={(draftMode || ceQ?.bid > 0 || ceQ?.ask > 0) ? `SELL ${k} CE` : "No quote — price unknown"}
                                 onclick={() => addOptionToBasket(k, 'CE', 'short')}>−</button>
                       </span>
                       {#if ceLeg}
@@ -1442,12 +1455,12 @@
                     <span class="chain-side-action">
                       <span class="chain-btn-pair">
                         <button type="button" class="chain-btn chain-btn-buy"
-                                disabled={!(peQ?.bid > 0 || peQ?.ask > 0)}
-                                title={peQ?.bid > 0 || peQ?.ask > 0 ? `BUY ${k} PE` : "No quote — price unknown"}
+                                disabled={!draftMode && !(peQ?.bid > 0 || peQ?.ask > 0)}
+                                title={(draftMode || peQ?.bid > 0 || peQ?.ask > 0) ? `BUY ${k} PE` : "No quote — price unknown"}
                                 onclick={() => addOptionToBasket(k, 'PE', 'long')}>+</button>
                         <button type="button" class="chain-btn chain-btn-sell"
-                                disabled={!(peQ?.bid > 0 || peQ?.ask > 0)}
-                                title={peQ?.bid > 0 || peQ?.ask > 0 ? `SELL ${k} PE` : "No quote — price unknown"}
+                                disabled={!draftMode && !(peQ?.bid > 0 || peQ?.ask > 0)}
+                                title={(draftMode || peQ?.bid > 0 || peQ?.ask > 0) ? `SELL ${k} PE` : "No quote — price unknown"}
                                 onclick={() => addOptionToBasket(k, 'PE', 'short')}>−</button>
                       </span>
                       {#if peLeg}
@@ -1483,12 +1496,12 @@
                     <span class="chain-side-action">
                       <span class="chain-btn-pair">
                         <button type="button" class="chain-btn chain-btn-buy"
-                                disabled={!(ceQ?.bid > 0 || ceQ?.ask > 0)}
-                                title={ceQ?.bid > 0 || ceQ?.ask > 0 ? `BUY ${k} CE` : "No quote — price unknown"}
+                                disabled={!draftMode && !(ceQ?.bid > 0 || ceQ?.ask > 0)}
+                                title={(draftMode || ceQ?.bid > 0 || ceQ?.ask > 0) ? `BUY ${k} CE` : "No quote — price unknown"}
                                 onclick={() => addOptionToBasket(k, 'CE', 'long')}>+</button>
                         <button type="button" class="chain-btn chain-btn-sell"
-                                disabled={!(ceQ?.bid > 0 || ceQ?.ask > 0)}
-                                title={ceQ?.bid > 0 || ceQ?.ask > 0 ? `SELL ${k} CE` : "No quote — price unknown"}
+                                disabled={!draftMode && !(ceQ?.bid > 0 || ceQ?.ask > 0)}
+                                title={(draftMode || ceQ?.bid > 0 || ceQ?.ask > 0) ? `SELL ${k} CE` : "No quote — price unknown"}
                                 onclick={() => addOptionToBasket(k, 'CE', 'short')}>−</button>
                       </span>
                       {#if ceLeg}
@@ -1515,12 +1528,12 @@
                     <span class="chain-side-action">
                       <span class="chain-btn-pair">
                         <button type="button" class="chain-btn chain-btn-buy"
-                                disabled={!(peQ?.bid > 0 || peQ?.ask > 0)}
-                                title={peQ?.bid > 0 || peQ?.ask > 0 ? `BUY ${k} PE` : "No quote — price unknown"}
+                                disabled={!draftMode && !(peQ?.bid > 0 || peQ?.ask > 0)}
+                                title={(draftMode || peQ?.bid > 0 || peQ?.ask > 0) ? `BUY ${k} PE` : "No quote — price unknown"}
                                 onclick={() => addOptionToBasket(k, 'PE', 'long')}>+</button>
                         <button type="button" class="chain-btn chain-btn-sell"
-                                disabled={!(peQ?.bid > 0 || peQ?.ask > 0)}
-                                title={peQ?.bid > 0 || peQ?.ask > 0 ? `SELL ${k} PE` : "No quote — price unknown"}
+                                disabled={!draftMode && !(peQ?.bid > 0 || peQ?.ask > 0)}
+                                title={(draftMode || peQ?.bid > 0 || peQ?.ask > 0) ? `SELL ${k} PE` : "No quote — price unknown"}
                                 onclick={() => addOptionToBasket(k, 'PE', 'short')}>−</button>
                       </span>
                       {#if peLeg}
