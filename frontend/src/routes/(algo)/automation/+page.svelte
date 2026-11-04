@@ -295,9 +295,32 @@
   async function _onParamKeyClick(/** @type {string} */ actionType, /** @type {string} */ key) {
     let catalog;
     try { catalog = await _ensureEditCatalog(); } catch { _paramDescResult = null; return; }
-    const entry = lookupAgentCliEntry(actionType, catalog);
+    const entry = lookupAgentCliEntry(actionType, catalog, 'do');
     const spec = entry?.paramsSchema?.[key];
     _paramDescResult = spec ? { name: key, description: spec.description || '' } : null;
+  }
+
+  // 2026-11-03, operator: "why render does not help when I click on it
+  // during edit" — the action's own TYPE label (`a.type`, e.g. "render")
+  // had no click handler at all, only its param KEYS did (above). For a
+  // `render`-kind action there ARE no param keys to click in the first
+  // place: the backend's real shape is the flat `{"type": "render",
+  // "render": "error", "gate": true}` (`render`/`gate` are siblings of
+  // `type`, never nested under a `params` object — see
+  // event_agents.py's own SEEDED_AGENTS literals), so `a.params` is
+  // undefined and the whole clickable-params block never renders. This
+  // gives the type label itself the identical describe-panel treatment,
+  // reusing `_paramDescResult` (one panel, same dismiss/Escape wiring).
+  // `lookupAgentCliEntry(actionType, catalog, 'do')` — explicit 'do'
+  // clauseKind, not the 2-arg default `null` `_onParamKeyClick` used to
+  // pass — is what actually resolves `catalog.renderAction` (a lone
+  // object outside the `actions` Map; see
+  // `_lookupAnyCatalogEntry`'s own 2026-11-03 comment in agents.js).
+  async function _onActionTypeClick(/** @type {string} */ actionType) {
+    let catalog;
+    try { catalog = await _ensureEditCatalog(); } catch { _paramDescResult = null; return; }
+    const entry = lookupAgentCliEntry(actionType, catalog, 'do');
+    _paramDescResult = entry ? { name: actionType, description: entry.description || '' } : null;
   }
 
   // Escape-stack entry (same `layerStack.js` coordinator AgentCliEditor's
@@ -902,7 +925,11 @@
       <div class="space-y-1">
         {#each agent.actions as a}
           <div class="preview-action">
-            <span class="preview-action-type">{a.type || '?'}</span>
+            <span class="preview-action-type" role="button" tabindex="0"
+              data-testid="agent-action-type"
+              onclick={() => _onActionTypeClick(a.type)}
+              onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); _onActionTypeClick(a.type); } }}
+            >{a.type || '?'}</span>
             {#if a.params && Object.keys(a.params).length}
               <!-- Click-to-describe (.claude/PLAN.md, Part 2) — each
                    top-level JSON key becomes its own clickable span;
@@ -1551,7 +1578,18 @@
     border-radius: 3px;
     padding: 0.3rem 0.4rem;
   }
-  .preview-action-type { color: var(--c-action); font-weight: 700; font-family: var(--font-numeric); font-size: var(--fs-sm); }
+  /* 2026-11-03 — now clickable (see `_onActionTypeClick`), same dotted-
+     underline convention as `.preview-action-param-key` below so the two
+     read consistently as "this is describable". */
+  .preview-action-type {
+    color: var(--c-action); font-weight: 700; font-family: var(--font-numeric); font-size: var(--fs-sm);
+    cursor: pointer;
+    border-bottom: 1px dotted var(--algo-sky-border-soft, rgba(125,211,252,0.5));
+  }
+  .preview-action-type:hover,
+  .preview-action-type:focus-visible {
+    background: rgba(125,211,252,0.12);
+  }
 
   /* Lifespan chip — shows next to row meta when an agent is non-
      persistent. Uses the sky-blue utility palette so it reads as an

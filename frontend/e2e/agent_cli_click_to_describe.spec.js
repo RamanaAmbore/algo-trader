@@ -430,4 +430,50 @@ test.describe('Automation page — JSON-preview card click-to-describe (Part 2)'
     const rawTextAfter = await paramsPre.textContent();
     expect(rawTextAfter).toBe(rawTextBefore);
   });
+
+  // 2026-11-03, operator: "why render does not help when I click on it
+  // during edit" — a `render`-kind event action's own TYPE label had no
+  // click handler at all (only param KEYS did, and this action shape has
+  // none to click: `render`/`gate` are flat siblings of `type`, never
+  // nested under `params` — see `_onActionTypeClick`'s own comment in
+  // +page.svelte).
+  const RENDER_AGENT_ROW = {
+    id: 9002, slug: 'click-describe-render-e2e', name: 'Click Describe Render E2E', long_name: null,
+    description: '', conditions: { log: { tag: 'error', min_level: 'ERROR' } },
+    events: [{ channel: 'telegram', enabled: true }],
+    actions: [{ type: 'render', render: 'error' }], scope: 'total', schedule: 'market_hours',
+    cooldown_minutes: 30, fire_at_time: null, status: 'active', last_triggered_at: null,
+    trigger_count: 0, last_error: null, is_system: false, lifespan_type: 'persistent',
+    lifespan_max_fires: null, lifespan_expires_at: null, debounce_minutes: 0, tags: [],
+    blackout_windows: [], trade_mode: 'paper', kind: 'event', tier: 'medium', topic: 'general',
+    group: null, cli_source: null,
+  };
+
+  test('clicking the "render" action-TYPE label (no clickable params exist for this shape) shows its description', async ({ page }) => {
+    await page.route('**/api/agents/', async (route) => {
+      if (route.request().method() !== 'GET') { await route.continue(); return; }
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([RENDER_AGENT_ROW]) });
+    });
+    await page.goto('/automation', { waitUntil: 'domcontentloaded' });
+    await expect(agentKindTrigger(page)).toBeVisible({ timeout: TIMEOUT });
+    await pickAgentKind(page, 'alerts');
+    const row = page.locator('[role="listitem"]').filter({ hasText: 'Click Describe Render E2E' });
+    await expect(row).toBeVisible({ timeout: TIMEOUT });
+    await row.locator('[role="button"]').first().click();
+
+    // This action shape has no `params` object at all, so there is
+    // nothing under `[data-testid="agent-param-key"]` to click.
+    await expect(row.locator('[data-testid="agent-param-key"]')).toHaveCount(0);
+
+    const typeLabel = row.locator('[data-testid="agent-action-type"]', { hasText: 'render' });
+    await expect(typeLabel).toBeVisible({ timeout: TIMEOUT });
+    await typeLabel.click();
+
+    const descPanel = row.locator('[data-testid="agent-param-desc"]');
+    await expect(descPanel).toBeVisible({ timeout: TIMEOUT });
+    await expect(descPanel).toContainText('render');
+    // A real, non-empty description — not a silent miss.
+    const descText = await row.locator('.preview-action-desc-text').textContent();
+    expect(descText?.trim().length).toBeGreaterThan(0);
+  });
 });
