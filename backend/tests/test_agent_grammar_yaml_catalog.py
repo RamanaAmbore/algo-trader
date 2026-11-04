@@ -235,6 +235,31 @@ baseline change) gained a required `render` field alongside the existing
 compiler can validate both against one schema. See CLAUDE.md's "Unified
 agent DSL" entry and `docs/specs/AGENTS_GRAMMAR_EBNF.md`.
 
+Amendment (2026-11-04, resolver wiring for the 8 live-dispatched order
+actions) — `place_order`/`order`/`modify_order`/`cancel_order`/
+`cancel_all_orders`/`chase_close_positions`/`close_position`/
+`expiry_auto_close` all carried `resolver: null` in `agent_grammar.yaml`
+since the "7 dead grammar-resolver stub functions" cleanup (see
+CLAUDE.md's "Agent action-dispatch SSOT" note) — that cleanup deleted
+genuinely-dead stub functions these tokens used to point at, but never
+re-wired `resolver:` to the REAL functions that actually place/cancel/
+modify orders (`actions.py`'s `_LIVE_ACTION_HANDLERS` dispatch table,
+resolved independently of this YAML field). Confirmed via direct trace
+of `_dispatch_live_action()`: it reads `_LIVE_ACTION_HANDLERS` directly
+and NEVER consults `GrammarRegistry.action()`/this `resolver:` field —
+so `resolver: null` here was always inert with respect to real trading,
+only blanking out `help(<name>)`'s reflection and the admin stats count
+for these 8 tokens. Now wired to the SAME real functions
+`_LIVE_ACTION_HANDLERS` already dispatches to
+(`backend.api.algo.actions_live._action_place_order` /
+`_action_live_modify_order` / `_action_live_cancel_order` /
+`_action_live_cancel_all_orders` / `_action_live_chase_close_positions` /
+`_action_live_close_position` / `_action_live_expiry_auto_close`), so
+`help(order)` etc. now actually reflects something instead of the
+explicit "(signature unavailable)"/"(no docstring)" placeholders. Zero
+live-dispatch behavior change — operator: "why the exception for
+place_order, order, etc?" / "go ahead".
+
 Perf: no DB / network calls, pure in-memory comparison.
 Reuse: shares the same SYSTEM_TOKENS / LOG_TAG_TOKENS module attributes
 every other grammar test and `seed_grammar_tokens()` read.

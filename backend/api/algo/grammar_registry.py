@@ -121,6 +121,147 @@ class ActionDispatchDriftError(RuntimeError):
     """
 
 
+class GrammarDescriptionDriftError(RuntimeError):
+    """Raised when a `SYSTEM_TOKENS` entry (agent_grammar.yaml) or one of
+    its `params_schema` fields has no `description` — the enforcement
+    half of the 2026-11-04 "standard pattern for help info for new
+    tokens/functions and parameters while registering them" standing
+    rule (operator: "this should be enforced").
+
+    Same mechanism and rationale as `ActionDispatchDriftError` above —
+    raised at registry reload time (real app startup, or the admin
+    `/grammar/reload` endpoint), not only caught by a pytest gate a
+    force-push or `--no-verify` could skip. A missing description is a
+    genuine, permanent UX gap: the Console's click-to-describe panel and
+    the `help(<name>)` action both read this field directly, with no
+    fallback to Python reflection for per-parameter text (most action
+    resolvers take a generic `(ctx, params: dict)` signature, so
+    `inspect.signature()` can never recover an individual field's name —
+    confirmed by the audit that led to this rule).
+    """
+
+
+# Pre-existing gaps as of the 2026-11-04 audit — every token itself
+# already had a description; only these 42 individual params_schema
+# fields did not. Each tuple is (grammar_kind, token_kind, token, param).
+# This is the SINGLE canonical copy — `test_grammar_token_descriptions.py`
+# imports it rather than keeping its own, so the allowlist can never
+# silently drift between the test gate and the startup gate. May only
+# shrink: a param gaining a real description must also be removed here
+# (`validate_token_descriptions_present`'s own self-tightening check
+# raises if it isn't).
+KNOWN_MISSING_PARAM_DESCRIPTIONS: frozenset[tuple[str, str, str, str]] = frozenset({
+    ('condition', 'metric', 'mean_pnl', 'minutes'),
+    ('condition', 'metric', 'mean_day', 'minutes'),
+    ('condition', 'metric', 'max_drawdown_pnl', 'minutes'),
+    ('condition', 'metric', 'max_drawdown_day', 'minutes'),
+    ('condition', 'metric', 'max_drawdown_pnl_pct', 'minutes'),
+    ('condition', 'metric', 'stdev_pnl', 'minutes'),
+    ('condition', 'metric', 'range_pnl', 'minutes'),
+    ('condition', 'metric', 'sum', 'column'),
+    ('condition', 'metric', 'max', 'column'),
+    ('condition', 'metric', 'avg', 'column'),
+    ('notify', 'channel', 'ntfy', 'priority'),
+    ('action', 'action_type', 'place_order', 'exchange'),
+    ('action', 'action_type', 'place_order', 'order_type'),
+    ('action', 'action_type', 'place_order', 'product'),
+    ('action', 'action_type', 'place_order', 'variety'),
+    ('action', 'action_type', 'order', 'exchange'),
+    ('action', 'action_type', 'order', 'order_type'),
+    ('action', 'action_type', 'order', 'product'),
+    ('action', 'action_type', 'order', 'variety'),
+    ('action', 'action_type', 'modify_order', 'account'),
+    ('action', 'action_type', 'modify_order', 'broker_order_id'),
+    ('action', 'action_type', 'modify_order', 'new_price'),
+    ('action', 'action_type', 'modify_order', 'new_qty'),
+    ('action', 'action_type', 'modify_order', 'new_trigger'),
+    ('action', 'action_type', 'cancel_order', 'account'),
+    ('action', 'action_type', 'cancel_order', 'broker_order_id'),
+    ('action', 'action_type', 'cancel_order', 'variety'),
+    ('action', 'action_type', 'cancel_all_orders', 'scope'),
+    ('action', 'action_type', 'cancel_all_orders', 'side'),
+    ('action', 'action_type', 'chase_close_positions', 'scope'),
+    ('action', 'action_type', 'chase_close_positions', 'account'),
+    ('action', 'action_type', 'close_position', 'exchange'),
+    ('action', 'action_type', 'close_position', 'product'),
+    ('action', 'action_type', 'monitor_order', 'account'),
+    ('action', 'action_type', 'monitor_order', 'broker_order_id'),
+    ('action', 'action_type', 'monitor_order', 'timeout_minutes'),
+    ('action', 'action_type', 'set_flag', 'name'),
+    ('action', 'action_type', 'set_flag', 'value'),
+    ('action', 'action_type', 'help', 'name'),
+    ('action', 'action_type', 'log', 'level'),
+    ('action', 'action_type', 'log', 'message'),
+    ('action', 'action_type', 'send_summary', 'summary_type'),
+})
+
+
+def validate_token_descriptions_present(
+    tokens: Optional[list] = None,
+    allowlist: Optional[frozenset] = None,
+) -> None:
+    """Every `SYSTEM_TOKENS` entry must carry a top-level `description`
+    (no grandfathering — this has been true for all 135 tokens since
+    before this check existed), and every `params_schema` field must
+    carry one too, except the pre-2026-11-04 gaps in
+    `KNOWN_MISSING_PARAM_DESCRIPTIONS`. Raises `GrammarDescriptionDriftError`
+    — never just logs — on:
+
+      1. Any token with an empty/missing top-level `description`.
+      2. Any params_schema field with no `description` that is NOT
+         already in the allowlist — this is the real enforcement: a
+         newly-registered token/param with an undocumented field fails
+         registry reload immediately, not six months later when an
+         operator clicks it in the Console and gets nothing.
+      3. An allowlist entry that no longer describes a real gap (the
+         param in question has since gained a real description) — the
+         allowlist must shrink in lockstep with fixes, never rot stale.
+
+    All arguments default to the real, code-level sources, matching
+    `validate_action_dispatch_catalog()`'s own calling convention.
+    """
+    if tokens is None:
+        from backend.api.algo.grammar import SYSTEM_TOKENS
+        tokens = SYSTEM_TOKENS
+    if allowlist is None:
+        allowlist = KNOWN_MISSING_PARAM_DESCRIPTIONS
+
+    missing_tokens: list[tuple] = []
+    missing_params: list[tuple] = []
+    for t in tokens:
+        key = (t.get('grammar_kind'), t.get('token_kind'), t.get('token'))
+        if not t.get('description'):
+            missing_tokens.append(key)
+        schema = t.get('params_schema') or {}
+        for pname, pspec in schema.items():
+            if isinstance(pspec, dict) and not pspec.get('description'):
+                missing_params.append(key + (pname,))
+
+    if missing_tokens:
+        raise GrammarDescriptionDriftError(
+            f"agent_grammar.yaml token(s) with no top-level description: "
+            f"{missing_tokens} — every token must carry operator-facing "
+            f"help text."
+        )
+
+    new_gaps = sorted(p for p in missing_params if p not in allowlist)
+    if new_gaps:
+        raise GrammarDescriptionDriftError(
+            f"agent_grammar.yaml params_schema field(s) with no "
+            f"description: {new_gaps} — add a `description` for each "
+            f"(see this function's own docstring, and "
+            f"test_grammar_token_descriptions.py, for the standing rule)."
+        )
+
+    stale = sorted(allowlist - set(missing_params))
+    if stale:
+        raise GrammarDescriptionDriftError(
+            f"KNOWN_MISSING_PARAM_DESCRIPTIONS entr(y/ies) no longer "
+            f"describe a real gap: {stale} — remove the stale allowlist "
+            f"entry in grammar_registry.py."
+        )
+
+
 # Dispatch-table action tokens that are DELIBERATELY not declared as their
 # own catalog row in agent_grammar.yaml. Each entry must be a real,
 # intentional exception — never a silent skip. `validate_action_dispatch_
@@ -459,7 +600,8 @@ class GrammarRegistry:
         table. Idempotent; safe to call at startup, after admin edits, or on
         demand from an operator API endpoint.
 
-        Runs `validate_action_dispatch_catalog()` FIRST, before the DB read
+        Runs `validate_action_dispatch_catalog()` and (2026-11-04)
+        `validate_token_descriptions_present()` FIRST, before the DB read
         and before any table swap, so a real drift (or a newly-stale
         allowlist entry) raises before this reload can leave the registry
         half-rebuilt — and so the error surfaces at startup
@@ -467,6 +609,7 @@ class GrammarRegistry:
         endpoint, never silently.
         """
         validate_action_dispatch_catalog()
+        validate_token_descriptions_present()
 
         from sqlalchemy import select
         from backend.api.database import async_session

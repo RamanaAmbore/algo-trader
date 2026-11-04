@@ -452,3 +452,102 @@ class TestValidateActionDispatchCatalog:
         mock_validate.assert_called_once()
         # The DB was never touched — validation runs before the SELECT.
         mock_session.execute.assert_not_called()
+
+
+class TestValidateTokenDescriptionsPresent:
+    """2026-11-04 standing rule (operator: "we need to have a standard
+    pattern for help info for new tokens/functions and parameters while
+    registering them" / "this should be enforced"). Mirrors
+    TestValidateActionDispatchCatalog's own structure/coverage exactly —
+    same validator shape, same three failure modes, same
+    reload()-propagates-the-error guarantee."""
+
+    def test_real_catalog_passes_cleanly(self):
+        """Regression guard: today's real agent_grammar.yaml, with NO
+        arguments (every default is the real code-level source, plus the
+        real KNOWN_MISSING_PARAM_DESCRIPTIONS allowlist for the 42
+        pre-existing gaps), must validate clean. Any NEW token/param
+        registered without a description fails this before it ever
+        reaches runtime/prod."""
+        from backend.api.algo.grammar_registry import validate_token_descriptions_present
+        validate_token_descriptions_present()  # must not raise
+
+    def test_raises_on_token_with_no_description(self):
+        """A token with no top-level description at all — no
+        grandfathering for this one, unlike params."""
+        from backend.api.algo.grammar_registry import (
+            validate_token_descriptions_present, GrammarDescriptionDriftError,
+        )
+        import pytest
+        with pytest.raises(GrammarDescriptionDriftError, match="fake_undocumented_token"):
+            validate_token_descriptions_present(
+                tokens=[{"grammar_kind": "action", "token_kind": "action_type",
+                         "token": "fake_undocumented_token", "description": "",
+                         "params_schema": {}}],
+                allowlist=frozenset(),
+            )
+
+    def test_raises_on_new_param_with_no_description(self):
+        """A params_schema field with no description, and NOT already in
+        the allowlist — the real enforcement case: a newly-registered
+        param nobody documented."""
+        from backend.api.algo.grammar_registry import (
+            validate_token_descriptions_present, GrammarDescriptionDriftError,
+        )
+        import pytest
+        with pytest.raises(GrammarDescriptionDriftError, match="fake_param"):
+            validate_token_descriptions_present(
+                tokens=[{"grammar_kind": "action", "token_kind": "action_type",
+                         "token": "fake_action", "description": "A fake action.",
+                         "params_schema": {"fake_param": {"type": "string"}}}],
+                allowlist=frozenset(),
+            )
+
+    def test_allowlisted_param_does_not_raise(self):
+        """A params_schema field with no description IS allowed through
+        when its exact (grammar_kind, token_kind, token, param) tuple is
+        in the allowlist — the grandfathering mechanism itself."""
+        from backend.api.algo.grammar_registry import validate_token_descriptions_present
+        validate_token_descriptions_present(
+            tokens=[{"grammar_kind": "action", "token_kind": "action_type",
+                     "token": "fake_action", "description": "A fake action.",
+                     "params_schema": {"fake_param": {"type": "string"}}}],
+            allowlist=frozenset({("action", "action_type", "fake_action", "fake_param")}),
+        )  # must not raise
+
+    def test_raises_on_stale_allowlist_entry_now_documented(self):
+        """An allowlist entry whose param has since gained a real
+        description is stale and must raise — never left to silently
+        rot and mask a future regression on that same field."""
+        from backend.api.algo.grammar_registry import (
+            validate_token_descriptions_present, GrammarDescriptionDriftError,
+        )
+        import pytest
+        with pytest.raises(GrammarDescriptionDriftError, match="now_documented"):
+            validate_token_descriptions_present(
+                tokens=[{"grammar_kind": "action", "token_kind": "action_type",
+                         "token": "fake_action", "description": "A fake action.",
+                         "params_schema": {"now_documented": {"type": "string", "description": "Fixed."}}}],
+                allowlist=frozenset({("action", "action_type", "fake_action", "now_documented")}),
+            )
+
+    def test_reload_invokes_validator_and_propagates_its_error(self):
+        """`REGISTRY.reload()` must actually call this validator (not
+        just have it sit unused) and must let a raised
+        GrammarDescriptionDriftError propagate — never swallow it."""
+        import asyncio
+        import pytest
+        from backend.api.algo.grammar_registry import REGISTRY, GrammarDescriptionDriftError
+
+        mock_session = _make_grammar_db_session_mock([])
+        with patch(
+            "backend.api.algo.grammar_registry.validate_token_descriptions_present",
+            side_effect=GrammarDescriptionDriftError("boom"),
+        ) as mock_validate, patch(
+            "backend.api.database.async_session", return_value=mock_session,
+        ):
+            with pytest.raises(GrammarDescriptionDriftError, match="boom"):
+                asyncio.run(REGISTRY.reload())
+        mock_validate.assert_called_once()
+        # The DB was never touched — validation runs before the SELECT.
+        mock_session.execute.assert_not_called()

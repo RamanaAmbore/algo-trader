@@ -796,6 +796,9 @@ system_tokens:
       - ERROR
       - CRITICAL
       default: INFO
+      description: Minimum log level to match, inclusive — a record below
+        this level is not matched even if its tag matches. Severity order is
+        DEBUG < INFO < WARNING < ERROR < CRITICAL.
     where:
       type: object
       required: false
@@ -1008,7 +1011,7 @@ system_tokens:
   token: place_order
   value_type: void
   description: Place a new broker order with the supplied parameters.
-  resolver: null
+  resolver: backend.api.algo.actions_live._action_place_order
   params_schema:
     account:
       type: string
@@ -1147,7 +1150,7 @@ system_tokens:
   token: order
   value_type: void
   description: Place a new broker order with the supplied parameters.
-  resolver: null
+  resolver: backend.api.algo.actions_live._action_place_order
   params_schema:
     account:
       type: string
@@ -1238,7 +1241,7 @@ system_tokens:
   token: modify_order
   value_type: void
   description: Modify an existing open broker order by broker_order_id.
-  resolver: null
+  resolver: backend.api.algo.actions_live._action_live_modify_order
   params_schema:
     account:
       type: string
@@ -1263,7 +1266,7 @@ system_tokens:
   token: cancel_order
   value_type: void
   description: Cancel a specific open broker order by broker_order_id.
-  resolver: null
+  resolver: backend.api.algo.actions_live._action_live_cancel_order
   params_schema:
     account:
       type: string
@@ -1286,7 +1289,7 @@ system_tokens:
   token: cancel_all_orders
   value_type: void
   description: Cancel every pending/open order matching the scope filter.
-  resolver: null
+  resolver: backend.api.algo.actions_live._action_live_cancel_all_orders
   params_schema:
     scope:
       type: enum
@@ -1330,7 +1333,7 @@ system_tokens:
   token: chase_close_positions
   value_type: void
   description: Close every open position in scope using the adaptive limit-order chase engine.
-  resolver: null
+  resolver: backend.api.algo.actions_live._action_live_chase_close_positions
   params_schema:
     scope:
       type: enum
@@ -1376,7 +1379,7 @@ system_tokens:
     (CE/PE pairs that net to zero are skipped). 2026-10-29 - exchange is no longer required; omitting
     it (the built-in expiry-day-itm-auto-close agent's own params) processes both NFO and MCX from one
     scan. An explicit exchange still restricts the scan + close to just that one.
-  resolver: null
+  resolver: backend.api.algo.actions_live._action_live_expiry_auto_close
   params_schema:
     exchange:
       type: enum
@@ -1399,7 +1402,7 @@ system_tokens:
   value_type: void
   description: Close a single open position with a LIMIT order at current LTP. In sim mode, records a
     paper AlgoOrder with the sim's current LTP so the trade price is visible in order logs.
-  resolver: null
+  resolver: backend.api.algo.actions_live._action_live_close_position
   params_schema:
     account:
       type: string

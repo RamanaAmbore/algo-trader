@@ -72,7 +72,10 @@ const FIXTURE_ROWS = [
     description: 'Match log records by tag, minimum level, and exact extra-field values.',
     params_schema: {
       tag: { type: 'freetext', required: true, description: 'Log tag to match.' },
-      min_level: { type: 'enum', enum: ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], default: 'INFO' },
+      // 2026-11-04 — real schema (agent_grammar.yaml) now carries a
+      // description here too (operator: "why in agents I don't help
+      // info on min_level" — it genuinely had none before this fix).
+      min_level: { type: 'enum', enum: ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], default: 'INFO', description: 'Minimum log level to match, inclusive.' },
     },
   },
   {
@@ -130,10 +133,10 @@ describe('describeTokenAt() — 2026-11-03: condition log(...) vs the same-named
     expect(r).toEqual({ name: 'tag', description: 'Log tag to match.', token: 'log', kind: 'param' });
   });
 
-  it('the OTHER param key (min_level) inside the same call also resolves', () => {
+  it('the OTHER param key (min_level) inside the same call also resolves, with a real description', () => {
     const text = 'WHEN log(tag=error, min_level=ERROR)';
     const r = describeTokenAt(text, text.indexOf('min_level='), CATALOG);
-    expect(r).toEqual({ name: 'min_level', description: '', token: 'log', kind: 'param' });
+    expect(r).toEqual({ name: 'min_level', description: 'Minimum log level to match, inclusive.', token: 'log', kind: 'param' });
   });
 
   it('an ALERT-clause bare log is unaffected — still resolves the notify-channel bucket, not the condition', () => {
