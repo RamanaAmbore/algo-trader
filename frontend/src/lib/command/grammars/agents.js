@@ -8816,6 +8816,43 @@ function _syntheticEntryFor(name, catalog) {
 function _lookupAnyCatalogEntry(name, catalog, clauseKind, scopeHint) {
   if (!catalog) return null;
   const key = String(name).toLowerCase();
+  // 2026-11-03 (operator: "when I press log, it shows log text with info"
+  // — the WRONG text; "when I press on parameter no help text" — a real
+  // describe gap). `catalog.logConditions` (the condition-kind `log(tag=,
+  // min_level=, where=)` row — see `buildCatalog`'s own comment) is a
+  // SEPARATE bucket from `channels`/`actions`, both of which ALSO carry a
+  // same-named `log` row (the notify channel and the renamed `emit_log`
+  // action, respectively — see `agent_grammar.yaml`'s three `token: log`
+  // entries). `compileRef` already special-cases this exact collision by
+  // checking `catalog.logConditions` FIRST, unconditionally, since `log`
+  // is never a real metric row. This mirrors that — but ONLY when
+  // `clauseKind === 'when'` (a condition call can only ever appear inside
+  // WHEN), never for 'alert'/'do'/'preamble', where a bare `log` really
+  // does mean the channel or the action. Without this scoping, clicking
+  // the bare `log(` name inside `WHEN log(tag=..., min_level=...)`
+  // resolved against the unrelated notify-channel row (right name, wrong
+  // section — the 'when'/unknown order below checks `channels` before
+  // `actions` and never checks `logConditions` at all), so every param
+  // click inside that call (`tag=`/`min_level=`) found no matching key in
+  // the channel's own schema and silently described as nothing.
+  if (clauseKind === 'when' && catalog.logConditions && catalog.logConditions.has(key)) {
+    return catalog.logConditions.get(key);
+  }
+  // Same class of gap as `logConditions` above, for the OTHER
+  // single-entry catalog field: `catalog.renderAction` (Sprint 18's
+  // synthetic `token_kind: 'render_action'` row for `render(render=...)`)
+  // is a lone object, never a `Map` inside `actions` — see `buildCatalog`.
+  // Several other call sites already match it directly by name
+  // (`catalog.renderAction.token`), but this lookup never did, so
+  // clicking the bare `render(` action name — or its own `render=` kwarg,
+  // via `_describeClosedCallArg`'s call back into this function — found
+  // nothing in any of metrics/scopes/channels/actions and described as
+  // nothing. Scoped to 'do'/'preamble' (render_action is only ever a DO
+  // action), matching the order below for those clauses.
+  if ((clauseKind === 'do' || clauseKind === 'preamble')
+    && catalog.renderAction && String(catalog.renderAction.token).toLowerCase() === key) {
+    return catalog.renderAction;
+  }
   // `order`/`place_order`/`bracket`/`token` ALWAYS resolve to the
   // (possibly-augmented) synthetic shape FIRST — ahead of the plain
   // catalog loop below — so `place_order(` and `order(` suggest the
