@@ -215,7 +215,20 @@ async def _opo_postprocess(
             masked, static_symbol, static_exchange,
             extra={
                 "tags": ["orders", "alert"], "alert_event": "order_correction",
-                "action_required": True,
+                # 2026-11-04 channel-routing audit (operator: "Email
+                # market info and summary[,] telegram all the alerts")
+                # — `order-correction-alert`'s own static override
+                # (alert_routing.py) was deliberately trimmed to
+                # telegram-only on 2026-10-28 ("a routine, self-
+                # resolving reconciliation correction... not an action
+                # the operator needs to take right now"). `action_
+                # required: True` here disagreed with that and silently
+                # forced an email on every correction anyway via
+                # `_apply_action_required_email_gate`. Key removed
+                # (not set to False — see chase.py's identical fix for
+                # why "False" is the wrong value here) so both gates
+                # pass through unchanged, matching the override's own
+                # stated intent.
                 "algo_order_id": algo_order_id,
                 "prior_status": prior_status or "?",
                 "new_status": new_status, "source": source,

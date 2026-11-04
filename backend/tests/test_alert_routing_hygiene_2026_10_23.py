@@ -253,13 +253,15 @@ class TestErrorAgentSelfAlertedGate:
     async def test_normal_error_record_still_dispatches(self, error_senders):
         """The gate must be scoped to self_alerted records only — a
         genuine, not-already-alerted ERROR record keeps firing exactly
-        as before (both telegram + ntfy)."""
+        as before. 2026-11-04 channel-routing audit: error-alert is now
+        telegram-only (ntfy dropped — it's a blanket catch-all, not a
+        curated high-priority signal)."""
         from backend.api.algo import event_agents
         rec = _error_rec("genuine failure 2")
         sent = await event_agents.dispatch([rec], [_error_agent()])
-        assert sent == 2
+        assert sent == 1
         assert len(error_senders["tg"]) == 1
-        assert len(error_senders["ntfy"]) == 1
+        assert len(error_senders["ntfy"]) == 0
 
     async def test_self_alerted_flag_does_not_affect_other_agents(self, error_senders):
         """The gate is scoped to ERROR_AGENT's own slug — any other
@@ -284,7 +286,9 @@ class TestErrorAgentSelfAlertedGate:
         )
         rec = _error_rec("already-alerted failure 3", self_alerted=True)
         sent = await event_agents.dispatch([rec], [other])
-        assert sent == 2, "self_alerted must only suppress ERROR_AGENT itself, not other agents"
+        # 2026-11-04 — error_channels (resolved above) is now
+        # telegram-only, so this "other agent" double mirrors that.
+        assert sent == 1, "self_alerted must only suppress ERROR_AGENT itself, not other agents"
 
     def test_error_agent_self_alerted_helper_direct(self):
         from backend.api.algo.event_agents import _error_agent_self_alerted, ERROR_AGENT
@@ -345,9 +349,11 @@ class TestCriticalAlertReachesErrorAgent:
         rec = _critical_rec("ticker died hard", tags=["chase"])
         assert "error" in rec["tags"], "tags_for() must stamp a CRITICAL record with 'error'"
         sent = await event_agents.dispatch([rec], [_error_agent()])
-        assert sent == 2
+        # 2026-11-04 channel-routing audit: error-alert is now
+        # telegram-only (ntfy dropped).
+        assert sent == 1
         assert len(error_senders["tg"]) == 1
-        assert len(error_senders["ntfy"]) == 1
+        assert len(error_senders["ntfy"]) == 0
 
     async def test_critical_record_with_alert_event_does_not_double_fire_via_error_agent(
         self, error_senders,

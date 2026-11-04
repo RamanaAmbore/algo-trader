@@ -56,9 +56,15 @@ _PER_SLUG_OVERRIDES: dict[str, list[dict]] = {
     "fill-alert": [
         {"channel": "telegram", "enabled": True},
     ],
+    # 2026-11-04 channel-routing audit (operator: "ntfy for more high
+    # priority alerts... not overwhelmed") — this is the blanket catch-all
+    # for ANY uncaught ERROR+ log line anywhere in the backend, not a
+    # curated high-priority signal. Pushing every one of those to ntfy
+    # was the single most likely source of ntfy noise. Telegram-only now;
+    # a genuinely high/urgent condition already has its own dedicated
+    # agent with its own ntfy row in this table.
     "error-alert": [
         {"channel": "telegram", "enabled": True},
-        {"channel": "ntfy", "enabled": True},
     ],
     "chase-cancel-alert": [
         {"channel": "telegram", "enabled": True},

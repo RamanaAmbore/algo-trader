@@ -27,6 +27,15 @@ degraded-alert`, and `user-registered-alert` (see
 `test_user_registered_agent_resolves_to_telegram_and_ntfy_high` below)
 gained an `email` entry to sync with their existing, genuinely
 action-required ntfy entry.
+
+2026-11-04 channel-routing audit (operator: "ntfy for more high
+priority alerts... not overwhelmed... telegram all the alerts") —
+third amendment pass: `error-alert` lost its ntfy entry. It is the
+blanket catch-all for ANY uncaught ERROR+ log line anywhere in the
+backend, not a curated high-priority signal, and was the single most
+likely source of ntfy noise. Telegram-only now; a genuinely high/
+urgent condition already has its own dedicated agent with its own
+ntfy row in this table.
 """
 import pytest
 
@@ -41,7 +50,9 @@ from backend.api.algo import alert_routing, event_agents
 # marked at their own entry below.
 _FROZEN_ORACLE: dict[str, list[dict]] = {
     "fill-alert": [{"channel": "telegram", "enabled": True}],
-    "error-alert": [{"channel": "telegram", "enabled": True}, {"channel": "ntfy", "enabled": True}],
+    # 2026-11-04 — lost its ntfy entry (see module docstring, third
+    # amendment pass). Frozen pre-migration shape was telegram + ntfy.
+    "error-alert": [{"channel": "telegram", "enabled": True}],
     "chase-cancel-alert": [
         {"channel": "telegram", "enabled": True},
         {"channel": "ntfy", "enabled": True, "priority": "urgent"},

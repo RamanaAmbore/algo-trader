@@ -65,17 +65,18 @@ async def test_error_alert_golden_text(sent, error_agent):
     # ("Agent: manual" — a generic ERROR+ log line almost never carries
     # a real `agent_id`, see `_render_error`'s own docstring for why
     # that's an accepted, honest default rather than a claim of cause).
-    # 2026-10 plain-text reversal: no `<b>`/`<code>` tags — telegram and
-    # ntfy differ only in whether the "RamboQuant error" line repeats
-    # (ntfy already shows it as a separate Title header).
+    # 2026-10 plain-text reversal: no `<b>`/`<code>` tags.
     # 2026-10-31 — trailing action-agent/alert-agent tag appended by
     # `_send_channel` (see its own comment). No `agent_id`/`agent_name`
     # on this record's extra -> action agent "manual"; ERROR_AGENT's own
     # slug is "error-alert" (tag-token'd "error_alert") — no
     # `ALERT_EVENT_DISPATCH` entry for a bare error log line.
+    # 2026-11-04 channel-routing audit — error-alert no longer sends
+    # ntfy at all (alert_routing.py's own per-slug override), telegram
+    # only; `sent["ntfy"]` is correctly empty now.
     from backend.api.algo import event_agents
     await event_agents.dispatch([_error_rec("boom: bad value")], [error_agent])
-    assert sent["ntfy"] == [("RamboQuant error", f"Agent: manual\nbackend.x\nboom: bad value\n{_FIXED_TS}\n\n#manual #error_alert")]
+    assert sent["ntfy"] == []
     assert sent["tg"] == [f"Agent: manual\nRamboQuant error\nbackend.x\nboom: bad value\n{_FIXED_TS}\n\n#manual #error_alert"]
 
 
@@ -83,7 +84,8 @@ async def test_error_alert_golden_text(sent, error_agent):
 async def test_error_alert_strips_html_like_fragments_as_before(sent, error_agent):
     from backend.api.algo import event_agents
     await event_agents.dispatch([_error_rec("boom <bad>")], [error_agent])
-    assert sent["ntfy"] == [("RamboQuant error", f"Agent: manual\nbackend.x\nboom\n{_FIXED_TS}\n\n#manual #error_alert")]
+    # 2026-11-04 — error-alert is telegram-only (see test_error_alert_golden_text).
+    assert sent["tg"] == [f"Agent: manual\nRamboQuant error\nbackend.x\nboom\n{_FIXED_TS}\n\n#manual #error_alert"]
 
 
 @pytest.mark.asyncio
@@ -96,18 +98,19 @@ async def test_error_alert_repeat_suffix_after_cooldown(monkeypatch, sent, error
     await event_agents.dispatch([_error_rec("down", alert_now=True)], [error_agent])
     clock["t"] = error_alerts.COOLDOWN_S + 1
     await event_agents.dispatch([_error_rec("down", alert_now=True)], [error_agent])
-    assert [b for _, b in sent["ntfy"]] == [
-        f"Agent: manual\nbackend.x\ndown\n{_FIXED_TS}\n\n#manual #error_alert",
-        f"Agent: manual\nbackend.x\ndown (+1 repeats)\n{_FIXED_TS}\n\n#manual #error_alert",
+    # 2026-11-04 — error-alert is telegram-only (see test_error_alert_golden_text).
+    assert sent["tg"] == [
+        f"Agent: manual\nRamboQuant error\nbackend.x\ndown\n{_FIXED_TS}\n\n#manual #error_alert",
+        f"Agent: manual\nRamboQuant error\nbackend.x\ndown (+1 repeats)\n{_FIXED_TS}\n\n#manual #error_alert",
     ]
-    assert sent["tg"][1] == f"Agent: manual\nRamboQuant error\nbackend.x\ndown (+1 repeats)\n{_FIXED_TS}\n\n#manual #error_alert"
 
 
 @pytest.mark.asyncio
 async def test_error_alert_masks_account_numbers(sent, error_agent):
     from backend.api.algo import event_agents
     await event_agents.dispatch([_error_rec("order failed for ZG0790.orders")], [error_agent])
-    assert "ZG0790" not in sent["ntfy"][0][1]
+    # 2026-11-04 — error-alert is telegram-only (see test_error_alert_golden_text).
+    assert "ZG0790" not in sent["tg"][0]
 
 
 def test_fill_format_golden():

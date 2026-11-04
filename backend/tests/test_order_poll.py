@@ -212,7 +212,12 @@ class TestReconcileRowAndFollowup:
         # /admin/alerts/history alongside real AgentEvent rows.
         assert extra["tags"] == ["orders", "alert"]
         assert extra["alert_event"] == "order_correction"
-        assert extra["action_required"] is True
+        # 2026-11-04 channel-routing audit — `action_required` no longer
+        # set here (was True); the per-slug override for
+        # order-correction-alert is already telegram-only, and this flag
+        # disagreed with that by silently forcing email on every
+        # correction. See order_poll.py's own comment at this call site.
+        assert "action_required" not in extra
         assert extra["algo_order_id"] == r.id
         assert extra["prior_status"] == "OPEN"
         assert extra["new_status"] == "FILLED"

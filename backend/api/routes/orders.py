@@ -1086,7 +1086,17 @@ async def _opp_send_cancel_alert(
             extra={
                 "tags": ["orders", "alert"], "alert_event": "order_cancelled",
                 "title": f"Order cancelled: {symbol}", "body": message,
-                "channels": [{"channel": "ntfy", "enabled": True}],
+                # 2026-11-04 channel-routing audit (operator: "telegram
+                # all the alerts[,] no exceptions") — telegram was
+                # missing from this record's own channel list entirely;
+                # every other alert type in the codebase includes it.
+                # ntfy/email unchanged: `action_required=True` below
+                # still forces urgent ntfy and appends email, same as
+                # before this fix.
+                "channels": [
+                    {"channel": "telegram", "enabled": True},
+                    {"channel": "ntfy", "enabled": True},
+                ],
                 "action_required": True,
                 "agent_id": agent_id, "agent_name": agent_name,
             },

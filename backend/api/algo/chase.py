@@ -2790,12 +2790,25 @@ async def _ch_build_cancel_unconfirmed_abort(
         "Chase %s: %s", symbol, result.detail,
         extra={
             "tags": ["chase", "alert"], "alert_event": "cancel_unconfirmed",
-            # 2026-10-23 fix #4 — binary ntfy gate: this is an
-            # action-required outcome (operator must manually verify the
-            # broker's order book), so it forces urgent ntfy regardless
-            # of the dispatching agent's own stored channel config. See
-            # event_agents.py:_dispatch_agent.
-            "action_required": True,
+            # 2026-10-23 fix #4 originally set `action_required: True`
+            # here. `chase-cancel-alert`'s own static override
+            # (alert_routing.py) already carries urgent ntfy
+            # unconditionally, so that flag's only REAL effect at this
+            # call site was the forced-email append
+            # (event_agents.py:_apply_action_required_email_gate) — the
+            # ntfy gate had nothing left to do (priority was already
+            # "urgent" in the static config). 2026-11-04 channel-routing
+            # audit (operator: "Email market info and summary[,]
+            # telegram all the alerts") — email is reserved for
+            # market-info/summary alerts; this is neither. The key is
+            # omitted entirely (NOT set to `False`) — `False` would
+            # strip ntfy outright (see
+            # `_apply_action_required_ntfy_gate`'s own docstring: "False
+            # -> returns None for an ntfy channel"), which is the
+            # opposite of what's wanted here. Omitted/absent passes both
+            # gates through unchanged, so telegram and the already-static
+            # urgent ntfy are untouched; only the forced-email append no
+            # longer fires.
             "transaction_type": transaction_type, "symbol": symbol, "account": account,
             "order_id": current_order_id, "attempt": attempt,
             "quantity": quantity, "remaining_qty": remaining_qty,

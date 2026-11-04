@@ -161,7 +161,12 @@ class TestActionLiveSendMarketStatus:
     test_alert_header_identity_2026_11_03.py."""
 
     @pytest.mark.asyncio
-    async def test_open_day_channels_include_ntfy(self):
+    async def test_open_day_channels_are_telegram_and_email_no_ntfy(self):
+        """2026-11-04 channel-routing audit (operator: "Email market
+        info and summary[,] ntfy for more high priority alerts") — a
+        daily routine status report is market-info content, not
+        action-required, regardless of whether a segment is open today.
+        Telegram + email unconditionally; ntfy never."""
         from backend.api.algo.actions_live import _action_live_send_market_status
         now = datetime(2026, 10, 22, 5, 35, tzinfo=IST)
         with patch("backend.shared.helpers.date_time_utils.timestamp_indian", return_value=now), \
@@ -177,8 +182,8 @@ class TestActionLiveSendMarketStatus:
         assert "MCX/Commodity: OPEN" in extra["body"]
         channels = {c["channel"]: c for c in extra["channels"]}
         assert channels["telegram"]["enabled"] is True
-        assert channels["ntfy"]["enabled"] is True
-        assert channels["ntfy"]["priority"] == "low"
+        assert channels["email"]["enabled"] is True
+        assert "ntfy" not in channels
         assert extra["agent_id"] == 99
         assert extra["agent_name"] == "Market status"
 
@@ -198,12 +203,14 @@ class TestActionLiveSendMarketStatus:
         assert "MCX/Commodity: CLOSED" in extra["body"]
         channels = {c["channel"] for c in extra["channels"]}
         assert "telegram" in channels
+        assert "email" in channels
         assert "ntfy" not in channels
 
     @pytest.mark.asyncio
-    async def test_mixed_day_channels_include_ntfy_on_either_open(self):
-        """NSE holiday (closed), MCX genuinely open (no holiday) — ntfy
-        channel still present per the "either segment open" default."""
+    async def test_mixed_day_channels_are_telegram_and_email_no_ntfy(self):
+        """NSE holiday (closed), MCX genuinely open (no holiday) — still
+        telegram + email, never ntfy (2026-11-04 channel-routing audit:
+        ntfy is no longer conditioned on segment-open state at all)."""
         from backend.api.algo.actions_live import _action_live_send_market_status
         now = datetime(2026, 10, 22, 5, 35, tzinfo=IST)
         with patch("backend.shared.helpers.date_time_utils.timestamp_indian", return_value=now), \
@@ -219,7 +226,9 @@ class TestActionLiveSendMarketStatus:
         assert "NSE/Equity: CLOSED (Diwali)" in extra["body"]
         assert "MCX/Commodity: OPEN" in extra["body"]
         channels = {c["channel"] for c in extra["channels"]}
-        assert "ntfy" in channels
+        assert "telegram" in channels
+        assert "email" in channels
+        assert "ntfy" not in channels
 
     @pytest.mark.asyncio
     async def test_agent_id_lookup_failure_degrades_to_no_identity_never_blocks(self):
