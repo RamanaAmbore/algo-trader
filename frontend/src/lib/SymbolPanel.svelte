@@ -2710,7 +2710,21 @@
     // the hardcoded 'NFO' default. Re-resolve the FULL object directly
     // instead of re-deriving the same lookup a second, lossy way.
     const root = _parseRoot(_localSymbol) || _localSymbol;
-    const resolved = root ? resolveUnderlying(root, findNearestFuture) : null;
+    // 2026-11-04 live incident — a successful basket submit resets
+    // `basketLegs=[]` AND `_localSymbol=''` (see submitBasket()'s
+    // post-submit cleanup), so `root` is genuinely empty here, not just
+    // "unresolved". The old code fell through `resolveUnderlying(null,
+    // ...)` straight to the hardcoded 'NFO' default regardless — so
+    // EVERY basket submit (MCX included) immediately showed "Market
+    // closed" the instant NSE's own hours closed (15:30), even seconds
+    // after a genuinely successful MCX order placed while MCX itself
+    // was still open (MCX trades until 23:30). An empty root means
+    // nothing is picked at all, which is exactly the case `_modalNotice`
+    // already knows how to suppress correctly (`if (!exch || exch ===
+    // 'Market') return null`) — so return '' here instead of guessing,
+    // rather than inventing a false NFO/NSE answer.
+    if (!root) return '';
+    const resolved = resolveUnderlying(root, findNearestFuture);
     return String(resolved?.exchange || 'NFO').toUpperCase();
   });
   let _chainMktOpen = $state(false);
