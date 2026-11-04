@@ -196,7 +196,8 @@ def test_frozen_oracle_covers_every_migrated_agent_exactly():
     the same reason `USER_REGISTERED_AGENT` already was — net-new, no
     pre-migration oracle entry to pin. `MARKET_STATUS_ALERT_AGENT`
     (2026-11-03, alert-agent audit Wave 1), `ACTION_NOTIFY_AGENT`
-    (Wave 2) and `ORDER_CANCELLED_AGENT` (Wave 3) are excluded for the
+    (Wave 2), `ORDER_CANCELLED_AGENT` (Wave 3), and
+    `GTT_ORPHAN_CANCELLED_AGENT` (2026-11-04) are excluded for the
     identical reason — brand-new agents added long after this oracle
     was frozen, not a migration of any pre-existing one."""
     all_specs = event_agents.SEEDED_AGENTS + event_agents._COLLAPSED_DETECTOR_SPECS
@@ -210,6 +211,7 @@ def test_frozen_oracle_covers_every_migrated_agent_exactly():
             event_agents.MARKET_STATUS_ALERT_AGENT["slug"],
             event_agents.ACTION_NOTIFY_AGENT["slug"],
             event_agents.ORDER_CANCELLED_AGENT["slug"],
+            event_agents.GTT_ORPHAN_CANCELLED_AGENT["slug"],
         )
     }
     assert migrated_slugs == set(_FROZEN_ORACLE)

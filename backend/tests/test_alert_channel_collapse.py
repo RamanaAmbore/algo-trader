@@ -86,17 +86,19 @@ def _freeze_ts(monkeypatch):
 # 2026-11-03 alert-agent audit (`market-status-alert` Wave 1,
 # `action-notify-alert` Wave 2, `order-cancelled-alert` Wave 3 — all
 # unrelated to the collapse, brand-new agents, not replaced
-# detectors) = 13.
+# detectors) = 13, PLUS `gtt-orphan-cancelled-alert` (2026-11-04, SEED_
+# VERSION 6 -> 7 — see event_agents.py's own comment on that bump) = 14.
 # ─────────────────────────────────────────────────────────────────────────
 
 def test_seeded_agents_count_is_13_not_23():
-    assert len(ea.SEEDED_AGENTS) == 13
+    assert len(ea.SEEDED_AGENTS) == 14
     slugs = {s["slug"] for s in ea.SEEDED_AGENTS}
     assert slugs == {
         "error-alert", "deploy-sync-alert", "agent-alert-rich", "market-summary",
         "cycle-breach-alert", "visitor-report-alert", "unrouted-alert-catch-all",
         "alert-channel-telegram", "alert-channel-ntfy", "alert-channel-email",
         "market-status-alert", "action-notify-alert", "order-cancelled-alert",
+        "gtt-orphan-cancelled-alert",
     }
 
 

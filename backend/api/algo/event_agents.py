@@ -1971,8 +1971,39 @@ ORDER_CANCELLED_AGENT = {
     "actions": [{"type": "render", "render": "order_cancelled"}],
 }
 
+GTT_ORPHAN_CANCELLED_AGENT = {
+    "slug": "gtt-orphan-cancelled-alert",
+    "name": "GTT orphan cancelled",
+    "description": "Notifies that an outstanding TP/SL GTT was "
+                    "auto-cancelled because its position was already "
+                    "closed through another order.",
+    # 2026-11-04 fix (operator: "when a position is closed [by any
+    # means], the gtt order on that position [should be] closed
+    # automatically... also, this should generate an alert in telegram,
+    # as there is nothing to act on for ntfy") — `background.py`'s
+    # `_oco_cancel_closed_position_gtts()` is the producer. Standalone
+    # dedicated agent (same shape as VISITOR_REPORT_AGENT/MARKET_STATUS_
+    # ALERT_AGENT above), not folded into `_GENERIC_NOTICE_SPECS` /
+    # `_COLLAPSED_DETECTOR_SPECS` — that table's 16/18 counts are pinned
+    # byte-for-byte across several tests (test_alert_channel_collapse.py,
+    # test_event_agents.py); a 17th/19th entry there is a much larger,
+    # unrelated-to-this-fix ripple than one more standalone seeded row.
+    "conditions": {"log": {"tag": "alert", "min_level": "INFO",
+                           "where": {"alert_event": "gtt_orphan_cancelled"}}},
+    "priority": "info",
+    "actions": [{"type": "render", "render": "generic_notice"}],
+}
+_GENERIC_NOTICE_IDENTITY["gtt_orphan_cancelled"] = (
+    GTT_ORPHAN_CANCELLED_AGENT["slug"], GTT_ORPHAN_CANCELLED_AGENT["name"],
+)
 
-SEED_VERSION = 6
+
+SEED_VERSION = 7
+# 2026-11-04 (SEED_VERSION 6 -> 7) — inserts the new GTT_ORPHAN_CANCELLED_
+# AGENT row. Standalone dedicated agent (own per-slug channel override in
+# alert_routing.py, telegram-only — "nothing to act on"), not a collapsed-
+# table entry; see the agent dict's own comment for why.
+#
 # 2026-10-30 (SEED_VERSION 5 -> 6) — every live `SEEDED_AGENTS` entry gets
 # a `description` field (operator: "alert agents don't have description").
 # The Automation page's collapsed-row detail line (`automation/+page.
@@ -2241,7 +2272,7 @@ EMAIL_CHANNEL_AGENT = _channel_agent_spec("alert-channel-email", "Alert channel:
 SEEDED_AGENTS = (
     ERROR_AGENT, DEPLOY_SYNC_AGENT, RICH_ALERT_AGENT, SUMMARY_AGENT, BREACH_AGENT,
     VISITOR_REPORT_AGENT, UNROUTED_ALERT_AGENT, MARKET_STATUS_ALERT_AGENT,
-    ACTION_NOTIFY_AGENT, ORDER_CANCELLED_AGENT,
+    ACTION_NOTIFY_AGENT, ORDER_CANCELLED_AGENT, GTT_ORPHAN_CANCELLED_AGENT,
     TELEGRAM_CHANNEL_AGENT, NTFY_CHANNEL_AGENT, EMAIL_CHANNEL_AGENT,
 )
 

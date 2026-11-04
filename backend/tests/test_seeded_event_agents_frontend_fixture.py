@@ -67,10 +67,11 @@ def test_fixture_has_all_13_agents_and_covers_both_log_and_any_shapes():
     # event_agents.SEED_VERSION's own comment). 2026-11-03: 10 -> 11 ->
     # 12 -> 13 — Waves 1/2/3 each add one brand-new dedicated agent
     # (`market-status-alert`, `action-notify-alert`,
-    # `order-cancelled-alert`).
+    # `order-cancelled-alert`). 2026-11-04: 13 -> 14 —
+    # `gtt-orphan-cancelled-alert` (SEED_VERSION 6 -> 7).
     with open(_FIXTURE_PATH, "r", encoding="utf-8") as f:
         fixture = json.load(f)
-    assert len(fixture) == 13
+    assert len(fixture) == 14
     has_plain_log = any("log" in a["conditions"] for a in fixture)
     has_any_of_logs = any("any" in a["conditions"] for a in fixture)
     has_nonempty_events = any(a["events"] for a in fixture)

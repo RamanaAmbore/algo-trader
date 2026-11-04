@@ -204,6 +204,16 @@ _PER_SLUG_OVERRIDES: dict[str, list[dict]] = {
     "visitor-report-alert": [
         {"channel": "telegram_info", "enabled": True, "gate": False},
     ],
+    # 2026-11-04 fix (operator: "when a position is closed [by any
+    # means], the gtt order on that position [should be] closed
+    # automatically... also, this should generate an alert in telegram,
+    # as there is nothing to act on for ntfy") — the system already
+    # cancelled the orphaned GTT by the time this fires; telegram-only,
+    # same "good news, nothing to act on" shape as ticker-recovered-alert
+    # above.
+    "gtt-orphan-cancelled-alert": [
+        {"channel": "telegram", "enabled": True, "gate": False},
+    ],
     # 2026-10 operator-reported gap — new-user self-registration alerts
     # were never reaching Telegram/ntfy (see `event_agents.py:
     # USER_REGISTERED_AGENT`'s own comment for the root cause). High,

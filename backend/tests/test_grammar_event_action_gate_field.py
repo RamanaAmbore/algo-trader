@@ -288,6 +288,10 @@ class TestSeededAgentsGateKeysAreDeclared:
         deliberately carry no `gate` key at all — real dispatch for
         them never calls `resolve_channels()`, so there is no gate
         semantic to declare.
+
+        2026-11-04 — `gtt-orphan-cancelled-alert` joins the set: its
+        one channel (telegram) carries `gate: False`, same convention
+        as every other agent here.
         """
         slugs = {
             agent["slug"]
@@ -296,7 +300,7 @@ class TestSeededAgentsGateKeysAreDeclared:
         }
         assert slugs == {
             "unrouted-alert-catch-all", "agent-alert-rich", "market-summary",
-            "visitor-report-alert", "deploy-sync-alert",
+            "visitor-report-alert", "deploy-sync-alert", "gtt-orphan-cancelled-alert",
         }
 
     def test_inventory_action_level_gate_agent_count(self):

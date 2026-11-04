@@ -474,13 +474,23 @@ class TestOcoParseEntriesPicksUpGroupOnlyRows:
     def test_row_with_only_sibling_ids_is_included(self):
         """A row whose ONLY OCO pointer is the plural `sibling_ids`
         (no classic singular `sibling_id` anywhere) must still be
-        picked up for the watcher to process — `_bg_oco_first_sibling_
-        account` is the gate `_oco_parse_entries` relies on."""
+        picked up for the watcher to process — `_bg_oco_has_any_gtt_
+        entry` is the gate `_oco_parse_entries` relies on.
+
+        2026-11-04 amendment — `_oco_parse_entries` now derives the
+        account from the row's OWN `.account` column (a real, NOT NULL
+        AlgoOrder field), not by scanning entries for `parent_account`
+        — see `_bg_oco_has_any_gtt_entry`'s docstring for why (a bare
+        Kite GTT entry never carries `parent_account` at all). The
+        fixture `_Row` class gained `.account` to match; the entries'
+        own `parent_account` fields are left as-is (still read by the
+        sibling-aware dispatch's position-flat gate)."""
         import json as _json
         from backend.api.background import _oco_parse_entries
 
         class _Row:
             id = 99
+            account = "ZG0790"
             attached_gtts_json = _json.dumps([
                 {"kind": "gtt", "label": "SL", "id": "SL1",
                  "sibling_ids": ["TP1", "TP2"],

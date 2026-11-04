@@ -210,6 +210,26 @@
     ]
   },
   {
+    "slug": "gtt-orphan-cancelled-alert",
+    "name": "GTT orphan cancelled",
+    "conditions": {
+      "log": {
+        "tag": "alert",
+        "min_level": "INFO",
+        "where": {
+          "alert_event": "gtt_orphan_cancelled"
+        }
+      }
+    },
+    "events": [],
+    "actions": [
+      {
+        "type": "render",
+        "render": "generic_notice"
+      }
+    ]
+  },
+  {
     "slug": "alert-channel-telegram",
     "name": "Alert channel: Telegram",
     "conditions": {

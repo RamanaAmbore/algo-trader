@@ -6033,22 +6033,27 @@ async def _task_trail_stop() -> None:
             logger.debug(f"[TRAIL] poll iteration failed: {e}")
 
 
-def _bg_oco_first_sibling_account(attached: list) -> Optional[str]:
-    """Return the first parent_account from any sibling entry, or None.
+def _bg_oco_has_any_gtt_entry(attached: list) -> bool:
+    """True when *attached* carries at least one entry this watcher can
+    act on: a sibling-paired leg (`sibling_id`/`sibling_ids` — Groww's
+    emulated-OCO / scale-ladder-plus-SL shapes) OR a bare `kind=="gtt"`
+    entry with no sibling bookkeeping at all (Kite's native 2-leg OCO —
+    the broker links both legs server-side and `apply_plan_live` writes
+    no sibling pointer at all for that case, see
+    `orders_place.py:_opp_build_attach_entries`).
 
-    T14 fix — recognises `sibling_ids` (plural, the scale-ladder-plus-SL
-    group pointer written only on the SL leg — see
-    `orders_place.py:_opl_build_group_sibling_map`) alongside the
-    original pairwise `sibling_id`, so a row that is ONLY part of a
-    scale-ladder group (no classic 2-leg pair) is still picked up by
-    `_oco_parse_entries` below for the watcher to process.
+    2026-11-04 fix (operator: "when a position is closed [by any means],
+    the gtt order on that position [should be] closed automatically") —
+    broadened from a sibling-only check. The pre-fix version silently
+    excluded every bare Kite 2-leg GTT row from this ENTIRE watcher, so
+    `_oco_cancel_closed_position_gtts()` (the new generalized safety net
+    below) could never even see those rows to evaluate them.
     """
-    for e in attached:
-        if isinstance(e, dict) and (e.get("sibling_id") or e.get("sibling_ids")):
-            acct = e.get("parent_account")
-            if acct:
-                return acct
-    return None
+    return any(
+        isinstance(e, dict)
+        and (e.get("sibling_id") or e.get("sibling_ids") or e.get("kind") == "gtt")
+        for e in attached
+    )
 
 
 def _oco_parse_entries(
@@ -6056,6 +6061,12 @@ def _oco_parse_entries(
     json_loads: object,
 ) -> tuple[dict, dict]:
     """Group OCO rows by account and build the attached-entries map.
+
+    Account now comes from the row's own `.account` column (a real,
+    NOT NULL field on every AlgoOrder row) rather than scanning entries
+    for a `parent_account` field — simpler, and correct for a bare Kite
+    GTT entry, which never carries `parent_account` at all (2026-11-04
+    fix, see `_bg_oco_has_any_gtt_entry`'s docstring).
 
     Returns:
         rows_by_account: dict[account_str, list[row]]
@@ -6070,7 +6081,9 @@ def _oco_parse_entries(
             continue
         if not isinstance(attached, list):
             continue
-        acct = _bg_oco_first_sibling_account(attached)
+        if not _bg_oco_has_any_gtt_entry(attached):
+            continue
+        acct = getattr(row, "account", None)
         if not acct:
             continue
         rows_by_account.setdefault(acct, []).append(row)
@@ -6297,6 +6310,131 @@ async def _oco_group_position_is_flat(account: str, exchange: str, symbol: str) 
     return net_qty == 0
 
 
+async def _oco_cancel_closed_position_gtts(
+    row: object,
+    attached: list,
+    broker: object,
+    broker_gtts: dict,
+) -> bool:
+    """Generalized safety net, independent of the sibling-aware dispatch
+    above (`_oco_process_one_entry`/`_oco_process_group_entry`): cancels
+    ANY still-live `kind=="gtt"` entry attached to *row* once the row's
+    real broker position is confirmed flat — regardless of whether that
+    entry carries sibling bookkeeping at all.
+
+    2026-11-04 fix (live operator report: "when a position is closed [by
+    any means], the gtt order on that position [should be] closed
+    automatically") — the sibling-aware dispatch above only ever reacts
+    when ONE leg of a tracked pair/group itself looks gone (fired,
+    cancelled, rejected). It does nothing when a position closes through
+    a completely different path — a manual ticket close, the
+    `close_position`/`chase_close_positions` agent actions, or expiry
+    auto-close — while the attached GTT(s) are still resting untouched
+    at the broker. Confirmed via code read: neither action calls
+    `cancel_gtt` or touches `attached_gtts_json` at all. A bare Kite
+    native 2-leg OCO GTT (no `sibling_id`/`sibling_ids` — the broker
+    links both legs server-side) was ALSO never reachable by the
+    sibling-aware path, and was excluded from this whole watcher's row
+    selection before `_bg_oco_has_any_gtt_entry`'s 2026-11-04 broadening.
+
+    This function closes both gaps in one place: it scans every
+    `kind=="gtt"` entry on the row (sibling-paired or bare) independent
+    of pairing shape, and cancels whichever ones are still live once the
+    row's OWN real position (`row.account`/`row.exchange`/`row.symbol`)
+    is CONFIRMED flat — the same `_oco_group_position_is_flat()` gate
+    used above, never treating `None` (unknown) as flat.
+
+    Idempotent and safe to call every poll cycle: `_oco_gtt_is_live()`
+    reads the broker's own listed status, so an id this function
+    already cancelled in a prior cycle reads as not-live on the next
+    cycle's fresh `broker_gtts` snapshot and is simply skipped — no
+    repeat cancel attempt, no repeat alert. A same-tick race with the
+    sibling-aware dispatch (which may cancel a sibling moments before
+    this runs, against the SAME cycle's `broker_gtts` snapshot fetched
+    before either ran) can cause one harmless, logged-but-not-alerted
+    failed cancel attempt on an id already gone — never a duplicate
+    order, never incorrect state; it self-corrects next cycle.
+
+    Returns True when *attached* was mutated (stale `sibling_id`/
+    `sibling_ids` pointers stripped from a cancelled entry and from its
+    former partner) — caller must persist in that case.
+    """
+    live_entries = [
+        e for e in attached
+        if isinstance(e, dict) and e.get("kind") == "gtt" and e.get("id")
+        and _oco_gtt_is_live(str(e.get("id")), broker_gtts)
+    ]
+    if not live_entries:
+        return False
+    account = getattr(row, "account", None)
+    exchange = getattr(row, "exchange", None)
+    symbol = getattr(row, "symbol", None)
+    if not (account and exchange and symbol):
+        return False
+    is_flat = await _oco_group_position_is_flat(account, exchange, symbol)
+    if is_flat is not True:
+        return False
+    live_ids = [str(e.get("id")) for e in live_entries]
+    still_live = await _oco_cancel_group_members(
+        broker, getattr(row, "id", None), exchange, live_ids,
+        f"position already closed via another order — cancelling orphaned GTT on {symbol}",
+    )
+    cancelled_ids = set(live_ids) - set(still_live)
+    if not cancelled_ids:
+        return False
+    _oco_strip_stale_sibling_pointers(attached, cancelled_ids)
+    await _oco_orphan_cancel_alert(account, symbol, cancelled_ids)
+    return True
+
+
+def _oco_strip_stale_sibling_pointers(attached: list, cancelled_ids: set) -> None:
+    """Clear sibling bookkeeping made stale by an orphan-cancel: the
+    cancelled entry's own pointers, AND a surviving partner's pointer
+    TO a now-cancelled id (even though the partner itself stays live
+    and will be retried next cycle — see
+    `_oco_cancel_closed_position_gtts`'s own docstring)."""
+    for e in attached:
+        if not isinstance(e, dict):
+            continue
+        if str(e.get("id")) in cancelled_ids:
+            e.pop("sibling_id", None)
+            e.pop("sibling_ids", None)
+        elif str(e.get("sibling_id") or "") in cancelled_ids:
+            e.pop("sibling_id", None)
+        elif e.get("sibling_ids"):
+            remaining = [s for s in e["sibling_ids"] if str(s) not in cancelled_ids]
+            if remaining:
+                e["sibling_ids"] = remaining
+            else:
+                e.pop("sibling_ids", None)
+
+
+async def _oco_orphan_cancel_alert(account: str, symbol: str, cancelled_ids: set) -> None:
+    """Telegram-only informational notice (operator: "this should
+    generate an alert in telegram, as there is nothing to act on for
+    ntfy") — the system already cancelled the GTT by the time this
+    fires; see `alert_routing.py`'s `gtt-orphan-cancelled-alert`
+    per-slug override. Best-effort: a failure here never undoes the
+    real cancel that already happened."""
+    try:
+        from backend.shared.helpers.utils import mask_account
+        from backend.api.algo.event_agents import generic_notice_identity_extra
+        masked = mask_account(account)
+        msg = (
+            f"Orphaned GTT auto-cancelled on {symbol} ({masked}) — "
+            f"position was already closed via another order. "
+            f"Cancelled id(s): {', '.join(sorted(cancelled_ids))}."
+        )
+        logger.info(
+            "[OCO-WATCH][ORPHAN-CANCEL] %s", msg,
+            extra={"tags": ["gtt", "alert"], "alert_event": "gtt_orphan_cancelled",
+                   "title": "Orphaned GTT cancelled", "body": msg,
+                   **(await generic_notice_identity_extra("gtt_orphan_cancelled"))},
+        )
+    except Exception as e:
+        logger.debug(f"[OCO-WATCH] orphan-cancel alert failed: {e}")
+
+
 async def _oco_group_handle_sl_fired(
     entry: dict, broker: object, row_id: int, exchange: str,
     my_id: str, active_tps: list[str],
@@ -6484,13 +6622,21 @@ async def _oco_process_account_entries(
         for entry in attached:
             if await _oco_process_one_entry(entry, by_id, broker, row.id, broker_gtts):
                 changed = True
+        # 2026-11-04 fix — generalized safety net, independent of the
+        # sibling-aware dispatch above: runs on EVERY row regardless of
+        # pairing shape, covering a position closed via any other order
+        # (manual close, close_position/chase_close_positions, expiry
+        # auto-close) as well as a bare Kite native 2-leg GTT with no
+        # sibling bookkeeping at all. See its own docstring.
+        if await _oco_cancel_closed_position_gtts(row, attached, broker, broker_gtts):
+            changed = True
         if changed:
             pending.append((row.id, _json.dumps(attached)))
     return pending
 
 
 async def _task_oco_pair_watcher() -> None:
-    """OCO sibling-watcher for brokers without native OCO (Groww).
+    """OCO sibling-watcher, plus a general orphaned-GTT safety net.
 
     Sprint C — when `apply_plan_live` placed two single-trigger GTTs
     instead of a real OCO (because `broker.capabilities.gtt_oco` is
@@ -6498,6 +6644,18 @@ async def _task_oco_pair_watcher() -> None:
     pointer. When one leg fires (FILLED / TRIGGERED at the broker),
     this task cancels the surviving sibling so the operator doesn't
     end up with a naked stop or take-profit on the book.
+
+    2026-11-04 fix — broadened beyond the sibling-pair case. Every row
+    with ANY `kind=="gtt"` attached entry (`_bg_oco_has_any_gtt_entry`),
+    including a bare Kite native 2-leg OCO GTT with no sibling pointer
+    at all, is now also run through `_oco_cancel_closed_position_gtts()`
+    each cycle — a generalized check that cancels any still-live GTT
+    once the row's OWN real position is confirmed flat, covering a
+    position closed through ANY other path (manual close,
+    close_position/chase_close_positions action, expiry auto-close),
+    not only "the other leg of this same pair just fired". See that
+    function's own docstring for the full rationale and the one
+    benign same-tick race it can hit.
 
     Polling cadence: `templates.oco_pair_poll_seconds`, default 5s
     (faster than trail-stop's 30s because the OCO race window

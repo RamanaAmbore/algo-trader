@@ -1037,11 +1037,17 @@ def test_generic_notice_agents_are_every_spec_in_the_shared_table():
     # `USER_REGISTERED_AGENT` exclusion below is now a no-op (it too is
     # collapsed and no longer in SEEDED_AGENTS at all) — kept for
     # documentation continuity with the historical exclusion rule.
+    #
+    # 2026-11-04 fix — GTT_ORPHAN_CANCELLED_AGENT is a SECOND deliberate
+    # standalone `generic_notice` user, outside `_GENERIC_NOTICE_SPECS`
+    # entirely (see its own dict comment in event_agents.py for why it
+    # was kept standalone rather than folded into the heavily-pinned
+    # 16/18-entry collapsed table).
     standalone_generic_notice_slugs = {
         spec["slug"] for spec in ea.SEEDED_AGENTS
         if any(isinstance(a, dict) and a.get("render") == "generic_notice" for a in spec.get("actions") or [])
     } - {ea.UNROUTED_ALERT_AGENT["slug"], ea.USER_REGISTERED_AGENT["slug"]}
-    assert standalone_generic_notice_slugs == {"visitor-report-alert"}
+    assert standalone_generic_notice_slugs == {"visitor-report-alert", "gtt-orphan-cancelled-alert"}
     for alert_event, source_slug in [
         ("gtt_asymmetric", "gtt-asymmetric-alert"), ("oco_double_fire", "oco-double-fire-alert"),
         ("ticker_recovered", "ticker-recovered-alert"), ("ticker_degraded", "ticker-degraded-alert"),
