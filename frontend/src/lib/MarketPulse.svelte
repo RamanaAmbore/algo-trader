@@ -4271,14 +4271,15 @@
     });
   }
 
-  // "Promote a draft to a real order" (2026-10) — clicking a draft row
-  // (anywhere except the .draft-select-cb checkbox, intercepted earlier
-  // in _tryHandleRowButton) opens the SAME pre-filled ticket the
-  // derivatives page's own executeDraft() opens: qty defaults to ONE LOT
-  // regardless of the draft's recorded qty (operator steps it up in the
-  // ticket — matches executeDraft()'s own comment), side from the sign
-  // of the draft's qty, price from the draft's avg_cost, action:'open'
-  // (a draft is always a hypothetical NEW position, never a close).
+  // "Promote a draft to a real order" (2026-10; qty/account carried
+  // over 2026-11-04) — clicking a draft row (anywhere except the
+  // .draft-select-cb checkbox, intercepted earlier in
+  // _tryHandleRowButton) opens the SAME pre-filled ticket the
+  // derivatives page's own executeDraft() opens: qty from the draft's
+  // own recorded size (operator can still adjust it in the ticket),
+  // side from the sign of the draft's qty, price from the draft's
+  // avg_cost, action:'open' (a draft is always a hypothetical NEW
+  // position, never a close).
   // `_draftId` threads through so the SymbolPanel onSubmit handler below
   // can clean up the originating payoffDrafts entry on a real PAPER/LIVE
   // fill — nothing here auto-submits; the operator still reviews/edits
@@ -4308,7 +4309,15 @@
       exchange:  r.exchange || inst?.e || _draftRootFut?.e || 'NFO',
       side,
       action:    'open',
-      qty:       lot || 1,
+      // 2026-11-04 fix (operator: "basically the draft position
+      // details to be used to place the order in the same direction")
+      // — carries over the draft's own unsigned contract qty (same
+      // units OrderTicket's `qty` prop expects — raw contracts, not
+      // lots; `r.qty_pos` is payoffDrafts' signed contracts via
+      // draftEntryToPositionRow). Falls back to one lot only when the
+      // draft's own qty is missing/zero. Mirrors the equivalent fix in
+      // derivatives/+page.svelte's executeDraft().
+      qty:       Math.abs(Number(r.qty_pos) || 0) || lot || 1,
       lotSize:   lot,
       price:     Number.isFinite(avg) && avg > 0 ? avg : undefined,
       accounts:  realAccounts,

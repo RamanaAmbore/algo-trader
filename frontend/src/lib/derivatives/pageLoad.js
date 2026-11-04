@@ -536,6 +536,16 @@ export function buildCandidatePositions({
     real.push({
       symbol: sym, account: '', qty, avg_cost: cost, ltp,
       source: 'draft', kind: isFut ? 'fut' : 'opt', draftId: d.id,
+      // The draft's OWN real account (2026-11-04 fix, operator: "draft
+      // position details to be used to place the order"), separate from
+      // the `account: ''` above — that field stays '' on purpose (this
+      // loop deliberately runs with no account filter: a draft can be
+      // shown regardless of which account the page is scoped to, and
+      // several consumers read a draft's bare `account` as "unassigned").
+      // `draft_account` is additive — read only by the Promote-to-real
+      // flow (`executeDraft()`), so it carries the real value without
+      // touching the existing no-filter / display semantics above.
+      draft_account: String(d.account || ''),
       // Threaded through from the backend's AlgoOrderInfo schema for
       // forward use — undefined for a local text-input draft (never
       // persisted to the backend). Not currently read by any consumer.

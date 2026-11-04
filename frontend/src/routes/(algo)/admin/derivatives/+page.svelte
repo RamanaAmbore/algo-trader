@@ -216,6 +216,13 @@
         qty:      e.qty,
         avg_cost: e.avg_cost ?? '',
         ltp:      '',
+        // 2026-11-04 fix (operator: "draft position details to be used
+        // to place the order") — this mapping used to drop the draft's
+        // own account entirely, so `pageLoad.js`'s `buildCandidatePositions`
+        // could never see it, and `executeDraft()`'s Promote-to-real flow
+        // always fell back to the page's default account instead of the
+        // draft's real one.
+        account:  e.account ?? '',
         // Already returned by the backend's AlgoOrderInfo schema (GET/
         // POST/PATCH /drafts) — threaded through here for forward use by
         // any future draft-dating logic. Not currently read by any
@@ -1991,7 +1998,7 @@
   // drafts whose symbol matches the underlying prefix. Source is a
   // per-row property (badge in the panel), not a mode-level filter.
   // Three sources appear in order: real → provisional (~) → draft store (D).
-  /** @type {{symbol:string,account:string,qty:number,opening_qty?:number,avg_cost:number|null,ltp:number|null,prev_close?:number|null,pnl?:number,realised?:number,unrealised?:number,day_change_val?:number,underlying_ltp?:number,source:string,kind:string,exchange?:string,draftId?:number,_expiryStatus?:string,proxy_for?:string,proxy_kind?:string,_provisional?:boolean,_draft_store?:boolean,_expired?:boolean,_expiredFrozen?:boolean}[]} */
+  /** @type {{symbol:string,account:string,qty:number,opening_qty?:number,avg_cost:number|null,ltp:number|null,prev_close?:number|null,pnl?:number,realised?:number,unrealised?:number,day_change_val?:number,underlying_ltp?:number,source:string,kind:string,exchange?:string,draftId?:number,draft_account?:string,_expiryStatus?:string,proxy_for?:string,proxy_kind?:string,_provisional?:boolean,_draft_store?:boolean,_expired?:boolean,_expiredFrozen?:boolean}[]} */
   const candidatePositions = $derived.by(() => {
     if (!selectedUnderlying) return [];
     void instrumentsReady;  // re-derive when instruments cache warms (cold start drops MCX open positions)
@@ -4193,11 +4200,23 @@
     const sym  = String(c.symbol).toUpperCase();
     const inst = getInstrument(sym);
     const lot  = Number(inst?.ls || 1);
-    // Add path: default to 1 lot regardless of the draft's recorded qty.
-    // Operator can step it up in the ticket; close path keeps existing qty.
-    const qty  = lot;
+    // 2026-11-04 fix (operator: "basically the draft position details
+    // to be used to place the order in the same direction") — this used
+    // to always default to 1 lot regardless of the draft's recorded
+    // size. Now carries over the draft's own unsigned contract qty
+    // (same units `OrderTicket`'s `qty` prop expects — raw contracts,
+    // not lots; `payoffDrafts` entries store signed contracts, same
+    // convention as MarketPulse's mirror of this flow,
+    // `_openTicketFromDraftRow`). Falls back to one lot only when the
+    // draft's own qty is missing/zero.
+    const qty  = Math.abs(Number(c.qty) || 0) || lot;
     const side = Number(c.qty || 0) < 0 ? 'SELL' : 'BUY';
-    const acct = _ticketAccountDefault();
+    // 2026-11-04 fix — prefer the draft's OWN account (threaded through
+    // via `draft_account`, see `pageLoad.js`'s draft-candidate push)
+    // over the page's default. Falls back to the page default when the
+    // draft was never assigned a specific account.
+    const acct = (c.draft_account && String(c.draft_account).trim())
+                   || _ticketAccountDefault();
     // Exchange resolution (2026-10-23 fix, live incident: a hardcoded
     // 'NFO' default here reached OrderTicket as a misleading hint on an
     // instruments-cache miss — an MCX GOLD option showed the generic
