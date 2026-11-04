@@ -7220,6 +7220,22 @@
     grid-template-columns: repeat(5, max-content auto);
     column-gap: 0.45rem;
     row-gap: 0;
+    /* 2026-11-03, operator: "the data row text is not vertically
+       centered" — `.opt-block` is a column flex (header + this grid),
+       and the 3-card `.opt-side-row` stretches every card to the
+       tallest sibling's height, so Greeks/Risk's own single short row
+       left all its slack space below itself: the header-to-content
+       gap is deliberately zero (see the padding/header comments
+       above), so the row sat flush against the header with nothing
+       pushing it down. `flex: 1` lets this grid claim the column's
+       remaining height; `align-content: center` then centers its one
+       row within that taller box. The grid's own TOP edge is
+       unaffected (flex children stack with no gap — see `.opt-block`'s
+       `gap: 0` — so growth happens below, not above), so the existing
+       zero-gap header-to-content measurement
+       (derivatives_card_spacing_consistency.spec.js) stays correct. */
+    flex: 1;
+    align-content: center;
   }
   .opt-kv-greeks .kv-pair {
     /* Each pair contributes label + value into two adjacent grid
@@ -7232,6 +7248,21 @@
     margin-left: 0.15rem;
     margin-right: 0.5rem;
     text-align: left;
+    /* 2026-11-03, operator: "the data row text is not vertically
+       centered" — `.kv-v` is plain `display: block` (base rule
+       above), so when the grid row's cross-axis stretches this cell
+       taller than the value's own line-height (to match the Greek
+       SYMBOL's own larger font-size/line-height in `.kv-k-greek`,
+       e.g. 17.28px vs this cell's natural 15.6px), the text does not
+       re-center within that extra box height — confirmed visually,
+       the value sat visibly lower than its label. `.kv-k` already
+       solves the identical problem for itself via `inline-flex` +
+       `align-items: center` (see the base `.kv-k` rule); doing the
+       same here is the matching fix, scoped to Greeks only (the
+       shared base `.kv-v` rule is used elsewhere in this file and is
+       deliberately left untouched). */
+    display: inline-flex;
+    align-items: center;
   }
   /* Narrow viewports (<600px): `max-content` tracks can't shrink, and
      five Greek pairs with large portfolio Θ/Vega values can overflow
@@ -7256,6 +7287,28 @@
     .opt-kv-greeks .kv-pair {
       display: flex;
     }
+  }
+  /* 2026-11-03, operator: "the data row text is not vertically
+     centered" — same fix as `.opt-kv-greeks` above, same reason (this
+     card's own single short row otherwise sits flush against the
+     zero-gap header with all its slack collapsed below it). Applies
+     unconditionally (both the base `.opt-kv` 2-column layout below
+     1180px and the single-row 6-column layout at/above it, set in the
+     media query right below) — it governs only the GRID's own height
+     and how its one row centers within it, independent of column
+     shape. */
+  .opt-kv-risk {
+    flex: 1;
+    align-content: center;
+  }
+  /* Same per-cell fix as `.opt-kv-greeks .kv-v` above, same reason
+     (plain `display: block` text doesn't re-center when the grid row
+     stretches this cell taller than the value's own line-height to
+     match its label's). Unconditional — applies at every viewport,
+     not just the ≥1180px single-row layout below. */
+  .opt-kv-risk .kv-v {
+    display: inline-flex;
+    align-items: center;
   }
   /* Risk block: single row on desktop */
   @media (min-width: 1180px) {
