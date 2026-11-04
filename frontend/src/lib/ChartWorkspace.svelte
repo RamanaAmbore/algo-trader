@@ -2564,11 +2564,32 @@
     overflow: visible;
   }
 
-  /* ── Header wrapper: merges picker + controls into one row on desktop ── */
+  /* ── Header wrapper: merges picker + controls into one row on desktop ──
+     2026-11-03, operator: "the elements to configure the chart should be
+     in a header strip" + "some overlapping borders have round corners
+     and some don't which makes [it] clumsy" — before this, `.cw-header`
+     had no background/border of its own, so every individual control
+     (Select triggers, SymbolSearchInput, the Intraday/Signals chips, the
+     range-pill group) floated directly on the chart's own dark
+     background as a loose cluster of independently-bordered shapes, each
+     with its own resting border color (amber on Select/SymbolSearchInput,
+     cyan on Intraday/Signals, neutral white on the range group) and
+     radius (3px on Select/SymbolSearchInput/the range group, 4px on
+     Intraday/Signals). Gives the whole row the SAME strip treatment
+     CardHeader already uses app-wide (`--ch-bg`'s gradient + a single
+     `--card-divider` bottom line, see (algo)/+layout.svelte) — matching
+     "other header strips" per the operator's own reference — so the
+     controls read as one cohesive toolbar, not a pile of mismatched
+     pills. The individual controls' own resting borders are unchanged
+     here (Select/SymbolSearchInput are shared components used all over
+     the app — out of scope to retheme); the radius/color mismatch on the
+     two LOCAL-to-this-component buttons is fixed just below. */
   .cw-header {
     display: flex;
     flex-direction: column;
     flex-shrink: 0;
+    background: var(--ch-bg, linear-gradient(180deg, rgba(255,255,255,0.05) 0%, rgba(255,255,255,0) 100%));
+    border-bottom: 1px solid var(--card-divider, rgba(126,151,184,0.40));
   }
   @media (min-width: 640px) {
     .cw-header {
@@ -2663,10 +2684,17 @@
     font-weight: 800;
   }
   /* Standalone intraday chip — same shape as a range pill, but
-     rounded on both ends (not in the segmented .cw-range-group). */
+     rounded on both ends (not in the segmented .cw-range-group).
+     2026-11-03 — resting border normalized to the same neutral
+     rgba(255,255,255,0.08) + 3px radius every other toolbar control
+     uses (Select trigger, SymbolSearchInput, .cw-range-group); it used
+     to rest on a cyan border + 4px radius, the two concrete mismatches
+     behind "some overlapping borders have round corners and some
+     don't". Cyan is now reserved for the ACTIVE state only, same
+     convention `.cw-range-btn.active` already follows. */
   .cw-intraday-btn {
-    border: 1px solid var(--algo-cyan-border-soft);
-    border-radius: 4px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 3px;
     flex-shrink: 0;
   }
   .cw-intraday-btn.active {
@@ -2675,10 +2703,11 @@
     color: var(--algo-cyan);
   }
   /* Signals toggle — same chip shape as intraday button.
-     Active state surfaces buy/sell markers on the chart. */
+     Active state surfaces buy/sell markers on the chart. Same
+     2026-11-03 resting-border normalization as .cw-intraday-btn above. */
   .cw-signals-btn {
-    border: 1px solid var(--algo-cyan-border);
-    border-radius: 4px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 3px;
     flex-shrink: 0;
   }
   .cw-signals-btn.active {
