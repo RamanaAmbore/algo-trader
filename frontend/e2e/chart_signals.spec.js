@@ -49,6 +49,13 @@ test.describe('chart buy/sell signal markers', () => {
     const ctx = await browser.newContext();
     const pg  = await ctx.newPage();
     await loginAsAdmin(pg);
+    // loginAsAdmin's fast path (cached token) only queues an
+    // addInitScript for the NEXT navigation — it never navigates the
+    // page itself. Reading sessionStorage on the still-about:blank page
+    // throws "SecurityError: Access is denied" (opaque-origin storage
+    // access is blocked). A real navigation first gives the page an
+    // origin sessionStorage can actually be read from.
+    await pg.goto('/dashboard', { waitUntil: 'domcontentloaded' });
     _session = await pg.evaluate(() => {
       const out = {};
       for (const k of ['ramboq_token', 'ramboq_user']) {

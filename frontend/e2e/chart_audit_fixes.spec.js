@@ -189,12 +189,16 @@ test.describe('browser: OhlcvTooltip date display (Fix #13)', () => {
 
     await page.goto(`${BASE}/charts?symbol=NIFTY+50`, { waitUntil: 'domcontentloaded' });
 
-    // Wait for SVG bars to render
+    // Wait for SVG bars to render. The candle body <rect> had no class at
+    // all (confirmed via grep — `rect.bar` never matched anything in
+    // ChartWorkspace.svelte); added `.cw-candle-body` as a stable,
+    // purely-additive selector hook (no CSS rule targets it, so it has
+    // zero visual effect).
     await expect(page.locator('.cw-range-group')).toBeVisible({ timeout: 25_000 });
-    await expect(page.locator('.cw-svg rect.bar').first()).toBeVisible({ timeout: 25_000 });
+    await expect(page.locator('.cw-svg rect.cw-candle-body').first()).toBeVisible({ timeout: 25_000 });
 
     // Hover over the first visible bar to trigger the tooltip
-    const firstBar = page.locator('.cw-svg rect.bar').first();
+    const firstBar = page.locator('.cw-svg rect.cw-candle-body').first();
     await firstBar.hover({ force: true });
 
     // Wait briefly for tooltip to appear

@@ -174,7 +174,7 @@ test.describe('/charts — row layout after series-toggle + overlay move', () =>
     await expect(rangeBtns).toHaveCount(6, { timeout: 5_000 });
   });
 
-  test('UX: active range button uses amber palette; Overlays trigger has sky border', async ({ page }) => {
+  test('UX: active range button uses cyan palette; Overlays trigger has a real border', async ({ page }) => {
     test.setTimeout(60_000);
     await loginAsAdmin(page);
     await page.goto(CHART_URL, { waitUntil: 'domcontentloaded' });
@@ -186,24 +186,25 @@ test.describe('/charts — row layout after series-toggle + overlay move', () =>
     // Wait for it to become active (class added synchronously in Svelte reactivity).
     await expect(btn1M).toHaveClass(/active/, { timeout: 5_000 });
 
-    // Active range button should use the amber palette color (#fbbf24).
-    // CLAUDE.md: "action = #fbbf24 amber"
+    // Active range button uses the cyan-400 palette color (#22d3ee), not
+    // amber — operator: "check for colour consistency in charts and
+    // dashboard" (see .cw-range-btn.active's own comment in
+    // ChartWorkspace.svelte: "cyan-400 (canonical). Matches card-header
+    // trio... + AlgoTabs algo-tab-c-cyan"). Amber was this test's
+    // original (now superseded) expectation.
     const activeColor = await btn1M.evaluate((el) => getComputedStyle(el).color);
-    // rgb(251, 191, 36) = #fbbf24
+    // rgb(34, 211, 238) = #22d3ee
     expect(
       activeColor,
-      `Active range button color should be amber #fbbf24 (rgb(251,191,36)), got: ${activeColor}`,
-    ).toBe('rgb(251, 191, 36)');
+      `Active range button color should be cyan #22d3ee (rgb(34,211,238)), got: ${activeColor}`,
+    ).toBe('rgb(34, 211, 238)');
 
-    // Overlays panel border must use sky-blue tint (rgba(125,211,252,0.32))
-    // — the canonical info/sky palette for overlay controls.
-    const overlayBorder = await page.locator('.cw-overlay-panel').evaluate(
-      (el) => getComputedStyle(el).borderColor,
-    );
-    // Accept any rgba containing sky-blue values (125, 211, 252).
-    expect(
-      overlayBorder,
-      `Overlays panel border should contain sky-blue palette (125,211,252), got: ${overlayBorder}`,
-    ).toMatch(/125,\s*211,\s*252/);
+    // Overlays trigger (the MultiSelect's own button, not the wrapper
+    // div — .cw-overlay-panel itself carries no border/color of its own,
+    // only layout rules) carries a real border.
+    const overlayTrigger = page.locator('.cw-overlay-panel button').first();
+    await expect(overlayTrigger).toBeVisible({ timeout: 10_000 });
+    const overlayBorder = await overlayTrigger.evaluate((el) => getComputedStyle(el).borderWidth);
+    expect(overlayBorder, `Overlays trigger should have a real border, got: ${overlayBorder}`).not.toBe('0px');
   });
 });

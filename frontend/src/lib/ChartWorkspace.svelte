@@ -2136,7 +2136,7 @@
           {#each _candles as c}
             <line x1={c.x} x2={c.x} y1={c.wickTop} y2={c.wickBot}
                   stroke={c.up ? 'var(--c-long)' : 'var(--c-short)'} stroke-width="1"/>
-            <rect x={c.x - c.w / 2} y={c.bodyY} width={c.w} height={c.bodyH}
+            <rect class="cw-candle-body" x={c.x - c.w / 2} y={c.bodyY} width={c.w} height={c.bodyH}
                   fill={c.up ? 'var(--c-long)' : 'var(--c-short)'}/>
           {/each}
         {:else if _chartType === 'plot'}
