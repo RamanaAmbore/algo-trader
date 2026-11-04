@@ -4168,7 +4168,23 @@
        plus (2026-10, later pass) display/align-items/align-self for
        the full-header-height stretch, all moved to the shared
        `.algo-label-decor` class (app.css); this rule still owns
-       `color` and everything else above. */
+       `color` and everything else above.
+
+       2026-11-03, operator: "in orders modal, the left vertical bar
+       to order label should not be present" — overrides OUT just the
+       bar/inset half of `.algo-label-decor` (border-left, padding-
+       left, border-radius) right below, scoped to this one label.
+       The shared class is otherwise untouched (still used by
+       `.ch-title`/`.mp-bucket-label` elsewhere) and this rule keeps
+       its `display: inline-flex; align-items: center; align-self:
+       stretch` — the icon+text layout and the full-header-height
+       stretch still need those, only the visible bar is gone. */
+  }
+  .oes-modal-name.algo-label-decor {
+    border-left: none;
+    padding-left: 0;
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
   }
   .oes-modal-name-icon { color: currentColor; flex-shrink: 0; }
   /* Shared Symbol picker — replaces the static `.oes-title` placeholder
