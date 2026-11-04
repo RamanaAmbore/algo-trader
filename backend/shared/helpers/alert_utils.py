@@ -454,31 +454,34 @@ def _email_message(
     the alert has no single originating agent (summaries).
 
     2026-11-02 subject reshape (operator), SCOPED to the subject only.
-    The label-word relabel below additionally applies to the two HTML
-    BODY header paragraphs (see `_relabel_agent_label_to_alert()`'s own
-    docstring and the operator's follow-up ask) — only the SUBJECT's
-    overall *shape* (prefix/ordering) is what changes HERE, in this
-    `if agent_line:` branch. When a real agent/alert identity is known
-    (`agent_line` truthy — same signal `agent_line_html` already gates
-    on), the subject becomes `"Alert: {subject_detail}{branch_tag}
-    {mode_tag} | {ist_display}"`, dropping the "RamboQuant Agent: "
-    prefix entirely and adding the dual-tz timestamp the subject never
-    carried before. `branch_tag`/`mode_tag` are threaded through (same
-    ordering convention as the Telegram/ntfy merged line in
-    `dispatch_payload`) so a PAPER/SIM/REPLAY/non-main-branch alert's
-    email subject still carries that fact — dropping them here would
-    have been the only place in the whole email that lost the mode tag
-    entirely, since the body's bold paragraph never carried `mode_tag`
-    either (see CLAUDE.md's "Every alert must explicitly show paper/
-    sim/replay mode" invariant). This is deliberately NOT applied to
-    the agent-less (summary) branch below, which keeps its prior shape
-    unchanged: `send_summary()`'s own `subject_detail` already has
-    `ist_display` baked into it (`f"{label} — {ist_display}"` in
-    `send_summary`), so re-appending `ist_display` here would duplicate
-    the timestamp and misname a summary as an "Alert"."""
+    Only the SUBJECT's overall *shape* (prefix/ordering) changes HERE,
+    in this `if agent_line:` branch. When a real agent identity is
+    known (`agent_line` truthy — same signal `agent_line_html` already
+    gates on), the subject becomes `"Agent: {subject_detail}
+    {branch_tag}{mode_tag} | {ist_display}"`, dropping the old
+    "RamboQuant Agent: " prefix duplication and adding the dual-tz
+    timestamp the subject never carried before. `branch_tag`/
+    `mode_tag` are threaded through (same ordering convention as the
+    Telegram/ntfy merged line in `dispatch_payload`) so a PAPER/SIM/
+    REPLAY/non-main-branch alert's email subject still carries that
+    fact — dropping them here would have been the only place in the
+    whole email that lost the mode tag entirely, since the body's bold
+    paragraph never carried `mode_tag` either (see CLAUDE.md's "Every
+    alert must explicitly show paper/sim/replay mode" invariant). This
+    is deliberately NOT applied to the agent-less (summary) branch
+    below, which keeps its prior shape unchanged: `send_summary()`'s
+    own `subject_detail` already has `ist_display` baked into it
+    (`f"{label} — {ist_display}"` in `send_summary`), so re-appending
+    `ist_display` here would duplicate the timestamp.
+
+    2026-11-04 (operator alert-format audit) — the label word here was
+    briefly "Alert:" (2026-11-02); reverted to "Agent:" to match every
+    other renderer in the system. See `_relabel_agent_label_to_alert()`
+    for the matching reversion on the Telegram/ntfy merged line and
+    the HTML body header paragraphs."""
     if agent_line:
         _mode_sfx = f" {mode_tag}" if mode_tag else ""
-        subject = f"Alert: {subject_detail}{branch_tag}{_mode_sfx} | {ist_display}"
+        subject = f"Agent: {subject_detail}{branch_tag}{_mode_sfx} | {ist_display}"
     else:
         subj_pfx = f"{email_prefix_full}{branch_tag}{(' ' + mode_tag) if mode_tag else ''}"
         subject = (
@@ -641,38 +644,25 @@ def resolve_origin(agent_id: "int | None", agent_name: "str | None" = None) -> s
 
 
 def _relabel_agent_label_to_alert(text: str) -> str:
-    """Scoped word relabel "Agent" -> "Alert" (operator, 2026-11-02),
-    used ONLY by `dispatch_payload()`'s merged Telegram/ntfy header line
-    and by `_email_message()`'s two header paragraphs (the agent-
-    identity line and the bold prefix+timestamp line).
+    """No-op (2026-11-04, operator alert-format audit: "the alerts don't
+    have standard format. some have alert label. some agent label.
+    some no label") — the 2026-11-02 "Agent" -> "Alert" word relabel
+    this function used to perform, scoped to `dispatch_payload()`'s
+    merged Telegram/ntfy header line and `_email_message()`'s two
+    header paragraphs, is reverted. Every renderer now says "Agent:"
+    — the convention 16 of the 18 real alert renderers already used;
+    "Alert:" was a late, narrow addition for exactly two of them
+    (rich-alert, breach) plus a conditional third (summary), which is
+    exactly the inconsistency the operator flagged. This function is
+    kept (rather than deleted at its call sites) only so a future
+    operator decision to re-introduce a distinct label has one place
+    to change; it is never called with new relabeling logic without an
+    explicit instruction to do so.
 
-    `format_notification_header()` itself is NEVER changed by this —
-    its own output always still says "Agent: ..."/"Agent #{id}". Every
-    OTHER caller of it (order display's `agent_origin` chip, fill/
-    failure/chase-cancel/template-attach renderers, etc.) is a
-    deliberate, separate origin-tracking SSOT ("who placed this order:
-    manual, or which agent") and must keep saying "Agent:" — this
-    helper is applied only at the two call sites above, never plumbed
-    into `format_notification_header` or any of its other readers.
-
-    Handles every shape `text` can actually take at those two call
-    sites:
-      - `format_notification_header(...).splitlines()[0]`, i.e.
-        "Agent: {name} (#{id})" or the bare "Agent #{id}" fallback.
-      - `tg_prefix_full` / `title_base_full`-style generic prefixes:
-        the bare word "Agent", or "SIMULATOR Agent" / "REPLAY Agent"
-        (mode-word prefix prepended) — relabels the trailing "Agent"
-        word, leaving the mode word untouched.
-    Any other text (e.g. "Open Summary", "SIMULATOR Open Summary" —
-    the open/close summary prefixes, which never contain the word
-    "Agent") is returned unchanged.
+    `format_notification_header()` was never affected by the old
+    relabel and needs no change here — it already always says
+    "Agent: ..."/"Agent #{id}".
     """
-    if text.startswith("Agent: "):
-        return "Alert: " + text[len("Agent: "):]
-    if text.startswith("Agent #"):
-        return "Alert #" + text[len("Agent #"):]
-    if text == "Agent" or text.endswith(" Agent"):
-        return text[:-len("Agent")] + "Alert"
     return text
 
 

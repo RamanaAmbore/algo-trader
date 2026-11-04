@@ -449,16 +449,17 @@ def _render_action_notify(rec: dict) -> tuple:
     `actions.py:_al_maybe_notify_action`).
 
     Plain `(title, body, tg)` passthrough, no separate origin header —
-    `body` (`full_message`, built by `_al_notify_build_message`) already
-    leads with the firing agent's own identity
-    (`"Agent [{agent_key}] action: ..."`); adding
-    `format_notification_header()`'s "Agent: {name} (#{id})" line on
-    top would just be a second, redundant identity mention. Own `out[4]`
-    channels list — this action's per-channel selection (e.g. ntfy's
-    `priority`) is resolved entirely at the producer
-    (`_al_notify_channels_for_log`), never by `alert_routing.py`'s
-    static per-agent resolution, same reasoning as `_render_market_
-    status` above.
+    `body` (`full_message`, built by `_al_notify_build_message`)
+    already leads with the firing agent's own identity via
+    `format_notification_header()` (2026-11-04 alert-format audit fix
+    — was the bespoke `"Agent [{agent_key}] action: ..."` shape;
+    adding a second `format_notification_header()` call here on top
+    would just redundantly repeat the identity line this message's
+    first line already is). Own `out[4]` channels list — this action's
+    per-channel selection (e.g. ntfy's `priority`) is resolved entirely
+    at the producer (`_al_notify_channels_for_log`), never by
+    `alert_routing.py`'s static per-agent resolution, same reasoning as
+    `_render_market_status` above.
     """
     x = rec.get("extra") or {}
     title = x.get("title") or "Agent action"
@@ -1746,7 +1747,7 @@ async def generic_notice_identity_extra(alert_event: "str | None") -> dict:
     call sites (gtt_asymmetric/oco_double_fire/ticker_recovered/
     ticker_degraded/visitor_report/deploy_out_of_sync) right before each
     `logger.X(...)` call, so `_render_deploy_sync` below can show a real
-    "Alert: {name} (#{id})" header instead of none at all.
+    "Agent: {name} (#{id})" header instead of none at all.
 
     Resolves through the shared, cached `get_agent_id_by_slug()` — the
     same accessor `agent_engine.py`'s own manual-sentinel resolution
@@ -1760,6 +1761,16 @@ async def generic_notice_identity_extra(alert_event: "str | None") -> dict:
     Renderers only receive `rec`, never the live DB, which is why this
     resolution happens at the PRODUCER (an `async def` background task),
     not inside `_render_deploy_sync` itself.
+
+    2026-11-04 (operator alert-format audit: "some [alerts have] no
+    label") — a resolution failure for a KNOWN `alert_event` (one with
+    a real entry in `_GENERIC_NOTICE_IDENTITY`) now logs a WARNING.
+    Before this, a cold-cache or transient-DB miss silently dropped the
+    header forever on that call with no signal anywhere it happened —
+    this degrade path is a real, if rare, failure worth seeing in logs,
+    not a designed "sometimes blank" behaviour. An unknown `alert_event`
+    (no entry at all) is NOT logged — that is the designed, expected
+    no-op for a caller this function was never meant to cover.
     """
     entry = _GENERIC_NOTICE_IDENTITY.get(alert_event or "")
     if not entry:
@@ -1770,7 +1781,14 @@ async def generic_notice_identity_extra(alert_event: "str | None") -> dict:
         agent_id = await get_agent_id_by_slug(slug)
     except Exception:
         agent_id = None
-    return {"agent_id": agent_id, "agent_name": name} if agent_id is not None else {}
+    if agent_id is None:
+        _logger.warning(
+            f"generic_notice_identity_extra: known alert_event "
+            f"'{alert_event}' failed to resolve agent slug '{slug}' — "
+            f"this notification will render with no origin header"
+        )
+        return {}
+    return {"agent_id": agent_id, "agent_name": name}
 
 
 GTT_NOT_ACCEPTED_AGENT = {

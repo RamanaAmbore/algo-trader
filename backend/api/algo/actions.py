@@ -835,8 +835,19 @@ def _al_notify_build_message(agent, action: dict, action_type: str, agent_key: s
     accurately, not as a blanket "placed". Masking reuses the EXACT SAME
     chokepoint events.py's `_describe_actions()` already uses
     (`mask_account_in_text`) — no second/new masking mechanism.
+
+    2026-11-04 (operator alert-format audit: "some have alert label.
+    some agent label. some no label") — the origin line is now built
+    via `format_notification_header()`, the SAME SSOT every other
+    renderer's "Agent: {name} (#{id})" line uses, instead of the
+    bespoke `"Agent [{agent_key}] action: ..."` inline shape this used
+    to embed directly in the message body. `_render_action_notify()`
+    (event_agents.py) still passes this message through unchanged as
+    its body — only the label's SHAPE changes here, not which renderer
+    owns building it.
     """
     from backend.api.algo.events import _describe_action
+    from backend.shared.helpers.alert_utils import format_notification_header
     from backend.shared.helpers.utils import mask_account_in_text
 
     result_detail = context.pop("_action_result_detail", None)
@@ -847,7 +858,10 @@ def _al_notify_build_message(agent, action: dict, action_type: str, agent_key: s
         base_desc = f"{base_desc} — {status}{(': ' + detail) if detail else ''}"
 
     message = mask_account_in_text(base_desc) or base_desc
-    return f"Agent [{agent_key}] action: {message}"
+    origin_header = format_notification_header(
+        getattr(agent, "name", None), getattr(agent, "id", None),
+    ).splitlines()[0]
+    return f"{origin_header}\naction: {message}"
 
 
 def _al_notify_channels_for_log(notify_channels: list) -> list[dict]:

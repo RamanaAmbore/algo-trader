@@ -432,13 +432,15 @@ class TestSubjectDetailNoLongerDuplicatesAgentPrefix:
         email Subject header.
 
         2026-11-02: the subject for a known agent/alert identity was
-        reshaped (operator) to `"Alert: {subject_detail} |
+        reshaped (operator) to `"{label}: {subject_detail} |
         {ist_display}"` — no "RamboQuant Agent: " prefix, and the
-        dual-tz timestamp is now appended. `extra["ist_display"]` is
-        real-clock here (not frozen by this test module), so the
-        assertion checks shape rather than pinning an exact string —
-        confirmed against the real fixed code's actual output before
-        writing this, not hand-computed."""
+        dual-tz timestamp is now appended. 2026-11-04 (operator
+        alert-format audit): the label word reverted from the brief
+        "Alert:" back to "Agent:" everywhere, including here.
+        `extra["ist_display"]` is real-clock here (not frozen by this
+        test module), so the assertion checks shape rather than
+        pinning an exact string — confirmed against the real fixed
+        code's actual output before writing this, not hand-computed."""
         from backend.shared.helpers.alert_utils import dispatch_payload
 
         agent = _Agent(name="loss-margin-low", id=42,
@@ -453,5 +455,5 @@ class TestSubjectDetailNoLongerDuplicatesAgentPrefix:
         assert "Agent: Agent:" not in payload["email_subject"]
         assert "RamboQuant" not in payload["email_subject"]
         assert payload["email_subject"] == (
-            f"Alert: loss-margin-low (#42) | {extra['ist_display']}"
+            f"Agent: loss-margin-low (#42) | {extra['ist_display']}"
         )

@@ -92,7 +92,9 @@ def test_render_summary_shows_the_real_agent_header_when_identity_is_present():
         "agent_name": "Market summary", "agent_id": 42,
     }}
     title, telegram_msg, tg, (email_subject, email_html) = _render_summary(rec)
-    assert "Alert:" in telegram_msg
+    # 2026-11-04 (operator alert-format audit): label reverted from the
+    # brief "Alert:" back to "Agent:" everywhere.
+    assert "Agent:" in telegram_msg
     assert "Market summary" in telegram_msg
     assert "#42" in telegram_msg
 

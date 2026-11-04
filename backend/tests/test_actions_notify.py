@@ -420,7 +420,14 @@ async def test_notify_record_reaches_a_real_log_handler_and_renders():
     assert rec["extra"]["agent_name"] == agent.name
 
     title, body, tg, email_payload, channels = _render_action_notify(rec)
-    assert "place_order" in body or "Agent [" in body
+    # 2026-11-04 (operator alert-format audit): the bespoke
+    # "Agent [{agent_key}] action: ..." string is gone — the body now
+    # leads with the same `format_notification_header()` origin line
+    # every other renderer in the system uses ("Agent: {name} (#{id})"),
+    # followed by "action: {description}".
+    assert body.startswith(f"Agent: {agent.name} (#{agent.id})\n")
+    assert "action: " in body
+    assert "BUY 2 NIFTY25JULFUT" in body
     assert email_payload is None
     channel_names = {c["channel"] for c in channels}
     assert {"telegram", "ntfy"} <= channel_names

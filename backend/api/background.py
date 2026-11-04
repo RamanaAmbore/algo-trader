@@ -9764,6 +9764,19 @@ async def _run_close_once(state: dict) -> None:
                 # docstring and _render_summary's for the full chain).
                 from backend.api.algo.agent_engine import get_agent_id_by_slug
                 _summary_agent_id = await get_agent_id_by_slug("market-summary")
+                if _summary_agent_id is None:
+                    # 2026-11-04 (operator alert-format audit: "some
+                    # [alerts have] no label") — a resolve failure here
+                    # used to silently render the summary header-less
+                    # with no signal anywhere it happened. A scheduled
+                    # close summary always has a known firing agent
+                    # (the seeded `market-summary` row), so a miss is a
+                    # real, worth-seeing failure, not a designed gap.
+                    logger.warning(
+                        "[BROKER-DAILY] close-summary: 'market-summary' "
+                        "agent id failed to resolve — this summary will "
+                        "render with no origin header"
+                    )
                 await _run(lambda: send_summary(_sh, _sp, ist_display, "close",
                                                 label=_label,
                                                 df_margins=df_margins,

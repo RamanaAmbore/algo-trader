@@ -70,11 +70,13 @@ class TestAgentEngineSubjectNoLongerDuplicatesAgentPrefix:
         subject_detail — must not read 'Agent: Agent:'.
 
         2026-11-02: the email subject for a known agent/alert identity
-        was reshaped (operator) to `"Alert: {subject_detail} |
+        was reshaped (operator) to `"{label}: {subject_detail} |
         {ist_display}"`, dropping the "RamboQuant Agent: " prefix
-        entirely and adding the dual-tz timestamp. Re-derived by
-        actually running the real fixed dispatch_payload(), not
-        hand-computed."""
+        entirely and adding the dual-tz timestamp. 2026-11-04 (operator
+        alert-format audit): the label word itself reverted from the
+        brief "Alert:" back to "Agent:" everywhere, including here.
+        Re-derived by actually running the real fixed
+        dispatch_payload(), not hand-computed."""
         from backend.shared.helpers.alert_utils import format_notification_header
 
         header_line = format_notification_header("loss-margin-low", 42).splitlines()[0]
@@ -86,4 +88,4 @@ class TestAgentEngineSubjectNoLongerDuplicatesAgentPrefix:
                 agent_name='loss-margin-low', agent_id=42,
             )
         assert "Agent: Agent:" not in payload["email_subject"]
-        assert payload["email_subject"] == "Alert: loss-margin-low (#42) | 09:14:22 IST"
+        assert payload["email_subject"] == "Agent: loss-margin-low (#42) | 09:14:22 IST"
