@@ -591,3 +591,130 @@ async def test_fetch_net_position_qty_no_matching_symbol_returns_none():
         result = await _fetch_net_position_qty("NIFTY25OCTFUT", "NFO", "ZG0790")
 
     assert result is None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 5. _fetch_net_position_row — 2026-11-04 orphan-GTT audit fix
+#    (defects 1 & 2: exchange/product disambiguation, staleness, force_refresh)
+# ═══════════════════════════════════════════════════════════════════════════
+
+@pytest.mark.asyncio
+async def test_fetch_net_position_row_exchange_disambiguates_cross_listed_rows():
+    """Defect 1: the same symbol+account carries two rows on DIFFERENT
+    exchanges — without the exchange filter, `rows.iloc[0]` could
+    silently return the wrong one. Confirmed to fail against the
+    pre-fix code (which accepted `exchange` and never used it)."""
+    from backend.api.routes.orders_place import _fetch_net_position_row
+
+    df = pd.DataFrame([
+        {"tradingsymbol": "SBIN", "quantity": -10,
+         "exchange": "BSE", "account": "ZG0790", "product": "MIS"},
+        {"tradingsymbol": "SBIN", "quantity": 25,
+         "exchange": "NSE", "account": "ZG0790", "product": "MIS"},
+    ])
+
+    with patch("backend.brokers.broker_apis.fetch_positions", return_value=[df]):
+        row = await _fetch_net_position_row("SBIN", "NSE", "ZG0790")
+
+    assert row["quantity"] == 25
+    assert row["exchange"] == "NSE"
+
+
+@pytest.mark.asyncio
+async def test_fetch_net_position_row_product_disambiguates_mis_vs_nrml():
+    """Defect 1 (the MIS-vs-NRML round-trip scenario the audit flagged):
+    an account holds an open NRML position AND a same-day flat MIS
+    round-trip on the identical symbol+exchange. Passing `product`
+    must select the caller's own row, not whichever sorts first."""
+    from backend.api.routes.orders_place import _fetch_net_position_row
+
+    df = pd.DataFrame([
+        {"tradingsymbol": "CRUDEOIL26NOVFUT", "quantity": 0,
+         "exchange": "MCX", "account": "ZG0790", "product": "MIS"},
+        {"tradingsymbol": "CRUDEOIL26NOVFUT", "quantity": 5,
+         "exchange": "MCX", "account": "ZG0790", "product": "NRML"},
+    ])
+
+    with patch("backend.brokers.broker_apis.fetch_positions", return_value=[df]):
+        row = await _fetch_net_position_row(
+            "CRUDEOIL26NOVFUT", "MCX", "ZG0790", product="NRML",
+        )
+
+    assert row["quantity"] == 5
+    assert row["product"] == "NRML"
+
+
+@pytest.mark.asyncio
+async def test_fetch_net_position_row_no_product_filter_keeps_old_behaviour():
+    """Omitting `product` (the 2 pre-existing callers' default) keeps
+    the original bare symbol+account(+exchange) match — no new failure
+    mode introduced for callers that don't know the product ahead of
+    time."""
+    from backend.api.routes.orders_place import _fetch_net_position_row
+
+    df = pd.DataFrame([
+        {"tradingsymbol": "CRUDEOIL26NOVFUT", "quantity": 0,
+         "exchange": "MCX", "account": "ZG0790", "product": "MIS"},
+    ])
+
+    with patch("backend.brokers.broker_apis.fetch_positions", return_value=[df]):
+        row = await _fetch_net_position_row("CRUDEOIL26NOVFUT", "MCX", "ZG0790")
+
+    assert row is not None
+    assert row["quantity"] == 0
+
+
+@pytest.mark.asyncio
+async def test_fetch_net_position_row_skips_stale_substitute_frame():
+    """Defect 2: a frame marked `attrs['stale']=True` (circuit-open or
+    DB-fallback substitute, see `_stale_substitute_frame`) must never be
+    matched — every existing caller treats this function's `None` as
+    'unknown, fail safe', so returning a possibly-wrong stale row would
+    be strictly worse than returning nothing."""
+    from backend.api.routes.orders_place import _fetch_net_position_row
+
+    df = pd.DataFrame([
+        {"tradingsymbol": "NIFTY25OCTFUT", "quantity": 999,
+         "exchange": "NFO", "account": "ZG0790"},
+    ])
+    df.attrs["stale"] = True
+
+    with patch("backend.brokers.broker_apis.fetch_positions", return_value=[df]):
+        row = await _fetch_net_position_row("NIFTY25OCTFUT", "NFO", "ZG0790")
+
+    assert row is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_net_position_row_threads_force_refresh_to_fetch_positions():
+    """Defect 2: `force_refresh=True` must reach `fetch_positions()`
+    itself — closing the conn-service-level cache gap that invalidating
+    only the local raw-cache (`_raw_cache_invalidate`) never covered."""
+    from backend.api.routes.orders_place import _fetch_net_position_row
+
+    df = pd.DataFrame([
+        {"tradingsymbol": "NIFTY25OCTFUT", "quantity": 10,
+         "exchange": "NFO", "account": "ZG0790"},
+    ])
+
+    with patch("backend.brokers.broker_apis.fetch_positions", return_value=[df]) as m:
+        await _fetch_net_position_row("NIFTY25OCTFUT", "NFO", "ZG0790", force_refresh=True)
+
+    assert m.call_args.kwargs.get("force_refresh") is True
+
+
+@pytest.mark.asyncio
+async def test_fetch_net_position_row_force_refresh_defaults_false():
+    """Baseline — omitting `force_refresh` keeps the original cached-read
+    behaviour for the 2 pre-existing callers."""
+    from backend.api.routes.orders_place import _fetch_net_position_row
+
+    df = pd.DataFrame([
+        {"tradingsymbol": "NIFTY25OCTFUT", "quantity": 10,
+         "exchange": "NFO", "account": "ZG0790"},
+    ])
+
+    with patch("backend.brokers.broker_apis.fetch_positions", return_value=[df]) as m:
+        await _fetch_net_position_row("NIFTY25OCTFUT", "NFO", "ZG0790")
+
+    assert m.call_args.kwargs.get("force_refresh") is False

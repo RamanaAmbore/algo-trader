@@ -389,10 +389,14 @@ def _opl_reconcile_attach_eligible(row) -> bool:
     return bool(row.fill_price)
 
 
-async def _fetch_net_position_row(sym: str, exchange: str, account: str) -> dict | None:
+async def _fetch_net_position_row(
+    sym: str, exchange: str, account: str, *,
+    product: str | None = None, force_refresh: bool = False,
+) -> dict | None:
     """Return the matched position row (as a dict) for (account, sym), or
     None when no matching row exists / the account column can't be
-    identified / the broker fetch fails.
+    identified / the broker fetch fails / the only matching frame is a
+    stale substitute.
 
     Shared single-row lookup behind `_fetch_net_position_qty` (qty only)
     and the close-path product resolver (`_fetch_net_position_product`,
@@ -405,12 +409,48 @@ async def _fetch_net_position_row(sym: str, exchange: str, account: str) -> dict
     cached broker DataFrame fetch (`broker_apis.fetch_positions`'s own
     30s TTL), so calling this more than once per close costs no extra
     broker round-trip in the common case.
+
+    Exchange-matched (2026-11-04 orphan-GTT audit fix, defect 1): `exchange`
+    used to be accepted and never used, so a symbol carrying more than one
+    open row for the same account (e.g. an MIS and an NRML position on the
+    same exchange, or the rarer cross-exchange listing) could silently
+    match the wrong row via a bare `rows.iloc[0]` with no tie-breaker.
+    Applied only when the frame actually carries an `exchange` column
+    (every real broker frame does) — a frame missing it is matched as
+    before rather than failing closed, since the pre-existing account-col
+    guard already protects against the one failure mode (wrong account)
+    that genuinely matters.
+
+    `product`, when given, is an ADDITIONAL filter on top of exchange —
+    optional because `_fetch_net_position_qty`/`_is_offsetting_position`
+    don't know the product ahead of time (they ARE the product-agnostic
+    "does ANY row net offset" check); only a caller that already knows
+    which specific product row it means should pass it — e.g. the
+    orphan-GTT safety net (`background.py:_oco_cancel_closed_position_gtts`),
+    which reads the row's own `AlgoOrder.product`.
+
+    `force_refresh` (defect 2): threads straight to `fetch_positions()`'s
+    own TTL-bypass. Without it, a caller can be served a cached frame up
+    to 30s stale (API-layer cache) or, in conn-service mode, up to a
+    further ~30s stale (conn_service's own cache) — long enough for a
+    same-day close-then-re-enter on the identical symbol to still read
+    "flat" from the pre-re-entry snapshot.
+
+    A frame that is itself a stale substitute (`df.attrs['stale']` —
+    circuit-open or DB-fallback, see `broker_apis._stale_substitute_frame`)
+    is never matched: every existing caller already treats this
+    function's `None` as "unknown, fail safe" (template-detach stays
+    conservative; the orphan-GTT check never treats unknown as flat), so
+    skipping a stale frame outright is strictly safer than returning a
+    row that might already be wrong.
     """
     try:
         from backend.brokers.broker_apis import fetch_positions as _fp
-        dfs = await asyncio.to_thread(_fp)
+        dfs = await asyncio.to_thread(_fp, force_refresh=force_refresh)
         for df in dfs:
             if df is None or df.empty:
+                continue
+            if bool(df.attrs.get("stale")):
                 continue
             acct_col = next(
                 (c for c in df.columns if "account" in c.lower() or "user" in c.lower()),
@@ -425,6 +465,10 @@ async def _fetch_net_position_row(sym: str, exchange: str, account: str) -> dict
                 return None
             mask = df["tradingsymbol"].str.upper() == sym.upper()
             mask &= df[acct_col].astype(str).str.upper() == account.upper()
+            if exchange and "exchange" in df.columns:
+                mask &= df["exchange"].astype(str).str.upper() == exchange.upper()
+            if product and "product" in df.columns:
+                mask &= df["product"].astype(str).str.upper() == product.upper()
             rows = df[mask]
             if rows.empty:
                 continue
@@ -434,7 +478,10 @@ async def _fetch_net_position_row(sym: str, exchange: str, account: str) -> dict
     return None
 
 
-async def _fetch_net_position_qty(sym: str, exchange: str, account: str) -> float | None:
+async def _fetch_net_position_qty(
+    sym: str, exchange: str, account: str, *,
+    product: str | None = None, force_refresh: bool = False,
+) -> float | None:
     """Return the signed net held quantity for (account, sym), or None when
     no matching position row exists or the broker fetch fails.
 
@@ -442,8 +489,12 @@ async def _fetch_net_position_qty(sym: str, exchange: str, account: str) -> floa
     call typically. Shared by `_is_offsetting_position` (sign-only check)
     and `_verify_close_intent` (sign + magnitude check) so both read the
     same position snapshot rather than each doing their own broker call.
+    Both existing callers omit `product`/`force_refresh` (default
+    behaviour unchanged); see `_fetch_net_position_row` for why.
     """
-    row = await _fetch_net_position_row(sym, exchange, account)
+    row = await _fetch_net_position_row(
+        sym, exchange, account, product=product, force_refresh=force_refresh,
+    )
     if row is None:
         return None
     try:

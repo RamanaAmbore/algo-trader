@@ -28,12 +28,31 @@ Covers:
   4. `_oco_process_account_entries` — wiring: the new check runs for
      every row and its `changed` flag feeds the same persist path as
      the pre-existing sibling-aware dispatch.
+
+2026-11-04 audit follow-up (defects 1-3, operator: "fix defects 1-3
+now") — `_oco_group_position_is_flat`'s aggregate net-flat check had
+three gaps, all fixed here and covered below:
+  5. `_fetch_net_position_row`/`_fetch_net_position_qty` (defect 1/2,
+     backend/tests/test_order_lifecycle_sprint1a.py) — exchange/product
+     disambiguation, stale-frame skip, force_refresh threading.
+  6. `_oco_row_superseded_by_newer_fill` (defect 3, new) — a newer FILLED
+     row on the exact same (account, exchange, symbol, product) makes
+     *row*'s own GTT unconditionally stale, independent of what the
+     CURRENT aggregate net happens to read (which could be non-zero
+     purely because of the newer row's own open position — the case
+     the aggregate check alone can never catch).
+  7. Wiring in `_oco_cancel_closed_position_gtts` — the superseded check
+     runs first and, when true, bypasses `_oco_group_position_is_flat`
+     entirely; `product` is threaded from the row's own column into the
+     flat check otherwise.
 """
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import pytest_asyncio
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -130,12 +149,24 @@ class TestOcoParseEntriesIncludesBareGttRows:
 # 3. _oco_cancel_closed_position_gtts
 # ─────────────────────────────────────────────────────────────────────────
 
-def _row(id_=1, account="ZG0790", exchange="NFO", symbol="NIFTY25JULFUT"):
+def _row(
+    id_=1, account="ZG0790", exchange="NFO", symbol="NIFTY25JULFUT",
+    product="NRML", filled_at=None, created_at=None,
+):
     r = MagicMock()
     r.id = id_
     r.account = account
     r.exchange = exchange
     r.symbol = symbol
+    # Explicit — a bare MagicMock() auto-vivifies ANY other attribute
+    # access (including `.filled_at`/`.created_at`) as a NEW MagicMock
+    # instance rather than raising, which is truthy and not a real
+    # datetime. Without these, `_oco_row_superseded_by_newer_fill`'s
+    # `getattr(row, "filled_at", None)` would silently pick up a
+    # MagicMock instead of None, defeating its own early-return guard.
+    r.product = product
+    r.filled_at = filled_at
+    r.created_at = created_at
     return r
 
 
@@ -482,6 +513,257 @@ class TestOcoCancelClosedPositionGtts:
         assert extra["alert_event"] == "gtt_orphan_cancelled"
         assert extra["tags"] == ["gtt", "alert"]
         assert "action_required" not in extra
+
+    # ── 2026-11-04 audit fix wiring (defects 1 & 3) ──────────────────
+
+    async def test_product_is_threaded_from_the_row_into_the_flat_check(self):
+        """Defect 1 wiring: `row.product` must reach
+        `_oco_group_position_is_flat` as the `product=` kwarg, not be
+        silently dropped."""
+        from backend.api import background as bg_mod
+
+        attached = [{"kind": "gtt", "id": "KITE_GTT_1"}]
+        broker = MagicMock()
+        broker.cancel_gtt = MagicMock()
+        broker_gtts = {"KITE_GTT_1": {"status": "active"}}
+        row = _row(product="MIS")
+
+        with pytest.MonkeyPatch.context() as mp:
+            flat_check = AsyncMock(return_value=True)
+            mp.setattr(bg_mod, "_oco_group_position_is_flat", flat_check)
+            mp.setattr(
+                bg_mod, "_oco_row_superseded_by_newer_fill", AsyncMock(return_value=False),
+            )
+            await bg_mod._oco_cancel_closed_position_gtts(row, attached, broker, broker_gtts)
+
+        flat_check.assert_awaited_once_with(row.account, row.exchange, row.symbol, product="MIS")
+
+    async def test_superseded_by_newer_fill_cancels_without_consulting_flat_check(self):
+        """Defect 3 wiring: when a newer fill has superseded this row,
+        the GTT is cancelled UNCONDITIONALLY — `_oco_group_position_is_
+        flat` must never even be called, since the whole point is that
+        the current aggregate net is not a reliable signal for THIS
+        row's own GTT any more."""
+        from backend.api import background as bg_mod
+
+        attached = [{"kind": "gtt", "id": "KITE_GTT_1"}]
+        broker = MagicMock()
+        broker.cancel_gtt = MagicMock()
+        broker_gtts = {"KITE_GTT_1": {"status": "active"}}
+        row = _row()
+
+        with pytest.MonkeyPatch.context() as mp:
+            flat_check = AsyncMock(return_value=False)  # would normally block the cancel
+            mp.setattr(bg_mod, "_oco_group_position_is_flat", flat_check)
+            mp.setattr(
+                bg_mod, "_oco_row_superseded_by_newer_fill", AsyncMock(return_value=True),
+            )
+            changed = await bg_mod._oco_cancel_closed_position_gtts(
+                row, attached, broker, broker_gtts,
+            )
+
+        assert changed is True
+        broker.cancel_gtt.assert_called_once_with("KITE_GTT_1", exchange="NFO")
+        flat_check.assert_not_called()
+
+    async def test_not_superseded_falls_through_to_the_normal_flat_check(self):
+        """Baseline — when the row is not superseded, behaviour is
+        unchanged from before this fix: the aggregate flat check still
+        gates the cancel."""
+        from backend.api import background as bg_mod
+
+        attached = [{"kind": "gtt", "id": "KITE_GTT_1"}]
+        broker = MagicMock()
+        broker.cancel_gtt = MagicMock()
+        broker_gtts = {"KITE_GTT_1": {"status": "active"}}
+        row = _row()
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(bg_mod, "_oco_group_position_is_flat", AsyncMock(return_value=False))
+            mp.setattr(
+                bg_mod, "_oco_row_superseded_by_newer_fill", AsyncMock(return_value=False),
+            )
+            changed = await bg_mod._oco_cancel_closed_position_gtts(
+                row, attached, broker, broker_gtts,
+            )
+
+        assert changed is False
+        broker.cancel_gtt.assert_not_called()
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 3b. _oco_row_superseded_by_newer_fill (defect 3) — real in-memory SQLite
+#     table, same pattern as test_draft_sweep.py's `sqlite_session_factory`
+#     (the REAL `AlgoOrder` model, no JSONB columns, compiles cleanly on
+#     SQLite). Not a production dependency — SQLite exists only inside
+#     this one in-process fixture to exercise the real SQLAlchemy
+#     select/where clause without needing a live Postgres connection.
+# ─────────────────────────────────────────────────────────────────────────
+
+@pytest_asyncio.fixture
+async def sqlite_session_factory():
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+    from backend.api.models import AlgoOrder
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(AlgoOrder.__table__.create)
+
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    yield factory
+    await engine.dispose()
+
+
+async def _insert_algo_order(factory, **overrides) -> int:
+    from backend.api.models import AlgoOrder
+
+    defaults = dict(
+        account="ZG0790", symbol="NIFTY25JULFUT", exchange="NFO",
+        transaction_type="BUY", quantity=50, product="NRML",
+        status="FILLED", mode="live",
+        created_at=datetime.now(timezone.utc),
+    )
+    defaults.update(overrides)
+    async with factory() as s:
+        row = AlgoOrder(**defaults)
+        s.add(row)
+        await s.commit()
+        await s.refresh(row)
+        return row.id
+
+
+class TestOcoRowSupersededByNewerFill:
+    pytestmark = pytest.mark.asyncio
+
+    async def test_no_newer_row_returns_false(self, sqlite_session_factory):
+        from backend.api.background import _oco_row_superseded_by_newer_fill
+
+        now = datetime.now(timezone.utc)
+        my_id = await _insert_algo_order(sqlite_session_factory, filled_at=now)
+        row = _row(id_=my_id, filled_at=now)
+
+        with patch("backend.api.database.async_session", sqlite_session_factory):
+            result = await _oco_row_superseded_by_newer_fill(
+                row, "ZG0790", "NFO", "NIFTY25JULFUT", "NRML",
+            )
+        assert result is False
+
+    async def test_newer_filled_row_same_scope_returns_true(self, sqlite_session_factory):
+        """The exact defect-3 scenario: row A's own GTT, with a later
+        FILLED row B on the identical (account, exchange, symbol,
+        product) — B's existence alone must be sufficient, regardless
+        of the current aggregate net."""
+        from backend.api.background import _oco_row_superseded_by_newer_fill
+
+        t0 = datetime.now(timezone.utc) - timedelta(hours=1)
+        t1 = datetime.now(timezone.utc)
+        my_id = await _insert_algo_order(sqlite_session_factory, filled_at=t0)
+        await _insert_algo_order(sqlite_session_factory, filled_at=t1)
+        row = _row(id_=my_id, filled_at=t0)
+
+        with patch("backend.api.database.async_session", sqlite_session_factory):
+            result = await _oco_row_superseded_by_newer_fill(
+                row, "ZG0790", "NFO", "NIFTY25JULFUT", "NRML",
+            )
+        assert result is True
+
+    async def test_newer_row_different_product_returns_false(self, sqlite_session_factory):
+        """Product disambiguation respected — a newer fill on a
+        DIFFERENT product (e.g. an MIS round-trip) must not supersede
+        an NRML row's own GTT."""
+        from backend.api.background import _oco_row_superseded_by_newer_fill
+
+        t0 = datetime.now(timezone.utc) - timedelta(hours=1)
+        t1 = datetime.now(timezone.utc)
+        my_id = await _insert_algo_order(sqlite_session_factory, filled_at=t0, product="NRML")
+        await _insert_algo_order(sqlite_session_factory, filled_at=t1, product="MIS")
+        row = _row(id_=my_id, filled_at=t0, product="NRML")
+
+        with patch("backend.api.database.async_session", sqlite_session_factory):
+            result = await _oco_row_superseded_by_newer_fill(
+                row, "ZG0790", "NFO", "NIFTY25JULFUT", "NRML",
+            )
+        assert result is False
+
+    async def test_newer_row_wrong_mode_returns_false(self, sqlite_session_factory):
+        """A newer PAPER row never counts — only a real `mode='live'`
+        fill can have genuinely reopened a live position."""
+        from backend.api.background import _oco_row_superseded_by_newer_fill
+
+        t0 = datetime.now(timezone.utc) - timedelta(hours=1)
+        t1 = datetime.now(timezone.utc)
+        my_id = await _insert_algo_order(sqlite_session_factory, filled_at=t0)
+        await _insert_algo_order(sqlite_session_factory, filled_at=t1, mode="paper")
+        row = _row(id_=my_id, filled_at=t0)
+
+        with patch("backend.api.database.async_session", sqlite_session_factory):
+            result = await _oco_row_superseded_by_newer_fill(
+                row, "ZG0790", "NFO", "NIFTY25JULFUT", "NRML",
+            )
+        assert result is False
+
+    async def test_newer_row_not_filled_returns_false(self, sqlite_session_factory):
+        """A newer row that's still OPEN (not yet FILLED) is not a real
+        fill — a pending/unfilled order can't have reopened anything."""
+        from backend.api.background import _oco_row_superseded_by_newer_fill
+
+        t0 = datetime.now(timezone.utc) - timedelta(hours=1)
+        t1 = datetime.now(timezone.utc)
+        my_id = await _insert_algo_order(sqlite_session_factory, filled_at=t0)
+        await _insert_algo_order(sqlite_session_factory, filled_at=t1, status="OPEN")
+        row = _row(id_=my_id, filled_at=t0)
+
+        with patch("backend.api.database.async_session", sqlite_session_factory):
+            result = await _oco_row_superseded_by_newer_fill(
+                row, "ZG0790", "NFO", "NIFTY25JULFUT", "NRML",
+            )
+        assert result is False
+
+    async def test_coalesces_to_created_at_when_filled_at_is_null(self, sqlite_session_factory):
+        """A row's own `filled_at` can be NULL (schema allows it) — the
+        comparison must fall back to `created_at` via COALESCE, on both
+        sides of the comparison."""
+        from backend.api.background import _oco_row_superseded_by_newer_fill
+
+        t0 = datetime.now(timezone.utc) - timedelta(hours=1)
+        t1 = datetime.now(timezone.utc)
+        my_id = await _insert_algo_order(sqlite_session_factory, created_at=t0, filled_at=None)
+        await _insert_algo_order(sqlite_session_factory, created_at=t1, filled_at=None)
+        row = _row(id_=my_id, created_at=t0, filled_at=None)
+
+        with patch("backend.api.database.async_session", sqlite_session_factory):
+            result = await _oco_row_superseded_by_newer_fill(
+                row, "ZG0790", "NFO", "NIFTY25JULFUT", "NRML",
+            )
+        assert result is True
+
+    async def test_row_with_no_own_timestamp_returns_false_without_querying(self):
+        """Fails closed with no DB access at all when *row* itself has
+        neither `filled_at` nor `created_at` — nothing to compare
+        against."""
+        from backend.api.background import _oco_row_superseded_by_newer_fill
+
+        row = _row(filled_at=None, created_at=None)
+        result = await _oco_row_superseded_by_newer_fill(
+            row, "ZG0790", "NFO", "NIFTY25JULFUT", "NRML",
+        )
+        assert result is False
+
+    async def test_db_failure_returns_false_not_raise(self):
+        """A query failure (e.g. async_session itself raising) must
+        fail closed — never widen the window where a cancel happens."""
+        from backend.api.background import _oco_row_superseded_by_newer_fill
+
+        row = _row(filled_at=datetime.now(timezone.utc))
+
+        def _boom():
+            raise RuntimeError("db unavailable")
+
+        with patch("backend.api.database.async_session", _boom):
+            result = await _oco_row_superseded_by_newer_fill(
+                row, "ZG0790", "NFO", "NIFTY25JULFUT", "NRML",
+            )
+        assert result is False
 
 
 # ─────────────────────────────────────────────────────────────────────────

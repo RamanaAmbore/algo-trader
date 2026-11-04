@@ -351,8 +351,13 @@ class TestBasketCloseIntentVerification:
         ])
 
         # Mock position: SHORT 50 lots (5000 contracts) — sufficient to close 30 lots
+        # `exchange` must match the leg's own "MCX" (2026-11-04 orphan-GTT audit
+        # fix, defect 1) — `_fetch_net_position_row` now filters on exchange,
+        # where it previously accepted and silently ignored the param. The
+        # factory's bare default ("NFO") was masking a mismatch this test never
+        # actually meant to exercise.
         positions_df = mock_positions_df("TEST001", [
-            {"tradingsymbol": "CRUDEOIL26JANFUT", "quantity": -5000}  # Negative = SHORT
+            {"tradingsymbol": "CRUDEOIL26JANFUT", "quantity": -5000, "exchange": "MCX"}  # Negative = SHORT
         ])
 
         mock_run_preflight = AsyncMock(return_value={"ok": True, "blocked": []})

@@ -6275,7 +6275,9 @@ def _oco_gtt_is_live(entry_id: str, broker_gtts: dict) -> bool:
     return (not status) or status in _OCO_GROUP_LIVE_STATUSES
 
 
-async def _oco_group_position_is_flat(account: str, exchange: str, symbol: str) -> Optional[bool]:
+async def _oco_group_position_is_flat(
+    account: str, exchange: str, symbol: str, *, product: str | None = None,
+) -> Optional[bool]:
     """2026-10-23 follow-up fix — True ONLY when the real broker position
     for (account, symbol) is confirmed exactly flat (qty == 0). False on
     a confirmed non-zero qty. `None` when unknown (fetch failed, or no
@@ -6293,6 +6295,22 @@ async def _oco_group_position_is_flat(account: str, exchange: str, symbol: str) 
     raw positions cache first (same pattern as chase's
     `_ch_capture_pre_fill_net_qty`) so a fill from the last few seconds
     isn't read through a stale 30s cache entry.
+
+    `product` (2026-11-04 orphan-GTT audit fix, defect 1): optional —
+    when a caller already knows which specific product row it means
+    (the orphan-GTT safety net below, which reads the row's own
+    `AlgoOrder.product`), passing it disambiguates a symbol carrying
+    both an MIS and an NRML position for the same account/exchange,
+    which a bare symbol+account match could otherwise silently conflate
+    (one product genuinely flat, the other genuinely still open).
+
+    `force_refresh=True` is always passed to the underlying fetch
+    (defect 2) — the `_raw_cache_invalidate` call above already busts
+    this process's OWN cache, which only ever expressed half the intent:
+    in conn-service mode (prod/dev), `fetch_positions()` without
+    `force_refresh` can still be served from conn_service's own ~30s
+    cache. This closes that gap for every caller of this function, all
+    of which share the same "never treat a stale read as flat" need.
     """
     try:
         from backend.brokers.broker_apis import _raw_cache_invalidate
@@ -6301,13 +6319,76 @@ async def _oco_group_position_is_flat(account: str, exchange: str, symbol: str) 
         pass
     try:
         from backend.api.routes.orders_place import _fetch_net_position_qty
-        net_qty = await _fetch_net_position_qty(symbol, exchange, account)
+        net_qty = await _fetch_net_position_qty(
+            symbol, exchange, account, product=product, force_refresh=True,
+        )
     except Exception as e:
         logger.debug(f"[OCO-WATCH] group position check failed: {e}")
         return None
     if net_qty is None:
         return None
     return net_qty == 0
+
+
+async def _oco_row_superseded_by_newer_fill(
+    row: object, account: str, exchange: str, symbol: str, product: "str | None",
+) -> bool:
+    """True when a DIFFERENT, FILLED `AlgoOrder` row for the exact same
+    (account, exchange, symbol, product) has a real fill timestamp AFTER
+    *row*'s own — i.e. the position *row*'s GTT was originally attached
+    to has demonstrably turned over into a new cycle since.
+
+    Defect 3 (2026-11-04 orphan-GTT audit): `_oco_group_position_is_flat`
+    answers "is the CURRENT aggregate net zero", which says nothing about
+    whether THIS row's own position cycle specifically is the one that's
+    flat. If row A closed and a different row B later reopened the same
+    symbol/account/product, the current net reads non-zero (because of
+    B), so the flat check alone would wrongly conclude "not flat" and
+    leave A's now-definitely-stale GTT live forever, able to later fire
+    against B's unrelated position. A confirmed newer fill makes that
+    determination directly, without reading the broker at all.
+
+    Scoped to `mode == 'live'` and `status == 'FILLED'` — a draft, a
+    cancelled/rejected attempt, or a paper/sim/replay row is never
+    "a real fill" that could have reopened a live position. `product`
+    is matched only when given (every real caller — the orphan-cancel
+    safety net below — always has it from the row's own column).
+
+    Fails closed (returns False, i.e. "not superseded") on any lookup
+    error or when *row* itself has no own timestamp to compare against —
+    the caller's existing net-flat check is the fallback either way, so
+    this never WIDENS when a cancel can happen, only narrows the window
+    where it was previously missed entirely.
+    """
+    my_ts = getattr(row, "filled_at", None) or getattr(row, "created_at", None)
+    my_id = getattr(row, "id", None)
+    if my_ts is None or my_id is None:
+        return False
+    try:
+        from sqlalchemy import select as _sa_select, func as _sa_func
+        from backend.api.database import async_session
+        from backend.api.models import AlgoOrder
+        async with async_session() as s:
+            q = (
+                _sa_select(AlgoOrder.id)
+                .where(
+                    AlgoOrder.id != my_id,
+                    AlgoOrder.account == account,
+                    AlgoOrder.exchange == exchange,
+                    AlgoOrder.symbol == symbol,
+                    AlgoOrder.mode == "live",
+                    AlgoOrder.status == "FILLED",
+                    _sa_func.coalesce(AlgoOrder.filled_at, AlgoOrder.created_at) > my_ts,
+                )
+                .limit(1)
+            )
+            if product:
+                q = q.where(AlgoOrder.product == product)
+            res = (await s.execute(q)).first()
+            return res is not None
+    except Exception as e:
+        logger.debug(f"[OCO-WATCH] superseded-by-newer-fill check failed: {e}")
+        return False
 
 
 async def _oco_cancel_closed_position_gtts(
@@ -6369,11 +6450,24 @@ async def _oco_cancel_closed_position_gtts(
     account = getattr(row, "account", None)
     exchange = getattr(row, "exchange", None)
     symbol = getattr(row, "symbol", None)
+    product = getattr(row, "product", None)
     if not (account and exchange and symbol):
         return False
-    is_flat = await _oco_group_position_is_flat(account, exchange, symbol)
-    if is_flat is not True:
-        return False
+    # Defect 3 (2026-11-04 orphan-GTT audit) — a newer fill on this exact
+    # (account, exchange, symbol, product) since THIS row's own fill means
+    # row's position cycle has already turned over into a new one. The
+    # aggregate net-flat check below can never catch this case on its
+    # own: if the newer row reopened the position, current net reads
+    # non-zero, so `_oco_group_position_is_flat` would wrongly conclude
+    # "not flat, don't cancel" — permanently masking THIS row's now-stale
+    # GTT, which is exactly the failure this whole function exists to
+    # close. A confirmed newer fill is sufficient on its own, independent
+    # of what the current net happens to read.
+    superseded = await _oco_row_superseded_by_newer_fill(row, account, exchange, symbol, product)
+    if not superseded:
+        is_flat = await _oco_group_position_is_flat(account, exchange, symbol, product=product)
+        if is_flat is not True:
+            return False
     live_ids = [str(e.get("id")) for e in live_entries]
     still_live = await _oco_cancel_group_members(
         broker, getattr(row, "id", None), exchange, live_ids,
