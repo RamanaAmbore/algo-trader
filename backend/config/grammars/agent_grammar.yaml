@@ -263,7 +263,7 @@ system_tokens:
   description: Average positions P&L over the last N minutes. Call syntax, e.g. mean_pnl(30).
   resolver: backend.api.algo.grammar_tokens.metric_mean_pnl._metric_factory_mean_pnl
   params_schema:
-    minutes: {type: number}
+    minutes: {type: number, description: Lookback window in minutes — averages positions P&L samples taken in the last N minutes.}
 - grammar_kind: condition
   token_kind: metric
   token: mean_day
@@ -272,7 +272,7 @@ system_tokens:
   description: Average holdings day-change value over the last N minutes. Call syntax, e.g. mean_day(30).
   resolver: backend.api.algo.grammar_tokens.metric_mean_day._metric_factory_mean_day
   params_schema:
-    minutes: {type: number}
+    minutes: {type: number, description: Lookback window in minutes — averages holdings day-change samples taken in the last N minutes.}
 - grammar_kind: condition
   token_kind: metric
   token: max_drawdown_pnl
@@ -281,7 +281,7 @@ system_tokens:
   description: Worst peak-to-trough drop in positions P&L over the last N minutes (always ≤ 0). Call syntax, e.g. max_drawdown_pnl(30).
   resolver: backend.api.algo.grammar_tokens.metric_max_drawdown_pnl._metric_factory_max_drawdown_pnl
   params_schema:
-    minutes: {type: number}
+    minutes: {type: number, description: Lookback window in minutes — finds the worst peak-to-trough P&L drop within the last N minutes.}
 - grammar_kind: condition
   token_kind: metric
   token: max_drawdown_day
@@ -290,7 +290,7 @@ system_tokens:
   description: Worst peak-to-trough drop in holdings day-change over the last N minutes (always ≤ 0). Call syntax, e.g. max_drawdown_day(60).
   resolver: backend.api.algo.grammar_tokens.metric_max_drawdown_day._metric_factory_max_drawdown_day
   params_schema:
-    minutes: {type: number}
+    minutes: {type: number, description: Lookback window in minutes — finds the worst peak-to-trough holdings day-change drop within the last N minutes.}
 - grammar_kind: condition
   token_kind: metric
   token: max_drawdown_pnl_pct
@@ -299,7 +299,7 @@ system_tokens:
   description: Worst peak-to-trough drop in positions P&L percentage over the last N minutes (always ≤ 0). Call syntax, e.g. max_drawdown_pnl_pct(30).
   resolver: backend.api.algo.grammar_tokens.metric_max_drawdown_pnl_pct._metric_factory_max_drawdown_pnl_pct
   params_schema:
-    minutes: {type: number}
+    minutes: {type: number, description: Lookback window in minutes — finds the worst peak-to-trough P&L percentage drop within the last N minutes.}
 - grammar_kind: condition
   token_kind: metric
   token: stdev_pnl
@@ -308,7 +308,7 @@ system_tokens:
   description: Standard deviation of positions P&L over the last N minutes (volatility proxy). Call syntax, e.g. stdev_pnl(30).
   resolver: backend.api.algo.grammar_tokens.metric_stdev_pnl._metric_factory_stdev_pnl
   params_schema:
-    minutes: {type: number}
+    minutes: {type: number, description: Lookback window in minutes — computes P&L standard deviation over samples taken in the last N minutes.}
 - grammar_kind: condition
   token_kind: metric
   token: range_pnl
@@ -317,7 +317,7 @@ system_tokens:
   description: max(P&L) − min(P&L) over the last N minutes (swing magnitude). Call syntax, e.g. range_pnl(30).
   resolver: backend.api.algo.grammar_tokens.metric_range_pnl._metric_factory_range_pnl
   params_schema:
-    minutes: {type: number}
+    minutes: {type: number, description: Lookback window in minutes — computes max(P&L) − min(P&L) over samples taken in the last N minutes.}
 
 # ── Row-set aggregates (DSL dataframe-access gaps, item 3) ───────────────
 # Reduce ACROSS THE ROWS of the current scope snapshot (after any
@@ -346,7 +346,7 @@ system_tokens:
     metric. Call syntax, e.g. sum(column=qty)@positions.expiring_today(exchange == "MCX") > 500.
   resolver: backend.api.algo.grammar_tokens.metric_sum._metric_factory_sum
   params_schema:
-    column: {type: string}
+    column: {type: string, description: Name of the numeric exposed column to sum across the scope's rows, e.g. qty or pnl.}
 - grammar_kind: condition
   token_kind: metric
   token: max
@@ -356,7 +356,7 @@ system_tokens:
     using this metric. Call syntax, e.g. max(pnl)@positions.any_acct <= -10000.
   resolver: backend.api.algo.grammar_tokens.metric_max._metric_factory_max
   params_schema:
-    column: {type: string}
+    column: {type: string, description: Name of the numeric exposed column to take the largest value of across the scope's rows, e.g. pnl.}
 - grammar_kind: condition
   token_kind: metric
   token: avg
@@ -366,7 +366,7 @@ system_tokens:
     metric. Call syntax, e.g. avg(pnl)@positions.any_acct < -5000.
   resolver: backend.api.algo.grammar_tokens.metric_avg._metric_factory_avg
   params_schema:
-    column: {type: string}
+    column: {type: string, description: Name of the numeric exposed column to average across the scope's rows, e.g. pnl.}
 
 # ── Expiry-aware metrics (Item 1 / Phase 25) ─────────────────────
 # Parse the tradingsymbol on every call. Returns None for
@@ -913,6 +913,7 @@ system_tokens:
       - high
       - urgent
       required: false
+      description: ntfy push urgency. Omitted defaults to the firing agent's tier (see this token's own description).
     gate:
       type: boolean
       required: false
@@ -1032,6 +1033,7 @@ system_tokens:
       - MCX
       required: false
       default: NFO
+      description: Exchange segment to route the order to. Defaults to NFO (F&O); use MCX for commodities, CDS for currency derivatives.
     side:
       type: enum
       enum:
@@ -1045,7 +1047,14 @@ system_tokens:
     # the frontend CLI's buy/sell grammar also draws these concepts from).
     # required/default/token_ref_ok stay local — they're place_order's own
     # context, not part of the shared concept. Resolved at import time by
-    # backend/api/algo/grammar.py's `_resolve_param_spec()`.
+    # backend/api/algo/grammar.py's `_resolve_param_spec()`. order_type/
+    # product/variety carry a LOCAL `description` override here (2026-11-04)
+    # rather than in order_fields.yaml itself — that catalog deliberately
+    # omits a description for these three fields to preserve pre-Phase-2
+    # schema parity (see its own comments); `_resolve_param_spec()` merges a
+    # local override/addition on top of the (description-less) catalog base,
+    # so this is additive at the call site only, with zero effect on
+    # order_fields.yaml's own parity test.
     qty:
       $ref: qty
       required: true
@@ -1054,6 +1063,7 @@ system_tokens:
       $ref: order_type
       required: false
       default: MARKET
+      description: Order execution type — MARKET fills immediately at best price, LIMIT at a specified price or better, SL/SL-M trigger a stop order.
     price:
       $ref: price
       required: false
@@ -1079,10 +1089,12 @@ system_tokens:
       $ref: product
       required: false
       default: MIS
+      description: Margin product — MIS (intraday, auto-squared-off), CNC (cash-and-carry, delivery), NRML (carried overnight for F&O).
     variety:
       $ref: variety
       required: false
       default: regular
+      description: Order variety — regular (normal), amo (after-market), co (cover order), iceberg, or auction.
     tag:
       $ref: tag
       required: false
@@ -1171,6 +1183,7 @@ system_tokens:
       - MCX
       required: false
       default: NFO
+      description: Exchange segment to route the order to. Defaults to NFO (F&O); use MCX for commodities, CDS for currency derivatives.
     side:
       type: enum
       enum:
@@ -1186,6 +1199,7 @@ system_tokens:
       $ref: order_type
       required: false
       default: MARKET
+      description: Order execution type — MARKET fills immediately at best price, LIMIT at a specified price or better, SL/SL-M trigger a stop order.
     price:
       $ref: price
       required: false
@@ -1200,10 +1214,12 @@ system_tokens:
       $ref: product
       required: false
       default: MIS
+      description: Margin product — MIS (intraday, auto-squared-off), CNC (cash-and-carry, delivery), NRML (carried overnight for F&O).
     variety:
       $ref: variety
       required: false
       default: regular
+      description: Order variety — regular (normal), amo (after-market), co (cover order), iceberg, or auction.
     tag:
       $ref: tag
       required: false
@@ -1246,21 +1262,26 @@ system_tokens:
     account:
       type: string
       required: true
+      description: Masked account id that owns the order (e.g. ZG####).
     broker_order_id:
       type: string
       required: true
+      description: Broker's own order id for the order to modify.
     new_price:
       type: number
       required: false
       token_ref_ok: true
+      description: New limit price. Omit to leave the price unchanged.
     new_qty:
       type: number
       required: false
       token_ref_ok: true
+      description: New order quantity. Omit to leave the quantity unchanged.
     new_trigger:
       type: number
       required: false
       token_ref_ok: true
+      description: New trigger price (SL/SL-M orders only). Omit to leave the trigger unchanged.
 - grammar_kind: action
   token_kind: action_type
   token: cancel_order
@@ -1271,9 +1292,11 @@ system_tokens:
     account:
       type: string
       required: true
+      description: Masked account id that owns the order (e.g. ZG####).
     broker_order_id:
       type: string
       required: true
+      description: Broker's own order id for the order to cancel.
     variety:
       type: enum
       enum:
@@ -1284,6 +1307,7 @@ system_tokens:
       - auction
       required: false
       default: regular
+      description: Order variety the broker needs to locate and cancel the order — must match the variety it was placed with.
 - grammar_kind: action
   token_kind: action_type
   token: cancel_all_orders
@@ -1299,6 +1323,7 @@ system_tokens:
       - role
       - user
       default: total
+      description: Which orders to cancel — total (every account), account (one account), role (every trader-role user's accounts), or user (one trader-role user's accounts).
     account:
       type: string
       required: false
@@ -1324,6 +1349,7 @@ system_tokens:
       - BUY
       - SELL
       required: false
+      description: If set, cancel only orders on this side. Omit to cancel both BUY and SELL.
     symbol:
       type: string
       required: false
@@ -1343,9 +1369,11 @@ system_tokens:
       - role
       - user
       default: total
+      description: Which positions to close — total (every account), account (one account), role (every trader-role user's accounts), or user (one trader-role user's accounts).
     account:
       type: string
       required: false
+      description: Masked account id to close positions for. Only narrows when scope=account.
     # 2026-10-31 — same role/user scoping as cancel_all_orders above,
     # restricted to role='trader' for the same well-definedness reason.
     role:
@@ -1423,6 +1451,7 @@ system_tokens:
       - MCX
       required: false
       default: NFO
+      description: Exchange segment the position is held on. Defaults to NFO (F&O).
     quantity:
       type: number
       required: false
@@ -1443,6 +1472,7 @@ system_tokens:
       - NRML
       required: false
       default: NRML
+      description: Margin product to close against. Defaults to NRML; must match the position's own product for the broker to net it off correctly.
 - grammar_kind: action
   token_kind: action_type
   token: monitor_order
@@ -1453,12 +1483,15 @@ system_tokens:
     account:
       type: string
       required: true
+      description: Masked account id that owns the order (e.g. ZG####).
     broker_order_id:
       type: string
       required: true
+      description: Broker's own order id to poll.
     timeout_minutes:
       type: number
       default: 5
+      description: Give up polling and fire on_timeout if the order hasn't filled within this many minutes.
     on_fill:
       type: array
       required: false
@@ -1484,10 +1517,12 @@ system_tokens:
     name:
       type: string
       required: true
+      description: Flag name — other agents' conditions read it by this exact name.
     value:
       type: boolean
       required: true
       token_ref_ok: true
+      description: true or false to set the flag to.
 - grammar_kind: action
   token_kind: action_type
   token: help
@@ -1499,6 +1534,7 @@ system_tokens:
     name:
       type: string
       required: true
+      description: Token, function, or operator name to look up (e.g. mean_pnl, ntfy, cancel_order).
 - grammar_kind: action
   token_kind: action_type
   token: log
@@ -1515,10 +1551,12 @@ system_tokens:
       - error
       - critical
       default: info
+      description: Log severity. critical/error records are alert-eligible for any event agent that matches them; debug-level log() calls are never alert-eligible — use the debug() sugar for those.
     message:
       type: string
       required: true
       token_ref_ok: true
+      description: The log message text.
     priority:
       type: enum
       enum:
@@ -1571,6 +1609,7 @@ system_tokens:
       - open
       - close
       default: open
+      description: Which summary to send — open (start-of-session snapshot) or close (end-of-session snapshot).
 - grammar_kind: action
   token_kind: action_type
   token: send_market_status

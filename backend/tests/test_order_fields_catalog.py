@@ -155,6 +155,20 @@ class TestRefResolver:
 # include it, not loosened. See test_grammar_catalog_place_order_
 # constraints.py for the dedicated required_if/mutually_exclusive_groups
 # coverage.
+#
+# 2026-11-04 amendment (standing "help info" rule, see grammar_registry.py's
+# KNOWN_MISSING_PARAM_DESCRIPTIONS / validate_token_descriptions_present):
+# `exchange`/`order_type`/`product`/`variety` gained a real `description`
+# as a LOCAL override at this call site only — order_fields.yaml's own
+# `description`-less entries for order_type/product/variety are untouched
+# (see test_order_type_product_variety_carry_no_description above, which
+# still passes unchanged), since that catalog deliberately preserves
+# pre-Phase-2 schema parity for its own entries. `_resolve_param_spec()`
+# merges the local override on top of the catalog base (see
+# TestRefResolver.test_ref_spec_local_description_override_wins), so
+# place_order's/order's RESOLVED schema now carries these four
+# descriptions while order_fields.yaml stays description-less for them.
+# This fixture was updated on purpose to include that — not loosened.
 _PRE_PHASE2_PLACE_ORDER_PARAMS_SCHEMA = {
     "account": {
         "type": "string", "required": True, "token_ref_ok": True,
@@ -167,6 +181,7 @@ _PRE_PHASE2_PLACE_ORDER_PARAMS_SCHEMA = {
     "exchange": {
         "type": "enum", "enum": ["NSE", "BSE", "NFO", "CDS", "MCX"],
         "required": False, "default": "NFO",
+        "description": "Exchange segment to route the order to. Defaults to NFO (F&O); use MCX for commodities, CDS for currency derivatives.",
     },
     "side": {
         "type": "enum", "enum": ["BUY", "SELL"], "required": True,
@@ -179,6 +194,7 @@ _PRE_PHASE2_PLACE_ORDER_PARAMS_SCHEMA = {
     "order_type": {
         "type": "enum", "enum": ["MARKET", "LIMIT", "SL", "SL-M"],
         "required": False, "default": "MARKET",
+        "description": "Order execution type — MARKET fills immediately at best price, LIMIT at a specified price or better, SL/SL-M trigger a stop order.",
     },
     "price": {
         "type": "number", "required": False, "token_ref_ok": True,
@@ -193,10 +209,12 @@ _PRE_PHASE2_PLACE_ORDER_PARAMS_SCHEMA = {
     "product": {
         "type": "enum", "enum": ["MIS", "CNC", "NRML"],
         "required": False, "default": "MIS",
+        "description": "Margin product — MIS (intraday, auto-squared-off), CNC (cash-and-carry, delivery), NRML (carried overnight for F&O).",
     },
     "variety": {
         "type": "enum", "enum": ["regular", "amo", "co", "iceberg", "auction"],
         "required": False, "default": "regular",
+        "description": "Order variety — regular (normal), amo (after-market), co (cover order), iceberg, or auction.",
     },
     "tag": {
         "type": "string", "required": False,

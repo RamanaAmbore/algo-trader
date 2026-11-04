@@ -142,58 +142,20 @@ class GrammarDescriptionDriftError(RuntimeError):
 
 
 # Pre-existing gaps as of the 2026-11-04 audit — every token itself
-# already had a description; only these 42 individual params_schema
-# fields did not. Each tuple is (grammar_kind, token_kind, token, param).
-# This is the SINGLE canonical copy — `test_grammar_token_descriptions.py`
-# imports it rather than keeping its own, so the allowlist can never
-# silently drift between the test gate and the startup gate. May only
-# shrink: a param gaining a real description must also be removed here
+# already had a description; 42 individual params_schema fields did not.
+# All 42 were given real descriptions the same day (operator: "yes to
+# both, go ahead" — the second half, after the min_level fix and the
+# enforcement mechanism itself shipped). The allowlist is now EMPTY, not
+# deleted — it stays the single canonical copy `test_grammar_token_
+# descriptions.py` imports, so a FUTURE token/param that ships without a
+# description still fails immediately via `new_gaps` below, and this is
+# where the next genuine grandfathered gap (if one is ever deliberately
+# accepted) would be added. May only shrink from here: a param gaining a
+# real description must also be removed from this set
 # (`validate_token_descriptions_present`'s own self-tightening check
-# raises if it isn't).
-KNOWN_MISSING_PARAM_DESCRIPTIONS: frozenset[tuple[str, str, str, str]] = frozenset({
-    ('condition', 'metric', 'mean_pnl', 'minutes'),
-    ('condition', 'metric', 'mean_day', 'minutes'),
-    ('condition', 'metric', 'max_drawdown_pnl', 'minutes'),
-    ('condition', 'metric', 'max_drawdown_day', 'minutes'),
-    ('condition', 'metric', 'max_drawdown_pnl_pct', 'minutes'),
-    ('condition', 'metric', 'stdev_pnl', 'minutes'),
-    ('condition', 'metric', 'range_pnl', 'minutes'),
-    ('condition', 'metric', 'sum', 'column'),
-    ('condition', 'metric', 'max', 'column'),
-    ('condition', 'metric', 'avg', 'column'),
-    ('notify', 'channel', 'ntfy', 'priority'),
-    ('action', 'action_type', 'place_order', 'exchange'),
-    ('action', 'action_type', 'place_order', 'order_type'),
-    ('action', 'action_type', 'place_order', 'product'),
-    ('action', 'action_type', 'place_order', 'variety'),
-    ('action', 'action_type', 'order', 'exchange'),
-    ('action', 'action_type', 'order', 'order_type'),
-    ('action', 'action_type', 'order', 'product'),
-    ('action', 'action_type', 'order', 'variety'),
-    ('action', 'action_type', 'modify_order', 'account'),
-    ('action', 'action_type', 'modify_order', 'broker_order_id'),
-    ('action', 'action_type', 'modify_order', 'new_price'),
-    ('action', 'action_type', 'modify_order', 'new_qty'),
-    ('action', 'action_type', 'modify_order', 'new_trigger'),
-    ('action', 'action_type', 'cancel_order', 'account'),
-    ('action', 'action_type', 'cancel_order', 'broker_order_id'),
-    ('action', 'action_type', 'cancel_order', 'variety'),
-    ('action', 'action_type', 'cancel_all_orders', 'scope'),
-    ('action', 'action_type', 'cancel_all_orders', 'side'),
-    ('action', 'action_type', 'chase_close_positions', 'scope'),
-    ('action', 'action_type', 'chase_close_positions', 'account'),
-    ('action', 'action_type', 'close_position', 'exchange'),
-    ('action', 'action_type', 'close_position', 'product'),
-    ('action', 'action_type', 'monitor_order', 'account'),
-    ('action', 'action_type', 'monitor_order', 'broker_order_id'),
-    ('action', 'action_type', 'monitor_order', 'timeout_minutes'),
-    ('action', 'action_type', 'set_flag', 'name'),
-    ('action', 'action_type', 'set_flag', 'value'),
-    ('action', 'action_type', 'help', 'name'),
-    ('action', 'action_type', 'log', 'level'),
-    ('action', 'action_type', 'log', 'message'),
-    ('action', 'action_type', 'send_summary', 'summary_type'),
-})
+# raises if it isn't) — do NOT add a new entry for a token/param you are
+# yourself registering; see this function's own docstring.
+KNOWN_MISSING_PARAM_DESCRIPTIONS: frozenset[tuple[str, str, str, str]] = frozenset()
 
 
 def validate_token_descriptions_present(
