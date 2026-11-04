@@ -1357,17 +1357,28 @@
      Overrides auto-fill with a fixed 2-column layout on desktop so each
      row card takes exactly half the row width. Child overflow fix:
      `min-width: 0` lets the track honour `1fr` and allows inner overflow
-     guards (word-break, overflow-x) to engage. Scroll-capped so a
-     large group's row list stays a bounded scrollable panel rather
-     than growing the whole page unbounded. Sprint C (2026-10) reuses
+     guards (word-break, overflow-x) to engage. Sprint C (2026-10) reuses
      this SAME class for every kind's row list (agents/alerts/brackets/
      templates) — previously Agents-only, with a separate
      `.automation-mini-grid` for Brackets/custom groups (removed, no
-     longer needed now there's one row-list shape per kind). */
+     longer needed now there's one row-list shape per kind).
+
+     2026-11-03, operator: "edit and other buttons are sometimes hidden
+     behind other cards" + "make agents page... look better" — the
+     former `max-height: 32rem; overflow-y: auto` turned this grid into
+     a SEPARATE, nested scroll region from the page's own scroll, with
+     no visible scrollbar affordance signaling it. Confirmed via live
+     measurement: with 23 real agents, the grid's `scrollHeight`
+     (unexpanded) already exceeded its 512px `clientHeight`, so it was
+     ALREADY clipping even before any card was expanded. Expanding a
+     card near that boundary pushed its own Edit/Delete footer past the
+     clipped edge — not behind another card, but invisible inside a
+     scroll area the operator had no reason to suspect existed. No
+     other list surface in this app uses this nested-scroll-cap pattern
+     (checked app.css) — removed so this grid grows with its content
+     and the PAGE scrolls it, the same as every other list page. */
   .agent-group-grid {
     grid-template-columns: repeat(2, 1fr);
-    max-height: 32rem;
-    overflow-y: auto;
   }
   @media (max-width: 768px) {
     .agent-group-grid { grid-template-columns: 1fr; }
