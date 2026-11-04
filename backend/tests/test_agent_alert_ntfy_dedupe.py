@@ -70,8 +70,12 @@ async def test_ntfy_fires_exactly_once_when_rich_alert_succeeds():
         patch("backend.shared.helpers.alert_utils.config") as cfg_mock,
         patch("backend.shared.helpers.alert_utils._send_telegram"),
         patch("backend.shared.helpers.alert_utils.send_ntfy_alert") as ntfy_mock,
-        patch("backend.api.algo.events._send_telegram", new=AsyncMock()),
-        patch("backend.api.algo.events._send_email_raw", new=AsyncMock()),
+        # `events.py`'s own `_send_telegram`/`_send_email_raw` were
+        # removed 2026-11-03 (confirmed dead: telegram/email always
+        # route through `_classify_recorded_channel`, never reaching
+        # `_dispatch_channel`'s now-deleted branches — true for this
+        # agent's channels both before and after that change) — no
+        # longer anything to patch here.
         patch("backend.api.algo.events.agent_event_queue") as queue_mock,
     ):
         cfg_mock.get.side_effect = lambda key, default=None: (

@@ -603,22 +603,6 @@ from backend.api.algo.grammar_tokens.channel_websocket import _broadcast_websock
 from backend.api.algo.grammar_tokens.channel_inapp import _broadcast_inapp  # noqa: E402
 
 
-async def _send_ntfy_channel(ch: dict, agent, telegram_body: str, ntfy_body: str | None) -> None:
-    from backend.shared.helpers.alert_utils import send_ntfy_alert, _TIER_TO_NTFY_PRIORITY
-    import asyncio
-    loop = asyncio.get_running_loop()
-    # ntfy_body is kept independent of telegram_body so an HTML-styled telegram body can
-    # never leak literal tags into ntfy. Legacy direct-call sites fall back to telegram_body.
-    _ntfy_msg = ntfy_body if ntfy_body is not None else telegram_body
-    # Explicit per-channel priority wins; otherwise fall back to this
-    # agent's own tier (critical/high/medium/low -> urgent/high/default/
-    # low). `agent` here is the real firing Agent row. Neither set ->
-    # priority stays None, same as before this change, and
-    # send_ntfy_alert's own clock-based day/night default applies.
-    priority = ch.get("priority") or _TIER_TO_NTFY_PRIORITY.get(getattr(agent, "tier", None))
-    await loop.run_in_executor(None, lambda: send_ntfy_alert(title=agent.name, message=_ntfy_msg, priority=priority))
-
-
 async def _dispatch_channel(
     ch: dict, agent, telegram_body: str, email_subject: str,
     email_body: str, condition_text: str, ist_display: str,
@@ -627,25 +611,29 @@ async def _dispatch_channel(
 ) -> None:
     """Route one channel event. Raises on error — caller wraps in try/except.
 
-    `branch_tag` is kept in the signature for call-site/positional-arg
-    stability (websocket/inapp callers and existing tests) even though no
-    branch in this function body reads it any more — `log` moved to
-    _RECORDED_CHANNELS / event_agents.py's CHANNELS table (Sprint 6) and
-    was the only consumer.
+    Only ever reached for `websocket`/`inapp` — `dispatch()`'s own loop
+    routes any channel named telegram/email/ntfy/log (`_RECORDED_
+    CHANNELS`) through `_classify_recorded_channel()` and an
+    unconditional `continue` before this function is ever called (see
+    that loop's own comment). The telegram/email/ntfy branches that
+    used to live here were therefore dead code and were removed
+    (2026-11-03) — confirmed via a repo-wide grep showing this was
+    their only call site.
+
+    `telegram_body`/`email_subject`/`email_body`/`ntfy_body`/
+    `branch_tag` stay in the signature for call-site/positional-arg
+    stability (this is still the one function both live branches below
+    are reached through) even though neither live branch reads
+    `email_subject`/`email_body`/`ntfy_body`, and only `inapp` reads
+    `branch`/`ist_display`.
     """
     channel = ch.get("channel", "")
     if not _tags_match(ch, eval_result):
         return
-    if channel == "telegram" and is_enabled("telegram"):
-        await _send_telegram(telegram_body)
-    elif channel == "email" and is_enabled("mail"):
-        await _send_email_raw(email_subject, email_body)
-    elif channel == "websocket" and broadcast_fn:
+    if channel == "websocket" and broadcast_fn:
         _broadcast_websocket(broadcast_fn, agent, telegram_body, condition_text, sim_mode)
     elif channel == "inapp" and broadcast_fn:
         _broadcast_inapp(broadcast_fn, agent, condition_text, eval_result, ist_display, sim_mode, branch)
-    elif channel == "ntfy" and is_enabled("ntfy"):
-        await _send_ntfy_channel(ch, agent, telegram_body, ntfy_body)
 
 
 async def log_event(agent, event_type: str, condition_text: str = "",
@@ -672,29 +660,3 @@ async def _log_event(agent, event_type: str, condition_text: str = "",
         )
     except Exception as e:
         logger.error(f"Agent event enqueue failed: {e}")
-
-
-async def _send_telegram(message: str):
-    """Send Telegram alert as plain text — agent condition text may contain < > operators."""
-    from backend.shared.helpers.alert_utils import _send_telegram as tg_send
-    import asyncio
-
-    loop = asyncio.get_running_loop()
-    # pass parse_mode="" so Telegram treats message as plain text;
-    # avoids 400 "Unsupported start tag" when condition text contains < or >.
-    await loop.run_in_executor(None, tg_send, message, "")
-
-
-async def _send_email_raw(subject: str, html_body: str):
-    """Send an HTML email to all alert recipients."""
-    from backend.shared.helpers.alert_utils import get_alert_recipients
-    from backend.shared.helpers.mail_utils import send_email
-    import asyncio
-
-    alert_emails = get_alert_recipients()
-    loop = asyncio.get_running_loop()
-    for email in alert_emails:
-        try:
-            await loop.run_in_executor(None, send_email, "RamboQuant", email, subject, html_body)
-        except Exception as e:
-            logger.error(f"Agent email failed to {email}: {e}")

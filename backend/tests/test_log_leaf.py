@@ -151,18 +151,22 @@ def _eval_result(tags):
 
 @pytest.mark.asyncio
 async def test_channel_with_tags_sends_only_when_a_match_carries_one(monkeypatch):
+    """`_tags_match()`'s gating, exercised via the `websocket` channel —
+    `_dispatch_channel`'s own telegram/email/ntfy branches were removed
+    2026-11-03 (confirmed unreachable: `dispatch()`'s loop always routes
+    those 3 channel names through `_classify_recorded_channel()` before
+    this function is ever called), but the tag-matching check itself
+    runs identically for every channel name, including the two still-
+    live ones (websocket/inapp)."""
     sent = []
-    monkeypatch.setattr(ev_events, "is_enabled", lambda cap: True)
 
-    async def fake_send(msg):
-        sent.append(msg)
-
-    monkeypatch.setattr(ev_events, "_send_telegram", fake_send)
+    def fake_broadcast(event, payload):
+        sent.append((event, payload))
 
     def _call(tags):
         return ev_events._dispatch_channel(
-            {"channel": "telegram", "tags": ["orders"]}, SimpleNamespace(name="a", slug="a"),
-            "body", "subj", "ebody", "cond", "ts", _eval_result(tags), None, False, "main", "")
+            {"channel": "websocket", "tags": ["orders"]}, SimpleNamespace(name="a", slug="a"),
+            "body", "subj", "ebody", "cond", "ts", _eval_result(tags), fake_broadcast, False, "main", "")
 
     await _call(["chase"])
     assert sent == []
@@ -173,16 +177,15 @@ async def test_channel_with_tags_sends_only_when_a_match_carries_one(monkeypatch
 @pytest.mark.asyncio
 async def test_channel_without_tags_is_unchanged(monkeypatch):
     sent = []
-    monkeypatch.setattr(ev_events, "is_enabled", lambda cap: True)
 
-    async def fake_send(msg):
-        sent.append(msg)
+    def fake_broadcast(event, payload):
+        sent.append((event, payload))
 
-    monkeypatch.setattr(ev_events, "_send_telegram", fake_send)
     await ev_events._dispatch_channel(
-        {"channel": "telegram"}, SimpleNamespace(name="a", slug="a"),
-        "body", "subj", "ebody", "cond", "ts", _eval_result([]), None, False, "main", "")
-    assert sent == ["body"]
+        {"channel": "websocket"}, SimpleNamespace(name="a", slug="a"),
+        "body", "subj", "ebody", "cond", "ts", _eval_result([]), fake_broadcast, False, "main", "")
+    assert len(sent) == 1
+    assert sent[0][1]["message"] == "body"
 
 
 @pytest.mark.asyncio

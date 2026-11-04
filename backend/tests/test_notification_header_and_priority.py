@@ -162,45 +162,15 @@ class TestTierToNtfyPriorityMapping:
         assert _TIER_TO_NTFY_PRIORITY.get(None) is None
 
 
-# ---------------------------------------------------------------------------
-# events.py:_send_ntfy_channel — explicit override wins, tier is the
-# fallback default, no-tier/no-override omits the kwarg.
-# ---------------------------------------------------------------------------
-
-class TestEventsSendNtfyChannelPriorityDerivation:
-    @pytest.mark.asyncio
-    async def test_explicit_channel_priority_wins_over_tier(self):
-        from backend.api.algo.events import _send_ntfy_channel
-
-        agent = MagicMock(name="agent", tier="critical")
-        agent.name = "loss-funds-negative"
-        with patch("backend.shared.helpers.alert_utils.send_ntfy_alert") as mock_send:
-            await _send_ntfy_channel({"priority": "low"}, agent, "tg body", None)
-        mock_send.assert_called_once()
-        assert mock_send.call_args.kwargs["priority"] == "low"
-
-    @pytest.mark.asyncio
-    async def test_tier_becomes_the_default_when_no_explicit_priority(self):
-        from backend.api.algo.events import _send_ntfy_channel
-
-        agent = MagicMock(name="agent", tier="critical")
-        agent.name = "loss-funds-negative"
-        with patch("backend.shared.helpers.alert_utils.send_ntfy_alert") as mock_send:
-            await _send_ntfy_channel({}, agent, "tg body", None)
-        mock_send.assert_called_once()
-        assert mock_send.call_args.kwargs["priority"] == "urgent"
-
-    @pytest.mark.asyncio
-    async def test_no_tier_and_no_override_passes_none_letting_clock_fallback_apply(self):
-        from backend.api.algo.events import _send_ntfy_channel
-
-        agent = MagicMock(name="agent", tier=None)
-        agent.name = "some-agent"
-        with patch("backend.shared.helpers.alert_utils.send_ntfy_alert") as mock_send:
-            await _send_ntfy_channel({}, agent, "tg body", None)
-        mock_send.assert_called_once()
-        assert mock_send.call_args.kwargs["priority"] is None
-
+# `TestEventsSendNtfyChannelPriorityDerivation` (events.py:_send_ntfy_
+# channel — explicit override wins, tier is the fallback default,
+# no-tier/no-override omits the kwarg) removed 2026-11-03:
+# `_send_ntfy_channel` was deleted along with `_dispatch_channel`'s
+# dead telegram/email/ntfy branches, its only caller (confirmed via
+# repo-wide grep: zero other callers). The analogous priority-
+# derivation logic for the LIVE ntfy path lives in
+# `event_agents.py:_send_channel` and is covered by that module's own
+# tests, not duplicated here.
 
 # ---------------------------------------------------------------------------
 # event_agents.py:_send_channel — regression guard for the bug caught
