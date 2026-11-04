@@ -690,6 +690,14 @@
     transition: background 0.1s;
     border-bottom: 1px solid var(--sep-color);
   }
+  /* 2026-11-03 — a leg row's own slate border-bottom stacks against the
+     TOTAL row's own 2px amber border-top (+page.svelte, .cand-row-total)
+     when TOTAL immediately follows — CSS grid rows don't collapse
+     borders the way a <table> does, so both rendered, giving a thin
+     grey hairline immediately above the thick amber divider. Same
+     :has(+ ...) pattern PnlAnalysis.svelte already uses for this exact
+     "suppress the last row's own divider" case. */
+  .cand-row:has(+ .cand-row-total) { border-bottom: none; }
   .cand-row:hover { background: rgba(34,211,238,0.05); }  /* cyan — matches History hover */
   /* All cells fill the full row track height and restore 0.2rem vertical
      breathing room at cell level (moved from container padding). */

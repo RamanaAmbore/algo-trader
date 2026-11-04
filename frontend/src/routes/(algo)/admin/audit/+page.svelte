@@ -410,7 +410,15 @@
   .audit-table th {
     text-align: left;
     padding: 0.4rem 0.55rem;
-    border-bottom: 1px solid rgba(251, 191, 36, 0.30);
+    /* 2026-11-03 — box-shadow, not a real border (same fix as the shared
+       .algo-table thead th rule in app.css). This header is `position:
+       sticky`, which can silently drop a real border on repaint under
+       `border-collapse: collapse` (OptionChainTab's documented bug
+       class). The amber color itself was already winning the cascade
+       against the shared grey rule (verified live: this component's
+       scoped selector carries higher specificity), so this is a
+       robustness fix against the repaint bug, not a visibility fix. */
+    box-shadow: inset 0 -1px 0 rgba(251, 191, 36, 0.30);
     color: var(--text-muted);
     font-weight: 800; letter-spacing: 0.06em;
     text-transform: uppercase;
