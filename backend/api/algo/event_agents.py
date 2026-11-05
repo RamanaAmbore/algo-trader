@@ -822,7 +822,27 @@ async def _send_channel(ch: dict, out: tuple, agent, rec: "dict | None" = None) 
         kwargs["recipients"] = ch.get("recipients")
     if ch.get("channel") == "log":
         kwargs["log_line"] = ch.get("log_line")
-        kwargs["agent_slug"] = ch.get("log_agent_slug")
+        # 2026-11-05 live fix (operator report: a false "unrouted
+        # alertable record" self-alert for market_status) — `events.py`'s
+        # `_classify_recorded_channel()` pre-bakes `log_agent_slug` onto
+        # a channel dict built from an AGENT'S OWN STATIC `events` list,
+        # resolved the normal way. A producer that instead supplies its
+        # own PER-RECORD dynamic `channels` override (the `out[4]`
+        # mechanism BREACH_AGENT/MARKET_STATUS_ALERT_AGENT/etc. use — see
+        # `action_send_market_status.py`'s plain
+        # `{"channel": "log", "enabled": True}` literal) never goes
+        # through that baking step, so `log_agent_slug` was always
+        # `None` for those. `_send_log_channel` then stamped
+        # `extra["agent_slug"]=None`, and `_looks_alert_shaped()`'s own
+        # echo-exclusion (`if extra.get("agent_slug") and not
+        # extra.get("alert_event")`) treats `None` as falsy — same as
+        # "not present" — so the echo was wrongly NOT excluded and got
+        # flagged as a fresh unrouted observation. `agent` here is
+        # ALWAYS the real firing Agent row regardless of which path
+        # built `ch`, so falling back to its own `.slug` closes the gap
+        # for every current and future per-record dynamic-channel
+        # producer, not just this one.
+        kwargs["agent_slug"] = ch.get("log_agent_slug") or getattr(agent, "slug", None)
         kwargs["sim_mode"] = ch.get("log_sim_mode", False)
     try:
         await asyncio.to_thread(send, title, body, tg, **kwargs)

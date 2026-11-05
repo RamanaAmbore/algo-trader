@@ -770,8 +770,21 @@ async def test_log_channel_entry_logs_via_logger_warning(monkeypatch):
 @pytest.mark.asyncio
 async def test_log_channel_falls_back_to_title_and_body_without_prebuilt_line(monkeypatch):
     """A caller that doesn't pre-build log_line/log_agent_slug (e.g. a
-    future renderer) still gets a sane 'title — body' log line instead of
-    crashing."""
+    future renderer, or a producer supplying its own per-record dynamic
+    `channels` override like `MARKET_STATUS_ALERT_AGENT` — see
+    `action_send_market_status.py`'s plain `{"channel": "log", "enabled":
+    True}` literal) still gets a sane 'title — body' log line instead of
+    crashing.
+
+    2026-11-05 live fix (operator report: a false "unrouted alertable
+    record" self-alert for market_status) — `agent_slug` must fall back
+    to the real firing `agent.slug` here, NOT stay `None`. Before this
+    fix, a `None` `agent_slug` made `_looks_alert_shaped()`'s own
+    echo-exclusion (`if extra.get("agent_slug") and not
+    extra.get("alert_event")`) treat the record as a FRESH alert-shaped
+    observation instead of recognising it as this channel's own delivery
+    echo — confirmed live: this exact record (tags=["warning","agent"],
+    alert_event=None) was wrongly flagged unrouted and self-alerted."""
     import backend.shared.helpers.utils as u
     monkeypatch.setattr(u, "is_enabled", lambda cap: True)
     captured = []
@@ -790,7 +803,33 @@ async def test_log_channel_falls_back_to_title_and_body_without_prebuilt_line(mo
 
     assert sent is True
     assert captured[0][0] == "Some Title — Some Body"
-    assert captured[0][1] == {"tags": ["agent"], "agent_slug": None, "sim_mode": False}
+    assert captured[0][1] == {"tags": ["agent"], "agent_slug": "x", "sim_mode": False}
+
+
+@pytest.mark.asyncio
+async def test_log_channel_echo_is_never_flagged_as_unrouted_end_to_end(monkeypatch):
+    """End-to-end regression guard for the live bug: a 'log' channel
+    delivery with no pre-baked `log_agent_slug` (the per-record dynamic-
+    channels shape) must produce a `LogEvent`-style record that
+    `_looks_alert_shaped()` correctly excludes as an echo — never a
+    fresh unrouted observation."""
+    import backend.shared.helpers.utils as u
+    monkeypatch.setattr(u, "is_enabled", lambda cap: True)
+    captured = []
+    monkeypatch.setattr(
+        _channel_log_mod, "_EVENTS_LOGGER",
+        SimpleNamespace(warning=lambda msg, **k: captured.append((msg, k.get("extra")))),
+    )
+    ch = {"channel": "log", "enabled": True}
+    out = ("Market Status", "Market Status — 2026-11-05 ...")
+    agent = SimpleNamespace(slug="market-status-alert", tier="info")
+
+    sent = await event_agents._send_channel(ch, out, agent)
+    assert sent is True
+
+    msg, extra = captured[0]
+    fake_rec = {"level": "WARNING", "tags": ["warning", "agent"], "extra": extra, "message": msg}
+    assert event_agents._looks_alert_shaped(fake_rec) is False
 
 
 @pytest.mark.asyncio
