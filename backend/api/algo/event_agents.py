@@ -776,11 +776,19 @@ async def _send_channel(ch: dict, out: tuple, agent, rec: "dict | None" = None) 
     # three helpers above). `rec` is None for every pre-existing caller
     # that hasn't been updated to pass it (and every existing test) —
     # a complete no-op in that case, zero behavior change.
+    #
+    # 2026-11-05 fix (operator, live screenshot: "the tags should be on
+    # the same line") — the tag line used to start its own paragraph
+    # (`\n\n{tag_line}`), which read as a disconnected trailing block
+    # and, combined with `_safe_truncate_message`'s 200-char diagnostic
+    # cap elsewhere, could cut a tag in half with no visual link back to
+    # the message it belonged to. Appended directly onto the body's own
+    # last line instead — one space, no newline.
     if rec is not None:
         tag_line = _agent_tag_line(agent, rec)
-        body = f"{body}\n\n{tag_line}"
+        body = f"{body} {tag_line}"
         if tg:
-            tg = f"{tg}\n\n{tag_line}"
+            tg = f"{tg} {tag_line}"
     priority = ch.get("priority")
     # Tier-driven default — ntfy ONLY. `_send_telegram_html`/
     # `_send_telegram_info_html` take no `priority` parameter at all (a
@@ -1314,6 +1322,31 @@ def _record_matches_any_agent(rec: dict, agents: list) -> bool:
     return False
 
 
+def _safe_truncate_message(s: str, limit: int) -> str:
+    """Truncate *s* to at most *limit* characters without ever cutting a
+    trailing '#tag' fragment in half.
+
+    2026-11-05 live fix (operator-reported, screenshot of the real
+    market-status self-alert from before the `_send_channel` `agent_
+    slug` fix shipped): the embedded message's hard `[:limit]` cut
+    landed mid-way through the trailing `_agent_tag_line()` text,
+    rendering as a dangling "...#market_status #" — the second tag's
+    leading `#` with nothing after it, confusing on its own even though
+    the UNDERLYING tag generation was correct (the full line would have
+    read "#market_status #market_status_alert"). If the hard cut lands
+    inside the LAST whitespace-delimited word and that word starts with
+    '#', the whole dangling fragment is dropped instead of leaving half
+    of it visible."""
+    if len(s) <= limit:
+        return s
+    cut = s[:limit]
+    last_space = cut.rfind(" ")
+    tail = cut[last_space + 1:] if last_space != -1 else cut
+    if tail.startswith("#"):
+        cut = cut[:last_space] if last_space != -1 else ""
+    return cut
+
+
 def _emit_unrouted_self_alert(rec: dict) -> None:
     """Log the one WARNING self-alert for an unrouted alert-shaped
     record — through `_EVENTS_LOGGER`, NOT `_logger`, so it is captured
@@ -1335,7 +1368,7 @@ def _emit_unrouted_self_alert(rec: dict) -> None:
     msg = (
         f"unrouted alertable record: tag={tags} level={rec.get('level')} "
         f"logger={rec.get('logger')} alert_event={extra.get('alert_event')} "
-        f"message={(rec.get('message') or '')[:200]}"
+        f"message={_safe_truncate_message(rec.get('message') or '', 200)}"
     )
     _EVENTS_LOGGER.warning(
         msg,

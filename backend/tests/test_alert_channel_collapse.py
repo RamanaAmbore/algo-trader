@@ -190,7 +190,7 @@ async def test_chase_cancel_identical_via_channel_agents(chans):
             "2 (40 contracts filled so far). "
             "The chase has been ABORTED without placing a replacement order. "
             "Manually verify the broker's order book — the old order may still be live."
-            "\n\n#manual #chase_cancel_alert")
+            " #manual #chase_cancel_alert")
     title = "Chase cancel unconfirmed — possible resting duplicate order"
     assert chans["ntfy"] == [(title, body, "urgent")]
     # 2-tuple renderer (chase_cancel) carries no 3rd (tg) element, so
@@ -217,7 +217,7 @@ async def test_partial_gtt_identical_via_channel_agents(chans):
     # 2026-10-31 — trailing tag: action agent "manual", alert agent
     # "partial-gtt-alert" (tag-token'd).
     body = (f"Agent: manual\n{_TS}\nparent #1088 CRUDEOIL26OCTFUT: 1/3 GTTs placed. Errors: rate limit; invalid price"
-            "\n\n#manual #partial_gtt_alert")
+            " #manual #partial_gtt_alert")
     assert chans["ntfy"] == [("Partial GTT placement", body, "urgent")]
     assert len(chans["telegram"]) == 1  # see chase-cancel test's own comment on tg=None
     assert chans["email"] == []
@@ -232,11 +232,11 @@ async def test_partial_gtt_identical_via_channel_agents(chans):
      {"gtt_ids_text": "['G1', 'G2']", "reason": "no candidate", "parent_order_id": 7,
       "symbol": "NIFTY", "exchange": "NFO"},
      "Unprotected SELL position",
-     f"Agent: manual\n{_TS}\nGTTs placed (ids: ['G1', 'G2']) but wing failed: no candidate | order #7 NIFTY NFO\n\n#manual #template_attach_urgent",
+     f"Agent: manual\n{_TS}\nGTTs placed (ids: ['G1', 'G2']) but wing failed: no candidate | order #7 NIFTY NFO #manual #template_attach_urgent",
      "urgent"),
     ("wing_hard_reject", "CRITICAL",
      {"reason": "premium too high", "symbol": "NIFTY", "exchange": "NFO", "target_premium": 12.5},
-     "Wing scan hard-rejected", f"Agent: manual\n{_TS}\npremium too high | NIFTY NFO target ₹12.50\n\n#manual #template_attach_urgent", "urgent"),
+     "Wing scan hard-rejected", f"Agent: manual\n{_TS}\npremium too high | NIFTY NFO target ₹12.50 #manual #template_attach_urgent", "urgent"),
     ("wing_skip", "WARNING",
      {"reason": "no candidate", "parent_order_id": 9, "symbol": "BANKNIFTY", "exchange": "NFO"},
      "Wing attach skipped", f"Agent: manual\n{_TS}\nno candidate | order #9 BANKNIFTY NFO", "high"),
@@ -278,7 +278,7 @@ async def test_order_failure_identical_via_channel_agents(chans):
     # tag-token'd); email body SHA re-derived.
     tg_body = ('Agent: manual\n10:15:30 IST\n❌ Order rejected  [Manual]  [LIVE]  (+2 suppressed)\n'
               'ZG####  BUY  75  NIFTY26OCTFUT  (NFO)\nsource: ticket\nInsufficient funds <x>'
-              '\n\n#manual #order_failure_alert')
+              ' #manual #order_failure_alert')
     assert chans["telegram"] == [("Order Rejected: NIFTY26OCTFUT BUY", tg_body, tg_body)]
     assert chans["ntfy"] == [("Order Rejected: NIFTY26OCTFUT BUY", tg_body, "urgent")]
     assert len(chans["email"]) == 1
@@ -325,7 +325,7 @@ async def test_template_guard_identical_via_channel_agents(chans):
                   "applies_to:  sell_option\nreason:      qty < lot_size\n\n"
                   "Parent order FILLED. Exits NOT attached.\nArm exits manually if needed.\n\n"
                   "Fix: at /admin/templates, change this template's 'applies_to' to 'both' or 'buy_option'."
-                  "\n\n#manual #template_guard_alert")
+                  " #manual #template_guard_alert")
     assert chans["telegram"] == [("Template guard fired", expected_tg, expected_tg)]
     assert chans["ntfy"] == [("Template guard fired", expected_tg, "high")]
     assert len(chans["email"]) == 1
@@ -345,7 +345,7 @@ async def test_template_attach_fail_identical_via_channel_agents(chans):
                   "symbol:   NIFTY26OCTFUT\naccount:  ZG####\n\n"
                   "errors:   qty < lot_size; rate limit\n\nParent order FILLED. Exits NOT attached.\n"
                   "Arm exits manually if needed."
-                  "\n\n#manual #template_attach_fail_alert")
+                  " #manual #template_attach_fail_alert")
     assert chans["telegram"] == [("Template attach failed", expected_tg, expected_tg)]
     assert chans["ntfy"] == [("Template attach failed", expected_tg, "urgent")]
     assert len(chans["email"]) == 1
@@ -360,7 +360,7 @@ async def test_mcp_ping_identical_via_channel_agents(chans):
     await ea.dispatch([rec], _channel_agents())
     # 2026-10-31 — trailing tag appended to `tg`: action agent "manual",
     # alert agent "mcp-ping-alert" (tag-token'd).
-    tagged = tg + "\n\n#manual #mcp_ping_alert"
+    tagged = tg + " #manual #mcp_ping_alert"
     assert chans["telegram"] == [("MCP", tagged, tagged)]
     assert chans["ntfy"] == [] and chans["email"] == []
 
@@ -378,7 +378,7 @@ async def test_user_registered_identical_via_channel_agents(chans):
     # operator must approve or reject the account).
     # 2026-10-31 — trailing tag: action agent "manual", alert agent
     # "user-registered-alert" (tag-token'd).
-    body = body + "\n\n#manual #user_registered_alert"
+    body = body + " #manual #user_registered_alert"
     assert chans["telegram"] == [("New user registered", body, body)]
     assert chans["ntfy"] == [("New user registered", body, "high")]
     assert len(chans["email"]) == 1
@@ -405,7 +405,7 @@ async def test_fill_live_identical_via_channel_agents(chans, monkeypatch):
     # only, which is what's captured in the 3rd test-mock position too.
     assert chans["telegram"] == [(
         "Order filled: SELL 1 CRUDEOIL26OCTFUT",
-        f"Agent: manual\n{_TS}\nAccount: ZG####\nSELL 1 CRUDEOIL26OCTFUT (MCX) @ 8750.00\nProduct: NRML\nOrder id: 7\n\n#manual #fill_alert",
+        f"Agent: manual\n{_TS}\nAccount: ZG####\nSELL 1 CRUDEOIL26OCTFUT (MCX) @ 8750.00\nProduct: NRML\nOrder id: 7 #manual #fill_alert",
         None,
     )]
 
@@ -463,7 +463,7 @@ async def test_generic_notice_events_identical_channel_set_and_priority(
     # this fixture's extra), alert agent this `alert_event`'s own
     # `source_slug` (tag-token'd) — derived the same way production
     # does, not hand-typed per case.
-    tagged_body = extra_extra["body"] + f"\n\n#manual #{ea._tag_token(entry['source_slug'])}"
+    tagged_body = extra_extra["body"] + f" #manual #{ea._tag_token(entry['source_slug'])}"
     assert chans["telegram"] == [(extra_extra["title"], tagged_body, tagged_body)]
     if expect_ntfy:
         expected_priority = next(c.get("priority") for c in entry["channels"] if c["channel"] == "ntfy")

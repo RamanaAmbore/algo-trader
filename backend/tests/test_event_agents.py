@@ -167,7 +167,7 @@ async def test_registered_renderer_is_used(monkeypatch, senders):
     # default `extra` has no `agent_id`/`agent_name` -> "manual"; its
     # `alert_event="filled"` resolves via the real
     # `ALERT_EVENT_DISPATCH` table to the fill detector's own slug.
-    assert senders["ntfy"] == [("T", "B\n\n#manual #fill_alert")]
+    assert senders["ntfy"] == [("T", "B #manual #fill_alert")]
 
 
 @pytest.mark.asyncio
@@ -695,7 +695,7 @@ async def test_breach_record_sends_only_its_stored_channels(monkeypatch):
     # tag_token'd) — `alert_event="breach"` has no `ALERT_EVENT_DISPATCH`
     # entry (that table only covers the 16 collapsed post-2026-10-25
     # detector specs), so the fallback to `agent.slug` applies here.
-    _tag = "\n\n#account_funds_gone_negative #cycle_breach_alert"
+    _tag = " #account_funds_gone_negative #cycle_breach_alert"
     assert sent["tg"] == [f"Alert — Account funds gone negative{_tag}"]
     assert sent["ntfy"] == [(
         "Account funds gone negative",
@@ -1582,6 +1582,91 @@ def test_unrouted_alert_agent_is_seeded_and_uses_the_reserved_event():
     assert leaf["tag"] == "alert"
     assert leaf["where"]["alert_event"] == ea._UNROUTED_ALERT_EVENT == "unrouted_alert"
     assert {c["channel"] for c in ea.UNROUTED_ALERT_AGENT["events"]} >= {"telegram", "ntfy"}
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 2026-11-05 live fix (operator, screenshot of a real self-alert): the
+# trailing agent/alert tag line used to start its own paragraph
+# ("\n\n#tag1 #tag2"), and `_emit_unrouted_self_alert`'s own 200-char
+# message cap could cut straight through that tag line, rendering a
+# dangling "...#market_status #" with nothing after the second '#'.
+# Fixed two ways: (1) the tag line is now appended to the SAME line as
+# the body ("... #tag1 #tag2", single space, no newline) — operator:
+# "the tags should be on the same line"; (2) `_safe_truncate_message`
+# drops a trailing dangling '#...' fragment instead of leaving half of
+# it visible when a hard length cap does land inside it.
+# ─────────────────────────────────────────────────────────────────────────
+
+class TestSafeTruncateMessage:
+    def test_short_string_is_returned_unchanged(self):
+        from backend.api.algo import event_agents as ea
+        assert ea._safe_truncate_message("short", 200) == "short"
+
+    def test_exact_limit_is_returned_unchanged(self):
+        from backend.api.algo import event_agents as ea
+        s = "x" * 200
+        assert ea._safe_truncate_message(s, 200) == s
+
+    def test_cut_landing_inside_a_trailing_hashtag_drops_the_fragment(self):
+        """The exact live scenario: a long message ending in two tags,
+        where the hard cut lands mid-way through the second tag's
+        leading '#'."""
+        from backend.api.algo import event_agents as ea
+        prefix = "x" * 180
+        s = f"{prefix} #market_status #market_status_alert"
+        # The cut at 200 lands right after "...#market_status #" (the
+        # dangling second tag's bare '#').
+        result = ea._safe_truncate_message(s, 200)
+        assert result == f"{prefix} #market_status"
+        assert not result.endswith("#")
+        assert "#market_status_alert" not in result
+
+    def test_cut_landing_mid_word_with_no_hashtag_is_a_plain_hard_cut(self):
+        """A cut that does NOT land inside a '#'-prefixed word is left
+        as a plain hard cut — this function only special-cases the
+        dangling-hashtag shape, not general word-wrapping."""
+        from backend.api.algo import event_agents as ea
+        s = "a" * 210
+        result = ea._safe_truncate_message(s, 200)
+        assert result == "a" * 200
+
+    def test_cut_landing_exactly_on_a_complete_hashtag_keeps_it(self):
+        """The cut landing exactly at the end of a complete '#tag' (not
+        mid-way through it) must keep that tag, not drop a complete,
+        valid tag just because it happens to start with '#'."""
+        from backend.api.algo import event_agents as ea
+        s = "x" * 190 + " #ok"
+        assert len(s) == 194
+        result = ea._safe_truncate_message(s, 194)
+        assert result == s
+
+    def test_no_space_at_all_before_the_cut_still_handled(self):
+        """Degenerate case — the entire string up to the cut is one
+        unbroken '#...' run with no space at all. Must not raise, and
+        must not return a dangling fragment."""
+        from backend.api.algo import event_agents as ea
+        s = "#" + ("a" * 210)
+        result = ea._safe_truncate_message(s, 200)
+        assert result == ""
+
+
+class TestAgentTagLineSameLine:
+    """`_send_channel`'s trailing tag line is appended to the body's
+    OWN last line now (single space), not its own new paragraph."""
+
+    @pytest.mark.asyncio
+    async def test_tag_line_has_no_leading_newlines(self, senders):
+        from backend.api.algo import event_agents as ea
+        ch = {"channel": "telegram", "enabled": True}
+        out = ("Title", "Body text", "Body text")
+        agent = SimpleNamespace(slug="some-agent")
+        rec = {"extra": {"agent_id": None, "agent_name": None}}
+
+        await ea._send_channel(ch, out, agent, rec)
+
+        sent_body = senders["tg"][0][1]
+        assert "\n\n" not in sent_body
+        assert sent_body == "Body text #manual #some_agent"
 
 
 async def _async_empty_agents():
