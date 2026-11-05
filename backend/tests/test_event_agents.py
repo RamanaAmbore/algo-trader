@@ -167,7 +167,7 @@ async def test_registered_renderer_is_used(monkeypatch, senders):
     # default `extra` has no `agent_id`/`agent_name` -> "manual"; its
     # `alert_event="filled"` resolves via the real
     # `ALERT_EVENT_DISPATCH` table to the fill detector's own slug.
-    assert senders["ntfy"] == [("T", "B #manual #fill_alert")]
+    assert senders["ntfy"] == [("T", "B\n#manual #fill_alert")]
 
 
 @pytest.mark.asyncio
@@ -695,7 +695,7 @@ async def test_breach_record_sends_only_its_stored_channels(monkeypatch):
     # tag_token'd) — `alert_event="breach"` has no `ALERT_EVENT_DISPATCH`
     # entry (that table only covers the 16 collapsed post-2026-10-25
     # detector specs), so the fallback to `agent.slug` applies here.
-    _tag = " #account_funds_gone_negative #cycle_breach_alert"
+    _tag = "\n#account_funds_gone_negative #cycle_breach_alert"
     assert sent["tg"] == [f"Alert — Account funds gone negative{_tag}"]
     assert sent["ntfy"] == [(
         "Account funds gone negative",
@@ -1650,12 +1650,22 @@ class TestSafeTruncateMessage:
         assert result == ""
 
 
-class TestAgentTagLineSameLine:
-    """`_send_channel`'s trailing tag line is appended to the body's
-    OWN last line now (single space), not its own new paragraph."""
+class TestAgentTagLineOwnLine:
+    """`_send_channel`'s trailing tag line starts its own line now (a
+    single `\\n`), not a blank-paragraph gap (`\\n\\n`) and not glued
+    onto the body's own last line with a bare space.
+
+    History: the original 2026-11-05 fix (operator: "the tags should be
+    on the same line") removed the old `\\n\\n` blank-paragraph gap by
+    appending the tag with a single space instead. The SAME DAY, a live
+    order-fill alert (a multi-line structured body ending in
+    "Order id: N") showed the tag read as a run-on continuation of that
+    line — operator: "the tags at the bottom are not starting in a new
+    line". Amended to a single `\\n`: the tag gets its own line, but
+    never a blank-paragraph gap."""
 
     @pytest.mark.asyncio
-    async def test_tag_line_has_no_leading_newlines(self, senders):
+    async def test_tag_line_starts_on_its_own_new_line(self, senders):
         from backend.api.algo import event_agents as ea
         ch = {"channel": "telegram", "enabled": True}
         out = ("Title", "Body text", "Body text")
@@ -1665,8 +1675,95 @@ class TestAgentTagLineSameLine:
         await ea._send_channel(ch, out, agent, rec)
 
         sent_body = senders["tg"][0][1]
-        assert "\n\n" not in sent_body
-        assert sent_body == "Body text #manual #some_agent"
+        assert "\n\n" not in sent_body, "tag must not sit in its own blank paragraph"
+        assert sent_body == "Body text\n#manual #some_agent"
+        assert sent_body.splitlines()[-1] == "#manual #some_agent"
+
+
+class TestBareTwoTupleRenderersSendAgentLabelAtTop:
+    """2026-11-05 live operator report: "in order fill alert agent label
+    is not showing at the top. the tags at the bottom are not starting
+    in a new line."
+
+    Root cause (two parts, same bug): `_render_fill` and five sibling
+    renderers (`_render_chase_cancel`, `_render_partial_gtt`,
+    `_render_template_attach`, `_render_order_correction`,
+    `_render_gtt_not_accepted`) each build their own `format_
+    notification_header()`-first `body`, but returned a bare
+    `(title, body)` 2-tuple — leaving `tg` (out[2]) unset. The real
+    `_send_telegram_html(title, body, tg)` sender falls back to
+    `tg or f"{title}\\n{body}"`, which prepended a redundant title line
+    ahead of `body`, pushing the real "Agent: ..." origin line down to
+    line 2 instead of the top. Fixed by returning `title, body, body`
+    (matching the established convention every other renderer in this
+    file already uses — `_render_order_cancelled`/`_render_action_
+    notify`/`_render_rich_alert`/etc.).
+
+    This test drives `_render_fill` through the real `_send_channel`
+    with a real (unmocked) `_send_telegram_html`, asserting on the exact
+    string that would actually be sent — the level every golden test in
+    this file operates at, but isolated to just this one defect so a
+    future regression here fails loudly and specifically."""
+
+    @pytest.mark.asyncio
+    async def test_fill_alert_agent_line_is_the_first_line_sent_to_telegram(self, monkeypatch):
+        # Deliberately NOT the `senders` fixture — that fixture replaces
+        # `CHANNELS["telegram"]` itself, bypassing the real
+        # `_send_telegram_html` fallback (`tg or f"{title}\n{body}"`)
+        # entirely. This test exists specifically to exercise that real
+        # fallback, so it mocks only the lowest-level `_send_telegram`.
+        import backend.shared.helpers.alert_utils as au
+        from backend.api.algo import event_agents as ea
+        tg_sent = []
+        monkeypatch.setattr(au, "_send_telegram", lambda msg, **k: tg_sent.append(msg))
+
+        rec = {"ts": None, "extra": {
+            "order_id": 7, "account": "ZG0790", "symbol": "CRUDEOIL26OCTFUT",
+            "exchange": "MCX", "transaction_type": "SELL", "quantity": 1,
+            "fill_price": 8750.0, "product": "NRML", "engine": "live", "agent_name": None,
+        }}
+        out = ea._render_fill(rec)
+        agent = SimpleNamespace(slug="fill-alert", tier="info")
+        ch = {"channel": "telegram", "enabled": True}
+
+        await ea._send_channel(ch, out, agent, rec)
+
+        sent = tg_sent[0]
+        first_line = sent.splitlines()[0]
+        assert first_line.startswith("Agent: "), (
+            f"Agent line must be the FIRST line sent to Telegram, got: {first_line!r}\nFull: {sent!r}"
+        )
+        assert not sent.startswith("Order filled:"), (
+            "the redundant title must not be prepended ahead of the real origin line"
+        )
+        # Tags on their own line, not glued onto "Order id: 7".
+        assert "Order id: 7\n#manual #fill_alert" in sent
+        assert "Order id: 7 #manual" not in sent
+
+    @pytest.mark.asyncio
+    async def test_chase_cancel_agent_line_is_the_first_line_sent_to_telegram(self, monkeypatch):
+        """Same defect class, second renderer — chase-cancel's own
+        format_notification_header()-first body must also reach Telegram
+        with the origin line first, not behind a redundant title."""
+        import backend.shared.helpers.alert_utils as au
+        from backend.api.algo import event_agents as ea
+        tg_sent = []
+        monkeypatch.setattr(au, "_send_telegram", lambda msg, **k: tg_sent.append(msg))
+
+        rec = {"extra": {
+            "agent_id": None, "transaction_type": "BUY", "symbol": "NIFTY26OCTFUT",
+            "order_id": "O1", "account": "ZG0790", "attempt": 2,
+            "quantity": 100, "remaining_qty": 60,
+        }}
+        out = ea._render_chase_cancel(rec)
+        agent = SimpleNamespace(slug="chase-cancel-alert", tier="high")
+        ch = {"channel": "telegram", "enabled": True}
+
+        await ea._send_channel(ch, out, agent, rec)
+
+        sent = tg_sent[0]
+        assert sent.splitlines()[0].startswith("Agent: ")
+        assert not sent.startswith("Chase cancel unconfirmed")
 
 
 async def _async_empty_agents():

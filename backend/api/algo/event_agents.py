@@ -46,7 +46,7 @@ _CACHE_S = 60.0
 _cache: dict = {"at": float("-inf"), "agents": []}
 
 
-def _render_fill(rec: dict) -> tuple[str, str]:
+def _render_fill(rec: dict) -> tuple[str, str, str]:
     """Order fill notification — side, qty, symbol, fill price."""
     extra = rec.get("extra") or {}
     row = SimpleNamespace(
@@ -58,7 +58,20 @@ def _render_fill(rec: dict) -> tuple[str, str]:
     when = rec.get("ts")
     if when is not None and when.tzinfo is None:
         when = when.replace(tzinfo=timezone.utc)
-    return fill_notify.format_fill_message(row, when=when)
+    title, body = fill_notify.format_fill_message(row, when=when)
+    # 2026-11-05 live fix (operator: "agent label is not showing at the
+    # top... tags at the bottom are not starting in a new line") —
+    # `body` already leads with `format_notification_header()`'s origin
+    # line (see format_fill_message's own docstring), but a bare
+    # (title, body) 2-tuple left `tg` (out[2]) unset. `_send_telegram_
+    # html`'s fallback is `tg or f"{title}\n{body}"`, which prepended
+    # the redundant "Order filled: ..." title ahead of body, pushing the
+    # real "Agent: ..." line down to line 2 — not at the top despite
+    # `format_fill_message` building it that way. Matches the
+    # established convention every other correctly-behaving renderer in
+    # this file uses (`_render_order_cancelled`/`_render_action_notify`/
+    # etc.): `tg=body` explicitly, so Telegram sends `body` alone.
+    return title, body, body
 
 
 RENDERS: dict = {}
@@ -76,8 +89,14 @@ def _get_gate():
     return _gate
 
 
-def _render_chase_cancel(rec: dict) -> tuple[str, str]:
-    """Chase cancel-and-replace could not confirm the cancel landed."""
+def _render_chase_cancel(rec: dict) -> tuple[str, str, str]:
+    """Chase cancel-and-replace could not confirm the cancel landed.
+
+    Returns `tg=body` explicitly (2026-11-05 fix, same bug class as
+    `_render_fill` — see that function's own comment) — `body` already
+    leads with `format_notification_header()`'s origin line; a bare
+    2-tuple left `_send_telegram_html` to fall back to
+    `f"{title}\n{body}"`, pushing the origin line down to line 2."""
     from backend.shared.helpers.utils import mask_account_in_text
     from backend.shared.helpers.date_time_utils import timestamp_display
     from backend.shared.helpers.alert_utils import format_notification_header
@@ -100,11 +119,15 @@ def _render_chase_cancel(rec: dict) -> tuple[str, str]:
         f"The chase has been ABORTED without placing a replacement order. "
         f"Manually verify the broker's order book — the old order may still be live."
     )
-    return "Chase cancel unconfirmed — possible resting duplicate order", mask_account_in_text(body)
+    masked_body = mask_account_in_text(body)
+    return "Chase cancel unconfirmed — possible resting duplicate order", masked_body, masked_body
 
 
-def _render_partial_gtt(rec: dict) -> tuple[str, str]:
-    """Only some of a parent order's planned GTTs were placed."""
+def _render_partial_gtt(rec: dict) -> tuple[str, str, str]:
+    """Only some of a parent order's planned GTTs were placed.
+
+    Returns `tg=body` explicitly (2026-11-05 fix — see `_render_fill`'s
+    own comment for the bug class)."""
     from backend.shared.helpers.date_time_utils import timestamp_display
     from backend.shared.helpers.alert_utils import format_notification_header
     from backend.shared.helpers.utils import mask_account_in_text
@@ -121,10 +144,10 @@ def _render_partial_gtt(rec: dict) -> tuple[str, str]:
         f"{x.get('placed')}/{x.get('planned')} GTTs placed. "
         f"Errors: {errors_text}"
     )
-    return "Partial GTT placement", body
+    return "Partial GTT placement", body, body
 
 
-def _render_template_attach(rec: dict) -> tuple[str, str]:
+def _render_template_attach(rec: dict) -> tuple[str, str, str]:
     """Template exit attach outcome — unprotected position, wing skip/reject.
 
     2026-10 audit fix: leads with `format_notification_header()` (origin
@@ -134,7 +157,11 @@ def _render_template_attach(rec: dict) -> tuple[str, str]:
     `agent_id` is read from `x.get('agent_id')`, now populated for all
     four branches (see the `template_attach.py` call sites: wing_hard_reject
     threads `parent_agent_id` through the wing-scan helper chain;
-    wing_unprotected reads `result.plan.parent_agent_id`)."""
+    wing_unprotected reads `result.plan.parent_agent_id`).
+
+    Returns `tg=body` explicitly (2026-11-05 fix — see `_render_fill`'s
+    own comment for the bug class) — computed once below rather than
+    duplicated at each of the 5 branches' own return."""
     from backend.shared.helpers.date_time_utils import timestamp_display
     from backend.shared.helpers.utils import mask_account_in_text
     from backend.shared.helpers.alert_utils import format_notification_header
@@ -147,23 +174,25 @@ def _render_template_attach(rec: dict) -> tuple[str, str]:
     # matching `order_failure_messages()`'s existing pattern.
     reason = mask_account_in_text(str(x.get('reason'))) if x.get('reason') is not None else x.get('reason')
     if ev == "wing_unprotected":
-        return ("Unprotected SELL position",
+        title, body = ("Unprotected SELL position",
                 f"{header}\n"
                 f"GTTs placed (ids: {x['gtt_ids_text']}) but wing failed: {reason} | "
                 f"order #{x['parent_order_id']} {x['symbol']} {x['exchange']}")
-    if ev == "wing_hard_reject":
-        return ("Wing scan hard-rejected",
+    elif ev == "wing_hard_reject":
+        title, body = ("Wing scan hard-rejected",
                 f"{header}\n{reason} | {x['symbol']} {x['exchange']} target ₹{x['target_premium']:.2f}")
-    if ev == "wing_skip":
-        return ("Wing attach skipped",
+    elif ev == "wing_skip":
+        title, body = ("Wing attach skipped",
                 f"{header}\n{reason} | order #{x['parent_order_id']} {x['symbol']} {x['exchange']}")
-    if ev == "wing_offset_skip":
-        return ("Wing offset attach skipped",
+    elif ev == "wing_offset_skip":
+        title, body = ("Wing offset attach skipped",
                 f"{header}\n{reason} | order #{x['parent_order_id']} {x['symbol']} {x['exchange']}")
-    # Fallback dumps the whole `extra` dict raw — may embed an `account`
-    # key or an account-shaped code inside a nested value; scrub the
-    # stringified dump too.
-    return "Template attach", f"{header}\n{mask_account_in_text(f'{x}')}"
+    else:
+        # Fallback dumps the whole `extra` dict raw — may embed an `account`
+        # key or an account-shaped code inside a nested value; scrub the
+        # stringified dump too.
+        title, body = "Template attach", f"{header}\n{mask_account_in_text(f'{x}')}"
+    return title, body, body
 
 
 def _render_order_failure(rec: dict) -> tuple:
@@ -245,8 +274,11 @@ def _render_attach_fail(rec: dict) -> tuple:
     return title, tg, tg, (email_subject, email_body)
 
 
-def _render_order_correction(rec: dict) -> tuple[str, str]:
-    """2026-10-23 order-poll consolidation — a background corrector
+def _render_order_correction(rec: dict) -> tuple[str, str, str]:
+    """Returns `tg=body` explicitly (2026-11-05 fix — see `_render_fill`'s
+    own comment for the bug class).
+
+    2026-10-23 order-poll consolidation — a background corrector
     (the open-order watchdog, the periodic order-poll sweep, or
     postback's non-blocking follow-up verification) found and fixed a
     stuck AlgoOrder row. This firing is itself the signal that some
@@ -274,7 +306,7 @@ def _render_order_correction(rec: dict) -> tuple[str, str]:
         f"{x.get('prior_status')} -> {x.get('new_status')} "
         f"(source={x.get('source') or 'order-poll'})"
     )
-    return title, body
+    return title, body, body
 
 
 def _render_mcp_ping(rec: dict) -> tuple[str, str, str]:
@@ -502,8 +534,11 @@ def _render_order_cancelled(rec: dict) -> tuple:
     return title, body, body, None, list(x.get("channels") or [])
 
 
-def _render_gtt_not_accepted(rec: dict) -> tuple[str, str]:
-    """A placed GTT was not accepted by the broker (status mismatch)."""
+def _render_gtt_not_accepted(rec: dict) -> tuple[str, str, str]:
+    """A placed GTT was not accepted by the broker (status mismatch).
+
+    Returns `tg=body` explicitly (2026-11-05 fix — see `_render_fill`'s
+    own comment for the bug class)."""
     from backend.shared.helpers.date_time_utils import timestamp_display
     from backend.shared.helpers.alert_utils import format_notification_header
     from backend.shared.helpers.utils import mask_account_in_text
@@ -513,9 +548,11 @@ def _render_gtt_not_accepted(rec: dict) -> tuple[str, str]:
     # 2026-10 notification-masking audit: `reason` is free-caller text that
     # can embed a raw broker account code — scrub as defense-in-depth.
     reason = mask_account_in_text(str(x.get('reason'))) if x.get('reason') is not None else x.get('reason')
-    return ("GTT not accepted at broker",
-            f"{origin_header}\n"
-            f"{x.get('symbol')} {x.get('label')} GTT {x.get('gtt_id')}: {reason}")
+    body = (
+        f"{origin_header}\n"
+        f"{x.get('symbol')} {x.get('label')} GTT {x.get('gtt_id')}: {reason}"
+    )
+    return "GTT not accepted at broker", body, body
 
 
 def _render_error(rec: dict) -> tuple[str, str, str]:
@@ -777,18 +814,29 @@ async def _send_channel(ch: dict, out: tuple, agent, rec: "dict | None" = None) 
     # that hasn't been updated to pass it (and every existing test) —
     # a complete no-op in that case, zero behavior change.
     #
-    # 2026-11-05 fix (operator, live screenshot: "the tags should be on
-    # the same line") — the tag line used to start its own paragraph
-    # (`\n\n{tag_line}`), which read as a disconnected trailing block
-    # and, combined with `_safe_truncate_message`'s 200-char diagnostic
-    # cap elsewhere, could cut a tag in half with no visual link back to
-    # the message it belonged to. Appended directly onto the body's own
-    # last line instead — one space, no newline.
+    # 2026-11-05, first fix (operator, live screenshot: "the tags should
+    # be on the same line") — the tag line used to start its own
+    # paragraph (`\n\n{tag_line}`), which read as a disconnected trailing
+    # block and, combined with `_safe_truncate_message`'s 200-char
+    # diagnostic cap elsewhere, could cut a tag in half with no visual
+    # link back to the message it belonged to. Appended directly onto
+    # the body's own last line — one space, no newline.
+    #
+    # 2026-11-05, amended same day (operator, live order-fill alert: "the
+    # tags at the bottom are not starting in a new line") — on a
+    # multi-line structured body (fill alerts' own
+    # Account/side-qty-symbol/Product/"Order id: N" lines), gluing the
+    # tag onto that last data line with a bare space read as a run-on
+    # continuation of "Order id: N", not a distinct trailing element.
+    # Now a single newline — the tag starts its own line, but this is
+    # still NOT the old `\n\n` blank-paragraph gap the first fix removed;
+    # a lone `\n` keeps the tag visually attached to the message
+    # directly above it.
     if rec is not None:
         tag_line = _agent_tag_line(agent, rec)
-        body = f"{body} {tag_line}"
+        body = f"{body}\n{tag_line}"
         if tg:
-            tg = f"{tg} {tag_line}"
+            tg = f"{tg}\n{tag_line}"
     priority = ch.get("priority")
     # Tier-driven default — ntfy ONLY. `_send_telegram_html`/
     # `_send_telegram_info_html` take no `priority` parameter at all (a

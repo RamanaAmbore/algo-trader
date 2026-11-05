@@ -24,7 +24,7 @@ class TestRenderPartialGttMasksErrors:
             "errors": [f"could not resolve broker for {RAW_ACCOUNT!r}: boom"],
             "agent_id": None,
         }}
-        title, body = _render_partial_gtt(rec)
+        title, body, _tg = _render_partial_gtt(rec)
         assert title == "Partial GTT placement"
         assert RAW_ACCOUNT not in body
 
@@ -36,7 +36,7 @@ class TestRenderTemplateAttachMasksReason:
             "reason": f"account {RAW_ACCOUNT} margin insufficient",
             "parent_order_id": 5, "symbol": "NIFTY26OCTFUT", "exchange": "NFO",
         }}
-        title, body = _render_template_attach(rec)
+        title, body, _tg = _render_template_attach(rec)
         assert title == "Wing attach skipped"
         assert RAW_ACCOUNT not in body
 
@@ -46,7 +46,7 @@ class TestRenderTemplateAttachMasksReason:
             "reason": f"account {RAW_ACCOUNT} rejected",
             "symbol": "NIFTY26OCTFUT", "exchange": "NFO", "target_premium": 12.5,
         }}
-        title, body = _render_template_attach(rec)
+        title, body, _tg = _render_template_attach(rec)
         assert title == "Wing scan hard-rejected"
         assert RAW_ACCOUNT not in body
 
@@ -56,7 +56,7 @@ class TestRenderTemplateAttachMasksReason:
             "gtt_ids_text": "1,2", "reason": f"wing failed for {RAW_ACCOUNT}",
             "parent_order_id": 5, "symbol": "NIFTY26OCTFUT", "exchange": "NFO",
         }}
-        title, body = _render_template_attach(rec)
+        title, body, _tg = _render_template_attach(rec)
         assert title == "Unprotected SELL position"
         assert RAW_ACCOUNT not in body
 
@@ -66,13 +66,13 @@ class TestRenderTemplateAttachMasksReason:
             "reason": f"skipped for {RAW_ACCOUNT}",
             "parent_order_id": 5, "symbol": "NIFTY26OCTFUT", "exchange": "NFO",
         }}
-        title, body = _render_template_attach(rec)
+        title, body, _tg = _render_template_attach(rec)
         assert title == "Wing offset attach skipped"
         assert RAW_ACCOUNT not in body
 
     def test_fallback_dump_scrubbed(self):
         rec = {"extra": {"account": RAW_ACCOUNT, "note": "unrecognized event"}}
-        title, body = _render_template_attach(rec)
+        title, body, _tg = _render_template_attach(rec)
         assert title == "Template attach"
         assert RAW_ACCOUNT not in body
 
@@ -84,6 +84,6 @@ class TestRenderGttNotAcceptedMasksReason:
             "reason": f"status mismatch for {RAW_ACCOUNT}",
             "agent_id": None,
         }}
-        title, body = _render_gtt_not_accepted(rec)
+        title, body, _tg = _render_gtt_not_accepted(rec)
         assert title == "GTT not accepted at broker"
         assert RAW_ACCOUNT not in body

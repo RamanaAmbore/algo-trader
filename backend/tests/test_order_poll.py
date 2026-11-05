@@ -275,13 +275,13 @@ class TestReconcileRowAndFollowup:
             "exchange": "NFO", "prior_status": "OPEN", "new_status": "FILLED",
             "source": "order-poll", "agent_id": 42,
         }}
-        title, body = _render_order_correction(rec_with_agent)
+        title, body, _tg = _render_order_correction(rec_with_agent)
         assert body.startswith("Agent #42")
         assert "Order corrected" in title
 
         rec_manual = dict(rec_with_agent)
         rec_manual["extra"] = {**rec_with_agent["extra"], "agent_id": None}
-        _, manual_body = _render_order_correction(rec_manual)
+        _, manual_body, _ = _render_order_correction(rec_manual)
         assert manual_body.startswith("Agent: manual")
 
     async def test_confirmed_cancel_fires_alert_without_attach_or_subscribe(self):
