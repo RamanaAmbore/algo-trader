@@ -133,9 +133,14 @@ def test_fill_format_golden():
     # 2026-10 audit fix: account is now masked — this is the
     # HIGHEST-VOLUME live notification (every fill, Telegram+ntfy), and
     # was previously the one unmasked account surface in the app.
+    # 2026-11-05 live fix — `title` is now ALSO an explicit line in
+    # `body` (right after the origin header), restoring "filled" to the
+    # alert text once `tg=body` stopped relying on the old
+    # `f"{title}\n{body}"` Telegram fallback to carry it.
     assert body == "\n".join([
         "Agent: manual",
         _FIXED_TS,
+        "Order filled: BUY 75 NIFTY26OCT25000CE",
         "Account: ZG####",
         "BUY 75 NIFTY26OCT25000CE (NFO) @ 112.50",
         "Product: NRML",
@@ -206,12 +211,14 @@ async def test_fill_delivery_golden_via_event_agent(monkeypatch):
     # explicitly (out[2]), so Telegram sends `body` alone, not the old
     # `f"{title}\n{body}"` fallback that pushed the real "Agent: ..."
     # origin line down to line 2 behind a redundant "Order filled: ..."
-    # title line.
+    # title line. `format_fill_message` now puts that same title text
+    # back INSIDE `body` (right after the origin header) so "filled"
+    # still reaches the alert text, just one line lower than before.
     # 2026-10-31 — trailing tag: action agent "manual" (no agent_id on
     # `row`), alert agent "fill-alert" (FILL_AGENT's slug, tag-token'd),
     # on its own line (2026-11-05 amendment — see _send_channel).
     assert sent["tg"] == [
-        f"Agent: manual\n{_FIXED_TS}\nAccount: ZG####\nSELL 1 CRUDEOIL26OCTFUT (MCX) @ 8750.00\nProduct: NRML\nOrder id: 7"
+        f"Agent: manual\n{_FIXED_TS}\nOrder filled: SELL 1 CRUDEOIL26OCTFUT\nAccount: ZG####\nSELL 1 CRUDEOIL26OCTFUT (MCX) @ 8750.00\nProduct: NRML\nOrder id: 7"
         "\n#manual #fill_alert"]
 
 

@@ -79,6 +79,27 @@ def test_format_uses_the_given_time_in_ist():
     assert ("EDT" in body) or ("EST" in body)
 
 
+def test_body_contains_the_title_text_not_just_the_title_slot():
+    """2026-11-05 live operator report: "order filled alert is not
+    showing order filled text anywhere in alert text". `title` used to
+    reach Telegram only via `_send_telegram_html`'s old
+    `tg or f"{title}\\n{body}"` fallback — once `_render_fill`
+    (event_agents.py) started supplying `tg=body` explicitly (closing a
+    separate "agent label not at top" bug the same day), `title` never
+    reached Telegram at all, and the word "filled" disappeared from the
+    alert entirely. `body` must now carry the title's own text as an
+    explicit line — ntfy (which always reads `body` directly, never
+    `title` for its own message) had this exact same gap even before
+    the other fix, just never reported."""
+    title, body = fill_notify.format_fill_message(_row())
+    assert title in body, f"title text must appear inside body — got body: {body!r}"
+    assert "filled" in body.lower()
+    # Origin line must still be the FIRST line (the other 2026-11-05 fix) —
+    # the title line goes right after it, not ahead of it.
+    assert body.splitlines()[0].startswith("Agent: ")
+    assert body.splitlines()[1] != body.splitlines()[0]
+
+
 def test_fill_message_shows_masked_account():
     # P1 fix (2026-10 audit): the account was previously shown RAW/
     # unmasked — this is the HIGHEST-VOLUME live notification (every

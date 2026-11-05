@@ -408,8 +408,8 @@ async def test_fill_live_identical_via_channel_agents(chans, monkeypatch):
     # "fill-alert" (tag-token'd), on its own line (2026-11-05 amendment).
     assert chans["telegram"] == [(
         "Order filled: SELL 1 CRUDEOIL26OCTFUT",
-        f"Agent: manual\n{_TS}\nAccount: ZG####\nSELL 1 CRUDEOIL26OCTFUT (MCX) @ 8750.00\nProduct: NRML\nOrder id: 7\n#manual #fill_alert",
-        f"Agent: manual\n{_TS}\nAccount: ZG####\nSELL 1 CRUDEOIL26OCTFUT (MCX) @ 8750.00\nProduct: NRML\nOrder id: 7\n#manual #fill_alert",
+        f"Agent: manual\n{_TS}\nOrder filled: SELL 1 CRUDEOIL26OCTFUT\nAccount: ZG####\nSELL 1 CRUDEOIL26OCTFUT (MCX) @ 8750.00\nProduct: NRML\nOrder id: 7\n#manual #fill_alert",
+        f"Agent: manual\n{_TS}\nOrder filled: SELL 1 CRUDEOIL26OCTFUT\nAccount: ZG####\nSELL 1 CRUDEOIL26OCTFUT (MCX) @ 8750.00\nProduct: NRML\nOrder id: 7\n#manual #fill_alert",
     )]
 
 

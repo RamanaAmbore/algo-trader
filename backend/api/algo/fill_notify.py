@@ -60,8 +60,21 @@ def format_fill_message(row, when: datetime | None = None) -> tuple[str, str]:
     # Missing-vs-zero convention (CLAUDE.md): a genuinely absent fill
     # price must never render as a fabricated "0.00".
     fill_px = (f"{float(row.fill_price):.2f}" if row.fill_price is not None else "—")
+    # 2026-11-05 live fix — `title` ("Order filled: SELL 1 X") used to be
+    # the ONLY place this body's own event type ("filled") appeared in
+    # the message text. It reached Telegram only via `_send_telegram_
+    # html`'s old `tg or f"{title}\n{body}"` fallback; once `_render_fill`
+    # (event_agents.py) started supplying `tg=body` explicitly (closing
+    # the "agent label not at top" bug the same day), `title` stopped
+    # reaching Telegram at all and the word "filled" disappeared from
+    # the alert entirely — operator: "order filled alert is not showing
+    # order filled text anywhere in alert text". `title` is now ALSO an
+    # explicit line in `body` (right after the origin header, so "Agent:
+    # ..." stays the first line) — `title` itself is kept unchanged for
+    # ntfy's own separate notification-title slot.
     body = "\n".join([
         header,
+        title,
         f"Account: {masked_account}",
         f"{side} {qty} {symbol} ({row.exchange or '-'}) @ {fill_px}",
         f"Product: {row.product or '-'}",
