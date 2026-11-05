@@ -339,6 +339,85 @@ class TestHelpLookupResolution:
         result = await help_lookup({}, {"name": "totally_unknown_xyz"})
         assert result["matches"] == []
 
+
+# ═══════════════════════════════════════════════════════════════════════
+#  2026-11-05 fix — help() also covers DSL structural syntax keywords
+#  (when/do/and/or/not/in/always/nop/true/false/given), which have no
+#  GrammarToken catalog row at all (operator: "for help info, show help
+#  even info dsl built tokens like when, do, etc.")
+# ═══════════════════════════════════════════════════════════════════════
+
+class TestHelpLookupDslSyntaxKeywords:
+    @pytest.mark.asyncio
+    async def test_when_renders_a_synthetic_syntax_match(self):
+        from backend.api.algo.actions import help_lookup
+
+        result = await help_lookup({}, {"name": "when"})
+        assert len(result["matches"]) == 1
+        m = result["matches"][0]
+        assert m["grammar_kind"] == "syntax"
+        assert m["token_kind"] == "keyword"
+        assert m["token"] == "when"
+        assert "WHEN ... DO ..." in m["description"] or "preamble" in m["description"]
+        assert m["signature"] == "WHEN <condition> DO <action1>, <action2>, ..."
+        assert "DSL syntax keyword" in m["docstring"]
+
+    @pytest.mark.asyncio
+    async def test_do_renders_a_synthetic_syntax_match(self):
+        from backend.api.algo.actions import help_lookup
+
+        result = await help_lookup({}, {"name": "do"})
+        assert len(result["matches"]) == 1
+        m = result["matches"][0]
+        assert m["token"] == "do"
+        assert m["signature"] == "WHEN <condition> DO <action1>, <action2>, ..."
+
+    @pytest.mark.asyncio
+    async def test_given_explains_removal_not_a_blank_no_match(self):
+        """`given` is no longer valid syntax, but an operator typing it
+        into help() (e.g. migrating an old statement) must get an
+        explanation, not a silent 'no matching token found'."""
+        from backend.api.algo.actions import help_lookup
+
+        result = await help_lookup({}, {"name": "given"})
+        assert len(result["matches"]) == 1
+        m = result["matches"][0]
+        assert "REMOVED" in m["description"]
+        assert "no longer valid syntax" in m["signature"]
+
+    @pytest.mark.parametrize(
+        "kw", ["and", "or", "not", "in", "always", "nop", "true", "false"],
+    )
+    @pytest.mark.asyncio
+    async def test_every_reserved_word_resolves_to_a_real_match(self, kw):
+        """Every lexer-level reserved word (agents.js's own `_RESERVED`
+        set) must resolve to something — not just when/do/given, the
+        three spelled out in the operator's own example."""
+        from backend.api.algo.actions import help_lookup
+
+        result = await help_lookup({}, {"name": kw})
+        assert len(result["matches"]) == 1
+        assert result["matches"][0]["token"] == kw
+
+    @pytest.mark.asyncio
+    async def test_lookup_is_case_insensitive(self):
+        from backend.api.algo.actions import help_lookup
+
+        result = await help_lookup({}, {"name": "WHEN"})
+        assert len(result["matches"]) == 1
+        assert result["matches"][0]["token"] == "when"
+
+    @pytest.mark.asyncio
+    async def test_keyword_lookup_never_queries_the_catalog_registry_falsely(self):
+        """A DSL keyword has no real GrammarToken row — confirms the
+        synthetic match isn't accidentally also duplicated by a stray
+        catalog hit in the test fixture's own seeded rows."""
+        from backend.api.algo.actions import help_lookup
+
+        result = await help_lookup({}, {"name": "when"})
+        kinds = {m["token_kind"] for m in result["matches"]}
+        assert kinds == {"keyword"}
+
     @pytest.mark.asyncio
     async def test_no_name_provided_degrades_gracefully(self):
         from backend.api.algo.actions import help_lookup
