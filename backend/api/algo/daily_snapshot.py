@@ -1460,20 +1460,45 @@ async def snapshot_daily_book(target_date: Optional[date] = None,
             # Prune positions rows no longer in broker response (e.g. post-settlement cleanup).
             # Only fires when the broker positions call succeeded (raw["positions"] is a list,
             # not None). An empty list means all positions are closed — wipes all today's rows.
+            #
+            # 2026-11-05 live-incident fix — pruning is gated on `market_open=True`.
+            # The broker's own "day positions" bucket resets/clears an already-
+            # closed (qty=0) position some time after settlement, so a snapshot
+            # fetch firing HOURS late (a missed-window catch-up, a restart's
+            # startup snapshot, a SessionGuard recovery — all of which pass
+            # `market_open=False`) can come back "successfully" with a symbol
+            # set that is genuinely narrower than reality, not because the
+            # position is actually gone. Treating that late response as
+            # authoritative silently and PERMANENTLY deleted a real closed
+            # position's settlement row — confirmed live: the regular 23:4x IST
+            # MCX settlement correctly wrote `positions=7`/`positions=5` for two
+            # accounts; a startup-snapshot catch-up ~2h later (itself caused by
+            # the `_preload_snapshot_sentinels()` holdings-signal gap fixed
+            # earlier the same day) came back with only 6/5 symbols and this
+            # prune step deleted the missing symbol's row outright, with no way
+            # to recover it afterward. A genuine live-hours fetch (`market_open
+            # =True`) is always fired promptly and is trusted as before — only
+            # the off-hours/late-catch-up case defers cleanup to the next real
+            # live-hours confirmation instead of deleting on a fetch that might
+            # be stale. Matches CLAUDE.md's "Staleness indicator freeze rule":
+            # a position that lingers one extra day before being correctly
+            # pruned is a strictly safer failure mode than one silently and
+            # irreversibly deleted on an untrustworthy snapshot.
             if raw["positions"] is not None:
                 _p_syms = {r["symbol"] for r in p_rows}
-                _pruned = await _delete_orphan_positions(target_date, account, _p_syms)
-                if _pruned:
-                    logger.info(
-                        "[SNAPSHOT] pruned %d stale position row(s) for %s %s",
-                        _pruned, account, target_date,
-                    )
-                _prior_pruned = await _delete_prior_orphan_positions(account, _p_syms)
-                if _prior_pruned:
-                    logger.info(
-                        "[SNAPSHOT] pruned %d stale position row(s) from prior snapshot for %s",
-                        _prior_pruned, account,
-                    )
+                if market_open:
+                    _pruned = await _delete_orphan_positions(target_date, account, _p_syms)
+                    if _pruned:
+                        logger.info(
+                            "[SNAPSHOT] pruned %d stale position row(s) for %s %s",
+                            _pruned, account, target_date,
+                        )
+                    _prior_pruned = await _delete_prior_orphan_positions(account, _p_syms)
+                    if _prior_pruned:
+                        logger.info(
+                            "[SNAPSHOT] pruned %d stale position row(s) from prior snapshot for %s",
+                            _prior_pruned, account,
+                        )
 
                 # Confirmed-empty marker — written AFTER the prune calls
                 # above (not before) so it can never be swept by

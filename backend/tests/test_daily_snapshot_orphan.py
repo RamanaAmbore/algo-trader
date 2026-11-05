@@ -268,6 +268,103 @@ def test_snapshot_prunes_orphan_on_refresh():
     )
 
 
+def test_snapshot_skips_prune_when_market_open_is_false():
+    """2026-11-05 live-incident fix: an off-hours/late-catch-up snapshot
+    (market_open=False — startup snapshot, SessionGuard recovery, a
+    missed-window catch-up) must NEVER delete a position row, even when
+    the broker response is missing a symbol that a prior row carries.
+
+    Live-confirmed root cause: the broker's own "day positions" bucket
+    resets some time after settlement, so a snapshot fetch firing hours
+    late can come back "successfully" (raw["positions"] is a real list,
+    not None) with a symbol set narrower than reality — not because the
+    position is actually gone. The regular 23:4x IST MCX settlement
+    correctly captured 7/5 positions for two real accounts; a startup
+    snapshot ~2h later came back with only 6/4 symbols, and because
+    pruning wasn't gated, `_delete_orphan_positions`/`_delete_prior_
+    orphan_positions` permanently deleted the missing symbol's row with
+    no way to recover it. Same raw_data shape as
+    test_snapshot_prunes_orphan_on_refresh above (RELIANCE present,
+    NIFTY implicitly "gone") — the only difference is `market_open=False`
+    — proves the gate, not a different broker response shape."""
+    from backend.api.algo.daily_snapshot import snapshot_daily_book
+
+    reliance_pos = {
+        "tradingsymbol": "RELIANCE",
+        "exchange": "NSE",
+        "quantity": 10,
+        "average_price": 2800.0,
+        "last_price": 2850.0,
+        "close_price": 2800.0,
+        "pnl": 500.0,
+        "day_change": 50.0,
+        "day_change_percentage": 1.78,
+        "overnight_quantity": 10,
+        "day_buy_quantity": 0,
+        "day_sell_quantity": 0,
+        "day_buy_value": 0.0,
+        "day_sell_value": 0.0,
+    }
+
+    raw_data = {
+        "holdings": [],
+        "positions": [reliance_pos],
+        "trades": [],
+        "funds": [],
+    }
+
+    fake_broker = MagicMock()
+    fake_broker.account = ACCOUNT
+
+    delete_calls: list = []
+    prior_delete_calls: list = []
+
+    async def fake_delete_orphan(target_date, account, current_symbols):
+        delete_calls.append((target_date, account, frozenset(current_symbols)))
+        return 1
+
+    async def fake_delete_prior(account, current_symbols):
+        prior_delete_calls.append((account, frozenset(current_symbols)))
+        return 1
+
+    async def fake_upsert(rows):
+        return len(rows)
+
+    mock_connections = MagicMock()
+    mock_connections.conn = {ACCOUNT: MagicMock()}
+    mock_loop = _make_loop_mock(raw_data)
+
+    with (
+        patch("backend.api.algo.daily_snapshot._get_connections",
+              return_value=mock_connections),
+        patch("backend.brokers.registry.all_brokers",
+              return_value=[fake_broker]),
+        patch("backend.api.algo.daily_snapshot._upsert_rows",
+              side_effect=fake_upsert),
+        patch("backend.api.algo.daily_snapshot._delete_orphan_positions",
+              side_effect=fake_delete_orphan),
+        patch("backend.api.algo.daily_snapshot._delete_prior_orphan_positions",
+              side_effect=fake_delete_prior),
+        patch("asyncio.get_running_loop", return_value=mock_loop),
+    ):
+        result = asyncio.run(snapshot_daily_book(
+            target_date=TARGET_DATE, market_open=False,
+        ))
+
+    assert result["errors"] == [], f"snapshot_daily_book reported errors: {result['errors']}"
+    assert ACCOUNT in result["accounts"]
+    assert delete_calls == [], (
+        "market_open=False must never call _delete_orphan_positions — "
+        f"got: {delete_calls}"
+    )
+    assert prior_delete_calls == [], (
+        "market_open=False must never call _delete_prior_orphan_positions — "
+        f"got: {prior_delete_calls}"
+    )
+    # The row itself must still be written (upsert is unaffected by the gate).
+    assert result["positions_rows"] >= 1
+
+
 def test_snapshot_skips_prune_on_broker_positions_failure():
     """When broker.positions() raises, raw['positions'] stays None.
     _delete_orphan_positions must NOT be called — guards against wiping
