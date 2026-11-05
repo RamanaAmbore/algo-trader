@@ -365,6 +365,70 @@ def test_snapshot_skips_prune_when_market_open_is_false():
     assert result["positions_rows"] >= 1
 
 
+def test_snapshot_confirmed_empty_marker_still_writes_when_market_open_is_false():
+    """The 2026-11-05 market_open gate wraps only the two DELETE calls —
+    `_write_confirmed_empty_marker` (a write establishing a future prune
+    anchor, never itself a deletion) must still fire off-hours exactly
+    as before. Pins that the new `if market_open:` block was inserted
+    as a sibling of the marker-write branch, not an ancestor that
+    accidentally swallows it too."""
+    from backend.api.algo.daily_snapshot import snapshot_daily_book
+
+    raw_data = {
+        "holdings": [],
+        "positions": [],  # broker confirms zero open positions
+        "trades": [],
+        "funds": [],
+        "positions_confirmed": True,
+    }
+
+    fake_broker = MagicMock()
+    fake_broker.account = ACCOUNT
+
+    marker_calls: list = []
+
+    async def fake_marker(account, target_date, now_ist):
+        marker_calls.append((account, target_date))
+
+    async def fake_delete_orphan(target_date, account, current_symbols):
+        return 0
+
+    async def fake_delete_prior(account, current_symbols):
+        return 0
+
+    async def fake_upsert(rows):
+        return len(rows)
+
+    mock_connections = MagicMock()
+    mock_connections.conn = {ACCOUNT: MagicMock()}
+    mock_loop = _make_loop_mock(raw_data)
+
+    with (
+        patch("backend.api.algo.daily_snapshot._get_connections",
+              return_value=mock_connections),
+        patch("backend.brokers.registry.all_brokers",
+              return_value=[fake_broker]),
+        patch("backend.api.algo.daily_snapshot._upsert_rows",
+              side_effect=fake_upsert),
+        patch("backend.api.algo.daily_snapshot._delete_orphan_positions",
+              side_effect=fake_delete_orphan),
+        patch("backend.api.algo.daily_snapshot._delete_prior_orphan_positions",
+              side_effect=fake_delete_prior),
+        patch("backend.api.algo.daily_snapshot._write_confirmed_empty_marker",
+              side_effect=fake_marker),
+        patch("asyncio.get_running_loop", return_value=mock_loop),
+    ):
+        result = asyncio.run(snapshot_daily_book(
+            target_date=TARGET_DATE, market_open=False,
+        ))
+
+    assert result["errors"] == []
+    assert marker_calls == [(ACCOUNT, TARGET_DATE)], (
+        "_write_confirmed_empty_marker must still fire off-hours when the "
+        f"broker confirms zero positions — got: {marker_calls}"
+    )
+
+
 def test_snapshot_skips_prune_on_broker_positions_failure():
     """When broker.positions() raises, raw['positions'] stays None.
     _delete_orphan_positions must NOT be called — guards against wiping

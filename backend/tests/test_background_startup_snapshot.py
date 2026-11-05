@@ -262,6 +262,76 @@ async def test_preload_query_counts_holdings_rows_as_non_mcx_signal():
 
 
 # ---------------------------------------------------------------------------
+# Test 3c: end-to-end — _preload_snapshot_sentinels() feeding straight into
+# _ds_startup_snapshot()'s own gate, reproducing the full live-incident call
+# chain in one test (2026-11-05 fix).
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_restart_on_mcx_only_positions_day_skips_startup_live_fetch():
+    """Full reproduction of the 2026-11-05 live incident in one test:
+    a `ramboq_api` restart at 06:41 IST, on a day where every account's
+    open `positions` rows are MCX-only (so the real NON-MCX settlement
+    is recorded only as `kind='holdings'` rows) must NOT fall through to
+    a live broker fetch.
+
+    Sibling tests above (`test_preload_query_counts_holdings_rows_as_non_mcx_signal`)
+    already prove `_preload_snapshot_sentinels()` seeds the NON-MCX
+    sentinel correctly in isolation; `test_ds_startup_snapshot_skips_when_eod_sentinels_set`
+    already proves `_ds_startup_snapshot()`'s own gate respects an
+    already-seeded sentinel. Neither exercises the two wired together —
+    which is exactly the path that was broken live: before the fix, the
+    sentinel never got seeded on an MCX-only `positions` day, so this
+    exact restart sequence fell through and fired a real broker fetch
+    at 06:41 IST, hours before the 08:00 IST market open."""
+    from backend.api.background import (
+        _preload_snapshot_sentinels, _ds_startup_snapshot, _snapshot_fired_today,
+    )
+    from zoneinfo import ZoneInfo
+
+    original_state = _snapshot_fired_today.copy()
+    _snapshot_fired_today["NON-MCX"] = None
+    _snapshot_fired_today["MCX"] = None
+
+    ist = ZoneInfo("Asia/Kolkata")
+    now_ist = datetime.now(ist).replace(hour=6, minute=41, second=0, microsecond=0)
+
+    async def _fake_execute(stmt, *a, **kw):
+        res = MagicMock()
+        # Real-world shape from the incident: MCX positions exist, NO
+        # non-MCX positions rows, but a genuine NON-MCX holdings
+        # settlement landed in the session window.
+        res.one_or_none.return_value = MagicMock(has_non_mcx=True, has_mcx=True)
+        return res
+
+    mock_session = AsyncMock()
+    mock_session.execute = AsyncMock(side_effect=_fake_execute)
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=None)
+
+    try:
+        with patch("backend.api.database.async_session") as mock_async_session:
+            mock_async_session.return_value = mock_session
+            await _preload_snapshot_sentinels()
+
+        with patch("backend.api.background.exchange_clock") as mock_clock, \
+             patch("backend.api.background.is_trading_day_today", return_value=True), \
+             patch("backend.api.background._snapshot_fire", new_callable=AsyncMock) as mock_fire:
+            mock_clock.is_exchange_open.return_value = False
+
+            await _ds_startup_snapshot(now_ist)
+
+            assert not mock_fire.called, (
+                "a 06:41 IST restart on an MCX-only positions day must "
+                "not fall through to a live broker fetch — the real "
+                "NON-MCX settlement is recorded as kind='holdings'"
+            )
+    finally:
+        _snapshot_fired_today.clear()
+        _snapshot_fired_today.update(original_state)
+
+
+# ---------------------------------------------------------------------------
 # Test 4: No sentinels set when no daily_book rows exist for today
 # ---------------------------------------------------------------------------
 
