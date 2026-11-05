@@ -1341,6 +1341,45 @@ def _build_polars_symbol_summary(df: "pl.DataFrame") -> "pl.DataFrame":
     ).rename({'_prev_val': 'day_prev_val'})
 
 
+def _restore_closed_position_avg_cost(raw: "pd.DataFrame") -> None:
+    """Restore `average_price` for a flat (quantity == 0) live position row.
+
+    2026-11-05 live fix (operator: "lots, price, avg for positions
+    closed are shown as zero. keep the correct values."). Kite zeroes
+    `average_price` once a position's net quantity goes to zero —
+    documented broker behaviour, not a signal that no entry price
+    exists. The row's own whole-life `buy_price`/`sell_price` fields
+    (NOT the today-only `day_buy_price`/`day_sell_price` pair) still
+    carry the real entry price for whichever side opened the position.
+    Same derivation `daily_snapshot.py:_positions_build_row` uses for
+    the daily_book write path (`pnl_math.closed_position_entry_price`)
+    — this is the live-fetch-path counterpart, since a closed position
+    is most commonly viewed live (during market hours, right after the
+    close) rather than only in the overnight snapshot.
+
+    No-op when `raw` is empty or lacks the columns this needs — a
+    missing `buy_price`/`sell_price` pair just means the fallback
+    (Kite's own zeroed `average_price`, left untouched) applies, same
+    as before this fix.
+    """
+    if raw.empty or 'average_price' not in raw.columns or 'quantity' not in raw.columns:
+        return
+    _qty = pd.to_numeric(raw['quantity'], errors='coerce').fillna(0)
+    _flat_mask = (_qty == 0)
+    if not _flat_mask.any():
+        return
+    from backend.api.algo.pnl_math import closed_position_entry_price
+
+    def _entry_price(row):
+        avg_px = pd.to_numeric(row.get('average_price'), errors='coerce')
+        avg_px = float(avg_px) if pd.notna(avg_px) else 0.0
+        oq_raw = pd.to_numeric(row.get('overnight_quantity'), errors='coerce')
+        oq_raw = float(oq_raw) if pd.notna(oq_raw) else 0.0
+        return closed_position_entry_price(row.to_dict(), avg_px, oq_raw)
+
+    raw.loc[_flat_mask, 'average_price'] = raw.loc[_flat_mask].apply(_entry_price, axis=1)
+
+
 def _apply_flat_row_hygiene(raw: "pd.DataFrame") -> None:
     """Zero day_change and day_change_percentage for pure intraday round-trips.
 
@@ -1539,6 +1578,13 @@ async def _fetch(force_refresh: bool = False) -> PositionsResponse:
     # report a per-share day_change delta (LTP is meaningless for a closed
     # position). Separate from the day_change_val backstop above.
     _apply_flat_row_hygiene(raw)
+
+    # 2026-11-05 live fix — restore average_price for a closed (qty=0)
+    # row before the fillna(0) below would otherwise make Kite's own
+    # broker-zeroed value permanent-looking. Must run before the numeric
+    # fillna so a row this can't derive an entry price for still falls
+    # through to the same 0 it would have shown anyway.
+    _restore_closed_position_avg_cost(raw)
 
     numeric = raw.select_dtypes(include='number').columns
     raw[numeric] = raw[numeric].fillna(0)

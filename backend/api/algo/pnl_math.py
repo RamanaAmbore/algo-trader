@@ -340,6 +340,68 @@ def naive_day_pnl(ltp: float, cls: float, qty: float) -> float:
     return (ltp - cls) * qty
 
 
+def closed_position_entry_price(
+    r: dict, avg_px: "float | None", oq_raw: float, multiplier: int = 1,
+) -> "float | None":
+    """Return the entry (average cost) price for a position whose net
+    quantity has gone flat (qty=0).
+
+    2026-11-05 live fix (operator: "lots, price, avg for positions
+    closed are shown as zero. keep the correct values."). Kite zeroes
+    both `average_price` and the lot count once a position's net
+    quantity reaches zero — documented broker behaviour, not a missing-
+    data signal. The row's own `buy_price`/`sell_price` fields still
+    carry the real whole-life VWAP for each side, though: whichever side
+    OPENED the position (buy for a long, sell-short for a short) is the
+    entry price; the other side is the exit price. This is the entry-
+    price mirror of `_closed_position_exit_ltp` (daily_snapshot.py),
+    which already derives the EXIT price from the same day_buy/day_sell
+    fields — same VWAP shape, opposite side selection, kept as two
+    functions (not one with a flag) because the two call sites read
+    different field names for the same concept (`buy_price`/`sell_price`
+    — the row's own whole-life running average — here, vs
+    `day_buy_value`/`day_sell_value` — today's trades only — there) and
+    conflating them risks silently swapping one call site onto the
+    other's semantics.
+
+    Direction: `oq_raw >= 0` means the position was flat-or-long
+    overnight (opened by BUYING) — entry = buy side. `oq_raw < 0` means
+    it was short (opened by SELLING) — entry = sell side. Falls back to
+    `avg_px` (whatever Kite's own `average_price` already was — 0 for a
+    genuinely closed row, but this function is only ever called in that
+    exact case) when the relevant side's qty/price/value are absent or
+    non-positive — never fabricates an entry price from incomplete data.
+    """
+    if avg_px:
+        return avg_px
+    if oq_raw >= 0:
+        qty = float(r.get("buy_quantity") or 0)
+        price = r.get("buy_price")
+    else:
+        qty = float(r.get("sell_quantity") or 0)
+        price = r.get("sell_price")
+    if qty > 0 and price:
+        return float(price)
+    return avg_px
+
+
+def closed_position_entry_lots(r: dict, oq_raw: float) -> "float | None":
+    """Return the entry (opening) lot/contract count for a flat position.
+
+    Same rationale and direction convention as `closed_position_entry_
+    price` above — `buy_quantity`/`sell_quantity` carry the real
+    whole-life opening size even once net `quantity` has gone to zero.
+    Caller is responsible for converting this contracts-or-lots value
+    (whichever unit the row's own `quantity` field uses) into the same
+    unit its own lots/lot_size convention expects — this function only
+    picks the correct SIDE, it does not know the caller's unit."""
+    if oq_raw >= 0:
+        qty = r.get("buy_quantity")
+    else:
+        qty = r.get("sell_quantity")
+    return float(qty) if qty else None
+
+
 def apply_day_change_backstop(raw: pd.DataFrame) -> pd.DataFrame:
     """Restore day_change_val for rows where the broker gate zeroed it.
 

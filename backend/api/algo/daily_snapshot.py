@@ -724,10 +724,28 @@ def _positions_build_row(
     """Assemble the final daily_book row dict for one position.
 
     Closed positions (qty_contracts == 0) receive a VWAP-derived ltp from
-    _closed_position_exit_ltp so the snapshot records the actual exit price.
+    _closed_position_exit_ltp so the snapshot records the actual exit
+    price, and an entry avg_cost/lots derived from the same row's own
+    whole-life buy/sell fields via closed_position_entry_price /
+    closed_position_entry_lots (pnl_math.py) — Kite zeroes both
+    `average_price` and the lot count once net quantity hits zero, which
+    is documented broker behaviour, not "no entry data exists" (2026-11-05
+    live fix, operator: "lots, price, avg for positions closed are shown
+    as zero. keep the correct values.").
     """
+    from backend.api.algo.pnl_math import closed_position_entry_price, closed_position_entry_lots
+
     if qty_contracts == 0:
         ltp_val = _closed_position_exit_ltp(r, ltp_val, oq_raw, multiplier)
+        avg_cost_val = closed_position_entry_price(r, avg_px or None, oq_raw, multiplier)
+        entry_qty_raw = closed_position_entry_lots(r, oq_raw)
+        if entry_qty_raw is not None:
+            lots_val = (
+                int(entry_qty_raw) if multiplier > 1
+                else int(entry_qty_raw) // max(lot_size_val, 1)
+            )
+    else:
+        avg_cost_val = float(r["average_price"]) if r.get("average_price") is not None else None
 
     previous_close_val = _position_previous_close(
         oq_raw, avg_px, qty_contracts, pos_close_ref, r
@@ -743,7 +761,7 @@ def _positions_build_row(
         "qty":            qty_contracts,
         "lots":           lots_val,
         "lot_size":       lot_size_val,
-        "avg_cost":       float(r["average_price"]) if r.get("average_price") is not None else None,
+        "avg_cost":       avg_cost_val,
         "ltp":            ltp_val,
         "day_pnl":        day_pnl,
         # SSOT: current_total_profit(realised, unrealised) — this value is
