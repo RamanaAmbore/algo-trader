@@ -1126,6 +1126,35 @@ export const orderModalFocusPing = writable(0);
 export const chaseActiveCount = writable(0);
 export const chaseDrawerOpen  = writable(false);
 
+// chasePollKick — 2026-11-05 live fix (operator: "chase status is taking
+// time to display. it can show chase immediately after showing the
+// order"). Every `<ChaseCard>` instance slows its own poll to a 15-30s
+// idle cadence once `_chases.length === 0` (deliberate — see that
+// component's own comment on avoiding background network noise on a
+// resting page). A freshly-submitted chase-eligible order then sits
+// behind whatever is left of that idle window before the chase
+// badge/countdown appears, even though the order itself (a separate,
+// faster-polled surface) renders immediately.
+//
+// A plain incrementing counter, not a boolean — `$effect`/subscribe
+// re-fires on every distinct bump even if a prior kick's poll hasn't
+// settled yet, and two call sites bumping in the same tick still
+// produce two intents (idempotent in effect: ChaseCard's own
+// in-flight `_fetching` guard already coalesces overlapping fetches).
+// Call `kickChasePoll()` right after a successful chase-eligible live
+// submit (OrderTicket.svelte, SymbolPanel.svelte's basket submit) —
+// never on a failed/rejected submit, since nothing chase-relevant
+// changed then. Every mounted ChaseCard instance (the layout's one
+// persistent header instance, /orders' own instance, etc.) reads this
+// independently and force-polls once on a bump; there is no
+// parent/child relationship between them to prop-drill through
+// instead, matching the pattern `chaseActiveCount`/`chaseDrawerOpen`
+// above already use for the same cross-cutting reason.
+export const chasePollKick = writable(0);
+export function kickChasePoll() {
+  chasePollKick.update((n) => n + 1);
+}
+
 // ── Chart modal control ──────────────────────────────────────────────
 // Mounted once in (algo)/+layout.svelte (same as ActivityLogModal).
 // `k` keyboard shortcut + PageHeaderActions chart button both call

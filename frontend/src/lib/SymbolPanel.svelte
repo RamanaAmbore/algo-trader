@@ -2383,6 +2383,16 @@
           });
         }
       }
+      // 2026-11-05 live fix (operator: "chase status is taking time to
+      // display. it can show chase immediately after showing the
+      // order") — same as OrderTicket.svelte's own submit() call site;
+      // basket chase is a shared per-request toggle (`_sharedChase`),
+      // not per-leg, so one kick after a successful live submit covers
+      // every chase-eligible leg in this basket.
+      if (basketMode2 === 'live' && _sharedChase && ok > 0) {
+        const { kickChasePoll } = await import('$lib/stores');
+        kickChasePoll();
+      }
     } catch (e) {
       // 2026-11-05 fix (HIGH-severity audit finding) — a client-side
       // submit timeout is NOT a known rejection (same D3 bug class

@@ -44,7 +44,7 @@
   import { toast } from '$lib/data/toastStore.svelte.js';
   import { isHeldPendingReleaseState } from '$lib/data/templateAttachToast.js';
   import CardHeader from '$lib/CardHeader.svelte';
-  import { visibleInterval } from '$lib/stores';
+  import { visibleInterval, chasePollKick } from '$lib/stores';
 
   let {
     pollMs   = 3000,
@@ -403,6 +403,20 @@
   onDestroy(() => {
     if (_timer) { _timer(); _timer = null; }
     if (_clockTimer) { clearInterval(_clockTimer); _clockTimer = null; }
+  });
+
+  // 2026-11-05 live fix — force an immediate poll whenever a submit path
+  // calls `kickChasePoll()` ($lib/stores), instead of waiting out
+  // whatever is left of the idle-slowed 15-30s cadence. Skips the FIRST
+  // effect run (mount-time, value still its initial 0) since `onMount`'s
+  // own `_load()` above already covers that — this effect only reacts to
+  // genuine bumps after mount. `_poll()`, not `_load()` directly, so the
+  // existing in-flight guard still coalesces a kick that lands mid-fetch.
+  let _kickedOnce = false;
+  $effect(() => {
+    void $chasePollKick;
+    if (!_kickedOnce) { _kickedOnce = true; return; }
+    untrack(_poll);
   });
 </script>
 
