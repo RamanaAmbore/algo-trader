@@ -257,6 +257,43 @@ async def _bk_validate_strategy_scope(data: BasketOrderRequest, request: Request
         )
 
 
+def _bk_resolve_effective_mode(
+    client_mode: "str | None", *, paper_trading_mode: bool, shadow_on: bool, is_prod: bool,
+) -> str:
+    """Resolve `basket_order_handler`'s effective dispatch mode — same
+    gate as `/ticket`, PLUS the client's own resolved mode (2026-11-05
+    fix, CRITICAL money-safety audit finding). Extracted as a pure
+    function so it's directly unit-testable with no mocking at all.
+
+    Before this, `eff_mode` was computed ENTIRELY from server-side
+    settings — a Chain basket submitted while the navbar showed SIM or
+    REPLAY had no way to avoid going live on prod, since
+    `BasketOrderRequest` had no field to carry the client's mode at all
+    (msgspec silently dropped it) and `eff_mode` never looked past
+    `execution.paper_trading_mode`/`execution.shadow_mode`/branch.
+
+    `client_mode`, when present, can only ever ADD a reason to go paper
+    — never override the server's own force-to-paper conditions below,
+    and never escalate to live. Any value other than the literal string
+    "live" (paper/sim/replay/shadow/anything else, including a future
+    client bug) is treated as "please don't go live" — the opposite-
+    direction trust `/ticket` places in `data.mode == "live"` would be
+    unsafe to mirror exactly here, since a basket's `eff_mode` is
+    resolved once for the whole request rather than per-order.
+
+    Precedence: shadow > paper_trading_mode > non-prod branch >
+    client-requested-non-live > LIVE.
+    """
+    _client_mode = (client_mode or "").strip().lower()
+    if shadow_on:
+        return "shadow"
+    if (not is_prod) or paper_trading_mode:
+        return "paper"
+    if _client_mode and _client_mode != "live":
+        return "paper"
+    return "live"
+
+
 async def basket_order_handler(
     data: BasketOrderRequest,
     request: Request,
@@ -300,17 +337,16 @@ async def basket_order_handler(
     # reintroduce a role check here — the route guard is the sole
     # authority.
 
-    # Resolve effective mode — same gate as /ticket.
+    # Resolve effective mode — see `_bk_resolve_effective_mode`'s own
+    # docstring for the full rationale (2026-11-05 CRITICAL money-safety
+    # audit fix: `data.mode` is new, and is the only thing that lets this
+    # handler see the client's navbar state at all).
     _ptm = _get_bool("execution.paper_trading_mode", False)
     _shadow = _get_bool("execution.shadow_mode", False)
     _shadow_on = _shadow and is_prod_branch()
-    # Determine mode: shadow > paper_trading_mode > LIVE.
-    if _shadow_on:
-        eff_mode = "shadow"
-    elif not is_prod_branch() or _ptm:
-        eff_mode = "paper"
-    else:
-        eff_mode = "live"
+    eff_mode = _bk_resolve_effective_mode(
+        data.mode, paper_trading_mode=_ptm, shadow_on=_shadow_on, is_prod=is_prod_branch(),
+    )
 
     eff_target_pct = _resolve_target_pct(data.target_pct)
 

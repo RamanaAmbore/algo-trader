@@ -9,7 +9,7 @@
   import { SvelteMap } from 'svelte/reactivity';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
-  import { authStore, marketAwareInterval, visibleInterval, selectedStrategyId, strategyOpenSymbols, includeHoldings, brokerHealthStore, lastRefreshAt } from '$lib/stores';
+  import { authStore, marketAwareInterval, visibleInterval, selectedStrategyId, strategyOpenSymbols, includeHoldings, brokerHealthStore, lastRefreshAt, executionMode } from '$lib/stores';
   import AlgoTimestamp from '$lib/AlgoTimestamp.svelte';
   import StrategyPicker from '$lib/StrategyPicker.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
@@ -3682,16 +3682,28 @@
     // path so the basket isn't a footgun (was hardcoded to 'paper' which
     // silently routed every leg through the paper engine even when the
     // operator had flipped to LIVE on /admin/execution).
+    //
+    // 2026-11-05 fix (CRITICAL money-safety audit finding, same bug
+    // class fixed in SymbolPanel.svelte's `_resolveBasketMode` for the
+    // Chain-tab basket) — this never read `$executionMode` at all, so
+    // SIM/REPLAY/SHADOW resolved to 'live' here whenever the server
+    // reported paper_trading_mode off on the main branch, regardless of
+    // what the navbar pill actually showed. Only the literal navbar
+    // value 'live' may even attempt to go live — same convention as
+    // OptionChainTab's own `_resolveBasketMode()`.
+    const navbarMode = String($executionMode || 'paper').toLowerCase();
     let basketMode = 'paper';
-    try {
-      const live = await fetchLiveStatus();
-      if (live && live.paper_trading_mode === false && live.branch === 'main') {
-        basketMode = 'live';
+    if (navbarMode === 'live') {
+      try {
+        const live = await fetchLiveStatus();
+        if (live && live.paper_trading_mode === false && live.branch === 'main') {
+          basketMode = 'live';
+        }
+      } catch {
+        basketError = 'Could not determine execution mode. Try again.';
+        basketPlacing = false;
+        return;
       }
-    } catch {
-      basketError = 'Could not determine execution mode. Try again.';
-      basketPlacing = false;
-      return;
     }
 
     basketPlacing  = true;

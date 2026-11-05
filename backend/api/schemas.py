@@ -627,6 +627,21 @@ class BasketOrderRequest(msgspec.Struct):
     groups: list[BasketGroup]
     # Optional TP override; falls back to algo.default_target_pct when None.
     target_pct: Optional[float] = None
+    # 2026-11-05 fix (CRITICAL money-safety audit finding) — the client's
+    # own resolved execution mode (SymbolPanel's `_resolveBasketMode()`),
+    # same convention as `TicketOrderRequest.mode`. This field never
+    # existed before, so msgspec silently dropped whatever mode the
+    # client sent — `orders_basket.py:basket_order_handler`'s `eff_mode`
+    # was computed ENTIRELY from server-side settings
+    # (execution.paper_trading_mode / execution.shadow_mode / branch),
+    # with no way to see that the navbar was actually in SIM or REPLAY.
+    # A Chain basket submitted while the navbar showed SIM placed real
+    # LIVE broker orders on prod. See `basket_order_handler`'s own
+    # comment for how this is consumed — unlike `/ticket` (which trusts
+    # `data.mode == "live"` directly), a non-"live" value here can only
+    # ever ADD a reason to go paper, never override the server's own
+    # force-to-paper conditions, and never escalate to live.
+    mode: Optional[str] = None
 
 
 class BasketLegResult(msgspec.Struct):

@@ -258,7 +258,16 @@ export async function submitResolvedConsoleOrder(resolved, opts = {}) {
   const { mode, source = 'command' } = opts;
   try {
     if (resolved.basket) {
-      const response = await placeBasket(resolved.basket.groups);
+      // 2026-11-05 fix (CRITICAL money-safety audit finding) — `mode`
+      // used to be read above (this function's own docstring explains
+      // why — AgentCliEditor's compiled `mode` collapses shadow/sim/
+      // replay to paper, so the caller passes the real executionMode
+      // value through explicitly) but was never threaded into the
+      // basket call at all, silently dropping the exact same signal
+      // the ticket branch below correctly uses. See `placeBasket`'s
+      // own comment (api.js) and `basket_order_handler`'s (orders_
+      // basket.py) for how a non-"live" value is honoured server-side.
+      const response = await placeBasket(resolved.basket.groups, mode);
       return { ok: true, kind: 'basket', response };
     }
     if (resolved.ticket) {

@@ -73,7 +73,11 @@ describe('SymbolPanel.svelte — submitBasket tags each leg source="basket"', ()
   // builder that reaches the /orders/basket network call.
   it('source: \'basket\' is inside the groups/legs builder, not the onSubmit callback', () => {
     const groupsIdx = block.indexOf('const groups =');
-    const placeIdx  = block.indexOf('await placeBasket(groups)');
+    // 2026-11-05 fix (CRITICAL money-safety audit) — placeBasket now
+    // takes the resolved mode as a second argument so the backend can
+    // see the navbar's real SIM/REPLAY state (see
+    // test_basket_mode_sim_replay_safety_2026_11_05.py).
+    const placeIdx  = block.indexOf('await placeBasket(groups, basketMode2)');
     const sourceMatch = block.match(/source:\s*'basket'/);
     expect(groupsIdx).toBeGreaterThan(-1);
     expect(placeIdx).toBeGreaterThan(groupsIdx);

@@ -978,8 +978,21 @@ export async function cancelAllOrders(payload) {
 /** POST /api/orders/basket — place all legs in one atomic backend call.
  *  Request:  { groups: [{ account, legs: [...] }] }
  *  Response: { groups: [{ account, basket_id, results: [...], margin_required, margin_available }] } */
-export async function placeBasket(groups) {
-  return _post('/orders/basket', { groups }, { auth: true });
+/**
+ * `mode` (2026-11-05 fix, CRITICAL money-safety audit finding) — the
+ * caller's own resolved execution mode. Before this param existed,
+ * `BasketOrderRequest` had no field to carry it at all, so a Chain
+ * basket submitted while the navbar showed SIM/REPLAY placed real LIVE
+ * broker orders on prod (the server computed its own `eff_mode`
+ * entirely from server-side settings, with zero visibility into the
+ * client's navbar state). Any value other than the literal string
+ * "live" is treated server-side as "please don't go live" — see
+ * `basket_order_handler`'s own comment in orders_basket.py.
+ * @param {any[]} groups
+ * @param {string} [mode]
+ */
+export async function placeBasket(groups, mode) {
+  return _post('/orders/basket', mode ? { groups, mode } : { groups }, { auth: true });
 }
 
 /** POST /api/orders/basket/margin — per-account margin check without placing.

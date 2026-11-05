@@ -2129,11 +2129,25 @@
   );
 
   /** Submit every leg in the shell basket via POST /api/orders/basket. */
-  // Resolves effective basket execution mode: if the current mode is
-  // paper/live, confirms against the server's branch + paper_trading_mode
-  // flag so a dev-branch basket doesn't silently go live.
+  // Resolves effective basket execution mode.
+  //
+  // 2026-11-05 fix (CRITICAL money-safety audit finding) — sim/replay/
+  // shadow used to pass straight through unchanged (the `mode !==
+  // 'paper' && mode !== 'live'` early return), matching neither this
+  // function's own name nor OrderTicket's `_resolveInitialMode`/mode-
+  // sync effect, which normalise those three to 'paper' first. Worse,
+  // the resulting value was sent as `mode: basketMode2` in the request
+  // body, but `BasketOrderRequest` had no such field at all — msgspec
+  // silently dropped it, and the backend computed its own `eff_mode`
+  // purely from server-side settings with zero visibility into what
+  // the navbar actually showed. Net effect: a Chain basket submitted
+  // while the navbar showed SIM or REPLAY placed real LIVE broker
+  // orders on prod. Normalising here AND threading the result to the
+  // backend (`basket_order_handler`'s own `data.mode` handling) closes
+  // both the client-side and server-side halves of the gap.
   async function _resolveBasketMode(/** @type {string} */ mode) {
-    if (mode !== 'paper' && mode !== 'live') return mode;
+    if (mode === 'sim' || mode === 'replay' || mode === 'shadow') return 'paper';
+    if (mode !== 'paper' && mode !== 'live') return 'paper';
     try {
       const live = await fetchLiveStatus();
       if (live && (live.branch !== 'main' || live.paper_trading_mode === true)) return 'paper';
@@ -2269,9 +2283,13 @@
       byAcct.get(acct)?.push({ legIndex: idx, leg });
     });
 
+    // `mode` is sent at the TOP LEVEL of the request body (see
+    // `placeBasket(groups, basketMode2)` below) — `BasketGroup` itself
+    // has no `mode` field, so a per-group `mode` key here was always
+    // silently dropped by the backend (2026-11-05 fix; see that call's
+    // own comment for the full story).
     const groups = [...byAcct.entries()].map(([acct, entries]) => ({
       account: acct,
-      mode: basketMode2,
       legs: entries.map(({ leg }) => ({
         tradingsymbol:    leg.sym,
         exchange:         leg.exchange || 'NFO',
@@ -2318,7 +2336,7 @@
     const fails = [];
 
     try {
-      const resp = await placeBasket(groups);
+      const resp = await placeBasket(groups, basketMode2);
       // Map per-account results back to original leg indices.
       /** @type {Map<number,any>} */
       const resultByOrigIdx = new Map();
