@@ -186,6 +186,82 @@ async def test_preload_sets_only_nonmcx_sentinel():
 
 
 # ---------------------------------------------------------------------------
+# Test 3b: NON-MCX signal must consult kind='holdings' rows, not only
+# kind='positions' — 2026-11-05 live-incident fix.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_preload_query_counts_holdings_rows_as_non_mcx_signal():
+    """Live incident (2026-11-05): NSE/equity settlement is normally
+    recorded as `kind='holdings'` rows, not intraday `positions` rows.
+    On a day where every account's open `positions` happen to be
+    MCX-only (confirmed on prod), the ORIGINAL query — `WHERE kind =
+    'positions'` with `bool_or(exchange != 'MCX')` — could never see
+    the real 15:45 IST NON-MCX settlement at all, since it never looked
+    at `kind='holdings'` rows. The NON-MCX sentinel then stayed
+    unseeded for the rest of that trading day, and every
+    00:00-08:00 IST restart fell through `_ds_startup_snapshot`'s `and`
+    gate into a REAL live broker fetch — confirmed live via a
+    `ramboq_api` restart at 06:41 IST that briefly displaced the frozen
+    overnight snapshot with a fresh live-fetched batch.
+
+    This test asserts on the real SQL text sent to `session.execute`
+    (not just the mocked boolean result, which every sibling test above
+    already covers and would pass unchanged regardless of this fix) —
+    `bool_or` is Postgres-only so a real SQLite/in-memory round-trip
+    isn't available here; pinning the SQL text is the closest
+    integration-level guard against this exact regression recurring."""
+    from backend.api.background import _preload_snapshot_sentinels, _snapshot_fired_today
+    from backend.shared.helpers.date_time_utils import timestamp_indian
+    from backend.api.algo.expiry_freeze import session_date_of
+
+    now = timestamp_indian()
+    today = session_date_of(now)
+
+    original_state = _snapshot_fired_today.copy()
+    _snapshot_fired_today["NON-MCX"] = None
+    _snapshot_fired_today["MCX"] = None
+
+    captured_sql: list[str] = []
+
+    async def _fake_execute(stmt, *a, **kw):
+        captured_sql.append(str(stmt))
+        res = MagicMock()
+        # Simulates the real-world shape: an all-MCX positions day, but
+        # a genuine NON-MCX holdings settlement exists in the window.
+        res.one_or_none.return_value = MagicMock(has_non_mcx=True, has_mcx=True)
+        return res
+
+    mock_session = AsyncMock()
+    mock_session.execute = AsyncMock(side_effect=_fake_execute)
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=None)
+
+    try:
+        with patch("backend.api.database.async_session") as mock_async_session:
+            mock_async_session.return_value = mock_session
+            await _preload_snapshot_sentinels()
+
+        assert _snapshot_fired_today["NON-MCX"] == today
+        assert _snapshot_fired_today["MCX"] == today
+
+        assert captured_sql, "session.execute was never called"
+        sql_text = captured_sql[0].replace(" ", "")
+        assert "kind='holdings'" in sql_text, (
+            "query must treat any kind='holdings' row as a NON-MCX "
+            f"settlement signal — got SQL: {captured_sql[0]}"
+        )
+        assert "WHEREkind='positions'" not in sql_text, (
+            "query must not filter the whole FROM clause down to "
+            "kind='positions' only — that would hide every holdings "
+            f"row from bool_or entirely. Got SQL: {captured_sql[0]}"
+        )
+    finally:
+        _snapshot_fired_today.clear()
+        _snapshot_fired_today.update(original_state)
+
+
+# ---------------------------------------------------------------------------
 # Test 4: No sentinels set when no daily_book rows exist for today
 # ---------------------------------------------------------------------------
 

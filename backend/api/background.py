@@ -3852,6 +3852,24 @@ async def _preload_snapshot_sentinels() -> None:
     unseeded and letting `_ds_startup_snapshot` / `_sg_recover_mcx_snapshot`
     / `_sg_recover_nonmcx_snapshot` re-fire onto the ALREADY-correct,
     already-settled row, clobbering its `settled` payload flag and `ltp`.
+
+    `has_non_mcx` also counts any `kind='holdings'` row in the window
+    (2026-11-05 live-incident fix). NSE/equity is normally carried as
+    `holdings`, not intraday `positions` — on a day where every account's
+    open `positions` rows happen to be MCX-only, the original query (which
+    only ever looked at `kind='positions'`) could never see the real
+    15:45 IST NON-MCX settlement write at all. The NON-MCX sentinel then
+    stayed unseeded forever that day, so `_ds_startup_snapshot`'s `and`
+    gate below never found both sentinels set and fell through to a REAL
+    live broker fetch on every single restart between 00:00-08:00 IST —
+    writing a fresh `daily_book` batch stamped with the restart's own
+    wall-clock `captured_at`, which then outranks (via `MAX(captured_at)`
+    per account) the correct frozen overnight settlement row everywhere
+    positions/holdings are served. Live-confirmed 2026-11-05: a
+    `ramboq_api` restart at 06:41 IST (well inside the 23:31→08:00 closed
+    window) re-fired this exact fallback, momentarily serving a
+    live-fetched batch instead of the snapshot. Holdings are never MCX,
+    so this added signal cannot ever contaminate `has_mcx`.
     """
     from backend.api.algo.expiry_freeze import session_date_of
     from backend.api.database import async_session
@@ -3870,11 +3888,13 @@ async def _preload_snapshot_sentinels() -> None:
         async with async_session() as session:
             result = await session.execute(_sql("""
                 SELECT
-                  bool_or(exchange != 'MCX') AS has_non_mcx,
-                  bool_or(exchange  = 'MCX') AS has_mcx
+                  bool_or(
+                    kind = 'holdings'
+                    OR (kind = 'positions' AND exchange != 'MCX')
+                  ) AS has_non_mcx,
+                  bool_or(kind = 'positions' AND exchange = 'MCX') AS has_mcx
                 FROM daily_book
-                WHERE kind = 'positions'
-                  AND captured_at >= :session_start
+                WHERE captured_at >= :session_start
                   AND captured_at <  :session_end
             """).bindparams(session_start=session_start, session_end=session_end))
             row = result.one_or_none()
