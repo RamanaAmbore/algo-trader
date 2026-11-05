@@ -310,7 +310,18 @@ async def test_restart_on_mcx_only_positions_day_skips_startup_live_fetch():
     mock_session.__aexit__ = AsyncMock(return_value=None)
 
     try:
-        with patch("backend.api.database.async_session") as mock_async_session:
+        # _preload_snapshot_sentinels() computes its own "now" via
+        # timestamp_indian() internally (a local import, re-resolved from
+        # the source module on every call) to derive the session date it
+        # seeds the sentinel with. Without pinning it to the SAME now_ist
+        # used below, this test is wall-clock-dependent: it only passes
+        # when the real moment it runs in happens to fall on the same
+        # session-date side of the 08:00 IST boundary as the hardcoded
+        # 06:41 restart time — flaky by time of day, not a real bug in
+        # the fix. Pin both halves to the identical instant.
+        with patch("backend.shared.helpers.date_time_utils.timestamp_indian",
+                    return_value=now_ist), \
+             patch("backend.api.database.async_session") as mock_async_session:
             mock_async_session.return_value = mock_session
             await _preload_snapshot_sentinels()
 
