@@ -5415,6 +5415,32 @@ async def _get_manual_agent_id() -> int | None:
     return await get_agent_id_by_slug("manual")
 
 
+def _ae_detail_json_nan_safe(detail: dict) -> str:
+    """json.dumps a flat AgentEvent `detail` dict, replacing any NaN
+    float with `None` first.
+
+    2026-11-05 live operator report: "In agent log, I see many nan
+    values in stringified json." A plain `json.dumps(detail)` does not
+    raise on `float('nan')` — it emits a bare, unquoted `NaN` token,
+    which is valid for Python's own lenient encoder/decoder but not
+    valid JSON, and survives verbatim in this column (`AgentEvent.
+    detail` is plain `Text`, not `JSONB`, so nothing downstream
+    validates it as JSON either). A chase-terminal `slippage`/
+    `final_price` computed from a broker price that was itself NaN
+    (same missing-vs-zero trap as `_chase_build_tasks`'s already-fixed
+    `str(p.get('product') or 'NRML')` bug — `nan or x` evaluates to
+    `nan`, never `x`, because `bool(float('nan'))` is `True`) is the
+    likely source. `x != x` is the standard NaN self-inequality check
+    (same convention `chase.py` already uses elsewhere) — avoids a
+    pandas/numpy import for a plain dict of Python scalars."""
+    import json as _json
+    safe = {
+        k: (None if isinstance(v, float) and v != v else v)
+        for k, v in detail.items()
+    }
+    return _json.dumps(safe)
+
+
 async def record_manual_event(
     *,
     outcome: str,           # 'action_success' | 'action_failure'
@@ -5433,7 +5459,6 @@ async def record_manual_event(
     Fire-and-forget: any DB error is logged + swallowed so it cannot
     break the order placement flow.
     """
-    import json as _json
     from backend.api.models import AgentEvent
 
     agent_id = await _get_manual_agent_id()
@@ -5464,7 +5489,7 @@ async def record_manual_event(
                 agent_id=agent_id,
                 event_type=outcome,
                 trigger_condition=f"manual via {source}",
-                detail=_json.dumps(detail),
+                detail=_ae_detail_json_nan_safe(detail),
                 sim_mode=False,
             ))
             await session.commit()
@@ -5496,7 +5521,6 @@ async def record_chase_terminal(
     if agent_id is None:
         return
 
-    import json as _json
     from backend.api.models import AgentEvent
 
     detail: dict = {
@@ -5519,7 +5543,7 @@ async def record_chase_terminal(
                 agent_id=agent_id,
                 event_type=outcome,
                 trigger_condition=f"chase terminal: {symbol} {side} {qty}",
-                detail=_json.dumps(detail),
+                detail=_ae_detail_json_nan_safe(detail),
                 sim_mode=False,
             ))
             await session.commit()
