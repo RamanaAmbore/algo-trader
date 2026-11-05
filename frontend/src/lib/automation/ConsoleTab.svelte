@@ -83,13 +83,43 @@
 
   let _agentCliCatalog = $state(/** @type {any} */ (null));
   let _agentCliCatalogError = $state('');
+  // 2026-11-05 live report: "CLI catalog unavailable" (a transient fetch
+  // failure — auth-token-not-yet-attached race, a momentary network blip,
+  // same class as the templates.js incident CLAUDE.md documents) replaced
+  // the ENTIRE editor textbox with a dead-end error message, no retry
+  // affordance. Switching away from and back to the Console tab DOES
+  // remount this component (automation/+page.svelte's `{#if activeTab ===
+  // 'console'}`) and would normally retry on its own, but the operator has
+  // no way to force that without leaving an in-progress edit — this flag
+  // tracks whether a retry is currently in flight so the button can show
+  // feedback instead of appearing to do nothing on a slow retry.
+  let _agentCliCatalogRetrying = $state(false);
+
+  function _loadAgentCliCatalog() {
+    fetchAgentCatalog()
+      .then((cat) => { _agentCliCatalog = cat; _agentCliCatalogError = ''; })
+      .catch(() => { _agentCliCatalogError = 'CLI catalog unavailable'; })
+      .finally(() => { _agentCliCatalogRetrying = false; });
+  }
+
+  function _retryAgentCliCatalog() {
+    if (_agentCliCatalogRetrying) return;
+    _agentCliCatalogRetrying = true;
+    // Deliberately does NOT clear `_agentCliCatalogError` here — that would
+    // flip the template's `{#if _agentCliCatalogError}` guard to its
+    // `{:else}` branch immediately, rendering `AgentCliEditor` with
+    // `catalog={null}` (still unresolved) for the whole retry window. The
+    // error+Retry banner stays visible (Retry now disabled, "Retrying…")
+    // until `_loadAgentCliCatalog()`'s own `.then()` clears it on a
+    // confirmed success; a renewed failure leaves the same message in
+    // place via its `.catch()`.
+    _loadAgentCliCatalog();
+  }
 
   $effect(() => {
     if (isDemo) return; // /admin/grammar/tokens requires auth
     if (_agentCliCatalog || _agentCliCatalogError) return;
-    fetchAgentCatalog()
-      .then((cat) => { _agentCliCatalog = cat; _agentCliCatalogError = ''; })
-      .catch(() => { _agentCliCatalogError = 'CLI catalog unavailable'; });
+    _loadAgentCliCatalog();
   });
 
   /** Live classification of the single textbox's current text — 'agents'
@@ -508,7 +538,13 @@
         </div>
       {/if}
       {#if _agentCliCatalogError}
-        <div class="console-agent-cli-err">{_agentCliCatalogError}</div>
+        <div class="console-agent-cli-err">
+          <span>{_agentCliCatalogError}</span>
+          <button type="button" class="btn-secondary console-agent-cli-retry"
+                  onclick={_retryAgentCliCatalog} disabled={_agentCliCatalogRetrying}>
+            {_agentCliCatalogRetrying ? 'Retrying…' : 'Retry'}
+          </button>
+        </div>
       {:else}
         <AgentCliEditor
           bind:value
@@ -585,12 +621,21 @@
     margin-bottom: 0.4rem;
   }
   .console-agent-cli-err {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.6rem;
     padding: 0.4rem 0.6rem;
     border-radius: 0.3rem;
     background: var(--algo-red-bg-mid);
     border: 1px solid var(--algo-red-border-soft);
     color: var(--algo-red-text-bright);
     font-size: var(--fs-sm);
+  }
+  .console-agent-cli-retry {
+    flex-shrink: 0;
+    font-size: var(--fs-xs);
+    padding: 0.2rem 0.6rem;
   }
   .console-agent-cli-btn {
     font-size: var(--fs-md);

@@ -62,6 +62,32 @@ const _MAX_DEPTH = 20;
 const _RESERVED = new Set(['when', 'do', 'nop', 'always', 'in', 'not', 'and', 'or', 'true', 'false']);
 export const RESERVED_WORDS = _RESERVED;
 
+// ── Reserved-word descriptions for the editor's click-to-describe /
+//    hover-info panel (`describeTokenAt` below). A reserved word is pure
+//    syntax, never a catalog token, so `_lookupAnyCatalogEntry` has no
+//    row for it and the panel silently showed nothing for `when`/`do`/
+//    etc. while editing (2026-11-05 live report). Same wording as the
+//    backend `help()` DSL action's own `_DSL_SYNTAX_KEYWORDS`
+//    (backend/api/algo/grammar_tokens/action_help.py) — keep both in
+//    sync by hand when either changes; there is no shared-text mechanism
+//    across the Python/JS boundary. `given` is deliberately NOT included
+//    here even though the backend's help() covers it as a bonus entry —
+//    it is no longer in `_RESERVED` at all (see the comment above), so a
+//    bare `given` token is lexed as an ordinary NAME and never reaches
+//    this lookup through the reserved-word path.
+const _SYNTAX_KEYWORD_INFO = Object.freeze({
+  when: 'Starts the optional condition clause of WHEN ... DO ... — everything before WHEN is the preamble (runs unconditionally, every cycle for a saved agent); WHEN’s own condition gates the paired DO block. WHEN without a paired DO, or DO without WHEN, is a compile error.',
+  do: 'Starts the action clause paired with a preceding WHEN. Every action listed after DO fires only when WHEN’s own condition matched this cycle. "DO nop" alone (no real action) is rejected.',
+  nop: 'A no-op action placeholder — does nothing on its own. "DO nop" alone is rejected; it only has meaning alongside a real action in the same DO clause.',
+  always: 'A condition that is unconditionally true every cycle. Used for a schedule-only agent (e.g. one gated purely by fire_at_time) that needs a trivially-satisfied WHEN condition.',
+  in: 'Membership operator inside a condition expression — true when the left value equals one of the listed right-hand values. Usage: WHEN <metric> in [<value1>, <value2>, ...] DO <action>',
+  not: 'Logical negation inside a condition expression. Usage: WHEN not <condition> DO <action>',
+  and: 'Logical AND inside a condition expression — both sides must be true for the overall condition to match.',
+  or: 'Logical OR inside a condition expression — either side being true is enough for the overall condition to match.',
+  true: 'Boolean literal — always true. Used on either side of a condition comparison.',
+  false: 'Boolean literal — always false. Used on either side of a condition comparison.',
+});
+
 // ── `always` sentinel leaf — the exact shape the real `market-open-nse` /
 //    `market-preclose-mcx` builtin agents use (agent_engine.py ~1578-1590).
 export const ALWAYS_LEAF = Object.freeze({
@@ -10256,6 +10282,16 @@ function _describeTokenAtImpl(text, pos, catalog) {
     if (idx >= 0) {
       const covering = real[idx];
       if (covering.type !== 'NAME') return null; // literal/punctuation — no tooltip
+      // Reserved syntax words (when/do/nop/always/in/not/and/or/true/
+      // false) are never catalog tokens, so the lookup below would
+      // always miss them — answer directly from `_SYNTAX_KEYWORD_INFO`
+      // before any catalog/binding resolution even runs (2026-11-05 fix).
+      if (covering.reserved) {
+        const syntaxDesc = _SYNTAX_KEYWORD_INFO[String(covering.value).toLowerCase()];
+        if (syntaxDesc) {
+          return { name: covering.value, description: syntaxDesc, token: covering.value, kind: 'token' };
+        }
+      }
       let clauseKind = _clauseKindFromTokenPrefix(real.slice(0, idx + 1));
       const nameEnd = covering.start + String(covering.value).length;
       if (covering.hasCall && p > nameEnd) {

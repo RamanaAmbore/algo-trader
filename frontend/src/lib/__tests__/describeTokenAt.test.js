@@ -23,7 +23,7 @@ import { describe, it, expect, vi } from 'vitest';
 vi.mock('$lib/data/instruments', () => ({ getInstrument: vi.fn(() => null) }));
 vi.mock('$lib/api', () => ({ fetchGrammarTokens: vi.fn() }));
 
-const { buildCatalog, compileAgentCliStatement, describeTokenAt } =
+const { buildCatalog, compileAgentCliStatement, describeTokenAt, RESERVED_WORDS } =
   await import('$lib/command/grammars/agents.js');
 
 const FIXTURE_ROWS = [
@@ -255,6 +255,45 @@ describe('describeTokenAt() — two-tier lex fallback', () => {
     const text = 'DO place_order(symbol="RELIANCE, qty=10)';
     const r = describeTokenAt(text, text.indexOf('qty'), CATALOG);
     expect(r).toBeNull();
+  });
+});
+
+describe('describeTokenAt() — reserved syntax words (2026-11-05 live report: "help info for reserved words not displayed during edit")', () => {
+  it('clicking WHEN returns a real description, not null', () => {
+    const text = 'WHEN pnl <= -1 DO alert(telegram)';
+    const r = describeTokenAt(text, text.indexOf('WHEN') + 1, CATALOG);
+    expect(r).not.toBeNull();
+    expect(r.kind).toBe('token');
+    expect(r.token.toLowerCase()).toBe('when');
+    expect(r.description.length).toBeGreaterThan(0);
+  });
+
+  it('clicking DO returns a real description, not null', () => {
+    const text = 'WHEN pnl <= -1 DO alert(telegram)';
+    const r = describeTokenAt(text, text.indexOf(' DO') + 2, CATALOG);
+    expect(r).not.toBeNull();
+    expect(r.token.toLowerCase()).toBe('do');
+    expect(r.description).toMatch(/action clause/i);
+  });
+
+  it('every reserved word (when/do/nop/always/in/not/and/or/true/false) resolves to a non-empty description', () => {
+    // RESERVED_WORDS is the grammar's own canonical set — iterating it
+    // directly means this test fails the moment a new reserved word is
+    // added without a matching _SYNTAX_KEYWORD_INFO entry, instead of
+    // silently leaving a gap the way the original bug did.
+    for (const word of RESERVED_WORDS) {
+      const text = `WHEN ${word} DO alert(telegram)`;
+      const r = describeTokenAt(text, text.indexOf(word) + 1, CATALOG);
+      expect(r, `expected a description for reserved word "${word}"`).not.toBeNull();
+      expect(r.description.length, `empty description for "${word}"`).toBeGreaterThan(0);
+    }
+  });
+
+  it('a non-reserved NAME with the same catalog entry is unaffected by the reserved-word path', () => {
+    const text = 'WHEN pnl <= -1 DO alert(telegram)';
+    const r = describeTokenAt(text, text.indexOf('pnl') + 1, CATALOG);
+    expect(r).not.toBeNull();
+    expect(r.description).toBe('P&L metric');
   });
 });
 
