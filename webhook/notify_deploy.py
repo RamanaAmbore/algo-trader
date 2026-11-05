@@ -92,18 +92,33 @@ def main():
     # (operator requirement #4). Telegram-only, via the dedicated
     # deploy bot/chat below. `event_label`/`detail_line` are kept
     # unchanged — the AppMessage record below still uses them.
+    #
+    # 2026-11-05 — synthetic structural parity with the real alert
+    # pipeline (operator request), NOT a resolved identity: this script
+    # runs out-of-process (see module docstring) and a deploy has no
+    # real Agent/action behind it the way an order or market event does
+    # — "deploy-pipeline" is a fixed constant label, never looked up.
+    # Line 1 mirrors `dispatch_payload()`'s merged
+    # "Alert: {name} (#{id}) | {IST} | {EST}" header shape (no `(#id)`
+    # — same convention as a no-id `resolve_origin()` result elsewhere);
+    # the trailing `#deploy_pipeline` tag mirrors `_send_channel()`'s
+    # own trailing action-agent/alert-agent tag, appended to the SAME
+    # line as the body's last line (2026-11-04 "tags on the same line"
+    # fix), not a new paragraph.
     ts_line = _dual_tz_timestamp()
+    header_line = f"Alert: deploy-pipeline | {ts_line}"
     if status == "ok":
         event_label = f"Deploy OK{branch_tag}{type_suffix}"
         detail_line = f"{branch} → {commit}{layers_line}"
-        tg_body = (f"Deploy OK{branch_tag}{type_suffix} · {commit}\n{ts_line}"
+        tg_body = (f"{header_line}\nDeploy OK{branch_tag}{type_suffix} · {commit}"
                    + (f"\nLayers: {layers}" if layers else ""))
     else:
         event_label = f"⚠ DEPLOY FAILED{branch_tag}"
         detail_line = f"{branch} → {commit}" + (f" — {reason}" if reason else "") + layers_line
-        tg_body = (f"⚠ DEPLOY FAILED{branch_tag} · {commit}\n{ts_line}"
+        tg_body = (f"{header_line}\n⚠ DEPLOY FAILED{branch_tag} · {commit}"
                    + (f"\n{reason}" if reason else "")
                    + (f"\nLayers: {layers}" if layers else ""))
+    tg_body = f"{tg_body} #deploy_pipeline"
 
     # Telegram — info/deploy channel
     tg_token   = sec.get("telegram_bot_token_deploy") or sec.get("telegram_bot_token", "")

@@ -183,6 +183,58 @@ class TestPayload:
 
 
 # ---------------------------------------------------------------------------
+# Synthetic structural parity with the real alert pipeline (2026-11-05,
+# operator request) — a fixed "deploy-pipeline" label and trailing tag,
+# NOT a resolved identity (this script has no DB/Agent context — see the
+# module docstring's out-of-process rationale).
+# ---------------------------------------------------------------------------
+
+class TestSyntheticAlertStructure:
+
+    def test_success_leads_with_alert_header_line(self):
+        """Line 1 mirrors dispatch_payload()'s merged
+        'Alert: {name} | {IST} | {EST}' header shape — no (#id), since
+        there is no real Agent row behind a deploy."""
+        cfg = {"deploy_branch": "main"}
+        _, mock_tg = _run_main(cfg, branch="main")
+        text = mock_tg.call_args[1]["json"]["text"]
+        first_line = text.splitlines()[0]
+        assert first_line.startswith("Alert: deploy-pipeline | "), (
+            f"Expected header line 1 to be the synthetic Alert line, got: {first_line!r}"
+        )
+        # Dual-tz shape: two " | "-separated zone segments after the label.
+        assert first_line.count(" | ") == 2, f"Expected IST | EST pair, got: {first_line!r}"
+        assert "IST" in first_line and "EST" in first_line
+
+    def test_failure_also_leads_with_alert_header_line(self):
+        cfg = {"deploy_branch": "main"}
+        _, mock_tg = _run_main(cfg, branch="main", status="fail")
+        text = mock_tg.call_args[1]["json"]["text"]
+        assert text.splitlines()[0].startswith("Alert: deploy-pipeline | ")
+
+    def test_trailing_tag_on_the_same_line_as_the_body_not_a_new_paragraph(self):
+        """Mirrors _send_channel()'s own 'tags on the same line, not a new
+        paragraph' fix — the tag must not be preceded by a blank line or
+        even its own newline; it is appended, space-joined, to whatever
+        the body's last line already is."""
+        cfg = {"deploy_branch": "main"}
+        _, mock_tg = _run_main(cfg, branch="main", layers="Backend API · Frontend")
+        text = mock_tg.call_args[1]["json"]["text"]
+        assert text.rstrip().endswith("#deploy_pipeline")
+        assert "\n\n" not in text, f"Tag must not be on its own paragraph: {text!r}"
+        last_line = text.splitlines()[-1]
+        assert last_line.endswith("#deploy_pipeline") and last_line != "#deploy_pipeline", (
+            f"Tag must share the last content line, not sit alone on its own line: {last_line!r}"
+        )
+
+    def test_tag_present_on_failure_too(self):
+        cfg = {"deploy_branch": "main"}
+        _, mock_tg = _run_main(cfg, branch="main", status="fail")
+        text = mock_tg.call_args[1]["json"]["text"]
+        assert text.rstrip().endswith("#deploy_pipeline")
+
+
+# ---------------------------------------------------------------------------
 # dispatch.sh routing
 # ---------------------------------------------------------------------------
 
