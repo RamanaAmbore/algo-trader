@@ -31,7 +31,7 @@ vi.mock('$lib/stores', () => ({
 // AbortController branch. fetchChainExpiries accepts a caller signal → exercises
 // the caller-abort branch. placeTicketOrder opts into `throwOnTimeout` (D3 fix,
 // 2026-09) → exercises the new TimeoutError-throwing branch.
-import { fetchWhoami, fetchChainExpiries, placeTicketOrder, fetchAgents } from '$lib/api';
+import { fetchWhoami, fetchChainExpiries, placeTicketOrder, placeBasket, fetchAgents } from '$lib/api';
 import { authStore } from '$lib/stores';
 
 // ── Fetch mock helpers ────────────────────────────────────────────────────────
@@ -182,6 +182,69 @@ describe('_request — throwOnTimeout opt-in (placeTicketOrder)', () => {
       caught = e;
     }
     expect(caught?.name).toBe('AbortError');
+  });
+});
+
+// ── 2026-11-05 fix (HIGH-severity audit finding): placeBasket also ──────────
+// opts into `throwOnTimeout` now, same D3 bug class as placeTicketOrder
+// above. Before this, a basket-submit timeout resolved `null`, which
+// SymbolPanel's submitBasket() read as "every leg's result is undefined" —
+// marking ALL legs failed and keeping them in the basket for "retry" even
+// though the server had very often already placed them, risking a
+// duplicate-order resubmit.
+describe('_request — throwOnTimeout opt-in (placeBasket)', () => {
+  it('throws a distinctly-named TimeoutError instead of resolving null on the internal 15s timeout', async () => {
+    fetchSpy.mockRejectedValue(makeAbortError());
+
+    let caught = null;
+    try {
+      await placeBasket([{ account: 'ZG0790', legs: [{ tradingsymbol: 'RELIANCE', transaction_type: 'BUY', quantity: 1 }] }], 'live');
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).not.toBeNull();
+    expect(caught.name).toBe('TimeoutError');
+    expect(caught.name).not.toBe('AbortError');
+  });
+
+  it('does not resolve null on timeout (the old false-"all legs rejected" shape)', async () => {
+    fetchSpy.mockRejectedValue(makeAbortError());
+
+    await expect(
+      placeBasket([{ account: 'ZG0790', legs: [{ tradingsymbol: 'RELIANCE', transaction_type: 'BUY', quantity: 1 }] }], 'live')
+    ).rejects.toBeTruthy();
+  });
+
+  it('a genuine successful response is unaffected by throwOnTimeout', async () => {
+    const payload = { groups: [{ account: 'ZG0790', basket_id: 'rb-bk-1', results: [] }] };
+    fetchSpy.mockResolvedValue(makeFetchResponse(payload));
+
+    const result = await placeBasket([{ account: 'ZG0790', legs: [] }], 'paper');
+    expect(result).toEqual(payload);
+  });
+
+  it('sends mode at the top level of the request body, alongside groups', async () => {
+    const payload = { groups: [] };
+    fetchSpy.mockResolvedValue(makeFetchResponse(payload));
+
+    await placeBasket([{ account: 'ZG0790', legs: [] }], 'paper');
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const [, init] = fetchSpy.mock.calls[0];
+    const body = JSON.parse(init.body);
+    expect(body.mode).toBe('paper');
+    expect(body.groups).toEqual([{ account: 'ZG0790', legs: [] }]);
+  });
+
+  it('omits mode from the request body when no mode is given', async () => {
+    const payload = { groups: [] };
+    fetchSpy.mockResolvedValue(makeFetchResponse(payload));
+
+    await placeBasket([{ account: 'ZG0790', legs: [] }]);
+
+    const [, init] = fetchSpy.mock.calls[0];
+    const body = JSON.parse(init.body);
+    expect(body).not.toHaveProperty('mode');
   });
 });
 

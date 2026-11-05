@@ -992,7 +992,19 @@ export async function cancelAllOrders(payload) {
  * @param {string} [mode]
  */
 export async function placeBasket(groups, mode) {
-  return _post('/orders/basket', mode ? { groups, mode } : { groups }, { auth: true });
+  // `throwOnTimeout: true` (2026-11-05 fix, HIGH-severity audit
+  // finding, same D3 bug class placeTicketOrder was fixed for in
+  // 2026-09) — without this, a client-side 15s timeout silently
+  // resolved `null`. The caller (SymbolPanel's submitBasket) then read
+  // every leg's result as undefined and reported "all legs rejected —
+  // no orders placed", even though the server had often already placed
+  // them (each live leg pays for preflight + a broker margin call +
+  // _start_live_chase's own confirm window, which alone can run up to
+  // 15s). A resubmit after that false "all rejected" banner could
+  // duplicate every already-placed live order. A timeout now throws a
+  // distinctly-named TimeoutError instead, so the caller can render
+  // "still processing" and refuse to treat it as a known rejection.
+  return _post('/orders/basket', mode ? { groups, mode } : { groups }, { auth: true, throwOnTimeout: true });
 }
 
 /** POST /api/orders/basket/margin — per-account margin check without placing.

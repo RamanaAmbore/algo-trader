@@ -2384,6 +2384,31 @@
         }
       }
     } catch (e) {
+      // 2026-11-05 fix (HIGH-severity audit finding) — a client-side
+      // submit timeout is NOT a known rejection (same D3 bug class
+      // OrderTicket's own submit() already guards against). Before
+      // this, `placeBasket` resolved `null` on timeout, every leg's
+      // `r` read undefined, and the generic catch below marked EVERY
+      // leg failed and kept them all in the basket for "retry" — even
+      // though the server had very often already placed them (each
+      // live leg pays for preflight + a broker margin call +
+      // _start_live_chase's own confirm window, which alone can run up
+      // to 15s). A resubmit on that false "all rejected" banner could
+      // duplicate every already-placed live order. Render "still
+      // processing" instead, leave `basketLegs` COMPLETELY untouched
+      // (no failedIdx entries at all — nothing is known to have
+      // failed), and return before the ok/fails-driven banner logic
+      // below, which assumes a real, known outcome.
+      if (/** @type {any} */ (e)?.name === 'TimeoutError') {
+        basketSubmitting = false;
+        basketResultMsg = 'Still processing — check Orders before resubmitting';
+        _stickyResultMsg = 'Basket submit still processing — check /orders before resubmitting';
+        _stickyResultLevel = 'warn';
+        if (_stickyResultTimer) clearTimeout(_stickyResultTimer);
+        _stickyResultTimer = null;
+        toast.warning('Basket still processing — check Orders before resubmitting', { timeoutMs: 8000 });
+        return;
+      }
       // Full request failure — mark all legs failed.
       basketLegs.forEach((_, i) => failedIdx.add(i));
       fails.push(/** @type {any} */ (e)?.message || 'Basket submit failed');

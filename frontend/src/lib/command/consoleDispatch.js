@@ -252,7 +252,7 @@ export async function resolveConsoleOrder(compiled) {
  * `executionMode` store and passes it through explicitly instead).
  * @param {{ticket:any, basket:any}} resolved
  * @param {{mode?: string, source?: string}} opts
- * @returns {Promise<{ok:true, kind:'basket'|'ticket', response:any} | {ok:false, error:string}>}
+ * @returns {Promise<{ok:true, kind:'basket'|'ticket', response:any} | {ok:false, error:string, timedOut?:boolean}>}
  */
 export async function submitResolvedConsoleOrder(resolved, opts = {}) {
   const { mode, source = 'command' } = opts;
@@ -277,7 +277,15 @@ export async function submitResolvedConsoleOrder(resolved, opts = {}) {
     }
     return { ok: false, error: 'nothing to submit' };
   } catch (e) {
-    return { ok: false, error: e?.message || 'order failed' };
+    // 2026-11-05 fix (HIGH-severity audit finding, same class as
+    // placeBasket's own `throwOnTimeout` fix) — a client-side submit
+    // timeout is not a known rejection; `timedOut` lets a caller show
+    // "still processing" instead of implying the order never went
+    // through (which, for a basket especially, it very often did).
+    return {
+      ok: false, error: e?.message || 'order failed',
+      timedOut: e?.name === 'TimeoutError',
+    };
   }
 }
 
