@@ -135,9 +135,14 @@ class TestBasketCloseIntentVerification:
             mock_session_inst = AsyncMock()
             mock_session_inst.__aenter__.return_value = mock_session_inst
             mock_session_inst.__aexit__.return_value = False
-            mock_session_inst.add = MagicMock()
+            _next_fake_id = [5000]
+            def _fake_add(obj):
+                if getattr(obj, "id", None) is None:
+                    obj.id = _next_fake_id[0]
+                    _next_fake_id[0] += 1
+            mock_session_inst.add = MagicMock(side_effect=_fake_add)
             mock_session_inst.commit = AsyncMock()
-            mock_session.__return_value = mock_session_inst
+            mock_session.return_value = mock_session_inst
 
             result = await basket_order_handler(request_data, mock_request)
 
@@ -257,10 +262,15 @@ class TestBasketCloseIntentVerification:
             mock_session_inst = AsyncMock()
             mock_session_inst.__aenter__.return_value = mock_session_inst
             mock_session_inst.__aexit__.return_value = False
-            mock_session_inst.add = MagicMock()
+            _next_fake_id = [5000]
+            def _fake_add(obj):
+                if getattr(obj, "id", None) is None:
+                    obj.id = _next_fake_id[0]
+                    _next_fake_id[0] += 1
+            mock_session_inst.add = MagicMock(side_effect=_fake_add)
             mock_session_inst.commit = AsyncMock()
             mock_session_inst.id = 42
-            mock_session.__return_value = mock_session_inst
+            mock_session.return_value = mock_session_inst
 
             result = await basket_order_handler(request_data, mock_request)
 
@@ -379,10 +389,15 @@ class TestBasketCloseIntentVerification:
             mock_session_inst = AsyncMock()
             mock_session_inst.__aenter__.return_value = mock_session_inst
             mock_session_inst.__aexit__.return_value = False
-            mock_session_inst.add = MagicMock()
+            _next_fake_id = [5000]
+            def _fake_add(obj):
+                if getattr(obj, "id", None) is None:
+                    obj.id = _next_fake_id[0]
+                    _next_fake_id[0] += 1
+            mock_session_inst.add = MagicMock(side_effect=_fake_add)
             mock_session_inst.commit = AsyncMock()
             mock_session_inst.id = 42
-            mock_session.__return_value = mock_session_inst
+            mock_session.return_value = mock_session_inst
 
             result = await basket_order_handler(request_data, mock_request)
 
@@ -439,10 +454,15 @@ class TestBasketCloseIntentVerification:
             mock_session_inst = AsyncMock()
             mock_session_inst.__aenter__.return_value = mock_session_inst
             mock_session_inst.__aexit__.return_value = False
-            mock_session_inst.add = MagicMock()
+            _next_fake_id = [5000]
+            def _fake_add(obj):
+                if getattr(obj, "id", None) is None:
+                    obj.id = _next_fake_id[0]
+                    _next_fake_id[0] += 1
+            mock_session_inst.add = MagicMock(side_effect=_fake_add)
             mock_session_inst.commit = AsyncMock()
             mock_session_inst.id = 42
-            mock_session.__return_value = mock_session_inst
+            mock_session.return_value = mock_session_inst
 
             result = await basket_order_handler(request_data, mock_request)
 
@@ -531,10 +551,15 @@ class TestBasketColdInstrumentsCacheErrorHandling:
             mock_session_inst = AsyncMock()
             mock_session_inst.__aenter__.return_value = mock_session_inst
             mock_session_inst.__aexit__.return_value = False
-            mock_session_inst.add = MagicMock()
+            _next_fake_id = [5000]
+            def _fake_add(obj):
+                if getattr(obj, "id", None) is None:
+                    obj.id = _next_fake_id[0]
+                    _next_fake_id[0] += 1
+            mock_session_inst.add = MagicMock(side_effect=_fake_add)
             mock_session_inst.commit = AsyncMock()
             mock_session_inst.id = 42
-            mock_session.__return_value = mock_session_inst
+            mock_session.return_value = mock_session_inst
 
             result = await basket_order_handler(request_data, mock_request)
 
@@ -680,10 +705,15 @@ class TestBasketPreflightBlockerDemotionRemoved:
             mock_session_inst = AsyncMock()
             mock_session_inst.__aenter__.return_value = mock_session_inst
             mock_session_inst.__aexit__.return_value = False
-            mock_session_inst.add = MagicMock()
+            _next_fake_id = [5000]
+            def _fake_add(obj):
+                if getattr(obj, "id", None) is None:
+                    obj.id = _next_fake_id[0]
+                    _next_fake_id[0] += 1
+            mock_session_inst.add = MagicMock(side_effect=_fake_add)
             mock_session_inst.commit = AsyncMock()
             mock_session_inst.id = 42
-            mock_session.__return_value = mock_session_inst
+            mock_session.return_value = mock_session_inst
 
             result = await basket_order_handler(request_data, mock_request)
 

@@ -369,6 +369,59 @@ class TestBasketChasePrePersistFailClosed:
         mock_broker.place_order.assert_not_called()
         mock_start_chase.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_non_chase_leg_db_prepersist_failure_rejects_leg_no_broker_call(
+        self, mock_request, mock_lot_sizes, mock_positions_df, mock_broker
+    ):
+        """2026-11-05 fix (HIGH-severity audit finding) — before this
+        fix, a non-chase-eligible live leg (MARKET/SL-M order type, or
+        an explicit `chase=False`) placed the real broker order FIRST
+        and only persisted its `AlgoOrder` tracking row afterward. A DB
+        failure on that post-place insert left a real, untracked live
+        order at the broker while the leg was reported as an "error"
+        and stayed in the basket for retry — risking a duplicate order
+        on resubmit (the fail-closed invariant commit 8fca413b already
+        established for /ticket, and the sibling
+        `test_db_prepersist_failure_rejects_leg_no_broker_call` above
+        already covers for the chase-eligible branch).
+
+        This is the non-chase-eligible counterpart: a MARKET order type
+        leg (chase-ineligible by construction) must ALSO be pre-
+        persisted before any broker call, so a pre-persist DB failure
+        refuses the leg outright with broker.place_order never called —
+        never placed-then-silently-untracked.
+        """
+        from backend.api.routes.orders_basket import basket_order_handler
+
+        leg = BasketLeg(
+            tradingsymbol="NIFTY25APRFUT",
+            exchange="NFO",
+            transaction_type="BUY",
+            quantity=1,
+            order_type="MARKET",
+            price=None,
+            chase=True,  # irrelevant — MARKET disqualifies chase eligibility
+        )
+        request_data = BasketOrderRequest(groups=[
+            BasketGroup(account="TEST001", legs=[leg])
+        ])
+        positions_df = mock_positions_df("TEST001", [])
+        session_factory, _ = _session_mock(commit_raises=True)
+
+        patches = _common_patches(
+            mock_broker, positions_df, mock_lot_sizes,
+            session_factory=session_factory,
+        )
+
+        result = await _run_with_patches(
+            patches, lambda: basket_order_handler(request_data, mock_request)
+        )
+
+        leg_result = result.groups[0].results[0]
+        assert leg_result.status == "error"
+        assert "tracking row" in leg_result.error.lower() or "retry" in leg_result.error.lower()
+        mock_broker.place_order.assert_not_called()
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 5. MCX quantity into chase is CONTRACTS, not lots-translated

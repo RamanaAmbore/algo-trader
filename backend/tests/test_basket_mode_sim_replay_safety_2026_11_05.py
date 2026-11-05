@@ -118,6 +118,38 @@ def mock_broker():
     return broker
 
 
+class _FakeAlgoOrderSession:
+    """Minimal async-context-manager session stand-in for the real DB.
+
+    `basket_order_handler`'s pre-persist step (2026-11-05 fix) relies on
+    the real SQLAlchemy session assigning a real autoincrement `id` to
+    a freshly-added `AlgoOrder` row on `commit()` — a bare, unconfigured
+    `MagicMock()` session leaves `.id` at its model-default `None`
+    forever, so the handler's own `if _pre_aid is None: ... continue`
+    fail-closed guard refuses the leg before it ever reaches
+    `broker.place_order`. This fake mimics just that one DB behaviour.
+    """
+
+    _next_id = 1000
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def add(self, obj):
+        if getattr(obj, "id", None) is None:
+            obj.id = _FakeAlgoOrderSession._next_id
+            _FakeAlgoOrderSession._next_id += 1
+
+    async def commit(self):
+        pass
+
+    async def execute(self, stmt):
+        return MagicMock()
+
+
 class TestBasketHandlerHonoursClientSimReplayMode:
     @pytest.mark.asyncio
     async def test_client_mode_sim_never_reaches_broker_place_order(
@@ -190,7 +222,7 @@ class TestBasketHandlerHonoursClientSimReplayMode:
              patch("backend.api.algo.agent_engine._build_now_ctx", return_value=MagicMock()), \
              patch("backend.shared.helpers.utils.is_prod_branch", return_value=True), \
              patch("backend.shared.helpers.settings.get_bool", return_value=False), \
-             patch("backend.api.database.async_session"), \
+             patch("backend.api.database.async_session", side_effect=lambda: _FakeAlgoOrderSession()), \
              patch("backend.api.routes.orders_basket._attach_basket_leg_template"):
             await basket_order_handler(data, mock_request)
 
@@ -226,7 +258,7 @@ class TestBasketHandlerHonoursClientSimReplayMode:
              patch("backend.api.algo.agent_engine._build_now_ctx", return_value=MagicMock()), \
              patch("backend.shared.helpers.utils.is_prod_branch", return_value=True), \
              patch("backend.shared.helpers.settings.get_bool", return_value=False), \
-             patch("backend.api.database.async_session"), \
+             patch("backend.api.database.async_session", side_effect=lambda: _FakeAlgoOrderSession()), \
              patch("backend.api.routes.orders_basket._attach_basket_leg_template"):
             await basket_order_handler(data, mock_request)
 

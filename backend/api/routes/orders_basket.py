@@ -629,52 +629,67 @@ async def basket_order_handler(
                 )
 
                 _pre_aid: int | None = None
-                if _leg_chase_eligible:
-                    # Pre-persist the AlgoOrder tracking row BEFORE any
-                    # broker call — same fail-closed pattern as /ticket
-                    # (_ticket_persist_live_algo_order +
-                    # ticket_order_handler's `if _live_algo_id is None:
-                    # raise HTTPException(503)` guard, 2026-09-28 commit
-                    # 8fca413b). A DB failure here must refuse the leg
-                    # outright — never start an untracked live chase loop.
-                    try:
-                        async with _async_session2() as _s_pre:
-                            _r_pre = _AlgoOrder2(
-                                account=account, symbol=sym, exchange=exch,
-                                transaction_type=side, quantity=qty,
-                                initial_price=float(leg.price or 0) or None,
-                                broker_order_id=None,
-                                status="OPEN", engine="live", mode="live",
-                                basket_tag=basket_id,
-                                strategy_id=leg.strategy_id,
-                                target_pct=(eff_target_pct if eff_target_pct > 0 else None),
-                                template_id=leg.template_id,
-                                template_hold_override=getattr(leg, "hold_template_exit", None),
-                                template_overrides_json=_build_overrides_json(leg),
-                                product=(leg.product or "NRML"),
-                                # Sprint 2b — basket legs have no per-leg
-                                # client-supplied source field (BasketLeg
-                                # schema doesn't carry one); the route
-                                # itself is the origin.
-                                source="basket",
-                            )
-                            _s_pre.add(_r_pre)
-                            await _s_pre.commit()
-                            _pre_aid = _r_pre.id
-                    except Exception as _e_pre:
-                        _pre_aid = None
-                        logger.warning(
-                            "[BASKET-LIVE] leg %d AlgoOrder pre-persist "
-                            "failed (chase path) acct=%s sym=%s: %s",
-                            i, account, sym, _e_pre,
+                # Pre-persist the AlgoOrder tracking row BEFORE any broker
+                # call — same fail-closed pattern as /ticket
+                # (_ticket_persist_live_algo_order +
+                # ticket_order_handler's `if _live_algo_id is None: raise
+                # HTTPException(503)` guard, 2026-09-28 commit 8fca413b).
+                # A DB failure here must refuse the leg outright — never
+                # place an untracked live order.
+                #
+                # 2026-11-05 fix (HIGH-severity audit finding) — this
+                # block used to be gated on `_leg_chase_eligible`, so a
+                # non-chase live leg (MARKET/SL-M, or an explicit
+                # `leg.chase=False`) placed the real broker order FIRST
+                # and only persisted its tracking row afterward. A DB
+                # failure on that post-place insert fell into the shared
+                # `except` below and was reported as a leg "error" —
+                # leaving a real, untracked live order at the broker
+                # while the leg stayed in the basket for "retry", risking
+                # a duplicate on resubmit. Now unconditional: EVERY live
+                # leg, chase or not, is pre-persisted before any broker
+                # call. The non-chase branch below now calls
+                # `_ticket_seed_broker_order_id` to seed the real broker
+                # id onto this SAME row after a successful placement,
+                # instead of inserting a second row.
+                try:
+                    async with _async_session2() as _s_pre:
+                        _r_pre = _AlgoOrder2(
+                            account=account, symbol=sym, exchange=exch,
+                            transaction_type=side, quantity=qty,
+                            initial_price=float(leg.price or 0) or None,
+                            broker_order_id=None,
+                            status="OPEN", engine="live", mode="live",
+                            basket_tag=basket_id,
+                            strategy_id=leg.strategy_id,
+                            target_pct=(eff_target_pct if eff_target_pct > 0 else None),
+                            template_id=leg.template_id,
+                            template_hold_override=getattr(leg, "hold_template_exit", None),
+                            template_overrides_json=_build_overrides_json(leg),
+                            product=(leg.product or "NRML"),
+                            # Sprint 2b — basket legs have no per-leg
+                            # client-supplied source field (BasketLeg
+                            # schema doesn't carry one); the route
+                            # itself is the origin.
+                            source="basket",
                         )
-                    if _pre_aid is None:
-                        leg_results.append(BasketLegResult(
-                            leg_index=i, order_id=None, status="error",
-                            error=("Could not create the order tracking "
-                                   "row — order NOT placed. Please retry."),
-                        ))
-                        continue
+                        _s_pre.add(_r_pre)
+                        await _s_pre.commit()
+                        _pre_aid = _r_pre.id
+                except Exception as _e_pre:
+                    _pre_aid = None
+                    logger.warning(
+                        "[BASKET-LIVE] leg %d AlgoOrder pre-persist "
+                        "failed acct=%s sym=%s: %s",
+                        i, account, sym, _e_pre,
+                    )
+                if _pre_aid is None:
+                    leg_results.append(BasketLegResult(
+                        leg_index=i, order_id=None, status="error",
+                        error=("Could not create the order tracking "
+                               "row — order NOT placed. Please retry."),
+                    ))
+                    continue
 
                 try:
                     broker = _broker_for(account)
@@ -731,26 +746,16 @@ async def basket_order_handler(
                             tag=basket_id,
                             intent=_leg_intent,
                         )
-                        # Persist AlgoOrder row so the order book tracks it.
-                        async with _async_session2() as _s:
-                            _r = _AlgoOrder2(
-                                account=account, symbol=sym, exchange=exch,
-                                transaction_type=side, quantity=qty,
-                                initial_price=float(leg.price or 0) or None,
-                                broker_order_id=str(kite_oid),
-                                status="OPEN", engine="live", mode="live",
-                                basket_tag=basket_id,
-                                strategy_id=leg.strategy_id,
-                                target_pct=(eff_target_pct if eff_target_pct > 0 else None),
-                                template_id=leg.template_id,
-                                template_hold_override=getattr(leg, "hold_template_exit", None),
-                                template_overrides_json=_build_overrides_json(leg),
-                                product=(leg.product or "NRML"),
-                                source="basket",
-                            )
-                            _s.add(_r)
-                            await _s.commit()
-                            _live_aid = _r.id
+                        # 2026-11-05 fix (HIGH-severity audit finding) —
+                        # seed the real broker id onto the row already
+                        # pre-persisted above (fail-closed, before this
+                        # broker call), instead of inserting a brand-new
+                        # row here. Mirrors the chase branch's own
+                        # `_ticket_seed_broker_order_id` call above —
+                        # there is never a window where a real broker
+                        # order exists with no tracking row at all.
+                        await _ticket_seed_broker_order_id(_pre_aid, kite_oid)
+                        _live_aid = _pre_aid
 
                     invalidate("orders")
                     await _attach_basket_leg_template(
