@@ -758,12 +758,21 @@ def _agent_tag_line(agent, rec: dict) -> str:
     '#<action_agent> #<alert_agent>'. Both values are sanitised forms
     of the exact same already-resolved values
     `format_notification_header()`'s own "Agent: ..." line uses — never
-    a second, independent resolution of the action agent."""
+    a second, independent resolution of the action agent.
+
+    2026-11-05 live fix (operator: "same tag is repeating multiple
+    places. show only unique tags in alerts") — the action-agent and
+    alert-agent tokens can genuinely resolve to the same value (e.g.
+    both "manual", or a real agent that is also its own dispatching
+    alert agent). Deduped so a record never shows "#x #x" — the second,
+    redundant copy is dropped rather than the first, so the tag order
+    (action agent first) is preserved when only one survives."""
     from backend.shared.helpers.alert_utils import resolve_origin
     extra = rec.get("extra") or {}
     action_label = resolve_origin(extra.get("agent_id"), extra.get("agent_name"))
     alert_label = _alert_agent_source_slug(agent, rec)
-    return f"#{_tag_token(action_label)} #{_tag_token(alert_label)}"
+    tokens = dict.fromkeys([_tag_token(action_label), _tag_token(alert_label)])
+    return " ".join(f"#{t}" for t in tokens)
 
 
 def _agent_pill_html(agent, rec: dict) -> str:

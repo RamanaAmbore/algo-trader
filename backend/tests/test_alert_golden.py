@@ -137,10 +137,14 @@ def test_fill_format_golden():
     # `body` (right after the origin header), restoring "filled" to the
     # alert text once `tg=body` stopped relying on the old
     # `f"{title}\n{body}"` Telegram fallback to carry it.
+    # Amended same day — operator: "remove symbol just after order
+    # filled text" — the body-embedded summary line drops the symbol
+    # (side+qty only); the symbol still appears once, on the
+    # trade-detail line below.
     assert body == "\n".join([
         "Agent: manual",
         _FIXED_TS,
-        "Order filled: BUY 75 NIFTY26OCT25000CE",
+        "Order filled: BUY 75",
         "Account: ZG####",
         "BUY 75 NIFTY26OCT25000CE (NFO) @ 112.50",
         "Product: NRML",
@@ -218,7 +222,7 @@ async def test_fill_delivery_golden_via_event_agent(monkeypatch):
     # `row`), alert agent "fill-alert" (FILL_AGENT's slug, tag-token'd),
     # on its own line (2026-11-05 amendment — see _send_channel).
     assert sent["tg"] == [
-        f"Agent: manual\n{_FIXED_TS}\nOrder filled: SELL 1 CRUDEOIL26OCTFUT\nAccount: ZG####\nSELL 1 CRUDEOIL26OCTFUT (MCX) @ 8750.00\nProduct: NRML\nOrder id: 7"
+        f"Agent: manual\n{_FIXED_TS}\nOrder filled: SELL 1\nAccount: ZG####\nSELL 1 CRUDEOIL26OCTFUT (MCX) @ 8750.00\nProduct: NRML\nOrder id: 7"
         "\n#manual #fill_alert"]
 
 

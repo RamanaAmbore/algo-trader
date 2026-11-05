@@ -87,15 +87,33 @@ def test_body_contains_the_title_text_not_just_the_title_slot():
     (event_agents.py) started supplying `tg=body` explicitly (closing a
     separate "agent label not at top" bug the same day), `title` never
     reached Telegram at all, and the word "filled" disappeared from the
-    alert entirely. `body` must now carry the title's own text as an
+    alert entirely. `body` must now carry a "filled" summary line as an
     explicit line — ntfy (which always reads `body` directly, never
     `title` for its own message) had this exact same gap even before
-    the other fix, just never reported."""
-    title, body = fill_notify.format_fill_message(_row())
-    assert title in body, f"title text must appear inside body — got body: {body!r}"
+    the other fix, just never reported.
+
+    Amended same day — operator: "the symbol [is shown] multiple times
+    in two different places. remove symbol just after order filled
+    text." The body-embedded summary line is now symbol-free (side+qty
+    only); the symbol still appears exactly once, on the trade-detail
+    line below it. `title` itself (the separate tuple element, used for
+    ntfy's own notification-title slot) is unchanged and still carries
+    the symbol — so `title` as a whole string no longer appears
+    verbatim inside `body`, only its "Order filled: {side} {qty}" prefix
+    does."""
+    row = _row()
+    title, body = fill_notify.format_fill_message(row)
+    side = str(row.transaction_type or "").upper()
+    qty = int(row.quantity or 0)
+    summary = f"Order filled: {side} {qty}"
+    assert summary in body, f"summary line must appear inside body — got body: {body!r}"
     assert "filled" in body.lower()
+    assert row.symbol in title
+    # The symbol must appear in body exactly once (the trade-detail
+    # line), never duplicated on the "Order filled:" summary line.
+    assert body.count(row.symbol) == 1, f"symbol must appear exactly once in body — got body: {body!r}"
     # Origin line must still be the FIRST line (the other 2026-11-05 fix) —
-    # the title line goes right after it, not ahead of it.
+    # the summary line goes right after it, not ahead of it.
     assert body.splitlines()[0].startswith("Agent: ")
     assert body.splitlines()[1] != body.splitlines()[0]
 

@@ -1680,6 +1680,50 @@ class TestAgentTagLineOwnLine:
         assert sent_body.splitlines()[-1] == "#manual #some_agent"
 
 
+class TestAgentTagLineDeduped:
+    """2026-11-05 live operator report: "same tag is repeating multiple
+    places. show only unique tags in alerts". The action-agent and
+    alert-agent tokens can genuinely resolve to the same label — e.g.
+    both default to "manual" when neither the triggering order nor the
+    dispatching agent record carries a real agent identity. Before this
+    fix the tag line always showed both tokens verbatim, so it could
+    read "#manual #manual". `_agent_tag_line` now dedupes, preserving
+    the action-agent-first ordering when only one survives."""
+
+    @pytest.mark.asyncio
+    async def test_duplicate_action_and_alert_agent_collapses_to_one_tag(self, senders):
+        from backend.api.algo import event_agents as ea
+        ch = {"channel": "telegram", "enabled": True}
+        out = ("Title", "Body text", "Body text")
+        # Agent's own slug/name resolve to "manual" via
+        # `_alert_agent_source_slug`'s fallback when it finds no
+        # `ALERT_EVENT_DISPATCH` entry and the agent itself has no
+        # distinct slug/name — mirrored here with a slug that itself
+        # sanitises to "manual" so both tokens collide.
+        agent = SimpleNamespace(slug="manual", name=None)
+        rec = {"extra": {"agent_id": None, "agent_name": None}}
+
+        await ea._send_channel(ch, out, agent, rec)
+
+        sent_body = senders["tg"][0][1]
+        tag_line = sent_body.splitlines()[-1]
+        assert tag_line == "#manual", f"expected deduped single tag, got {tag_line!r}"
+
+    @pytest.mark.asyncio
+    async def test_distinct_action_and_alert_agent_keeps_both_tags(self, senders):
+        from backend.api.algo import event_agents as ea
+        ch = {"channel": "telegram", "enabled": True}
+        out = ("Title", "Body text", "Body text")
+        agent = SimpleNamespace(slug="some-agent")
+        rec = {"extra": {"agent_id": None, "agent_name": None}}
+
+        await ea._send_channel(ch, out, agent, rec)
+
+        sent_body = senders["tg"][0][1]
+        tag_line = sent_body.splitlines()[-1]
+        assert tag_line == "#manual #some_agent", f"expected both distinct tags, got {tag_line!r}"
+
+
 class TestBareTwoTupleRenderersSendAgentLabelAtTop:
     """2026-11-05 live operator report: "in order fill alert agent label
     is not showing at the top. the tags at the bottom are not starting

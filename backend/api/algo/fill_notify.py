@@ -72,9 +72,20 @@ def format_fill_message(row, when: datetime | None = None) -> tuple[str, str]:
     # explicit line in `body` (right after the origin header, so "Agent:
     # ..." stays the first line) — `title` itself is kept unchanged for
     # ntfy's own separate notification-title slot.
+    #
+    # 2026-11-05 amended same day — operator: "the symbol [is shown] in
+    # multiple times in two different places. remove symbol just after
+    # order filled text. the symbol in other place in alert can stay."
+    # `symbol` already appears on the trade-detail line below
+    # ("SELL 1 X (MCX) @ 8750.00") — the body-embedded summary line
+    # drops it (side + qty only) so the symbol shows exactly once in
+    # the body. `title` itself (the separate tuple element, used for
+    # ntfy's own notification-title slot — a distinct UI element, not a
+    # second place WITHIN the body) keeps the symbol unchanged.
+    body_summary = f"Order filled: {side} {qty}"
     body = "\n".join([
         header,
-        title,
+        body_summary,
         f"Account: {masked_account}",
         f"{side} {qty} {symbol} ({row.exchange or '-'}) @ {fill_px}",
         f"Product: {row.product or '-'}",
