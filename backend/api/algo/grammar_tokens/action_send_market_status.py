@@ -158,18 +158,25 @@ async def _action_live_send_market_status(context: dict, params: dict) -> None:
     `send_ntfy_alert` DIRECTLY, bypassing the log-record + event-agent
     pipeline every other alert in this codebase goes through
     (documented at the top of this module as a deliberate exception,
-    now overridden by this instruction). The telegram-vs-ntfy routing
-    stays content-conditional — it still can't be expressed by
-    `alert_routing.py`'s static per-agent channel resolution — but is
-    now carried AS DATA on the log record itself (`extra['channels']`),
-    read via the SAME per-record dynamic-channel mechanism
-    `_render_breach`'s `out[4]` already uses in `event_agents.py`'s
-    `_dispatch_agent()` (`channels = out[4] if len(out) > 4 else
-    agent_channels` — a generic mechanism, not breach-specific).
-    `MARKET_STATUS_ALERT_AGENT` (`event_agents.py`) is the new, dedicated
-    `kind='event'` agent that picks this up; its own `events`/channel
-    config is irrelevant for the SAME reason BREACH_AGENT's is — the
-    per-record list always wins.
+    now overridden by this instruction). `MARKET_STATUS_ALERT_AGENT`
+    (`event_agents.py`) is the dedicated `kind='event'` agent that picks
+    this up.
+
+    2026-11-05 simplification (operator: "move market status onto the
+    static events config now that it no longer needs content-
+    conditional routing") — this record no longer carries its own
+    `extra['channels']` override. That per-record mechanism existed only
+    because the old telegram-vs-ntfy choice depended on whether a
+    segment was open that day — content `alert_routing.py`'s static
+    per-agent resolution couldn't see. The 2026-11-04 audit already
+    removed that conditionality (both branches now send the identical
+    fixed set below), so `MARKET_STATUS_ALERT_AGENT`'s own static
+    `events` list is the SSOT for channels again — the normal path every
+    other static agent uses, resolved by `_dispatch_agent()`. This also
+    closes the bug the per-record path caused: its own "log" channel
+    entry never carried a baked-in agent slug, which made the delivery
+    echo get wrongly flagged as a fresh, unrouted alert-shaped record
+    (see `event_agents.py:_send_channel`'s own fix for the general case).
 
     Logs through `_DISPATCH_LOGGER` (`backend.api.algo.events`), never
     this module's own `logging.getLogger(__name__)` — the exact logger-
@@ -189,23 +196,15 @@ async def _action_live_send_market_status(context: dict, params: dict) -> None:
     commodity = await _market_status_for_segment("commodity", now)
     message = _format_market_status_message(now, equity, commodity)
 
-    # 2026-11-04 channel-routing audit (operator: "Email market info and
-    # summary[,] ntfy for more high priority alerts... not overwhelmed")
-    # — a daily routine status report is exactly the "market info" case
-    # email is for, and is NOT high-priority regardless of whether a
-    # segment happens to be open today (that used to gate a `low`-
-    # priority ntfy entry); ntfy (which interrupts the phone) is dropped
-    # so it's reserved for genuinely action-required alerts.
-    channels = [{"channel": "log", "enabled": True},
-                {"channel": "telegram", "enabled": True},
-                {"channel": "email", "enabled": True}]
-
+    # Channel selection (log, telegram, email — ntfy deliberately
+    # excluded per the 2026-11-04 channel-routing audit comment above)
+    # now lives entirely on `MARKET_STATUS_ALERT_AGENT.events`, not here.
     agent_id = await get_agent_id_by_slug("market-status-alert")
     _DISPATCH_LOGGER.info(
         "[MARKET-STATUS] %s", message.replace("\n", " | "),
         extra={
             "tags": ["agent", "alert"], "alert_event": "market_status",
-            "title": "Market Status", "body": message, "channels": channels,
+            "title": "Market Status", "body": message,
             "agent_name": ("Market status" if agent_id is not None else None),
             "agent_id": agent_id,
         },

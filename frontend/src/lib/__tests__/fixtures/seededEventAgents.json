@@ -161,7 +161,20 @@
         }
       }
     },
-    "events": [],
+    "events": [
+      {
+        "channel": "log",
+        "enabled": true
+      },
+      {
+        "channel": "telegram",
+        "enabled": true
+      },
+      {
+        "channel": "email",
+        "enabled": true
+      }
+    ],
     "actions": [
       {
         "type": "render",

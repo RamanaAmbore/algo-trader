@@ -34,6 +34,13 @@ const FIXTURE_ROWS = [
   { grammar_kind: 'notify', token_kind: 'channel', token: 'telegram', params_schema: { gate: { type: 'boolean', required: false } } },
   { grammar_kind: 'notify', token_kind: 'channel', token: 'ntfy', params_schema: { priority: { type: 'enum', enum: ['low', 'default', 'high', 'urgent'], required: false }, gate: { type: 'boolean', required: false } } },
   { grammar_kind: 'notify', token_kind: 'channel', token: 'email', params_schema: { gate: { type: 'boolean', required: false } } },
+  // 2026-11-05 — MARKET_STATUS_ALERT_AGENT is the first SEEDED_AGENTS
+  // entry to carry a literal {"channel": "log"} in its static `events`
+  // (previously channel-agnostic, resolved per-record; see its own
+  // backend comment). Distinct from the `log_filter` condition token
+  // below — real catalog entry, agent_grammar.yaml's own
+  // `token_kind: channel, token: log` (no params_schema there either).
+  { grammar_kind: 'notify', token_kind: 'channel', token: 'log', params_schema: {} },
   { grammar_kind: 'action', token_kind: 'render_action', token: 'render', params_schema: { render: { type: 'freetext', required: true }, gate: { type: 'boolean', required: false }, channel_key: { type: 'freetext', required: false } } },
   {
     grammar_kind: 'condition', token_kind: 'log_filter', token: 'log', value_type: 'void',

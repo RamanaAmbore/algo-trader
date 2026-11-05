@@ -540,9 +540,10 @@ class TestSeedVersionBumpTransition:
         collapse (see event_agents.SEED_VERSION's own comment). 2026-10-30:
         bumped again, 5 -> 6, to backfill a `description` on every live
         seeded agent. 2026-11-04: bumped again, 6 -> 7, to insert
-        GTT_ORPHAN_CANCELLED_AGENT."""
+        GTT_ORPHAN_CANCELLED_AGENT. 2026-11-05: bumped again, 7 -> 8, to
+        give MARKET_STATUS_ALERT_AGENT a static `events` list."""
         from backend.api.algo.event_agents import SEED_VERSION
-        assert SEED_VERSION == 7
+        assert SEED_VERSION == 8
 
     def test_hash_match_row_from_old_version_updates_at_new_version(self):
         """A row last seeded at the OLD SEED_VERSION=2, whose current
@@ -646,7 +647,7 @@ class TestModifiedSkipLogsRealWarning:
         # then alert-channel-collapse) — this test's mechanism
         # (modified_skip still bumps seed_version) is unaffected; see
         # the historical note on test_seed_version_is_now_3 above.
-        assert row.seed_version == ea.SEED_VERSION == 7
+        assert row.seed_version == ea.SEED_VERSION == 8
         # stderr line preserved (an existing sibling test pins this too).
         assert "operator-modified" in capsys.readouterr().err
         # New Step 6 behaviour — a real, visible WARNING through
@@ -729,7 +730,7 @@ class TestSeedVersionBumpUpdateBranchEndToEnd:
         # 2026-10-25: SEED_VERSION moved 3 -> 4 -> 5 (tag-unification,
         # then alert-channel-collapse) —
         # see the historical note on test_seed_version_is_now_3 above.
-        assert row.seed_version == ea.SEED_VERSION == 7
+        assert row.seed_version == ea.SEED_VERSION == 8
         new_hash = ea.compute_seed_spec_hash(row.conditions, row.events, row.actions)
         assert row.seed_spec_hash == new_hash, "hash must reflect the NEW write, not the old one"
 

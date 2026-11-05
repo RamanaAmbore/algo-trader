@@ -421,16 +421,19 @@ def _render_market_status(rec: dict) -> tuple:
     """Daily 05:35 IST NSE/MCX market open-or-closed status report
     (2026-11-03 log+agent conversion of `send_market_status`).
 
-    Plain `(title, body, tg)` passthrough like `_render_deploy_sync`,
-    PLUS its own per-record `out[4]` channel list — Telegram always
-    fires while ntfy is content-conditional (only when at least one
-    segment is open today), a decision `_action_live_send_market_status`
-    already made and carries as `extra['channels']`, since
-    `alert_routing.py`'s static per-agent channel resolution can't
-    express it. This reuses the SAME generic per-record dynamic-channel
-    mechanism `_render_breach` above already relies on
-    (`_dispatch_agent`: `channels = out[4] if len(out) > 4 else
-    agent_channels`) — not a new mechanism, not breach-specific.
+    Plain `(title, body, tg)` passthrough, same shape as
+    `_render_deploy_sync` — 2026-11-05 simplification: this used to also
+    return a per-record `out[4]` channel list, because Telegram-always/
+    ntfy-if-open was content-conditional and `alert_routing.py`'s static
+    per-agent resolution couldn't express it. The 2026-11-04 channel-
+    routing audit removed that conditionality (the same fixed set —
+    log, telegram, email — fires every day now), so
+    `MARKET_STATUS_ALERT_AGENT`'s own static `events` list is the SSOT
+    for channels again, resolved the normal way by `_dispatch_agent()`.
+    Returning a plain 3-tuple (not a 5-tuple with an empty channels
+    list) matters: `_dispatch_agent` reads `out[4]` whenever
+    `len(out) > 4`, so a stray empty list there would have suppressed
+    every channel instead of falling back to `agent_channels`.
     """
     x = rec.get("extra") or {}
     title = x.get("title") or "Market Status"
@@ -440,7 +443,7 @@ def _render_market_status(rec: dict) -> tuple:
         from backend.shared.helpers.alert_utils import format_notification_header
         origin_header = format_notification_header(agent_name, agent_id)
         body = f"{origin_header}\n{body}"
-    return title, body, body, None, list(x.get("channels") or [])
+    return title, body, body
 
 
 def _render_action_notify(rec: dict) -> tuple:
@@ -1955,11 +1958,27 @@ MARKET_STATUS_ALERT_AGENT = {
     "conditions": {"log": {"tag": "alert", "min_level": "INFO",
                            "where": {"alert_event": "market_status"}}},
     "priority": "info",
-    # `events` deliberately omitted — like BREACH_AGENT, this agent's
-    # real channel list is per-record (`_render_market_status`'s own
-    # `out[4]`, carrying the producer's content-conditional telegram-
-    # always/ntfy-if-open decision), never `alert_routing.resolve_
-    # channels()`'s static per-agent resolution.
+    # 2026-11-05 simplification (operator: "move market status onto the
+    # static events config now that it no longer needs content-
+    # conditional routing") — `events` used to be deliberately omitted
+    # here, with the real channel list carried per-record via
+    # `_render_market_status`'s `out[4]` (the SAME mechanism BREACH_AGENT
+    # needs, because a breach's channel set genuinely varies per firing
+    # by severity/account). Market status never had that kind of
+    # per-firing variability — its only reason for the dynamic path was
+    # a telegram-always/ntfy-if-open decision that the 2026-11-04
+    # channel-routing audit already removed (`_action_live_send_market_
+    # status` now sends the SAME fixed set — log, telegram, email — every
+    # day, open or closed). Moving it back to a plain static `events`
+    # list closes the exact gap that caused the false "unrouted
+    # alertable record" self-alert (see `_send_channel`'s own fix above):
+    # the per-record dynamic path never baked `log_agent_slug` the way
+    # the static path's `_dispatch_agent()` resolution does.
+    "events": [
+        {"channel": "log",      "enabled": True},
+        {"channel": "telegram", "enabled": True},
+        {"channel": "email",    "enabled": True},
+    ],
     "actions": [{"type": "render", "render": "market_status"}],
 }
 
@@ -2036,7 +2055,16 @@ _GENERIC_NOTICE_IDENTITY["gtt_orphan_cancelled"] = (
 )
 
 
-SEED_VERSION = 7
+SEED_VERSION = 8
+# 2026-11-05 (SEED_VERSION 7 -> 8) — MARKET_STATUS_ALERT_AGENT gains a
+# static `events` list (log, telegram, email), replacing the per-record
+# dynamic `out[4]` channel override its renderer used to return. An
+# existing-row shape change (not a new slug), so this bump is required
+# to re-sync the already-seeded prod/dev row. Pre-flight: the row was
+# seeded at SEED_VERSION 7 with `events: []` and never operator-edited,
+# so `seed_action()`'s hash check sees it as unmodified and takes the
+# 'update' branch, not 'modified_skip'.
+#
 # 2026-11-04 (SEED_VERSION 6 -> 7) — inserts the new GTT_ORPHAN_CANCELLED_
 # AGENT row. Standalone dedicated agent (own per-slug channel override in
 # alert_routing.py, telegram-only — "nothing to act on"), not a collapsed-
