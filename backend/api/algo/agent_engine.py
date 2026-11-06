@@ -2241,6 +2241,78 @@ _LOSS_AGENTS = [
          ),
 
     # ── Positions: total guardrail (critical tier) ──────────────────────
+    #
+    # 2026-11 noise-reduction redesign (operator complaint: too many
+    # serious alerts; 6-agent council review before shipping — see
+    # CLAUDE.md's "Market daily window"-adjacent risk-council precedent
+    # for this review convention). Two independent changes to the old
+    # flat `any[day_val<=-50000, day_pct<=-2.0, pnl_rate_abs<=-6000,
+    # pnl_rate_pct<=-0.25]` tree:
+    #
+    #   (B) day_val floor raised -50,000 -> -100,000. A 14-day replay of
+    #       real fires found 8 of the 15 day_val-only fires sat between
+    #       -50,550 and -88,700 with day_pct under -0.6% — small,
+    #       marginal, the actual source of most reported noise. None of
+    #       them also crossed a rate threshold (those still fire via the
+    #       rate leaf regardless of this floor). -100,000 sits well below
+    #       2026-10-30's own first fire (-177,300), so that incident
+    #       still fires, and still fires early.
+    #
+    #   (C) The rate leaves (pnl_rate_abs / pnl_rate_pct) are no longer
+    #       bare — they're gated behind "the day is either already
+    #       negative, OR it has dropped >= ₹20,000 from its own session
+    #       peak in the last 30 minutes" (`max_drawdown_pnl(30)`, the
+    #       registered call-syntax metric wrapping
+    #       `Context.window_drawdown` — see grammar_tokens/
+    #       metric_max_drawdown_pnl.py; NOT `window_drawdown` directly,
+    #       which is a Context method, not a DSL token). A bare
+    #       `day_val < 0` gate (the operator's original ask) was found by
+    #       the risk council to have a permanent, session-long blind
+    #       spot: an account at +₹600k that bleeds -₹10k/min for 30
+    #       minutes but ends the day at +₹300k never crosses day_val<0,
+    #       so the rate leaves would never fire for that whole session no
+    #       matter how severe the bleed. The drawdown-from-peak leaf
+    #       closes that gap.
+    #
+    #       Threshold choice, deliberately LOOSE, not tight (2026-11,
+    #       mid-task operator correction, relayed explicitly: "rate of
+    #       change alert is the most important one" — do not let this
+    #       redesign narrow rate-of-change coverage relative to the old
+    #       bare condition; any ambiguity resolves toward STILL FIRING,
+    #       not toward exclusion). -₹20,000 is intentionally small —
+    #       roughly 3-5 minutes' worth of the -₹6,000/min rate floor
+    #       itself — so the gate only filters a genuinely negligible,
+    #       near-zero-magnitude rate reading (a computational edge case
+    #       `windowed_rate`'s own ≥3-sample / ≥80%-span robustness guard
+    #       is meant to prevent, but isn't airtight against). Any REAL,
+    #       sustained rate breach — which by construction already implies
+    #       a multi-minute decline on that same order of magnitude or
+    #       larger — passes this gate in virtually every real scenario.
+    #       This is a conscious reversal of this redesign's OWN earlier,
+    #       tighter -₹100,000 draft threshold (sized to match the day_val
+    #       floor for symmetry) once the operator's priority ordering was
+    #       made explicit mid-implementation: noise-reduction on this one
+    #       leaf is subordinate to never missing a genuine fast decline.
+    #       See `test_loss_positions_total_drawdown_gate.py` for the
+    #       giveback acceptance case and the near-zero-artifact exclusion
+    #       case. Nesting shape (`all[...]` wrapping `any[...]`) has a
+    #       live precedent in this exact file —
+    #       `loss-positions-underlying-divergence` a few entries above.
+    #
+    #   (D) cooldown 30 -> 45 minutes. Per the risk council: most of the
+    #       "17 fires in one day" symptom was independent per-leaf
+    #       latches (day_val and pnl_rate_abs each escalating on their
+    #       own key) co-firing, not purely the cooldown window being too
+    #       short — (B) and the rich-alert consolidation (component A,
+    #       `_ae_group_alert_rows`) already reduce a meaningful share of
+    #       that without touching timing. Kept modest since this agent is
+    #       meant to catch an 11.5-hour sustained grind.
+    #
+    # See `_ae_is_stale_loss_positions_total_cond` below for the one-time
+    # migration that force-syncs an already-seeded row still at the OLD
+    # shape — a code-only change here is otherwise inert against a live
+    # DB row (`_ae_sync_existing_builtin` never force-syncs conditions/
+    # cooldown except via a narrow, content-matched detector).
     dict(slug="loss-positions-total",
          long_name="when:positions.total.pnl<=total-thresholds   alert:critical/tg+email+log   do:notify-only",
          tier="critical",
@@ -2248,17 +2320,29 @@ _LOSS_AGENTS = [
          name="Positions total loss guardrail",
          description=(
              "Fires when the book-wide positions trip total loss "
-             "thresholds: -2% of total margin OR -₹50k OR -₹6k/min OR "
-             "-0.25 %/min. Critical-tier — implicit 'the whole book "
-             "is bleeding' signal."
+             "thresholds: -2% of total margin OR -₹1,00,000, OR the "
+             "book is burning -₹6k/min / -0.25%/min WHILE either the "
+             "day is already negative or it has dropped ₹20,000+ from "
+             "its own session peak in the last 30 minutes. Critical-tier "
+             "— implicit 'the whole book is bleeding' signal."
          ),
          conditions={"any": [
-             {"metric": "day_val",      "scope": "positions.total", "op": "<=", "value": -50000},
-             {"metric": "day_pct",      "scope": "positions.total", "op": "<=", "value": -2.0},
-             {"metric": "pnl_rate_abs", "scope": "positions.total", "op": "<=", "value": -6000},
-             {"metric": "pnl_rate_pct", "scope": "positions.total", "op": "<=", "value": -0.25},
+             {"metric": "day_val", "scope": "positions.total", "op": "<=", "value": -100000},
+             {"metric": "day_pct", "scope": "positions.total", "op": "<=", "value": -2.0},
+             {"all": [
+                 {"any": [
+                     {"metric": "day_val", "scope": "positions.total", "op": "<", "value": 0},
+                     {"metric": "max_drawdown_pnl(30)", "scope": "positions.total",
+                      "op": "<=", "value": -20000},
+                 ]},
+                 {"any": [
+                     {"metric": "pnl_rate_abs", "scope": "positions.total", "op": "<=", "value": -6000},
+                     {"metric": "pnl_rate_pct", "scope": "positions.total", "op": "<=", "value": -0.25},
+                 ]},
+             ]},
          ]},
          scope="total",
+         cooldown_minutes=45,
          ),
 
     # ── Funds: margin shortfall warning (early-warning before negative) ──
@@ -2861,13 +2945,49 @@ def _ae_should_reset_conditions(existing_cond: dict | None, code_cond: dict | No
     return _ae_has_pnl_leaf(existing_cond) and not _ae_has_pnl_leaf(code_cond)
 
 
+# One-time migration constant (2026-11 noise-reduction redesign, components
+# B+C+D) — the EXACT condition tree `loss-positions-total` shipped with
+# before this redesign (flat day_val<=-50000, no window_drawdown/
+# max_drawdown_pnl gate). Used ONLY to detect an un-migrated, still-stock
+# row — compared byte-for-byte, the same narrow, content-matched precedent
+# `_ae_should_reset_conditions` already uses for this exact class of
+# problem (code changed the condition shape, the live row didn't follow).
+# An operator who customized this agent's conditions in ANY way (even just
+# re-ordering leaves) is left alone — see `_ae_is_stale_loss_positions_
+# total_cond`'s own docstring.
+_LOSS_POSITIONS_TOTAL_OLD_COND = {"any": [
+    {"metric": "day_val",      "scope": "positions.total", "op": "<=", "value": -50000},
+    {"metric": "day_pct",      "scope": "positions.total", "op": "<=", "value": -2.0},
+    {"metric": "pnl_rate_abs", "scope": "positions.total", "op": "<=", "value": -6000},
+    {"metric": "pnl_rate_pct", "scope": "positions.total", "op": "<=", "value": -0.25},
+]}
+
+
+def _ae_is_stale_loss_positions_total_cond(cond: dict | None) -> bool:
+    """True when `cond` is byte-for-byte the pre-2026-11
+    `loss-positions-total` condition tree (see
+    `_LOSS_POSITIONS_TOTAL_OLD_COND`).
+
+    Deliberately an exact-equality check, not a looser "does it lack a
+    drawdown leaf" heuristic — a false positive here would silently
+    overwrite an operator's own hand-edited condition tree on the next
+    process restart. A false negative (an already-migrated or
+    differently-customized row) just means this one-time sync no-ops,
+    which is always safe."""
+    return cond == _LOSS_POSITIONS_TOTAL_OLD_COND
+
+
 def _ae_sync_existing_builtin(existing, agent_def: dict) -> None:
     """Force-sync mutable fields on an existing system Agent row.
 
     Operator-editable fields (conditions, cooldown, actions) are left
     untouched EXCEPT when stale ``pnl``/``pnl_pct`` leaves are detected
-    (one-time day-P&L metric migration via ``_ae_should_reset_conditions``).
-    Extracted from seed_agents to reduce CC there.
+    (one-time day-P&L metric migration via ``_ae_should_reset_conditions``)
+    or the row is `loss-positions-total` still at its exact pre-2026-11
+    shape (one-time drawdown-gate migration via
+    ``_ae_is_stale_loss_positions_total_cond`` — see that agent's own
+    BUILTIN_AGENTS entry for the full redesign rationale). Extracted from
+    seed_agents to reduce CC there.
 
     `status` sync (2026-10 fix): only force-synced for the safety-critical
     "Ships INACTIVE" category (`_ae_seed_ships_inactive`) — these must
@@ -2912,6 +3032,21 @@ def _ae_sync_existing_builtin(existing, agent_def: dict) -> None:
     code_cond = agent_def.get('conditions')
     if code_cond and _ae_should_reset_conditions(existing.conditions, code_cond):
         existing.conditions = code_cond
+    # One-time migration (2026-11 noise-reduction redesign, components
+    # B+C+D) — loss-positions-total's own condition tree never force-syncs
+    # on an ordinary restart (same as every other builtin), so shipping
+    # the new tree in code alone would be inert against an already-seeded
+    # row. Slug-gated and content-matched (byte-for-byte against the OLD
+    # shape), so an operator who customized this agent's conditions in
+    # any way is left alone — only an un-migrated, still-stock row is
+    # overwritten, and only here (never via the generic pnl-leaf check
+    # above, which this shape never matches — it has no 'pnl'/'pnl_pct'
+    # leaf at all).
+    if (agent_def.get("slug") == "loss-positions-total"
+            and _ae_is_stale_loss_positions_total_cond(existing.conditions)):
+        existing.conditions = agent_def["conditions"]
+        existing.cooldown_minutes = agent_def.get(
+            "cooldown_minutes", existing.cooldown_minutes)
 
 
 def _ae_build_agent_row(agent_def: dict) -> 'Agent':

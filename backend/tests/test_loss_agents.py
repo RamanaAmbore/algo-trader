@@ -18,6 +18,27 @@ def _agent(slug):
     return next((a for a in BUILTIN_AGENTS if a["slug"] == slug), None)
 
 
+def _collect_metrics(cond: dict) -> set:
+    """Recursively collect every leaf `metric` value in a condition tree.
+
+    2026-11 noise-reduction redesign (loss-positions-total) nests its
+    rate leaves inside an `all[any[...], any[...]]` subtree (gated on
+    drawdown-from-peak) — flat `{c['metric'] for c in conds}` no longer
+    reaches them, so tests that only care "is this metric present
+    anywhere" walk the whole tree instead of assuming a flat shape."""
+    out = set()
+    if not isinstance(cond, dict):
+        return out
+    for key in ('all', 'any'):
+        for child in (cond.get(key) or []):
+            out |= _collect_metrics(child)
+    if 'not' in cond:
+        out |= _collect_metrics(cond['not'])
+    if 'metric' in cond:
+        out.add(cond['metric'])
+    return out
+
+
 class TestLossRateAcct:
     """Tests for loss-rate-acct (new burn-rate-only agent)."""
 
@@ -230,10 +251,13 @@ class TestLossPositionsTotal:
         assert a["tier"] == "critical", f"Expected tier='critical', got {a['tier']}"
 
     def test_keeps_rate_conditions(self):
-        """loss-positions-total still has rate conditions (unlike per-acct)."""
+        """loss-positions-total still has rate conditions (unlike per-acct).
+
+        2026-11 redesign: these now live nested inside an
+        `all[any[...], any[...]]` subtree (gated on drawdown-from-peak),
+        not flat under the top-level `any` — see `_collect_metrics`."""
         a = _agent("loss-positions-total")
-        conds = a["conditions"]["any"]
-        metrics = {c["metric"] for c in conds}
+        metrics = _collect_metrics(a["conditions"])
         rate_metrics = {m for m in metrics if "rate" in m}
         assert rate_metrics == {"pnl_rate_abs", "pnl_rate_pct"}, (
             f"loss-positions-total should keep rate conditions, "
@@ -243,13 +267,50 @@ class TestLossPositionsTotal:
     def test_keeps_static_conditions(self):
         """loss-positions-total has day_val and day_pct static thresholds (migrated from pnl/pnl_pct)."""
         a = _agent("loss-positions-total")
-        conds = a["conditions"]["any"]
-        metrics = {c["metric"] for c in conds}
+        metrics = _collect_metrics(a["conditions"])
         static_metrics = {m for m in metrics if m in {"day_val", "day_pct"}}
         assert static_metrics == {"day_val", "day_pct"}, (
             f"loss-positions-total should have day_val + day_pct static conditions, "
             f"got {static_metrics}"
         )
+
+    def test_day_val_floor_raised_to_100000(self):
+        """2026-11 noise-reduction redesign (component B): the day_val
+        floor was raised -50,000 -> -100,000 to eliminate the 8 marginal
+        fires found in the 14-day replay (see the agent's own code
+        comment for the full data-justified rationale)."""
+        a = _agent("loss-positions-total")
+        top = a["conditions"]["any"]
+        day_val_leaf = next(c for c in top if c.get("metric") == "day_val")
+        assert day_val_leaf["value"] == -100000
+
+    def test_rate_leaves_gated_on_day_val_or_drawdown(self):
+        """2026-11 redesign (component C): the rate leaves are no longer
+        bare — they're wrapped in all[any[day_val<0, max_drawdown_pnl(30)
+        <=-threshold], any[rate_abs, rate_pct]], closing the risk
+        council's "permanent giveback blind spot" finding (a bare
+        day_val<0 gate alone would never catch a +600k->+300k bleed)."""
+        a = _agent("loss-positions-total")
+        top = a["conditions"]["any"]
+        gated = next((c for c in top if "all" in c), None)
+        assert gated is not None, "expected a nested all[] branch gating the rate leaves"
+        all_children = gated["all"]
+        assert len(all_children) == 2
+        gate_branch, rate_branch = all_children
+        gate_metrics = {c["metric"] for c in gate_branch["any"]}
+        assert gate_metrics == {"day_val", "max_drawdown_pnl(30)"}
+        day_val_gate = next(c for c in gate_branch["any"] if c["metric"] == "day_val")
+        assert day_val_gate["op"] == "<" and day_val_gate["value"] == 0
+        drawdown_gate = next(
+            c for c in gate_branch["any"] if c["metric"] == "max_drawdown_pnl(30)")
+        assert drawdown_gate["op"] == "<=" and drawdown_gate["value"] < 0
+        rate_metrics = {c["metric"] for c in rate_branch["any"]}
+        assert rate_metrics == {"pnl_rate_abs", "pnl_rate_pct"}
+
+    def test_cooldown_lengthened_to_45_minutes(self):
+        """2026-11 redesign (component D): cooldown 30 -> 45 minutes."""
+        a = _agent("loss-positions-total")
+        assert a["cooldown_minutes"] == 45
 
     def test_in_ntfy_dict_as_urgent(self):
         """loss-positions-total must map to 'urgent' in _LOSS_AGENT_NTFY."""
@@ -517,14 +578,24 @@ class TestConditionTreeStructure:
         assert len(items) >= 2, "loss-positions-acct should have at least 2 conditions"
 
     def test_loss_positions_total_condition_tree(self):
-        """loss-positions-total conditions are a valid any: tree with 4 items (2 static + 2 rate)."""
+        """loss-positions-total conditions are a valid any: tree.
+
+        2026-11 redesign: 3 top-level items now (day_val, day_pct, and a
+        nested all[] branch gating the 2 rate leaves on drawdown-from-
+        peak) — the rate leaves moved from flat top-level items into
+        that nested branch, not removed. See TestLossPositionsTotal's
+        test_rate_leaves_gated_on_day_val_or_drawdown for the nested
+        shape itself."""
         a = _agent("loss-positions-total")
         conds = a.get("conditions")
         assert "any" in conds, "loss-positions-total must have 'any' key"
 
         items = conds["any"]
         assert isinstance(items, list), "conditions['any'] must be a list"
-        assert len(items) == 4, (
-            f"loss-positions-total should have exactly 4 conditions "
-            f"(2 static day_val/day_pct + 2 rate), got {len(items)}"
+        assert len(items) == 3, (
+            f"loss-positions-total should have exactly 3 top-level "
+            f"conditions (day_val, day_pct, nested rate-gate branch), "
+            f"got {len(items)}"
         )
+        assert sum(1 for i in items if "all" in i) == 1, (
+            "expected exactly one nested all[] branch")

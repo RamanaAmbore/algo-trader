@@ -205,26 +205,34 @@ class TestBackwardCompatRealAgentShapes:
 
     @pytest.mark.asyncio
     async def test_loss_positions_total_multi_leaf_coincident_breach(self):
-        """Real agent `loss-positions-total`'s exact 4-leaf any[]
+        """Real agent `loss-positions-total`'s exact top-level any[]
         condition (all positions.total scope) — 2 leaves co-breaching
         the SAME tick must still fire exactly once, not twice. Uses the
         real condition shape with a synthetic action attached (the prod
         agent itself is notify-only) to prove the dispatch-loop behavior
-        the shape implies."""
+        the shape implies.
+
+        2026-11 noise-reduction redesign: the day_val floor raised to
+        -100000, and the 2 rate leaves moved into a nested all[]/any[]
+        branch gated on drawdown-from-peak (see agent_engine.py's own
+        comment on this agent, and test_loss_agents.py's
+        TestLossPositionsTotal for the dedicated shape tests). The
+        top-level day_val/day_pct leaves this fan-out test exercises are
+        unaffected by that nesting."""
         spec = _builtin("loss-positions-total")
-        assert spec["conditions"] == {"any": [
-            {"metric": "day_val",      "scope": "positions.total", "op": "<=", "value": -50000},
-            {"metric": "day_pct",      "scope": "positions.total", "op": "<=", "value": -2.0},
-            {"metric": "pnl_rate_abs", "scope": "positions.total", "op": "<=", "value": -6000},
-            {"metric": "pnl_rate_pct", "scope": "positions.total", "op": "<=", "value": -0.25},
-        ]}, "loss-positions-total's real condition shape changed — update this test"
+        assert spec["conditions"]["any"][0] == {
+            "metric": "day_val", "scope": "positions.total", "op": "<=", "value": -100000,
+        }, "loss-positions-total's real condition shape changed — update this test"
+        assert spec["conditions"]["any"][1] == {
+            "metric": "day_pct", "scope": "positions.total", "op": "<=", "value": -2.0,
+        }, "loss-positions-total's real condition shape changed — update this test"
         agent = _Agent(id=102, slug=spec["slug"], tier=spec["tier"], topic=spec["topic"],
                        actions=[{"type": "chase_close_positions", "params": {"scope": "total"}}])
         # Both day_val and day_pct leaves breach the SAME TOTAL row this tick.
-        total_row = _row("TOTAL", day_change_val=-60000, day_change_percentage=-3.0)
+        total_row = _row("TOTAL", day_change_val=-120000, day_change_percentage=-3.0)
         matches = [
             _m(metric="day_val", scope="positions.total", account="TOTAL",
-               op="<=", threshold=-50000, value=-60000, row=total_row),
+               op="<=", threshold=-100000, value=-120000, row=total_row),
             _m(metric="day_pct", scope="positions.total", account="TOTAL",
                op="<=", threshold=-2.0, value=-3.0, row=total_row),
         ]
