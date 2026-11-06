@@ -222,27 +222,47 @@ class TestHoldingsAccountFilter:
         self,
         auth_token: str,
     ) -> None:
-        """?account= (empty string) must return the same result as no param."""
+        """?account= (empty string) must return the same result as no param.
+
+        2026-11-06 fix — this hits the REAL live dev server (`BASE_URL`
+        above), so the two sequential fetches are not atomic: a holding
+        that genuinely closes/opens between the two live HTTP calls
+        (e.g. during active trading, exactly the environment this app
+        runs in) makes the row counts legitimately differ for a single
+        pair of calls, with no code defect involved — confirmed via a
+        standalone re-run of this exact test immediately after a
+        full-suite failure, which passed. A real `?account=` handling
+        bug would reproduce on every attempt; a live-state race would
+        not. Retrying the whole fetch-both-and-compare pair up to 3
+        times (only on a mismatch) keeps the test a genuine regression
+        guard while no longer flaking under live trading activity.
+        """
         pytest_skip_if_unreachable()
 
-        # Fetch both variants back-to-back from the same live state.
-        unfiltered = _get_holdings(auth_token)
-        req = urllib.request.Request(
-            f"{HOLDINGS_URL}?account=",
-            headers={
-                "Authorization": f"Bearer {auth_token}",
-                "User-Agent": UA,
-            },
-        )
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-            filtered = json.loads(resp.read())
+        last_mismatch = None
+        for attempt in range(3):
+            # Fetch both variants back-to-back from the same live state.
+            unfiltered = _get_holdings(auth_token)
+            req = urllib.request.Request(
+                f"{HOLDINGS_URL}?account=",
+                headers={
+                    "Authorization": f"Bearer {auth_token}",
+                    "User-Agent": UA,
+                },
+            )
+            with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+                filtered = json.loads(resp.read())
 
-        unfiltered_count = len(unfiltered.get("rows", []))
-        filtered_count = len(filtered.get("rows", []))
-        assert filtered_count == unfiltered_count, (
-            f"?account= (empty) returned {filtered_count} rows; "
-            f"expected {unfiltered_count} (same as no param)"
-        )
+            unfiltered_count = len(unfiltered.get("rows", []))
+            filtered_count = len(filtered.get("rows", []))
+            if filtered_count == unfiltered_count:
+                return
+            last_mismatch = (
+                f"?account= (empty) returned {filtered_count} rows; "
+                f"expected {unfiltered_count} (same as no param) "
+                f"[attempt {attempt + 1}/3]"
+            )
+        assert False, last_mismatch
 
 
 # ── __main__ block ────────────────────────────────────────────────────────────
