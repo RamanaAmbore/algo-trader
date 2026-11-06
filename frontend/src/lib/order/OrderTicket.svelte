@@ -599,24 +599,29 @@
       // resort before trusting the hint — this generalizes beyond MCX
       // to any bare NSE/NFO underlying root (e.g. "NIFTY") typed
       // without an explicit Fut/Opt type filter.
-      if (!_hasContractSuffix) {
-        const fut = findNearestFuture(sym);
-        if (fut?.e) return fut.e;
-      } else {
-        // Suffixed-symbol cache-miss rescue (2026-10-23 fix, same live
-        // incident as above — defense in depth, mirrors the CE/PE
-        // rescue in `exchangeOptions` below). A cache miss on an
-        // already-resolved CE/PE/FUT contract used to fall straight
-        // through to the caller's `exchange` hint, which several
-        // callers pass as a generic default (e.g. derivatives page's
-        // `executeDraft()` / MarketPulse's `_openTicketFromDraftRow()`
-        // both default to 'NFO' on their OWN cache miss). Resolve the
-        // contract's root and check for a listed future on that root
-        // before trusting the hint.
-        const root = String(sym.match(/^([A-Z]+)/)?.[1] || '');
-        const fut = root ? findNearestFuture(root) : null;
-        if (fut?.e) return fut.e;
-      }
+      //
+      // 2026-11-06 fix (live incident, operator: "last night around
+      // 10:00 PM, after placing the order I got market closed or mcx
+      // closed message") — `_hasContractSuffix` tests `_underlying`
+      // (the caller's ORIGINAL `symbol` prop), not `sym` (the value
+      // actually looked up here). The bare-underlying auto-picker
+      // (`_wantsFut`) resolves `_resolvedSymbol` to a full contract
+      // ("CRUDEOIL26NOVFUT") from a bare-root prop ("CRUDEOIL") — so
+      // `_hasContractSuffix` reads FALSE (the prop has no suffix) even
+      // though `sym` here is the fully-suffixed contract. This branch
+      // then called `findNearestFuture(sym)` with the FULL contract
+      // symbol — `listFutures()` keys its lookup on `{ROOT}|FUT`, so a
+      // full-contract argument never matches and the rescue silently
+      // returned null, falling through to the caller's generic exchange
+      // hint (often NFO/NSE) on any cold-cache miss for that specific
+      // contract. Extracting the leading-letters root from `sym` first
+      // (same regex the suffixed-rescue branch below already uses) is a
+      // no-op for a genuinely bare root and the correct argument for an
+      // already-resolved contract either way — collapses both branches
+      // into the one that was already proven correct.
+      const _bareRoot = String(sym.match(/^([A-Z]+)/)?.[1] || sym);
+      const fut = findNearestFuture(_bareRoot);
+      if (fut?.e) return fut.e;
     }
     return exchange || '';
   });
