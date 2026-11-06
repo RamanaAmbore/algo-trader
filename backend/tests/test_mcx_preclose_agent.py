@@ -764,7 +764,11 @@ class TestMatchToAlertRowMarginFalsePositive:
 
 
 def _rich_extra(mock_logger) -> dict:
-    for c in mock_logger.info.call_args_list:
+    # 2026-11-06 — _v2_send_rich_alert now calls `logger.log(level,
+    # ...)` with a tier-derived level (info->INFO, critical->CRITICAL,
+    # etc.), not a hardcoded `logger.info(...)` — read `.log`, the
+    # generic dispatcher every level routes through.
+    for c in mock_logger.log.call_args_list:
         extra = c.kwargs.get("extra") or {}
         if extra.get("alert_event") == "rich_alert":
             return {"tg_table": extra["tg_table"], "email_table_html": extra["email_table_html"]}

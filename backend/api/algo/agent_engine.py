@@ -1865,8 +1865,36 @@ async def _v2_send_rich_alert(agent, matches, now, sim_mode: bool = False,
                if _subject_header_line.startswith("Agent: ")
                else _subject_header_line)
     mode_tag   = _agent_execution_mode_tag(agent, sim_mode=sim_mode, replay_mode=replay_mode)
+    # 2026-11-06 fix (operator-approved, source/alert-agent/trigger redesign) —
+    # the log CALL ITSELF now carries the firing agent's real tier as its
+    # Python logging level, not a hardcoded logger.info(...), so the new
+    # trailing log-level tag (event_agents.py:_agent_tag_line, 4th slot)
+    # reads e.g. "#critical" for a critical-tier breach instead of always
+    # "#info" — matching the approved template. `tier` -> level: critical
+    # ->CRITICAL, high->ERROR, medium->WARNING, low/info->INFO (never
+    # DEBUG — LogStoreHandler's own floor is INFO; a DEBUG record would
+    # never reach the dispatch pipeline at all, silently dropping the
+    # alert). `self_alerted=True` is REQUIRED alongside this: ERROR_AGENT
+    # (event_agents.py:ERROR_AGENT) is a blanket catch-all matching any
+    # tag="error"/min_level="ERROR" record, and tags_for() auto-tags a
+    # CRITICAL record "error" too (see ERROR_AGENT's own docstring) — a
+    # high/critical-tier rich alert would otherwise ALSO match that
+    # catch-all and double-alert once this log call stops always being
+    # INFO. Same `self_alerted` convention chase's max-attempts
+    # exhaustion and actions_live.py's close_position failure path
+    # already use (_error_agent_self_alerted).
+    import logging as _logging
+    _tier_to_level = {
+        "critical": _logging.CRITICAL,
+        "high":     _logging.ERROR,
+        "medium":   _logging.WARNING,
+        "low":      _logging.INFO,
+        "info":     _logging.INFO,
+    }
+    _level = _tier_to_level.get(getattr(agent, "tier", None), _logging.INFO)
     try:
-        logger.info(
+        logger.log(
+            _level,
             f"Agent [{agent.slug}] alert recorded",
             extra={
                 "tags": ["agent"], "alert_event": "rich_alert", "agent_slug": agent.slug,
@@ -1875,6 +1903,7 @@ async def _v2_send_rich_alert(agent, matches, now, sim_mode: bool = False,
                 "email_table_html": email_html, "subject_detail": subject,
                 "sim_mode": bool(sim_mode), "mode_tag": mode_tag,
                 "replay_mode": bool(replay_mode),
+                "self_alerted": True,
                 # 2026-10-16 fix — the REAL triggering agent's tier, so
                 # event_agents.py's RICH_ALERT_AGENT (a generic fan-out
                 # dispatcher for every agent's alerts, itself always

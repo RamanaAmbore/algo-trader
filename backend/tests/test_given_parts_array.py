@@ -362,8 +362,11 @@ class TestFullChainThroughRichAlert:
         from backend.shared.helpers.utils import mask_account
         eval_result = EvalResult(triggered=True, condition_text="pnl <= -1", detail={"matches": []})
         calls = []
-        with patch.object(ae_mod.logger, "info",
-                           side_effect=lambda msg, **kw: calls.append(kw.get("extra"))):
+        # 2026-11-06 — _v2_send_rich_alert now calls `logger.log(level,
+        # ...)` with a tier-derived level, not a hardcoded
+        # `logger.info(...)` — patch `.log`, the generic dispatcher.
+        with patch.object(ae_mod.logger, "log",
+                           side_effect=lambda level, msg, **kw: calls.append(kw.get("extra"))):
             sent = await _v2_send_rich_alert(
                 agent, matches, now, sim_mode=False, context=context, eval_result=eval_result,
             )

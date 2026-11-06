@@ -66,13 +66,24 @@ def _eval_result(condition_text="pnl <= -50000"):
 
 
 async def _capture_rich_alert(agent, matches, eval_result, *, sim_mode=False, context=None):
-    """Run the real _v2_send_rich_alert and capture the logger.info extra
+    """Run the real _v2_send_rich_alert and capture the logger extra
     dict it builds (the one event_agents.py's RICH_ALERT_AGENT reads
-    tg_table/email_table_html off of)."""
+    tg_table/email_table_html off of).
+
+    2026-11-06 fix — _v2_send_rich_alert now calls `logger.log(level,
+    ...)` with a level derived from the firing agent's own tier (so the
+    new per-alert log-level tag reads real severity, not always
+    "#info" — see agent_engine.py's own comment at the call site), not
+    a hardcoded `logger.info(...)`. Patching `.log` (the generic
+    dispatcher every level routes through) instead of `.info` directly
+    catches the call regardless of which tier/level this agent uses —
+    every test in this file uses the default tier="medium" (-> WARNING)
+    unless it says otherwise, so patching `.info` specifically stopped
+    catching anything."""
     from backend.api.algo import agent_engine as ae_mod
     calls = []
-    with patch.object(ae_mod.logger, "info",
-                       side_effect=lambda msg, **kw: calls.append(kw.get("extra"))):
+    with patch.object(ae_mod.logger, "log",
+                       side_effect=lambda level, msg, **kw: calls.append(kw.get("extra"))):
         sent = await _v2_send_rich_alert(
             agent, matches, _now(), sim_mode=sim_mode, context=context,
             eval_result=eval_result,
@@ -150,8 +161,8 @@ class TestPlainStringMsgOverride:
         ])
         from backend.api.algo import agent_engine as ae_mod
         calls = []
-        with patch.object(ae_mod.logger, "info",
-                           side_effect=lambda msg, **kw: calls.append(kw.get("extra"))):
+        with patch.object(ae_mod.logger, "log",
+                           side_effect=lambda level, msg, **kw: calls.append(kw.get("extra"))):
             sent = await _v2_send_rich_alert(agent, [_match()], _now(), sim_mode=False)
         assert sent is True
         assert "TOTAL" in calls[0]["tg_table"]
@@ -457,3 +468,92 @@ class TestSubjectDetailNoLongerDuplicatesAgentPrefix:
         assert payload["email_subject"] == (
             f"Agent: loss-margin-low (#42) | {extra['ist_display']}"
         )
+
+
+class TestRichAlertLogLevelMatchesTier:
+    """2026-11-06 fix (operator-approved, source/alert-agent/trigger
+    redesign) — the approved alert template shows a #critical tag for a
+    critical-tier breach's log-level slot. _v2_send_rich_alert used to
+    always call logger.info(...) regardless of the firing agent's real
+    tier, so the new log-level tag (event_agents.py:_agent_tag_line's
+    4th slot, which reads the record's own level) would have always
+    read #info, even for a critical breach — contradicting the approved
+    template. Fixed: the log call's own level now derives from
+    agent.tier. Also verifies self_alerted=True is always set, which is
+    REQUIRED once this record can carry level=ERROR/CRITICAL —
+    ERROR_AGENT (event_agents.py) is a blanket catch-all matching any
+    tag="error"/min_level="ERROR" record, and a CRITICAL record is
+    auto-tagged "error" too (see ERROR_AGENT's own docstring) — without
+    self_alerted, a high/critical-tier rich alert would ALSO match that
+    catch-all and double-alert."""
+
+    async def _capture_level_and_extra(self, tier):
+        from backend.api.algo import agent_engine as ae_mod
+        agent = _Agent(tier=tier)
+        calls = []
+        with patch.object(ae_mod.logger, "log",
+                           side_effect=lambda level, msg, **kw: calls.append((level, kw.get("extra")))):
+            sent = await _v2_send_rich_alert(agent, [_match()], _now(), sim_mode=False)
+        assert sent is True
+        assert len(calls) == 1
+        return calls[0]
+
+    @pytest.mark.asyncio
+    async def test_critical_tier_logs_at_critical_level(self):
+        import logging
+        level, extra = await self._capture_level_and_extra("critical")
+        assert level == logging.CRITICAL
+        assert extra["self_alerted"] is True
+
+    @pytest.mark.asyncio
+    async def test_high_tier_logs_at_error_level(self):
+        import logging
+        level, extra = await self._capture_level_and_extra("high")
+        assert level == logging.ERROR
+        assert extra["self_alerted"] is True
+
+    @pytest.mark.asyncio
+    async def test_medium_tier_logs_at_warning_level(self):
+        import logging
+        level, extra = await self._capture_level_and_extra("medium")
+        assert level == logging.WARNING
+        assert extra["self_alerted"] is True
+
+    @pytest.mark.asyncio
+    async def test_low_tier_logs_at_info_level(self):
+        import logging
+        level, extra = await self._capture_level_and_extra("low")
+        assert level == logging.INFO
+        assert extra["self_alerted"] is True
+
+    @pytest.mark.asyncio
+    async def test_info_tier_logs_at_info_level_never_debug(self):
+        """A DEBUG record would never reach the dispatch pipeline at all
+        (LogStoreHandler's own floor is INFO) — info tier must map to
+        INFO, not DEBUG, or the alert silently vanishes."""
+        import logging
+        level, extra = await self._capture_level_and_extra("info")
+        assert level == logging.INFO
+        assert extra["self_alerted"] is True
+
+    @pytest.mark.asyncio
+    async def test_unknown_tier_defaults_to_info_level(self):
+        """A tier value this mapping doesn't recognise must never crash
+        or silently drop the alert — defaults to INFO."""
+        import logging
+        level, extra = await self._capture_level_and_extra("not-a-real-tier")
+        assert level == logging.INFO
+        assert extra["self_alerted"] is True
+
+    @pytest.mark.asyncio
+    async def test_high_tier_record_does_not_also_double_alert_via_error_agent(self):
+        """Regression guard for the exact double-alert this fix must
+        prevent: a high-tier rich alert now logs at ERROR level, which
+        would otherwise ALSO match ERROR_AGENT's blanket catch-all
+        (tag="error", min_level="ERROR") were self_alerted not set."""
+        from backend.api.algo.event_agents import ERROR_AGENT, _error_agent_self_alerted
+        from types import SimpleNamespace
+        _, extra = await self._capture_level_and_extra("high")
+        rec = {"level": "ERROR", "extra": extra}
+        error_agent = SimpleNamespace(slug=ERROR_AGENT["slug"])
+        assert _error_agent_self_alerted(error_agent, rec) is True

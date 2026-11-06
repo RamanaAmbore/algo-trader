@@ -89,7 +89,11 @@ async def test_ntfy_fires_exactly_once_when_rich_alert_succeeds():
     assert ntfy_mock.call_count == 0, (
         "events.dispatch() must not send ntfy for an alert the rich path recorded"
     )
-    records = [c.kwargs["extra"] for c in log_mock.info.call_args_list
+    # 2026-11-06 — _v2_send_rich_alert now calls `logger.log(level, ...)`
+    # with a tier-derived level (so the log-level tag reads real
+    # severity), not a hardcoded `logger.info(...)` — check `.log`, the
+    # generic dispatcher every level routes through.
+    records = [c.kwargs["extra"] for c in log_mock.log.call_args_list
                if (c.kwargs.get("extra") or {}).get("alert_event") == "rich_alert"]
     assert len(records) == 1, "the rich alert must be recorded exactly once"
 
