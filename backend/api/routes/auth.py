@@ -269,7 +269,14 @@ def _registration_alert_extra(username: str, email: str) -> dict:
     `body` as plain text for both Telegram and ntfy (no parse mode, no
     `_html_to_plain` pass — see `event_agents.py:_render_deploy_sync`).
     Escaping here would show literal `&lt;`/`&amp;` text in the
-    notification instead of the real username/email."""
+    notification instead of the real username/email.
+
+    2026-11-06 (operator SSOT instruction: "the source is process that
+    generated error... keeping the name as agent is not correct") — this
+    producer never had any identity mechanism at all (a real, documented
+    gap, not a migration) — `source_type`/`source_name` give it one:
+    self-registration is a genuinely un-caused process, never "manual"
+    or a real agent action."""
     return {
         # "alert" added additively (2026-10-25 tag-unification) so
         # USER_REGISTERED_AGENT's condition (now tag="alert") matches —
@@ -279,6 +286,7 @@ def _registration_alert_extra(username: str, email: str) -> dict:
         "tags": ["auth", "alert"], "alert_event": "user_registered",
         "title": "New user registered",
         "body": f"{username} ({email}) registered and is pending admin approval.",
+        "source_type": "process", "source_name": "User registration",
     }
 
 

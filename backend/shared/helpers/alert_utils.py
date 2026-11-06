@@ -1175,7 +1175,8 @@ def _partial_outage_warning_lines(sum_positions) -> "list[str] | None":
 def send_summary(sum_holdings, sum_positions, ist_display: str, msg_type: str,
                  label: str = "", df_margins=None, df_positions=None,
                  sim_mode: bool = False, replay_mode: bool = False,
-                 agent_name: "str | None" = None, agent_id: "int | None" = None):
+                 agent_name: "str | None" = None, agent_id: "int | None" = None,
+                 source_type: "str | None" = None, source_name: "str | None" = None):
     """
     Send holdings + positions + funds summary at market open or close.
     msg_type: 'open' or 'close'
@@ -1201,13 +1202,21 @@ def send_summary(sum_holdings, sum_positions, ist_display: str, msg_type: str,
     record's extras and passes them to `dispatch_payload()`, the same
     mechanism `_render_rich_alert()` already uses, so the rendered
     alert shows a real "Alert: {name} (#{id})" header instead of none
-    at all. `background.py`'s cron-driven close summary resolves the
-    real `market-summary` seeded Agent row's id and passes both; the
-    `send_summary` DSL action threads the REAL firing agent's own
-    identity from its `context` instead (never hardcodes
+    at all. The `send_summary` DSL action threads the REAL firing
+    agent's own identity from its `context` (never hardcodes
     "market-summary" — a custom agent calling this action should be
     credited as itself, not as the built-in report). Omitted (the
     default) keeps the pre-existing header-less rendering.
+
+    `source_type`/`source_name` (2026-11-06, operator SSOT instruction —
+    see `resolve_source()`'s own docstring) — `background.py`'s cron-
+    driven close summary ("Market summary") is a genuinely un-caused
+    scheduled job, not an agent action; it passes
+    `source_type="process", source_name="Market summary"` instead of a
+    fake agent identity. These two kwargs and `agent_name`/`agent_id`
+    are mutually exclusive in practice — a caller passes one pair or the
+    other, never both — so only ONE pair's keys reach the record's
+    `extra` dict, never a stale leftover from the other path.
     """
     h_rows    = _summary_holdings_rows(sum_holdings)
     p_rows    = _summary_positions_rows(sum_positions)
@@ -1228,18 +1237,21 @@ def send_summary(sum_holdings, sum_positions, ist_display: str, msg_type: str,
             f"{warning_lines[0]}</p>" + email_html
         )
 
-    _DISPATCH_LOGGER.info(
-        f"Background: {msg_type} summary recorded",
-        extra={
-            # "alert" added additively (2026-10-25 tag-unification) so
-            # SUMMARY_AGENT's condition (now tag="alert") matches.
-            "tags": ["summary", "alert"], "alert_event": "summary", "msg_type": msg_type,
-            "ist_display": ist_display, "tg_table": tg_table,
-            "email_table_html": email_html, "subject_detail": subject_detail,
-            "sim_mode": bool(sim_mode), "replay_mode": bool(replay_mode),
-            "agent_name": agent_name, "agent_id": agent_id,
-        },
-    )
+    extra = {
+        # "alert" added additively (2026-10-25 tag-unification) so
+        # SUMMARY_AGENT's condition (now tag="alert") matches.
+        "tags": ["summary", "alert"], "alert_event": "summary", "msg_type": msg_type,
+        "ist_display": ist_display, "tg_table": tg_table,
+        "email_table_html": email_html, "subject_detail": subject_detail,
+        "sim_mode": bool(sim_mode), "replay_mode": bool(replay_mode),
+    }
+    if source_type and source_name:
+        extra["source_type"] = source_type
+        extra["source_name"] = source_name
+    else:
+        extra["agent_name"] = agent_name
+        extra["agent_id"] = agent_id
+    _DISPATCH_LOGGER.info(f"Background: {msg_type} summary recorded", extra=extra)
 
 
 # ---------------------------------------------------------------------------

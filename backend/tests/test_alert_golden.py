@@ -574,10 +574,15 @@ async def test_user_registered_agent_sends_telegram_and_ntfy_high(monkeypatch):
                             **{k: event_agents.USER_REGISTERED_AGENT.get(k, [])
                                for k in ("conditions", "events", "actions")})
     await event_agents.dispatch([rec], [agent])
-    # 2026-10-31 — trailing tag: action agent "manual", alert agent
-    # "user-registered-alert" (tag-token'd).
-    # 2026-11-06 — 4th slot is this record's own level ("info").
-    tagged_body = body + "\n#manual #user_registered_alert #info"
+    # 2026-11-06 rebuild (operator SSOT instruction) — self-registration
+    # never had any identity mechanism at all; `_registration_alert_extra`
+    # now sets a literal `source_type="process", source_name="User
+    # registration"` (a genuinely un-caused process, never "manual").
+    # Trailing tag: process ("user_registration"), alert agent
+    # "user-registered-alert" (tag-token'd), log level ("info") — no
+    # action tag, since nothing triggered this.
+    tagged_body = (f"Source: User registration\n{_FIXED_TS}\n{body}"
+                   "\n#user_registration #user_registered_alert #info")
     assert sent["tg"] == [tagged_body]
     assert sent["ntfy"] == [("New user registered", tagged_body, "high")]
 

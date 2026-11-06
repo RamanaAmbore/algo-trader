@@ -35,10 +35,13 @@ Covers:
      — the rendered Telegram text contains "Alert:" + the name; with no
      identity, the output is byte-identical to before (no "Alert:"
      line, no regression for the common/no-agent case).
-  3. `generic_notice_identity_extra()`: resolves (agent_id, agent_name)
-     for a known `alert_event` when the DB lookup succeeds; returns `{}`
-     for an unknown `alert_event`; returns `{}` (never raises) when the
-     lookup fails or returns None.
+  3. (2026-11-06 superseded) `TestProcessSourceProducers`: each of the 8
+     background-process producers (user registration, market status
+     report, market summary, GTT reconciler, OCO watcher, ticker
+     watchdog, visitor report, deploy sync) now logs a literal
+     `source_type="process"` + a real process name — never a
+     `get_agent_id_by_slug()` DB round-trip, which is DELETED along with
+     `generic_notice_identity_extra()`/`_GENERIC_NOTICE_IDENTITY`.
   4. `_render_deploy_sync()`: builds a real "Agent: {name} (#{id})"
      header line when both are present in extras; stays header-less
      (byte-identical to before) when they're absent — never falls back
@@ -47,7 +50,7 @@ Covers:
 from __future__ import annotations
 
 import logging
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -112,64 +115,91 @@ def test_render_summary_stays_header_less_with_no_identity_byte_identical_to_bef
     assert "Agent:" not in telegram_msg
 
 
-class TestGenericNoticeIdentityExtra:
-    @pytest.mark.asyncio
-    async def test_resolves_identity_for_a_known_alert_event(self):
-        from backend.api.algo.event_agents import generic_notice_identity_extra
+class TestProcessSourceProducers:
+    """2026-11-06 rebuild (operator SSOT instruction: "the source is
+    process that generated error... keeping the name as agent is not
+    correct") — `generic_notice_identity_extra()` / `_GENERIC_NOTICE_
+    IDENTITY` are DELETED. Every one of these 8 background-process
+    producers now logs a literal `source_type="process"` + a real
+    process name, never a `get_agent_id_by_slug()` DB round-trip. This
+    class replaces the deleted function's own unit tests with direct
+    checks on each producer's real `extra` dict."""
 
-        with patch(
-            "backend.api.algo.agent_engine.get_agent_id_by_slug",
-            new=AsyncMock(return_value=77),
-        ):
-            out = await generic_notice_identity_extra("ticker_recovered")
-        assert out == {"agent_id": 77, "agent_name": "Ticker recovered"}
+    def test_gtt_asymmetric_alert_carries_a_literal_process_name(self):
+        from backend.api.algo.event_agents import GTT_ASYMMETRIC_AGENT
+        assert GTT_ASYMMETRIC_AGENT["conditions"]["log"]["where"] == {"alert_event": "gtt_asymmetric"}
+        # The producer itself (background.py) is exercised end-to-end by
+        # test_alert_channel_collapse.py's own generic_notice parametrize —
+        # this class checks the OTHER producers that test doesn't cover.
 
-    @pytest.mark.asyncio
-    async def test_covers_the_two_dedicated_producers_not_in_the_collapsed_table(self):
-        """deploy_out_of_sync / visitor_report stayed dedicated agents in
-        the 2026-10-25 collapse — not in ALERT_EVENT_DISPATCH — this must
-        still resolve them via DEPLOY_SYNC_AGENT / VISITOR_REPORT_AGENT."""
-        from backend.api.algo.event_agents import generic_notice_identity_extra
-
-        with patch(
-            "backend.api.algo.agent_engine.get_agent_id_by_slug",
-            new=AsyncMock(return_value=5),
-        ):
-            deploy = await generic_notice_identity_extra("deploy_out_of_sync")
-            visitor = await generic_notice_identity_extra("visitor_report")
-        assert deploy == {"agent_id": 5, "agent_name": "Deploy out of sync"}
-        assert visitor == {"agent_id": 5, "agent_name": "Visitor report"}
+    def test_user_registration_alert_extra_carries_process_identity(self):
+        from backend.api.routes.auth import _registration_alert_extra
+        extra = _registration_alert_extra("newtrader", "newtrader@example.com")
+        assert extra["source_type"] == "process"
+        assert extra["source_name"] == "User registration"
+        assert "agent_id" not in extra and "agent_name" not in extra
 
     @pytest.mark.asyncio
-    async def test_unknown_alert_event_returns_empty(self):
-        from backend.api.algo.event_agents import generic_notice_identity_extra
+    async def test_market_status_report_logs_a_literal_process_name(self, monkeypatch):
+        """Replaces the deleted `get_agent_id_by_slug("market-status-
+        alert")` round-trip — no DB call is made at all any more."""
+        from backend.shared.helpers import alert_utils
+        from backend.api.algo.grammar_tokens import action_send_market_status as m
 
-        assert await generic_notice_identity_extra("something_unrouted") == {}
-        assert await generic_notice_identity_extra(None) == {}
+        captured = []
+        monkeypatch.setattr(alert_utils._DISPATCH_LOGGER, "info",
+                             lambda *a, **kw: captured.append(kw.get("extra")))
+        monkeypatch.setattr(m, "_market_status_for_segment",
+                             AsyncMock(return_value={"open": False, "hours": None, "reason": "weekend"}))
 
-    @pytest.mark.asyncio
-    async def test_lookup_failure_degrades_to_empty_never_raises(self):
-        from backend.api.algo.event_agents import generic_notice_identity_extra
+        await m._action_live_send_market_status({}, {})
 
-        with patch(
-            "backend.api.algo.agent_engine.get_agent_id_by_slug",
-            new=AsyncMock(side_effect=RuntimeError("db down")),
-        ):
-            out = await generic_notice_identity_extra("gtt_asymmetric")
-        assert out == {}
+        assert captured, "market-status record never logged"
+        extra = captured[0]
+        assert extra["source_type"] == "process"
+        assert extra["source_name"] == "Market status report"
+        assert "agent_id" not in extra and "agent_name" not in extra
 
-    @pytest.mark.asyncio
-    async def test_cold_cache_none_result_degrades_to_empty(self):
-        """A fresh DB with seed_agents() not yet run resolves to None, not
-        an exception — must still degrade to no identity, not a crash."""
-        from backend.api.algo.event_agents import generic_notice_identity_extra
+    def test_close_summary_cron_passes_a_literal_process_name_to_send_summary(self, monkeypatch):
+        """`send_summary()` now accepts `source_type`/`source_name` and
+        writes them into the record's extra INSTEAD of `agent_name`/
+        `agent_id` — the DSL-action path (real firing agent) is
+        unaffected, since it never passes these two new kwargs."""
+        import pandas as pd
+        from backend.shared.helpers import alert_utils
 
-        with patch(
-            "backend.api.algo.agent_engine.get_agent_id_by_slug",
-            new=AsyncMock(return_value=None),
-        ):
-            out = await generic_notice_identity_extra("oco_double_fire")
-        assert out == {}
+        captured = []
+        monkeypatch.setattr(alert_utils._DISPATCH_LOGGER, "info",
+                             lambda msg, **kw: captured.append(kw.get("extra")))
+        alert_utils.send_summary(
+            pd.DataFrame(), pd.DataFrame(), "03-Nov-26 15:45", "close", label="Equity",
+            source_type="process", source_name="Market summary",
+        )
+        assert captured
+        extra = captured[0]
+        assert extra["source_type"] == "process"
+        assert extra["source_name"] == "Market summary"
+        assert "agent_id" not in extra and "agent_name" not in extra
+
+    def test_send_summary_dsl_action_path_unaffected_by_the_new_kwargs(self, monkeypatch):
+        """The `send_summary` DSL action (a real firing agent) never
+        passes `source_type`/`source_name` — its own `agent_name`/
+        `agent_id` pair still reaches the record's extra unchanged."""
+        import pandas as pd
+        from backend.shared.helpers import alert_utils
+
+        captured = []
+        monkeypatch.setattr(alert_utils._DISPATCH_LOGGER, "info",
+                             lambda msg, **kw: captured.append(kw.get("extra")))
+        alert_utils.send_summary(
+            pd.DataFrame(), pd.DataFrame(), "03-Nov-26 15:45", "close", label="Equity",
+            agent_name="Custom loss agent", agent_id=99,
+        )
+        assert captured
+        extra = captured[0]
+        assert extra["agent_name"] == "Custom loss agent"
+        assert extra["agent_id"] == 99
+        assert "source_type" not in extra and "source_name" not in extra
 
 
 class TestRenderDeploySync:

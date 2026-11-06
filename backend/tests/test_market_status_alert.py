@@ -183,13 +183,17 @@ class TestActionLiveSendMarketStatus:
         daily routine status report is market-info content, not
         action-required, regardless of whether a segment is open today.
         2026-11-05: channels are no longer carried on the record at
-        all — see the class docstring."""
+        all — see the class docstring.
+
+        2026-11-06 (operator SSOT instruction) — the real producer no
+        longer resolves an agent id at all; it logs a literal
+        `source_type="process", source_name="Market status report"`
+        instead of a fake-agent lookup."""
         from backend.api.algo.actions_live import _action_live_send_market_status
         now = datetime(2026, 10, 22, 5, 35, tzinfo=IST)
         with patch("backend.shared.helpers.date_time_utils.timestamp_indian", return_value=now), \
              patch("backend.brokers.broker_apis.fetch_holidays", return_value=set()), \
              patch("backend.brokers.broker_apis.fetch_special_sessions_async", new=AsyncMock(return_value=[])), \
-             patch("backend.api.algo.agent_engine.get_agent_id_by_slug", new=AsyncMock(return_value=99)), \
              patch("backend.shared.helpers.alert_utils._DISPATCH_LOGGER") as mock_logger:
             await _action_live_send_market_status({}, {})
         mock_logger.info.assert_called_once()
@@ -198,8 +202,9 @@ class TestActionLiveSendMarketStatus:
         assert "NSE/Equity: OPEN" in extra["body"]
         assert "MCX/Commodity: OPEN" in extra["body"]
         assert "channels" not in extra
-        assert extra["agent_id"] == 99
-        assert extra["agent_name"] == "Market status"
+        assert extra["source_type"] == "process"
+        assert extra["source_name"] == "Market status report"
+        assert "agent_id" not in extra and "agent_name" not in extra
 
     @pytest.mark.asyncio
     async def test_closed_day_record_carries_no_per_record_channels_override(self):
@@ -240,21 +245,23 @@ class TestActionLiveSendMarketStatus:
         assert "channels" not in extra
 
     @pytest.mark.asyncio
-    async def test_agent_id_lookup_failure_degrades_to_no_identity_never_blocks(self):
-        """A cold cache / transient DB hiccup must not prevent the log
-        record (and so the alert) from being written at all."""
+    async def test_literal_process_name_never_depends_on_a_db_lookup(self):
+        """2026-11-06 rebuild — the old `get_agent_id_by_slug()` round-trip
+        (and its own cold-cache/transient-DB-hiccup failure mode) is gone
+        entirely. A literal string can never fail to resolve, so this
+        producer no longer has a degrade path to test — it just always
+        carries the same literal identity, with no DB dependency."""
         from backend.api.algo.actions_live import _action_live_send_market_status
         now = datetime(2026, 10, 22, 5, 35, tzinfo=IST)
         with patch("backend.shared.helpers.date_time_utils.timestamp_indian", return_value=now), \
              patch("backend.brokers.broker_apis.fetch_holidays", return_value=set()), \
              patch("backend.brokers.broker_apis.fetch_special_sessions_async", new=AsyncMock(return_value=[])), \
-             patch("backend.api.algo.agent_engine.get_agent_id_by_slug", new=AsyncMock(return_value=None)), \
              patch("backend.shared.helpers.alert_utils._DISPATCH_LOGGER") as mock_logger:
             await _action_live_send_market_status({}, {})
         mock_logger.info.assert_called_once()
         extra = mock_logger.info.call_args.kwargs["extra"]
-        assert extra["agent_id"] is None
-        assert extra["agent_name"] is None
+        assert extra["source_type"] == "process"
+        assert extra["source_name"] == "Market status report"
 
 
 class TestActionDispatchWiring:

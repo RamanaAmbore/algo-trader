@@ -79,6 +79,11 @@ class TestGttAsymmetricAlert:
         assert "ZG0790" not in captured["extra"]["body"], "account must be masked"
         assert "ZG####" in captured["extra"]["body"]
         assert "CRUDEOIL26OCTFUT" in captured["extra"]["body"]
+        # 2026-11-06 (operator SSOT instruction) — a literal process
+        # name, not a fake-agent lookup: no known trigger.
+        assert captured["extra"]["source_type"] == "process"
+        assert captured["extra"]["source_name"] == "GTT reconciler"
+        assert "agent_id" not in captured["extra"] and "agent_name" not in captured["extra"]
 
     @pytest.mark.asyncio
     async def test_never_raises_even_on_internal_failure(self, monkeypatch):
@@ -113,6 +118,11 @@ class TestOcoDoubleFireAlert:
         assert captured["extra"]["title"] == "OCO double-fire"
         assert "ZG0790" not in captured["extra"]["body"]
         assert "ZG####" in captured["extra"]["body"]
+        # 2026-11-06 (operator SSOT instruction) — a literal process
+        # name, not a fake-agent lookup: no known trigger.
+        assert captured["extra"]["source_type"] == "process"
+        assert captured["extra"]["source_name"] == "OCO watcher"
+        assert "agent_id" not in captured["extra"] and "agent_name" not in captured["extra"]
 
     @pytest.mark.asyncio
     async def test_sibling_pointer_cleared_regardless_of_alert_outcome(self, monkeypatch):
@@ -145,6 +155,11 @@ class TestTickerRecoveredAlert:
         assert captured["extra"]["title"] == "Ticker recovered"
         assert "ZG0790" not in captured["extra"]["body"]
         assert "ZG####" in captured["extra"]["body"]
+        # 2026-11-06 (operator SSOT instruction) — a literal process
+        # name, not a fake-agent lookup: no known trigger.
+        assert captured["extra"]["source_type"] == "process"
+        assert captured["extra"]["source_name"] == "Ticker watchdog"
+        assert "agent_id" not in captured["extra"] and "agent_name" not in captured["extra"]
 
     def test_call_site_has_try_except_now(self):
         """Previously had NO try/except — a failure propagated straight
@@ -178,6 +193,11 @@ class TestTickerDegradedAlert:
         assert "ZG0790" not in captured["extra"]["body"]
         assert "ZG0791" not in captured["extra"]["body"]
         assert "ZG####" in captured["extra"]["body"]
+        # 2026-11-06 (operator SSOT instruction) — a literal process
+        # name, not a fake-agent lookup: no known trigger.
+        assert captured["extra"]["source_type"] == "process"
+        assert captured["extra"]["source_name"] == "Ticker watchdog"
+        assert "agent_id" not in captured["extra"] and "agent_name" not in captured["extra"]
 
     def test_call_site_has_try_except_now(self):
         """Previously had NO try/except — a failure propagated straight
@@ -197,6 +217,10 @@ class TestVisitorReportAlert:
         assert "await asyncio.to_thread(_alert_route" not in src
         assert '"alert_event": "visitor_report"' in src
         assert '"title": "Visitor report"' in src
+        # 2026-11-06 (operator SSOT instruction) — a literal process
+        # name, not a fake-agent lookup: no known trigger.
+        assert '"source_type": "process", "source_name": "Visitor report"' in src
+        assert "generic_notice_identity_extra" not in src
 
     def test_uses_plain_text_summary_not_the_html_builder(self):
         """2026-10 plain-text reversal: `summary_for_telegram()` builds

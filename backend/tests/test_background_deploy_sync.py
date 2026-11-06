@@ -223,3 +223,13 @@ def test_task_documents_manual_fallback_command():
     assert "dispatch.sh" in src and "refs/heads/" in src, (
         "the alert message should carry the manual remediation command"
     )
+
+
+def test_task_logs_a_literal_process_name_not_a_fake_agent_lookup():
+    """2026-11-06 (operator SSOT instruction: "the source is process
+    that generated error... keeping the name as agent is not correct")
+    — a literal `source_type="process", source_name="Deploy sync"`,
+    never `generic_notice_identity_extra()` (deleted)."""
+    src = inspect.getsource(_task_deploy_sync_check)
+    assert '"source_type": "process", "source_name": "Deploy sync"' in src
+    assert "generic_notice_identity_extra" not in src

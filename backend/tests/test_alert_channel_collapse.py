@@ -385,10 +385,12 @@ async def test_user_registered_identical_via_channel_agents(chans):
     # 2026-10-28 noise tightening — user-registered-alert gained email
     # (a new pending-approval registration is action-required: the
     # operator must approve or reject the account).
-    # 2026-10-31 — trailing tag: action agent "manual", alert agent
-    # "user-registered-alert" (tag-token'd).
-    # 2026-11-06 — 4th slot is this record's own level ("info").
-    body = body + "\n#manual #user_registered_alert #info"
+    # 2026-11-06 rebuild (operator SSOT instruction) — self-registration
+    # is a genuinely un-caused process ("Source: User registration"),
+    # never "manual". Trailing tag: process, alert agent
+    # "user-registered-alert" (tag-token'd), log level ("info").
+    body = (f"Source: User registration\n{_TS}\n{body}"
+            "\n#user_registration #user_registered_alert #info")
     assert chans["telegram"] == [("New user registered", body, body)]
     assert chans["ntfy"] == [("New user registered", body, "high")]
     assert len(chans["email"]) == 1

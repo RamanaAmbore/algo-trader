@@ -460,18 +460,21 @@ class TestOcoCancelClosedPositionGtts:
         assert "sibling_id" not in attached[1]
 
     async def test_orphan_cancel_alert_failure_is_swallowed(self, monkeypatch):
-        """A failure while building/sending the alert (e.g.
-        `generic_notice_identity_extra` raising) must never propagate —
-        the real cancel already happened and must not be undone or
-        surfaced as an error."""
+        """A failure while building/sending the alert must never
+        propagate — the real cancel already happened and must not be
+        undone or surfaced as an error.
+
+        2026-11-06 rebuild (operator SSOT instruction) — the producer no
+        longer calls `generic_notice_identity_extra()` (deleted; a
+        literal `source_type`/`source_name` replaces it, which can never
+        raise). The failure point exercised here is `mask_account()`,
+        the other real call inside this function's own try/except."""
         from backend.api import background as bg_mod
 
-        async def _boom(alert_event):
-            raise RuntimeError("identity lookup failed")
+        def _boom(account):
+            raise RuntimeError("masking failed")
 
-        monkeypatch.setattr(
-            "backend.api.algo.event_agents.generic_notice_identity_extra", _boom,
-        )
+        monkeypatch.setattr("backend.shared.helpers.utils.mask_account", _boom)
 
         # Should not raise.
         await bg_mod._oco_orphan_cancel_alert("ZG0790", "NIFTY25JULFUT", {"G1"})
@@ -513,6 +516,11 @@ class TestOcoCancelClosedPositionGtts:
         assert extra["alert_event"] == "gtt_orphan_cancelled"
         assert extra["tags"] == ["gtt", "alert"]
         assert "action_required" not in extra
+        # 2026-11-06 (operator SSOT instruction) — a literal process
+        # name, not a fake-agent lookup: no known trigger.
+        assert extra["source_type"] == "process"
+        assert extra["source_name"] == "GTT reconciler"
+        assert "agent_id" not in extra and "agent_name" not in extra
 
     # ── 2026-11-04 audit fix wiring (defects 1 & 3) ──────────────────
 

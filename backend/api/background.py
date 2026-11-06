@@ -5690,14 +5690,16 @@ async def _send_trail_partial_modify_alert(
             f"leg rejected. Cancel + recreate "
             f"or verify at broker."
         )
-        from backend.api.algo.event_agents import generic_notice_identity_extra
         logger.warning(
             "[GTT-ASYMMETRIC] %s", msg,
             # "alert" added additively (2026-10-25 tag-unification) so
             # GTT_ASYMMETRIC_AGENT's condition (now tag="alert") matches.
+            # 2026-11-06 (operator SSOT instruction) — a literal process
+            # name, not a fake-agent lookup: this is a genuinely
+            # un-caused background job, no known trigger.
             extra={"tags": ["gtt", "alert"], "alert_event": "gtt_asymmetric",
                    "title": "GTT asymmetric", "body": msg,
-                   **(await generic_notice_identity_extra("gtt_asymmetric"))},
+                   "source_type": "process", "source_name": "GTT reconciler"},
         )
     except Exception:
         pass
@@ -6192,14 +6194,15 @@ async def _oco_handle_settled_pair(
             f"window. Verify broker position; "
             f"manual close may be needed."
         )
-        from backend.api.algo.event_agents import generic_notice_identity_extra
         logger.warning(
             "[OCO-DOUBLE-FIRE] %s", msg,
             # "alert" added additively (2026-10-25 tag-unification) so
             # OCO_DOUBLE_FIRE_AGENT's condition (now tag="alert") matches.
+            # 2026-11-06 (operator SSOT instruction) — a literal process
+            # name, not a fake-agent lookup: no known trigger.
             extra={"tags": ["gtt", "alert"], "alert_event": "oco_double_fire",
                    "title": "OCO double-fire", "body": msg,
-                   **(await generic_notice_identity_extra("oco_double_fire"))},
+                   "source_type": "process", "source_name": "OCO watcher"},
         )
     except Exception as _alert_err:
         logger.debug(f"[OCO-WATCH] double-fire alert failed: {_alert_err}")
@@ -6532,18 +6535,19 @@ async def _oco_orphan_cancel_alert(account: str, symbol: str, cancelled_ids: set
     real cancel that already happened."""
     try:
         from backend.shared.helpers.utils import mask_account
-        from backend.api.algo.event_agents import generic_notice_identity_extra
         masked = mask_account(account)
         msg = (
             f"Orphaned GTT auto-cancelled on {symbol} ({masked}) — "
             f"position was already closed via another order. "
             f"Cancelled id(s): {', '.join(sorted(cancelled_ids))}."
         )
+        # 2026-11-06 (operator SSOT instruction) — a literal process
+        # name, not a fake-agent lookup: no known trigger.
         logger.info(
             "[OCO-WATCH][ORPHAN-CANCEL] %s", msg,
             extra={"tags": ["gtt", "alert"], "alert_event": "gtt_orphan_cancelled",
                    "title": "Orphaned GTT cancelled", "body": msg,
-                   **(await generic_notice_identity_extra("gtt_orphan_cancelled"))},
+                   "source_type": "process", "source_name": "GTT reconciler"},
         )
     except Exception as e:
         logger.debug(f"[OCO-WATCH] orphan-cancel alert failed: {e}")
@@ -7540,14 +7544,15 @@ async def _watchdog_handle_recovery(ticker: object, status: dict) -> None:
         # pipeline (TICKER_RECOVERED_AGENT). Previously had NO try/except
         # at all — a failure here (e.g. a future alert-pipeline change)
         # would have propagated straight into the ticker watchdog loop.
-        from backend.api.algo.event_agents import generic_notice_identity_extra
         logger.info(
             "[TICKER-RECOVERED] %s", msg,
             # "alert" added additively (2026-10-25 tag-unification) so
             # TICKER_RECOVERED_AGENT's condition (now tag="alert") matches.
+            # 2026-11-06 (operator SSOT instruction) — a literal process
+            # name, not a fake-agent lookup: no known trigger.
             extra={"tags": ["broker", "alert"], "alert_event": "ticker_recovered",
                    "title": "Ticker recovered", "body": msg,
-                   **(await generic_notice_identity_extra("ticker_recovered"))},
+                   "source_type": "process", "source_name": "Ticker watchdog"},
         )
     except Exception as _alert_err:
         logger.debug(f"ticker-recovered alert record failed: {_alert_err}")
@@ -7639,14 +7644,15 @@ async def _watchdog_alert_degraded(
         # pipeline (TICKER_DEGRADED_AGENT). Previously had NO try/except
         # at all — a failure here would have propagated straight into
         # the ticker watchdog loop.
-        from backend.api.algo.event_agents import generic_notice_identity_extra
         logger.warning(
             "[TICKER-DEGRADED] %s", msg,
             # "alert" added additively (2026-10-25 tag-unification) so
             # TICKER_DEGRADED_AGENT's condition (now tag="alert") matches.
+            # 2026-11-06 (operator SSOT instruction) — a literal process
+            # name, not a fake-agent lookup: no known trigger.
             extra={"tags": ["broker", "alert"], "alert_event": "ticker_degraded",
                    "title": "Ticker degraded", "body": msg,
-                   **(await generic_notice_identity_extra("ticker_degraded"))},
+                   "source_type": "process", "source_name": "Ticker watchdog"},
         )
     except Exception as _alert_err:
         logger.debug(f"ticker-degraded alert record failed: {_alert_err}")
@@ -7936,15 +7942,17 @@ async def _task_visitor_log_daily() -> None:
                     from backend.scripts.visitor_report import _summary_text
                     tg_body = _summary_text(report_path)
                     msg = f"Visitors{branch_tag}\n{tg_body}"
-                    from backend.api.algo.event_agents import generic_notice_identity_extra
                     logger.info(
                         "[VISITOR-REPORT] %s", msg,
                         # "alert" added additively (2026-10-25 tag-unification)
                         # so VISITOR_REPORT_AGENT's condition (now
                         # tag="alert") matches.
+                        # 2026-11-06 (operator SSOT instruction) — a
+                        # literal process name, not a fake-agent lookup:
+                        # no known trigger.
                         extra={"tags": ["visitor", "alert"], "alert_event": "visitor_report",
                                "title": "Visitor report", "body": msg,
-                               **(await generic_notice_identity_extra("visitor_report"))},
+                               "source_type": "process", "source_name": "Visitor report"},
                     )
                 except Exception as tg_err:
                     logger.warning(f"Background: visitor log alert failed: {tg_err}")
@@ -9708,15 +9716,17 @@ async def _task_deploy_sync_check() -> None:
                             f"sudo -u www-data /etc/webhook/dispatch.sh refs/heads/{branch}\n"
                             f"{timestamp_display()}"
                         )
-                        from backend.api.algo.event_agents import generic_notice_identity_extra
                         logger.warning(
                             f"[DEPLOY-SYNC] {message}",
                             # "alert" added additively (2026-10-25
                             # tag-unification) so DEPLOY_SYNC_AGENT's
                             # condition (now tag="alert") matches.
+                            # 2026-11-06 (operator SSOT instruction) — a
+                            # literal process name, not a fake-agent
+                            # lookup: no known trigger.
                             extra={"tags": ["deploy", "alert"], "alert_event": "deploy_out_of_sync",
                                    "title": f"Deploy out of sync — {branch}", "body": message,
-                                   **(await generic_notice_identity_extra("deploy_out_of_sync"))},
+                                   "source_type": "process", "source_name": "Deploy sync"},
                         )
         except asyncio.CancelledError:
             raise
@@ -9870,33 +9880,20 @@ async def _run_close_once(state: dict) -> None:
                 _sh = _summarise_holdings(df_h, sum_h, None)
                 _sp = _summarise_positions(df_p)
                 _label = seg["name"].capitalize()
-                # 2026-11-03 fix (operator: "every alert should be
-                # generated by an agent... format... driven by tags") —
-                # resolve the real `market-summary` seeded Agent row's
-                # id so the rendered alert shows a real "Alert:" header
-                # instead of none at all (see send_summary's own
-                # docstring and _render_summary's for the full chain).
-                from backend.api.algo.agent_engine import get_agent_id_by_slug
-                _summary_agent_id = await get_agent_id_by_slug("market-summary")
-                if _summary_agent_id is None:
-                    # 2026-11-04 (operator alert-format audit: "some
-                    # [alerts have] no label") — a resolve failure here
-                    # used to silently render the summary header-less
-                    # with no signal anywhere it happened. A scheduled
-                    # close summary always has a known firing agent
-                    # (the seeded `market-summary` row), so a miss is a
-                    # real, worth-seeing failure, not a designed gap.
-                    logger.warning(
-                        "[BROKER-DAILY] close-summary: 'market-summary' "
-                        "agent id failed to resolve — this summary will "
-                        "render with no origin header"
-                    )
+                # 2026-11-06 (operator SSOT instruction: "the source is
+                # process that generated error... keeping the name as
+                # agent is not correct") — a literal process name, not a
+                # fake-agent lookup: this scheduled close-summary cron
+                # has no known trigger. Replaces the prior
+                # `get_agent_id_by_slug("market-summary")` round-trip
+                # (and its own resolve-failure warning, now moot — a
+                # literal string can never fail to resolve).
                 await _run(lambda: send_summary(_sh, _sp, ist_display, "close",
                                                 label=_label,
                                                 df_margins=df_margins,
                                                 df_positions=df_p,
-                                                agent_name=("Market summary" if _summary_agent_id is not None else None),
-                                                agent_id=_summary_agent_id))
+                                                source_type="process",
+                                                source_name="Market summary"))
                 ss["last_close"] = today
                 logger.info(f"Background[cron]: close summary sent for {seg['name']}")
                 _fire(AppMessage(

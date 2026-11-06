@@ -189,7 +189,6 @@ async def _action_live_send_market_status(context: dict, params: dict) -> None:
     """
     from backend.shared.helpers.date_time_utils import timestamp_indian
     from backend.shared.helpers.alert_utils import _DISPATCH_LOGGER
-    from backend.api.algo.agent_engine import get_agent_id_by_slug
 
     now = timestamp_indian()
     equity = await _market_status_for_segment("equity", now)
@@ -199,13 +198,17 @@ async def _action_live_send_market_status(context: dict, params: dict) -> None:
     # Channel selection (log, telegram, email — ntfy deliberately
     # excluded per the 2026-11-04 channel-routing audit comment above)
     # now lives entirely on `MARKET_STATUS_ALERT_AGENT.events`, not here.
-    agent_id = await get_agent_id_by_slug("market-status-alert")
+    #
+    # 2026-11-06 (operator SSOT instruction: "the source is process that
+    # generated error... keeping the name as agent is not correct") — a
+    # literal process name, not a fake-agent lookup: this daily 05:35
+    # IST report is a genuinely un-caused scheduled job. Replaces the
+    # prior `get_agent_id_by_slug("market-status-alert")` round-trip.
     _DISPATCH_LOGGER.info(
         "[MARKET-STATUS] %s", message.replace("\n", " | "),
         extra={
             "tags": ["agent", "alert"], "alert_event": "market_status",
             "title": "Market Status", "body": message,
-            "agent_name": ("Market status" if agent_id is not None else None),
-            "agent_id": agent_id,
+            "source_type": "process", "source_name": "Market status report",
         },
     )
