@@ -103,4 +103,49 @@ test.describe('Derivatives Greeks/Risk grids — value text vertically centered 
       expect(cs.alignContent, `${sel} align-content`).toBe('center');
     }
   });
+
+  test('Greeks/Risk/EV labels render in a different color than their values', async ({ page }) => {
+    // 2026-11-06 fix (operator: "greeks, risk & expected value grid
+    // data row labels and values should have different colors").
+    // `.kv-k-greek` used to set `color: var(--algo-slate)` — the EXACT
+    // same token `.kv-v` uses for the value text — so after the earlier
+    // 2026-11-06 fix extended `.kv-k-greek` from the 5 Greek labels to
+    // all 11 Strategy-Summary labels (Risk/EV included), every label
+    // and its value rendered in the identical color, distinguished only
+    // by font-weight/size. Fixed by no longer overriding color at all —
+    // `.kv-k`'s own `color: var(--text-muted)` (the correct label
+    // token, already used by every other label in this app) applies.
+    await loginAsAdmin(page);
+    await page.goto('/admin/derivatives', { waitUntil: 'load', timeout: 30_000 });
+    await page.waitForSelector('.opt-kv-greeks', { timeout: 20_000 });
+    await page.waitForSelector('.opt-kv-risk', { timeout: 20_000 });
+
+    const pairs = await page.evaluate(() => {
+      const out = [];
+      for (const sel of ['.opt-kv-greeks', '.opt-kv-risk']) {
+        const grid = document.querySelector(sel);
+        const ks = [...grid.querySelectorAll('.kv-k')];
+        const vs = [...grid.querySelectorAll('.kv-v')];
+        for (let i = 0; i < ks.length; i++) {
+          out.push({
+            label: ks[i].textContent.trim(),
+            kColor: getComputedStyle(ks[i]).color,
+            vColor: vs[i] ? getComputedStyle(vs[i]).color : null,
+          });
+        }
+      }
+      return out;
+    });
+
+    expect(pairs.length).toBeGreaterThan(0);
+    for (const p of pairs) {
+      expect(p.vColor, `${p.label} value must have a color`).not.toBeNull();
+      expect(p.kColor, `${p.label} label vs value color`).not.toBe(p.vColor);
+    }
+    // The label color must be the app's own muted-label token
+    // (--text-muted, #7e97b8 -> rgb(126, 151, 184)), not an ad-hoc value.
+    for (const p of pairs) {
+      expect(p.kColor, `${p.label} label color`).toBe('rgb(126, 151, 184)');
+    }
+  });
 });

@@ -7247,11 +7247,18 @@
   }
   /* Greek symbols — clean, slightly heavier than other labels but
      not oversize. The visual identity of each Greek pair without
-     overpowering the value next to it. */
+     overpowering the value next to it.
+     2026-11-06 fix (operator: "greeks, risk & expected value grid data
+     row labels and values should have different colors") — this used
+     to set `color: var(--algo-slate)`, the EXACT same token `.kv-v`
+     uses for the value text (both resolve to #ffffff), so a label and
+     its value were visually indistinguishable by color, only by
+     weight/size. No color override here now — `.kv-k`'s own
+     `color: var(--text-muted)` (the correct, already-semantic "label"
+     token) applies instead, same as every other non-Greek label. */
   .kv-k-greek {
     font-size: var(--fs-lg);
     font-weight: 700;
-    color: var(--algo-slate);
   }
   /* Greeks card — all five pairs in a single row. The narrow
      `max-content auto` per slot lets each pair size to its own
