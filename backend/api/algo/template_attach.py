@@ -278,17 +278,28 @@ def _fire_guard_alert(*, template_slug: str, applies_to: str,
     import asyncio as _asyncio
     import html as _html
     from backend.shared.helpers.date_time_utils import timestamp_display
+    from backend.shared.helpers.utils import mask_account
 
     # Dual-tz (IST + ET) timestamp — same SSOT as every other alert
     # channel in the app. 2026-10: upgraded from a bare hand-built
     # IST-only strftime.
     ist_label = timestamp_display()
 
+    # 2026-11 audit fix: mask once here and reuse the SAME masked value
+    # for both the log display string AND the `extra` dict entry below —
+    # `template_guard_message()` (one screen up) already masks its own
+    # display string; this function was the one producer still passing
+    # the raw account into `extra`, which reaches `log_events` (and from
+    # there, `_AccountMaskFilter` only ever masks the rendered message
+    # text, never a structured `extra` value — see CLAUDE.md's "Account
+    # masking" entries). Mask at the producer, not the central filter.
+    masked_account = mask_account(parent_account) if parent_account else parent_account
+
     summary = (
         f"Refused to attach template '{template_slug}' "
         f"(applies_to={applies_to}) to parent order "
         f"#{parent_order_id} — {parent_side} {parent_qty} "
-        f"{parent_symbol} @ ₹{parent_fill_price:.2f} on {parent_account}. "
+        f"{parent_symbol} @ ₹{parent_fill_price:.2f} on {masked_account}. "
         f"Reason: {reason}. Parent order is filled; EXITS NOT ATTACHED."
     )
 
@@ -314,7 +325,7 @@ def _fire_guard_alert(*, template_slug: str, applies_to: str,
             "template_slug": template_slug, "applies_to": applies_to, "reason": reason,
             "parent_order_id": parent_order_id, "parent_side": parent_side,
             "parent_qty": parent_qty, "parent_symbol": parent_symbol,
-            "parent_fill_price": float(parent_fill_price), "parent_account": parent_account,
+            "parent_fill_price": float(parent_fill_price), "parent_account": masked_account,
             "ist_label": ist_label, "agent_id": agent_id,
         },
     )
