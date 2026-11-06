@@ -132,10 +132,23 @@
       ? Number(c.opening_qty)
       : null
   );
+  // Closed F&O rows (CE/PE/FUT): qty genuinely is 0 (net flat, correct),
+  // but the operator wants the ENTRY size shown, same as Lots — 2026-11-06
+  // live fix (operator: "lots and qty for close positions in derivatives
+  // legs grid is zero. can you keep the correct value"). Backend now
+  // populates `c.lots` with the real entry lot count for a closed F&O row
+  // (`PositionRow.lots` / `positions.py:_restore_closed_position_lots`);
+  // multiplied back out by the instrument's own lot size to get contracts,
+  // mirroring lotsForRow.js's own instrument-lookup fallback.
+  const _foDisplayQty = $derived(
+    c.kind !== 'eq' && Number(c.qty || 0) === 0 && c.lots != null && Number(c.lots) !== 0
+      ? Number(c.lots) * (Number(getInstrument(String(c.symbol || '').toUpperCase())?.ls) || 1)
+      : null
+  );
   const displayQty = $derived(
     c._residualQty != null
       ? Number(c._residualQty)
-      : (_eqDisplayQty != null ? _eqDisplayQty : Number(c.qty || 0))
+      : (_eqDisplayQty ?? _foDisplayQty ?? Number(c.qty || 0))
   );
 
   const _ltpFromFallback = $derived(!!(lg && lg.ltp_source === 'avg_cost'));

@@ -842,13 +842,16 @@ _ROW_COLS = [
     # Frozen prior-session settlement price — set by _override_stale_close_from_snapshot
     # for every matched row.
     'prev_close',
+    # Entry lot count for a closed (quantity == 0) F&O row — see
+    # PositionRow.lots / _restore_closed_position_lots.
+    'lots',
 ]
 
 _TTL = 30
 
 # Fields that must remain None when absent rather than being coerced to 0
 # by the general None-guard in the row-building comprehension.
-_NULLABLE_COLS: frozenset[str] = frozenset({'prev_settlement_pnl'})
+_NULLABLE_COLS: frozenset[str] = frozenset({'prev_settlement_pnl', 'lots'})
 
 # Pass-through de-dup anchor (perf fix 2026-10-02 — collapse stacked
 # position caches). The raw per-account frame LIST OBJECT that this
@@ -1380,6 +1383,52 @@ def _restore_closed_position_avg_cost(raw: "pd.DataFrame") -> None:
     raw.loc[_flat_mask, 'average_price'] = raw.loc[_flat_mask].apply(_entry_price, axis=1)
 
 
+def _restore_closed_position_lots(raw: "pd.DataFrame") -> None:
+    """Set `lots` (entry lot count) for a flat (quantity == 0) live
+    position row — the live-fetch-path sibling of `_restore_closed_
+    position_avg_cost` above, same 2026-11-05 live fix. Kite zeroes the
+    lot count along with `average_price` once net quantity hits zero.
+
+    `PositionRow.lots` is deliberately left `None` (never 0) for every
+    OTHER row — `lotsForRow.js`'s frontend fast path treats `lots != null`
+    as "trust this value," so a real 0 on a genuinely-open position would
+    wrongly short-circuit its own qty/lot_size derivation. Only a flat
+    row, where no other derivation is possible (qty is 0), gets a real
+    value here.
+
+    Mirrors `daily_snapshot.py:_positions_build_row`'s identical
+    `multiplier > 1` branch exactly — MCX/NCO's `entry_qty_raw` is
+    already lot-equivalent after `broker_apis._annotate_lot_size`'s own
+    contract scaling, so it is NOT divided by `lot_size` a second time.
+    """
+    if raw.empty or 'quantity' not in raw.columns or 'lot_size' not in raw.columns:
+        return
+    _qty = pd.to_numeric(raw['quantity'], errors='coerce').fillna(0)
+    _flat_mask = (_qty == 0)
+    if not _flat_mask.any():
+        return
+    from backend.api.algo.pnl_math import closed_position_entry_lots
+
+    def _entry_lots(row):
+        oq_raw = pd.to_numeric(row.get('overnight_quantity'), errors='coerce')
+        oq_raw = float(oq_raw) if pd.notna(oq_raw) else 0.0
+        entry_qty_raw = closed_position_entry_lots(row.to_dict(), oq_raw)
+        if entry_qty_raw is None:
+            return None
+        multiplier = pd.to_numeric(row.get('multiplier'), errors='coerce')
+        multiplier = float(multiplier) if pd.notna(multiplier) else 1.0
+        lot_size_val = pd.to_numeric(row.get('lot_size'), errors='coerce')
+        lot_size_val = int(lot_size_val) if pd.notna(lot_size_val) else 1
+        return (
+            int(entry_qty_raw) if multiplier > 1
+            else int(entry_qty_raw) // max(lot_size_val, 1)
+        )
+
+    if 'lots' not in raw.columns:
+        raw['lots'] = None
+    raw.loc[_flat_mask, 'lots'] = raw.loc[_flat_mask].apply(_entry_lots, axis=1)
+
+
 def _apply_flat_row_hygiene(raw: "pd.DataFrame") -> None:
     """Zero day_change and day_change_percentage for pure intraday round-trips.
 
@@ -1585,8 +1634,10 @@ async def _fetch(force_refresh: bool = False) -> PositionsResponse:
     # fillna so a row this can't derive an entry price for still falls
     # through to the same 0 it would have shown anyway.
     _restore_closed_position_avg_cost(raw)
+    _restore_closed_position_lots(raw)
 
     numeric = raw.select_dtypes(include='number').columns
+    numeric = numeric.drop('lots', errors='ignore')
     raw[numeric] = raw[numeric].fillna(0)
     df = pl.from_pandas(raw)
 

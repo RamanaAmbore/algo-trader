@@ -155,6 +155,15 @@ class PositionRow(msgspec.Struct):
     day_sell_quantity:  int   = 0
     day_buy_value:      float = 0.0
     day_sell_value:     float = 0.0
+    # Entry lot count for a CLOSED (quantity == 0) F&O position — Kite
+    # zeroes the lot count along with average_price once net quantity
+    # hits zero, so the frontend cannot derive it from quantity/lot_size
+    # any more (2026-11-05 live fix, operator: "lots and qty for close
+    # positions in derivatives legs grid is zero"). None for every other
+    # row — frontend fast path (lotsForRow.js) treats `lots != null` as
+    # "trust this value," so a real 0 here would wrongly short-circuit
+    # its own qty/lot_size derivation for a genuinely-open position.
+    lots: Optional[int] = None
     # True when last_price was sourced from the last-known-good cache
     # (both PriceBroker.quote and KiteTicker returned 0 or raised).
     # Frontend can surface a small staleness indicator on these rows.

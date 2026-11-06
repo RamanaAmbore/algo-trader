@@ -161,3 +161,81 @@ class TestRestoreClosedPositionAvgCostLive:
 
         raw = pd.DataFrame()
         _restore_closed_position_avg_cost(raw)  # must not raise
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 4. positions.py:_restore_closed_position_lots — derivatives Legs grid fix
+# ─────────────────────────────────────────────────────────────────────────
+
+class TestRestoreClosedPositionLotsLive:
+    """2026-11-06 live operator report: "lots and qty for close positions
+    in derivatives legs grid is zero. can you keep the correct value."
+
+    `quantity` genuinely IS 0 for a closed position (correct, unchanged).
+    `lots` is the entry lot count — Kite zeroes it the same way it zeroes
+    `average_price`, and `broker_apis.py:_annotate_lot_size` (which runs
+    per-account, BEFORE this row reaches positions.py) computes `lots`
+    from that already-zeroed `quantity`, so its own `lots` column is also
+    wrongly 0 for a closed row — this is the live-fetch-path sibling of
+    `_restore_closed_position_avg_cost` above, same mirrored derivation
+    `daily_snapshot.py:_positions_build_row` already uses for the
+    daily_book write path."""
+
+    def test_closed_mcx_row_lots_restored_from_whole_life_lot_field(self):
+        """Real MCX shape: multiplier>1 means Kite ships buy_quantity/
+        sell_quantity in LOTS already (unscaled by _annotate_lot_size,
+        which only scales overnight_quantity/day_buy_quantity/
+        day_sell_quantity) — the entry lot count is that value directly,
+        no further division by lot_size."""
+        from backend.api.routes.positions import _restore_closed_position_lots
+
+        raw = pd.DataFrame([{
+            "quantity": 0, "lot_size": 100, "multiplier": 100,
+            "overnight_quantity": -200,
+            "buy_quantity": 2, "buy_price": 46.8,
+            "sell_quantity": 2, "sell_price": 225.3,
+        }])
+        _restore_closed_position_lots(raw)
+        assert raw.loc[0, "lots"] == 2, f"expected 2 entry lots, got {raw.loc[0, 'lots']!r}"
+
+    def test_closed_nfo_row_lots_derived_via_lot_size_division(self):
+        """Non-MCX (multiplier==1): buy_quantity/sell_quantity are
+        already in contracts — entry lots = contracts // lot_size."""
+        from backend.api.routes.positions import _restore_closed_position_lots
+
+        raw = pd.DataFrame([{
+            "quantity": 0, "lot_size": 75, "multiplier": 1,
+            "overnight_quantity": 150,
+            "buy_quantity": 150, "buy_price": 112.5,
+            "sell_quantity": 0, "sell_price": 0.0,
+        }])
+        _restore_closed_position_lots(raw)
+        assert raw.loc[0, "lots"] == 2, f"expected 150/75=2 entry lots, got {raw.loc[0, 'lots']!r}"
+
+    def test_open_row_lots_is_never_touched(self):
+        """A genuinely OPEN row (quantity != 0) keeps whatever `lots`
+        value `_annotate_lot_size` already computed upstream — this fix
+        only touches the flat (quantity == 0) branch."""
+        from backend.api.routes.positions import _restore_closed_position_lots
+
+        raw = pd.DataFrame([{
+            "quantity": 75, "lots": 1, "lot_size": 75, "multiplier": 1,
+            "overnight_quantity": 1,
+            "buy_quantity": 1, "buy_price": 999.0,
+            "sell_quantity": 0, "sell_price": 0.0,
+        }])
+        _restore_closed_position_lots(raw)
+        assert raw.loc[0, "lots"] == 1
+
+    def test_missing_lot_size_column_is_a_safe_noop(self):
+        from backend.api.routes.positions import _restore_closed_position_lots
+
+        raw = pd.DataFrame([{"quantity": 0}])
+        _restore_closed_position_lots(raw)  # must not raise
+        assert "lots" not in raw.columns or raw.loc[0, "lots"] is None
+
+    def test_empty_frame_is_a_safe_noop(self):
+        from backend.api.routes.positions import _restore_closed_position_lots
+
+        raw = pd.DataFrame()
+        _restore_closed_position_lots(raw)  # must not raise
