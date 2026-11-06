@@ -2412,6 +2412,60 @@ fully overwrites intra-block order anyway, making the earlier pass redundant and
 Invariant: never let an account/pair sort run before a block-anchor computation reads the
 result — composition order is critical to preserve cross-option grouping.
 
+**Hand-rolled-grid column sort SSOT — `columnSort.js`/`columnSort.svelte.js` (2026-11)** —
+Every ag-Grid-based grid already had column sort for free (`sortable: true` on
+`defaultColDef`, `sortingOrder: ['asc','desc',null]`). `algoGridUtils.js` now exports
+`SORT_CYCLE`/`DEFAULT_COL_DEF` as the one shared constant pair both `mkBaseGridOpts()` and
+`pulseGridSetup.js`'s `PULSE_DEFAULT_COL_DEF`/`PULSE_SORTING_ORDER` (now plain re-exports)
+derive from. The derivatives Legs/Candidates grid (`.cand-grid`, a hand-rolled CSS-subgrid
+table, not ag-Grid) had none. `frontend/src/lib/data/columnSort.js` (pure core:
+`cycleSortState`, `applyColumnSort`) + `columnSort.svelte.js` (thin `$state`-backed
+`createColumnSort()` wrapper) is the SSOT any **future** hand-rolled grid should reuse
+instead of building a bespoke sort mechanism — operator: "this functionality is ssot".
+`cycleSortState` advances the identical 3-state cycle (`SORT_CYCLE`) ag-Grid's own
+`sortingOrder` uses, so a hand-rolled grid's click behaviour matches the Pulse grids
+mechanically, not just visually. `applyColumnSort` returns the rows array UNCHANGED (same
+reference) when no sort is active, so callers skip evaluating a live-tick accessor
+(LTP/P&L/etc.) on the default render path; its null-handling mirrors ag-Grid's own
+nulls-as-minimum comparator (nulls sort first on asc, last on desc), with a stable
+original-index tiebreak.
+- **Composition-order invariant (the risk this plan's own analysis flagged, see the
+  "Underlying-block-order preservation" entry above for two prior live incidents of the same
+  class).** The derivatives grid's `displayedCandidates` already composed a pair-group sort
+  (`sortRowsByPairGroup`, clusters auto-paired CE/PE legs with their underlying) before a
+  drafts-last reshuffle. The column-sort feature slots in at the SAME structural point rather
+  than restructuring the pipeline: stamp a stable `_ord` index on every row (replaces the
+  `{#each}` key's loop-index fallback, since an active column sort re-orders rows on every
+  live tick and the loop index would otherwise remount rows mid-sort) → when no column is
+  actively sorted, `sortRowsByPairGroup(rows)` runs over EVERY row including drafts, exactly
+  as before column sort existed → when a column IS actively sorted, `applyColumnSort` replaces
+  that call at the identical point → the drafts-last `filter`/`concat` reshuffle runs
+  UNCONDITIONALLY afterward either way, so drafts never leave the bottom regardless of sort
+  state. This composition lives in `frontend/src/lib/data/candidateRowComposition.js`
+  (`composeDisplayedCandidates`), pulled out of `+page.svelte`'s own `$derived.by` specifically
+  so a regression test can assert the null-sort path is BYTE-IDENTICAL to the literal
+  pre-column-sort two-liner, not a hand-mirrored copy.
+- **Accessor/cell agreement.** `CandidateLegRow.svelte`'s inline leg-display `$derived`s
+  (`isClosed`/`ltp`/`cost`/`displayQty`/`_chgPct`, plus the Lots column's proxy-beta-scaling
+  branch) were extracted verbatim into `derivativesMath.js` (`legIsClosed`/`legLiveLtp`/
+  `legChgPct`/`legDisplayQty`/`legCost`) and `lotsForRow.js` (`legLotsValue`) so the 18
+  sortable columns' accessors (`CAND_COLUMN_SPECS` in `+page.svelte`) read the EXACT same
+  functions the rendered cells do — a column sort can never disagree with what's on screen.
+  `legLiveLtp`/`legLotsValue` take the live tick / proxy-row as PARAMETERS rather than
+  importing `symbolStore.svelte.js`/`hedgeProxies.js` themselves: both of those modules
+  transitively import rune-using `.svelte.js` files, which this project's Vitest toolchain
+  (no Svelte compiler plugin) cannot evaluate — importing either transitively from
+  `derivativesMath.js`/`lotsForRow.js` would break every test importing them (`nav.js`,
+  `portfolioStore.svelte.js`, `pageLoad.js`, …). Callers (`CandidateLegRow.svelte`,
+  `+page.svelte` — both already import `liveSnap`/`getProxyRow`) resolve the live value
+  themselves and pass it in, keeping every extracted function genuinely pure.
+- Checkbox / St / EV stay unsortable (EV is a hardcoded `'—'` placeholder with no real
+  per-leg data to sort). Exp Close tab header clicks are inert — its own band/theta ordering
+  would be corrupted by a column sort, same reasoning as the pair-group block risk above.
+Invariant: an account/pair-group sort composition's "no explicit sort" path must stay
+byte-identical to its pre-column-sort behaviour; a new explicit sort mode only ever REPLACES
+the default clustering call at the same structural point, never wraps or reorders around it.
+
 ---
 
 ## UI Card Button Group
