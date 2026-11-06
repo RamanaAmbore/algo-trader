@@ -129,18 +129,20 @@ async def test_dsl_single_tag_alert_dispatches_to_telegram_and_ntfy(sent):
     )
 
     assert n_sent == 2, "1 matching record x 2 channels (telegram + ntfy)"
-    # 2026-10-31 — trailing tag: action agent "manual", alert agent
-    # this demo agent's own slug "demo-error-alert" (tag-token'd) — the
-    # bare `extra={}` fixture has no `alert_event`.
-    assert sent["ntfy"] == [
-        ("RamboQuant error",
-         f"Agent: manual\nbackend.api.routes.orders\norder placement failed: insufficient margin\n{_FIXED_TS}\n#manual #demo_error_alert"),
-    ]
-    # 2026-10 plain-text reversal: no `<b>`/`<code>` tags.
-    assert sent["tg"] == [
-        f"Agent: manual\nRamboQuant error\nbackend.api.routes.orders\n"
-        f"order placement failed: insufficient margin\n{_FIXED_TS}\n#manual #demo_error_alert",
-    ]
+    # 2026-11-06 rebuild (operator SSOT instruction) — `_render_error`
+    # now leads with "Source: {logger-derived process name} (error)"
+    # instead of "Agent: manual" — here the logger's last dotted
+    # component ("orders", from "backend.api.routes.orders"). The bare
+    # `extra={}` fixture has no `agent_id`/`agent_name` key -> no
+    # "triggered..." phrase and no action tag. The old generic
+    # "RamboQuant error" filler line and the separate full-logger-name
+    # body line are both dropped. Trailing tag: process ("orders"),
+    # alert agent this demo agent's own slug "demo-error-alert"
+    # (tag-token'd), log level ("error") — no action tag.
+    body = (f"Source: orders (error)\n{_FIXED_TS}\n\n"
+            f"order placement failed: insufficient margin\n#orders #demo_error_alert #error")
+    assert sent["ntfy"] == [("RamboQuant error", body)]
+    assert sent["tg"] == [body]
 
 
 @pytest.mark.asyncio

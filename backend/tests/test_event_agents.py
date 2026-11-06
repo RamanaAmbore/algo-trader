@@ -167,7 +167,8 @@ async def test_registered_renderer_is_used(monkeypatch, senders):
     # default `extra` has no `agent_id`/`agent_name` -> "manual"; its
     # `alert_event="filled"` resolves via the real
     # `ALERT_EVENT_DISPATCH` table to the fill detector's own slug.
-    assert senders["ntfy"] == [("T", "B\n#manual #fill_alert")]
+    # 2026-11-06 — 4th slot is `_rec()`'s own default level ("info").
+    assert senders["ntfy"] == [("T", "B\n#manual #fill_alert #info")]
 
 
 @pytest.mark.asyncio
@@ -695,7 +696,8 @@ async def test_breach_record_sends_only_its_stored_channels(monkeypatch):
     # tag_token'd) — `alert_event="breach"` has no `ALERT_EVENT_DISPATCH`
     # entry (that table only covers the 16 collapsed post-2026-10-25
     # detector specs), so the fallback to `agent.slug` applies here.
-    _tag = "\n#account_funds_gone_negative #cycle_breach_alert"
+    # 2026-11-06 — 4th slot is the record's own level ("info").
+    _tag = "\n#account_funds_gone_negative #cycle_breach_alert #info"
     assert sent["tg"] == [f"Alert — Account funds gone negative{_tag}"]
     assert sent["ntfy"] == [(
         "Account funds gone negative",

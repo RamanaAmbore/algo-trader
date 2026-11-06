@@ -443,7 +443,7 @@ def _email_message(
     *, email_prefix_full: str, branch_tag: str, mode_tag: str,
     subject_detail: str, sim_mode: bool, branch: str,
     tg_prefix_full: str, ist_display: str, email_table_html: str,
-    agent_line: str = '', replay_mode: bool = False,
+    agent_line: str = '', replay_mode: bool = False, label_word: str = "Agent",
 ) -> tuple[str, str]:
     """Subject and HTML body of an agent or summary email. Pure.
 
@@ -481,7 +481,7 @@ def _email_message(
     the HTML body header paragraphs."""
     if agent_line:
         _mode_sfx = f" {mode_tag}" if mode_tag else ""
-        subject = f"Agent: {subject_detail}{branch_tag}{_mode_sfx} | {ist_display}"
+        subject = f"{label_word}: {subject_detail}{branch_tag}{_mode_sfx} | {ist_display}"
     else:
         subj_pfx = f"{email_prefix_full}{branch_tag}{(' ' + mode_tag) if mode_tag else ''}"
         subject = (
@@ -643,6 +643,90 @@ def resolve_origin(agent_id: "int | None", agent_name: "str | None" = None) -> s
     return f"Agent #{agent_id}"
 
 
+def _source_extra(
+    agent_name: "str | None", agent_id: "int | None", source_type: "str | None" = None,
+    source_name: "str | None" = None, trigger_known: bool = True,
+) -> dict:
+    """Build the `extra`-shaped dict `resolve_source()` consumes, from
+    the scalar params `format_notification_header()`/`dispatch_payload()`
+    already take. The ONLY new concept here is `trigger_known`: a bare
+    `agent_id=None` is genuinely ambiguous — it means "manual" for an
+    order-scoped alert (chase/template-attach/order-poll/order-cancelled)
+    but means "no trigger at all" for a background process with no
+    cause (ticker watchdog, deploy-sync, market status/summary). Callers
+    that know which case they're in say so explicitly; the default
+    (`True`) preserves every pre-existing caller's behavior byte-for-byte,
+    since every one of them already treats a bare `None` as "manual"."""
+    extra: dict = {}
+    if source_type and source_name:
+        extra["source_type"] = source_type
+        extra["source_name"] = source_name
+    if trigger_known:
+        extra["agent_id"] = agent_id
+        extra["agent_name"] = agent_name
+    return extra
+
+
+def resolve_source(extra: dict) -> "tuple[str, str, str | None, str | None]":
+    """SSOT for alert identity composition — the one function that
+    decides what label a header shows AND what tag a trailing tag line
+    carries for ANY alert in the system (2026-11-06, operator: "this is
+    ssot. the alert agent framework should use this").
+
+    Returns `(label_word, label_sentence, process_tag, action_tag)`:
+      - `label_word` — "Agent" or "Source", the word before the colon.
+      - `label_sentence` — the full label text after the colon (may
+        fold in "triggered manually"/"triggered by {agent}").
+      - `process_tag` — the process's own name for the trailing tag
+        line, `None` when there is no process layer.
+      - `action_tag` — the resolved action agent/"manual" string, `None`
+        when nothing is known to have triggered this (a genuinely
+        agent-less background job — never fabricated).
+
+    Branch 1 — `source_type in ("process", "error")` and `source_name`
+    truthy: this is a PROCESS (or the ERROR_AGENT catch-all, which is
+    "process"-shaped with its name derived from the logger). The action
+    tag is resolved ONLY when the caller actually supplied an
+    `agent_id`/`agent_name` KEY (checked via `in extra`, not via
+    truthiness — a bare `None` VALUE for either key still means "the
+    trigger is known to be manual", exactly like every order-scoped
+    renderer already relies on via `resolve_origin(None, None) ==
+    "manual"`). A caller that never set either key at all (the 8
+    background-process producers with no known cause) gets `action_tag
+    = None` and a trigger-free sentence/tag set — never a fabricated
+    "triggered manually".
+
+    Branch 2 — everything else: today's exact behavior, unchanged.
+    `label_word` is always "Agent", `label_sentence` is
+    `resolve_origin(agent_id, agent_name)` (the real agent name or the
+    literal "manual"), and there is no process tag.
+    """
+    source_type = extra.get("source_type")
+    source_name = extra.get("source_name")
+    agent_id = extra.get("agent_id")
+    agent_name = extra.get("agent_name")
+    if source_type in ("process", "error") and source_name:
+        has_trigger_key = "agent_id" in extra or "agent_name" in extra
+        action_tag = resolve_origin(agent_id, agent_name) if has_trigger_key else None
+        process_tag = source_name
+        if action_tag is None:
+            label_sentence = source_name
+        elif action_tag == "manual":
+            label_sentence = f"{source_name} triggered manually"
+        else:
+            label_sentence = f"{source_name} triggered by {action_tag}"
+        if source_type == "error":
+            # Distinguishes a bare logger-derived name (the ERROR_AGENT
+            # catch-all) from a genuine named process in the HEADER text
+            # only — the trailing tag stays the plain process name
+            # (`#chase`, not `#chase_error`), matching the plan's own
+            # "Bare, uncategorized error" template.
+            label_sentence = f"{label_sentence} (error)"
+        return "Source", label_sentence, process_tag, action_tag
+    action_tag = resolve_origin(agent_id, agent_name)
+    return "Agent", action_tag, None, action_tag
+
+
 def _relabel_agent_label_to_alert(text: str) -> str:
     """No-op (2026-11-04, operator alert-format audit: "the alerts don't
     have standard format. some have alert label. some agent label.
@@ -668,16 +752,19 @@ def _relabel_agent_label_to_alert(text: str) -> str:
 
 def format_notification_header(
     agent_name: "str | None", agent_id: "int | None", *, ist_display: "str | None" = None,
+    source_type: "str | None" = None, source_name: "str | None" = None,
+    trigger_known: bool = True,
 ) -> str:
     """Single source of truth for the "who fired this + when" header shown
     at the top of every notification body (Telegram/email/ntfy).
 
-    ALWAYS emits an "Agent: {origin}" line as the FIRST line, followed by
-    the dual-tz timestamp — `origin` resolved via `resolve_origin()`, so
-    a genuinely agent-less alert reads "Agent: manual" rather than
-    silently omitting any origin at all (2026-10 operator requirement:
-    "make sure it has agent info in the beginning... if it is not by
-    agent, add manual").
+    ALWAYS emits a label line as the FIRST line, followed by the dual-tz
+    timestamp. With no `source_type`/`source_name` (every pre-existing
+    caller), the label is "Agent: {origin}" — `origin` resolved via
+    `resolve_origin()`, so a genuinely agent-less alert reads
+    "Agent: manual" rather than silently omitting any origin at all
+    (2026-10 operator requirement: "make sure it has agent info in the
+    beginning... if it is not by agent, add manual").
 
     When BOTH `agent_name` and `agent_id` are truthy and resolve to a
     real (non-manual) agent, the line keeps its original
@@ -686,6 +773,21 @@ def format_notification_header(
     (rich alerts, breach alerts) renders byte-identical output. A bare
     `agent_id` with no resolvable name renders as the self-describing
     "Agent #{id}" (no redundant "Agent: " prefix).
+
+    `source_type`/`source_name` (2026-11-06, operator: "there are two
+    layers here. The source that generated the log... the alert agent
+    then processes it") — when set (and `source_type` is `"process"` or
+    `"error"`), the label becomes "Source: {name}", optionally folding in
+    who triggered that process: "Source: {name} triggered manually" or
+    "Source: {name} triggered by {agent}". This composition is delegated
+    entirely to `resolve_source()` (the SSOT for this decision) — this
+    function only renders whatever label that returns.
+
+    `trigger_known` (default `True`, preserving every existing caller's
+    behavior) — see `_source_extra()`'s own docstring for the "manual
+    vs no-trigger-at-all" ambiguity this resolves. Only a caller that
+    knows it has NO trigger concept at all (the background-process
+    producers with no known cause) passes `False`.
 
     `ist_display` lets a caller that already computed this request's
     dual-tz string (so Telegram/email/ntfy all share one timestamp
@@ -699,20 +801,27 @@ def format_notification_header(
     """
     from backend.shared.helpers.date_time_utils import timestamp_display
     ts = ist_display if ist_display is not None else timestamp_display()
-    origin = resolve_origin(agent_id, agent_name)
-    if agent_name and agent_id is not None and origin == agent_name:
-        header_line = f"Agent: {origin} (#{agent_id})"
-    elif origin.startswith("Agent #"):
-        header_line = origin
+    label_word, label_sentence, _process_tag, _action_tag = resolve_source(
+        _source_extra(agent_name, agent_id, source_type, source_name, trigger_known)
+    )
+    if label_word == "Agent":
+        origin = label_sentence
+        if agent_name and agent_id is not None and origin == agent_name:
+            header_line = f"Agent: {origin} (#{agent_id})"
+        elif origin.startswith("Agent #"):
+            header_line = origin
+        else:
+            header_line = f"Agent: {origin}"
     else:
-        header_line = f"Agent: {origin}"
+        header_line = f"{label_word}: {label_sentence}"
     return f"{header_line}\n{ts}"
 
 
 def dispatch_payload(msg_type: str, ist_display: str, tg_table: str, email_table_html: str,
                      subject_detail: str, sim_mode: bool = False, mode_tag: str = '',
                      agent_name: "str | None" = None, agent_id: "int | None" = None,
-                     replay_mode: bool = False) -> dict:
+                     replay_mode: bool = False, source_type: "str | None" = None,
+                     source_name: "str | None" = None) -> dict:
     """Telegram message, title, route key and email for one alert. Pure; no sending.
 
     `agent_name`/`agent_id` — when both are given, the real firing agent's
@@ -721,6 +830,18 @@ def dispatch_payload(msg_type: str, ist_display: str, tg_table: str, email_table
     entirely for alert types with no single originating agent (open/close
     summaries) — the dual-tz `ist_display` already shown in the header
     line is not duplicated.
+
+    `source_type`/`source_name` (2026-11-06, operator SSOT instruction —
+    see `resolve_source()`) — lets a caller with no real agent at all
+    (the scheduled close-summary cron, "Market summary") still show a
+    real process name instead of rendering header-less. Whether the
+    trigger is "known" is inferred from plain value truthiness here
+    (`agent_name`/`agent_id` truthy), NOT key presence — unlike
+    `format_notification_header()`'s own `trigger_known` escape hatch,
+    this function's two real callers (rich alerts, summaries) have no
+    "manual, agent-less" concept the way order-scoped alerts do, so a
+    `None` agent paired with a real `source_type`/`source_name` always
+    means "nothing triggered this", never "triggered manually".
 
     `replay_mode` / `mode_tag` auto-derivation (2026-10-31, operator:
     "the alerts should show paper and simulation mode explicitly in
@@ -742,16 +863,27 @@ def dispatch_payload(msg_type: str, ist_display: str, tg_table: str, email_table
     tg_prefix_full    = f"{_mode_word} {tg_prefix}"    if _mode_word else tg_prefix
     email_prefix_full = f"{_mode_word} {email_prefix}" if _mode_word else email_prefix
 
+    has_agent_identity = bool(agent_name) and agent_id is not None
+    has_process_identity = bool(source_type) and bool(source_name)
+    has_identity = has_agent_identity or has_process_identity
+    # See this function's own docstring — no "manual, agent-less"
+    # concept exists for a rich alert or a summary, so plain value
+    # truthiness is a safe proxy for "is there a real known trigger".
+    trigger_known = has_agent_identity
+
     # 2026-10 audit fix: the ntfy/lock-screen TITLE used to be the bare
     # generic `tg_prefix` ("Agent") for every alert, showing e.g.
     # "Agent — 09:14:22 IST" with zero agent name/metric/account visible
     # before opening the notification. When the REAL triggering agent's
     # name is known (both `agent_name` and `agent_id` given — the exact
     # same condition `agent_line` above already gates on), use it as the
-    # title's base instead of the generic prefix. Falls back to the
-    # prior generic text for callers with no single originating agent
-    # (open/close summaries) — unchanged behaviour there.
-    title_base = agent_name if (agent_name and agent_id is not None) else tg_prefix
+    # title's base instead of the generic prefix. A known process name
+    # (2026-11-06) is the next preference — still better than the
+    # generic prefix. Falls back to the prior generic text for callers
+    # with no single originating agent or process (open/close summaries)
+    # — unchanged behaviour there.
+    title_base = agent_name if has_agent_identity else (
+        source_name if has_process_identity else tg_prefix)
     title_base_full = f"{_mode_word} {title_base}" if _mode_word else title_base
 
     branch = config.get('deploy_branch', 'main')
@@ -771,8 +903,16 @@ def dispatch_payload(msg_type: str, ist_display: str, tg_table: str, email_table
     # below is `ist_display` itself, already pipe-separated dual-tz
     # text).
     agent_line = ''
-    if agent_name and agent_id is not None:
-        agent_line = format_notification_header(agent_name, agent_id, ist_display=ist_display).splitlines()[0]
+    label_word = "Agent"
+    if has_identity:
+        agent_line = format_notification_header(
+            agent_name, agent_id, ist_display=ist_display,
+            source_type=source_type, source_name=source_name,
+            trigger_known=trigger_known,
+        ).splitlines()[0]
+        label_word, _, _, _ = resolve_source(
+            _source_extra(agent_name, agent_id, source_type, source_name, trigger_known)
+        )
 
     warning_block = _build_tg_warning_block(sim_mode, branch, replay_mode=replay_mode)
     # 2026-10 audit fix: the agent-identity line leads the message —
@@ -836,7 +976,7 @@ def dispatch_payload(msg_type: str, ist_display: str, tg_table: str, email_table
         subject_detail=subject_detail, sim_mode=sim_mode, branch=branch,
         tg_prefix_full=tg_prefix_full, ist_display=ist_display,
         email_table_html=email_table_html, agent_line=agent_line,
-        replay_mode=replay_mode,
+        replay_mode=replay_mode, label_word=label_word,
     )
     return {
         "event_key": event_key,
