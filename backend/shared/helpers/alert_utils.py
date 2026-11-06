@@ -1820,19 +1820,31 @@ def _fmt_pct(n: float) -> str:
     return f"{n:.2f}%"
 
 
-def _tg_rule_line(a: dict) -> str:
-    """Build the second Telegram line for an alert (rule kind + threshold/rate)."""
+def _tg_rule_line(a: dict, show_own_pnl: bool = False) -> str:
+    """Build the second Telegram line for an alert (rule kind + threshold/rate).
+
+    `show_own_pnl` (2026-11 alert-consolidation fix) — set by the caller
+    when this leaf is part of a multi-leaf group (see
+    `agent_engine._ae_group_alert_rows`) whose members DISAGREE on pnl —
+    a real, common case for `loss-positions-total` (day_val reads
+    day_change_val, every other metric reads lifetime pnl), not a rare
+    edge case. The shared header then carries no value (never an
+    arbitrarily-picked one), so this leaf's own pnl is shown here
+    instead — the operator never loses a number, it just moves from a
+    (non-existent) shared header line onto the per-leaf line. Default
+    False keeps every pre-existing call site byte-identical."""
     k = a['kind']
     label = _KIND_LABEL[k]
+    own = f"{_fmt_rupees(a['pnl'])}  " if show_own_pnl else ""
     if k in ('static_pct', 'static_abs'):
-        return f"  {label}  floor {a['threshold']}"
+        return f"  {label}  {own}floor {a['threshold']}"
     if k == 'rate_abs':
-        return (f"  {label}  now {_fmt_rupees(a['rate_val'])}/min  "
+        return (f"  {label}  {own}now {_fmt_rupees(a['rate_val'])}/min  "
                 f"floor {a['threshold']}")
     if k == 'rate_pct':
-        return (f"  {label}  now {_fmt_pct(a['rate_val'])}/min  "
+        return (f"  {label}  {own}now {_fmt_pct(a['rate_val'])}/min  "
                 f"floor {a['threshold']}")
-    return f"  {label}  {a['threshold']}"
+    return f"  {label}  {own}{a['threshold']}"
 
 
 def _tg_position_enrichment_lines(a: dict) -> list[str]:
@@ -1844,15 +1856,34 @@ def _tg_position_enrichment_lines(a: dict) -> list[str]:
     which reads as a bulleted list even though this whole alert pipeline
     is otherwise plain text (see the "Alert message format" entry in
     CLAUDE.md). Plain ", " joins the same data with no decorative glyph.
+
+    2026-11 alert-consolidation fix — these are scope-level facts (both
+    `underlyings_breakdown` and the static-rate `rate_val` only depend
+    on (df_positions, scope_label), never on which metric fired), so a
+    multi-leaf group must emit them ONCE, not once per leaf. When `a`
+    carries `agent_engine._ae_group_alert_rows`'s `_grp_*` annotations
+    (the normal path, grouped once upstream in `_v2_send_rich_alert`),
+    this reads the group-level values it already computed. Falls back to
+    the old per-row computation when those keys are absent (a caller
+    passing a bare, un-annotated row — every pre-existing test; treated
+    as a group of one) so behavior there is unchanged.
     """
     result: list[str] = []
-    ub = a.get('underlyings_breakdown') or []
+    if '_grp_underlyings_breakdown' in a:
+        ub = a['_grp_underlyings_breakdown'] or []
+    else:
+        ub = a.get('underlyings_breakdown') or []
     if ub:
         pieces = [f"{u['underlying']} {_fmt_rupees_compact(u['pnl'])}" for u in ub]
         result.append("  by und: " + ", ".join(pieces))
-    k = a['kind']
-    rv = a.get('rate_val')
-    if rv is not None and k not in ('rate_abs', 'rate_pct'):
+    if '_grp_rate_for_enrichment' in a:
+        rv = a['_grp_rate_for_enrichment']
+    else:
+        k = a['kind']
+        rv = a.get('rate_val')
+        if k in ('rate_abs', 'rate_pct'):
+            rv = None
+    if rv is not None:
         result.append(f"  rate:   {_fmt_rupees(rv)}/min")
     return result
 
@@ -1882,18 +1913,46 @@ def _tg_alert_body(alerts: list) -> str:
     dropped; the row's own section/scope/value text is unambiguous
     without it. See `_tg_position_enrichment_lines` for the matching
     fix to the per-underlying separator on line 3.
+
+    2026-11 alert-consolidation fix (operator complaint: several leaves
+    of the same agent firing together for one scope produced N near-
+    identical blocks) — `alerts` is expected to already carry
+    `agent_engine._ae_group_alert_rows`'s `_grp_*` annotations (set
+    once, upstream, by `_v2_send_rich_alert`). Reads those via
+    `.get(key, <default>)` so a caller passing bare, un-annotated rows
+    (every pre-existing test) still renders each row as its own group of
+    one — byte-identical to the pre-consolidation output. A group's
+    shared header carries the pnl/pct value ONLY when every member
+    genuinely agrees (see `_ae_group_alert_rows`'s docstring for why
+    that can't be assumed) and appends a plain-ASCII "xN" marker when
+    the group has more than one member; when members disagree, the
+    header drops the number and each subline shows its own instead
+    (`_tg_rule_line`'s `show_own_pnl`) — the operator never loses which
+    thresholds tripped, or their values, vs the pre-consolidation output.
     """
     lines = []
     for a in alerts:
-        short = _SECTION_SHORT.get(a['section'], a['section'][:3].upper())
-        head_right = _fmt_rupees(a['pnl'])
-        if a.get('pct') is not None and a['pct'] != 0:
-            head_right += f" ({_fmt_pct(a['pct'])})"
-        lines.append(f"{short} {a['scope']}  {head_right}")
-        lines.append(_tg_rule_line(a))
-        if a['section'] == 'Positions':
+        grp_size   = a.get('_grp_size', 1)
+        is_first   = a.get('_grp_is_first', True)
+        is_last    = a.get('_grp_is_last', True)
+        agrees     = a.get('_grp_pnl_agrees', True)
+        if is_first:
+            short = _SECTION_SHORT.get(a['section'], a['section'][:3].upper())
+            if agrees:
+                head_right = _fmt_rupees(a['pnl'])
+                if a.get('pct') is not None and a['pct'] != 0:
+                    head_right += f" ({_fmt_pct(a['pct'])})"
+                head = f"{short} {a['scope']}  {head_right}"
+            else:
+                head = f"{short} {a['scope']}"
+            if grp_size > 1:
+                head += f"  x{grp_size}"
+            lines.append(head)
+        lines.append(_tg_rule_line(a, show_own_pnl=not agrees))
+        if a['section'] == 'Positions' and is_last:
             lines.extend(_tg_position_enrichment_lines(a))
-        lines.append("")  # blank line between alerts for easy scanning
+        if is_last:
+            lines.append("")  # blank line between groups for easy scanning
     if lines and lines[-1] == "":
         lines.pop()
     return "\n".join(lines)
@@ -1925,6 +1984,21 @@ def _email_alert_body(alerts: list) -> str:
     Build a proper HTML table for email. Columns: Type, Account, Rule,
     Current (₹/%), Rate (when applicable), Threshold. Rows are colored by
     severity kind so rate alerts pop visually.
+
+    2026-11 alert-consolidation fix — every leaf still gets its own
+    `<tr>` here (unlike the Telegram body's merged header), because each
+    leaf's own Current/Rate/Threshold cells are genuinely different
+    values for the same scope (see `_ae_group_alert_rows`'s docstring —
+    `pnl` disagrees across members in the common case) and a table row
+    is the natural place to show them side-by-side, not a duplication
+    bug worth consolidating. The ONE real duplication this file had was
+    the per-underlying breakdown sub-row, recomputed and reprinted after
+    EVERY leaf's row for the same scope — that is a scope-level fact, so
+    it's now emitted once per (section, scope) group, on its last
+    member (`_grp_is_last`), reading the group-level value
+    `agent_engine._ae_group_alert_rows` already computed. Falls back to
+    the per-row value when the `_grp_*` annotations are absent (a bare,
+    un-annotated row — every pre-existing test), unchanged from before.
     """
     th = (
         f"background-color:{_EMAIL_BG};color:{_EMAIL_AMBER};padding:8px 12px;"
@@ -1996,9 +2070,15 @@ def _email_alert_body(alerts: list) -> str:
             + "</tr>"
         )
         # Per-underlying breakdown sub-row — only for Position alerts
-        # that carry the breakdown payload.
-        ub = a.get('underlyings_breakdown') or []
-        if a['section'] == 'Positions' and ub:
+        # that carry the breakdown payload. Emitted ONCE per (section,
+        # scope) group (on its last member), not once per leaf — see
+        # this function's own docstring.
+        if '_grp_underlyings_breakdown' in a:
+            ub = a['_grp_underlyings_breakdown'] or []
+        else:
+            ub = a.get('underlyings_breakdown') or []
+        is_last = a.get('_grp_is_last', True)
+        if a['section'] == 'Positions' and is_last and ub:
             row_html += _email_underlying_subrow(ub, bg)
     return (
         f"<table style='border-collapse:collapse;width:100%;"

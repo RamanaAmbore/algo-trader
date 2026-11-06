@@ -1630,6 +1630,96 @@ def _ae_sort_alert_rows(rows: list[dict]) -> None:
                               r['scope']))
 
 
+def _ae_group_alert_rows(rows: list[dict]) -> list[dict]:
+    """Annotate alert rows (the `_v2_match_to_alertrow` dict shape) with
+    same-cycle multi-leaf grouping info, keyed by (section, scope).
+
+    Operator complaint: a cycle where several leaves of the same agent
+    fire together for the same scope (e.g. loss-positions-total's
+    day_val + day_pct + pnl_rate_abs, its most common real shape)
+    rendered as N near-identical blocks, each repeating "POS TOTAL" and
+    a value. This groups them under one header.
+
+    NOT assumed identical — checked, not guessed: `_v2_extract_pnl_fields`
+    derives `pnl` differently PER METRIC, not per scope — `day_val` reads
+    `day_change_val` while every other Positions metric reads lifetime
+    `pnl`; Funds reads the match's own threshold-compared `value`, which
+    also differs per metric. A replay of the real 36-fire
+    `loss-positions-total` history (14 days, prod `agent_events`) found
+    EVERY multi-leaf group disagreed on pnl — zero agreed. So the header
+    shows a shared pnl/pct ONLY when every member's own value genuinely
+    matches; when they disagree, the header drops the number instead of
+    arbitrarily picking one, and each subline carries its own value via
+    `_tg_rule_line`'s `show_own_pnl` — the operator never loses a number,
+    it just moves from the (non-existent) shared header onto the
+    per-leaf line that already shows kind/threshold.
+
+    Returns a NEW list of shallow-copied row dicts (does not mutate
+    `rows` or any of its dict elements), same length and order, each
+    carrying:
+      _grp_size                    — member count sharing this (section, scope)
+      _grp_is_first / _grp_is_last — position within its own group
+      _grp_pnl_agrees              — True iff every member's pnl AND pct match
+      _grp_underlyings_breakdown   — the group's breakdown, computed once
+      _grp_rate_for_enrichment     — the group's "rate:" enrichment value,
+                                      or None when a member's own kind is
+                                      already rate_abs/rate_pct (that
+                                      leaf's own subline already shows it)
+
+    `_tg_alert_body`/`_email_alert_body` read these via `.get(key,
+    <single-row default>)`, so a caller that passes raw, un-annotated
+    rows (every pre-existing test; any future caller that skips this
+    step) still renders correctly as N independent groups of 1 — byte-
+    identical to the pre-grouping behavior. This function itself groups
+    by a plain dict bucket (not by assuming adjacency), so it is correct
+    even if a caller's rows for one (section, scope) aren't contiguous —
+    though the one production caller (`_v2_send_rich_alert`) always
+    sorts via `_ae_sort_alert_rows` first, which already makes them so.
+    """
+    buckets: dict[tuple, list[int]] = {}
+    order: list[tuple] = []
+    for idx, r in enumerate(rows):
+        key = (r.get('section'), r.get('scope'))
+        if key not in buckets:
+            buckets[key] = []
+            order.append(key)
+        buckets[key].append(idx)
+
+    out = [dict(r) for r in rows]  # shallow copy — never mutate caller's dicts
+    for key in order:
+        idxs = buckets[key]
+        members = [rows[i] for i in idxs]
+        pnls = {m.get('pnl') for m in members}
+        pcts = {m.get('pct') for m in members}
+        agrees = len(pnls) == 1 and len(pcts) == 1
+
+        # Enrichment is a scope-level fact, not a per-leaf one — both
+        # `underlyings_breakdown` and the static-rate `rate_val` only
+        # depend on (df_positions, scope_label), never on which metric
+        # fired, so any member that carries one carries the same one.
+        ub: list = []
+        for m in members:
+            if m.get('underlyings_breakdown'):
+                ub = m['underlyings_breakdown']
+                break
+        has_rate_leaf = any(m.get('kind') in ('rate_abs', 'rate_pct') for m in members)
+        rate_for_enrichment = None
+        if not has_rate_leaf:
+            for m in members:
+                if m.get('rate_val') is not None:
+                    rate_for_enrichment = m['rate_val']
+                    break
+
+        for pos, i in enumerate(idxs):
+            out[i]['_grp_size'] = len(idxs)
+            out[i]['_grp_is_first'] = (pos == 0)
+            out[i]['_grp_is_last'] = (pos == len(idxs) - 1)
+            out[i]['_grp_pnl_agrees'] = agrees
+            out[i]['_grp_underlyings_breakdown'] = ub
+            out[i]['_grp_rate_for_enrichment'] = rate_for_enrichment
+    return out
+
+
 def _ae_sim_notify_suppressed(agent, sim_mode: bool) -> bool:
     """Return True when sim_mode is active AND notify_during_run is off.
 
@@ -1792,6 +1882,14 @@ async def _v2_send_rich_alert(agent, matches, now, sim_mode: bool = False,
 
     # Sort Holdings → Positions → Funds, per-account before TOTAL.
     _ae_sort_alert_rows(rows)
+
+    # Group same-cycle multi-leaf fires for one (section, scope) into one
+    # header — run ONCE here, before either renderer sees the data, so
+    # Telegram/ntfy (which reuses the Telegram body) and email can never
+    # disagree about how a breach with 2+ co-firing leaves is rendered.
+    # See _ae_group_alert_rows's own docstring for why the header can't
+    # just assume a shared pnl value (it often can't, empirically).
+    rows = _ae_group_alert_rows(rows)
 
     # `simulator.notify_during_run` gate — audit trail is always written;
     # only the noisy outbound channels are suppressed in sim mode.
