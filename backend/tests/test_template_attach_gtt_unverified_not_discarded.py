@@ -219,3 +219,35 @@ def test_confirmed_rejection_is_dropped_without_cancel_attempt():
     assert not any(g.unverified for g in result.plan.gtts)
     assert not result.gtt_ids
     assert any("not accepted at broker" in e for e in result.errors)
+
+
+# ── Step 6 mechanical fix (2026-11-06): gtt_unverified_tracked carries
+# agent_id, matching its sibling gtt_not_accepted block ───────────────
+
+def test_gtt_unverified_tracked_log_carries_agent_id(monkeypatch):
+    """`[GTT-UNVERIFIED]`'s own `extra` dict was missing `agent_id` —
+    its sibling block 15 lines above (`gtt_not_accepted`) already
+    carried it. Fixed to match: `plan.parent_agent_id` now reaches the
+    logged extra here too, even though this record currently carries
+    no "alert" tag (so it isn't alert-dispatched) — the fix is about
+    extra-dict consistency with its sibling, not about wiring a new
+    alert."""
+    plan = _make_plan()
+    plan.parent_agent_id = 42
+    broker = _make_broker()
+    broker.get_gtts.return_value = []
+    broker.cancel_gtt.side_effect = RuntimeError("broker unreachable")
+
+    captured = {}
+
+    def _fake_critical(msg, *args, **kwargs):
+        if kwargs.get("extra", {}).get("alert_event") == "gtt_unverified_tracked":
+            captured["extra"] = kwargs["extra"]
+
+    from backend.api.algo import template_attach as ta_mod
+    monkeypatch.setattr(ta_mod.logger, "critical", _fake_critical)
+
+    apply_plan_live(plan, broker)
+
+    assert captured, "gtt_unverified_tracked was never logged"
+    assert captured["extra"]["agent_id"] == 42

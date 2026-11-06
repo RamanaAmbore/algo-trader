@@ -2128,7 +2128,8 @@ def _ta_live_place_one_gtt(
                 spec.label, plan.parent_symbol, _gtt_reason, _cancel_exc_msg, gtt_id,
                 extra={"tags": ["orders", "gtt"], "alert_event": "gtt_unverified_tracked",
                        "symbol": plan.parent_symbol, "label": spec.label,
-                       "gtt_id": str(gtt_id), "reason": _gtt_reason},
+                       "gtt_id": str(gtt_id), "reason": _gtt_reason,
+                       "agent_id": plan.parent_agent_id},
             )
         spec.placed_id = str(gtt_id)
         result.gtt_ids.append(spec.placed_id)
