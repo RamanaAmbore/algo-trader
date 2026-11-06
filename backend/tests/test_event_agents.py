@@ -1769,6 +1769,79 @@ class TestAgentTagLineDeduped:
         assert tag_line == "#chase_close_positions #market_status_alert", f"got {tag_line!r}"
 
 
+class TestAlertAgentTagPrefersHumanReadableName:
+    """2026-11-06 fix (operator live report: "check the agent name and
+    make them relavent. I see something like _rich in agent name and
+    tag. It does not look appropriate.").
+
+    Confirmed against the real last loss-guard breach on prod
+    (agent_events id 3463, `loss-positions-total`, 2026-11-06 12:41:18
+    UTC, dispatched by `RICH_ALERT_AGENT`, slug `agent-alert-rich`, DB
+    id 62, DB `name` "Agent alert"). Before this fix,
+    `_alert_agent_source_slug`'s fallback preferred `agent.slug` over
+    `agent.name`, so every rich-alert breach — this loss-guard alert
+    included — carried a trailing `#agent_alert_rich` tag: a raw
+    kebab-case internal slug, not something an operator recognizes as
+    meaningful. `Agent.name` is the column this codebase documents as
+    "the human-readable display name shown in alerts" (see
+    `models.py`'s own `Agent.name` comment) — `_alert_agent_source_slug`
+    now prefers it. This is deliberately NOT a slug rename:
+    `ALERT_EVENT_DISPATCH`'s own `source_slug` branch (used for the 16
+    collapsed/retired detector events) is untouched and still resolves
+    to the retired detector's own slug."""
+
+    @pytest.mark.asyncio
+    async def test_rich_alert_tag_shows_human_name_not_rich_suffixed_slug(self, senders):
+        from backend.api.algo import event_agents as ea
+        ch = {"channel": "telegram", "enabled": True}
+        out = ("Title", "Body text", "Body text")
+        # Real production values for RICH_ALERT_AGENT (DB id 62,
+        # slug "agent-alert-rich", name "Agent alert" — confirmed via
+        # `SELECT id, slug, name FROM agents WHERE slug='agent-alert-rich'`
+        # on prod) dispatching the real loss-positions-total breach
+        # shape (agent_id=36, agent_name="Positions total loss
+        # guardrail", alert_event="rich_alert", tier="critical").
+        agent = SimpleNamespace(id=62, slug="agent-alert-rich", name="Agent alert")
+        rec = {"extra": {"alert_event": "rich_alert", "agent_id": 36,
+                          "agent_name": "Positions total loss guardrail",
+                          "tier": "critical"},
+               "level": "CRITICAL"}
+
+        await ea._send_channel(ch, out, agent, rec)
+
+        sent_body = senders["tg"][0][1]
+        tag_line = sent_body.splitlines()[-1]
+        assert "rich" not in tag_line, (
+            f"alert-agent tag must not leak the internal 'agent-alert-rich' "
+            f"slug fragment, got {tag_line!r}")
+        assert tag_line == "#positions_total_loss_guardrail #agent_alert #critical", (
+            f"got {tag_line!r}")
+
+    @pytest.mark.asyncio
+    async def test_collapsed_event_still_shows_retired_detector_slug(self, senders):
+        """The `ALERT_EVENT_DISPATCH['source_slug']` branch (used by the
+        3 generic post-collapse channel agents for one of the 16
+        collapsed/retired detector events) is a different code path and
+        must be unaffected by the name-preference fallback fix above."""
+        from backend.api.algo import event_agents as ea
+        ch = {"channel": "telegram", "enabled": True}
+        out = ("Title", "Body text", "Body text")
+        # A generic post-collapse channel agent's own name is generic
+        # ("Alert channel: Telegram") — the whole point of the
+        # `source_slug` branch is to resolve to the ORIGINAL retired
+        # detector's slug instead, regardless of name preference.
+        agent = SimpleNamespace(id=99, slug="alert-channel-telegram",
+                                name="Alert channel: Telegram")
+        rec = {"extra": {"alert_event": "cancel_unconfirmed"}}
+
+        await ea._send_channel(ch, out, agent, rec)
+
+        sent_body = senders["tg"][0][1]
+        tag_line = sent_body.splitlines()[-1]
+        assert "chase_cancel_alert" in tag_line, f"got {tag_line!r}"
+        assert "alert_channel" not in tag_line, f"got {tag_line!r}"
+
+
 class TestBareTwoTupleRenderersSendAgentLabelAtTop:
     """2026-11-05 live operator report: "in order fill alert agent label
     is not showing at the top. the tags at the bottom are not starting

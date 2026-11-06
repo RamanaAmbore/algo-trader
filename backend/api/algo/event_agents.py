@@ -847,7 +847,7 @@ def _alert_agent_source_slug(agent, rec: dict) -> str:
 
     Prefers `ALERT_EVENT_DISPATCH[alert_event]['source_slug']` — the
     ORIGINAL (now-retired) detector agent's own slug, e.g.
-    'chase-cancel-alert' — over `agent.slug`/`agent.name` directly.
+    'chase-cancel-alert' — over `agent.name`/`agent.slug` directly.
     Without this, the 3 generic post-collapse channel agents
     (`alert-channel-telegram`/`-ntfy`/`-email`) would each show their
     own generic name ("Alert channel: Email") when independently
@@ -858,7 +858,28 @@ def _alert_agent_source_slug(agent, rec: dict) -> str:
     identical, original detector name. The 7 agents that stayed
     dedicated post-collapse (`agent-alert-rich`, `cycle-breach-alert`,
     etc.) have no `alert_event`/no table entry and fall through to
-    their own slug directly — already the real dispatching agent.
+    this function's own fallback — already the real dispatching agent.
+
+    2026-11-06 fix (operator live report: "I see something like _rich
+    in agent name and tag. It does not look appropriate.") — the
+    fallback used to prefer `agent.slug` over `agent.name`. For
+    RICH_ALERT_AGENT (slug "agent-alert-rich") every real breach alert
+    — e.g. the loss-guard alert the operator was looking at — showed a
+    trailing `#agent_alert_rich` tag: an internal/kebab-case
+    implementation detail, not something an operator recognizes as
+    meaningful. `Agent.name` ("Agent alert" for this row) is the
+    column this codebase already documents as "the human-readable
+    display name shown in alerts" (see `models.py`'s own `Agent.name`
+    comment) — it is the correct field to read for anything rendered
+    into an alert, slug is for URLs/API paths/condition references.
+    Preferring name here therefore applies uniformly to every one of
+    the 7 dedicated agents (all of which already carry a short,
+    human-readable `name`, e.g. "Cycle breach", "Deploy out of sync"),
+    not a one-off rename of this single agent's slug — a slug rename
+    would ripple into `alert_routing.py`'s per-slug overrides and every
+    test keying on it, for no benefit. `ALERT_EVENT_DISPATCH`'s own
+    `source_slug` branch above is untouched; a collapsed event still
+    shows its retired detector's slug (e.g. `#chase_cancel_alert`).
     """
     extra = rec.get("extra") or {}
     alert_event = extra.get("alert_event")
@@ -866,7 +887,7 @@ def _alert_agent_source_slug(agent, rec: dict) -> str:
         entry = ALERT_EVENT_DISPATCH.get(alert_event)
         if entry and entry.get("source_slug"):
             return str(entry["source_slug"])
-    return str(getattr(agent, "slug", None) or getattr(agent, "name", None) or "alert")
+    return str(getattr(agent, "name", None) or getattr(agent, "slug", None) or "alert")
 
 
 def _tag_token(value: "str | None") -> str:
