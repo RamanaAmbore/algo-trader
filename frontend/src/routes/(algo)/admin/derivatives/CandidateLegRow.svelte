@@ -34,13 +34,13 @@
   import { liveSnap } from '$lib/data/symbolStore.svelte.js';
   import { rootOfLabel }            from '$lib/data/rootOf.js';
   import { formatSymbol }           from '$lib/data/decomposeSymbol';
-  import { getInstrument, getOptionUnderlyingLot } from '$lib/data/instruments';
+  import { getOptionUnderlyingLot } from '$lib/data/instruments';
   import { acctColor }              from '$lib/account';
-  import { lotsForRow, fmtLots }    from '$lib/data/lotsForRow';
+  import { fmtLots, legLotsValue } from '$lib/data/lotsForRow';
   import { getProxyRow }            from '$lib/data/hedgeProxies';
   import { priceFmt, pctFmt, aggCompact, ltpDayClass, qtyFmt } from '$lib/format';
   import { longPress }              from '$lib/actions/longPress.js';
-  import { legPnlDisplay }          from '$lib/data/derivativesMath.js';
+  import { legPnlDisplay, legIsClosed, legLiveLtp, legChgPct, legDisplayQty, legCost } from '$lib/data/derivativesMath.js';
   import { positionStateBadge }     from '$lib/data/positionStateBadge.js';
   import InfoHint                   from '$lib/InfoHint.svelte';
 
@@ -107,49 +107,17 @@
 
   // ── Derived locals (identical logic to what was in {@const} blocks) ───
 
-  // isClosed must be computed BEFORE ltp (Fix 2a, coherence guard) — a
-  // leg's local qty (from either a real poll or Fix 1's optimistic
-  // position_filled apply) can flip to 0 well before the symbol's own
-  // SSE subscription naturally stops delivering ticks (other legs on the
-  // same underlying, or a lingering subscription, can keep the
-  // symbolStore entry updating indefinitely). Reading a live tick for a
-  // row that's no longer held produces a "ghost leg" — a closed
-  // position whose LTP visibly keeps moving. qty=0 rows stay in the
-  // Legs grid on purpose (CLOSED split tag, realised P&L feeding
-  // TOTAL/Day P&L — see CLAUDE.md's Day P&L formulas) — only the LIVE
-  // price feed is frozen here, not the row itself.
-  const isClosed  = $derived(Number(c.qty || 0) === 0);
-  const ltp       = $derived(
-    isClosed
-      ? (lg?.ltp ?? c.ltp)
-      : (liveSnap(String(c.symbol || '').toUpperCase())?.ltp ?? (lg?.ltp ?? c.ltp))
-  );
-  const cost      = $derived(c.avg_cost != null ? c.avg_cost : (lg ? lg.avg_cost : null));
-
-  // Sold-today eq rows: surface opening_qty so Lots column shows original size.
-  const _eqDisplayQty = $derived(
-    c.kind === 'eq' && Number(c.qty || 0) === 0 && Number(c.opening_qty || 0) !== 0
-      ? Number(c.opening_qty)
-      : null
-  );
-  // Closed F&O rows (CE/PE/FUT): qty genuinely is 0 (net flat, correct),
-  // but the operator wants the ENTRY size shown, same as Lots — 2026-11-06
-  // live fix (operator: "lots and qty for close positions in derivatives
-  // legs grid is zero. can you keep the correct value"). Backend now
-  // populates `c.lots` with the real entry lot count for a closed F&O row
-  // (`PositionRow.lots` / `positions.py:_restore_closed_position_lots`);
-  // multiplied back out by the instrument's own lot size to get contracts,
-  // mirroring lotsForRow.js's own instrument-lookup fallback.
-  const _foDisplayQty = $derived(
-    c.kind !== 'eq' && Number(c.qty || 0) === 0 && c.lots != null && Number(c.lots) !== 0
-      ? Number(c.lots) * (Number(getInstrument(String(c.symbol || '').toUpperCase())?.ls) || 1)
-      : null
-  );
-  const displayQty = $derived(
-    c._residualQty != null
-      ? Number(c._residualQty)
-      : (_eqDisplayQty ?? _foDisplayQty ?? Number(c.qty || 0))
-  );
+  // isClosed/ltp/cost/displayQty — extracted (2026-11) into derivativesMath.js
+  // (legIsClosed/legLiveLtp/legCost/legDisplayQty) as the shared SSOT a
+  // column-sort accessor now reads too, so the sort order and the rendered
+  // cell can never disagree. No formula changes — see that file for the
+  // original per-function docblocks (sold-today eq rows surface
+  // opening_qty; closed F&O rows surface the backend-restored `c.lots` ×
+  // instrument lot size — 2026-11-06 live fix).
+  const isClosed  = $derived(legIsClosed(c));
+  const ltp       = $derived(legLiveLtp(c, lg, liveSnap(String(c.symbol || '').toUpperCase())?.ltp));
+  const cost      = $derived(legCost(c, lg));
+  const displayQty = $derived(legDisplayQty(c));
 
   const _ltpFromFallback = $derived(!!(lg && lg.ltp_source === 'avg_cost'));
   // pnl: row-own fields, NEVER positionsDerivedStore (2026-09 fix). The
@@ -213,11 +181,9 @@
   // Chg % — pure price-% (ltp vs prev_close), decoupled from the Day P&L
   // baseline. Distinct metric from the Day P&L cell — a symbol can move
   // price-wise even on a flat/new position where Day P&L reads ~0.
-  const _chgPct = $derived.by(() => {
-    const px = Number(c?.prev_close);
-    if (!(px > 0) || ltp == null) return null;
-    return ((ltp - px) / px) * 100;
-  });
+  // Extracted (2026-11) into derivativesMath.js:legChgPct — shared SSOT
+  // with the column-sort accessor.
+  const _chgPct = $derived(legChgPct(c, ltp));
 
   // Cumulative day % for flash tier — uses the SSOT _chgPct, falls back to 1 (middle tier).
   const _legDayPct = $derived(_chgPct != null ? Math.abs(_chgPct) : 1);
@@ -567,7 +533,13 @@
     {@const _lotsTargetLot  = getOptionUnderlyingLot(c.proxy_for)}
     {@const _lotsEffQty     = (_lotsTargetSpot > 0 && _lotsProxyLtp > 0)
         ? (_lotsBeta * Math.abs(displayQty) * _lotsProxyLtp) / _lotsTargetSpot : 0}
-    {@const _lotsTargetLots = _lotsTargetLot > 0 ? _lotsEffQty / _lotsTargetLot : 0}
+    <!-- Numeric value — extracted (2026-11) into lotsForRow.js:legLotsValue,
+         the shared SSOT a column-sort accessor also reads. The tooltip
+         text above still computes its own intermediate β/eff-qty locals
+         (presentational only); legLotsValue's internal formula is
+         verbatim-identical, so the rendered number can never disagree
+         with the sort order. -->
+    {@const _lotsTargetLots = legLotsValue(c, strategy, _lotsRow) ?? 0}
     <span class="num"
           title={_lotsTargetLots > 0
             ? `${_lotsTargetLots.toFixed(2)} ${c.proxy_for} lot${_lotsTargetLots === 1 ? '' : 's'} (β=${_lotsBeta.toFixed(2)}, ${_lotsEffQty.toFixed(2)} target units ÷ ${_lotsTargetLot}/lot)`
@@ -575,7 +547,7 @@
       {_lotsTargetLots > 0 ? fmtLots(_lotsTargetLots) : '—'}
     </span>
   {:else}
-    <span class="num">{fmtLots(lotsForRow({ tradingsymbol: c.symbol, quantity: displayQty, lots: c.lots ?? null }))}</span>
+    <span class="num">{fmtLots(legLotsValue(c, strategy))}</span>
   {/if}
   {#if isClosed}
     <span class="num cell-flat">0</span>

@@ -12,6 +12,106 @@
  */
 
 import { decomposeSymbol } from '$lib/data/decomposeSymbol.js';
+import { getInstrument } from '$lib/data/instruments';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Leg display primitives — extracted VERBATIM (2026-11, no formula changes)
+// from CandidateLegRow.svelte's own inline `$derived`s. This is the shared
+// SSOT a column-sort accessor and the rendered cell both read, so they can
+// never disagree (see the column-sort plan's Section D/5).
+//
+// `legLiveLtp` deliberately does NOT import `symbolStore.svelte.js` itself
+// (unlike the component's own pre-refactor inline derived) — this file is a
+// plain, framework-agnostic `.js` module imported transitively by nav.js /
+// portfolioStore.svelte.js / pageLoad.js and exercised directly by Vitest,
+// which has no Svelte-rune compiler in its toolchain (see every
+// `*.svelte.js` test file's own documented constraint). A module-level
+// `$state(...)` call inside `symbolStore.svelte.js` would throw
+// `$state is not defined` the instant anything imports this file under
+// Vitest. Callers (CandidateLegRow.svelte, +page.svelte — both already
+// import `liveSnap`) resolve the live tick themselves and pass it in as
+// `liveLtp`, keeping every function here genuinely pure.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * True when a candidate leg's live quantity is flat (net zero) — the row
+ * still renders (CLOSED split tag, realised P&L feeding TOTAL/Day P&L),
+ * but its LIVE price feed is frozen (no further ticks read) and its Qty
+ * cell renders a literal 0, not the entry-size fallback used elsewhere.
+ * @param {any} c
+ * @returns {boolean}
+ */
+export function legIsClosed(c) {
+  return Number(c.qty || 0) === 0;
+}
+
+/**
+ * Live LTP for a candidate leg. Closed legs freeze on the strategy
+ * analytics (or row) LTP rather than reading a possibly-still-ticking SSE
+ * snapshot (a closed position shouldn't visibly keep moving). Open legs
+ * prefer the live tick, falling back to the same frozen sources.
+ *
+ * `liveLtp` is the caller's own `liveSnap(symbol)?.ltp` lookup — this
+ * function stays pure (no `symbolStore.svelte.js` import, see the module
+ * header above) and simply decides which of the three values wins.
+ * @param {any} c
+ * @param {any} lg - legAnalyticsBySymbol[c.symbol], or undefined
+ * @param {number | null | undefined} liveLtp - caller's `liveSnap(sym)?.ltp`
+ * @returns {number | null | undefined}
+ */
+export function legLiveLtp(c, lg, liveLtp) {
+  return legIsClosed(c)
+    ? (lg?.ltp ?? c.ltp)
+    : (liveLtp ?? (lg?.ltp ?? c.ltp));
+}
+
+/**
+ * Pure price-% change (ltp vs prev_close) — decoupled from the Day P&L
+ * baseline. A symbol can move price-wise even on a flat/new position
+ * where Day P&L reads ~0.
+ * @param {any} c
+ * @param {number | null | undefined} ltp - legLiveLtp(c, lg)
+ * @returns {number | null}
+ */
+export function legChgPct(c, ltp) {
+  const px = Number(c?.prev_close);
+  if (!(px > 0) || ltp == null) return null;
+  return ((ltp - px) / px) * 100;
+}
+
+/**
+ * Display quantity for a candidate leg — the SAME value the Lots/dir/
+ * cost/pnl cells read (NOT what the Qty cell itself renders when closed;
+ * that cell shows a literal 0 instead, see `legIsClosed`). Falls back to
+ * the entry size for a closed eq row (sold-today, shows opening_qty) or a
+ * closed F&O row (backend-restored `c.lots`, multiplied by the
+ * instrument's own lot size to get contracts).
+ * @param {any} c
+ * @returns {number}
+ */
+export function legDisplayQty(c) {
+  const isClosed = legIsClosed(c);
+  const eqDisplayQty = (
+    c.kind === 'eq' && isClosed && Number(c.opening_qty || 0) !== 0
+  ) ? Number(c.opening_qty) : null;
+  const foDisplayQty = (
+    c.kind !== 'eq' && isClosed && c.lots != null && Number(c.lots) !== 0
+  ) ? Number(c.lots) * (Number(getInstrument(String(c.symbol || '').toUpperCase())?.ls) || 1) : null;
+  return c._residualQty != null
+    ? Number(c._residualQty)
+    : (eqDisplayQty ?? foDisplayQty ?? Number(c.qty || 0));
+}
+
+/**
+ * Avg cost for a candidate leg — row-own `avg_cost` first, falling back
+ * to the strategy analytics leg's own `avg_cost`. No live-tick dependency.
+ * @param {any} c
+ * @param {any} lg - legAnalyticsBySymbol[c.symbol], or undefined
+ * @returns {number | null}
+ */
+export function legCost(c, lg) {
+  return c.avg_cost != null ? c.avg_cost : (lg ? lg.avg_cost : null);
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared filter factories (eliminate repeated closure boilerplate)

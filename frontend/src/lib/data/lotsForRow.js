@@ -19,6 +19,7 @@
 // instantly.
 
 import { getInstrument, getOptionUnderlyingLot } from '$lib/data/instruments';
+import { legDisplayQty } from '$lib/data/derivativesMath.js';
 
 /**
  * Normalize raw row quantities into {qPos, qHold} unsigned values.
@@ -105,6 +106,48 @@ export function lotsForRow(row) {
   const { qPos, qHold } = _normalizeQtys(row, itype);
   const total = _computeLots(sym, itype, qPos, qHold, inst, row);
   return Math.round(total * 10) / 10;
+}
+
+/**
+ * Lots value for the derivatives Candidates/Legs grid's own Lots column —
+ * extracted VERBATIM (2026-11, no formula changes) from
+ * CandidateLegRow.svelte's existing proxy-beta-scaling branch (a proxy ETF
+ * leg like GOLDBEES scaled into the hedged root's own lot units) and its
+ * plain `lotsForRow(...)` branch for every other row. Shared by the cell
+ * render AND a column-sort accessor so they can never disagree.
+ *
+ * Mirrors the cell's own "waiting on spot" convention: the proxy branch
+ * returns `null` (renders '—') when the scaled lot count isn't yet a
+ * positive number; the plain branch returns `lotsForRow()`'s own value
+ * as-is, including a genuine `0`.
+ *
+ * `proxyRow` is the caller's own `getProxyRow(c.symbol, c.proxy_for)`
+ * lookup — this function deliberately does NOT import `hedgeProxies.js`
+ * itself: that module's top-level `import { fetchHedgeProxies } from
+ * '$lib/api'` chain reaches `stores.js` → `activityStore.svelte.js`
+ * (a rune-using `.svelte.js` module), which throws under Vitest the
+ * instant anything imports it (same constraint documented on
+ * `legLiveLtp` above). `lotsForRow.js` is imported directly by its own
+ * Vitest suite, so it must stay free of that chain.
+ *
+ * @param {any} c - candidate leg row
+ * @param {any} strategy - current strategy object (for proxy spot math)
+ * @param {any} [proxyRow] - caller's `getProxyRow(c.symbol, c.proxy_for)`, when `c.proxy_for` is set
+ * @returns {number | null}
+ */
+export function legLotsValue(c, strategy, proxyRow) {
+  const displayQty = legDisplayQty(c);
+  if (c.proxy_for) {
+    const targetSpot = Number(strategy?.spot) || 0;
+    const proxyLtp = Number(c.ltp) || 0;
+    const beta = proxyRow?.beta != null ? Number(proxyRow.beta) : 1.0;
+    const targetLot = getOptionUnderlyingLot(c.proxy_for);
+    const effQty = (targetSpot > 0 && proxyLtp > 0)
+      ? (beta * Math.abs(displayQty) * proxyLtp) / targetSpot : 0;
+    const targetLots = targetLot > 0 ? effQty / targetLot : 0;
+    return targetLots > 0 ? targetLots : null;
+  }
+  return lotsForRow({ tradingsymbol: c.symbol, quantity: displayQty, lots: c.lots ?? null });
 }
 
 /**
