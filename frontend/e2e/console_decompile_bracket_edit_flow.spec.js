@@ -162,36 +162,24 @@ test.describe('Bracket kind row → Edit → decompileBracket → Console (Sprin
     await expect(saveBtn).toBeVisible({ timeout: TIMEOUT });
     await expect(saveBtn).toHaveText('Save');
 
-    // 2026-10-13 (operator request) — Save and Cancel edit now share one
-    // bottom-right button row under the editor, instead of Cancel living
-    // in the top banner and Save left-aligned below. Confirm both are
-    // present in the SAME right-aligned container.
-    const cancelBtn = page.locator('.console-edit-cancel');
-    await expect(cancelBtn).toBeVisible({ timeout: TIMEOUT });
-    await expect(cancelBtn).toHaveText('Cancel edit');
-    // Operator (2026-10-17): "I want cancel edit to look like a button" —
-    // was an underlined bare-text link (no border/background/padding).
-    // Assert real button chrome now: a visible border and a non-transparent
-    // background, not the old underline-link look.
-    const cancelStyle = await cancelBtn.evaluate((el) => {
-      const cs = getComputedStyle(el);
-      return {
-        borderWidth: cs.borderTopWidth,
-        textDecoration: cs.textDecorationLine,
-        background: cs.backgroundColor,
-      };
-    });
-    expect(cancelStyle.borderWidth).not.toBe('0px');
-    expect(cancelStyle.textDecoration).toBe('none');
-    expect(cancelStyle.background).not.toBe('rgba(0, 0, 0, 0)');
+    // 2026-11-06 (operator request) — the "Cancel edit" button that used
+    // to share this bottom-right row with Save was removed. A header
+    // Reset button (always visible on the Console tab, not edit-mode-
+    // only) now covers "clear the entry, stop editing" from one place.
+    // Confirm the old bottom button is gone and the header Reset button
+    // is present and clears both the editor text and edit-mode state.
+    await expect(page.locator('.console-edit-cancel')).toHaveCount(0);
+    const resetBtn = page.locator('.console-reset-btn');
+    await expect(resetBtn).toBeVisible({ timeout: TIMEOUT });
+    await expect(resetBtn).toHaveText('Reset');
+
     const actionsRow = page.locator('.console-agent-cli-actions');
     await expect(actionsRow).toBeVisible({ timeout: TIMEOUT });
-    await expect(actionsRow.locator('.console-edit-cancel')).toHaveCount(1);
     await expect(actionsRow.locator('.console-agent-cli-btn')).toHaveCount(1);
     const justifyContent = await actionsRow.evaluate((el) => getComputedStyle(el).justifyContent);
     expect(justifyContent).toBe('flex-end');
 
-    // Right-aligned: both buttons' right edge sits at (or very near) the
+    // Right-aligned: Save's right edge sits at (or very near) the
     // container's own right edge, not left-aligned/centered.
     const [rowBox, saveBox] = await Promise.all([actionsRow.boundingBox(), saveBtn.boundingBox()]);
     expect(rowBox).not.toBeNull();
@@ -205,6 +193,42 @@ test.describe('Bracket kind row → Edit → decompileBracket → Console (Sprin
 
     // Edit-mode banner clears on a successful Save.
     await expect(page.locator('.console-edit-banner')).toHaveCount(0);
+  });
+
+  test('Reset clears the editor and exits edit mode without saving', async ({ page }) => {
+    // 2026-11-06 (operator: "there should be reset button cli header so
+    // that when pressed, the entry should be cleared. if editing an
+    // existing agent, the edit should stop, the cli window should be
+    // empty"). Separate test from the Save/PATCH flow above — Reset is
+    // a destructive alternative to Save, not a step within it.
+    await mockAgentsList(page, [CUSTOM_BRACKET_AGENT_ROW]);
+    await page.goto('/automation', { waitUntil: 'domcontentloaded' });
+    await expect(agentKindTrigger(page)).toBeVisible({ timeout: TIMEOUT });
+
+    const row = await openBracketRow(page, 'ZZZ E2E Custom Bracket');
+    await row.getByText('Edit', { exact: true }).click();
+
+    const cliTextarea = page.locator('.agent-cli-textarea');
+    await expect(cliTextarea).toBeVisible({ timeout: TIMEOUT });
+    await expect(cliTextarea).not.toHaveValue('', { timeout: TIMEOUT });
+    await expect(page.locator('.console-edit-banner')).toBeVisible({ timeout: TIMEOUT });
+
+    let patchCalled = false;
+    await page.route('**/api/admin/templates/90001', async (route) => {
+      patchCalled = true;
+      await route.fulfill({ status: 200, body: '{}' });
+    });
+
+    await page.locator('.console-reset-btn').click();
+
+    await expect(cliTextarea).toHaveValue('', { timeout: TIMEOUT });
+    await expect(page.locator('.console-edit-banner')).toHaveCount(0);
+    // With the textarea empty, nothing compiles, so the Save/Create
+    // button (which only renders once the typed text compiles
+    // successfully) disappears entirely rather than relabeling itself
+    // back to a create-mode label.
+    await expect(page.locator('.console-agent-cli-btn')).toHaveCount(0);
+    expect(patchCalled).toBe(false);
   });
 
   test('system Bracket refuses loud instead of switching to Console', async ({ page }) => {

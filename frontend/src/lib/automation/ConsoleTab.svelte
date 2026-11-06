@@ -73,12 +73,6 @@
   const _EDIT_KIND_FOR_ROW_KIND = { cycle: 'agent', event: 'event', template: 'token', bracket: 'bracket' };
   const _ROW_KIND_LABEL = { cycle: 'agent', event: 'alert', template: 'token', bracket: 'bracket' };
 
-  function cancelEdit() {
-    editTarget = null;
-    value = '';
-    _cliSubmitStatus = null;
-  }
-
   const isDemo = $derived(!$authStore.user);
 
   let _agentCliCatalog = $state(/** @type {any} */ (null));
@@ -556,12 +550,16 @@
           showCompileErrors={_classify === 'agents'}
           {placeholder}
         />
-        <!-- Save/Create + Cancel edit share one right-aligned button row
-             at the bottom of the editor (2026-10-13, operator request). -->
+        <!-- Save/Create lives in this right-aligned button row at the
+             bottom of the editor (2026-10-13, operator request). The
+             "Cancel edit" button that used to sit here was removed
+             2026-11-06 (operator request) — the header's Reset button
+             (automation/+page.svelte) now covers both "clear the
+             entry" and "stop editing" from one always-visible control,
+             by clearing the bound `value`/`editTarget` props directly
+             (the identical effect this component's own now-deleted
+             `cancelEdit()` used to produce internally). -->
         <div class="console-agent-cli-actions">
-          {#if editTarget}
-            <button type="button" class="console-edit-cancel" onclick={cancelEdit}>Cancel edit</button>
-          {/if}
           {#if !isDemo && _agentCliCompiled?.ok && (_agentCliCompiled.kind === 'agent' || _agentCliCompiled.kind === 'event')}
             <button type="button" class="btn-primary console-agent-cli-btn"
               onclick={() => _submitAgentCliAgent(_agentCliCompiled)}>
@@ -670,27 +668,5 @@
     justify-content: flex-end;
     gap: 0.75rem;
     margin-top: 0.3rem;
-  }
-  /* Operator (2026-10-17): "I want cancel edit to look like a button" —
-     was an underlined bare-text link (no border/background/padding).
-     Now a real outlined secondary button, same height/padding family as
-     its sibling .console-agent-cli-btn (Save/Create), so the two sit
-     visually paired in the same action row — amber-outline, not filled,
-     so it still reads as the LESS prominent action next to Save/Create's
-     solid btn-primary fill. */
-  .console-edit-cancel {
-    font-size: var(--fs-md);
-    font-weight: 600;
-    color: var(--algo-amber);
-    background: rgba(251, 191, 36, 0.08);
-    border: 1px solid rgba(251, 191, 36, 0.4);
-    border-radius: 0.375rem;
-    cursor: pointer;
-    padding: 0.25rem 0.9rem;
-    transition: background-color 0.05s, border-color 0.05s;
-  }
-  .console-edit-cancel:hover {
-    background: rgba(251, 191, 36, 0.16);
-    border-color: rgba(251, 191, 36, 0.6);
   }
 </style>

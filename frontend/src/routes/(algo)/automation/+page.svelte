@@ -434,6 +434,23 @@
     setActiveTab('console');
   }
 
+  // 2026-11-06 (operator: "there should be reset button cli header so
+  // that when pressed, the entry should be cleared. if editing an
+  // existing agent, the edit should stop, the cli window should be
+  // empty... you can remove edit cancel button") — `_consoleCliText`/
+  // `_consoleEditTarget` are already two-way bound into ConsoleTab
+  // (`bind:value`/`bind:editTarget` below), so clearing them here has
+  // the identical effect to ConsoleTab's own internal `cancelEdit()`
+  // (value='', editTarget=null) with no new prop/export needed on the
+  // child. Replaces the former bottom-of-editor "Cancel edit" button,
+  // which only existed while actively editing — this one is always
+  // visible in the header and also doubles as "clear the entry" for a
+  // fresh (non-edit) statement.
+  function _resetConsole() {
+    _consoleCliText = '';
+    _consoleEditTarget = null;
+  }
+
   function _deleteConfirmMessage(/** @type {string} */ cardId, /** @type {any} */ row) {
     if (cardId === 'brackets') return `Delete bracket "${row.name}"? Existing orders that used it are not affected.`;
     if (row.kind === 'template') return `Delete token "${row.name}"? Any agent still $ref-ing it will log a warning and skip that reference.`;
@@ -861,6 +878,10 @@
            anything in `right` pins to the header's far right edge —
            CardHeader.svelte's own layout, no new CSS needed here. Renders
            on either tab, unchanged from the prior behavior. -->
+      {#if activeTab === 'console'}
+        <button type="button" class="btn-secondary console-reset-btn" onclick={_resetConsole}
+                title="Clear the entry. If editing an agent, stops the edit too.">Reset</button>
+      {/if}
       <a href="/automation/guide" title="CLI grammar guide" class="btn-secondary console-guide-btn">Trader Guide</a>
     {/snippet}
   </CardHeader>
@@ -1246,6 +1267,20 @@
     padding: 0 0.6rem;
     font-size: var(--fs-sm);
     box-sizing: border-box;
+  }
+  /* 2026-11-06 — Console-tab header Reset button. Same height/padding
+     floor as .console-guide-btn (its header neighbor) so the two sit
+     flush; margin-right separates it from Guide since both now live in
+     the same `right` snippet zone. */
+  .console-reset-btn {
+    display: inline-flex;
+    align-items: center;
+    white-space: nowrap;
+    min-height: max(1.55rem, var(--toolbar-h));
+    padding: 0 0.6rem;
+    font-size: var(--fs-sm);
+    box-sizing: border-box;
+    margin-right: 0.4rem;
   }
   /* Scopes the shared $lib/Select.svelte's trigger to the SAME floor
      as .console-guide-btn above. Select.svelte has no `class`/style
