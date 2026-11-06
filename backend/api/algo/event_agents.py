@@ -766,12 +766,33 @@ def _agent_tag_line(agent, rec: dict) -> str:
     both "manual", or a real agent that is also its own dispatching
     alert agent). Deduped so a record never shows "#x #x" — the second,
     redundant copy is dropped rather than the first, so the tag order
-    (action agent first) is preserved when only one survives."""
+    (action agent first) is preserved when only one survives.
+
+    2026-11-06 amendment (operator: "market status alert shows
+    #market_status and #market_status_alert which are very similar") —
+    a system/scheduled alert with no distinct human/other-agent action
+    (market status, deploy sync, etc.) stamps its OWN agent_id as the
+    record's action-agent identity (e.g. `action_send_market_status.py`
+    passes `agent_id=get_agent_id_by_slug("market-status-alert")`,
+    `agent_name="Market status"`). `resolve_origin()` reads that literal
+    `agent_name` ("Market status" -> `market_status`), while
+    `_alert_agent_source_slug` reads the SAME agent's `.slug`
+    ("market-status-alert" -> `market_status_alert`) — two different
+    source fields for the identical agent, so the plain string-equality
+    dedup above can't catch it. Compare by id instead: when the
+    record's own `agent_id` equals the dispatching agent's real id, the
+    action and alert tags are the same agent by construction, and only
+    the alert-agent's tag (its slug — the more specific, stable
+    identifier) is kept."""
     from backend.shared.helpers.alert_utils import resolve_origin
     extra = rec.get("extra") or {}
-    action_label = resolve_origin(extra.get("agent_id"), extra.get("agent_name"))
+    action_agent_id = extra.get("agent_id")
+    action_label = resolve_origin(action_agent_id, extra.get("agent_name"))
     alert_label = _alert_agent_source_slug(agent, rec)
-    tokens = dict.fromkeys([_tag_token(action_label), _tag_token(alert_label)])
+    if action_agent_id is not None and action_agent_id == getattr(agent, "id", None):
+        tokens = [_tag_token(alert_label)]
+    else:
+        tokens = list(dict.fromkeys([_tag_token(action_label), _tag_token(alert_label)]))
     return " ".join(f"#{t}" for t in tokens)
 
 

@@ -1723,6 +1723,49 @@ class TestAgentTagLineDeduped:
         tag_line = sent_body.splitlines()[-1]
         assert tag_line == "#manual #some_agent", f"expected both distinct tags, got {tag_line!r}"
 
+    @pytest.mark.asyncio
+    async def test_system_alert_stamping_its_own_agent_id_dedupes_by_id_not_string(self, senders):
+        """2026-11-06 live operator report: "market status alert shows
+        #market_status and #market_status_alert which are very
+        similar". A system/scheduled alert (market status, deploy sync)
+        stamps its OWN agent_id/name as the record's action-agent
+        identity — `resolve_origin` reads `agent_name` ("Market
+        status" -> `market_status`), while `_alert_agent_source_slug`
+        reads the SAME agent's `.slug` ("market-status-alert" ->
+        `market_status_alert`) — two different source fields for the
+        identical agent, so plain string-equality dedup can't catch it.
+        Must collapse to the alert-agent's tag alone when the record's
+        own agent_id equals the dispatching agent's real id."""
+        from backend.api.algo import event_agents as ea
+        ch = {"channel": "telegram", "enabled": True}
+        out = ("Title", "Body text", "Body text")
+        agent = SimpleNamespace(id=42, slug="market-status-alert")
+        rec = {"extra": {"agent_id": 42, "agent_name": "Market status"}}
+
+        await ea._send_channel(ch, out, agent, rec)
+
+        sent_body = senders["tg"][0][1]
+        tag_line = sent_body.splitlines()[-1]
+        assert tag_line == "#market_status_alert", f"expected one deduped-by-id tag, got {tag_line!r}"
+
+    @pytest.mark.asyncio
+    async def test_different_agent_ids_are_never_deduped_even_if_labels_would_collide(self, senders):
+        """Guard against the by-id branch over-firing: a genuinely
+        different real agent_id must keep both tags even if it happens
+        to share the dispatching agent's id by coincidence is excluded
+        — this only tests the common distinct-id case stays unaffected."""
+        from backend.api.algo import event_agents as ea
+        ch = {"channel": "telegram", "enabled": True}
+        out = ("Title", "Body text", "Body text")
+        agent = SimpleNamespace(id=42, slug="market-status-alert")
+        rec = {"extra": {"agent_id": 7, "agent_name": "Chase close positions"}}
+
+        await ea._send_channel(ch, out, agent, rec)
+
+        sent_body = senders["tg"][0][1]
+        tag_line = sent_body.splitlines()[-1]
+        assert tag_line == "#chase_close_positions #market_status_alert", f"got {tag_line!r}"
+
 
 class TestBareTwoTupleRenderersSendAgentLabelAtTop:
     """2026-11-05 live operator report: "in order fill alert agent label
