@@ -11,7 +11,7 @@
 
 const BASE = '/api';
 
-import { authStore } from '$lib/stores';
+import { authStore, kickChasePoll } from '$lib/stores';
 
 /** Return auth headers if a token is present, empty object otherwise. */
 function _authHeaders() {
@@ -918,7 +918,28 @@ export async function fetchQuote(exchange, tradingsymbol) {
  *  which OrderTicket used to render as a false "order placed" success
  *  with the order id shown as `#?`. */
 export async function placeTicketOrder(payload) {
-  return _post('/orders/ticket', payload, { auth: true, throwOnTimeout: true });
+  const resp = await _post('/orders/ticket', payload, { auth: true, throwOnTimeout: true });
+  // 2026-11-06 live fix (operator: "chase info display gets delayed
+  // after placing the order") — the 2026-11-05 kickChasePoll fix only
+  // covered OrderTicket.svelte's own submit() and SymbolPanel's
+  // submitBasket(). OptionChainTab's per-leg Chain submit,
+  // consoleDispatch's CLI order statement, and the derivatives page's
+  // own quick-order action all call this function DIRECTLY, bypassing
+  // both of those wrapper success handlers — none of them ever force a
+  // poll, so a chase placed through any of those paths still waited
+  // out ChaseCard's own 15-30s idle cadence. Moved here (the one
+  // function every caller funnels through) so every current and future
+  // caller gets it for free, instead of each call site needing its own
+  // copy — same gate OrderTicket.svelte used: live mode, a real limit
+  // price (chase requires a resting order to re-quote), chase armed.
+  if (
+    String(payload?.mode).toLowerCase() === 'live'
+    && payload?.chase === true
+    && String(payload?.order_type).toUpperCase() === 'LIMIT'
+  ) {
+    kickChasePoll();
+  }
+  return resp;
 }
 
 /** POST /api/orders/preflight — pre-submit cost/margin estimate. Reuses

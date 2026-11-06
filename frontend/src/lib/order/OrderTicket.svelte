@@ -2583,18 +2583,15 @@
         }
         // 2026-11-05 live fix (operator: "chase status is taking time to
         // display. it can show chase immediately after showing the
-        // order") — ChaseCard's own poll idles down to 15-30s once
-        // nothing is chasing; without a kick, a freshly-armed chase sits
-        // behind whatever's left of that window before its badge/
-        // countdown appears, even though the order itself renders right
-        // away. Mirrors the server's own chase-eligibility rule
-        // (`_opl_chase_eligible`/`showLimit && _chase`, line ~2079
-        // above) so this never fires for a MARKET/SL-M leg or an
-        // explicit chase=off submit, where no real chase gets armed.
-        if (_mode === 'live' && showLimit && _chase) {
-          const { kickChasePoll } = await import('$lib/stores');
-          kickChasePoll();
-        }
+        // order") — the kick itself now lives inside placeTicketOrder()
+        // (api.js), the one function every chase-eligible live submit
+        // funnels through (2026-11-06 — moved there after the same gap
+        // was found for OptionChainTab's Chain submit, the CLI order
+        // statement, and the derivatives page's quick-order action,
+        // none of which go through this component's own submit()).
+        // Nothing to do here any more — kept this comment so a future
+        // reader lands here first via the git-blame trail from the
+        // original 2026-11-05 fix.
       }
       // Record the symbol + account as the operator's most recent
       // pick so the next /orders or /charts page open lands on
