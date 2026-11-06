@@ -241,7 +241,12 @@ def _chase_rec():
             "logger": "backend.api.algo.chase", "message": "Chase NIFTY: ...", "tags": ["chase", "alert"],
             "extra": {"tags": ["chase", "alert"], "alert_event": "cancel_unconfirmed", "transaction_type": "BUY",
                       "symbol": "NIFTY26OCTFUT", "account": "ZG0790", "order_id": "O1",
-                      "attempt": 2, "quantity": 100, "remaining_qty": 60}}
+                      "attempt": 2, "quantity": 100, "remaining_qty": 60,
+                      # 2026-11-06 (operator SSOT instruction) — the real
+                      # producer (`chase.py`) always sets `agent_id`
+                      # (even when manual, value None) alongside these.
+                      "agent_id": None,
+                      "source_type": "process", "source_name": "chase"}}
 
 
 @pytest.mark.asyncio
@@ -260,22 +265,23 @@ async def test_chase_cancel_golden_text_and_urgent_priority(monkeypatch):
     # denominator was actually "contracts already filled" — unrelated
     # numbers. Now spelled out unambiguously.
     #
-    # 2026-10 audit fix (origin header): leads with "Agent: manual" (no
-    # `agent_id` in this record's extra) + the shared dual-tz timestamp,
-    # replacing the old standalone trailing timestamp line.
-    # 2026-10-31 — trailing tag: action agent "manual", alert agent
-    # CHASE_CANCEL_AGENT's own slug "chase-cancel-alert" (also this
-    # record's own `ALERT_EVENT_DISPATCH["cancel_unconfirmed"]
-    # ["source_slug"]`, tag-token'd).
-    # 2026-11-06 — 4th slot is this record's own level ("critical").
+    # 2026-11-06 rebuild (operator: "process -> alert agent, agent/manual
+    # -> process -> alert agent... this additional info should be also
+    # displayed") — "Source: chase triggered manually" replaces the
+    # plain "Agent: manual" label (no `agent_id` in this record's
+    # extra -> manual trigger) + the shared dual-tz timestamp.
+    # Trailing tag, in order: action ("manual"), process ("chase"),
+    # alert agent CHASE_CANCEL_AGENT's own slug "chase-cancel-alert"
+    # (also this record's own `ALERT_EVENT_DISPATCH["cancel_unconfirmed"]
+    # ["source_slug"]`, tag-token'd), log level ("critical").
     assert sent == [(
         "Chase cancel unconfirmed — possible resting duplicate order",
-        f"Agent: manual\n{_FIXED_TS}\n"
+        f"Source: chase triggered manually\n{_FIXED_TS}\n"
         "BUY NIFTY26OCTFUT — cancel of order O1 on ZG#### could not be confirmed after attempt "
         "2 (40 contracts filled so far). "
         "The chase has been ABORTED without placing a replacement order. "
         "Manually verify the broker's order book — the old order may still be live."
-        "\n#manual #chase_cancel_alert #critical",
+        "\n#manual #chase #chase_cancel_alert #critical",
         "urgent",
     )]
 
@@ -296,39 +302,46 @@ async def test_partial_gtt_golden_text_and_urgent_priority(monkeypatch):
            "logger": "backend.api.routes.orders_place", "message": "PARTIAL GTT", "tags": ["gtt", "alert"],
            "extra": {"tags": ["orders", "gtt", "alert"], "alert_event": "partial_gtt", "parent_row_id": 1088,
                      "parent_symbol": "CRUDEOIL26OCTFUT", "planned": 3, "placed": 1,
-                     "errors": ["rate limit", "invalid price"]}}
+                     "errors": ["rate limit", "invalid price"],
+                     # 2026-11-06 — the real producer (`orders_place.py`)
+                     # always sets `agent_id` (even when manual, value
+                     # None) alongside these.
+                     "agent_id": None,
+                     "source_type": "process", "source_name": "template attach"}}
     agent = SimpleNamespace(slug="partial-gtt-alert",
                             **{k: event_agents.PARTIAL_GTT_AGENT.get(k, []) for k in ("conditions", "events", "actions")})
     await event_agents.dispatch([rec], [agent])
-    # 2026-10 audit fix: origin header ("Agent: manual" — no `agent_id`
-    # in this record's extra) leads, replacing the old standalone
-    # trailing timestamp line.
-    # 2026-10-31 — trailing tag: action agent "manual", alert agent
-    # "partial-gtt-alert" (tag-token'd).
-    # 2026-11-06 — 4th slot is this record's own level ("critical").
+    # 2026-11-06 rebuild — "Source: template attach triggered manually"
+    # replaces the plain "Agent: manual" label. Trailing tag: action
+    # ("manual"), process ("template_attach"), alert agent
+    # "partial-gtt-alert" (tag-token'd), log level ("critical").
     assert sent == [("Partial GTT placement",
-                     f"Agent: manual\n{_FIXED_TS}\nparent #1088 CRUDEOIL26OCTFUT: 1/3 GTTs placed. Errors: rate limit; invalid price"
-                     "\n#manual #partial_gtt_alert #critical",
+                     f"Source: template attach triggered manually\n{_FIXED_TS}\nparent #1088 CRUDEOIL26OCTFUT: 1/3 GTTs placed. Errors: rate limit; invalid price"
+                     "\n#manual #template_attach #partial_gtt_alert #critical",
                      "urgent")]
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("agent_key, event, level, extra, expected", [
-    # 2026-10 audit fix: these 4 now lead with the origin header
-    # ("Agent: manual" — no `agent_id` in any of these fixtures — plus
-    # the dual-tz timestamp), replacing the old trailing bare timestamp.
-    # 2026-10-31 — trailing tag: action agent "manual", alert agent
-    # TEMPLATE_ATTACH_URGENT_AGENT's own `ALERT_EVENT_DISPATCH` source
-    # slug "template-attach-urgent" (tag-token'd), for both events.
-    # 2026-11-06 — 4th slot is each fixture's own level ("warning"/"critical").
+    # 2026-11-06 rebuild (operator SSOT instruction) — "Source: GTT wing
+    # triggered manually" replaces the plain "Agent: manual" label (no
+    # `agent_id` in any of these fixtures — plus the dual-tz timestamp).
+    # Both fixtures now also carry `source_type`/`source_name` (the real
+    # producer, `template_attach.py`, sets these alongside `agent_id`).
+    # Trailing tag: action ("manual"), process ("GTT_wing" — the space
+    # tag-tokens to an underscore), alert agent TEMPLATE_ATTACH_URGENT_
+    # AGENT's own `ALERT_EVENT_DISPATCH` source slug
+    # "template-attach-urgent" (tag-token'd), log level, for both events.
     ("TEMPLATE_ATTACH_URGENT_AGENT", "wing_unprotected", "WARNING",
      {"gtt_ids_text": "['G1', 'G2']", "reason": "no candidate", "parent_order_id": 7,
-      "symbol": "NIFTY", "exchange": "NFO"},
+      "symbol": "NIFTY", "exchange": "NFO", "agent_id": None,
+      "source_type": "process", "source_name": "GTT wing"},
      ("Unprotected SELL position",
-      f"Agent: manual\n{_FIXED_TS}\nGTTs placed (ids: ['G1', 'G2']) but wing failed: no candidate | order #7 NIFTY NFO\n#manual #template_attach_urgent #warning", "urgent")),
+      f"Source: GTT wing triggered manually\n{_FIXED_TS}\nGTTs placed (ids: ['G1', 'G2']) but wing failed: no candidate | order #7 NIFTY NFO\n#manual #gtt_wing #template_attach_urgent #warning", "urgent")),
     ("TEMPLATE_ATTACH_URGENT_AGENT", "wing_hard_reject", "CRITICAL",
-     {"reason": "premium too high", "symbol": "NIFTY", "exchange": "NFO", "target_premium": 12.5},
-     ("Wing scan hard-rejected", f"Agent: manual\n{_FIXED_TS}\npremium too high | NIFTY NFO target ₹12.50\n#manual #template_attach_urgent #critical", "urgent")),
+     {"reason": "premium too high", "symbol": "NIFTY", "exchange": "NFO", "target_premium": 12.5,
+      "agent_id": None, "source_type": "process", "source_name": "GTT wing"},
+     ("Wing scan hard-rejected", f"Source: GTT wing triggered manually\n{_FIXED_TS}\npremium too high | NIFTY NFO target ₹12.50\n#manual #gtt_wing #template_attach_urgent #critical", "urgent")),
     # 2026-10-28 noise tightening removed ntfy from TEMPLATE_ATTACH_HIGH_AGENT
     # entirely (an FYI "leg skipped" notice, not action-required) — its
     # wing_skip/wing_offset_skip rows are gone from this ntfy-golden-text

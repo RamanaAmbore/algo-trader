@@ -2813,6 +2813,13 @@ async def _ch_build_cancel_unconfirmed_abort(
             "order_id": current_order_id, "attempt": attempt,
             "quantity": quantity, "remaining_qty": remaining_qty,
             "agent_id": agent_id,
+            # 2026-11-06 (operator SSOT instruction) — "Source: chase
+            # triggered manually/by {agent}" replaces the plain
+            # "Agent: {origin}" label (`event_agents.py:_render_chase_
+            # cancel`). Set here, not only passed to the renderer
+            # locally, so the trailing `#chase` tag (built from THIS
+            # SAME extra dict) agrees with the header.
+            "source_type": "process", "source_name": "chase",
         },
     )
     emit("chase_cancel_unconfirmed", {

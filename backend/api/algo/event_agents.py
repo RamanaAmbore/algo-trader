@@ -107,10 +107,25 @@ def _render_chase_cancel(rec: dict) -> tuple[str, str, str]:
     # actually "contracts already filled so far" — an unrelated number.
     # Spelled out unambiguously below.
     filled_so_far = x.get('quantity', 0) - x.get('remaining_qty', 0)
-    # 2026-10 audit fix: origin header leads every alert (order-scoped —
-    # `agent_id` threaded from the chase loop's own AlgoOrder context,
-    # "manual" when the chased order was placed by a human).
-    origin_header = format_notification_header(None, x.get('agent_id'), ist_display=timestamp_display())
+    # 2026-11-06 (operator: "process -> alert agent, agent/manual ->
+    # process -> alert agent... this additional info should be also
+    # displayed") — "Source: chase triggered manually"/"Source: chase
+    # triggered by {agent}" replaces the plain "Agent: {origin}" label.
+    # `agent_id` threading is UNCHANGED (still the chase loop's own
+    # AlgoOrder context) — it now feeds the trigger half of the new
+    # sentence via `resolve_source()`'s branch 1, not the primary label.
+    # `source_type`/`source_name` are read from the PRODUCER's own extra
+    # dict (chase.py sets them alongside `agent_id`) rather than
+    # hardcoded here, so `_agent_tag_line()`'s own `#<process>` tag
+    # (built from this SAME `extra` dict) can never disagree with the
+    # header text — falls back to the literal default only if a
+    # producer somehow omits it.
+    origin_header = format_notification_header(
+        None, x.get('agent_id'), ist_display=timestamp_display(),
+        source_type=x.get('source_type') or "process",
+        source_name=x.get('source_name') or "chase",
+        trigger_known=_order_scope_trigger_known(x),
+    )
     body = (
         f"{origin_header}\n"
         f"{x.get('transaction_type')} {x.get('symbol')} — cancel of order {x.get('order_id')} "
@@ -132,8 +147,18 @@ def _render_partial_gtt(rec: dict) -> tuple[str, str, str]:
     from backend.shared.helpers.alert_utils import format_notification_header
     from backend.shared.helpers.utils import mask_account_in_text
     x = rec.get("extra") or {}
-    # 2026-10 audit fix: origin header leads every alert.
-    origin_header = format_notification_header(None, x.get('agent_id'), ist_display=timestamp_display())
+    # 2026-11-06 — "Source: template attach triggered manually/by
+    # {agent}" replaces the plain "Agent: {origin}" label. `agent_id`
+    # threading is unchanged. `source_type`/`source_name` are read from
+    # the producer's own extra dict (`orders_place.py` sets them
+    # alongside `agent_id`), so the trailing `#<process>` tag (built
+    # from this SAME dict) can never disagree with the header.
+    origin_header = format_notification_header(
+        None, x.get('agent_id'), ist_display=timestamp_display(),
+        source_type=x.get('source_type') or "process",
+        source_name=x.get('source_name') or "template attach",
+        trigger_known=_order_scope_trigger_known(x),
+    )
     # 2026-10 notification-masking audit: `errors` can carry a raw account
     # code (e.g. a broker-resolution KeyError text) — scrub as
     # defense-in-depth, matching `order_failure_messages()`'s pattern.
@@ -168,7 +193,18 @@ def _render_template_attach(rec: dict) -> tuple[str, str, str]:
     x = rec.get("extra") or {}
     ev = x.get("alert_event")
     ts = timestamp_display()
-    header = format_notification_header(None, x.get('agent_id'), ist_display=ts)
+    # 2026-11-06 — "Source: GTT wing triggered manually/by {agent}"
+    # replaces the plain "Agent: {origin}" label. `agent_id` threading
+    # is unchanged. `source_type`/`source_name` are read from the
+    # producer's own extra dict (`template_attach.py` sets them
+    # alongside `agent_id` on all 4 wing_* branches), so the trailing
+    # `#<process>` tag can never disagree with the header.
+    header = format_notification_header(
+        None, x.get('agent_id'), ist_display=ts,
+        source_type=x.get('source_type') or "process",
+        source_name=x.get('source_name') or "GTT wing",
+        trigger_known=_order_scope_trigger_known(x),
+    )
     # 2026-10 notification-masking audit: `reason` is free-caller text that
     # can embed a raw broker account code — scrub as defense-in-depth,
     # matching `order_failure_messages()`'s existing pattern.
@@ -297,7 +333,23 @@ def _render_order_correction(rec: dict) -> tuple[str, str, str]:
     same as any other agent-less order."""
     from backend.shared.helpers.alert_utils import format_notification_header
     x = rec.get("extra") or {}
-    header = format_notification_header(None, x.get("agent_id"))
+    # 2026-11-06 — "Source: {corrector} triggered manually/by {agent}"
+    # replaces the plain "Agent: {origin}" label. The process name is
+    # the real background corrector that fixed this row, read from the
+    # producer's own `source_name` key (`order_poll.py` derives it from
+    # its own `source` field — e.g. "order-poll", "postback-followup",
+    # "open-order-watchdog", "chase-backstop" — as plain words, not one
+    # of 3 fixed process names, since this renderer's real actor
+    # genuinely varies per firing, unlike chase/template-attach's own
+    # single subsystem) so the trailing `#<process>` tag (built from the
+    # SAME extra dict) can never disagree with the header. `agent_id`
+    # threading is unchanged.
+    header = format_notification_header(
+        None, x.get("agent_id"),
+        source_type=x.get("source_type") or "process",
+        source_name=x.get("source_name") or (x.get("source") or "order-poll").replace("-", " "),
+        trigger_known=_order_scope_trigger_known(x),
+    )
     title = f"Order corrected: {x.get('symbol') or ''} #{x.get('algo_order_id')}"
     body = (
         f"{header}\n"
@@ -568,7 +620,20 @@ def _render_order_cancelled(rec: dict) -> tuple:
     from backend.shared.helpers.alert_utils import format_notification_header
     x = rec.get("extra") or {}
     title = x.get("title") or "Order cancelled"
-    origin_header = format_notification_header(x.get("agent_name"), x.get("agent_id"))
+    # 2026-11-06 — "Source: postback triggered manually/by {agent}"
+    # replaces the plain "Agent: {origin}" label. The chase-own-requote
+    # case never reaches this renderer at all (filtered out at the
+    # producer, `orders.py:_opp_send_cancel_alert`), so every firing
+    # here genuinely IS a postback-observed cancel. `agent_id`/
+    # `agent_name` threading is unchanged. `source_type`/`source_name`
+    # are read from the producer's own extra dict, so the trailing
+    # `#<process>` tag can never disagree with the header.
+    origin_header = format_notification_header(
+        x.get("agent_name"), x.get("agent_id"),
+        source_type=x.get("source_type") or "process",
+        source_name=x.get("source_name") or "postback",
+        trigger_known=_order_scope_trigger_known(x),
+    )
     body = f"{origin_header}\n{x.get('body') or ''}"
     return title, body, body, None, list(x.get("channels") or [])
 
@@ -582,8 +647,20 @@ def _render_gtt_not_accepted(rec: dict) -> tuple[str, str, str]:
     from backend.shared.helpers.alert_utils import format_notification_header
     from backend.shared.helpers.utils import mask_account_in_text
     x = rec.get("extra") or {}
-    # 2026-10 audit fix: origin header leads every alert.
-    origin_header = format_notification_header(None, x.get('agent_id'), ist_display=timestamp_display())
+    # 2026-11-06 — "Source: template attach triggered manually/by
+    # {agent}" replaces the plain "Agent: {origin}" label (this is the
+    # same GTT-placement step `partial_gtt` covers, verifying ANY exit
+    # leg — TP/SL, not specifically the wing). `agent_id` threading is
+    # unchanged. `source_type`/`source_name` are read from the
+    # producer's own extra dict (`template_attach.py` sets them
+    # alongside `agent_id` on both gtt_not_accepted branches), so the
+    # trailing `#<process>` tag can never disagree with the header.
+    origin_header = format_notification_header(
+        None, x.get('agent_id'), ist_display=timestamp_display(),
+        source_type=x.get('source_type') or "process",
+        source_name=x.get('source_name') or "template attach",
+        trigger_known=_order_scope_trigger_known(x),
+    )
     # 2026-10 notification-masking audit: `reason` is free-caller text that
     # can embed a raw broker account code — scrub as defense-in-depth.
     reason = mask_account_in_text(str(x.get('reason'))) if x.get('reason') is not None else x.get('reason')
@@ -802,6 +879,24 @@ def _tag_token(value: "str | None") -> str:
     import re
     token = re.sub(r"[^0-9a-zA-Z]+", "_", str(value or "")).strip("_").lower()
     return token or "unknown"
+
+
+def _order_scope_trigger_known(x: dict) -> bool:
+    """Whether an order-scoped renderer's own `extra` dict genuinely
+    carries a trigger KEY (`agent_id` or `agent_name`), not merely a
+    non-None VALUE after `.get()` has already collapsed "key absent"
+    and "key present but None" into the same thing. Every order-scoped
+    renderer passes this to `format_notification_header(...,
+    trigger_known=...)` explicitly — `format_notification_header`'s own
+    `trigger_known` default (`True`) is correct ONLY for callers that
+    always intend "whatever I pass IS the known answer" (every
+    pre-existing caller); an order-scoped renderer must instead mirror
+    the SAME key-presence check `resolve_source()`/`_agent_tag_line()`
+    apply to the record's raw `extra` dict, so a producer that
+    genuinely omits both keys renders "no known trigger" in the header
+    exactly as it does in the trailing tag — never "triggered manually"
+    in one place and no action tag in the other."""
+    return "agent_id" in x or "agent_name" in x
 
 
 def _error_catch_all_extra(rec: dict) -> dict:

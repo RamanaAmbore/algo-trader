@@ -1099,6 +1099,10 @@ async def _opp_send_cancel_alert(
                 ],
                 "action_required": True,
                 "agent_id": agent_id, "agent_name": agent_name,
+                # 2026-11-06 (operator SSOT instruction) — "Source:
+                # postback triggered manually/by {agent}"
+                # (event_agents.py:_render_order_cancelled).
+                "source_type": "process", "source_name": "postback",
             },
         )
     except Exception as log_e:

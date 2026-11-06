@@ -1227,6 +1227,10 @@ async def _fire_template_attach_on_fill(
                         "planned": _planned_gtt_count, "placed": _placed_gtt_count,
                         "errors": [str(e) for e in result.errors[:2]],
                         "agent_id": row_info.get("agent_id"),
+                        # 2026-11-06 (operator SSOT instruction) —
+                        # "Source: template attach triggered manually/by
+                        # {agent}" (event_agents.py:_render_partial_gtt).
+                        "source_type": "process", "source_name": "template attach",
                     },
                 )
 

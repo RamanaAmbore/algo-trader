@@ -181,17 +181,21 @@ async def test_chase_cancel_identical_via_channel_agents(chans):
            "tags": ["chase", "alert"],
            "extra": {"tags": ["chase", "alert"], "alert_event": "cancel_unconfirmed", "action_required": True,
                      "transaction_type": "BUY", "symbol": "NIFTY26OCTFUT", "account": "ZG0790",
-                     "order_id": "O1", "attempt": 2, "quantity": 100, "remaining_qty": 60}}
+                     "order_id": "O1", "attempt": 2, "quantity": 100, "remaining_qty": 60,
+                     "agent_id": None, "source_type": "process", "source_name": "chase"}}
     sent = await ea.dispatch([rec], _channel_agents())
-    # 2026-10-31 — trailing tag: action agent "manual", alert agent
-    # "chase-cancel-alert" (tag-token'd).
-    # 2026-11-06 — 4th slot is this record's own level ("critical").
-    body = (f"Agent: manual\n{_TS}\n"
+    # 2026-11-06 rebuild (operator SSOT instruction) — "Source: chase
+    # triggered manually" replaces the plain "Agent: manual" label (the
+    # real producer, `chase.py`, always sets `agent_id` alongside
+    # `source_type`/`source_name`). Trailing tag: action ("manual"),
+    # process ("chase"), alert agent "chase-cancel-alert" (tag-token'd),
+    # log level ("critical").
+    body = (f"Source: chase triggered manually\n{_TS}\n"
             "BUY NIFTY26OCTFUT — cancel of order O1 on ZG#### could not be confirmed after attempt "
             "2 (40 contracts filled so far). "
             "The chase has been ABORTED without placing a replacement order. "
             "Manually verify the broker's order book — the old order may still be live."
-            "\n#manual #chase_cancel_alert #critical")
+            "\n#manual #chase #chase_cancel_alert #critical")
     title = "Chase cancel unconfirmed — possible resting duplicate order"
     assert chans["ntfy"] == [(title, body, "urgent")]
     # 2026-11-05 live fix — `_render_chase_cancel` now supplies `tg=body`
@@ -213,13 +217,15 @@ async def test_partial_gtt_identical_via_channel_agents(chans):
            "tags": ["gtt", "alert"],
            "extra": {"tags": ["orders", "gtt", "alert"], "alert_event": "partial_gtt", "parent_row_id": 1088,
                      "parent_symbol": "CRUDEOIL26OCTFUT", "planned": 3, "placed": 1,
-                     "errors": ["rate limit", "invalid price"]}}
+                     "errors": ["rate limit", "invalid price"],
+                     "agent_id": None, "source_type": "process", "source_name": "template attach"}}
     await ea.dispatch([rec], _channel_agents())
-    # 2026-10-31 — trailing tag: action agent "manual", alert agent
-    # "partial-gtt-alert" (tag-token'd).
-    # 2026-11-06 — 4th slot is this record's own level ("critical").
-    body = (f"Agent: manual\n{_TS}\nparent #1088 CRUDEOIL26OCTFUT: 1/3 GTTs placed. Errors: rate limit; invalid price"
-            "\n#manual #partial_gtt_alert #critical")
+    # 2026-11-06 rebuild — "Source: template attach triggered manually"
+    # replaces the plain "Agent: manual" label. Trailing tag: action
+    # ("manual"), process ("template_attach"), alert agent
+    # "partial-gtt-alert" (tag-token'd), log level ("critical").
+    body = (f"Source: template attach triggered manually\n{_TS}\nparent #1088 CRUDEOIL26OCTFUT: 1/3 GTTs placed. Errors: rate limit; invalid price"
+            "\n#manual #template_attach #partial_gtt_alert #critical")
     assert chans["ntfy"] == [("Partial GTT placement", body, "urgent")]
     assert len(chans["telegram"]) == 1  # see chase-cancel test's own comment on tg=None
     assert chans["email"] == []
@@ -227,19 +233,24 @@ async def test_partial_gtt_identical_via_channel_agents(chans):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("event, level, extra, expected_title, expected_body, expected_priority", [
-    # 2026-10-31 — trailing tag: action agent "manual", alert agent
-    # TEMPLATE_ATTACH_URGENT_AGENT's own source slug "template-attach-urgent"
-    # (tag-token'd), for both wing_unprotected and wing_hard_reject.
-    # 2026-11-06 — 4th slot is each fixture's own level.
+    # 2026-11-06 rebuild (operator SSOT instruction) — "Source: GTT wing
+    # triggered manually" replaces the plain "Agent: manual" label (the
+    # real producer, `template_attach.py`, always sets `agent_id`
+    # alongside `source_type`/`source_name`). Trailing tag: action
+    # ("manual"), process ("gtt_wing"), alert agent
+    # TEMPLATE_ATTACH_URGENT_AGENT's own source slug
+    # "template-attach-urgent" (tag-token'd), log level.
     ("wing_unprotected", "WARNING",
      {"gtt_ids_text": "['G1', 'G2']", "reason": "no candidate", "parent_order_id": 7,
-      "symbol": "NIFTY", "exchange": "NFO"},
+      "symbol": "NIFTY", "exchange": "NFO", "agent_id": None,
+      "source_type": "process", "source_name": "GTT wing"},
      "Unprotected SELL position",
-     f"Agent: manual\n{_TS}\nGTTs placed (ids: ['G1', 'G2']) but wing failed: no candidate | order #7 NIFTY NFO\n#manual #template_attach_urgent #warning",
+     f"Source: GTT wing triggered manually\n{_TS}\nGTTs placed (ids: ['G1', 'G2']) but wing failed: no candidate | order #7 NIFTY NFO\n#manual #gtt_wing #template_attach_urgent #warning",
      "urgent"),
     ("wing_hard_reject", "CRITICAL",
-     {"reason": "premium too high", "symbol": "NIFTY", "exchange": "NFO", "target_premium": 12.5},
-     "Wing scan hard-rejected", f"Agent: manual\n{_TS}\npremium too high | NIFTY NFO target ₹12.50\n#manual #template_attach_urgent #critical", "urgent"),
+     {"reason": "premium too high", "symbol": "NIFTY", "exchange": "NFO", "target_premium": 12.5,
+      "agent_id": None, "source_type": "process", "source_name": "GTT wing"},
+     "Wing scan hard-rejected", f"Source: GTT wing triggered manually\n{_TS}\npremium too high | NIFTY NFO target ₹12.50\n#manual #gtt_wing #template_attach_urgent #critical", "urgent"),
     ("wing_skip", "WARNING",
      {"reason": "no candidate", "parent_order_id": 9, "symbol": "BANKNIFTY", "exchange": "NFO"},
      "Wing attach skipped", f"Agent: manual\n{_TS}\nno candidate | order #9 BANKNIFTY NFO\n#manual #template_attach_high #warning", "high"),
@@ -301,7 +312,8 @@ async def test_order_correction_identical_via_channel_agents(chans):
            "tags": ["orders", "alert"],
            "extra": {"tags": ["orders", "alert"], "alert_event": "order_correction", "algo_order_id": 1,
                      "symbol": "NIFTY26OCTFUT", "exchange": "NFO", "prior_status": "OPEN",
-                     "new_status": "FILLED", "source": "order_poll", "masked": "ZG####"}}
+                     "new_status": "FILLED", "source": "order_poll", "masked": "ZG####",
+                     "agent_id": None}}
     await ea.dispatch([rec], _channel_agents())
     # 2026-10-28 noise tightening — order-correction-alert dropped ntfy.
     # A corrected status is informational (the row now shows its real
@@ -311,7 +323,15 @@ async def test_order_correction_identical_via_channel_agents(chans):
     assert chans["email"] == []
     title, body, tg = chans["telegram"][0]
     assert title == "Order corrected: NIFTY26OCTFUT #1"
-    assert body.splitlines()[0] == "Agent: manual"
+    # 2026-11-06 rebuild (operator SSOT instruction) — "Source:
+    # order_poll triggered manually" replaces "Agent: manual" (this
+    # fixture's `agent_id` key is present with value `None` -> manual
+    # trigger, matching the real producer, `order_poll.py`, which
+    # always sets `agent_id`). `source_name` derives from this
+    # fixture's own "source" field, which this particular fixture
+    # spells with an underscore ("order_poll"), not the real producer's
+    # hyphenated "order-poll" — `.replace("-", " ")` is a no-op here.
+    assert body.splitlines()[0] == "Source: order_poll triggered manually"
 
 
 @pytest.mark.asyncio

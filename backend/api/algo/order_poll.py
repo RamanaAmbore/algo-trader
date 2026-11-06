@@ -236,6 +236,15 @@ async def _opo_postprocess(
                 "exchange": static_exchange,
                 "agent_id": static_agent_id,
                 "branch": config.get("deploy_branch", "main"),
+                # 2026-11-06 (operator SSOT instruction) — "Source:
+                # {corrector} triggered manually/by {agent}"
+                # (event_agents.py:_render_order_correction). The real
+                # background corrector that fixed this row — plain
+                # words, not one of 3 fixed process names, since this
+                # one genuinely varies per firing (order-poll sweep,
+                # open-order watchdog, postback follow-up, chase
+                # backstop).
+                "source_type": "process", "source_name": source.replace("-", " "),
             },
         )
     except Exception as _ae:

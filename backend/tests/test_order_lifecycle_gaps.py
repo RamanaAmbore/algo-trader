@@ -111,10 +111,17 @@ class TestCancelAlertSendsWithoutTypeError:
 
     def test_render_leads_with_the_shared_origin_header_when_no_agent_resolved(self):
         """No `order_id` / no resolvable AlgoOrder row -> `agent_id` is
-        None -> `format_notification_header(None, None)` degrades to
-        "Agent: manual" as the rendered body's first line — built at
-        RENDER time now (`_render_order_cancelled`), not by the
-        producer, which no longer constructs any header text itself."""
+        None -> manual trigger. Built at RENDER time (`_render_order_
+        cancelled`), not by the producer, which no longer constructs
+        any header text itself.
+
+        2026-11-06 rebuild (operator SSOT instruction) — this renderer
+        now always carries a process layer ("postback" — the producer,
+        `orders.py:_opp_send_cancel_alert`, sets `source_type`/
+        `source_name`; this fixture omits them deliberately to exercise
+        the renderer's own literal fallback default), so the header
+        reads "Source: postback triggered manually" instead of the old
+        "Agent: manual"."""
         from backend.api.algo.event_agents import _render_order_cancelled
 
         rec = {"extra": {
@@ -124,4 +131,4 @@ class TestCancelAlertSendsWithoutTypeError:
             "channels": [{"channel": "ntfy", "enabled": True}],
         }}
         title, body, tg, email_payload, channels = _render_order_cancelled(rec)
-        assert body.splitlines()[0] == "Agent: manual"
+        assert body.splitlines()[0] == "Source: postback triggered manually"

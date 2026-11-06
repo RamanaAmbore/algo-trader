@@ -1833,7 +1833,12 @@ class TestBareTwoTupleRenderersSendAgentLabelAtTop:
     async def test_chase_cancel_agent_line_is_the_first_line_sent_to_telegram(self, monkeypatch):
         """Same defect class, second renderer — chase-cancel's own
         format_notification_header()-first body must also reach Telegram
-        with the origin line first, not behind a redundant title."""
+        with the origin line first, not behind a redundant title.
+
+        2026-11-06 rebuild (operator SSOT instruction) — the real
+        producer (`chase.py`) now also sets `source_type`/`source_name`,
+        so the header reads "Source: chase" instead of "Agent: manual"
+        — still the first line, same invariant."""
         import backend.shared.helpers.alert_utils as au
         from backend.api.algo import event_agents as ea
         tg_sent = []
@@ -1843,6 +1848,7 @@ class TestBareTwoTupleRenderersSendAgentLabelAtTop:
             "agent_id": None, "transaction_type": "BUY", "symbol": "NIFTY26OCTFUT",
             "order_id": "O1", "account": "ZG0790", "attempt": 2,
             "quantity": 100, "remaining_qty": 60,
+            "source_type": "process", "source_name": "chase",
         }}
         out = ea._render_chase_cancel(rec)
         agent = SimpleNamespace(slug="chase-cancel-alert", tier="high")
@@ -1851,7 +1857,7 @@ class TestBareTwoTupleRenderersSendAgentLabelAtTop:
         await ea._send_channel(ch, out, agent, rec)
 
         sent = tg_sent[0]
-        assert sent.splitlines()[0].startswith("Agent: ")
+        assert sent.splitlines()[0].startswith("Source: ")
         assert not sent.startswith("Chase cancel unconfirmed")
 
 

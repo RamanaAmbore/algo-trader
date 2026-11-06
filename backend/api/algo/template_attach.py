@@ -406,7 +406,11 @@ def _fire_wing_unprotected_alert(
         extra={"tags": ["orders", "gtt", "alert"], "alert_event": "wing_unprotected",
                "gtt_ids_text": str(result.gtt_ids), "reason": str(wing_skipped_reason),
                "parent_order_id": parent_order_id, "symbol": parent_symbol,
-               "exchange": parent_exchange, "agent_id": agent_id},
+               "exchange": parent_exchange, "agent_id": agent_id,
+               # 2026-11-06 (operator SSOT instruction) — "Source: GTT
+               # wing triggered manually/by {agent}"
+               # (event_agents.py:_render_template_attach).
+               "source_type": "process", "source_name": "GTT wing"},
     )
 
 
@@ -893,7 +897,8 @@ async def _pick_wing_by_premium(
             extra={"tags": ["orders", "gtt", "alert"], "alert_event": "wing_hard_reject",
                    "reason": str(_hr_reason), "symbol": parent_symbol,
                    "exchange": parent_exchange, "target_premium": float(target_premium),
-                   "agent_id": parent_agent_id},
+                   "agent_id": parent_agent_id,
+                   "source_type": "process", "source_name": "GTT wing"},
         )
         return None, None, f"wing_premium_pct hard-reject: {_hr_reason}"
 
@@ -2086,7 +2091,8 @@ def _ta_live_place_one_gtt(
                     extra={"tags": ["orders", "gtt", "alert"], "alert_event": "gtt_not_accepted",
                            "symbol": plan.parent_symbol, "label": spec.label,
                            "gtt_id": str(gtt_id), "reason": _gtt_reason,
-                           "agent_id": plan.parent_agent_id},
+                           "agent_id": plan.parent_agent_id,
+                           "source_type": "process", "source_name": "template attach"},
                 )
                 return pair_first_id
             _cancel_exc_msg: Optional[str] = None
@@ -2105,7 +2111,8 @@ def _ta_live_place_one_gtt(
                     extra={"tags": ["orders", "gtt", "alert"], "alert_event": "gtt_not_accepted",
                            "symbol": plan.parent_symbol, "label": spec.label,
                            "gtt_id": str(gtt_id), "reason": _gtt_reason,
-                           "agent_id": plan.parent_agent_id},
+                           "agent_id": plan.parent_agent_id,
+                           "source_type": "process", "source_name": "template attach"},
                 )
                 return pair_first_id
             spec.unverified = True
@@ -3083,7 +3090,8 @@ async def _maybe_scan_wing_by_premium(
         parent_order_id, parent_symbol, reason,
         extra={"tags": ["orders", "gtt", "alert"], "alert_event": "wing_skip", "reason": str(reason),
                "parent_order_id": parent_order_id, "symbol": parent_symbol,
-               "exchange": parent_exchange, "agent_id": parent_agent_id},
+               "exchange": parent_exchange, "agent_id": parent_agent_id,
+               "source_type": "process", "source_name": "GTT wing"},
     )
 
     return overrides, reason, reason
@@ -3173,7 +3181,8 @@ async def _maybe_fetch_wing_quote_for_offset(
         parent_order_id, parent_symbol, reason,
         extra={"tags": ["orders", "gtt", "alert"], "alert_event": "wing_offset_skip", "reason": str(reason),
                "parent_order_id": parent_order_id, "symbol": parent_symbol,
-               "exchange": parent_exchange, "agent_id": parent_agent_id},
+               "exchange": parent_exchange, "agent_id": parent_agent_id,
+               "source_type": "process", "source_name": "GTT wing"},
     )
     return overrides, reason, reason
 

@@ -265,9 +265,16 @@ class TestReconcileRowAndFollowup:
         (commit 70802eb5) extended to this new renderer — it was added
         the same day but originally skipped `format_notification_header`,
         the one thing every other order-scoped renderer in this file
-        routes through. A real agent_id resolves to "Agent #{id}"; a
-        missing one resolves to "manual" (`resolve_origin`'s own rule),
-        never a silently-omitted origin line."""
+        routes through. A real agent_id resolves to "...triggered by
+        Agent #{id}"; a missing one resolves to "...triggered manually"
+        (`resolve_origin`'s own rule), never a silently-omitted origin
+        line.
+
+        2026-11-06 rebuild (operator SSOT instruction) — "Source:
+        {corrector} triggered by/manually" replaces the plain
+        "Agent #{id}"/"Agent: manual" label. The process name derives
+        from this fixture's own "source" field ("order-poll" ->
+        "order poll")."""
         from backend.api.algo.event_agents import _render_order_correction
 
         rec_with_agent = {"extra": {
@@ -276,13 +283,13 @@ class TestReconcileRowAndFollowup:
             "source": "order-poll", "agent_id": 42,
         }}
         title, body, _tg = _render_order_correction(rec_with_agent)
-        assert body.startswith("Agent #42")
+        assert body.startswith("Source: order poll triggered by Agent #42")
         assert "Order corrected" in title
 
         rec_manual = dict(rec_with_agent)
         rec_manual["extra"] = {**rec_with_agent["extra"], "agent_id": None}
         _, manual_body, _ = _render_order_correction(rec_manual)
-        assert manual_body.startswith("Agent: manual")
+        assert manual_body.startswith("Source: order poll triggered manually")
 
     async def test_confirmed_cancel_fires_alert_without_attach_or_subscribe(self):
         from backend.api.algo.order_poll import reconcile_row_and_followup
