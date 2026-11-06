@@ -2509,6 +2509,99 @@ Rule: these buttons must always live inside the shared card button-group slot. N
 
 ## Critical math guards
 
+**Positions loss guard — `day_val` floor raised, rate leaves gated on drawdown-from-peak, co-firing
+leaves grouped, guard-alert `extra` masked (2026-11-06; commits `b4972fd0`, `f38db207`, `dc9969c7`)** —
+`loss-positions-total` (critical tier, `_LOSS_AGENTS`,
+[`agent_engine.py:2316`](backend/api/algo/agent_engine.py#L2316)) drove roughly 90% of urgent pushes
+system-wide: 37 fires in 14 days. Most came from a static −₹50,000 `day_val` floor, which was far more
+sensitive than the −2.0% `day_pct` leaf. Confirmed: `day_pct` for Positions scope is already
+margin-based ([`grammar.py:696`](backend/api/algo/grammar.py#L696)). The fix retunes the existing floor
+and invents no new proportional metric.
+- **`day_val` floor −₹50,000 → −₹100,000.** Replay of the real 14-day `agent_events` history removes
+  exactly 8 marginal fires between −₹50,550 and −₹88,700 that had no co-firing rate leaf. It touches no
+  fire that also crossed a rate threshold. The 2026-10-30 incident still fires at the same early point
+  (first fire −₹177,300).
+- **Rate leaves gated on drawdown-from-peak.** `pnl_rate_abs` / `pnl_rate_pct` now sit behind
+  `any[day_val<0, max_drawdown_pnl(30)<=-20000]`
+  ([`agent_engine.py:2332-2341`](backend/api/algo/agent_engine.py#L2332)). The gate closes the reported
+  false positive: a fast pullback from gains paging as critical while the day was still up. A bare
+  `day_val<0` gate would have reintroduced a blind spot. A genuine fast profit-giveback (e.g. +₹600k
+  peak bleeding to +₹300k) never crosses zero, so it would never alert for the rest of the session. The
+  drawdown leaf reuses the existing `max_drawdown_pnl` factory
+  ([`grammar_tokens/metric_max_drawdown_pnl.py`](backend/api/algo/grammar_tokens/metric_max_drawdown_pnl.py)).
+  No new grammar, YAML or golden-baseline entry was needed.
+- **Drawdown threshold kept loose on purpose (−₹20,000, not symmetric with the −₹100,000 floor).** An
+  earlier draft used −₹100,000. Operator correction mid-implementation: "rate of change alert is the most
+  important one." The gate must favour still firing on ambiguous cases over suppressing this leaf's
+  noise. −₹20,000 is roughly 3–5 minutes of the −₹6,000/min rate floor.
+- **Cooldown 30 → 45 min.** `_v2_leaf_should_fire()` enforces cooldown as a hard gate before escalation
+  is checked, so a longer cooldown delays the next possible alert however fast the loss accelerates. 45
+  is kept modest on purpose: this agent exists to catch a sustained multi-hour grind such as
+  2026-10-30's −₹177k→−₹844k.
+- **Nesting precedent.** The `all[any[...], any[...]]` shape has a live precedent in
+  `loss-positions-underlying-divergence`. `TestNestedConditionLatchKeying` confirms per-leaf latch keying
+  and escalation gating are unaffected by the extra level.
+- **Replay evidence.** All 36 real fires from the last 14 days were replayed against the new tree, not
+  only unit-tested. The 2026-10-30 incident still fires early, the 8 marginal fires are excluded, and no
+  other true-positive fire is lost. Two 2026-10-29 rate-only fires (day up at the time) cannot be replayed
+  literally: the intraday P&L series is not persisted (checked `perf_snapshots`, `daily_book`,
+  `log_events`, other `agent_events`). Given the rate-first priority and the loose threshold, both most
+  likely still fire.
+- **Migration.** `_ae_sync_existing_builtin()`
+  ([`agent_engine.py:2980`](backend/api/algo/agent_engine.py#L2980)) does not force-sync conditions or
+  cooldown on an already-seeded row. The narrow content-matched detector
+  `_ae_is_stale_loss_positions_total_cond()`
+  ([`agent_engine.py:2966`](backend/api/algo/agent_engine.py#L2966)) overwrites only a row still at the
+  exact pre-redesign shape, and the sync branch for this slug sits at
+  [`:3045`](backend/api/algo/agent_engine.py#L3045). An operator-customised row is left untouched. The
+  code-seed change and this migration ship in one commit, because a code-only change would be inert
+  against the live row.
+- **Known dropped premise, so it is not re-treaded.** Legacy `kind='template'` rows
+  `loss-positions-acct-default` and `loss-positions-total-default` were suspected as noise sources. They
+  are `status='active'` in the live DB, but `run_cycle` evaluates only `kind='cycle'`, so they have never
+  fired. No code change was made for them.
+- **Co-firing leaves grouped into one alert body (`f38db207`).** Operator report: several leaves of one
+  critical agent crossing in the same cycle (e.g. `day_val`, `day_pct`, `pnl_rate_abs`) rendered as
+  near-identical repeated bullets. `_ae_group_alert_rows()`
+  ([`agent_engine.py:1633`](backend/api/algo/agent_engine.py#L1633)) groups the rows built in
+  `_v2_send_rich_alert` ([`:1832`](backend/api/algo/agent_engine.py#L1832)) by `(section, scope)`
+  upstream of both `_tg_alert_body`
+  ([`alert_utils.py:1891`](backend/shared/helpers/alert_utils.py#L1891)) and `_email_alert_body`
+  ([`alert_utils.py:1982`](backend/shared/helpers/alert_utils.py#L1982)). Telegram/ntfy and email therefore
+  render one identical structure.
+  - **Merged value only when members genuinely agree.** Replay of 36 real fires, done before the renderer
+    was built, disproved the design assumption that co-firing leaves share one `pnl`/`pct`.
+    `_v2_extract_pnl_fields` derives `pnl` per metric: `day_val` reads `day_change_val`, while every other
+    Positions metric reads lifetime `pnl`. All 19 real multi-leaf groups disagreed. The header therefore
+    shows a merged value only when every member agrees. Otherwise it shows a bare `xN` count, and each
+    subline carries its own value via `_tg_rule_line(show_own_pnl=...)`
+    ([`alert_utils.py:1823`](backend/shared/helpers/alert_utils.py#L1823)). A cleaner but wrong merged
+    number was rejected.
+  - Single-leaf alerts (17 of 36 in real history) render byte-identical to before. The per-underlying
+    `by und:` / `rate:` enrichment lines had the same per-leaf duplication and are now deduplicated once
+    per group.
+  - ntfy's 3× urgent repeat (`send_count`, keyed on tier) is deliberately untouched. It does not scale
+    with leaf count.
+- **Guard-alert `extra` masked at the producer (`b4972fd0`).** `_fire_guard_alert()`
+  ([`template_attach.py:257`](backend/api/algo/template_attach.py#L257)) passed a raw account into
+  `extra={"parent_account": ...}`, while the sibling `template_guard_message()` already masked it for its
+  own display string. The fix masks once, at [`:296`](backend/api/algo/template_attach.py#L296), and reuses
+  that value for both the message and the `extra` entry. This closes a gap the account-masking invariant
+  did not cover: `_AccountMaskFilter` masks only `record.msg` and `exc_text`, never `extra` values. It was
+  found by a live audit of a `template_guard` alert.
+  - Scoped to this one producer, not a central recursive walk in `_AccountMaskFilter`. `extra` values are
+    often structured data that downstream code needs unmasked. `mask_account()` is also not idempotent,
+    so a blanket second mask would yield a wrong, plausible-looking value.
+- Tests: `backend/tests/test_loss_positions_total_drawdown_gate.py` (incl.
+  `TestModestPullbackNowFiresPerOperatorPriority`, which uses the real observed −9,199.69/min rate in a
+  rising-day scenario), `backend/tests/test_alert_row_grouping.py`,
+  `backend/tests/test_fire_guard_alert_extra_masking.py` (drives a real `LogStoreHandler` and asserts on
+  `extra`, not only the rendered string).
+- Invariant: a critical loss guard never treats a rate-of-change move as noise unless the book is up and
+  has not given back a meaningful amount from its session peak. A grouped alert never shows one merged
+  number unless its members agree. A structured `extra` value that carries an account is masked at its
+  producer.
+
 **Fan-out actions (`cancel_all_orders`, `chase_close_positions`) can scope by role/user as well as
 account (2026-10-31, operator: "I should be able to select an account in actions... for accounts,
 roles, users, etc. If the parameters are not mentioned, it should be for all")** — `place_order`/
@@ -3698,6 +3791,8 @@ now caches + returns a `stale` flag; `/api/nav/by-account` masks `errors` for no
 | Change tab title / SEO | `frontend/src/app.html` + per-route `<svelte:head>` |
 | Change footer | `backend/config/frontend_config.yaml` |
 | Change loss threshold | `/agents` page → edit `loss-*` agent condition |
+| Change `loss-positions-total` floor / rate gate / cooldown | `backend/api/algo/agent_engine.py` (`_LOSS_AGENTS` `loss-positions-total`, `_ae_is_stale_loss_positions_total_cond`) |
+| Grouped rich-alert body (co-firing leaves) | `backend/api/algo/agent_engine.py:_ae_group_alert_rows` + `backend/shared/helpers/alert_utils.py:_tg_rule_line` / `_tg_alert_body` / `_email_alert_body` |
 | Change alert recipients | `backend/config/secrets.yaml` on server |
 | Deploy notification | `backend/config/backend_config.yaml` on server |
 | Market hours | `backend/config/backend_config.yaml` |
