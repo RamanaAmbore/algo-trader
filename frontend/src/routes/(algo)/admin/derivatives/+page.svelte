@@ -54,7 +54,10 @@
   import { POPULAR_UNDERLYINGS } from '$lib/data/popularUnderlyings';
   import { priceFmt, pctFmt, aggCompact, fmtPctFraction, ltpDayClass } from '$lib/format';
   import { todayIST, isCurrentTradingSession } from '$lib/dateFormat.js';
-  import { lotsForRow, fmtLots } from '$lib/data/lotsForRow';
+  import { lotsForRow, fmtLots, legLotsValue } from '$lib/data/lotsForRow';
+  import { legIsClosed, legLiveLtp, legChgPct, legDisplayQty, legCost, legPnlDisplay } from '$lib/data/derivativesMath.js';
+  import { createColumnSort } from '$lib/data/columnSort.svelte.js';
+  import { composeDisplayedCandidates } from '$lib/data/candidateRowComposition.js';
   import {
     loadHedgeProxies, proxiesForTarget, targetsForProxy, getProxyRow,
   } from '$lib/data/hedgeProxies';
@@ -63,7 +66,6 @@
   import { exportRowsToCsv } from '$lib/utils/csvExport.js';
   import { RISK_FREE_R as _RISK_FREE_R, normCdf as _normCdf, probAbove as _probAbove, expectedValueOnCurve as _expectedValueOnCurve, multilegPopOnCurve as _multilegPopOnCurve } from '$lib/data/riskMath.js';
   import ChartModal from '$lib/ChartModal.svelte';
-  import { sortRowsByPairGroup } from '$lib/data/pairGroupSort.js';
   import { toast } from '$lib/data/toastStore.svelte.js';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
   import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
@@ -849,6 +851,24 @@
   // see `.cand-empty`'s own CSS comment for why this is needed instead of
   // the item's own intrinsic width.
   let _candScrollW = $state(0);
+  // Legs/Candidates grid column-sort — shared SSOT (columnSort.svelte.js),
+  // matching the Pulse grids' own ag-Grid 3-state click cycle. See
+  // CAND_COLUMN_SPECS below (needs legAnalyticsBySymbol/_candDayPnl/
+  // _legExpPnlLive to be declared first) and `displayedCandidates`'s own
+  // composition-order comment for the invariant this sort must preserve.
+  const candSort = createColumnSort();
+  /** Header click/Enter/Space handler — inert on the Exp Close tab, whose
+   *  own band/theta ordering a column sort would corrupt. */
+  function _toggleCandSort(key) {
+    if (legsTab === 'expiry') return;
+    candSort.toggle(key);
+  }
+  function _candSortKeydown(e, key) {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      _toggleCandSort(key);
+    }
+  }
   const displayedCandidates = $derived.by(() => {
     let rows;
     if (legsTab !== 'expiry') {
@@ -873,35 +893,20 @@
       const q = _filterLegs.toUpperCase();
       rows = rows.filter(c => String(c.symbol || '').toUpperCase().includes(q));
     }
-    // Pair-group sort (2026-10, restored) — the 2026-09 Commit 9 removal
-    // was correct AT THE TIME: candidate rows built by
-    // buildCandidatePositions never carried `pair_group_key` (stripped by
-    // expiryPnl.js's old field whitelist before it ever reached this
-    // pipeline), so the sort was a guaranteed-stable no-op. That whitelist
-    // gap is now fixed (buildPositionRowFromBroker carries is_orphan/
-    // pair_group_key/has_gtt through), so rows sharing a
-    // pair_group_key now sort adjacent to each other — the operator's
-    // "treat the paired set as a single group" request. Only applied to
-    // the Legs tab (legsTab !== 'expiry') — the Exp Close tab already has
-    // its OWN pairing/grouping via _band/_pairId (theta-DESC ordering,
-    // netted-band pair tints), which this would otherwise interleave with
-    // and duplicate band headers.
-    if (legsTab !== 'expiry') {
-      rows = sortRowsByPairGroup(rows);
-      // Draft rows (payoff store, display-only) sort to the BOTTOM of the
-      // Legs grid, below every real position — 2026-10 operator design
-      // decision (misread-risk: a hypothetical row among real money rows
-      // is too easy to glance past as real; matches Sensibull's Draft
-      // Portfolios / thinkorswim's Simulated Trades keeping hypothetical
-      // legs structurally separate). Array.filter preserves relative
-      // order, so this is a pure reshuffle — each group keeps its own
-      // existing order from sortRowsByPairGroup above. Exp Close tab
-      // (legsTab === 'expiry') is untouched — its own band/theta ordering
-      // doesn't surface draft rows (expiryCloseAnalysis is a different,
-      // real-position-only pipeline).
-      rows = rows.filter(c => c.source !== 'draft').concat(rows.filter(c => c.source === 'draft'));
-    }
-    return rows;
+    // Composition (column-sort plan, Section E) — pulled into
+    // candidateRowComposition.js so the exact composition order (stamp
+    // `_ord` → pair-group-or-column-sort real+draft rows together →
+    // drafts-last reshuffle) is Vitest-testable directly, not via a
+    // hand-mirrored copy. CRITICAL invariant, see that module's own
+    // header comment: when no column sort is active
+    // (`candSort.direction == null`), this is BYTE-IDENTICAL to the
+    // pre-column-sort code — CLAUDE.md documents two prior live
+    // incidents from corrupting this exact pair-group block ordering.
+    return composeDisplayedCandidates(rows, {
+      isExpiryTab: legsTab === 'expiry',
+      sortState: { column: candSort.column, direction: candSort.direction },
+      columnSpecs: CAND_COLUMN_SPECS,
+    });
   });
 
   /** Underlying-anchor row for the Legs grid — shows the selected
@@ -2719,6 +2724,61 @@
       ? liveStoreExpPnl(c, _storeExpPiecesByKey)
       : _legExpPnlDisplay(c, liveSpot ?? null);
   }
+
+  /** Shared live-LTP resolver for the column-sort accessors below — the
+   *  SAME resolution CandidateLegRow.svelte's own `ltp` derived uses
+   *  (legLiveLtp from derivativesMath.js), so a sort by LTP/Chg%/P&L can
+   *  never disagree with what the cell itself shows. */
+  function _candSortLtp(c) {
+    const lg = legAnalyticsBySymbol[c.symbol];
+    return legLiveLtp(c, lg, liveSnap(String(c.symbol || '').toUpperCase())?.ltp);
+  }
+
+  /** Column-sort SSOT for the Legs/Candidates grid (column-sort plan,
+   *  Section D) — one accessor per sortable column, reading the exact
+   *  same shared functions (derivativesMath.js/lotsForRow.js/
+   *  expiryPnl.js) CandidateLegRow.svelte and the Day/Exp P&L cells
+   *  already use, so a column sort can never disagree with the rendered
+   *  cell. checkbox / St / EV are not sortable — EV is a hardcoded '—'
+   *  placeholder today (no real per-leg data to sort). Built once here
+   *  (not a static module) because several accessors close over
+   *  page-level reactive state (legAnalyticsBySymbol, strategy,
+   *  liveSpot via _legExpPnlLive) — see columnSort.js's own `ColumnSpec`
+   *  type for the {type, accessor} shape `applyColumnSort` expects. */
+  /** @type {Record<string, import('$lib/data/columnSort.js').ColumnSpec>} */
+  const CAND_COLUMN_SPECS = {
+    symbol: { type: 'text', accessor: (c) => c.symbol },
+    ltp: { type: 'number', accessor: (c) => _candSortLtp(c) },
+    chg: { type: 'number', accessor: (c) => legChgPct(c, _candSortLtp(c)) },
+    lots: {
+      type: 'number',
+      accessor: (c) => legLotsValue(c, strategy, c.proxy_for ? getProxyRow(c.symbol, c.proxy_for) : null),
+    },
+    qty: { type: 'number', accessor: (c) => (legIsClosed(c) ? 0 : legDisplayQty(c)) },
+    onQty: { type: 'number', accessor: (c) => (c.overnight_quantity || c.opening_qty || 0) || null },
+    avg: { type: 'number', accessor: (c) => legCost(c, legAnalyticsBySymbol[c.symbol]) },
+    pclose: { type: 'number', accessor: (c) => (c.prev_close != null ? Number(c.prev_close) : null) },
+    dayPnl: { type: 'number', accessor: (c) => _candDayPnl(c) },
+    pnl: {
+      type: 'number',
+      accessor: (c) => {
+        const lg = legAnalyticsBySymbol[c.symbol];
+        const ltp = _candSortLtp(c);
+        const cost = legCost(c, lg);
+        const qty = legIsClosed(c) ? 0 : legDisplayQty(c);
+        const ltpFromFallback = !!(lg && lg.ltp_source === 'avg_cost');
+        return legPnlDisplay(c, ltp, cost, qty, ltpFromFallback, c._residualQty != null);
+      },
+    },
+    expPnl: { type: 'number', accessor: (c) => _legExpPnlLive(c) },
+    extrinsic: { type: 'number', accessor: (c) => legExtrinsicDisplay(c, Number(c?.underlying_ltp) || 0) },
+    acct: { type: 'text', accessor: (c) => c.account },
+    iv: { type: 'number', accessor: (c) => legAnalyticsBySymbol[c.symbol]?.iv ?? null },
+    delta: { type: 'number', accessor: (c) => legAnalyticsBySymbol[c.symbol]?.greeks?.delta ?? null },
+    gamma: { type: 'number', accessor: (c) => legAnalyticsBySymbol[c.symbol]?.greeks?.gamma ?? null },
+    theta: { type: 'number', accessor: (c) => legAnalyticsBySymbol[c.symbol]?.greeks?.theta ?? null },
+    vega: { type: 'number', accessor: (c) => legAnalyticsBySymbol[c.symbol]?.greeks?.vega ?? null },
+  };
 
   /** Day P&L TOTAL for the currently selected underlying across all enabled
    *  F&O legs — script-level SSOT shared by the Legs TOTAL row AND the
@@ -6025,6 +6085,16 @@
                clicking 12 checkboxes when starting from a fresh
                page). Stops click propagation so the surrounding
                grid-row toggle handlers don't double-fire. -->
+          <!-- Sort-direction glyph — rendered UNCONDITIONALLY inside every
+               sortable header span (see the sort-header comment below) and
+               toggled via visibility:hidden/visible (never display:none),
+               so toggling which column is sorted never reflows the
+               column's own width. Styled to match the ag-Grid sort-icon
+               convention (app.css .ag-sort-indicator-icon). -->
+          {#snippet _candSortGlyph(key)}
+            <span class="cand-sort-glyph" aria-hidden="true"
+                  style:visibility={candSort.column === key ? 'visible' : 'hidden'}>{candSort.glyph(key) ?? '▲'}</span>
+          {/snippet}
           <div class="cand-headrow">
             <input type="checkbox"
                    class="cand-check cand-check-master"
@@ -6035,43 +6105,135 @@
                    checked={allCandidatesOn}
                    bind:this={allCandidatesEl}
                    onclick={(e) => { e.stopPropagation(); toggleAllCandidates(); }} />
-            <!-- State column header — matches second grid-template-columns track (28px). -->
+            <!-- State column header — matches second grid-template-columns track (28px). Not sortable. -->
             <span class="cand-state-hdr" title="Position state: GTT (green) / Paired (cyan) / Orphan (amber)">St</span>
+            <!-- Column-sort headers (2026-11, column-sort plan) —
+                 role="columnheader" (not "button" — ag-Grid's own a11y
+                 convention, and avoids the "aria-sort unsupported on
+                 role=button" a11y warning) + aria-sort + onclick/onkeydown
+                 toggle the shared candSort (columnSort.svelte.js). Inert
+                 (class:cand-hdr-disabled, no-op handlers) on the Exp Close
+                 tab — its own band/theta ordering would be corrupted by a
+                 column sort. The glyph span renders UNCONDITIONALLY and
+                 toggles visibility (never display:none) so toggling sort
+                 never reflows the column's own width. -->
             <!-- Symbol header — hyphenated form below carries the
                  expiry month inline (e.g. NIFTY-26JUN-22000-CE) so a
                  separate Expiry column would be redundant. -->
-            <span>Symbol</span>
-            <span class="num">LTP</span>
-            <span class="num cand-chg-sep-hdr">Chg %</span>
-            <span class="num"
-                  title="Qty in F&O lot units. Option / futures positions use the contract's own lot; other rows show 0.">Lots</span>
-            <span class="num">Qty</span>
-            <span class="num"
-                  title="Quantity carried overnight from yesterday's session close.">O/N Qty</span>
-            <span class="num">Avg</span>
-            <span class="num">P.Close</span>
-            <span class="num"
-                  title="Today's change in P&L (broker-agnostic split formula). Sum across all rows = strip's P∆ chip.">
-              Day P&amp;L
+            <span role="columnheader" tabindex="0" class:cand-hdr-disabled={legsTab === 'expiry'}
+                  aria-sort={candSort.ariaSort('symbol')}
+                  onclick={() => _toggleCandSort('symbol')}
+                  onkeydown={(e) => _candSortKeydown(e, 'symbol')}>
+              Symbol{@render _candSortGlyph('symbol')}
             </span>
-            <span class="num"
-                  title="Cumulative P&L on the position (lifetime, broker-reported). Sum across all rows = strip's P chip.">
-              P&amp;L
+            <span class="num" role="columnheader" tabindex="0" class:cand-hdr-disabled={legsTab === 'expiry'}
+                  aria-sort={candSort.ariaSort('ltp')}
+                  onclick={() => _toggleCandSort('ltp')}
+                  onkeydown={(e) => _candSortKeydown(e, 'ltp')}>
+              LTP{@render _candSortGlyph('ltp')}
             </span>
-            <span class="num"
-                  title="P&L if every contract expired RIGHT NOW at the current underlying spot — intrinsic value minus cost basis. Futures + equity track spot 1:1, so this matches their P&L. Options strip out time value and show only intrinsic settlement.">
-              Exp P&amp;L
+            <span class="num cand-chg-sep-hdr" role="columnheader" tabindex="0" class:cand-hdr-disabled={legsTab === 'expiry'}
+                  aria-sort={candSort.ariaSort('chg')}
+                  onclick={() => _toggleCandSort('chg')}
+                  onkeydown={(e) => _candSortKeydown(e, 'chg')}>
+              Chg %{@render _candSortGlyph('chg')}
             </span>
-            <span class="num"
-                  title="Extrinsic value in P&L terms — Exp P&amp;L minus (ltp−avg)×qty. Positive = time value still in the option premium.">
-              Extrinsic
+            <span class="num" role="columnheader" tabindex="0" class:cand-hdr-disabled={legsTab === 'expiry'}
+                  title="Qty in F&O lot units. Option / futures positions use the contract's own lot; other rows show 0."
+                  aria-sort={candSort.ariaSort('lots')}
+                  onclick={() => _toggleCandSort('lots')}
+                  onkeydown={(e) => _candSortKeydown(e, 'lots')}>
+              Lots{@render _candSortGlyph('lots')}
             </span>
-            <span>Acct</span>
-            <span class="num">IV</span>
-            <span class="num">Δ</span>
-            <span class="num">Γ</span>
-            <span class="num">Θ</span>
-            <span class="num">𝒱</span>
+            <span class="num" role="columnheader" tabindex="0" class:cand-hdr-disabled={legsTab === 'expiry'}
+                  aria-sort={candSort.ariaSort('qty')}
+                  onclick={() => _toggleCandSort('qty')}
+                  onkeydown={(e) => _candSortKeydown(e, 'qty')}>
+              Qty{@render _candSortGlyph('qty')}
+            </span>
+            <span class="num" role="columnheader" tabindex="0" class:cand-hdr-disabled={legsTab === 'expiry'}
+                  title="Quantity carried overnight from yesterday's session close."
+                  aria-sort={candSort.ariaSort('onQty')}
+                  onclick={() => _toggleCandSort('onQty')}
+                  onkeydown={(e) => _candSortKeydown(e, 'onQty')}>
+              O/N Qty{@render _candSortGlyph('onQty')}
+            </span>
+            <span class="num" role="columnheader" tabindex="0" class:cand-hdr-disabled={legsTab === 'expiry'}
+                  aria-sort={candSort.ariaSort('avg')}
+                  onclick={() => _toggleCandSort('avg')}
+                  onkeydown={(e) => _candSortKeydown(e, 'avg')}>
+              Avg{@render _candSortGlyph('avg')}
+            </span>
+            <span class="num" role="columnheader" tabindex="0" class:cand-hdr-disabled={legsTab === 'expiry'}
+                  aria-sort={candSort.ariaSort('pclose')}
+                  onclick={() => _toggleCandSort('pclose')}
+                  onkeydown={(e) => _candSortKeydown(e, 'pclose')}>
+              P.Close{@render _candSortGlyph('pclose')}
+            </span>
+            <span class="num" role="columnheader" tabindex="0" class:cand-hdr-disabled={legsTab === 'expiry'}
+                  title="Today's change in P&L (broker-agnostic split formula). Sum across all rows = strip's P∆ chip."
+                  aria-sort={candSort.ariaSort('dayPnl')}
+                  onclick={() => _toggleCandSort('dayPnl')}
+                  onkeydown={(e) => _candSortKeydown(e, 'dayPnl')}>
+              Day P&amp;L{@render _candSortGlyph('dayPnl')}
+            </span>
+            <span class="num" role="columnheader" tabindex="0" class:cand-hdr-disabled={legsTab === 'expiry'}
+                  title="Cumulative P&L on the position (lifetime, broker-reported). Sum across all rows = strip's P chip."
+                  aria-sort={candSort.ariaSort('pnl')}
+                  onclick={() => _toggleCandSort('pnl')}
+                  onkeydown={(e) => _candSortKeydown(e, 'pnl')}>
+              P&amp;L{@render _candSortGlyph('pnl')}
+            </span>
+            <span class="num" role="columnheader" tabindex="0" class:cand-hdr-disabled={legsTab === 'expiry'}
+                  title="P&L if every contract expired RIGHT NOW at the current underlying spot — intrinsic value minus cost basis. Futures + equity track spot 1:1, so this matches their P&L. Options strip out time value and show only intrinsic settlement."
+                  aria-sort={candSort.ariaSort('expPnl')}
+                  onclick={() => _toggleCandSort('expPnl')}
+                  onkeydown={(e) => _candSortKeydown(e, 'expPnl')}>
+              Exp P&amp;L{@render _candSortGlyph('expPnl')}
+            </span>
+            <span class="num" role="columnheader" tabindex="0" class:cand-hdr-disabled={legsTab === 'expiry'}
+                  title="Extrinsic value in P&L terms — Exp P&amp;L minus (ltp−avg)×qty. Positive = time value still in the option premium."
+                  aria-sort={candSort.ariaSort('extrinsic')}
+                  onclick={() => _toggleCandSort('extrinsic')}
+                  onkeydown={(e) => _candSortKeydown(e, 'extrinsic')}>
+              Extrinsic{@render _candSortGlyph('extrinsic')}
+            </span>
+            <span role="columnheader" tabindex="0" class:cand-hdr-disabled={legsTab === 'expiry'}
+                  aria-sort={candSort.ariaSort('acct')}
+                  onclick={() => _toggleCandSort('acct')}
+                  onkeydown={(e) => _candSortKeydown(e, 'acct')}>
+              Acct{@render _candSortGlyph('acct')}
+            </span>
+            <span class="num" role="columnheader" tabindex="0" class:cand-hdr-disabled={legsTab === 'expiry'}
+                  aria-sort={candSort.ariaSort('iv')}
+                  onclick={() => _toggleCandSort('iv')}
+                  onkeydown={(e) => _candSortKeydown(e, 'iv')}>
+              IV{@render _candSortGlyph('iv')}
+            </span>
+            <span class="num" role="columnheader" tabindex="0" class:cand-hdr-disabled={legsTab === 'expiry'}
+                  aria-sort={candSort.ariaSort('delta')}
+                  onclick={() => _toggleCandSort('delta')}
+                  onkeydown={(e) => _candSortKeydown(e, 'delta')}>
+              Δ{@render _candSortGlyph('delta')}
+            </span>
+            <span class="num" role="columnheader" tabindex="0" class:cand-hdr-disabled={legsTab === 'expiry'}
+                  aria-sort={candSort.ariaSort('gamma')}
+                  onclick={() => _toggleCandSort('gamma')}
+                  onkeydown={(e) => _candSortKeydown(e, 'gamma')}>
+              Γ{@render _candSortGlyph('gamma')}
+            </span>
+            <span class="num" role="columnheader" tabindex="0" class:cand-hdr-disabled={legsTab === 'expiry'}
+                  aria-sort={candSort.ariaSort('theta')}
+                  onclick={() => _toggleCandSort('theta')}
+                  onkeydown={(e) => _candSortKeydown(e, 'theta')}>
+              Θ{@render _candSortGlyph('theta')}
+            </span>
+            <span class="num" role="columnheader" tabindex="0" class:cand-hdr-disabled={legsTab === 'expiry'}
+                  aria-sort={candSort.ariaSort('vega')}
+                  onclick={() => _toggleCandSort('vega')}
+                  onkeydown={(e) => _candSortKeydown(e, 'vega')}>
+              𝒱{@render _candSortGlyph('vega')}
+            </span>
             <span class="num"
                   title="Expected value — probability-weighted average payoff. Per-leg EV requires backend support and shows '—' today; the TOTAL footer carries the strategy-level EV.">
               EV
@@ -6143,7 +6305,7 @@
               <span class="num"></span>
             </div>
           {/if}
-          {#each displayedCandidates as c, _ci (c.source + '|' + c.account + '|' + c.symbol + '|' + (c._splitTag ?? _ci) + '|' + (c.lot_piece_label ?? '') + '|' + (c._pairId ?? '') + '|' + (c._band ?? '') + '|' + (c.draftId != null ? c.draftId : _ci))}
+          {#each displayedCandidates as c, _ci (c.source + '|' + c.account + '|' + c.symbol + '|' + (c._splitTag ?? c._ord ?? _ci) + '|' + (c.lot_piece_label ?? '') + '|' + (c._pairId ?? '') + '|' + (c._band ?? '') + '|' + (c.draftId != null ? c.draftId : (c._ord ?? _ci)))}
             <CandidateLegRow
               {c}
               ci={_ci}
@@ -8415,6 +8577,43 @@
   .cand-headrow > .num {
     text-align: right;
     justify-self: end;
+  }
+  /* Column-sort headers (2026-11, column-sort plan) — every sortable
+     header span gets a pointer cursor + hover tint so it reads as
+     clickable, matching the ag-Grid header-hover convention. The glyph
+     span is sized to never grow/shrink the column on toggle (fixed
+     ~9px, visibility-only — see `_candSortGlyph` snippet's own comment). */
+  .cand-headrow > [role="columnheader"] {
+    cursor: pointer;
+    gap: 2px;
+  }
+  .cand-headrow > [role="columnheader"]:hover {
+    color: var(--algo-slate);
+  }
+  .cand-headrow > [role="columnheader"]:focus-visible {
+    outline: 1px solid var(--algo-cyan-border, rgba(34, 211, 238, 0.5));
+    outline-offset: -1px;
+  }
+  /* Exp Close tab — header clicks are inert; same visual treatment as
+     every other disabled affordance in this file (reduced opacity,
+     default cursor), so the operator doesn't try to click a dead header. */
+  .cand-headrow > .cand-hdr-disabled {
+    cursor: default;
+    opacity: 0.7;
+  }
+  .cand-headrow > .cand-hdr-disabled:hover {
+    color: inherit;
+  }
+  /* Sort-direction glyph — matches the ag-Grid sort-icon convention
+     (app.css .ag-sort-indicator-icon: 9px, muted). Rendered unconditionally
+     (see the snippet's own comment) and toggled via visibility, never
+     display:none, so a column's own width never reflows on sort toggle. */
+  .cand-sort-glyph {
+    display: inline-block;
+    margin-left: 2px;
+    font-size: 9px;
+    color: var(--text-muted);
+    line-height: 1;
   }
   /* All .cand-row variant styles (cand-row, cand-row:hover, cand-row-long/short,
      cand-row.cand-draft/closed/eq, cand-sym, cand-draft-x, cand-pnl,
