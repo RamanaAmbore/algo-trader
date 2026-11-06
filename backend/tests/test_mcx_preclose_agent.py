@@ -709,11 +709,57 @@ class TestMatchToAlertRowMarginFalsePositive:
         }
         row = _v2_match_to_alertrow(match)
         tg_body = _tg_alert_body([row])
-        assert tg_body == f"▸ FND {mask_account('ACC1')}  -₹5K\n  Margin < 0  -₹0"
+        # 2026-11-06 fix (operator: "remove the bullet point") — line 1
+        # no longer leads with a '▸' marker.
+        assert tg_body == f"FND {mask_account('ACC1')}  -₹5K\n  Margin < 0  -₹0"
         email_html = _email_alert_body([row])
         assert "Margin &lt; 0" in email_html or "Margin < 0" in email_html
         assert "-₹0" in email_html
         assert "999,999,999" not in email_html
+
+    def test_loss_guard_underlying_breakdown_golden_render_no_bullets(self):
+        """2026-11-06 fix (operator live report: "I see bullet points in
+        loss guard with symbol info. need to remove the bullet point.").
+
+        Golden render of the real `loss-positions-total` breach shape
+        (agent_events id 3463 on prod, 2026-11-06 12:41:18 UTC) through
+        the exact Telegram body builder, WITH a real per-underlying
+        breakdown populated (the "with symbol info" half of the report —
+        `df_positions` non-None is what makes `_v2_match_to_alertrow`
+        call `breakdown_positions_by_underlying`). Before this fix line 1
+        led with '▸' and the breakdown line joined symbols with '·'; both
+        read as a bulleted list even though this pipeline is otherwise
+        plain text. Neither decorative glyph may appear anywhere in the
+        rendered body."""
+        from backend.api.algo.agent_engine import _v2_match_to_alertrow
+        from backend.shared.helpers.alert_utils import _tg_alert_body
+        import pandas as pd
+
+        match = {
+            'metric': 'day_val', 'scope': 'positions.total', 'op': '<=',
+            'threshold': -50000, 'value': -52310.00010000001,
+            'row': {'account': 'TOTAL', 'pnl': -49310.00010000001,
+                    'day_change_val': -52310.00010000001,
+                    'day_change_percentage': -6.365992880700006},
+            'account': 'TOTAL', 'underlying': None,
+        }
+        df_positions = pd.DataFrame([
+            {'account': 'ZG0790', 'tradingsymbol': 'CRUDEOIL26NOV9000PE', 'pnl': -30000.0},
+            {'account': 'ZJ6294', 'tradingsymbol': 'GOLD26DECFUT', 'pnl': -15000.0},
+            {'account': 'ZG0790', 'tradingsymbol': 'CRUDEOIL26NOV8500PE', 'pnl': -7310.0001},
+        ])
+        row = _v2_match_to_alertrow(match, df_positions=df_positions, alert_state=None)
+        assert row['underlyings_breakdown'], "fixture must exercise the real breakdown path"
+        tg_body = _tg_alert_body([row])
+
+        for glyph in ("▸", "·", "•"):
+            assert glyph not in tg_body, f"{glyph!r} must not appear in a plain-text alert body: {tg_body!r}"
+        assert tg_body.splitlines()[0].startswith("POS "), (
+            "line 1 must start with the plain section label, no bullet marker")
+        assert "by und:" in tg_body
+        # Symbols still present (the report's "with symbol info" half is
+        # about the decoration, not the data).
+        assert "CRUDEOIL" in tg_body and "GOLD" in tg_body
 
     def test_market_open_nse_trick_leaf_not_rendered_as_margin_breach(self):
         """The false-positive from the operator report: market-open-nse's
@@ -837,4 +883,6 @@ class TestSendRichAlertScheduledAgentClarity:
         assert sent is True
         # Account code masked (2026-10 leak fix) — computed, not
         # hardcoded, same flake-safety reason as the sibling tests above.
-        assert captured['tg_table'] == f"▸ FND {mask_account('ACC1')}  -₹5K\n  Margin < 0  -₹0"
+        # 2026-11-06 fix (operator: "remove the bullet point") — line 1
+        # no longer leads with a '▸' marker.
+        assert captured['tg_table'] == f"FND {mask_account('ACC1')}  -₹5K\n  Margin < 0  -₹0"

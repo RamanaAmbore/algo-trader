@@ -1836,12 +1836,20 @@ def _tg_rule_line(a: dict) -> str:
 
 
 def _tg_position_enrichment_lines(a: dict) -> list[str]:
-    """Return optional enrichment lines for a Position alert (underlying breakdown + rate)."""
+    """Return optional enrichment lines for a Position alert (underlying breakdown + rate).
+
+    2026-11-06 fix (operator: "I see bullet points in loss guard with
+    symbol info. need to remove the bullet point.") — the per-underlying
+    breakdown used to join symbols with a middle-dot ('·') separator,
+    which reads as a bulleted list even though this whole alert pipeline
+    is otherwise plain text (see the "Alert message format" entry in
+    CLAUDE.md). Plain ", " joins the same data with no decorative glyph.
+    """
     result: list[str] = []
     ub = a.get('underlyings_breakdown') or []
     if ub:
         pieces = [f"{u['underlying']} {_fmt_rupees_compact(u['pnl'])}" for u in ub]
-        result.append("  by und: " + " · ".join(pieces))
+        result.append("  by und: " + ", ".join(pieces))
     k = a['kind']
     rv = a.get('rate_val')
     if rv is not None and k not in ('rate_abs', 'rate_pct'):
@@ -1852,11 +1860,11 @@ def _tg_position_enrichment_lines(a: dict) -> list[str]:
 def _tg_alert_body(alerts: list) -> str:
     """
     Build the narrow 2-line-per-row Telegram body. Each alert gets:
-      line 1:  ▸ <short> <scope>  <current ₹> (<pct>)
+      line 1:  <short> <scope>  <current ₹> (<pct>)
       line 2:    <rule>  <extra / threshold>
 
     Position alerts can carry two extra lines:
-      line 3:    by und: NIFTY -₹22k · BANKNIFTY -₹13k · …
+      line 3:    by und: NIFTY -₹22k, BANKNIFTY -₹13k, …
       line 4:    rate:   <rate ₹/min>            (when alert_state had
                                                   enough history for a
                                                   static-alert rate
@@ -1865,6 +1873,15 @@ def _tg_alert_body(alerts: list) -> str:
                                                   line 2)
 
     Keeps rows under ~32 char so they don't wrap on a phone in portrait.
+
+    2026-11-06 fix (operator: "I see bullet points in loss guard with
+    symbol info. need to remove the bullet point.") — line 1 used to
+    lead with a '▸' marker, which read as a bulleted list item. This
+    whole pipeline is otherwise plain text with no markup (see the
+    "Alert message format" entry in CLAUDE.md), so the marker is
+    dropped; the row's own section/scope/value text is unambiguous
+    without it. See `_tg_position_enrichment_lines` for the matching
+    fix to the per-underlying separator on line 3.
     """
     lines = []
     for a in alerts:
@@ -1872,7 +1889,7 @@ def _tg_alert_body(alerts: list) -> str:
         head_right = _fmt_rupees(a['pnl'])
         if a.get('pct') is not None and a['pct'] != 0:
             head_right += f" ({_fmt_pct(a['pct'])})"
-        lines.append(f"▸ {short} {a['scope']}  {head_right}")
+        lines.append(f"{short} {a['scope']}  {head_right}")
         lines.append(_tg_rule_line(a))
         if a['section'] == 'Positions':
             lines.extend(_tg_position_enrichment_lines(a))
