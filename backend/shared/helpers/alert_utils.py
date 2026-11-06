@@ -817,6 +817,41 @@ def format_notification_header(
     return f"{header_line}\n{ts}"
 
 
+def _dp_resolve_identity(
+    agent_name: "str | None", agent_id: "int | None",
+    source_type: "str | None", source_name: "str | None",
+    ist_display: str, tg_prefix: str, mode_word: str,
+) -> "tuple[bool, str, str, str]":
+    """`dispatch_payload()`'s identity resolution, extracted to keep that
+    function's own cyclomatic complexity within the project's radon gate
+    (2026-11-06) — no behavior change, pure refactor.
+
+    Returns `(has_identity, title_base, agent_line, label_word)`. See
+    `dispatch_payload()`'s own docstring for the `source_type`/
+    `source_name` semantics this implements."""
+    has_agent_identity = bool(agent_name) and agent_id is not None
+    has_process_identity = bool(source_type) and bool(source_name)
+    has_identity = has_agent_identity or has_process_identity
+    # See dispatch_payload's own docstring — no "manual, agent-less"
+    # concept exists for a rich alert or a summary, so plain value
+    # truthiness is a safe proxy for "is there a real known trigger".
+    trigger_known = has_agent_identity
+    title_base = agent_name if has_agent_identity else (
+        source_name if has_process_identity else tg_prefix)
+    agent_line = ''
+    label_word = "Agent"
+    if has_identity:
+        agent_line = format_notification_header(
+            agent_name, agent_id, ist_display=ist_display,
+            source_type=source_type, source_name=source_name,
+            trigger_known=trigger_known,
+        ).splitlines()[0]
+        label_word, _, _, _ = resolve_source(
+            _source_extra(agent_name, agent_id, source_type, source_name, trigger_known)
+        )
+    return has_identity, title_base, agent_line, label_word
+
+
 def dispatch_payload(msg_type: str, ist_display: str, tg_table: str, email_table_html: str,
                      subject_detail: str, sim_mode: bool = False, mode_tag: str = '',
                      agent_name: "str | None" = None, agent_id: "int | None" = None,
@@ -863,27 +898,25 @@ def dispatch_payload(msg_type: str, ist_display: str, tg_table: str, email_table
     tg_prefix_full    = f"{_mode_word} {tg_prefix}"    if _mode_word else tg_prefix
     email_prefix_full = f"{_mode_word} {email_prefix}" if _mode_word else email_prefix
 
-    has_agent_identity = bool(agent_name) and agent_id is not None
-    has_process_identity = bool(source_type) and bool(source_name)
-    has_identity = has_agent_identity or has_process_identity
-    # See this function's own docstring — no "manual, agent-less"
-    # concept exists for a rich alert or a summary, so plain value
-    # truthiness is a safe proxy for "is there a real known trigger".
-    trigger_known = has_agent_identity
-
     # 2026-10 audit fix: the ntfy/lock-screen TITLE used to be the bare
     # generic `tg_prefix` ("Agent") for every alert, showing e.g.
     # "Agent — 09:14:22 IST" with zero agent name/metric/account visible
     # before opening the notification. When the REAL triggering agent's
-    # name is known (both `agent_name` and `agent_id` given — the exact
-    # same condition `agent_line` above already gates on), use it as the
-    # title's base instead of the generic prefix. A known process name
-    # (2026-11-06) is the next preference — still better than the
-    # generic prefix. Falls back to the prior generic text for callers
-    # with no single originating agent or process (open/close summaries)
-    # — unchanged behaviour there.
-    title_base = agent_name if has_agent_identity else (
-        source_name if has_process_identity else tg_prefix)
+    # name is known, use it as the title's base instead of the generic
+    # prefix. A known process name (2026-11-06) is the next preference —
+    # still better than the generic prefix. Falls back to the prior
+    # generic text for callers with no single originating agent or
+    # process (open/close summaries) — unchanged behaviour there.
+    # Agent-identity line — the first line of format_notification_
+    # header's output ("Agent: {name} (#{id})" or, since 2026-11-06,
+    # "Source: {process}..."), never its own timestamp (the dual-tz
+    # timestamp used in the merged line below is `ist_display` itself,
+    # already pipe-separated dual-tz text). See `_dp_resolve_identity`'s
+    # own docstring — extracted purely to keep this function's
+    # complexity within the project's radon gate.
+    has_identity, title_base, agent_line, label_word = _dp_resolve_identity(
+        agent_name, agent_id, source_type, source_name, ist_display, tg_prefix, _mode_word,
+    )
     title_base_full = f"{_mode_word} {title_base}" if _mode_word else title_base
 
     branch = config.get('deploy_branch', 'main')
@@ -895,24 +928,6 @@ def dispatch_payload(msg_type: str, ist_display: str, tg_table: str, email_table
     _mode_bracket = '[REPLAY]' if replay_mode else ('[SIM]' if sim_mode else '')
     mode_tag = mode_tag or _mode_bracket
     mode_pfx = f"{mode_tag} " if mode_tag else ''
-
-    # Agent-identity line only — the first line of
-    # format_notification_header's output ("Agent: {name} (#{id})"),
-    # never its own timestamp (format_notification_header's SECOND line
-    # is dropped here; the dual-tz timestamp used in the merged line
-    # below is `ist_display` itself, already pipe-separated dual-tz
-    # text).
-    agent_line = ''
-    label_word = "Agent"
-    if has_identity:
-        agent_line = format_notification_header(
-            agent_name, agent_id, ist_display=ist_display,
-            source_type=source_type, source_name=source_name,
-            trigger_known=trigger_known,
-        ).splitlines()[0]
-        label_word, _, _, _ = resolve_source(
-            _source_extra(agent_name, agent_id, source_type, source_name, trigger_known)
-        )
 
     warning_block = _build_tg_warning_block(sim_mode, branch, replay_mode=replay_mode)
     # 2026-10 audit fix: the agent-identity line leads the message —
