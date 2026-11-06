@@ -21,6 +21,27 @@ const _isMobile = typeof window !== 'undefined' && window.innerWidth <= 720;
 export const NUMERIC_HDR = 'ag-right-aligned-header';
 
 /**
+ * Canonical 3-state column-sort cycle — asc → desc → unsorted (null
+ * restores natural row order). SSOT for every ag-Grid instance's
+ * `sortingOrder` AND for the hand-rolled (non-ag-Grid) column-sort
+ * utility (`columnSort.js`), so a click cycles through the exact same
+ * states everywhere in the app — mechanism, not just look.
+ */
+export const SORT_CYCLE = /** @type {('asc'|'desc'|null)[]} */ (['asc', 'desc', null]);
+
+/**
+ * Canonical defaultColDef shape shared by every algo dark-palette
+ * ag-Grid instance. `mkBaseGridOpts()` spreads a fresh copy of this
+ * into its own `defaultColDef` below.
+ */
+export const DEFAULT_COL_DEF = /** @type {import('ag-grid-community').ColDef} */ ({
+  resizable: true,
+  sortable: true,
+  suppressMovable: true,
+  suppressHeaderMenuButton: true,
+});
+
+/**
  * valueFormatter — en-IN price format (₹X,XX,XXX.XX).
  * '—' for null / undefined.
  * @param {{ value: any }} p
@@ -122,13 +143,8 @@ export function mkDirCellText(opts = {}) {
 export function mkBaseGridOpts(overrides = {}) {
   return {
     theme: 'legacy',
-    defaultColDef: {
-      resizable: true,
-      sortable: true,
-      suppressMovable: true,
-      suppressHeaderMenuButton: true,
-    },
-    sortingOrder: /** @type {('asc'|'desc'|null)[]} */ (['asc', 'desc', null]),
+    defaultColDef: { ...DEFAULT_COL_DEF },
+    sortingOrder: SORT_CYCLE,
     rowHeight: _isMobile ? 34 : 26,
     // headerHeight mirrors rowHeight (2026-10-18) — header row was never
     // explicitly sized anywhere in the codebase, defaulting to ag-Grid's

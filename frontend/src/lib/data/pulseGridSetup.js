@@ -9,26 +9,27 @@
  */
 
 import { pairGroupSort } from './pairGroupSort.js';
+import { DEFAULT_COL_DEF, SORT_CYCLE } from './algoGridUtils.js';
 
 /**
  * Shared defaultColDef for every Pulse ag-Grid instance.
  * All four grids (bucket × 2 + summary × 2 + funds) use this
  * identical shape; a single reference removes four copies.
+ *
+ * Re-export of `algoGridUtils.js`'s `DEFAULT_COL_DEF` (2026-11 SSOT
+ * consolidation) — was previously an independently-defined, byte-identical
+ * literal. Kept under this name so MarketPulse.svelte needs no changes.
  */
-export const PULSE_DEFAULT_COL_DEF = /** @type {import('ag-grid-community').ColDef} */ ({
-  resizable: true,
-  sortable: true,
-  suppressMovable: true,
-  suppressHeaderMenuButton: true,
-});
+export const PULSE_DEFAULT_COL_DEF = DEFAULT_COL_DEF;
 
 /**
  * Canonical column-sort cycle for all Pulse grids.
  * asc → desc → unsorted (null restores the natural row order).
+ *
+ * Re-export of `algoGridUtils.js`'s `SORT_CYCLE` (2026-11 SSOT
+ * consolidation) — see that file for the shared rationale.
  */
-export const PULSE_SORTING_ORDER = /** @type {('asc'|'desc'|null)[]} */ (
-  ['asc', 'desc', null]
-);
+export const PULSE_SORTING_ORDER = SORT_CYCLE;
 
 /**
  * Row-id function for the six bucket grids (Pinned, Watch, Positions,
