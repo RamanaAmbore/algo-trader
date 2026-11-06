@@ -254,7 +254,21 @@ async def test_all_six_sites_agree_mcx_open():
     # failed for real around IST midnight, when MCX's actual real-time
     # state differs from the fixture's intended "evening holiday open"
     # scenario (2026-10-20 fix).
-    with patch("backend.api.background.timestamp_indian", return_value=_FIXTURE_NOW):
+    # `_watchdog_check_market_open` also calls `_get_segments()` directly
+    # (background.py:7472) with no override param — unlike every other
+    # verdict in this test, which either receives gate dicts as plain
+    # arguments or has `_get_segments` explicitly patched (see the
+    # simulator verdict below, and the isolated sibling test
+    # `test_watchdog_check_market_open_agrees` above). Without patching
+    # it here too, this call falls through to the REAL `_get_segments()`,
+    # whose return value depends on ambient process state (the
+    # `exchange_clock` cache another test file may have warmed earlier
+    # in the same pytest process) rather than this test's own fixture —
+    # confirmed via full-suite run: this exact verdict flipped to False
+    # while every other of the 6 sites (fed the fixture gates directly)
+    # agreed True. Patching it closes that isolation gap.
+    with patch("backend.api.background.timestamp_indian", return_value=_FIXTURE_NOW), \
+         patch.object(bg, "_get_segments", return_value=[mcx_gate, nse_gate]):
         verdicts["watchdog"] = await bg._watchdog_check_market_open(
             holiday_cache={}, holiday_year_ref=[_FIXTURE_NOW.year],
             fetch_holidays=_fake_fetch_holidays,
