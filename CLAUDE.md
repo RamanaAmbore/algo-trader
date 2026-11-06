@@ -1047,6 +1047,190 @@ slug; version gating only matters when an EXISTING row's shape changes.
   `alert_utils.py`'s own low-level senders and `event_agents.py`'s channel dispatch. A future alert
   path must follow this same log-then-dispatch pattern, never add a new direct-send call site.
 
+**Alert identity SSOT — `resolve_source()` separates "who triggered it" from "which process produced
+it"; background processes stop borrowing a fake agent; trailing tag becomes four slots (2026-11-06
+IST; commits `631777aa` foundation, `a65b0a66` 8 background producers, `17e55448` order-scoped
+renderers, `7d5e0d95` GTT mechanical fix, `466b0aa7` CC-gate refactor, `0cbf300d` log level; docs
+archive `02c6571c`.)** — Operator: "there are two layers here. The source that
+generated the log... the alert agent then processes it", and "this is ssot. the alert agent framework
+should use this". Before this change, every alert header and trailing tag was built from a two-state
+model: a real agent, or the literal `"manual"`. Anything without an agent was mislabelled
+`Agent: manual`. That covered background jobs (ticker watchdog, deploy sync, market status, visitor
+report), bare ERROR+ log lines, and the order-scoped processes (chase, template attach, GTT wing,
+order poll) that act on a real order's behalf. Background producers had been borrowing a seeded
+`Agent` row's identity through `get_agent_id_by_slug()` purely to fill that model. Often the row was
+retired. Three independent identity roles now exist. Each has exactly one resolving function:
+- **Action / trigger agent** — who caused the event (a real agent, or `"manual"`). Resolved by
+  `resolve_origin()` ([alert_utils.py:613](backend/shared/helpers/alert_utils.py#L613)). Unchanged.
+- **Process** — the background job or subsystem that produced the log line. Resolved by
+  `resolve_source()` ([alert_utils.py:670](backend/shared/helpers/alert_utils.py#L670)) from the
+  record's own `source_type` / `source_name` keys.
+- **Alert agent / dispatcher** — the agent whose channel rules sent this message. Still
+  `_alert_agent_source_slug()` in [event_agents.py](backend/api/algo/event_agents.py), unchanged.
+
+**`resolve_source(extra)` — the SSOT.** It returns `(label_word, label_sentence, process_tag,
+action_tag)`. It has two branches.
+- **Branch 1, `source_type in ("process", "error")` with a truthy `source_name`.** This is a process.
+  The action tag is resolved only when the caller actually set an `agent_id` or `agent_name` KEY
+  (checked with `in extra`, not by truthiness). A caller that sets neither key gets `action_tag=None`
+  and a trigger-free sentence. The label is `"Source"`. The sentence is one of:
+  - `"{process}"` for a pure process with no known trigger.
+  - `"{process} triggered manually"` when the resolved action is `"manual"`.
+  - `"{process} triggered by {agent}"` when a real agent is known.
+  - `"... (error)"` appended for `source_type == "error"` only. This marks a bare logger-derived
+    name in the HEADER. The trailing tag keeps the plain process name.
+
+  The trigger is folded into ONE sentence. It is never a second line.
+- **Branch 2, everything else.** Today's behaviour, byte-for-byte. The label is `"Agent"`, the
+  sentence is `resolve_origin(agent_id, agent_name)`, and there is no process tag.
+
+**Header composition.** `format_notification_header()`
+([alert_utils.py:753](backend/shared/helpers/alert_utils.py#L753)) delegates the label decision to
+`resolve_source()` and only renders what it returns. It takes two new kwargs. `source_type` and
+`source_name` select the process branch. `trigger_known` (default `True`) is the escape hatch for the
+"no trigger at all" case. A bare `agent_id=None` is ambiguous. It means "manual" for an order-scoped
+alert, but "no trigger" for a background job with no cause. Callers that know which case they are in
+say so explicitly. `_source_extra()` ([alert_utils.py:646](backend/shared/helpers/alert_utils.py#L646))
+builds the `extra`-shaped dict from those scalars. The resulting label forms are:
+- `Source: Ticker watchdog` for a pure process.
+- `Source: chase triggered manually` or `Source: chase triggered by {agent}` for a process acting for a
+  known trigger.
+- `Agent: {name}` / `Agent: manual` / `Agent #{id}`, unchanged, for a direct agent or manual action
+  with no process layer.
+
+`dispatch_payload()` ([alert_utils.py:855](backend/shared/helpers/alert_utils.py#L855)) resolves its
+identity through `_dp_resolve_identity()` ([alert_utils.py:820](backend/shared/helpers/alert_utils.py#L820)).
+That helper was extracted in `466b0aa7` purely to keep `dispatch_payload`'s own cyclomatic complexity
+under the radon D-grade gate. It is a pure refactor with no behaviour change. In `dispatch_payload`,
+"trigger known" is plain value truthiness. A rich alert or a summary has no "manual, agent-less"
+concept.
+
+**Order-scoped renderers adopt the Source sentence (`17e55448`).** Six renderers now show
+`Source: {process} triggered manually/by {agent}` instead of only `Agent: {origin}`. They are
+`_render_chase_cancel`, `_render_partial_gtt`, `_render_template_attach`, `_render_order_correction`,
+`_render_gtt_not_accepted` and `_render_order_cancelled` (the renderer behind `ORDER_CANCELLED_AGENT`,
+[event_agents.py:596](backend/api/algo/event_agents.py#L596); the agent row is at
+[:2308](backend/api/algo/event_agents.py#L2308)). The order's real `agent_id` / `agent_name`
+resolution is unchanged. It is re-purposed as the trigger half of the sentence. Each passes
+`trigger_known=_order_scope_trigger_known(x)` ([event_agents.py, ~L884-899](backend/api/algo/event_agents.py#L884)).
+That helper mirrors the same key-presence check `resolve_source()` applies to the raw record, so the
+header and the trailing tag can never disagree about whether a trigger exists. `_render_order_correction`'s
+process name is dynamic. It is `source.replace("-", " ")` at [order_poll.py:247](backend/api/algo/order_poll.py#L247),
+because four background correctors (order-poll sweep, open-order watchdog, postback follow-up, chase
+backstop) fire through this one renderer.
+
+**ERROR_AGENT catch-all derives its process from the logger (`_render_error`).**
+`_render_error()` ([event_agents.py:674](backend/api/algo/event_agents.py#L674)) is not order-scoped.
+Its source name is now the record's logger name, via `_error_catch_all_extra()`
+([event_agents.py:902](backend/api/algo/event_agents.py#L902)). The same helper feeds the trailing tag,
+so the header's process name and the `#<process>` tag cannot disagree. Two things were dropped as
+redundant. One is the generic "RamboQuant error" filler line. The other is the full-logger-name body
+line, which the header already shows. The log message is now the body's only content, per the
+operator: "the process's own log message is the central message of the alert". An error record is
+never claimed to be "manual" unless it actually carries a real `agent_id` or `agent_name`.
+
+**Eight background producers stop borrowing a fake agent.** The producers below previously called
+`get_agent_id_by_slug()` to borrow a seeded `Agent` row's identity. They now log a literal
+`source_type="process"` plus a real `source_name` at the call site. `generic_notice_identity_extra()`
+and `_GENERIC_NOTICE_IDENTITY` in [event_agents.py](backend/api/algo/event_agents.py) (~L2105) were
+deleted. The producers and their call sites are:
+- GTT reconciler: [background.py:5702](backend/api/background.py#L5702), [:6550](backend/api/background.py#L6550).
+- OCO watcher: [background.py:6205](backend/api/background.py#L6205).
+- Ticker watchdog: [background.py:7555](backend/api/background.py#L7555), [:7655](backend/api/background.py#L7655).
+- Visitor report: [background.py:7955](backend/api/background.py#L7955).
+- Deploy sync: [background.py:9729](backend/api/background.py#L9729).
+- Market status report: [action_send_market_status.py:212](backend/api/algo/grammar_tokens/action_send_market_status.py#L212).
+- Market summary: `send_summary()` at [alert_utils.py:1230](backend/shared/helpers/alert_utils.py#L1230)
+  and the producer at [background.py:9895](backend/api/background.py#L9895).
+
+The producers never pass a trigger key. They omit `agent_id` and `agent_name` from their `extra`
+dict entirely. The renderer computes `trigger_known` from that: `has_process_identity` is true,
+so `trigger_known = not has_process_identity` is False
+([event_agents.py:456](backend/api/algo/event_agents.py#L456) for the generic-notice path,
+[:566](backend/api/algo/event_agents.py#L566) for market status). The result is `Source: Ticker
+watchdog` with no "triggered" phrase and no action tag. A producer that omits the keys never renders
+"triggered manually". The `trigger_known` decision lives in the renderer, not in the producer.
+User registration ([routes/auth.py:289](backend/api/routes/auth.py#L289)) gained a real identity for
+the first time. Previously it had none at all.
+
+**GTT unverified-tracked log carries `agent_id` (`7d5e0d95`).** The `gtt_unverified_tracked` record
+at [template_attach.py:2129](backend/api/algo/template_attach.py#L2129) now carries `agent_id`, the
+same way its sibling block does. Without it, a GTT that was placed but not yet verified showed no
+action identity. Test:
+`test_template_attach_gtt_unverified_not_discarded.py::test_gtt_unverified_tracked_log_carries_agent_id`.
+This is a mechanical fix. It does not change the identity model.
+
+**Trailing tag — four independent slots, dedup across all four (`_agent_tag_line` /
+`_agent_pill_html`).** The trailing tag line is now built from four slots, in this order:
+action/manual, process, alert-agent, log-level. Each slot is an independent value.
+- `_resolve_tag_labels()` ([event_agents.py:987](backend/api/algo/event_agents.py#L987)) is the one
+  place that builds the four labels. Telegram/ntfy (`_agent_tag_line`,
+  [event_agents.py:1026](backend/api/algo/event_agents.py#L1026)) and email (`_agent_pill_html`,
+  [event_agents.py:1046](backend/api/algo/event_agents.py#L1046)) both read from it, so the two channels
+  cannot diverge. Email renders the same four values as readable badges. Telegram renders them as
+  underscored hashtags.
+- The action and process slots come from `resolve_source()`, never from a second resolution.
+- A slot that does not apply is omitted, never blanked or placeholder'd.
+- The log-level slot is `_level_tag_for()` ([event_agents.py:948](backend/api/algo/event_agents.py#L948)).
+  It reads `rec["level"]` directly, because a hand-built test record may not keep the positional
+  `tags[0]` convention.
+- `_dedup_source_labels()` ([event_agents.py:966](backend/api/algo/event_agents.py#L966)) generalises
+  the old two-slot dedup to all four. It compares by tag token, so "Manual" and "manual" collapse.
+  Tag order is preserved among the survivors.
+- By-id special case, preserved. When the record's own `agent_id` equals the dispatching agent's id,
+  the action slot is dropped outright. The alert-agent tag is the more specific and stable identifier.
+- The ERROR_AGENT catch-all uses `_tag_source_extra()`
+  ([event_agents.py:925](backend/api/algo/event_agents.py#L925)). It gates on the render key, never on a
+  level or content heuristic. A real ERROR-level record that carries its own `agent_id` therefore
+  keeps its own identity.
+- Live fix, 2026-11-05 (operator: "same tag is repeating multiple places. show only unique tags in
+  alerts"). Action and alert tokens could resolve to the same value, for example both `manual`.
+  Dedup prevents `#x #x`. The second copy is dropped, not the first.
+
+**Log-level tag from the real tier (`0cbf300d`).** `_v2_send_rich_alert()`
+([agent_engine.py:1896](backend/api/algo/agent_engine.py#L1896)) logs through `logger.log(_level, ...)`,
+not a hardcoded `logger.info`. The level comes from the firing agent's tier:
+`critical`→CRITICAL, `high`→ERROR, `medium`→WARNING, `low`/`info`→INFO
+([agent_engine.py:1887-1894](backend/api/algo/agent_engine.py#L1887)). It never maps to DEBUG, because
+`LogStoreHandler`'s floor is INFO and a DEBUG record would silently never dispatch. The record also
+carries `self_alerted=True`. Without it, `tags_for()` auto-tags a CRITICAL record `"error"`, and
+`ERROR_AGENT` would double-alert on every high- and critical-tier rich alert. The same
+`self_alerted` convention is used by chase's exhaustion path and `actions_live.py`'s close failure path
+(`_error_agent_self_alerted`).
+
+**What this supersedes (read these older entries with the following in mind, do not act on them as
+written).**
+- "Alert-agent audit, all 4 waves", Wave 0: `generic_notice_identity_extra()` /
+  `_GENERIC_NOTICE_IDENTITY` and the `get_agent_id_by_slug()` identity lookup it fed. Both are deleted.
+  The 8 background producers now log a literal `source_type` + `source_name`, not a borrowed agent.
+- "Every alert leads with its origin", the "Known imprecision" bullet: `_render_error()` reading
+  `Agent: manual` for a generic ERROR+ line. It now reads `Source: {logger name} (error)`.
+- "Every alert carries a trailing action-agent + alert-agent tag" (2026-10-31): the two-slot
+  `#<action> #<alert>` tag line is replaced by the four-slot line above. Its `_agent_tag_line` and
+  `_agent_pill_html` are kept as names but rebuilt on `_resolve_tag_labels`.
+- "Every alert leads with its origin" (line 1 invariant): still true for `Agent:` renderers. An
+  order-scoped or process-scoped alert now leads with `Source: ... triggered ...` instead, so line 1
+  is no longer always `Agent: ...`.
+
+**Known gaps, deliberately not fixed in this pass:**
+- `routes/lab.py` `_mcp_ping` ([lab.py:1169](backend/api/routes/lab.py#L1169)) still calls
+  `format_notification_header(None, None)` for every MCP tool-call ping. An MCP tool call is arguably a
+  distinct "external client" actor. Classifying it needs an explicit operator decision, not a guess.
+- `_emit_unrouted_self_alert()` ([event_agents.py:1670](backend/api/algo/event_agents.py#L1670)) is a
+  genuine meta/diagnostic process event. It is a candidate for `source_type="process"` in a later pass.
+- `_render_order_failure` ([event_agents.py:234](backend/api/algo/event_agents.py#L234)),
+  `_render_template_guard` ([:254](backend/api/algo/event_agents.py#L254)) and `_render_attach_fail`
+  ([:286](backend/api/algo/event_agents.py#L286)) are the same process-scoped shape as the six converted
+  renderers. They already route through `format_notification_header()`, so they are not broken. They
+  still show `Agent: ...` rather than the new `Source: ... triggered ...` sentence. This is an
+  inconsistent rollout, not a defect.
+
+Invariant: every alert identity line and every trailing tag is resolved by `resolve_source()` and
+`resolve_origin()`. No renderer or producer may compose a second, independent identity. A background
+process is never shown as `Agent: manual`, and never as a fabricated trigger. A "triggered manually"
+or "triggered by" phrase appears only when a real trigger key is present on the record. The header and
+the trailing tag always agree, because both read the same `extra` dict through the same function.
+
 **MCX spot resolution — a transient 4a quote failure never swaps the contract (2026-10-25; commit `21f74618`)** — `_resolve_commodity_spot()` ([`options_helpers.py:191`](backend/api/routes/options_helpers.py#L191)) resolves the MCX future in priority order: the option_symbol contract (`lookup_future_for_option`, [:209](backend/api/routes/options_helpers.py#L209)), then `expiry_hint` ([:213](backend/api/routes/options_helpers.py#L213)), then the front-month ([:215](backend/api/routes/options_helpers.py#L215)). When the option_symbol contract resolved but its 4a price quote failed transiently (broker or thread-pool timeout), step 4b used to rebuild the spot from `expiry_hint` and quote a DIFFERENT contract. Reproduced under forced 4a timeout: the anchor flipped from the option_symbol month to the expiry_hint month. The guard at [:240](backend/api/routes/options_helpers.py#L240) now skips 4b whenever `resolved_via_option_symbol` is set. A 4a failure then returns `(None, "none", …)`, and the caller falls through to its last-resort spot source. Invariant: a transient quote failure changes the price's availability, never which contract anchors it.
 
 **F&O order qty convention** — API now accepts LOTS as input for instruments with 
@@ -3527,6 +3711,8 @@ now caches + returns a `stale` flag; `/api/nav/by-account` masks `errors` for no
 | MCX real per-contract expiry (live freeze filter) | `expiry_freeze.py:_mcx_future_real_expiry` |
 | generic_notice body (plain text, no origin line — see "Alert message format") | `event_agents.py:_render_deploy_sync` (pass-through) + producer `msg` in `background.py` |
 | Alert channel set for a seeded agent | `backend/api/algo/alert_routing.py` (`_PER_SLUG_OVERRIDES`, `_TIER_DEFAULTS`, `resolve_channels`) — not the agent's spec |
+| Alert identity header label ("Agent:" vs "Source: ... triggered ...") | `backend/shared/helpers/alert_utils.py:resolve_source` (SSOT) → `format_notification_header` / `dispatch_payload`; a producer sets `source_type="process"` + `source_name` on its log record (see "Alert identity SSOT" above) |
+| Alert trailing tag (action / process / alert-agent / level hashtags) | `backend/api/algo/event_agents.py:_resolve_tag_labels` (shared by `_agent_tag_line` and `_agent_pill_html`) |
 | Convert a direct-send alert path to log+agent (market status / notify= / postback cancel pattern) | Log via `_DISPATCH_LOGGER` with `alert_event`/`channels`/`agent_id`/`agent_name` in `extra` → new seeded agent + renderer in `event_agents.py` (see "Alert-agent audit, all 4 waves" above) |
 | Deploy-sync Telegram channel (dedicated bot/chat) | `event_agents.py:_send_telegram_deploy_html` + `CHANNELS["telegram_deploy"]` + `alert_routing.py` (`deploy-sync-alert` row); secrets `telegram_bot_token_deploy` / `telegram_chat_id_deploy` |
 | Deploy script Telegram ping (no ntfy, no email) | `webhook/notify_deploy.py` |
