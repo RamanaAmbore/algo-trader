@@ -6589,7 +6589,7 @@
           </CardHeader>
           <div class="opt-kv opt-kv-risk">
             <div class="kv-pair">
-              <span class="kv-k" bind:this={_sumHintAnchor.rr} role="button" tabindex="0"
+              <span class="kv-k kv-k-greek" bind:this={_sumHintAnchor.rr} role="button" tabindex="0"
                     aria-expanded={_sumHintOpen.rr}
                     onclick={() => { _sumHintOpen.rr = !_sumHintOpen.rr; }}
                     onkeydown={(e) => _sumHintKeydown(e, () => _sumHintOpen.rr = !_sumHintOpen.rr)}>R:R
@@ -6607,7 +6607,7 @@
                  unbounded. Wrapped in {#if} so the {@const} satisfies
                  Svelte's "immediate-child" rule. -->
             <div class="kv-pair">
-              <span class="kv-k" bind:this={_sumHintAnchor.ror} role="button" tabindex="0"
+              <span class="kv-k kv-k-greek" bind:this={_sumHintAnchor.ror} role="button" tabindex="0"
                     aria-expanded={_sumHintOpen.ror}
                     onclick={() => { _sumHintOpen.ror = !_sumHintOpen.ror; }}
                     onkeydown={(e) => _sumHintKeydown(e, () => _sumHintOpen.ror = !_sumHintOpen.ror)}>Risk-of-ruin
@@ -6616,7 +6616,7 @@
               <span class="kv-v">{_ror == null ? '—' : `${_ror.toFixed(2)}×`}</span>
             </div>
             <div class="kv-pair">
-              <span class="kv-k" bind:this={_sumHintAnchor.breakevens} role="button" tabindex="0"
+              <span class="kv-k kv-k-greek" bind:this={_sumHintAnchor.breakevens} role="button" tabindex="0"
                     aria-expanded={_sumHintOpen.breakevens}
                     onclick={() => { _sumHintOpen.breakevens = !_sumHintOpen.breakevens; }}
                     onkeydown={(e) => _sumHintKeydown(e, () => _sumHintOpen.breakevens = !_sumHintOpen.breakevens)}>Breakevens
@@ -6629,7 +6629,7 @@
               </span>
             </div>
             <div class="kv-pair">
-              <span class="kv-k" bind:this={_sumHintAnchor.pop} role="button" tabindex="0"
+              <span class="kv-k kv-k-greek" bind:this={_sumHintAnchor.pop} role="button" tabindex="0"
                     aria-expanded={_sumHintOpen.pop}
                     onclick={() => { _sumHintOpen.pop = !_sumHintOpen.pop; }}
                     onkeydown={(e) => _sumHintKeydown(e, () => _sumHintOpen.pop = !_sumHintOpen.pop)}>POP
@@ -6638,7 +6638,7 @@
               <span class="kv-v tf-cell {(_mergedPop ?? strategy?.risk?.pop) > 0.6 ? 'kv-pos' : (_mergedPop ?? strategy?.risk?.pop) < 0.4 ? 'kv-neg' : ''}">{fmtPct(_mergedPop ?? strategy?.risk?.pop)}</span>
             </div>
             <div class="kv-pair">
-              <span class="kv-k" bind:this={_sumHintAnchor.ev} role="button" tabindex="0"
+              <span class="kv-k kv-k-greek" bind:this={_sumHintAnchor.ev} role="button" tabindex="0"
                     aria-expanded={_sumHintOpen.ev}
                     onclick={() => { _sumHintOpen.ev = !_sumHintOpen.ev; }}
                     onkeydown={(e) => _sumHintKeydown(e, () => _sumHintOpen.ev = !_sumHintOpen.ev)}>EV
@@ -6648,7 +6648,7 @@
             </div>
             {#if strategy?.risk?.ev_pct != null}
               <div class="kv-pair">
-                <span class="kv-k" bind:this={_sumHintAnchor.evCost} role="button" tabindex="0"
+                <span class="kv-k kv-k-greek" bind:this={_sumHintAnchor.evCost} role="button" tabindex="0"
                       aria-expanded={_sumHintOpen.evCost}
                       onclick={() => { _sumHintOpen.evCost = !_sumHintOpen.evCost; }}
                       onkeydown={(e) => _sumHintKeydown(e, () => _sumHintOpen.evCost = !_sumHintOpen.evCost)}>EV / cost
@@ -7217,7 +7217,17 @@
     flex-wrap: nowrap;
     cursor: pointer;
   }
-  /* Non-Greek labels: dashed underline signals "tap for explanation" */
+  /* Fallback label treatment: dashed underline signals "tap for
+     explanation" — only applies to a `.kv-k` with no `.kv-k-greek`
+     companion class. 2026-11-06 fix (operator: "the label text in
+     risk & expected value grid is not readable and also smaller
+     compared to values... remove dashed underline... make the label
+     as tooltip like greek labels") — the Risk & EV card's 6 labels
+     (R:R, Risk-of-ruin, Breakevens, POP, EV, EV/cost) now carry
+     `.kv-k-greek` too, same as the 5 Greek labels, so none of the 11
+     Strategy-Summary kv-pair labels hit this rule any more. Left in
+     place as the general fallback for any future `.kv-k` that doesn't
+     opt into the bigger/bolder treatment. */
   .kv-k:not(.kv-k-greek) {
     border-bottom: 1px dashed rgba(148,163,184,0.3);
     display: inline-flex;
