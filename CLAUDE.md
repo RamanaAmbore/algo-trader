@@ -2511,7 +2511,7 @@ Rule: these buttons must always live inside the shared card button-group slot. N
 
 **Auto-close a short option at 90% of premium captured — one real agent, staged through a generic
 hold/release/auto-release mechanism, 4 sprints (2026-11-08; commits `5583e869`, `4aea966a`,
-`e7563522`, `6c426e1a`, `d17a93be`, `bd0d2a9f`, `2421034e`, plus this sprint's own
+`e7563522`, `6c426e1a`, `d17a93be`, `bd0d2a9f`, `2421034e`, `a57ab68e` for this sprint's own
 `_ae_build_agent_row`/`_ae_sync_existing_builtin` fix and the `exit-tp-short-option-90` seed, both
 in `agent_engine.py`)** — Flow: a short option position captures 90% of its premium →
 `short_option_gain_from_entry_pct >= 90` matches → `close_position` fires → because the agent carries
@@ -2530,9 +2530,9 @@ Held Orders first; release re-verifies the live position before resuming the cha
   (`test_sprint1_autoclose_foundation.py`) pins the actual (buggy) behaviour as a documented, confirmed
   gap — fixing `_eval_all` itself was explicitly out of scope (shared engine code, wider blast radius).
 - **Sprint 2** (`4aea966a`) — a non-blocking try-lock inside `chase_order()` itself, keyed on
-  `(account, exchange, symbol)`. It had to live there, not at either call site: Spike A proved
-  `_action_live_close_position` and `release_held_order`/`_chase_released` are two fully independent
-  code paths with zero shared code before `chase_order()`. Released as soon as the first order is
+  `(account, exchange, symbol)`. It had to live there, not at either call site: Sprint 1's Spike B
+  proved `_action_live_close_position` and `release_held_order`/`_chase_released` are two fully
+  independent code paths with zero shared code before `chase_order()`. Released as soon as the first order is
   placed+synced, not held across the multi-minute cancel-and-replace retry loop — a genuinely later,
   non-concurrent close for the same key is never blocked by this lock.
 - **Sprint 3** — `short_option_gain_from_entry_pct` (`e7563522`) avoids Sprint 1's cross-join gap
