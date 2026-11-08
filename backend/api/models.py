@@ -1154,6 +1154,38 @@ class Agent(Base):
     # working as a global "force paper" override.
     trade_mode: Mapped[str]      = mapped_column(String(8), nullable=False, default="paper")
 
+    # ── Sprint 3 (auto-close-short-option plan) — generic per-agent
+    #    hold/release infra, reusable by any future action-firing agent,
+    #    not only the one this plan eventually seeds ──────────────────
+    #
+    # require_release — when True, a `close_position` action fired by
+    # THIS agent in LIVE mode (see `_dispatch_live_action`'s hold check
+    # in actions.py) is staged as a HELD AlgoOrder
+    # (HoldCategory.AGENT_CLOSE) instead of being sent to the broker.
+    # `server_default='false'` for the same reason `has_explicit_alert`
+    # has one — a `NOT NULL` boolean needs a DDL-level default to
+    # `ADD COLUMN` on an already-populated table; every pre-existing
+    # row reads back `False` (unchanged behaviour), never `NULL`
+    # (no ambiguous tri-state for a safety-relevant switch).
+    #
+    # release_timeout_minutes — when set (and require_release is True),
+    # the staged hold auto-releases this many minutes after it was
+    # staged (see order_hold.hold_record's `auto_release_at`). `None`
+    # (the default) means "never auto-releases" — stays held until an
+    # explicit operator action via /api/orders/held/{id}/release.
+    # Nullable, no DB default, matching `priority`'s own convention —
+    # `None` is itself a valid, meaningful value here, not "unset".
+    #
+    # Both columns are DELIBERATELY absent from `update_agent`'s field
+    # allow-list (routes/agents.py) and from `_AI_REFINE_WRITABLE_
+    # FIELDS` — an ordinary PUT edit or an AI-refine must never be able
+    # to silently flip this safety switch. They can only be set at
+    # agent-creation time (or by a direct DB/admin action).
+    require_release: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default='false')
+    release_timeout_minutes: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True)
+
     # Runtime state. `status` ∈ active / inactive / cooldown / completed.
     # `completed` is the terminal state for lifespan-bounded agents
     # (one_shot, n_fires, until_date). Engine skips `completed` rows

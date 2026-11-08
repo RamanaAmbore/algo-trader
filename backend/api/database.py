@@ -1172,6 +1172,31 @@ async def _migrate_agents_priority(conn) -> None:
     ))
 
 
+async def _migrate_agents_require_release(conn) -> None:
+    """Additive migration — `agents.require_release` + `agents.
+    release_timeout_minutes` (Sprint 3, auto-close-short-option plan —
+    generic per-agent hold/release infra). Same pattern as every other
+    migration here: `SET LOCAL lock_timeout` bounds how long this can
+    wait behind any in-flight row lock on `agents`. `require_release`
+    is `NOT NULL` with a DDL-level `DEFAULT false` (same reasoning as
+    `has_explicit_alert` — a boolean safety switch must never read back
+    an ambiguous `NULL`); `release_timeout_minutes` is a plain nullable
+    `INTEGER` with no default, matching `priority`'s convention — `None`
+    is itself the meaningful "never auto-releases" value. No index on
+    either column — both are read per-row only (`_dispatch_live_action`'s
+    hold check, the auto-release scan in `background.py`), never
+    scanned by a `WHERE` clause."""
+    from sqlalchemy import text
+    await conn.execute(text("SET LOCAL lock_timeout = '5s'"))
+    await conn.execute(text(
+        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS require_release "
+        "BOOLEAN NOT NULL DEFAULT false"
+    ))
+    await conn.execute(text(
+        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS release_timeout_minutes INTEGER"
+    ))
+
+
 async def _migrate_agents_bracket_columns(conn) -> None:
     """Additive migration — `agents.legacy_template_id` +
     `agents.bracket_config` (Sprint E, Agent/Bracket/Template
@@ -1342,6 +1367,7 @@ async def init_db() -> None:
         await _migrate_agents_has_explicit_alert(conn)
         await _migrate_agents_seed_spec_hash(conn)
         await _migrate_agents_priority(conn)
+        await _migrate_agents_require_release(conn)
         await _migrate_drop_position_pairs_table(conn)
         await _migrate_market_special_sessions_source(conn)
     logger.info("Database: tables verified")

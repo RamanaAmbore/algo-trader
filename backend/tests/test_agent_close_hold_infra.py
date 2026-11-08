@@ -145,4 +145,104 @@ class TestAutoReleaseAtSnapshot:
         assert rec["auto_release_at"] != new_deadline.isoformat()
 
 
-# Remaining pieces (3-6) are appended by later commits in this same file.
+# ═══════════════════════════════════════════════════════════════════════
+#  Piece 3 — Agent.require_release / Agent.release_timeout_minutes + migration
+# ═══════════════════════════════════════════════════════════════════════
+
+class _FakeTxConn:
+    def __init__(self):
+        self.executed: list[str] = []
+
+    async def execute(self, stmt, *a, **k):
+        self.executed.append(str(stmt))
+        return None
+
+
+class TestAgentRequireReleaseColumns:
+    def test_require_release_column_not_null_with_server_default_false(self):
+        from backend.api.models import Agent
+        col = Agent.__table__.columns["require_release"]
+        assert col.nullable is False
+        assert col.server_default is not None
+
+    def test_release_timeout_minutes_column_is_nullable_with_no_server_default(self):
+        from backend.api.models import Agent
+        col = Agent.__table__.columns["release_timeout_minutes"]
+        assert col.nullable is True
+        assert col.server_default is None
+
+    def test_require_release_orm_default_is_false(self):
+        """SQLAlchemy's `default=` kwarg is a Core-level ColumnDefault
+        applied at INSERT-compile time, not at bare Python object
+        construction — so this checks the declared default directly
+        rather than constructing an un-flushed Agent() and reading the
+        attribute back (which would read None, not False, since no
+        INSERT has run)."""
+        from backend.api.models import Agent
+        col = Agent.__table__.columns["require_release"]
+        assert col.default is not None
+        assert col.default.arg is False
+
+    def test_migrate_agents_require_release_statement_shape(self):
+        from backend.api import database as dbmod
+        conn = _FakeTxConn()
+        asyncio.run(dbmod._migrate_agents_require_release(conn))
+        joined = "\n".join(conn.executed)
+        assert (
+            "ALTER TABLE agents ADD COLUMN IF NOT EXISTS require_release "
+            "BOOLEAN NOT NULL DEFAULT false" in joined
+        )
+        assert "ALTER TABLE agents ADD COLUMN IF NOT EXISTS release_timeout_minutes INTEGER" in joined
+        assert any("lock_timeout" in s for s in conn.executed)
+        assert not any("CONCURRENTLY" in s for s in conn.executed)
+
+    def test_init_db_calls_require_release_migration_after_priority(self):
+        import inspect
+        from backend.api import database as dbmod
+        src = inspect.getsource(dbmod.init_db)
+        lines = src.splitlines()
+        begin_idx = next(i for i, l in enumerate(lines) if "async with engine.begin() as conn:" in l)
+        begin_indent = len(lines[begin_idx]) - len(lines[begin_idx].lstrip())
+
+        def _idx(marker):
+            i = next(j for j, l in enumerate(lines) if marker in l and "async def" not in l)
+            return i, len(lines[i]) - len(lines[i].lstrip())
+
+        priority_idx, _ = _idx("_migrate_agents_priority(conn)")
+        rr_idx, rr_indent = _idx("_migrate_agents_require_release(conn)")
+
+        assert rr_indent > begin_indent, (
+            "_migrate_agents_require_release(conn) must run INSIDE the engine.begin() block"
+        )
+        assert rr_idx > priority_idx, (
+            "_migrate_agents_require_release(conn) must run after _migrate_agents_priority(conn)"
+        )
+
+
+class TestRequireReleaseFieldsExcludedFromWriteAllowlists:
+    """The whole safety of piece 4 depends on these two columns being
+    unreachable from an ordinary agent edit or an AI-refine diff-apply."""
+
+    def test_require_release_not_in_update_agent_field_loop(self):
+        """`AgentController.update_agent` is wrapped by Litestar's route
+        decorator, so `inspect.getsource` on the bound method resolves
+        to the wrong object — read the whole routes/agents.py module
+        source text instead. Confirmed by direct grep (orientation
+        pass, before this sprint's model/migration edits) that neither
+        field name appeared anywhere in this file at all; this asserts
+        that invariant holds after adding the columns elsewhere."""
+        import inspect
+        from backend.api.routes import agents as agents_mod
+        src = inspect.getsource(agents_mod)
+        assert "'require_release'" not in src
+        assert '"require_release"' not in src
+        assert "'release_timeout_minutes'" not in src
+        assert '"release_timeout_minutes"' not in src
+
+    def test_require_release_not_in_ai_refine_writable_fields(self):
+        from backend.api.routes.agents import _AI_REFINE_WRITABLE_FIELDS
+        assert "require_release" not in _AI_REFINE_WRITABLE_FIELDS
+        assert "release_timeout_minutes" not in _AI_REFINE_WRITABLE_FIELDS
+
+
+# Remaining pieces (4-6) are appended by later commits in this same file.
