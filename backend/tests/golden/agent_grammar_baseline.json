@@ -457,6 +457,15 @@
     {
       "grammar_kind": "condition",
       "token_kind": "metric",
+      "token": "gain_from_entry_pct",
+      "value_type": "number",
+      "units": "%",
+      "description": "Percent gain/loss from this position's average entry price, direction-aware (long = (ltp - avg_price) / avg_price * 100; short = (avg_price - ltp) / avg_price * 100). None when avg_price/ltp/qty is missing, non-positive, or non-finite, or the row's own price_source is a degraded snapshot/pending-open tag.",
+      "resolver": "backend.api.algo.grammar_tokens.metric_gain_from_entry_pct._metric_gain_from_entry_pct"
+    },
+    {
+      "grammar_kind": "condition",
+      "token_kind": "metric",
       "token": "minutes_since_open",
       "value_type": "number",
       "units": "min",
@@ -736,6 +745,14 @@
       "value_type": "object",
       "description": "The single per-symbol position row with the most-negative pnl.",
       "resolver": "backend.api.algo.grammar_tokens.scope_positions_worst_symbol._scope_positions_worst_symbol"
+    },
+    {
+      "grammar_kind": "condition",
+      "token_kind": "scope",
+      "token": "positions.any_symbol",
+      "value_type": "array",
+      "description": "Every per-symbol position row, independently (fan-out — one row per held position; leaf is OR-combined per row). Unlike positions.worst_symbol (single worst row) or positions.any_underlying (one aggregate row per underlying), every match carries its own row's full account/symbol/exchange.",
+      "resolver": "backend.api.algo.grammar_tokens.scope_positions_any_symbol._scope_positions_any_symbol"
     },
     {
       "grammar_kind": "condition",

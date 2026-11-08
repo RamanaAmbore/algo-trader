@@ -568,13 +568,17 @@ class TestAggregateRowRefFailsClosed:
 
 class TestFireMatchesLatchKeyFix:
     def test_two_same_account_different_symbol_both_survive_fire_matches(self):
-        """`_latch_key` is (agent_slug, metric, scope, account) — NO
-        symbol component. Two matches sharing that key (same account,
-        same metric/scope, different tradingsymbol) must BOTH appear in
-        `fire_matches`, even though the escalation gate's own
-        `effective`/`latched_matches` only keeps the first (a real,
-        pre-existing per-KEY gating property that must not silently
-        drop a real per-ROW fire)."""
+        """Sprint 1 foundation (auto-close-short-option-at-90%-profit
+        plan) fixed `_latch_key` for real: 'tradingsymbol' is now folded
+        into the key as an ADDITIONAL dimension alongside account (not a
+        lower-priority OR-fallback, which would be a no-op — a real
+        position row always carries a truthy `account`). Two matches
+        sharing (agent_slug, metric, scope, account) but with DIFFERENT
+        tradingsymbols on their row now get genuinely DISTINCT latch
+        keys, so BOTH pass the escalation gate independently this tick
+        — `latched_matches` itself now carries both rows, not just
+        `fire_matches`' re-expansion band-aid (which still runs, and
+        still agrees, see the `fire_matches` assertion below)."""
         agent = _Agent(id=401, slug="test-latch-key-gap", cooldown_minutes=30)
         matches = [
             _m(metric="is_itm", scope="positions.expiring_today", account="ZG0790",
@@ -593,15 +597,62 @@ class TestFireMatchesLatchKeyFix:
         )
         assert fired
         entry = pending[0]
-        assert len(entry['latched_matches']) == 1, (
-            "sanity check — the pre-existing per-KEY gate still only "
-            "latches the first row for this key (expected/unchanged)"
+        assert len(entry['latched_matches']) == 2, (
+            "post-fix: each symbol's leg now gets its own independent "
+            "per-key latch, so BOTH rows pass the escalation gate this "
+            "tick — not just the first"
         )
         fire_syms = sorted(m['row']['tradingsymbol'] for m in entry['fire_matches'])
         assert fire_syms == ["A26OCTFUT", "B26OCTFUT"], (
-            f"fire_matches must contain BOTH rows sharing the latch key, "
-            f"got {fire_syms}"
+            f"fire_matches must contain BOTH rows sharing the (pre-fix) "
+            f"latch key, got {fire_syms}"
         )
+
+    def test_recovery_on_one_symbol_does_not_clear_a_different_symbols_latch(self):
+        """Direct regression for the bug this sprint's `_latch_key` fix
+        closes: leg A (NIFTY) recovers past the hysteresis re-arm band
+        while leg B (BANKNIFTY), same account/metric/scope, is still
+        breaching. Leg A's recovery must clear ONLY leg A's latch —
+        leg B's latch (set on a prior tick) must survive untouched."""
+        agent = _Agent(id=403, slug="test-latch-key-recovery-isolation")
+        # Prior tick: both legs latched independently (as they now are
+        # post-fix) at a breaching value.
+        key_a = agent_engine._latch_key(
+            agent.slug, _m(metric="day_val", scope="positions.expiring_today",
+                          account="ZG0790", op="<=", threshold=-10000, value=-20000,
+                          row=_row("ZG0790", tradingsymbol="NIFTY26OCTFUT")),
+        )
+        key_b = agent_engine._latch_key(
+            agent.slug, _m(metric="day_val", scope="positions.expiring_today",
+                          account="ZG0790", op="<=", threshold=-10000, value=-20000,
+                          row=_row("ZG0790", tradingsymbol="BANKNIFTY26OCTFUT")),
+        )
+        assert key_a != key_b, "the two legs must get distinct latch keys"
+        store = {
+            key_a: {'ts': _now(), 'val': -20000},
+            key_b: {'ts': _now(), 'val': -20000},
+        }
+
+        # This tick: leg A recovers past the re-arm band (op='<=' means
+        # worse_dir=-1; re-arm requires recovering to within 80% of the
+        # threshold's magnitude — -10000 * 0.8 = -8000, well clear at
+        # +5000). Leg B is simply absent from this tick's observations
+        # (it's still breaching but didn't get freshly observed as
+        # fired=False — recovery only acts on rows actually seen).
+        observations = [
+            {'metric': 'day_val', 'scope': 'positions.expiring_today',
+             'account': 'ZG0790', 'op': '<=', 'threshold': -10000, 'value': 5000,
+             'row': _row("ZG0790", tradingsymbol="NIFTY26OCTFUT"), 'fired': False},
+        ]
+        agent_engine._v2_apply_recovery(agent, observations, store=store)
+
+        assert key_a not in store, "leg A's recovered latch must be cleared"
+        assert key_b in store, (
+            "leg B's still-breaching latch must survive leg A's recovery "
+            "untouched — this is exactly the cross-contamination bug "
+            "the per-symbol latch-key fix closes"
+        )
+        assert store[key_b]['val'] == -20000
 
     @pytest.mark.asyncio
     async def test_both_rows_dispatch_when_row_ref_action_attached(self):

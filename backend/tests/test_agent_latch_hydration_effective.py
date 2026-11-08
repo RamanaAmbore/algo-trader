@@ -355,3 +355,68 @@ class TestMergeRebuildStampsOnlyWinnersOwnLatch:
             f"— re-latching the sibling's match under the winner's slug "
             f"would corrupt the sibling's own re-alert timing on hydration"
         )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Sprint 1 foundation — per-symbol latch key survives the real JSON
+#  round-trip hydration uses (detail -> json.dumps -> json.loads -> re-key)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestPerSymbolLatchKeySurvivesJsonRoundTrip:
+    """`_latch_key`'s new symbol dimension reads `m.get('row', {}).
+    get('tradingsymbol')`. Hydration re-derives `m` from
+    `json.loads(detail_raw)` (a real DB TEXT column round-trip), not the
+    original in-memory dict — this proves the 'row' sub-dict (and its
+    'tradingsymbol' key) survives that JSON round-trip intact, so a
+    restarted process re-derives the SAME distinct per-symbol keys the
+    live engine had, not a collapsed/corrupted one."""
+
+    def test_two_same_account_different_symbol_legs_hydrate_to_distinct_keys(self):
+        agent_engine._V2_LATCH.clear()
+        try:
+            agent = _Agent(slug="test-per-symbol-hydration")
+            now = datetime(2026, 11, 8, 4, 30, 0, tzinfo=timezone.utc)
+
+            leg_a = {'metric': 'gain_from_entry_pct', 'scope': 'positions.any_symbol',
+                     'account': 'ZG0790', 'op': '>=', 'threshold': 90, 'value': 95.0,
+                     'row': {'account': 'ZG0790', 'tradingsymbol': 'SHORT_A'}}
+            leg_b = {'metric': 'gain_from_entry_pct', 'scope': 'positions.any_symbol',
+                     'account': 'ZG0790', 'op': '>=', 'threshold': 90, 'value': 92.0,
+                     'row': {'account': 'ZG0790', 'tradingsymbol': 'SHORT_B'}}
+
+            effective = _v2_apply_escalation_gate(
+                agent, [leg_a, leg_b], now, 30, store=agent_engine._V2_LATCH,
+            )
+            assert len(effective) == 2, (
+                "sanity: both legs must independently pass the gate on "
+                "their first breach (distinct per-symbol keys)"
+            )
+
+            # Build the EXACT detail shape _v2_build_evalresult writes,
+            # then round-trip it through real json.dumps/json.loads —
+            # not the in-memory dict — exactly as agent_events.detail
+            # (a TEXT column) does in production.
+            result = _v2_build_evalresult([leg_a, leg_b], agent.name,
+                                          latched_matches=effective)
+            detail_raw = json.dumps(result.detail)
+
+            agent_engine._V2_LATCH.clear()
+            _hydrate_latch_from_rows(
+                [(agent.slug, detail_raw, now)], now.date(),
+            )
+
+            key_a = _latch_key(agent.slug, leg_a)
+            key_b = _latch_key(agent.slug, leg_b)
+            assert key_a != key_b, "the two legs must still hydrate to distinct keys"
+            assert key_a in agent_engine._V2_LATCH, (
+                f"leg A's key must be present after hydration, store="
+                f"{agent_engine._V2_LATCH}"
+            )
+            assert key_b in agent_engine._V2_LATCH, (
+                f"leg B's key must be present after hydration, store="
+                f"{agent_engine._V2_LATCH}"
+            )
+            assert agent_engine._V2_LATCH[key_a]['val'] == 95.0
+            assert agent_engine._V2_LATCH[key_b]['val'] == 92.0
+        finally:
+            agent_engine._V2_LATCH.clear()

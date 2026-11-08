@@ -953,6 +953,9 @@ EXPOSED_COLUMNS: dict[str, dict] = {
     'positions.any_acct':                     _POSITIONS_SUMMARY_COLUMNS,
     'positions.worst_acct':                   _POSITIONS_SUMMARY_COLUMNS,
     'positions.worst_symbol':                 _POSITION_ROW_COLUMNS,
+    # Sprint 1 foundation — fan-out scope, same per-symbol row shape as
+    # worst_symbol/expiring_today (ctx.position_rows, untouched).
+    'positions.any_symbol':                   _POSITION_ROW_COLUMNS,
     'positions.expiring_today':               _POSITION_ROW_COLUMNS,
     'positions.expiring_today.nfo':           _POSITION_ROW_COLUMNS,
     'positions.expiring_today.mcx_unhedged':  _POSITION_ROW_COLUMNS,
@@ -992,6 +995,7 @@ EXPOSED_COLUMN_SCOPE_PROVENANCE: dict[str, tuple[str, str]] = {
     'positions.any_acct':                     ('ctx.sum_positions', 'backend.api.algo.grammar_tokens.scope_positions_any_acct._scope_positions_any_acct'),
     'positions.worst_acct':                   ('ctx.sum_positions', 'backend.api.algo.grammar_tokens.scope_positions_worst_acct._scope_positions_worst_acct'),
     'positions.worst_symbol':                 ('ctx.position_rows', 'backend.api.algo.grammar_tokens.scope_positions_worst_symbol._scope_positions_worst_symbol'),
+    'positions.any_symbol':                   ('ctx.position_rows', 'backend.api.algo.grammar_tokens.scope_positions_any_symbol._scope_positions_any_symbol'),
     'positions.expiring_today':               ('ctx.position_rows', 'backend.api.algo.grammar_tokens.scope_positions_expiring_today._scope_positions_expiring_today'),
     'positions.expiring_today.nfo':           ('ctx.position_rows', 'backend.api.algo.grammar_tokens.scope_positions_expiring_today_nfo._scope_positions_expiring_today_nfo'),
     'positions.expiring_today.mcx_unhedged':  ('ctx.position_rows', 'backend.api.algo.grammar_tokens.scope_positions_expiring_today_mcx_unhedged._scope_positions_expiring_today_mcx_unhedged'),

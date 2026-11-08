@@ -90,9 +90,11 @@ def _maybe_reset_v2_state(today, *, live: bool = True):
 
 
 def _latch_key(agent_slug: str, m: dict) -> tuple:
-    """Per-leaf, per-account (or per-underlying) latch key. `m` is a
-    match/observation dict from `agent_evaluator` — has 'metric',
-    'scope', 'account', 'underlying'.
+    """Per-leaf, per-account-or-underlying (AND per-symbol when the
+    matched row carries one) latch key. `m` is a match/observation dict
+    from `agent_evaluator` — has 'metric', 'scope', 'account',
+    'underlying', and (per-row) a 'row' dict carrying the full matched
+    row, including 'tradingsymbol' for any positions.* per-symbol scope.
 
     Fix A (underlying-divergence feature) — `positions.any_underlying`
     matches carry no 'account' at all (they roll up across every account
@@ -103,9 +105,42 @@ def _latch_key(agent_slug: str, m: dict) -> tuple:
     one underlying would corrupt another's state. Account still wins
     when both are present (shouldn't happen in practice — the two scope
     families are mutually exclusive on any one match — but preserves the
-    pre-existing account-keyed behaviour unconditionally)."""
-    return (agent_slug, m.get('metric'), m.get('scope'),
-            m.get('account') or m.get('underlying') or 'TOTAL')
+    pre-existing account-keyed behaviour unconditionally).
+
+    Fix B (Sprint 1 foundation, `positions.any_symbol`) — a fan-out
+    per-symbol scope returns MULTIPLE rows for the SAME account in one
+    tick (e.g. two different option legs in account ZG0790). The bug
+    this closes: "two different legs in the same account can collapse
+    onto one latch" — a plain lower-priority OR-fallback (checked only
+    when account is ABSENT, mirroring Fix A's style literally) would be
+    a no-op here, since a real position row always carries a truthy
+    `account`. `tradingsymbol` is therefore folded in as an ADDITIONAL
+    dimension ALONGSIDE account/underlying, not a lower-priority
+    alternative to them — appended to the base identity string only
+    when the matched row actually carries one.
+
+    `tradingsymbol` is read from the matched row (`m.get('row', {}).
+    get('tradingsymbol')`) — per-row leaves never promote a top-level
+    'tradingsymbol' key onto the match entry itself (only 'account'/
+    'underlying' are promoted, see `agent_evaluator._eval_leaf_per_row`),
+    so this reads the SAME full row every per-row metric resolver
+    already reads via `m['row']`.
+
+    Byte-identical for every match that carries no 'tradingsymbol' — an
+    account/underlying/TOTAL-scoped aggregate match's `row` is `{}` (or
+    has no symbol column), so the appended suffix is skipped entirely
+    and the returned 4-tuple's last element is EXACTLY the old
+    `account_or_underlying` string. This preserves every existing
+    hand-built/persisted key for `positions.total`/`positions.any_acct`/
+    `positions.any_underlying`/`funds.*`/`holdings.*` etc. unchanged —
+    including hydration from already-written `agent_events.detail` rows
+    predating this fix, which never carried a row with a symbol anyway
+    for those scopes."""
+    base = m.get('account') or m.get('underlying') or 'TOTAL'
+    symbol = (m.get('row') or {}).get('tradingsymbol')
+    if symbol:
+        base = f"{base}|{symbol}"
+    return (agent_slug, m.get('metric'), m.get('scope'), base)
 
 
 # Ops for which "worse" has a well-defined direction. -1 ⇒ smaller is
