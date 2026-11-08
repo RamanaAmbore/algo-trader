@@ -1871,31 +1871,27 @@ def _v2_exit_tp_short_option_sibling_lines(matches: list, context: dict | None) 
     side of a spread.
 
     Groups `context["position_rows"]` by `row.get('underlying')` — the
-    IDENTICAL key `scope_positions_any_underlying._scope_positions_any_
-    underlying` groups by (imported, not re-derived) — so this can never
-    silently disagree with that scope's own notion of "same underlying".
+    SAME key `scope_positions_any_underlying._scope_positions_any_
+    underlying` groups by — so this can never silently disagree with
+    that scope's own notion of "same underlying". That scope's own
+    function is NOT called here: it collapses to one aggregate row per
+    underlying (pnl/day_change_val/accounts only, no symbol list), which
+    is the wrong shape for a per-leg "who else is open on this
+    underlying" listing — only the grouping KEY is shared, deliberately
+    re-read directly off `context["position_rows"]` instead.
     Excludes the firing leg itself (identified by account+tradingsymbol)
-    from its own sibling list — a leg is not its own sibling. Masks each
+    from its own sibling list — a leg is not its own sibling. Also
+    excludes a flat (`quantity == 0`) sibling row — a closed-out leg
+    is not "naked leg context" an operator needs to see. Masks each
     account exactly once (`mask_account` is not idempotent).
 
     Returns an empty list when there is nothing to show (no `position_
     rows` on context, or every firing leg has no siblings) — the caller
     must render nothing extra in that case, not an empty header.
     """
-    from backend.api.algo.grammar_tokens.scope_positions_any_underlying import (
-        _scope_positions_any_underlying,
-    )
     from backend.shared.helpers.utils import mask_account
 
-    class _Shim:
-        position_rows = (context or {}).get("position_rows") or []
-
-    # Establishes the exact grouping key via the real scope resolver —
-    # not read for its aggregate output (pnl/day_change_val are not
-    # needed here), only to prove this function groups on the same
-    # identity (`row.get('underlying')`) that scope does.
-    _scope_positions_any_underlying(_Shim())
-    all_rows = _Shim.position_rows
+    all_rows = (context or {}).get("position_rows") or []
 
     firing_identities = set()
     underlyings: set = set()
@@ -1912,6 +1908,7 @@ def _v2_exit_tp_short_option_sibling_lines(matches: list, context: dict | None) 
             r for r in all_rows
             if r.get('underlying') == u
             and (r.get('account'), r.get('tradingsymbol')) not in firing_identities
+            and (r.get('quantity') or 0) != 0
         ]
         if not siblings:
             continue

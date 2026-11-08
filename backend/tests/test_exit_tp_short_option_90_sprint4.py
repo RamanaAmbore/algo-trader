@@ -175,6 +175,39 @@ class TestBuiltAgentRowSpec:
         assert checked > 5, "sanity: expected many other builtins to exist"
 
 
+class TestCooldownZeroPinned:
+    """Pins the `cooldown_minutes: 0` decision itself — not just that the
+    field equals 0 (TestBuiltAgentRowSpec already does that), but that a
+    non-zero value on this exact agent shape WOULD have blocked a second
+    leg, and 0 genuinely does not. `cooldown_minutes` is PUT-editable
+    (unlike `require_release`/`release_timeout_minutes`) — an operator
+    raising it on this agent silently reintroduces the cross-leg block
+    this sprint fixed."""
+
+    def test_cooldown_in_real_function_never_blocks_at_zero(self):
+        from backend.api.algo.agent_engine import _cycle_in_cooldown
+        row = _built_row()
+        row.status = "cooldown"
+        # Real wall-clock `datetime.now()` — `_cycle_in_cooldown` reads
+        # the REAL current time internally (not an injectable `now`), so
+        # this must be anchored to it, not to this file's fixed `_now()`.
+        row.last_triggered_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+        assert _cycle_in_cooldown(row, bypass_schedule=False) is False, (
+            "cooldown_minutes=0 must mean 'never agent-level-blocked', "
+            "even moments after the agent's own last fire"
+        )
+
+    def test_a_nonzero_cooldown_would_have_blocked_the_same_scenario(self):
+        """Sanity companion, proving the test above is meaningful — the
+        exact same row, with a realistic non-zero cooldown, DOES block."""
+        from backend.api.algo.agent_engine import _cycle_in_cooldown
+        row = _built_row()
+        row.status = "cooldown"
+        row.last_triggered_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+        row.cooldown_minutes = 30
+        assert _cycle_in_cooldown(row, bypass_schedule=False) is True
+
+
 # ═══════════════════════════════════════════════════════════════════════
 #  B — the "Ships INACTIVE" guard does not accidentally catch this agent
 # ═══════════════════════════════════════════════════════════════════════
@@ -397,18 +430,25 @@ class TestHoldStagedExactlyOnceZeroBrokerCalls:
         }
         mock_record_held = AsyncMock()
         mock_alert = AsyncMock()
+        mock_suppression_check = AsyncMock(return_value=True)
         with patch("backend.shared.helpers.utils.is_prod_branch", return_value=True), \
              patch("backend.shared.helpers.settings.get_bool", return_value=False), \
              patch("backend.api.algo.actions_live._al_close_resolve_position",
                    new=AsyncMock(return_value=("BUY", 50, "NRML"))), \
              patch("backend.api.algo.actions_live._al_agent_close_recently_cancelled_this_session",
-                   new=AsyncMock(return_value=True)), \
+                   mock_suppression_check), \
              patch("backend.api.algo.order_hold_gate.record_held_order", mock_record_held), \
              patch("backend.api.algo.actions_live._al_send_agent_close_hold_alert", mock_alert), \
              patch.object(agent_engine, "_v2_send_rich_alert", new=AsyncMock(return_value=False)):
             fired = await _run_real_dispatch_chain(agent, matches, context)
 
         assert fired, "the agent's OWN condition still matches (it fired)"
+        # Prove the chain genuinely REACHED the real suppression check
+        # with THIS leg's own identity, not merely that nothing downstream
+        # happened to run (a vacuous pass if the chain dead-ended earlier).
+        mock_suppression_check.assert_awaited_once_with(
+            9001, "ZG0790", "NIFTY26NOV24000CE", "NFO", "BUY",
+        )
         mock_record_held.assert_not_called(), "suppressed re-stage must not hold"
         mock_alert.assert_not_called(), "suppressed re-stage must not re-alert"
 
@@ -679,6 +719,32 @@ class TestAutoReleaseReVerifiesLivePositionFirst:
         mock_chase_order.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_cancelled_row_never_auto_releases(self):
+        """"Explicitly cancelled before the timeout: never auto-releases"
+        — the real guard BEHIND the scan's own `status == 'HELD'` SQL
+        filter (which a cancelled row would already fail at the SQL
+        level in prod). Proven here directly against `release_held_
+        order` itself: a row at `status='CANCELLED'` must be refused,
+        never silently resumed, even if something upstream ever handed
+        it one."""
+        from backend.api.algo import order_release as m
+
+        row = _held_row(status="CANCELLED")
+        session = _release_session(row)
+        mock_chase_order = AsyncMock()
+
+        with patch("backend.api.database.async_session", return_value=session), \
+             patch("backend.api.algo.chase.chase_order", mock_chase_order):
+            result = await m.release_held_order(777, actor="auto-release")
+
+        assert result["ok"] is False
+        assert "CANCELLED" in result["reason"], (
+            f"expected the real 'not HELD' refusal, got {result['reason']!r}"
+        )
+        assert row.status == "CANCELLED", "a refused release must not mutate status"
+        mock_chase_order.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_scan_dispatches_through_the_real_get_release_handler_for_agent_close(self):
         """The auto-release scan itself (`_task_agent_close_auto_release`)
         dispatches through `get_release_handler('agent_close')` — proven
@@ -904,6 +970,22 @@ class TestRichAlertEnrichment:
         )
         assert "same underlying" not in text
 
+    def test_flat_sibling_is_excluded(self):
+        """A closed-out (quantity==0) sibling row is not 'naked leg
+        context' an operator needs to see — must never render (which,
+        pre-fix, read as a nonsensical 'LONG 0 SYMBOL' line)."""
+        flat_sibling = {
+            "account": "ZG0790", "tradingsymbol": "NIFTY26NOV24500PE",
+            "underlying": "NIFTY", "quantity": 0,
+        }
+        agent = _built_row()
+        text = agent_engine._v2_exit_tp_short_option_enrichment(
+            agent, [_match(_FIRING_ROW, 92.0)],
+            {"position_rows": [_FIRING_ROW, flat_sibling]},
+        )
+        assert "NIFTY26NOV24500PE" not in text
+        assert "same underlying" not in text
+
     def test_slug_gate_only_applies_to_this_agent(self):
         """A different agent must never get this enrichment appended."""
         from backend.api.algo.agent_engine import _v2_exit_tp_short_option_enrichment
@@ -914,6 +996,70 @@ class TestRichAlertEnrichment:
         import inspect
         src = inspect.getsource(agent_engine._v2_send_rich_alert)
         assert f"'{_SLUG}'" in src
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  L — the REAL YAML catalog's resolver paths for both tokens this
+#      condition depends on resolve to the exact real functions, via the
+#      real loader (`_import_dotted`) — proves prod boot, not only this
+#      test file's own manual `REGISTRY` monkeypatch (test H), actually
+#      wires these two tokens.
+# ═══════════════════════════════════════════════════════════════════════
+
+class TestRealYamlCatalogResolvesBothTokens:
+    def _catalog_row(self, token_kind: str, token: str) -> dict:
+        from backend.api.algo.grammar import _GRAMMAR_CATALOG
+        rows = _GRAMMAR_CATALOG["system_tokens"]
+        matches = [
+            r for r in rows
+            if r.get("token_kind") == token_kind and r.get("token") == token
+        ]
+        assert len(matches) == 1, (
+            f"expected exactly one catalog row for ({token_kind}, {token}), "
+            f"found {len(matches)}"
+        )
+        return matches[0]
+
+    def test_scope_token_resolver_path_is_the_real_function(self):
+        from backend.api.algo.grammar_registry import _import_dotted
+        from backend.api.algo.grammar_tokens.scope_positions_any_symbol import (
+            _scope_positions_any_symbol,
+        )
+        row = self._catalog_row("scope", "positions.any_symbol")
+        resolved = _import_dotted(row["resolver"])
+        assert resolved is _scope_positions_any_symbol, (
+            f"catalog resolver {row['resolver']!r} did not resolve to the "
+            f"real scope function"
+        )
+
+    def test_metric_token_resolver_path_is_the_real_function(self):
+        from backend.api.algo.grammar_registry import _import_dotted
+        from backend.api.algo.grammar_tokens.metric_short_option_gain_from_entry_pct import (
+            _metric_short_option_gain_from_entry_pct,
+        )
+        row = self._catalog_row("metric", "short_option_gain_from_entry_pct")
+        resolved = _import_dotted(row["resolver"])
+        assert resolved is _metric_short_option_gain_from_entry_pct, (
+            f"catalog resolver {row['resolver']!r} did not resolve to the "
+            f"real metric function"
+        )
+
+    @pytest.mark.asyncio
+    async def test_both_tokens_are_live_in_registry_after_a_real_reload(self):
+        """The strongest version of this check: run the REAL async
+        `REGISTRY.reload()` against the REAL DB-seeded `grammar_tokens`
+        table (via `seed_grammar_tokens()` + `reload()`, the exact boot
+        sequence `init_db()` runs) and confirm both tokens resolve —
+        not a hand-picked YAML row read in isolation."""
+        from backend.api.algo.grammar import seed_grammar_tokens
+        from backend.api.algo.grammar_registry import REGISTRY
+        try:
+            await seed_grammar_tokens()
+            await REGISTRY.reload()
+        except Exception as e:
+            pytest.skip(f"no DB available in this environment: {e}")
+        assert 'positions.any_symbol' in REGISTRY.scopes
+        assert 'short_option_gain_from_entry_pct' in REGISTRY.metrics
 
 
 # ═══════════════════════════════════════════════════════════════════════
