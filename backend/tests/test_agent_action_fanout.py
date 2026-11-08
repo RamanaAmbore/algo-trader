@@ -734,8 +734,25 @@ class TestFanoutHelperUnits:
     def test_actions_use_row_ref_false_for_every_builtin_agent(self):
         """No currently-seeded agent can contain $row — confirms the
         backward-compat guarantee holds for the ENTIRE real catalog,
-        not just the 4 shapes spot-checked above."""
+        not just the 4 shapes spot-checked above.
+
+        ONE deliberate, documented exception as of the auto-close-
+        short-option plan's final sprint: `exit-tp-short-option-90`
+        genuinely needs $row — its `positions.any_symbol` fan-out
+        condition matches a different leg per fire, and its
+        `close_position` action must bind THAT leg's own account/
+        symbol/exchange, not a hardcoded one. See that agent's own
+        BUILTIN_AGENTS entry (agent_engine.py) for the full design.
+        The exclusion is scoped by slug, not blanket — a SECOND
+        unexpected $row-using builtin would still fail this test."""
+        _KNOWN_ROW_REF_SLUGS = {"exit-tp-short-option-90"}
         for spec in BUILTIN_AGENTS:
+            if spec.get("slug") in _KNOWN_ROW_REF_SLUGS:
+                assert _ae_actions_use_row_ref(spec.get("actions") or []) is True, (
+                    f"BUILTIN_AGENTS['{spec.get('slug')}'] was expected to use "
+                    f"$row (that's its whole design) but doesn't"
+                )
+                continue
             assert _ae_actions_use_row_ref(spec.get("actions") or []) is False, (
                 f"BUILTIN_AGENTS['{spec.get('slug')}'] unexpectedly uses $row"
             )

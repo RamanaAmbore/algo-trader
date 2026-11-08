@@ -1864,6 +1864,101 @@ def _v2_rich_alert_custom_message(agent, eval_result, context: dict | None):
     return None
 
 
+def _v2_exit_tp_short_option_sibling_lines(matches: list, context: dict | None) -> list[str]:
+    """Sibling-leg lines for `exit-tp-short-option-90`'s own enrichment —
+    "naked leg context" for an operator reviewing a staged close, since
+    this condition fires PER LEG and a 90%-profit short leg could be one
+    side of a spread.
+
+    Groups `context["position_rows"]` by `row.get('underlying')` — the
+    IDENTICAL key `scope_positions_any_underlying._scope_positions_any_
+    underlying` groups by (imported, not re-derived) — so this can never
+    silently disagree with that scope's own notion of "same underlying".
+    Excludes the firing leg itself (identified by account+tradingsymbol)
+    from its own sibling list — a leg is not its own sibling. Masks each
+    account exactly once (`mask_account` is not idempotent).
+
+    Returns an empty list when there is nothing to show (no `position_
+    rows` on context, or every firing leg has no siblings) — the caller
+    must render nothing extra in that case, not an empty header.
+    """
+    from backend.api.algo.grammar_tokens.scope_positions_any_underlying import (
+        _scope_positions_any_underlying,
+    )
+    from backend.shared.helpers.utils import mask_account
+
+    class _Shim:
+        position_rows = (context or {}).get("position_rows") or []
+
+    # Establishes the exact grouping key via the real scope resolver —
+    # not read for its aggregate output (pnl/day_change_val are not
+    # needed here), only to prove this function groups on the same
+    # identity (`row.get('underlying')`) that scope does.
+    _scope_positions_any_underlying(_Shim())
+    all_rows = _Shim.position_rows
+
+    firing_identities = set()
+    underlyings: set = set()
+    for m in matches:
+        row = (m or {}).get('row') or {}
+        u = row.get('underlying')
+        if u:
+            underlyings.add(u)
+        firing_identities.add((row.get('account'), row.get('tradingsymbol')))
+
+    lines: list[str] = []
+    for u in sorted(underlyings):
+        siblings = [
+            r for r in all_rows
+            if r.get('underlying') == u
+            and (r.get('account'), r.get('tradingsymbol')) not in firing_identities
+        ]
+        if not siblings:
+            continue
+        for r in siblings:
+            qty = r.get('quantity', 0)
+            side = "SHORT" if (qty or 0) < 0 else "LONG"
+            lines.append(
+                f"  {u}: {mask_account(r.get('account') or '')} {side} "
+                f"{abs(qty) if qty else 0} {r.get('tradingsymbol') or '?'}"
+            )
+    return lines
+
+
+def _v2_exit_tp_short_option_enrichment(agent, matches: list, context: dict | None) -> str | None:
+    """Enrichment block appended to `exit-tp-short-option-90`'s own rich
+    alert (medium-tier, fires alongside the generic kind/threshold
+    table — never replacing it, since that table carries the leg's real
+    value against the 90% threshold). States the auto-release deadline
+    and how to cancel, conditionally — this alert cannot know whether
+    the hold-staging path (`_al_maybe_stage_agent_close_hold`, Sprint 3
+    infra, left unmodified) actually staged anything this cycle: staging
+    can be suppressed by an earlier operator cancel this session, by an
+    already-HELD row, or refused by position verification. A concrete
+    "auto-releases at HH:MM" claim would be a lie in those cases, so the
+    phrasing is conditional throughout.
+
+    Gated by slug in the caller — narrow by design, mirrors the existing
+    `expiry-day-preclose-alert` precedent at this same call site.
+    """
+    timeout_min = getattr(agent, "release_timeout_minutes", None)
+    deadline_phrase = (
+        f"auto-releases {timeout_min} min after staging unless cancelled"
+        if isinstance(timeout_min, int) and timeout_min > 0
+        else "stays held until released by hand"
+    )
+    parts = [
+        f"If staged for review (skipped when already held or cancelled "
+        f"earlier this session), this close {deadline_phrase} — cancel "
+        f"from Held Orders to keep the position open."
+    ]
+    sibling_lines = _v2_exit_tp_short_option_sibling_lines(matches, context)
+    if sibling_lines:
+        parts.append("Other open legs on the same underlying:")
+        parts.extend(sibling_lines)
+    return "\n".join(parts)
+
+
 async def _v2_send_rich_alert(agent, matches, now, sim_mode: bool = False,
                               context: dict | None = None, eval_result=None,
                               replay_mode: bool = False):
@@ -1974,6 +2069,19 @@ async def _v2_send_rich_alert(agent, matches, now, sim_mode: bool = False,
     else:
         tg_body    = _tg_alert_body(rows)
         email_html = _email_alert_body(rows)
+    # `exit-tp-short-option-90` enrichment — appended, never replacing,
+    # the generic kind/threshold table above (that table carries the
+    # leg's real gain% value against the 90% threshold). Slug-gated,
+    # mirroring the `expiry-day-preclose-alert` precedent at this same
+    # call site. See `_v2_exit_tp_short_option_enrichment`'s own
+    # docstring for why the deadline phrasing is conditional.
+    if getattr(agent, 'slug', None) == 'exit-tp-short-option-90':
+        enrichment = _v2_exit_tp_short_option_enrichment(agent, matches, context)
+        if enrichment:
+            tg_body = f"{tg_body}\n\n{enrichment}"
+            email_html = email_html + "".join(
+                f"<p>{html.escape(line)}</p>" for line in enrichment.split("\n")
+            )
     # Single-line agent tag for the email subject (via subject_detail) —
     # format_notification_header's full output carries an embedded
     # newline (agent line + dual-tz timestamp) which must never reach an
@@ -2716,6 +2824,152 @@ _EXPIRY_DAY_AWARENESS_AGENTS = [
 BUILTIN_AGENTS.extend(_EXPIRY_DAY_AWARENESS_AGENTS)
 
 
+# ── Exit-rule agent: auto-close a short option at 90% of premium
+#    captured (Sprint 4 / final sprint of the auto-close-short-option
+#    plan) ────────────────────────────────────────────────────────────
+#
+# Builds on three prior sprints, none of which are modified here:
+#   Sprint 1 — `positions.any_symbol` fan-out scope, `gain_from_entry_
+#     pct` metric, `_latch_key`'s symbol dimension (`5583e869`).
+#   Sprint 2 — a per-(account,exchange,symbol) close lock inside
+#     `chase_order()` itself (`4aea966a`).
+#   Sprint 3 — the generic hold/require_release/release_timeout_minutes
+#     infra: `HoldCategory.AGENT_CLOSE`, the hold check inside
+#     `_dispatch_live_action`, operator-cancel suppression, the
+#     auto-release background scan, and `short_option_gain_from_entry_
+#     pct` (`e7563522`, `6c426e1a`, `d17a93be`, `bd0d2a9f`, `2421034e`).
+#
+# `short_option_gain_from_entry_pct` folds the qty<0 direction check and
+# the CE/PE instrument-type check INSIDE itself, so this agent's whole
+# condition is a SINGLE leaf — `agent_evaluator._eval_all`'s confirmed
+# cross-join bug (Sprint 1's Spike A) over a fan-out scope only matters
+# for an `all[]` of separate leaves, which this agent deliberately never
+# uses.
+#
+# `cooldown_minutes: 0` is load-bearing, not an oversight (confirmed via
+# a real read of `_cycle_in_cooldown`/`_ae_cycle_eval_and_buffer`): a
+# persistent agent's status moves to `'cooldown'` after EVERY fire
+# (`_cycle_compute_post_fire_status`), and `_ae_cycle_eval_and_buffer`
+# returns BEFORE buffering any new fire while `_cycle_in_cooldown(agent)`
+# is true — that gate is AGENT-LEVEL, not per-leaf, so a non-zero
+# `cooldown_minutes` here would silently block a SECOND, DIFFERENT short
+# leg from ever being evaluated while the agent is still cooling down
+# from the FIRST leg's fire. `_cycle_in_cooldown` computes `elapsed <
+# agent.cooldown_minutes`, which is always False once the stored value
+# is `0`, so the agent-level gate never blocks. Per-leg dedup still
+# applies: `_v2_apply_escalation_gate` falls back to `cfg['cooldown_min']`
+# (the `alerts.cooldown_minutes` setting, default 30) whenever `agent.
+# cooldown_minutes` is falsy (`0 or cfg[...]`), so the SAME leg does not
+# re-fire on every single poll tick — it is gated by that per-leaf
+# cooldown, by the Sprint-1 symbol-keyed latch's own escalation rule
+# (re-fires only after moving another full |threshold| worse, which a
+# percentage metric capped near 100 can realistically never do), and —
+# independently — by the hold-staging path's own dedup (`_al_find_held_
+# agent_close`: an existing HELD row is never re-alerted) and cancel-
+# suppression (`_al_agent_close_recently_cancelled_this_session`).
+#
+# `trade_mode: "live"` is set EXPLICITLY — the exact field the
+# 2026-10-31 `expiry-day-itm-auto-close` incident (see that agent's own
+# comment above) was caused by omitting. Without it, this agent would
+# silently inherit `execution.default_agent_trade_mode` ("paper"), and
+# `_dispatch_live_action`'s `require_release` hold check — the ENTIRE
+# point of this agent — is only ever reached on the live branch
+# (`_resolve_mode`'s mode resolution, consulted one level up by `_al_
+# dispatch_by_mode`); a paper-mode close never reaches it at all. Dev
+# (non-main branch) still forces paper regardless of this field — see
+# "Execution Modes" in CLAUDE.md's branch-gate note — so the hold path
+# only ever engages on a prod/main deploy.
+#
+# `require_release: True` + `release_timeout_minutes: 5` route every
+# `close_position` fired by this agent through `_al_maybe_stage_agent_
+# close_hold` (Sprint 3) instead of the real broker handler — the close
+# is staged as a HELD AlgoOrder for operator review and auto-releases
+# after 5 minutes unless cancelled from Held Orders first.
+#
+# `tier: "medium"` is this agent's OWN alert tier (ntfy priority for its
+# rich alert) — a genuine profit-taking opportunity, not a risk event,
+# so it does not get the 3x urgent ntfy repeat `tier="critical"` agents
+# get. This is independent of the SEPARATE `action_required=True` the
+# hold-staging alert (`_al_send_agent_close_hold_alert`, Sprint 3,
+# UNMODIFIED here) always sets on ITS OWN alert — that one forces urgent
+# ntfy + a forced email regardless of this agent's tier, because it
+# carries the concrete held-order id an operator needs to act on. One
+# real fire therefore produces TWO alerts: this agent's own medium-tier
+# rich alert (enriched below with the conditional deadline/cancel text
+# and sibling-leg context), and the hold's own urgent action-required
+# alert. Both are accepted, by design — see `_v2_exit_tp_short_option_
+# enrichment`'s own docstring for why THIS alert's deadline text must
+# stay conditional ("if staged...") rather than asserting a concrete
+# time: this agent's own alert fires unconditionally on every breach,
+# before it can know whether the hold-staging path actually staged
+# anything (it can be suppressed by an earlier cancel this session, an
+# already-HELD row, or a failed position verification).
+#
+# `$row`-bound close_position params ({"account": "account_id"},
+# {"symbol": "symbol"}, {"exchange": "exchange"}) mirror Sprint 1's own
+# `_CLOSE_ACTION` fixture verbatim (`test_sprint1_autoclose_foundation.
+# py`) — no `qty`/`side` override, so `_al_close_resolve_position`
+# derives the full offsetting close from the real live position, the
+# same verified-close machinery `_action_live_close_position` itself
+# uses.
+_EXIT_TP_SHORT_OPTION_90_ACTIONS = [{
+    "type": "close_position",
+    "params": {
+        "account":  {"$row": "account_id"},
+        "symbol":   {"$row": "symbol"},
+        "exchange": {"$row": "exchange"},
+    },
+}]
+
+_EXIT_TP_SHORT_OPTION_90_AGENT = {
+    "slug": "exit-tp-short-option-90",
+    "name": "Auto-close short option at 90% profit",
+    "long_name": (
+        "when:positions.any_symbol.short_option_gain_from_entry_pct>=90   "
+        "schedule:market_hours/cooldown:0   alert:medium/tg+email+ntfy+log   "
+        "do:close_position(require_release, 5-min auto-release)"
+    ),
+    "description": (
+        "Per-leg: when a SHORT option position has captured 90% of its "
+        "premium (short_option_gain_from_entry_pct >= 90 — direction- and "
+        "instrument-type-aware, so this never matches a long leg or a "
+        "non-option row), stages a close for operator review instead of "
+        "placing it live. The close is a HELD AlgoOrder "
+        "(HoldCategory.AGENT_CLOSE) that auto-releases 5 minutes after "
+        "staging unless cancelled from Held Orders first — see "
+        "release_timeout_minutes. Side/quantity/product are derived and "
+        "verified against the real live position at release time, never "
+        "the stale values captured at staging."
+    ),
+    # `kind` is omitted — the Agent model's own column default ("cycle")
+    # applies, same convention as every other BUILTIN_AGENTS entry in
+    # this file (`_ae_build_agent_row` does not read a `kind` key at
+    # all; none of this file's other spec dicts set one either).
+    "schedule": "market_hours",
+    "cooldown_minutes": 0,
+    "tier": "medium",
+    "topic": "profit_exit",
+    "status": "active",
+    "trade_mode": "live",
+    "require_release": True,
+    "release_timeout_minutes": 5,
+    "conditions": {
+        "op": ">=",
+        "scope": "positions.any_symbol",
+        "metric": "short_option_gain_from_entry_pct",
+        "value": 90,
+    },
+    "actions": _EXIT_TP_SHORT_OPTION_90_ACTIONS,
+    "events": [
+        {"channel": "telegram", "enabled": True},
+        {"channel": "email",    "enabled": True},
+        {"channel": "log",      "enabled": True},
+        {"channel": "ntfy",     "enabled": True, "priority": "default"},
+    ],
+}
+BUILTIN_AGENTS.append(_EXIT_TP_SHORT_OPTION_90_AGENT)
+
+
 # ── Market open/close info agents ────────────────────────────────────
 #
 # Notify-only agents that fire at exact market open/close times.
@@ -2957,6 +3211,33 @@ def _ae_sync_builtin_status(existing, desired: str | None) -> None:
         existing.status = "inactive"
 
 
+def _ae_sync_require_release_fail_safe(existing, agent_def: dict) -> None:
+    """`require_release` fail-safe sync (Sprint 4). Extracted from
+    `_ae_sync_existing_builtin` to reduce CC there, mirroring
+    `_ae_sync_builtin_status`'s own extraction above.
+
+    ONE-DIRECTIONAL — False -> True only, never True -> False. A
+    builtin spec that declares `require_release: True` is a safety-
+    critical promise (real orders get staged for review, not placed
+    live) — if an already-seeded row is ever found with it at False (a
+    direct DB/admin edit, or a bug in an earlier process build),
+    restart restores the safe value. The reverse direction is
+    intentionally NEVER done here: the model column's own docstring
+    documents that an admin may deliberately flip this OFF via a direct
+    DB action, and this sync must not silently undo that deliberate
+    choice on the next restart."""
+    if agent_def.get("require_release") is not True:
+        return
+    if existing.require_release is True:
+        return
+    logger.warning(
+        "Agent engine: seed '%s' declares require_release=True but "
+        "the existing row has it False — restoring the safe value.",
+        agent_def.get("slug", "<unknown>"),
+    )
+    existing.require_release = True
+
+
 def _ae_has_pnl_leaf(cond: dict | None) -> bool:
     """True when the condition tree contains any leaf with metric in ('pnl', 'pnl_pct')."""
     if not isinstance(cond, dict):
@@ -3049,6 +3330,7 @@ def _ae_sync_existing_builtin(existing, agent_def: dict) -> None:
         existing.topic = _def_topic
     if _ae_seed_ships_inactive(agent_def):
         _ae_sync_builtin_status(existing, _ae_guard_seed_status(agent_def, default=None))
+    _ae_sync_require_release_fail_safe(existing, agent_def)
     # Additive-sync events: add any default channel missing from the stored events.
     # Never removes channels the operator may have added manually.
     code_events = agent_def.get("events", [])
@@ -3120,6 +3402,24 @@ def _ae_build_agent_row(agent_def: dict) -> 'Agent':
     )
     if "trade_mode" in agent_def:
         kwargs["trade_mode"] = agent_def["trade_mode"]
+    # `require_release` / `release_timeout_minutes` (Sprint 4 fix, same
+    # bug class as the `trade_mode` fix above): this builder never read
+    # either Sprint 3 column from `agent_def` at all, even though
+    # Sprint 3 shipped both the columns (`d17a93be`) and the hold check
+    # that reads them (`bd0d2a9f`). A builtin spec setting
+    # `require_release: True` would have silently gotten the ORM
+    # column default (`False`) instead — worse than the trade_mode
+    # incident this mirrors: combined with `trade_mode: "live"`, a
+    # `close_position` action would reach the real broker immediately,
+    # with no staged hold and no operator review at all. Only passed
+    # through when the spec explicitly sets it, so every other builtin
+    # (none of which specify these today) keeps the exact same default
+    # (`require_release=False`, `release_timeout_minutes=None`) as
+    # before this fix.
+    if "require_release" in agent_def:
+        kwargs["require_release"] = agent_def["require_release"]
+    if "release_timeout_minutes" in agent_def:
+        kwargs["release_timeout_minutes"] = agent_def["release_timeout_minutes"]
     return Agent(**kwargs)
 
 
