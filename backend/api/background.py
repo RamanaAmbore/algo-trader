@@ -2172,6 +2172,26 @@ async def _perf_run_agent_engine(
             # Extracted to a module-level helper (not inlined here) to
             # keep this function under the radon complexity gate.
             _broadcast_mcx_ce_pe_group_columns(position_rows)
+            # Sprint 3 (auto-close-short-option plan) — stamp price_source
+            # onto position_rows BEFORE they reach run_cycle, closing the
+            # gap where metric_gain_from_entry_pct / metric_short_option_
+            # gain_from_entry_pct's own degraded-price_source guard could
+            # never fire in production (ctx.position_rows previously had
+            # no price_source column at all — see tag_position_rows_
+            # price_source's own docstring for exact scope/limitations).
+            try:
+                from backend.api.helpers.snapshot_gate import prewarm_pending_open_segments
+                from backend.api.routes.positions import (
+                    _resolve_pending_open_exchanges, tag_position_rows_price_source,
+                )
+                if 'exchange' in df_positions.columns:
+                    await prewarm_pending_open_segments(
+                        {str(e).upper() for e in df_positions['exchange'].dropna().unique()}
+                    )
+                _pending_exch_tag = _resolve_pending_open_exchanges(df_positions)
+                tag_position_rows_price_source(position_rows, df_positions, _pending_exch_tag)
+            except Exception as pte:
+                logger.debug(f"Background: position_rows price_source tagging failed: {pte}")
         spot_prices = await _run(_resolve_spot_prices, df_positions)
         if not spot_prices:
             logger.warning(

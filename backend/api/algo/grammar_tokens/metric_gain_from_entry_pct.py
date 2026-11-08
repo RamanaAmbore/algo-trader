@@ -21,15 +21,27 @@ import math
 # of these call sites today.
 #
 # A row carrying NO `price_source` key at all is NOT treated as
-# degraded — that is the normal shape of `ctx.position_rows` in
-# production today (`background.py`'s `_perf_fetch_all_broker_data` ->
-# `_perf_run_agent_engine` pipeline builds `position_rows` straight from
-# the raw broker DataFrame, which never gets a `price_source` column;
-# only the `/api/positions` ROUTE response layer tags PositionRow
-# structs with it). Treating a genuinely absent field as degraded would
-# make this metric return None on every live tick in production, which
-# is the exact missing-vs-zero trap this codebase's convention exists to
+# degraded. Treating a genuinely absent field as degraded would make
+# this metric return None on every live tick in production, which is
+# the exact missing-vs-zero trap this codebase's convention exists to
 # avoid in the other direction.
+#
+# Updated Sprint 3 (auto-close-short-option plan) — before this sprint,
+# `ctx.position_rows` NEVER carried a `price_source` key at all on the
+# background live-engine path (`background.py`'s `_perf_fetch_all_
+# broker_data` -> `_perf_run_agent_engine` pipeline built `position_rows`
+# straight from the raw broker DataFrame, which never got a
+# `price_source` column; only the `/api/positions` ROUTE response layer
+# tagged PositionRow structs with it), so this guard could never
+# actually fire in production. `background.py:_perf_run_agent_engine`
+# now calls `routes.positions.tag_position_rows_price_source()` to stamp
+# `'snapshot_settled'` (flat rows) and `'pending_open'` BEFORE
+# `position_rows` reaches this metric. See that function's own
+# docstring for the one case still deliberately left untagged
+# (`'snapshot_unsettled'` — a non-flat position on a currently closed,
+# not merely pending-open, exchange). A row in that remaining gap still
+# reads as an untagged (non-degraded) "live" row here, same as before
+# this sprint.
 _DEGRADED_PRICE_SOURCES = frozenset({
     'snapshot_settled', 'snapshot_unsettled', 'pending_open',
 })

@@ -2323,6 +2323,22 @@ def _resolve_pending_open_exchanges(raw: pd.DataFrame) -> set:
     return {e for e in exchanges if is_segment_pending_open(e, now)}
 
 
+def _pending_open_mask(raw: pd.DataFrame, pending_exchanges: set) -> "pd.Series":
+    """Boolean mask shared by `_pin_pending_open_rows` (numeric pin, this
+    module) and `tag_position_rows_price_source` (ctx.position_rows
+    price_source tag, background.py — Sprint 3 of the auto-close-short-
+    option plan) — the ONE predicate for "this row is on a pending-open
+    exchange with a resolved prev_close", so the two call sites can
+    never disagree about which rows were actually numerically pinned.
+    Returns an all-False Series (never raises) on missing columns or an
+    empty frame."""
+    if raw.empty or not pending_exchanges or 'exchange' not in raw.columns \
+            or 'prev_close' not in raw.columns:
+        return pd.Series(False, index=raw.index, dtype=bool)
+    pc = pd.to_numeric(raw['prev_close'], errors='coerce').fillna(0)
+    return raw['exchange'].astype(str).str.upper().isin(pending_exchanges) & (pc > 0)
+
+
 def _pin_pending_open_rows(raw: pd.DataFrame, pending_exchanges: set) -> None:
     """In-place: for any row on a *pending_exchanges* exchange with a
     resolved ``prev_close`` > 0, pin last_price to prev_close and
@@ -2345,12 +2361,11 @@ def _pin_pending_open_rows(raw: pd.DataFrame, pending_exchanges: set) -> None:
         return
     if 'prev_close' not in raw.columns:
         return
-    pc = pd.to_numeric(raw['prev_close'], errors='coerce').fillna(0)
-    mask = raw['exchange'].astype(str).str.upper().isin(pending_exchanges) & (pc > 0)
+    mask = _pending_open_mask(raw, pending_exchanges)
     if not mask.any():
         return
     sel = raw.index[mask]
-    cls = pc.loc[sel]
+    cls = pd.to_numeric(raw.loc[sel, 'prev_close'], errors='coerce').fillna(0)
     raw.loc[sel, 'last_price'] = cls
     avg = pd.to_numeric(raw.loc[sel, 'average_price'], errors='coerce').fillna(0)
     qty = pd.to_numeric(raw.loc[sel, 'quantity'], errors='coerce').fillna(0)
@@ -2407,6 +2422,68 @@ def _apply_pending_open_tag(rows: list) -> list:
         else:
             out.append(r)
     return out
+
+
+def tag_position_rows_price_source(
+    position_rows: "list[dict]", raw: "pd.DataFrame", pending_exchanges: set,
+) -> None:
+    """In-place: stamp `price_source` on each dict in *position_rows* — a
+    PLAIN `list[dict]` (e.g. `ctx.position_rows`, built via
+    `raw.to_dict('records')`), NOT a msgspec `PositionRow` (which has its
+    own tagging path via `_apply_pending_open_tag` / the closed-exchange
+    overlay — this function is never applied to that path and must not
+    be).
+
+    Sprint 3 fix (auto-close-short-option plan) — closes the gap in
+    `metric_gain_from_entry_pct`/`metric_short_option_gain_from_entry_
+    pct`'s own degraded-`price_source` guard: the background agent-engine
+    cycle (`background.py:_perf_run_agent_engine`) builds `ctx.
+    position_rows` straight from the raw broker DataFrame, which never
+    carries a `price_source` column at all — only the `/api/positions`
+    HTTP response layer tags one. Without this, a pending-open or
+    already-flat/settled row was silently evaluated by those metrics at
+    a pinned/frozen price with no signal that it was degraded.
+
+    Two cases, in priority order (matching `_process_overlay_row`'s own
+    precedence — a flat row is "settled" regardless of exchange state,
+    checked FIRST):
+      1. `quantity == 0` (flat) -> `'snapshot_settled'`, same predicate as
+         `_row_is_settled_flat`.
+      2. Else, a row selected by `_pending_open_mask` (same predicate
+         `_pin_pending_open_rows` numerically pins) -> `'pending_open'`.
+
+    Deliberately scoped NO FURTHER than this: the third degraded tag,
+    `'snapshot_unsettled'`, is produced by `_overlay_snapshot_for_closed_
+    exchanges`'s daily_book-backed lookup, which has no equivalent call
+    anywhere in the background cycle — reproducing it here would mean
+    duplicating that whole async DB-snapshot pipeline inside the
+    hot agent-engine tick, a materially larger change than "stamp a tag
+    onto rows already in hand". A non-flat position on a currently
+    CLOSED (not merely pending-open) exchange is therefore left
+    untouched by this function (no `price_source` key at all, read as
+    "live" by both metrics' own convention for an absent key) — a known,
+    deliberate limitation, not a silent gap.
+
+    `position_rows` and `raw` MUST align 1:1 by row order (true for any
+    caller using `raw.to_dict('records')` with no intervening reindex/
+    filter — exactly how `_perf_run_agent_engine` builds `position_rows`
+    today).
+    """
+    if not position_rows or raw is None or raw.empty:
+        return
+    pending_mask = _pending_open_mask(raw, pending_exchanges)
+    pending_list = pending_mask.tolist()
+    n = min(len(position_rows), len(pending_list))
+    for i in range(n):
+        row = position_rows[i]
+        try:
+            qty = float(row.get('quantity', 0) or 0)
+        except (TypeError, ValueError):
+            qty = 0.0
+        if qty == 0:
+            row['price_source'] = 'snapshot_settled'
+        elif pending_list[i]:
+            row['price_source'] = 'pending_open'
 
 
 async def _build_paper_positions_response() -> PositionsResponse:
