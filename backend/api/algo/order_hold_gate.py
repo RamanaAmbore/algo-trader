@@ -44,8 +44,19 @@ def template_exit_held(override: bool | None = None) -> bool:
 async def record_held_order(category: HoldCategory, *, account: str, symbol: str,
                             exchange: str, side: str, qty: int, product: str,
                             reason: str, price_policy: str = "CHASE_MED",
-                            agent_id: "int | None" = None) -> int | None:
+                            agent_id: "int | None" = None,
+                            auto_release_at: "datetime | None" = None) -> int | None:
     """Persist one HELD AlgoOrder for any hold category. Returns the row id.
+
+    `auto_release_at` (Sprint 3, generic auto-release infra, reused by
+    any future `Agent.require_release` category — not only `AGENT_CLOSE`)
+    — an absolute UTC timestamp, already computed by the CALLER (e.g.
+    `held_at_for_deadline + timedelta(minutes=agent.release_timeout_
+    minutes)`), snapshotted onto `hold_json` via `hold_record()`. `None`
+    (the default) means "never auto-releases, stays held until an
+    explicit operator action". This function never derives the value
+    itself and never re-reads a live `Agent.release_timeout_minutes` —
+    see `hold_record()`'s own docstring for why that matters.
 
     Generic form of the old `record_held_close` (which held one and only one
     category, `EXPIRY_CLOSE`, hardcoded). See the module docstring in
@@ -104,7 +115,8 @@ async def record_held_order(category: HoldCategory, *, account: str, symbol: str
                 transaction_type=side, quantity=qty, product=product,
                 initial_price=None, status="HELD", engine="live", mode="live",
                 broker_order_id="", detail=f"Pending: {reason}", agent_id=agent_id,
-                hold_json=hold_record(category, reason, price_policy, None, held_at),
+                hold_json=hold_record(category, reason, price_policy, None, held_at,
+                                      auto_release_at=auto_release_at),
             )
             s.add(row)
             await s.commit()

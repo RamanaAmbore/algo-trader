@@ -562,7 +562,15 @@ _RELEASE_HANDLERS: dict[str | None, Callable] = {
     HoldCategory.TEMPLATE_EXIT.value: release_template_exit,
     HoldCategory.AGENT_ORDER.value: release_repeated_rejection_hold,
 }
-_DEFAULT_RELEASE_HANDLER: Callable = release_held_order  # expiry_close + anything unregistered
+# expiry_close + agent_close (Sprint 3, auto-close-short-option plan) +
+# anything else unregistered. `agent_close` is a DELIBERATE, permanent
+# fall-through — its hold represents "close an existing position that
+# was never attempted at the broker", the exact shape `release_held_order`
+# already handles (re-verify the live position, re-quote, place a new
+# close order). Do not "fix" this by registering a dedicated handler
+# for `agent_close` without a real behavioural reason to diverge from
+# the default.
+_DEFAULT_RELEASE_HANDLER: Callable = release_held_order
 
 
 def get_release_handler(category: str | None) -> Callable:

@@ -11,6 +11,18 @@ class HoldCategory(str, Enum):
     EXPIRY_CLOSE = "expiry_close"
     TEMPLATE_EXIT = "template_exit"
     AGENT_ORDER = "agent_order"
+    # Sprint 3 of the auto-close-short-option plan (generic infra, reused
+    # by any future `Agent.require_release` agent). Stages a close that
+    # was NEVER attempted at the broker — distinct from `AGENT_ORDER`
+    # (chase's own repeated-rejection hold, which RESUMES an
+    # already-placed order from its own persisted fields). Deliberately
+    # left UNREGISTERED in `order_release.py`'s `_RELEASE_HANDLERS` — it
+    # falls through to `_DEFAULT_RELEASE_HANDLER` (`release_held_order`)
+    # automatically, which is already exactly the right shape for this
+    # category (re-verify the live position, re-quote a fresh price,
+    # place a new close order). Do not register a dedicated handler for
+    # this category without a real reason to deviate from that default.
+    AGENT_CLOSE = "agent_close"
 
 
 DEFAULT_HELD = True
@@ -60,16 +72,34 @@ def release_price(bid: float | None, ask: float | None, last: float | None,
 
 
 def hold_record(category: HoldCategory, reason: str, price_policy: str,
-                override: bool | None, held_at: datetime) -> str:
-    """Serialise the hold state stored on an order (AlgoOrder.hold_json)."""
+                override: bool | None, held_at: datetime,
+                auto_release_at: "datetime | None" = None) -> str:
+    """Serialise the hold state stored on an order (AlgoOrder.hold_json).
+
+    `auto_release_at` (Sprint 3, generic auto-release infra) — an
+    absolute UTC timestamp, snapshotted at STAGE time by the caller
+    (e.g. `order_hold_gate.record_held_order`'s own caller, who computes
+    it as `held_at + timedelta(minutes=agent.release_timeout_minutes)`
+    when that setting is non-None, else `None`). Stored as an ISO
+    string, or omitted from the JSON entirely when `None` — so every
+    pre-existing caller's serialised `hold_json` stays byte-identical
+    to before this field existed. A later edit to the agent's own
+    `release_timeout_minutes` setting can never retroactively change an
+    already-staged hold's deadline: the auto-release scan
+    (`background.py`) reads ONLY this snapshotted value, never a live
+    re-join back to `Agent.release_timeout_minutes`.
+    """
     import json
-    return json.dumps({
+    out = {
         "category": category.value,
         "reason": reason,
         "price_policy": price_policy,
         "override": override,
         "held_at": held_at.isoformat(),
-    }, sort_keys=True)
+    }
+    if auto_release_at is not None:
+        out["auto_release_at"] = auto_release_at.isoformat()
+    return json.dumps(out, sort_keys=True)
 
 
 def parse_hold_record(raw: str | None) -> dict | None:
