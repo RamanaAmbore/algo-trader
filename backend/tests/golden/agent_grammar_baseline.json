@@ -466,6 +466,15 @@
     {
       "grammar_kind": "condition",
       "token_kind": "metric",
+      "token": "short_option_gain_from_entry_pct",
+      "value_type": "number",
+      "units": "%",
+      "description": "Percent of premium captured from entry, SHORT OPTIONS ONLY (avg_price - ltp) / avg_price * 100. None for a long or flat row, a non-option row (digit-anchored CE/PE suffix check), missing/non-positive/non-finite avg_price or ltp, or a degraded snapshot/pending-open price_source tag. Avoids the all[] cross-join bug over a fan-out scope by folding the direction and instrument-type checks inside the metric itself.",
+      "resolver": "backend.api.algo.grammar_tokens.metric_short_option_gain_from_entry_pct._metric_short_option_gain_from_entry_pct"
+    },
+    {
+      "grammar_kind": "condition",
+      "token_kind": "metric",
       "token": "minutes_since_open",
       "value_type": "number",
       "units": "min",
