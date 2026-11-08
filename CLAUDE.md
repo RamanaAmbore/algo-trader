@@ -3349,6 +3349,8 @@ and the `hold_json` column.
   `HeldOrdersCard` header title and `aria-label` still read "Held orders", beside per-row "Pending" text.
 - The covered-call feature's own "Held" label is a separate concept. It was not touched and must not be
   changed without a fresh operator decision.
+- *Amended 2026-11-08:* a search of the current frontend code found no literal covered-call "Held" label;
+  this claim is unconfirmed (cause not verified).
 - Invariant: operator-facing hold text reads "Pending". The DB kind stays `held`. The covered-call "Held"
   label is untouched.
 

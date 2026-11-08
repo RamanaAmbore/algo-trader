@@ -1583,7 +1583,7 @@
                 title={includeHoldings
                   ? 'Holdings ON — equity holdings included in Legs + overlaid on payoff. Click to hide.'
                   : 'Holdings OFF — equity holdings hidden. Click to include.'}
-                onclick={() => onToggleHoldings && onToggleHoldings()}>HOLD</button>
+                onclick={() => onToggleHoldings && onToggleHoldings()}>HOLDINGS</button>
       {/if}
     </div>
   {/if}

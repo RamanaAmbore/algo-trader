@@ -222,8 +222,8 @@ test('payoffDrafts store is accessible and integrates as session-only store', as
   // No DRAFT legend toggle any more (showDraftInPayoff removed).
   await expect(page.locator('.legend-toggle-draft')).toHaveCount(0);
 
-  // Confirm the HOLD button also renders (regression guard — both should coexist).
-  const holdBtn = page.locator('.legend-toggle').filter({ hasText: 'HOLD' });
+  // Confirm the HOLDINGS button also renders (regression guard — both should coexist).
+  const holdBtn = page.locator('.legend-toggle').filter({ hasText: 'HOLDINGS' });
   await expect(holdBtn).toBeVisible({ timeout: 5_000 });
 });
 

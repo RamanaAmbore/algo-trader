@@ -25,7 +25,7 @@
  * Test strategy (deterministic, no reliance on race timing):
  *   Seed a DELIBERATELY DIVERGED sessionStorage snapshot (`_includeHoldings`
  *   opposite of the localStorage-backed store value) before navigation,
- *   then assert the on-page HOLD toggle reflects the STORE's value, not
+ *   then assert the on-page HOLDINGS toggle reflects the STORE's value, not
  *   the stale cache — both on cold load and after a click.
  *
  * Five quality dimensions:
@@ -57,7 +57,7 @@ const PAGE_SRC = path.resolve(
 const CACHE_KEY = 'ramboq:options-state';
 const HOLDINGS_KEY = 'opt.includeHoldings';
 
-const HOLD_BUTTON = 'button.legend-toggle:has-text("HOLD")';
+const HOLD_BUTTON = 'button.legend-toggle:has-text("HOLDINGS")';
 
 /**
  * Seed localStorage's `opt.includeHoldings` flag + a deliberately diverged
